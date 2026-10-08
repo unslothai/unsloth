@@ -305,6 +305,7 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "gradient_checkpointing": values.get("gradient_checkpointing", "unsloth"),
         "offload_layers": values.get("offload_layers") or 0,
         "offload_vram_gb": values.get("offload_vram_gb"),
+        "offload_vram_gb_per_device": values.get("offload_vram_gb_per_device"),
         "prefetch_depth": values.get("prefetch_depth") or 2,
         "use_rslora": values.get("use_rslora", False),
         "use_loftq": values.get("use_loftq", False),

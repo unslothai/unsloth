@@ -160,6 +160,16 @@ export function mapBackendModelConfigToTrainingPatch(
     const budget = toNumber(training?.offload_vram_gb);
     patch.offloadVramGb = budget !== undefined && budget > 0 ? budget : null;
   }
+  if (Object.hasOwn(training ?? {}, "offload_vram_gb_per_device")) {
+    // Exported keyed by GPU index; the request's list form is indexed the same way.
+    const raw = training?.offload_vram_gb_per_device;
+    const perDevice: Record<string, number | null> = {};
+    for (const [index, value] of Object.entries(raw ?? {})) {
+      const gb = toNumber(value);
+      if (/^\d+$/.test(index) && gb !== undefined && gb > 0 && gb <= 4096) perDevice[index] = gb;
+    }
+    patch.offloadVramGbPerDevice = perDevice;
+  }
   if (training?.prefetch_depth === "auto") patch.prefetchDepth = "auto";
   else {
     const depth = toNumber(training?.prefetch_depth);

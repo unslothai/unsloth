@@ -7,13 +7,18 @@ load and LoRA path receives, and the live snapshot the training view polls."""
 from __future__ import annotations
 
 import sys
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
 
 from core.training.training import _build_training_worker_config
-from core.training.worker import _training_vram_budget_fraction, _with_vram_budget_hint
+from core.training.worker import (
+    _apply_training_vram_budget,
+    _device_budget_gb,
+    _training_vram_budget_fraction,
+    _with_vram_budget_hint,
+)
 from models.training import TrainingStartRequest
 
 GIB = 1024**3
@@ -53,6 +58,18 @@ def test_vram_budget_must_be_positive():
         _request(offload_vram_gb = 0)
 
 
+def test_per_device_budget_defaults_off_and_takes_nulls():
+    assert _request().offload_vram_gb_per_device is None
+    r = _request(offload_vram_gb_per_device = [8, None, 12.5])
+    assert r.offload_vram_gb_per_device == [8, None, 12.5]
+
+
+@pytest.mark.parametrize("value", [[0], [-1, 8], [5000], [8, "x"], [float("nan")], [1.0] * 65])
+def test_per_device_budget_refuses_what_a_single_budget_would(value):
+    with pytest.raises(ValidationError):
+        _request(offload_vram_gb_per_device = value)
+
+
 def test_worker_config_carries_the_offload_fields():
     cfg = _build_training_worker_config(
         {
@@ -69,6 +86,11 @@ def test_worker_config_carries_the_offload_fields():
     )
     off = _build_training_worker_config({"model_name": "org/model"})
     assert (off["offload_layers"], off["offload_vram_gb"], off["prefetch_depth"]) == (0, None, 2)
+    assert off["offload_vram_gb_per_device"] is None
+    per = _build_training_worker_config(
+        {"model_name": "org/model", "offload_vram_gb_per_device": [10.0, None]}
+    )
+    assert per["offload_vram_gb_per_device"] == [10.0, None]
 
 
 def test_budget_fraction_holds_the_run_to_its_gib():
@@ -79,6 +101,89 @@ def test_budget_fraction_holds_the_run_to_its_gib():
     for budget in (None, 0, -2, "x", float("nan")):
         assert _training_vram_budget_fraction(budget, 32 * GIB) is None
     assert _training_vram_budget_fraction(8, 0) is None
+
+
+def test_device_budget_falls_back_to_the_single_budget():
+    assert _device_budget_gb(8, None, 0) == 8 and _device_budget_gb(8, None, 3) == 8
+    assert _device_budget_gb(None, None, 0) is None
+    assert _device_budget_gb(8, [], 1) == 8
+
+
+def test_device_budget_reads_each_cards_own_entry():
+    per = [10.0, None, 6.0]
+    assert [_device_budget_gb(99, per, i) for i in range(4)] == [10.0, None, 6.0, None]
+    # Training narrowed to physical GPUs 2 and 0: ordinal 0 is GPU 2.
+    assert _device_budget_gb(None, per, 0, [2, 0]) == 6.0
+    assert _device_budget_gb(None, per, 1, [2, 0]) == 10.0
+
+
+class _FakeCuda:
+    def __init__(
+        self,
+        totals,
+        current = None,
+    ):
+        self.totals, self.set, self.current = totals, {}, current or {}
+
+    def is_available(self):
+        return True
+
+    def device_count(self):
+        return len(self.totals)
+
+    def get_device_properties(self, i):
+        return SimpleNamespace(total_memory = self.totals[i])
+
+    def mem_get_info(self, i):
+        return (0, self.totals[i])
+
+    def get_per_process_memory_fraction(self, i):
+        return self.current.get(i, 1.0)
+
+    def set_per_process_memory_fraction(self, fraction, i):
+        self.set[i] = fraction
+
+
+def _fake_torch(totals, current = None):
+    return SimpleNamespace(__version__ = "2.8.0", cuda = _FakeCuda(totals, current))
+
+
+def test_per_device_budget_sets_each_cards_own_fraction():
+    torch_mod = _fake_torch([32 * GIB, 16 * GIB, 24 * GIB])
+    # The list replaces the single budget, and a null entry leaves that card uncapped.
+    assert _apply_training_vram_budget(torch_mod, 99, [8, 12, None], None) == pytest.approx(
+        {0: 0.25, 1: 0.75}
+    )
+    assert torch_mod.cuda.set == pytest.approx({0: 0.25, 1: 0.75})
+
+
+def test_per_device_budget_keeps_the_tighter_oom_guard_cap_per_card():
+    torch_mod = _fake_torch([32 * GIB, 32 * GIB], current = {0: 0.5})
+    assert _apply_training_vram_budget(torch_mod, None, [24, 24], None) == pytest.approx(
+        {0: 0.5, 1: 0.75}
+    )
+
+
+def test_single_budget_still_caps_every_card_alike():
+    torch_mod = _fake_torch([32 * GIB, 16 * GIB])
+    assert _apply_training_vram_budget(torch_mod, 8, None, None) == pytest.approx({0: 0.25, 1: 0.5})
+
+
+def test_per_device_budget_follows_the_narrowed_gpu_ids():
+    torch_mod = _fake_torch([32 * GIB, 32 * GIB])
+    # Physical GPUs 3 and 1 are visible as ordinals 0 and 1.
+    assert _apply_training_vram_budget(
+        torch_mod, None, [None, 16, None, 8], [3, 1]
+    ) == pytest.approx({0: 0.25, 1: 0.5})
+
+
+def test_worker_routes_both_budgets_through_the_helper():
+    import inspect
+    from core.training import worker
+
+    src = inspect.getsource(worker.run_training_process)
+    assert 'config.get("offload_vram_gb_per_device")' in src
+    assert "_apply_training_vram_budget(" in src
 
 
 def _trainer(
@@ -141,6 +246,96 @@ def test_snapshot_keys_layers_as_strings(monkeypatch):
     )
     snap = _trainer(model = SimpleNamespace(_unsloth_block_swap = swapper))._offload_snapshot()
     assert snap["state"] == {"14": "host", "15": "gpu"} and snap["prefetch_depth"] == 2
+
+
+def _block(device):
+    import torch
+    return SimpleNamespace(home = torch.device(device))
+
+
+def _layer(device):
+    import torch
+    return SimpleNamespace(parameters = lambda: iter([SimpleNamespace(device = torch.device(device))]))
+
+
+def _zoo_block_swap(monkeypatch):
+    # The Studio CPU job runs without unsloth_zoo installed.
+    try:
+        import unsloth_zoo.block_swap as module
+    except ImportError:
+        package = ModuleType("unsloth_zoo")
+        module = ModuleType("unsloth_zoo.block_swap")
+        package.block_swap = module
+        monkeypatch.setitem(sys.modules, "unsloth_zoo", package)
+        monkeypatch.setitem(sys.modules, "unsloth_zoo.block_swap", module)
+    return module
+
+
+def test_snapshot_reports_every_card_and_each_layers_card(monkeypatch):
+    zoo_block_swap = _zoo_block_swap(monkeypatch)
+    from core.training import trainer
+
+    cuda = trainer.torch.cuda
+    allocated, peak = {0: 5 * GIB, 1: 3 * GIB}, {0: 6 * GIB, 1: 4 * GIB}
+    totals, fractions = {0: 32 * GIB, 1: 16 * GIB}, {0: 1.0, 1: 0.5}
+    monkeypatch.setattr(cuda, "is_available", lambda: True)
+    monkeypatch.setattr(cuda, "device_count", lambda: 2)
+    monkeypatch.setattr(cuda, "memory_allocated", lambda d = 0: allocated[d])
+    monkeypatch.setattr(cuda, "max_memory_allocated", lambda d = 0: peak[d])
+    monkeypatch.setattr(
+        cuda,
+        "get_device_properties",
+        lambda d = 0: SimpleNamespace(name = f"card{d}", total_memory = totals[d]),
+    )
+    monkeypatch.setattr(
+        cuda, "get_per_process_memory_fraction", lambda d = 0: fractions[d], raising = False
+    )
+    layers = [_layer("cuda:0"), _layer("cuda:0"), _layer("cuda:1"), _layer("cuda:1")]
+    monkeypatch.setattr(zoo_block_swap, "find_decoder_layers", lambda model: layers, raising = False)
+    swapper = SimpleNamespace(
+        device = 0,
+        indices = [1, 3],
+        blocks = [_block("cuda:0"), _block("cuda:1")],
+        stats = lambda: {"state": {1: "host", 3: "gpu"}, "swapped": [1, 3], "total_layers": 4},
+    )
+    t = _trainer(model = SimpleNamespace(_unsloth_block_swap = swapper))
+    t._gpu_ids = [2, 0]
+    snap = t._offload_snapshot()
+    # The single-card keys stay for older panels.
+    assert snap["vram_total_bytes"] == 32 * GIB and snap["vram_allocated_bytes"] == 5 * GIB
+    assert snap["vram_devices"] == [
+        {
+            "index": 0,
+            "gpu_id": 2,
+            "name": "card0",
+            "allocated_bytes": 5 * GIB,
+            "peak_bytes": 6 * GIB,
+            "total_bytes": 32 * GIB,
+            "fraction": 1.0,
+        },
+        {
+            "index": 1,
+            "gpu_id": 0,
+            "name": "card1",
+            "allocated_bytes": 3 * GIB,
+            "peak_bytes": 4 * GIB,
+            "total_bytes": 16 * GIB,
+            "fraction": 0.5,
+        },
+    ]
+    assert snap["layer_device"] == {"0": 0, "1": 0, "2": 1, "3": 1}
+
+
+def test_layer_device_map_survives_a_zoo_without_find_decoder_layers(monkeypatch):
+    zoo_block_swap = _zoo_block_swap(monkeypatch)
+
+    def boom(model):
+        raise RuntimeError("no layers")
+
+    monkeypatch.setattr(zoo_block_swap, "find_decoder_layers", boom, raising = False)
+    swapper = SimpleNamespace(indices = [5], blocks = [_block("cuda:1")])
+    # Only the offloaded layer's home is known, which is enough to place it.
+    assert _trainer(model = SimpleNamespace())._offload_layer_device_map(swapper) == {"5": 1}
 
 
 def test_offload_route_reports_inactive_until_a_step_carries_stats(monkeypatch):
@@ -207,6 +402,11 @@ def test_every_worker_failure_path_carries_the_budget_hint():
     assert src.count("_with_vram_budget_hint(") == 4
 
 
+def test_per_gpu_budgets_get_the_hint_too():
+    hinted = _with_vram_budget_hint({"offload_vram_gb_per_device": [None, 6, 8]}, _INFEASIBLE)
+    assert "per-GPU VRAM budgets (6, 8 GiB)" in hinted
+
+
 @pytest.mark.parametrize("checkpointing", ["none", "False", "off", "no", "0"])
 @pytest.mark.parametrize("offload", [14, "auto"])
 def test_offload_without_checkpointing_is_refused_up_front(checkpointing, offload):
@@ -255,12 +455,10 @@ def test_multi_gpu_vision_and_audio_runs_skip_the_budget():
     ):
         assert needle in gate
     skip = src.index("if _budget_unsupported:")
-    assert 'config["offload_vram_gb"] = None' in src[skip : src.index("elif _wants_budget:")]
-    assert (
-        skip
-        < src.index("elif _wants_budget:")
-        < src.index("set_per_process_memory_fraction(_b_fraction")
-    )
+    cleared = src[skip : src.index("elif _wants_budget:")]
+    assert 'config["offload_vram_gb"] = None' in cleared
+    assert 'config["offload_vram_gb_per_device"] = None' in cleared
+    assert skip < src.index("elif _wants_budget:") < src.index("_apply_training_vram_budget(", skip)
 
 
 def test_an_inherited_mask_counts_its_visible_gpus(monkeypatch):

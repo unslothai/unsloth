@@ -32,6 +32,7 @@ interface BackendTrainingDefaults {
   random_seed?: number;
   offload_layers?: number | "auto";
   offload_vram_gb?: number | null;
+  offload_vram_gb_per_device?: Record<string, number | null> | (number | null)[] | null;
   prefetch_depth?: number | "auto";
   vision_image_size?: number | string | null;
   packing?: boolean;

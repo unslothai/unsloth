@@ -3426,6 +3426,7 @@ export const ptBR = {
       offloadVramBudget: "Orçamento de VRAM (GiB)",
       offloadVramBudgetTooltip: "A VRAM máxima que este treino pode usar. Auto descarrega camadas suficientes para caber, e dois treinos podem dividir uma placa. Vazio usa a placa inteira.",
       offloadWholeCard: "placa inteira",
+      offloadVramBudgetGpu: "Orçamento de VRAM GPU {index} (GiB)",
       prefetchDepth: "Profundidade de pré-busca",
       prefetchDepthTooltip: "Quantas camadas descarregadas são copiadas antes da que está rodando. Auto começa em 1 e só mantém mais se reduzir de forma mensurável a espera por cópias.",
       offloadPanelTitle: "Camadas descarregadas",
@@ -3440,6 +3441,8 @@ export const ptBR = {
       offloadPanelDepth: "profundidade de pré-busca",
       offloadPanelPinned: "fixada",
       offloadPanelSweepNote: "A janela móvel mostra a ordem em que as camadas são buscadas, desacelerada para ficar visível; os números são medidos no último passo.",
+      offloadPanelCard: "GPU {index}",
+      offloadPanelCardUnknown: "Placa desconhecida",
       gradCheckpoint: "Checkpoint de gradiente",
       gradCheckpointTooltip:
         "Reduz o uso de memória ao recalcular as ativações, em troca de maior custo computacional.",

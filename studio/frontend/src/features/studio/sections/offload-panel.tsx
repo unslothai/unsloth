@@ -9,7 +9,12 @@ import { RamMemoryIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { ReactElement } from "react";
 import { useEffect, useState } from "react";
-import { layerPlacement } from "./offload-panel-layout";
+import {
+  type OffloadCard,
+  groupLayersByCard,
+  layerPlacement,
+  vramUsage,
+} from "./offload-panel-layout";
 
 /** `GET /api/train/offload`: unsloth_zoo BlockSwap.stats() from the last logged step. */
 export interface OffloadState {
@@ -33,6 +38,9 @@ export interface OffloadState {
   vram_peak_bytes?: number;
   vram_total_bytes?: number;
   vram_fraction?: number;
+  /** Every visible card, and the torch ordinal each decoder layer runs on. */
+  vram_devices?: OffloadCard[];
+  layer_device?: Record<string, number>;
 }
 
 const GIB = 1024 ** 3;
@@ -99,6 +107,58 @@ function Stat({ label, value }: { label: string; value: string }): ReactElement 
   );
 }
 
+function VramBar({
+  label,
+  used,
+  budget,
+  total,
+}: { label: string } & ReturnType<typeof vramUsage>): ReactElement {
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex justify-between text-ui-11 text-muted-foreground">
+        <span>{label}</span>
+        <span className="font-mono">
+          {(used / GIB).toFixed(1)} / {((budget ?? total) / GIB).toFixed(1)} GiB
+        </span>
+      </div>
+      <div className="relative h-2 overflow-hidden rounded-full bg-muted">
+        <div
+          className="h-full rounded-full bg-control-accent"
+          style={{ width: `${Math.min(100, (100 * used) / total)}%` }}
+        />
+        {budget != null && (
+          <div
+            className="absolute inset-y-0 w-0.5 bg-[color-mix(in_oklab,var(--foreground)_calc(70%*var(--contrast-wash-gain,1)),transparent)]"
+            style={{ left: `${(100 * budget) / total}%` }}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function LayerGrid({
+  cells,
+  layers,
+  label,
+}: {
+  cells: ReturnType<typeof layerPlacement>;
+  layers: number[];
+  label: string;
+}): ReactElement {
+  return (
+    <div className="grid w-fit grid-cols-8 gap-1" aria-label={label}>
+      {layers.map((layer) => (
+        <div
+          key={layer}
+          title={`${layer}`}
+          className={cn("size-4 rounded-[3px] transition-colors", CELL[cells[layer]])}
+        />
+      ))}
+    </div>
+  );
+}
+
 export function OffloadPanel({ isTrainingRunning }: { isTrainingRunning: boolean }): ReactElement | null {
   const t = useT();
   const s = useOffloadState(isTrainingRunning);
@@ -114,8 +174,8 @@ export function OffloadPanel({ isTrainingRunning }: { isTrainingRunning: boolean
   const busy = (s.compute_ms ?? 0) + (s.stall_ms ?? 0);
   const waiting = busy > 0 ? (100 * (s.stall_ms ?? 0)) / busy : null;
   const vramTotal = s.vram_total_bytes ?? 0;
-  const used = s.vram_peak_bytes ?? s.vram_allocated_bytes ?? 0;
-  const budget = s.vram_fraction && s.vram_fraction < 1 ? s.vram_fraction * vramTotal : null;
+  const cards = s.vram_devices ?? [];
+  const multi = cards.length > 1;
   const ms = (v: number | null) => (v == null ? "--" : `${v.toFixed(1)} ms`);
 
   return (
@@ -128,16 +188,45 @@ export function OffloadPanel({ isTrainingRunning }: { isTrainingRunning: boolean
       className="shadow-border border border-border/60 bg-card/90 ring-0 backdrop-blur-sm"
     >
       <div className="flex flex-wrap items-start gap-6">
-        <div className="grid grid-cols-8 gap-1" aria-label={t("studio.params.offloadPanelTitle")}>
-          {cells.map((cell, layer) => (
-            <div
-              // biome-ignore lint/suspicious/noArrayIndexKey: one cell per decoder layer, fixed order
-              key={layer}
-              title={`${layer}`}
-              className={cn("size-4 rounded-[3px] transition-colors", CELL[cell])}
-            />
-          ))}
-        </div>
+        {multi ? (
+          <div className="flex flex-col gap-4">
+            {groupLayersByCard(total, s.layer_device, cards).map(({ card, layers }) => {
+              const name = card
+                ? t("studio.params.offloadPanelCard", { index: card.gpu_id ?? card.index })
+                : t("studio.params.offloadPanelCardUnknown");
+              return (
+                <div key={card?.index ?? "unplaced"} className="flex w-44 flex-col gap-2">
+                  <div className="flex items-baseline gap-1.5 text-ui-11">
+                    <span className="font-medium">{name}</span>
+                    {card?.name && (
+                      <span className="truncate text-muted-foreground" title={card.name}>
+                        {card.name}
+                      </span>
+                    )}
+                  </div>
+                  <LayerGrid cells={cells} layers={layers} label={name} />
+                  {card && (card.total_bytes ?? 0) > 0 && (
+                    <VramBar
+                      label={t("studio.params.offloadPanelVram")}
+                      {...vramUsage(card.total_bytes, card.peak_bytes, card.allocated_bytes, card.fraction)}
+                    />
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="grid grid-cols-8 gap-1" aria-label={t("studio.params.offloadPanelTitle")}>
+            {cells.map((cell, layer) => (
+              <div
+                // biome-ignore lint/suspicious/noArrayIndexKey: one cell per decoder layer, fixed order
+                key={layer}
+                title={`${layer}`}
+                className={cn("size-4 rounded-[3px] transition-colors", CELL[cell])}
+              />
+            ))}
+          </div>
+        )}
         <div className="flex min-w-48 flex-1 flex-col gap-3">
           <div className="flex flex-wrap gap-3 text-ui-11 text-muted-foreground">
             <span className="flex items-center gap-1.5">
@@ -153,27 +242,11 @@ export function OffloadPanel({ isTrainingRunning }: { isTrainingRunning: boolean
               {t("studio.params.offloadPanelHost")}
             </span>
           </div>
-          {vramTotal > 0 && (
-            <div className="flex flex-col gap-1">
-              <div className="flex justify-between text-ui-11 text-muted-foreground">
-                <span>{t("studio.params.offloadPanelVram")}</span>
-                <span className="font-mono">
-                  {(used / GIB).toFixed(1)} / {((budget ?? vramTotal) / GIB).toFixed(1)} GiB
-                </span>
-              </div>
-              <div className="relative h-2 overflow-hidden rounded-full bg-muted">
-                <div
-                  className="h-full rounded-full bg-control-accent"
-                  style={{ width: `${Math.min(100, (100 * used) / vramTotal)}%` }}
-                />
-                {budget != null && (
-                  <div
-                    className="absolute inset-y-0 w-0.5 bg-[color-mix(in_oklab,var(--foreground)_calc(70%*var(--contrast-wash-gain,1)),transparent)]"
-                    style={{ left: `${(100 * budget) / vramTotal}%` }}
-                  />
-                )}
-              </div>
-            </div>
+          {!multi && vramTotal > 0 && (
+            <VramBar
+              label={t("studio.params.offloadPanelVram")}
+              {...vramUsage(vramTotal, s.vram_peak_bytes, s.vram_allocated_bytes, s.vram_fraction)}
+            />
           )}
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
             <Stat label={t("studio.params.offloadPanelCopy")} value={ms(perCopy)} />

@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/select";
 import { useTrainingConfigStore } from "@/features/training";
 import type { OffloadLayers, PrefetchDepth } from "@/features/training/types/config";
+import { useGpuDevices, useGpuInfo } from "@/hooks/use-gpu-info";
 import { useT } from "@/i18n";
 import { type ReactElement, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
@@ -32,12 +33,18 @@ export function OffloadLayersParams(): ReactElement {
     useShallow((state) => ({
       offloadLayers: state.offloadLayers,
       offloadVramGb: state.offloadVramGb,
+      offloadVramGbPerDevice: state.offloadVramGbPerDevice,
       prefetchDepth: state.prefetchDepth,
       setOffloadLayers: state.setOffloadLayers,
       setOffloadVramGb: state.setOffloadVramGb,
+      setOffloadVramGbForDevice: state.setOffloadVramGbForDevice,
       setPrefetchDepth: state.setPrefetchDepth,
     })),
   );
+  const gpu = useGpuInfo();
+  const devices = useGpuDevices(true);
+  // Same rule as the start payload: several training GPUs get one budget each.
+  const cards = gpu.available && devices.length > 1 ? devices : [];
   // The count box's text while it is being edited: clearing it to retype must not read as Off.
   const [countDraft, setCountDraft] = useState<string | null>(null);
   const mode = countDraft !== null ? "layers" : modeOf(store.offloadLayers);
@@ -88,7 +95,39 @@ export function OffloadLayersParams(): ReactElement {
           )}
         </div>
       </ParamsRow>
-      {mode === "auto" && (
+      {mode === "auto" && cards.length > 0 && (
+        <ParamsRow
+          label={t("studio.params.offloadVramBudget")}
+          tooltip={t("studio.params.offloadVramBudgetTooltip")}
+        >
+          {/* One box per training GPU, four to a line; empty uses the whole card. */}
+          <div className="flex max-w-[calc(356px*var(--ui-space-scale,1))] flex-wrap justify-end gap-1.5">
+            {cards.map((card) => (
+              <Input
+                key={card.index}
+                type="number"
+                inputMode="decimal"
+                min={1}
+                max={card.memoryTotalGb > 0 ? card.memoryTotalGb : undefined}
+                step={0.5}
+                title={card.name}
+                aria-label={t("studio.params.offloadVramBudgetGpu", { index: card.index })}
+                placeholder={t("studio.params.offloadPanelCard", { index: card.index })}
+                value={store.offloadVramGbPerDevice[String(card.index)] ?? ""}
+                onChange={(e) => {
+                  const gb = Number(e.target.value);
+                  store.setOffloadVramGbForDevice(
+                    card.index,
+                    e.target.value === "" || !(gb > 0) ? null : gb,
+                  );
+                }}
+                className="w-[calc(84px*var(--ui-space-scale,1))] pl-3 pr-7 font-mono placeholder:font-sans"
+              />
+            ))}
+          </div>
+        </ParamsRow>
+      )}
+      {mode === "auto" && cards.length === 0 && (
         <ParamsRow
           label={t("studio.params.offloadVramBudget")}
           tooltip={t("studio.params.offloadVramBudgetTooltip")}

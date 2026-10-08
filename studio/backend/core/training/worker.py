@@ -1652,6 +1652,58 @@ def _training_vram_budget_fraction(
     return min(current, budget * 1024**3 / denominator_bytes)
 
 
+def _apply_training_vram_budget(
+    torch_mod: Any, single_gb: float | None, per_device_gb: list | None, gpu_ids: list | None
+) -> dict[int, float]:
+    """Cap each visible device at its own budget; returns {ordinal: fraction} for what was set."""
+    applied: dict[int, float] = {}
+    if not torch_mod.cuda.is_available():
+        return applied
+    get_fraction = getattr(torch_mod.cuda, "get_per_process_memory_fraction", None)
+    divides_by_props = _allocator_divides_by_props_total(getattr(torch_mod, "__version__", ""))
+    for index in range(torch_mod.cuda.device_count()):
+        budget = _device_budget_gb(single_gb, per_device_gb, index, gpu_ids)
+        if not budget:
+            continue
+        props = torch_mod.cuda.get_device_properties(index)
+        denominator = int(getattr(props, "total_memory", 0) or 0)
+        if not divides_by_props:
+            denominator = int(torch_mod.cuda.mem_get_info(index)[1])
+        current = get_fraction(index) if get_fraction is not None else 1.0
+        fraction = _training_vram_budget_fraction(budget, denominator, current)
+        if fraction is None:
+            continue
+        torch_mod.cuda.set_per_process_memory_fraction(fraction, index)
+        applied[index] = fraction
+        logger.info(
+            "Training VRAM budget: set_per_process_memory_fraction(%.4f, cuda:%d), "
+            "%.1f GiB of %.1f GiB",
+            fraction,
+            index,
+            fraction * denominator / 1024**3,
+            denominator / 1024**3,
+        )
+    return applied
+
+
+def _device_budget_gb(
+    single_gb: float | None,
+    per_device_gb: list | None,
+    ordinal: int,
+    gpu_ids: list | None = None,
+) -> float | None:
+    """The budget for torch device ``ordinal``. ``per_device_gb`` is indexed by physical GPU id, so
+    the ordinal goes through ``gpu_ids`` (the CUDA_VISIBLE_DEVICES narrowing) first; when it is
+    given, a missing or null entry means no cap on that card."""
+    if not per_device_gb:
+        return single_gb
+    physical = gpu_ids[ordinal] if gpu_ids and ordinal < len(gpu_ids) else ordinal
+    try:
+        return per_device_gb[int(physical)]
+    except (IndexError, TypeError, ValueError):
+        return None
+
+
 def _offload_plan_shape(config: dict) -> dict:
     """The per-device batch and LoRA rank an Auto offload plan sizes its training reserve for."""
     return {"batch_size": config.get("batch_size"), "lora_rank": config.get("lora_r")}
@@ -1669,11 +1721,19 @@ def _visible_gpu_count() -> int:
 def _with_vram_budget_hint(config: dict, message: str) -> str:
     """Point a run that does not fit at its own VRAM budget, the one cause the generic advice omits."""
     budget = config.get("offload_vram_gb")
+    per_device = [gb for gb in config.get("offload_vram_gb_per_device") or [] if gb]
     lower = (message or "").lower()
-    if not budget or not any(k in lower for k in ("out of memory", "out of vram", "does not fit")):
+    if not (budget or per_device) or not any(
+        k in lower for k in ("out of memory", "out of vram", "does not fit")
+    ):
         return message
+    cap = (
+        f"a {budget:g} GiB VRAM budget"
+        if budget and not per_device
+        else "per-GPU VRAM budgets (" + ", ".join(f"{gb:g}" for gb in per_device) + " GiB)"
+    )
     return (
-        f"{message}\nThis run is capped at a {budget:g} GiB VRAM budget. Raise or clear the "
+        f"{message}\nThis run is capped at {cap}. Raise or clear the "
         "VRAM budget under Training Hyperparameters > Memory."
     )
 
@@ -4236,10 +4296,9 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     # Offload layers sizes "auto" to what the allocator may use, so a budget makes the run fit in it,
     # and two runs on one card can each take their share.
     # ── 2b. Training VRAM budget ──
-    _budget_gb = config.get("offload_vram_gb")
     # Only "auto" sizes to a budget, and only LoRA runs outside decision / embedding offload.
     _wants_budget = bool(
-        _budget_gb
+        (config.get("offload_vram_gb") or config.get("offload_vram_gb_per_device"))
         and config.get("offload_layers") == "auto"
         and config.get("training_type", "LoRA/QLoRA") in ("LoRA/QLoRA", "Continued Pretraining")
         and not config.get("is_decision")
@@ -4259,35 +4318,16 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         )
         # An out-of-memory error then must not blame a cap that was never set.
         config["offload_vram_gb"] = None
+        config["offload_vram_gb_per_device"] = None
     elif _wants_budget:
         try:
             import torch as _torch_budget
-            if _torch_budget.cuda.is_available():
-                for _b_index in range(_torch_budget.cuda.device_count()):
-                    _b_props = _torch_budget.cuda.get_device_properties(_b_index)
-                    _b_denominator = int(getattr(_b_props, "total_memory", 0) or 0)
-                    if not _allocator_divides_by_props_total(
-                        getattr(_torch_budget, "__version__", "")
-                    ):
-                        _b_denominator = int(_torch_budget.cuda.mem_get_info(_b_index)[1])
-                    _get_fraction = getattr(
-                        _torch_budget.cuda, "get_per_process_memory_fraction", None
-                    )
-                    _b_current = _get_fraction(_b_index) if _get_fraction is not None else 1.0
-                    _b_fraction = _training_vram_budget_fraction(
-                        _budget_gb, _b_denominator, _b_current
-                    )
-                    if _b_fraction is None:
-                        continue
-                    _torch_budget.cuda.set_per_process_memory_fraction(_b_fraction, _b_index)
-                    logger.info(
-                        "Training VRAM budget: set_per_process_memory_fraction(%.4f, cuda:%d), "
-                        "%.1f GiB of %.1f GiB",
-                        _b_fraction,
-                        _b_index,
-                        _b_fraction * _b_denominator / 1024**3,
-                        _b_denominator / 1024**3,
-                    )
+            _apply_training_vram_budget(
+                _torch_budget,
+                config.get("offload_vram_gb"),
+                config.get("offload_vram_gb_per_device"),
+                gpu_ids,
+            )
         except Exception as _budget_err:
             logger.warning("Could not apply the training VRAM budget: %s", _budget_err)
 

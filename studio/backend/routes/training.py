@@ -1987,6 +1987,7 @@ async def start_training(
             else "unsloth",
             "offload_layers": request.offload_layers,
             "offload_vram_gb": request.offload_vram_gb,
+            "offload_vram_gb_per_device": request.offload_vram_gb_per_device,
             "prefetch_depth": request.prefetch_depth,
             "use_rslora": request.use_rslora,
             "use_loftq": request.use_loftq,

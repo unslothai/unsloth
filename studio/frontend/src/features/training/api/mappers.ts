@@ -82,7 +82,8 @@ export function offloadHardwareSupported(
   return devices.length === 0 || devices.some((device) => device.unified_memory !== true);
 }
 
-/** The offload fields, sent off wherever the controls are hidden. */
+/** The offload fields, sent off wherever the controls are hidden. `gpuIndices` are the GPUs
+ * training can see; with more than one, the budget goes out per card. */
 export function offloadPayload(
   config: Pick<
     TrainingConfigState,
@@ -93,10 +94,15 @@ export function offloadPayload(
     | "gradientCheckpointing"
     | "offloadLayers"
     | "offloadVramGb"
+    | "offloadVramGbPerDevice"
     | "prefetchDepth"
   >,
+  gpuIndices: readonly number[] = [],
   system: Parameters<typeof offloadHardwareSupported>[0] = null,
-): Pick<TrainingStartRequest, "offload_layers" | "offload_vram_gb" | "prefetch_depth"> {
+): Pick<
+  TrainingStartRequest,
+  "offload_layers" | "offload_vram_gb" | "offload_vram_gb_per_device" | "prefetch_depth"
+> {
   const layers = !(offloadSupported(config) && offloadHardwareSupported(system))
     ? 0
     : config.offloadLayers === "auto"
@@ -106,15 +112,50 @@ export function offloadPayload(
     config.prefetchDepth === "auto"
       ? "auto"
       : Math.min(8, Math.max(1, Math.floor(config.prefetchDepth || 2)));
+  const multi = gpuIndices.length > 1;
   return {
     offload_layers: layers,
     // The budget only sizes "auto"; with a fixed count or off it would cap the run for nothing.
+    // Several cards hide the single input, so a value left in it from a one-card setup is not sent.
     offload_vram_gb:
-      layers === "auto" && config.offloadVramGb && config.offloadVramGb > 0
+      !multi && layers === "auto" && config.offloadVramGb && config.offloadVramGb > 0
         ? config.offloadVramGb
+        : null,
+    offload_vram_gb_per_device:
+      multi && layers === "auto"
+        ? perDeviceBudgetPayload(config.offloadVramGbPerDevice, gpuIndices)
         : null,
     prefetch_depth: depth,
   };
+}
+
+/** Entry i is GPU index i's budget, null where a card has none; null when no card has one. */
+export function perDeviceBudgetPayload(
+  perDevice: Record<string, number | null> | undefined,
+  gpuIndices: readonly number[],
+): (number | null)[] | null {
+  const valid = gpuIndices.filter((i) => Number.isInteger(i) && i >= 0);
+  if (!valid.length) return null;
+  const out: (number | null)[] = Array.from({ length: Math.max(...valid) + 1 }, () => null);
+  let any = false;
+  for (const i of valid) {
+    const gb = perDevice?.[String(i)];
+    if (typeof gb === "number" && gb > 0 && gb <= 4096) {
+      out[i] = gb;
+      any = true;
+    }
+  }
+  return any ? out : null;
+}
+
+/** The GPU indices training sees, from the torch inventory in `/api/system`. */
+export function trainingGpuIndices(
+  gpu: { available?: boolean; devices?: { index?: number | null }[] } | null | undefined,
+): number[] {
+  if (!gpu?.available) return [];
+  return (gpu.devices ?? [])
+    .map((d) => d.index)
+    .filter((i): i is number => typeof i === "number");
 }
 
 export function buildTrainingStartPayload(
@@ -239,7 +280,7 @@ export function buildTrainingStartPayload(
     lora_dropout: config.loraDropout,
     target_modules: adapterMethod ? config.targetModules : [],
     gradient_checkpointing: config.gradientCheckpointing,
-    ...offloadPayload(config, system),
+    ...offloadPayload(config, trainingGpuIndices(system?.gpu), system),
     use_rslora: loraVariants && config.loraVariant === "rslora",
     use_loftq: loraVariants && config.loraVariant === "loftq",
     use_dora: loraVariants && config.loraVariant === "dora",

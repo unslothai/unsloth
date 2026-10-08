@@ -3455,6 +3455,7 @@ export const es = {
       offloadVramBudget: "Presupuesto de VRAM (GiB)",
       offloadVramBudgetTooltip: "La VRAM máxima que puede usar este entrenamiento. Auto descarga las capas necesarias para caber, y dos entrenamientos pueden compartir una tarjeta. Vacío usa toda la tarjeta.",
       offloadWholeCard: "toda la tarjeta",
+      offloadVramBudgetGpu: "Presupuesto de VRAM GPU {index} (GiB)",
       prefetchDepth: "Profundidad de precarga",
       prefetchDepthTooltip: "Cuántas capas descargadas se copian antes de la que se ejecuta. Auto empieza en 1 y solo mantiene más si reduce de forma medible la espera de copias.",
       offloadPanelTitle: "Capas descargadas",
@@ -3469,6 +3470,8 @@ export const es = {
       offloadPanelDepth: "profundidad de precarga",
       offloadPanelPinned: "fijada",
       offloadPanelSweepNote: "La ventana móvil muestra el orden en que se traen las capas, ralentizado para que se vea; los números se miden en el último paso.",
+      offloadPanelCard: "GPU {index}",
+      offloadPanelCardUnknown: "Tarjeta desconocida",
       gradCheckpoint: "Checkpoint de gradiente",
       gradCheckpointTooltip:
         "Intercambia cómputo por memoria recalculando las activaciones.",
