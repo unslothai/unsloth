@@ -299,6 +299,7 @@ class _MarkdownRenderer(HTMLParser):
         self,
         scope_tags: frozenset[str] | None = None,
         strip_header: bool = False,
+        span_char_limit: int = _MAX_SPAN_CHARS,
     ):
         super().__init__(convert_charrefs = False)
         self._out: list[str] = []
@@ -361,6 +362,7 @@ class _MarkdownRenderer(HTMLParser):
         self._cell_rowspan: int = 1
         self._row_spans: dict[int, tuple[str, int]] = {}
         self._span_chars: int = 0
+        self._span_char_limit: int = min(_MAX_SPAN_CHARS, max(0, span_char_limit))
         self._in_row: bool = False
 
         self._in_pre: bool = False
@@ -481,30 +483,39 @@ class _MarkdownRenderer(HTMLParser):
         self._fill_spanned_cells(0)
         col = len(self._current_row)
         self._current_row.append(cell_text)
-        if self._span_chars >= _MAX_SPAN_CHARS:
+        if self._span_chars >= self._span_char_limit:
             return
-        self._current_row.extend([""] * (self._cell_colspan - 1))
-        self._span_chars += 3 * (self._cell_colspan - 1)
+        extra_col_cost = 9 if not self._header_row_done else 3
+        extra_cols = min(
+            self._cell_colspan - 1,
+            (self._span_char_limit - self._span_chars) // extra_col_cost,
+        )
+        self._current_row.extend([""] * extra_cols)
+        self._span_chars += extra_col_cost * extra_cols
         if self._cell_rowspan > 1:
             repeated = cell_text if len(cell_text) <= _MAX_REPEATED_CELL_CHARS else ""
-            for i in range(self._cell_colspan):
+            for i in range(extra_cols + 1):
                 self._row_spans[col + i] = (repeated if i == 0 else "", self._cell_rowspan)
 
     def _fill_spanned_cells(self, width: int) -> None:
-        while self._span_chars < _MAX_SPAN_CHARS and (
+        while self._span_chars < self._span_char_limit and (
             len(self._current_row) < width or len(self._current_row) in self._row_spans
         ):
             span = self._row_spans.get(len(self._current_row))
             text = span[0] if span else ""
+            cost = len(text) + 3
+            if self._span_chars + cost > self._span_char_limit:
+                self._span_chars = self._span_char_limit
+                break
             self._current_row.append(text)
-            self._span_chars += len(text) + 3
+            self._span_chars += cost
 
     def _finish_row(self) -> None:
         in_row, self._in_row = self._in_row, False
         if not self._current_row and not (in_row and self._row_spans):
             return
         self._fill_spanned_cells(max(self._row_spans, default = -1) + 1)
-        if self._span_chars >= _MAX_SPAN_CHARS:
+        if self._span_chars >= self._span_char_limit:
             self._row_spans = {}
         else:
             self._row_spans = {
@@ -1114,7 +1125,12 @@ def _strip_boilerplate_lines(text: str) -> str:
 def _new_renderer(
     source_html: str, scope_tags: frozenset[str] | None, strip_header: bool
 ) -> _MarkdownRenderer:
-    renderer = _MarkdownRenderer(scope_tags = scope_tags, strip_header = strip_header)
+    # generated span cells stay proportional to their source and cannot consume the fetch cap alone
+    renderer = _MarkdownRenderer(
+        scope_tags = scope_tags,
+        strip_header = strip_header,
+        span_char_limit = 2 * len(source_html),
+    )
     renderer.feed(source_html)
     renderer.close()
     renderer.flush_pending()

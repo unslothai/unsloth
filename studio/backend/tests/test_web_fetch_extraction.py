@@ -2136,9 +2136,10 @@ def test_spanned_table_cells_stay_in_their_columns():
 
 
 def test_table_spans_do_not_multiply_the_page_size():
+    small_wide = "<table><tr>" + "<td colspan='1000'>x</td>" * 3 + "</tr></table>"
     wide = "<table><tr>" + "<td colspan='1000'>x" * 30000 + "</table>"
     tall = "<table><tr><td rowspan='65534'>" + "word " * 2000 + "<tr><td>b" * 5000 + "</table>"
-    for html in (wide, tall):
+    for html in (small_wide, wide, tall):
         assert len(html_to_markdown(html)) < 3 * len(html)
 
 
