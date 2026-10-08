@@ -10,6 +10,7 @@ import {
   defaultsKeyFor,
   loadedRecipeFor,
   residentDefaultsKey,
+  residentRecipeFor,
   resolutionFor,
 } from "../src/features/images/image-generation-defaults.ts";
 
@@ -218,4 +219,20 @@ test("the Images page applies the loaded family recipe only to an untouched fall
   assert.match(ready, /loadedRecipeFor\(\s*pickDefaults\.current/);
   assert.match(ready, /!pickRecipeSuperseded\.current\?\.\(\)/);
   assert.match(ready, /cur === DEFAULT_GEN\.steps \? loadedRecipe\.steps : cur/);
+});
+
+test("the resident recipe prefers the backend-reported one", () => {
+  const schnellBase = residentDefaultsKey("/models/my_flux.safetensors", "black-forest-labs/FLUX.1-schnell", null);
+  assert.deepEqual(residentRecipeFor(schnellBase, { steps: 20, guidance: 3.5 }), { steps: 20, guidance: 3.5 });
+  // An older backend (or the native engine) reports nothing: the base-repo key decides, as before.
+  assert.deepEqual(residentRecipeFor(schnellBase, null), defaultsFor("black-forest-labs/FLUX.1-schnell"));
+  assert.deepEqual(residentRecipeFor(schnellBase, {}), defaultsFor("black-forest-labs/FLUX.1-schnell"));
+});
+
+test("the Images page seeds Default from the resident recipe and drops the pick token on revert", () => {
+  const src = readSrc("features/images/images-page.tsx");
+  assert.match(src, /residentRecipeFor\(\s*residentDefaults,\s*status\?\.generation_defaults/);
+  assert.doesNotMatch(src, /defaultsFor\(residentDefaults\)/);
+  const revert = src.slice(src.indexOf("const revertPick = useCallback"), src.indexOf("}, []);", src.indexOf("const revertPick = useCallback")));
+  assert.match(revert, /pickDefaults\.current = null/);
 });

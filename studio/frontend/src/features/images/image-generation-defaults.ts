@@ -73,12 +73,19 @@ export function loadedRecipeFor(
   reported?: { steps?: number; guidance?: number } | null,
 ): { steps: number; guidance: number } | null {
   if (pickDefaults !== DEFAULT_GEN) return null;
+  const resident = residentRecipeFor(residentKey, reported);
+  return resident.steps === DEFAULT_GEN.steps && resident.guidance === DEFAULT_GEN.guidance ? null : resident;
+}
+
+/** The resident model's recipe: the backend's own when it reports one, else the base-repo key's. */
+export function residentRecipeFor(
+  residentKey: string,
+  reported?: { steps?: number; guidance?: number } | null,
+): { steps: number; guidance: number } {
   if (reported && typeof reported.steps === "number" && typeof reported.guidance === "number") {
-    const same = reported.steps === DEFAULT_GEN.steps && reported.guidance === DEFAULT_GEN.guidance;
-    return same ? null : { steps: reported.steps, guidance: reported.guidance };
+    return { steps: reported.steps, guidance: reported.guidance };
   }
-  const resident = defaultsFor(residentKey);
-  return resident === DEFAULT_GEN ? null : resident;
+  return defaultsFor(residentKey);
 }
 
 export function residentDefaultsKey(

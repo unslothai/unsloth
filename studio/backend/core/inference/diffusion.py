@@ -1575,6 +1575,12 @@ def _generation_defaults_for(
     return {"steps": int(steps), "guidance": float(guidance)}
 
 
+_WHOLE_PIPELINE_GGUF_LORA_MSG = (
+    "LoRA is not available on a whole-pipeline GGUF: its UNet runs as the stored GGUF weights, which cannot carry "
+    "adapters. Load the .safetensors checkpoint to use a LoRA, or clear the LoRA selection."
+)
+
+
 def _whole_pipeline_gguf_pick(repo_id: Optional[str], gguf_filename: Optional[str]) -> bool:
     """True when the pick is an on-disk GGUF carrying a whole single-file pipeline (UNet + text encoders + VAE)."""
     return whole_pipeline_gguf_family(local_pick_file(repo_id, gguf_filename)) is not None
@@ -3406,6 +3412,12 @@ class DiffusionBackend:
             text_encoder_files = text_encoder_files,
             vae_file = vae_file,
         )
+        if (
+            fam.single_file_is_pipeline
+            and resolve_model_kind(gguf_filename, model_kind) == "gguf"
+            and _has_active_lora(loras)
+        ):
+            raise ValueError(_WHOLE_PIPELINE_GGUF_LORA_MSG)
         # Refuse an EXPLICIT precision this host can never honor BEFORE the load starts, so the route answers 409 with
         # the reason instead of evicting the resident model, downloading several GB and only then failing. The
         # declines that need the real footprint can only be found mid-load and surface through load-progress.
@@ -6046,6 +6058,8 @@ class DiffusionBackend:
                     transformer_quant = "off" if speed_off else TQ_AUTO
                     if kind == "gguf" and fam.single_file_is_pipeline:
                         # A whole-pipeline GGUF (SDXL) has no dense twin in the base repo: its UNet runs as stored.
+                        if _has_active_lora(loras):
+                            raise ValueError(_WHOLE_PIPELINE_GGUF_LORA_MSG)
                         transformer_quant = "off"
                 # The one case that must fail closed: a named scheme (not auto, not off). Normalized here so "FP8" and
                 # "fp8" refuse identically; a bogus value already raised above.

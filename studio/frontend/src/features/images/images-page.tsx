@@ -193,6 +193,7 @@ import {
   defaultsKeyFor,
   loadedRecipeFor,
   residentDefaultsKey,
+  residentRecipeFor,
   resolutionFor,
 } from "./image-generation-defaults";
 import {
@@ -1487,6 +1488,7 @@ export function ImagesPage({
   const revertPick = useCallback((r: PickRevert) => {
     setQuant(r.prev);
     setPendingModelDefaults(null);
+    pickDefaults.current = null;
     // Equality alone cannot tell "nobody touched this" from "the user chose the same number": a
     // preset selected after the pick owns these fields.
     if (!pickRecipeSuperseded.current?.()) {
@@ -1712,10 +1714,12 @@ export function ImagesPage({
     [batchSize, count, guidance, height, negativePrompt, steps, width],
   );
   const residentDefaults = residentDefaultsKey(status?.repo_id ?? "", status?.base_repo, status?.resolved?.family_override);
+  const { steps: residentSteps, guidance: residentGuidance } = residentRecipeFor(
+    residentDefaults,
+    status?.generation_defaults,
+  );
   const imageDefaultRecipe = useMemo<ImageGenerationPresetParams>(() => {
-    const recommended =
-      pendingModelDefaults ??
-      defaultsFor(residentDefaults);
+    const recommended = pendingModelDefaults ?? { steps: residentSteps, guidance: residentGuidance };
     // Reset restores the resident build's canvas, the same one the seed above applied. A constant
     // here would quietly undo it and put a 24 GB card back over its budget.
     const size = resolutionFor(status?.base_repo ?? status?.repo_id ?? "", {
@@ -1734,7 +1738,8 @@ export function ImagesPage({
     };
   }, [
     pendingModelDefaults,
-    residentDefaults,
+    residentSteps,
+    residentGuidance,
     status?.base_repo,
     status?.repo_id,
     status?.model_kind,
@@ -2822,7 +2827,7 @@ export function ImagesPage({
     const repoId = status?.loaded ? status.repo_id : null;
     if (!repoId) return;
     if (lastLoad.current) return;
-    const seedKey = `${repoId}\0${residentDefaults}`;
+    const seedKey = `${repoId}\0${residentDefaults}\0${residentSteps}\0${residentGuidance}`;
     if (seededResident.current === seedKey) return;
     seededResident.current = seedKey;
     // Wire Reapply to the resident model too. Only a full pipeline is reloadable by repo id
@@ -2836,7 +2841,7 @@ export function ImagesPage({
       residentSeeded.current = true;
       if (imagePresets.storedRecipe) return;
     }
-    const d = defaultsFor(residentDefaults);
+    const d = { steps: residentSteps, guidance: residentGuidance };
     setPendingModelDefaults(null);
     setSteps(d.steps);
     setGuidance(d.guidance);
@@ -2856,6 +2861,8 @@ export function ImagesPage({
   }, [
     imagePresets.storedRecipe,
     residentDefaults,
+    residentSteps,
+    residentGuidance,
     status?.display_repo_id,
     status?.loaded,
     status?.repo_id,

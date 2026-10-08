@@ -355,3 +355,20 @@ def test_status_reports_the_header_variant_recipe(tmp_path):
         str(tmp_path), "RealVisXL_V4.0-q8_0.gguf", "stabilityai/stable-diffusion-xl-base-1.0"
     )
     assert got == {"steps": 25, "guidance": 7.0}
+
+
+def test_lora_on_a_whole_pipeline_gguf_is_refused_before_the_load(tmp_path):
+    from core.inference.diffusion import get_diffusion_backend
+
+    _write_gguf(tmp_path / "RealVisXL_V4.0-q8_0.gguf", _SHAPES)
+    backend = get_diffusion_backend()
+    with pytest.raises(ValueError, match = "LoRA is not available on a whole-pipeline GGUF"):
+        backend.begin_load(
+            str(tmp_path),
+            gguf_filename = "RealVisXL_V4.0-q8_0.gguf",
+            model_kind = "gguf",
+            local_files_only = True,
+            loras = [("some/sdxl-lora", 1.0)],
+        )
+    # Nothing started: the resident model was never evicted.
+    assert backend._loading is None
