@@ -1395,6 +1395,15 @@ def _stored_reward_specs(stored: dict) -> dict[str, dict]:
     }
 
 
+def _resume_reward_mismatch(stored_specs: dict[str, dict], selections) -> bool:
+    """A resumed GRPO run must keep the source run's rewards and weights: the checkpoint's
+    optimizer state belongs to that summed reward."""
+    if not stored_specs:
+        return False
+    stored = {name: float(spec.get("weight", 1.0)) for name, spec in stored_specs.items()}
+    return stored != {s.name: float(s.weight) for s in selections}
+
+
 _RESUME_CHECKPOINT_STRUCTURE_FIELDS = (
     "load_in_4bit",
     "use_lora",
@@ -1950,9 +1959,15 @@ async def start_training(
             )
         if request.objective == "grpo":
             from core.training.rewards import RewardError, RewardNotFoundError, get_reward
+
             stored_specs = (
                 _stored_reward_specs(training_run_config(resume_run)) if resume_run else {}
             )
+            if resume_run and _resume_reward_mismatch(stored_specs, request.grpo_rewards):
+                raise HTTPException(
+                    status_code = 409,
+                    detail = "The GRPO rewards do not match the source run.",
+                )
             # Resolved here, under the caller's account, and stored with the run: later edits to a
             # library reward do not change what this run says it trained with.
             try:

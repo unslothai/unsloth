@@ -423,3 +423,26 @@ def test_grpo_generation_batch_counts_every_process(monkeypatch):
     )
     # Global batch 2, three generations: the generation batch rounds up to 6.
     assert kw["args"].generation_batch_size == 6
+
+
+def test_resume_refuses_a_changed_reward_set():
+    from types import SimpleNamespace as S
+
+    from routes.training import _resume_reward_mismatch, _stored_reward_specs
+
+    stored = _stored_reward_specs(
+        {
+            "reward_specs": [
+                {"name": "a", "rule": {"type": "length"}, "weight": 1.0},
+                {"name": "b", "rule": {"type": "length"}, "weight": 0.5},
+            ]
+        }
+    )
+    assert not _resume_reward_mismatch(stored, [S(name = "a", weight = 1), S(name = "b", weight = 0.5)])
+    assert _resume_reward_mismatch(stored, [S(name = "a", weight = 2.0), S(name = "b", weight = 0.5)])
+    assert _resume_reward_mismatch(stored, [S(name = "a", weight = 1.0)])
+    assert _resume_reward_mismatch(
+        stored, [S(name = "a", weight = 1.0), S(name = "b", weight = 0.5), S(name = "c", weight = 1.0)]
+    )
+    # Runs stored before reward specs were recorded keep resuming.
+    assert not _resume_reward_mismatch({}, [S(name = "c", weight = 1.0)])
