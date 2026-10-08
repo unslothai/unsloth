@@ -270,7 +270,8 @@ def raise_if_bnb_cpu_spill(
     else:
         hint = (
             'Pass `offload_layers = "auto"` to from_pretrained to keep the decoder layers the GPU '
-            "cannot hold in host RAM and stream them in during training (slower, but it trains), "
+            "cannot hold in host RAM and stream them in during training (slower, and it needs that "
+            "much free system RAM), "
             "load a smaller model, or free GPU memory held by other programs."
         )
     raise ValueError(
