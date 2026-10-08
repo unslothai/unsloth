@@ -76,8 +76,13 @@ import {
   syncStoredChatMessages,
 } from "../utils/chat-history-storage";
 import { notifyChatHistoryUpdated } from "../api/chat-api";
-import { toolResultModelText } from "../api/chat-adapter";
+import { resolveChatInstructions, toolResultModelText } from "../api/chat-adapter";
 import { toolCallReplayArguments } from "../tool-call-arguments";
+import { codexLocalToolRoundId, startsNewCodexToolRound } from "../codex-reasoning";
+import {
+  settleThreadScopedSettingsForCopy,
+  threadScopedDefault,
+} from "../stores/chat-runtime-store";
 import { usePlusMenuPrefsStore } from "../stores/plus-menu-prefs-store";
 import type { ThreadRecord, MessageRecord } from "../types";
 import {
@@ -231,29 +236,66 @@ async function loadConversationMessages(
   options: {
     emptyMessage?: string;
     includeSiblings?: boolean;
+    includeInstructions?: boolean;
   } = {},
 ) {
   const {
     emptyMessage = "No messages in this conversation to export.",
     includeSiblings = true,
+    includeInstructions = true,
   } = options;
   // Read before the storage await: switching chats meanwhile would point the lookup at another thread.
   const liveBranch = liveThreadBranch(threadId);
-  const raw = await listStoredChatMessages(threadId);
+  const [raw, instructions] = await Promise.all([
+    listStoredChatMessages(threadId),
+    includeInstructions ? chatInstructionsTurn(threadId) : [],
+  ]);
   if (raw.length === 0) {
     toast.info(emptyMessage);
     return null;
   }
   // No parentId = legacy flat thread (already DB createdAt-sorted); walking the chain would invert order.
   const hasParentIds = raw.some((m) => (m as { parentId?: unknown }).parentId != null);
-  if (!hasParentIds) return raw;
-  // Newest saved turn of the branch on screen: a reply still generating is not stored yet, and falling back to the newest leaf would export the reply it replaces.
-  const storedIds = new Set(raw.map((m) => m.id));
+  if (!hasParentIds) return [...instructions, ...raw];
+  const headId = liveBranchHeadId(liveBranch, raw);
+  return [
+    ...instructions,
+    ...orderByParentChain(raw, { includeSiblings, headId }),
+  ] as typeof raw;
+}
+
+async function chatInstructionsTurn(threadId: string): Promise<MessageRecord[]> {
+  // A debounced or held edit is not on the row yet, and the next reply already runs with it.
+  await settleThreadScopedSettingsForCopy(threadId);
+  const thread = await getStoredChatThread(threadId);
+  if (!thread) return [];
+  const text = await resolveChatInstructions(
+    threadId,
+    thread.settings?.systemPrompt ?? threadScopedDefault("systemPrompt"),
+    thread.settings?.systemVariables ?? threadScopedDefault("systemVariables"),
+    async () => thread,
+  );
+  if (!text) return [];
+  return [
+    {
+      id: `${threadId}-instructions`,
+      threadId,
+      role: "system",
+      content: [{ type: "text", text }],
+      createdAt: thread.createdAt,
+    },
+  ];
+}
+
+// Newest saved turn of the branch on screen: a reply still generating is not stored yet, and falling back to the newest leaf would export the reply it replaces.
+function liveBranchHeadId(
+  liveBranch: string[] | null,
+  raw: Array<{ id: string }>,
+): string | null | undefined {
   // An empty list is no opinion, not an empty branch: switching chats sets remoteId before the history load refills the view.
-  const headId = liveBranch?.length
-    ? ([...liveBranch].reverse().find((id) => storedIds.has(id)) ?? null)
-    : undefined;
-  return orderByParentChain(raw, { includeSiblings, headId }) as typeof raw;
+  if (!liveBranch?.length) return undefined;
+  const storedIds = new Set(raw.map((m) => m.id));
+  return [...liveBranch].reverse().find((id) => storedIds.has(id)) ?? null;
 }
 
 function exportTs(): string {
@@ -341,20 +383,47 @@ function messageToOpenAI(msg: { role: unknown; content: unknown; attachments?: u
   ];
 
   if (role === "assistant") {
-    const textParts: string[] = [];
-    const toolCalls: OAIToolCall[] = [];
-    const toolResults: OAIMessage[] = [];
+    const out: OAIMessage[] = [];
+    let textParts: string[] = [];
+    let toolCalls: OAIToolCall[] = [];
+    let toolResults: OAIMessage[] = [];
+    let callCount = 0;
+    let roundId: number | null = null;
+
+    const flush = () => {
+      const content = textParts.join("\n\n") || null;
+      out.push(
+        toolCalls.length > 0
+          ? { role: "assistant", content, tool_calls: toolCalls }
+          : { role: "assistant", content: content ?? "" },
+        ...toolResults,
+      );
+      textParts = [];
+      toolCalls = [];
+      toolResults = [];
+      roundId = null;
+    };
+    const pushText = (text: string) => {
+      if (!text.trim()) return;
+      // A call with no result (stopped, provider-native) stays with this text: splitting would leave tool_calls unanswered.
+      if (toolResults.length > 0) flush();
+      textParts.push(text);
+    };
 
     for (const p of allParts) {
       if (p.type === "text" && typeof p.text === "string") {
-        textParts.push(p.text);
+        pushText(p.text);
       } else if (p.type === "reasoning" || p.type === "thinking") {
         const t = typeof p.thinking === "string" ? p.thinking : typeof p.text === "string" ? p.text : "";
-        if (t) textParts.push(`<thinking>\n${t}\n</thinking>`);
+        if (t) pushText(`<thinking>\n${t}\n</thinking>`);
       } else if (p.type === "image" && typeof p.image === "string" && p.image) {
-        textParts.push("[image attachment]");
+        pushText("[image attachment]");
       } else if (p.type === "tool-call") {
-        const id = typeof p.toolCallId === "string" ? p.toolCallId : `call_${toolCalls.length}`;
+        const callRoundId = codexLocalToolRoundId(p.provenance);
+        if (toolCalls.length > 0 && startsNewCodexToolRound(roundId, callRoundId)) flush();
+        if (callRoundId !== null) roundId = callRoundId;
+        const id = typeof p.toolCallId === "string" ? p.toolCallId : `call_${callCount}`;
+        callCount++;
         const name = typeof p.toolName === "string" ? p.toolName : "unknown";
         const argsStr = toolCallReplayArguments(
           typeof p.argsText === "string" ? p.argsText : undefined,
@@ -367,18 +436,13 @@ function messageToOpenAI(msg: { role: unknown; content: unknown; attachments?: u
           const resultStr =
             typeof modelText === "string" ? modelText : JSON.stringify(modelText);
           toolResults.push({ role: "tool", tool_call_id: id, name, content: resultStr });
+          if (callRoundId === null && (p.provenance as { source?: unknown } | undefined)?.source === "local") flush();
         }
       }
     }
 
-    const content = textParts.join("\n\n") || null;
-    const assistantMsg: OAIMessage = toolCalls.length > 0
-      ? { role: "assistant", content, tool_calls: toolCalls }
-      : { role: "assistant", content: content ?? "" };
-
-    return toolResults.length > 0
-      ? [assistantMsg, ...toolResults]
-      : [assistantMsg];
+    if (out.length === 0 || textParts.length > 0 || toolCalls.length > 0) flush();
+    return out;
   }
 
   const contentParts: OAIContentPart[] = [];
@@ -474,7 +538,7 @@ export async function exportConversationCsv(threadId: string): Promise<void> {
 // One place decides that markdown carries the branch on screen; callers keep their own empty-state wording.
 const loadDisplayedBranchMessages = (
   threadId: string,
-  options: { emptyMessage?: string } = {},
+  options: { emptyMessage?: string; includeInstructions?: boolean } = {},
 ) => loadConversationMessages(threadId, { ...options, includeSiblings: false });
 
 /** Same markdown the download produces, for the "Copy as Markdown" shortcut. */
@@ -502,6 +566,7 @@ async function saveConversationAsProjectSource(
 ): Promise<SaveSourceOutcome> {
   const messages = await loadDisplayedBranchMessages(threadId, {
     emptyMessage: "No messages in this conversation to save.",
+    includeInstructions: false,
   });
   if (!messages) return "skipped";
   const markdown = buildConversationMarkdown(
@@ -938,15 +1003,22 @@ export async function buildFineTuneJsonl(
   let conversations = 0;
   let skipped = 0;
   for (const id of ids) {
-    const raw = await listStoredChatMessages(id);
+    const liveBranch = liveThreadBranch(id);
+    const [raw, instructions] = await Promise.all([
+      listStoredChatMessages(id),
+      chatInstructionsTurn(id),
+    ]);
     const hasParentIds = raw.some(
       (m) => (m as { parentId?: unknown }).parentId != null,
     );
     // Chain only: retries/regenerations leave sibling branches, and mixing alternate replies into one conversation corrupts the training targets.
     const ordered = hasParentIds
-      ? (orderByParentChain(raw, { includeSiblings: false }) as typeof raw)
+      ? (orderByParentChain(raw, {
+          includeSiblings: false,
+          headId: liveBranchHeadId(liveBranch, raw),
+        }) as typeof raw)
       : raw;
-    const turns = messagesToFineTuneTurns(ordered);
+    const turns = messagesToFineTuneTurns([...instructions, ...ordered]);
     const converted = turns ? turnsToFineTuneLines(turns, format) : [];
     if (converted.length === 0) {
       skipped += 1;
@@ -2569,7 +2641,7 @@ export function PromptStorageDialog({
                 className="w-full rounded-lg border-0 bg-muted/50 pl-9 pr-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/60 transition-shadow"
               />
               {showSuggestions && searchQuery.trim() !== "" && suggestions.length > 0 && (
-                <div className="absolute top-full left-0 right-0 z-50 mt-1 rounded-xl border border-border/60 bg-popover shadow-lg overflow-hidden">
+                <div className="dropdown-surface absolute top-full left-0 right-0 z-50 mt-1 rounded-xl border border-border/60 bg-popover shadow-lg overflow-hidden">
                   {suggestions.map((name) => (
                     <button
                       key={name}

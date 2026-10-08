@@ -265,7 +265,11 @@ def test_model_config_page_floors_the_context_ceiling():
     rounded up (rounding up can offer/persist a length above the model's real
     ceiling and break loading)."""
     src = _read("features/model-picker/components/model-config-page.tsx")
-    assert "floorMaxSeqLength(modelMaxPosition.maxPositionEmbeddings)" in src
+    assert re.search(
+        r"floorMaxSeqLength\(\s*targetIsNpu\s*\? target\.meta\.contextLength\s*"
+        r": modelMaxPosition\.maxPositionEmbeddings,\s*\)",
+        src,
+    )
     assert "normalizeMaxSeqLength(modelMaxPosition.maxPositionEmbeddings)" not in src
 
 
@@ -765,15 +769,17 @@ def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
     # The variant click withholds it: a quant outside the pinned snapshot lands in a different one.
     block = re.search(r"onSelect\(repoId, \{.*?\n\s*\}", picker, re.S)
     assert block and "loadId: downloaded === true ? loadId : undefined," in block.group(0)
-    # localPath alone: preferLocalCache would answer from disk and drop the undownloaded quants.
-    # #7767 added the expander's abort signal to this call, so the options are an object
-    # literal now rather than the bare localSource ternary.
     call = re.search(r"listGgufVariants\(repoId, hfToken, \{.*?\n\s*\}\)", picker, re.S)
     assert call, "the expander must still list variants for the row's own repo"
     assert "...(localSource ? { localPath: localSource } : {})" in call.group(
         0
     ), "the expander drops the row's own cache directory"
     assert "preferLocalCache" not in call.group(0)
+    assert "localOnly," in call.group(0)
+    assert "loadPickerGgufVariants(" in picker
+    sole = re.search(r"async function readSoleQuant\(.*?\n}", picker, re.S)
+    assert sole and "localOnly: true," in sole.group(0)
+    assert "soleQuantNeedsExpander(" in picker and "hubWithdrawsSoleQuant(" in picker
     assert "cachePath={c.cache_path}" in picker
 
     # A reload rebuilds its target from the checkpoint id, so the resident model remembers the pin.
@@ -1082,7 +1088,7 @@ def test_local_mtp_warning_uses_backend_source_metadata():
     # Both GGUF responses report it: the status poll and the already_loaded
     # dedup reply. Either one re-deriving it reintroduces the flip.
     assert route.count("is_local_model = _loaded_is_local_model(") >= 2
-    assert "backend.active_model_name and is_local_path(backend.active_model_name)" in route
+    assert "is_local_model = bool(_active and is_local_path(_active))" in route
 
 
 def test_fixed_layer_gguf_pins_displayed_context():
@@ -1157,9 +1163,10 @@ def test_reset_persists_null_max_length_and_substitutes_only_for_load():
     # Load-only substitution of the resolved value (recomputed from any committed
     # same-click Max Seq Length draft, so it is never dropped).
     assert "maxSeqLength: effectiveMaxSeqLengthValue" in src
-    # MLX pins via customContextLength, so substituting the shown default would turn
-    # "Auto" into a request for that number.
-    assert "      : targetIsMlx\n        ? effectiveRuntimeConfig" in src
+    # MLX and NPU pin via customContextLength, so substituting the shown default would
+    # turn "Auto" into a request for that number.
+    assert "const pinsContextLength = targetIsMlx || targetIsNpu;" in src
+    assert "target.isGguf || pinsContextLength\n        ? effectiveRuntimeConfig" in src
     assert "const effectiveLoadConfig" in src
     # The persisted record is saved from effectiveRuntimeConfig; the load request
     # carries effectiveLoadConfig (with any committed context input).
@@ -1228,7 +1235,8 @@ def test_same_click_commit_covers_all_numeric_inputs():
     assert "maxSeqLength: effectiveMaxSeqLengthValue" in page
     # The committed draft lands in this target's pin field.
     assert (
-        "Object.assign(pendingPatch, contextPinPatch(committedMaxSeqLength, targetIsMlx));" in page
+        "Object.assign(pendingPatch, contextPinPatch(committedMaxSeqLength, pinsContextLength));"
+        in page
     )
 
 
@@ -1328,7 +1336,10 @@ def test_an_mlx_target_is_offered_a_context_length_not_a_sequence_length():
     assert 'const label = isMlx ? "Context Length" : "Max Seq Length";' in page
     # A number, not a word: the placeholder is only for a window nobody has read.
     assert 'displayValue={isMlx && windowUnknown ? "—" : undefined}' in page
-    assert "savedContextPin(config) == null && mlxServedWindow == null\n" in page
+    assert (
+        "savedContextPin(config) == null &&\n                mlxServedWindow == null &&\n"
+        "                npuServedWindow == null\n" in page
+    )
     assert "const mlxServedWindow = resolveMlxServedWindow(" in page
     assert "targetIsMlx && isActiveModel ? servedWindow(loadedContextLength) : null,\n" in page
     assert "? servedWindow(modelMaxPosition.maxPositionEmbeddings)" in page
@@ -1354,14 +1365,14 @@ def test_an_mlx_target_is_offered_a_context_length_not_a_sequence_length():
     assert "final !== value || displayValue != null || derived;" in numeric
     assert "if (isEdit(final)) {\n      onChange(final);\n    }\n    return final;" in numeric
     assert "lastBlurCommittedRef.current = isEdit(final) ? final : null;" in numeric
-    assert "update(contextPinPatch(value, targetIsMlx))" in page
+    assert "update(contextPinPatch(value, pinsContextLength))" in page
     # The platform answers which backend serves: "anything not GGUF" relabels CUDA.
     assert (
         "isServedByMlx(\n    target.isGguf,\n    platform.deviceType,\n    platform.chatOnlyReason,\n  )"
         in page
     )
     # Both props are optional, so dropping either typechecks and mislabels the control.
-    assert "isMlx={targetIsMlx}" in page
+    assert "isMlx={pinsContextLength}" in page
     assert "windowUnknown={" in page
 
 
@@ -1558,10 +1569,7 @@ def test_forget_settings_is_not_locked_by_unloadable_extra_args():
     """Forget only deletes, so invalid saved llama args must not lock it: the args gates
     apply to a save only."""
     gate = " ".join(_save_button_gate().split())
-    assert re.search(
-        r"\(remember && \((?:\([^()]*\) \|\| )?\(!extraArgsLoadable && !sharedExtraArgsCleared\) \|\|",
-        gate,
-    ), gate
+    assert "(remember && ((!extraArgsLoadable && !sharedExtraArgsCleared) ||" in gate, gate
     assert "sharedExtraArgsRefused || extraArgsHydrating))" in gate, gate
 
 
@@ -2535,7 +2543,7 @@ def test_adopting_a_resident_model_reseeds_the_slot_and_batch_controls():
     # And the rollback that makes the reseed necessary is still ordered before the
     # hydration it protects, in the adopt path.
     runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
-    adopt = runtime[runtime.index("const confirmedStatus = await getInferenceStatus()") :]
+    adopt = runtime[runtime.index("const confirmedStatus = await readPickStatus()") :]
     adopt = adopt[: adopt.index("void refreshContextUsage(")]
     assert (
         adopt.index("restorePreviousConfig();")
@@ -2942,7 +2950,7 @@ def test_adoption_takes_its_own_pin_before_moving_the_checkpoint():
     loadable. The ordering requirement is unchanged and is what this still pins.
     """
     src = _read("features/chat/hooks/use-chat-model-runtime.ts")
-    branch = src[src.index("const confirmedStatus = await getInferenceStatus()") :]
+    branch = src[src.index("const confirmedStatus = await readPickStatus()") :]
     branch = branch[: branch.index("void refreshContextUsage(")]
     assert "activeLoadId: loadPath === modelId ? null : loadPath," in branch
     # Landing before the checkpoint moves, so nothing reads the pair half updated.

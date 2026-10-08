@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useState } from "react";
+import { useRef, useState } from "react";
+import {
+  imeOwnsInputKeydown,
+  inputImeHandlers,
+  newInputImeState,
+} from "@/features/chat/utils/composer-preferences";
 import {
   SidebarContent,
   SidebarFooter,
@@ -107,6 +112,7 @@ export function ThreadSidebar({
 
   const [renamingItem, setRenamingItem] = useState<SidebarItem | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
+  const renameImeRef = useRef(newInputImeState());
 
   function viewForItem(item: SidebarItem): ChatView {
     return item.type === "single"
@@ -354,7 +360,6 @@ export function ThreadSidebar({
       <Dialog open={renamingItem !== null} onOpenChange={(open) => { if (!open) setRenamingItem(null); }}>
         <DialogContent
           className="corner-squircle dialog-soft-surface sm:max-w-sm"
-          // Radix closes on Escape before the input sees it; keep IME candidate dismissal from closing.
           onEscapeKeyDown={(e) => { if (e.isComposing || e.keyCode === 229) e.preventDefault(); }}
         >
           <DialogHeader>
@@ -363,8 +368,9 @@ export function ThreadSidebar({
           <Input
             value={renameDraft}
             onChange={(e) => setRenameDraft(e.target.value)}
+            {...inputImeHandlers(renameImeRef.current)}
             onKeyDown={(e) => {
-              if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+              if (imeOwnsInputKeydown(e, renameImeRef.current)) return;
               if (e.key === "Enter") void commitRename();
             }}
             autoFocus

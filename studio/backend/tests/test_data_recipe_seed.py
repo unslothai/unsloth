@@ -5,6 +5,7 @@ import asyncio
 import base64
 import importlib.util
 import io
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -102,6 +103,25 @@ def test_local_csv_seed_keeps_its_values_as_written(monkeypatch, tmp_path):
         "01234,NA,3,None",
         "90210,DE,,N/A",
     ]
+
+
+@pytest.mark.parametrize("filename", ["seed.jsonl", "seed.json"])
+def test_local_json_seed_preview_keeps_its_values_as_written(monkeypatch, tmp_path, filename):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    monkeypatch.setattr(seed_route, "account_path", lambda path: None)
+    records = [
+        {"zip": "01234", "qty": 3, "created_at": 1700000000, "date": "2024-01-01"},
+        {"zip": "90210", "qty": 4, "created_at": 1700000001, "date": "2024-01-02"},
+    ]
+    path = tmp_path / filename
+    if filename.endswith(".jsonl"):
+        path.write_text("\n".join(json.dumps(record) for record in records), encoding = "utf-8")
+    else:
+        path.write_text(json.dumps(records), encoding = "utf-8")
+
+    rows = seed_route._read_preview_rows_from_local_file(path, 10)
+
+    assert rows == records
 
 
 @pytest.mark.parametrize(

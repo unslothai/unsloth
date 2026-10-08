@@ -226,7 +226,7 @@ jobs:
           # ABI-coupled to torch, so the pair is chosen per lane. huggingface_hub unpinned: 4.x wants <1.0, 5.x >=1.5.0.
           pip install ${{ matrix.pkg_pins }} \
             sentencepiece protobuf safetensors numpy 'pytest>=8' \
-            tqdm packaging psutil Pillow
+            tqdm packaging psutil Pillow requests
           # Editable-install both repos so the test imports the
           # checkouts (not whatever stale PyPI version pip resolved).
           pip install --no-deps -e "$RUNNER_TEMP/unsloth-zoo"
@@ -358,7 +358,7 @@ jobs:
           # TRL last so it pulls the transformers/peft it requires.
           pip install ${{ matrix.pkg_pins }} \
             sentencepiece protobuf safetensors numpy 'pytest>=8' \
-            tqdm packaging psutil Pillow
+            tqdm packaging psutil Pillow requests
           pip install ${{ matrix.trl_pin }}
           pip install --no-deps -e "$RUNNER_TEMP/unsloth-zoo"
           pip install --no-deps -e ./unsloth

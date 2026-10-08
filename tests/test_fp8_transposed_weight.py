@@ -7,7 +7,11 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+cuda_available = torch.cuda.is_available()
+xpu_available = hasattr(torch, "xpu") and torch.xpu.is_available()
+dev = "cuda" if cuda_available else "xpu" if xpu_available else "cpu"
+
+pytestmark = pytest.mark.skipif(not (cuda_available or xpu_available), reason = "needs CUDA or XPU")
 
 
 @pytest.fixture(scope = "module")
@@ -18,7 +22,7 @@ def F():
 
 
 def _rowwise(n):
-    w = torch.randn(n, n, device = "cuda") * torch.linspace(0.01, 1.0, n, device = "cuda")[:, None]
+    w = torch.randn(n, n, device = dev) * torch.linspace(0.01, 1.0, n, device = dev)[:, None]
     s = (w.abs().amax(1, keepdim = True) / 448).float()
     q = (w / s).to(torch.float8_e4m3fn)
     return q, s, q.float() * s
@@ -27,18 +31,18 @@ def _rowwise(n):
 def _block(n, bs):
     torch.manual_seed(0)
     p = -(-n // bs)
-    s = torch.rand(p, p, device = "cuda") * 4 + 0.1
+    s = torch.rand(p, p, device = dev) * 4 + 0.1
     full = s.repeat_interleave(bs, 0)[:n].repeat_interleave(bs, 1)[:, :n]
-    q = (torch.randn(n, n, device = "cuda") * 0.02 / full).to(torch.float8_e4m3fn)
+    q = (torch.randn(n, n, device = dev) * 0.02 / full).to(torch.float8_e4m3fn)
     s.block_size = [bs, bs]
     return q, s, q.float() * full
 
 
 def _block_rect(n, k, bs):
     torch.manual_seed(0)
-    s = torch.rand(-(-n // bs), -(-k // bs), device = "cuda") * 4 + 0.1
+    s = torch.rand(-(-n // bs), -(-k // bs), device = dev) * 4 + 0.1
     full = s.repeat_interleave(bs, 0)[:n].repeat_interleave(bs, 1)[:, :k]
-    q = (torch.randn(n, k, device = "cuda") * 0.02 / full).to(torch.float8_e4m3fn)
+    q = (torch.randn(n, k, device = dev) * 0.02 / full).to(torch.float8_e4m3fn)
     s.block_size = [bs, bs]
     return q, s, q.float() * full
 
@@ -62,7 +66,7 @@ def test_fp8_linear_on_transposed_view(F, kind):
         q, s, ref = _block_rect(256, 384, 128)
     else:
         q, s, ref = _block(256, 128 if kind == "block128" else 64)
-    X = torch.randn(64, q.shape[0], device = "cuda", dtype = torch.bfloat16)
+    X = torch.randn(64, q.shape[0], device = dev, dtype = torch.bfloat16)
     y = F.fp8_linear(X, q.t(), s)
     expect = X.float() @ ref
     assert ((y.float() - expect).norm() / expect.norm()) < 0.05

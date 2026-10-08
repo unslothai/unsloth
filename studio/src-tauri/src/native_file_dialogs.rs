@@ -7,7 +7,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tauri::{AppHandle, Manager, State, WebviewWindow};
+use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
 const MAX_TRAINING_CONFIG_BYTES: u64 = 1024 * 1024;
@@ -15,6 +15,8 @@ const MAX_TRAINING_CONFIG_BYTES: u64 = 1024 * 1024;
 /// pieces, and a piece has to fit in one IPC response.
 const MAX_CHAT_IMPORT_CHUNK_BYTES: usize = 8 * 1024 * 1024;
 const NATIVE_FILE_NAME_HEADER: &str = "x-unsloth-default-name";
+const NATIVE_FILE_SAVE_TOKEN_HEADER: &str = "x-unsloth-save-token";
+const MAX_NATIVE_FILE_SAVE_CHUNK_BYTES: usize = 8 * 1024 * 1024;
 const CHAT_IMPORT_EXTENSIONS: &[&str] = &["json", "jsonl", "ndjson", "csv", "md", "markdown"];
 const CHAT_IMPORT_TYPE_ERROR: &str =
     "Chat import must be a .json, .jsonl, .ndjson, .csv, or .md file.";
@@ -68,6 +70,50 @@ impl ChatImportRegistry {
             .iter()
             .find(|(candidate, _, _)| candidate == token)
             .map(|(_, path, file)| (path.clone(), Arc::clone(file)))
+    }
+}
+
+struct NativeSave {
+    destination: PathBuf,
+    temporary: tempfile::NamedTempFile,
+}
+
+const NATIVE_SAVE_HANDLE_LIMIT: usize = 8;
+
+#[derive(Default)]
+pub struct NativeSaveRegistry {
+    files: Mutex<Vec<(String, Arc<Mutex<NativeSave>>)>>,
+}
+
+impl NativeSaveRegistry {
+    fn register(&self, save: NativeSave) -> String {
+        let token: String = (0..4)
+            .map(|_| format!("{:016x}", rand::random::<u64>()))
+            .collect();
+        let mut files = self.files.lock().expect("native save registry poisoned");
+        files.push((token.clone(), Arc::new(Mutex::new(save))));
+        while files.len() > NATIVE_SAVE_HANDLE_LIMIT {
+            files.remove(0);
+        }
+        token
+    }
+
+    fn resolve(&self, token: &str) -> Option<Arc<Mutex<NativeSave>>> {
+        let files = self.files.lock().expect("native save registry poisoned");
+        files
+            .iter()
+            .find(|(candidate, _)| candidate == token)
+            .map(|(_, save)| Arc::clone(save))
+    }
+
+    fn take(&self, token: &str) -> Option<Arc<Mutex<NativeSave>>> {
+        let mut files = self.files.lock().expect("native save registry poisoned");
+        let index = files.iter().position(|(candidate, _)| candidate == token)?;
+        Some(files.remove(index).1)
+    }
+
+    fn cancel(&self, token: &str) {
+        let _ = self.take(token);
     }
 }
 
@@ -186,7 +232,7 @@ fn local_dialog_path(path: tauri_plugin_dialog::FilePath) -> Result<PathBuf, Str
 }
 
 /// Stage the write beside the destination so a partial file never replaces a real one.
-fn staged_temp_file(path: &Path) -> Result<tempfile::NamedTempFile, String> {
+pub(crate) fn staged_temp_file(path: &Path) -> Result<tempfile::NamedTempFile, String> {
     let parent = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -216,7 +262,7 @@ fn saved_file_name(path: &Path) -> String {
 fn save_selected_file(
     selected_path: Option<PathBuf>,
     content: &[u8],
-) -> Result<Option<String>, String> {
+) -> Result<Option<PathBuf>, String> {
     let Some(path) = selected_path else {
         return Ok(None);
     };
@@ -228,7 +274,46 @@ fn save_selected_file(
     temporary
         .persist(&path)
         .map_err(|error| format!("Failed to save {}: {}", path.display(), error.error))?;
-    Ok(Some(saved_file_name(&path)))
+    Ok(Some(path))
+}
+
+fn native_save_chunk(body: &tauri::ipc::InvokeBody) -> Result<Cow<'_, [u8]>, String> {
+    let content = invoke_body_bytes(body)
+        .ok_or_else(|| "Native export content must be binary.".to_string())?;
+    if content.len() > MAX_NATIVE_FILE_SAVE_CHUNK_BYTES {
+        return Err("Native export chunk is too large.".to_string());
+    }
+    Ok(content)
+}
+
+fn append_native_save(save: &Arc<Mutex<NativeSave>>, content: &[u8]) -> Result<(), String> {
+    let mut save = save
+        .lock()
+        .map_err(|_| "Native export handle is unavailable.".to_string())?;
+    let destination = save.destination.clone();
+    save.temporary
+        .write_all(content)
+        .map_err(|error| format!("Failed to save {}: {error}", destination.display()))
+}
+
+fn finish_native_save(save: Arc<Mutex<NativeSave>>) -> Result<String, String> {
+    let save = Arc::try_unwrap(save)
+        .map_err(|_| "Native export is still being written.".to_string())?
+        .into_inner()
+        .map_err(|_| "Native export handle is unavailable.".to_string())?;
+    let NativeSave {
+        destination,
+        mut temporary,
+    } = save;
+    temporary
+        .flush()
+        .and_then(|()| temporary.as_file().sync_all())
+        .map_err(|error| format!("Failed to save {}: {error}", destination.display()))?;
+    let name = saved_file_name(&destination);
+    temporary
+        .persist(&destination)
+        .map_err(|error| format!("Failed to save {}: {}", destination.display(), error.error))?;
+    Ok(name)
 }
 
 /// Only the local backend, or the webview could write any host's reply to disk. Parsed
@@ -372,11 +457,23 @@ fn read_selected_training_config(
 
 #[tauri::command]
 pub async fn save_native_file(
-    window: WebviewWindow,
+    webview: tauri::Webview,
     app: AppHandle,
     request: tauri::ipc::Request<'_>,
 ) -> Result<Option<String>, String> {
-    crate::native_intents::ensure_main_window(&window)?;
+    crate::native_intents::ensure_main_window(&webview)?;
+    let config_dir = app.path().app_config_dir().ok();
+    let start = config_dir.as_deref().and_then(last_save_dir);
+    let saved = save_request_with_dialog(&app, &request, start.as_deref()).await?;
+    if let (Some(config_dir), Some(path)) = (&config_dir, &saved) {
+        remember_save_dir(config_dir, path);
+    }
+    Ok(saved.map(|path| saved_file_name(&path)))
+}
+
+fn request_file<'a>(
+    request: &'a tauri::ipc::Request<'_>,
+) -> Result<(String, Cow<'a, [u8]>), String> {
     let encoded_name = request
         .headers()
         .get(NATIVE_FILE_NAME_HEADER)
@@ -386,6 +483,48 @@ pub async fn save_native_file(
     let file_name = decode_default_file_name(encoded_name)?;
     let content = invoke_body_bytes(request.body())
         .ok_or_else(|| "Native export content must be binary.".to_string())?;
+    Ok((file_name, content))
+}
+
+/// Save the request body where the user picks, starting in `directory`; None if cancelled.
+pub(crate) async fn save_request_with_dialog(
+    app: &AppHandle,
+    request: &tauri::ipc::Request<'_>,
+    directory: Option<&Path>,
+) -> Result<Option<PathBuf>, String> {
+    let (file_name, content) = request_file(request)?;
+    let (filter_name, extensions) = save_filter(&file_name);
+    let extension_refs = extensions.iter().map(String::as_str).collect::<Vec<_>>();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let mut dialog = app
+        .dialog()
+        .file()
+        .set_title("Save Unsloth export")
+        .set_file_name(file_name)
+        .add_filter(filter_name, &extension_refs);
+    if let Some(directory) = directory {
+        dialog = dialog.set_directory(directory);
+    }
+    dialog.save_file(move |path| {
+        let _ = tx.send(path);
+    });
+    let selected_path = rx
+        .await
+        .map_err(|_| "Save dialog closed unexpectedly.".to_string())?
+        .map(local_dialog_path)
+        .transpose()?;
+    save_selected_file(selected_path, content.as_ref())
+}
+
+#[tauri::command]
+pub async fn begin_native_file_save(
+    webview: tauri::Webview,
+    app: AppHandle,
+    registry: State<'_, NativeSaveRegistry>,
+    file_name: String,
+) -> Result<Option<String>, String> {
+    crate::native_intents::ensure_main_window(&webview)?;
+    let file_name = default_file_name(&file_name);
     let (filter_name, extensions) = save_filter(&file_name);
     let extension_refs = extensions.iter().map(String::as_str).collect::<Vec<_>>();
     let config_dir = app.path().app_config_dir().ok();
@@ -407,11 +546,134 @@ pub async fn save_native_file(
         .map_err(|_| "Save dialog closed unexpectedly.".to_string())?
         .map(local_dialog_path)
         .transpose()?;
-    let saved = save_selected_file(selected_path.clone(), content.as_ref())?;
-    if let (Some(config_dir), Some(path), Some(_)) = (&config_dir, &selected_path, &saved) {
-        remember_save_dir(config_dir, path);
+    let Some(destination) = selected_path else {
+        return Ok(None);
+    };
+    let temporary = staged_temp_file(&destination)?;
+    Ok(Some(registry.register(NativeSave {
+        destination,
+        temporary,
+    })))
+}
+
+#[tauri::command]
+pub async fn append_native_file_save_chunk(
+    webview: tauri::Webview,
+    registry: State<'_, NativeSaveRegistry>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<(), String> {
+    crate::native_intents::ensure_main_window(&webview)?;
+    let token = request
+        .headers()
+        .get(NATIVE_FILE_SAVE_TOKEN_HEADER)
+        .ok_or_else(|| "Native export token is missing.".to_string())?
+        .to_str()
+        .map_err(|_| "Invalid native export token.".to_string())?;
+    let save = registry
+        .resolve(token)
+        .ok_or_else(|| "That native export is no longer available.".to_string())?;
+    let content = native_save_chunk(request.body())?.into_owned();
+    tokio::task::spawn_blocking(move || append_native_save(&save, &content))
+        .await
+        .map_err(|error| format!("Failed to write the native export: {error}"))?
+}
+
+#[tauri::command]
+pub async fn finish_native_file_save(
+    webview: tauri::Webview,
+    app: AppHandle,
+    registry: State<'_, NativeSaveRegistry>,
+    token: String,
+) -> Result<String, String> {
+    crate::native_intents::ensure_main_window(&webview)?;
+    let save = registry
+        .take(&token)
+        .ok_or_else(|| "That native export is no longer available.".to_string())?;
+    let destination = save
+        .lock()
+        .map(|save| save.destination.clone())
+        .map_err(|_| "Native export handle is unavailable.".to_string())?;
+    let name = tokio::task::spawn_blocking(move || finish_native_save(save))
+        .await
+        .map_err(|error| format!("Failed to finish the native export: {error}"))??;
+    if let Ok(config_dir) = app.path().app_config_dir() {
+        remember_save_dir(&config_dir, &destination);
     }
-    Ok(saved)
+    Ok(name)
+}
+
+#[tauri::command]
+pub fn cancel_native_file_save(
+    webview: tauri::Webview,
+    registry: State<'_, NativeSaveRegistry>,
+    token: String,
+) -> Result<(), String> {
+    crate::native_intents::ensure_main_window(&webview)?;
+    registry.cancel(&token);
+    Ok(())
+}
+
+/// Room under the usual 255-byte name limit for the " (999)" a taken name gets.
+const MAX_DOWNLOAD_NAME_BYTES: usize = 240;
+const WINDOWS_DEVICE_NAMES: [&str; 22] = [
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+];
+
+fn is_bidi_control(c: char) -> bool {
+    matches!(
+        c,
+        '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+    )
+}
+
+/// A website's file name made safe everywhere: no separators, control or reserved characters, trailing dots/spaces or device names; length capped.
+pub(crate) fn safe_download_name(name: &str) -> String {
+    let mut name: String = name
+        .chars()
+        .map(|c| {
+            // Bidi controls too: `invoice\u{202e}fdp.exe` must not read as `invoiceexe.pdf`.
+            if c.is_control() || is_bidi_control(c) || "/\\:*?\"<>|".contains(c) {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let kept = name.trim_end_matches(['.', ' ']).len();
+    name.truncate(kept);
+    if name.trim_matches(['.', ' ']).is_empty() {
+        return "download".into();
+    }
+    let device = name.split('.').next().unwrap_or("").trim_end();
+    if WINDOWS_DEVICE_NAMES
+        .iter()
+        .any(|reserved| reserved.eq_ignore_ascii_case(device))
+    {
+        name.insert(0, '_');
+    }
+    if name.len() > MAX_DOWNLOAD_NAME_BYTES {
+        let extension = name
+            .rfind('.')
+            .filter(|&at| at > 0 && name.len() - at <= 32)
+            .map_or("", |at| &name[at..]);
+        let mut end = MAX_DOWNLOAD_NAME_BYTES - extension.len();
+        while !name.is_char_boundary(end) {
+            end -= 1;
+        }
+        name = format!("{}{extension}", &name[..end]);
+    }
+    name
+}
+
+pub(crate) fn save_request_in(
+    request: &tauri::ipc::Request<'_>,
+    directory: &Path,
+) -> Result<PathBuf, String> {
+    let (file_name, content) = request_file(request)?;
+    let path = unique_destination(directory, &safe_download_name(&file_name))?;
+    save_selected_file(Some(path), content.as_ref())?
+        .ok_or_else(|| "Failed to save the file.".to_string())
 }
 
 /// Save a backend URL by streaming it to the chosen path.
@@ -421,12 +683,12 @@ pub async fn save_native_file(
 /// the chooser first and writes the response chunk by chunk, leaving nothing resident.
 #[tauri::command]
 pub async fn save_native_file_from_url(
-    window: WebviewWindow,
+    webview: tauri::Webview,
     app: AppHandle,
     url: String,
     file_name: String,
 ) -> Result<Option<String>, String> {
-    crate::native_intents::ensure_main_window(&window)?;
+    crate::native_intents::ensure_main_window(&webview)?;
     require_loopback_url(&url)?;
     let file_name = default_file_name(&file_name);
     let (filter_name, extensions) = save_filter(&file_name);
@@ -570,7 +832,7 @@ fn log_archive_directory() -> Result<PathBuf, String> {
 /// an issue. Best effort by nature -- another process can take the name between the check
 /// and the rename -- but it removes the case that actually happens, which is the same
 /// user pressing the button again.
-fn unique_destination(directory: &Path, file_name: &str) -> Result<PathBuf, String> {
+pub(crate) fn unique_destination(directory: &Path, file_name: &str) -> Result<PathBuf, String> {
     let candidate = directory.join(file_name);
     if !candidate.exists() {
         return Ok(candidate);
@@ -732,7 +994,7 @@ fn strip_verbatim_prefix(text: String) -> String {
 }
 
 /// The absolute, symlink-resolved path to show the user.
-fn display_path(path: &Path) -> String {
+pub(crate) fn display_path(path: &Path) -> String {
     let resolved = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     strip_verbatim_prefix(resolved.display().to_string())
 }
@@ -758,14 +1020,14 @@ fn display_path(path: &Path) -> String {
 /// from a generic failure.
 #[tauri::command]
 pub async fn download_logs_to_downloads(
-    window: WebviewWindow,
+    webview: tauri::Webview,
     state: State<'_, crate::process::BackendState>,
     diagnostics: State<'_, crate::diagnostics::DiagnosticsState>,
     url: String,
     filename: String,
     ui_token: Option<String>,
 ) -> Result<String, String> {
-    crate::native_intents::ensure_main_window(&window)?;
+    crate::native_intents::ensure_main_window(&webview)?;
     // Both guards run before anything is minted, so a URL this command will not fetch
     // never causes a token to exist.
     require_loopback_url(&url)?;
@@ -842,11 +1104,11 @@ pub async fn read_native_chat_import_chunk(
 
 #[tauri::command]
 pub async fn pick_native_chat_import(
-    window: WebviewWindow,
+    webview: tauri::Webview,
     app: AppHandle,
     registry: State<'_, ChatImportRegistry>,
 ) -> Result<Option<NativeChatImport>, String> {
-    crate::native_intents::ensure_main_window(&window)?;
+    crate::native_intents::ensure_main_window(&webview)?;
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.dialog()
         .file()
@@ -865,10 +1127,10 @@ pub async fn pick_native_chat_import(
 
 #[tauri::command]
 pub async fn pick_native_training_config(
-    window: WebviewWindow,
+    webview: tauri::Webview,
     app: AppHandle,
 ) -> Result<Option<NativeImportedFile>, String> {
-    crate::native_intents::ensure_main_window(&window)?;
+    crate::native_intents::ensure_main_window(&webview)?;
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.dialog()
         .file()
@@ -888,6 +1150,31 @@ pub async fn pick_native_training_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn download_names_are_safe_on_every_platform() {
+        assert_eq!(safe_download_name("report:2026.pdf"), "report_2026.pdf");
+        assert_eq!(
+            safe_download_name("a<b>c|d?e*f\"g.txt"),
+            "a_b_c_d_e_f_g.txt"
+        );
+        assert_eq!(safe_download_name("evil\u{7}name.sh"), "evil_name.sh");
+        assert_eq!(
+            safe_download_name("invoice\u{202e}fdp.exe"),
+            "invoice_fdp.exe"
+        );
+        assert_eq!(safe_download_name("a\u{2066}b\u{061c}.txt"), "a_b_.txt");
+        assert_eq!(safe_download_name("CON"), "_CON");
+        assert_eq!(safe_download_name("nul.tar.gz"), "_nul.tar.gz");
+        assert_eq!(safe_download_name("console.log"), "console.log");
+        assert_eq!(safe_download_name("notes. . "), "notes");
+        assert_eq!(safe_download_name(".."), "download");
+        assert_eq!(safe_download_name(" "), "download");
+        let long = format!("{}.pdf", "\u{3042}".repeat(255));
+        let safe = safe_download_name(&long);
+        assert!(safe.len() <= MAX_DOWNLOAD_NAME_BYTES, "{}", safe.len());
+        assert!(safe.ends_with("\u{3042}.pdf"));
+    }
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_path(name: &str) -> PathBuf {
@@ -962,6 +1249,64 @@ mod tests {
         assert_eq!(fs::read(&binary_path).unwrap(), [0, 1, 2, 255]);
         let _ = fs::remove_file(text_path);
         let _ = fs::remove_file(binary_path);
+    }
+
+    #[test]
+    fn chunked_save_keeps_the_destination_atomic() {
+        let destination = temp_path("chunked").with_extension("zip");
+        fs::write(&destination, b"previous export").unwrap();
+        let registry = NativeSaveRegistry::default();
+        let token = registry.register(NativeSave {
+            temporary: staged_temp_file(&destination).unwrap(),
+            destination: destination.clone(),
+        });
+        let save = registry.resolve(&token).unwrap();
+
+        append_native_save(&save, b"first ").unwrap();
+        append_native_save(&save, b"second").unwrap();
+        assert_eq!(fs::read(&destination).unwrap(), b"previous export");
+        drop(save);
+
+        let completed = registry.take(&token).unwrap();
+        assert_eq!(
+            finish_native_save(completed).unwrap(),
+            saved_file_name(&destination)
+        );
+        assert_eq!(fs::read(&destination).unwrap(), b"first second");
+        assert!(registry.resolve(&token).is_none());
+        let _ = fs::remove_file(destination);
+    }
+
+    #[test]
+    fn cancelled_chunked_save_preserves_the_destination() {
+        let destination = temp_path("chunked-cancel").with_extension("zip");
+        fs::write(&destination, b"keep this").unwrap();
+        let registry = NativeSaveRegistry::default();
+        let token = registry.register(NativeSave {
+            temporary: staged_temp_file(&destination).unwrap(),
+            destination: destination.clone(),
+        });
+        append_native_save(&registry.resolve(&token).unwrap(), b"discard this").unwrap();
+
+        registry.cancel(&token);
+        assert_eq!(fs::read(&destination).unwrap(), b"keep this");
+        assert!(registry.resolve(&token).is_none());
+        let _ = fs::remove_file(destination);
+    }
+
+    #[test]
+    fn native_save_chunks_are_bounded() {
+        let accepted = tauri::ipc::InvokeBody::Raw(vec![0; MAX_NATIVE_FILE_SAVE_CHUNK_BYTES]);
+        assert_eq!(
+            native_save_chunk(&accepted).unwrap().len(),
+            MAX_NATIVE_FILE_SAVE_CHUNK_BYTES
+        );
+
+        let refused = tauri::ipc::InvokeBody::Raw(vec![0; MAX_NATIVE_FILE_SAVE_CHUNK_BYTES + 1]);
+        assert_eq!(
+            native_save_chunk(&refused).unwrap_err(),
+            "Native export chunk is too large."
+        );
     }
 
     #[test]
