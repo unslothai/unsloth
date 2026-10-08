@@ -161,7 +161,10 @@ def test_training_start_prepares_token_once_before_transport():
         "async function checkSelectedDataset", 1
     )[0]
     assert "await prepareHfTokenForUse(attempt.hfToken)" in prepare_attempt
-    assert "buildTrainingStartPayload(attempt.config, hfToken)" in submit_attempt
+    assert (
+        "buildTrainingStartPayload(attempt.config, hfToken, getCachedSystemInfo())"
+        in submit_attempt
+    )
     assert "payload.hf_token = hfToken" not in submit_attempt
     assert submit_attempt.index("attempt.enterTransport()") < submit_attempt.index(
         "await startTraining(payload, attempt.startRequestId)"
@@ -316,7 +319,7 @@ def test_training_start_aborts_when_semantic_config_or_token_changes():
     snapshot = source.split("function captureTrainingStartInputs", 1)[1].split(
         "type TrainingStartInputs", 1
     )[0]
-    assert "buildTrainingStartPayload(config, null)" in snapshot
+    assert "buildTrainingStartPayload(config, null, getCachedSystemInfo())" in snapshot
     assert "payload.hf_token = null" not in snapshot
     assert "payload.model_known_cached =" not in snapshot
     assert "payload.model_local_path =" not in snapshot
