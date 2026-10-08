@@ -1275,11 +1275,12 @@ export function AgentsTab() {
           >
             {t("settings.agents.title")}
           </h1>
+          {/* title, not aria-label, so the accessible name stays the visible text. */}
           <a
             href={DOCS_URL}
             target="_blank"
             rel="noopener noreferrer"
-            aria-label={t("settings.agents.docsLabel")}
+            title={t("settings.agents.docsLabel")}
             className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
             {t("settings.agents.docs")}
