@@ -308,6 +308,9 @@ def import_reward(raw: str, *, overwrite: bool = False) -> dict:
     spec = parse_reward_markdown(raw)
     target = _user_root() / spec["name"]
     with _LOCK:
+        # Same rule as the listing: never write through a link planted in the library.
+        if target.is_symlink() or (target / "REWARD.md").is_symlink():
+            raise RewardError(f"'{spec['name']}' is a link; remove it before importing.")
         if target.exists() and not overwrite:
             raise RewardExistsError(f"A reward named '{spec['name']}' already exists.")
         target.mkdir(parents = True, exist_ok = True)

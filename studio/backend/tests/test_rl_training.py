@@ -296,3 +296,28 @@ def test_trl_config_without_max_prompt_length_still_builds(monkeypatch):
         reward_specs = [],
     )
     assert (kw["args"].beta, kw["args"].max_length) == (0.2, 1024)
+
+
+def test_grpo_eval_batch_is_rounded_to_whole_prompt_groups(monkeypatch):
+    fake = types.SimpleNamespace(GRPOConfig = _FakeGRPOConfigWithEval, GRPOTrainer = lambda **kw: kw)
+    monkeypatch.setitem(sys.modules, "trl", fake)
+    spec = {
+        "name": "len",
+        "rule": {"type": "length", "max_chars": 9, "score": {"over": -1.0, "under": 0.0}},
+    }
+    kw = build_rl_trainer(
+        "grpo",
+        model = None,
+        tokenizer = None,
+        train_dataset = None,
+        eval_dataset = None,
+        config_args = {"output_dir": "o", "max_seq_length": 1024, "per_device_eval_batch_size": 2},
+        settings = {"num_generations": 4},
+        reward_specs = [spec],
+    )
+    assert kw["args"].per_device_eval_batch_size == 4
+
+
+@dataclasses.dataclass
+class _FakeGRPOConfigWithEval(_FakeGRPOConfig):
+    per_device_eval_batch_size: int = 8

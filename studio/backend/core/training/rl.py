@@ -328,13 +328,21 @@ def build_rl_trainer(
                 "epsilon_high": settings.get("epsilon_high"),
             },
         )
+        num_generations = int(settings.get("num_generations") or 4)
+        grpo_base = {**base, "max_prompt_length": max_prompt_length}
+        eval_batch = grpo_base.get("per_device_eval_batch_size")
+        if eval_batch:
+            # TRL evaluates whole prompt groups: the eval batch must be a multiple of num_generations.
+            grpo_base["per_device_eval_batch_size"] = (
+                -(-int(eval_batch) // num_generations) * num_generations
+            )
         args = trl.GRPOConfig(
-            **_config_kwargs(trl.GRPOConfig, {**base, "max_prompt_length": max_prompt_length}),
+            **_config_kwargs(trl.GRPOConfig, grpo_base),
             **variant_args,
             use_vllm = False,
             beta = beta,
             temperature = float(settings.get("temperature") or 1.0),
-            num_generations = int(settings.get("num_generations") or 4),
+            num_generations = num_generations,
             max_completion_length = max_completion_length,
             reward_weights = [float(s.get("weight", 1.0)) for s in reward_specs],
             log_completions = False,

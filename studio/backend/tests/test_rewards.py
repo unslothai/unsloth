@@ -222,3 +222,14 @@ def test_catastrophic_user_regex_times_out_as_a_miss(monkeypatch):
     start = time.perf_counter()
     assert rewards.score_rule(rule, "a" * 40 + "!") == rule["score"]["miss"]
     assert time.perf_counter() - start < 5
+
+
+def test_import_refuses_to_write_through_a_linked_reward(user_root, tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    root = rewards._user_root()
+    root.mkdir(parents = True, exist_ok = True)
+    (root / "linked").symlink_to(outside, target_is_directory = True)
+    with pytest.raises(rewards.RewardError, match = "link"):
+        rewards.import_reward(_md("linked", "type: regex\npattern: x"), overwrite = True)
+    assert not (outside / "REWARD.md").exists()
