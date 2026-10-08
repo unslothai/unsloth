@@ -399,28 +399,37 @@ echo "$START"
 JOB_ID=$(echo "$START" | grep -v '"status":"error"' | grep -o '"job_id":"[^"]*"' | cut -d'"' -f4)
 
 # Wait: phase goes loading_model -> training -> completed (or error / stopped).
-while [ -n "$JOB_ID" ] && ! curl -s ${base}/api/train/status ${auth} \\
-  | grep -qE '"phase":"(completed|error|stopped)"'; do sleep 10; done
+PHASE=
+while [ -n "$JOB_ID" ]; do
+  STATUS=$(curl -s ${base}/api/train/status ${auth})
+  PHASE=$(echo "$STATUS" | grep -o '"phase":"[^"]*"' | cut -d'"' -f4)
+  case "$PHASE" in completed|error|stopped) echo "$STATUS"; break ;; esac
+  sleep 10
+done
 
 # Stop early and save a checkpoint (from another terminal, with this JOB_ID):
 # curl ${base}/api/train/stop ${auth} -H "Content-Type: application/json" \\
 #   -d "{\\"expected_job_id\\": \\"$JOB_ID\\", \\"save\\": true}"
 
-# Image (SDXL) LoRA.
-curl ${base}/api/train/diffusion/dataset \\
-  ${auth} \\
-  -F "name=${TRAIN.imageData}" -F "files=@cat1.png" -F "files=@cat2.png"
-# The LLM worker exits a few seconds after "completed"; until then start answers 409.
-for i in $(seq 12); do
-  CODE=$(curl -s -o image-start.json -w '%{http_code}' ${base}/api/train/diffusion/start \\
+# Image (SDXL) LoRA, once the LLM run has finished without an error.
+if [ "$PHASE" = completed ] || [ "$PHASE" = stopped ]; then
+  curl ${base}/api/train/diffusion/dataset \\
     ${auth} \\
-    -H "Content-Type: application/json" \\
-    -d '${shSingle(JSON.stringify(imageTrainBody, null, 2))}')
-  [ "$CODE" != 409 ] && break
-  sleep 5
-done
-cat image-start.json
-curl ${base}/api/train/diffusion/status ${auth}`;
+    -F "name=${TRAIN.imageData}" -F "files=@cat1.png" -F "files=@cat2.png"
+  # The LLM worker exits a few seconds after "completed"; until then start answers 409.
+  for i in $(seq 12); do
+    CODE=$(curl -s -o image-start.json -w '%{http_code}' ${base}/api/train/diffusion/start \\
+      ${auth} \\
+      -H "Content-Type: application/json" \\
+      -d '${shSingle(JSON.stringify(imageTrainBody, null, 2))}')
+    [ "$CODE" != 409 ] && break
+    sleep 5
+  done
+  cat image-start.json
+  # Wait for the image job; its final status is completed, stopped or error.
+  while curl -s ${base}/api/train/diffusion/status ${auth} | grep -q '"active":true'; do sleep 10; done
+  curl ${base}/api/train/diffusion/status ${auth}
+fi`;
 }
 
 function curlTrainingWindows(base: string, key: string): string {
@@ -434,6 +443,7 @@ $start = curl.exe -s ${base}/api/train/start \`
   -d "@train.json" | ConvertFrom-Json
 $start
 # No job_id on an HTTP error; "status": "error" means another job is running and its id is not ours.
+$phase = $null
 if ($start.job_id -and $start.status -ne "error") {
   # Wait: phase goes loading_model -> training -> completed (or error / stopped).
   do {
@@ -441,29 +451,38 @@ if ($start.job_id -and $start.status -ne "error") {
     $s = curl.exe -s ${base}/api/train/status ${auth} | ConvertFrom-Json
     "$($s.phase) $($s.message)"
   } until ($s.phase -in "completed", "error", "stopped")
+  $phase = $s.phase
 }
 
 # Stop early and save a checkpoint (from another window, with this job_id):
 # @{expected_job_id = $start.job_id; save = $true} | ConvertTo-Json | Set-Content stop.json -Encoding ascii
 # curl.exe ${base}/api/train/stop ${auth} -H "Content-Type: application/json" -d "@stop.json"
 
-# Image (SDXL) LoRA.
-curl.exe ${base}/api/train/diffusion/dataset \`
-  ${auth} \`
-  -F "name=${TRAIN.imageData}" -F "files=@cat1.png" -F "files=@cat2.png"
-$body = '${psSingle(JSON.stringify(imageTrainBody, null, 2))}'
-Set-Content -Path image-train.json -Value $body -Encoding ascii
-# The LLM worker exits a few seconds after "completed"; until then start answers 409.
-for ($i = 0; $i -lt 12; $i++) {
-  $code = curl.exe -s -o image-start.json -w "%{http_code}" ${base}/api/train/diffusion/start \`
+# Image (SDXL) LoRA, once the LLM run has finished without an error.
+if ($phase -in "completed", "stopped") {
+  curl.exe ${base}/api/train/diffusion/dataset \`
     ${auth} \`
-    -H "Content-Type: application/json" \`
-    -d "@image-train.json"
-  if ($code -ne "409") { break }
-  Start-Sleep 5
-}
-Get-Content image-start.json
-curl.exe ${base}/api/train/diffusion/status ${auth}`;
+    -F "name=${TRAIN.imageData}" -F "files=@cat1.png" -F "files=@cat2.png"
+  $body = '${psSingle(JSON.stringify(imageTrainBody, null, 2))}'
+  Set-Content -Path image-train.json -Value $body -Encoding ascii
+  # The LLM worker exits a few seconds after "completed"; until then start answers 409.
+  for ($i = 0; $i -lt 12; $i++) {
+    $code = curl.exe -s -o image-start.json -w "%{http_code}" ${base}/api/train/diffusion/start \`
+      ${auth} \`
+      -H "Content-Type: application/json" \`
+      -d "@image-train.json"
+    if ($code -ne "409") { break }
+    Start-Sleep 5
+  }
+  Get-Content image-start.json
+  # Wait for the image job; its final status is completed, stopped or error.
+  do {
+    Start-Sleep 10
+    $d = curl.exe -s ${base}/api/train/diffusion/status ${auth} | ConvertFrom-Json
+    "$($d.step) / $($d.total_steps) $($d.loss)"
+  } while ($d.active)
+  "$($d.status) $($d.message)"
+}`;
 }
 
 // Strings and numbers only, so the JSON text is also a Python dict literal.
