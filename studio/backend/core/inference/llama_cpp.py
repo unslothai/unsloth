@@ -23995,22 +23995,19 @@ class LlamaCppBackend:
             # shipped llama.cpp (ggml-org/llama.cpp#27819). Promoting a sidecar
             # there crashes the load and the route retries on layer split, which
             # loses to MTP on tensor split (57 vs 40 tok/s on 2x R9700). So when
-            # Auto has an MTP drafter to run instead, it neither fetches nor
+            # Auto has an MTP sidecar it can launch, it neither fetches nor
             # promotes DFlash under tensor. Without one, DFlash on layer split
             # still beats tensor with no drafter, so that path is unchanged, as is
-            # an explicit "dflash" request.
+            # an explicit "dflash" request. _estimate_gguf_required_gb mirrors this.
             _auto_tensor_split = _spec_canon == "auto" and _effective_tensor_parallel(
                 extra_args, tensor_parallel
             )
 
             def _auto_dflash_blocked_by_tensor() -> bool:
-                if not _auto_tensor_split:
+                if not (_auto_tensor_split and mtp_draft_path):
                     return False
-                if mtp_draft_path:
-                    return True
                 try:
-                    from utils.models.gguf_metadata import read_gguf_nextn_predict_layers
-                    return (read_gguf_nextn_predict_layers(model_path) or 0) > 0
+                    return _mtp_drafter_loads_standalone(mtp_draft_path)
                 except Exception:
                     return False
 

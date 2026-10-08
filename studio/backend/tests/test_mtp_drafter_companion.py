@@ -3095,6 +3095,7 @@ def _dflash_fetch_during_auto_load(
     gguf_path = None,
     dflash_draft_path = None,
     mtp_draft_path = None,
+    mtp_loads = True,
 ):
     """Whether an Auto load fetches the DFlash sidecar, and what it resolves to.
 
@@ -3135,6 +3136,7 @@ def _dflash_fetch_during_auto_load(
         backend, "_download_gguf", lambda **_kwargs: "/cache/snap/model-Q4_K_M.gguf"
     )
     monkeypatch.setattr(backend, "_download_mtp", lambda **_kwargs: mtp_draft_path)
+    monkeypatch.setattr(llama_cpp_module, "_mtp_drafter_loads_standalone", lambda _path: mtp_loads)
     # Exactly what _download_dspark does for a cached sidecar on a binary that
     # cannot run it: the path comes back regardless of the capability.
     monkeypatch.setattr(backend, "_download_dspark", lambda **_kwargs: dspark_cached)
@@ -3257,18 +3259,19 @@ def test_auto_skips_dflash_under_tensor_split_from_env(monkeypatch):
     assert seen["dflash_fetched"] is False
 
 
-def test_auto_skips_dflash_under_tensor_split_for_an_embedded_mtp_head(monkeypatch):
-    import utils.models.gguf_metadata as gguf_metadata
-
-    monkeypatch.setattr(gguf_metadata, "read_gguf_nextn_predict_layers", lambda _path: 1)
+def test_auto_keeps_dflash_under_tensor_split_when_the_mtp_sidecar_cannot_load(monkeypatch):
+    """An MTP sidecar the loader would drop is no alternative, so DFlash stays."""
     seen = _dflash_fetch_during_auto_load(
         monkeypatch,
         supports_dspark = False,
         supports_dflash = True,
         dspark_cached = None,
         tensor_parallel = True,
+        mtp_draft_path = _MTP,
+        mtp_loads = False,
     )
-    assert seen["dflash_fetched"] is False
+    assert seen["dflash_fetched"] is True
+    assert seen["dflash_promoted"] is True
 
 
 def test_auto_keeps_dflash_under_tensor_split_without_an_mtp_drafter(monkeypatch):

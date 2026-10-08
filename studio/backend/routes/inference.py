@@ -13222,6 +13222,18 @@ def _estimate_gguf_required_gb(
             and not _extras_own_drafter
             and not _draft_pinned_to_cpu
         )
+        # load_model's #11308 rule: under tensor split Auto runs a usable MTP sidecar
+        # instead of DFlash, so price that one.
+        if _auto_dflash:
+            from core.inference.llama_server_args import _effective_tensor_parallel
+            _tp_mtp = getattr(config, "gguf_mtp_file", None)
+            if (
+                _tp_mtp
+                and _effective_tensor_parallel(llama_extra_args, tensor_parallel)
+                and Path(_tp_mtp).is_file()
+                and _mtp_drafter_loads_standalone(str(_tp_mtp))
+            ):
+                _auto_dflash = False
         _dflash_capable = True
         if _forced_dflash or _auto_dflash:
             try:

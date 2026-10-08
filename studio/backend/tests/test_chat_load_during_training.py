@@ -1644,6 +1644,50 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             classmethod(lambda cls, binary = None: {"supports_dflash": supported}),
         )
 
+    def test_auto_prices_the_mtp_sidecar_under_tensor_split(self):
+        """#11308: under tensor split Auto launches a loadable MTP sidecar instead of
+        DFlash, so the estimate charges the MTP file, not the DFlash one."""
+        import tempfile
+
+        import core.inference.llama_cpp as llama_cpp_module
+
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d)
+            target = p / "model.gguf"
+            sidecar = p / "dflash-kquant.gguf"
+            mtp = p / "MTP" / "mtp-model.gguf"
+            mtp.parent.mkdir()
+            target.write_bytes(b"x" * 2000)
+            sidecar.write_bytes(b"y" * 3000)
+            mtp.write_bytes(b"z" * 5000)
+            cfg = _gguf_cfg(
+                gguf_file = str(target),
+                gguf_dflash_file = str(sidecar),
+                gguf_mtp_file = str(mtp),
+                gguf_hf_repo = None,
+                gguf_variant = None,
+            )
+
+            def _estimate(loads, **kw):
+                with (
+                    patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
+                    patch.object(self.route, "_remote_gguf_compute_reserve_gb", return_value = 0.0),
+                    patch.object(
+                        llama_cpp_module, "_mtp_drafter_loads_standalone", lambda _p: loads
+                    ),
+                    self._dflash_capable(),
+                ):
+                    return self.route._estimate_gguf_required_gb(cfg, speculative_type = "auto", **kw)
+
+            tensor = _estimate(True, tensor_parallel = True)
+            tensor_extras = _estimate(True, llama_extra_args = ["-sm", "tensor"])
+            layer = _estimate(True)
+            unloadable = _estimate(False, tensor_parallel = True)
+        self.assertAlmostEqual(tensor, 7000 / (1024**3), places = 9)
+        self.assertAlmostEqual(tensor_extras, 7000 / (1024**3), places = 9)
+        self.assertAlmostEqual(layer, 5000 / (1024**3), places = 9)
+        self.assertAlmostEqual(unloadable, 5000 / (1024**3), places = 9)
+
     def test_extra_args_drafter_is_charged_once_when_it_is_the_local_sidecar(self):
         """--model-draft usually names the very sidecar discovery already found,
         and charging it on both paths billed a 1.5 GiB drafter as 3 GiB, so the
