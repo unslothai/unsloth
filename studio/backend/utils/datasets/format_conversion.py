@@ -490,7 +490,6 @@ def convert_to_vlm_format(
             dataset = dataset.select(with_image)
             total = len(with_image)
 
-    # Bare-filename detection: build a basename to repo_path lookup so filename-only images resolve via hf_hub_download during conversion.
     _image_lookup = None
     _IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff")
     if (
