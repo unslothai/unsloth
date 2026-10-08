@@ -63,6 +63,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
+          # An unset shell is `bash -e` without pipefail: tee would hide the updater's exit code.
+          set -euo pipefail
           python3 scripts/update_lemonade_pins.py --write | tee "$RUNNER_TEMP/changes.txt"
           if git diff --quiet -- "$PINS"; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
