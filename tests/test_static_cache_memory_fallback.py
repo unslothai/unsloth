@@ -155,6 +155,30 @@ def test_estimate_default_length_capped_at_context():
     )
 
 
+def test_explicit_max_length_is_the_total():
+    config = _llama_config()
+    model = _model(config)
+    input_ids = torch.zeros(1, 900, dtype = torch.long)
+    assert _static_cache_bytes(model, input_ids, {"max_length": 1000}) == _static_cache_bytes(
+        model, input_ids, {"max_new_tokens": 100}
+    )
+
+
+def test_legacy_static_cache_is_never_constructed(monkeypatch):
+    """Before transformers 4.56 StaticCache allocates in __init__: count every layer as full."""
+    import transformers
+
+    def explode(*args, **kwargs):
+        raise AssertionError("constructed a legacy StaticCache")
+
+    monkeypatch.setattr(vision, "_static_cache_preallocates", lambda: True)
+    monkeypatch.setattr(transformers, "StaticCache", explode)
+    config = _llama_config(sliding_window = 16, layer_types = ["sliding_attention"] * 4)
+    input_ids = torch.zeros(1, 10, dtype = torch.long)
+    need = _static_cache_bytes(_model(config), input_ids, {"max_new_tokens": 90})
+    assert need == 1 * 2 * (32 + 32) * 2 * 100 * 4
+
+
 def test_estimate_uses_the_compile_decode_bucket(monkeypatch):
     config = _llama_config()
     input_ids = torch.zeros(1, 1, dtype = torch.long)

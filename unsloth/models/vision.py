@@ -1425,6 +1425,12 @@ def _dynamic_cache_choice(kwargs):
     return requested
 
 
+@functools.lru_cache(maxsize = None)
+def _static_cache_preallocates():
+    from transformers import StaticCache
+    return "max_batch_size" in inspect.signature(StaticCache.__init__).parameters
+
+
 def _static_cache_bytes(model, input_ids, kwargs):
     """Bytes the static KV cache transformers preallocates for this call, or None when it cannot
     be sized. Worst case length (prompt + max_new_tokens), whatever length the reply turns out."""
@@ -1441,9 +1447,11 @@ def _static_cache_bytes(model, input_ids, kwargs):
     )
     if max_new_tokens is not None:
         length = prompt + max_new_tokens
+    elif kwargs.get("max_length") is not None:
+        length = kwargs["max_length"]
     else:
         # Upper bound of _prepare_generated_length: a default max_length counts new tokens.
-        max_length = kwargs.get("max_length", getattr(generation_config, "max_length", None))
+        max_length = getattr(generation_config, "max_length", None)
         max_length = 20 if max_length is None else max_length
         length = max_length + prompt
         max_positions = getattr(text_config, "max_position_embeddings", None)
@@ -1459,13 +1467,17 @@ def _static_cache_bytes(model, input_ids, kwargs):
         kwargs.get("num_return_sequences", getattr(generation_config, "num_return_sequences", 1))
         or 1,
     )
-    # transformers' own layer plan: sliding / chunked windows, shared-KV and linear layers.
-    layers = StaticCache(config = text_config, max_cache_len = length).layers
-    tokens = sum(
-        layer.max_cache_len
-        for layer in layers
-        if type(getattr(layer, "max_cache_len", None)) is int
-    )
+    if _static_cache_preallocates():
+        # Before transformers 4.56 constructing one allocates it, so count every layer as full.
+        tokens = text_config.num_hidden_layers * length
+    else:
+        # transformers' own layer plan: sliding / chunked windows, shared-KV and linear layers.
+        layers = StaticCache(config = text_config, max_cache_len = length).layers
+        tokens = sum(
+            layer.max_cache_len
+            for layer in layers
+            if type(getattr(layer, "max_cache_len", None)) is int
+        )
     n_heads = text_config.num_attention_heads
     kv_heads = getattr(text_config, "num_key_value_heads", None) or n_heads
     head_dim = getattr(text_config, "head_dim", None) or text_config.hidden_size // n_heads
