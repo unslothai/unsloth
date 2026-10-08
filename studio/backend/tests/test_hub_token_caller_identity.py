@@ -126,7 +126,7 @@ def _st_resolver(monkeypatch, **overrides) -> None:
     stub it cares about and the rest stays out of the way.
     """
     stubs = {
-        "_llama_backend_active": lambda _m: False,
+        "_llama_backend_active": lambda _m, _token = None: False,
         "_local_sentence_transformer_is_present": lambda _m: False,
         "_st_weight_source": lambda *_a, **_k: None,
     }
@@ -137,7 +137,7 @@ def _st_resolver(monkeypatch, **overrides) -> None:
 def _gguf_resolver(monkeypatch, **overrides) -> None:
     """The llama-server preamble: six stubs is what it takes to reach the candidate lookup."""
     stubs = {
-        "_llama_backend_active": lambda _m: True,
+        "_llama_backend_active": lambda _m, _token = None: True,
         "_llama_runtime_available": lambda: True,
         "_resolves_as_local_gguf": lambda _m: False,
         "_local_gguf_backend_error": lambda _m: None,
