@@ -141,6 +141,7 @@ function linkDownload(page: BrowserPage, url: string): BrowserDownload {
 
 /** Save what a link points at, fetched through the panel's proxy so any site works. */
 export async function saveLinkAs(url: string): Promise<void> {
+  const temporary = useChatRuntimeStore.getState().incognito;
   const controller = new AbortController();
   const pending = fetchBrowserPage({ url }, controller.signal).then((page) => linkDownload(page, url));
   // The dialog needs the menu click, which a slow fetch outlasts: ask with the resolved name
@@ -175,5 +176,5 @@ export async function saveLinkAs(url: string): Promise<void> {
   if (asked !== undefined && isDangerousDownload(download.name) && !isDangerousDownload(asked)) {
     if (!(await approved(url, download.name))) return;
   }
-  await saveBrowserDownload(download, target);
+  await saveBrowserDownload({ ...download, temporary }, target);
 }

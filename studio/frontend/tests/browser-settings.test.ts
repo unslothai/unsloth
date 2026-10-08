@@ -141,6 +141,46 @@ test("a file a temporary chat's page fetched stays unlisted when it is saved aft
   assert.equal(useBrowserHistoryStore.getState().downloads.length, 1);
 });
 
+test("Save link as from a temporary chat stays unlisted when its fetch lands after the chat turns normal", async () => {
+  const { saveLinkAs } = await import("../src/features/browser/downloads.ts");
+  useBrowserHistoryStore.getState().clearDownloads();
+  const prefs = useBrowserPrefsStore.getState();
+  prefs.setAskWhereToSave(true);
+  prefs.setAskBeforeDownloading(false);
+  const g = globalThis as { showSaveFilePicker?: unknown; __authFetch?: unknown };
+  const written: Blob[] = [];
+  g.showSaveFilePicker = async ({ suggestedName }: { suggestedName: string }) => ({
+    name: suggestedName,
+    createWritable: async () => ({ write: async (data: Blob) => void written.push(data), close: async () => {} }),
+  });
+  g.__authFetch = () =>
+    new Promise((resolve) =>
+      setTimeout(
+        () =>
+          resolve(
+            new Response(new Blob(["x"]), {
+              headers: { "Content-Type": "application/zip", "X-Unsloth-Browser-Filename": "data.zip" },
+            }),
+          ),
+        50,
+      ),
+    );
+  try {
+    useChatRuntimeStore.getState().setIncognito(true);
+    const saving = saveLinkAs("https://a.example/data.zip");
+    useChatRuntimeStore.getState().setIncognito(false);
+    await saving;
+    assert.equal(written.length, 1);
+    assert.deepEqual(useBrowserHistoryStore.getState().downloads, []);
+  } finally {
+    useChatRuntimeStore.getState().setIncognito(false);
+    prefs.setAskWhereToSave(false);
+    prefs.setAskBeforeDownloading(true);
+    delete g.showSaveFilePicker;
+    delete g.__authFetch;
+  }
+});
+
 test("shortening how long history is kept drops older visits at once", () => {
   const now = Date.now();
   useBrowserPrefsStore.getState().setHistoryRetentionDays(0);

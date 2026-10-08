@@ -34,6 +34,7 @@ import {
   ATTACHMENT_KIND_ICONS,
   ATTACHMENT_KIND_ICON_CLASS,
   attachmentFileKind,
+  useChatRuntimeStore,
 } from "@/features/chat";
 import { startLibraryChat } from "@/features/library";
 import {
@@ -1139,6 +1140,7 @@ function ZoomControl({ tab }: { tab: BrowserTab | undefined }) {
 }
 
 async function takeScreenshot(tab: BrowserTab, page: HTMLElement, t: ReturnType<typeof useT>): Promise<void> {
+  const temporary = useChatRuntimeStore.getState().incognito;
   let blob: Blob | null;
   try {
     blob = await screenshotPage(tab, page);
@@ -1157,7 +1159,7 @@ async function takeScreenshot(tab: BrowserTab, page: HTMLElement, t: ReturnType<
   const pad = (value: number) => String(value).padStart(2, "0");
   const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}.${pad(now.getMinutes())}.${pad(now.getSeconds())}`;
   const name = `Screenshot ${entry.kind === "web" ? hostOf(entry.url) : tab.title || "page"} ${stamp}.png`.replace(/[\\/:*?"<>|]+/g, "-");
-  const download: BrowserDownload = { blob, name, contentType: "image/png", url: null };
+  const download: BrowserDownload = { blob, name, contentType: "image/png", url: null, temporary };
   const attach = useBrowserStore.getState().attachToChat;
   if (attach && (await attach(new File([blob], name, { type: "image/png" })))) {
     toast.success(t("browser.screenshot.added"), {
