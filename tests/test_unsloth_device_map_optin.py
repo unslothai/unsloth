@@ -1328,12 +1328,14 @@ class _SizedPlan(_Plan):
         headroom_gib = 0.5,
         devices = (0, 1),
         transient_gib = 0.0,
+        reserve_gib = 0.0,
     ):
         super().__init__({"model.layers.0": devices[0], "lm_head": devices[-1]})
         self.raw_budgets = {d: int(budget_gib * 2**30) for d in devices}
         self.total_weight_bytes = int(total_gib * 2**30)
         self.headroom_bytes = int(headroom_gib * 2**30)
         self.load_transient_by_device = {devices[-1]: int(transient_gib * 2**30)}
+        self.activation_reserve_by_device = {d: int(reserve_gib * 2**30) for d in devices}
 
 
 @pytest.mark.parametrize("total_gib", [1.2, 6.2, 9.7])  # Qwen3-0.6B, DeepSeek-OCR, Gemma 3n fp32
@@ -1391,3 +1393,23 @@ def test_balanced_still_splits_a_small_model():
     plan = _SizedPlan(1.2)
     ns = _load(planner = lambda name, **kw: plan)
     assert ns["resolve_unsloth_device_map"]("unsloth_balanced", "m") == plan.device_map
+
+
+@pytest.mark.parametrize(
+    "planner_kwargs, single",
+    [
+        (None, True),  # an auto-derived reserve stays the planner's business
+        ({"activation_reserve_bytes": 4 * 2**30}, True),
+        ({"activation_reserve_bytes": 6 * 2**30}, False),
+    ],
+)
+def test_a_reserve_the_caller_passed_is_kept_on_the_single_card(planner_kwargs, single):
+    plan = _SizedPlan(
+        9.7,
+        reserve_gib = 6.0
+        if planner_kwargs is None
+        else planner_kwargs["activation_reserve_bytes"] / 2**30,
+    )
+    ns = _load(planner = lambda name, **kw: plan)
+    got = ns["resolve_unsloth_device_map"]("unsloth", "m", planner_kwargs = planner_kwargs)
+    assert got == ({"": 0} if single else plan.device_map)

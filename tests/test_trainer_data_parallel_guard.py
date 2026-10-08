@@ -76,3 +76,50 @@ def test_everything_else_is_left_alone(model, args):
     assert _guard()(model, args) is False
     if args is not None:
         assert args.n_gpu == before
+
+
+def _init_patch():
+    import functools
+
+    src = open(SOURCE, encoding = "utf-8").read()
+    ns = {"functools": functools}
+    for n in ast.parse(src).body:
+        if isinstance(n, ast.FunctionDef) and n.name in (
+            "_keep_unsloth_models_off_data_parallel",
+            "_patch_trainer_init_data_parallel",
+        ):
+            exec(ast.get_source_segment(src, n), ns)
+    return ns["_patch_trainer_init_data_parallel"]
+
+
+class _FakeTrainer:
+    def __init__(
+        self,
+        model = None,
+        args = None,
+    ):
+        self.model, self.args = model, args
+        self._train_batch_size = args.train_batch_size
+
+
+@pytest.mark.parametrize("positional", [False, True])
+def test_the_marker_alone_guards_trainer_init(positional):
+    # Fast encoders never call patch_gradient_accumulation_fix; marking must be enough.
+    Trainer = type("Trainer", (_FakeTrainer,), {})
+    _init_patch()(Trainer)
+    _init_patch()(Trainer)
+    args = _Args(2)
+    trainer = Trainer(_wrapped(), args) if positional else Trainer(model = _wrapped(), args = args)
+    assert args.n_gpu == 1 and trainer._train_batch_size == 2
+    unmarked = _Args(2)
+    assert Trainer(model = _wrapped(marked = False), args = unmarked)._train_batch_size == 4
+
+
+def test_marking_installs_the_init_guard():
+    src = open(SOURCE, encoding = "utf-8").read()
+    fn = next(
+        n
+        for n in ast.parse(src).body
+        if isinstance(n, ast.FunctionDef) and n.name == "_patch_transformers_trainer_data_parallel"
+    )
+    assert "_patch_trainer_init_data_parallel(Trainer)" in ast.get_source_segment(src, fn)

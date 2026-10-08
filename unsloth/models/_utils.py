@@ -246,6 +246,7 @@ def _patch_transformers_trainer_data_parallel():
     except (ImportError, ModuleNotFoundError):
         return False
 
+    _patch_trainer_init_data_parallel(Trainer)
     original_wrap_model = getattr(Trainer, "_wrap_model", None)
     if original_wrap_model is None:
         return False
@@ -317,6 +318,28 @@ def _keep_unsloth_models_off_data_parallel(model, args):
         return True
     except Exception:
         return False
+
+
+def _patch_trainer_init_data_parallel(Trainer):
+    # Every marked path, not only the ones that call patch_gradient_accumulation_fix (fast encoders).
+    if getattr(Trainer, "_unsloth_data_parallel_init_patched", False):
+        return
+    original_init = Trainer.__init__
+
+    @functools.wraps(original_init)
+    def _unsloth_data_parallel_init(self, *args, **kwargs):
+        model = kwargs.get("model", args[0] if len(args) > 0 else None)
+        training_args = kwargs.get("args", args[1] if len(args) > 1 else None)
+        _keep_unsloth_models_off_data_parallel(model, training_args)
+        original_init(self, *args, **kwargs)
+        # Args the Trainer built itself; refresh the batch size it cached.
+        if _keep_unsloth_models_off_data_parallel(
+            getattr(self, "model", None), getattr(self, "args", None)
+        ):
+            self._train_batch_size = self.args.train_batch_size
+
+    Trainer.__init__ = _unsloth_data_parallel_init
+    Trainer._unsloth_data_parallel_init_patched = True
 
 
 def _mark_unsloth_disable_data_parallel(model, disable = True):
@@ -5143,16 +5166,7 @@ def patch_gradient_accumulation_fix(Trainer):
                     apply_accepts_loss_kwargs_fix(model)
                 except Exception:
                     pass
-            training_args = kwargs.get("args")
-            if training_args is None and len(args) > 1:
-                training_args = args[1]
-            _keep_unsloth_models_off_data_parallel(model, training_args)
             _original_trainer_init(self, *args, **kwargs)
-            # Args the Trainer built itself; refresh the batch size it cached.
-            if _keep_unsloth_models_off_data_parallel(
-                getattr(self, "model", None), getattr(self, "args", None)
-            ):
-                self._train_batch_size = self.args.train_batch_size
             try:
                 accelerator = getattr(self, "accelerator", None)
                 if (

@@ -554,18 +554,27 @@ def resolve_unsloth_device_map(
         print(f"Unsloth: Not planning a device map; {reason}. Using `{_declined}`.")
         return _declined
 
-    def _plan_fits_first_device(plan, activation_share = 0.2):
+    def _plan_fits_first_device(
+        plan,
+        explicit_reserve,
+        activation_share = 0.2,
+    ):
         """First allowed card if weights + headroom + load transient leave `activation_share` of it
-        free (about Gemma 3n E4B fp32 on a T4), else None, as for a planner without sizes."""
+        free (about Gemma 3n E4B fp32 on a T4), and any reserve the caller passed, else None, as
+        for a planner without sizes."""
         try:
             budgets = plan.raw_budgets
             first = min(budgets)
             budget = int(budgets[first])
             transient = max((plan.load_transient_by_device or {}).values(), default = 0)
             need = int(plan.total_weight_bytes) + int(plan.headroom_bytes) + int(transient)
+            free = budget * activation_share
+            if explicit_reserve:
+                # The planner treats a passed reserve as a hard constraint; so must the collapse.
+                free = max(free, int(plan.activation_reserve_by_device.get(first, 0)))
         except Exception:
             return None
-        if budget > 0 and need <= budget * (1 - activation_share):
+        if budget > 0 and need + free <= budget:
             return first
         return None
 
@@ -654,7 +663,11 @@ def resolve_unsloth_device_map(
 
     if plan is None:
         return _declined
-    single_device = _plan_fits_first_device(plan) if device_map == UNSLOTH_DEVICE_MAP else None
+    single_device = (
+        _plan_fits_first_device(plan, planner_kwargs.get("activation_reserve_bytes") is not None)
+        if device_map == UNSLOTH_DEVICE_MAP
+        else None
+    )
     if single_device is not None:
         # Splitting a model one card holds only adds cross-device bugs (Kaggle T4x2).
         print(
