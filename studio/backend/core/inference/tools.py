@@ -6325,14 +6325,14 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     os_aliases.add(alias.asname or alias.name)
                 elif alias.name in _AUTO_UNSAFE_PY_LOAD_MODULES:
                     load_module_aliases.add(alias.asname or alias.name)
-                elif alias.name == "numpy":
-                    numpy_aliases.add(alias.asname or "numpy")
+                elif alias.name.split(".")[0] == "numpy":
+                    numpy_aliases.add(alias.asname or "numpy")  # import numpy.lib.npyio as io
                 elif alias.name == "operator":
                     operator_aliases.add(alias.asname or "operator")
                 elif alias.name == "fileinput":
                     fileinput_aliases.add(alias.asname or "fileinput")
         elif isinstance(node, ast.ImportFrom):
-            if node.module == "numpy":
+            if node.module and node.module.split(".")[0] == "numpy":
                 for alias in node.names:
                     if alias.name in ("load", "*"):
                         load_fn_aliases.add(alias.asname or "load")
