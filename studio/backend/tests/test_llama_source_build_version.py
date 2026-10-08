@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import os
 import shutil
-import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -22,11 +21,24 @@ if str(_BACKEND) not in sys.path:
 
 import utils.llama_cpp_update as upd  # noqa: E402
 
-# The stub llama-server is a shell script, which native Windows cannot exec.
-pytestmark = pytest.mark.skipif(
-    shutil.which("git") is None or sys.platform == "win32",
-    reason = "needs git and a POSIX shell",
-)
+pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason = "git not installed")
+
+# llama-server path -> what its --version prints; answered in-process so the test runs on Windows too.
+_VERSIONS: dict[str, str] = {}
+_real_run = subprocess.run
+
+
+@pytest.fixture(autouse = True)
+def _fake_version(monkeypatch):
+    def run(args, *a, **k):
+        if isinstance(args, list) and args and args[0] in _VERSIONS:
+            return subprocess.CompletedProcess(args, 0, stdout = "", stderr = _VERSIONS[args[0]])
+        return _real_run(args, *a, **k)
+
+    monkeypatch.setattr(upd.subprocess, "run", run)
+    yield
+    _VERSIONS.clear()
+
 
 LATEST_MIX = "b11408-mix-1e24fc5"
 
@@ -68,22 +80,22 @@ def _upstream(
 def _stub_server(root: Path, version_line: str) -> str:
     exe = root / "build" / "bin" / "llama-server"
     exe.parent.mkdir(parents = True, exist_ok = True)
-    exe.write_text(f"#!/bin/sh\necho '{version_line}' 1>&2\n")
-    exe.chmod(exe.stat().st_mode | stat.S_IXUSR)
+    exe.write_text("")
+    _VERSIONS[str(exe)] = version_line + "\n"
     return str(exe)
 
 
 def _clone_branch(tmp_path: Path, upstream: Path, ref: str) -> Path:
     # setup.sh / setup.ps1 fresh clone: git clone --depth 1 --branch <ref>
     dest = tmp_path / "llama.cpp"
-    _git("clone", "-q", "--depth", "1", "--branch", ref, f"file://{upstream}", str(dest))
+    _git("clone", "-q", "--depth", "1", "--branch", ref, upstream.as_uri(), str(dest))
     return dest
 
 
 def _clone_fetch_checkout(tmp_path: Path, upstream: Path, ref: str) -> Path:
     # setup.ps1 reuse path: fetch --depth 1 origin <ref> + checkout -B unsloth-llama-build FETCH_HEAD
     dest = tmp_path / "llama.cpp"
-    _git("clone", "-q", "--depth", "1", "--no-tags", f"file://{upstream}", str(dest))
+    _git("clone", "-q", "--depth", "1", "--no-tags", upstream.as_uri(), str(dest))
     _git("-C", str(dest), "fetch", "-q", "--depth", "1", "--no-tags", "origin", ref)
     _git("-C", str(dest), "checkout", "-q", "-B", "unsloth-llama-build", "FETCH_HEAD")
     return dest
