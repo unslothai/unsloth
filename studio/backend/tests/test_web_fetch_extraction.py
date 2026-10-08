@@ -2112,6 +2112,36 @@ def test_table_nested_in_a_header_inside_a_cell_keeps_its_columns():
     )
 
 
+def test_spanned_table_cells_stay_in_their_columns():
+    html = (
+        "<table>"
+        "<tr><th>Rank</th><th>Nation</th><th>Gold</th><th>Silver</th><th>Bronze</th><th>Total</th></tr>"
+        "<tr><td rowspan='2'>25</td><th>Latvia</th><td>0</td><td>1</td><td>0</td><td>1</td></tr>"
+        "<tr><th>Estonia</th><td>0</td><td>1</td><td>0</td><td>1</td></tr>"
+        "<tr><td>27</td><th>Spain</th><td>0</td><td>0</td><td>1</td><td rowspan='2'>1</td></tr>"
+        "<tr><td>28</td><th>Chile</th><td>0</td><td>0</td><td>1</td></tr>"
+        "<tr><th colspan='2'>Totals (5 entries)</th><td>0</td><td>2</td><td>2</td><td>4</td></tr>"
+        "</table>"
+    )
+    lines = html_to_markdown(f"<body>{html}</body>").splitlines()
+    assert lines == [
+        "| Rank | Nation | Gold | Silver | Bronze | Total |",
+        "| --- | --- | --- | --- | --- | --- |",
+        "| 25 | Latvia | 0 | 1 | 0 | 1 |",
+        "| 25 | Estonia | 0 | 1 | 0 | 1 |",
+        "| 27 | Spain | 0 | 0 | 1 | 1 |",
+        "| 28 | Chile | 0 | 0 | 1 | 1 |",
+        "| Totals (5 entries) |  | 0 | 2 | 2 | 4 |",
+    ]
+
+
+def test_table_spans_do_not_multiply_the_page_size():
+    wide = "<table><tr>" + "<td colspan='1000'>x" * 30000 + "</table>"
+    tall = "<table><tr><td rowspan='65534'>" + "word " * 2000 + "<tr><td>b" * 5000 + "</table>"
+    for html in (wide, tall):
+        assert len(html_to_markdown(html)) < 3 * len(html)
+
+
 def test_truncated_header_and_blockquote_keep_source_order():
     out = html_to_markdown("<body><main><header><h1>Title</h1><blockquote>Quote", main_content = True)
     assert out.index("Title") < out.index("Quote")

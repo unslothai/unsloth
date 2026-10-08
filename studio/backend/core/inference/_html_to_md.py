@@ -98,6 +98,13 @@ def _is_hidden_element(attr_dict: dict) -> bool:
     return _style_hides_element(attr_dict.get("style") or "")
 
 
+def _span_attr(attr_dict: dict, name: str) -> int:
+    try:
+        return max(1, int(attr_dict.get(name) or 1))
+    except ValueError:
+        return 1
+
+
 def _is_aria_heading(attr_dict: dict) -> bool:
     """True for ``role="heading"``, which titles a page just as ``h1``-``h6`` does.
 
@@ -190,6 +197,8 @@ _BLOCK_TAGS = frozenset(
     }
 )
 _HEADING_TAGS = frozenset({"h1", "h2", "h3", "h4", "h5", "h6"})
+# rowspan/colspan repeat cells, so a few spanned cells could otherwise multiply a page's size
+_MAX_SPAN_CHARS = 100_000
 _INLINE_EMPHASIS = {"strong": "**", "b": "**", "em": "*", "i": "*"}
 
 # measured density: 0.94-1.00 for link lists, 0.13-0.90 for content headers
@@ -345,6 +354,10 @@ class _MarkdownRenderer(HTMLParser):
         self._header_row_done: bool = False
         self._row_has_th: bool = False
         self._is_first_row: bool = False
+        self._cell_colspan: int = 1
+        self._cell_rowspan: int = 1
+        self._row_spans: dict[int, tuple[str, int]] = {}
+        self._span_chars: int = 0
 
         self._in_pre: bool = False
         self._pre_parts: list[str] = []
@@ -460,12 +473,37 @@ class _MarkdownRenderer(HTMLParser):
         self._in_cell = False
         cell_text = "".join(self._cell_parts).strip().replace("\n", " ")
         cell_text = cell_text.replace("|", "\\|")
-        self._current_row.append(cell_text)
         self._cell_parts = []
+        self._fill_spanned_cells(0)
+        col = len(self._current_row)
+        self._current_row.append(cell_text)
+        if self._span_chars >= _MAX_SPAN_CHARS:
+            return
+        self._current_row.extend([""] * (self._cell_colspan - 1))
+        self._span_chars += 3 * (self._cell_colspan - 1)
+        if self._cell_rowspan > 1:
+            for i in range(self._cell_colspan):
+                self._row_spans[col + i] = (cell_text if i == 0 else "", self._cell_rowspan)
+
+    def _fill_spanned_cells(self, width: int) -> None:
+        while self._span_chars < _MAX_SPAN_CHARS and (
+            len(self._current_row) < width or len(self._current_row) in self._row_spans
+        ):
+            span = self._row_spans.get(len(self._current_row))
+            text = span[0] if span else ""
+            self._current_row.append(text)
+            self._span_chars += len(text) + 3
 
     def _finish_row(self) -> None:
         if not self._current_row:
             return
+        self._fill_spanned_cells(max(self._row_spans, default = -1) + 1)
+        if self._span_chars >= _MAX_SPAN_CHARS:
+            self._row_spans = {}
+        else:
+            self._row_spans = {
+                col: (text, rows - 1) for col, (text, rows) in self._row_spans.items() if rows > 1
+            }
         line = "| " + " | ".join(self._current_row) + " |"
         self._emit_replay(line + "\n")
         if not self._header_row_done and (self._row_has_th or self._is_first_row):
@@ -776,6 +814,7 @@ class _MarkdownRenderer(HTMLParser):
             self._in_table = True
             self._header_row_done = False
             self._is_first_row = True
+            self._row_spans = {}
             self._emit("\n\n")
 
         elif tag == "tr":
@@ -787,6 +826,8 @@ class _MarkdownRenderer(HTMLParser):
             self._cell_parts = []
             self._in_cell = True
             self._cell_seq += 1
+            self._cell_colspan = min(_span_attr(attr_dict, "colspan"), 1000)
+            self._cell_rowspan = _span_attr(attr_dict, "rowspan")
             if tag == "th":
                 self._row_has_th = True
 
