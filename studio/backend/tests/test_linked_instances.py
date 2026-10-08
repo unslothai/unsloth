@@ -16,6 +16,7 @@ from core.inference import linked_instances
 from storage import credential_secrets, linked_instances_db
 
 REMOTE_KEY = "sk-unsloth-" + "a" * 32
+LAN_ADDRESS = {"remote": "192.168.1.20"}
 
 
 @pytest.fixture(autouse = True)
@@ -33,6 +34,15 @@ def isolated_databases(tmp_path, monkeypatch):
         auth_storage.get_or_create_credential_encryption_key,
     )
     monkeypatch.setattr(linked_instances, "_catalog_cache", {})
+    # The test remotes live on the LAN.
+    real_getaddrinfo = linked_instances.socket.getaddrinfo
+
+    def getaddrinfo(host, *args, **kwargs):
+        if host == "remote":
+            return [(2, 1, 6, "", (LAN_ADDRESS["remote"], 0))]
+        return real_getaddrinfo(host, *args, **kwargs)
+
+    monkeypatch.setattr(linked_instances.socket, "getaddrinfo", getaddrinfo)
     # Owner with an API key: no managed account, not keyless.
     monkeypatch.setattr(
         linked_instances,
@@ -672,3 +682,42 @@ def test_the_tools_off_header_beats_a_remote_launched_with_enable_tools():
             assert off.json() == {"tools": False}
     finally:
         reset_tool_policy()
+
+
+def test_a_plain_http_remote_that_now_resolves_public_never_gets_the_key(monkeypatch):
+    linked_instances_db.create_instance("wsl", "http://remote", REMOTE_KEY)
+    sent = []
+
+    def handler(request: httpx.Request):
+        sent.append(request.headers.get("authorization"))
+        return httpx.Response(200, json = {"ok": True})
+
+    _remote(handler, monkeypatch)
+    monkeypatch.setitem(LAN_ADDRESS, "remote", "8.8.8.8")
+    body = {"model": "@wsl/unsloth/a", "messages": []}
+    request = _request(body)
+
+    async def run():
+        target = await linked_instances.resolve(request, body["model"])
+        return await linked_instances.forward(request, "chat/completions", target)
+
+    with pytest.raises(HTTPException) as refused:
+        asyncio.run(run())
+    assert refused.value.status_code == 502
+    assert sent == []
+
+
+def test_status_and_info_report_a_rebound_http_remote_offline(monkeypatch):
+    row = linked_instances_db.create_instance("wsl", "http://remote", REMOTE_KEY)
+    sent = []
+
+    def handler(request: httpx.Request):
+        sent.append(request.url.path)
+        return httpx.Response(200, json = {"data": []})
+
+    _remote(handler, monkeypatch)
+    monkeypatch.setitem(LAN_ADDRESS, "remote", "8.8.8.8")
+    instance = linked_instances_db.get_instance(row["id"])
+    assert asyncio.run(linked_instances.probe(instance))["online"] is False
+    assert asyncio.run(linked_instances.fetch_info(instance))["online"] is False
+    assert sent == []

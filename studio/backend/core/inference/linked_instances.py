@@ -119,6 +119,14 @@ def split_model(model: object) -> Optional[tuple[str, str]]:
 
 
 def _auth_headers(instance: dict) -> dict[str, str]:
+    # Saving checked a plain http host was private; DNS can move it since, and the key would
+    # then cross the internet in the clear. Check again before every request.
+    parts = urlsplit(instance["base_url"])
+    if parts.scheme == "http" and not _is_private_host(parts.hostname or ""):
+        raise httpx.ConnectError(
+            f"Linked instance '{instance.get('name')}' no longer resolves to this machine or "
+            "your LAN; plain http to a public address is refused."
+        )
     key = linked_instances_db.get_api_key(instance["id"])
     headers = {HOP_HEADER: "1"}
     if not instance.get("allow_tools"):
@@ -290,7 +298,11 @@ async def forward(
         if not options.get("include_usage"):
             body["stream_options"] = {**options, "include_usage": True}
             strip_usage = True
-    headers = await asyncio.to_thread(_auth_headers, instance)
+    try:
+        headers = await asyncio.to_thread(_auth_headers, instance)
+    except httpx.HTTPError as exc:
+        api_monitor.fail(entry_id, str(exc))
+        raise HTTPException(status_code = 502, detail = str(exc)) from exc
     for name in _FORWARDED_HEADERS:
         if value := request.headers.get(name):
             headers[name] = value
@@ -500,7 +512,10 @@ def _rewrite_urls(value: object, prefix: str) -> object:
 
 async def proxy(request: Request, instance: dict, path: str) -> Response:
     """Relay one allowlisted Unsloth Studio API call to ``instance`` with its key."""
-    headers = await asyncio.to_thread(_auth_headers, instance)
+    try:
+        headers = await asyncio.to_thread(_auth_headers, instance)
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code = 502, detail = str(exc)) from exc
     for name in _PROXY_REQUEST_HEADERS:
         if value := request.headers.get(name):
             headers[name] = value
@@ -622,7 +637,10 @@ def _gpus(system: dict, hardware: dict) -> list[dict]:
 
 async def fetch_info(instance: dict) -> dict:
     """Version, runtime and hardware of a linked instance. Each source is optional."""
-    headers = await asyncio.to_thread(_auth_headers, instance)
+    try:
+        headers = await asyncio.to_thread(_auth_headers, instance)
+    except httpx.HTTPError:
+        return {"online": False, "error": "Not reachable."}
     keys = list(_INFO_PATHS)
     results = await asyncio.gather(
         *(_get_json(instance, headers, _INFO_PATHS[k]) for k in keys), return_exceptions = True
