@@ -149,7 +149,7 @@ def _checkout_tag_build(binary: str, reported_commit: str) -> Optional[int]:
     packed: dict[str, str] = {}
     try:
         git_dir = next(
-            (p / ".git" for p in Path(binary).parents[:5] if (p / ".git").exists()), None
+            (p / ".git" for p in list(Path(binary).parents)[:5] if (p / ".git").exists()), None
         )
         if git_dir is None or not git_dir.is_dir():
             return None
