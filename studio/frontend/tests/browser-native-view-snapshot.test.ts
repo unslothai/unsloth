@@ -230,3 +230,56 @@ test("a finished download is listed and reported after its tab closed, and warns
     stop();
   }
 });
+
+test("a native page and its downloads begun beside a temporary chat stay temporary when they land after it", async () => {
+  const { useChatRuntimeStore } = await import("@/features/chat");
+  const stop = startNativeViews();
+  const g = globalThis as {
+    nativeViewListener?: (event: { payload: unknown }) => void;
+    nativeViewSeen?: unknown;
+    nativeViewVisits?: unknown;
+    nativeViewApprove?: boolean;
+  };
+  try {
+    useBrowserStore.getState().openUrl("https://example.org/", { newTab: true });
+    await frame();
+    const tabId = useBrowserStore.getState().activeTabId as string;
+    const visits: { url: string; temporary: boolean }[] = [];
+    const seen: { level: string; message: string; temporary?: boolean }[] = [];
+    g.nativeViewVisits = visits;
+    g.nativeViewSeen = seen;
+    g.nativeViewApprove = true;
+    const load = (url: string, loading: boolean) =>
+      g.nativeViewListener?.({ payload: { kind: "load", tabId, url, loading } });
+    const url = "https://example.org/a.zip";
+    useChatRuntimeStore.getState().setIncognito(true);
+    load("https://example.org/next", true);
+    g.nativeViewListener?.({ payload: { kind: "downloadPrompt", tabId, url, site: "", name: "a.zip", id: "p1" } });
+    g.nativeViewListener?.({ payload: { kind: "downloadPrompt", tabId, url, site: "", name: "a.zip", id: "p2" } });
+    await settle();
+    useChatRuntimeStore.getState().setIncognito(false);
+    load("https://example.org/next", false);
+    const done = { kind: "download", tabId, url, name: "a.zip", path: null, size: 3, done: true, success: true, marked: true };
+    g.nativeViewListener?.({ payload: { ...done, downloadId: "d1" } });
+    g.nativeViewListener?.({ payload: { ...done, downloadId: "d2" } });
+    g.nativeViewListener?.({ payload: { ...done, downloadId: "d3" } });
+    load("https://example.org/later", true);
+    load("https://example.org/later", false);
+    assert.deepEqual(visits, [
+      { url: "https://example.org/next", temporary: true },
+      { url: "https://example.org/later", temporary: false },
+    ]);
+    assert.deepEqual(
+      seen.filter((item) => item.level === "history"),
+      [
+        { level: "history", message: "d1", temporary: true },
+        { level: "history", message: "d2", temporary: true },
+        { level: "history", message: "d3" },
+      ],
+    );
+  } finally {
+    useChatRuntimeStore.getState().setIncognito(false);
+    delete g.nativeViewApprove;
+    stop();
+  }
+});

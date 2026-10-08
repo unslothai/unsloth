@@ -119,22 +119,39 @@ function listenOnce(): void {
   );
 }
 
-// Downloads asked for beside a temporary chat: they land later, often after the chat is gone.
-const temporaryDownloads = new Set<string>();
+// Downloads asked for beside a temporary chat, counted per tab and address: they land later, often after the chat is gone.
+const temporaryDownloads = new Map<string, number>();
 const downloadKey = (tabId: string, url: string) => `${tabId}\n${url}`;
+
+function takeTemporaryDownload(key: string): boolean {
+  const count = temporaryDownloads.get(key) ?? 0;
+  if (count > 1) temporaryDownloads.set(key, count - 1);
+  else temporaryDownloads.delete(key);
+  return count > 0;
+}
+
+// Tabs whose page began loading beside a temporary chat: in-page navigation makes no new entry.
+const temporaryPages = new Set<string>();
+
+function notePageStart(tabId: string): void {
+  if (useChatRuntimeStore.getState().incognito) temporaryPages.add(tabId);
+  else temporaryPages.delete(tabId);
+}
 
 /** Always answered: an unanswered download would sit in staging until the app quits. */
 function onDownloadPrompt(event: Extract<NativeEvent, { kind: "downloadPrompt" }>, tab: BrowserTab | undefined): void {
   const { id, url, site, name } = event;
   const entry = tab ? currentEntry(tab) : null;
   const key = downloadKey(event.tabId, url);
-  if (useChatRuntimeStore.getState().incognito || (entry?.kind === "web" && entry.temporary)) temporaryDownloads.add(key);
+  if (useChatRuntimeStore.getState().incognito || (entry?.kind === "web" && entry.temporary)) {
+    temporaryDownloads.set(key, (temporaryDownloads.get(key) ?? 0) + 1);
+  }
   // The site asking is the page that started it, taken then (a later site's answer must not cover it); blob: counts as its creator. With no web origin yet, the opener or the address asked for.
   const asking = downloadSiteOf(site) ? site : entry?.kind === "web" ? entry.from || entry.url : "";
   const decided = entry?.kind === "web" ? approveDownload(url, name, asking) : Promise.resolve(false);
   void decided
     .then(async (allow) => {
-      if (!allow) temporaryDownloads.delete(key);
+      if (!allow) takeTemporaryDownload(key);
       await decideNativeDownload(id, allow, useBrowserPrefsStore.getState().askWhereToSave);
       if (allow) toast(t("browser.native.downloading", { name }));
     })
@@ -157,17 +174,19 @@ function onNativeEvent(event: NativeEvent): void {
   const entry = currentEntry(tab);
   if (entry.kind !== "web") return;
   const history = useBrowserHistoryStore.getState();
+  if ((event.kind === "load" && event.loading) || event.kind === "url") notePageStart(tab.id);
+  const temporary = entry.temporary === true || temporaryPages.has(tab.id);
   switch (event.kind) {
     case "load":
       store.updateTab(tab.id, { loading: event.loading, displayUrl: event.url, ...leftOpenedPage(tab, event.url) });
       page(tab.id).url = event.url;
       remember(tab.id, event.url);
-      if (!event.loading) history.recordVisit(event.url, tab.title, entry.temporary);
+      if (!event.loading) history.recordVisit(event.url, tab.title, temporary);
       break;
     case "title":
       store.updateTab(tab.id, { title: event.title });
       page(tab.id).title = event.title;
-      history.recordVisit(tab.displayUrl ?? currentEntryUrl(tab), event.title, entry.temporary);
+      history.recordVisit(tab.displayUrl ?? currentEntryUrl(tab), event.title, temporary);
       break;
     case "url":
       store.updateTab(tab.id, { displayUrl: event.url, ...leftOpenedPage(tab, event.url) });
@@ -219,7 +238,7 @@ function onDownload(event: Extract<NativeEvent, { kind: "download" }>): void {
     toast(t("browser.native.downloading", { name: event.name }));
     return;
   }
-  const temporary = temporaryDownloads.delete(downloadKey(event.tabId, event.url));
+  const temporary = takeTemporaryDownload(downloadKey(event.tabId, event.url));
   if (event.success) {
     const item = {
       name: event.name,
