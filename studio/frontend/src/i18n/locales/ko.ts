@@ -508,6 +508,7 @@ export const ko = {
     },
   },
   common: {
+    duplicate: "복제",
     cancel: "취소",
     close: "닫기",
     delete: "삭제",
@@ -3413,6 +3414,9 @@ export const ko = {
       readMore: "더 알아보기",
     },
     training: {
+      duplicateFailed: "실행 복제에 실패했습니다",
+      duplicateDraftChanged: "불러오는 동안 학습 설정이 변경되었습니다. 다시 복제해 보세요.",
+      duplicateNoModel: "이 실행에는 저장된 모델 구성이 없습니다.",
       startTraining: "학습 시작",
       starting: "시작 중...",
       loadingModel: "모델을 로딩하는 중...",

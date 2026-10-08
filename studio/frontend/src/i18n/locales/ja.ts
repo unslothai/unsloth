@@ -510,6 +510,7 @@ export const ja = {
     },
   },
   common: {
+    duplicate: "複製",
     cancel: "キャンセル",
     close: "閉じる",
     delete: "削除",
@@ -3373,6 +3374,9 @@ export const ja = {
       readMore: "詳細を読む",
     },
     training: {
+      duplicateFailed: "実行の複製に失敗しました",
+      duplicateDraftChanged: "読み込み中にトレーニング設定が変更されました。もう一度複製してください。",
+      duplicateNoModel: "この実行には保存されたモデル構成がありません。",
       startTraining: "トレーニング開始",
       starting: "開始中...",
       loadingModel: "モデルを読み込み中...",

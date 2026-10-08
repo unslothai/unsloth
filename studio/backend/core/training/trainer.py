@@ -1337,7 +1337,7 @@ class UnslothTrainer:
                 )
                 logger.info(f"[VLM Diagnostic] Usable as vision processor: {has_image_proc}\n")
             else:
-                text_kwargs = dict(
+                self.model, self.tokenizer = FastLanguageModel.from_pretrained(
                     model_name = lookup_name,
                     max_seq_length = max_seq_length,
                     dtype = _auto_dtype,
@@ -1350,9 +1350,7 @@ class UnslothTrainer:
                     use_exact_model_name = model_revision is not None,
                     use_gradient_checkpointing = use_gradient_checkpointing,
                     on_model_resolved = on_model_resolved,
-                )
-                self.model, self.tokenizer = FastLanguageModel.from_pretrained(
-                    **text_kwargs, **self._offload_load_kwargs()
+                    **self._offload_load_kwargs(),
                 )
                 logger.info("Loaded text model")
 

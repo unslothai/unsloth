@@ -190,6 +190,7 @@ export function LiveTrainingView(): ReactElement {
       >
         <div data-tour="studio-training-progress">
           <ProgressSection
+            runId={runtime.jobId}
             key={runtime.jobId ?? "no-job"}
             data={viewData}
             configOverride={runConfigOverride}

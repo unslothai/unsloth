@@ -284,6 +284,7 @@ export interface TrainingConfigActions {
   setFinetuneMLPModules: (value: boolean) => void;
   setTargetModules: (value: string[]) => void;
   setS3Config: (value: S3Config | null) => void;
+  restoreRunConfig: (config: Record<string, unknown>) => void;
   reset: () => void;
   resetToModelDefaults: () => void;
   applyConfigPatch: (config: BackendModelConfig) => void;

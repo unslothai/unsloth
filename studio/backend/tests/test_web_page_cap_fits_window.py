@@ -1116,3 +1116,31 @@ class TestTheProbeIsNotPaidForTwice:
         for entry in tools._PROBE_COUNT_CACHE.values():
             assert len(entry) <= 3
             assert sum(map(len, entry)) <= 12_000
+
+
+def test_a_previous_generation_sentinel_reads_as_unset(monkeypatch):
+    """An `execute_tool` held across a reload of tools passes the old sentinels (#11384)."""
+    stale = object()
+    monkeypatch.setattr("state.tool_policy.require_tool_access", lambda **kw: None)
+    seen = []
+    monkeypatch.setattr(
+        tools,
+        "_search_knowledge_base_with_budget",
+        lambda a, s, timeout, c, **kw: seen.append(timeout) or "ok",
+    )
+
+    token = tools._REQUEST_CONTEXT_TOKENS.set(stale)
+    try:
+        assert tools._page_char_budget() == tools._MAX_PAGE_CHARS
+        assert tools._tool_result_char_budget() == tools._MAX_OUTPUT_CHARS
+        assert tools._window_context_tokens() is None
+        _window(monkeypatch, 4864)
+        assert tools._page_char_budget() == 6809
+        assert tools._tool_result_char_budget() == 6809
+        assert tools._window_context_tokens() == 4864
+
+        tools.execute_tool("search_knowledge_base", {}, timeout = stale, context_tokens = stale)
+        assert seen == [tools._EXEC_TIMEOUT]
+        assert tools._page_char_budget() == 6809
+    finally:
+        tools._REQUEST_CONTEXT_TOKENS.reset(token)
