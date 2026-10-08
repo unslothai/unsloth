@@ -7,6 +7,7 @@ import {
   type ConversationMarkdownMessage,
   buildConversationMarkdown,
 } from "./conversation-markdown.ts";
+import { parseExternalModelId } from "../external-providers.ts";
 import { stripSearchImageTokens } from "../search-images/search-images.ts";
 
 type StoredConversationMessage = {
@@ -59,7 +60,8 @@ export function createConversationMarkdownBuilder<
   };
 }
 
-const MAX_EXPORT_BASENAME_LENGTH = 120;
+// UTF-8 bytes, leaving room under the usual 255-byte name limit for " (YYYY-MM-DD).jsonl".
+const MAX_EXPORT_BASENAME_BYTES = 200;
 
 function filenamePart(text: string): string {
   return (
@@ -85,14 +87,20 @@ export function conversationExportBasename(
     | undefined,
   date: Date,
 ): string {
-  const model = filenamePart(thread?.modelId?.split("/").pop() ?? "");
+  const modelId = parseExternalModelId(thread?.modelId)?.modelId ?? thread?.modelId ?? "";
+  const model = filenamePart(modelId.split("/").pop() ?? "");
   const title = filenamePart(thread?.title ?? "");
   const name = [model, title].filter(Boolean).join(" - ") || "conversation";
-  // Cut by code point (no lone surrogate); Windows refuses a trailing dot or space.
-  const capped = Array.from(name)
-    .slice(0, MAX_EXPORT_BASENAME_LENGTH)
-    .join("")
-    .replace(/[. ]+$/, "");
+  // Cut on a code point (no lone surrogate); Windows refuses a trailing dot or space.
+  const encoder = new TextEncoder();
+  let capped = "";
+  let bytes = 0;
+  for (const char of name) {
+    bytes += encoder.encode(char).length;
+    if (bytes > MAX_EXPORT_BASENAME_BYTES) break;
+    capped += char;
+  }
+  capped = capped.replace(/[. ]+$/, "");
   return `${capped || "conversation"} (${localDateStamp(date)})`;
 }
 

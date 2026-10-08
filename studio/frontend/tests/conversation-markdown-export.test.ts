@@ -201,14 +201,27 @@ test("an export name never carries a path separator or a trailing dot", () => {
   );
 });
 
-test("an export name is cut by code point and drops bidi controls", () => {
+test("an export name is cut by UTF-8 bytes on a code point and drops bidi controls", () => {
   const name = conversationExportBasename(
-    { title: `${"a".repeat(119)}\u{1F600}tail \u202Egpj.exe` },
+    { title: `${"a".repeat(197)}\u{1F600}tail \u202Egpj.exe` },
     EXPORT_DAY,
   );
-  assert.equal(name, `${"a".repeat(119)}\u{1F600} (2026-09-01)`);
+  assert.equal(name, `${"a".repeat(197)} (2026-09-01)`);
+  const cjk = conversationExportBasename({ title: "\u7532".repeat(120) }, EXPORT_DAY);
+  assert.equal(cjk, `${"\u7532".repeat(66)} (2026-09-01)`);
+  assert.ok(new TextEncoder().encode(`${cjk}.jsonl`).length <= 255);
   assert.equal(
     conversationExportBasename({ title: "x\u202Egpj.exe" }, EXPORT_DAY),
     "x_gpj.exe (2026-09-01)",
+  );
+});
+
+test("an external provider chat is named after the model, not its internal id", () => {
+  assert.equal(
+    conversationExportBasename(
+      { modelId: "external::provider-1::openai%2Fgpt-4o", title: "Hi" },
+      EXPORT_DAY,
+    ),
+    "gpt-4o - Hi (2026-09-01)",
   );
 });
