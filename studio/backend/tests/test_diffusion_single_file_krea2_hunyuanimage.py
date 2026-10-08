@@ -468,16 +468,18 @@ def test_comfy_int8_krea2_file_loads_with_codes_exact(tmp_path, monkeypatch):
     assert loaded._unsloth_comfy_quant["dequantized"] == len(expected)
 
 
-def test_plain_krea2_file_loads_like_the_base_repo(tmp_path, monkeypatch):
+@pytest.mark.parametrize("prefix", ["", "model.model.", "diffusion_model."])
+def test_plain_krea2_file_loads_like_the_base_repo(tmp_path, monkeypatch, prefix):
     """A plain bf16 ComfyUI file through Studio's loader (used while diffusers gives Krea 2 no
     from_single_file): same tensors as the diffusers weights, the _keep_in_fp32_modules norms in float32
-    as from_pretrained leaves them, strict on keys."""
+    as from_pretrained leaves them, strict on keys. Every container prefix, including the two diffusers
+    0.41's own Krea 2 converter does not strip."""
     cls = _class("Krea2Transformer2DModel")
     model = _tiny("Krea2Transformer2DModel", KREA2_CFG)
     path = tmp_path / "krea2_tiny_bf16.safetensors"
     safetensors_torch.save_file(
         {
-            k: v.to(torch.bfloat16).contiguous()
+            prefix + k: v.to(torch.bfloat16).contiguous()
             for k, v in krea2_original(model.state_dict()).items()
         },
         str(path),
@@ -538,6 +540,20 @@ def test_both_classes_register_and_resolve(monkeypatch):
     # The ComfyUI loader's lookup, which raised "has no single-file converter" before.
     fn, _ = cq._mapping(diffusers.HunyuanImageTransformer2DModel)
     assert fn is conv.hunyuanimage_checkpoint_to_diffusers
+
+
+def test_studio_converters_win_over_a_later_upstream_entry(monkeypatch):
+    """diffusers 0.41 registers its own Krea 2 converter, which strips only model.diffusion_model."""
+    from diffusers.loaders import single_file_model as sfm
+
+    cls = _class("Krea2Transformer2DModel")
+    monkeypatch.setitem(
+        sfm.SINGLE_FILE_LOADABLE_CLASSES,
+        "Krea2Transformer2DModel",
+        {"checkpoint_mapping_fn": lambda **k: {}, "default_subfolder": "transformer"},
+    )
+    fn, _ = cq._mapping(cls)
+    assert fn is conv.krea2_checkpoint_to_diffusers
 
 
 @pytest.mark.parametrize(
