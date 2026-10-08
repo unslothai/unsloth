@@ -4,6 +4,8 @@
 // Live state for the toolbar's Downloads button: running downloads and the latest finish.
 // Session only; history-store.ts keeps the lasting record.
 
+import { getLocale, translate } from "@/i18n";
+import { toast } from "@/lib/toast";
 import { create } from "zustand";
 
 export type FinishedDownload = {
@@ -29,17 +31,28 @@ type DownloadActivity = {
   dismissFinished: () => void;
 };
 
-export const useDownloadActivity = create<DownloadActivity>((set) => ({
+// Saved from the panel this session, so Open can show the file again without the disk.
+const MAX_KEPT_FILES = 8;
+const keptFiles = new Map<string, { blob: Blob; name: string; contentType: string }>();
+
+/** Whether the current result went to a button rather than its caller's toast. */
+let finishedOnButton = false;
+
+/** A result with no history row can only be reached from its notice: drop its bytes as that goes. */
+function release(finished: FinishedDownload | null): void {
+  if (finished && !finished.historyId) keptFiles.delete(finished.key);
+}
+
+export const useDownloadActivity = create<DownloadActivity>((set, get) => ({
   active: {},
   finished: null,
   finishedSequence: 0,
   buttons: 0,
-  dismissFinished: () => set({ finished: null }),
+  dismissFinished: () => {
+    release(get().finished);
+    set({ finished: null });
+  },
 }));
-
-// Saved from the panel this session, so Open can show the file again without the disk.
-const MAX_KEPT_FILES = 8;
-const keptFiles = new Map<string, { blob: Blob; name: string; contentType: string }>();
 
 export function keptDownloadFile(id: string | undefined) {
   return id ? (keptFiles.get(id) ?? null) : null;
@@ -80,15 +93,23 @@ export function finishDownload(
   result: Omit<FinishedDownload, "key">,
   file?: { blob: Blob; name: string; contentType: string },
 ): boolean {
+  const { finished: replaced, buttons } = useDownloadActivity.getState();
+  // A replaced result the list can't show (failed or unrecorded) would vanish: toast it instead.
+  if (replaced && !replaced.historyId && finishedOnButton) {
+    const title = replaced.failed ? "browser.downloads.failed" : "browser.downloads.complete";
+    toast[replaced.failed ? "error" : "success"](translate(title, {}, getLocale()), { description: replaced.name });
+  }
+  release(replaced);
   // Unrecorded, its native id was forgotten (history-store.ts), so it can't open or reveal.
   const nativeId = result.historyId ? result.nativeId : undefined;
   if (file) keepFile(result.historyId ?? key, file);
   const active = { ...useDownloadActivity.getState().active };
   delete active[key];
+  finishedOnButton = buttons > 0;
   useDownloadActivity.setState((state) => ({
     active,
     finished: { ...result, nativeId, key },
     finishedSequence: state.finishedSequence + 1,
   }));
-  return useDownloadActivity.getState().buttons > 0;
+  return finishedOnButton;
 }

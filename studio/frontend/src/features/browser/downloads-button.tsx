@@ -352,18 +352,21 @@ export function DownloadsButton({ className }: { className?: string }) {
 
   useEffect(() => mountDownloadsButton(), []);
 
-  // Hovering holds the notice; leaving starts the countdown again.
-  useEffect(() => {
-    if (mode !== "finished" || hovered) return;
-    const timer = window.setTimeout(() => setMode("closed"), COMPLETE_SHOWN_MS);
-    return () => window.clearTimeout(timer);
-  }, [mode, hovered, finishedSequence]);
-
   const close = () => {
     setMode("closed");
     setHovered(false);
     useDownloadActivity.getState().dismissFinished();
   };
+
+  // Hovering holds the notice; leaving starts the countdown again.
+  useEffect(() => {
+    if (mode !== "finished" || hovered) return;
+    const timer = window.setTimeout(() => {
+      setMode("closed");
+      useDownloadActivity.getState().dismissFinished();
+    }, COMPLETE_SHOWN_MS);
+    return () => window.clearTimeout(timer);
+  }, [mode, hovered, finishedSequence]);
   const label = t(active ? "browser.downloads.inProgressLabel" : "browser.downloads.title");
   const lit = active || mode === "finished";
 

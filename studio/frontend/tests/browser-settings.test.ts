@@ -568,3 +568,37 @@ test("a finished download links to its history row, and an unrecorded one drops 
   finishDownload("save:2", { ...result, nativeId: "n2" });
   assert.equal(useDownloadActivity.getState().finished?.nativeId, undefined);
 });
+
+test("an unrecorded result's bytes go with its notice, and one replaced on screen is toasted", async () => {
+  const { finishDownload, keptDownloadFile, mountDownloadsButton, useDownloadActivity } = await import(
+    "../src/features/browser/download-activity.ts"
+  );
+  const file = { blob: new Blob(["x"]), name: "a.bin", contentType: "" };
+  const result = { name: "a.bin", size: 1, contentType: "", url: null, failed: false };
+  const unmount = mountDownloadsButton();
+  const toasts = ((globalThis as { __toasts?: { message: string; options?: { description?: string } }[] }).__toasts ??=
+    []);
+  toasts.length = 0;
+  try {
+    finishDownload("save:a", result, file);
+    assert.equal(keptDownloadFile("save:a"), file);
+    useDownloadActivity.getState().dismissFinished();
+    assert.equal(keptDownloadFile("save:a"), null);
+    // A failure the list never shows, replaced before it was dismissed: toasted, not lost.
+    finishDownload("native:p1", { ...result, name: "lost.zip", failed: true });
+    finishDownload("save:b", result, file);
+    assert.deepEqual(
+      toasts.map((item) => [item.message, item.options?.description]),
+      [["browser.downloads.failed", "lost.zip"]],
+    );
+    assert.equal(keptDownloadFile("save:b"), file);
+    // A recorded result replaced on screen stays in the list, so no toast.
+    finishDownload("save:c", { ...result, historyId: "row-c" });
+    finishDownload("save:d", { ...result, historyId: "row-d" });
+    assert.equal(toasts.length, 2);
+    assert.equal(keptDownloadFile("save:b"), null);
+  } finally {
+    useDownloadActivity.getState().dismissFinished();
+    unmount();
+  }
+});
