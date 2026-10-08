@@ -32664,13 +32664,7 @@ class LlamaCppBackend:
         return (self._hf_variant or "").lower() == (intent.hf_variant or "").lower()
 
     def components_match_intent(self, intent: GgufLoadIntent) -> bool:
-        """Same weights and caller-authored components; capacity and placement may differ.
-
-        Another account joining the resident (#12365) never saw its context, slots, cache, batch or
-        GPU placement, so those may differ. What changes the output or loads extra files may not:
-        the chat template, the extras (``--lora``, drafters), vision, speculative mode and the
-        reasoning budget, all compared the way ``_runtime_matches_intent`` compares them.
-        """
+        """``_runtime_matches_intent`` minus capacity and placement: same weights and components."""
         if intent.force_reload or not self.matches_load_source(intent):
             return False
         requested = self.requested_extra_args

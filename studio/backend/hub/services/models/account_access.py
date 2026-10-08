@@ -270,8 +270,7 @@ def join_resident(modality: str) -> None:
     require_live_account()
     from core.inference import gpu_arbiter
 
-    # A resident loaded before the first managed account has no sharers yet: seed its loader,
-    # or the joiner would be the sole sharer and its unload a teardown of the loader's model.
+    # No sharers yet (loaded pre-accounts): seed the loader so the joiner's unload keeps it.
     loader = gpu_arbiter.owner_account() if gpu_arbiter.current_owner() == modality else None
     with _sharers_lock:
         sharers = _resident_sharers.setdefault(modality, set())
@@ -377,11 +376,7 @@ def resident_hidden(modality: str | None = None, reference: str | None = None) -
 
 
 def joins_resident_runtime(modality: str, reference: str | None = None) -> bool:
-    """A managed caller that did not load the resident: its ordinary load names the model, not a runtime.
-
-    A hidden caller never saw the resident's settings, and a sharer's saved settings can still
-    differ, so repeating the load that joined must join again rather than replace (#12365).
-    """
+    """A managed caller that did not load the resident: an ordinary load joins it (#12365)."""
     if resident_hidden(modality, reference):
         return True
     if not managed_account() or not resident_shared_with(modality, current_account_id()):

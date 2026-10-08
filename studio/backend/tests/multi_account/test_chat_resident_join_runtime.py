@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Another account's ordinary load of the resident GGUF joins it even when its runtime settings
-differ (#12365). That account cannot see the resident's settings before joining, so a strict
-runtime match turned every such load into a replacement: a 409 while the loader generated, and an
-eviction and reload once it went idle."""
+"""#12365: another account's ordinary load joins the resident GGUF despite other settings."""
 
 import asyncio
 import threading
@@ -33,9 +30,7 @@ class ReachedReplacement(Exception):
 
 
 class StrictLlama(FakeLlama):
-    """Bob's resident runs 2 slots with tensor parallelism; reuse needs the same runtime.
-
-    The cross-account join runs the real component comparison against these fields."""
+    """Bob's resident: 2 slots, tensor parallel; the join uses the real component comparison."""
 
     tensor_parallel = True
     extra_args = None
@@ -142,7 +137,6 @@ def test_other_account_default_runtime_joins_instead_of_replacing(strict, accoun
         response = load(accounts["alice"])
     assert response.status == "already_loaded"
     assert not strict.unloaded
-    # The resident keeps Bob's runtime; Alice's defaults are not adopted.
     assert strict.adopted == []
     assert strict.last_load_intent.n_parallel == 2 and strict.last_load_intent.tensor_parallel
     assert access._resident_sharers["chat"] == {
@@ -203,7 +197,6 @@ def test_the_installation_owner_sees_the_resident_so_its_mismatch_still_replaces
 
 
 def test_repeating_the_load_that_joined_joins_again(strict, accounts):
-    # Now a sharer, so status shows the resident, but its saved settings still differ.
     assert load(accounts["alice"]).status == "already_loaded"
     assert load(accounts["alice"]).status == "already_loaded"
     assert not strict.unloaded and strict.adopted == []
