@@ -25,7 +25,6 @@ if str(_BACKEND) not in sys.path:
 
 from core.inference.chat_template_helpers import (  # noqa: E402
     _normalize_tool_call_arguments,
-    _repair_orphan_tool_results,
     _split_parallel_tool_calls,
     apply_chat_template_for_generation,
 )
@@ -196,6 +195,8 @@ def test_render_links_every_result_of_an_orphan_run():
 
 
 def test_orphan_repair_is_idempotent_and_leaves_linked_results_alone():
+    from core.inference.chat_template_helpers import _repair_orphan_tool_results
+
     messages = [
         {"role": "user", "content": "weather?"},
         {"role": "tool", "name": "web_search", "content": "21C sunny"},
