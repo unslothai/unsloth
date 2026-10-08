@@ -1721,8 +1721,7 @@ def CausalLM_fast_forward(fast_forward_inference):
                 logit_scaling = logit_scaling,
                 n_items = n_items,
             )
-        else:
-            logits = apply_logit_transforms(logits, logit_softcapping, logit_scaling)
+        logits = apply_logit_transforms(logits, logit_softcapping, logit_scaling)
 
         if not return_dict:
             output = (logits,) + outputs[1:]
