@@ -345,6 +345,7 @@ def load_h3_quantized_text_encoder(
             # pinned to cache_dir alone a moved cache folder re-pulls 27 GB.
             reuse_other_cache_root = True,
             local_files_only = local_files_only,
+            gguf_header_delta = True,
         )
 
         config = transformers.AutoConfig.from_pretrained(

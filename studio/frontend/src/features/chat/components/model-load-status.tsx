@@ -47,7 +47,7 @@ export function ModelLoadDescription({
     splitProgressLabel(progressLabel);
 
   return (
-    <div className={cn("relative flex min-h-12 w-full items-stretch gap-2", className)}>
+    <div className={cn("relative flex min-h-12 w-full items-stretch gap-3", className)}>
       <div className="flex h-full shrink-0 items-center self-center">
         <Spinner className="size-3.5 text-muted-foreground" />
       </div>

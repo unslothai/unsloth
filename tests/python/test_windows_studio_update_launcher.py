@@ -791,6 +791,95 @@ def test_a_quarantined_away_launcher_with_a_broken_package_still_fails(
         _update(studio)
 
 
+def test_a_failed_recovery_reports_the_verdict_it_acted_on(monkeypatch, studio, tmp_path, capsys):
+    """#9804: a failed recovery reports why, not that the launcher is absent."""
+    _configure_windows(monkeypatch, studio, tmp_path, launcher = None)
+    monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        studio.subprocess,
+        "run",
+        lambda argv, **_kwargs: types.SimpleNamespace(returncode = 3),
+    )
+
+    with pytest.raises(studio.typer.Exit):
+        _update(studio)
+
+    err = capsys.readouterr().err
+    assert "the managed Python CLI returned 3 for --version" in err
+    assert "update failed because the updated launcher is not on disk" not in err
+
+
+def test_a_failed_recovery_with_no_interpreter_says_both(monkeypatch, studio, tmp_path, capsys):
+    """No interpreter: the reason itself carries the absence."""
+    scripts, _launcher = _configure_windows(monkeypatch, studio, tmp_path, launcher = None)
+    (scripts / "python.exe").unlink()
+    monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: None)
+    monkeypatch.setattr(studio.subprocess, "run", _successful_version_run())
+
+    with pytest.raises(studio.typer.Exit):
+        _update(studio)
+
+    # Whole clause: __enter__ already prints a "missing or invalid" warning.
+    assert (
+        "the updated launcher is missing and there is no managed interpreter"
+        in capsys.readouterr().err
+    )
+
+
+def test_a_recovered_launcher_still_reports_what_setup_published(
+    monkeypatch, studio, tmp_path, capsys
+):
+    """A broken published launcher is still the reported cause after a successful restore."""
+    scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path)
+    monkeypatch.setattr(
+        studio, "_run_setup_script", lambda **_kwargs: launcher.write_bytes(b"MZ-new")
+    )
+
+    def run(argv, **_kwargs):
+        target = Path(argv[0])
+        if target.name == "unsloth.exe" and target.read_bytes() == ORIGINAL_LAUNCHER:
+            return types.SimpleNamespace(returncode = 0)
+        return types.SimpleNamespace(returncode = 1)
+
+    monkeypatch.setattr(studio.subprocess, "run", run)
+
+    with pytest.raises(studio.typer.Exit):
+        _update(studio)
+
+    err = capsys.readouterr().err
+    assert "the updated launcher returned 1 for --version" in err
+    assert launcher.read_bytes() == ORIGINAL_LAUNCHER
+    assert "The previous launcher was restored." in err
+
+
+def test_a_published_launcher_keeps_its_own_verdict_when_recovery_also_fails(
+    monkeypatch, studio, tmp_path, capsys
+):
+    """The restored copy's failure never replaces the published launcher's."""
+    scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path)
+    published = b"MZ-published"
+    monkeypatch.setattr(
+        studio, "_run_setup_script", lambda **_kwargs: launcher.write_bytes(published)
+    )
+
+    def run(argv, **_kwargs):
+        target = Path(argv[0])
+        if target.name != "unsloth.exe":
+            return types.SimpleNamespace(returncode = 9)
+        if target.read_bytes() == published:
+            return types.SimpleNamespace(returncode = 7)
+        return types.SimpleNamespace(returncode = 8)
+
+    monkeypatch.setattr(studio.subprocess, "run", run)
+
+    with pytest.raises(studio.typer.Exit):
+        _update(studio)
+
+    err = capsys.readouterr().err
+    assert "the updated launcher returned 7 for --version" in err
+    assert "returned 8 for --version" not in err
+
+
 def test_a_restorable_launcher_is_restored_before_the_interpreter_is_asked(
     monkeypatch, studio, tmp_path
 ):

@@ -454,7 +454,7 @@ class TestStudioLocalhostIpv6Warning:
         monkeypatch.setattr(
             run_module,
             "_verify_global_reachability",
-            lambda display_host, port: calls["reachability"].append((display_host, port)),
+            lambda display_host, port, **_: calls["reachability"].append((display_host, port)),
         )
         return calls
 
@@ -558,11 +558,11 @@ class TestCompatibleWindowsRuntimeLines:
         assert compatible_windows_runtime_lines(host) == ["cuda12"]
 
     @pytest.mark.parametrize("minor", [0, 1, 2, 3])
-    def test_cuda12_runs_on_any_12_x_driver(self, minor):
-        # Regression: Windows previously gated cuda12 below a 12.4 driver, but minor-version compat runs toolkit-12.8
-        # bundles on any 12.x driver, same as Linux.
+    def test_cuda12_needs_a_12_4_driver(self, minor):
+        # Minor-version compat alone would run the toolkit-12.8 bundles on any 12.x driver, but
+        # their -compress-mode=size device code does not load before 12.4 (#12842).
         host = make_host(driver_cuda_version = (12, minor))
-        assert compatible_windows_runtime_lines(host) == ["cuda12"]
+        assert compatible_windows_runtime_lines(host) == []
 
     def test_driver_13_1(self):
         host = make_host(driver_cuda_version = (13, 1))

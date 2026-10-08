@@ -178,7 +178,7 @@ test("a quit with no window on screen raises no overlay", async () => {
   );
   assert.match(
     rust,
-    /app\.get_webview_window\("main"\)\s*\.map\(\|window\| window\.is_visible\(\)/,
+    /app\.get_window\("main"\)\s*\.map\(\|window\| window\.is_visible\(\)/,
   );
 });
 

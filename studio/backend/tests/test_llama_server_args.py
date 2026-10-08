@@ -192,7 +192,6 @@ def test_a_bare_positional_is_rejected():
         "--path",
         "--api-prefix",
         "--reuse-port",
-        "--rpc",
         # Auth / TLS
         "--api-key",
         "--api-key-file",
@@ -1404,7 +1403,6 @@ def test_every_denied_flag_with_a_twin_in_the_help_is_scrubbed():
         ("LLAMA_ARG_HF_REPO", "--hf-repo"),
         ("LLAMA_ARG_HOST", "--host"),
         ("LLAMA_ARG_PORT", "--port"),
-        ("LLAMA_ARG_RPC", "--rpc"),
         ("LLAMA_ARG_N_PARALLEL", "--parallel"),
         ("LLAMA_ARG_SSL_KEY_FILE", "--ssl-key-file"),
         ("LLAMA_ARG_SSL_CERT_FILE", "--ssl-cert-file"),
@@ -1718,3 +1716,25 @@ def test_ngram_mod_extras_are_respelled_for_a_legacy_build():
     assert translate_ngram_mod_args(["--spec-ngram-mod-n-max"], "legacy") == [
         "--spec-ngram-mod-n-max"
     ]
+
+
+def test_owner_only_path_flags_names_each_file_option_once():
+    args = [
+        "--ctx-size",
+        "4096",
+        "--lora",
+        "/a.gguf",
+        "--lora",
+        "/b.gguf",
+        "--chat_template_file",
+        "/t.jinja",
+        "-jf",
+        "/s.json",
+        "--temp",
+        "0.7",
+    ]
+    assert _lsa.owner_only_path_flags(args) == ["--lora", "--chat-template-file", "-jf"]
+    assert _lsa.owner_only_path_flags(["--ctx-size", "4096", "-ngl", "99"]) == []
+    assert _lsa.owner_only_path_flags(None) == []
+    # Owners keep every one of them: the validator itself is unchanged.
+    assert validate_extra_args(args) == args

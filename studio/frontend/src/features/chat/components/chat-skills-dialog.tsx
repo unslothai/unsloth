@@ -399,7 +399,8 @@ export function ChatSkillsDialog({
               </Button>
             </div>
 
-            <div className="hover-scrollbar min-h-0 max-h-[min(58dvh,520px)] space-y-5 overflow-y-auto pr-1 max-sm:flex-1 max-sm:max-h-none">
+            {/* -mr-7 pr-7 spans the dialog's right padding, so the scrollbar sits on its edge. */}
+            <div className="hover-scrollbar min-h-0 max-h-[min(58dvh,520px)] -mr-7 space-y-5 overflow-y-auto pr-7 max-sm:flex-1 max-sm:max-h-none">
               {error ? (
                 <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">
                   {error}
@@ -481,7 +482,7 @@ export function ChatSkillsDialog({
               </DialogDescription>
             </DialogHeader>
 
-            <div className="hover-scrollbar min-h-0 max-h-[min(62dvh,640px)] overflow-y-auto pr-1 max-sm:flex-1 max-sm:max-h-none">
+            <div className="hover-scrollbar min-h-0 max-h-[min(62dvh,640px)] -mr-7 overflow-y-auto pr-7 max-sm:flex-1 max-sm:max-h-none">
               {view.kind === "new" ? (
                 <Editor
                   formId="skill-new-form"
@@ -738,6 +739,12 @@ function SkillRow({
       />
       <div className="flex min-w-0 flex-wrap items-center gap-2">
         <span className="truncate font-medium text-ui-14">{skill.name}</span>
+        <HugeiconsIcon
+          icon={ChevronRightStandardIcon}
+          strokeWidth={2}
+          aria-hidden="true"
+          className="-ml-1 size-4 shrink-0 text-muted-foreground/50 transition-colors group-hover:text-foreground"
+        />
         {skill.shadowed ? <Badge variant="secondary">{t("skills.shadowed")}</Badge> : null}
         {skill.linked ? <Badge variant="outline">{t("skills.linked")}</Badge> : null}
         {skill.valid ? null : <Badge variant="destructive">{t("skills.invalid")}</Badge>}
@@ -759,14 +766,6 @@ function SkillRow({
       >
         {skill.valid ? skill.description : skill.error}
       </p>
-      <span className="flex h-[1lh] translate-y-[0.1em] items-center self-start justify-self-center text-ui-13">
-        <HugeiconsIcon
-          icon={ChevronRightStandardIcon}
-          strokeWidth={2}
-          aria-hidden="true"
-          className="size-4 text-muted-foreground/50 transition-colors group-hover:text-foreground"
-        />
-      </span>
     </div>
   );
 }

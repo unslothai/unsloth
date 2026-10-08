@@ -173,6 +173,14 @@ jobs:
       - name: No new code shapes that heuristic scanners quarantine
         run: python scripts/lint_av_shapes.py
 
+      - name: Risky-loader gate self-test
+        run: python scripts/lint_risky_loaders.py --self-test
+
+      # Dynamic imports, trust_remote_code turned on in code, unpinned code fetches and
+      # unsafe deserialization. Existing sites live in scripts/risky_loaders_baseline.json.
+      - name: No new risky loader call sites
+        run: python scripts/lint_risky_loaders.py
+
       - name: Python ruff check (whole repo)
         # The narrow rule set in pyproject.toml [tool.ruff.lint]
         # selects E9 / F63 / F7 / F82 -- syntax errors, broken
@@ -284,11 +292,8 @@ jobs:
         # duplicate that was already in the file is printed and ignored while one
         # this PR introduced fails. Comparing added LINES instead would miss the
         # case where the new copy is inserted ABOVE the old one, since the finding
-        # is reported at the second, unchanged definition. There are 37 pre-existing
-        # findings on main today; they are a separate cleanup, not a reason to leave
-        # the gate off. Four of those are only visible once each control-flow branch is
-        # scanned on its own: a repeated `from unsloth import is_bfloat16_supported`
-        # inside one `if __name__ == "__main__":` block in four of the saving tests.
+        # is reported at the second, unchanged definition. The whole-tree step below
+        # catches pre-existing ones.
         if: github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -329,6 +334,13 @@ jobs:
           printf 'checking %d file(s)\n' "${#CHANGED[@]}"
           python scripts/lint_duplicate_definitions.py \
             --before "$MERGE_BASE" --after "$HEAD_SHA" "${CHANGED[@]}"
+
+      - name: Duplicate definitions (whole tree)
+        # The diff-scoped step passes pre-existing findings, so the backlog regrew
+        # to 38 while it was the only gate. Runs on push too.
+        run: |
+          python scripts/lint_duplicate_definitions.py \
+            unsloth unsloth_cli studio scripts tests cli.py unsloth-cli.py
 
       - name: No silent llama-server parallel-slot downgrades
         # #7717 clamped --parallel to 1 whenever MTP resolved, costing batched

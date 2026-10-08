@@ -25,6 +25,7 @@ const {
   budgetImpliesTruncation,
   hasRenderableContent,
   incompleteLabel,
+  incompleteReasonAfterError,
   incompleteRemedy,
   isContinuableContent,
   isProviderReportedReason,
@@ -32,6 +33,7 @@ const {
   joinContinuation,
   modeAllowsContinuation,
   noteRunStartedThisSession,
+  providerCompactionContinuationFields,
   readContinuationRequest,
   readIncompleteInfo,
   readTextThoughtSignature,
@@ -477,6 +479,52 @@ test("a continuation request is read only when it carries text", () => {
   );
   assert.equal(readContinuationRequest({}), null);
   assert.equal(readContinuationRequest(undefined), null);
+});
+
+test("a continuation carries a complete provider compaction tuple", () => {
+  const fields = {
+    providerCompaction: {
+      type: "compaction",
+      content: "summary",
+      encrypted_content: "opaque",
+    },
+    providerCompactionAfterToolCalls: 0,
+    providerCompactionProviderType: "anthropic",
+    providerCompactionModelId: "claude-opus-4-7",
+    providerCompactionConnectionKey: "v1:connection-a",
+  };
+  assert.deepEqual(
+    providerCompactionContinuationFields({ custom: fields }),
+    fields,
+  );
+  assert.deepEqual(
+    readContinuationRequest({
+      custom: {
+        unslothContinuation: { partial: "half an answer", ...fields },
+      },
+    }),
+    { partial: "half an answer", ...fields },
+  );
+  assert.deepEqual(
+    readContinuationRequest({
+      custom: {
+        unslothContinuation: {
+          partial: "half an answer",
+          ...fields,
+          providerCompactionModelId: undefined,
+        },
+      },
+    }),
+    { partial: "half an answer" },
+  );
+  assert.match(
+    THREAD,
+    /\.\.\.providerCompactionContinuationFields\(metadata\)/,
+  );
+  assert.match(
+    CHAT_ADAPTER,
+    /const continuationCompaction = continuation[\s\S]*providerCompactionForTarget\([\s\S]*content: continuationCompaction/,
+  );
 });
 
 test("a turn that called a tool cannot be continued", () => {
@@ -1785,7 +1833,7 @@ test("a losing claim does not follow the row onto the next branch", () => {
   const rows = readSrc("components/assistant-ui/progressive-messages.tsx");
   assert.match(
     rows,
-    /<MessageByIndexProvider key=\{index\}/,
+    /<AuiProvider key=\{index\} value=\{gate\.row\(index\)\}>\s*<MessageByIndexProvider index=\{index\}>/,
     "rows are no longer keyed by index; this test needs rewriting",
   );
 
@@ -2943,4 +2991,34 @@ test("a merger with repair off is the identity, streaming or final", () => {
   const full = `${partial}${REASONING}`;
   assert.equal(merge(full), full);
   assert.equal(merge(full, { final: true }), full);
+});
+
+const ERROR_PATH_REASON =
+  /incompleteReasonAfterError\(\s*incompleteReason,\s*err instanceof GenerationLengthError\s*\?\s*lengthIncompleteReason\(err\.stopCause\)/;
+
+test("a length error refines the length the terminal chunk latched", () => {
+  // The terminal chunk latches length before GenerationLengthError identifies the cause.
+  assert.equal(
+    incompleteReasonAfterError("length", "context_window"),
+    "context_window",
+  );
+  assert.equal(incompleteReasonAfterError("length", "length"), "length");
+  // An explicit Stop still outranks whatever the error says.
+  assert.equal(
+    incompleteReasonAfterError("cancelled", "context_window"),
+    "cancelled",
+  );
+  // Nothing latched: the error decides, as before.
+  assert.equal(
+    incompleteReasonAfterError(null, "context_window"),
+    "context_window",
+  );
+  assert.equal(incompleteReasonAfterError(null, "interrupted"), "interrupted");
+  // A latched reason is not overridden by an unrelated error.
+  assert.equal(incompleteReasonAfterError("length", "interrupted"), "length");
+});
+
+test("the adapter's error path asks the length error which limit it was", () => {
+  // Check the wiring without initializing the adapter's stores.
+  assert.match(CHAT_ADAPTER, ERROR_PATH_REASON);
 });

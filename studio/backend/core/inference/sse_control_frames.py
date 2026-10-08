@@ -38,6 +38,7 @@ _CONTROL_TYPES = frozenset(
         "tool_output",
         "tool_args",
         "tool_status",
+        "skill_load",
         "diffusion_frame",
         "reasoning_summary",
     }
