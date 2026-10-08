@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { Copy } from "lucide-react";
-import { useDuplicateTrainingRun } from "@/features/training/hooks/use-duplicate-training-run";
 import {
   Sidebar,
   SidebarContent,
@@ -151,7 +149,7 @@ import {
 } from "@/components/ui/tooltip";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { ArrowRightIcon, ChevronDown, Moon } from "lucide-react";
+import { ArrowRightIcon, ChevronDown, Copy, Moon } from "lucide-react";
 import { ForkIcon } from "@/lib/fork-icon";
 import {
   Link,
@@ -262,6 +260,7 @@ import {
   isTrainingStartPending,
   removeTrainingUnloadGuard,
   renameTrainingRun,
+  useDuplicateTrainingRun,
   useTrainingCompletionWatch,
   useTrainingHistorySidebarItems,
   useTrainingRuntimeStore,
