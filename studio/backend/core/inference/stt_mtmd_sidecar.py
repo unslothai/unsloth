@@ -17,13 +17,14 @@ from __future__ import annotations
 import base64
 import http.client
 import json
+import secrets
 import socket
 import subprocess
 import threading
 import time
 import urllib.request
 import uuid
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator, Optional
@@ -591,6 +592,7 @@ class MtmdSttSidecar:
         self._start_lock = threading.Lock()
         self._process: Optional[subprocess.Popen] = None
         self._port: Optional[int] = None
+        self._api_key: Optional[str] = None
         self._model_id: Optional[str] = None
         self._binary_path_revision: Optional[int] = None
         self._loading = False
@@ -667,6 +669,7 @@ class MtmdSttSidecar:
         finally:
             self._process = None
             self._port = None
+            self._api_key = None
             self._model_id = None
             self._binary_path_revision = None
 
@@ -970,6 +973,19 @@ class MtmdSttSidecar:
                 raise SttLoadCancelledError(
                     "Unsloth is shutting down; not starting the MTMD server."
                 )
+            from core.inference.llama_cpp import (
+                _llama_server_api_key_enabled,
+                _write_direct_stream_key,
+            )
+
+            api_key = key_file = None
+            if _llama_server_api_key_enabled():
+                # A per-launch key, as for the chat server: a web page cannot drive this loopback server (it sends
+                # permissive CORS). llama-server reads the file once at startup, so it is removed once ready.
+                api_key = secrets.token_urlsafe(32)
+                key_file = _write_direct_stream_key(api_key)
+                # Right after the binary: --no-mmproj-offload has to stay last.
+                cmd[1:1] = ["--api-key-file", str(key_file)]
             process = subprocess.Popen(
                 cmd,
                 # nothing reads these, and an undrained pipe blocks llama-server mid-startup once its logs fill the
@@ -995,7 +1011,13 @@ class MtmdSttSidecar:
                 raise SttLoadCancelledError(
                     "Unsloth is shutting down; not starting the MTMD server."
                 )
-            if not self._wait_for_server(process, port, cancel_event):
+            try:
+                ready = self._wait_for_server(process, port, cancel_event)
+            finally:
+                if key_file is not None:
+                    with suppress(OSError):
+                        key_file.unlink()
+            if not ready:
                 # Reap it here: _process was never assigned, so unload() cannot reach a child that ignores SIGTERM and
                 # keeps port and VRAM.
                 _reap(process)
@@ -1009,6 +1031,7 @@ class MtmdSttSidecar:
             with self._lock:
                 self._process = process
                 self._port = port
+                self._api_key = api_key
                 self._model_id = model_id
                 self._binary_path_revision = path_revision
                 self._gpu_disabled = training
@@ -1076,6 +1099,7 @@ class MtmdSttSidecar:
         self.load(model_id, request_cancel_event = cancel_event)
         with self._lock:
             port = self._port
+            api_key = self._api_key
             if port is None or not self._process_alive():
                 raise SttUnavailableError("The dictation server is not running.")
             # Another client can switch models in the gap between that load returning and this lock, and the port read
@@ -1098,6 +1122,7 @@ class MtmdSttSidecar:
                 wav_bytes,
                 audio_seconds,
                 cancel_event = cancel_event,
+                **({"api_key": api_key} if api_key else {}),
                 **({"on_progress": on_progress} if on_progress is not None else {}),
             )
             if cancel_event is not None and cancel_event.is_set():
@@ -1131,6 +1156,7 @@ class MtmdSttSidecar:
         *,
         cancel_event: Optional[threading.Event] = None,
         on_progress = None,
+        api_key: Optional[str] = None,
     ) -> str:
         spec = MTMD_STT_MODELS[model_id]
         payload = {
@@ -1172,7 +1198,10 @@ class MtmdSttSidecar:
                 "POST",
                 "/v1/chat/completions",
                 body = json.dumps(payload).encode("utf-8"),
-                headers = {"Content-Type": "application/json"},
+                headers = {
+                    "Content-Type": "application/json",
+                    **({"Authorization": f"Bearer {api_key}"} if api_key else {}),
+                },
             )
             with connection.getresponse() as response:
                 if on_progress is not None and 200 <= response.status < 300:
