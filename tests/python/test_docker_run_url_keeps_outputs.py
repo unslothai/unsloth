@@ -375,6 +375,13 @@ def test_run_sh_starts_unsloth_run_in_the_mounted_host_dir(tmp_path):
             "--nproc_per_node=2",
             "/workspace/host/train.py",
         ),
+        (
+            "python",
+            "-m",
+            "torch.distributed.launch",
+            "--use-env",
+            "/workspace/host/train.py",
+        ),
         ("bash", "/workspace/host/train"),
         ("bash", "--noprofile", "/workspace/host/train"),
         ("bash", "+O", "extglob", "/workspace/host/train.sh"),

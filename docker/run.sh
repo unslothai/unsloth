@@ -499,7 +499,7 @@ if [[ $# -gt 0 ]]; then
                         continue
                     fi
                     case "$_arg_case" in
-                        -m | -q | --bind_cores_to_rank | --cpu | --debug | --downcast_bf16 | --dynamo_use_dynamic | --dynamo_use_fullgraph | --dynamo_use_regional_compilation | --enable_cpu_affinity | --elastic_training | --force_multi | --fp8_use_autocast_during_eval | --module | --multi_gpu | --no_local_rank | --no_python | --no_ssh | --no_ssh_check | --no_tpu_cluster | --quiet | --run_path | --same_network | --save_pid | --standalone | --tpu | --tpu_cluster | --tpu_use_sudo | --use_cpu | --use_deepspeed | --use_fsdp | --use_megatron_lm | --use_mps_device | --use_parallelism_config | --use_tp | --use_xpu | --virtual_local_rank)
+                        -m | -q | --bind_cores_to_rank | --cpu | --debug | --downcast_bf16 | --dynamo_use_dynamic | --dynamo_use_fullgraph | --dynamo_use_regional_compilation | --enable_cpu_affinity | --elastic_training | --force_multi | --fp8_use_autocast_during_eval | --module | --multi_gpu | --no_local_rank | --no_python | --no_ssh | --no_ssh_check | --no_tpu_cluster | --quiet | --run_path | --same_network | --save_pid | --standalone | --tpu | --tpu_cluster | --tpu_use_sudo | --use_cpu | --use_deepspeed | --use_env | --use_fsdp | --use_megatron_lm | --use_mps_device | --use_parallelism_config | --use_tp | --use_xpu | --virtual_local_rank)
                             _prev=""
                             continue
                             ;;
