@@ -23998,7 +23998,6 @@ class LlamaCppBackend:
             )
 
             def _auto_dflash_blocked_by_tensor() -> bool:
-                # Only when the discovered sidecar is what launches: not with an extras drafter or an embedded head.
                 if (
                     _auto_tensor_split
                     and mtp_draft_path
