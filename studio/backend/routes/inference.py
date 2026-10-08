@@ -8846,6 +8846,15 @@ def _as_local_scan_folder_request(request):
     if is_ollama_manifest_ref(str(load_path)):
         # An Ollama tag reached by id: the manifest rewriter's lease handling owns it.
         return request
+    # The index also covers the active hub cache, which the remote path already reuses
+    # without downloading; rewriting that hit would only trade the repo id for a path.
+    try:
+        from hub.utils.paths import path_is_same_or_child
+        from routes.models import _resolve_hf_cache_dir
+        if path_is_same_or_child(Path(load_path), Path(_resolve_hf_cache_dir())):
+            return request
+    except Exception:
+        return request
     logger.info(
         "Resolved repo id '%s' to local path %s instead of downloading",
         identifier,
