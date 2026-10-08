@@ -2755,7 +2755,8 @@ class UnslothTrainer:
             has_separate_eval_source = False
             # Not `eval_steps > 0`: inf and NaN pass that and codec-encode a split later discarded.
             eval_enabled = evaluation_enabled(eval_steps)
-            raw_text_mode = is_cpt or format_type == "raw"
+            # RL rows are built from column roles, whatever format the SFT settings name.
+            raw_text_mode = objective == "sft" and (is_cpt or format_type == "raw")
             dataset_loaded_from_cache = False
 
             def _load_selected_cached_dataset(
