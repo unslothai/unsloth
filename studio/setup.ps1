@@ -186,6 +186,7 @@ $script:CudaToolkitReady = $false
 $script:NvccPath = $null
 $script:CudaToolkitRoot = $null
 $script:CudaArch = $null
+$script:DriverMaxCuda = $null
 
 function Exit-SetupFailure {
     param(
@@ -1361,6 +1362,18 @@ function Write-CudaDriverToolkitMismatch {
     substep "CUDA Toolkit $ToolkitVersion is a major-version mismatch: toolkit major $toolkitMajor exceeds driver CUDA major $driverMajor ($DriverMaxCuda)." $Color
     substep "Update the NVIDIA GPU driver to run CUDA Toolkit $ToolkitVersion, or install a CUDA $driverMajor.x toolkit." $Color
     substep "Or let Unsloth use the prebuilt CUDA bundle; it does not need the local toolkit." $Color
+}
+
+# ggml passes nvcc -compress-mode=size for toolkit >= 12.8, and nvcc documents that mode as
+# "not compatible with drivers released before CUDA Toolkit's 12.4 Release": such a driver
+# rejects every kernel with "device kernel image is invalid" (#12842). True only for a known
+# driver below 12.4; an unknown driver keeps ggml's default.
+function Test-CudaDriverNeedsUncompressedFatbin {
+    param([string]$DriverMaxCuda)
+    if ($DriverMaxCuda -notmatch '^(\d+)\.(\d+)$') { return $false }
+    $major = [int]$Matches[1]
+    $minor = [int]$Matches[2]
+    return (($major -lt 12) -or (($major -eq 12) -and ($minor -lt 4)))
 }
 
 function Get-CudaComputeCapability {
@@ -5373,6 +5386,7 @@ if (-not $CudaArch) {
 $script:NvccPath = $NvccPath
 $script:CudaToolkitRoot = $CudaToolkitRoot
 $script:CudaArch = $CudaArch
+$script:DriverMaxCuda = $DriverMaxCuda
 $script:CudaToolkitReady = $true
 }
 
@@ -10777,6 +10791,10 @@ if ($LocalLlamaCppLinked) {
                 $CmakeArgs += '-DGGML_CUDA=OFF'
             } else {
                 $CmakeArgs += '-DGGML_CUDA=ON'
+                if (Test-CudaDriverNeedsUncompressedFatbin -DriverMaxCuda $script:DriverMaxCuda) {
+                    $CmakeArgs += '-DGGML_CUDA_COMPRESSION_MODE=none'
+                    substep "driver CUDA $script:DriverMaxCuda predates 12.4; building uncompressed CUDA kernels it can load." "Yellow"
+                }
                 # Accept a host MSVC newer than nvcc's whitelist, which would otherwise abort.
                 $nvccAllowFlag = '-allow-unsupported-compiler'
                 if ([string]::IsNullOrEmpty($env:NVCC_PREPEND_FLAGS)) {
