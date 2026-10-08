@@ -9,7 +9,9 @@ import { createPastedTextFile } from "../src/features/chat/utils/pasted-text.ts"
 import {
   canQueueTextAttachment,
   completeTextAttachment,
+  prepareQueuedPromptFiles,
   snapshotQueuedTextAttachments,
+  snapshotQueuedTextPrompt,
   normalizeQueuedPrompt,
   queuedPromptHasContent,
   queuedPromptMessage,
@@ -70,6 +72,32 @@ test("queueing uses decoded bytes without another asynchronous file read", async
   assert.deepEqual(snapshot[0].content, [
     { type: "text", text: "<attachment name=windows.txt>\nHi\n</attachment>" },
   ]);
+});
+
+test("queued files survive until dispatch preparation without leaking into the message", async () => {
+  const file = new File(["a,b"], "data.csv", { type: "text/csv" });
+  const item = snapshotQueuedTextPrompt("analyze", [await ready(file)])!;
+  assert.equal(item.attachmentFiles?.[0], file);
+  const prepared = await prepareQueuedPromptFiles(
+    item,
+    async (_source, attachment) => ({
+      ...attachment,
+      original: { sha256: "ab".repeat(32), sizeBytes: file.size },
+    }) as never,
+  );
+  assert.equal(prepared.attachmentFiles, undefined);
+  assert.deepEqual(
+    (prepared.attachments?.[0] as { original?: unknown }).original,
+    { sha256: "ab".repeat(32), sizeBytes: file.size },
+  );
+  assert.equal("attachmentFiles" in queuedPromptMessage(prepared), false);
+  await assert.rejects(
+    prepareQueuedPromptFiles(
+      { prompt: "analyze", attachmentFiles: [file] },
+      async (_source, attachment) => attachment,
+    ),
+    /Queued attachment snapshot is inconsistent/,
+  );
 });
 
 test("attachment-only messages, including an empty file, survive queue filtering", async () => {

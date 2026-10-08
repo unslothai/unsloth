@@ -14,7 +14,37 @@ import { annotationsContentText, annotationsOfFile } from "./document-annotation
 export type QueuedPrompt = {
   prompt: string;
   attachments?: CompleteAttachment[];
+  attachmentFiles?: File[];
 };
+
+export async function prepareQueuedPromptFiles(
+  item: QueuedPrompt,
+  prepare: (
+    file: File,
+    attachment: CompleteAttachment,
+  ) => Promise<CompleteAttachment>,
+): Promise<QueuedPrompt> {
+  const { attachments, attachmentFiles } = item;
+  if (attachmentFiles === undefined || attachmentFiles.length === 0) {
+    return item;
+  }
+  if (!attachments || attachments.length !== attachmentFiles.length) {
+    throw new Error("Queued attachment snapshot is inconsistent");
+  }
+  return {
+    ...item,
+    attachments: await Promise.all(
+      attachments.map((attachment, index) => {
+        const file = attachmentFiles[index];
+        if (!file) {
+          throw new Error("Queued attachment snapshot is inconsistent");
+        }
+        return prepare(file, attachment);
+      }),
+    ),
+    attachmentFiles: undefined,
+  };
+}
 
 /** keeps normal sends and queues aligned on filenames, encoding, and paste markers. */
 export function completeTextAttachment(
@@ -65,6 +95,26 @@ export function snapshotQueuedTextAttachments(
       cachedTextAttachment(attachment.file!)!,
     ),
   );
+}
+
+export function snapshotQueuedTextPrompt(
+  prompt: string,
+  attachments: readonly Attachment[],
+): QueuedPrompt | null {
+  const completed = snapshotQueuedTextAttachments(attachments);
+  if (!completed) {
+    return null;
+  }
+  return {
+    prompt,
+    attachments: completed,
+    attachmentFiles: attachments.map((attachment) => {
+      if (!attachment.file) {
+        throw new Error("Queued attachment snapshot is inconsistent");
+      }
+      return attachment.file;
+    }),
+  };
 }
 
 export function normalizeQueuedPrompt(

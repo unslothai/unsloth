@@ -3,12 +3,14 @@
 
 import {
   canQueueTextAttachment,
-  snapshotQueuedTextAttachments,
   normalizeQueuedPrompt,
+  prepareQueuedPromptFiles,
   queuedPromptHasContent,
   queuedPromptMessage,
+  snapshotQueuedTextPrompt,
   type QueuedPrompt,
 } from "@/features/chat/utils/queued-text-attachments";
+import { getAuthSessionEpoch } from "@/features/auth";
 
 import {
   ComposerAttachments,
@@ -102,6 +104,8 @@ import {
   useInComparePane,
   refreshSkillsCatalog,
   stopRecoveredRun,
+  pythonToolRunsInStudio,
+  withAttachmentOriginal,
 } from "@/features/chat";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import {
@@ -260,6 +264,7 @@ import {
   useChatProjectScope,
   shouldAbortPendingQueueForModelBoundary,
   shouldAbortPendingQueueForSettingsChange,
+  resolveDeferredQueuedModelSettings,
   snapshotQueuedChatRunSettings,
   composerDraftKey,
   composerPasteDraftKey,
@@ -4000,19 +4005,17 @@ const Composer: FC<{
     const usesKnowledgeBaseAtQueueStart =
       chatStateAtQueueStart.ragEnabled &&
       chatStateAtQueueStart.ragSource.type === "kb";
+    const deferModelResolution =
+      chatStateAtQueueStart.modelLoading &&
+      parseExternalModelId(
+        chatStateAtQueueStart.loadingModelPick &&
+        !chatStateAtQueueStart.loadingModelPick.selectionSuperseded
+          ? chatStateAtQueueStart.loadingModelPick.id
+          : chatStateAtQueueStart.params.checkpoint,
+      ) === null;
     const runSettingsAtQueueStart = snapshotQueuedChatRunSettings(
       chatStateAtQueueStart,
-      {
-        // Resolve the incoming model at dispatch; retain the prompt's settings.
-        deferModelResolution:
-          chatStateAtQueueStart.modelLoading &&
-          parseExternalModelId(
-            chatStateAtQueueStart.loadingModelPick &&
-            !chatStateAtQueueStart.loadingModelPick.selectionSuperseded
-              ? chatStateAtQueueStart.loadingModelPick.id
-              : chatStateAtQueueStart.params.checkpoint,
-          ) === null,
-      },
+      { deferModelResolution },
     );
     const getThreadListItemState = () => {
       const runtime =
@@ -4194,8 +4197,39 @@ const Composer: FC<{
           }
           // refresh aliases after initialization replaces a local id so stop dialogs deduplicate it
           syncPromptQueueUI();
+          const resolvedRunSettings = deferModelResolution
+            ? resolveDeferredQueuedModelSettings(
+                runSettingsAtQueueStart,
+                useChatRuntimeStore.getState(),
+              )
+            : runSettingsAtQueueStart;
+          const keepQueuedFilesForPython = pythonToolRunsInStudio(
+            resolvedRunSettings,
+          );
+          const authSessionEpoch = getAuthSessionEpoch();
+          const readyPrompt = await prepareQueuedPromptFiles(
+            prompt,
+            (file, attachment) =>
+              withAttachmentOriginal(
+                { file },
+                attachment,
+                incognitoAtQueueStart,
+                authSessionEpoch,
+                keepQueuedFilesForPython,
+              ),
+          );
+          prompt.attachments = readyPrompt.attachments;
+          prompt.attachmentFiles = readyPrompt.attachmentFiles;
+          if (
+            removeFreshThreadPersistedAfterAbort() ||
+            cancelled ||
+            epoch !== appendEpoch ||
+            !pendingSettingsIds.has(settingsId)
+          ) {
+            return;
+          }
           const appendResult = thread.append(
-            queuedPromptMessage(prompt),
+            queuedPromptMessage(readyPrompt),
           ) as unknown;
           freshThreadAppendAccepted = true;
           // thread.append accepts synchronously; later provider failures must not dispatch a duplicate
@@ -4395,12 +4429,12 @@ const Composer: FC<{
       const attachments = composer.getState().attachments;
       // keep validated decoded file payloads separate from the editable prompt
       if (!attachments.every((attachment) => isPastedTextFile(attachment.file))) {
-        const prepared = snapshotQueuedTextAttachments(attachments);
-        if (!prepared) return false;
         const text = composer.getState().text;
+        const prepared = snapshotQueuedTextPrompt(text, attachments);
+        if (!prepared) return false;
         const ids = attachments.map((attachment) => attachment.id);
         startHydratedPromptQueue(
-          [{ prompt: text, attachments: prepared }],
+          [prepared],
           waitForCurrentRun,
           () => {
             const state = composer.getState();

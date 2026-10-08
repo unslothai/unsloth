@@ -964,8 +964,9 @@ class OpenDocumentAttachmentAdapter implements AttachmentAdapter {
 const MAX_TOOL_ONLY_ATTACHMENT_BYTES = 200 * 1024 * 1024;
 
 /** Whether this turn's python tool runs in Studio's sandbox; chat-adapter.ts decides it the same way. */
-function pythonToolRunsInStudio(): boolean {
-  const state = useChatRuntimeStore.getState();
+export function pythonToolRunsInStudio(
+  state: Parameters<typeof codeToolsOn>[0] = useChatRuntimeStore.getState(),
+): boolean {
   // The effective Code state, as the send path computes it: Full access turns it on locally.
   const codeToolsEnabled = codeToolsOn(state);
   const external = parseExternalModelId(state.params.checkpoint);
