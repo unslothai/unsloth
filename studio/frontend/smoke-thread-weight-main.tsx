@@ -112,7 +112,46 @@ function userMarkdown(index: number): string {
  * `"all"` makes every reply plain; omitting it keeps the default fenced body everywhere, so
  * the existing weight measurements are untouched.
  */
-type SeedOptions = { plainAssistants?: readonly number[] | "all" };
+type SeedOptions = {
+  plainAssistants?: readonly number[] | "all";
+  /**
+   * Agent-shaped replies instead of the fenced body: `rounds` repetitions of reasoning, one
+   * tool call with its result, and a short answer, which is how a tool loop is stored (#12552).
+   * `compactionEvery` stamps a context truncation on every Nth reply, as Rolling Context does.
+   */
+  agent?: { rounds: number; compactionEvery?: number };
+};
+
+const AGENT_TOOLS = ["web_search", "terminal", "python"] as const;
+
+function agentContent(index: number, rounds: number) {
+  const parts: Exclude<ThreadMessageLike["content"], string>[number][] = [];
+  for (let round = 0; round < rounds; round++) {
+    const tag = `${index}_${round}`;
+    const toolName = AGENT_TOOLS[(index + round) % AGENT_TOOLS.length];
+    const args =
+      toolName === "web_search"
+        ? { query: `step ${tag} reference for the scheduler buffer` }
+        : { code: `print("step ${tag}")` };
+    parts.push({
+      type: "reasoning" as const,
+      text: `Round ${tag}. ${PROSE} ${CLOSING}`,
+    });
+    parts.push({
+      type: "tool-call" as const,
+      toolCallId: `call_${tag}`,
+      toolName,
+      args,
+      argsText: JSON.stringify(args),
+      result: `Result ${tag}. ${PROSE}\n${PROSE}\n${CLOSING}`,
+    });
+    parts.push({
+      type: "text" as const,
+      text: `Answer ${tag}. ${PROSE}\n\n- first item ${tag}\n- second item ${tag}`,
+    });
+  }
+  return parts;
+}
 
 function isPlain(assistantOrdinal: number, options: SeedOptions | undefined): boolean {
   const plain = options?.plainAssistants;
@@ -126,24 +165,48 @@ function buildMessages(
   count: number,
   options?: SeedOptions,
 ): ThreadMessageLike[] {
-  return Array.from({ length: count }, (_, index) =>
-    index % 2 === 0
-      ? {
-          role: "user" as const,
-          content: [{ type: "text" as const, text: userMarkdown(index) }],
-        }
-      : {
-          role: "assistant" as const,
-          content: [
-            {
-              type: "text" as const,
-              text: isPlain((index - 1) / 2, options)
-                ? plainAssistantMarkdown(index)
-                : assistantMarkdown(index),
-            },
-          ],
+  const agent = options?.agent;
+  return Array.from({ length: count }, (_, index): ThreadMessageLike => {
+    if (index % 2 === 0) {
+      return {
+        role: "user" as const,
+        content: [{ type: "text" as const, text: userMarkdown(index) }],
+      };
+    }
+    if (agent) {
+      const ordinal = (index - 1) / 2;
+      const every = agent.compactionEvery ?? 0;
+      const compacted = every > 0 && ordinal > 0 && ordinal % every === 0;
+      return {
+        role: "assistant" as const,
+        content: agentContent(index, agent.rounds),
+        ...(compacted
+          ? {
+              metadata: {
+                custom: {
+                  contextTruncation: {
+                    dropped_messages: index - 4,
+                    boundary_messages: index - 4,
+                    fits: true,
+                  },
+                },
+              },
+            }
+          : {}),
+      };
+    }
+    return {
+      role: "assistant" as const,
+      content: [
+        {
+          type: "text" as const,
+          text: isPlain((index - 1) / 2, options)
+            ? plainAssistantMarkdown(index)
+            : assistantMarkdown(index),
         },
-  );
+      ],
+    };
+  });
 }
 
 // A run would need a backend. Seeding goes through `thread.import`, which does not use this.
