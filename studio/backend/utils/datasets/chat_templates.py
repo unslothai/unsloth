@@ -297,6 +297,18 @@ def get_dataset_info_summary(dataset_info):
     }
 
 
+def _with_system_turn(convo, system):
+    if (
+        isinstance(system, str)
+        and system.strip()
+        and convo
+        and isinstance(convo[0], dict)
+        and convo[0].get("role") != "system"
+    ):
+        return [{"role": "system", "content": system}, *convo]
+    return convo
+
+
 def apply_chat_template_to_dataset(
     dataset_info,
     tokenizer,
@@ -516,12 +528,20 @@ def apply_chat_template_to_dataset(
 
         def _format_chatml(examples):
             convos = examples[chat_column]
+            systems = examples.get("system") or [None] * len(convos)
             texts = []
             row_errors = []
 
-            for convo in convos:
+            for convo, system in zip(convos, systems):
                 try:
-                    text = _render_conversation(tokenizer, convo)
+                    with_system = _with_system_turn(convo, system)
+                    try:
+                        text = _render_conversation(tokenizer, with_system)
+                    except Exception:
+                        # A template without a system role still trains the conversation.
+                        if with_system is convo:
+                            raise
+                        text = _render_conversation(tokenizer, convo)
 
                     if remove_bos_prefix:
                         text = text.removeprefix('<bos>')

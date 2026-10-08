@@ -49,6 +49,12 @@ def _isolated(monkeypatch):
     monkeypatch.setattr(att, "_active_attention_backend", lambda: "native")
     monkeypatch.setattr(att, "warn_if_sdpa_math_only", lambda *a, **k: False)
     monkeypatch.setattr(att, "_indexed_cuda_device", lambda device: device)
+    monkeypatch.setattr(att, "_install_sage_dispatch_guard", lambda: True)
+    monkeypatch.setattr(att, "_sage_version_too_old", lambda: None)
+    # The pip SageAttention 2 path; the hub path is in test_diffusion_attention_install.py.
+    monkeypatch.setattr(att, "_pip_sage2_installed", lambda: True, raising = False)
+    monkeypatch.setattr(att, "_install_fa4_dispatch_guard", lambda: True)
+    monkeypatch.setattr(att, "_fa4_kernel_runs", lambda *a, **k: True)
 
 
 def _stub_probe(
@@ -56,7 +62,11 @@ def _stub_probe(
     result,
     seen = None,
 ):
-    def _probe(device, dtype):
+    def _probe(
+        device,
+        dtype,
+        head_dim = 128,
+    ):
         if seen is not None:
             seen.append((device, dtype))
         if isinstance(result, BaseException):
@@ -89,12 +99,9 @@ def test_sage_stays_engaged_where_its_kernel_runs(monkeypatch):
     assert t.calls == ["sage"]
 
 
-@pytest.mark.parametrize(
-    "exc", [ImportError("no sageattention"), RuntimeError("CUDA out of memory")]
-)
-def test_an_unanswerable_probe_keeps_the_request(monkeypatch, exc):
+def test_an_unanswerable_probe_keeps_the_request(monkeypatch):
     seen: list = []
-    _stub_probe(monkeypatch, exc, seen)
+    _stub_probe(monkeypatch, RuntimeError("CUDA out of memory"), seen)
     t = _Transformer()
     assert (
         apply_attention_backend(types.SimpleNamespace(transformer = t), "sage", target = _target())
@@ -172,7 +179,7 @@ def test_bare_cuda_is_keyed_by_the_card_pinned_on_this_thread(monkeypatch):
     monkeypatch.setattr(
         att,
         "_run_sage_probe",
-        lambda d, dt: seen.append(d) or ("" if d == "cuda:1" else _UNSUPPORTED),
+        lambda d, dt, hd = 128: seen.append(d) or ("" if d == "cuda:1" else _UNSUPPORTED),
     )
     bare = types.SimpleNamespace(device = "cuda", dtype = "bf16")
     assert att._sage_kernel_runs(bare) is False

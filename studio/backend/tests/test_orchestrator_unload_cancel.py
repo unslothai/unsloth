@@ -3540,7 +3540,7 @@ def test_a_llama_server_spawned_as_shutdown_began_is_reaped():
     )
     body = textwrap.dedent(ast.get_source_segment(src, fn) or "")
 
-    publish = body.index("self._record_server_pid(")
+    publish = body.index("self._note_server_pid(")
     recheck = body.index("_spawn_is_stale", publish)
     kill = body.index("self._kill_process()", publish)
     assert publish < recheck < kill, (
@@ -3631,7 +3631,7 @@ def test_the_primary_llama_launch_rechecks_after_recording_the_pid():
     record = [
         n.lineno
         for n in ast.walk(fn)
-        if isinstance(n, ast.Call) and getattr(n.func, "attr", None) == "_record_server_pid"
+        if isinstance(n, ast.Call) and getattr(n.func, "attr", None) == "_note_server_pid"
     ]
     stale = [
         n.lineno
@@ -3869,6 +3869,7 @@ def test_every_long_lived_spawner_consults_the_shutdown_latch():
     guarded = {
         "core/export/orchestrator.py",
         "core/inference/audio_cpp_server.py",
+        "core/inference/diffusion_vae_prebuild.py",
         "core/inference/engine_install.py",
         "core/inference/lemonade_server.py",
         "core/inference/llama_cpp.py",
@@ -3881,6 +3882,7 @@ def test_every_long_lived_spawner_consults_the_shutdown_latch():
         "core/inference/stt_mtmd_sidecar.py",
         "core/inference/stt_transformers_worker.py",
         "core/rag/embed_llama_server.py",
+        "core/systemone/native_worker.py",
         "core/training/training.py",
     }
     # Adopters this change deliberately leaves ungated, listed so the completeness check

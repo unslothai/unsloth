@@ -13,7 +13,7 @@
 from unsloth_zoo.utils import Version
 from importlib.metadata import version as importlib_version
 from unsloth_zoo.hf_utils import dtype_from_config, HAS_TORCH_DTYPE
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from unsloth_zoo.llama_cpp import (
     convert_to_gguf,
     quantize_gguf,
@@ -60,7 +60,6 @@ import subprocess
 import traceback
 import psutil
 import re
-from transformers.models.llama.modeling_llama import logger
 from .models.loader_utils import (
     get_model_name,
     _resolve_hub_repo_cached_file,
@@ -68,9 +67,10 @@ from .models.loader_utils import (
     _tokenizer_revision,
     _tokenizer_wants_local_only,
 )
-from .models._utils import _convert_torchao_model
+from .models._utils import _convert_torchao_model, lora_relative_to_original_base
 from .models.mistral_format import raise_if_merging_mistral_format_view
 from .ollama_template_mappers import OLLAMA_TEMPLATES, MODEL_TO_OLLAMA_TEMPLATE_MAPPER
+from .device_type import clean_gpu_cache
 from transformers import ProcessorMixin, PreTrainedTokenizerBase
 from huggingface_hub import HfApi
 
@@ -994,7 +994,7 @@ def unsloth_save_model(
     assert maximum_memory_usage > 0 and maximum_memory_usage <= 0.95
 
     for _ in range(3):
-        torch.cuda.empty_cache()
+        clean_gpu_cache()
         gc.collect()
 
     save_method = save_method.lower().replace(" ", "_")
@@ -1002,7 +1002,7 @@ def unsloth_save_model(
     if save_method != "lora" and save_method != "merged_16bit" and save_method != "merged_4bit":
         raise RuntimeError(
             "Unsloth: You must select one of 3 options when saving models:\n"
-            '"lora"         ==> This is the fastest and easiet. Just saves LoRA modules.\n'
+            '"lora"         ==> This is the fastest and easiest. Just saves LoRA modules.\n'
             '"merged_16bit" ==> This merges LoRA weights and saves to float16. Needed for llama.cpp / GGUF.\n'
             '"merged_4bit"  ==> This merges LoRA weights and saves to 4bit. Useful for DPO / inference.'
         )
@@ -1479,17 +1479,17 @@ def unsloth_save_model(
     for j, (key, value) in enumerate(state_dict.items()):
         state_dict[key] = None
         if j % 10 == 0:
-            torch.cuda.empty_cache()
+            clean_gpu_cache()
             gc.collect()
     state_dict = None
     del state_dict
-    torch.cuda.empty_cache()
+    clean_gpu_cache()
     gc.collect()
 
     shutil.rmtree(temporary_location, ignore_errors = True)
 
     for _ in range(3):
-        torch.cuda.empty_cache()
+        clean_gpu_cache()
         gc.collect()
     return save_directory, username
 
@@ -2346,8 +2346,8 @@ def unsloth_save_pretrained_merged(
     converted to float16 with as few overhead as possible.
 
     Choose for `save_method` to be either:
-    1. `16bit`: Merge LoRA into float16 weights. Useful for GGUF / llama.cpp.
-    2.  `4bit`: Merge LoRA into int4 weights. Useful for DPO / HF inference.
+    1. `merged_16bit`: Merge LoRA into float16 weights. Useful for GGUF / llama.cpp.
+    2.  `merged_4bit`: Merge LoRA into int4 weights. Useful for DPO / HF inference.
     3.  `lora`: Save the LoRA adapter itself, with no merging: `adapter_config.json`
         plus `adapter_model.safetensors`, and no base-model weights at all (the adapter
         is written as `adapter_model.bin` instead when `safe_serialization = False`).
@@ -2485,8 +2485,8 @@ def unsloth_push_to_hub_merged(
     converted to float16 with as few overhead as possible.
 
     Choose for `save_method` to be either:
-    1. `16bit`: Merge LoRA into float16 weights. Useful for GGUF / llama.cpp.
-    2.  `4bit`: Merge LoRA into int4 weights. Useful for DPO / HF inference.
+    1. `merged_16bit`: Merge LoRA into float16 weights. Useful for GGUF / llama.cpp.
+    2.  `merged_4bit`: Merge LoRA into int4 weights. Useful for DPO / HF inference.
     3.  `lora`: Save the LoRA adapter itself, with no merging: `adapter_config.json`
         plus `adapter_model.safetensors`, and no base-model weights at all (the adapter
         is written as `adapter_model.bin` instead when `safe_serialization = False`).
@@ -4128,8 +4128,7 @@ def unsloth_save_pretrained_gguf(
     for _ in range(3):
         import gc
         gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        clean_gpu_cache()
 
     try:
         model_dtype = dtype_from_config(self.config)
@@ -5155,16 +5154,8 @@ def unsloth_convert_lora_to_ggml_and_save_locally(
     return _unsloth_save_lora_gguf(self, tokenizer, save_directory, outtype = outtype)
 
 
-from .models.loader_utils import (
-    get_model_name,
-    _resolve_hub_repo_cached_file,
-    _tokenizer_cache_dir,
-    _tokenizer_wants_local_only,
-)
-
 # Imported lazily at the two call sites: an older zoo, before its bitsandbytes import became optional, would otherwise break `import unsloth` on a host without bnb.
 from unsloth_zoo.llama_cpp import (
-    install_llama_cpp,
     convert_to_gguf as _convert_to_gguf,
 )
 
@@ -5711,19 +5702,22 @@ def unsloth_generic_save(
         _prewarm_base_model_hub_cache(model, save_method = save_method, token = token)
         from unsloth_zoo.saving_utils import merge_and_overwrite_lora
 
-        merge_and_overwrite_lora(
-            get_model_name,
-            model = model,
-            tokenizer = tokenizer,
-            save_directory = save_directory,
-            push_to_hub = push_to_hub,
-            private = private,
-            token = token,
-            save_method = save_method,
-            output_dtype = None,
-            low_disk_space_usage = True,
-            use_temp_file = False,
-        )
+        # merged_4bit merges into the loaded (already residual) weights, so it needs no conversion.
+        in_place = save_method in ("merged_4bit", "forced_merged_4bit")
+        with nullcontext() if in_place else lora_relative_to_original_base(model):
+            merge_and_overwrite_lora(
+                get_model_name,
+                model = model,
+                tokenizer = tokenizer,
+                save_directory = save_directory,
+                push_to_hub = push_to_hub,
+                private = private,
+                token = token,
+                save_method = save_method,
+                output_dtype = None,
+                low_disk_space_usage = True,
+                use_temp_file = False,
+            )
 
     if push_to_hub and datasets:
         try:
@@ -5766,8 +5760,8 @@ def unsloth_generic_save_pretrained_merged(
     converted to float16 with as few overhead as possible.
 
     Choose for `save_method` to be either:
-    1. `16bit`: Merge LoRA into float16 weights. Useful for GGUF / llama.cpp.
-    2.  `4bit`: Merge LoRA into int4 weights. Useful for DPO / HF inference.
+    1. `merged_16bit`: Merge LoRA into float16 weights. Useful for GGUF / llama.cpp.
+    2.  `merged_4bit`: Merge LoRA into int4 weights. Useful for DPO / HF inference.
     3.  `lora`: Save the LoRA adapter itself, with no merging: `adapter_config.json`
         plus `adapter_model.safetensors`, and no base-model weights at all (the adapter
         is written as `adapter_model.bin` instead when `safe_serialization = False`).
@@ -5905,8 +5899,8 @@ def unsloth_generic_push_to_hub_merged(
     converted to float16 with as few overhead as possible.
 
     Choose for `save_method` to be either:
-    1. `16bit`: Merge LoRA into float16 weights. Useful for GGUF / llama.cpp.
-    2.  `4bit`: Merge LoRA into int4 weights. Useful for DPO / HF inference.
+    1. `merged_16bit`: Merge LoRA into float16 weights. Useful for GGUF / llama.cpp.
+    2.  `merged_4bit`: Merge LoRA into int4 weights. Useful for DPO / HF inference.
     3.  `lora`: Save the LoRA adapter itself, with no merging: `adapter_config.json`
         plus `adapter_model.safetensors`, and no base-model weights at all (the adapter
         is written as `adapter_model.bin` instead when `safe_serialization = False`).
@@ -6104,10 +6098,7 @@ def _unsloth_save_torchao_with_given_config(
     model_restore = _offload_model_for_quantize_subprocess(model)
     for _ in range(3):
         gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        if hasattr(torch, "xpu") and torch.xpu.is_available():
-            torch.xpu.empty_cache()
+        clean_gpu_cache()
 
     # The original stays offloaded until the quantized copy is saved AND released, else both are resident at once and the restore OOMs.
     try:
@@ -6145,10 +6136,7 @@ def _unsloth_save_torchao_with_given_config(
             traceback.clear_frames(_exc.__traceback__)
         for _ in range(3):
             gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            if hasattr(torch, "xpu") and torch.xpu.is_available():
-                torch.xpu.empty_cache()
+            clean_gpu_cache()
         _restore_model_after_quantize_subprocess(model, model_restore)
 
     if os.path.exists(save_directory):
@@ -6640,8 +6628,7 @@ def _unsloth_save_compressed_tensors(
         model_restore = _offload_model_for_quantize_subprocess(model)
         for _ in range(3):
             gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            clean_gpu_cache()
 
         # Same boundary as the LoRA GGUF converter: False scrubs, it does not merely withhold.
         env = os.environ.copy()
@@ -6707,8 +6694,7 @@ def _unsloth_save_compressed_tensors(
             shutil.rmtree(work_tmp, ignore_errors = True)
         for _ in range(3):
             gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            clean_gpu_cache()
 
 
 def _unsloth_save_torchao(
@@ -6827,14 +6813,10 @@ def _unsloth_save_torchao(
         auto_processor = AutoProcessor if is_vlm else AutoTokenizer
 
         # Free the in-memory model's accelerator memory before reloading from disk, else it sits beside the copy and OOMs a device that fit the model once. Covers CUDA, XPU and multi-GPU dispatched shards, which a plain .to("cpu") cannot move.
-        _has_xpu = hasattr(torch, "xpu") and torch.xpu.is_available()
         model_restore = _offload_model_for_quantize_subprocess(model)
         for _ in range(3):
             gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            if _has_xpu:
-                torch.xpu.empty_cache()
+            clean_gpu_cache()
 
         # Reload the staged 16bit checkpoint with torchao applied: bfloat16 is required, and device_map="auto" falls back to CPU, so this works on any hardware.
         print(f"Unsloth: Quantizing the merged model to torchao {kind}...")
@@ -6853,8 +6835,7 @@ def _unsloth_save_torchao(
         del quantized_model
         for _ in range(3):
             gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            clean_gpu_cache()
 
         cfg_path = os.path.join(out_dir, "config.json")
         cfg = {}
@@ -6904,17 +6885,13 @@ def _unsloth_save_torchao(
             traceback.clear_frames(_exc.__traceback__)
         for _ in range(3):
             gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            if hasattr(torch, "xpu") and torch.xpu.is_available():
-                torch.xpu.empty_cache()
+            clean_gpu_cache()
         _restore_model_after_quantize_subprocess(model, model_restore)
         if work_tmp is not None:
             shutil.rmtree(work_tmp, ignore_errors = True)
         for _ in range(3):
             gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            clean_gpu_cache()
 
 
 def unsloth_save_pretrained_torchao(
