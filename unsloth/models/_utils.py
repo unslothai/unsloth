@@ -5252,8 +5252,7 @@ def _shadow_accepts_loss_kwargs(model, value):
             continue
         if "accepts_loss_kwargs" in d and not _is_guess(d):
             continue
-        # Through __dict__: torch.compile's OptimizedModule forwards setattr to the inner module,
-        # which would part the value from its marker.
+        # Via __dict__: OptimizedModule forwards setattr to _orig_mod, parting the value from its marker.
         try:
             d["accepts_loss_kwargs"] = value
             d[_GUESSED_LOSS_KWARGS] = value
