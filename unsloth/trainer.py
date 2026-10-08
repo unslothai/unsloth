@@ -746,7 +746,6 @@ def _create_unsloth_optimizer(
 
     if loraplus_lr_ratio is not None:
         if not lora_plus_names:
-            # Also catches FSDP1, whose flattened names hide lora_B like they hide the embeddings.
             raise ValueError(
                 "Unsloth: loraplus_lr_ratio was set but no trainable LoRA B parameter was found, "
                 "so LoRA+ would do nothing. Add LoRA adapters with get_peft_model, train "
