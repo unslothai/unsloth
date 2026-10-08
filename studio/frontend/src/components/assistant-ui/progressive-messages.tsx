@@ -15,6 +15,7 @@
 // per commit, so every delete would re-render every body, action bar and tooltip: the regression #9042 removed.
 
 import {
+  AuiProvider,
   MessageByIndexProvider,
   useAui,
   useAuiState,
@@ -33,6 +34,7 @@ import {
   useState,
 } from "react";
 
+import { createComposerTextGatedClient } from "@/components/assistant-ui/composer-text-gate";
 import {
   type AnchorSample,
   type MountWindow,
@@ -531,6 +533,9 @@ export const ProgressiveMessages: FC<{
   ({ renderMessage, resetKey, viewportRef }) => {
     const count = useAuiState(({ thread }) => thread.messages.length);
     const mountWindow = useProgressiveMountWindow(count, resetKey, viewportRef);
+    // The rows subscribe through a client that ignores composer keystrokes. See composer-text-gate.ts.
+    const aui = useAui();
+    const rowsAui = useMemo(() => createComposerTextGatedClient(aui), [aui]);
 
     return useMemo(() => {
       if (count === 0) return null;
@@ -553,8 +558,8 @@ export const ProgressiveMessages: FC<{
           </MessageByIndexProvider>,
         );
       }
-      return <>{rows}</>;
-    }, [count, mountWindow, renderMessage]);
+      return <AuiProvider value={rowsAui}>{rows}</AuiProvider>;
+    }, [count, mountWindow, renderMessage, rowsAui]);
   },
   (prev, next) =>
     prev.resetKey === next.resetKey &&

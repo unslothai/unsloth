@@ -309,7 +309,12 @@ test("the row map is memoized on the slot identity", () => {
   // identity; rebuilding 220 elements per Thread re-render hands back what the windowing collects.
   assert.match(
     GLUE,
-    /useMemo\(\(\) => \{[\s\S]*?\}, \[count, mountWindow, renderMessage\]\)/,
+    /useMemo\(\(\) => \{[\s\S]*?\}, \[count, mountWindow, renderMessage, rowsAui\]\)/,
+  );
+  // rowsAui is memoized on the client, so it adds no rebuild of its own.
+  assert.match(
+    GLUE,
+    /const rowsAui = useMemo\(\(\) => createComposerTextGatedClient\(aui\), \[aui\]\)/,
   );
   assert.match(GLUE, /prev\.renderMessage === next\.renderMessage/);
   assert.match(THREAD, /const renderThreadMessage = proplessSlot\(/);
