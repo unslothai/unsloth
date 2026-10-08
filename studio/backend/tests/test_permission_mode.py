@@ -2373,6 +2373,10 @@ def test_python_classifier(code, unsafe):
             True,
         ),
         ("import numpy as np\nnp.load('a.npy', 'r')", False),
+        ("import numpy as np\nnp.load('a.npy', None, 'yes')", True),
+        ("import numpy as np\nnp.lib.format.read_array(f, 'yes')", True),
+        ("import numpy as np\nz = np.load('a.npz')\nz.allow_pickle = True\nz['x']", True),
+        ("import numpy as np\nz = np.load('a.npz')\nz['x']", False),
         ("import numpy as np\nnp.load('a.npy', None, False)", False),
     ],
 )

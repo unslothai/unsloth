@@ -6143,10 +6143,10 @@ def _is_literal_false(node: ast.AST) -> bool:
     return isinstance(node, ast.Constant) and node.value is False
 
 
-def _is_inert_loader_arg(node: ast.AST) -> bool:
-    # A literal that cannot turn pickling on: False, None, or a string (mmap_mode="r").
+def _is_inert_loader_arg(node: ast.AST, mmap_slot: bool) -> bool:
+    # A literal that cannot turn pickling on: False or None, or a string in load's mmap_mode slot (mmap_mode="r").
     return isinstance(node, ast.Constant) and (
-        node.value is None or node.value is False or isinstance(node.value, str)
+        node.value is None or node.value is False or (mmap_slot and isinstance(node.value, str))
     )
 
 
@@ -6700,6 +6700,9 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 # rm("x")).
                 if node.attr in _AUTO_UNSAFE_PY_ATTRS:
                     return True
+                # z = np.load("a.npz"); z.allow_pickle = True turns pickling on for the next z["x"].
+                if node.attr == "allow_pickle" and isinstance(node.ctx, ast.Store):
+                    return True
                 # builtins.exec / eval / __import__ (and compile/breakpoint) are dynamic code execution, matching the
                 # bare-name code_exec_aliases path; __builtins__.__import__(...) is a dynamic import that dodges the
                 # static import check.
@@ -6748,9 +6751,13 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     kw.arg == "allow_pickle" and not _is_literal_false(kw.value)
                     for kw in node.keywords
                 ) or (
-                    _allow_pickle_position(func) is not None
+                    (_flag_pos := _allow_pickle_position(func)) is not None
                     and (
-                        not all(_is_inert_loader_arg(arg) for arg in node.args[1:3])
+                        not all(
+                            # Only load/NpzFile (flag third) have a string-valued second argument.
+                            _is_inert_loader_arg(arg, mmap_slot = i == 1 and _flag_pos == 2)
+                            for i, arg in enumerate(node.args[1:3], start = 1)
+                        )
                         or any(isinstance(arg, ast.Starred) for arg in node.args)
                         or any(kw.arg is None for kw in node.keywords)
                     )
