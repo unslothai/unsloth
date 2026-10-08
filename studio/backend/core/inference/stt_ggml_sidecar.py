@@ -739,8 +739,9 @@ def _supports_request_path(binary: str) -> bool:
     except OSError:
         return False
     cached = _REQUEST_PATH_SUPPORT.get(key)
-    if cached is None and _whisper_install_marker(binary) is not None:
-        # Studio's own install is our whisper.cpp fork, which always has the flag; skip the ~0.6 s --help probe.
+    marker = _whisper_install_marker(binary) if cached is None else None
+    if marker is not None and marker.get("published_repo") == "unslothai/whisper.cpp":
+        # Our whisper.cpp releases always have the flag; skip the ~0.6 s --help probe. Custom repos are probed.
         cached = _REQUEST_PATH_SUPPORT[key] = True
     if cached is None:
         try:

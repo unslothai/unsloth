@@ -112,10 +112,23 @@ def test_help_probe_detects_the_flag_and_caches(tmp_path):
 def test_managed_install_skips_the_help_probe(tmp_path, monkeypatch):
     old = _script(tmp_path, "managed-server", "  --port N, Port number")
     monkeypatch.setattr(
-        ggml_module, "_whisper_install_marker", lambda binary: {"component": "whisper.cpp"}
+        ggml_module,
+        "_whisper_install_marker",
+        lambda binary: {"component": "whisper.cpp", "published_repo": "unslothai/whisper.cpp"},
     )
     assert ggml_module._supports_request_path(old) is True
     assert not (tmp_path / "managed-server.runs").exists()
+
+
+def test_custom_published_repo_is_still_probed(tmp_path, monkeypatch):
+    old = _script(tmp_path, "custom-server", "  --port N, Port number")
+    monkeypatch.setattr(
+        ggml_module,
+        "_whisper_install_marker",
+        lambda binary: {"component": "whisper.cpp", "published_repo": "someone/whisper-fork"},
+    )
+    assert ggml_module._supports_request_path(old) is False
+    assert (tmp_path / "custom-server.runs").read_text().count("run") == 1
 
 
 class _RoutedHandler(http.server.BaseHTTPRequestHandler):
