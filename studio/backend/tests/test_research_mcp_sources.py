@@ -315,5 +315,4 @@ def test_research_ignores_mcp_sources_while_tools_are_disabled(notes_server):
 
 def test_research_mcp_calls_cannot_reach_built_in_tools():
     from core.inference.tools import execute_mcp_tool
-
     assert execute_mcp_tool("terminal", {"command": "id"}).startswith("Error:")
