@@ -5105,6 +5105,57 @@ def patch_unsafe_trainer_rng_load():
     logger.info("Unsloth: Hardened Trainer._load_rng_state rng loading (CVE-2026-1839).")
 
 
+def patch_bitsandbytes_paged_optimizer_resume():
+    """Keep paged bitsandbytes optimizer state paged after a checkpoint resume (#2168).
+    Optimizer8bit.load_state_dict leaves state1/state2 as plain tensors (accelerate has already
+    moved them to CUDA), so a resumed paged_adamw_* run holds that state in the CUDA allocator
+    through the next forward and backward, where a fresh run keeps it in paged memory that can
+    spill to CPU, and OOMs where the fresh run fit. Re-allocate it right after the load through
+    get_state_buffer, which pages exactly what a fresh run pages."""
+    if "bitsandbytes" not in sys.modules:
+        return
+    try:
+        from bitsandbytes.optim.optimizer import Optimizer8bit
+    except Exception:
+        return
+    load_state_dict = getattr(Optimizer8bit, "load_state_dict", None)
+    if (
+        load_state_dict is None
+        or not hasattr(Optimizer8bit, "get_state_buffer")
+        or getattr(load_state_dict, "_unsloth_repage", False)
+    ):
+        return
+
+    import torch
+
+    @functools.wraps(load_state_dict)
+    def _unsloth_load_state_dict(self, *args, **kwargs):
+        result = load_state_dict(self, *args, **kwargs)
+        if not getattr(self, "is_paged", False):
+            return result
+        for group in self.param_groups:
+            for p in group["params"]:
+                state = self.state.get(p) if p.device.type != "cpu" else None
+                if not state:
+                    continue
+                for key in ("state1", "state2"):
+                    value = state.get(key)
+                    if (
+                        not isinstance(value, torch.Tensor)
+                        or getattr(value, "is_paged", False)
+                        or value.shape != p.shape
+                    ):
+                        continue
+                    buffer = self.get_state_buffer(p, dtype = value.dtype)
+                    if getattr(buffer, "is_paged", False):
+                        buffer.copy_(value)
+                        state[key] = buffer
+        return result
+
+    _unsloth_load_state_dict._unsloth_repage = True
+    Optimizer8bit.load_state_dict = _unsloth_load_state_dict
+
+
 _PT2_UNSAFE_LOAD_ENV = "UNSLOTH_ALLOW_UNSAFE_PT2_LOAD"
 # torch.export's .pt2 readers: their weights_only=False loads unpickle archive bytes.
 _PT2_LOADER_MODULES = frozenset(
