@@ -158,3 +158,13 @@ test("picking any entry in the dataset list ends a continuation", () => {
   assert.match(body, /setContinuationDatasetName\(null\);/);
   assert.ok(body.indexOf("return;") < body.indexOf("setContinuationDatasetName(null)"));
 });
+
+test("a name the user typed is never replaced by a generated one", () => {
+  assert.match(
+    source,
+    /if \(!uploadMode \|\| continuingUploadName \|\| uploadNameEdited\.current\) return;/,
+  );
+  const form = source.slice(source.indexOf("{uploadMode ? ("));
+  const newSet = form.slice(0, form.indexOf(") : ("));
+  assert.match(newSet, /uploadNameEdited\.current = true;\s+setUploadName\(e\.target\.value\);/);
+});

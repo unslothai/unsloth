@@ -461,6 +461,8 @@ export function DiffusionTrainPanel({
   const [dataset, setDataset] = useState<string>(UPLOAD_DATASET);
   const [uploadName, setUploadName] = useState("my-images");
   const [continuationDatasetName, setContinuationDatasetName] = useState<string | null>(null);
+  // a typed name is the user's: a taken one shows the note instead of being replaced.
+  const uploadNameEdited = useRef(false);
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   // Adds to the selected set; the other input creates a new one.
@@ -788,7 +790,7 @@ export function DiffusionTrainPanel({
     ? `A folder named "${takenName}" already exists but holds no images or clips yet, so it is not in the list. Add to it, or choose another name.`
     : `A set named "${takenName}" already exists. Pick it in the list above to add to it, or choose another name.`;
   useEffect(() => {
-    if (!uploadMode || continuingUploadName) return;
+    if (!uploadMode || continuingUploadName || uploadNameEdited.current) return;
     setUploadName((current) =>
       existingDatasetName(current, occupiedDatasets)
         ? freeDatasetName(occupiedDatasets)
@@ -1697,6 +1699,7 @@ export function DiffusionTrainPanel({
                   // any explicit pick ends a continuation; "Add to it" is the way back in.
                   setContinuationDatasetName(null);
                   if (v === UPLOAD_DATASET && existingDatasetName(uploadName, occupiedDatasets)) {
+                    uploadNameEdited.current = false;
                     setUploadName(freeDatasetName(occupiedDatasets));
                   }
                   setDataset(v);
@@ -1788,7 +1791,10 @@ export function DiffusionTrainPanel({
                     value={uploadName}
                     placeholder="my-photos"
                     spellCheck={false}
-                    onChange={(e) => setUploadName(e.target.value)}
+                    onChange={(e) => {
+                      uploadNameEdited.current = true;
+                      setUploadName(e.target.value);
+                    }}
                     className="h-8 min-w-0 flex-1 text-xs"
                     aria-label="New dataset name"
                   />
