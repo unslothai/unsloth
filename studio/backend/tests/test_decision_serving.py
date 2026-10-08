@@ -847,3 +847,39 @@ def test_mlx_sources_are_fetched_at_their_pinned_revisions(home, monkeypatch, tm
     assert laya_runtime._mlx_dirs(target, local_only = False)[0] == main and not fetched
     (main / "head.pt").unlink()
     assert not laya_runtime.is_cached(target)
+
+
+def test_images_in_the_state_route_like_the_images_field(home, monkeypatch):
+    seen = []
+
+    def select(
+        checkpoint,
+        images = None,
+        questions = None,
+        preference = None,
+        state_images = False,
+    ):
+        seen.append(state_images and not images)
+        raise laya_runtime.Unavailable(400, "api_usage_error", "stop")
+
+    monkeypatch.setattr(laya_runtime, "select", select)
+    part = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA=="}}
+    chat = [{"role": "user", "content": [{"type": "text", "text": "hi"}, part]}]
+    cases = (
+        (chat, True),
+        ({"messages": chat}, True),
+        ([{"role": "user", "content": "hi"}], False),
+        ("s", False),
+    )
+    for state, routed in cases:
+        with pytest.raises(laya_runtime.Unavailable):
+            laya_runtime._route(catalog.CHECKPOINTS["kev-4b"], state, {"q": {"type": "noul"}}, None)
+        assert bool(seen[-1]) == routed
+
+
+def test_auto_keeps_images_in_the_state_off_mlx(home, engine, monkeypatch):
+    kev = catalog.CHECKPOINTS["kev-4b"]
+    monkeypatch.setattr(laya_runtime, "_native_unavailable", lambda *args: None)
+    monkeypatch.setattr(laya_runtime, "is_cached", lambda checkpoint: True)
+    assert laya_runtime.select(kev)[0].backend == "mlx"
+    assert laya_runtime.select(kev, state_images = True)[0].backend == "llama.cpp"
