@@ -3071,9 +3071,9 @@ _ASYNC_LOAD_ENV = "HF_DEACTIVATE_ASYNC_LOAD"
 def sync_load_when_quantizing(quantization_config, model_config):
     """Load one tensor at a time while quantizing an unquantized checkpoint on the fly.
 
-    transformers 5.0 to 5.4 reads every tensor on worker threads, at full precision and straight
+    transformers 5.0 to 5.3 reads every tensor on worker threads, at full precision and straight
     onto the card, while the main thread quantizes them one by one, so a bf16 checkpoint can peak
-    far above its 4bit size. 5.5 goes synchronous in exactly this case; this does the same on the
+    far above its 4bit size. 5.4 goes synchronous in exactly this case; this does the same on the
     older ones. A pre-quantized checkpoint, or a caller who set the variable, is left alone."""
     if (
         quantization_config is None

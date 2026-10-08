@@ -3,7 +3,7 @@
 
 """sync_load_when_quantizing: on-the-fly 4bit loads go one tensor at a time. No GPU needed.
 
-transformers 5.0 to 5.4 materialises every checkpoint tensor at full precision on the card from
+transformers 5.0 to 5.3 materialises every checkpoint tensor at full precision on the card from
 worker threads while the main thread quantizes, so a bf16 Qwen3.5-27B that fits at 4bit runs out
 of memory during from_pretrained. Extracted with ast so nothing imports torch's CUDA stack.
 """
@@ -118,7 +118,11 @@ def _calls_inside_sync_load(src, callee):
 
 @pytest.mark.parametrize(
     "module, callee",
-    [("vision.py", "auto_model"), ("llama.py", "AutoModelForCausalLM")],
+    [
+        ("vision.py", "auto_model"),
+        ("llama.py", "AutoModelForCausalLM"),
+        ("llama.py", "AutoModelForSequenceClassification"),
+    ],
 )
 def test_the_causal_lm_loads_run_inside_the_helper(module, callee):
     calls = _calls_inside_sync_load(_source(module), callee)
