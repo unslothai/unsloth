@@ -1481,17 +1481,27 @@ def _detect_hardware_locked() -> DeviceType:
                 print(f"Hardware detected: XPU -- {device_name} ({reason})")
                 return DEVICE
 
-        # Reuse the guarded answer: a raising second is_available() would skip the XPU branch below.
+        # reuse guarded result because another is_available() exception would skip XPU fallback
         if not cuda_unavailable:
             DEVICE = DeviceType.CUDA
             CHAT_ONLY = False
             try:
                 device_name = torch.cuda.get_device_properties(0).name
             except Exception as e:
-                logger.debug("CUDA device 0 property probe failed: %s", e)
+                # failed CUDA init can make later PyTorch calls segfault, so log the cause
+                from utils.allocator_conf import ALLOCATOR_CONF_ENV_VARS
+
+                allocator_conf = {
+                    name: os.environ[name] for name in ALLOCATOR_CONF_ENV_VARS if name in os.environ
+                }
+                logger.error(
+                    "CUDA device 0 property probe failed: %r (allocator config: %s)",
+                    e,
+                    allocator_conf or "unset",
+                )
                 device_name = "<unavailable>"
 
-            # Distinguish ROCm from CUDA for display only (DeviceType stays CUDA). AMD SDK wheels do not set torch.version.hip, so fall back to __version__.
+            # AMD SDK wheels omit torch.version.hip; ROCm label uses __version__; DEVICE stays CUDA
             _hip_ver = getattr(torch.version, "hip", None)
             if _hip_ver is not None or "rocm" in torch.__version__.lower():
                 IS_ROCM = True
