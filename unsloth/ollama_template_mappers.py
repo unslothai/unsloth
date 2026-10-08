@@ -1192,8 +1192,7 @@ OLLAMA_TEMPLATES["gemma-3n"] = gemma3n_ollama
 OLLAMA_TEMPLATES["gemma3n"] = gemma3n_ollama
 
 # =========================================== Gemma-4
-# Gemma 4 calls the assistant role "model". Turns are back to back with no blank line between them,
-# matching the HF chat template with add_generation_prompt = True.
+# Assistant role is "model"; no blank line between turns, to match the HF chat template.
 gemma4_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """{{- range $i, $_ := .Messages }}

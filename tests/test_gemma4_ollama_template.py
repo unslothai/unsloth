@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""Gemma-4 Ollama template (E2B / E4B and every Gemma-4 template without the empty thought primer).
-
-History assistant turns must render as <|turn>model, with no blank line between turns and no
-leading newline, so Ollama matches the HF chat template with add_generation_prompt = True.
-The module is loaded via ast so the test runs without a GPU or Go.
-"""
+"""Gemma-4 Ollama template must match the HF chat template; loaded via ast (no GPU or Go)."""
 
 import ast
 import os
@@ -74,9 +69,7 @@ def test_history_assistant_turns_use_the_model_role():
 
 def test_no_blank_line_or_leading_newline_between_turns():
     body = _template_body(NS["gemma4_ollama"])
-    # Every literal newline is either trimmed by a {{- action or is part of a turn marker line.
     assert body.startswith("{{-")
     assert "<turn|>\n\n" not in body
     assert "\n<|turn>" not in body
-    # The generation prompt carries no thought channel for this template.
     assert "<|channel>" not in body
