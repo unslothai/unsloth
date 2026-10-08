@@ -457,9 +457,6 @@ def test_windows_reuseaddr_listener_is_not_reported_as_a_free_port():
 
 
 def test_a_loopback_bind_is_not_free_while_another_process_holds_the_wildcard():
-    # Windows and macOS let a 127.0.0.1 bind succeed while another process
-    # listens on 0.0.0.0, and the new listener then takes that process's localhost
-    # traffic. The probe has to see the listener so _resolve_port falls back.
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
         listener.bind(("0.0.0.0", 0))
         listener.listen()
@@ -470,10 +467,7 @@ def test_a_loopback_bind_is_not_free_while_another_process_holds_the_wildcard():
 
 @pytest.mark.skipif(sys.platform != "win32", reason = "Windows drops the SYN to a full backlog")
 def test_a_wildcard_listener_with_a_full_backlog_is_not_a_free_port():
-    # A listener that has stopped accepting still owns the port. Windows drops the SYN instead of
-    # refusing it, so the probe's connect times out the same way it does on a free port; the listener
-    # table is what tells the two apart.
-    # The table comes from psutil, which studio.txt alone does not install.
+    # studio.txt alone does not install psutil, the only thing that tells this apart from a free port.
     pytest.importorskip("psutil")
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
         listener.bind(("0.0.0.0", 0))
@@ -552,8 +546,7 @@ def test_a_timed_out_connect_is_settled_by_the_listener_table(monkeypatch):
 
 
 def test_a_free_loopback_port_is_reported_without_a_long_wait():
-    # Every default launch probes 127.0.0.1, and Windows waits out the whole
-    # connect timeout on a free port instead of refusing it.
+    # Windows waits out the whole connect timeout on a free port.
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
@@ -631,7 +624,6 @@ def test_port_probe_checks_every_resolved_bind_address(monkeypatch, platform, oc
         (socket.AF_INET, ("127.0.0.1", 8888)),
         (socket.AF_INET6, ("::1", 8888, 0, 0)),
     ]
-    # Once every bind succeeds, each resolved address is also checked for a listener.
     assert connect_attempts == ([] if occupied else bind_attempts)
     assert all(probe.closed for probe in sockets)
     for probe in sockets[: len(bind_attempts)]:

@@ -823,9 +823,8 @@ def _addresses_collide(recorded: "str | None", host: str, port: int) -> bool:
 def _is_port_free(host: str, port: int) -> bool:
     """Check if a port is available for binding. For a ``0.0.0.0`` wildcard host, also check whether anything
     is listening on ``127.0.0.1`` (and ``::1`` when IPv6 exists): an SSH tunnel may hold loopback while the
-    wildcard bind succeeds, making Unsloth unreachable via ``localhost``. For a specific host, also check
-    whether anything already answers on the addresses it resolves to: Windows and macOS let a ``127.0.0.1``
-    bind succeed while another process listens on ``0.0.0.0``, and then take that process's local traffic."""
+    wildcard bind succeeds, making Unsloth unreachable via ``localhost``. A specific host is checked too:
+    Windows and macOS let a ``127.0.0.1`` bind sit beside another process's ``0.0.0.0`` listener."""
     import socket
 
     sockets = []
@@ -860,11 +859,8 @@ def _is_port_free(host: str, port: int) -> bool:
         for probe in sockets:
             probe.close()
 
-    # A bind can succeed next to another process's listener: a wildcard bind while it holds localhost
-    # (e.g. an SSH -L tunnel), or on Windows and macOS a specific bind while it holds the wildcard. Either
-    # way the address is already served, so a successful connect means the port is taken. Windows only
-    # refuses a connect to a free port after ~2 s of SYN retries, so keep the wait short: a listener
-    # answers in ms.
+    # A successful bind can still sit beside a live listener, so a connect that lands means taken. Short
+    # timeout: Windows only refuses a free port after ~2 s of SYN retries.
     if is_wildcard_host(host):
         targets = [
             (socket.AF_INET, ("127.0.0.1", port)),
@@ -879,8 +875,7 @@ def _is_port_free(host: str, port: int) -> bool:
                 result = s.connect_ex(sockaddr)
                 if result == 0:
                     return False
-                # Windows drops the SYN to a listener whose accept backlog is full, so that connect times out
-                # exactly like one to a free port. Anything but a refusal is settled by the listener table.
+                # Windows times out on a full-backlog listener exactly as on a free port.
                 if result not in _CONNECT_REFUSED and _listener_collides(sockaddr[0], port):
                     return False
         except OSError:
@@ -893,8 +888,8 @@ _CONNECT_REFUSED = {errno.ECONNREFUSED, 10061}  # WSAECONNREFUSED
 
 
 def _listener_collides(address: str, port: int) -> bool:
-    """Is some process listening on *port* at *address* or at its family's wildcard? Best effort: no psutil
-    means no. Only the same family counts: a v6-only ``::`` listener shares a port with an IPv4 bind."""
+    """A same-family listener on *port* at *address* or its wildcard; a v6-only ``::`` shares the port
+    with IPv4. Best effort: no psutil means no."""
     import socket
 
     family = socket.AF_INET6 if ":" in address else socket.AF_INET
