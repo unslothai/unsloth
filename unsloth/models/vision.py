@@ -1511,8 +1511,7 @@ def _static_cache_does_not_fit(model, input_ids, kwargs):
         free = backend.mem_get_info(device)[0]
         if need <= free // 2:
             return False
-        # memory_stats costs ~70 us a call, so blocks the allocator holds unused are only
-        # counted when the driver's free memory alone is not enough.
+        # memory_stats is slow, so allocator-held free blocks are read only when needed.
         free += backend.memory_reserved(device) - backend.memory_allocated(device)
     except Exception:
         return False
