@@ -1009,7 +1009,8 @@ export function writeDocxTableRows(archive: Uint8Array): Uint8Array {
       for (const row of Array.from(table.getElementsByTagNameNS(w, "tr"))) {
         const cells = Array.from(row.getElementsByTagNameNS(w, "tc"));
         const before = grid(row, "trPr", "gridBefore");
-        if (cells.length + before < 2) {
+        const after = grid(row, "trPr", "gridAfter");
+        if (cells.length + before + after < 2) {
           for (const cell of cells) {
             for (const child of Array.from(cell.childNodes)) {
               if ((child as Element).localName !== "tcPr") table.parentNode?.insertBefore(child, table);
@@ -1042,6 +1043,7 @@ export function writeDocxTableRows(archive: Uint8Array): Uint8Array {
             });
           for (let i = 1; i < (grid(cell, "tcPr", "gridSpan") || 1); i++) line.appendChild(tab());
         });
+        for (let i = 0; i < after; i++) line.appendChild(tab());
         table.parentNode?.insertBefore(line, table);
       }
       table.parentNode?.removeChild(table);
@@ -1749,11 +1751,16 @@ function collectHtmlBlockText(
         slots.push(null);
       }
     };
-    const span = (value: string | null) => Math.min(Math.max(Number(value) || 1, 1), 1000);
+    const span = (value: string | null, max: number) =>
+      Math.min(Math.max(Number(value) || 1, 1), max);
     for (const cell of cells) {
       skipCovered();
-      const rows = span(cell.getAttribute("rowspan"));
-      for (let i = 0; i < span(cell.getAttribute("colspan")); i++) {
+      const rowspan = cell.getAttribute("rowspan");
+      const rows =
+        rowspan !== null && /^0+$/.test(rowspan)
+          ? Number.POSITIVE_INFINITY
+          : span(rowspan, 65534);
+      for (let i = 0; i < span(cell.getAttribute("colspan"), 1000); i++) {
         covered[slots.length] = rows - 1;
         slots.push(i ? null : cell);
       }
