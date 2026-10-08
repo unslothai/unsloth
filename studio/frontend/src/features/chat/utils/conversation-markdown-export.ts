@@ -65,8 +65,9 @@ function filenamePart(text: string): string {
   return (
     text
       .replace(/\s+/g, " ")
+      // Bidi controls too: `x\u202egpj.exe` would display as `xexe.jpg`.
       // eslint-disable-next-line no-control-regex
-      .replace(/[\\/:*?"<>|\u0000-\u001f]/g, "_")
+      .replace(/[\\/:*?"<>|\u0000-\u001f\u007f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "_")
       .trim()
   );
 }
@@ -89,7 +90,11 @@ export function conversationExportBasename(
   const title = filenamePart(thread?.title ?? "");
   const name = [model, title].filter(Boolean).join(" - ") || "conversation";
   // Windows refuses a name ending in a dot or space.
-  const capped = name.slice(0, MAX_EXPORT_BASENAME_LENGTH).replace(/[. ]+$/, "");
+  // By code point, so an emoji at the cut is not split into a lone surrogate.
+  const capped = Array.from(name)
+    .slice(0, MAX_EXPORT_BASENAME_LENGTH)
+    .join("")
+    .replace(/[. ]+$/, "");
   return `${capped || "conversation"} (${localDateStamp(date)})`;
 }
 

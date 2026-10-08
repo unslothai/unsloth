@@ -200,3 +200,15 @@ test("an export name never carries a path separator or a trailing dot", () => {
     "model - a_b_c_ _d__ next (2026-09-01)",
   );
 });
+
+test("an export name is cut by code point and drops bidi controls", () => {
+  const name = conversationExportBasename(
+    { title: `${"a".repeat(119)}\u{1F600}tail \u202Egpj.exe` },
+    EXPORT_DAY,
+  );
+  assert.equal(name, `${"a".repeat(119)}\u{1F600} (2026-09-01)`);
+  assert.equal(
+    conversationExportBasename({ title: "x\u202Egpj.exe" }, EXPORT_DAY),
+    "x_gpj.exe (2026-09-01)",
+  );
+});
