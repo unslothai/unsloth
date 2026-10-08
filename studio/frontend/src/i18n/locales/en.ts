@@ -585,6 +585,7 @@ export const en = {
     },
   },
   common: {
+    duplicate: "Duplicate",
     cancel: "Cancel",
     close: "Close",
     delete: "Delete",
@@ -3458,6 +3459,10 @@ export const en = {
       readMore: "Read more",
     },
     training: {
+      duplicateFailed: "Could not duplicate run",
+      duplicateDraftChanged:
+        "Training settings changed while loading. Try duplicating again.",
+      duplicateNoModel: "This run has no saved model configuration.",
       startTraining: "Start Training",
       starting: "Starting...",
       loadingModel: "Loading model...",
