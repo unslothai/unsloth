@@ -127,6 +127,7 @@ export function TrainingMemoryParams(): ReactElement {
       gradientCheckpointing: state.gradientCheckpointing,
       isVisionModel: state.isVisionModel,
       isEmbeddingModel: state.isEmbeddingModel,
+      isAudioModel: state.isAudioModel,
       isDecision: state.modelType === "decision",
       modelType: state.modelType,
       isDatasetImage: state.isDatasetImage,

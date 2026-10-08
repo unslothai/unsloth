@@ -4215,10 +4215,11 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     # and two runs on one card can each take their share.
     # ── 2b. Training VRAM budget ──
     _budget_gb = config.get("offload_vram_gb")
-    # Only "auto" sizes to a budget, and decision / embedding runs never offload.
+    # Only "auto" sizes to a budget, and only LoRA runs outside decision / embedding offload.
     if (
         _budget_gb
         and config.get("offload_layers") == "auto"
+        and config.get("use_lora", True)
         and not config.get("is_decision")
         and not config.get("is_embedding")
     ):

@@ -51,16 +51,18 @@ export function trainingLoadsIn4Bit(
 }
 
 /** Whether a run can offload layers: LoRA on the main trainer (embedding and decision models
- * train elsewhere) with gradient checkpointing on, which swapped layers need. */
+ * train elsewhere, and the Whisper / codec audio paths have no decoder stack to stream) with
+ * gradient checkpointing on, which swapped layers need. */
 export function offloadSupported(
   config: Pick<
     TrainingConfigState,
-    "trainingMethod" | "isEmbeddingModel" | "modelType" | "gradientCheckpointing"
+    "trainingMethod" | "isEmbeddingModel" | "isAudioModel" | "modelType" | "gradientCheckpointing"
   >,
 ): boolean {
   return (
     config.trainingMethod !== "full" &&
     !config.isEmbeddingModel &&
+    !config.isAudioModel &&
     config.modelType !== "embeddings" &&
     config.modelType !== "decision" &&
     config.gradientCheckpointing !== "none"
@@ -73,6 +75,7 @@ export function offloadPayload(
     TrainingConfigState,
     | "trainingMethod"
     | "isEmbeddingModel"
+    | "isAudioModel"
     | "modelType"
     | "gradientCheckpointing"
     | "offloadLayers"

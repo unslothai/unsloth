@@ -196,7 +196,7 @@ def test_every_worker_failure_path_carries_the_budget_hint():
     assert src.count("_with_vram_budget_hint(") == 4
 
 
-@pytest.mark.parametrize("checkpointing", ["none", "False"])
+@pytest.mark.parametrize("checkpointing", ["none", "False", "off", "no", "0"])
 @pytest.mark.parametrize("offload", [14, "auto"])
 def test_offload_without_checkpointing_is_refused_up_front(checkpointing, offload):
     with pytest.raises(ValidationError, match = "needs gradient checkpointing"):
@@ -219,9 +219,36 @@ def test_worker_applies_the_budget_only_where_auto_offload_sizes_to_it():
         'config.get("offload_layers") == "auto"',
         'config.get("is_decision")',
         'config.get("is_embedding")',
+        'config.get("use_lora", True)',
     ):
         assert needle in gate
     # The budget lands before the decision / embedding branches return, so the gate has to.
     assert src.index("# ── 2b. Training VRAM budget ──") < src.index(
         'if config.get("is_decision", False):'
     )
+
+
+def test_disabled_checkpointing_aliases_match_the_trainer():
+    import ast
+    from pathlib import Path
+
+    from models.training import _CHECKPOINTING_OFF
+
+    src = (Path(__file__).resolve().parents[1] / "core" / "training" / "trainer.py").read_text(
+        encoding = "utf-8"
+    )
+    fn = next(
+        n
+        for n in ast.parse(src).body
+        if isinstance(n, ast.FunctionDef) and n.name == "normalize_gradient_checkpointing"
+    )
+    # The alias tuple whose branch returns False.
+    off = next(
+        ast.literal_eval(node.test.comparators[0])
+        for node in ast.walk(fn)
+        if isinstance(node, ast.If)
+        and isinstance(node.test, ast.Compare)
+        and isinstance(node.body[0], ast.Return)
+        and getattr(node.body[0].value, "value", None) is False
+    )
+    assert set(off) == set(_CHECKPOINTING_OFF)
