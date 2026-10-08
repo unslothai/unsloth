@@ -15665,17 +15665,11 @@ def _resolve_with_budget(hostname, port, deadline, cancel_event):
 
 
 def _read_capped_body(resp, max_bytes, timeout, deadline, cancel_event):
-    """Read up to ``max_bytes``, enforcing the overall budget between chunks. A single
-    ``resp.read(max_bytes)`` can block for the whole transfer if the server dribbles bytes just
-    inside each socket-inactivity timeout, so the body is read in chunks with the budget
-    re-checked (and the socket timeout re-tightened toward the deadline) each round. The joined
-    bytes are identical to one capped read. Returns ``(error_or_None, body_bytes)``."""
-    # Best-effort handle on the underlying socket so its timeout tightens as the deadline nears; absent on test
-    # doubles, where the between-chunk budget check still bounds the read. An HTTPError wraps the response.
+    """read at most ``max_bytes`` within the overall budget and return ``(error_or_None, body_bytes)``."""
+    # HTTPError wraps the socket; tighten its deadline when present, while chunk checks bound test doubles without one
     fp = getattr(resp, "fp", None)
     sock = getattr(getattr(getattr(fp, "fp", fp), "raw", None), "_sock", None)
-    # A buffered read(n) keeps receiving until n bytes arrive, so a drip never reaches the
-    # budget check; read1 returns after one receive.
+    # use read1 because buffered read(n) can keep receiving until n bytes arrive and bypass the budget check
     read = getattr(resp, "read1", None) or resp.read
     chunks = []
     remaining = max_bytes
@@ -15801,36 +15795,11 @@ def _fetch_url_raw(
     host_headers = None,
     error_page: bool = False,
 ) -> tuple[str | None, "str | bytes", str]:
-    """Fetch a URL with SSRF protection; return ``(error, body_text, content_type)``.
-
-    ``host_headers(host)`` adds headers for one hop, chosen by the host that hop goes to, so a
-    redirect to another site does not carry them.
-
-    ``post_data`` sends a urlencoded POST (kept on 307/308, dropped on other redirects).
-    ``meta_out`` receives the final ``url``, ``charset``, ``filename`` (Content-Disposition),
-    ``allow_origin`` (Access-Control-Allow-Origin), ``cache_control`` and ``age`` of a successful
-    binary-mode fetch, and
-    ``bot_check`` on HTTP errors.
-
-    ``raw_bytes_max`` switches to binary mode: the body is returned as ``bytes`` untouched (no PDF
-    or text handling) and refused past that many bytes. The same scheme, host, redirect and budget
-    gates apply either way.
-
-    ``error_page`` (binary mode) also returns an HTTP error's HTML body, under the same caps.
-
-    ``error`` is a user-facing message string when the fetch failed, else ``None``. Blocks
-    private/loopback/link-local targets and caps the download size. No input reaches the caller as
-    an exception: the URL is model-supplied, so every malformed form resolves to one of these
-    strings.
-
-    ``deadline`` is an optional ``time.monotonic`` cutoff for the whole fetch (redirect hops and
-    body read included) and ``cancel_event`` aborts it when the caller goes away; both default off.
-    """
+    """fetch with SSRF protection; binary reads stay capped, HTML error pages require binary mode, per-hop headers do not cross redirects, and deadlines cover redirects and body reads."""
     from urllib.parse import urlparse
     from .web_access_policy import check_url_access
 
-    # Before the policy gate: it requires an http(s) scheme, so a bare host would be refused there and never reach the
-    # fetch.
+    # normalize before the policy gate because a bare host would otherwise fail its http(s) scheme check.
     url = _normalize_url_scheme(url)
     allowed, reason, canonical_host = check_url_access(url, website_policy)
     if not allowed:
@@ -15909,8 +15878,7 @@ def _fetch_url_raw(
                 headers.setdefault("Content-Type", "application/x-www-form-urlencoded")
             req = urllib.request.Request(request_url, headers = headers, data = pending_post)
             try:
-                # Cap the socket timeout at the time left on the overall deadline so a single slow hop cannot outlast
-                # the whole fetch budget.
+                # cap the socket timeout at the remaining deadline so one slow hop cannot outlast the fetch budget.
                 resp = opener.open(req, timeout = _fetch_hop_timeout(timeout, deadline))
             except _HTTPError as e:
                 if e.code not in (301, 302, 303, 307, 308):
@@ -15930,7 +15898,7 @@ def _fetch_url_raw(
                     if not location:
                         return "Failed to fetch URL: redirect missing Location header.", "", ""
                     current_url = urljoin(current_url, location)
-                    # 307/308 keep the POST; other redirects turn it into a GET.
+                    # 307/308 preserve POST; other redirects switch to GET.
                     if e.code not in (307, 308):
                         pending_post = None
                     hop_error, current_host, pinned_ips = _redirect_hop(
@@ -15943,15 +15911,13 @@ def _fetch_url_raw(
                         return hop_error, "", ""
                     continue
 
-            # get_content_type() defaults to "text/plain" when the header is absent (RFC 2045); report "" instead so
-            # callers can tell a missing header apart from a server that really declared text/plain.
+            # get_content_type() defaults missing headers to "text/plain" per RFC 2045; use "" to distinguish them.
             if resp.headers.get("Content-Type") is None:
                 content_type = ""
             else:
                 content_type = (resp.headers.get_content_type() or "").lower()
 
-            # Success: read the capped body enforcing the budget between chunks (see _read_capped_body), so a
-            # slow-drip server can't stretch a single resp.read past the deadline.
+            # chunked reads recheck the fetch budget between chunks.
             declared_pdf = raw_bytes_max is None and content_type == "application/pdf"
             if raw_bytes_max is not None:
                 read_limit = raw_bytes_max + 1
@@ -15969,8 +15935,7 @@ def _fetch_url_raw(
             if body_error is not None:
                 return body_error, "", ""
 
-            # A missing or wrong PDF MIME type is common: once the initial text-sized read identifies PDF magic,
-            # finish the bounded download to reach the EOF xref.
+            # missing or wrong PDF MIME types require a bounded tail read to reach the EOF xref.
             if raw_bytes_max is not None:
                 if len(raw_bytes) > raw_bytes_max:
                     return f"(content exceeds the {raw_bytes_max} byte limit)", "", content_type

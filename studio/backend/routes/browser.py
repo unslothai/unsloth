@@ -1437,7 +1437,7 @@ def _fetch(
 
 
 def _attachment_name(meta: dict) -> Optional[str]:
-    """The server's name for a download, as a bare file name."""
+    """server-provided download name reduced to a bare file name."""
     name = meta.get("filename")
     if not isinstance(name, str):
         return None
@@ -1453,13 +1453,13 @@ def _build_response(
     meta: dict,
     cancel_event: Optional[threading.Event] = None,
 ) -> Response:
-    """Build the panel's response. Runs in the fetch pool to keep large pages off the event loop."""
+    """build the panel response in the fetch pool to keep large pages off the event loop."""
     looks_html = not content_type and body[:512].lstrip().lower().startswith(
         (b"<!doctype html", b"<html")
     )
     is_html = content_type in _HTML_TYPES or looks_html
     if error is not None and (meta.get("bot_check") or not (is_html and body.strip())):
-        # The host only: a page address can carry a sign-in token.
+        # log the host only because page URLs can carry sign-in tokens.
         try:
             host = urlsplit(url).hostname
         except ValueError:

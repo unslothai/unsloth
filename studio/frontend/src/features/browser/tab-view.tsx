@@ -289,11 +289,11 @@ function WebPage({
         cachePage(entry, page);
         setState({ status: "ready", page });
         show(page);
-        // A file the panel can't show downloads, as in a browser; fresh loads only, so returning to the tab doesn't ask again.
+        // unsupported files download only on fresh loads, so revisiting the tab does not prompt again.
         if (page.kind === "raw") {
           const name = page.fileName ?? fileNameFromUrl(page.url);
           if (!canShowFile(name, page.contentType)) {
-            // The sending page, else the address asked for (not the redirect target), so another site's "allow" can't cover it.
+            // use the sender or requested address, not the redirect target, so another site's permission cannot apply.
             void saveBrowserDownload({ blob: page.blob, name, contentType: page.contentType, url: page.url, site: entry.from ?? url });
             if (entry.kind === "web" && entry.from) useBrowserStore.getState().leaveDownload(tab.id, entry);
           }
