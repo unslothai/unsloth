@@ -21063,6 +21063,12 @@ class LlamaCppBackend:
         if blocked is not None:
             return code_integrity_user_message(binary or "the llama.cpp runtime", blocked)
 
+        # Every kernel fails to load alike, so the memory / GGUF fallback below would
+        # send the user after the wrong cause (#12842).
+        cuda_image_error = LlamaCppBackend._cuda_kernel_image_error(output)
+        if cuda_image_error is not None:
+            return LlamaCppBackend._cuda_kernel_image_message(cuda_image_error, binary)
+
         # The dynamic loader kills llama-server before main(), so nothing below
         # matches and the fallback blames the file or memory instead. The Linux
         # prebuilt links libgomp.so.1, which a stock container does not ship.
@@ -22328,6 +22334,64 @@ class LlamaCppBackend:
         # reprint it are not consistent about that.
         text = (output or "").lower()
         return any(marker in text for marker in cls._KERNEL_IMAGE_INVALID_MARKERS)
+
+    # The same failure from a CUDA build (#12842). ggml prefixes the error with
+    # GGML_CUDA_NAME, "ROCm" on a HIP build, so the #7624 crash never matches. Group 1
+    # is cudaErrorInvalidKernelImage (a fatbin the driver cannot decode: CUDA >= 12.8
+    # builds compress with -compress-mode, which drivers older than 12.4 cannot read)
+    # or cudaErrorNoKernelImageForDevice (no SASS or PTX for this GPU). Either way every
+    # kernel fails alike, so no fit, flash-attn, slot or drafter retry can help.
+    _CUDA_KERNEL_IMAGE_RE = re.compile(
+        r"\bCUDA error: (device kernel image is invalid|no kernel image is available for execution)",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def _cuda_kernel_image_error(cls, output: str) -> Optional[str]:
+        """The CUDA kernel-image error text in ``output`` (lowercased), or None."""
+        match = cls._CUDA_KERNEL_IMAGE_RE.search(output or "")
+        return match.group(1).lower() if match else None
+
+    @staticmethod
+    def _cuda_build_driver_note(binary: Optional[str]) -> str:
+        """The driver's and the build's CUDA versions from the managed install's
+        marker, as a parenthetical, or "" when either side is unknown."""
+        try:
+            from utils.llama_cpp_update import _llama_install_root
+
+            root = _llama_install_root(binary) if binary else None
+            if root is None:
+                return ""
+            marker = json.loads((root / "UNSLOTH_PREBUILT_INFO.json").read_text(encoding = "utf-8"))
+            profile = marker.get("host_profile") or {}
+            driver = profile.get("driver_cuda_version")
+            toolkit = marker.get("toolkit_line")
+            if not (isinstance(driver, list) and len(driver) == 2 and toolkit):
+                return ""
+            return (
+                f" (this NVIDIA driver supports CUDA {int(driver[0])}.{int(driver[1])}; "
+                f"this llama.cpp was built with CUDA {str(toolkit)[:16]})"
+            )
+        except Exception:
+            return ""
+
+    @classmethod
+    def _cuda_kernel_image_message(cls, error: str, binary: Optional[str]) -> str:
+        remedy = cls._runtime_remedy(binary)
+        if error == "device kernel image is invalid":
+            return (
+                'llama-server could not load its CUDA kernels ("device kernel image is '
+                'invalid"): the NVIDIA driver is too old for this llama.cpp CUDA build'
+                f"{cls._cuda_build_driver_note(binary)}. This is not the GGUF file and not "
+                "out of memory. Update the NVIDIA driver to R550 or newer (CUDA 12.4+), "
+                f"or {remedy}."
+            )
+        return (
+            'llama-server could not load its CUDA kernels ("no kernel image is available '
+            "for execution\"): this llama.cpp CUDA build has no kernels for this GPU's "
+            "architecture. This is not the GGUF file and not out of memory. "
+            f"{remedy[0].upper()}{remedy[1:]}, or use the CPU or Vulkan backend."
+        )
 
     @classmethod
     def _arch_crash_retry_gpu_ids(cls, selected, enumerated) -> list[int]:
@@ -30133,8 +30197,12 @@ class LlamaCppBackend:
                         _hip_rocr_mismatch = self._is_bundled_hip_rocr_mismatch(_startup_output)
                         # No fit retry reaches it, and the rung below needs this
                         # launch's argv. Whole buffer: it arrives with a backtrace.
-                        _capability_crash = _tensor_capability_crash or self._is_kv_unified_refused(
-                            "\n".join(self._stdout_lines)
+                        _capability_crash = (
+                            _tensor_capability_crash
+                            or self._is_kv_unified_refused("\n".join(self._stdout_lines))
+                            # #12842: no placement loads a kernel the driver cannot.
+                            or self._cuda_kernel_image_error("\n".join(self._stdout_lines[-80:]))
+                            is not None
                         )
                         if (
                             not _did_rocm_retry
@@ -31126,6 +31194,29 @@ class LlamaCppBackend:
                             target_unknown = _cache_target_unknown,
                         )
                         healthy = _spawn_and_wait(cmd, label = "-archfallback")
+
+                # A CUDA build whose kernels this driver or GPU cannot load (#12842).
+                # The #7624 respawn above already had its chance at another device;
+                # every rung below (one slot, flash-attn off, no drafter, CPU projector)
+                # keeps the same kernels, so stop here with the real cause.
+                if not healthy and not _load_cancelled():
+                    _cuda_image_out = "\n".join(self._stdout_lines[-80:])
+                    if self._cuda_kernel_image_error(_cuda_image_out) is not None:
+                        _proc_snap_ki = self._process  # snapshot: re-reading races the teardown
+                        _ki_rc = _proc_snap_ki.poll() if _proc_snap_ki is not None else None
+                        self._kill_process()
+                        _raise_terminal_load_failure(
+                            self._classify_llama_start_failure(
+                                _cuda_image_out,
+                                gguf_path,
+                                self._model_identifier,
+                                _ki_rc,
+                                binary,
+                                self._llama_log_path,
+                                (self._api_key,),
+                                self._extra_args,
+                            )
+                        )
 
                 # Studio adds --kv-unified itself above one slot, so nothing the user
                 # changes reaches it: retry at one slot, context intact. It aborts, so
