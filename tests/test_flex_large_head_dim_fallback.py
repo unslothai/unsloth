@@ -255,11 +255,8 @@ def test_forcing_the_env_var_cannot_override_an_architecture_opt_out(monkeypatch
     assert u._enable_flex_attention_support(cls, "t5gemma2") is False
 
 
-# Upstream skips the mask for an unpadded batch, but `_ignore_causal_mask_sdpa` returns False
-# while tracing, so a compiled create_causal_mask always builds one. unsloth-zoo#1575 restores the
-# skip in the wrapper: an unpadded, cache-free SDPA call runs the original eagerly and gets None,
-# while padding, packed position_ids and UNSLOTH_SKIP_CAUSAL_MASK=0 keep the mask. Pins that
-# contract, and that with UNSLOTH_COMPILE_DISABLE=1 the uncompiled wrapper keeps upstream's skip.
+# `_ignore_causal_mask_sdpa` returns False while tracing, so a compiled create_causal_mask always
+# builds a mask; unsloth-zoo#1575 restores upstream's unpadded skip by running eagerly.
 
 
 def _mask_for(
@@ -285,8 +282,7 @@ def _mask_for(
         vocab_size = 128,
     )
     cfg._attn_implementation = "sdpa"
-    # Read the upstream signature, not the wrapper's (*args, **kwargs): transformers <= 5.1 names
-    # it `input_embeds` and requires `cache_position`, 5.2+ renamed it and 5.9 dropped the cache.
+    # Upstream signature, not the wrapper's: <= 5.1 `input_embeds` + `cache_position`, 5.9 no cache.
     original = getattr(
         masking_utils, "_unsloth_original_create_causal_mask", masking_utils.create_causal_mask
     )
@@ -319,7 +315,6 @@ def _padded_masks():
 def _packed_position_ids():
     import torch
 
-    # Two sequences of 32 packed into each row: position ids reset mid-row.
     return torch.arange(32).repeat(2).unsqueeze(0).expand(2, -1)
 
 
@@ -355,8 +350,7 @@ def test_upstream_skips_the_mask_for_an_unpadded_batch():
     import torch
 
     create = _uncompiled_create_causal_mask()
-    # No position_ids with no mask: transformers 4.x treats any position_ids as possibly packed
-    # (find_packed_sequence_indices never returns None there) and then keeps the mask.
+    # transformers 4.x treats any position_ids as possibly packed and keeps the mask.
     assert _mask_for(create, None, position_ids = None) is None
     assert _mask_for(create, torch.ones(2, 64, dtype = torch.long)) is None
 
@@ -405,7 +399,6 @@ def test_compiled_wrapper_skips_the_mask_for_an_unpadded_batch(_skip_on):
     before = _skip_count()
     assert _mask_for(create, None) is None
     assert _mask_for(create, torch.ones(2, 64, dtype = torch.long)) is None
-    # The skip came from the wrapper's eager path, not from a silent fallback.
     assert _skip_count() == before + 2
 
 
