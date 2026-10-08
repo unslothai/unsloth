@@ -10330,6 +10330,9 @@ if ($NeedLlamaSourceBuild -and -not $script:LlamaBuildToolsDeclined) {
     if ($OpenSslRoot) {
         $OpenSslAvailable = $true
         substep "OpenSSL dev found at $OpenSslRoot"
+    } elseif ($script:LlamaSourceBuildIsFallback -and -not (Test-LlamaBuildToolsInstallAllowed)) {
+        # Optional for the build, so it is skipped rather than declining the whole build.
+        substep "OpenSSL dev not found; building without HTTPS (UNSLOTH_INSTALL_BUILD_TOOLS=1 installs it)" "Yellow"
     } else {
         Write-StudioLine ""
         substep "installing OpenSSL dev (for HTTPS in llama-server)..."

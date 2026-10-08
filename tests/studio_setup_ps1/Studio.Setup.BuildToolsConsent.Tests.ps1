@@ -143,6 +143,14 @@ Describe 'only the automatic fallback is gated' {
         $script:SetupText | Should -Match ([regex]::Escape('if ($NeedLlamaSourceBuild -and -not $script:LlamaBuildToolsDeclined) {'))
     }
 
+    It 'a fallback without consent skips the OpenSSL install even when every other tool is present' {
+        $skip = $script:SetupText.IndexOf('} elseif ($script:LlamaSourceBuildIsFallback -and -not (Test-LlamaBuildToolsInstallAllowed)) {')
+        $install = $script:SetupText.IndexOf('winget install -e --id ShiningLight.OpenSSL.Dev')
+        $skip | Should -BeGreaterThan 0
+        $skip | Should -BeLessThan $install
+        $script:SetupText.Substring($skip, $install - $skip) | Should -Match 'building without HTTPS'
+    }
+
     It 'the gate checks the fallback flag before asking' {
         $script:SetupText | Should -Match ([regex]::Escape('$script:LlamaSourceBuildIsFallback -and (Test-LlamaBuildToolsMissing) -and'))
     }
