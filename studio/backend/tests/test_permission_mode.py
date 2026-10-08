@@ -2346,6 +2346,9 @@ def test_python_classifier(code, unsafe):
         ("import numpy as np\nloader, _ = (np.load, None)\nloader('a.npy', None, True)", True),
         ("from numpy.lib._npyio_impl import load\nload('a.npy', None, True)", True),
         ("import numpy.lib.npyio as io\nio.load('a.npy', None, True)", True),
+        ("from numpy.lib import _npyio_impl as io\nio.load('a.npy', None, True)", True),
+        ("from numpy.lib.format import read_array\nread_array(open('a.npy', 'rb'), True)", True),
+        ("import numpy as np\nnp.lib.format.read_array(open('a.npy', 'rb'))", False),
     ],
 )
 def test_python_classifier_numpy_allow_pickle(code, unsafe):

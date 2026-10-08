@@ -38,9 +38,9 @@ const BLOCK_BREAK_RE =
 const VARIABLE_PROSE_RE =
   /^(?!\w+\s+$)(?:[A-Za-z]{2,}\w*|_\w+|\{[A-Za-z_]\w*\})[\w\s.,;:!?'"()/`|&<>=*\-\p{L}\p{M}\u3000-\u303f\uff00-\uff65]*(?:[\s/:,.;|<>=\-\u3000-\u303f\uff00-\uff65]|[^\P{L}\p{ASCII}]|[\s(]["'(`])$/u;
 // VARIABLE_PROSE_RE backtracks polynomially (about cubic), so a longer span, or any span past a
-// per-message budget, is left to the math path: worst case stays near 75 ms per message.
+// per-message budget, is left to the math path: worst case stays near 20 ms per message.
 const MAX_VARIABLE_PROSE_SPAN = 128;
-const VARIABLE_PROSE_BUDGET = 8192;
+const VARIABLE_PROSE_BUDGET = 2048;
 const NEW_TOKEN_RE = /[\w{\\]/;
 const isAsciiLetter = (c: number) => (c | 32) >= 97 && (c | 32) <= 122;
 const isWordChar = (c: number) =>

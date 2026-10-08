@@ -6187,6 +6187,8 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     numpy_aliases = {"numpy"}
     load_fn_aliases: "set[str]" = set()
     load_fn_attr_aliases: "set[str]" = set()
+    # numpy.lib.format.read_array(fp, allow_pickle) unpickles too, with the flag second.
+    read_array_aliases = {"read_array"}
     # Names bound to the builtin getattr (g = getattr), so a dynamic lookup aliased through it still fails closed.
     getattr_aliases = {"getattr"}
     # Names bound to functools.partial, so a partial that wraps open/a writer fails closed when it is called.
@@ -6216,6 +6218,13 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 and node.value.id in numpy_aliases
             )
         return False
+
+    def _allow_pickle_position(func) -> "int | None":
+        # Positional index of allow_pickle: numpy.load(file, mmap_mode, allow_pickle), read_array(fp, allow_pickle).
+        if _is_numpy_load(func):
+            return 2
+        name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+        return 1 if name in read_array_aliases else None
 
     def _is_dynamic_namespace(node) -> bool:
         # A namespace mapping whose .get/.pop/.setdefault (or subscript) can return open/eval/a mutator:
@@ -6336,6 +6345,12 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 for alias in node.names:
                     if alias.name in ("load", "*"):
                         load_fn_aliases.add(alias.asname or "load")
+                    elif alias.name == "read_array":
+                        read_array_aliases.add(alias.asname or "read_array")
+                    else:
+                        numpy_aliases.add(
+                            alias.asname or alias.name
+                        )  # from numpy.lib import format as fmt
             if node.module == "operator":
                 for alias in node.names:
                     if alias.name == "methodcaller":
@@ -6706,9 +6721,9 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     kw.arg == "allow_pickle" and not _is_literal_false(kw.value)
                     for kw in node.keywords
                 ) or (
-                    _is_numpy_load(func)
+                    (_flag_pos := _allow_pickle_position(func)) is not None
                     and (
-                        (len(node.args) >= 3 and not _is_literal_false(node.args[2]))
+                        (len(node.args) > _flag_pos and not _is_literal_false(node.args[_flag_pos]))
                         or any(isinstance(arg, ast.Starred) for arg in node.args)
                         or any(kw.arg is None for kw in node.keywords)
                     )
