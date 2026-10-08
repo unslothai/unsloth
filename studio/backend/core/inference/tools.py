@@ -6181,9 +6181,12 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     # Module names bound to a pickle-backed loader (import torch as t), so t.load(...) is still gated as a
     # code-executing deserialize.
     load_module_aliases = set(_AUTO_UNSAFE_PY_LOAD_MODULES)
-    # Names bound to a load function (from numpy import load as read; loader = np.load), so its positional or
-    # splatted allow_pickle is still gated.
-    load_fn_aliases = {"load"}
+    # numpy module names (import numpy as np) and names bound to numpy.load (from numpy import load as read;
+    # loader = np.load; box.reader = np.load), so its positional or splatted allow_pickle is still gated while
+    # json.load(*args) stays safe.
+    numpy_aliases = {"numpy"}
+    load_fn_aliases: "set[str]" = set()
+    load_fn_attr_aliases: "set[str]" = set()
     # Names bound to the builtin getattr (g = getattr), so a dynamic lookup aliased through it still fails closed.
     getattr_aliases = {"getattr"}
     # Names bound to functools.partial, so a partial that wraps open/a writer fails closed when it is called.
@@ -6202,6 +6205,17 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     # direct open() site. Track aliases so an aliased invoker is still checked; the write-callable gate keeps map(len,
     # ...) safe.
     invoker_aliases = set(_HIGHER_ORDER_INVOKERS)
+
+    def _is_numpy_load(node) -> bool:
+        if isinstance(node, ast.Name):
+            return node.id in load_fn_aliases
+        if isinstance(node, ast.Attribute):
+            return node.attr in load_fn_attr_aliases or (
+                node.attr == "load"
+                and isinstance(node.value, ast.Name)
+                and node.value.id in numpy_aliases
+            )
+        return False
 
     def _is_dynamic_namespace(node) -> bool:
         # A namespace mapping whose .get/.pop/.setdefault (or subscript) can return open/eval/a mutator:
@@ -6311,14 +6325,17 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     os_aliases.add(alias.asname or alias.name)
                 elif alias.name in _AUTO_UNSAFE_PY_LOAD_MODULES:
                     load_module_aliases.add(alias.asname or alias.name)
+                elif alias.name == "numpy":
+                    numpy_aliases.add(alias.asname or "numpy")
                 elif alias.name == "operator":
                     operator_aliases.add(alias.asname or "operator")
                 elif alias.name == "fileinput":
                     fileinput_aliases.add(alias.asname or "fileinput")
         elif isinstance(node, ast.ImportFrom):
-            for alias in node.names:
-                if alias.name == "load":
-                    load_fn_aliases.add(alias.asname or "load")
+            if node.module == "numpy":
+                for alias in node.names:
+                    if alias.name in ("load", "*"):
+                        load_fn_aliases.add(alias.asname or "load")
             if node.module == "operator":
                 for alias in node.names:
                     if alias.name == "methodcaller":
@@ -6370,10 +6387,9 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 assign_targets = node.targets
             targets = [t.id for t in assign_targets if isinstance(t, ast.Name)]
             attr_targets = [t.attr for t in assign_targets if isinstance(t, ast.Attribute)]
-            if (isinstance(value, ast.Name) and value.id in load_fn_aliases) or (
-                isinstance(value, ast.Attribute) and value.attr == "load"
-            ):
+            if _is_numpy_load(value):
                 load_fn_aliases.update(targets)  # loader = np.load
+                load_fn_attr_aliases.update(attr_targets)  # box.reader = np.load
             if isinstance(value, ast.Name) and value.id in open_aliases:
                 open_aliases.update(targets)
                 attr_open_aliases.update(attr_targets)  # box.f = open
@@ -6684,11 +6700,7 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     kw.arg == "allow_pickle" and not _is_literal_false(kw.value)
                     for kw in node.keywords
                 ) or (
-                    (
-                        func.attr == "load"
-                        if isinstance(func, ast.Attribute)
-                        else getattr(func, "id", None) in load_fn_aliases
-                    )
+                    _is_numpy_load(func)
                     and (
                         (len(node.args) >= 3 and not _is_literal_false(node.args[2]))
                         or any(isinstance(arg, ast.Starred) for arg in node.args)
