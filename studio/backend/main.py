@@ -1722,6 +1722,10 @@ from utils.keyless_api_access import KeylessToolPolicyMiddleware  # noqa: E402
 
 app.add_middleware(KeylessToolPolicyMiddleware)
 
+from core.inference.linked_instances import LinkedToolsOffMiddleware  # noqa: E402
+
+app.add_middleware(LinkedToolsOffMiddleware)
+
 from utils.remote_access_settings import RemoteAccessStopResponseMiddleware  # noqa: E402
 
 app.add_middleware(RemoteAccessStopResponseMiddleware)

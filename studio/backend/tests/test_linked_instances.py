@@ -624,3 +624,51 @@ def test_proxy_keeps_the_query_and_streams_binary(monkeypatch):
 
     assert seen["url"] == "https://remote.example/api/hub/gguf-variants?repo_id=unsloth%2Fa"
     assert response.media_type == "image/png" and asyncio.run(body()) == b"\x89PNG"
+
+
+def test_the_tools_off_header_rides_until_the_owner_allows_tools(monkeypatch):
+    row = linked_instances_db.create_instance("wsl", "http://remote", REMOTE_KEY)
+    seen = []
+
+    def handler(request: httpx.Request):
+        seen.append(request.headers.get(linked_instances.TOOLS_OFF_HEADER))
+        return httpx.Response(200, json = {"ok": True})
+
+    _remote(handler, monkeypatch)
+    body = {"model": "@wsl/unsloth/a", "messages": [], "enable_tools": True}
+
+    async def run():
+        request = _request(dict(body))
+        target = await linked_instances.resolve(request, body["model"])
+        return await linked_instances.forward(request, "chat/completions", target)
+
+    asyncio.run(run())
+    linked_instances_db.update_instance(row["id"], allow_tools = True)
+    linked_instances.forget(row["id"])
+    asyncio.run(run())
+    assert seen == ["1", None]
+
+
+def test_the_tools_off_header_beats_a_remote_launched_with_enable_tools():
+    from types import SimpleNamespace
+
+    from starlette.applications import Starlette
+    from starlette.responses import JSONResponse
+    from starlette.routing import Route
+    from starlette.testclient import TestClient
+
+    from routes.inference import _effective_enable_tools
+    from state.tool_policy import reset_tool_policy, set_tool_policy
+
+    async def endpoint(request):
+        return JSONResponse({"tools": _effective_enable_tools(SimpleNamespace(enable_tools = False))})
+
+    app = linked_instances.LinkedToolsOffMiddleware(Starlette(routes = [Route("/", endpoint)]))
+    set_tool_policy(True)
+    try:
+        with TestClient(app) as client:
+            assert client.get("/").json() == {"tools": True}
+            off = client.get("/", headers = {linked_instances.TOOLS_OFF_HEADER: "1"})
+            assert off.json() == {"tools": False}
+    finally:
+        reset_tool_policy()

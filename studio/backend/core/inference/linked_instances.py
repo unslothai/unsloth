@@ -32,6 +32,9 @@ logger = get_logger(__name__)
 MODEL_PREFIX = "@"
 # Set on forwarded requests so a remote never forwards again (A links B links A).
 HOP_HEADER = "X-Unsloth-Linked-Hop"
+# Sent when the owner has not allowed tools: a body's `enable_tools: false` loses to a remote's
+# `--enable-tools`, so the remote hard-disables tools for the request instead.
+TOOLS_OFF_HEADER = "X-Unsloth-Linked-Tools-Off"
 _FORWARDED_HEADERS = ("anthropic-version", "anthropic-beta")
 
 # Tool fields run code, read files and reach the network ON THE REMOTE, under its permission
@@ -118,6 +121,8 @@ def split_model(model: object) -> Optional[tuple[str, str]]:
 def _auth_headers(instance: dict) -> dict[str, str]:
     key = linked_instances_db.get_api_key(instance["id"])
     headers = {HOP_HEADER: "1"}
+    if not instance.get("allow_tools"):
+        headers[TOOLS_OFF_HEADER] = "1"
     if key:
         headers["Authorization"] = f"Bearer {key}"
     return headers
@@ -132,6 +137,24 @@ def _may_use_linked(request: Request) -> bool:
     if account_access.managed_account():
         return False
     return not request_admitted_without_credential(request)
+
+
+class LinkedToolsOffMiddleware:
+    """Receiving side of ``TOOLS_OFF_HEADER``. A caller can only take tools away from itself."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http" or not any(
+            name.lower() == TOOLS_OFF_HEADER.lower().encode()
+            for name, _ in scope.get("headers", ())
+        ):
+            await self.app(scope, receive, send)
+            return
+        from state.tool_policy import tools_force_disabled
+        with tools_force_disabled():
+            await self.app(scope, receive, send)
 
 
 async def resolve(request: Request, model: object) -> Optional[tuple[dict, str]]:
