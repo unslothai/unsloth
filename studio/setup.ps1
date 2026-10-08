@@ -2750,16 +2750,46 @@ function Find-VsBuildTools {
     return $null
 }
 
+# Same ceiling Resolve-CudaToolkit reads: nvidia-smi, else the driver library.
+function Get-LlamaDriverMaxCuda {
+    $smi = ""
+    if ($NvidiaSmiExe -and (Get-Command Invoke-NvidiaSmiBounded -ErrorAction SilentlyContinue)) {
+        try { $smi = Invoke-NvidiaSmiBounded $NvidiaSmiExe } catch { }
+    }
+    if ($smi -match "CUDA(?: UMD)? Version:\s+(\d+)\.(\d+)") { return "$($Matches[1]).$($Matches[2])" }
+    if (Get-Command Get-NvidiaLibraryInventory -ErrorAction SilentlyContinue) {
+        $inv = Get-NvidiaLibraryInventory
+        if ($inv) { return "$($inv.CudaMajor).$($inv.CudaMinor)" }
+    }
+    return $null
+}
+
+function Get-NvccMajor {
+    param([string]$Nvcc)
+    try { if ((& $Nvcc --version 2>&1 | Out-String) -match 'release\s+(\d+)\.') { return [int]$Matches[1] } } catch { }
+    return $null
+}
+
 function Test-LlamaBuildToolsMissing {
     if ($null -eq (Get-Command git -ErrorAction SilentlyContinue)) { return $true }
     if ($null -eq (Get-Command cmake -ErrorAction SilentlyContinue)) { return $true }
     # A CUDA source build installs the Toolkit (several GB) when no nvcc is found.
-    $nvcc = if ($HasNvidiaDriverEvidence) { Find-Nvcc } else { $null }
-    if ($HasNvidiaDriverEvidence -and -not $nvcc) { return $true }
+    $nvccExe = $null
+    if ($HasNvidiaDriverEvidence) {
+        # A toolkit newer than the driver is rejected by Resolve-CudaToolkit, which then installs one.
+        $max = Get-LlamaDriverMaxCuda
+        $nvccExe = if ($max) { Find-Nvcc -MaxVersion $max } else { $null }
+        if (-not $nvccExe) {
+            $nvccExe = Find-Nvcc
+            $major = if ($nvccExe -and $max) { Get-NvccMajor $nvccExe } else { $null }
+            if ($max -and ($null -eq $major -or $major -gt [int]$max.Split('.')[0])) { $nvccExe = $null }
+        }
+    }
+    if ($HasNvidiaDriverEvidence -and -not $nvccExe) { return $true }
     # Phase 4 upgrades a CMake too old for VS 2026 via winget.
     if ($CmakeGenerator -match 'Visual Studio 18\b' -and -not (Test-CmakeCanDriveGenerator -Generator $CmakeGenerator)) { return $true }
     # Resolve-CudaToolkit copies missing CUDA .targets into VS, elevating when denied.
-    $cudaRoot = if ($nvcc) { Split-Path (Split-Path $nvcc -Parent) -Parent } else { $null }
+    $cudaRoot = if ($nvccExe) { Split-Path (Split-Path $nvccExe -Parent) -Parent } else { $null }
     if ($cudaRoot -and $script:VsInstallPath) {
         $extras = Join-Path $cudaRoot "extras\visual_studio_integration\MSBuildExtensions"
         $custom = Get-VcBuildCustomizationsDir -VsInstallPath $script:VsInstallPath -Generator $CmakeGenerator

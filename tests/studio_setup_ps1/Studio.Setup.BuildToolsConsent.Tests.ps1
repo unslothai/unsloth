@@ -10,6 +10,7 @@ BeforeAll {
     . ([scriptblock]::Create((Get-FunctionSource -Path $script:SetupPs1 -Name 'Test-LlamaBuildToolsMissing')))
     . ([scriptblock]::Create((Get-FunctionSource -Path $script:SetupPs1 -Name 'Test-SetupConsoleHeadless')))
     . ([scriptblock]::Create((Get-FunctionSource -Path $script:SetupPs1 -Name 'Get-VcBuildCustomizationsDir')))
+    function Get-LlamaDriverMaxCuda { $null }
     function Write-StudioLine { param([string]$Text, [string]$ForegroundColor) }
     $script:SetupText = Get-Content -LiteralPath $script:SetupPs1 -Raw
 }
@@ -82,6 +83,21 @@ Describe 'Test-LlamaBuildToolsMissing' {
         function Find-Nvcc { $Nvcc }
         $HasNvidiaDriverEvidence = [bool]$Nvidia
         $script:VsInstallPath = $Vs
+        Test-LlamaBuildToolsMissing | Should -Be $Expected
+    }
+
+    It 'a CUDA toolkit newer than the driver counts as missing (toolkit <Major>, driver 12.8)' -ForEach @(
+        @{ Major = 13; Expected = $true }, @{ Major = 12; Expected = $false }
+    ) {
+        Mock Get-Command { [pscustomobject]@{ Name = $Name } } -ParameterFilter { $Name -in 'git', 'cmake' }
+        function Find-VsBuildTools { $null }
+        function Find-Nvcc { param([string]$MaxVersion) if ($MaxVersion) { $null } else { 'C:\CUDA\v13.0\bin\nvcc.exe' } }
+        function Get-LlamaDriverMaxCuda { '12.8' }
+        function Get-NvccMajor { param($Nvcc) $Major }
+        $HasNvidiaDriverEvidence = $true
+        $CmakeGenerator = $null
+        $script:VsInstallPath = $null
+        $script:VsInstallPath = 'Z:\none'
         Test-LlamaBuildToolsMissing | Should -Be $Expected
     }
 
