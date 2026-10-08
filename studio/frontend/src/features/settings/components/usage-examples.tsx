@@ -1027,8 +1027,12 @@ export function UsageExamples({
   const toolsKey =
     apiKey ||
     (keylessBase && keylessTools ? KEYLESS_KEY_PLACEHOLDER : KEY_PLACEHOLDER);
-  // keyless "inference" scope never reaches /api/train, so always name a real key
-  const trainKey = apiKey || KEY_PLACEHOLDER;
+  // keyless "inference" scope never reaches /api/train; "full" admits the dummy bearer there
+  const trainKey =
+    apiKey ||
+    (keylessBase && keylessScope === "full"
+      ? KEYLESS_KEY_PLACEHOLDER
+      : KEY_PLACEHOLDER);
   // agent tools are client-side schemas sent through the admitted inference routes.
   const agentKey =
     apiKey || (keylessBase ? KEYLESS_KEY_PLACEHOLDER : KEY_PLACEHOLDER);
