@@ -137,6 +137,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -3443,7 +3444,7 @@ export function ChatPage({
           : `project:${view.projectId}:${projectNewThreadNonce}`
         : artifactViewKey;
   // biome-ignore lint/correctness/useExhaustiveDependencies: another chat on screen is the reset
-  useEffect(() => {
+  useLayoutEffect(() => {
     useBrowserStore.getState().closeChatPages();
   }, [shownChatKey]);
 

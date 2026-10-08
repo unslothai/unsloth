@@ -127,6 +127,15 @@ test("Back and Forward cannot assign an outgoing local thread to an incoming new
   assert.doesNotMatch(identity, /isAssistantLocalThreadId/);
 });
 
+test("a chat switch removes stale pages before destination artifacts auto-open", () => {
+  const page = read("../src/features/chat/chat-page.tsx");
+  const cleanup = page.slice(page.indexOf("const shownChatKey ="), page.indexOf("const hasActiveModel"));
+  assert.match(cleanup, /useLayoutEffect\(\(\) => \{\s*useBrowserStore\.getState\(\)\.closeChatPages\(\);/);
+  const card = read("../src/features/chat/artifacts/artifact-card.tsx");
+  const autoOpen = card.slice(card.indexOf("const autoOpenAttemptedRef"), card.indexOf("const pageTitle"));
+  assert.match(autoOpen, /useEffect\(\(\) => \{/);
+});
+
 test("a new chat started inside a project closes the previous project chat's pages", () => {
   const page = read("../src/features/chat/chat-page.tsx");
   const key = page.slice(page.indexOf("const shownChatKey ="), page.indexOf("closeChatPages();"));
