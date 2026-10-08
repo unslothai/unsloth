@@ -57,19 +57,19 @@ _LOOP_NOTE = re.compile(
 
 def split_images(result: str) -> tuple[str, list[dict]]:
     """Validated, so tool text that merely mentions the marker is not truncated."""
-    text, images = _split_images(result)
-    notes = ""
-    body = result
-    # At most the starved note and then the repeat note.
+    end = len(result)
+    # At most the starved note and then the repeat note; peeled first so the array parses once.
     for _ in range(2):
-        if images or not body.endswith("]"):
+        if not result.endswith("]", 0, end):
             break
-        cut = body.rfind("\n\n[", max(0, len(body) - 512))
-        if cut == -1 or not _LOOP_NOTE.fullmatch(body, cut + 2):
+        cut = result.rfind("\n\n[", max(0, end - 512), end)
+        if cut == -1 or not _LOOP_NOTE.fullmatch(result, cut + 2, end):
             break
-        body, notes = body[:cut], body[cut:] + notes
-        text, images = _split_images(body)
-    return (text + notes, images) if images else (result, [])
+        end = cut
+    if end == len(result):
+        return _split_images(result)
+    text, images = _split_images(result[:end])
+    return (text + result[end:], images) if images else (result, [])
 
 
 def _split_images(result: str) -> tuple[str, list[dict]]:
