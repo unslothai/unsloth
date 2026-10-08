@@ -8,6 +8,7 @@ import test from "node:test";
 import {
   defaultsFor,
   defaultsKeyFor,
+  loadedRecipeFor,
   residentDefaultsKey,
   resolutionFor,
 } from "../src/features/images/image-generation-defaults.ts";
@@ -187,4 +188,30 @@ test("every Qwen-Image-Layered spelling the backend accepts gets its 20 / 2.5 re
   ]) {
     assert.deepEqual(defaultsFor(id), { steps: 20, guidance: 2.5 }, id);
   }
+});
+
+test("a community single file picked by path takes its family recipe once loaded (#11391)", () => {
+  const pick = defaultsFor(defaultsKeyFor("/models/checkpoints/RealVisXL_V4.0.safetensors", null));
+  const resident = residentDefaultsKey(
+    "/models/checkpoints",
+    "stabilityai/stable-diffusion-xl-base-1.0",
+    { value: "sdxl", source: "auto" },
+  );
+  assert.deepEqual(loadedRecipeFor(pick, resident), { steps: 25, guidance: 7 });
+  // A pick whose name already chose a recipe keeps it (Schnell is not re-seeded as dev).
+  assert.equal(
+    loadedRecipeFor(defaultsFor("black-forest-labs/FLUX.1-schnell"), "black-forest-labs/FLUX.1-dev"),
+    null,
+  );
+  // An unrecognised resident leaves the form alone.
+  assert.equal(loadedRecipeFor(pick, "/models/unknown"), null);
+  assert.equal(loadedRecipeFor(null, resident), null);
+});
+
+test("the Images page applies the loaded family recipe only to an untouched fallback form", () => {
+  const src = readSrc("features/images/images-page.tsx");
+  const ready = src.slice(src.indexOf('if (p.phase === "ready")'), src.indexOf('if (p.phase === "error")'));
+  assert.match(ready, /loadedRecipeFor\(\s*pickDefaults\.current/);
+  assert.match(ready, /!pickRecipeSuperseded\.current\?\.\(\)/);
+  assert.match(ready, /cur === DEFAULT_GEN\.steps \? loadedRecipe\.steps : cur/);
 });

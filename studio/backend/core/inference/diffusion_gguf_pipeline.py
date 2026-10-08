@@ -1,0 +1,100 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Load a whole-pipeline GGUF (stable-diffusion.cpp ``convert`` of an SDXL checkpoint) through diffusers.
+
+diffusers' pipeline-level ``from_single_file`` reads a GGUF as packed bytes for every component, so the text encoders
+and VAE fail on their packed shapes (816 vs 768). The denoiser loads quantized through ``GGUFQuantizationConfig`` at
+model level, which accepts a state dict; the remaining components are dequantized once and handed to the pipeline
+loader in place of the file read.
+"""
+
+import threading
+from typing import Any, Optional
+
+_DENOISER_PREFIX = "model.diffusion_model."
+_PATCH_LOCK = threading.Lock()
+
+
+def split_whole_pipeline_checkpoint(checkpoint: dict, dtype: Any) -> tuple[dict, dict]:
+    """(denoiser state dict still GGUF-packed, every other tensor dequantized at ``dtype``)."""
+    from diffusers.quantizers.gguf.utils import GGUFParameter, dequantize_gguf_tensor
+
+    denoiser: dict = {}
+    rest: dict = {}
+    for key, value in checkpoint.items():
+        if key.startswith(_DENOISER_PREFIX):
+            denoiser[key] = value
+        elif isinstance(value, GGUFParameter):
+            rest[key] = dequantize_gguf_tensor(value).to(dtype)
+        else:
+            rest[key] = value
+    return denoiser, rest
+
+
+def load_whole_pipeline_gguf(
+    pipeline_cls: Any,
+    denoiser_cls: Any,
+    path: str,
+    pipe_kwargs: dict,
+    *,
+    dtype: Any,
+    denoiser_attr: str = "unet",
+    logger: Optional[Any] = None,
+) -> Any:
+    """``pipeline_cls`` assembled from a GGUF holding the whole pipeline: the denoiser stays GGUF-quantized (dequantized
+    per forward at ``dtype``), the text encoders and VAE load dense at ``dtype``. ``pipe_kwargs`` are the
+    safetensors path's ``from_single_file`` kwargs (``config`` on the family base repo)."""
+    import diffusers
+    import diffusers.loaders.single_file as single_file_mod
+    from diffusers.loaders.single_file_utils import load_single_file_checkpoint
+
+    checkpoint = load_single_file_checkpoint(
+        path,
+        local_files_only = pipe_kwargs.get("local_files_only"),
+        cache_dir = pipe_kwargs.get("cache_dir"),
+        token = pipe_kwargs.get("token"),
+    )
+    denoiser_sd, rest = split_whole_pipeline_checkpoint(checkpoint, dtype)
+    del checkpoint
+    if not denoiser_sd:
+        raise ValueError(f"'{path}' carries no {denoiser_attr} tensors ({_DENOISER_PREFIX}*).")
+    model_kwargs = {
+        key: pipe_kwargs[key]
+        for key in ("local_files_only", "cache_dir", "token")
+        if pipe_kwargs.get(key) is not None
+    }
+    denoiser = denoiser_cls.from_single_file(
+        denoiser_sd,
+        config = pipe_kwargs.get("config"),
+        subfolder = denoiser_attr,
+        quantization_config = diffusers.GGUFQuantizationConfig(compute_dtype = dtype),
+        torch_dtype = dtype,
+        **model_kwargs,
+    )
+    del denoiser_sd
+    original = single_file_mod.load_single_file_checkpoint
+
+    def _read(link, *args, **kwargs):
+        # Only this file's read is redirected; any other single-file load keeps the real reader
+        if str(link) == str(path):
+            return rest
+        return original(link, *args, **kwargs)
+
+    # Module-global swap: serialized so concurrent single-file loads never see another load's tensors
+    with _PATCH_LOCK:
+        single_file_mod.load_single_file_checkpoint = _read
+        try:
+            pipe = pipeline_cls.from_single_file(path, **{denoiser_attr: denoiser}, **pipe_kwargs)
+        finally:
+            single_file_mod.load_single_file_checkpoint = original
+    if logger is not None:
+        logger.info(
+            "diffusion.gguf_pipeline: %s loaded from a whole-pipeline GGUF (%s GGUF-quantized, %d other tensors "
+            "dequantized at %s)",
+            pipeline_cls.__name__,
+            denoiser_attr,
+            len(rest),
+            dtype,
+        )
+    return pipe

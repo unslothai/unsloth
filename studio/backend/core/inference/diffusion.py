@@ -45,7 +45,13 @@ from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_m
 from utils.account_context import account_thread, current_account_id
 from utils.hardware import clear_gpu_cache
 
-from .diffusion_content import assert_local_pick_is_dit, content_variant_hint
+from .diffusion_content import (
+    assert_local_pick_is_dit,
+    content_variant_hint,
+    local_pick_file,
+    whole_pipeline_gguf_family,
+)
+from .diffusion_gguf_pipeline import load_whole_pipeline_gguf
 from .diffusion_families import (
     DIFFUSION_CANCELLED_MSG,
     DIFFUSION_NOT_LOADED_MSG,
@@ -1553,6 +1559,11 @@ def _restore_gguf_trimmed_dims(model: Any, state_dict: Any) -> Any:
             continue
         state_dict[name] = have.reshape(want_shape)
     return state_dict
+
+
+def _whole_pipeline_gguf_pick(repo_id: Optional[str], gguf_filename: Optional[str]) -> bool:
+    """True when the pick is an on-disk GGUF carrying a whole single-file pipeline (UNet + text encoders + VAE)."""
+    return whole_pipeline_gguf_family(local_pick_file(repo_id, gguf_filename)) is not None
 
 
 def _dequantize_gguf_outside_linears(
@@ -3200,11 +3211,15 @@ class DiffusionBackend:
 
         if not family_buildable_here(fam, model_kind = kind):
             assert_pipeline_class_available(fam.pipeline_class, fam.name)
-        # Families whose single file IS the whole pipeline have no GGUF path; reject before eviction
-        if kind == "gguf" and fam.single_file_is_pipeline:
+        # A family whose single file IS the whole pipeline loads a GGUF only when it carries the whole pipeline too
+        # (stable-diffusion.cpp ``convert`` of a checkpoint); a denoiser-only GGUF has no companions to pair with.
+        if kind == "gguf" and fam.single_file_is_pipeline and not _whole_pipeline_gguf_pick(
+            repo_id, gguf_filename
+        ):
             raise ValueError(
-                f"'{fam.name}' checkpoints are whole-pipeline single files and have no GGUF "
-                f"transformer variant; load the .safetensors pipeline instead of a GGUF."
+                f"'{fam.name}' checkpoints are whole-pipeline single files, so a GGUF loads only when it "
+                f"also carries the text encoders and VAE (a stable-diffusion.cpp convert of the "
+                f"checkpoint, on disk). Load the .safetensors checkpoint, or such a GGUF, instead."
             )
         # A multi-denoiser family (Ideogram 4) has no transformer-only path; reject before eviction
         if kind in ("gguf", "single_file") and fam.pipeline_only:
@@ -3229,7 +3244,7 @@ class DiffusionBackend:
                 f"base_repo is restricted to unsloth/* repos (or a local path); got '{base_repo}'."
             )
         # A local base_repo loads as a full pipeline; reject a non-pipeline one before eviction
-        whole_file = kind == "single_file" and fam.single_file_is_pipeline
+        whole_file = kind in ("single_file", "gguf") and fam.single_file_is_pipeline
         excluded = (
             (fam.denoiser_attr,) if kind in ("gguf", "single_file") and not whole_file else ()
         )
@@ -6014,6 +6029,9 @@ class DiffusionBackend:
                         speed_mode is not None and str(speed_mode).strip().lower() == SPEED_OFF
                     )
                     transformer_quant = "off" if speed_off else TQ_AUTO
+                    if kind == "gguf" and fam.single_file_is_pipeline:
+                        # A whole-pipeline GGUF (SDXL) has no dense twin in the base repo: its UNet runs as stored.
+                        transformer_quant = "off"
                 # The one case that must fail closed: a named scheme (not auto, not off). Normalized here so "FP8" and
                 # "fp8" refuse identically; a bogus value already raised above.
                 transformer_quant_pinned = (
@@ -7086,9 +7104,9 @@ class DiffusionBackend:
                                         logger,
                                         _load_token,
                                     )
-                        elif kind == "single_file" and fam.single_file_is_pipeline:
+                        elif kind in ("single_file", "gguf") and fam.single_file_is_pipeline:
                             # A single-file SDXL-style checkpoint is the WHOLE pipeline: load it through the pipeline
-                            # class with ``config`` on the base repo.
+                            # class with ``config`` on the base repo. Its GGUF (validated whole) loads the same way.
                             sf_pipe_kwargs: dict[str, Any] = {
                                 "local_files_only": local_files_only,
                                 "torch_dtype": dtype,
@@ -7104,7 +7122,21 @@ class DiffusionBackend:
                                     "A ComfyUI-quantized checkpoint holds only a denoiser; this family's single "
                                     "file is a whole pipeline, so it cannot be loaded here."
                                 )
-                            pipe = pipeline_cls.from_single_file(single_file_path, **sf_pipe_kwargs)
+                            if kind == "gguf":
+                                pipe = load_whole_pipeline_gguf(
+                                    pipeline_cls,
+                                    getattr(diffusers, fam.transformer_class),
+                                    single_file_path,
+                                    sf_pipe_kwargs,
+                                    dtype = dtype,
+                                    denoiser_attr = fam.denoiser_attr,
+                                    logger = logger,
+                                )
+                                _dequantize_gguf_outside_linears(
+                                    getattr(pipe, fam.denoiser_attr), dtype, logger
+                                )
+                            else:
+                                pipe = pipeline_cls.from_single_file(single_file_path, **sf_pipe_kwargs)
                         else:
                             # Transformer-only single file; VAE/text-encoder/scheduler come from the base repo.
                             sf_kwargs: dict[str, Any] = {
