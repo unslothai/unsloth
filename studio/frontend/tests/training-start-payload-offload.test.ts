@@ -10,7 +10,7 @@ import test from "node:test";
 import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
-const { offloadPayload } = await import("../src/features/training/api/mappers.ts");
+const { offloadPayload, offloadSupported } = await import("../src/features/training/api/mappers.ts");
 const { initialTrainingConfigState } = await import(
   "../src/features/training/stores/training-config-policy.ts"
 );
@@ -49,4 +49,23 @@ test("a full finetune never offloads", () => {
 test("depth is clamped to what the backend accepts", () => {
   assert.equal(offloadPayload({ ...base, offloadLayers: 4, prefetchDepth: 40 }).prefetch_depth, 8);
   assert.equal(offloadPayload({ ...base, offloadLayers: 4, prefetchDepth: 0 }).prefetch_depth, 2);
+});
+
+test("offload goes out off wherever the run cannot offload", () => {
+  const on = { ...base, offloadLayers: "auto" as const, offloadVramGb: 8 };
+  for (const blocked of [
+    { gradientCheckpointing: "none" as const },
+    { isEmbeddingModel: true },
+    { modelType: "decision" as const },
+    { modelType: "embeddings" as const },
+  ]) {
+    assert.equal(offloadSupported({ ...on, ...blocked }), false);
+    assert.deepEqual(offloadPayload({ ...on, ...blocked }).offload_layers, 0);
+    assert.equal(offloadPayload({ ...on, ...blocked }).offload_vram_gb, null);
+  }
+  assert.equal(offloadSupported(on), true);
+});
+
+test("a count above the backend limit is clamped instead of failing the start", () => {
+  assert.equal(offloadPayload({ ...base, offloadLayers: 5000 }).offload_layers, 1024);
 });

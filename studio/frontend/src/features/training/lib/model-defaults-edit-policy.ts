@@ -26,6 +26,8 @@ export const MODEL_DEFAULT_STATE_KEYS = [
   "gradientCheckpointing",
   "randomSeed",
   "offloadLayers",
+  "offloadVramGb",
+  "prefetchDepth",
   "visionImageSize",
   "enableWandb",
   "wandbProject",

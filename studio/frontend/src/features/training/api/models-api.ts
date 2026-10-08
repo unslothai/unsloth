@@ -31,6 +31,8 @@ interface BackendTrainingDefaults {
   weight_decay?: number;
   random_seed?: number;
   offload_layers?: number | "auto";
+  offload_vram_gb?: number | null;
+  prefetch_depth?: number | "auto";
   vision_image_size?: number | string | null;
   packing?: boolean;
   train_on_completions?: boolean;
