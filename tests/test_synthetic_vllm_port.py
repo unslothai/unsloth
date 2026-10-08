@@ -18,7 +18,9 @@ from unsloth.dataprep.synthetic import SyntheticDataKit
 @pytest.fixture
 def busy_port():
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
+        # All interfaces, as Studio binds in the Docker image: BSD lets a wildcard bind share a port with a
+        # loopback-only listener, so a 127.0.0.1 listener would not read as taken on macOS.
+        s.bind(("", 0))
         s.listen()
         yield s.getsockname()[1]
 
