@@ -780,6 +780,25 @@ def test_the_mlx_engine_needs_apple_silicon_and_the_gpu(home, client, engine, mo
     assert laya_runtime._mlx_target(kev) is None
 
 
+def test_settings_report_mlx_as_detection_settles_and_where_it_runs(
+    home, client, engine, monkeypatch
+):
+    hardware = sys.modules["utils.hardware.hardware"]
+    assert _put(client, enabled = True, model = "kev-4b").status_code == 200
+    # No device stored: MLX takes the GPU, as llama.cpp does, and the response says so.
+    settings = client.get("/api/settings/systemone").json()
+    assert (settings["effective_backend"], settings["device"]) == ("mlx", "gpu")
+    # Detection finishing inside this read's own wait for it is seen by the MLX answers too.
+    hardware.DETECTION_COMPLETE.clear()
+    monkeypatch.setattr(
+        hardware,
+        "get_device",
+        lambda: hardware.DETECTION_COMPLETE.set() or hardware.DeviceType.MLX,
+    )
+    settings = client.get("/api/settings/systemone").json()
+    assert settings["mlx_available"] and settings["effective_backend"] == "mlx"
+
+
 def test_mlx_sources_are_fetched_at_their_pinned_revisions(home, monkeypatch, tmp_path):
     fetched = []
 

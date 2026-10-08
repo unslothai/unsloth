@@ -1561,6 +1561,8 @@ def _systemone_response(request: Request) -> SystemOneSettingsResponse:
     if runtime["error_model"] not in (None, model):
         error = None
     port = getattr(request.app.state, "server_port", None) or request.scope["server"][1]
+    # First: it waits for device detection, which the MLX answers below read without waiting.
+    gpu_available = systemone_settings.gpu_available()
     effective, fallback = laya_runtime.effective_backend(configured)
     mlx_available = laya_runtime.mlx_available()
     if runtime["loaded_model"] == model and runtime["fallback_reason"]:
@@ -1570,12 +1572,12 @@ def _systemone_response(request: Request) -> SystemOneSettingsResponse:
         enabled_locked = systemone_settings.enabled_locked(),
         model = model,
         model_locked = systemone_settings.model_locked(),
-        # llama.cpp defaults to the GPU when no device is stored; report where it actually runs.
+        # llama.cpp and MLX default to the GPU when no device is stored; report where they actually run.
         device = systemone_settings.clef_device()
-        if effective == "llama.cpp"
+        if effective in ("llama.cpp", "mlx")
         else systemone_settings.get_device(),
         device_locked = systemone_settings.device_locked(),
-        gpu_available = systemone_settings.gpu_available(),
+        gpu_available = gpu_available,
         models = [
             SystemOneModelOption(
                 name = c.name,
