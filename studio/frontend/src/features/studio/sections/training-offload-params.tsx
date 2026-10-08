@@ -56,7 +56,6 @@ export function OffloadLayersParams(): ReactElement {
               setCountDraft(null);
               if (next === "off") store.setOffloadLayers(0);
               else if (next === "auto") store.setOffloadLayers("auto");
-              // A count to start from; the user edits it next.
               else store.setOffloadLayers(typeof store.offloadLayers === "number" && store.offloadLayers > 0 ? store.offloadLayers : 8);
             }}
           >
