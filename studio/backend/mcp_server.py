@@ -76,7 +76,7 @@ def _dump(value: Any) -> Any:
 
 def _dump_redacted(value: Any) -> Any:
     """Host paths as opaque references; the second pass catches diffusion fields (lora_path,
-    ema_path, catalog_path) that redact_host_paths has no name for."""
+    ema_path, catalog_path, resume_blocked_reason) that redact_host_paths has no name for."""
     from hub.utils.host_paths import redact_host_paths
     return _reference_absolute_paths(redact_host_paths(_dump(value), via_api_key = True))
 
@@ -86,9 +86,12 @@ def _reference_absolute_paths(value: Any) -> Any:
         return {key: _reference_absolute_paths(item) for key, item in value.items()}
     if isinstance(value, list):
         return [_reference_absolute_paths(item) for item in value]
-    if isinstance(value, str) and (posixpath.isabs(value) or ntpath.isabs(value)):
-        from hub.utils.host_paths import cache_reference
-        return cache_reference(value) or ""
+    if isinstance(value, str):
+        from hub.utils.host_paths import cache_reference, redact_paths_in_text
+        if posixpath.isabs(value) or ntpath.isabs(value):
+            return cache_reference(value) or ""
+        # Free text such as resume_blocked_reason quotes paths inside an OS error.
+        return redact_paths_in_text(value)
     return value
 
 

@@ -420,6 +420,7 @@ def test_diffusion_status_and_runs_hide_host_paths(monkeypatch):
                 "job_id": "diff-1",
                 "output_dir": "/home/leo/.unsloth/outputs/cats-lora",
                 "catalog_path": "/home/leo/.unsloth/studio/loras/diffusion/cats-lora",
+                "resume_blocked_reason": "Could not write /home/leo/.unsloth/outputs/cats-lora/checkpoint-5: Permission denied",
             }
         ]
     }
@@ -447,6 +448,8 @@ def test_diffusion_status_and_runs_hide_host_paths(monkeypatch):
     assert listed["runs"][0]["job_id"] == "diff-1"
     for key in ("output_dir", "catalog_path"):
         assert listed["runs"][0][key].startswith("ref:"), (key, listed["runs"][0][key])
+    reason = listed["runs"][0]["resume_blocked_reason"]
+    assert reason.startswith("Could not write") and "leo" not in reason, reason
 
 
 def test_start_diffusion_training_refusal_hides_host_paths(monkeypatch):
