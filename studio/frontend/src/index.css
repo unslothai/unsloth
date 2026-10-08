@@ -3101,9 +3101,8 @@ html[data-chat-font] .aui-root {
 	[data-slot="popover-content"] {
 		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16) !important;
 	}
-	/* Dark: an even glow in the darkest surface the menu sits on, the page
-	   unless a context below says otherwise. .dropdown-surface marks bespoke
-	   dropdowns. */
+	/* Dark: glow in the page colour unless a context below sets --dropdown-glow.
+	   .dropdown-surface marks bespoke dropdowns. */
 	.dark [data-slot="dropdown-menu-content"],
 	.dark [data-slot="dropdown-menu-sub-content"],
 	.dark [data-slot="context-menu-content"],
@@ -3128,10 +3127,9 @@ html[data-chat-font] .aui-root {
 		background-color: var(--sidebar) !important;
 	}
 
-	/* Menus portal to <body>, so their context comes from what else is open there.
-	   Inside a card dialog or the model picker, menus glow in that surface, and
-	   stock ones, which match it, lift to the Hub menu tone. The tones resolve on
-	   <html> so --accent can be reassigned without a cycle. */
+	/* Menus portal to <body>, so context comes from the open dialog or picker.
+	   There they glow in its surface, and stock menus lift to the Hub tone.
+	   Defined on <html> so --accent can be reassigned without a cycle. */
 	.dark {
 		--dropdown-lift-surface: color-mix(in srgb, var(--accent) 60%, var(--popover));
 		--dropdown-lift-accent: color-mix(in srgb, var(--foreground) 6%, var(--accent));
@@ -3156,7 +3154,7 @@ html[data-chat-font] .aui-root {
 		) {
 		--dropdown-glow: var(--card);
 	}
-	/* After the dialog rule, so a picker inside a dialog takes the picker's colour. */
+	/* After the dialog rule, so a picker in a dialog wins. */
 	.dark
 		body:has(> [data-radix-popper-content-wrapper] > .unsloth-model-selector-menu[data-state="open"])
 		:is(
