@@ -110,6 +110,8 @@ def _detect_reasoning_flags():
         ("google/gemma-4-31B-it-GGUF", False),  # not unsloth
         ("unsloth/Qwen3.5-9B-MTP-GGUF", False),
         ("/home/user/models/gemma-4-E2B.Q4_K_M.gguf", False),  # local path
+        ("/scan/models--unsloth--gemma-4-E2B-it-GGUF/snapshots/abc", True),  # repo snapshot
+        ("C:\\scan\\models--google--gemma-4-31B-it-GGUF\\snapshots\\abc", False),
         ("", False),
         (None, False),
     ],
