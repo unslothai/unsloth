@@ -1202,11 +1202,6 @@ def _validate_training_platform(request: TrainingStartRequest) -> None:
             status_code = 400,
             detail = "Embedding model training is not supported for MLX training yet.",
         )
-    if request.is_decision:
-        raise HTTPException(
-            status_code = 400,
-            detail = "Decision model training is not supported for MLX training yet.",
-        )
     if request.is_dataset_audio:
         raise HTTPException(
             status_code = 400,
@@ -1281,13 +1276,9 @@ def _validate_decision_request(request: TrainingStartRequest, via_api_key: bool 
         from core.systemone.catalog import clef_unsupported_reason
         from utils.hardware import hardware
 
-        # Runs before _validate_training_platform: name the MLX limit, not a missing GPU.
-        if hardware.get_device() == hardware.DeviceType.MLX:
-            raise HTTPException(
-                status_code = 400,
-                detail = "Decision model training is not supported for MLX training yet.",
-            )
-        if (reason := clef_unsupported_reason()) is not None:
+        # Apple Silicon trains Clef with MLX; elsewhere it needs the GPU the torch path runs on.
+        mlx = hardware.get_device() == hardware.DeviceType.MLX
+        if not mlx and (reason := clef_unsupported_reason()) is not None:
             raise HTTPException(status_code = 400, detail = reason)
         request.decision_layout = "llm" if llm else "clef"
         if request.model_subfolder is not None:

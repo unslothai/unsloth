@@ -391,22 +391,17 @@ if _IS_MLX:
                 "Unsloth: FastSentenceTransformer is not yet supported on MLX."
             )
 
-    class FastDecisionModel:
-        @staticmethod
-        def from_pretrained(*args, **kwargs):
-            raise NotImplementedError(
-                "Unsloth: FastDecisionModel training is not yet supported on MLX."
-            )
-
-        @staticmethod
-        def get_peft_model(*args, **kwargs):
-            raise NotImplementedError(
-                "Unsloth: FastDecisionModel training is not yet supported on MLX."
-            )
-
-    class DecisionTrainer:
-        def __init__(self, *args, **kwargs):
-            raise NotImplementedError("Unsloth: DecisionTrainer is not yet supported on MLX.")
+    # Decision models (Laya, Clef): models/decision_mlx.py, by path because unsloth.models needs torch.
+    _decision_spec = importlib.util.spec_from_file_location(
+        "unsloth._decision_mlx",
+        os.path.join(os.path.dirname(__file__), "models", "decision_mlx.py"),
+    )
+    _decision_mlx = importlib.util.module_from_spec(_decision_spec)
+    sys.modules[_decision_spec.name] = _decision_mlx
+    _decision_spec.loader.exec_module(_decision_mlx)
+    FastDecisionModel = _decision_mlx.FastDecisionModel
+    DecisionTrainer = _decision_mlx.DecisionTrainer
+    del _decision_spec
 
     def is_bfloat16_supported():
         try:
