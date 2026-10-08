@@ -2871,11 +2871,15 @@ export function ChatPage({
       ? persistedActiveThreadId
       : null;
   // retain the first thread id because leaving chat clears activeThreadId before returning.
+  const newChatIdentityBlankedRef = useRef<string | null>(null);
+  if (search.new && activeThreadId === null) {
+    newChatIdentityBlankedRef.current = search.new;
+  }
   const newChatRef = useRef<{ nonce: string; threadId: string } | null>(null);
   if (
     search.new &&
     activeThreadId &&
-    newChatBlankedRef.current === search.new &&
+    newChatIdentityBlankedRef.current === search.new &&
     newChatRef.current?.nonce !== search.new
   ) {
     newChatRef.current = { nonce: search.new, threadId: activeThreadId };

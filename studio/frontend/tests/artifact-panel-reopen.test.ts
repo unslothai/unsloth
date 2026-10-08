@@ -112,10 +112,19 @@ test("a project's browser overlay stages Request edits in the project composer",
 test("leaving Chat and coming back keeps a new chat's pages open", () => {
   const page = read("../src/features/chat/chat-page.tsx");
   // outside Chat, activeThreadId is cleared and restored, so ?new uses the first shown thread id.
-  assert.match(page, /newChatRef\.current\?\.nonce !== search\.new\s*\) \{\s*newChatRef\.current = \{ nonce: search\.new, threadId: activeThreadId \};/);
+  assert.match(page, /if \(search\.new && activeThreadId === null\) \{\s*newChatIdentityBlankedRef\.current = search\.new;/);
+  assert.match(page, /newChatIdentityBlankedRef\.current === search\.new &&\s*newChatRef\.current\?\.nonce !== search\.new\s*\) \{/);
   assert.match(page, /view\.newThreadNonce === newChat\.nonce \? newChat\.threadId : null;/);
   const key = page.slice(page.indexOf("const shownChatKey ="), page.indexOf("closeChatPages();"));
   assert.match(key, /view\.threadId \?\? newChatShownId \?\? activeThreadId/);
+});
+
+test("Back and Forward cannot assign an outgoing local thread to an incoming new-chat nonce", () => {
+  const page = read("../src/features/chat/chat-page.tsx");
+  const identity = page.slice(page.indexOf("const newChatIdentityBlankedRef"), page.indexOf("const modelOperationInProgress"));
+  assert.match(identity, /search\.new && activeThreadId === null/);
+  assert.match(identity, /newChatIdentityBlankedRef\.current === search\.new/);
+  assert.doesNotMatch(identity, /isAssistantLocalThreadId/);
 });
 
 test("a new chat started inside a project closes the previous project chat's pages", () => {
