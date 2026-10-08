@@ -31,6 +31,7 @@ from core.inference.tool_loop_controller import is_tool_error, strip_result_for_
 from core.inference.tools import (
     EMPTY_SEARCH_RESULTS,
     RAG_SOURCES_SENTINEL,
+    execute_mcp_tool,
     execute_tool,
     is_high_risk_tool_call,
     mcp_search_tools,
@@ -1342,7 +1343,7 @@ class ResearchSupervisor:
         results = await asyncio.gather(
             *(
                 asyncio.to_thread(
-                    execute_tool,
+                    execute_mcp_tool,
                     tool["name"],
                     arguments,
                     cancel_event = cancel_event,

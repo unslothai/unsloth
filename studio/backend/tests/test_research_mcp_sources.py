@@ -155,6 +155,7 @@ def test_selected_mcp_tools_search_every_step_and_are_cited(notes_server, monkey
 
     monkeypatch.setattr(supervisor, "_stream_completion", fake_stream_completion)
     monkeypatch.setattr(worker, "execute_tool", fake_tool)
+    monkeypatch.setattr(worker, "execute_mcp_tool", fake_tool)
     asyncio.run(supervisor._process(research_db.claim_next(supervisor.worker_id)))
 
     completed = research_db.get_run("run-1")
@@ -239,6 +240,7 @@ def test_resumed_run_keeps_mcp_sources_citable(notes_server, monkeypatch):
 
     monkeypatch.setattr(supervisor, "_stream_completion", fake_stream_completion)
     monkeypatch.setattr(worker, "execute_tool", unexpected_tool)
+    monkeypatch.setattr(worker, "execute_mcp_tool", unexpected_tool)
     asyncio.run(supervisor._process(recovered))
 
     completed = research_db.get_run("run-1")
@@ -309,3 +311,9 @@ def test_research_ignores_mcp_sources_while_tools_are_disabled(notes_server):
 
     assert listed == []
     assert "mcpSources" not in config
+
+
+def test_research_mcp_calls_cannot_reach_built_in_tools():
+    from core.inference.tools import execute_mcp_tool
+
+    assert execute_mcp_tool("terminal", {"command": "id"}).startswith("Error:")

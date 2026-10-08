@@ -13919,6 +13919,12 @@ async def mcp_search_tools(include_stdio: bool = True) -> list[dict]:
     return found
 
 
+def execute_mcp_tool(name: str, arguments: dict, **kwargs) -> str:
+    if not name.startswith(MCP_TOOL_PREFIX):
+        return f"Error: '{name}' is not an MCP tool"
+    return execute_tool(name, arguments, **kwargs)
+
+
 def mcp_tool_definition(server_id: str, tool_name: str) -> "dict | None":
     """Cache only: callers must not spawn a stdio subprocess or block on a probe."""
     tools = get_cached_tools(server_id) or ()
