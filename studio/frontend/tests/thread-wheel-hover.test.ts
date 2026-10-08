@@ -74,13 +74,17 @@ function attach(...ids: string[]) {
 }
 
 // The browser moves `:hover` whether or not the event reaches assistant-ui.
-const enter = (m: Message) => {
+const enter = (m: Message, buttons = 0) => {
   m.hover = true;
-  thread.boundary(new MouseEvent("mouseenter"), m);
+  const event = new MouseEvent("mouseenter");
+  Object.defineProperty(event, "buttons", { value: buttons });
+  thread.boundary(event, m);
 };
-const leave = (m: Message) => {
+const leave = (m: Message, buttons = 0) => {
   m.hover = false;
-  thread.boundary(new MouseEvent("mouseleave"), m);
+  const event = new MouseEvent("mouseleave");
+  Object.defineProperty(event, "buttons", { value: buttons });
+  thread.boundary(event, m);
 };
 
 test("a wheel scroll holds message hover events, then moves hover once it settles", () => {
@@ -168,6 +172,33 @@ test("programmatic scrolls (follow-to-bottom) and button-held wheels keep hover 
     [["mouseenter", "mouseleave"], ["mouseenter"]],
   );
   detach();
+});
+
+test("a selection drag passes through during an active wheel tail", () => {
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const {
+      detach,
+      messages: [a, b],
+    } = attach("a", "b");
+    enter(a);
+    thread.fire("wheel", { buttons: 0 });
+    thread.fire("scroll");
+    leave(a, 1);
+    enter(b, 1);
+    assert.deepEqual(
+      [a.got, b.got],
+      [["mouseenter", "mouseleave"], ["mouseenter"]],
+    );
+    mock.timers.tick(200);
+    assert.deepEqual(
+      [a.got, b.got],
+      [["mouseenter", "mouseleave"], ["mouseenter"]],
+    );
+    detach();
+  } finally {
+    mock.timers.reset();
+  }
 });
 
 test("detaching mid-scroll settles hover and stops listening", () => {
