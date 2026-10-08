@@ -1,19 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-import dataclasses
 from types import SimpleNamespace
 
 import pytest
-from peft import LoraConfig
 
 import unsloth  # noqa: F401
+from peft import LoraConfig
 from unsloth.models._utils import reject_alora
 from unsloth.models.llama import FastLlamaModel
 from unsloth.models.vision import FastBaseModel
-
-if "alora_invocation_tokens" not in {f.name for f in dataclasses.fields(LoraConfig)}:
-    pytest.skip("this PEFT has no aLoRA", allow_module_level = True)
 
 
 def _model(**extra):
