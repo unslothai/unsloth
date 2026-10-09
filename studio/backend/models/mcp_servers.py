@@ -15,7 +15,7 @@ class McpImageInputMapping(BaseModel):
 
 
 def _one_field_per_tool(mappings: list[McpImageInputMapping]) -> list[McpImageInputMapping]:
-    # Only one field of a tool receives the image (image_mapping), so a second one would silently do nothing.
+    # image_mapping sends the image to one field per tool; a second one could only be a fallback the UI never offered.
     tools = [mapping.tool for mapping in mappings]
     if len(tools) != len(set(tools)):
         raise ValueError("each tool can map only one image field")

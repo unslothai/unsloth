@@ -8,6 +8,7 @@ import {
   imageFieldCandidates,
   mcpImageMappingsEnabled,
   modelVisibleMessage,
+  changedImageMappings,
   toolOnlyImages,
   unmappedImageFields,
   withImageField,
@@ -132,4 +133,27 @@ test("adding a field keeps one row per tool, in place", () => {
     ...mapped,
     { tool: "lookup", field: "image", encoding: "base64" },
   ]);
+});
+
+test("a tool saved with two rows keeps one after picking a field", () => {
+  const saved = [
+    { tool: "search_by_file", field: "imageBase64", encoding: "data_url" },
+    { tool: "search_by_url", field: "url", encoding: "base64" },
+    { tool: "search_by_file", field: "filePath", encoding: "base64" },
+  ] as const;
+  assert.deepEqual(
+    withImageField(saved, { tool: "search_by_file", field: "file" }),
+    [{ tool: "search_by_file", field: "file", encoding: "base64" }, saved[1]],
+  );
+});
+
+test("an edit leaves unchanged mappings out of the update", () => {
+  const saved = [
+    { tool: "search_by_file", field: "imageBase64", encoding: "base64" },
+    { tool: "search_by_file", field: "filePath", encoding: "base64" },
+  ] as const;
+  assert.equal(changedImageMappings(saved, [...saved]), undefined);
+  const edited = [{ ...saved[0], encoding: "data_url" as const }];
+  assert.deepEqual(changedImageMappings(saved, edited), edited);
+  assert.deepEqual(changedImageMappings([], []), undefined);
 });

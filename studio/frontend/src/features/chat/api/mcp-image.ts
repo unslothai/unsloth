@@ -100,7 +100,21 @@ export function withImageField(
     field: option.field,
     encoding: "base64",
   };
-  return mappings.some((m) => m.tool === option.tool)
-    ? mappings.map((m) => (m.tool === option.tool ? next : m))
-    : [...mappings, next];
+  const index = mappings.findIndex((m) => m.tool === option.tool);
+  if (index < 0) return [...mappings, next];
+  // A server saved through the API can hold two rows for one tool; keep only the replacement.
+  return mappings.flatMap((m, i) =>
+    i === index ? [next] : m.tool === option.tool ? [] : [m],
+  );
+}
+
+/** The mappings an edit should send, or undefined when they are unchanged and the update can leave them alone. */
+export function changedImageMappings(
+  saved: readonly McpImageInputMapping[],
+  current: McpImageInputMapping[],
+): McpImageInputMapping[] | undefined {
+  // Resending an unchanged list would fail an unrelated edit of a server saved with two fields on one tool.
+  return JSON.stringify(saved) === JSON.stringify(current)
+    ? undefined
+    : current;
 }
