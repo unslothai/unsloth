@@ -1510,10 +1510,10 @@ def html_to_markdown(
     subtrees hidden from rendering (``hidden`` / ``aria-hidden="true"``).
 
     ``main_content=True`` applies a readability-style heuristic for page
-    fetches: prefer the ``<article>`` subtree (GitHub renders READMEs there),
-    then ``<main>``, falling back to the whole document, reduce a link-only
-    ``<header>`` to the heading it carries, and strip known boilerplate
-    fragments from the result.
+    fetches: prefer the ``<article>`` subtree (GitHub renders READMEs there)
+    when it holds at least half of ``<main>``, then ``<main>``, falling back
+    to the whole document, reduce a link-only ``<header>`` to the heading it
+    carries, and strip known boilerplate fragments from the result.
 
     ``site_links`` records the links back into the page's own site; the output is unchanged.
 
@@ -1526,14 +1526,13 @@ def html_to_markdown(
         span_limit = min(span_limit, max_span_chars)
     rendered = ""
     if main_content:
-        for scope_tag in ("article", "main"):
-            # Render only the chosen subtree so sibling <article>/<main> elements do not leak in.
-            length, rendered = _select_main_scope_render(
-                source_html, scope_tag, site_links, span_limit
-            )
-            if length >= _MIN_MAIN_CONTENT_CHARS:
-                break
-        else:
+        length, rendered = _select_main_scope_render(source_html, "article", site_links, span_limit)
+        main_length, main_rendered = _select_main_scope_render(
+            source_html, "main", site_links, span_limit
+        )
+        if main_length >= _MIN_MAIN_CONTENT_CHARS and main_length > 2 * length:
+            rendered = main_rendered
+        elif length < _MIN_MAIN_CONTENT_CHARS:
             rendered = _strip_boilerplate_lines(
                 _render(
                     source_html,
