@@ -3355,6 +3355,14 @@ def test_an_explicit_speculative_mode_loads_through_mlx_vlm_and_attaches_what_fi
         )
     ]
     assert reasons == [mlx_speculative.RUNTIME_ERROR, mlx_speculative.KV_QUANT]
+    # A diffusion model gets no draft at load, so the resident batch cannot speculate on it either.
+    failing.clear()
+    monkeypatch.setattr(mlx_speculative, "speculation_refusal", lambda **_k: None)
+    monkeypatch.setattr(mlx_inference, "_vlm_generation_is_diffusion", lambda model: True)
+    backend.load_model(config, max_seq_length = 0, speculative_type = "ngram")
+    entry = backend.models["org/text"]
+    assert backend._speculative_draft is None and entry["spec_drafter_kind"] is None
+    assert entry["spec_fallback_reason"] == mlx_speculative.RUNTIME_ERROR
 
 
 def test_a_text_model_mlx_vlm_cannot_load_is_served_without_turboquant(monkeypatch):
@@ -5407,13 +5415,16 @@ def test_a_speculative_load_drafts_eligible_single_replies(monkeypatch):
     prepared = []
     draft = SimpleNamespace(draft_kind = "mtp", draft_n = 6, draft_n_accepted = 4)
     draft.prepare = lambda ids, sampling, given: prepared.append(
-        (ids, sampling.temperature)
+        (ids, sampling.temperature, sampling.top_k)
     ) or setattr(draft, "given", given)
     backend = mlx_inference.MLXInferenceBackend()
     backend._speculative_draft = draft
 
-    seen = _drive_vlm_generation(backend, monkeypatch, temperature = 0.5, repetition_penalty = 1.1)
-    assert seen["draft_model"] is draft and seen["extra"] == 1 and prepared == [([7, 8, 9], 0.5)]
+    # top_k -1 is the API's "disabled", which the drafter's sampling settings spell 0.
+    seen = _drive_vlm_generation(
+        backend, monkeypatch, temperature = 0.5, top_k = -1, repetition_penalty = 1.1
+    )
+    assert seen["draft_model"] is draft and seen["extra"] == 1 and prepared == [([7, 8, 9], 0.5, 0)]
     # The draft is told every processor the reply runs: none reaches mlx-vlm as a shortcut.
     assert "repetition_penalty" not in seen and draft.given == seen["logits_processors"] != []
     monkeypatch.setattr(

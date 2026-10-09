@@ -4842,6 +4842,15 @@ class MLXInferenceBackend:
         _priceable = not (is_distributed or is_lora or dtype is not None)
         spec_kind = _drafter_ctx = None
         _drafter_fitted = False
+        _vlm_route = speculates and not is_vision
+        if speculates and _vlm_generation_is_diffusion(self._model):
+            # Neither the single path nor the resident batch may decode a diffusion model speculatively.
+            speculates = False
+            spec_reason = (
+                None
+                if spec_mode == "auto" and not spec_draft_model
+                else mlx_speculative.RUNTIME_ERROR
+            )
         if speculates:
             model_dir = _snapshot_dir(self._model, model_name)
             resolution = mlx_speculative.resolve_speculation(
@@ -4898,7 +4907,7 @@ class MLXInferenceBackend:
                 kv_bits = _requested_bits,
                 is_vlm = use_vlm,
                 eligibility = _eligibility,
-                **({"vision": True} if speculates and not is_vision else {}),
+                **({"vision": True} if _vlm_route else {}),
             )
         )
         if _fitted_ctx:
@@ -6365,7 +6374,7 @@ class MLXInferenceBackend:
                         SamplingParams(
                             temperature = temperature,
                             top_p = top_p,
-                            top_k = int(top_k or 0),
+                            top_k = max(int(top_k or 0), 0),
                             min_p = float(min_p or 0.0),
                             seed = seed,
                         ),
