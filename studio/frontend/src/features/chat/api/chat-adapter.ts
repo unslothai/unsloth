@@ -849,7 +849,9 @@ function collectImageParts(
     parts.push({
       type: "image_url",
       image_url: {
-        url: src.startsWith("data:") ? src : `data:image/png;base64,${src}`,
+        url: /^(?:data:|https?:\/\/)/i.test(src)
+          ? src
+          : `data:image/png;base64,${src}`,
       },
     });
   };
@@ -6149,7 +6151,11 @@ export function createOpenAIStreamAdapter(
       // A carried thought is reasoning whatever this request's thinking setting says.
       setParseThink(
         isExternalRequest
-          ? requestParsesThinkTags(externalReasoningFields)
+          ? requestParsesThinkTags({
+              ...externalReasoningFields,
+              provider_type: externalProvider?.providerType,
+              external_model: externalSelection?.modelId,
+            })
           : reasoningAlwaysOn ||
               Boolean(resumedThought) ||
               requestParsesThinkTags(localReasoningFields),

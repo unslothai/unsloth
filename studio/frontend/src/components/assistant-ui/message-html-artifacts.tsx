@@ -10,11 +10,14 @@
 // React components (```jsx / ```tsx) get a card after the HTML ones; their code
 // stays in place, and nothing else renders them.
 
+import {
+  memoOnArray,
+  partsHaveRenderableRenderHtmlTool,
+} from "@/components/assistant-ui/message-derived";
 import { ArtifactCard, useChatRuntimeStore } from "@/features/chat";
 import {
   extractHtmlFences,
   extractReactFences,
-  isRenderableRenderHtmlToolPart,
 } from "@/features/chat/artifacts/html-fences";
 import { useAuiState } from "@assistant-ui/react";
 import { type FC, useMemo } from "react";
@@ -23,21 +26,26 @@ import { type FC, useMemo } from "react";
 // fence is never stitched across a non-text part (tool call, source, reasoning).
 const PART_SEPARATOR = "\u0000";
 
+const visibleTextBlob = memoOnArray(
+  (content: ReadonlyArray<{ type: string; text?: unknown }>) =>
+    content
+      .filter((part) => part.type === "text" && "text" in part)
+      .map((part) => (part as { text: string }).text)
+      .join(PART_SEPARATOR),
+);
+
 export const MessageHtmlArtifacts: FC = () => {
   // Skip while streaming; "!== running" also covers loaded historical messages.
   const isRunning = useAuiState(
     ({ message }) => message.status?.type === "running",
   );
   const hasRenderHtmlTool = useAuiState(({ message }) =>
-    message.parts.some(isRenderableRenderHtmlToolPart),
+    partsHaveRenderableRenderHtmlTool(message.parts),
   );
   // Visible assistant text parts only (no reasoning, tools, sources, or errors),
   // kept separate so a fence stays within the part the user actually sees.
   const textBlob = useAuiState(({ message }) =>
-    message.content
-      .filter((part) => part.type === "text" && "text" in part)
-      .map((part) => (part as { text: string }).text)
-      .join(PART_SEPARATOR),
+    visibleTextBlob(message.content),
   );
   const collapseHtmlArtifacts = useChatRuntimeStore(
     (state) => state.collapseHtmlArtifacts,

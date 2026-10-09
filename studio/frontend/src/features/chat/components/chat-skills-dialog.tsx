@@ -739,6 +739,12 @@ function SkillRow({
       />
       <div className="flex min-w-0 flex-wrap items-center gap-2">
         <span className="truncate font-medium text-ui-14">{skill.name}</span>
+        <HugeiconsIcon
+          icon={ChevronRightStandardIcon}
+          strokeWidth={2}
+          aria-hidden="true"
+          className="-ml-1 size-4 shrink-0 text-muted-foreground/50 transition-colors group-hover:text-foreground"
+        />
         {skill.shadowed ? <Badge variant="secondary">{t("skills.shadowed")}</Badge> : null}
         {skill.linked ? <Badge variant="outline">{t("skills.linked")}</Badge> : null}
         {skill.valid ? null : <Badge variant="destructive">{t("skills.invalid")}</Badge>}
@@ -760,14 +766,6 @@ function SkillRow({
       >
         {skill.valid ? skill.description : skill.error}
       </p>
-      <span className="flex h-[1lh] translate-y-[0.1em] items-center self-start justify-self-center text-ui-13">
-        <HugeiconsIcon
-          icon={ChevronRightStandardIcon}
-          strokeWidth={2}
-          aria-hidden="true"
-          className="size-4 text-muted-foreground/50 transition-colors group-hover:text-foreground"
-        />
-      </span>
     </div>
   );
 }

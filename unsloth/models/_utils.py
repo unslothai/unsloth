@@ -77,6 +77,7 @@ __all__ = [
     "validate_loftq_config",
     "validate_init_lora_weights",
     "validate_init_target_parameters",
+    "reject_alora",
     "RESIDUAL_INIT_LORA_WEIGHTS",
     "snapshot_residual_lora_init",
     "lora_relative_to_original_base",
@@ -99,6 +100,8 @@ __all__ = [
     "skip_checkpointing",
     "refuse_block_swap_load",
     "legacy_offload_layers",
+    "prefetch_depth_arg",
+    "auto_plan_depth",
     "block_swap_load_device",
     "begin_block_swap_load",
     "finish_block_swap_load",
@@ -246,6 +249,7 @@ def _patch_transformers_trainer_data_parallel():
     except (ImportError, ModuleNotFoundError):
         return False
 
+    _patch_trainer_init_data_parallel(Trainer)
     original_wrap_model = getattr(Trainer, "_wrap_model", None)
     if original_wrap_model is None:
         return False
@@ -295,6 +299,50 @@ def _patch_transformers_trainer_data_parallel():
     _unsloth_wrap_model._unsloth_original_wrap_model = original_wrap_model
     Trainer._wrap_model = _unsloth_wrap_model
     return True
+
+
+def _keep_unsloth_models_off_data_parallel(model, args):
+    """`args._n_gpu = 1` for a marked Unsloth model, as the TRL trainers do; True if changed.
+    Before Trainer.__init__: it sizes the batch from n_gpu, too early for `_wrap_model`."""
+    try:
+        if args is None or model is None or not hasattr(model, "modules"):
+            return False
+        if getattr(args, "n_gpu", 1) <= 1 or getattr(model, "is_loaded_in_8bit", False):
+            return False
+        from transformers.training_args import ParallelMode
+
+        if getattr(args, "parallel_mode", None) != ParallelMode.NOT_DISTRIBUTED:
+            return False
+        if not any(
+            getattr(module, "_unsloth_disable_data_parallel", False) for module in model.modules()
+        ):
+            return False
+        args._n_gpu = 1
+        return True
+    except Exception:
+        return False
+
+
+def _patch_trainer_init_data_parallel(Trainer):
+    # Every marked path, not only the ones that call patch_gradient_accumulation_fix (fast encoders).
+    if getattr(Trainer, "_unsloth_data_parallel_init_patched", False):
+        return
+    original_init = Trainer.__init__
+
+    @functools.wraps(original_init)
+    def _unsloth_data_parallel_init(self, *args, **kwargs):
+        model = kwargs.get("model", args[0] if len(args) > 0 else None)
+        training_args = kwargs.get("args", args[1] if len(args) > 1 else None)
+        _keep_unsloth_models_off_data_parallel(model, training_args)
+        original_init(self, *args, **kwargs)
+        # Args the Trainer built itself; refresh the batch size it cached.
+        if _keep_unsloth_models_off_data_parallel(
+            getattr(self, "model", None), getattr(self, "args", None)
+        ):
+            self._train_batch_size = self.args.train_batch_size
+
+    Trainer.__init__ = _unsloth_data_parallel_init
+    Trainer._unsloth_data_parallel_init_patched = True
 
 
 def _mark_unsloth_disable_data_parallel(model, disable = True):
@@ -5911,6 +5959,19 @@ def validate_init_target_parameters(init_lora_weights, target_parameters):
         )
 
 
+def reject_alora(model, requested = None):
+    # Unsloth's LoRA forwards never apply aLoRA's invocation offsets, so the adapter would fire on every token (#2471).
+    configs = (getattr(model, "peft_config", None) or {}).values()
+    if requested is not None or any(
+        getattr(c, "alora_invocation_tokens", None) is not None for c in configs
+    ):
+        raise NotImplementedError(
+            "Unsloth: Activated LoRA (`alora_invocation_tokens`) is not supported yet. "
+            "Unsloth would apply the adapter to every token, not only after the invocation tokens.\n"
+            "Use plain `transformers` + `peft` for aLoRA, or drop `alora_invocation_tokens` for a normal LoRA."
+        )
+
+
 def validate_init_lora_weights(
     init_lora_weights,
     model,
@@ -6544,6 +6605,9 @@ def _check_block_swap(model_or_config):
 
 
 def _new_block_swap(layers, n, *args, placement, **kwargs):
+    if args and args[0] == "auto" and not hasattr(BlockSwap, "stats"):
+        # unsloth_zoo before prefetch_depth = "auto" takes a count only.
+        args = (2,) + args[1:]
     try:
         return BlockSwap(layers, n, *args, placement = placement, **kwargs)
     except TypeError as e:
@@ -6557,8 +6621,27 @@ def legacy_offload_layers(kwargs, offload_layers = None):
     """`offload_layers`, or its original name `block_swap_layers` from `kwargs` when it was not given (0 = off)."""
     legacy = kwargs.pop("block_swap_layers", None)
     if offload_layers is None:
-        return 0 if legacy is None else legacy
+        offload_layers = 0 if legacy is None else legacy
+    if offload_layers is False:
+        # False always meant off; only True is ambiguous.
+        offload_layers = 0
+    if offload_layers != "auto" and (
+        isinstance(offload_layers, bool)
+        or not isinstance(offload_layers, int)
+        or offload_layers < 0
+    ):
+        raise ValueError(
+            f"Unsloth: offload_layers must be a layer count (0 = off) or 'auto', not {offload_layers!r}."
+        )
     return offload_layers
+
+
+def prefetch_depth_arg(kwargs):
+    """get_peft_model(prefetch_depth = k | "auto"): layers fetched ahead of the one running (default 2)."""
+    depth = kwargs.pop("prefetch_depth", 2)
+    if depth != "auto" and (isinstance(depth, bool) or not isinstance(depth, int) or depth < 1):
+        raise ValueError(f"Unsloth: prefetch_depth must be 1 or more, or 'auto', not {depth!r}.")
+    return depth
 
 
 def refuse_block_swap_load(offload_layers, reason):
@@ -6606,9 +6689,18 @@ def begin_block_swap_load(
     return load_layers_to_host(offload_layers, placement = "spread")
 
 
+def auto_plan_depth(prefetch_depth):
+    """The slot pool a swap built at `prefetch_depth` starts with, which an auto plan must reserve:
+    "auto" begins one slot ahead on a zoo that adapts, at the fixed 2 on one that does not."""
+    if prefetch_depth != "auto":
+        return prefetch_depth
+    return 1 if hasattr(BlockSwap, "stats") else 2
+
+
 def planned_prefetch_depth(device_map_planner_kwargs):
     # The depth "auto" sized the slot pool with; the swapper must allocate the same pool.
-    return int((device_map_planner_kwargs or {}).get("prefetch_depth", 2))
+    depth = (device_map_planner_kwargs or {}).get("prefetch_depth", 2)
+    return depth if depth == "auto" else int(depth)
 
 
 def finish_block_swap_load(
@@ -6842,8 +6934,9 @@ def install_block_swap(
             return None
         if BlockSwap is None:
             _check_block_swap(model)
+        # An adaptive pool starts at one slot ahead and only grows into room it finds free.
         model._unsloth_offload_layers_auto = prefetch_depth
-        offload_layers = _auto_block_swap_indices(model, prefetch_depth)
+        offload_layers = _auto_block_swap_indices(model, auto_plan_depth(prefetch_depth))
         if not offload_layers:
             return None
     _check_block_swap(model)
@@ -6953,14 +7046,19 @@ def replan_auto_offload_for_trainer(trainer):
                 f"get_peft_model(offload_layers = {want}) or lower per_device_train_batch_size."
             )
             return swapper
-    elif not auto_swap_indices(layers, reserve, prefetch_depth)[0]:
+    elif not auto_swap_indices(layers, reserve, auto_plan_depth(prefetch_depth))[0]:
         return swapper
     if swapper is not None:
         swapper.remove()
         layers._unsloth_block_swap = None
         model._unsloth_block_swap = None
     try:
-        indices = _auto_block_swap_indices(model, prefetch_depth, batch_size = rows, seq_len = seq_len)
+        indices = _auto_block_swap_indices(
+            model,
+            auto_plan_depth(prefetch_depth),
+            batch_size = rows,
+            seq_len = seq_len,
+        )
         # Union: old layers stay swapped (checkpoint_skip_layers chose among the rest), new picks kept.
         indices = sorted(set(old) | set(indices))
         if not indices:

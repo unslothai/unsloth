@@ -469,6 +469,7 @@ export const it = {
     queueingHintShared: "La coda viene mantenuta.",
   },
   common: {
+    duplicate: "Duplica",
     cancel: "Annulla",
     close: "Chiudi",
     delete: "Elimina",
@@ -1124,6 +1125,8 @@ export const it = {
     sandbox: {
       title: "Sandbox",
       description: "Indica se le chiamate agli strumenti Python e Terminale vengono eseguite in una sandbox del sistema su questo computer.",
+      docs: "Documentazione",
+      docsLabel: "Apri la documentazione della sandbox",
       toolsSection: "Questo computer",
       refresh: "Aggiorna",
       python: "Python",
@@ -2252,6 +2255,7 @@ export const it = {
         "Impossibile caricare tutte le quantizzazioni. Il comando userà il valore del modello disponibile.",
       generatedCommand: "Comando generato",
       docs: "Documentazione",
+      docsLabel: "Apri la documentazione di unsloth start",
       agentDocs: "Apri la documentazione di configurazione di {agent}",
       copyGeneratedCommand: "Copia il comando generato",
       // English is the baseline until translated: the three-part sentence is assembled around an
@@ -2794,6 +2798,8 @@ export const it = {
       revoking: "Revoca in corso...",
       decisionApi: {
         title: "API decisionale",
+        docs: "Documentazione",
+        docsLabel: "Apri la documentazione dell'API decisionale",
         description: "Rispondi a domande sì/no, a scelta multipla e a punteggio sul testo con un modello su questo computer o un modello decisionale dalle Connessioni. Funziona con l'SDK di TypeSafe.",
         enable: "Rispondi alle richieste",
         enableDescription: "Gestisce /v1/systemone. Attivandolo si scarica il modello.",
@@ -2815,6 +2821,8 @@ export const it = {
         backendAuto: "Automatico",
         backendDescription:
           "Automatico serve Clef tramite llama.cpp quando il modello ha una build GGUF, altrimenti ripiega su PyTorch. llama.cpp legge anche le immagini.",
+        backendDescriptionMlx:
+          "Automatico serve il testo di Clef tramite MLX su Apple Silicon e tramite llama.cpp quando solo la build GGUF del modello è caricata o scaricata. MLX legge solo testo; llama.cpp legge anche le immagini.",
         backendStatus: "Runtime: {backend}",
         backendNone: "non disponibile",
         mediaImages: "Legge testo e immagini.",
@@ -3449,6 +3457,31 @@ export const it = {
         "Frazione degli step totali fra due valutazioni (0-1). Imposta 0 per disattivare la valutazione. Per esempio 0,01 = valuta ogni 1% degli step.",
       seed: "Seed",
       seedTooltip: "Seed casuale per la riproducibilità.",
+      offloadLayers: "Scarica livelli",
+      offloadLayersTooltip: "Mantiene i livelli del decoder nella RAM di sistema e trasferisce ciascuno alla GPU subito prima dell'esecuzione, così un modello più grande della tua VRAM si addestra con LoRA. Auto ne scarica il minimo necessario; un numero ne scarica esattamente quanti. Richiede il gradient checkpointing.",
+      offloadOff: "Disattivato",
+      offloadAuto: "Auto",
+      offloadCount: "Numero",
+      offloadVramBudget: "Budget VRAM (GiB)",
+      offloadVramBudgetTooltip: "La VRAM massima che questo addestramento può usare. Auto scarica abbastanza livelli per restare sotto, e due addestramenti possono condividere una scheda. Vuoto usa tutta la scheda.",
+      offloadWholeCard: "tutta la scheda",
+      offloadVramBudgetGpu: "Budget VRAM GPU {index} (GiB)",
+      prefetchDepth: "Profondità di prefetch",
+      prefetchDepthTooltip: "Quanti livelli scaricati vengono copiati prima di quello in esecuzione. Auto parte da 1 e tiene una riserva più profonda solo se riduce in modo misurabile l'attesa delle copie.",
+      offloadPanelTitle: "Livelli scaricati",
+      offloadPanelGpu: "Sulla GPU",
+      offloadPanelHost: "Nella RAM di sistema",
+      offloadPanelCopying: "In copia",
+      offloadPanelSwapped: "scaricati",
+      offloadPanelStall: "attesa delle copie",
+      offloadPanelCopy: "copia per livello",
+      offloadPanelCompute: "calcolo per livello",
+      offloadPanelVram: "VRAM",
+      offloadPanelDepth: "profondità di prefetch",
+      offloadPanelPinned: "bloccata",
+      offloadPanelSweepNote: "La finestra mobile mostra l'ordine in cui i livelli vengono caricati, rallentato per essere visibile; i numeri sono misurati sull'ultimo passo.",
+      offloadPanelCard: "GPU {index}",
+      offloadPanelCardUnknown: "Scheda sconosciuta",
       gradCheckpoint: "Checkpoint del gradiente",
       gradCheckpointTooltip:
         "Riduce l'uso della memoria ricalcolando le attivazioni, al costo di più calcoli.",
@@ -3513,6 +3546,11 @@ export const it = {
       configTooLarge:
         "La configurazione dell'addestramento è troppo grande (massimo 1 MiB).",
       failedToSaveConfig: "Salvataggio della configurazione non riuscito",
+      duplicateFailed: "Impossibile duplicare il run",
+      duplicateDraftChanged:
+        "Le impostazioni dell'addestramento sono cambiate durante il caricamento. Riprova a duplicare il run.",
+      duplicateNoModel:
+        "Questo run non ha una configurazione del modello salvata.",
       startTraining: "Avvia l'addestramento",
       starting: "Avvio...",
       loadingModel: "Caricamento del modello...",

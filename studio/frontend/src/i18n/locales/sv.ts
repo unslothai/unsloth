@@ -603,6 +603,7 @@ export const sv = {
     },
   },
   common: {
+    duplicate: "Duplicera",
     cancel: "Avbryt",
     close: "Stäng",
     delete: "Ta bort",
@@ -1274,6 +1275,8 @@ export const sv = {
       title: "Sandlåda",
       description:
         "Om verktygsanrop för Python och Terminal körs i en OS-sandlåda på den här datorn.",
+      docs: "Dokumentation",
+      docsLabel: "Öppna dokumentationen för sandlådan",
       toolsSection: "Den här datorn",
       refresh: "Uppdatera",
       python: "Python",
@@ -2438,6 +2441,7 @@ export const sv = {
         "Det gick inte att läsa in alla kvantiseringar. Kommandot använder det tillgängliga modellvärdet.",
       generatedCommand: "Genererat kommando",
       docs: "Dokumentation",
+      docsLabel: "Öppna dokumentationen för unsloth start",
       agentDocs: "Öppna installationsdokumentation för {agent}",
       copyGeneratedCommand: "Kopiera genererat kommando",
       automaticSettingsNote:
@@ -2999,6 +3003,8 @@ export const sv = {
       revoking: "Återkallar ...",
       decisionApi: {
         title: "Decision API",
+        docs: "Dokumentation",
+        docsLabel: "Öppna dokumentationen för Decision API",
         description:
           "Besvara ja/nej-frågor, flervalsfrågor och poängfrågor om text med en modell på denna dator eller en beslutsmodell från Anslutningar. Fungerar med TypeSafe SDK.",
         enable: "Hantera begäranden",
@@ -3023,6 +3029,8 @@ export const sv = {
         backendAuto: "Automatisk",
         backendDescription:
           "Automatisk kör Clef via llama.cpp när modellen har en GGUF-version och faller annars tillbaka på PyTorch. llama.cpp läser också bilder.",
+        backendDescriptionMlx:
+          "Automatisk kör Clef-text via MLX på Apple Silicon och via llama.cpp när bara modellens GGUF-version är laddad eller nedladdad. MLX läser bara text; llama.cpp läser också bilder.",
         backendStatus: "Körmiljö: {backend}",
         backendNone: "inte tillgänglig",
         mediaImages: "Läser text och bilder.",
@@ -3607,6 +3615,31 @@ export const sv = {
         "Andel av totala träningssteg mellan utvärderingar (0–1). Ange 0 för att inaktivera utvärdering. Exempel: 0,01 = utvärdera var 1 % av stegen.",
       seed: "Slumptalets startvärde",
       seedTooltip: "Slumptalets startvärde för reproducerbarhet.",
+      offloadLayers: "Avlasta lager",
+      offloadLayersTooltip: "Håll avkodarlager i systemminnet och strömma vart och ett till GPU:n precis innan det körs, så att en modell som är större än ditt VRAM kan tränas med LoRA. Auto avlastar så få som behövs; ett antal avlastar exakt så många. Kräver gradient checkpointing.",
+      offloadOff: "Av",
+      offloadAuto: "Auto",
+      offloadCount: "Antal",
+      offloadVramBudget: "VRAM-budget (GiB)",
+      offloadVramBudgetTooltip: "Det mesta VRAM den här körningen får använda. Auto avlastar tillräckligt många lager för att hålla sig under det, och två körningar kan dela ett kort genom att ta varsin del. Tomt använder hela kortet.",
+      offloadVramBudgetGpu: "VRAM-budget för GPU {index} (GiB)",
+      offloadWholeCard: "hela kortet",
+      prefetchDepth: "Förhämtningsdjup",
+      prefetchDepthTooltip: "Hur många avlastade lager som kopieras i förväg före det som körs. Auto börjar på 1 och behåller en djupare pool bara så länge den mätbart minskar väntan på kopior.",
+      offloadPanelTitle: "Avlastade lager",
+      offloadPanelCard: "GPU {index}",
+      offloadPanelCardUnknown: "Okänt kort",
+      offloadPanelGpu: "På GPU",
+      offloadPanelHost: "I systemminnet",
+      offloadPanelCopying: "Kopieras",
+      offloadPanelSwapped: "avlastade",
+      offloadPanelStall: "väntan på kopior",
+      offloadPanelCopy: "kopiering per lager",
+      offloadPanelCompute: "beräkning per lager",
+      offloadPanelVram: "VRAM",
+      offloadPanelDepth: "förhämtningsdjup",
+      offloadPanelPinned: "låst",
+      offloadPanelSweepNote: "Det rörliga fönstret visar i vilken ordning lagren hämtas, saktat ner för att synas; siffrorna är uppmätta på det senaste steget.",
       gradCheckpoint: "Gradientkontrollpunkt",
       gradCheckpointTooltip:
         "Byt beräkningskraft mot minne genom att beräkna aktiveringar igen.",
@@ -3617,6 +3650,11 @@ export const sv = {
       readMore: "Läs mer",
     },
     training: {
+      duplicateFailed: "Det gick inte att duplicera körningen",
+      duplicateDraftChanged:
+        "Träningsinställningarna ändrades under inläsningen. Försök duplicera igen.",
+      duplicateNoModel:
+        "Den här körningen har ingen sparad modellkonfiguration.",
       startTraining: "Starta träning",
       starting: "Startar ...",
       loadingModel: "Läser in modell ...",

@@ -25,6 +25,8 @@ register("./helpers/browser-store-resolver.mjs", import.meta.url);
 const { useBrowserHistoryStore } = await import("../src/features/browser/history-store.ts");
 const { useBrowserPrefsStore } = await import("../src/features/browser/prefs-store.ts");
 const { useBrowserBookmarksStore } = await import("../src/features/browser/bookmarks-store.ts");
+const { useChatRuntimeStore } = await import("@/features/chat");
+const { currentEntry, useBrowserStore } = await import("../src/features/browser/store.ts");
 
 const download = { name: "file.pdf", url: "https://example.com/file.pdf", size: 10, contentType: "application/pdf" };
 
@@ -39,6 +41,37 @@ test("with history saving off, visits are not recorded; turned back on, they are
   assert.equal(useBrowserHistoryStore.getState().history.length, 1);
 });
 
+test("pages visited beside a temporary chat stay out of history, icons included", () => {
+  const history = useBrowserHistoryStore.getState();
+  history.clearHistory();
+  useChatRuntimeStore.getState().setIncognito(true);
+  history.recordIcon("example.com", "https://example.com/icon.png");
+  history.recordVisit("https://example.com/", "Example");
+  assert.deepEqual(useBrowserHistoryStore.getState().history, []);
+  assert.deepEqual(useBrowserHistoryStore.getState().icons, {});
+  useChatRuntimeStore.getState().setIncognito(false);
+  history.recordVisit("https://example.com/", "Example");
+  assert.equal(useBrowserHistoryStore.getState().history.length, 1);
+});
+
+test("a page opened beside a temporary chat stays out of history when it loads after the chat turns normal", () => {
+  const history = useBrowserHistoryStore.getState();
+  history.clearHistory();
+  useChatRuntimeStore.getState().setIncognito(true);
+  useBrowserStore.getState().openUrl("https://example.com/", { newTab: true });
+  const tab = useBrowserStore.getState().tabs.find((item) => item.id === useBrowserStore.getState().activeTabId);
+  const entry = tab ? currentEntry(tab) : null;
+  useChatRuntimeStore.getState().setIncognito(false);
+  assert.equal(entry?.kind === "web" && entry.temporary, true);
+  history.recordVisit("https://example.com/", "Example", entry?.kind === "web" ? entry.temporary : false);
+  assert.deepEqual(useBrowserHistoryStore.getState().history, []);
+  useBrowserStore.getState().openUrl("https://example.org/", { newTab: true });
+  const next = useBrowserStore.getState().tabs.find((item) => item.id === useBrowserStore.getState().activeTabId);
+  const nextEntry = next ? currentEntry(next) : null;
+  history.recordVisit("https://example.org/", "Example", nextEntry?.kind === "web" ? nextEntry.temporary : false);
+  assert.equal(useBrowserHistoryStore.getState().history.length, 1);
+});
+
 test("with download history off, downloads are not listed", () => {
   const history = useBrowserHistoryStore.getState();
   history.clearDownloads();
@@ -49,6 +82,140 @@ test("with download history off, downloads are not listed", () => {
   const id = history.recordDownload(download);
   assert.equal(useBrowserHistoryStore.getState().downloads.length, 1);
   assert.equal(useBrowserHistoryStore.getState().downloads[0].id, id);
+});
+
+test("a navigation asked for as temporary stays temporary in a normal chat", () => {
+  const store = useBrowserStore.getState();
+  store.openUrl("https://example.com/", { newTab: true });
+  const tabId = useBrowserStore.getState().activeTabId!;
+  store.navigate(tabId, { url: "https://example.com/reached", temporary: true });
+  const entry = currentEntry(useBrowserStore.getState().tabs.find((item) => item.id === tabId)!);
+  assert.equal(entry.kind === "web" && entry.temporary, true);
+  store.navigate(tabId, { url: "https://example.com/after" });
+  const after = currentEntry(useBrowserStore.getState().tabs.find((item) => item.id === tabId)!);
+  assert.equal(after.kind === "web" && after.temporary, undefined);
+  // A page noted as normal stays normal when it is kept during a temporary chat.
+  useChatRuntimeStore.getState().setIncognito(true);
+  store.navigate(tabId, { url: "https://example.com/kept", temporary: false });
+  useChatRuntimeStore.getState().setIncognito(false);
+  const kept = currentEntry(useBrowserStore.getState().tabs.find((item) => item.id === tabId)!);
+  assert.equal(kept.kind === "web" && kept.temporary, undefined);
+  store.closeTab(tabId);
+});
+
+test("files downloaded beside a temporary chat are not listed", () => {
+  const history = useBrowserHistoryStore.getState();
+  history.clearDownloads();
+  useChatRuntimeStore.getState().setIncognito(true);
+  history.recordDownload(download);
+  assert.deepEqual(useBrowserHistoryStore.getState().downloads, []);
+  useChatRuntimeStore.getState().setIncognito(false);
+  history.recordDownload(download);
+  assert.equal(useBrowserHistoryStore.getState().downloads.length, 1);
+});
+
+test("a download begun beside a temporary chat stays unlisted when it is saved after the chat turns normal", async () => {
+  const { saveBrowserDownload } = await import("../src/features/browser/downloads.ts");
+  const history = useBrowserHistoryStore.getState();
+  history.clearDownloads();
+  const prefs = useBrowserPrefsStore.getState();
+  prefs.setAskWhereToSave(true);
+  prefs.setAskBeforeDownloading(false);
+  const g = globalThis as { showSaveFilePicker?: unknown; __toasts?: { options?: { action?: { onClick: () => void } } }[] };
+  const written: Blob[] = [];
+  g.showSaveFilePicker = async ({ suggestedName }: { suggestedName: string }) => ({
+    name: suggestedName,
+    createWritable: async () => ({ write: async (data: Blob) => void written.push(data), close: async () => {} }),
+  });
+  Object.defineProperty(globalThis, "navigator", { value: { userActivation: { isActive: false } }, configurable: true });
+  g.__toasts = [];
+  try {
+    useChatRuntimeStore.getState().setIncognito(true);
+    await saveBrowserDownload({ blob: new Blob(["x"]), name: "late.zip", contentType: "application/zip", url: "https://a.example/late.zip" });
+    useChatRuntimeStore.getState().setIncognito(false);
+    g.__toasts.at(-1)!.options!.action!.onClick();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(written.length, 1);
+    assert.deepEqual(useBrowserHistoryStore.getState().downloads, []);
+  } finally {
+    useChatRuntimeStore.getState().setIncognito(false);
+    prefs.setAskWhereToSave(false);
+    prefs.setAskBeforeDownloading(true);
+    delete g.showSaveFilePicker;
+  }
+});
+
+test("a file a temporary chat's page fetched stays unlisted when it is saved after the chat turns normal", async () => {
+  const { saveBrowserDownload } = await import("../src/features/browser/downloads.ts");
+  useBrowserHistoryStore.getState().clearDownloads();
+  const written: Blob[] = [];
+  const target = {
+    name: "late.bin",
+    createWritable: async () => ({ write: async (data: Blob) => void written.push(data), close: async () => {} }),
+  };
+  const download = { blob: new Blob(["x"]), name: "late.bin", contentType: "application/octet-stream", url: "https://a.example/late.bin" };
+  await saveBrowserDownload({ ...download, temporary: true }, target);
+  assert.equal(written.length, 1);
+  assert.deepEqual(useBrowserHistoryStore.getState().downloads, []);
+  await saveBrowserDownload(download, target);
+  assert.equal(useBrowserHistoryStore.getState().downloads.length, 1);
+  // Taken as normal before a temporary chat was shown: still listed.
+  useChatRuntimeStore.getState().setIncognito(true);
+  try {
+    await saveBrowserDownload({ ...download, temporary: false }, target);
+  } finally {
+    useChatRuntimeStore.getState().setIncognito(false);
+  }
+  assert.equal(useBrowserHistoryStore.getState().downloads.length, 2);
+});
+
+test("Save link as from a temporary chat stays unlisted when its fetch lands after the chat turns normal", async () => {
+  const { saveLinkAs } = await import("../src/features/browser/downloads.ts");
+  useBrowserHistoryStore.getState().clearDownloads();
+  const prefs = useBrowserPrefsStore.getState();
+  prefs.setAskWhereToSave(true);
+  prefs.setAskBeforeDownloading(false);
+  const g = globalThis as { showSaveFilePicker?: unknown; __authFetch?: unknown };
+  const written: Blob[] = [];
+  g.showSaveFilePicker = async ({ suggestedName }: { suggestedName: string }) => ({
+    name: suggestedName,
+    createWritable: async () => ({ write: async (data: Blob) => void written.push(data), close: async () => {} }),
+  });
+  g.__authFetch = () =>
+    new Promise((resolve) =>
+      setTimeout(
+        () =>
+          resolve(
+            new Response(new Blob(["x"]), {
+              headers: { "Content-Type": "application/zip", "X-Unsloth-Browser-Filename": "data.zip" },
+            }),
+          ),
+        50,
+      ),
+    );
+  try {
+    useChatRuntimeStore.getState().setIncognito(true);
+    const saving = saveLinkAs("https://a.example/data.zip");
+    useChatRuntimeStore.getState().setIncognito(false);
+    await saving;
+    assert.equal(written.length, 1);
+    assert.deepEqual(useBrowserHistoryStore.getState().downloads, []);
+  } finally {
+    useChatRuntimeStore.getState().setIncognito(false);
+    prefs.setAskWhereToSave(false);
+    prefs.setAskBeforeDownloading(true);
+    delete g.showSaveFilePicker;
+    delete g.__authFetch;
+  }
+});
+
+test("a download begun beside a normal chat is listed though it lands while a temporary chat is shown", () => {
+  const history = useBrowserHistoryStore.getState();
+  history.clearDownloads();
+  useChatRuntimeStore.getState().setIncognito(true);
+  history.recordDownload(download, false);
+  useChatRuntimeStore.getState().setIncognito(false);
+  assert.equal(useBrowserHistoryStore.getState().downloads.length, 1);
 });
 
 test("shortening how long history is kept drops older visits at once", () => {
@@ -314,6 +481,28 @@ test("a remembered answer settles the site's other waiting downloads", async () 
   assert.equal(await fourth, true);
   assert.equal(useDownloadSitesStore.getState().sites["https://b.example"], undefined);
   useDownloadSitesStore.getState().setSite("https://a.example", null);
+});
+
+test("a context menu download skips a site's block, and a file that runs code still asks", async () => {
+  const { approveChosenDownload, answerDownload, useApprovalStore } = await import(
+    "../src/features/browser/download-approval-queue.ts"
+  );
+  const { useDownloadSitesStore } = await import("../src/features/browser/download-sites-store.ts");
+  useDownloadSitesStore.getState().setSite("https://e.example", "block");
+  try {
+    assert.equal(await approveChosenDownload("https://e.example/cat.png", "cat.png"), true);
+    const setup = approveChosenDownload("https://e.example/setup.exe", "setup.exe");
+    // No origin: the prompt offers nothing to remember.
+    assert.deepEqual(
+      useApprovalStore.getState().queue.map(({ origin, label, dangerous }) => [origin, label, dangerous]),
+      [["", "e.example", true]],
+    );
+    answerDownload(useApprovalStore.getState().queue[0], true, true);
+    assert.equal(await setup, true);
+    assert.equal(useDownloadSitesStore.getState().sites["https://e.example"], "block");
+  } finally {
+    useDownloadSitesStore.getState().setSite("https://e.example", null);
+  }
 });
 
 test("a file that runs code asks whatever the site's remembered answer or the ask setting", async () => {

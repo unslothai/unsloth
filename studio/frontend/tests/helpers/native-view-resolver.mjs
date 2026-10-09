@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // register after browser-store-resolver.mjs and route Tauri calls through globalThis.nativeViewCall;
-// events reach globalThis.nativeViewListener, toasts and recorded downloads land in globalThis.nativeViewSeen
+// events reach globalThis.nativeViewListener, toasts and recorded downloads land in globalThis.nativeViewSeen, visits in globalThis.nativeViewVisits
 const stub = (source) => `data:text/javascript,${encodeURIComponent(source)}`;
 
 const STUBS = {
@@ -21,7 +21,7 @@ const STUBS = {
     export const useNativeBrowser = { getState: () => ({ enabled: true }) };
     export const callNative = (command, args) => globalThis.nativeViewCall(command, args);
     export const nativeClearing = () => false;
-    export const onNativeViewsClosed = () => () => {};
+    export const onNativeViewsClosed = (callback) => { globalThis.nativeViewsClosed = callback; return () => {}; };
     export const clearNativeBrowsingData = async () => {};
   `),
   "./favicon": stub("export const proxiedFavicon = async () => null;"),
@@ -40,11 +40,15 @@ const STUBS = {
     "export const decideNativeDownload = async (...args) => { globalThis.nativeViewDecide?.(...args); };",
   ),
   "./download-approval-queue": stub(
-    "export const approveDownload = async () => Boolean(globalThis.nativeViewApprove); export const downloadSiteOf = () => '';",
+    "export const approveDownload = async () => Boolean(globalThis.nativeViewApprove);" +
+      " export const approveChosenDownload = async () => Boolean(globalThis.nativeViewApprove);" +
+      " export const downloadSiteOf = () => '';",
   ),
   "./history-store": stub(
-    "export const useBrowserHistoryStore = { getState: () => ({ recordVisit() {}," +
-      " recordDownload: (item) => void (globalThis.nativeViewSeen ??= []).push({ level: 'history', message: item.nativeId }) }) };",
+    "const seen = (entry, temporary) => void (globalThis.nativeViewSeen ??= []).push(temporary ? { ...entry, temporary } : entry);" +
+      " export const useBrowserHistoryStore = { getState: () => ({" +
+      " recordVisit: (url, _title, temporary) => void (globalThis.nativeViewVisits ??= []).push({ url, temporary: Boolean(temporary) })," +
+      " recordDownload: (item, temporary) => seen({ level: 'history', message: item.nativeId }, temporary) }) };",
   ),
 };
 

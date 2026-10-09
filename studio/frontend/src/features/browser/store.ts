@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type { DocumentAnnotations } from "@/features/chat";
+import { type DocumentAnnotations, useChatRuntimeStore } from "@/features/chat";
 import { create } from "zustand";
 import { unwrapRedirect } from "./address";
 import type { BrowserPage } from "./api";
@@ -19,6 +19,8 @@ export type BrowserEntry =
       body?: string;
       /** source page for link, form, script, or refresh; files reached here download on its behalf. */
       from?: string;
+      /** Opened beside a temporary chat, so it stays out of history. */
+      temporary?: true;
     }
   | {
       kind: "file";
@@ -209,9 +211,10 @@ export function currentEntry(tab: BrowserTab): BrowserEntry {
   return tab.history[tab.index] ?? { kind: "newtab" };
 }
 
-function webEntry(url: string, method?: "GET" | "POST", body?: string, from?: string): BrowserEntry {
-  const entry: BrowserEntry =
+function webEntry(url: string, method?: "GET" | "POST", body?: string, from?: string, temporary?: boolean): BrowserEntry {
+  const entry: Extract<BrowserEntry, { kind: "web" }> =
     method === "POST" ? { kind: "web", url, method, body } : { kind: "web", url: unwrapRedirect(url) };
+  if (temporary ?? useChatRuntimeStore.getState().incognito) entry.temporary = true;
   return from ? { ...entry, from } : entry;
 }
 
@@ -297,7 +300,7 @@ type BrowserState = {
   openFile: (input: OpenFileInput) => void;
   navigate: (
     tabId: string,
-    request: { url: string; method?: "GET" | "POST"; body?: string; from?: string },
+    request: { url: string; method?: "GET" | "POST"; body?: string; from?: string; temporary?: boolean },
     options?: { replace?: boolean },
   ) => void;
   /** removes a page-sent download from history and returns to its sending page unless the tab moved on. */
@@ -556,7 +559,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
       set((state) => ({
         tabs: patchTab(state.tabs, tabId, (tab) => {
           const replace = options?.replace ?? (nativeWebHistory && currentEntry(tab).kind === "web");
-          const entry = webEntry(request.url, request.method, request.body, request.from);
+          const entry = webEntry(request.url, request.method, request.body, request.from, request.temporary);
           if (request.from && !replace) sentFrom.set(entry, currentEntry(tab));
           return pushEntry(tab, entry, replace);
         }),

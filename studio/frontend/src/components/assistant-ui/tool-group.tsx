@@ -9,6 +9,7 @@ import {
   type PropsWithChildren,
 } from "react";
 import { useAuiState } from "@assistant-ui/react";
+import { useMessageMemo } from "@/components/assistant-ui/use-message-memo";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences-store";
 // eslint-disable-next-line no-restricted-imports -- this file is in the startup cycle; the chat barrel closes it.
@@ -266,24 +267,28 @@ const ToolGroupImpl: FC<
   PropsWithChildren<{ startIndex: number; endIndex: number }>
 > = ({ children, startIndex, endIndex }) => {
   const toolCount = endIndex - startIndex + 1;
-  const containsUngroupedTool = useAuiState(({ message }) =>
-    message.parts.slice(startIndex, endIndex + 1).some(holdsOwnOutput),
+  const containsUngroupedTool = useMessageMemo(
+    (message) =>
+      message.parts.slice(startIndex, endIndex + 1).some(holdsOwnOutput),
+    [startIndex, endIndex],
   );
   // A blocking allow/deny prompt must never be hidden inside a collapsed
   // group, so force the group open while any of its calls awaits confirmation.
   const toolConfirmations = useChatRuntimeStore((s) => s.toolConfirmations);
-  const hasPendingConfirmation = useAuiState(({ message }) =>
-    message.parts
-      .slice(startIndex, endIndex + 1)
-      .some((part) => awaitsConfirmation(part, toolConfirmations)),
+  const hasPendingConfirmation = useMessageMemo(
+    (message) =>
+      message.parts
+        .slice(startIndex, endIndex + 1)
+        .some((part) => awaitsConfirmation(part, toolConfirmations)),
+    [startIndex, endIndex, toolConfirmations],
   );
   const messageRunning = useAuiState(
     ({ message }) => message.status?.type === "running",
   );
   // Still working: a part inherits the message status until it has a result, so the group goes
   // quiet once every call in it has one, without waiting for the rest of the turn.
-  const groupRunning = useAuiState(
-    ({ message }) =>
+  const groupRunning = useMessageMemo(
+    (message) =>
       message.status?.type === "running" &&
       message.parts
         .slice(startIndex, endIndex + 1)
@@ -292,6 +297,7 @@ const ToolGroupImpl: FC<
             part.type === "tool-call" &&
             (part as { result?: unknown }).result === undefined,
         ),
+    [startIndex, endIndex],
   );
   // Only collapsed suppresses the forced opens below. Auto and expanded want it open anyway.
   const collapseByDefault = useChatPreferencesStore(
@@ -301,23 +307,25 @@ const ToolGroupImpl: FC<
   const toolLiveOutput = useChatRuntimeStore((s) => s.toolLiveOutput);
   const paneScope = useToolPaneScope();
   const unresolvedScope = useUnresolvedToolPaneScope();
-  const hasLiveOutput = useAuiState(({ message }) =>
-    message.parts
-      .slice(startIndex, endIndex + 1)
-      .some(
-        (part) =>
-          part.type === "tool-call" &&
-          // Either scope: a first turn writes under the unresolved one for its whole
-          // life, even after the autosave assigns the id (see useToolOutputFor).
-          (Object.prototype.hasOwnProperty.call(
-            toolLiveOutput,
-            toolOutputKey(paneScope, part.toolCallId),
-          ) ||
-            Object.prototype.hasOwnProperty.call(
+  const hasLiveOutput = useMessageMemo(
+    (message) =>
+      message.parts
+        .slice(startIndex, endIndex + 1)
+        .some(
+          (part) =>
+            part.type === "tool-call" &&
+            // Either scope: a first turn writes under the unresolved one for its whole
+            // life, even after the autosave assigns the id (see useToolOutputFor).
+            (Object.prototype.hasOwnProperty.call(
               toolLiveOutput,
-              toolOutputKey(unresolvedScope, part.toolCallId),
-            )),
-      ),
+              toolOutputKey(paneScope, part.toolCallId),
+            ) ||
+              Object.prototype.hasOwnProperty.call(
+                toolLiveOutput,
+                toolOutputKey(unresolvedScope, part.toolCallId),
+              )),
+        ),
+    [startIndex, endIndex, toolLiveOutput, paneScope, unresolvedScope],
   );
   // Keep the group open once a confirmation or live output forced it (so an
   // allow/deny doesn't snap it shut between calls); reverts once the turn ends.
@@ -339,20 +347,24 @@ const ToolGroupImpl: FC<
   const foldToolActivity = useChatPreferencesStore((state) =>
     foldIsActive(state.foldToolActivityIntoThinking, state.toolVisibility),
   );
-  const roundKey = useAuiState(({ message }) => {
-    const reasoningEnd = governingReasoningEnd(message.parts, startIndex);
-    return reasoningEnd === null
-      ? null
-      : reasoningRoundKey(message.id, reasoningEnd);
-  });
+  const roundKey = useMessageMemo(
+    (message) => {
+      const reasoningEnd = governingReasoningEnd(message.parts, startIndex);
+      return reasoningEnd === null
+        ? null
+        : reasoningRoundKey(message.id, reasoningEnd);
+    },
+    [startIndex],
+  );
   const roundOpen = useReasoningRoundStore((state) =>
     roundKey === null ? true : (state.open[roundKey] ?? false),
   );
   const underThinking = foldToolActivity && roundKey !== null;
   const exempt = containsUngroupedTool || hasPendingConfirmation;
   // Last thing under the block, with the answer right after: close the trace with a rule.
-  const closesTrace = useAuiState(({ message }) =>
-    endsFoldedSpan(message.parts, endIndex),
+  const closesTrace = useMessageMemo(
+    (message) => endsFoldedSpan(message.parts, endIndex),
+    [endIndex],
   );
 
   // Render single calls, canvases, Python scripts, and calls that created files

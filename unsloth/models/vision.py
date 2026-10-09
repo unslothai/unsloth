@@ -147,6 +147,7 @@ from .loader_utils import (
     _dequantize_leftover_fp8_params,
     _restore_dropped_fp8_scales,
     _prepare_compressed_tensors_model,
+    _dequantize_bitsandbytes_for_full_finetuning,
     planner_class_mismatch_reason,
     planner_model_class,
     exclude_no_placement_params,
@@ -154,6 +155,7 @@ from .loader_utils import (
     requested_device_map,
     resolve_auto_block_swap,
     resolve_unsloth_device_map,
+    sync_load_when_quantizing,
     warn_if_bitsandbytes_quantized_nothing,
 )
 # `unsloth.save` imports `.models.loader_utils`, so binding a name out of it here at module
@@ -3537,9 +3539,14 @@ class FastBaseModel:
                     )
                 ):
                     try:
-                        with begin_block_swap_load(
-                            _offload_layers, device_map, embeddings = bool(_embedding_needed)
-                        ) as (_block_swap_state):
+                        with (
+                            begin_block_swap_load(
+                                _offload_layers, device_map, embeddings = bool(_embedding_needed)
+                            ) as (_block_swap_state),
+                            sync_load_when_quantizing(
+                                kwargs.get("quantization_config"), model_config
+                            ),
+                        ):
                             model = auto_model.from_pretrained(
                                 model_name,
                                 config = model_config,
@@ -3608,6 +3615,8 @@ class FastBaseModel:
                     dtype = torch_dtype,
                 )
                 _prepare_compressed_tensors_model(model, full_finetuning = full_finetuning)
+                if full_finetuning:
+                    _dequantize_bitsandbytes_for_full_finetuning(model, torch_dtype, model_name)
                 if load_in_16bit and not load_in_4bit and not load_in_8bit:
                     _dequantize_leftover_fp8_params(
                         model,
@@ -4164,6 +4173,8 @@ class FastBaseModel:
         **kwargs,
     ):
         offload_layers = legacy_offload_layers(kwargs, offload_layers)
+        prefetch_depth = prefetch_depth_arg(kwargs)
+        reject_alora(model, kwargs.get("alora_invocation_tokens"))
         if os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1":
             print("Unsloth: Full finetuning is enabled, so .get_peft_model has no effect")
             # Full finetuning still compiles, so a stray pre-train forward can poison the cache; install the detector here too (idempotent).
@@ -4545,7 +4556,10 @@ class FastBaseModel:
             module.max_seq_length = max_seq_length
         offload_embedding_if_tight(model)
         install_block_swap(
-            model, offload_layers, use_gradient_checkpointing = use_gradient_checkpointing
+            model,
+            offload_layers,
+            prefetch_depth = prefetch_depth,
+            use_gradient_checkpointing = use_gradient_checkpointing,
         )
         skip_checkpointing(model, checkpoint_skip_layers)
         for _ in range(3):
@@ -4575,6 +4589,7 @@ class FastBaseModel:
         tokenizer = None,
         float32_mixed_precision = None,
     ):
+        reject_alora(model)
         full_finetuning = os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1"
 
         if type(float32_mixed_precision) is bool:
