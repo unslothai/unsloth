@@ -20,6 +20,7 @@ from studio_mcp.tools.jobs import register_jobs
 from studio_mcp.tools.models import register_models
 from studio_mcp.tools.status import register_status
 from studio_mcp.tools.text import register_text
+from studio_mcp.tools.training import register_training
 from studio_mcp.tools.video import register_video
 
 
@@ -57,19 +58,7 @@ def create_studio_mcp() -> FastMCP:
     register_video(mcp)
     register_jobs(mcp)
     register_data(mcp)
-
-    @mcp.tool
-    async def start_training(config: dict[str, Any]) -> dict[str, Any]:
-        """Start a validated Unsloth training job from a TrainingStartRequest-shaped object.
-
-        The config is validated by the same Pydantic model used by the Unsloth UI.
-        Call get_training_status first and do not start work while another job runs.
-        """
-        from models import TrainingStartRequest
-        from routes.training import start_training as start
-
-        request = TrainingStartRequest.model_validate(config)
-        return _dump(await start(request, current_subject = "mcp", via_api_key = True))
+    register_training(mcp)
 
     @mcp.tool
     async def stop_training(expected_job_id: str, save: bool = True) -> dict[str, Any]:

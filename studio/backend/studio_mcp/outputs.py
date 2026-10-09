@@ -315,3 +315,9 @@ class DatasetsResult(ToolOutput):
     cached: Optional[list[CachedDataset]] = None
     format: Optional[DatasetFormat] = None
     download: Optional[DatasetDownload] = None
+
+
+class TrainingStarted(ToolOutput):
+    job_id: RouteText
+    status: RouteText
+    message: Optional[RouteText] = None
