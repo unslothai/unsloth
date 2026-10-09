@@ -15,6 +15,7 @@ from fastmcp.exceptions import ToolError
 from studio_mcp import checkpoints as named
 from studio_mcp.caller import Caller, current_caller
 from studio_mcp.errors import raise_for_status_field
+from studio_mcp.forward import forward
 from studio_mcp.outputs import (
     CheckpointName,
     TrainingRun,
@@ -56,7 +57,7 @@ async def start_training(
 ) -> TrainingStarted:
     """Start a training job and return at once; follow it with studio_status. This starts real GPU work, so build the config first and check it with ``validate_only`` true, which starts nothing.
 
-    kind "llm": ``config`` is the Unsloth Studio training request. The minimum is {"model_name": a Hugging Face model repo id (not a GGUF; it is downloaded when training starts), "training_type": "LoRA/QLoRA" | "Full Finetuning" | "Continued Pretraining", "format_type": "auto" | "alpaca" | "chatml" | "sharegpt" | "conversational" | "raw", "hf_dataset": a Hugging Face dataset repo id}. Common options: max_steps or num_epochs, learning_rate (a string such as "2e-4"), batch_size, gradient_accumulation_steps, max_seq_length, load_in_4bit, lora_r, lora_alpha, train_split. list_models with ``model`` returns that model's defaults to start from, and datasets(action="check_format") tells you the format_type to use. hf_token for a gated model goes in the config.
+    kind "llm": ``config`` is the Unsloth Studio training request. The minimum is {"model_name": a Hugging Face model repo id (not a GGUF; it is downloaded when training starts), "training_type": "LoRA/QLoRA" | "Full Finetuning" | "Continued Pretraining", "format_type": "auto" | "alpaca" | "chatml" | "sharegpt" | "conversational" | "raw", "hf_dataset": a Hugging Face dataset repo id}. Common options: max_steps or num_epochs, learning_rate (a string such as "2e-4"), batch_size, gradient_accumulation_steps, max_seq_length, load_in_4bit, lora_r, lora_alpha, train_split. list_models with ``model`` returns that model's defaults to start from, and datasets(action="check_format") detects the dataset's format: use it when it is one of the format_type values above, otherwise "auto" (image and audio datasets included). hf_token for a gated model goes in the config.
 
     kind "diffusion": an image LoRA; ``config`` is the image training request, and ``data_dir`` names an image dataset already in Unsloth Studio (there is no upload tool).
 
@@ -67,17 +68,36 @@ async def start_training(
     _checked_config(config, kind)
     if validate_only:
         return TrainingStarted(status = "valid", message = "The config is valid; nothing was started.")
-    payload = await route_json("POST", TRAINING_ROUTES[kind], json_body = config)
-    # The route refuses some starts with a 200 and status "error".
-    raise_for_status_field(payload)
+    start_request_id = opt_text(config.get("start_request_id"))
+    try:
+        payload = await route_json("POST", TRAINING_ROUTES[kind], json_body = config)
+        # The route refuses some starts with a 200 and status "error".
+        raise_for_status_field(payload)
+    except ToolError:
+        if start_request_id:
+            await _acknowledge_start(start_request_id)
+        raise
     if not isinstance(payload, dict) or not opt_text(payload.get("job_id")):
         raise ToolError("Unsloth Studio did not start the training job")
     return TrainingStarted(
         job_id = payload["job_id"],
         status = opt_text(payload.get("status")) or "queued",
         message = opt_text(payload.get("message")),
-        start_request_id = opt_text(config.get("start_request_id")),
+        start_request_id = start_request_id,
     )
+
+
+async def _acknowledge_start(start_request_id: str) -> None:
+    # A refused start stays the training status until acknowledged, hiding the run that is (or was) going; the
+    # training page acknowledges its own refusals the same way. Best effort: the refusal is what the agent needs.
+    try:
+        await forward(
+            current_caller(),
+            "POST",
+            f"/api/train/start-requests/{quote(start_request_id, safe = '')}/acknowledge",
+        )
+    except Exception:
+        pass
 
 
 # Scalars from a run's saved config worth showing; nothing that names a file or a folder.

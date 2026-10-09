@@ -5,6 +5,7 @@ import asyncio
 import json
 
 import pytest
+from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 from fastmcp.exceptions import ToolError
 
@@ -82,6 +83,43 @@ def test_an_already_active_200_is_a_tool_error(monkeypatch):
     result = _call(monkeypatch, studio, "start_training", {"config": CONFIG})
     assert result["isError"] is True
     assert result["content"][0]["text"] == refused["message"]
+
+
+ACKNOWLEDGE = ("POST", "/api/train/start-requests/{start_request_id}/acknowledge")
+
+
+@pytest.mark.parametrize("refusal", ["status_error", "http_409"])
+def test_a_refused_start_is_acknowledged(monkeypatch, refusal):
+    refused = {
+        "job_id": "",
+        "status": "error",
+        "message": "Training already active",
+        "error": "Training already active",
+    }
+    answer = (
+        (lambda request, body: refused)
+        if refusal == "status_error"
+        else (
+            lambda request, body: JSONResponse(
+                {"detail": "A transformers installation is in progress."}, status_code = 409
+            )
+        )
+    )
+    studio = _studio(
+        {("POST", "/api/train/start"): answer, ACKNOWLEDGE: lambda request, body: {"status": "ok"}}
+    )
+    result = _call(monkeypatch, studio, "start_training", {"config": CONFIG})
+    assert result["isError"] is True
+    (sent,) = _bodies(studio, "/api/train/start")
+    acknowledged = [p for _m, p, _h, _b in studio.state.calls if p.endswith("/acknowledge")]
+    # Without this the refusal would stay the training status and hide the run that is going.
+    assert acknowledged == [f"/api/train/start-requests/{sent['start_request_id']}/acknowledge"]
+
+
+def test_a_started_job_is_not_acknowledged(monkeypatch):
+    studio = _studio({ACKNOWLEDGE: lambda request, body: {"status": "ok"}})
+    _call(monkeypatch, studio, "start_training", {"config": CONFIG})
+    assert not [p for _m, p, _h, _b in studio.state.calls if p.endswith("/acknowledge")]
 
 
 def test_validate_only_starts_nothing(monkeypatch):
@@ -167,8 +205,6 @@ def test_kind_routes_to_the_matching_start_route(monkeypatch):
 
 
 def test_a_diffusion_start_during_an_llm_run_is_refused(monkeypatch):
-    from fastapi.responses import JSONResponse
-
     def busy(request, body):
         return JSONResponse(
             {"detail": "An LLM training run is active. Stop it before starting image training."},
