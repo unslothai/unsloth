@@ -122,6 +122,7 @@ from ._utils import (
     _mark_full_finetuning,
     _get_text_only_config,
     resolve_model_class,
+    _is_seq2seq_lm_config,
     _is_family_text_decoder,
     _apply_text_only_key_mapping,
     _get_remote_composite_text_only,
@@ -2643,7 +2644,13 @@ class FastModel(FastBaseModel):
             if _num_labels is not None:
                 from transformers import AutoModelForSequenceClassification
                 auto_model = AutoModelForSequenceClassification
-            elif _is_text_seq2seq_config(model_config):
+            elif _is_text_seq2seq_config(model_config) or (
+                # SeamlessM4T: Seq2SeqLM-mapped (text-to-text) beside its speech classes, no causal-LM class.
+                not is_vlm
+                and _is_seq2seq_lm_config(model_config)
+                and resolve_model_class(AutoModelForCausalLM, model_config, **_probe_hub_kwargs)
+                is None
+            ):
                 if fast_inference:
                     raise NotImplementedError(
                         "Unsloth: fast_inference (vLLM) does not support encoder-decoder models "
