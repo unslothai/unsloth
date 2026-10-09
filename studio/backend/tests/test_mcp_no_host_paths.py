@@ -56,7 +56,10 @@ CASES: dict[str, Any] = {
         (VIDEO_PAYLOADS, {"kind": "video", "id": "video-1"}),
         (RECIPE_PAYLOADS, {"kind": "recipe", "id": "job-1", "rows": 2}),
     ],
-    "start_training": (TRAINING_PAYLOADS, {"config": {"model_name": "m"}}),
+    "start_training": [
+        (TRAINING_PAYLOADS, {"config": {"model_name": "m"}}),
+        (TRAINING_PAYLOADS, {"config": {"base_model": "m", "data_dir": "d"}, "kind": "diffusion"}),
+    ],
     "run_recipe": (RECIPE_PAYLOADS, {"recipe": {"columns": [{"name": "q"}]}}),
     "datasets": [
         (DATASETS_PAYLOADS, {"action": "list"}),

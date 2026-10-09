@@ -18,7 +18,14 @@ CONFIG = {
 }
 STARTED = {"job_id": "job-7", "status": "queued", "message": "Training job queued", "error": None}
 
-PAYLOADS = {("POST", "/api/train/start"): STARTED}
+PAYLOADS = {
+    ("POST", "/api/train/start"): STARTED,
+    ("POST", "/api/train/diffusion/start"): {
+        "job_id": "diff-1",
+        "status": "queued",
+        "output_dir": "/srv/out",
+    },
+}
 
 
 def _studio(overrides = None):
@@ -71,3 +78,49 @@ def test_start_training_annotations():
     assert tool.annotations.destructiveHint is False
     assert tool.annotations.openWorldHint is False
     assert tool.output_schema is not None
+
+
+DIFFUSION = {
+    "base_model": "stabilityai/stable-diffusion-xl-base-1.0",
+    "data_dir": "my-photos",
+    "output_dir": "my-lora",
+    "train_steps": 500,
+}
+
+
+def test_kind_routes_to_the_matching_start_route(monkeypatch):
+    studio = _studio(
+        {
+            ("POST", "/api/train/diffusion/start"): lambda request, body: {
+                "job_id": "diff-1",
+                "status": "queued",
+                "output_dir": "/srv/unsloth/outputs/my-lora",
+            }
+        }
+    )
+    result = _call(
+        monkeypatch, studio, "start_training", {"config": DIFFUSION, "kind": "diffusion"}
+    )
+    assert result["structuredContent"] == {"job_id": "diff-1", "status": "queued", "message": None}
+    assert "/srv" not in json.dumps(result)
+    assert _bodies(studio, "/api/train/diffusion/start") == [DIFFUSION]
+    assert _bodies(studio, "/api/train/start") == []
+
+
+def test_a_diffusion_start_during_an_llm_run_is_refused(monkeypatch):
+    from fastapi.responses import JSONResponse
+
+    def busy(request, body):
+        return JSONResponse(
+            {"detail": "An LLM training run is active. Stop it before starting image training."},
+            status_code = 409,
+        )
+
+    studio = _studio({("POST", "/api/train/diffusion/start"): busy})
+    result = _call(
+        monkeypatch, studio, "start_training", {"config": DIFFUSION, "kind": "diffusion"}
+    )
+    assert result["isError"] is True
+    assert result["content"][0]["text"] == (
+        "An LLM training run is active. Stop it before starting image training. (HTTP 409)"
+    )
