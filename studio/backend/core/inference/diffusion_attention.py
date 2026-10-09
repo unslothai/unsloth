@@ -142,18 +142,15 @@ _SDPA_PROBE_CACHE: dict[tuple[str, str], tuple[str, ...]] = {}
 
 def _probe_rocm_sdpa_kernels(device: str, dtype: Any) -> tuple[str, ...]:
     """Isolate each backend's HIP error state from Studio and from the other probes."""
+    from concurrent.futures import ThreadPoolExecutor
     import json
     from pathlib import Path
     import subprocess
     import sys
+    from utils.subprocess_compat import windows_hidden_subprocess_kwargs
     from .rocm_sdpa_probe import RESULT_PREFIX
 
-    available = []
-    for name, backend in (
-        (SDPA_MATH, "MATH"),
-        (SDPA_FLASH, "FLASH_ATTENTION"),
-        (SDPA_MEM_EFFICIENT, "EFFICIENT_ATTENTION"),
-    ):
+    def probe(backend: str) -> str:
         try:
             result = subprocess.run(
                 [
@@ -166,18 +163,30 @@ def _probe_rocm_sdpa_kernels(device: str, dtype: Any) -> tuple[str, ...]:
                 capture_output = True,
                 text = True,
                 timeout = 45,
+                **windows_hidden_subprocess_kwargs(),
             )
             replies = [
                 line[len(RESULT_PREFIX) :]
                 for line in result.stdout.splitlines()
                 if line.startswith(RESULT_PREFIX)
             ]
-            status = json.loads(replies[-1]) if result.returncode == 0 and replies else "unknown"
+            return json.loads(replies[-1]) if result.returncode == 0 and replies else "unknown"
         except Exception:
-            return ()
+            return "unknown"
+
+    if probe("MATH") != "available":
+        return ()
+    # Overlap Torch imports and HIP context setup, while retaining one process per backend.
+    # A failed in-process fused probe could poison Studio before this isolation can help.
+    candidates = (
+        (SDPA_FLASH, "FLASH_ATTENTION"),
+        (SDPA_MEM_EFFICIENT, "EFFICIENT_ATTENTION"),
+    )
+    with ThreadPoolExecutor(max_workers = 2) as executor:
+        statuses = list(executor.map(probe, (backend for _, backend in candidates)))
+    available = [SDPA_MATH]
+    for (name, _), status in zip(candidates, statuses):
         if status not in ("available", "unavailable", "failed"):
-            return ()
-        if name == SDPA_MATH and status != "available":
             return ()
         if status == "available":
             available.append(name)

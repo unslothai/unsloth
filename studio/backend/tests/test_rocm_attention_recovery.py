@@ -3,6 +3,7 @@
 
 import json
 import subprocess
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -35,7 +36,17 @@ def flags():
     att._SDPA_PROBE_CACHE.clear()
 
 
-def test_isolated_probe_runs_each_backend_in_a_fresh_child(monkeypatch):
+@pytest.mark.parametrize("platform", ["linux", "win32"])
+def test_isolated_probe_runs_each_backend_in_a_fresh_child(monkeypatch, platform):
+    from utils import subprocess_compat
+
+    monkeypatch.setattr(subprocess_compat, "sys", SimpleNamespace(platform = platform))
+    monkeypatch.setattr(subprocess, "CREATE_NO_WINDOW", 0x08000000, raising = False)
+    monkeypatch.setattr(subprocess, "STARTF_USESHOWWINDOW", 1, raising = False)
+    monkeypatch.setattr(subprocess, "SW_HIDE", 0, raising = False)
+    monkeypatch.setattr(
+        subprocess, "STARTUPINFO", lambda: SimpleNamespace(dwFlags = 16), raising = False
+    )
     calls = []
 
     def run(cmd, **kwargs):
@@ -45,8 +56,52 @@ def test_isolated_probe_runs_each_backend_in_a_fresh_child(monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", run)
     assert att._probe_rocm_sdpa_kernels("cuda:1", torch.bfloat16) == ("math", "mem_efficient")
-    assert [cmd[-1] for cmd, _ in calls] == ["MATH", "FLASH_ATTENTION", "EFFICIENT_ATTENTION"]
+    assert calls[0][0][-1] == "MATH"
+    assert {cmd[-1] for cmd, _ in calls[1:]} == {"FLASH_ATTENTION", "EFFICIENT_ATTENTION"}
     assert all(cmd[-3:-1] == ["cuda:1", "bfloat16"] and kw["timeout"] == 45 for cmd, kw in calls)
+    for _, kwargs in calls:
+        if platform == "win32":
+            assert kwargs["creationflags"] == subprocess.CREATE_NO_WINDOW
+            assert kwargs["startupinfo"].dwFlags == 17
+            assert kwargs["startupinfo"].wShowWindow == subprocess.SW_HIDE
+        else:
+            assert "creationflags" not in kwargs and "startupinfo" not in kwargs
+
+
+def test_fused_children_overlap_only_after_math_succeeds(monkeypatch):
+    math_done = threading.Event()
+    fused_started = threading.Barrier(2, timeout = 5)
+
+    def run(cmd, **kwargs):
+        if cmd[-1] == "MATH":
+            math_done.set()
+        else:
+            assert math_done.is_set()
+            # A serial implementation cannot finish either child before the other starts.
+            fused_started.wait()
+        return SimpleNamespace(returncode = 0, stdout = probe.RESULT_PREFIX + '"available"')
+
+    monkeypatch.setattr(subprocess, "run", run)
+    assert att._probe_rocm_sdpa_kernels("cuda:0", torch.bfloat16) == (
+        "math",
+        "flash",
+        "mem_efficient",
+    )
+
+
+@pytest.mark.parametrize("status", ["failed", "unavailable", "unknown", "timeout"])
+def test_fused_children_are_not_started_without_working_math(monkeypatch, status):
+    calls = []
+
+    def run(cmd, **kwargs):
+        calls.append(cmd[-1])
+        if status == "timeout":
+            raise subprocess.TimeoutExpired(cmd, 45)
+        return SimpleNamespace(returncode = 0, stdout = probe.RESULT_PREFIX + json.dumps(status))
+
+    monkeypatch.setattr(subprocess, "run", run)
+    assert att._probe_rocm_sdpa_kernels("cuda:0", torch.bfloat16) == ()
+    assert calls == ["MATH"]
 
 
 @pytest.mark.parametrize("failure", ["timeout", "exit", "garbage", "unknown"])
