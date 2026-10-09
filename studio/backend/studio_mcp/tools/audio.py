@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import base64
 import binascii
-import json
 from typing import Any, Literal, Optional
 from urllib.parse import quote
 
@@ -252,8 +251,16 @@ async def _transcribe_source(
 
     response, payload = await send()
     # A missing model is refused as a 409 before the stream starts, or as an error line within it.
-    refusal = response.text if payload is None else json.dumps(payload)
-    if NOT_DOWNLOADED in refusal:
+    if payload is None:
+        missing = response.status_code == 409 and NOT_DOWNLOADED in response.text
+    else:
+        # Only an error line: a transcript can say anything.
+        missing = (
+            isinstance(payload, dict)
+            and payload.get("type") == "error"
+            and NOT_DOWNLOADED in str(payload.get("message", ""))
+        )
+    if missing:
         await _download_then_retry(caller, ctx, model)
         response, payload = await send()
     if payload is None:

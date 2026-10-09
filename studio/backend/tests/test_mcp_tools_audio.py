@@ -764,6 +764,16 @@ def test_a_missing_model_is_downloaded_before_a_stored_clip_is_retried(monkeypat
     assert "/api/inference/audio/stt/download" in paths
 
 
+def test_a_transcript_that_mentions_the_phrase_is_not_retried(monkeypatch):
+    said = {**COMPLETE, "text": "The file is not downloaded yet, he said."}
+    studio = _source_studio(events = [said])
+    result = _transcribe(monkeypatch, studio, {"audio": {"clip_id": "clip-7"}})
+    assert result["structuredContent"]["text"] == "The file is not downloaded yet, he said."
+    paths = [c[1] for c in studio.state.calls]
+    assert paths.count("/api/inference/audio/transcribe/source") == 1
+    assert "/api/inference/audio/stt/download" not in paths
+
+
 def test_an_ndjson_error_line_is_a_tool_error(monkeypatch):
     studio = _source_studio(
         events = [
