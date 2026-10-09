@@ -5,11 +5,9 @@
 
 from __future__ import annotations
 
-import re
 from typing import Annotated, Any, Literal, Optional
 from urllib.parse import quote
 
-from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from fastmcp.tools import ToolResult
 from pydantic import Field
@@ -28,7 +26,8 @@ from studio_mcp.outputs import (
     RecipeResult,
     VideoInfo,
 )
-from studio_mcp.tools import READ_ONLY, WRITES, integer, number, opt_text, route_json
+from studio_mcp.tools import READ_ONLY, WRITES, as_dict, integer, leaf_name, number, opt_text
+from studio_mcp.tools import route_json
 
 
 def _video_path(video_id: str, suffix: str = "") -> str:
@@ -36,9 +35,8 @@ def _video_path(video_id: str, suffix: str = "") -> str:
 
 
 async def _video_job(caller: Caller, video_id: str) -> ToolResult:
-    job = await route_json("GET", _video_path(video_id), caller = caller)
-    job = job if isinstance(job, dict) else {}
-    error = job.get("error") if isinstance(job.get("error"), dict) else {}
+    job = as_dict(await route_json("GET", _video_path(video_id), caller = caller))
+    error = as_dict(job.get("error"))
     contents: list[Any] = []
     video = None
     if job.get("status") == "completed":
@@ -65,10 +63,10 @@ async def _video_job(caller: Caller, video_id: str) -> ToolResult:
 
 async def _video_jobs(caller: Caller) -> ToolResult:
     listing = await route_json("GET", "/v1/videos", caller = caller)
-    rows = listing.get("data") if isinstance(listing, dict) else None
+    rows = as_dict(listing).get("data")
     jobs = [
-        JobSummary(
-            id = row["id"],
+        JobSummary.from_route(
+            row,
             status = opt_text(row.get("status")) or "queued",
             progress_percent = number(row.get("progress")),
         )
@@ -82,10 +80,7 @@ RECIPE_ROUTES = "/api/data-recipe"
 
 
 def _recipe_dataset(artifact_path: Any) -> Optional[str]:
-    name = opt_text(artifact_path)
-    if name is None:
-        return None
-    leaf = re.split(r"[\\/]", name.rstrip("\\/"))[-1]
+    leaf = leaf_name(artifact_path) if opt_text(artifact_path) else None
     return f"recipes/{leaf}" if leaf else None
 
 
@@ -103,11 +98,11 @@ async def _recipe_job(
         response = await forward(caller, "GET", path)
         # No recipe has run since Unsloth Studio started: nothing to report, not an error.
         if response.status_code == 404:
-            return JobStatus(kind = "recipe", jobs = [])
+            return media_result([], JobStatus(kind = "recipe", jobs = []))
         job = raise_for_route(response)
-    job = job if isinstance(job, dict) else {}
+    job = as_dict(job)
     job_id = opt_text(job.get("job_id")) or job_id
-    progress = job.get("progress") if isinstance(job.get("progress"), dict) else {}
+    progress = as_dict(job.get("progress"))
     data_rows = total = None
     if rows and job_id:
         page = await route_json(
@@ -119,15 +114,13 @@ async def _recipe_job(
         if isinstance(page, dict):
             data_rows = [row for row in page.get("dataset") or [] if isinstance(row, dict)]
             total = integer(page.get("total"))
-    status = JobStatus(
+    status = JobStatus.from_route(
+        job,
         kind = "recipe",
         id = job_id,
-        status = opt_text(job.get("status")),
         progress_percent = number(progress.get("percent")),
-        error = opt_text(job.get("error")),
-        recipe = RecipeInfo(
-            stage = opt_text(job.get("stage")),
-            rows = integer(job.get("rows")),
+        recipe = RecipeInfo.from_route(
+            job,
             dataset = _recipe_dataset(job.get("artifact_path")),
             total_rows = total,
             data_rows = data_rows,
@@ -183,11 +176,9 @@ async def run_recipe(
         payload = await route_json(
             "POST", f"{RECIPE_ROUTES}/validate", json_body = {"recipe": recipe}
         )
-        payload = payload if isinstance(payload, dict) else {}
+        payload = as_dict(payload)
         errors = [
-            RecipeError(
-                message = opt_text(e.get("message")) or "invalid", path = opt_text(e.get("path"))
-            )
+            RecipeError.from_route(e, message = opt_text(e.get("message")) or "invalid")
             for e in payload.get("errors") or []
             if isinstance(e, dict)
         ]
@@ -203,6 +194,4 @@ async def run_recipe(
     return RecipeResult(mode = mode, job_id = job_id)
 
 
-def register_jobs(mcp: FastMCP) -> None:
-    mcp.tool(run_recipe, annotations = WRITES)
-    mcp.tool(get_job, annotations = READ_ONLY, output_schema = JobStatus.model_json_schema())
+TOOLS = ((run_recipe, WRITES), (get_job, READ_ONLY, JobStatus.model_json_schema()))

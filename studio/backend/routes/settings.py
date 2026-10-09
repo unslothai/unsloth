@@ -4178,8 +4178,7 @@ def _require_ui_session_for_mcp(via_api_key: bool = Depends(authenticated_via_ap
     """MCP admits API keys, so a key (or a keyless caller) must not be the thing that opens it."""
     if via_api_key:
         raise HTTPException(
-            status_code = 403,
-            detail = "Agent access (MCP) can only be changed from the Unsloth UI.",
+            status_code = 403, detail = "Agent access (MCP) can only be changed from the Unsloth UI."
         )
 
 

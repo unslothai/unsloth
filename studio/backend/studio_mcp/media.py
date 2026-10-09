@@ -7,8 +7,8 @@ from __future__ import annotations
 
 import base64
 import json
-from typing import Any, Optional, Union
-from urllib.parse import urlsplit
+from typing import Any, Optional
+from urllib.parse import quote, urlsplit
 
 from fastmcp.exceptions import ToolError
 from fastmcp.tools import ToolResult
@@ -20,8 +20,7 @@ from studio_mcp.outputs import ToolOutput
 # Agents put inline media straight into the model's context; past this a link is kinder.
 INLINE_CAP = 1536 * 1024
 MEDIA_PREFIXES = ("/v1/", "/api/inference/")
-
-Content = Union[ImageContent, AudioContent, ResourceLink]
+THUMB_SIDE = 1024
 
 
 def image_content(data: bytes, mime: str) -> ImageContent:
@@ -63,13 +62,13 @@ def public_url(caller: Caller, path: str) -> str:
     return f"{_base(caller)}{parts.path}{query}"
 
 
-def inline_or_link(
-    data: Optional[bytes], mime: str, *, url: str, name: str, kind: str
-) -> list[Content]:
-    """Inline content for media under the cap, else only a link."""
-    if data is not None and len(data) <= INLINE_CAP:
-        return [image_content(data, mime) if kind == "image" else audio_content(data, mime)]
-    return [resource_link(url, name, mime)]
+def image_gallery_path(image_id: str, thumb: bool = False) -> str:
+    path = f"/api/inference/images/gallery/{quote(image_id, safe = '')}/file"
+    return f"{path}?thumb={THUMB_SIDE}" if thumb else path
+
+
+def audio_gallery_path(clip_id: str) -> str:
+    return f"/v1/audio/gallery/{quote(clip_id, safe = '')}/file"
 
 
 def media_result(contents: list[Any], output: ToolOutput) -> ToolResult:

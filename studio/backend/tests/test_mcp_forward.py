@@ -2,7 +2,6 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import asyncio
-import secrets
 
 import httpx
 import pytest
@@ -10,48 +9,28 @@ from fastapi import Depends, Request
 from fastapi.testclient import TestClient
 from fastmcp import FastMCP
 
-from auth import policy, storage
+from auth import storage
 from auth.authentication import get_current_subject
-from studio_mcp.caller import Caller, current_caller
-from studio_mcp.forward import (
-    FORWARD_BASE_URL,
-    checked_path,
-    forward,
-    ndjson_last,
-    parse_json,
-)
+from studio_mcp.caller import current_caller
+from studio_mcp.forward import FORWARD_BASE_URL, checked_path, forward, ndjson_last, parse_json
 from utils import keyless_api_access
 from utils.account_context import AccountContext, bind_account, current_account, reset_account
 from utils.client_ip import client_ip, is_direct_local_request
 
-from .mcp_harness import call_tool, fake_studio, served
+from .mcp_harness import (
+    call_tool,
+    fake_studio,
+    isolated_auth,  # noqa: F401  (fixture)
+    make_caller,
+    owner_auth,  # noqa: F401  (fixture)
+    served,
+)
 
 PROBE_PATH = "/api/inference/__mcp_forward_probe"
 
 
 @pytest.fixture
-def auth_db(tmp_path, monkeypatch):
-    monkeypatch.setattr(storage, "DB_PATH", tmp_path / "auth.db")
-    monkeypatch.setattr(storage, "_BOOTSTRAP_PW_PATH", tmp_path / ".bootstrap_password")
-    monkeypatch.setattr(storage, "_bootstrap_password", None)
-    monkeypatch.setattr(storage, "_api_key_pbkdf2_salt_cache", None)
-    storage._reset_api_key_hash_cache()
-    policy.invalidate_account_cache()
-    keyless_api_access._reset_scope_cache()
-    storage.create_initial_user(
-        username = storage.DEFAULT_ADMIN_USERNAME,
-        password = "human-password-123",
-        jwt_secret = secrets.token_urlsafe(64),
-        must_change_password = False,
-    )
-    yield
-    storage._reset_api_key_hash_cache()
-    policy.invalidate_account_cache()
-    keyless_api_access._reset_scope_cache()
-
-
-@pytest.fixture
-def studio_with_probe(monkeypatch, auth_db):
+def studio_with_probe(monkeypatch, owner_auth):
     """The real main.app with a throwaway route, keyless access at its widest and Studio on loopback."""
     import main
 
@@ -88,21 +67,6 @@ def studio_with_probe(monkeypatch, auth_db):
     app.middleware_stack = None
 
 
-def _caller(
-    app,
-    token,
-    hf_token = None,
-):
-    return Caller(
-        token = token,
-        account_id = "owner",
-        direct_local = True,
-        public_base = "http://127.0.0.1:8888",
-        studio_app = app,
-        hf_token = hf_token,
-    )
-
-
 def test_keyless_full_on_loopback_still_works_for_a_direct_caller(studio_with_probe):
     # Control: the same route admits a keyless caller that really is local.
     local = TestClient(
@@ -115,13 +79,17 @@ def test_keyless_full_on_loopback_still_works_for_a_direct_caller(studio_with_pr
 
 @pytest.mark.parametrize("token", ["", "not-needed", "lm-studio", "ollama", "no-key-required"])
 def test_a_forwarded_call_cannot_use_keyless(studio_with_probe, token):
-    response = asyncio.run(forward(_caller(studio_with_probe, token), "GET", PROBE_PATH))
+    response = asyncio.run(
+        forward(make_caller(studio_app = studio_with_probe, token = token), "GET", PROBE_PATH)
+    )
     assert response.status_code == 401
 
 
 def test_a_forwarded_call_is_remote_and_authenticated_by_the_key(studio_with_probe):
     raw_key, _row = storage.create_api_key(storage.DEFAULT_ADMIN_USERNAME, name = "agent")
-    response = asyncio.run(forward(_caller(studio_with_probe, raw_key), "GET", PROBE_PATH))
+    response = asyncio.run(
+        forward(make_caller(studio_app = studio_with_probe, token = raw_key), "GET", PROBE_PATH)
+    )
     assert response.status_code == 200, response.text
     seen = response.json()
     assert seen["subject"] == storage.DEFAULT_ADMIN_USERNAME
@@ -202,7 +170,7 @@ def test_a_bytes_upload_carries_content_length(monkeypatch):
 
 
 def test_a_streamed_upload_is_refused():
-    caller = _caller(None, "sk-unsloth-test")
+    caller = make_caller(studio_app = None)
 
     async def chunks():
         yield b"x"
@@ -226,7 +194,7 @@ def test_a_streamed_upload_is_refused():
     ],
 )
 def test_a_path_outside_the_allowlist_raises(path):
-    caller = _caller(None, "sk-unsloth-test")
+    caller = make_caller(studio_app = None)
     with pytest.raises(RuntimeError):
         asyncio.run(forward(caller, "GET", path))
 
@@ -262,7 +230,9 @@ def test_the_routes_account_binding_never_reaches_the_tool(studio_with_probe):
     async def run():
         token = bind_account(sentinel)
         try:
-            response = await forward(_caller(studio_with_probe, raw_key), "GET", PROBE_PATH)
+            response = await forward(
+                make_caller(studio_app = studio_with_probe, token = raw_key), "GET", PROBE_PATH
+            )
             return response.json()["account"], current_account()
         finally:
             reset_account(token)
@@ -288,7 +258,7 @@ def test_cancelling_the_tool_cancels_the_forwarded_call():
 
         studio = fake_studio({("GET", "/api/inference/hang"): hang})
         tool = asyncio.create_task(
-            forward(_caller(studio, "sk-unsloth-test"), "GET", "/api/inference/hang")
+            forward(make_caller(studio_app = studio), "GET", "/api/inference/hang")
         )
         await asyncio.wait_for(started.wait(), 10)
         tool.cancel()
@@ -307,7 +277,7 @@ def test_concurrent_calls_under_different_keys_keep_their_own_account(studio_wit
 
     async def run():
         calls = [
-            forward(_caller(studio_with_probe, key), "GET", PROBE_PATH)
+            forward(make_caller(studio_app = studio_with_probe, token = key), "GET", PROBE_PATH)
             for key in (owner_key, alice_key) * 4
         ]
         responses = await asyncio.gather(*calls)

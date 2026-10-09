@@ -6,14 +6,9 @@ land between them; the orchestrator checks the name under the lock the export ho
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import pytest
 
-_BACKEND_DIR = Path(__file__).resolve().parent.parent
-if str(_BACKEND_DIR) not in sys.path:
-    sys.path.insert(0, str(_BACKEND_DIR))
+import models
 
 
 @pytest.fixture
@@ -60,18 +55,8 @@ def test_without_expected_checkpoint_nothing_changes(orchestrator):
     assert len(sent) == 1
 
 
-def test_every_export_request_takes_expected_checkpoint():
-    from models import (
-        ExportBaseModelRequest,
-        ExportGGUFRequest,
-        ExportLoRAAdapterRequest,
-        ExportMergedModelRequest,
-    )
-    for model in (
-        ExportBaseModelRequest,
-        ExportGGUFRequest,
-        ExportLoRAAdapterRequest,
-        ExportMergedModelRequest,
-    ):
-        assert model(save_directory = "out", expected_checkpoint = "/x").expected_checkpoint == "/x"
-        assert model(save_directory = "out").expected_checkpoint is None
+@pytest.mark.parametrize("name", ["BaseModel", "GGUF", "LoRAAdapter", "MergedModel"])
+def test_every_export_request_takes_expected_checkpoint(name):
+    model = getattr(models, f"Export{name}Request")
+    assert model(save_directory = "out", expected_checkpoint = "/x").expected_checkpoint == "/x"
+    assert model(save_directory = "out").expected_checkpoint is None

@@ -5,21 +5,21 @@
 
 from __future__ import annotations
 
-
 from fastmcp import FastMCP
 
-from studio_mcp.tools.audio import register_audio
-from studio_mcp.tools.cancel import register_cancel
-from studio_mcp.tools.data import register_data
-from studio_mcp.tools.export import register_export
-from studio_mcp.tools.images import register_images
-from studio_mcp.tools.jobs import register_jobs
-from studio_mcp.tools.models import register_models
-from studio_mcp.tools.status import register_status
-from studio_mcp.tools.text import register_text
-from studio_mcp.tools.training import register_training
-from studio_mcp.tools.video import register_video
-
+from studio_mcp.tools import (
+    audio,
+    cancel,
+    data,
+    export,
+    images,
+    jobs,
+    models,
+    status,
+    text,
+    training,
+    video,
+)
 
 INSTRUCTIONS = (
     "Unsloth Studio runs models, generates media, trains and exports. "
@@ -42,16 +42,22 @@ def create_studio_mcp() -> FastMCP:
     """Create the Unsloth MCP server and register the high-value tools."""
     mcp = FastMCP("Unsloth Studio", instructions = INSTRUCTIONS)
 
-    register_status(mcp)
-    register_models(mcp)
-    register_text(mcp)
-    register_images(mcp)
-    register_audio(mcp)
-    register_video(mcp)
-    register_jobs(mcp)
-    register_data(mcp)
-    register_training(mcp)
-    register_export(mcp)
-    register_cancel(mcp)
+    for module in (
+        status,
+        models,
+        text,
+        images,
+        audio,
+        video,
+        jobs,
+        data,
+        training,
+        export,
+        cancel,
+    ):
+        for tool, annotations, *schema in module.TOOLS:
+            mcp.tool(
+                tool, annotations = annotations, **({"output_schema": schema[0]} if schema else {})
+            )
 
     return mcp

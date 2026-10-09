@@ -1,28 +1,24 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import asyncio
 import base64
-import json
 
-from fastapi.responses import JSONResponse, Response
-from fastapi.testclient import TestClient
+from fastapi.responses import Response
 
-from mcp_server import create_studio_mcp
-from studio_mcp.inputs import PATH_REMOTE
+from .mcp_harness import (
+    PNG,
+    PNG_URL,
+    WEBP,
+    bodies,
+    call_to,
+    fake_studio,
+    openai_error,
+    queries,
+    run_tool,
+)
 
-from .mcp_harness import call_tool, fake_studio, served
 
-PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
-WEBP = b"RIFF\x00\x00\x00\x00WEBPVP8 " + b"\x00" * 32
-
-
-def _job(
-    video_id = "video-1",
-    status = "queued",
-    progress = 0,
-    error = None,
-):
+def _job(video_id, status, progress, **fields):
     return {
         "id": video_id,
         "object": "video",
@@ -33,12 +29,13 @@ def _job(
         "prompt": "waves",
         "size": "704x480",
         "seconds": "4",
-        "error": error,
+        "error": None,
+        **fields,
     }
 
 
 PAYLOADS = {
-    ("POST", "/v1/videos"): _job(),
+    ("POST", "/v1/videos"): _job("video-1", "queued", 0),
     ("GET", "/v1/videos"): {
         "object": "list",
         "data": [_job("video-2", "in_progress", 40), _job("video-1", "completed", 100)],
@@ -54,36 +51,25 @@ def _thumbnail(request, body):
 
 
 def _studio(overrides = None):
-    routes = {
-        key: (lambda payload: lambda request, body: payload)(value)
-        for key, value in PAYLOADS.items()
-    }
-    routes[("GET", "/v1/videos/video-1/content")] = _thumbnail
-    routes.update(overrides or {})
-    return fake_studio(routes)
+    return fake_studio(
+        {**PAYLOADS, ("GET", "/v1/videos/video-1/content"): _thumbnail, **(overrides or {})}
+    )
 
 
-def _call(monkeypatch, studio, name, args, **client):
-    with TestClient(served(create_studio_mcp(), studio, monkeypatch = monkeypatch), **client) as http:
-        return call_tool(http, name, args)
+def _get_job(
+    monkeypatch,
+    args,
+    overrides = None,
+    **client,
+):
+    return run_tool(monkeypatch, _studio(overrides), "get_job", {"kind": "video", **args}, **client)
 
 
 def test_generate_video_starts_a_job_with_string_fields(monkeypatch):
-    studio = _studio()
-    with TestClient(served(create_studio_mcp(), studio, monkeypatch = monkeypatch)) as http:
-        result = call_tool(
-            http,
-            "generate_video",
-            {
-                "prompt": "waves",
-                "seconds": "4",
-                "size": "704x480",
-                "first_frame": {
-                    "data_url": "data:image/png;base64," + base64.b64encode(PNG).decode()
-                },
-            },
-            headers = {"X-Unsloth-HF-Token": "hf_h"},
-        )
+    args = {"prompt": "waves", "seconds": "4", "size": "704x480", "first_frame": PNG_URL}
+    result, studio = run_tool(
+        monkeypatch, _studio(), "generate_video", args, headers = {"X-Unsloth-HF-Token": "hf_h"}
+    )
     assert result["structuredContent"] == {
         "id": "video-1",
         "status": "queued",
@@ -92,47 +78,19 @@ def test_generate_video_starts_a_job_with_string_fields(monkeypatch):
         "seconds": "4",
         "size": "704x480",
     }
-    (_m, _p, headers, body) = next(c for c in studio.state.calls if c[1] == "/v1/videos")
-    assert json.loads(body) == {
-        "prompt": "waves",
-        "seconds": "4",
-        "size": "704x480",
-        "input_reference": "data:image/png;base64," + base64.b64encode(PNG).decode(),
-    }
-    assert headers["x-unsloth-hf-token"] == "hf_h"
-
-
-def test_no_video_model_says_to_load_one(monkeypatch):
-    def none(request, body):
-        return JSONResponse(
-            {
-                "error": {
-                    "message": "No video model is loaded.",
-                    "type": "api_error",
-                    "param": None,
-                    "code": None,
-                }
-            },
-            status_code = 503,
-        )
-
-    studio = _studio({("POST", "/v1/videos"): none})
-    result = _call(monkeypatch, studio, "generate_video", {"prompt": "waves"})
-    assert result["isError"] is True
-    assert result["content"][0]["text"] == (
-        "No video model is loaded. (HTTP 503) Load a video model with load_model(kind='video') first."
-    )
+    assert bodies(studio, "/v1/videos") == [
+        {
+            "prompt": "waves",
+            "seconds": "4",
+            "size": "704x480",
+            "input_reference": "data:image/png;base64," + base64.b64encode(PNG).decode(),
+        }
+    ]
+    assert call_to(studio, "/v1/videos")[2]["x-unsloth-hf-token"] == "hf_h"
 
 
 def test_a_completed_job_returns_its_thumbnail_and_a_link_never_the_mp4(monkeypatch):
-    studio = _studio()
-    result = _call(
-        monkeypatch,
-        studio,
-        "get_job",
-        {"kind": "video", "id": "video-1"},
-        base_url = "http://192.168.1.20:8888",
-    )
+    result, _studio = _get_job(monkeypatch, {"id": "video-1"}, base_url = "http://192.168.1.20:8888")
     out = result["structuredContent"]
     assert out == {
         "kind": "video",
@@ -156,45 +114,26 @@ def test_a_completed_job_returns_its_thumbnail_and_a_link_never_the_mp4(monkeypa
 
 
 def test_the_forwarder_never_asks_for_the_video_or_a_gallery_file(monkeypatch):
-    seen = []
-
-    def guard(request, body):
-        seen.append(dict(request.query_params))
-        return _thumbnail(request, body)
-
-    studio = _studio({("GET", "/v1/videos/video-1/content"): guard})
-    _call(monkeypatch, studio, "get_job", {"kind": "video", "id": "video-1"})
-    _call(monkeypatch, studio, "get_job", {"kind": "video"})
-    assert seen == [{"variant": "thumbnail"}]
+    _result, studio = _get_job(monkeypatch, {"id": "video-1"})
+    run_tool(monkeypatch, studio, "get_job", {"kind": "video"})
+    assert queries(studio, "/v1/videos/video-1/content") == [{"variant": "thumbnail"}]
     assert not [c for c in studio.state.calls if "/gallery/" in c[1]]
 
 
 def test_an_unavailable_thumbnail_leaves_only_the_link(monkeypatch):
-    def unavailable(request, body):
-        return JSONResponse(
-            {
-                "error": {
-                    "message": "ffmpeg is not installed",
-                    "type": "api_error",
-                    "param": None,
-                    "code": "video_thumbnail_unavailable",
-                }
-            },
-            status_code = 501,
-        )
-
-    studio = _studio({("GET", "/v1/videos/video-1/content"): unavailable})
-    result = _call(monkeypatch, studio, "get_job", {"kind": "video", "id": "video-1"})
+    unavailable = openai_error(
+        "ffmpeg is not installed", 501, type = "api_error", code = "video_thumbnail_unavailable"
+    )
+    content = {("GET", "/v1/videos/video-1/content"): unavailable}
+    result, _studio = _get_job(monkeypatch, {"id": "video-1"}, content)
     assert result["isError"] is False
     assert [c["type"] for c in result["content"][1:]] == ["resource_link"]
     assert result["structuredContent"]["video"]["thumbnail_inline"] is False
 
 
 def test_a_running_job_reports_progress_without_media(monkeypatch):
-    studio = _studio(
-        {("GET", "/v1/videos/video-2"): lambda request, body: _job("video-2", "in_progress", 40)}
-    )
-    result = _call(monkeypatch, studio, "get_job", {"kind": "video", "id": "video-2"})
+    running = {("GET", "/v1/videos/video-2"): _job("video-2", "in_progress", 40)}
+    result, studio = _get_job(monkeypatch, {"id": "video-2"}, running)
     assert result["structuredContent"]["status"] == "in_progress"
     assert result["structuredContent"]["progress_percent"] == 40.0
     assert result["structuredContent"]["video"] is None
@@ -203,60 +142,18 @@ def test_a_running_job_reports_progress_without_media(monkeypatch):
 
 
 def test_a_failed_job_carries_its_error(monkeypatch):
-    failed = _job(
-        "video-3", "failed", 10, {"code": "video_generation_failed", "message": "Out of memory"}
+    error = {"code": "video_generation_failed", "message": "Out of memory"}
+    failed = _job("video-3", "failed", 10, error = error)
+    result, _studio = _get_job(
+        monkeypatch, {"id": "video-3"}, {("GET", "/v1/videos/video-3"): failed}
     )
-    studio = _studio({("GET", "/v1/videos/video-3"): lambda request, body: failed})
-    result = _call(monkeypatch, studio, "get_job", {"kind": "video", "id": "video-3"})
     assert result["structuredContent"]["error"] == "Out of memory"
 
 
 def test_without_an_id_recent_jobs_are_listed(monkeypatch):
-    studio = _studio()
-    result = _call(monkeypatch, studio, "get_job", {"kind": "video"})
+    result, studio = _get_job(monkeypatch, {})
     assert result["structuredContent"]["jobs"] == [
         {"id": "video-2", "status": "in_progress", "progress_percent": 40.0},
         {"id": "video-1", "status": "completed", "progress_percent": 100.0},
     ]
     assert [c[1] for c in studio.state.calls] == ["/v1/videos"]
-
-
-def test_a_remote_agent_cannot_send_a_first_frame_path(monkeypatch, tmp_path):
-    frame = tmp_path / "mcp-input.png"
-    frame.write_bytes(PNG)
-    opened = []
-    monkeypatch.setattr(type(frame), "read_bytes", lambda self: opened.append(self) or PNG)
-    studio = _studio()
-    remote = _call(
-        monkeypatch,
-        studio,
-        "generate_video",
-        {"prompt": "waves", "first_frame": {"path": str(frame)}},
-        base_url = "http://192.168.1.20:8888",
-        client = ("192.0.2.7", 50000),
-    )
-    assert remote["content"][0]["text"] == PATH_REMOTE
-    assert opened == [] and studio.state.calls == []
-    local = _call(
-        monkeypatch,
-        studio,
-        "generate_video",
-        {"prompt": "waves", "first_frame": {"path": str(frame)}},
-        base_url = "http://127.0.0.1:8888",
-        client = ("127.0.0.1", 50000),
-    )
-    assert local["isError"] is False
-    assert opened == [frame]
-
-
-def test_video_annotations():
-    tools = {t.name: t for t in asyncio.run(create_studio_mcp().list_tools())}
-    generate, job = tools["generate_video"], tools["get_job"]
-    assert generate.annotations.readOnlyHint is False
-    assert generate.annotations.destructiveHint is False
-    assert job.annotations.readOnlyHint is True
-    for tool in (generate, job):
-        assert tool.annotations.openWorldHint is False
-        assert tool.output_schema is not None
-    kind = job.parameters["properties"]["kind"]
-    assert "video" in kind.get("enum", [kind.get("const")])

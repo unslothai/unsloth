@@ -39,20 +39,19 @@ TOO_LARGE = (
 )
 
 
+async def _respond(send: Any, status: int, body: bytes, headers: list) -> None:
+    await send({"type": "http.response.start", "status": status, "headers": headers})
+    await send({"type": "http.response.body", "body": body})
+
+
 async def send_json(
     send: Any,
     status: int,
     body: dict,
     headers: tuple = (),
 ) -> None:
-    await send(
-        {
-            "type": "http.response.start",
-            "status": status,
-            "headers": [(b"content-type", b"application/json"), *headers],
-        }
-    )
-    await send({"type": "http.response.body", "body": json.dumps(body).encode()})
+    content_type = (b"content-type", b"application/json")
+    await _respond(send, status, json.dumps(body).encode(), [content_type, *headers])
 
 
 async def _unauthorized(send: Any, detail: str) -> None:
@@ -136,14 +135,7 @@ class StudioMcpGate:
         # The decisions mount only matches with the trailing slash, so /mcp/decisions lands here.
         if _mount_relative_path(scope).rstrip("/") == "/decisions":
             target = URL(scope = {**scope, "path": scope["path"].rstrip("/") + "/"})
-            await send(
-                {
-                    "type": "http.response.start",
-                    "status": 307,
-                    "headers": [(b"location", str(target).encode("latin-1"))],
-                }
-            )
-            await send({"type": "http.response.body", "body": b""})
+            await _respond(send, 307, b"", [(b"location", str(target).encode("latin-1"))])
             return
 
         if not await run_in_threadpool(is_mcp_enabled):

@@ -9,16 +9,15 @@ import json
 import uuid
 from typing import Annotated, Any, Literal, Optional, Union
 
-from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from pydantic import BaseModel, ConfigDict, Field
 
 from studio_mcp.caller import current_caller
 from studio_mcp.errors import raise_for_route
 from studio_mcp.forward import forward
-from studio_mcp.inputs import ImageInput, data_url, resolve_image
+from studio_mcp.inputs import ImageInput, resolve_images
 from studio_mcp.outputs import ChatResult, DecisionAnswer, EmbedResult, SystemOneResult, Usage
-from studio_mcp.tools import READ_ONLY, WRITES, integer, number, route_json, opt_text
+from studio_mcp.tools import READ_ONLY, WRITES, integer, number, opt_text, present, route_json
 
 MAX_EMBED_INPUTS = 2048
 LOAD_CHAT_HINT = "Load a chat model with load_model first; list_models shows the downloaded ones."
@@ -49,13 +48,13 @@ async def _attach_images(turns: list[dict], images: list[ImageInput]) -> None:
     last_user = next((turn for turn in reversed(turns) if turn["role"] == "user"), None)
     if last_user is None:
         raise ToolError("images need a user turn to go with.")
-    caller, parts, total = current_caller(), [], 0
-    for image in images:
-        data, mime = await resolve_image(caller, image)
-        total += len(data)
-        if total > MAX_CHAT_IMAGE_BYTES:
-            raise ToolError("The images together are larger than the 96 MiB a chat request takes")
-        parts.append({"type": "image_url", "image_url": {"url": data_url(data, mime)}})
+    urls = await resolve_images(
+        current_caller(),
+        images,
+        total_cap = MAX_CHAT_IMAGE_BYTES,
+        too_large = "The images together are larger than the 96 MiB a chat request takes",
+    )
+    parts = [{"type": "image_url", "image_url": {"url": url}} for url in urls]
     last_user["content"] = [{"type": "text", "text": last_user["content"]}, *parts]
 
 
@@ -89,14 +88,11 @@ async def chat(
         "stream": False,
         # Our own id, so this run never matches a cancel aimed at another chat.
         "cancel_id": cancel_id,
+        **present(max_tokens = max_tokens, temperature = temperature),
     }
-    if max_tokens is not None:
-        body["max_tokens"] = max_tokens
-    if temperature is not None:
-        body["temperature"] = temperature
-    response = await forward(current_caller(), "POST", "/v1/chat/completions", json_body = body)
-    hints = {400: LOAD_CHAT_HINT} if NOT_LOADED in response.text else None
-    payload = raise_for_route(response, hints = hints)
+    payload = await route_json(
+        "POST", "/v1/chat/completions", json_body = body, hint_if = (NOT_LOADED, {400: LOAD_CHAT_HINT})
+    )
     choices = payload.get("choices") if isinstance(payload, dict) else None
     if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
         raise ToolError("Unsloth Studio returned no reply")
@@ -115,13 +111,7 @@ async def chat(
         text = text,
         model = answered,
         finish_reason = finish_reason,
-        usage = Usage(
-            prompt_tokens = integer(usage.get("prompt_tokens")),
-            completion_tokens = integer(usage.get("completion_tokens")),
-            total_tokens = integer(usage.get("total_tokens")),
-        )
-        if usage
-        else None,
+        usage = Usage.from_route(usage) if usage else None,
         note = note,
         cancel_id = cancel_id,
     )
@@ -151,9 +141,7 @@ async def embed(
         raise ToolError(f"Unsloth Studio returned {len(rows)} embeddings for {len(texts)} texts")
     embeddings = [[float(value) for value in row["embedding"]] for row in rows]
     return EmbedResult(
-        model = opt_text(payload.get("model")),
-        dimensions = len(embeddings[0]),
-        embeddings = embeddings,
+        model = opt_text(payload.get("model")), dimensions = len(embeddings[0]), embeddings = embeddings
     )
 
 
@@ -181,12 +169,9 @@ def _floats(values: Any) -> Optional[dict[str, float]]:
 
 def _answer(answer: dict) -> DecisionAnswer:
     legend = answer.get("legend")
-    return DecisionAnswer(
+    return DecisionAnswer.from_route(
+        answer,
         type = str(answer.get("type")),
-        noul = number(answer.get("noul")),
-        choice = opt_text(answer.get("choice")),
-        score = number(answer.get("score")),
-        confidence = number(answer.get("confidence")),
         probabilities = _floats(answer.get("probabilities")),
         legend = {
             str(k): v if isinstance(v, str) else json.dumps(v, ensure_ascii = False)
@@ -212,16 +197,14 @@ async def system_one(
         "questions": {name: q.model_dump(exclude_none = True) for name, q in questions.items()},
     }
     if images:
-        caller, urls, total = current_caller(), [], 0
-        for image in images:
-            data, mime = await resolve_image(
-                caller, image, max_bytes = MAX_DECISION_IMAGE_BYTES, mimes = ("image/png", "image/jpeg")
-            )
-            total += len(data)
-            if total > MAX_DECISION_IMAGES_BYTES:
-                raise ToolError("The images together are larger than 8 MiB")
-            urls.append(data_url(data, mime))
-        body["images"] = urls
+        body["images"] = await resolve_images(
+            current_caller(),
+            images,
+            total_cap = MAX_DECISION_IMAGES_BYTES,
+            too_large = "The images together are larger than 8 MiB",
+            max_bytes = MAX_DECISION_IMAGE_BYTES,
+            mimes = ("image/png", "image/jpeg"),
+        )
     response = await forward(current_caller(), "POST", "/v1/systemone", json_body = body)
     payload = raise_for_route(response, hints = {404: DECISION_API_OFF_HINT})
     answers = payload.get("answers") if isinstance(payload, dict) else None
@@ -234,7 +217,4 @@ async def system_one(
     )
 
 
-def register_text(mcp: FastMCP) -> None:
-    mcp.tool(chat, annotations = WRITES)
-    mcp.tool(embed, annotations = READ_ONLY)
-    mcp.tool(system_one, annotations = READ_ONLY)
+TOOLS = ((chat, WRITES), (embed, READ_ONLY), (system_one, READ_ONLY))

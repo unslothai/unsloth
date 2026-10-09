@@ -13,6 +13,7 @@ import httpx
 from fastmcp.exceptions import ToolError
 
 from hub.utils.host_paths import redact_paths_in_text
+from studio_mcp.forward import parse_json
 
 # Route errors sometimes tell a browser client which route to call next ("Call POST /inference/load
 # first."). The path scrub turns that route into <path>, and an MCP agent cannot call routes anyway.
@@ -120,7 +121,7 @@ def _describe(status: int, body: Any, headers: Mapping[str, str]) -> str:
 
 def _body(resp: httpx.Response) -> Any:
     try:
-        return json.loads(resp.content.strip())
+        return parse_json(resp.content)
     except (ValueError, UnicodeDecodeError):
         return resp.text.strip()
 
@@ -164,7 +165,7 @@ def raise_for_route(
         raise tool_error(_describe(resp.status_code, body, resp.headers), hint)
     if payload is None:
         try:
-            payload = json.loads(resp.content.strip()) if resp.content.strip() else None
+            payload = parse_json(resp.content) if resp.content.strip() else None
         except (ValueError, UnicodeDecodeError):
             return None
     return raise_for_payload(payload)

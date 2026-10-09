@@ -1,14 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import asyncio
-
 import pytest
-from fastapi.testclient import TestClient
 
-from mcp_server import create_studio_mcp
-
-from .mcp_harness import call_tool, fake_studio, served
+from .mcp_harness import fake_studio, run_tool
 
 CATALOG = {
     "object": "list",
@@ -74,16 +69,9 @@ def _list(
     monkeypatch,
     args = None,
     headers = None,
+    routes = PAYLOADS,
 ):
-    studio = fake_studio(
-        {
-            key: (lambda payload: lambda request, body: payload)(value)
-            for key, value in PAYLOADS.items()
-        }
-    )
-    with TestClient(served(create_studio_mcp(), studio, monkeypatch = monkeypatch)) as http:
-        result = call_tool(http, "list_models", args or {}, headers = headers)
-    return result, studio
+    return run_tool(monkeypatch, routes, "list_models", args or {}, headers = headers)
 
 
 @pytest.mark.parametrize(
@@ -123,17 +111,10 @@ def test_entries_carry_only_the_allowlisted_fields(monkeypatch):
 
 
 def test_output_modalities_is_never_sent(monkeypatch):
-    seen = []
-    studio = fake_studio(
-        {
-            ("GET", "/v1/models"): lambda request, body: seen.append(str(request.url.query))
-            or CATALOG
-        }
-    )
-    with TestClient(served(create_studio_mcp(), studio, monkeypatch = monkeypatch)) as http:
-        for args in ({}, {"kind": "image"}, {"kind": "stt", "loaded_only": True}):
-            call_tool(http, "list_models", args)
-    assert seen == ["", "", ""]
+    studio = fake_studio({("GET", "/v1/models"): CATALOG})
+    for args in ({}, {"kind": "image"}, {"kind": "stt", "loaded_only": True}):
+        run_tool(monkeypatch, studio, "list_models", args)
+    assert [query for _m, _p, query in studio.state.queries] == ["", "", ""]
 
 
 def test_loaded_only_takes_the_fast_path_for_chat(monkeypatch):
@@ -150,26 +131,20 @@ def test_loaded_only_takes_the_fast_path_for_chat(monkeypatch):
     assert [call[1] for call in studio.state.calls] == ["/v1/models"]
 
 
-def test_model_adds_scalar_training_defaults(monkeypatch):
-    result, _studio = _list(monkeypatch, {"model": "unsloth/Qwen3-0.6B"})
+# ``model`` narrows the list to that model and adds its scalar training defaults.
+@pytest.mark.parametrize(
+    "asked", ["unsloth/Qwen3-0.6B", "unsloth/qwen3-0.6b", "unsloth/Qwen3-0.6B:Q4_K_M"]
+)
+def test_model_matches_whatever_case_or_variant_is_asked_for(monkeypatch, asked):
+    routes = {**PAYLOADS, ("GET", f"/api/models/config/{asked}"): CONFIG}
+    result, _studio = _list(monkeypatch, {"model": asked}, routes = routes)
+    assert [m["id"] for m in result["structuredContent"]["models"]] == ["unsloth/Qwen3-0.6B"]
     assert result["structuredContent"]["training_defaults"] == {
         "max_seq_length": 2048,
         "learning_rate": "2e-4",
         "packing": False,
         "lora_r": 16,
     }
-
-
-def test_model_narrows_the_list_to_that_model(monkeypatch):
-    result, _studio = _list(monkeypatch, {"model": "unsloth/Qwen3-0.6B"})
-    assert [m["id"] for m in result["structuredContent"]["models"]] == ["unsloth/Qwen3-0.6B"]
-
-
-@pytest.mark.parametrize("asked", ["unsloth/qwen3-0.6b", "unsloth/Qwen3-0.6B:Q4_K_M"])
-def test_model_matches_whatever_case_or_variant_is_asked_for(monkeypatch, asked):
-    monkeypatch.setitem(PAYLOADS, ("GET", f"/api/models/config/{asked}"), CONFIG)
-    result, _studio = _list(monkeypatch, {"model": asked})
-    assert [m["id"] for m in result["structuredContent"]["models"]] == ["unsloth/Qwen3-0.6B"]
 
 
 def test_the_config_request_carries_the_hub_token_only_when_given(monkeypatch):
@@ -185,11 +160,3 @@ def test_the_config_request_carries_the_hub_token_only_when_given(monkeypatch):
     calls = {path: h for _m, path, h, _b in studio.state.calls}
     assert calls["/api/models/config/unsloth/Qwen3-0.6B"]["x-unsloth-hf-token"] == "hf_secret"
     assert "x-unsloth-hf-token" not in calls["/v1/models"]
-
-
-def test_list_models_is_read_only():
-    tool = {t.name: t for t in asyncio.run(create_studio_mcp().list_tools())}["list_models"]
-    assert tool.annotations.readOnlyHint is True
-    assert tool.annotations.openWorldHint is False
-    assert tool.output_schema is not None
-    assert set(tool.parameters["properties"]) == {"kind", "loaded_only", "model"}

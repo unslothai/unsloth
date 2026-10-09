@@ -17,6 +17,7 @@ from typing import Any, Awaitable, Callable, Optional
 from fastmcp.exceptions import ToolError
 
 from hub.utils.host_paths import redact_paths_in_text
+from studio_mcp.tools import leaf_name
 
 CAPACITY = 64
 
@@ -64,8 +65,7 @@ def output_name(path: Any) -> Optional[str]:
         from utils.paths import exports_root
         return Path(path).resolve().relative_to(Path(exports_root()).resolve()).as_posix()
     except Exception:
-        name = re.split(r"[\\/]", path.rstrip("\\/"))[-1]
-        return f"{name} (outside exports folder)"
+        return f"{leaf_name(path)} (outside exports folder)"
 
 
 def finish(

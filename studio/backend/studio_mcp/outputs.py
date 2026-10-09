@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Any, Optional, Union
+from typing import Annotated, Any, Optional, TypeVar, Union, get_args, get_origin
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, StrictBool, StrictFloat, StrictInt
 
@@ -16,6 +16,44 @@ RouteText = Annotated[str, AfterValidator(redact_paths_in_text)]
 
 class ToolOutput(BaseModel):
     model_config = ConfigDict(extra = "forbid")
+
+    @classmethod
+    def from_route(cls: type[_Out], payload: Any, **overrides: Any) -> _Out:
+        """Copy each declared field from route JSON, coerced by its type: text must be non-empty, numbers must not be bools, a bool must be ``true``, a list of text keeps its strings. A field the route left out or sent malformed keeps its default; nested models, dicts and anything needing more care come in through ``overrides``."""
+        row = payload if isinstance(payload, dict) else {}
+        fields = {}
+        for name, info in cls.model_fields.items():
+            value = None if name in overrides else _route_value(info.annotation, row.get(name))
+            if value is not None:
+                fields[name] = value
+        return cls(**fields, **overrides)
+
+
+_Out = TypeVar("_Out", bound = ToolOutput)
+
+
+def _unwrap(annotation: Any) -> Any:
+    # The type under Annotated and Optional; None for a union of several types.
+    while get_origin(annotation) is Annotated:
+        annotation = get_args(annotation)[0]
+    if get_origin(annotation) is Union:
+        kinds = [kind for kind in get_args(annotation) if kind is not type(None)]
+        return _unwrap(kinds[0]) if len(kinds) == 1 else None
+    return annotation
+
+
+def _route_value(annotation: Any, value: Any) -> Any:
+    from studio_mcp.tools import integer, number, opt_text
+
+    kind = _unwrap(annotation)
+    if get_origin(kind) is list:
+        if _unwrap(get_args(kind)[0]) is not str or not isinstance(value, list):
+            return None
+        return [item for item in value if isinstance(item, str)]
+    if kind is bool:
+        return value is True
+    rule = {str: opt_text, int: integer, float: number}.get(kind)
+    return rule(value) if rule else None
 
 
 class ChatModel(ToolOutput):

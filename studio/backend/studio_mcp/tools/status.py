@@ -6,10 +6,9 @@
 from __future__ import annotations
 
 import asyncio
-import re
+from functools import partial
 from typing import Any, Callable
 
-from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 
 from studio_mcp.caller import Caller, current_caller
@@ -29,7 +28,7 @@ from studio_mcp.outputs import (
     TrainingSlot,
     VideoSlot,
 )
-from studio_mcp.tools import READ_ONLY, integer, number, opt_text
+from studio_mcp.tools import READ_ONLY, as_dict, integer, leaf_name, number, opt_text, try_json
 
 SLOT_ROUTES = {
     "chat": "/api/inference/status",
@@ -47,41 +46,25 @@ STT_ENGINES = ("transformers", "mtmd", "gguf", "audiocpp")
 
 def _chat(payload: dict) -> ChatSlot:
     active = payload.get("model_identifier")
-    loaded = []
-    for model_id in payload.get("loaded") or []:
-        if not isinstance(model_id, str):
-            continue
-        is_active = model_id == active
-        loaded.append(
-            ChatModel(
-                id = model_id,
-                display_name = opt_text(payload.get("active_model")) if is_active else None,
-                is_gguf = bool(payload.get("is_gguf")) if is_active else None,
-            )
+    loaded = [
+        ChatModel(
+            id = model_id,
+            display_name = opt_text(payload.get("active_model")) if model_id == active else None,
+            is_gguf = bool(payload.get("is_gguf")) if model_id == active else None,
         )
+        for model_id in payload.get("loaded") or []
+        if isinstance(model_id, str)
+    ]
     loading = [model for model in payload.get("loading") or [] if isinstance(model, str)]
     return ChatSlot(loaded = loaded, loading = loading)
 
 
-def _image(payload: dict) -> ImageSlot:
-    loaded = payload.get("loaded") is True
-    return ImageSlot(
-        loaded = loaded,
-        model = (opt_text(payload.get("display_repo_id")) or opt_text(payload.get("repo_id")))
-        if loaded
-        else None,
-        family = opt_text(payload.get("family")) if loaded else None,
-    )
-
-
-def _video(payload: dict) -> VideoSlot:
-    loaded = payload.get("loaded") is True
-    return VideoSlot(
-        loaded = loaded,
-        model = (opt_text(payload.get("display_repo_id")) or opt_text(payload.get("repo_id")))
-        if loaded
-        else None,
-    )
+def _media(slot: type, payload: dict) -> Any:
+    if payload.get("loaded") is not True:
+        return slot()
+    model = opt_text(payload.get("display_repo_id")) or opt_text(payload.get("repo_id"))
+    family = {"family": opt_text(payload.get("family"))} if slot is ImageSlot else {}
+    return slot(loaded = True, model = model, **family)
 
 
 def _stt(payload: dict) -> SttSlot:
@@ -109,22 +92,15 @@ def _stt(payload: dict) -> SttSlot:
 
 def _embedder(payload: dict) -> EmbedderSlot:
     custom = payload.get("is_custom") is True
-    return EmbedderSlot(
-        available = True,
-        loaded = payload.get("loaded") is True,
-        model = "custom" if custom else opt_text(payload.get("embedding_model")),
-    )
+    model = "custom" if custom else opt_text(payload.get("embedding_model"))
+    return EmbedderSlot.from_route(payload, available = True, model = model)
 
 
 def _training(payload: dict) -> TrainingSlot:
-    details = payload.get("details") if isinstance(payload.get("details"), dict) else {}
+    details = as_dict(payload.get("details"))
     step, total = integer(details.get("step")), integer(details.get("total_steps"))
-    return TrainingSlot(
-        job_id = opt_text(payload.get("job_id")),
-        phase = opt_text(payload.get("phase")) or "idle",
-        is_training_running = payload.get("is_training_running") is True,
-        message = opt_text(payload.get("message")) or "",
-        error = opt_text(payload.get("error")),
+    return TrainingSlot.from_route(
+        payload,
         step = step,
         total_steps = total,
         loss = number(details.get("loss")),
@@ -133,44 +109,29 @@ def _training(payload: dict) -> TrainingSlot:
     )
 
 
-def _folder_name(value: Any) -> Any:
-    if not opt_text(value):
-        return None
-    return re.split(r"[\\/]", value.rstrip("\\/"))[-1] or None
-
-
 def _export(payload: dict) -> ExportSlot:
-    return ExportSlot(
+    path = opt_text(payload.get("last_op_output_path"))
+    return ExportSlot.from_route(
+        payload,
         active = payload.get("is_export_active") is True,
         op_kind = opt_text(payload.get("active_op_kind")),
-        last_op_status = opt_text(payload.get("last_op_status")),
-        last_output = _folder_name(payload.get("last_op_output_path")),
+        last_output = (path and leaf_name(path)) or None,
     )
 
 
 def _hardware(payload: dict) -> HardwareSlot:
     devices = [
-        GpuDevice(
-            index = integer(device.get("index")),
-            gpu_utilization_pct = number(device.get("gpu_utilization_pct")),
-            vram_used_gb = number(device.get("vram_used_gb")),
-            vram_total_gb = number(device.get("vram_total_gb")),
-            temperature_c = number(device.get("temperature_c")),
-        )
+        GpuDevice.from_route(device)
         for device in payload.get("devices") or []
         if isinstance(device, dict)
     ]
-    return HardwareSlot(
-        available = payload.get("available") is True,
-        backend = opt_text(payload.get("backend")),
-        devices = devices,
-    )
+    return HardwareSlot.from_route(payload, devices = devices)
 
 
 BUILDERS: dict[str, Callable[[dict], Any]] = {
     "chat": _chat,
-    "image": _image,
-    "video": _video,
+    "image": partial(_media, ImageSlot),
+    "video": partial(_media, VideoSlot),
     "stt": _stt,
     "embedder": _embedder,
     "training": _training,
@@ -198,11 +159,7 @@ GENERATING_ROUTES = {
 
 
 async def _generating(caller: Caller, slot: str) -> bool:
-    try:
-        response = await forward(caller, "GET", GENERATING_ROUTES[slot])
-        payload = response.json() if response.status_code == 200 else {}
-    except Exception:
-        return False
+    payload = await try_json(caller, GENERATING_ROUTES[slot])
     return isinstance(payload, dict) and payload.get("active") is True
 
 
@@ -229,5 +186,4 @@ async def studio_status() -> StudioStatus:
     return StudioStatus(**status, unavailable = unavailable)
 
 
-def register_status(mcp: FastMCP) -> None:
-    mcp.tool(studio_status, annotations = READ_ONLY)
+TOOLS = ((studio_status, READ_ONLY),)

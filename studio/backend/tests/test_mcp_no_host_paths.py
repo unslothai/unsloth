@@ -19,7 +19,7 @@ from studio_mcp.errors import raise_for_route
 from studio_mcp.forward import forward
 from studio_mcp.outputs import RouteText, ToolOutput
 
-from .mcp_harness import SENTINEL_ROOTS, call_tool, fake_studio, poison, served
+from .mcp_harness import SENTINEL_ROOTS, WAV_INPUT, call_tool, fake_studio, poison, served
 from .test_mcp_tools_audio import PAYLOADS as AUDIO_PAYLOADS
 from .test_mcp_tools_audio import TRANSCRIBE_PAYLOADS
 from .test_mcp_tools_cancel import PAYLOADS as CANCEL_PAYLOADS
@@ -73,22 +73,8 @@ CASES: dict[str, Any] = {
         (DATASETS_PAYLOADS, {"action": "check_format", "name": "a/b"}),
         (DATASETS_PAYLOADS, {"action": "status", "repo_id": "a/b"}),
     ],
-    "transcribe": (
-        TRANSCRIBE_PAYLOADS,
-        {
-            "audio": {"data_base64": "UklGRg==", "filename": "a.wav"},
-            "timestamps": True,
-            "language": "en",
-        },
-    ),
-    "generate_audio": (
-        AUDIO_PAYLOADS,
-        {
-            "workflow": "clone",
-            "text": "hi",
-            "reference": {"data_base64": "UklGRg==", "filename": "a.wav"},
-        },
-    ),
+    "transcribe": (TRANSCRIBE_PAYLOADS, {"audio": WAV_INPUT, "timestamps": True, "language": "en"}),
+    "generate_audio": (AUDIO_PAYLOADS, {"workflow": "clone", "text": "hi", "reference": WAV_INPUT}),
 }
 
 # Output keys that carry model-written text, which is the model's to say and is never rewritten.
@@ -113,16 +99,8 @@ def leaks(result: dict, ignore: frozenset = frozenset()) -> Optional[str]:
     return None
 
 
-def _poisoned_studio(routes: dict[tuple[str, str], Any]):
-    def answer(payload):
-        return lambda request, body: poison(payload)
-
-    return fake_studio({key: answer(payload) for key, payload in routes.items()})
-
-
 def run_case(monkeypatch, mcp, name: str, routes: dict, args: dict) -> dict:
-    app = served(mcp, _poisoned_studio(routes), monkeypatch = monkeypatch)
-    with TestClient(app) as http:
+    with TestClient(served(mcp, fake_studio(poison(routes)), monkeypatch = monkeypatch)) as http:
         return call_tool(http, name, args)
 
 
@@ -205,9 +183,7 @@ def _probe_mcp():
     return mcp
 
 
-ROUTES = {
-    ("GET", "/api/train/status"): {"message": "Training", "output_dir": "/srv/out"},
-}
+ROUTES = {("GET", "/api/train/status"): {"message": "Training", "output_dir": "/srv/out"}}
 
 
 def test_the_checker_sees_a_passed_through_route_payload(monkeypatch):
@@ -224,9 +200,9 @@ def test_a_typed_output_and_a_route_error_do_not_leak(monkeypatch):
         from fastapi.responses import JSONResponse
         return JSONResponse({"detail": poison("Run not found")}, status_code = 404)
 
-    studio = fake_studio({("GET", "/api/train/missing"): missing})
-    with TestClient(served(_probe_mcp(), studio, monkeypatch = monkeypatch)) as http:
-        failed = call_tool(http, "failing")
+    failed = run_case(
+        monkeypatch, _probe_mcp(), "failing", {("GET", "/api/train/missing"): missing}, {}
+    )
     assert failed["isError"] is True
     assert "Run not found" in failed["content"][0]["text"]
     assert leaks(failed) is None

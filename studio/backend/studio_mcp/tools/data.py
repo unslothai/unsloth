@@ -8,7 +8,6 @@ from __future__ import annotations
 import dataclasses
 from typing import Literal, Optional
 
-from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 
 from studio_mcp.caller import current_caller
@@ -19,13 +18,9 @@ from studio_mcp.outputs import (
     DatasetsResult,
     LocalDataset,
 )
-from studio_mcp.tools import WRITES, integer, opt_text, route_json
+from studio_mcp.tools import WRITES, as_dict, opt_text, route_json
 
 HUB_DATASETS = "/api/hub/datasets"
-
-
-def _strings(values) -> list[str]:
-    return [v for v in values if isinstance(v, str)] if isinstance(values, list) else []
 
 
 async def datasets(
@@ -46,17 +41,15 @@ async def datasets(
         cached = await route_json("GET", f"{HUB_DATASETS}/cached", caller = caller)
         return DatasetsResult(
             local = [
-                LocalDataset(
-                    id = row["id"],
-                    label = opt_text(row.get("label")) or row["id"],
-                    rows = integer(row.get("rows")),
+                LocalDataset.from_route(
+                    row, label = opt_text(row.get("label")) or row["id"], source = "local"
                 )
-                for row in (local.get("datasets") if isinstance(local, dict) else None) or []
+                for row in as_dict(local).get("datasets") or []
                 if isinstance(row, dict) and opt_text(row.get("id"))
             ],
             cached = [
-                CachedDataset(repo_id = row["repo_id"], size_bytes = integer(row.get("size_bytes")))
-                for row in (cached.get("cached") if isinstance(cached, dict) else None) or []
+                CachedDataset.from_route(row)
+                for row in as_dict(cached).get("cached") or []
                 if isinstance(row, dict) and opt_text(row.get("repo_id"))
             ],
         )
@@ -71,20 +64,14 @@ async def datasets(
         found = await route_json(
             "POST", f"{HUB_DATASETS}/check-format", caller = caller, json_body = body, hub_header = True
         )
-        found = found if isinstance(found, dict) else {}
+        found = as_dict(found)
         mapping = found.get("suggested_mapping")
         return DatasetsResult(
-            format = DatasetFormat(
-                detected_format = opt_text(found.get("detected_format")),
-                requires_manual_mapping = found.get("requires_manual_mapping") is True,
-                columns = _strings(found.get("columns")),
+            format = DatasetFormat.from_route(
+                found,
                 suggested_mapping = {str(k): v for k, v in mapping.items() if isinstance(v, str)}
                 if isinstance(mapping, dict)
                 else None,
-                is_image = found.get("is_image") is True,
-                is_audio = found.get("is_audio") is True,
-                total_rows = integer(found.get("total_rows")),
-                warning = opt_text(found.get("warning")),
             )
         )
     if not repo_id:
@@ -97,24 +84,20 @@ async def datasets(
             json_body = {"repo_id": repo_id},
             hub_header = True,
         )
-        started = started if isinstance(started, dict) else {}
         return DatasetsResult(
             download = DatasetDownload(
-                repo_id = repo_id, state = opt_text(started.get("state")) or "queued"
+                repo_id = repo_id, state = opt_text(as_dict(started).get("state")) or "queued"
             )
         )
     state = await route_json(
         "GET", f"{HUB_DATASETS}/download-status", caller = caller, params = {"repo_id": repo_id}
     )
-    state = state if isinstance(state, dict) else {}
+    state = as_dict(state)
     return DatasetsResult(
-        download = DatasetDownload(
-            repo_id = repo_id,
-            state = opt_text(state.get("state")) or "unknown",
-            error = opt_text(state.get("error")),
+        download = DatasetDownload.from_route(
+            state, repo_id = repo_id, state = opt_text(state.get("state")) or "unknown"
         )
     )
 
 
-def register_data(mcp: FastMCP) -> None:
-    mcp.tool(datasets, annotations = WRITES)
+TOOLS = ((datasets, WRITES),)

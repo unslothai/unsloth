@@ -9,8 +9,7 @@ import base64
 import binascii
 import re
 from pathlib import Path
-from typing import Optional
-from urllib.parse import quote
+from typing import Any, Optional
 
 from fastmcp.exceptions import ToolError
 from pydantic import BaseModel, ConfigDict, model_validator
@@ -18,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, model_validator
 from studio_mcp.caller import Caller
 from studio_mcp.errors import raise_for_route
 from studio_mcp.forward import forward
+from studio_mcp.media import image_gallery_path
 
 PATH_REMOTE = (
     "File paths work only when the agent runs on the Unsloth Studio computer. "
@@ -100,11 +100,7 @@ async def resolve_image(
             raise ToolError("data_url must be data:image/png, image/jpeg or image/webp;base64,...")
         data = decode_base64(match.group(2), max_bytes, "data_url")
     else:
-        response = await forward(
-            caller,
-            "GET",
-            f"/api/inference/images/gallery/{quote(image.gallery_id, safe = '')}/file",
-        )
+        response = await forward(caller, "GET", image_gallery_path(image.gallery_id))
         raise_for_route(response)
         data = response.content
         if len(data) > max_bytes:
@@ -114,6 +110,20 @@ async def resolve_image(
         allowed = ", ".join(m.removeprefix("image/").upper() for m in mimes)
         raise ToolError(f"Images must be {allowed}")
     return data, mime
+
+
+async def resolve_images(
+    caller: Caller, images: list[ImageInput], *, total_cap: int, too_large: str, **limits: Any
+) -> list[str]:
+    """Each image as a data URL, refused with ``too_large`` as soon as their bytes together pass ``total_cap``."""
+    urls, total = [], 0
+    for image in images:
+        data, mime = await resolve_image(caller, image, **limits)
+        total += len(data)
+        if total > total_cap:
+            raise ToolError(too_large)
+        urls.append(data_url(data, mime))
+    return urls
 
 
 def data_url(data: bytes, mime: str) -> str:

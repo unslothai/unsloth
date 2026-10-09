@@ -9,16 +9,14 @@ import os
 import re
 from typing import Any, Literal, Optional, Union
 
-from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 
 from studio_mcp import checkpoints, export_jobs
 from studio_mcp.caller import Caller, current_caller
 from studio_mcp.errors import tool_error
 from studio_mcp.outputs import ExportJobRef
-from studio_mcp.tools import WRITES, route_json
+from studio_mcp.tools import EXPORT_STATUS, WRITES, present, route_json
 
-EXPORT_STATUS = "/api/export/status"
 RUNNING = (
     "Another export is running. Unsloth Studio exports one at a time, so try again when it ends."
 )
@@ -43,31 +41,6 @@ async def _op(caller: Caller, path: str, body: dict[str, Any]) -> Any:
     if isinstance(result, dict) and result.get("success") is False:
         raise tool_error(result.get("message") or "The export step failed")
     return result
-
-
-def _export_body(
-    format: str,
-    *,
-    save_directory: str,
-    quantization_method: Union[str, list[str]],
-    push_to_hub: bool,
-    repo_id: Optional[str],
-    hf_token: Optional[str],
-    private: bool,
-) -> dict[str, Any]:
-    body: dict[str, Any] = {
-        "save_directory": save_directory,
-        "push_to_hub": push_to_hub,
-        "private": private,
-    }
-    if repo_id:
-        body["repo_id"] = repo_id
-    # In the body, as the export routes read it; an API key never falls back to the server's token.
-    if hf_token:
-        body["hf_token"] = hf_token
-    if format == "gguf":
-        body["quantization_method"] = quantization_method
-    return body
 
 
 def _same_checkpoint(status: Any, path: str) -> bool:
@@ -97,21 +70,20 @@ async def export_model(
     if (isinstance(running, dict) and running.get("is_export_active")) or export_jobs.any_running():
         raise ToolError(RUNNING)
     found = await checkpoints.resolve(caller, checkpoint)
-    token = hf_token or caller.hf_token
-    load: dict[str, Any] = {"checkpoint_path": found.path, "max_seq_length": max_seq_length}
-    if load_in_4bit is not None:
-        load["load_in_4bit"] = load_in_4bit
-    if token:
-        load["hf_token"] = token
-    body = _export_body(
-        format,
-        save_directory = save_directory,
-        quantization_method = quantization_method,
-        push_to_hub = push_to_hub,
-        repo_id = repo_id,
-        hf_token = token,
-        private = private,
-    )
+    token = hf_token or caller.hf_token or None
+    load = {
+        "checkpoint_path": found.path,
+        "max_seq_length": max_seq_length,
+        **present(load_in_4bit = load_in_4bit, hf_token = token),
+    }
+    # In the body, as the export routes read it; an API key never falls back to the server's token.
+    body = {
+        "save_directory": save_directory,
+        "push_to_hub": push_to_hub,
+        "private": private,
+        **present(repo_id = repo_id or None, hf_token = token),
+        **({"quantization_method": quantization_method} if format == "gguf" else {}),
+    }
 
     async def run(job: export_jobs.ExportJob) -> None:
         job.phase = "loading"
@@ -140,5 +112,4 @@ async def export_model(
     return ExportJobRef(job_id = job.job_id)
 
 
-def register_export(mcp: FastMCP) -> None:
-    mcp.tool(export_model, annotations = WRITES)
+TOOLS = ((export_model, WRITES),)

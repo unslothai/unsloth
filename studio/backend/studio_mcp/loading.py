@@ -15,7 +15,7 @@ from fastmcp.exceptions import ToolError
 from studio_mcp.caller import Caller
 from studio_mcp.errors import tool_error
 from studio_mcp.outputs import LoadResult, UnloadResult
-from studio_mcp.tools import number, route_json, opt_text
+from studio_mcp.tools import as_dict, number, opt_text, route_json, strings
 
 POLL_INTERVAL_S = 2.0
 
@@ -95,7 +95,7 @@ async def load_llm(
     if not isinstance(payload, dict):
         raise ToolError("Unsloth Studio did not confirm the load")
     loaded = opt_text(payload.get("model")) or model
-    evicted = _strings(payload.get("evicted"))
+    evicted = strings(payload.get("evicted"))
     # Some loads (an engine switch for an audio model, say) unload the chat model without the
     # route listing it, so name whatever was serving before and is gone now. Only then: the
     # route names what it did drop by another id form, which would list it twice.
@@ -105,10 +105,7 @@ async def load_llm(
             m for m in before if m not in after and m not in evicted and m not in (model, loaded)
         ]
     return LoadResult(
-        kind = kind,
-        model = loaded,
-        display_name = opt_text(payload.get("display_name")),
-        evicted = evicted,
+        kind = kind, model = loaded, display_name = opt_text(payload.get("display_name")), evicted = evicted
     )
 
 
@@ -121,18 +118,13 @@ async def _serving_or_empty(caller: Caller) -> list[str]:
     return serving
 
 
-def _strings(values: Any) -> list[str]:
-    return [v for v in values if isinstance(v, str)] if isinstance(values, list) else []
-
-
 async def _llm_resident(caller: Caller) -> tuple[list[str], list[str], set[str]]:
-    status = await route_json("GET", "/api/inference/status", caller = caller)
-    status = status if isinstance(status, dict) else {}
+    status = as_dict(await route_json("GET", "/api/inference/status", caller = caller))
     serving, checkpoints = (
-        _strings(status.get("serving")),
-        _strings(status.get("serving_checkpoints")),
+        strings(status.get("serving")),
+        strings(status.get("serving_checkpoints")),
     )
-    return serving, checkpoints, {*serving, *checkpoints, *_strings(status.get("loaded"))}
+    return serving, checkpoints, {*serving, *checkpoints, *strings(status.get("loaded"))}
 
 
 async def unload_llm(caller: Caller, model: Optional[str]) -> UnloadResult:
@@ -156,20 +148,14 @@ async def unload_llm(caller: Caller, model: Optional[str]) -> UnloadResult:
 
 
 MEDIA_ROUTES = {
-    "image": {
-        "plan": "/api/inference/images/download-plan",
-        "load": "/api/inference/images/load",
-        "progress": "/api/inference/images/load-progress",
-        "status": "/api/inference/images/status",
-        "unload": "/api/inference/images/unload",
-    },
-    "video": {
-        "plan": "/api/inference/video/download-plan",
-        "load": "/api/inference/video/load",
-        "progress": "/api/inference/video/load-progress",
-        "status": "/api/inference/video/status",
-        "unload": "/api/inference/video/unload",
-    },
+    kind: {
+        "plan": f"/api/inference/{prefix}/download-plan",
+        "load": f"/api/inference/{prefix}/load",
+        "progress": f"/api/inference/{prefix}/load-progress",
+        "status": f"/api/inference/{prefix}/status",
+        "unload": f"/api/inference/{prefix}/unload",
+    }
+    for kind, prefix in (("image", "images"), ("video", "video"))
 }
 # Polls with no load in flight and the model still not resident before the load counts as lost.
 _IDLE_POLLS = 5
@@ -196,16 +182,9 @@ async def _gguf_filename(caller: Caller, model: str, variant: Optional[str]) -> 
     listing = await route_json(
         "GET", "/api/hub/gguf-variants", caller = caller, params = {"repo_id": model}, hub_header = True
     )
-    variants = (
-        [v for v in listing.get("variants") or [] if isinstance(v, dict)]
-        if isinstance(listing, dict)
-        else []
-    )
-    wanted = (
-        (variant or opt_text(listing.get("default_variant")) or "").lower()
-        if isinstance(listing, dict)
-        else ""
-    )
+    listing = as_dict(listing)
+    variants = [v for v in listing.get("variants") or [] if isinstance(v, dict)]
+    wanted = (variant or opt_text(listing.get("default_variant")) or "").lower()
     for entry in variants:
         if str(entry.get("quant", "")).lower() == wanted and opt_text(entry.get("filename")):
             return entry["filename"]
@@ -254,8 +233,7 @@ async def load_media(
     await route_json("POST", routes["load"], caller = caller, json_body = body)
     idle = 0
     while True:
-        progress = await route_json("GET", routes["progress"], caller = caller)
-        progress = progress if isinstance(progress, dict) else {}
+        progress = as_dict(await route_json("GET", routes["progress"], caller = caller))
         phase = progress.get("phase")
         if phase == "error":
             raise tool_error(opt_text(progress.get("error")) or f"The {kind} model failed to load")
@@ -291,8 +269,7 @@ async def load_media(
 
 async def unload_media(caller: Caller, kind: str) -> UnloadResult:
     routes = MEDIA_ROUTES[kind]
-    before = await route_json("GET", routes["status"], caller = caller)
-    before = before if isinstance(before, dict) else {}
+    before = as_dict(await route_json("GET", routes["status"], caller = caller))
     if before.get("loaded") is not True:
         return UnloadResult(kind = kind, unloaded = False)
     after = await route_json("POST", routes["unload"], caller = caller)
@@ -307,18 +284,16 @@ STT_ENGINES = ("transformers", "mtmd", "audiocpp", "gguf")
 
 
 async def stt_status(caller: Caller, model: Optional[str] = None) -> dict:
-    status = await route_json(
-        "GET", STT_STATUS, caller = caller, params = {"model": model} if model else None
-    )
-    return status if isinstance(status, dict) else {}
+    params = {"model": model} if model else None
+    return as_dict(await route_json("GET", STT_STATUS, caller = caller, params = params))
 
 
 def stt_engine(status: dict, model: str) -> str:
     for engine in STT_ENGINES:
         state = status.get(engine)
         if isinstance(state, dict) and model in {
-            *_strings(state.get("models")),
-            *_strings(state.get("downloaded_models")),
+            *strings(state.get("models")),
+            *strings(state.get("downloaded_models")),
         }:
             return engine
     return "transformers"
@@ -341,8 +316,7 @@ async def download_stt(
     while True:
         await asyncio.sleep(POLL_INTERVAL_S)
         state = (await stt_status(caller, model)).get(engine)
-        download = state.get("download") if isinstance(state, dict) else None
-        download = download if isinstance(download, dict) else {}
+        download = as_dict(as_dict(state).get("download"))
         if download.get("downloading"):
             done, total = number(download.get("bytes_done")), number(download.get("bytes_total"))
             if ctx is not None and done is not None and total:
@@ -352,9 +326,9 @@ async def download_stt(
             raise tool_error(f"Downloading {model} failed: {download['error']}")
         if download.get("cancelled"):
             raise ToolError(f"The download of {model} was cancelled")
-        if download_id is None or download_id in _strings(download.get("completed_download_ids")):
+        if download_id is None or download_id in strings(download.get("completed_download_ids")):
             return
-        if model in _strings(state.get("downloaded_models") if isinstance(state, dict) else None):
+        if model in strings(as_dict(state).get("downloaded_models")):
             return
         raise ToolError(f"Unsloth Studio stopped downloading {model} before it finished")
 
@@ -369,9 +343,9 @@ async def load_stt(
 ) -> LoadResult:
     status = await stt_status(caller, model)
     engine = stt_engine(status, model)
-    state = status.get(engine) if isinstance(status.get(engine), dict) else {}
+    state = as_dict(status.get(engine))
     # Load refuses a model that is not on disk, so download first and load only once that finished.
-    if model not in _strings(state.get("downloaded_models")):
+    if model not in strings(state.get("downloaded_models")):
         await download_stt(caller, ctx, model = model, engine = engine, hf_token = hf_token)
     body: dict[str, Any] = {"model": model, "engine": engine}
     if variant:

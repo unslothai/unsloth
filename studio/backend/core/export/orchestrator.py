@@ -624,8 +624,8 @@ class ExportOrchestrator:
                 "private": private,
                 "compressed_method": compressed_method,
                 "install_missing_dependencies": install_missing_dependencies,
+                "expected_checkpoint": expected_checkpoint,
             },
-            expected_checkpoint = expected_checkpoint,
         )
 
     def export_base_model(
@@ -647,8 +647,8 @@ class ExportOrchestrator:
                 "hf_token": hf_token,
                 "private": private,
                 "base_model_id": base_model_id,
+                "expected_checkpoint": expected_checkpoint,
             },
-            expected_checkpoint = expected_checkpoint,
         )
 
     def export_gguf(
@@ -675,8 +675,8 @@ class ExportOrchestrator:
                 "imatrix_file": imatrix_file,
                 "private": private,
                 "npu_q4nx": npu_q4nx,
+                "expected_checkpoint": expected_checkpoint,
             },
-            expected_checkpoint = expected_checkpoint,
         )
 
     def export_lora_adapter(
@@ -703,22 +703,18 @@ class ExportOrchestrator:
                 "gguf": gguf,
                 "gguf_outtype": gguf_outtype,
                 "adapter_format": adapter_format,
+                "expected_checkpoint": expected_checkpoint,
             },
-            expected_checkpoint = expected_checkpoint,
         )
 
     @owned_job(continuation = True)
-    def _run_export(
-        self,
-        export_type: str,
-        params: dict,
-        expected_checkpoint: Optional[str] = None,
-    ) -> Tuple[bool, str, Optional[str]]:
+    def _run_export(self, export_type: str, params: dict) -> Tuple[bool, str, Optional[str]]:
         """Send an export command and wait for the result.
 
         Returns ``(success, message, output_path)``. ``output_path`` is the on-disk
         dir the worker wrote to (None if it only pushed to Hub or failed pre-write).
         """
+        expected = params.pop("expected_checkpoint", None)
         validate_job_paths(params)
         with self._lock:
             if not self._ensure_subprocess_alive():
@@ -728,8 +724,9 @@ class ExportOrchestrator:
                     None,
                 )
             # Checked under the lock the export holds, so no load can slip in before it starts.
-            if expected_checkpoint is not None and not _same_checkpoint(
-                self.current_checkpoint, expected_checkpoint
+            loaded = self.current_checkpoint
+            if expected is not None and (
+                not loaded or os.path.realpath(loaded) != os.path.realpath(expected)
             ):
                 return False, CHECKPOINT_CHANGED, None
 
@@ -821,12 +818,6 @@ class ExportOrchestrator:
 
 
 _export_backend = None
-
-
-def _same_checkpoint(loaded: Optional[str], expected: str) -> bool:
-    if not loaded:
-        return False
-    return os.path.realpath(loaded) == os.path.realpath(expected)
 
 
 def get_export_backend() -> ExportOrchestrator:

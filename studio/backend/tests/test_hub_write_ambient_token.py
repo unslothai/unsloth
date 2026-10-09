@@ -665,91 +665,58 @@ def test_the_mcp_export_tool_never_goes_ambient(monkeypatch):
     in the body of both calls, and a push without one meets the route's refusal instead of
     the server's own Hugging Face token."""
     import json
-    import time
 
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
-
-    import routes.export as export_routes
-    from auth.authentication import get_current_subject
-    from mcp_server import create_studio_mcp
     from studio_mcp import export_jobs
 
-    from .mcp_harness import call_tool, served
+    from .mcp_harness import bodies, fake_studio, run_export_job
 
     export_jobs._reset()
-    backend_calls = []
+    backend = _backend(monkeypatch, "export_gguf")
 
-    async def supported():
-        return None
-
-    class Backend:
-        def export_gguf(self, **kwargs):
-            backend_calls.append(kwargs)
-            return True, "done", "out"
-
-    monkeypatch.setattr(export_routes, "_ensure_export_supported", supported)
-    monkeypatch.setattr(export_routes, "get_export_backend", lambda: Backend())
-
-    bodies = []
-    studio = FastAPI()
-    studio.state.bind_host = "127.0.0.1"
-
-    def checkpoints():
+    def status(request, body):
+        # Like the real route: it names the checkpoint the last load put in the worker.
+        loaded = bodies(studio, "/api/export/load-checkpoint")
         return {
-            "outputs_dir": "/o",
-            "models": [{"name": "run", "checkpoints": [{"display_name": "run", "path": "/o/run"}]}],
+            "last_op_seq": 0,
+            "current_checkpoint": loaded[-1]["checkpoint_path"] if loaded else None,
         }
 
-    def load(body: dict):
-        bodies.append(("load", body))
-        return {"success": True, "message": "Loaded"}
-
-    def status():
-        # Like the real route: it names the checkpoint the last load put in the worker.
-        loaded = [body["checkpoint_path"] for kind, body in bodies if kind == "load"]
-        return {"last_op_seq": 0, "current_checkpoint": loaded[-1] if loaded else None}
-
-    studio.add_api_route("/api/models/checkpoints", checkpoints, methods = ["GET"])
-    studio.add_api_route("/api/export/load-checkpoint", load, methods = ["POST"])
-    studio.add_api_route("/api/export/status", status, methods = ["GET"])
+    studio = fake_studio(
+        {
+            ("GET", "/api/models/checkpoints"): {
+                "outputs_dir": "/o",
+                "models": [
+                    {"name": "run", "checkpoints": [{"display_name": "run", "path": "/o/run"}]}
+                ],
+            },
+            ("POST", "/api/export/load-checkpoint"): {"success": True, "message": "Loaded"},
+            ("GET", "/api/export/status"): status,
+        }
+    )
+    studio.state.bind_host = "127.0.0.1"
     studio.include_router(export_routes.router, prefix = "/api/export")
     studio.dependency_overrides[get_current_subject] = lambda: "unsloth"
 
-    def export(http, **args):
-        started = call_tool(
-            http,
-            "export_model",
-            {"checkpoint": "run", "format": "gguf", "save_directory": "out", **args},
-        )
-        job_id = started["structuredContent"]["job_id"]
+    def export(**args):
         # The job runs in the background; a fixed number of back-to-back polls can beat it on a slow host.
-        deadline = time.monotonic() + 30
-        while time.monotonic() < deadline:
-            job = call_tool(http, "get_job", {"kind": "export", "id": job_id})
-            if job["structuredContent"]["status"] != "running":
-                return job["structuredContent"]
-            time.sleep(0.05)
-        raise AssertionError("the export job never finished")
+        sent = {"checkpoint": "run", "format": "gguf", "save_directory": "out", **args}
+        return run_export_job(monkeypatch, studio, sent)[1]["structuredContent"]
 
-    with TestClient(served(create_studio_mcp(), studio, monkeypatch = monkeypatch)) as http:
-        with_token = export(http, push_to_hub = True, repo_id = "me/m", hf_token = "hf_agent")
-        without = export(http, push_to_hub = True, repo_id = "me/m")
+    with_token = export(push_to_hub = True, repo_id = "me/m", hf_token = "hf_agent")
+    without = export(push_to_hub = True, repo_id = "me/m")
     export_jobs._reset()
 
+    loads = bodies(studio, "/api/export/load-checkpoint")
     assert with_token["status"] == "completed"
-    assert bodies[0] == (
-        "load",
-        {"checkpoint_path": "/o/run", "max_seq_length": 2048, "hf_token": "hf_agent"},
-    )
-    assert backend_calls[0]["hf_token"] == "hf_agent"
+    assert loads[0] == {"checkpoint_path": "/o/run", "max_seq_length": 2048, "hf_token": "hf_agent"}
+    assert backend.export_gguf.call_args.kwargs["hf_token"] == "hf_agent"
     assert without["status"] == "failed"
     assert without["error"].startswith(
         "Hugging Face token is required to push to Hub when authenticated via API key."
     )
-    assert len(backend_calls) == 1
-    assert "hf_token" not in bodies[1][1]
-    assert json.dumps(bodies).count("hf_agent") == 1
+    assert backend.export_gguf.call_count == 1
+    assert "hf_token" not in loads[1]
+    assert json.dumps(loads).count("hf_agent") == 1
 
 
 def test_the_worker_can_still_disable_implicit_tokens_when_it_starts():

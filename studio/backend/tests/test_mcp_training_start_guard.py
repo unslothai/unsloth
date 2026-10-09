@@ -333,14 +333,9 @@ def test_an_unknown_start_request_id_is_still_refused_without_a_record(monkeypat
 def test_the_mcp_tool_surfaces_the_409_as_a_tool_error_not_a_dict(monkeypatch):
     """The MCP tool forwards to the real training route under the agent's API key, so the
     route's own guard refuses it, and the agent sees the 409 detail as a tool error."""
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
-
     import routes.training as training_routes
-    from auth.authentication import get_current_subject
-    from mcp_server import create_studio_mcp
 
-    from .mcp_harness import call_tool, served
+    from .mcp_harness import route_studio, run_tool
 
     monkeypatch.setattr(
         training_routes,
@@ -354,12 +349,8 @@ def test_the_mcp_tool_surfaces_the_409_as_a_tool_error_not_a_dict(monkeypatch):
     )
     monkeypatch.setattr(training_routes, "_background_video_generation_active", lambda: False)
 
-    studio = FastAPI()
-    studio.state.bind_host = "127.0.0.1"
-    studio.include_router(training_routes.router, prefix = "/api/train")
-    studio.dependency_overrides[get_current_subject] = lambda: "unsloth"
-    with TestClient(served(create_studio_mcp(), studio, monkeypatch = monkeypatch)) as http:
-        result = call_tool(http, "start_training", {"config": _config()})
+    studio = route_studio(training_routes.router, "/api/train")
+    result, _studio = run_tool(monkeypatch, studio, "start_training", {"config": _config()})
 
     # An isError CallToolResult carrying the route's detail, not a raised HTTPException or
     # a {"status": ...} dict.

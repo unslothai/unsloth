@@ -4,7 +4,6 @@
 import asyncio
 import json
 import os
-import secrets
 import sqlite3
 import subprocess
 import sys
@@ -18,55 +17,34 @@ from starlette.routing import Mount
 
 from fastmcp import FastMCP
 
-from auth import policy, storage
+from auth import storage
 from auth.authentication import create_access_token
 from mcp_server import create_studio_mcp
 from studio_mcp.caller import current_caller
 from studio_mcp.gate import MAX_REQUEST_BYTES, NEED_KEY, TOO_LARGE, StudioMcpGate
-from utils import mcp_access
 from utils.account_context import AccountContext, bind_account, current_account, reset_account
-from utils.keyless_api_access import (
-    APPROVED_DUMMY_BEARERS,
-    KEYLESS_SCOPES,
-    _reset_scope_cache,
-    set_keyless_api_access,
-)
+from utils.keyless_api_access import APPROVED_DUMMY_BEARERS, KEYLESS_SCOPES, set_keyless_api_access
 from utils.mcp_access import ENV_FORCE, set_mcp_enabled
 
-MCP_HEADERS = {"Accept": "application/json, text/event-stream"}
+from .mcp_harness import LOCAL, MCP_HEADERS, REMOTE, isolated_auth, seed_owner  # noqa: F401  (fixture)
+
 LISTING = {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}
-
-
-@pytest.fixture(autouse = True)
-def isolated_state(tmp_path, monkeypatch):
-    monkeypatch.setattr(storage, "DB_PATH", tmp_path / "auth.db")
-    monkeypatch.setattr(storage, "_BOOTSTRAP_PW_PATH", tmp_path / ".bootstrap_password")
-    monkeypatch.setattr(storage, "_bootstrap_password", None)
-    monkeypatch.setattr(storage, "_api_key_pbkdf2_salt_cache", None)
-    monkeypatch.delenv(ENV_FORCE, raising = False)
-    monkeypatch.delenv("UNSLOTH_STUDIO_MCP_TOKEN", raising = False)
-    storage._reset_api_key_hash_cache()
-    policy.invalidate_account_cache()
-    _reset_scope_cache()
-    mcp_access._reset_cache()
-    yield
-    storage._reset_api_key_hash_cache()
-    policy.invalidate_account_cache()
-    _reset_scope_cache()
-    mcp_access._reset_cache()
-
-
-def seed_owner():
-    storage.create_initial_user(
-        username = storage.DEFAULT_ADMIN_USERNAME,
-        password = "human-password-123",
-        jwt_secret = secrets.token_urlsafe(64),
-        must_change_password = False,
-    )
+# Every tool call here asks the probe's one tool, whoami, which takes no arguments.
+WHOAMI = {**LISTING, "id": 7, "method": "tools/call", "params": {"name": "whoami", "arguments": {}}}
+pytestmark = pytest.mark.usefixtures("isolated_auth")
 
 
 def owner_key(**kwargs):
     return storage.create_api_key(storage.DEFAULT_ADMIN_USERNAME, name = "agent", **kwargs)
+
+
+@pytest.fixture
+def live_key():
+    """The owner's API key, with the switch on."""
+    seed_owner()
+    raw_key, _row = owner_key()
+    set_mcp_enabled(True)
+    return raw_key
 
 
 def probe_mcp():
@@ -96,19 +74,8 @@ def served(mcp, **state):
     return app
 
 
-def call_tool(
-    http,
-    name,
-    headers,
-    arguments = None,
-):
-    body = {
-        "jsonrpc": "2.0",
-        "id": 7,
-        "method": "tools/call",
-        "params": {"name": name, "arguments": arguments or {}},
-    }
-    response = http.post("/mcp/", json = body, headers = {**MCP_HEADERS, **headers})
+def call_tool(http, headers):
+    response = http.post("/mcp/", json = WHOAMI, headers = {**MCP_HEADERS, **headers})
     if response.status_code != 200:
         return response, None
     data = [line[5:].strip() for line in response.text.splitlines() if line.startswith("data:")]
@@ -215,11 +182,8 @@ def test_a_websocket_is_closed():
     assert _run_gate(scope) == [{"type": "websocket.close", "code": 4404}]
 
 
-def test_the_mcp_app_is_stateless_and_streams():
-    seed_owner()
-    raw_key, _row = owner_key()
-    set_mcp_enabled(True)
-    headers = {**MCP_HEADERS, **bearer(raw_key)}
+def test_the_mcp_app_is_stateless_and_streams(live_key):
+    headers = {**MCP_HEADERS, **bearer(live_key)}
     with TestClient(served(create_studio_mcp())) as http:
         first = http.post("/mcp/", json = LISTING, headers = headers)
         second = http.post("/mcp/", json = {**LISTING, "id": 2}, headers = headers)
@@ -245,10 +209,8 @@ def test_keyless_is_never_admitted(scope, authorization):
     set_keyless_api_access(scope, tools = scope != "off")
     set_mcp_enabled(True)
     headers = {"Authorization": authorization} if authorization is not None else {}
-    with TestClient(
-        served(probe_mcp()), base_url = "http://127.0.0.1:8888", client = ("127.0.0.1", 50000)
-    ) as http:
-        response, result = call_tool(http, "whoami", headers)
+    with TestClient(served(probe_mcp()), **LOCAL) as http:
+        response, result = call_tool(http, headers)
     assert response.status_code == 401
     assert response.json() == {"detail": NEED_KEY}
     assert response.headers["www-authenticate"] == "Bearer"
@@ -256,23 +218,20 @@ def test_keyless_is_never_admitted(scope, authorization):
 
 
 @pytest.mark.parametrize(
-    "authorization", ["Basic dXNlcjpwYXNz", "Token sk-unsloth-x", "Bearer not-a-key"]
+    "authorization",
+    [
+        lambda: "Basic dXNlcjpwYXNz",
+        lambda: "Token sk-unsloth-x",
+        lambda: "Bearer not-a-key",
+        # A UI session's JWT.
+        lambda: f"Bearer {create_access_token(subject = storage.DEFAULT_ADMIN_USERNAME)}",
+    ],
 )
 def test_other_schemes_and_non_keys_need_a_key(authorization):
     seed_owner()
     set_mcp_enabled(True)
     with TestClient(served(probe_mcp())) as http:
-        response, _result = call_tool(http, "whoami", {"Authorization": authorization})
-    assert response.status_code == 401
-    assert response.json() == {"detail": NEED_KEY}
-
-
-def test_a_ui_session_jwt_is_refused():
-    seed_owner()
-    set_mcp_enabled(True)
-    session = create_access_token(subject = storage.DEFAULT_ADMIN_USERNAME)
-    with TestClient(served(probe_mcp())) as http:
-        response, _result = call_tool(http, "whoami", bearer(session))
+        response, _result = call_tool(http, {"Authorization": authorization()})
     assert response.status_code == 401
     assert response.json() == {"detail": NEED_KEY}
 
@@ -282,34 +241,29 @@ def test_a_valid_key_passes_and_a_revoked_one_does_not():
     raw_key, row = owner_key()
     set_mcp_enabled(True)
     with TestClient(served(probe_mcp())) as http:
-        response, result = call_tool(http, "whoami", bearer(raw_key))
+        response, result = call_tool(http, bearer(raw_key))
         assert response.status_code == 200, response.text
         assert result["token"] == raw_key
         assert result["account_id"] == storage.get_user_record("unsloth")["account_id"]
         assert storage.revoke_api_key(storage.DEFAULT_ADMIN_USERNAME, row["id"])
         storage._reset_api_key_hash_cache()
-        revoked, _result = call_tool(http, "whoami", bearer(raw_key))
+        revoked, _result = call_tool(http, bearer(raw_key))
     assert revoked.status_code == 401
     assert revoked.json() == {"detail": "Invalid or expired API key"}
 
 
-def test_an_unknown_key_is_refused():
+@pytest.mark.parametrize(
+    "workflow,detail",
+    [(False, "Invalid or expired API key"), (True, "Workflow keys cannot use Unsloth Studio MCP")],
+)
+def test_an_unknown_or_workflow_key_is_refused(workflow, detail):
     seed_owner()
+    raw_key = owner_key(internal = True)[0] if workflow else "sk-unsloth-" + "0" * 32
     set_mcp_enabled(True)
     with TestClient(served(probe_mcp())) as http:
-        response, _result = call_tool(http, "whoami", bearer("sk-unsloth-" + "0" * 32))
+        response, _result = call_tool(http, bearer(raw_key))
     assert response.status_code == 401
-    assert response.json() == {"detail": "Invalid or expired API key"}
-
-
-def test_a_workflow_key_is_refused():
-    seed_owner()
-    raw_key, _row = owner_key(internal = True)
-    set_mcp_enabled(True)
-    with TestClient(served(probe_mcp())) as http:
-        response, _result = call_tool(http, "whoami", bearer(raw_key))
-    assert response.status_code == 401
-    assert response.json() == {"detail": "Workflow keys cannot use Unsloth Studio MCP"}
+    assert response.json() == {"detail": detail}
 
 
 def test_a_managed_account_key_carries_its_account():
@@ -318,25 +272,22 @@ def test_a_managed_account_key_carries_its_account():
     raw_key, _row = storage.create_api_key("alice", name = "agent", account_id = alice)
     set_mcp_enabled(True)
     with TestClient(served(probe_mcp())) as http:
-        response, result = call_tool(http, "whoami", bearer(raw_key))
+        response, result = call_tool(http, bearer(raw_key))
     assert response.status_code == 200, response.text
     assert result["account_id"] == alice
     # The gate validates; the forwarded route call is what binds the account.
     assert result["bound_account"] == "owner"
 
 
-def test_two_authorization_headers_are_refused():
-    seed_owner()
-    raw_key, _row = owner_key()
-    set_mcp_enabled(True)
+def test_two_authorization_headers_are_refused(live_key):
     with TestClient(served(probe_mcp())) as http:
         response = http.post(
             "/mcp/",
             json = LISTING,
             headers = [
                 ("accept", MCP_HEADERS["Accept"]),
-                ("authorization", f"Bearer {raw_key}"),
-                ("authorization", f"Bearer {raw_key}"),
+                ("authorization", f"Bearer {live_key}"),
+                ("authorization", f"Bearer {live_key}"),
             ],
         )
     assert response.status_code == 401
@@ -348,7 +299,7 @@ def test_the_gate_validates_without_touching_last_used(key_spy):
     raw_key, row = owner_key()
     set_mcp_enabled(True)
     with TestClient(served(probe_mcp())) as http:
-        response, _result = call_tool(http, "whoami", bearer(raw_key))
+        response, _result = call_tool(http, bearer(raw_key))
     assert response.status_code == 200, response.text
     assert key_spy == [{"touch": False}]
     conn = sqlite3.connect(storage.DB_PATH)
@@ -361,10 +312,7 @@ def test_the_gate_validates_without_touching_last_used(key_spy):
     assert last_used is None
 
 
-def test_the_gate_never_binds_an_account():
-    seed_owner()
-    raw_key, _row = owner_key()
-    set_mcp_enabled(True)
+def test_the_gate_never_binds_an_account(live_key):
     sentinel = AccountContext("sentinel-account", "sentinel")
     seen = []
 
@@ -395,7 +343,7 @@ def test_the_gate_never_binds_an_account():
                 "client": ("127.0.0.1", 50000),
                 "headers": [
                     (b"host", b"127.0.0.1:8888"),
-                    (b"authorization", f"Bearer {raw_key}".encode()),
+                    (b"authorization", f"Bearer {live_key}".encode()),
                 ],
             }
             await StudioMcpGate(inner)(scope, receive, send)
@@ -409,20 +357,11 @@ def test_the_gate_never_binds_an_account():
     assert after == sentinel
 
 
-def test_tools_see_the_outer_request():
-    seed_owner()
-    raw_key, _row = owner_key()
-    set_mcp_enabled(True)
-    with TestClient(
-        served(probe_mcp()), base_url = "http://127.0.0.1:8888", client = ("127.0.0.1", 50000)
-    ) as http:
-        _response, local = call_tool(
-            http, "whoami", {**bearer(raw_key), "X-Unsloth-HF-Token": " hf_abc "}
-        )
-    with TestClient(
-        served(probe_mcp()), base_url = "http://192.168.1.20:8888", client = ("192.168.1.30", 50000)
-    ) as http:
-        _response, remote = call_tool(http, "whoami", bearer(raw_key))
+def test_tools_see_the_outer_request(live_key):
+    with TestClient(served(probe_mcp()), **LOCAL) as http:
+        _response, local = call_tool(http, {**bearer(live_key), "X-Unsloth-HF-Token": " hf_abc "})
+    with TestClient(served(probe_mcp()), **REMOTE) as http:
+        _response, remote = call_tool(http, bearer(live_key))
     assert local["direct_local"] is True
     assert local["public_base"] == "http://127.0.0.1:8888"
     assert local["hf_token"] == "hf_abc"
@@ -432,57 +371,31 @@ def test_tools_see_the_outer_request():
     assert remote["hf_token"] is None
 
 
-def test_a_root_path_carries_into_the_public_base():
-    seed_owner()
-    raw_key, _row = owner_key()
-    set_mcp_enabled(True)
-    with TestClient(
-        served(probe_mcp()),
-        base_url = "http://127.0.0.1:8888",
-        client = ("127.0.0.1", 50000),
-        root_path = "/studio",
-    ) as http:
-        response = http.post(
-            "/studio/mcp/",
-            json = {
-                "jsonrpc": "2.0",
-                "id": 7,
-                "method": "tools/call",
-                "params": {"name": "whoami", "arguments": {}},
-            },
-            headers = {**MCP_HEADERS, **bearer(raw_key)},
-        )
+def test_a_root_path_carries_into_the_public_base(live_key):
+    # The client's base URL carries the prefix, so call_tool's /mcp/ goes to /studio/mcp/.
+    client = {**LOCAL, "base_url": "http://127.0.0.1:8888/studio"}
+    with TestClient(served(probe_mcp()), root_path = "/studio", **client) as http:
+        response, result = call_tool(http, bearer(live_key))
     assert response.status_code == 200
-    assert '"public_base":"http://127.0.0.1:8888/studio"' in response.text.replace(" ", "")
+    assert result["public_base"] == "http://127.0.0.1:8888/studio"
 
 
-def test_an_oversized_hf_token_is_refused():
-    seed_owner()
-    raw_key, _row = owner_key()
-    set_mcp_enabled(True)
+def test_an_oversized_hf_token_is_refused(live_key):
     with TestClient(served(probe_mcp())) as http:
-        response, _result = call_tool(
-            http, "whoami", {**bearer(raw_key), "X-Unsloth-HF-Token": "h" * 513}
-        )
+        response, _result = call_tool(http, {**bearer(live_key), "X-Unsloth-HF-Token": "h" * 513})
     assert response.status_code == 400
 
 
 def _padded_call(pad):
-    body = {
-        "jsonrpc": "2.0",
-        "id": 7,
-        "method": "tools/call",
-        "params": {"name": "whoami", "arguments": {}, "_meta": {"pad": "x" * pad}},
-    }
+    body = {**WHOAMI, "params": {**WHOAMI["params"], "_meta": {"pad": "x" * pad}}}
     return json.dumps(body).encode()
 
 
 @pytest.mark.parametrize("chunked", [False, True])
-def test_a_request_over_4_mib_is_refused_with_guidance(chunked):
-    seed_owner()
-    raw_key, _row = owner_key()
-    set_mcp_enabled(True)
-    payload = _padded_call(MAX_REQUEST_BYTES)
+@pytest.mark.parametrize("over", [True, False])
+def test_a_request_over_4_mib_is_refused_and_one_under_reaches_the_tool(live_key, chunked, over):
+    payload = _padded_call(MAX_REQUEST_BYTES if over else MAX_REQUEST_BYTES - 4096)
+    assert (len(payload) > MAX_REQUEST_BYTES) is over
     content = (
         (payload[i : i + 65536] for i in range(0, len(payload), 65536)) if chunked else payload
     )
@@ -490,30 +403,14 @@ def test_a_request_over_4_mib_is_refused_with_guidance(chunked):
         response = http.post(
             "/mcp/",
             content = content,
-            headers = {**MCP_HEADERS, **bearer(raw_key), "Content-Type": "application/json"},
+            headers = {**MCP_HEADERS, **bearer(live_key), "Content-Type": "application/json"},
         )
-    assert response.status_code == 413
-    assert response.json() == {"detail": TOO_LARGE}
-
-
-@pytest.mark.parametrize("chunked", [False, True])
-def test_a_request_under_4_mib_reaches_the_tool(chunked):
-    seed_owner()
-    raw_key, _row = owner_key()
-    set_mcp_enabled(True)
-    payload = _padded_call(MAX_REQUEST_BYTES - 4096)
-    assert len(payload) <= MAX_REQUEST_BYTES
-    content = (
-        (payload[i : i + 65536] for i in range(0, len(payload), 65536)) if chunked else payload
-    )
-    with TestClient(served(probe_mcp())) as http:
-        response = http.post(
-            "/mcp/",
-            content = content,
-            headers = {**MCP_HEADERS, **bearer(raw_key), "Content-Type": "application/json"},
-        )
-    assert response.status_code == 200
-    assert '"isError":false' in response.text.replace(" ", "")
+    if over:
+        assert response.status_code == 413
+        assert response.json() == {"detail": TOO_LARGE}
+    else:
+        assert response.status_code == 200
+        assert '"isError":false' in response.text.replace(" ", "")
 
 
 def test_current_caller_outside_the_gate_is_an_error():
@@ -603,13 +500,10 @@ TUNNEL = "https://abc-def.trycloudflare.com"
         ("http://127.0.0.1:8888", "http://localhost:3000", False),
     ],
 )
-def test_origin_allowlist(key_spy, base_url, origin, allowed):
-    seed_owner()
-    raw_key, _row = owner_key()
-    set_mcp_enabled(True)
-    headers = {**bearer(raw_key), **({"Origin": origin} if origin else {})}
+def test_origin_allowlist(key_spy, base_url, origin, allowed, live_key):
+    headers = {**bearer(live_key), **({"Origin": origin} if origin else {})}
     with TestClient(served(probe_mcp(), cloudflare_url = TUNNEL), base_url = base_url) as http:
-        response, _result = call_tool(http, "whoami", headers)
+        response, _result = call_tool(http, headers)
     if allowed:
         assert response.status_code == 200, response.text
     else:
@@ -621,21 +515,18 @@ def test_origin_allowlist(key_spy, base_url, origin, allowed):
 def test_a_foreign_origin_is_refused_before_auth():
     set_mcp_enabled(True)
     with TestClient(served(probe_mcp())) as http:
-        response, _result = call_tool(http, "whoami", {"Origin": "https://evil.example"})
+        response, _result = call_tool(http, {"Origin": "https://evil.example"})
     assert response.status_code == 403
 
 
-def test_two_origin_headers_are_refused():
-    seed_owner()
-    raw_key, _row = owner_key()
-    set_mcp_enabled(True)
+def test_two_origin_headers_are_refused(live_key):
     with TestClient(served(probe_mcp()), base_url = "http://127.0.0.1:8888") as http:
         response = http.post(
             "/mcp/",
             json = LISTING,
             headers = [
                 ("accept", MCP_HEADERS["Accept"]),
-                ("authorization", f"Bearer {raw_key}"),
+                ("authorization", f"Bearer {live_key}"),
                 ("origin", "http://127.0.0.1:8888"),
                 ("origin", "https://evil.example"),
             ],
@@ -670,7 +561,7 @@ def test_oauth_discovery_is_a_404_not_the_app_shell(tmp_path, path):
 def test_the_gate_401_advertises_no_oauth_metadata():
     set_mcp_enabled(True)
     with TestClient(served(probe_mcp())) as http:
-        response, _result = call_tool(http, "whoami", {})
+        response, _result = call_tool(http, {})
     assert response.status_code == 401
     assert response.headers["www-authenticate"] == "Bearer"
     assert "resource_metadata" not in response.text

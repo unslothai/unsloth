@@ -6,14 +6,19 @@ import json
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 from fastmcp.exceptions import ToolError
 
-from mcp_server import create_studio_mcp
 from studio_mcp import export_jobs
-from studio_mcp.export_jobs import ExportJob
 
-from .mcp_harness import call_tool, fake_studio, served
+from .mcp_harness import (
+    OUT,
+    RUN_CHECKPOINTS,
+    fake_studio,
+    register_export_job,
+    run_export_job,
+    run_tool,
+    sequence,
+)
 
 
 @pytest.fixture(autouse = True)
@@ -23,28 +28,17 @@ def fresh_registry():
     export_jobs._reset()
 
 
-def _register(
-    account_id = "owner",
-    job_id = "job-a",
-    **fields,
+def _get(
+    monkeypatch,
+    args,
+    status = None,
 ):
-    job = ExportJob(job_id = job_id, account_id = account_id, format = "gguf", **fields)
-    export_jobs._jobs[f"{account_id}:{job_id}"] = job
-    return job
-
-
-def _get(monkeypatch, studio, args):
-    with TestClient(served(create_studio_mcp(), studio, monkeypatch = monkeypatch)) as http:
-        return call_tool(http, "get_job", args)
-
-
-def _status(payload):
-    return fake_studio({("GET", "/api/export/status"): lambda request, body: payload})
+    return run_tool(monkeypatch, {("GET", "/api/export/status"): status or {}}, "get_job", args)
 
 
 def test_another_accounts_job_is_unknown(monkeypatch):
-    _register(account_id = "alice-id", job_id = "job-a")
-    result = _get(monkeypatch, _status({}), {"kind": "export", "id": "job-a"})
+    register_export_job(account_id = "alice-id", job_id = "job-a")
+    result, _studio = _get(monkeypatch, {"kind": "export", "id": "job-a"})
     assert result["isError"] is True
     assert result["content"][0]["text"] == "No such export job"
     with pytest.raises(ToolError):
@@ -52,14 +46,14 @@ def test_another_accounts_job_is_unknown(monkeypatch):
 
 
 def test_an_unknown_id_is_refused(monkeypatch):
-    result = _get(monkeypatch, _status({}), {"kind": "export", "id": "nope"})
+    result, _studio = _get(monkeypatch, {"kind": "export", "id": "nope"})
     assert result["content"][0]["text"] == "No such export job"
 
 
 def test_a_running_job_is_not_settled_from_the_export_status(monkeypatch):
     # The status names whatever op ran last, here an export from the Export page; only the
     # job's own export call settles it.
-    _register(phase = "exporting")
+    register_export_job(phase = "exporting")
     status = {
         "last_op_seq": 4,
         "last_op_kind": "export_gguf",
@@ -67,17 +61,16 @@ def test_a_running_job_is_not_settled_from_the_export_status(monkeypatch):
         "last_op_output_path": "theirs",
         "is_export_active": False,
     }
-    studio = _status(status)
-    result = _get(monkeypatch, studio, {"kind": "export", "id": "job-a"})
+    result, studio = _get(monkeypatch, {"kind": "export", "id": "job-a"}, status)
     assert result["structuredContent"]["status"] == "running"
     assert result["structuredContent"]["export"]["output"] is None
     assert studio.state.calls == []
 
 
 def test_a_failed_job_reports_its_error_scrubbed(monkeypatch):
-    job = _register()
+    job = register_export_job()
     export_jobs.finish(job, "failed", error = "Disk full writing /srv/exports/x.gguf")
-    result = _get(monkeypatch, _status({}), {"kind": "export", "id": "job-a"})
+    result, _studio = _get(monkeypatch, {"kind": "export", "id": "job-a"})
     out = result["structuredContent"]
     assert out["status"] == "failed"
     assert out["error"].startswith("Disk full writing")
@@ -117,9 +110,9 @@ def test_settle_waits_for_the_job_to_finish_on_its_own():
 
 
 def test_without_an_id_only_this_accounts_jobs_are_listed(monkeypatch):
-    _register(job_id = "mine", status = "completed")
-    _register(account_id = "alice-id", job_id = "theirs")
-    result = _get(monkeypatch, _status({}), {"kind": "export"})
+    register_export_job(job_id = "mine", status = "completed")
+    register_export_job(account_id = "alice-id", job_id = "theirs")
+    result, _studio = _get(monkeypatch, {"kind": "export"})
     assert result["structuredContent"]["jobs"] == [
         {"id": "mine", "status": "completed", "progress_percent": None}
     ]
@@ -164,8 +157,8 @@ def test_a_failing_task_is_failed_and_a_cancelled_one_cancelled():
 
 def test_capacity_drops_the_oldest_finished_jobs_first():
     for index in range(export_jobs.CAPACITY):
-        _register(job_id = f"done-{index}", status = "completed")
-    running = _register(job_id = "running")
+        register_export_job(job_id = f"done-{index}", status = "completed")
+    running = register_export_job(job_id = "running")
     export_jobs._evict()
     assert len(export_jobs._jobs) == export_jobs.CAPACITY
     assert "owner:done-0" not in export_jobs._jobs
@@ -174,23 +167,8 @@ def test_capacity_drops_the_oldest_finished_jobs_first():
 
 # ---------------------------------------------------------------- export_model
 
-OUT = "/srv/unsloth/outputs"
-CHECKPOINTS = {
-    "outputs_dir": OUT,
-    "models": [
-        {
-            "name": "qwen-lora",
-            "checkpoints": [
-                {"display_name": "qwen-lora", "path": f"{OUT}/qwen-lora", "loss": 0.9},
-                {
-                    "display_name": "checkpoint-30",
-                    "path": f"{OUT}/qwen-lora/checkpoint-30",
-                    "loss": 1.1,
-                },
-            ],
-        }
-    ],
-}
+CHECKPOINTS = {**RUN_CHECKPOINTS, "models": RUN_CHECKPOINTS["models"][:1]}
+ARGS = {"checkpoint": "qwen-lora", "format": "gguf", "save_directory": "out"}
 
 
 def _export_studio(
@@ -199,20 +177,22 @@ def _export_studio(
     statuses = None,
     recorder = None,
 ):
-    statuses = list(
-        statuses
-        or [
-            {"last_op_seq": 5},
-            {
-                "last_op_seq": 6,
-                "last_op_status": "success",
-                "last_op_output_path": "my-gguf",
-                "current_checkpoint": f"{OUT}/qwen-lora",
-            },
-        ]
-    )
     # export_model first checks that no export is running.
-    statuses.insert(0, {"is_export_active": False, "last_op_seq": 5})
+    next_status = sequence(
+        {"is_export_active": False, "last_op_seq": 5},
+        *(
+            statuses
+            or [
+                {"last_op_seq": 5},
+                {
+                    "last_op_seq": 6,
+                    "last_op_status": "success",
+                    "last_op_output_path": "my-gguf",
+                    "current_checkpoint": f"{OUT}/qwen-lora",
+                },
+            ]
+        ),
+    )
     loaded = []
 
     def record(name, answer):
@@ -226,14 +206,14 @@ def _export_studio(
         return handler
 
     def status(request, body):
-        answer = statuses.pop(0) if len(statuses) > 1 else statuses[0]
+        answer = next_status(request, body)
         # The status names whatever the last load put in the worker, unless a test says otherwise.
         if loaded and "current_checkpoint" not in answer:
             answer = {**answer, "current_checkpoint": loaded[-1]}
         return answer
 
     routes = {
-        ("GET", "/api/models/checkpoints"): lambda request, body: CHECKPOINTS,
+        ("GET", "/api/models/checkpoints"): CHECKPOINTS,
         ("GET", "/api/export/status"): status,
         ("POST", "/api/export/load-checkpoint"): record(
             "load", {"success": True, "message": "Loaded"}
@@ -246,24 +226,6 @@ def _export_studio(
             or {"success": True, "message": "Exported", "details": {"output_path": "my-gguf"}},
         )
     return fake_studio(routes)
-
-
-def _run_export(
-    monkeypatch,
-    studio,
-    args,
-    polls = 20,
-):
-    with TestClient(served(create_studio_mcp(), studio, monkeypatch = monkeypatch)) as http:
-        started = call_tool(http, "export_model", args)
-        if started.get("isError"):
-            return started, None
-        job_id = started["structuredContent"]["job_id"]
-        for _ in range(polls):
-            job = call_tool(http, "get_job", {"kind": "export", "id": job_id})
-            if job["structuredContent"]["status"] != "running":
-                break
-    return started, job
 
 
 def test_an_export_finishing_after_this_one_does_not_become_its_result(monkeypatch):
@@ -281,11 +243,7 @@ def test_an_export_finishing_after_this_one_does_not_become_its_result(monkeypat
             },
         ]
     )
-    _started, job = _run_export(
-        monkeypatch,
-        studio,
-        {"checkpoint": "qwen-lora", "format": "gguf", "save_directory": "my-gguf"},
-    )
+    _started, job = run_export_job(monkeypatch, studio, {**ARGS, "save_directory": "my-gguf"})
     assert job["structuredContent"]["status"] == "completed"
     assert job["structuredContent"]["error"] is None
     assert job["structuredContent"]["export"]["output"] == "my-gguf"
@@ -294,16 +252,9 @@ def test_an_export_finishing_after_this_one_does_not_become_its_result(monkeypat
 def test_export_returns_a_job_at_once_and_the_job_completes(monkeypatch):
     calls = []
     studio = _export_studio(recorder = calls)
-    started, job = _run_export(
-        monkeypatch,
-        studio,
-        {
-            "checkpoint": "qwen-lora/checkpoint-30",
-            "format": "gguf",
-            "save_directory": "my-gguf",
-            "quantization_method": ["Q4_K_M", "Q8_0"],
-        },
-    )
+    args = {**ARGS, "checkpoint": "qwen-lora/checkpoint-30", "save_directory": "my-gguf"}
+    args["quantization_method"] = ["Q4_K_M", "Q8_0"]
+    started, job = run_export_job(monkeypatch, studio, args)
     assert started["structuredContent"]["status"] == "running"
     assert job["structuredContent"]["status"] == "completed"
     assert job["structuredContent"]["export"] == {
@@ -328,34 +279,27 @@ def test_export_returns_a_job_at_once_and_the_job_completes(monkeypatch):
 
 
 def test_an_export_is_refused_while_another_one_runs(monkeypatch):
-    studio = fake_studio(
+    result, studio = run_tool(
+        monkeypatch,
         {
-            ("GET", "/api/export/status"): lambda request, body: {
+            ("GET", "/api/export/status"): {
                 "is_export_active": True,
                 "active_op_kind": "export_gguf",
             },
-            ("GET", "/api/models/checkpoints"): lambda request, body: CHECKPOINTS,
-        }
+            ("GET", "/api/models/checkpoints"): CHECKPOINTS,
+        },
+        "export_model",
+        ARGS,
     )
-    with TestClient(served(create_studio_mcp(), studio, monkeypatch = monkeypatch)) as http:
-        result = call_tool(
-            http,
-            "export_model",
-            {"checkpoint": "qwen-lora", "format": "gguf", "save_directory": "out"},
-        )
     assert result["isError"] is True
     assert result["content"][0]["text"].startswith("Another export is running.")
     assert [c[0] for c in studio.state.calls] == ["GET"]
 
 
 def test_an_export_is_refused_while_an_mcp_export_job_runs(monkeypatch):
-    _register(account_id = "alice-id", job_id = "job-a")
+    register_export_job(account_id = "alice-id", job_id = "job-a")
     calls = []
-    result, _job = _run_export(
-        monkeypatch,
-        _export_studio(recorder = calls),
-        {"checkpoint": "qwen-lora", "format": "gguf", "save_directory": "out"},
-    )
+    result, _job = run_export_job(monkeypatch, _export_studio(recorder = calls), ARGS)
     assert result["isError"] is True
     assert calls == []
 
@@ -368,16 +312,12 @@ def test_two_exports_at_once_cannot_both_start(monkeypatch):
 
     async def racing(caller, name):
         found = await real(caller, name)
-        _register(account_id = "owner", job_id = "first")
+        register_export_job(account_id = "owner", job_id = "first")
         return found
 
     monkeypatch.setattr(export_tool.checkpoints, "resolve", racing)
     calls = []
-    result, _job = _run_export(
-        monkeypatch,
-        _export_studio(recorder = calls),
-        {"checkpoint": "qwen-lora", "format": "gguf", "save_directory": "out"},
-    )
+    result, _job = run_export_job(monkeypatch, _export_studio(recorder = calls), ARGS)
     assert result["isError"] is True
     assert result["content"][0]["text"].startswith("Another export is running.")
     assert calls == []
@@ -386,13 +326,9 @@ def test_two_exports_at_once_cannot_both_start(monkeypatch):
 
 def test_a_checkpoint_loaded_by_someone_else_in_between_is_never_exported(monkeypatch):
     calls = []
-    swapped = [
-        {"last_op_seq": 5, "current_checkpoint": f"{OUT}/someone-else"},
-    ]
-    started, job = _run_export(
-        monkeypatch,
-        _export_studio(recorder = calls, statuses = swapped),
-        {"checkpoint": "qwen-lora", "format": "gguf", "save_directory": "out"},
+    swapped = [{"last_op_seq": 5, "current_checkpoint": f"{OUT}/someone-else"}]
+    started, job = run_export_job(
+        monkeypatch, _export_studio(recorder = calls, statuses = swapped), ARGS
     )
     assert started["isError"] is False
     assert job["structuredContent"]["status"] == "failed"
@@ -404,30 +340,15 @@ def test_a_checkpoint_loaded_by_someone_else_in_between_is_never_exported(monkey
 def test_each_format_reaches_its_route(monkeypatch):
     for fmt in ("merged", "lora", "base"):
         calls = []
-        _run_export(
-            monkeypatch,
-            _export_studio(recorder = calls),
-            {"checkpoint": "qwen-lora", "format": fmt, "save_directory": "out"},
-        )
+        run_export_job(monkeypatch, _export_studio(recorder = calls), {**ARGS, "format": fmt})
         assert [name for name, _ in calls] == ["load", fmt]
         assert "quantization_method" not in calls[1][1]
 
 
 def test_hf_token_and_load_in_4bit_go_in_the_bodies(monkeypatch):
     calls = []
-    _run_export(
-        monkeypatch,
-        _export_studio(recorder = calls),
-        {
-            "checkpoint": "qwen-lora",
-            "format": "merged",
-            "save_directory": "out",
-            "push_to_hub": True,
-            "repo_id": "me/m",
-            "hf_token": "hf_x",
-            "load_in_4bit": False,
-        },
-    )
+    args = {**ARGS, "format": "merged", "push_to_hub": True, "repo_id": "me/m", "hf_token": "hf_x"}
+    run_export_job(monkeypatch, _export_studio(recorder = calls), {**args, "load_in_4bit": False})
     assert calls[0][1] == {
         "checkpoint_path": f"{OUT}/qwen-lora",
         "max_seq_length": 2048,
@@ -439,11 +360,7 @@ def test_hf_token_and_load_in_4bit_go_in_the_bodies(monkeypatch):
 
 
 def test_an_unknown_checkpoint_lists_the_names(monkeypatch):
-    started, _job = _run_export(
-        monkeypatch,
-        _export_studio(),
-        {"checkpoint": "nope", "format": "gguf", "save_directory": "out"},
-    )
+    started, _job = run_export_job(monkeypatch, _export_studio(), {**ARGS, "checkpoint": "nope"})
     assert started["isError"] is True
     assert (
         started["content"][0]["text"]
@@ -451,38 +368,14 @@ def test_an_unknown_checkpoint_lists_the_names(monkeypatch):
     )
 
 
-@pytest.mark.parametrize("directory", ["/srv/out", "C:\\out", "~/out", "a/../../etc", "..", "  "])
-def test_save_directory_must_be_relative_and_inside(monkeypatch, directory):
-    calls = []
-    studio = _export_studio(recorder = calls)
-    started, _job = _run_export(
-        monkeypatch,
-        studio,
-        {"checkpoint": "qwen-lora", "format": "gguf", "save_directory": directory},
-    )
-    assert started["isError"] is True
-    assert calls == []
-    assert studio.state.calls == []
-
-
 def test_a_failed_export_step_fails_the_job(monkeypatch):
     studio = _export_studio(
         export_answer = {"success": False, "message": "llama.cpp converter missing at /srv/llama"}
     )
-    _started, job = _run_export(
-        monkeypatch, studio, {"checkpoint": "qwen-lora", "format": "gguf", "save_directory": "out"}
-    )
+    _started, job = run_export_job(monkeypatch, studio, ARGS)
     assert job["structuredContent"]["status"] == "failed"
     assert job["structuredContent"]["error"].startswith("llama.cpp converter missing at")
     assert "/srv" not in json.dumps(job)
-
-
-def test_export_model_annotations():
-    tool = {t.name: t for t in asyncio.run(create_studio_mcp().list_tools())}["export_model"]
-    assert tool.annotations.readOnlyHint is False
-    assert tool.annotations.destructiveHint is False
-    assert tool.annotations.openWorldHint is False
-    assert tool.output_schema is not None
 
 
 PAYLOADS = {

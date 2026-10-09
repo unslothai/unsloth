@@ -1240,23 +1240,17 @@ def test_the_mcp_status_tool_reads_hardware_off_the_event_loop():
         named = [
             node
             for node in ast.walk(tree)
-            if (isinstance(node, ast.Name) and node.id == "get_gpu_utilization")
-            or (isinstance(node, ast.Attribute) and node.attr == "get_gpu_utilization")
-            or (
-                isinstance(node, ast.ImportFrom)
-                and any(alias.name == "get_gpu_utilization" for alias in node.names)
-            )
+            # A name, an attribute, or a name imported from a module.
+            if "get_gpu_utilization" in (getattr(node, "id", None), getattr(node, "attr", None))
+            or isinstance(node, ast.ImportFrom)
+            and "get_gpu_utilization" in [alias.name for alias in node.names]
         ]
         assert not named, (
             f"{path.name} reaches get_gpu_utilization() again; it blocks the event loop on the "
             "warm's torch import"
         )
     status = (_BACKEND / "studio_mcp" / "tools" / "status.py").read_text(encoding = "utf-8")
-    routes = {
-        node.value
-        for node in ast.walk(ast.parse(status))
-        if isinstance(node, ast.Constant) and isinstance(node.value, str)
-    }
+    routes = {node.value for node in ast.walk(ast.parse(status)) if isinstance(node, ast.Constant)}
     assert "/api/train/hardware" in routes, "studio_status no longer reads the hardware route"
     training = (_BACKEND / "routes" / "training.py").read_text(encoding = "utf-8")
     assert (

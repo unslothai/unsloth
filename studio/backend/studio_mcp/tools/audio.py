@@ -8,9 +8,8 @@ from __future__ import annotations
 import base64
 import binascii
 from typing import Any, Literal, Optional
-from urllib.parse import quote
 
-from fastmcp import Context, FastMCP
+from fastmcp import Context
 from fastmcp.exceptions import ToolError
 from fastmcp.tools import ToolResult
 
@@ -19,9 +18,16 @@ from studio_mcp.caller import Caller, current_caller
 from studio_mcp.errors import raise_for_route
 from studio_mcp.forward import forward, ndjson_last
 from studio_mcp.inputs import AudioInput, audio_bytes, audio_ref, upload_audio
-from studio_mcp.media import INLINE_CAP, audio_content, media_result, public_url, resource_link
+from studio_mcp.media import (
+    INLINE_CAP,
+    audio_content,
+    audio_gallery_path,
+    media_result,
+    public_url,
+    resource_link,
+)
 from studio_mcp.outputs import AudioClip, AudioResult, TranscriptResult, TranscriptSegment
-from studio_mcp.tools import WRITES, integer, number, opt_text
+from studio_mcp.tools import WRITES, opt_text, present, route_json, try_json
 
 LOAD_AUDIO_HINT = "Load a text-to-speech or music model with load_model(kind='tts') first."
 NOT_LOADED = "No model loaded"
@@ -29,15 +35,11 @@ NOT_LOADED = "No model loaded"
 _WAV_BYTES_PER_SAMPLE = 2
 
 
-def _gallery_path(clip_id: str) -> str:
-    return f"/v1/audio/gallery/{quote(clip_id, safe = '')}/file"
-
-
 async def _clip_contents(caller: Caller, clip: AudioClip) -> list[Any]:
     """A clip inline when its WAV fits the cap, else a link; one that cannot fit is never fetched."""
     estimate = (clip.duration_s or 0) * (clip.sample_rate or 0) * _WAV_BYTES_PER_SAMPLE
     if clip.duration_s and clip.sample_rate and estimate <= INLINE_CAP:
-        response = await forward(caller, "GET", _gallery_path(clip.id))
+        response = await forward(caller, "GET", audio_gallery_path(clip.id))
         if response.status_code == 200 and len(response.content) <= INLINE_CAP:
             mime = response.headers.get("content-type", "audio/wav").split(";")[0]
             return [audio_content(response.content, mime)]
@@ -78,47 +80,42 @@ async def generate_audio(
     ):
         if audio is not None:
             inputs[key] = await audio_ref(caller, audio)
-    if reference_text is not None:
-        inputs["reference_text"] = reference_text
-    if source_text is not None:
-        inputs["source_text"] = source_text
+    inputs.update(present(reference_text = reference_text, source_text = source_text))
     body: dict[str, Any] = {"workflow": workflow, "inputs": inputs}
-    for key, value in (
-        ("text", text),
-        ("language", language),
-        ("instructions", instructions),
-        ("mode", mode),
-        ("lyrics", lyrics),
-        ("duration_s", duration_s),
-        ("edit", edit),
-        ("convert", convert),
-        ("speed", speed),
-        ("seed", seed),
-        ("max_tokens", max_tokens),
-        ("options", options),
-    ):
-        if value is not None:
-            body[key] = value
+    body.update(
+        present(
+            text = text,
+            language = language,
+            instructions = instructions,
+            mode = mode,
+            lyrics = lyrics,
+            duration_s = duration_s,
+            edit = edit,
+            convert = convert,
+            speed = speed,
+            seed = seed,
+            max_tokens = max_tokens,
+            options = options,
+        )
+    )
     if instrumental:
         body["instrumental"] = True
     if variations != 1:
         body["variations"] = variations
-    response = await forward(caller, "POST", "/v1/audio/run", json_body = body)
-    hints = {400: LOAD_AUDIO_HINT} if NOT_LOADED in response.text else None
-    payload = raise_for_route(response, hints = hints)
+    payload = await route_json(
+        "POST",
+        "/v1/audio/run",
+        caller = caller,
+        json_body = body,
+        hint_if = (NOT_LOADED, {400: LOAD_AUDIO_HINT}),
+    )
     if not isinstance(payload, dict):
         raise ToolError("Unsloth Studio returned no audio")
     clips, contents = [], []
     for row in payload.get("clips") or []:
         if not isinstance(row, dict) or not opt_text(row.get("id")):
             continue
-        clip = AudioClip(
-            id = row["id"],
-            role = opt_text(row.get("role")) or "output",
-            url = public_url(caller, _gallery_path(row["id"])),
-            duration_s = number(row.get("duration_s")),
-            sample_rate = integer(row.get("sample_rate")),
-        )
+        clip = AudioClip.from_route(row, url = public_url(caller, audio_gallery_path(row["id"])))
         clips.append(clip)
         contents.extend(await _clip_contents(caller, clip))
     saved = True
@@ -138,13 +135,7 @@ async def generate_audio(
         contents.append(audio_content(data, f"audio/{opt_text(fallback.get('format')) or 'wav'}"))
     if not clips and saved:
         raise ToolError("Unsloth Studio returned no audio")
-    result = AudioResult(
-        model = opt_text(payload.get("model")),
-        group_id = opt_text(payload.get("group_id")),
-        clips = clips,
-        saved = saved,
-    )
-    return media_result(contents, result)
+    return media_result(contents, AudioResult.from_route(payload, clips = clips, saved = saved))
 
 
 # OpenAI's own upload limit for /audio/transcriptions; past it the tool uploads first.
@@ -157,15 +148,12 @@ def _segments(payload: dict) -> Optional[list[TranscriptSegment]]:
     rows = payload.get("segments")
     if not isinstance(rows, list):
         return None
-    return [
-        TranscriptSegment(
-            start = number(row.get("start")),
-            end = number(row.get("end")),
-            text = row.get("text") if isinstance(row.get("text"), str) else "",
-        )
-        for row in rows
-        if isinstance(row, dict)
-    ]
+    return [TranscriptSegment.from_route(row) for row in rows if isinstance(row, dict)]
+
+
+def _default_stt(status: dict) -> Optional[str]:
+    default = status.get("transformers") if isinstance(status.get("transformers"), dict) else {}
+    return opt_text(default.get("default_model")) or opt_text(status.get("default_model"))
 
 
 async def _download_then_retry(
@@ -174,8 +162,7 @@ async def _download_then_retry(
     """Fetch the STT model a transcription refused as missing, the way load_model does."""
     status = await loading.stt_status(caller, model)
     if model is None:
-        default = status.get("transformers") if isinstance(status.get("transformers"), dict) else {}
-        model = opt_text(default.get("default_model")) or opt_text(status.get("default_model"))
+        model = _default_stt(status)
     if model is None:
         raise ToolError("Unsloth Studio did not name a default speech-to-text model to download")
     engine = loading.stt_engine(status, model)
@@ -211,8 +198,7 @@ async def _stt_model(caller: Caller, model: Optional[str]) -> tuple[str, str]:
             state = status.get(engine)
             if isinstance(state, dict) and opt_text(state.get("loaded_model")):
                 return state["loaded_model"], engine
-        default = status.get("transformers") if isinstance(status.get("transformers"), dict) else {}
-        model = opt_text(default.get("default_model")) or opt_text(status.get("default_model"))
+        model = _default_stt(status)
     if model is None:
         raise ToolError("Unsloth Studio did not name a speech-to-text model; pass model.")
     return model, loading.stt_engine(status, model)
@@ -331,17 +317,11 @@ async def transcribe(
 
 
 async def _resident_stt(caller: Caller) -> Optional[str]:
-    try:
-        response = await forward(caller, "GET", "/api/inference/audio/stt/status")
-        payload = response.json() if response.status_code == 200 else None
-    except Exception:
-        return None
+    payload = await try_json(caller, "/api/inference/audio/stt/status")
     for state in payload.values() if isinstance(payload, dict) else ():
         if isinstance(state, dict) and opt_text(state.get("loaded_model")):
             return state["loaded_model"]
     return None
 
 
-def register_audio(mcp: FastMCP) -> None:
-    mcp.tool(generate_audio, annotations = WRITES, output_schema = AudioResult.model_json_schema())
-    mcp.tool(transcribe, annotations = WRITES)
+TOOLS = ((generate_audio, WRITES, AudioResult.model_json_schema()), (transcribe, WRITES))

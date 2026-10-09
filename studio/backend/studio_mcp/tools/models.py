@@ -8,16 +8,15 @@ from __future__ import annotations
 from typing import Any, Literal, Optional
 from urllib.parse import quote
 
-from fastmcp import Context, FastMCP
+from fastmcp import Context
 
 from studio_mcp import loading
 from studio_mcp.caller import current_caller
 from studio_mcp.outputs import LoadResult, ModelEntry, ModelList, UnloadResult
-from studio_mcp.tools import DESTRUCTIVE, READ_ONLY, WRITES, integer, route_json, opt_text
+from studio_mcp.tools import DESTRUCTIVE, READ_ONLY, WRITES, as_dict, opt_text, route_json
 
-ModelKind = Literal["llm", "image", "video", "stt", "tts", "audio"]
 # "tts" and "audio" are what list_models reports for audio models; they load in the llm slot.
-LoadKind = Literal["llm", "image", "video", "stt", "tts", "audio"]
+ModelKind = Literal["llm", "image", "video", "stt", "tts", "audio"]
 
 KIND_BY_TASK = {
     "text-to-image": "image",
@@ -60,29 +59,16 @@ def kind_of(entry: dict) -> str:
 def _entry(entry: dict) -> Optional[ModelEntry]:
     if not opt_text(entry.get("id")):
         return None
-    workflows = entry.get("audio_workflows")
-    return ModelEntry(
-        id = entry["id"],
-        kind = kind_of(entry),
-        loaded = entry.get("loaded") is True,
-        display_name = opt_text(entry.get("display_name")),
-        quant = opt_text(entry.get("quant")),
-        context_length = integer(entry.get("context_length")),
-        audio_workflows = [w for w in workflows if isinstance(w, str)]
-        if isinstance(workflows, list)
-        else None,
-    )
+    return ModelEntry.from_route(entry, kind = kind_of(entry))
 
 
 def _training_defaults(details: Any) -> Optional[dict[str, Any]]:
-    config = details.get("config") if isinstance(details, dict) else None
+    config = as_dict(details).get("config")
     if not isinstance(config, dict):
         return None
     defaults = {}
     for section, keys in TRAINING_DEFAULT_KEYS.items():
-        values = config.get(section)
-        if not isinstance(values, dict):
-            continue
+        values = as_dict(config.get(section))
         for key in keys:
             if isinstance(values.get(key), (bool, int, float, str)):
                 defaults[key] = values[key]
@@ -105,7 +91,7 @@ async def list_models(
         listing = await route_json("GET", "/api/inference/loaded-models")
     else:
         listing = await route_json("GET", "/v1/models")
-    rows = listing.get("data") if isinstance(listing, dict) else None
+    rows = as_dict(listing).get("data")
     models = []
     for row in rows if isinstance(rows, list) else []:
         entry = _entry(row) if isinstance(row, dict) else None
@@ -125,7 +111,7 @@ async def list_models(
 
 async def load_model(
     model: str,
-    kind: LoadKind = "llm",
+    kind: ModelKind = "llm",
     variant: Optional[str] = None,
     max_seq_length: Optional[int] = None,
     load_in_4bit: bool = True,
@@ -152,7 +138,7 @@ async def load_model(
     )
 
 
-async def unload_model(kind: LoadKind = "llm", model: Optional[str] = None) -> UnloadResult:
+async def unload_model(kind: ModelKind = "llm", model: Optional[str] = None) -> UnloadResult:
     """Unload a model to free memory. Without ``model`` the active one of that kind is unloaded; image and video have one slot each, so ``model`` is ignored there. The embedding model is managed by Unsloth Studio and is not unloaded here. ``unloaded`` is false when nothing matching was loaded."""
     if kind == "stt":
         return await loading.unload_stt(current_caller(), model)
@@ -161,7 +147,4 @@ async def unload_model(kind: LoadKind = "llm", model: Optional[str] = None) -> U
     return await loading.unload_llm(current_caller(), model)
 
 
-def register_models(mcp: FastMCP) -> None:
-    mcp.tool(list_models, annotations = READ_ONLY)
-    mcp.tool(load_model, annotations = WRITES)
-    mcp.tool(unload_model, annotations = DESTRUCTIVE)
+TOOLS = ((list_models, READ_ONLY), (load_model, WRITES), (unload_model, DESTRUCTIVE))

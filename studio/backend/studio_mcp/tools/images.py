@@ -6,32 +6,31 @@
 from __future__ import annotations
 
 from typing import Annotated, Any, Literal, Optional
-from urllib.parse import quote
 
-from fastmcp import Context, FastMCP
+from fastmcp import Context
 from fastmcp.exceptions import ToolError
 from fastmcp.tools import ToolResult
 from pydantic import Field
 
 from studio_mcp import loading
 from studio_mcp.caller import Caller, current_caller
-from studio_mcp.errors import raise_for_route
 from studio_mcp.forward import forward
 from studio_mcp.inputs import ImageInput, data_url, resolve_image, sniff_image
-from studio_mcp.media import INLINE_CAP, image_content, media_result, public_url, resource_link
+from studio_mcp.media import (
+    INLINE_CAP,
+    image_content,
+    image_gallery_path,
+    media_result,
+    public_url,
+    resource_link,
+)
 from studio_mcp.outputs import ImageItem, ImageResult
-from studio_mcp.tools import WRITES, integer, number, route_json, opt_text
+from studio_mcp.tools import WRITES, integer, number, opt_text, present, route_json
 
 LOAD_IMAGE_HINT = "Load an image model with load_model(kind='image') first."
 NOT_LOADED = "No diffusion model is loaded"
-THUMB_SIDE = 1024
 # The route takes 128 MiB of base64 across every image in one request.
 MAX_REQUEST_IMAGE_BYTES = 128 * 1024 * 1024 * 3 // 4
-
-
-def _gallery_path(image_id: str, thumb: bool = False) -> str:
-    path = f"/api/inference/images/gallery/{quote(image_id, safe = '')}/file"
-    return f"{path}?thumb={THUMB_SIDE}" if thumb else path
 
 
 def _progress_poll(caller: Caller):
@@ -54,10 +53,10 @@ async def _fetch(caller: Caller, path: str) -> Optional[bytes]:
 async def _image_contents(caller: Caller, item: ImageItem) -> list[Any]:
     """The PNG inline when it must fit the cap, else a WebP thumbnail plus a link; a large original is never fetched."""
     if item.width and item.height and item.width * item.height * 3 <= INLINE_CAP:
-        data = await _fetch(caller, _gallery_path(item.id))
+        data = await _fetch(caller, image_gallery_path(item.id))
         if data is not None and len(data) <= INLINE_CAP:
             return [image_content(data, "image/png")]
-    thumb = await _fetch(caller, _gallery_path(item.id, thumb = True))
+    thumb = await _fetch(caller, image_gallery_path(item.id, thumb = True))
     contents: list[Any] = []
     if thumb is not None and len(thumb) <= INLINE_CAP:
         # Studio sends the original PNG when it cannot make the thumbnail.
@@ -69,16 +68,14 @@ async def _image_contents(caller: Caller, item: ImageItem) -> list[Any]:
 async def run_generation(
     caller: Caller, ctx: Optional[Context], body: dict[str, Any]
 ) -> ToolResult:
-    async def generate():
-        response = await forward(caller, "POST", "/api/inference/images/generate", json_body = body)
-        hints = (
-            {409: LOAD_IMAGE_HINT}
-            if response.status_code == 409 and NOT_LOADED in response.text
-            else None
-        )
-        return raise_for_route(response, hints = hints)
-
-    payload = await loading.with_progress(ctx, generate(), _progress_poll(caller))
+    generate = route_json(
+        "POST",
+        "/api/inference/images/generate",
+        caller = caller,
+        json_body = body,
+        hint_if = (NOT_LOADED, {409: LOAD_IMAGE_HINT}),
+    )
+    payload = await loading.with_progress(ctx, generate, _progress_poll(caller))
     rows = payload.get("images") if isinstance(payload, dict) else None
     if not isinstance(rows, list) or not rows:
         raise ToolError("Unsloth Studio returned no images")
@@ -86,13 +83,7 @@ async def run_generation(
     for row in rows:
         if not isinstance(row, dict) or not opt_text(row.get("id")):
             continue
-        item = ImageItem(
-            id = row["id"],
-            url = public_url(caller, _gallery_path(row["id"])),
-            width = integer(row.get("width")),
-            height = integer(row.get("height")),
-            seed = integer(row.get("seed")),
-        )
+        item = ImageItem.from_route(row, url = public_url(caller, image_gallery_path(row["id"])))
         items.append(item)
         contents.extend(await _image_contents(caller, item))
     return media_result(contents, ImageResult(images = items))
@@ -149,24 +140,23 @@ async def generate_image(
     caller = current_caller()
     body: dict[str, Any] = {"prompt": prompt}
     body.update(await _image_fields(caller, init_image, mask_image, reference_images))
-    for key, value in (
-        ("negative_prompt", negative_prompt),
-        ("width", width),
-        ("height", height),
-        ("steps", steps),
-        ("guidance", guidance),
-        ("seed", seed),
-        ("batch_size", batch_size),
-        ("workflow", workflow),
-        ("strength", strength),
-        ("upscale", upscale),
-    ):
-        if value is not None:
-            body[key] = value
+    body.update(
+        present(
+            negative_prompt = negative_prompt,
+            width = width,
+            height = height,
+            steps = steps,
+            guidance = guidance,
+            seed = seed,
+            batch_size = batch_size,
+            workflow = workflow,
+            strength = strength,
+            upscale = upscale,
+        )
+    )
     if allow_oversized:
         body["allow_oversized"] = True
     return await run_generation(caller, ctx, body)
 
 
-def register_images(mcp: FastMCP) -> None:
-    mcp.tool(generate_image, annotations = WRITES, output_schema = ImageResult.model_json_schema())
+TOOLS = ((generate_image, WRITES, ImageResult.model_json_schema()),)

@@ -5,13 +5,12 @@
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from typing import Optional
 
 from studio_mcp.caller import Caller
 from studio_mcp.errors import tool_error
-from studio_mcp.tools import integer, number, opt_text, route_json
+from studio_mcp.tools import as_dict, integer, leaf_name, number, opt_text, route_json
 
 
 @dataclass(frozen = True)
@@ -26,29 +25,25 @@ class Checkpoint:
     is_quantized: bool = False
 
 
-def _leaf(path: str) -> str:
-    return re.split(r"[\\/]", path.rstrip("\\/"))[-1]
-
-
 def run_folder_path(checkpoints: list[dict], folder: str) -> Optional[str]:
     """The run folder's own path: its final checkpoint, else the parent of an intermediate one."""
     paths = [
         c.get("path") for c in checkpoints if isinstance(c, dict) and isinstance(c.get("path"), str)
     ]
     for path in paths:
-        if _leaf(path) == folder:
+        if leaf_name(path) == folder:
             return path
     for path in paths:
-        parent = re.split(r"[\\/]", path.rstrip("\\/"))
-        if len(parent) > 1:
-            return path[: len(path.rstrip("\\/")) - len(parent[-1])].rstrip("\\/")
+        trimmed, leaf = path.rstrip("\\/"), leaf_name(path)
+        if len(leaf) < len(trimmed):
+            return trimmed[: len(trimmed) - len(leaf)].rstrip("\\/")
     return None
 
 
 async def list_checkpoints(caller: Caller) -> tuple[list[Checkpoint], dict[str, str]]:
     """Every checkpoint by name, plus each run folder's path for matching training runs."""
     listing = await route_json("GET", "/api/models/checkpoints", caller = caller)
-    models = listing.get("models") if isinstance(listing, dict) else None
+    models = as_dict(listing).get("models")
     found: list[Checkpoint] = []
     folders: dict[str, str] = {}
     for model in models or []:
@@ -67,7 +62,7 @@ async def list_checkpoints(caller: Caller) -> tuple[list[Checkpoint], dict[str, 
                 Checkpoint(
                     run = folder,
                     name = folder
-                    if label == folder or _leaf(path) == folder
+                    if label == folder or leaf_name(path) == folder
                     else f"{folder}/{label}",
                     path = path,
                     loss = number(entry.get("loss")),

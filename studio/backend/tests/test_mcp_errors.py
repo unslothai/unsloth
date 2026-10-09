@@ -10,6 +10,8 @@ from fastmcp.exceptions import ToolError
 from studio_mcp.errors import raise_for_payload, raise_for_route, raise_for_status_field
 from studio_mcp.forward import ndjson_last
 
+from .mcp_harness import DEFERRED, openai_error
+
 SENTINEL = "/srv/mcp-sentinel/models/secret.gguf"
 WIN_SENTINEL = "C:\\mcp-sentinel\\models\\secret.gguf"
 
@@ -26,6 +28,12 @@ def _response(
     return httpx.Response(
         status, content = content, headers = {"content-type": "application/json", **(headers or {})}
     )
+
+
+def _v1(status, message, **fields):
+    # The OpenAI-style envelope the /v1 routes answer with.
+    sent = openai_error(message, status, **fields)
+    return httpx.Response(status, content = sent.body, headers = sent.raw_headers)
 
 
 def _message(resp, **kwargs):
@@ -50,17 +58,7 @@ CASES = [
         id = "api-detail-dict",
     ),
     pytest.param(
-        _response(
-            404,
-            {
-                "error": {
-                    "message": f"No model {SENTINEL}",
-                    "type": "not_found_error",
-                    "param": None,
-                    "code": "model_not_found",
-                }
-            },
-        ),
+        _v1(404, f"No model {SENTINEL}", type = "not_found_error", code = "model_not_found"),
         ["No model", "(model_not_found)", "(HTTP 404)"],
         id = "v1-envelope",
     ),
@@ -74,16 +72,12 @@ CASES = [
         id = "gpu-busy-unwrapped",
     ),
     pytest.param(
-        _response(
+        _v1(
             409,
-            {
-                "error": {
-                    "message": GPU_BUSY_MESSAGE,
-                    "type": "conflict_error",
-                    "param": "model",
-                    "code": "gpu_busy",
-                }
-            },
+            GPU_BUSY_MESSAGE,
+            type = "conflict_error",
+            param = "model",
+            code = "gpu_busy",
             headers = {"Retry-After": "4"},
         ),
         ["GPU busy: Another account is generating", "Retry after 4 s."],
@@ -97,17 +91,7 @@ CASES = [
         id = "gpu-busy-detail-wrapped",
     ),
     pytest.param(
-        _response(
-            400,
-            {
-                "error": {
-                    "message": "messages: Field required",
-                    "type": "invalid_request_error",
-                    "param": "messages",
-                    "code": None,
-                }
-            },
-        ),
+        _v1(400, "messages: Field required", param = "messages"),
         ["Invalid arguments: messages: Field required"],
         id = "v1-validation-400",
     ),
@@ -184,24 +168,13 @@ def test_route_errors_become_scrubbed_tool_errors(resp, expected):
         assert text in message
 
 
-@pytest.mark.parametrize(
-    "deferred,expected",
-    [
-        (
-            {"status_code": 409, "detail": f"Another model is loading {SENTINEL}"},
-            ["Another model is loading", "(HTTP 409)"],
-        ),
-        (
-            {"status_code": 500, "detail": f"RuntimeError: CUDA out of memory {SENTINEL}"},
-            ["RuntimeError: CUDA out of memory", "(HTTP 500)"],
-        ),
-    ],
-)
-def test_a_padded_200_with_a_deferred_error_is_an_error(deferred, expected):
-    body = b" " * 64 + json.dumps({"_deferred_error": deferred}).encode()
+@pytest.mark.parametrize("deferred", DEFERRED)
+def test_a_padded_200_with_a_deferred_error_is_an_error(deferred):
+    sent = {**deferred, "detail": f"{deferred['detail']} {SENTINEL}"}
+    body = b" " * 64 + json.dumps({"_deferred_error": sent}).encode()
     message = _message(_response(200, content = body))
-    for text in expected:
-        assert text in message
+    assert deferred["detail"] in message
+    assert f"(HTTP {deferred['status_code']})" in message
 
 
 def test_a_padded_200_success_parses():

@@ -5,7 +5,7 @@ import pytest
 
 import storage.studio_db as studio_db
 from utils import mcp_access
-from utils.account_context import OWNER, AccountContext, bind_account, reset_account, run_as
+from utils.account_context import OWNER, AccountContext, run_as
 from utils.mcp_access import (
     ENV_FORCE,
     MCP_ENABLED_SETTING_KEY,
@@ -47,12 +47,8 @@ def test_other_env_values_do_not_force_it(monkeypatch, value):
 
 
 def test_setter_refuses_a_managed_account():
-    token = bind_account(ALICE)
-    try:
-        with pytest.raises(ValueError):
-            set_mcp_enabled(True)
-    finally:
-        reset_account(token)
+    with pytest.raises(ValueError):
+        run_as(ALICE, set_mcp_enabled, True)
     assert get_mcp_enabled() is False
 
 
@@ -114,9 +110,5 @@ def test_a_write_during_a_read_is_not_published(monkeypatch):
 def test_a_managed_account_reads_the_owners_value():
     run_as(OWNER, set_mcp_enabled, True)
     mcp_access._reset_cache()
-    token = bind_account(ALICE)
-    try:
-        assert studio_db.get_app_setting(MCP_ENABLED_SETTING_KEY, None) is None
-        assert get_mcp_enabled() is True
-    finally:
-        reset_account(token)
+    assert run_as(ALICE, studio_db.get_app_setting, MCP_ENABLED_SETTING_KEY, None) is None
+    assert run_as(ALICE, get_mcp_enabled) is True
