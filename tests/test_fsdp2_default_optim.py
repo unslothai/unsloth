@@ -29,6 +29,9 @@ _PROBE = textwrap.dedent(
         return str(getattr(value, "value", value))
 
     fsdp2_args = {"fsdp": "full_shard", "fsdp_config": {"fsdp_version": 2}}
+    fsdp2_json = os.environ["PROBE_OUT"] + "_cfg.json"
+    with open(fsdp2_json, "w", encoding = "utf-8") as f:
+        json.dump({"fsdp_version": 2}, f)
     print("PROBE " + json.dumps({
         "grpo_plain": optim(GRPOConfig, {}),
         "sft_plain": optim(SFTConfig, {}),
@@ -36,6 +39,7 @@ _PROBE = textwrap.dedent(
         "grpo_fsdp2": optim(GRPOConfig, {"ACCELERATE_USE_FSDP": "true", "FSDP_VERSION": "2"}),
         "sft_fsdp2": optim(SFTConfig, {"ACCELERATE_USE_FSDP": "true", "FSDP_VERSION": "2"}),
         "grpo_fsdp2_args": optim(GRPOConfig, {}, **fsdp2_args),
+        "grpo_fsdp2_json": optim(GRPOConfig, {}, fsdp = "full_shard", fsdp_config = fsdp2_json),
         "grpo_fsdp2_explicit_torch": optim(GRPOConfig, {"FSDP_VERSION": "2"}, optim = "adamw_torch"),
     }))
     """
@@ -61,7 +65,7 @@ def test_without_fsdp2_the_default_is_unchanged(probe):
     assert probe["grpo_fsdp1"] == "adamw_8bit"
 
 
-@pytest.mark.parametrize("case", ["grpo_fsdp2", "sft_fsdp2", "grpo_fsdp2_args"])
+@pytest.mark.parametrize("case", ["grpo_fsdp2", "sft_fsdp2", "grpo_fsdp2_args", "grpo_fsdp2_json"])
 def test_fsdp2_gets_an_optimizer_that_steps_dtensors(probe, case):
     assert probe[case] == "adamw_torch_fused"
 

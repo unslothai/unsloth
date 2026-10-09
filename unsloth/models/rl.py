@@ -3124,10 +3124,18 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
     if "optim" in call_args:
         extra_args += "_unsloth_fsdp2 = os.environ.get('FSDP_VERSION', '').strip() == '2'\n"
         if "fsdp" in call_args and "fsdp_config" in call_args:
-            # TrainingArguments(fsdp = ..., fsdp_config = {"fsdp_version": 2}) without the launcher.
+            # TrainingArguments(fsdp = ..., fsdp_config = {"fsdp_version": 2} or a JSON path) without the launcher.
             extra_args += (
-                "if fsdp and isinstance(fsdp_config, dict):\n"
-                "    _unsloth_fsdp2 = _unsloth_fsdp2 or str(fsdp_config.get('fsdp_version', fsdp_config.get('version', ''))) == '2'\n"
+                "_unsloth_fsdp_cfg = fsdp_config\n"
+                "if fsdp and isinstance(_unsloth_fsdp_cfg, str) and os.path.isfile(_unsloth_fsdp_cfg):\n"
+                "    try:\n"
+                "        import json as _unsloth_json\n"
+                "        with open(_unsloth_fsdp_cfg, encoding = 'utf-8') as _unsloth_f:\n"
+                "            _unsloth_fsdp_cfg = _unsloth_json.load(_unsloth_f)\n"
+                "    except Exception:\n"
+                "        _unsloth_fsdp_cfg = None\n"
+                "if fsdp and isinstance(_unsloth_fsdp_cfg, dict):\n"
+                "    _unsloth_fsdp2 = _unsloth_fsdp2 or str(_unsloth_fsdp_cfg.get('fsdp_version', _unsloth_fsdp_cfg.get('version', ''))) == '2'\n"
             )
         extra_args += (
             "if _unsloth_fsdp2 and str(getattr(optim, 'value', optim)) == 'adamw_8bit':\n"
