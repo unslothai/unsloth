@@ -73,15 +73,26 @@ def _captured_generate_kwargs(config, **generate_kwargs):
     return captured
 
 
-def _dia_config():
-    # Dia landed in transformers 4.53, below Unsloth's floor.
-    from transformers import DiaConfig
+# Plain namespaces, not DiaConfig: Dia needs transformers >= 4.53, above Unsloth's 4.52.4 floor.
+def _legacy_dia_config():
+    # transformers < 5: audio token ids only at the top level (nari-labs/Dia-1.6B-0626's config.json).
+    return SimpleNamespace(
+        model_type = "dia", pad_token_id = 1025, eos_token_id = 1024, decoder_config = SimpleNamespace()
+    )
 
-    # Top-level ids as nari-labs/Dia-1.6B-0626's config.json sets them; default DiaConfig() leaves them None.
-    return DiaConfig(pad_token_id = 1025, eos_token_id = 1024)
+
+def _dia_config():
+    # transformers 5: ids on decoder_config, top level deprecated and None unless config.json sets it.
+    return SimpleNamespace(
+        model_type = "dia",
+        pad_token_id = None,
+        eos_token_id = None,
+        decoder_config = SimpleNamespace(pad_token_id = 1025, eos_token_id = 1024),
+    )
 
 
 def test_dia_defaults_to_its_audio_pad_token():
+    assert _captured_generate_kwargs(_legacy_dia_config())["pad_token_id"] == 1025
     assert _captured_generate_kwargs(_dia_config())["pad_token_id"] == 1025
 
 
