@@ -637,7 +637,12 @@ def test_a_failed_move_aside_warns_that_unsloth_may_not_upgrade(
 POLICY_WINERRORS = [1260, 4551]
 
 
-def _blocked_exe_run(interpreter_result, calls = None, *, winerror = 1260):
+def _blocked_exe_run(
+    interpreter_result,
+    calls = None,
+    *,
+    winerror = 1260,
+):
     def run(argv, **kwargs):
         if calls is not None:
             calls.append((argv, kwargs))
@@ -715,9 +720,7 @@ def test_installer_setup_survives_a_policy_blocked_launcher(
 
 
 @pytest.mark.parametrize("winerror", POLICY_WINERRORS)
-def test_a_policy_block_with_a_broken_package_still_fails(
-    monkeypatch, studio, tmp_path, winerror
-):
+def test_a_policy_block_with_a_broken_package_still_fails(monkeypatch, studio, tmp_path, winerror):
     scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path)
     monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: None)
     monkeypatch.setattr(
