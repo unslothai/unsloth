@@ -50,6 +50,13 @@ test("progress fills the files in the order they download", () => {
   assert.equal(parts?.find((p) => p.kind === "model")?.doneBytes, 2.5 * GB);
 });
 
+test("a resumed download's files already on disk don't fill the segments early", () => {
+  // The job counts 19 GB; 4.6 GB of it was on disk before this run, so it isn't in fileBytes.
+  const parts = downloadParts(qwen, 4.6 * GB + 10 * GB, 18.9 * GB + 4.6 * GB);
+  assert.equal(parts?.find((p) => p.kind === "encoder")?.doneBytes, 10 * GB);
+  assert.equal(parts?.find((p) => p.kind === "vae")?.doneBytes, 0);
+});
+
 test("one kind of file keeps the single bar", () => {
   assert.equal(
     downloadParts({ fileBytes: { "vae/diffusion_pytorch_model.safetensors": GB } }, 0),

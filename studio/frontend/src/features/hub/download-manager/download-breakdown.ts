@@ -27,10 +27,13 @@ const ORDER: DownloadPartKind[] = ["model", "encoder", "vae"];
 
 /** Bar segments for a companion download, or null when it doesn't split into two or more parts.
  *  Files arrive one at a time in name order (`snapshot_download`, `max_workers=1`), so the job's
- *  single byte count is spread over the files in that order. */
+ *  single byte count is spread over the files in that order. On a resumed download the job also
+ *  counts files already on disk, so whatever `expectedBytes` holds beyond the listed files comes off
+ *  the count first. */
 export function downloadParts(
   breakdown: DownloadBreakdown | undefined,
   downloadedBytes: number,
+  expectedBytes = 0,
 ): DownloadPart[] | null {
   if (!breakdown) return null;
   const parts = new Map<DownloadPartKind, DownloadPart>();
@@ -42,7 +45,8 @@ export function downloadParts(
   };
   const cached = Math.max(0, breakdown.cachedCheckpointBytes ?? 0);
   if (cached > 0) add("model", cached, cached);
-  let left = Math.max(0, downloadedBytes);
+  const listed = Object.values(breakdown.fileBytes).reduce((n, b) => n + Math.max(0, b ?? 0), 0);
+  let left = Math.max(0, downloadedBytes - Math.max(0, expectedBytes - listed));
   for (const file of Object.keys(breakdown.fileBytes).sort()) {
     const bytes = Math.max(0, breakdown.fileBytes[file] ?? 0);
     if (bytes <= 0) continue;

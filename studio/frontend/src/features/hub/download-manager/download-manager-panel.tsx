@@ -219,7 +219,7 @@ function DownloadRow({ jobKey }: { jobKey: string }) {
           parts={
             job.presentation
               ? null
-              : downloadParts(job.breakdown, job.downloadedBytes)
+              : downloadParts(job.breakdown, job.downloadedBytes, progress.expectedBytes)
           }
         />
       ) : null}
