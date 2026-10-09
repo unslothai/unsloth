@@ -407,13 +407,22 @@ args = DiffusionConfig(
     bf16 = False, fp16 = False, dataset_num_proc = 1, gradient_checkpointing = True,
 )
 trainer = DiffusionTrainer(model = model, args = args, train_dataset = Dataset.from_list(rows), processing_class = tokenizer)
+fixed = trainer._prepare_inputs(next(iter(trainer.get_train_dataloader())))
+
+
+def fixed_noise_ce():
+    # Per-step losses are too noisy over 20 steps (1 / t weight, fresh noise); score one batch under one draw.
+    torch.manual_seed(0)
+    with torch.no_grad():
+        return trainer.diffusion_profile.compute_loss(model, fixed, args)[2]["masked_ce"]
+
+
+first = fixed_noise_ce()
 trainer.train()
 losses = [h["loss"] for h in trainer.state.log_history if "loss" in h]
 assert len(losses) == 20 and all(math.isfinite(x) for x in losses), losses
-# The 1 / t weight makes the objective itself too noisy over 20 steps; unweighted masked CE is the trend.
-ce = [h["masked_ce"] for h in trainer.state.log_history if "masked_ce" in h]
-first, last = sum(ce[:5]) / 5, sum(ce[-5:]) / 5
-assert last < first, ce
+last = fixed_noise_ce()
+assert last < first, (first, last)
 after = {k: v for k, v in model.named_parameters() if k in before}
 assert any(not torch.equal(before[k], after[k].detach()) for k in before)
 model.save_pretrained(os.path.join(out, "adapter"))
