@@ -198,6 +198,31 @@ def _catalog_by_id() -> dict[str, LoraCatalogEntry]:
     return {e.id: e for e in (list(_CURATED) + _scan_local())}
 
 
+def export_local_lora(lora_id: str, dest_dir: Path) -> Path:
+    """Copy a local adapter (and its ``<stem>.json`` sidecar, if any) into ``dest_dir``.
+
+    Takes a catalog id, never a path, so only files already in ``loras_dir()`` can be read.
+    Returns the copied weight file.
+    """
+    import shutil
+
+    entry = next((e for e in _scan_local() if e.id == lora_id), None)
+    if entry is None or not entry.local_path:
+        raise FileNotFoundError(f"no local image LoRA named '{lora_id}'")
+    src = Path(entry.local_path)
+    dest_dir.mkdir(parents = True, exist_ok = True)
+    out = dest_dir / src.name
+    sidecar = src.with_suffix(".json")
+    for path, target in ((src, out), (sidecar, out.with_suffix(".json"))):
+        if not path.is_file():
+            continue
+        # Exporting into loras_dir itself would copy a file onto itself.
+        if target.exists() and os.path.samefile(path, target):
+            continue
+        shutil.copy2(path, target)
+    return out
+
+
 def resolve_one(
     spec_id: str,
     weight: float,
