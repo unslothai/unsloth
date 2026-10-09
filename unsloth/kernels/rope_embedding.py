@@ -10,6 +10,7 @@
 # You should have received a copy of the GNU Lesser General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+import functools
 import triton
 import triton.language as tl
 import torch
@@ -45,6 +46,7 @@ def _rope_embedding_QK(
     BACKWARD_PASS: tl.constexpr,
     HAS_ROPE_INDICES: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
+    EVICT_INDICES: tl.constexpr,
 ):
     row_position = tl.program_id(0)
     head_position = tl.program_id(1)
@@ -52,11 +54,13 @@ def _rope_embedding_QK(
     half_head_dim = head_dim // 2
     mask = col_offsets < half_head_dim
 
-    if HAS_ROPE_INDICES:
+    if HAS_ROPE_INDICES and EVICT_INDICES:
         rot_position = tl.load(
             rope_embedding_indices + row_position,
             eviction_policy = "evict_first",
         ).to(tl.int32)
+    elif HAS_ROPE_INDICES:
+        rot_position = tl.load(rope_embedding_indices + row_position).to(tl.int32)
     else:
         rot_position = row_position % seqlen
 
@@ -236,6 +240,19 @@ class Fast_RoPE_Embedding(torch.autograd.Function):
         )
 
 
+@functools.lru_cache(maxsize = None)
+def _eviction_hints_ok_at(device_type, index):
+    # ptxas rejects ld eviction hints below sm_70 (Maxwell, Pascal).
+    if device_type != "cuda" or torch.version.hip is not None:
+        return True
+    return torch.cuda.get_device_capability(index)[0] >= 7
+
+
+def _eviction_hints_ok(device):
+    index = device.index if device.index is not None else torch.cuda.current_device()
+    return _eviction_hints_ok_at(device.type, index)
+
+
 def _rope_qk(Q, K, cos, sin, rope_ptr, has_indices, backward, wrap):
     # Rotates Q [batch, n_heads_Q, seq_len, head_dim] and K in place, at any strides.
     batch, n_heads_Q, seq_len, head_dim = Q.shape
@@ -261,6 +278,7 @@ def _rope_qk(Q, K, cos, sin, rope_ptr, has_indices, backward, wrap):
         BACKWARD_PASS = backward,
         HAS_ROPE_INDICES = has_indices,
         BLOCK_SIZE = BLOCK_SIZE,
+        EVICT_INDICES = _eviction_hints_ok(Q.device),
         num_warps = num_warps,
     )
 
