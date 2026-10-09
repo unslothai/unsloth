@@ -106,3 +106,32 @@ def test_pinned_archive_matches_its_checksum(tmp_path):
     # Namespace dirs the archive build keeps only via .git_archival.txt.
     assert (source / "src/llmcompressor/modeling/moe/context.py").is_file()
     assert (source / ".git_archival.txt").is_file()
+
+
+@pytest.mark.allow_network
+def test_the_archive_builds_the_whole_package_without_git(tmp_path, monkeypatch):
+    import subprocess
+    import sys
+
+    monkeypatch.setenv("PATH", "")  # no git for setuptools_scm to fall back on
+    source = tv._download_llmcompressor_source(tmp_path)
+    target = tmp_path / "site"
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "-q",
+            "--no-deps",
+            "--target",
+            str(target),
+            str(source),
+        ],
+        check = True,
+    )
+    package = target / "llmcompressor"
+    assert (package / "modeling" / "moe" / "context.py").is_file()
+    assert (package / "modeling" / "patch").is_dir()
+    version = (package / "version.py").read_text(encoding = "utf-8")
+    assert f"+g{tv._LLMC_MAIN_SHA[:8]}" in version
