@@ -3119,6 +3119,22 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         )
         extra_args += learning_rate_check
 
+    # bitsandbytes' 8-bit optimizers step plain tensors, but FSDP2 shards parameters as DTensors, so the
+    # first step dies with "got mixed torch.Tensor and DTensor" (unsloth#3551).
+    if "optim" in call_args:
+        extra_args += "_unsloth_fsdp2 = os.environ.get('FSDP_VERSION', '').strip() == '2'\n"
+        if "fsdp" in call_args and "fsdp_config" in call_args:
+            # TrainingArguments(fsdp = ..., fsdp_config = {"fsdp_version": 2}) without the launcher.
+            extra_args += (
+                "if fsdp and isinstance(fsdp_config, dict):\n"
+                "    _unsloth_fsdp2 = _unsloth_fsdp2 or str(fsdp_config.get('fsdp_version', fsdp_config.get('version', ''))) == '2'\n"
+            )
+        extra_args += (
+            "if _unsloth_fsdp2 and str(getattr(optim, 'value', optim)) == 'adamw_8bit':\n"
+            "    print(\"Unsloth: FSDP2 shards parameters as DTensors, which bitsandbytes' 8-bit optimizers cannot step. Switching optim = 'adamw_8bit' to 'adamw_torch_fused'.\")\n"
+            "    optim = 'adamw_torch_fused'\n"
+        )
+
     # Fix num_train_epochs = None causing a TypeError in Trainer.__init__, which does `args.num_train_epochs > 0`.
     if "num_train_epochs" in call_args:
         num_train_epochs_check = (
