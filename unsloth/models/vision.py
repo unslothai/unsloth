@@ -675,6 +675,32 @@ global NUM_LOGITS_TO_KEEP
 NUM_LOGITS_TO_KEEP = dict()
 
 
+def _set_generate_param(
+    kwargs,
+    name,
+    value,
+    overwrite = True,
+):
+    # Sets a generate() parameter that is also a recognized GenerationConfig field
+    # (e.g. pad_token_id, cache_implementation, compile_config). Setting such a field
+    # as a raw kwarg *alongside* an explicit generation_config (as TRL passes at
+    # rollout time) is ambiguous to transformers and triggers its
+    # generation_config-vs-kwargs deprecation warning (GenerationMixin.
+    # _prepare_generation_config), even though the merged result is unaffected either
+    # way. Set it on that config object instead when one was passed in.
+    # overwrite=False preserves an already-set (non-None) value on the caller's config.
+    caller_generation_config = kwargs.get("generation_config")
+    if caller_generation_config is not None:
+        if overwrite or getattr(caller_generation_config, name, None) is None:
+            setattr(caller_generation_config, name, value)
+        # Always drop a same-named raw kwarg here, even one the caller supplied
+        # directly alongside generation_config: leaving it is the exact leftover
+        # this helper exists to prevent.
+        kwargs.pop(name, None)
+    else:
+        kwargs[name] = value
+
+
 def _unsloth_generate_accepts_kwarg(model, key):
     # True if the top level accepts this generate kwarg; some models expose it on an inner forward only.
     try:
@@ -1630,7 +1656,10 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
         and getattr(self.config, "pad_token_id", None) is not None
     ):
         default_pad_token_id = self.config.pad_token_id
-    kwargs["pad_token_id"] = kwargs.pop("pad_token_id", default_pad_token_id)
+
+    _set_generate_param(
+        kwargs, "pad_token_id", kwargs.pop("pad_token_id", default_pad_token_id), overwrite = False
+    )
 
     try:
         kwargs["pixel_values"] = kwargs["pixel_values"].to(dtype)
@@ -1661,9 +1690,9 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     # FlashAttention breaks on the forced static cache below (unfilled slots stay unmasked while decoding), so delegate after normalization but before it.
     _clear_generation_caches(self)
     if _uses_flash_attention_for_generation(self.config):
-        # Pin the literal "dynamic": None is merged back to the model default, and a static cache still arrives via kwargs or the caller's generation_config (TRL). The kwarg wins, since update runs last; skip it when the caller passed a cache.
+        # Pin the literal "dynamic": None is merged back to the model default, and a static cache still arrives via kwargs or the caller's generation_config (TRL); skip it when the caller passed a cache.
         if kwargs.get("past_key_values") is None:
-            kwargs["cache_implementation"] = "dynamic"
+            _set_generate_param(kwargs, "cache_implementation", "dynamic")
         try:
             with torch.inference_mode(), autocaster:
                 return self._old_generate(*args, **kwargs)
@@ -1728,21 +1757,13 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     compile_config = _decode_compile_config if compile_decode else _compile_config
     if _is_decode_compile_model(self):
         _match_compiled_call(self, compile_decode)
-    if "generation_config" in kwargs:
-        kwargs["generation_config"].cache_implementation = (
-            dynamic_implementation if force_dynamic_cache else cache_implementation
-        )
-        # kwargs are applied after the config merge, so an explicit value survives.
-        if force_dynamic_cache:
-            kwargs["cache_implementation"] = dynamic_implementation
-        if cache_implementation is not None:
-            kwargs["generation_config"].compile_config = compile_config
-    else:
-        kwargs["cache_implementation"] = (
-            dynamic_implementation if force_dynamic_cache else cache_implementation
-        )
-        if cache_implementation is not None:
-            kwargs["compile_config"] = compile_config
+    _set_generate_param(
+        kwargs,
+        "cache_implementation",
+        dynamic_implementation if force_dynamic_cache else cache_implementation,
+    )
+    if cache_implementation is not None:
+        _set_generate_param(kwargs, "compile_config", compile_config)
 
     decode_scope = _CompileDecodeOnRepeat(self) if compile_decode else contextlib.nullcontext()
     eager_scope = _EagerDecodeSteps(self) if _eager_decodes(self) else contextlib.nullcontext()
