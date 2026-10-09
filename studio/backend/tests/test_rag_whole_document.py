@@ -7,10 +7,11 @@ new store query, the tool-level renderer, and the auto-inject wiring + fallback.
 No embedder is needed - the whole-doc path does no query embedding."""
 
 import json
+import re
 
 import pytest
 
-from core.rag import store, tool
+from core.rag import chunking, parsers, store, tool
 from core.rag.chunking import Chunk
 from core.inference import tools as inf_tools
 
@@ -227,6 +228,35 @@ def test_whole_document_context_spans_multiple_docs(rag_conn):
     text, sources = tool.whole_document_context(scope_thread_id = "t1", max_tokens = 6000)
     assert "alpha text" in text and "bravo text" in text
     assert {s["filename"] for s in sources} == {"a.pdf", "b.pdf"}
+
+
+def test_whole_document_context_reads_each_overlapping_line_once(rag_conn):
+    lines = [f"R{i:03d} | Travel | Vendor number {i} | ${i}.00" for i in range(1, 71)]
+    pages = parsers.parse_text("\n".join(lines))
+    chunks = chunking.chunk_pages(pages, max_tokens = 200, overlap = 32, count = lambda t: len(t.split()))
+    assert len(chunks) > 1
+    store.create_document(
+        rag_conn, scope = store.thread_scope("t1"), filename = "exp.docx", sha256 = "h1", document_id = "d1"
+    )
+    store.add_chunks(rag_conn, store.thread_scope("t1"), "d1", chunks, [list(_VEC) for _ in chunks])
+    store.set_document_status(rag_conn, "d1", "completed", num_chunks = len(chunks))
+    text, sources = tool.whole_document_context(scope_thread_id = "t1", max_tokens = 6000)
+    assert re.findall(r"R\d{3}", text) == [f"R{i:03d}" for i in range(1, 71)]
+    assert [s["chunkId"] for s in sources] == [f"d1:{i}" for i in range(len(chunks))]
+
+
+def test_whole_document_context_keeps_text_repeated_on_the_next_page(rag_conn):
+    _add_doc(
+        rag_conn,
+        store.thread_scope("t1"),
+        "d1",
+        "report.pdf",
+        "h1",
+        ["page one body\nACME Confidential", "ACME Confidential\npage two body"],
+        pages = [1, 2],
+    )
+    text, _sources = tool.whole_document_context(scope_thread_id = "t1", max_tokens = 6000)
+    assert text.count("ACME Confidential") == 2
 
 
 # ── build_rag_autoinject wiring ──────────────────────────────────────
