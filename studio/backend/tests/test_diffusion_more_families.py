@@ -766,7 +766,9 @@ def test_the_pinned_prebuilt_is_one_that_can_load_qwen_image_21():
     )
 
 
-def test_a_minimum_that_has_not_shipped_does_not_prescribe_an_impossible_upgrade():
+def test_a_minimum_that_has_not_shipped_does_not_prescribe_an_impossible_upgrade(
+    monkeypatch, tmp_path
+):
     """``pip install -U 'diffusers>=0.41.0'`` has no candidate while 0.41.0 is unreleased, so the
     refusal has to name the pinned main build Studio actually installs for this class.
 
@@ -774,22 +776,30 @@ def test_a_minimum_that_has_not_shipped_does_not_prescribe_an_impossible_upgrade
     host whose git exits non-zero: the install keeps diffusers 0.40.0, and the old text sent the
     reader to `pip install -r diffusers-main.txt`, which resolves the same git+https requirement
     and fails identically. The quoted zip URL needs no git, so it is the one line here that has to
-    stay true, hence the check that it names the commit the pin file actually carries."""
+    stay true, hence the check that it names the commit the pin file actually carries.
+
+    0.41.0 has since shipped, so this runs as the next unreleased pin would: the minimum marked
+    unreleased and diffusers-main.txt with its commit line uncommented."""
     import pathlib
     import re as _re
 
-    from core.inference.diffusion_families import (
-        _PIPELINE_MIN_DIFFUSERS,
-        _UNRELEASED_MIN_DIFFUSERS,
-        _too_old_message,
+    from core.inference import diffusion_families as families
+    from core.inference.diffusion_families import _PIPELINE_MIN_DIFFUSERS, _too_old_message
+
+    shipped = pathlib.Path(__file__).resolve().parents[1] / "requirements" / "diffusers-main.txt"
+    pin = tmp_path / "diffusers-main.txt"
+    pin.write_text(
+        shipped.read_text(encoding = "utf-8").replace("\n# diffusers @ git+", "\ndiffusers @ git+"),
+        encoding = "utf-8",
     )
+    monkeypatch.setattr(families, "_DIFFUSERS_MAIN_PIN", pin)
+    monkeypatch.setattr(families, "_UNRELEASED_MIN_DIFFUSERS", frozenset({"0.41.0"}))
 
     message = _too_old_message("QwenImage21Pipeline", "qwen-image-2.1", "0.40.0")
     assert "pip install -U 'diffusers>=0.41.0'" not in message
     assert "has not been released yet" in message
     assert "git --version" in message, "the likely cause has to be checkable by the reader"
 
-    pin = pathlib.Path(__file__).resolve().parents[1] / "requirements" / "diffusers-main.txt"
     commit = _re.search(r"@([0-9a-fA-F]{40})\b", pin.read_text(encoding = "utf-8"))
     assert commit is not None, "the main pin must carry a full commit for the zip route to exist"
     assert (
@@ -803,7 +813,20 @@ def test_a_minimum_that_has_not_shipped_does_not_prescribe_an_impossible_upgrade
     # Every unreleased entry must still be a minimum some class actually declares, so a stale one
     # cannot sit here unnoticed after its release ships.
     declared = set(_PIPELINE_MIN_DIFFUSERS.values())
-    assert _UNRELEASED_MIN_DIFFUSERS <= declared, sorted(_UNRELEASED_MIN_DIFFUSERS - declared)
+    monkeypatch.undo()
+    unreleased = families._UNRELEASED_MIN_DIFFUSERS
+    assert unreleased <= declared, sorted(unreleased - declared)
+
+
+def test_qwen_image_21_on_0_40_points_at_the_released_0_41():
+    """0.41.0 is on PyPI: a 0.40.0 install is told to update, not sent to a git build."""
+    from core.inference.diffusion_families import _UNRELEASED_MIN_DIFFUSERS, _too_old_message
+
+    assert "0.41.0" not in _UNRELEASED_MIN_DIFFUSERS
+    message = _too_old_message("QwenImage21Pipeline", "qwen-image-2.1", "0.40.0")
+    assert "pip install -U 'diffusers>=0.41.0'" in message
+    assert "Settings, Check for updates" in message
+    assert "has not been released yet" not in message and "git" not in message, message
 
 
 def test_qwen_image_21_takes_reference_images_but_is_not_an_edit_only_family():

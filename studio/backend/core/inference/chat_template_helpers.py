@@ -3501,7 +3501,7 @@ def render_native_template(
             exc,
         )
         return None
-    if with_tools == no_tools:
+    if tools and with_tools == no_tools:
         return None
     if return_metadata:
         return ChatTemplateRenderResult(
@@ -3509,11 +3509,7 @@ def render_native_template(
             _detect_reasoning_channel_markers_from_templates(
                 _selected_template_strings_from_value(native_tpl, tools)
             ),
-            # The NATIVE profile decided this render's catalog: it can drop a tool the active profile kept, so callers
-            # must gate healing and tool execution on this list rather than on the one they sanitized themselves. With
-            # *tools*, matching the render above: a named native template selects "tool_use" for a tool-calling turn,
-            # and profiling it without them read "default" instead, so a tool the render dropped was reported as
-            # advertised (#7066).
+            # gate healing and execution on NATIVE: "default" can advertise tools dropped by "tool_use" (#7066).
             neutralize_tool_descriptions(
                 tools, None, markup_for_tokenizer(render_tokenizer, tools)
             ),

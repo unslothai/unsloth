@@ -261,7 +261,8 @@ export function AnnotateLayer({
   page,
   fileName,
   url,
-}: { page: HTMLElement; fileName: string; url?: string }) {
+  zoom = 1,
+}: { page: HTMLElement; fileName: string; url?: string; zoom?: number }) {
   const t = useT();
   const layerRef = useRef<HTMLDivElement | null>(null);
   const cursorRef = useRef<HTMLDivElement | null>(null);
@@ -329,16 +330,26 @@ export function AnnotateLayer({
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(() => setFrame((value) => value + 1));
     };
+    // Reduced motion gives zoom a 0.01ms transition, so content settles when it ends.
+    const zoomed = (event: TransitionEvent) => event.propertyName === "zoom" && redraw();
     page.addEventListener("scroll", redraw, { capture: true, passive: true });
+    page.addEventListener("transitionend", zoomed, true);
     const resize = new ResizeObserver(redraw);
     resize.observe(page);
     return () => {
       cancelAnimationFrame(frame);
       window.clearTimeout(settle);
       page.removeEventListener("scroll", redraw, { capture: true });
+      page.removeEventListener("transitionend", zoomed, true);
       resize.disconnect();
     };
   }, [page]);
+
+  // A zoom resizes the content after this render measured it, and fires no scroll or resize.
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => setFrame((value) => value + 1));
+    return () => cancelAnimationFrame(frame);
+  }, [zoom]);
 
   // Capture phase, so the page's own links and click handlers never see a marking press.
   useEffect(() => {

@@ -154,13 +154,6 @@ def _patch_resume_from_checkpoint_memory(trainer_class):
     trainer_class.train = _unsloth_train_with_resume_guard
 
 
-def _generation_target(unwrapped_model):
-    # TRL PPO unwraps a PolicyAndValueWrapper, which has no generate(); it generates through .policy.
-    if hasattr(unwrapped_model, "generate"):
-        return unwrapped_model
-    return getattr(unwrapped_model, "policy", unwrapped_model)
-
-
 def _generate_accepts_use_model_defaults():
     try:
         from transformers.generation.utils import GenerationMixin
@@ -185,23 +178,6 @@ def _caller_sampling_only(model, kwargs):
         if getattr(generation_config, key, None) is None:
             setattr(generation_config, key, getattr(model_config, key, None))
     return {**kwargs, "generation_config": generation_config, "use_model_defaults": False}
-
-
-@contextmanager
-def _hide_unsupported_gradient_checkpointing(model):
-    # TRL < 0.26 PPO's PolicyAndValueWrapper reports is_gradient_checkpointing but lacks the
-    # gradient_checkpointing_disable() TRL's unwrap then calls; for_inference / for_training toggle it.
-    wrapper = getattr(model, "module", model)
-    hide = getattr(wrapper, "is_gradient_checkpointing", False) is True and not hasattr(
-        wrapper, "gradient_checkpointing_disable"
-    )
-    if hide:
-        wrapper.is_gradient_checkpointing = False
-    try:
-        yield
-    finally:
-        if hide:
-            wrapper.is_gradient_checkpointing = True
 
 
 def PatchRL(FastLanguageModel):
@@ -253,30 +229,31 @@ def PatchRL(FastLanguageModel):
             ),
             False,
         )
-        with (
-            _hide_unsupported_gradient_checkpointing(model),
-            unwrap_model_for_generation(model, *args, **kwargs) as unwrapped_model,
-        ):
+        with unwrap_model_for_generation(model, *args, **kwargs) as unwrapped_model:
             FastLanguageModel.for_inference(model)
 
-            generator = _generation_target(unwrapped_model)
+            # PPO's PolicyAndValueWrapper has no generate(); TRL generates through its .policy.
+            generating_model = unwrapped_model
+            if not hasattr(generating_model, "generate"):
+                generating_model = getattr(unwrapped_model, "policy", unwrapped_model)
+
             # .clone is required because inference_mode is forced here; no_grad would have been the better choice.
-            original_generate = generator.generate
+            original_generate = generating_model.generate
 
             def generate_with_clone(*args, **kwargs):
-                if generator is not unwrapped_model:
-                    kwargs = _caller_sampling_only(generator, kwargs)
+                if generating_model is not unwrapped_model:
+                    kwargs = _caller_sampling_only(generating_model, kwargs)
                 out = original_generate(*args, **kwargs)
                 if isinstance(out, torch.Tensor):
                     return out.clone()
                 return out
 
-            generator.generate = generate_with_clone
+            generating_model.generate = generate_with_clone
 
             try:
                 yield unwrapped_model
             finally:
-                generator.generate = original_generate
+                generating_model.generate = original_generate
                 FastLanguageModel.for_training(
                     model,
                     use_gradient_checkpointing = use_gradient_checkpointing,
@@ -314,9 +291,12 @@ def PatchRL(FastLanguageModel):
         else:
             labels = None
 
-        # Force logits during eval, but restore the user's prior setting after so an explicit UNSLOTH_RETURN_LOGITS="1" is not silently turned off.
+        # Force logits only when they are kept (compute_metrics, predict): a loss-only eval stays on the
+        # fused CE path instead of materializing [bsz, seq, vocab] logits per batch (#1801). Restore the
+        # user's prior setting after so an explicit UNSLOTH_RETURN_LOGITS="1" is not silently turned off.
         _old_return_logits = os.environ.get("UNSLOTH_RETURN_LOGITS", "0")
-        os.environ["UNSLOTH_RETURN_LOGITS"] = "1"
+        if not prediction_loss_only:
+            os.environ["UNSLOTH_RETURN_LOGITS"] = "1"
         try:
             with torch.no_grad():
                 if has_labels or loss_without_labels:
@@ -2134,6 +2114,32 @@ def _backport_vision_dataset_gate(RLTrainer_source):
     return RLTrainer_source
 
 
+def _patch_ppo_policy_value_wrapper(module):
+    # TRL < 1.0 copies is_gradient_checkpointing onto PolicyAndValueWrapper without the toggles
+    # unwrap_model_for_generation then calls on it; same fix as huggingface/trl#5245.
+    wrapper = getattr(module, "PolicyAndValueWrapper", None)
+    if wrapper is None:
+        trainer_class = getattr(module, "PPOTrainer", None)
+        wrapper = getattr(
+            sys.modules.get(getattr(trainer_class, "__module__", "")),
+            "PolicyAndValueWrapper",
+            None,
+        )
+    if wrapper is None or hasattr(wrapper, "gradient_checkpointing_disable"):
+        return
+
+    def gradient_checkpointing_enable(self, **kwargs):
+        self.policy.gradient_checkpointing_enable(**kwargs)
+        self.is_gradient_checkpointing = True
+
+    def gradient_checkpointing_disable(self):
+        self.policy.gradient_checkpointing_disable()
+        self.is_gradient_checkpointing = False
+
+    wrapper.gradient_checkpointing_enable = gradient_checkpointing_enable
+    wrapper.gradient_checkpointing_disable = gradient_checkpointing_disable
+
+
 def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     # Defensive wrapper matching patch_trl_rl_trainers()'s try/except, so direct callers do not see exceptions from the impl on TRL versions that rename or move classes.
     try:
@@ -2157,6 +2163,9 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
     except Exception as error:
         logger.info(f"Unsloth: Could not import trl.trainer.{trainer_file}: {error}")
         return
+
+    if trainer_file == "ppo_trainer":
+        _patch_ppo_policy_value_wrapper(trainer)
 
     name = [
         x

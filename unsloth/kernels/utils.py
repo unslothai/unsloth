@@ -397,6 +397,15 @@ def _packed_base(base_layer):
     return base_layer.weight_packed, base_layer.mxfp4_quant_state()
 
 
+def _has_packed_qweight(proj):
+    # GPTQ / AWQ keep a packed qweight and no dense .weight tensor: only their own forward can run them.
+    base_layer = proj._modules.get("base_layer", proj)
+    return (
+        not isinstance(getattr(base_layer, "weight", None), torch_Tensor)
+        and _packed_base(base_layer) is None
+    )
+
+
 def _is_packed_state(quant_state):
     return getattr(type(quant_state), "_unsloth_packed_weight_state", False)
 
@@ -1406,6 +1415,7 @@ def fast_linear_forward(
         _has_multiple_active_adapters(proj)
         or _has_active_dora_adapter(proj)
         or _has_active_lora_bias(proj)
+        or _has_packed_qweight(proj)
     ):
         result = proj(X)
         return result if out is None else out.copy_(result)

@@ -1,9 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+"""PPOTrainer with an Unsloth policy (#884).
 
-"""TRL PPOTrainer under Unsloth: the generate target, rollout sampling and the PPO padding mask.
-
-Helpers are lifted from ``unsloth/models/rl.py`` with ``ast`` so the test stays CPU-only.
+TRL < 1.0 PolicyAndValueWrapper copies is_gradient_checkpointing from the policy without the toggles
+unwrap_model_for_generation calls, and has no generate() for Unsloth's unwrap to wrap. The PPO value
+and reward models are plain transformers models built after Unsloth patched the rotary class, so on
+transformers v5 their inv_freq buffer is uninitialized memory that extend_rope_embedding read.
+The rl.py helpers are lifted out with ``ast`` so those checks run without ``import unsloth``.
 """
 
 from __future__ import annotations
@@ -12,91 +15,214 @@ import ast
 import copy
 import functools
 import inspect
+import sys
 from contextlib import contextmanager
 from pathlib import Path
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
+torch = pytest.importorskip("torch")
 
-RL_PATH = Path(__file__).resolve().parents[1] / "unsloth" / "models" / "rl.py"
-NAMES = (
-    "_generation_target",
-    "_generate_accepts_use_model_defaults",
-    "_caller_sampling_only",
-    "_hide_unsupported_gradient_checkpointing",
-    "_ppo_padding_mask_modules",
-    "_wrap_ppo_train",
-)
+RL_PY = Path(__file__).resolve().parents[1] / "unsloth" / "models" / "rl.py"
 
 
-def _load():
-    tree = ast.parse(RL_PATH.read_text(encoding = "utf-8"), filename = str(RL_PATH))
-    wanted = [
-        node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in NAMES
-    ]
-    assert len(wanted) == len(NAMES), [n.name for n in wanted]
+def _lift(
+    name,
+    namespace,
+    parent = None,
+):
+    tree = ast.parse(RL_PY.read_text(encoding = "utf-8"))
+    scope = tree
+    if parent is not None:
+        scope = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == parent)
+    node = next(n for n in ast.walk(scope) if isinstance(n, ast.FunctionDef) and n.name == name)
+    exec(compile(ast.Module(body = [node], type_ignores = []), str(RL_PY), "exec"), namespace)
+    return namespace[name]
+
+
+class _Policy(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.is_gradient_checkpointing = True
+        self.calls = []
+
+    def gradient_checkpointing_disable(self):
+        self.calls.append("disable")
+        self.is_gradient_checkpointing = False
+
+    def gradient_checkpointing_enable(self, **kwargs):
+        self.calls.append("enable")
+        self.is_gradient_checkpointing = True
+
+    def generate(self, *args, **kwargs):
+        with torch.inference_mode():
+            return torch.ones(1, 3, dtype = torch.long)
+
+
+def _old_trl_wrapper_class():
+    # TRL 0.18 - 0.29 PolicyAndValueWrapper, minus the critic backbone.
+    class PolicyAndValueWrapper(torch.nn.Module):
+        def __init__(self, policy, value_model):
+            super().__init__()
+            self.policy = policy
+            self.value_model = value_model
+            self.is_gradient_checkpointing = policy.is_gradient_checkpointing
+
+    return PolicyAndValueWrapper
+
+
+@contextmanager
+def _trl_unwrap(
+    model,
+    accelerator = None,
+    **kwargs,
+):
+    # trl.models.utils.unwrap_model_for_generation without DeepSpeed.
+    is_gradient_checkpointing = model.is_gradient_checkpointing
+    if is_gradient_checkpointing:
+        model.gradient_checkpointing_disable()
+    yield model
+    if is_gradient_checkpointing:
+        model.gradient_checkpointing_enable()
+
+
+def test_old_wrapper_gets_gradient_checkpointing_toggles():
+    patch = _lift("_patch_ppo_policy_value_wrapper", {"sys": sys})
+    module = ModuleType("fake_ppo_trainer")
+    module.PolicyAndValueWrapper = _old_trl_wrapper_class()
+    wrapper = module.PolicyAndValueWrapper(_Policy(), torch.nn.Linear(1, 1))
+    with pytest.raises(AttributeError):
+        with _trl_unwrap(wrapper):
+            pass
+
+    patch(module)
+    patch(module)
+    with _trl_unwrap(wrapper):
+        assert wrapper.is_gradient_checkpointing is False
+    assert wrapper.policy.calls == ["disable", "enable"]
+    assert wrapper.is_gradient_checkpointing is True
+
+
+def test_wrapper_found_through_the_trainer_module_and_upstream_toggles_kept():
+    patch = _lift("_patch_ppo_policy_value_wrapper", {"sys": sys})
+    real = ModuleType("fake_trl_experimental_ppo_trainer")
+    real.PolicyAndValueWrapper = _old_trl_wrapper_class()
+    real.PPOTrainer = type("PPOTrainer", (), {"__module__": real.__name__})
+    sys.modules[real.__name__] = real
+    try:
+        shim = ModuleType("fake_trl_trainer_ppo_trainer")
+        shim.PPOTrainer = real.PPOTrainer
+        patch(shim)
+        assert hasattr(real.PolicyAndValueWrapper, "gradient_checkpointing_disable")
+    finally:
+        del sys.modules[real.__name__]
+
+    upstream = ModuleType("fake_trl_1x")
+    upstream.PolicyAndValueWrapper = _old_trl_wrapper_class()
+    own = lambda self: None
+    upstream.PolicyAndValueWrapper.gradient_checkpointing_disable = own
+    patch(upstream)
+    assert upstream.PolicyAndValueWrapper.gradient_checkpointing_disable is own
+
+
+def _unsloth_unwrap(calls):
+    fast = SimpleNamespace(
+        for_inference = lambda model: calls.append("for_inference"),
+        for_training = lambda model, use_gradient_checkpointing: calls.append(
+            ("for_training", use_gradient_checkpointing)
+        ),
+    )
     namespace = {
-        "copy": copy,
-        "functools": functools,
-        "inspect": inspect,
+        "torch": torch,
         "contextmanager": contextmanager,
+        "unwrap_model_for_generation": _trl_unwrap,
+        "FastLanguageModel": fast,
+        "copy": copy,
+        "inspect": inspect,
     }
-    exec(compile(ast.Module(body = wanted, type_ignores = []), str(RL_PATH), "exec"), namespace)
+    _lift("_generate_accepts_use_model_defaults", namespace)
+    _lift("_caller_sampling_only", namespace)
+    return _lift("unsloth_unwrap_model_for_generation", namespace, parent = "PatchRL")
+
+
+def test_unwrap_generates_through_the_ppo_policy():
+    patch = _lift("_patch_ppo_policy_value_wrapper", {"sys": sys})
+    module = ModuleType("fake_ppo_trainer")
+    module.PolicyAndValueWrapper = _old_trl_wrapper_class()
+    patch(module)
+    policy = _Policy()
+    policy.gradient_checkpointing = "unsloth"
+    wrapper = module.PolicyAndValueWrapper(policy, torch.nn.Linear(1, 1))
+
+    calls = []
+    with _unsloth_unwrap(calls)(wrapper) as unwrapped:
+        assert unwrapped is wrapper
+        out = unwrapped.policy.generate()
+    assert not out.is_inference()
+    assert "generate" not in vars(wrapper)
+    assert calls == ["for_inference", ("for_training", "unsloth")]
+
+
+def test_unwrap_still_wraps_a_model_with_generate():
+    policy = _Policy()
+    calls = []
+    with _unsloth_unwrap(calls)(policy) as unwrapped:
+        out = unwrapped.generate()
+    assert not out.is_inference()
+
+
+def _has_real_gpu():
+    try:
+        torch.zeros(1).to("cuda")
+        return True
+    except Exception:
+        return False
+
+
+@pytest.mark.skipif(
+    not _has_real_gpu(), reason = "LlamaRotaryEmbedding builds per-device caches in __init__"
+)
+@pytest.mark.parametrize("garbage", [float("nan"), 1e30])
+def test_rope_extension_ignores_a_refilled_inv_freq(garbage):
+    from transformers import LlamaConfig
+    from unsloth.models.llama import LlamaRotaryEmbedding
+
+    config = LlamaConfig(
+        hidden_size = 256,
+        num_attention_heads = 4,
+        max_position_embeddings = 65536,
+        rope_theta = 500000.0,
+    )
+    reference = LlamaRotaryEmbedding(config = config)
+    rope = LlamaRotaryEmbedding(config = config)
+    # What transformers v5 meta loading leaves in a non-persistent buffer it does not know how to init.
+    rope.inv_freq.fill_(garbage)
+    x = torch.zeros(1, device = "cuda", dtype = torch.float32)
+    reference.extend_rope_embedding(x, config.max_position_embeddings)
+    rope.extend_rope_embedding(x, config.max_position_embeddings)
+    cos, sin = rope.get_cached(device_index = x.device.index)
+    ref_cos, ref_sin = reference.get_cached(device_index = x.device.index)
+    assert cos.shape[0] >= config.max_position_embeddings
+    assert torch.isfinite(cos).all() and torch.isfinite(sin).all()
+    torch.testing.assert_close(cos, ref_cos, rtol = 0, atol = 0)
+    torch.testing.assert_close(sin, ref_sin, rtol = 0, atol = 0)
+    torch.testing.assert_close(rope.inv_freq, reference.inv_freq, rtol = 0, atol = 0)
+
+
+def _rollout_helpers():
+    namespace = {"copy": copy, "functools": functools, "inspect": inspect}
+    for name in (
+        "_generate_accepts_use_model_defaults",
+        "_caller_sampling_only",
+        "_ppo_padding_mask_modules",
+        "_wrap_ppo_train",
+    ):
+        _lift(name, namespace)
     return namespace
 
 
-NS = _load()
-
-
-class _Policy:
-    def generate(self, *args, **kwargs):
-        return "policy"
-
-
-class _PolicyAndValueWrapper:
-    """TRL 0.22 PolicyAndValueWrapper surface: no generate, no gradient_checkpointing_disable."""
-
-    def __init__(self):
-        self.policy = _Policy()
-        self.is_gradient_checkpointing = True
-
-
-def test_ppo_wrapper_generates_through_policy():
-    wrapper = _PolicyAndValueWrapper()
-    assert NS["_generation_target"](wrapper) is wrapper.policy
-
-
-def test_plain_model_generates_itself():
-    model = _Policy()
-    assert NS["_generation_target"](model) is model
-
-
-def test_gradient_checkpointing_hidden_from_trl_then_restored():
-    wrapper = _PolicyAndValueWrapper()
-    with NS["_hide_unsupported_gradient_checkpointing"](wrapper):
-        # TRL's unwrap reads this and would call the missing gradient_checkpointing_disable().
-        assert wrapper.is_gradient_checkpointing is False
-    assert wrapper.is_gradient_checkpointing is True
-
-
-def test_gradient_checkpointing_restored_on_error():
-    wrapper = _PolicyAndValueWrapper()
-    with pytest.raises(RuntimeError):
-        with NS["_hide_unsupported_gradient_checkpointing"](wrapper):
-            raise RuntimeError("generation failed")
-    assert wrapper.is_gradient_checkpointing is True
-
-
-def test_models_with_gradient_checkpointing_api_untouched():
-    class _Model:
-        is_gradient_checkpointing = True
-
-        def gradient_checkpointing_disable(self):
-            pass
-
-    model = _Model()
-    with NS["_hide_unsupported_gradient_checkpointing"](model):
-        assert model.is_gradient_checkpointing is True
+NS = _rollout_helpers()
 
 
 class _Generator:
@@ -160,9 +286,7 @@ def test_rollout_logits_freed_after_scoring():
     ppo = pytest.importorskip("trl.trainer.ppo_trainer")
     if not hasattr(ppo, "PPOTrainer"):
         pytest.skip("TRL without trl.trainer.ppo_trainer.PPOTrainer")
-    import inspect
-
-    path = RL_PATH.with_name("rl_replacements.py")
+    path = RL_PY.with_name("rl_replacements.py")
     tree = ast.parse(path.read_text(encoding = "utf-8"))
     node = next(
         n
@@ -226,7 +350,7 @@ def test_ppo_training_keeps_padding_masks_then_restores():
 
 def test_llama_training_forward_mask_is_opt_in():
     # Every other trainer keeps today's behaviour: training mode drops the mask unless the flag is set.
-    source = (RL_PATH.parent / "llama.py").read_text(encoding = "utf-8")
+    source = (RL_PY.parent / "llama.py").read_text(encoding = "utf-8")
     assert (
         'elif self.training and not getattr(self, "_unsloth_keep_padding_mask", False):\n'
         "        attention_mask = None\n"

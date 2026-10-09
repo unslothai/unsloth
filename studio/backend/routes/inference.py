@@ -16774,6 +16774,22 @@ _COMPRESSED_TENSORS_INFERENCE_UNSUPPORTED_MESSAGE = (
     "build of this model instead."
 )
 
+# The optional vLLM engine loads compressed-tensors checkpoints (#11728); said only where it can run.
+_COMPRESSED_TENSORS_VLLM_HINT = (
+    " Or run it with vLLM: open this model's run settings and set Inference engine to vLLM."
+)
+
+
+def _vllm_engine_hint(engine: Optional[str]) -> str:
+    """Empty unless this host can run vLLM; ``wait = False`` keeps the GPU probe off this path."""
+    if engine not in (None, "auto"):
+        return ""
+    try:
+        from core.inference.engine_install import support_reason
+        return _COMPRESSED_TENSORS_VLLM_HINT if support_reason("vllm", wait = False) is None else ""
+    except Exception:
+        return ""
+
 
 def _diagnosis_text(msg: str) -> str:
     """``msg`` up to the startup-diagnostics block, which is not ours to read.
@@ -16818,7 +16834,7 @@ def _is_missing_compressed_tensors_error(msg: str) -> bool:
     return any(sig in lower_msg for sig in _MISSING_COMPRESSED_TENSORS_SIGNATURES)
 
 
-def _unsupported_quantization_detail(msg: str) -> Optional[str]:
+def _unsupported_quantization_detail(msg: str, engine: Optional[str] = None) -> Optional[str]:
     """The refusal to show for ``msg``, or None when it is not about quantization.
 
     One place to add a signature to, so load, native load and validate cannot drift.
@@ -16826,7 +16842,7 @@ def _unsupported_quantization_detail(msg: str) -> Optional[str]:
     if _is_unsupported_nvfp4_inference_error(msg):
         return _NVFP4_INFERENCE_UNSUPPORTED_MESSAGE
     if _is_missing_compressed_tensors_error(msg):
-        return _COMPRESSED_TENSORS_INFERENCE_UNSUPPORTED_MESSAGE
+        return _COMPRESSED_TENSORS_INFERENCE_UNSUPPORTED_MESSAGE + _vllm_engine_hint(engine)
     return None
 
 
@@ -19389,7 +19405,9 @@ async def _load_model_impl(
         raise
     except ValueError as e:
         redacted_msg = redact_native_paths(str(e))
-        _unsupported_quantization = _unsupported_quantization_detail(redacted_msg)
+        _unsupported_quantization = _unsupported_quantization_detail(
+            redacted_msg, getattr(request, "engine", None)
+        )
         if _unsupported_quantization is not None:
             logger.warning(
                 "Unsupported quantization while loading '%s': %s",
@@ -19439,7 +19457,9 @@ async def _load_model_impl(
             raise HTTPException(status_code = 400, detail = HUB_TOKEN_REJECTED_ERROR)
         # Friendlier message for models Unsloth cannot load.
         redacted_msg = redact_native_paths(str(e))
-        _unsupported_quantization = _unsupported_quantization_detail(redacted_msg)
+        _unsupported_quantization = _unsupported_quantization_detail(
+            redacted_msg, getattr(request, "engine", None)
+        )
         if _unsupported_quantization is not None:
             logger.warning(
                 "Unsupported quantization while loading '%s': %s",
@@ -20093,7 +20113,9 @@ async def validate_model(
                     "Check the name, or add a token with access to it in Settings."
                 ),
             )
-        _unsupported_quantization = _unsupported_quantization_detail(redacted_msg)
+        _unsupported_quantization = _unsupported_quantization_detail(
+            redacted_msg, getattr(request, "engine", None)
+        )
         if _unsupported_quantization is not None:
             logger.warning(
                 "Unsupported quantization while validating '%s': %s",
@@ -27499,6 +27521,9 @@ def _build_external_messages(
             if provider_type == "llama_cpp" and msg.role == "assistant" and msg.reasoning_content
             else {}
         )
+        has_message_extra_content = bool(
+            emit_message_extra_content and msg.role == "assistant" and msg.extra_content
+        )
         if anthropic and msg.role == "assistant" and isinstance(msg.extra_content, dict):
             native = msg.extra_content.get("anthropic")
             if (
@@ -27516,7 +27541,9 @@ def _build_external_messages(
             and msg.tool_call_id in dropped_server_builtin_tool_call_ids
         ):
             continue
-        if isinstance(msg.content, str) or (msg.content is None and replay):
+        if isinstance(msg.content, str) or (
+            msg.content is None and (replay or has_message_extra_content)
+        ):
             # Drop bare assistant messages with no content AND no tool_calls
             # (some providers reject empty assistant turns). Preserve assistant
             # turns whose only payload is tool_calls so multi-turn
@@ -27526,6 +27553,7 @@ def _build_external_messages(
                 and not (msg.content or "").strip()
                 and not msg.tool_calls
                 and not replay
+                and not has_message_extra_content
             ):
                 continue
             out: dict[str, Any] = {"role": msg.role, "content": msg.content or "", **replay}
@@ -27533,7 +27561,9 @@ def _build_external_messages(
                 _tcs = _filter_tool_calls(msg.tool_calls)
                 if _tcs:
                     out["tool_calls"] = _tcs
-                elif not (msg.content or "").strip() and not replay:
+                elif (
+                    not (msg.content or "").strip() and not replay and not has_message_extra_content
+                ):
                     # Every tool_call was a dropped synthetic provider card;
                     # the turn would be an empty
                     # `{"role":"assistant","content":""}` that some providers
@@ -27616,12 +27646,17 @@ def _build_external_messages(
                     _tcs = _filter_tool_calls(msg.tool_calls)
                     if _tcs:
                         entry["tool_calls"] = _tcs
-                    elif not parts and not replay:
+                    elif not parts and not replay and not has_message_extra_content:
                         # All tool_calls were synthetic and dropped, and no
                         # content parts survived. Skip rather than forward an
                         # empty assistant turn that downstream providers reject.
                         continue
-                elif msg.role == "assistant" and not parts and not replay:
+                elif (
+                    msg.role == "assistant"
+                    and not parts
+                    and not replay
+                    and not has_message_extra_content
+                ):
                     continue
                 if msg.role == "tool":
                     if msg.tool_call_id:
@@ -27651,7 +27686,12 @@ def _build_external_messages(
                         if p.content and p.encrypted_content:
                             compaction["encrypted_content"] = p.encrypted_content
                         preserved.append(compaction)
-                if msg.role == "assistant" and not preserved and not replay:
+                if (
+                    msg.role == "assistant"
+                    and not preserved
+                    and not replay
+                    and not has_message_extra_content
+                ):
                     continue
                 if len(preserved) == 1 and preserved[0]["type"] == "text":
                     # Single text part collapses to a string for providers that
@@ -27670,7 +27710,7 @@ def _build_external_messages(
                         _has_text = (
                             isinstance(_entry_content, str) and _entry_content.strip()
                         ) or (isinstance(_entry_content, list) and len(_entry_content) > 0)
-                        if not _has_text and not replay:
+                        if not _has_text and not replay and not has_message_extra_content:
                             continue
                 if msg.role == "tool":
                     if msg.tool_call_id:

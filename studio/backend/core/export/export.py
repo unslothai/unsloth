@@ -1933,9 +1933,11 @@ class ExportBackend:
             )
 
         from unsloth_zoo import llama_cpp as _zoo_llama_cpp
+        from utils import llama_cpp_source
 
         default_dir = os.path.normpath(_zoo_llama_cpp.LLAMA_CPP_DEFAULT_DIR)
         source_dir = os.path.join(os.path.dirname(default_dir), "llama.cpp-source")
+        base_source_dir = source_dir
         # A user-set scripts dir is authoritative and is checked before any network revision lookup.
         pinned_dir = os.environ.get("UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", "").strip()
         if pinned_dir:
@@ -1948,55 +1950,73 @@ class ExportBackend:
         elif os.path.exists(os.path.join(default_dir, "convert_lora_to_gguf.py")):
             converter = os.path.join(default_dir, "convert_lora_to_gguf.py")
         else:
-            # Pinned to the installed binaries' revision (else the latest release).
+            # The installed binaries' revision (else latest), from its unslothai/llama.cpp release.
             try:
-                _repo, tag = _zoo_llama_cpp._resolve_converter_revision(default_dir)
+                repo, tag = _zoo_llama_cpp._resolve_converter_revision(default_dir)
             except Exception:
-                tag = None
-            tag = tag.split("-mix-")[0] if tag else None
-            if tag:
+                repo, tag = None, None
+            converter = None
+            if tag and llama_cpp_source.is_fork_release_tag(repo, tag):
                 source_dir = f"{source_dir}-{tag}"
-            converter = os.path.join(source_dir, "convert_lora_to_gguf.py")
-            if not os.path.exists(converter):
-                converter = None
+                if os.path.exists(os.path.join(source_dir, "convert_lora_to_gguf.py")):
+                    converter = os.path.join(source_dir, "convert_lora_to_gguf.py")
+            elif tag and not getattr(_zoo_llama_cpp, "_converter_network_allowed", lambda: True)():
+                # Offline only: online, the download path resolves the stable mix release first.
+                cached = sorted(
+                    glob.glob(f"{glob.escape(source_dir)}-{glob.escape(tag)}-mix-*"),
+                    key = os.path.getmtime,
+                )
+                cached = [
+                    d for d in cached if os.path.isfile(os.path.join(d, "convert_lora_to_gguf.py"))
+                ]
+                if cached:
+                    converter = os.path.join(cached[-1], "convert_lora_to_gguf.py")
+            # Trees the previous git-clone exporter left: llama.cpp-source-<upstream tag>, or
+            # llama.cpp-source when no revision was known.
+            legacy = base_source_dir + (f"-{tag.split('-mix-')[0]}" if tag else "")
+            if converter is None and os.path.isfile(
+                os.path.join(legacy, "convert_lora_to_gguf.py")
+            ):
+                converter = os.path.join(legacy, "convert_lora_to_gguf.py")
+            if converter is None and not tag:
+                # No revision known (offline, no marker): the newest tree any exporter left.
+                trees = [
+                    d
+                    for d in glob.glob(f"{glob.escape(base_source_dir)}-*")
+                    if os.path.isfile(os.path.join(d, "convert_lora_to_gguf.py"))
+                ]
+                if trees:
+                    converter = os.path.join(
+                        max(trees, key = os.path.getmtime), "convert_lora_to_gguf.py"
+                    )
         if converter is None:
             if not getattr(_zoo_llama_cpp, "_converter_network_allowed", lambda: True)():
                 raise RuntimeError(
                     "GGUF adapter export needs llama.cpp's convert_lora_to_gguf.py, which is not "
-                    f"installed, and offline mode forbids cloning it; clone llama.cpp into {source_dir}."
+                    "installed, and offline mode forbids downloading it; extract the "
+                    f"{llama_cpp_source.FORK_REPO} release's llama.cpp-source-<tag>.tar.gz into "
+                    f"{source_dir}."
                 )
             if not getattr(_zoo_llama_cpp, "_auto_install_enabled", lambda: True)():
                 raise RuntimeError(
-                    "GGUF adapter export needs a llama.cpp source checkout and automatic "
-                    f"installation was declined (UNSLOTH_AUTO_INSTALL=0); clone llama.cpp into {source_dir}."
+                    "GGUF adapter export needs llama.cpp's converter sources and automatic "
+                    "installation was declined (UNSLOTH_AUTO_INSTALL=0); extract the "
+                    f"{llama_cpp_source.FORK_REPO} release's llama.cpp-source-<tag>.tar.gz into "
+                    f"{source_dir}."
                 )
-            # Not install_llama_cpp: it probes apt-get even when only cloning, which fails on macOS.
-            ensure_dir(Path(source_dir).parent)
-            with tempfile.TemporaryDirectory(dir = Path(source_dir).parent) as tmp_dir:
-                clone = os.path.join(tmp_dir, "llama.cpp")
-                subprocess.run(
-                    [
-                        "git",
-                        "clone",
-                        "--depth",
-                        "1",
-                        *(["--branch", tag] if tag else []),
-                        "https://github.com/ggml-org/llama.cpp",
-                        clone,
-                    ],
-                    check = True,
-                    capture_output = True,
-                    text = True,
-                    encoding = "utf-8",
-                    errors = "replace",
+            # Not install_llama_cpp: it probes apt-get even when only fetching sources, which fails on macOS.
+            try:
+                fetched = llama_cpp_source.download_converter_source(
+                    repo, tag, Path(source_dir).parent
                 )
-                if not os.path.exists(source_dir):
-                    os.replace(clone, source_dir)
-            converter = os.path.join(source_dir, "convert_lora_to_gguf.py")
-            if not os.path.exists(converter):
+            except Exception as exc:
                 raise RuntimeError(
-                    f"convert_lora_to_gguf.py is missing from the llama.cpp clone at {source_dir}."
-                )
+                    "Could not download llama.cpp's converter sources from the "
+                    f"{llama_cpp_source.FORK_REPO} release: {exc}"
+                ) from exc
+            converter = os.path.join(str(fetched), "convert_lora_to_gguf.py")
+            if not os.path.exists(converter):
+                raise RuntimeError(f"convert_lora_to_gguf.py is missing from {fetched}.")
         if importlib.util.find_spec("gguf") is None and not os.path.isdir(
             os.path.join(os.path.dirname(converter), "gguf-py")
         ):
