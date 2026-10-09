@@ -129,6 +129,17 @@ def test_a_large_image_is_never_fetched_in_full(monkeypatch):
     assert queries == ["thumb=1024"]
 
 
+def test_a_thumbnail_studio_could_not_make_keeps_its_png_type(monkeypatch):
+    # The gallery route answers a failed thumbnail with the original PNG.
+    def fallback(request, body):
+        return Response(PNG, media_type = "image/png")
+
+    studio = _studio({("GET", "/api/inference/images/gallery/img-large/file"): fallback})
+    result = _call(monkeypatch, studio, {"prompt": "x"})
+    previews = [c for c in result["content"] if c["type"] == "image"]
+    assert previews[-1]["mimeType"] == "image/png"
+
+
 def test_a_full_image_over_the_cap_falls_back_to_the_thumbnail(monkeypatch):
     def huge(request, body):
         if request.query_params.get("thumb"):

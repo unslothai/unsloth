@@ -17,7 +17,7 @@ from studio_mcp import loading
 from studio_mcp.caller import Caller, current_caller
 from studio_mcp.errors import raise_for_route
 from studio_mcp.forward import forward
-from studio_mcp.inputs import ImageInput, data_url, resolve_image
+from studio_mcp.inputs import ImageInput, data_url, resolve_image, sniff_image
 from studio_mcp.media import INLINE_CAP, image_content, media_result, public_url, resource_link
 from studio_mcp.outputs import ImageItem, ImageResult
 from studio_mcp.tools import WRITES, integer, number, route_json, opt_text
@@ -60,7 +60,8 @@ async def _image_contents(caller: Caller, item: ImageItem) -> list[Any]:
     thumb = await _fetch(caller, _gallery_path(item.id, thumb = True))
     contents: list[Any] = []
     if thumb is not None and len(thumb) <= INLINE_CAP:
-        contents.append(image_content(thumb, "image/webp"))
+        # Studio sends the original PNG when it cannot make the thumbnail.
+        contents.append(image_content(thumb, sniff_image(thumb) or "image/webp"))
     contents.append(resource_link(item.url, f"{item.id}.png", "image/png"))
     return contents
 
