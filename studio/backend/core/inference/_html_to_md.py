@@ -1347,12 +1347,17 @@ def _render(
     scope_tags: frozenset[str] | None,
     strip_header: bool = False,
     site_links: SiteLinks | None = None,
+    span_char_limit: int | None = None,
 ) -> str:
-    return _cleanup("".join(_new_renderer(source_html, scope_tags, strip_header, site_links)._out))
+    renderer = _new_renderer(source_html, scope_tags, strip_header, site_links, span_char_limit)
+    return _cleanup("".join(renderer._out))
 
 
 def _select_main_scope_render(
-    source_html: str, tag: str, site_links: SiteLinks | None
+    source_html: str,
+    tag: str,
+    site_links: SiteLinks | None,
+    span_char_limit: int | None = None,
 ) -> tuple[int, str]:
     """Length and boilerplate-stripped render of the largest single ``<tag>``
     subtree. Sizing candidates one at a time stops many tiny sibling cards from
@@ -1368,7 +1373,11 @@ def _select_main_scope_render(
     furniture can never be the majority of a score. Uncapped, a teaser with a
     1000 link header outranked a sibling holding five times its real text."""
     renderer = _new_renderer(
-        source_html, frozenset({tag}), strip_header = True, site_links = site_links
+        source_html,
+        frozenset({tag}),
+        strip_header = True,
+        site_links = site_links,
+        span_char_limit = span_char_limit,
     )
     # generated span cells must not lift a scope past the content gate or rank; only span pages pay this second pass
     scoring = (
@@ -1465,6 +1474,7 @@ def html_to_markdown(
     *,
     main_content: bool = False,
     site_links: SiteLinks | None = None,
+    max_span_chars: int | None = None,
 ) -> str:
     """Convert HTML to Markdown (headings, links, emphasis, lists, tables, blockquotes, code, entities).
 
@@ -1478,20 +1488,34 @@ def html_to_markdown(
     fragments from the result.
 
     ``site_links`` records the links back into the page's own site; the output is unchanged.
+
+    ``max_span_chars`` caps the cells generated for ``rowspan``/``colspan``, so a caller with a
+    smaller result budget keeps room for the text after a table.
     """
     source_html = source_html.replace("\r\n", "\n").replace("\r", "\n")
+    span_limit = 2 * len(source_html)
+    if max_span_chars is not None:
+        span_limit = min(span_limit, max_span_chars)
     rendered = ""
     if main_content:
         for scope_tag in ("article", "main"):
             # Render only the chosen subtree so sibling <article>/<main> elements do not leak in.
-            length, rendered = _select_main_scope_render(source_html, scope_tag, site_links)
+            length, rendered = _select_main_scope_render(
+                source_html, scope_tag, site_links, span_limit
+            )
             if length >= _MIN_MAIN_CONTENT_CHARS:
                 break
         else:
             rendered = _strip_boilerplate_lines(
-                _render(source_html, None, strip_header = True, site_links = site_links),
+                _render(
+                    source_html,
+                    None,
+                    strip_header = True,
+                    site_links = site_links,
+                    span_char_limit = span_limit,
+                ),
                 site_links,
             )
     else:
-        rendered = _render(source_html, None, site_links = site_links)
+        rendered = _render(source_html, None, site_links = site_links, span_char_limit = span_limit)
     return site_links.finish(rendered) if site_links is not None else rendered

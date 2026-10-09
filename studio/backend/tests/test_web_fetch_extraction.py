@@ -2305,6 +2305,21 @@ def test_table_spans_do_not_multiply_the_page_size():
     assert html_to_markdown(nested).index("Article sentinel.") < 16_000
 
 
+def test_table_spans_fit_a_small_fetch_budget(monkeypatch):
+    tall = (
+        "<html><body><table><tr><td rowspan='3000'>x</td></tr>"
+        + "<tr></tr>" * 2999
+        + "</table><p>Article sentinel.</p></body></html>"
+    )
+    assert html_to_markdown(tall, max_span_chars = 1000).index("Article sentinel.") < 2000
+
+    def fake_fetch(url, **kwargs):
+        return None, tall, "text/html"
+
+    monkeypatch.setattr("core.inference.tools._fetch_url_raw", fake_fetch)
+    assert "Article sentinel." in _fetch_page_text("https://example.com/t", max_chars = 2000)
+
+
 def test_generated_table_spans_do_not_make_a_main_content_candidate():
     body = "<main><p>" + "Real page body. " * 20 + "</p></main>"
     decoys = (
