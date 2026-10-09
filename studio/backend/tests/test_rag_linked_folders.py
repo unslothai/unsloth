@@ -3243,3 +3243,72 @@ def test_a_vec_table_resized_after_the_prefetch_falls_back_to_a_normal_ingest(
             (folder["id"],),
         ).fetchone()["document_id"]
     assert _vectors(b_id)
+
+
+@requires_sqlite_vec
+def test_cancel_event_stops_check_running_without_sqlite_write(rag_home):
+    """Unlink / Stop must not need BEGIN IMMEDIATE before the worker can notice (#13095)."""
+    _, folder = _folder(rag_home)
+    folder_sync._worker_state.job_id = "unused"
+    folder_sync._worker_state.folder_id = folder["id"]
+    try:
+        folder_sync.request_cancel(folder["id"])
+        with pytest.raises(folder_sync._SyncCancelled):
+            folder_sync._check_running()
+    finally:
+        folder_sync.clear_cancel(folder["id"])
+        del folder_sync._worker_state.job_id
+        del folder_sync._worker_state.folder_id
+
+
+@requires_sqlite_vec
+def test_cancel_folder_sync_stops_a_running_job_without_unlinking(
+    rag_home, stub_embeddings, monkeypatch
+):
+    source, folder = _folder(rag_home)
+    (source / "notes.txt").write_text("words to index", encoding = "utf-8")
+    entered = threading.Event()
+    release = threading.Event()
+    real_check = folder_sync._check_running
+    calls = {"n": 0}
+
+    def gated_check():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            entered.set()
+            assert release.wait(10)
+        real_check()
+
+    monkeypatch.setattr(folder_sync, "_check_running", gated_check)
+    job_id = folder_sync.request_sync(folder["id"])
+    worker = threading.Thread(
+        target = folder_sync.reconcile_folder, args = (job_id,), daemon = True
+    )
+    worker.start()
+    assert entered.wait(5), "reconcile never reached the first health check"
+    cancelled = folder_sync.cancel_folder_sync(folder["id"])
+    release.set()
+    worker.join(timeout = 15)
+    assert not worker.is_alive(), "reconcile did not exit after cancel"
+    assert folder_sync.get_folder(folder["id"]) is not None
+    assert cancelled is not None
+    assert cancelled["status"] == "failed"
+    assert cancelled["error"] == "Indexing was stopped"
+    assert folder_sync.get_job(job_id)["status"] == "failed"
+
+
+@requires_sqlite_vec
+def test_delete_folder_signals_cancel_before_taking_the_write_lock(rag_home, monkeypatch):
+    _, folder = _folder(rag_home)
+    seen = []
+    real_begin = folder_sync._begin_immediate_for_cancel
+
+    def observe(conn):
+        seen.append(folder_sync.is_cancel_requested(folder["id"]))
+        return real_begin(conn)
+
+    monkeypatch.setattr(folder_sync, "_begin_immediate_for_cancel", observe)
+    assert folder_sync.delete_folder(folder["id"], remove_index = False) is True
+    assert seen == [True]
+    assert folder_sync.get_folder(folder["id"]) is None
+    assert not folder_sync.is_cancel_requested(folder["id"])

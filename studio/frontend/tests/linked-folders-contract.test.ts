@@ -3,6 +3,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readSrc } from "./helpers/kit.ts";
 import {
   isLinkedFolderManaged,
   linkedFolderSourcesChanged,
@@ -49,6 +50,20 @@ test("only the folder's currently active job remains visible after polling", () 
   assert.deepEqual(
     retainActiveFolderJobs([{ ...folder, activeJobId: null }], jobs),
     {},
+  );
+});
+
+test("a running linked folder exposes Stop indexing before Sync and Rebuild", () => {
+  const manager = readSrc("features/rag/components/linked-folders-manager.tsx");
+  const hook = readSrc("features/rag/components/use-linked-folders.ts");
+  const api = readSrc("features/rag/api/rag-api.ts");
+  assert.match(manager, /Stop indexing/);
+  assert.match(manager, /manager\.cancel\(folder\.id\)/);
+  assert.match(hook, /cancelLinkedFolder/);
+  assert.match(hook, /cancel,/);
+  assert.match(
+    api,
+    /\/linked-folders\/\$\{encodeURIComponent\(linkedFolderId\)\}\/cancel/,
   );
 });
 

@@ -751,6 +751,16 @@ def unlink_folder(
     return {"ok": True}
 
 
+@router.post("/linked-folders/{folder_id}/cancel")
+def cancel_folder(folder_id: str, subject: str = Depends(get_current_subject)) -> dict:
+    """Stop in-flight indexing without unlinking the folder."""
+    _require_rag()
+    job = folder_sync.cancel_folder_sync(folder_id)
+    if job is None and folder_sync.get_folder(folder_id) is None:
+        raise HTTPException(status_code = 404, detail = "Linked folder not found")
+    return {"ok": True, "job": _folder_job_view(job) if job is not None else None}
+
+
 @router.post("/linked-folders/{folder_id}/sync")
 def sync_folder(folder_id: str, subject: str = Depends(get_current_subject)) -> dict:
     _require_rag()

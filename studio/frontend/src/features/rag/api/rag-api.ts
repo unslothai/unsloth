@@ -691,6 +691,15 @@ export function deleteLinkedFolder(
   );
 }
 
+export function cancelLinkedFolder(
+  linkedFolderId: string,
+): Promise<{ ok: boolean; job: FolderSyncJob | null }> {
+  return ragRequest(
+    `/linked-folders/${encodeURIComponent(linkedFolderId)}/cancel`,
+    { method: "POST" },
+  );
+}
+
 function startLinkedFolderJob(
   linkedFolderId: string,
   action: "sync" | "rebuild",
