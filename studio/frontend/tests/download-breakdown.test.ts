@@ -11,7 +11,7 @@ registerBundlerResolver();
 const {
   breakdownOfPersisted,
   downloadParts,
-  withCachedCheckpoint,
+  withPlanBreakdown,
 } = await import("../src/features/hub/download-manager/download-breakdown.ts");
 const { diffusionStagingEntries } = await import(
   "../src/lib/diffusion-pipeline-load-target.ts"
@@ -72,21 +72,51 @@ test("a malformed persisted breakdown is dropped", () => {
   assert.deepEqual(breakdownOfPersisted(qwen), { breakdown: qwen });
 });
 
-test("the checkpoint lands on the first companion, cached or staged first", () => {
+test("a cached checkpoint lands on the first companion", () => {
   const companions = [
     { repoId: "a", checkpoint: false },
     { repoId: "b", checkpoint: false },
   ];
   assert.deepEqual(
-    withCachedCheckpoint(companions, 2.5 * GB).map((e) => e.cachedCheckpointBytes),
+    withPlanBreakdown(companions, 2.5 * GB).map((e) => e.cachedCheckpointBytes),
     [2.5 * GB, undefined],
   );
-  // FLUX.2-klein-9B: the GGUF downloads as its own entry, the companion bar still shows the model.
-  const withModel = [{ repoId: "m", checkpoint: true }, ...companions];
-  assert.deepEqual(
-    withCachedCheckpoint(withModel, 5.9 * GB).map((e) => e.cachedCheckpointBytes),
-    [undefined, 5.9 * GB, undefined],
+});
+
+test("every job of a plan shows all three parts from the start", () => {
+  // FLUX.2-klein-9B: the GGUF downloads as its own job before the companions.
+  const [gguf, companion] = withPlanBreakdown(
+    [
+      { checkpoint: true, fileBytes: { "flux-2-klein-9b-Q4_K_M.gguf": 5.9 * GB } },
+      {
+        checkpoint: false,
+        fileBytes: {
+          "text_encoder/model.safetensors": 16 * GB,
+          "vae/diffusion_pytorch_model.safetensors": 168e6,
+        },
+      },
+    ],
+    5.9 * GB,
   );
+  const halfway = downloadParts(
+    { fileBytes: gguf.fileBytes, laterBytes: gguf.laterBytes },
+    3 * GB,
+  );
+  assert.deepEqual(
+    halfway?.map((p) => [p.kind, p.bytes, p.doneBytes]),
+    [
+      ["model", 5.9 * GB, 3 * GB],
+      ["encoder", 16 * GB, 0],
+      ["vae", 168e6, 0],
+    ],
+  );
+  // The GGUF counts once: as the companion's earlier job, not also as a cached checkpoint.
+  assert.equal(companion.cachedCheckpointBytes, undefined);
+  const next = downloadParts(
+    { fileBytes: companion.fileBytes, earlierBytes: companion.earlierBytes },
+    0,
+  );
+  assert.deepEqual(next?.[0], { kind: "model", bytes: 5.9 * GB, doneBytes: 5.9 * GB });
 });
 
 test("tokenizer and scheduler files count as the text encoder, so the bar has three parts", () => {

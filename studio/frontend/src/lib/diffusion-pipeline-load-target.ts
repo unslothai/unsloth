@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { withCachedCheckpoint } from "@/features/hub/download-manager/download-breakdown";
+import { withPlanBreakdown } from "@/features/hub/download-manager/download-breakdown";
 
 type DiffusionPickSource = "hub" | "lora" | "exported" | "local" | "external";
 
@@ -42,5 +42,5 @@ export function diffusionStagingEntries(
         e.checkpoint ?? (opts.filename ? e.files.includes(opts.filename) : e.repo_id === planRepoId),
     }))
     .filter((e) => planRepoId === repoId || !e.checkpoint);
-  return withCachedCheckpoint(staged, opts.checkpointBytes);
+  return withPlanBreakdown(staged, opts.checkpointBytes);
 }

@@ -69,6 +69,9 @@ export interface DownloadBreakdown {
   fileBytes: Record<string, number>;
   /** The picked checkpoint, already on disk, shown as a full segment. */
   cachedCheckpointBytes?: number;
+  /** The plan's other jobs: fetched before this one (full) and after it (empty). */
+  earlierBytes?: Record<string, number>;
+  laterBytes?: Record<string, number>;
 }
 
 export interface DownloadPresentation {

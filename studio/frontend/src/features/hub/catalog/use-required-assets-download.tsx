@@ -16,7 +16,7 @@ import {
   selectDownloadEntries,
 } from "../download-manager/required-assets";
 import { RequiredAssetsDownloadDialog } from "../download-manager/required-assets-dialog";
-import { withCachedCheckpoint } from "../download-manager/download-breakdown";
+import { withPlanBreakdown } from "../download-manager/download-breakdown";
 import { enqueueHubDownload } from "../download-manager/use-hub-download-queue";
 import type { StagedDownloadEntry } from "../download-manager/use-staged-download";
 export type AssetRuntime = "images" | "video" | "audio";
@@ -115,7 +115,7 @@ export function useRequiredAssetsDownload({
     try {
       const p = await resolvePlan();
       if (sequence.current !== id) return;
-      const entries = withCachedCheckpoint(
+      const entries = withPlanBreakdown(
         p.entries.map((e) => ({
           repoId: e.repo_id,
           files: e.files,
