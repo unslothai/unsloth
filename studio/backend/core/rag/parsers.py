@@ -175,7 +175,8 @@ def _image_covers_a_corner(doc, number: int) -> bool:
             for x in (r.x0, r.x1 - 10)
             for y in (r.y0, r.y1 - 10)
         ]
-        boxes = [fitz.Rect(info["bbox"]) for info in page.get_image_info()]
+        # Image boxes are unrotated; the probe clips page.rect, which is rotated.
+        boxes = [fitz.Rect(info["bbox"]) * page.rotation_matrix for info in page.get_image_info()]
     except Exception:
         return False
     return any(box.intersects(corner) for box in boxes for corner in corners)
