@@ -6,6 +6,10 @@ export type GeminiThoughtReplayPart = {
   thoughtSignature: string;
 };
 
+export type PositionedGeminiThoughtReplayPart = GeminiThoughtReplayPart & {
+  afterToolCalls: number;
+};
+
 type ReplayableMessagePart = {
   type: string;
   text?: unknown;
@@ -14,16 +18,20 @@ type ReplayableMessagePart = {
 };
 
 export function appendGeminiThoughtReplayPart(
-  parts: GeminiThoughtReplayPart[],
+  parts: PositionedGeminiThoughtReplayPart[],
   text: string,
   thoughtSignature: string,
+  afterToolCalls: number,
 ): void {
   const latestPart = parts.at(-1);
-  if (latestPart?.thoughtSignature === thoughtSignature) {
+  if (
+    latestPart?.thoughtSignature === thoughtSignature &&
+    latestPart.afterToolCalls === afterToolCalls
+  ) {
     latestPart.text += text;
     return;
   }
-  parts.push({ text, thoughtSignature });
+  parts.push({ text, thoughtSignature, afterToolCalls });
 }
 
 export function pinGeminiTextThoughtSignature<T extends { type: string }>(
@@ -46,46 +54,74 @@ export function pinGeminiTextThoughtSignature<T extends { type: string }>(
   return parts;
 }
 
+function replayPlacement<T extends { type: string }>(
+  parts: T[],
+  afterToolCalls: number,
+): { targetIndex: number; insertIndex: number } {
+  let toolCallsSeen = 0;
+  let reasoningIndex = -1;
+  let textIndex = -1;
+  let insertIndex = parts.length;
+  for (let index = 0; index < parts.length; index += 1) {
+    const type = parts[index].type;
+    if (type === "tool-call") {
+      if (toolCallsSeen === afterToolCalls) {
+        insertIndex = index;
+      }
+      toolCallsSeen += 1;
+    } else if (toolCallsSeen === afterToolCalls) {
+      if (type === "reasoning") {
+        reasoningIndex = index;
+      } else if (type === "text") {
+        textIndex = index;
+      }
+      insertIndex = index + 1;
+    }
+  }
+  return {
+    targetIndex: reasoningIndex === -1 ? textIndex : reasoningIndex,
+    insertIndex,
+  };
+}
+
 export function pinGeminiThoughtReplayParts<T extends { type: string }>(
   parts: T[],
-  thoughtParts: GeminiThoughtReplayPart[],
+  thoughtParts: PositionedGeminiThoughtReplayPart[],
 ): T[] {
   if (thoughtParts.length === 0) {
     return parts;
   }
-  let targetIndex = -1;
-  for (let index = parts.length - 1; index >= 0; index -= 1) {
-    if (parts[index].type === "reasoning") {
-      targetIndex = index;
-      break;
-    }
-    if (targetIndex === -1 && parts[index].type === "text") {
-      targetIndex = index;
+  const byToolRound = new Map<number, GeminiThoughtReplayPart[]>();
+  for (const { afterToolCalls, text, thoughtSignature } of thoughtParts) {
+    const round = byToolRound.get(afterToolCalls) ?? [];
+    round.push({ text, thoughtSignature });
+    byToolRound.set(afterToolCalls, round);
+  }
+  for (const [afterToolCalls, replayMetadata] of byToolRound) {
+    const { targetIndex, insertIndex } = replayPlacement(parts, afterToolCalls);
+    if (targetIndex === -1) {
+      parts.splice(insertIndex, 0, {
+        type: "reasoning",
+        text: "",
+        _google_thought_parts: replayMetadata,
+      } as unknown as T);
+    } else {
+      parts[targetIndex] = {
+        ...parts[targetIndex],
+        _google_thought_parts: replayMetadata,
+      } as T;
     }
   }
-  const replayMetadata = thoughtParts.map((part) => ({ ...part }));
-  if (targetIndex === -1) {
-    parts.push({
-      type: "reasoning",
-      text: "",
-      _google_thought_parts: replayMetadata,
-    } as unknown as T);
-    return parts;
-  }
-  parts[targetIndex] = {
-    ...parts[targetIndex],
-    _google_thought_parts: replayMetadata,
-  } as T;
   return parts;
 }
 
-export function geminiThoughtReplayParts(
-  part: ReplayableMessagePart,
+export function parseGeminiThoughtReplayParts(
+  value: unknown,
 ): GeminiThoughtReplayPart[] {
-  if (!Array.isArray(part._google_thought_parts)) {
+  if (!Array.isArray(value)) {
     return [];
   }
-  return part._google_thought_parts.flatMap((entry) => {
+  return value.flatMap((entry) => {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
       return [];
     }
@@ -101,6 +137,25 @@ export function geminiThoughtReplayParts(
         ]
       : [];
   });
+}
+
+export function geminiThoughtReplayParts(
+  part: ReplayableMessagePart,
+): GeminiThoughtReplayPart[] {
+  return parseGeminiThoughtReplayParts(part._google_thought_parts);
+}
+
+export function collectGeminiThoughtReplayParts(
+  content: readonly unknown[] | undefined,
+): GeminiThoughtReplayPart[] {
+  if (!content) {
+    return [];
+  }
+  return content.flatMap((part) =>
+    part && typeof part === "object" && !Array.isArray(part)
+      ? geminiThoughtReplayParts(part as ReplayableMessagePart)
+      : [],
+  );
 }
 
 export function withGeminiThoughtReplayParts(

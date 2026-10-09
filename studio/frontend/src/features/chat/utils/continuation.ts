@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  type GeminiThoughtReplayPart,
+  parseGeminiThoughtReplayParts,
+} from "../gemini-thought-replay.ts";
 import type { ProviderCompactionContentPart } from "../types/api";
 import { providerCompactionPart } from "./provider-compaction.ts";
 
@@ -380,6 +384,8 @@ export type ContinuationRequest = {
   /** Gemini text-part thoughtSignature from the turn being resumed: the sibling run drops the
    *  original assistant message, so replaying it here keeps the history signed. */
   thoughtSignature?: string;
+  /** Signed Gemini thought-summary parts from the turn being resumed. */
+  thoughtParts?: GeminiThoughtReplayPart[];
   providerCompaction?: ProviderCompactionContentPart;
   providerCompactionAfterToolCalls?: number;
   providerCompactionProviderType?: string;
@@ -454,6 +460,7 @@ export function readContinuationRequest(
         reasoning?: unknown;
         reasoningDuration?: unknown;
         thoughtSignature?: unknown;
+        thoughtParts?: unknown;
         providerCompaction?: unknown;
         providerCompactionAfterToolCalls?: unknown;
         providerCompactionProviderType?: unknown;
@@ -471,6 +478,7 @@ export function readContinuationRequest(
   }
   const duration = request?.reasoningDuration;
   const signature = request?.thoughtSignature;
+  const thoughtParts = parseGeminiThoughtReplayParts(request?.thoughtParts);
   return {
     partial,
     ...(reasoning ? { reasoning } : {}),
@@ -483,6 +491,7 @@ export function readContinuationRequest(
     ...(typeof signature === "string" && signature
       ? { thoughtSignature: signature }
       : {}),
+    ...(thoughtParts.length > 0 ? { thoughtParts } : {}),
     ...providerCompactionFields(request),
   };
 }

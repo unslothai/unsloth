@@ -18,6 +18,14 @@ import { createReasoningDurationTracker } from "../src/features/chat/utils/reaso
 import { readSrc } from "./helpers/kit.ts";
 
 const THOUGHT = "The user wants three primes. Small ones are";
+const COLLECT_GEMINI_THOUGHTS =
+  /collectGeminiThoughtReplayParts\(messageContent\)/;
+const CARRY_GEMINI_THOUGHTS =
+  /thoughtParts\.length > 0 \? \{ thoughtParts \} : \{\}/;
+const REPLAY_GEMINI_THOUGHTS =
+  /continuation\.thoughtParts && continuation\.thoughtParts\.length > 0/;
+const SEED_GEMINI_THOUGHTS =
+  /continuation\?\.thoughtParts\?\.map\(\(part\) => \(\{[\s\S]*afterToolCalls: 0/;
 
 test("the source splits a reply into the answer and the thought before it", () => {
   assert.deepEqual(
@@ -65,10 +73,26 @@ test("a thought-only request is read, and its duration only travels with a thoug
   assert.deepEqual(
     readContinuationRequest({
       custom: {
-        unslothContinuation: { partial: "", reasoning: THOUGHT, reasoningDuration: 7 },
+        unslothContinuation: {
+          partial: "",
+          reasoning: THOUGHT,
+          reasoningDuration: 7,
+          thoughtParts: [
+            { text: "first thought", thoughtSignature: "SIG-THOUGHT-1" },
+            { text: "second thought", thoughtSignature: "SIG-THOUGHT-2" },
+          ],
+        },
       },
     }),
-    { partial: "", reasoning: THOUGHT, reasoningDuration: 7 },
+    {
+      partial: "",
+      reasoning: THOUGHT,
+      reasoningDuration: 7,
+      thoughtParts: [
+        { text: "first thought", thoughtSignature: "SIG-THOUGHT-1" },
+        { text: "second thought", thoughtSignature: "SIG-THOUGHT-2" },
+      ],
+    },
   );
   assert.deepEqual(
     readContinuationRequest({
@@ -82,6 +106,15 @@ test("a thought-only request is read, and its duration only travels with a thoug
     }),
     null,
   );
+});
+
+test("Gemini signed thought parts travel through a continuation sibling", () => {
+  const thread = readSrc("components/assistant-ui/thread.tsx");
+  const adapter = readSrc("features/chat/api/chat-adapter.ts");
+  assert.match(thread, COLLECT_GEMINI_THOUGHTS);
+  assert.match(thread, CARRY_GEMINI_THOUGHTS);
+  assert.match(adapter, REPLAY_GEMINI_THOUGHTS);
+  assert.match(adapter, SEED_GEMINI_THOUGHTS);
 });
 
 /** What the adapter's stream loop appends, per delta, to a seeded buffer. */

@@ -179,6 +179,7 @@ import {
 } from "../codex-reasoning";
 import {
   type GeminiThoughtReplayPart,
+  type PositionedGeminiThoughtReplayPart,
   appendGeminiThoughtReplayPart,
   geminiThoughtReplayParts,
   pinGeminiTextThoughtSignature,
@@ -1493,11 +1494,11 @@ function serializeAssistantReplayMessages(
   };
 
   for (const part of message.content ?? []) {
-    pendingGeminiThoughtParts.push(...geminiThoughtReplayParts(part));
     if (part.type === "reasoning") {
       if (pendingToolCalls.length > 0) {
         flushAssistantAndToolResults();
       }
+      pendingGeminiThoughtParts.push(...geminiThoughtReplayParts(part));
       pendingReasoningParts.push(part.text);
       continue;
     }
@@ -1506,6 +1507,7 @@ function serializeAssistantReplayMessages(
       if (pendingToolCalls.length > 0) {
         flushAssistantAndToolResults();
       }
+      pendingGeminiThoughtParts.push(...geminiThoughtReplayParts(part));
       pendingTextParts.push(part.text);
       continue;
     }
@@ -5209,6 +5211,14 @@ export function createOpenAIStreamAdapter(
               ]
             : continuation.partial,
           ...(resumedThought ? { reasoning_content: resumedThought } : {}),
+          ...(continuation.thoughtParts && continuation.thoughtParts.length > 0
+            ? {
+                extra_content: withGeminiThoughtReplayParts(
+                  undefined,
+                  continuation.thoughtParts,
+                ),
+              }
+            : {}),
         });
         // The original assistant message is not in this branch, so without its signature the history
         // goes back unsigned.
@@ -6023,7 +6033,11 @@ export function createOpenAIStreamAdapter(
         );
       let latestGeminiTextSignature: string | undefined;
       let pendingGeminiThoughtText = "";
-      const geminiThoughtParts: GeminiThoughtReplayPart[] = [];
+      const geminiThoughtParts: PositionedGeminiThoughtReplayPart[] =
+        continuation?.thoughtParts?.map((part) => ({
+          ...part,
+          afterToolCalls: 0,
+        })) ?? [];
       const buildAssistantContent = (rawText: string) => {
         const positionedTools = toolCallParts
           .map((part, index) => {
@@ -7677,6 +7691,7 @@ export function createOpenAIStreamAdapter(
                   geminiThoughtParts,
                   pendingGeminiThoughtText,
                   geminiThoughtSignature,
+                  toolCallParts.length,
                 );
                 pendingGeminiThoughtText = "";
                 replayStateChanged = true;
