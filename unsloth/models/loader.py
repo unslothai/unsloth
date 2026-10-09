@@ -876,6 +876,31 @@ def _fix_rope_inv_freq(model):
     return model
 
 
+def _patch_from_pretrained_rope_fix():
+    """pre_patch swaps Unsloth's rotary classes into transformers, so a plain from_pretrained after an Unsloth load (a reward model TRL loads by name) also gets the corrupted inv_freq (#1494)."""
+    if not _NEEDS_ROPE_FIX:
+        return
+    import functools
+    from transformers import PreTrainedModel
+
+    original = PreTrainedModel.from_pretrained.__func__
+    if getattr(original, "_unsloth_rope_fix", False):
+        return
+
+    @functools.wraps(original)
+    def wrapped(cls, *args, **kwargs):
+        output = original(cls, *args, **kwargs)
+        # output_loading_info = True returns (model, info).
+        _fix_rope_inv_freq(output[0] if isinstance(output, tuple) else output)
+        return output
+
+    wrapped._unsloth_rope_fix = True
+    PreTrainedModel.from_pretrained = classmethod(wrapped)
+
+
+_patch_from_pretrained_rope_fix()
+
+
 def _vllm_unavailable_error():
     # vLLM installed but disabled at import (ABI break, needs transformers 5) is not "not installed".
     from unsloth import import_fixes
