@@ -174,6 +174,20 @@ def test_vllm_and_mixed_image_video_batches_are_refused(zoo_with_video_keys):
         _unsloth_grpo_video_inputs(_trainer(_Processor(), use_vllm = True), prompts)
     with pytest.raises(NotImplementedError, match = "image and video"):
         _unsloth_grpo_video_inputs(_trainer(_Processor()), prompts, images = [["img"]])
+    inline = _video_prompt("a.mp4", text = "1")
+    inline[0]["content"].insert(0, {"type": "image", "image": "x.png"})
+    with pytest.raises(NotImplementedError, match = "image and video"):
+        _unsloth_grpo_video_inputs(_trainer(_Processor()), [inline])
+
+
+def test_vllm_is_refused_before_generation():
+    from unsloth.models.rl_replacements import _unsloth_grpo_clean_video_prompts
+
+    trainer = types.SimpleNamespace(use_vllm = True)
+    with pytest.raises(NotImplementedError, match = "fast_inference"):
+        _unsloth_grpo_clean_video_prompts([_video_prompt("a.mp4")], trainer)
+    text = [[{"role": "user", "content": [{"type": "text", "text": "hi"}]}]]
+    assert _unsloth_grpo_clean_video_prompts(text, trainer) is text
 
 
 def test_an_old_zoo_is_refused_rather_than_training_on_text(monkeypatch):
@@ -242,7 +256,7 @@ def test_the_trl_trainer_gets_the_videos_merged_into_its_forward_kwargs():
     patched = grpo_trainer__generate_and_score_completions(
         "_generate_and_score_completions", source
     )
-    assert "prompts = _unsloth_grpo_clean_video_prompts(prompts)" in patched
+    assert "prompts = _unsloth_grpo_clean_video_prompts(prompts, self)" in patched
     assert "_unsloth_video_kwargs = _unsloth_grpo_video_inputs(self, prompts" in patched
     merge = patched.index("forward_kwargs = {**forward_kwargs, **_unsloth_video_kwargs}")
     old_logps = patched.index("_get_per_token_logps_and_entropies(")

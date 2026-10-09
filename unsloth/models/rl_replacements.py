@@ -1254,8 +1254,8 @@ def _unsloth_grpo_split_videos_by_sample(batch):
     return split
 
 
-def _unsloth_grpo_prompt_videos(prompt):
-    """Number of video parts in a conversational prompt."""
+def _unsloth_grpo_prompt_videos(prompt, kind = "video"):
+    """Number of `kind` parts in a conversational prompt."""
     if not isinstance(prompt, list):
         return 0
     count = 0
@@ -1263,7 +1263,7 @@ def _unsloth_grpo_prompt_videos(prompt):
         content = message.get("content", None) if isinstance(message, dict) else None
         if isinstance(content, list):
             count += sum(
-                1 for part in content if isinstance(part, dict) and part.get("type") == "video"
+                1 for part in content if isinstance(part, dict) and part.get("type") == kind
             )
     return count
 
@@ -1280,7 +1280,7 @@ def _unsloth_grpo_has_video_key(prompt):
     return False
 
 
-def _unsloth_grpo_clean_video_prompts(prompts):
+def _unsloth_grpo_clean_video_prompts(prompts, trainer = None):
     """Arrow gives every content part of a column the union of the keys, so in a dataset with
     any video a text part arrives as {"type": "text", "text": ..., "video": None}, in text only
     rows too. Qwen2-VL style templates test `'video' in content`, render a video placeholder for
@@ -1288,6 +1288,14 @@ def _unsloth_grpo_clean_video_prompts(prompts):
     prompt carrying a `video` key; prompts without one are passed through untouched."""
     if not any(_unsloth_grpo_has_video_key(prompt) for prompt in prompts):
         return prompts
+    if getattr(trainer, "use_vllm", False) and any(
+        _unsloth_grpo_prompt_videos(prompt) for prompt in prompts
+    ):
+        # Before generation, which vLLM would otherwise run without the videos.
+        raise NotImplementedError(
+            "Unsloth: video GRPO runs on the transformers generation path only. "
+            "Load the model with fast_inference = False (use_vllm = False)."
+        )
     cleaned = []
     for prompt in prompts:
         if not _unsloth_grpo_has_video_key(prompt):
@@ -1341,7 +1349,9 @@ def _unsloth_grpo_video_inputs(
             "Unsloth: video GRPO runs on the transformers generation path only. "
             "Load the model with fast_inference = False (use_vllm = False)."
         )
-    if images is not None and any(images):
+    if (images is not None and any(images)) or any(
+        _unsloth_grpo_prompt_videos(prompt, "image") for prompt in prompts
+    ):
         raise NotImplementedError(
             "Unsloth: GRPO does not support image and video inputs in the same batch yet."
         )
@@ -1873,7 +1883,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
             _target_line,
             _target_line
             + _metadata_extraction
-            + "        prompts = _unsloth_grpo_clean_video_prompts(prompts)\n",
+            + "        prompts = _unsloth_grpo_clean_video_prompts(prompts, self)\n",
         )
 
     # TRL builds the logprob forward kwargs from images only; add the batch's videos.
