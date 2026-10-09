@@ -1,18 +1,18 @@
 {
   "schema_version": 1,
   "lemonade": {
-    "version": "11.9.0",
+    "version": "2026.41.1",
     "repo": "lemonade-sdk/lemonade",
     "assets": {
       "linux-x64": {
-        "name": "lemonade-embeddable-11.9.0-ubuntu-x64.tar.gz",
-        "sha256": "a18beaf78b5e30996087d1387683a6a5b4207cdd50f0a8ed7d7dc88823eb204d",
-        "size": 7429447
+        "name": "lemonade-embeddable-2026.41.1-ubuntu-x64.tar.gz",
+        "sha256": "8029760a9c0ca4574783dcb8b9fbb1183b25de45cd347e4960c82342184fbea4",
+        "size": 7423912
       },
       "windows-x64": {
-        "name": "lemonade-embeddable-11.9.0-windows-x64.zip",
-        "sha256": "8311d9089c3f3747eb3ff5cee35c325a20686f7f5911c455763e7edf0619d1c7",
-        "size": 5382390
+        "name": "lemonade-embeddable-2026.41.1-windows-x64.zip",
+        "sha256": "055b582d6c64f3a7a60438edf371b1fc75bfdd481b4f104175ba521f57eadb08",
+        "size": 5379955
       }
     }
   },
