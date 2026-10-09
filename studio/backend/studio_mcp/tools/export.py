@@ -18,6 +18,7 @@ from studio_mcp.outputs import ExportJobRef
 from studio_mcp.tools import WRITES, integer, route_json
 
 EXPORT_STATUS = "/api/export/status"
+RUNNING = "Another export is running. Studio exports one at a time, so try again when it ends."
 
 
 def checked_save_directory(value: str) -> str:
@@ -83,9 +84,7 @@ async def export_model(
     # One export worker: a job queued behind another could not be told apart from it when cancelled.
     running = await route_json("GET", EXPORT_STATUS, caller = caller)
     if (isinstance(running, dict) and running.get("is_export_active")) or export_jobs.any_running():
-        raise ToolError(
-            'Another export is running. Wait for it with get_job(kind="export") or cancel it first.'
-        )
+        raise ToolError(RUNNING)
     found = await checkpoints.resolve(caller, checkpoint)
     token = hf_token or caller.hf_token
     load: dict[str, Any] = {"checkpoint_path": found.path, "max_seq_length": max_seq_length}
@@ -113,6 +112,9 @@ async def export_model(
         await _op(caller, f"/api/export/export/{format}", body)
         export_jobs.reconcile(job, await route_json("GET", EXPORT_STATUS, caller = caller))
 
+    # Checked again with no await before start, so two calls at once cannot both get past the guard.
+    if export_jobs.any_running():
+        raise ToolError(RUNNING)
     job = export_jobs.start(caller.account_id, format, run)
     return ExportJobRef(job_id = job.job_id)
 

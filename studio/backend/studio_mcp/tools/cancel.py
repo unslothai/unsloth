@@ -115,7 +115,24 @@ async def cancel(
             )
         status = await route_json("GET", EXPORT_STATUS, caller = caller)
         if not (isinstance(status, dict) and status.get("is_export_active")):
-            return CancelResult(kind = kind, id = id, cancelled = False, message = "No export is running.")
+            if job is None:
+                return CancelResult(
+                    kind = kind, id = id, cancelled = False, message = "No export is running."
+                )
+            # Its export may have just finished; settle that rather than call it cancelled.
+            export_jobs.reconcile(job, status)
+            if job.finished:
+                return CancelResult(
+                    kind = kind, id = id, cancelled = False, message = f"The export already {job.status}."
+                )
+            # Between steps: stop the job's own task and leave the worker alone.
+            export_jobs.mark_cancelled(job)
+            return CancelResult(
+                kind = kind,
+                id = id,
+                cancelled = True,
+                message = "The export job was stopped before its next step.",
+            )
         if job is not None and not _export_is_this_job(job, status):
             return CancelResult(
                 kind = kind,

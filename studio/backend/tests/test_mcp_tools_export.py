@@ -320,6 +320,30 @@ def test_an_export_is_refused_while_an_mcp_export_job_runs(monkeypatch):
     assert calls == []
 
 
+def test_two_exports_at_once_cannot_both_start(monkeypatch):
+    # Another call registers its job while this one awaits the checkpoint lookup.
+    from studio_mcp.tools import export as export_tool
+
+    real = export_tool.checkpoints.resolve
+
+    async def racing(caller, name):
+        found = await real(caller, name)
+        _register(account_id = "owner", job_id = "first")
+        return found
+
+    monkeypatch.setattr(export_tool.checkpoints, "resolve", racing)
+    calls = []
+    result, _job = _run_export(
+        monkeypatch,
+        _export_studio(recorder = calls),
+        {"checkpoint": "qwen-lora", "format": "gguf", "save_directory": "out"},
+    )
+    assert result["isError"] is True
+    assert result["content"][0]["text"].startswith("Another export is running.")
+    assert calls == []
+    assert [job.job_id for job in export_jobs._jobs.values()] == ["first"]
+
+
 def test_each_format_reaches_its_route(monkeypatch):
     for fmt in ("merged", "lora", "base"):
         calls = []

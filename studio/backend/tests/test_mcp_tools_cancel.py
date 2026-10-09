@@ -169,22 +169,48 @@ def test_an_export_cancel_leaves_another_jobs_op_alone(monkeypatch, phase, op):
     assert [c[1] for c in studio.state.calls] == ["/api/export/status"]
 
 
-@pytest.mark.parametrize("args", [{"kind": "export"}, {"kind": "export", "id": "exp-1"}])
-def test_an_idle_export_worker_keeps_its_checkpoint(monkeypatch, args):
+IDLE_WORKER = {"is_export_active": False, "current_checkpoint": "ref:abc", "last_op_seq": 5}
+
+
+def test_an_idle_export_worker_keeps_its_checkpoint(monkeypatch):
     # Between ops the worker is alive and holds a checkpoint; the cancel route would kill it.
-    job = ExportJob(job_id = "exp-1", account_id = "owner", format = "gguf", phase = "exporting")
-    export_jobs._jobs["owner:exp-1"] = job
-    studio = _studio(
-        {
-            ("GET", "/api/export/status"): lambda r, b: {
-                "is_export_active": False,
-                "current_checkpoint": "ref:abc",
-            }
-        }
-    )
-    result = _call(monkeypatch, studio, args)
+    studio = _studio({("GET", "/api/export/status"): lambda r, b: IDLE_WORKER})
+    result = _call(monkeypatch, studio, {"kind": "export"})
     assert result["structuredContent"]["cancelled"] is False
     assert result["structuredContent"]["message"] == "No export is running."
+    assert [c[1] for c in studio.state.calls] == ["/api/export/status"]
+
+
+@pytest.mark.parametrize("phase", ["starting", "loading", "exporting"])
+def test_a_job_between_steps_is_stopped_without_touching_the_worker(monkeypatch, phase):
+    job = ExportJob(job_id = "exp-1", account_id = "owner", format = "gguf", phase = phase, started_seq = 5)
+    export_jobs._jobs["owner:exp-1"] = job
+    studio = _studio({("GET", "/api/export/status"): lambda r, b: IDLE_WORKER})
+    result = _call(monkeypatch, studio, {"kind": "export", "id": "exp-1"})
+    assert result["structuredContent"]["cancelled"] is True
+    assert (
+        result["structuredContent"]["message"] == "The export job was stopped before its next step."
+    )
+    assert job.status == "cancelled"
+    assert [c[1] for c in studio.state.calls] == ["/api/export/status"]
+
+
+def test_a_cancel_just_after_the_export_finished_reports_it_done(monkeypatch):
+    job = ExportJob(
+        job_id = "exp-1", account_id = "owner", format = "gguf", phase = "exporting", started_seq = 5
+    )
+    export_jobs._jobs["owner:exp-1"] = job
+    finished = {
+        "is_export_active": False,
+        "last_op_seq": 6,
+        "last_op_status": "success",
+        "last_op_output_path": "my-gguf",
+    }
+    studio = _studio({("GET", "/api/export/status"): lambda r, b: finished})
+    result = _call(monkeypatch, studio, {"kind": "export", "id": "exp-1"})
+    assert result["structuredContent"]["cancelled"] is False
+    assert result["structuredContent"]["message"] == "The export already completed."
+    assert job.status == "completed"
     assert [c[1] for c in studio.state.calls] == ["/api/export/status"]
 
 
