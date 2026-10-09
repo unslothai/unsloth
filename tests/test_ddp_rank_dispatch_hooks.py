@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""A DDP rank holding its whole bnb model on one card gets no dispatch hooks: on ranks >= 1 they broke the
-non-reentrant checkpoint recompute (#3459). A single process on a non-default card (#5068) keeps them."""
+"""#3459: a DDP rank on its own card gets no dispatch hooks; one process on a non-default card (#5068) keeps them."""
 
 import types
 
