@@ -30,10 +30,12 @@ def flags():
     for _, write in before:
         write(True)
     att._SDPA_PROBE_CACHE.clear()
+    att._ROCM_GUARD_DISABLED.clear()
     yield
     for value, write in before:
         write(value)
     att._SDPA_PROBE_CACHE.clear()
+    att._ROCM_GUARD_DISABLED.clear()
 
 
 @pytest.mark.parametrize("platform", ["linux", "win32"])
@@ -145,6 +147,26 @@ def test_guard_only_disables_failed_backends(monkeypatch, available, disabled):
     assert att.guard_rocm_fused_sdpa(target) == ()
 
 
+def test_guard_restores_only_its_own_flags_for_a_healthy_card(monkeypatch):
+    monkeypatch.setattr(att, "_is_cuda_rocm", lambda t: True)
+    capability = {"cuda:0": ("math",), "cuda:1": ("math", "flash", "mem_efficient")}
+    monkeypatch.setattr(att, "_probe_sdpa_kernels", lambda device, dtype: capability[device])
+    broken = SimpleNamespace(device = "cuda:0", dtype = torch.bfloat16)
+    healthy = SimpleNamespace(device = "cuda:1", dtype = torch.bfloat16)
+    assert att.guard_rocm_fused_sdpa(broken) == ("flash", "mem_efficient")
+    assert att.sdpa_math_only(healthy)
+    assert att.guard_rocm_fused_sdpa(healthy) == ()
+    assert att.sdpa_subquadratic_confirmed(healthy)
+    assert torch.backends.cuda.flash_sdp_enabled()
+    assert torch.backends.cuda.mem_efficient_sdp_enabled()
+
+    torch.backends.cuda.enable_flash_sdp(False)
+    assert att.guard_rocm_fused_sdpa(broken) == ("mem_efficient",)
+    att.guard_rocm_fused_sdpa(healthy)
+    assert not torch.backends.cuda.flash_sdp_enabled()
+    assert torch.backends.cuda.mem_efficient_sdp_enabled()
+
+
 def test_cached_capabilities_follow_current_flags(monkeypatch):
     calls = []
 
@@ -168,7 +190,7 @@ def test_cached_capabilities_follow_current_flags(monkeypatch):
 def test_other_platforms_and_explicit_override_do_not_probe(monkeypatch, rocm, allow):
     monkeypatch.setattr(att, "_is_cuda_rocm", lambda t: rocm)
     monkeypatch.setenv(att.ROCM_FUSED_SDPA_ALLOW_ENV, "1" if allow else "0")
-    monkeypatch.setattr(att, "available_sdpa_kernels", lambda t: pytest.fail("unexpected probe"))
+    monkeypatch.setattr(att, "_sdpa_capability", lambda t: pytest.fail("unexpected probe"))
     assert att.guard_rocm_fused_sdpa(SimpleNamespace()) == ()
 
 

@@ -244,6 +244,11 @@ def available_sdpa_kernels(target: Any) -> tuple[str, ...]:
 
     Empty when the probe could not run at all (no torch, no device, an allocator failure) -- an
     unanswerable probe must never be read as "only math", which is a claim about the hardware."""
+    return _enabled_sdpa_kernels(_sdpa_capability(target))
+
+
+def _sdpa_capability(target: Any) -> tuple[str, ...]:
+    """The cached per-device probe result, before the current process flags are applied."""
     device = str(getattr(target, "torch_device", None) or getattr(target, "device", "") or "")
     if device == "cuda":
         ordinal = getattr(target, "ordinal", None)
@@ -264,7 +269,7 @@ def available_sdpa_kernels(target: Any) -> tuple[str, ...]:
     with _SDPA_PROBE_LOCK:
         cached = _SDPA_PROBE_CACHE.get(key)
         if cached is not None:
-            return _enabled_sdpa_kernels(cached)
+            return cached
     try:
         available = _probe_sdpa_kernels(device, dtype)
     except Exception:  # noqa: BLE001 - a probe is a diagnostic; it may never fail a load
@@ -274,8 +279,7 @@ def available_sdpa_kernels(target: Any) -> tuple[str, ...]:
     if not available:
         return ()
     with _SDPA_PROBE_LOCK:
-        _SDPA_PROBE_CACHE.setdefault(key, available)
-        return _enabled_sdpa_kernels(_SDPA_PROBE_CACHE[key])
+        return _SDPA_PROBE_CACHE.setdefault(key, available)
 
 
 def sdpa_math_only(target: Any) -> bool:
@@ -320,6 +324,7 @@ def warn_if_sdpa_math_only(target: Any, logger: Any = None) -> bool:
 
 
 ROCM_FUSED_SDPA_ALLOW_ENV = "UNSLOTH_ALLOW_ROCM_FUSED_SDPA"
+_ROCM_GUARD_DISABLED: set[str] = set()
 
 
 def guard_rocm_fused_sdpa(target: Any, logger: Any = None) -> tuple[str, ...]:
@@ -344,7 +349,7 @@ def guard_rocm_fused_sdpa(target: Any, logger: Any = None) -> tuple[str, ...]:
             if rocm_bf16_supported(torch, torch.device(device).index)
             else torch.float16
         )
-    available = available_sdpa_kernels(SimpleNamespace(device = device, dtype = dtype))
+    available = _sdpa_capability(SimpleNamespace(device = device, dtype = dtype))
     if SDPA_MATH not in available:
         return ()
     disabled = []
@@ -356,8 +361,14 @@ def guard_rocm_fused_sdpa(target: Any, logger: Any = None) -> tuple[str, ...]:
             torch.backends.cuda.enable_mem_efficient_sdp,
         ),
     ):
-        if name not in available and enabled():
+        if name in available:
+            # The flags are process-wide: a healthy card gets back only what this guard turned off for another.
+            if name in _ROCM_GUARD_DISABLED and not enabled():
+                switch(True)
+            _ROCM_GUARD_DISABLED.discard(name)
+        elif enabled():
             switch(False)
+            _ROCM_GUARD_DISABLED.add(name)
             disabled.append(name)
     if disabled:
         (logger or _module_logger()).warning(
