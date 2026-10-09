@@ -1224,10 +1224,8 @@ def _unsloth_grpo_split_vision_by_sample(batch):
 
 
 def _unsloth_grpo_split_videos_by_sample(batch):
-    """pixel_values_videos is flat over every video's patch rows, and the grid and
-    second_per_grid_ts over videos, so the per sample shuffle in _prepare_inputs would hand
-    rows to the wrong sample. Group them by sample off num_videos;
-    _unsloth_grpo_unsplit_vision merges them back once the step's slice is taken."""
+    """Group the flat video rows, grid and second_per_grid_ts by sample (num_videos) so the
+    _prepare_inputs shuffle keeps them with their sample; _unsloth_grpo_unsplit_vision merges back."""
     pixel_values_videos = batch.get("pixel_values_videos", None)
     video_grid_thw = batch.get("video_grid_thw", None)
     num_videos = batch.get("num_videos", None)
@@ -1281,11 +1279,8 @@ def _unsloth_grpo_has_video_key(prompt):
 
 
 def _unsloth_grpo_clean_video_prompts(prompts, trainer = None):
-    """Arrow gives every content part of a column the union of the keys, so in a dataset with
-    any video a text part arrives as {"type": "text", "text": ..., "video": None}, in text only
-    rows too. Qwen2-VL style templates test `'video' in content`, render a video placeholder for
-    each such part, and the processor then runs out of videos. Strip the None keys from every
-    prompt carrying a `video` key; prompts without one are passed through untouched."""
+    """Arrow adds `video: None` to every content part of a column holding videos; Qwen2-VL
+    templates test `'video' in content` and render a placeholder per part (StopIteration)."""
     if not any(_unsloth_grpo_has_video_key(prompt) for prompt in prompts):
         return prompts
     if getattr(trainer, "use_vllm", False) and any(
@@ -1334,13 +1329,8 @@ def _unsloth_grpo_video_inputs(
     prompts,
     images = None,
 ):
-    """The video tensors for the old, reference and policy logprob forwards.
-
-    TRL builds those forward kwargs from `image` / `images` alone, so a video prompt is
-    generated against its video but scored as text. Rebuilt here with the processor's own
-    chat template, the same call generation makes, so the video tokens in prompt_ids and the
-    patch rows line up. Each distinct prompt is decoded once and repeated for its
-    generations. None when the batch has no video."""
+    """Video tensors for the logprob forwards, which TRL builds from images only. Rendered with
+    the same chat template call generation makes, once per distinct prompt. None without video."""
     num_videos = [_unsloth_grpo_prompt_videos(prompt) for prompt in prompts]
     if not any(num_videos):
         return None
