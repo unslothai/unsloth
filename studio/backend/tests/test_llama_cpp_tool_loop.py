@@ -1704,6 +1704,31 @@ def test_duplicate_web_search_noop_allows_distinct_followup_tool(monkeypatch):
     assert len(duplicate_nudges) == 1
 
 
+@pytest.mark.parametrize("deduplicate", [True, False])
+def test_rebuild_without_an_edit_runs_again_only_when_deduplication_is_off(
+    monkeypatch, deduplicate
+):
+    # #10379: a second identical build command after no file edit is a duplicate by default.
+    build = {"command": "./gradlew build"}
+    streams = [
+        [_tool_call_sse("terminal", build, "call_build_1"), _done()],
+        [_tool_call_sse("terminal", build, "call_build_2"), _done()],
+        [_sse({"content": "Built."}), _done()],
+    ]
+    backend = _make_backend(monkeypatch, streams, [])
+    calls = _record_tool_calls(monkeypatch, lambda name: "BUILD SUCCESSFUL")
+
+    _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "build it twice"}],
+        [{"type": "function", "function": {"name": "terminal"}}],
+        max_tool_iterations = 3,
+        deduplicate_tool_calls = deduplicate,
+    )
+
+    assert calls == [("terminal", build)] * (1 if deduplicate else 2)
+
+
 def test_repeated_duplicate_noop_transitions_to_final_pass(monkeypatch):
     first_search = [
         _tool_call_sse("web_search", {"query": "gpu prices 2026"}, "call_search_1"),
