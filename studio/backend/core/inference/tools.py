@@ -13813,17 +13813,19 @@ def cached_mcp_tools() -> tuple[list[dict], bool]:
     return _mcp_listing(listed), complete
 
 
-async def get_enabled_mcp_tools() -> list[dict]:
-    # Keep the SQLite-backed server list off the event loop.
+async def get_enabled_mcp_tools(
+    include_stdio: bool = True, server_ids: set[str] | None = None
+) -> list[dict]:
+    # keep the SQLite-backed server list off the event loop.
     servers = await asyncio.to_thread(lambda: _enabled_mcp_servers(mcp_servers_db.list_servers()))
-    # Never spawn stdio servers when stdio is disabled on this host.
-    if not stdio_mcp_enabled():
+    if server_ids is not None:
+        servers = [server for server in servers if server["id"] in server_ids]
+    if not include_stdio or not stdio_mcp_enabled():
         servers = [s for s in servers if not is_stdio(s["url"])]
     if not servers:
         return []
 
-    # Skip servers still in their post-failure cool-off, otherwise a down server gets re-probed, and blocks the send
-    # for the full timeout, on every message.
+    # cool-off avoids blocking every send for the full probe timeout when a server is down.
     uncached = [
         s for s in servers if get_cached_tools(s["id"]) is None and not in_failure_cooloff(s["id"])
     ]
@@ -13873,8 +13875,64 @@ async def get_enabled_mcp_tools() -> list[dict]:
     return _mcp_listing(listed)
 
 
+def mcp_search_argument(name: str, tool: dict) -> str | None:
+    schema = _mcp_input_schema(tool)
+    required = schema.get("required") or []
+    properties = schema.get("properties") or {}
+    if len(required) != 1 or not isinstance(properties, dict):
+        return None
+    key = required[0]
+    prop = properties.get(key) if isinstance(key, str) else None
+    if not isinstance(prop, dict) or prop.get("type") != "string" or "enum" in prop:
+        return None
+    if is_potentially_unsafe_tool_call(name, {key: ""}):
+        return None
+    return key
+
+
+async def mcp_search_tools(
+    include_stdio: bool = True, server_ids: set[str] | None = None
+) -> list[dict]:
+    from state.tool_policy import get_tool_policy
+
+    if get_tool_policy() is False:
+        return []
+    await get_enabled_mcp_tools(include_stdio = include_stdio, server_ids = server_ids)
+    servers = _enabled_mcp_servers(await asyncio.to_thread(mcp_servers_db.list_servers))
+    if server_ids is not None:
+        servers = [server for server in servers if server["id"] in server_ids]
+    if not include_stdio or not stdio_mcp_enabled():
+        servers = [s for s in servers if not is_stdio(s["url"])]
+    found = []
+    for server in servers:
+        for tool in get_cached_tools(server["id"]) or ():
+            raw_name = tool.get("name") if isinstance(tool, dict) else None
+            if not isinstance(raw_name, str) or not tool_visible_to(tool, "model"):
+                continue
+            name = f"{MCP_TOOL_PREFIX}{server['id']}__{raw_name}"
+            argument = mcp_search_argument(name, public_tool(server, tool))
+            if argument:
+                found.append(
+                    {
+                        "name": name,
+                        "serverId": server["id"],
+                        "serverName": server.get("display_name") or server["id"],
+                        "tool": raw_name,
+                        "description": tool.get("description") or "",
+                        "argument": argument,
+                    }
+                )
+    return found
+
+
+def execute_mcp_tool(name: str, arguments: dict, **kwargs) -> str:
+    if not name.startswith(MCP_TOOL_PREFIX):
+        return f"Error: '{name}' is not an MCP tool"
+    return execute_tool(name, arguments, **kwargs)
+
+
 def mcp_tool_definition(server_id: str, tool_name: str) -> "dict | None":
-    """Cache only: callers must not spawn a stdio subprocess or block on a probe."""
+    """cache only: callers must not spawn a stdio subprocess or block on a probe."""
     tools = get_cached_tools(server_id) or ()
     return next((t for t in tools if isinstance(t, dict) and t.get("name") == tool_name), None)
 
