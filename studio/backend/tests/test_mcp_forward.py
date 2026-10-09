@@ -21,7 +21,7 @@ from studio_mcp.forward import (
     parse_json,
 )
 from utils import keyless_api_access
-from utils.account_context import current_account
+from utils.account_context import AccountContext, bind_account, current_account, reset_account
 from utils.client_ip import client_ip, is_direct_local_request
 
 from .mcp_harness import call_tool, fake_studio, served
@@ -253,3 +253,66 @@ def test_padded_bodies_parse():
     }
     with pytest.raises(ValueError):
         ndjson_last(b"\n \n")
+
+
+def test_the_routes_account_binding_never_reaches_the_tool(studio_with_probe):
+    raw_key, _row = storage.create_api_key(storage.DEFAULT_ADMIN_USERNAME, name = "agent")
+    sentinel = AccountContext("sentinel-account", "sentinel")
+
+    async def run():
+        token = bind_account(sentinel)
+        try:
+            response = await forward(_caller(studio_with_probe, raw_key), "GET", PROBE_PATH)
+            return response.json()["account"], current_account()
+        finally:
+            reset_account(token)
+
+    route_account, after = asyncio.run(run())
+    assert route_account == "owner"
+    assert after == sentinel
+
+
+def test_cancelling_the_tool_cancels_the_forwarded_call():
+    state = {}
+
+    async def run():
+        started = asyncio.Event()
+
+        async def hang(request, body):
+            started.set()
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                state["route_cancelled"] = True
+                raise
+
+        studio = fake_studio({("GET", "/api/inference/hang"): hang})
+        tool = asyncio.create_task(
+            forward(_caller(studio, "sk-unsloth-test"), "GET", "/api/inference/hang")
+        )
+        await asyncio.wait_for(started.wait(), 10)
+        tool.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await tool
+        await asyncio.sleep(0)
+
+    asyncio.run(run())
+    assert state == {"route_cancelled": True}
+
+
+def test_concurrent_calls_under_different_keys_keep_their_own_account(studio_with_probe):
+    owner_key, _row = storage.create_api_key(storage.DEFAULT_ADMIN_USERNAME, name = "owner-agent")
+    alice = storage.issue_account_setup_code(username = "alice")["account"]["account_id"]
+    alice_key, _row = storage.create_api_key("alice", name = "alice-agent", account_id = alice)
+
+    async def run():
+        calls = [
+            forward(_caller(studio_with_probe, key), "GET", PROBE_PATH)
+            for key in (owner_key, alice_key) * 4
+        ]
+        responses = await asyncio.gather(*calls)
+        return [response.json()["account"] for response in responses], current_account()
+
+    accounts, after = asyncio.run(run())
+    assert accounts == ["owner", alice] * 4
+    assert after.account_id == "owner"

@@ -7,6 +7,7 @@ The in-process client is deliberately remote: a TEST-NET peer and an ``.invalid`
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any, Optional
 
@@ -66,20 +67,26 @@ async def forward(
     """Send one request to Studio as ``caller`` and return the buffered response. ``content`` must be bytes, so httpx sets Content-Length: the upload routes answer a streamed body with 411."""
     if content is not None and not isinstance(content, (bytes, bytearray)):
         raise TypeError("forward() uploads need bytes")
+    # The route binds the account ContextVar in whatever task runs it; its own task keeps that out of the tool.
+    body = {"params": params, "json": json_body, "content": content, "files": files, "data": data}
+    task = asyncio.create_task(
+        _send(caller, method, path, body, _headers(caller, hub_header, content_type))
+    )
+    try:
+        return await task
+    except asyncio.CancelledError:
+        task.cancel()
+        raise
+
+
+async def _send(
+    caller: Caller, method: str, path: str, body: dict[str, Any], headers: dict[str, str]
+) -> httpx.Response:
     transport = httpx.ASGITransport(app = caller.studio_app, client = FORWARD_CLIENT)
     async with httpx.AsyncClient(
         transport = transport, base_url = FORWARD_BASE_URL, timeout = None
     ) as client:
-        request = client.build_request(
-            method,
-            path,
-            params = params,
-            json = json_body,
-            content = content,
-            files = files,
-            data = data,
-            headers = _headers(caller, hub_header, content_type),
-        )
+        request = client.build_request(method, path, headers = headers, **body)
         checked_path(request.url)
         return await client.send(request)
 
