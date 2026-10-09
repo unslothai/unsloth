@@ -293,3 +293,10 @@ def test_deepspeed_engine_keeps_its_own_forward():
     from unsloth.models.diffusion_block import _is_distributed_wrapper
     engine = type("DeepSpeedEngine", (nn.Module,), {})()
     assert _is_distributed_wrapper(engine) and not _is_distributed_wrapper(_LM())
+
+
+def test_unknown_time_weighting_is_rejected():
+    llada2, _ = _profiles()
+    inputs = _batch([3], [20], 20)
+    with pytest.raises(ValueError, match = "diffusion_time_weighting"):
+        llada2.compute_loss(_LM(), inputs, SimpleNamespace(diffusion_time_weighting = "inverse-t"))

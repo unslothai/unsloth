@@ -28,6 +28,7 @@ from .diffusion_profiles import (
     diffusion_model_types,
     resolve_diffusion_profile,
     restore_rotary_buffers,
+    unwrap_diffusion_model,
 )
 from .llama import logger
 from .loader_utils import (
@@ -406,7 +407,7 @@ class FastDiffusionModel:
 
         if not return_tokenizer:
             if profile is not None:
-                model = profile.prepare_model(model, None)
+                profile.prepare_model(unwrap_diffusion_model(model), None)
             return model, None
 
         # Prefer the processor (chat template plus tokenizer), falling back to a bare tokenizer, returned as
@@ -451,7 +452,8 @@ class FastDiffusionModel:
             )
 
         if profile is not None:
-            model = profile.prepare_model(model, tokenizer)
+            # On the base module: the objectives read these attributes after unwrapping PEFT / DDP.
+            profile.prepare_model(unwrap_diffusion_model(model), tokenizer)
         return model, tokenizer
 
     @staticmethod

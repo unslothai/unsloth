@@ -202,6 +202,10 @@ def test_reloaded_adapter_still_refuses_merge(tmp_path):
     reloaded, _ = FastModel.from_pretrained(str(tmp_path), dtype = torch.float32, device_map = "cpu")
     with pytest.raises(RuntimeError, match = "share base weights"):
         reloaded.merge_and_unload()
+    # The objective reads its token bookkeeping from the unwrapped module.
+    from unsloth.models.diffusion_profiles import unwrap_diffusion_model
+
+    assert "_unsloth_diffusion_eos_token_id" in vars(unwrap_diffusion_model(reloaded))
 
 
 def test_reload_uses_the_adapters_saved_tokenizer(tmp_path):

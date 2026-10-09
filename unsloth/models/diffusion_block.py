@@ -233,7 +233,12 @@ class BlockDiffusionProfile(DiffusionProfile):
             # Project only the masked positions: the vocab-sized logits are the memory peak otherwise.
             logits = head(hidden[masked]).float()
         nll = F.cross_entropy(logits, clean[masked], reduction = "none")
-        if self.option(args, "diffusion_time_weighting", "none") == "inverse_t":
+        weighting = self.option(args, "diffusion_time_weighting", "none")
+        if weighting not in ("inverse_t", "none"):
+            raise ValueError(
+                f"Unsloth: {self.name} does not support diffusion_time_weighting={weighting!r}."
+            )
+        if weighting == "inverse_t":
             nll = nll / p[:, None].expand_as(masked)[masked].float()
         if self.defaults.get("normalize", "masked") == "supervised":
             denominator = maskable.sum()
