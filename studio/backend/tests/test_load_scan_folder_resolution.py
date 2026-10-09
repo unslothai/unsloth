@@ -251,3 +251,106 @@ def test_scan_folder_nested_inside_the_hub_cache_still_loads_from_disk(roots, mo
     snapshot = _cache_repo(nested, ["Tiny-Probe-Q4_K_M.gguf"])
     rewritten = inf._as_local_scan_folder_request(_request(model_path = _REPO), True)
     assert rewritten.model_path == str(snapshot)
+
+
+_MUSE_FILE_ID = "unsloth/Muse-Glimmer-30B-GGUF/Muse-Glimmer-30B-UD-Q4_K_XL.gguf"
+_PROBE_FILE_ID = f"{_REPO}/Tiny-Probe-UD-Q5_K_XL.gguf"
+
+
+def test_repo_file_id_resolves_to_local_scan_folder_copy(monkeypatch):
+    seen = []
+
+    def fake_resolve(wanted, **kwargs):
+        seen.append(wanted)
+        return (_SNAPSHOT, "UD-Q4_K_XL", "loader")
+
+    monkeypatch.setattr(resolver, "resolve_local_gguf", fake_resolve)
+    monkeypatch.setattr(inf, "_load_dir_offers_file", lambda load_dir, name, variant: True)
+    rewritten = inf._as_local_scan_folder_request(_request(model_path = _MUSE_FILE_ID), True)
+    assert seen == ["unsloth/Muse-Glimmer-30B-GGUF:UD-Q4_K_XL"]
+    assert rewritten.model_path == _SNAPSHOT
+    assert rewritten.gguf_variant == "UD-Q4_K_XL"
+
+
+def test_repo_file_id_prefers_the_file_over_a_pinned_variant(monkeypatch):
+    seen = []
+
+    def fake_resolve(wanted, **kwargs):
+        seen.append(wanted)
+        return (_SNAPSHOT, "UD-Q4_K_XL", "loader")
+
+    monkeypatch.setattr(resolver, "resolve_local_gguf", fake_resolve)
+    monkeypatch.setattr(inf, "_load_dir_offers_file", lambda load_dir, name, variant: True)
+    request = _request(model_path = _MUSE_FILE_ID, gguf_variant = "Q8_0")
+    rewritten = inf._as_local_scan_folder_request(request, True)
+    assert seen == ["unsloth/Muse-Glimmer-30B-GGUF:UD-Q4_K_XL"]
+    assert rewritten.gguf_variant == "UD-Q4_K_XL"
+
+
+def test_repo_file_id_local_miss_keeps_the_request_untouched(monkeypatch):
+    monkeypatch.setattr(resolver, "resolve_local_gguf", lambda wanted, **kwargs: None)
+    original = _request(model_path = _MUSE_FILE_ID)
+    assert inf._as_local_scan_folder_request(original, True) is original
+
+
+def test_repo_file_id_not_in_snapshot_stays_remote(monkeypatch):
+    monkeypatch.setattr(
+        resolver, "resolve_local_gguf", lambda wanted, **kwargs: (_SNAPSHOT, "UD-Q4_K_XL", "loader")
+    )
+    monkeypatch.setattr(inf, "_load_dir_offers_file", lambda load_dir, name, variant: False)
+    original = _request(model_path = _MUSE_FILE_ID)
+    assert inf._as_local_scan_folder_request(original, True) is original
+
+
+def test_repo_file_id_owner_guard_applies(monkeypatch):
+    def fail(wanted, **kwargs):
+        pytest.fail("resolver consulted for a non-owner session")
+
+    monkeypatch.setattr(resolver, "resolve_local_gguf", fail)
+    request = _request(model_path = _MUSE_FILE_ID)
+    assert inf._as_local_scan_folder_request(request, False) is request
+
+
+def test_repo_file_id_scan_folder_copy_loads_from_disk(roots):
+    _active, scan = roots
+    snapshot = _cache_repo(scan, ["Tiny-Probe-UD-Q5_K_XL.gguf"])
+    rewritten = inf._as_local_scan_folder_request(_request(model_path = _PROBE_FILE_ID), True)
+    assert (rewritten.model_path, rewritten.gguf_variant) == (str(snapshot), "UD-Q5_K_XL")
+    # A stale file id (the quant exists, the file name does not) must not load a different file.
+    stale = f"{_REPO}/Tiny-Probe-Renamed-UD-Q5_K_XL.gguf"
+    untouched = inf._as_local_scan_folder_request(_request(model_path = stale), True)
+    assert (untouched.model_path, untouched.gguf_variant) == (stale, None)
+
+
+def test_repo_file_id_companion_name_does_not_load_a_quant(roots):
+    # A companion name can carry a real quant token (mmproj-…-F16 -> F16): it must not rewrite
+    # to the weights file of that quant, which the picker never offered under this name.
+    _active, scan = roots
+    _cache_repo(scan, ["Tiny-Probe-F16.gguf", "mmproj-Tiny-Probe-F16.gguf"])
+    companion = f"{_REPO}/mmproj-Tiny-Probe-F16.gguf"
+    untouched = inf._as_local_scan_folder_request(_request(model_path = companion), True)
+    assert (untouched.model_path, untouched.gguf_variant) == (companion, None)
+
+
+def test_repo_file_id_uppercase_suffix_resolves(roots):
+    _active, scan = roots
+    snapshot = _cache_repo(scan, ["Tiny-Probe-UD-Q5_K_XL.gguf"])
+    rewritten = inf._as_local_scan_folder_request(
+        _request(model_path = f"{_REPO}/Tiny-Probe-UD-Q5_K_XL.GGUF"), True
+    )
+    assert (rewritten.model_path, rewritten.gguf_variant) == (str(snapshot), "UD-Q5_K_XL")
+
+
+def test_repo_file_id_native_path_lease_keeps_the_requested_id(monkeypatch):
+    def fail(wanted, **kwargs):
+        pytest.fail("resolver consulted under a native lease")
+
+    monkeypatch.setattr(resolver, "resolve_local_gguf", fail)
+    request = _request(model_path = _MUSE_FILE_ID, native_path_lease = "lease-token")
+    assert inf._as_local_scan_folder_request(request, True) is request
+
+
+def test_repo_file_id_requires_a_gguf_suffix(monkeypatch):
+    monkeypatch.setattr(resolver, "resolve_local_gguf", lambda wanted, **kwargs: None)
+    original = _request(model_path = "unsloth/Muse-Glimmer-30B-GGUF/config.json")
+    assert inf._as_local_scan_folder_request(original, True) is original

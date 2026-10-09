@@ -8808,10 +8808,46 @@ def _as_ollama_manifest_request(request):
     return request.model_copy(update = {"model_path": ref})
 
 
+_REPO_FILE_GGUF_ID = re.compile(r"^([^/]+/[^/]+)/([^/]+\.gguf)$", re.IGNORECASE)
+
+
+def _repo_file_gguf_id(identifier: str):
+    """('org/name', 'File.gguf') when *identifier* names one GGUF file of a repo, else None.
+
+    The quant picker and remembered quant entries send the file their row showed, not the
+    bare repo id, so the scan-folder rewrite below has to read the repo out of that form.
+    """
+    match = _REPO_FILE_GGUF_ID.match(identifier)
+    return (match.group(1), match.group(2)) if match else None
+
+
+def _load_dir_offers_file(load_dir: str, filename: str, variant: str) -> bool:
+    """Whether *filename* is the file the resolved *variant* is served from (casefolded).
+
+    Listing the selectable variants, not just the directory, keeps a companion or drafter name
+    (which can carry a real quant token, e.g. ``mmproj-…-F16``) from rewriting to that quant's
+    weights file, and a stale file id (a renamed quant) from loading whatever file the repo
+    still holds.
+    """
+    from hub.utils.gguf import list_local_gguf_variants
+
+    try:
+        offered, _has_vision = list_local_gguf_variants(str(load_dir), require_existing_files = True)
+    except Exception:
+        return False
+    wanted = filename.casefold()
+    return any(
+        str(getattr(v, "filename", "")).casefold() == wanted
+        and str(getattr(v, "quant", "")) == variant
+        for v in offered
+    )
+
+
 def _as_local_scan_folder_request(request, owner_session: bool):
-    """*request* with a repo id whose GGUF copy sits outside the active hub cache (e.g. a scan folder) rewritten to it."""
+    """*request* with a repo id (or a repo/file.gguf id) whose GGUF copy sits outside the active hub cache (e.g. a scan folder) rewritten to it."""
     from core.inference.local_model_resolver import _is_abs_path_id, resolve_local_gguf
     from core.inference.model_ids import hf_cache_repo_id
+    from utils.models.model_config import _gguf_variant_key
 
     identifier = (request.model_path or "").strip()
     # Bare names mean unsloth/<name> remotely; a same-stemmed local file must not win them.
@@ -8825,7 +8861,18 @@ def _as_local_scan_folder_request(request, owner_session: bool):
     # Owner session only (as _refused_repo_cached_gguf); a native lease names one exact artifact.
     if not owner_session or getattr(request, "native_path_lease", None):
         return request
-    wanted = f"{identifier}:{request.gguf_variant}" if request.gguf_variant else identifier
+    # A quant row names the file it showed: the file is the exact artifact, so its variant key
+    # decides the lookup and a pinned gguf_variant that disagrees with it cannot win.
+    repo_file = _repo_file_gguf_id(identifier)
+    if repo_file is not None:
+        repo_id, file_name = repo_file
+        file_variant = _gguf_variant_key(file_name)
+        if not file_variant:
+            return request
+        wanted = f"{repo_id}:{file_variant}"
+    else:
+        repo_id = identifier
+        wanted = f"{identifier}:{request.gguf_variant}" if request.gguf_variant else identifier
     try:
         resolved = resolve_local_gguf(wanted)
     except Exception:
@@ -8834,7 +8881,11 @@ def _as_local_scan_folder_request(request, owner_session: bool):
         return request
     load_path, variant = str(resolved[0]), resolved[1]
     # Only a GGUF snapshot of this repo: its path maps back to the repo id (status, unload, consent).
-    if not variant or (hf_cache_repo_id(load_path) or "").lower() != identifier.lower():
+    if not variant or (hf_cache_repo_id(load_path) or "").lower() != repo_id.lower():
+        return request
+    # A stale or companion file id must not load another file of the repo: the named file has
+    # to be the one the resolved quant is served from.
+    if repo_file is not None and not _load_dir_offers_file(load_path, file_name, variant):
         return request
     # A repo directly in the active hub cache already loads by repo id without downloading.
     try:
