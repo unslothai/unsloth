@@ -11,7 +11,22 @@ import sys
 RESULT_PREFIX = "UNSLOTH_SDPA_PROBE "
 
 
+def _register_rocm_dll_directories() -> list:
+    import os
+
+    handles = []
+    if sys.platform == "win32":
+        for directory in os.environ.get("UNSLOTH_STUDIO_PROBE_ROCM_DLL_DIRS", "").split(os.pathsep):
+            if directory and os.path.isdir(directory):
+                try:
+                    handles.append(os.add_dll_directory(directory))
+                except (OSError, AttributeError):
+                    pass
+    return handles
+
+
 def probe(device: str, dtype_name: str, backend_name: str) -> str:
+    _handles = _register_rocm_dll_directories()
     import torch
     from torch.nn.attention import SDPBackend, sdpa_kernel
 

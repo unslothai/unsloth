@@ -140,7 +140,27 @@ _SDPA_PROBE_LOCK = threading.Lock()
 _SDPA_PROBE_CACHE: dict[tuple[str, str], tuple[str, ...]] = {}
 
 
+# An incomplete ROCm probe is retried, but not by every check of the same load (up to 90 s per attempt).
+_ROCM_PROBE_RETRY_S = 120.0
+_ROCM_PROBE_INCOMPLETE: dict[tuple[str, str], float] = {}
+
+
 def _probe_rocm_sdpa_kernels(device: str, dtype: Any) -> tuple[str, ...]:
+    import time
+
+    key = (device, str(dtype))
+    last = _ROCM_PROBE_INCOMPLETE.get(key)
+    if last is not None and time.monotonic() - last < _ROCM_PROBE_RETRY_S:
+        return ()
+    available = _run_rocm_sdpa_children(device, dtype)
+    if available:
+        _ROCM_PROBE_INCOMPLETE.pop(key, None)
+    else:
+        _ROCM_PROBE_INCOMPLETE[key] = time.monotonic()
+    return available
+
+
+def _run_rocm_sdpa_children(device: str, dtype: Any) -> tuple[str, ...]:
     """Isolate each backend's HIP error state from Studio and from the other probes."""
     from concurrent.futures import ThreadPoolExecutor
     import json
@@ -148,8 +168,17 @@ def _probe_rocm_sdpa_kernels(device: str, dtype: Any) -> tuple[str, ...]:
     import subprocess
     import sys
     from utils.child_stdio import utf8_child_env
+    from utils.native_path_leases import child_env_without_native_path_secret
     from utils.subprocess_compat import windows_hidden_subprocess_kwargs
+    from utils.torch_device_probe import ROCM_DLL_DIRS_ENV_VAR, _rocm_dll_directories
     from .rocm_sdpa_probe import RESULT_PREFIX
+
+    # Same bootstrap as the device probe: a fresh interpreter lacks main.py's ROCm DLL registrations.
+    child_env = child_env_without_native_path_secret()
+    dll_directories = _rocm_dll_directories()
+    if dll_directories:
+        child_env[ROCM_DLL_DIRS_ENV_VAR] = os.pathsep.join(dll_directories)
+    child_env = utf8_child_env(child_env)
 
     def probe(backend: str) -> str:
         try:
@@ -166,7 +195,7 @@ def _probe_rocm_sdpa_kernels(device: str, dtype: Any) -> tuple[str, ...]:
                 encoding = "utf-8",
                 errors = "replace",
                 timeout = 45,
-                env = utf8_child_env(),
+                env = child_env,
                 **windows_hidden_subprocess_kwargs(),
             )
             replies = [
@@ -197,7 +226,10 @@ def _probe_rocm_sdpa_kernels(device: str, dtype: Any) -> tuple[str, ...]:
 
 
 def _enabled_sdpa_kernels(kernels: tuple[str, ...]) -> tuple[str, ...]:
+    if not kernels:
+        return ()
     import torch
+
     flags = {
         SDPA_FLASH: "flash_sdp_enabled",
         SDPA_MEM_EFFICIENT: "mem_efficient_sdp_enabled",

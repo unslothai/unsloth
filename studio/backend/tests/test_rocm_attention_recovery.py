@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import json
+import os
 import subprocess
 import threading
 from types import SimpleNamespace
@@ -31,11 +32,13 @@ def flags():
         write(True)
     att._SDPA_PROBE_CACHE.clear()
     att._ROCM_GUARD_DISABLED.clear()
+    att._ROCM_PROBE_INCOMPLETE.clear()
     yield
     for value, write in before:
         write(value)
     att._SDPA_PROBE_CACHE.clear()
     att._ROCM_GUARD_DISABLED.clear()
+    att._ROCM_PROBE_INCOMPLETE.clear()
 
 
 @pytest.mark.parametrize("platform", ["linux", "win32"])
@@ -228,3 +231,52 @@ def test_a_successful_retry_after_an_incomplete_probe_still_disables_failed_kern
     att.apply_attention_backend(SimpleNamespace(), None, target = target)
     assert not torch.backends.cuda.flash_sdp_enabled()
     assert not torch.backends.cuda.mem_efficient_sdp_enabled()
+
+
+def test_probe_children_inherit_windows_rocm_dll_directories(monkeypatch, tmp_path):
+    from utils import torch_device_probe
+
+    monkeypatch.setattr(torch_device_probe, "_rocm_dll_directories", lambda: [str(tmp_path)])
+    envs = []
+
+    def run(cmd, **kwargs):
+        envs.append(kwargs["env"])
+        return SimpleNamespace(returncode = 0, stdout = probe.RESULT_PREFIX + '"available"')
+
+    monkeypatch.setattr(subprocess, "run", run)
+    att._probe_rocm_sdpa_kernels("cuda:0", torch.bfloat16)
+    assert envs and all(e[torch_device_probe.ROCM_DLL_DIRS_ENV_VAR] == str(tmp_path) for e in envs)
+
+    added = []
+    monkeypatch.setattr(probe.sys, "platform", "win32")
+    monkeypatch.setattr(os, "add_dll_directory", added.append, raising = False)
+    monkeypatch.setenv(torch_device_probe.ROCM_DLL_DIRS_ENV_VAR, str(tmp_path))
+    probe._register_rocm_dll_directories()
+    assert added == [str(tmp_path)]
+
+
+def test_an_unanswered_probe_needs_no_torch(monkeypatch):
+    import sys
+
+    monkeypatch.setitem(sys.modules, "torch", None)
+    assert att.available_sdpa_kernels(SimpleNamespace(device = "")) == ()
+    assert att.sdpa_math_only(SimpleNamespace(device = "")) is False
+
+
+def test_an_incomplete_child_probe_is_not_relaunched_by_every_check_of_one_load(monkeypatch):
+    calls = []
+
+    def run(cmd, **kwargs):
+        calls.append(cmd[-1])
+        raise subprocess.TimeoutExpired(cmd, 45)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(att, "_is_cuda_rocm", lambda t: True)
+    monkeypatch.setattr("core._torchao_stub._module_is_rocm", lambda m: True)
+    target = SimpleNamespace(device = "cuda:0", dtype = torch.bfloat16)
+    att.apply_attention_backend(SimpleNamespace(), None, target = target)
+    assert not att.sdpa_math_only(target)
+    assert calls == ["MATH"]
+    monkeypatch.setattr(att, "_ROCM_PROBE_RETRY_S", 0.0)
+    att.sdpa_math_only(target)
+    assert calls == ["MATH", "MATH"]
