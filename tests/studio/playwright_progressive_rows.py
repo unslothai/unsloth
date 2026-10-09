@@ -97,15 +97,9 @@ async def check(browser, url, engine):
     state = await settle(page)
     assert state["rows"] == 200 and state["renders"] == 400, state
 
-    # The last page: every row, then `end`, and no sentinel or observer left behind.
-    for _ in range(40):
-        state = await scroll_to_bottom(page)
-        if state["end"]:
-            break
-    assert state["rows"] == 1000 and state["end"] and not state["sentinelLast"], state
-    assert state["observers"] == 0, state
-
-    # Unmounting disconnects; mounting again starts from the first page, as reopening Recents does.
+    # Collapsing mid-way, with rows still to page and an observer armed, disconnects it; mounting
+    # again starts from the first page, as reopening Recents does.
+    assert await page.evaluate("window.liveObservers") == 1
     await page.evaluate("window.fixture.setMounted(false)")
     await page.wait_for_timeout(200)
     assert await page.evaluate("window.liveObservers") == 0
@@ -120,6 +114,14 @@ async def check(browser, url, engine):
     await page.evaluate("window.fixture.setCount(1000)")
     state = await settle(page)
     assert state["rows"] == 50 and state["sentinelLast"] and state["observers"] == 1, state
+
+    # The last page: every row, then `end`, and no sentinel or observer left behind.
+    for _ in range(40):
+        state = await scroll_to_bottom(page)
+        if state["end"]:
+            break
+    assert state["rows"] == 1000 and state["end"] and not state["sentinelLast"], state
+    assert state["observers"] == 0, state
 
     # A sentinel still in range after a page asks for the next one without any scroll: the observer
     # reports a change of intersection, so this holds only if it is re-armed after each page. Rows
