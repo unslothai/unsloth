@@ -289,6 +289,7 @@ def test_export_returns_a_job_at_once_and_the_job_completes(monkeypatch):
                 "push_to_hub": False,
                 "private": False,
                 "quantization_method": ["Q4_K_M", "Q8_0"],
+                "expected_checkpoint": f"{OUT}/qwen-lora/checkpoint-30",
             },
         ),
     ]

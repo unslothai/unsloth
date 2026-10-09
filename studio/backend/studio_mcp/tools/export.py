@@ -123,7 +123,10 @@ async def export_model(
             )
         job.started_seq = integer(before.get("last_op_seq")) if isinstance(before, dict) else None
         job.phase = "exporting"
-        await _op(caller, f"/api/export/export/{format}", body)
+        # The route checks this under the export lock, which closes the gap the status check leaves.
+        await _op(
+            caller, f"/api/export/export/{format}", {**body, "expected_checkpoint": found.path}
+        )
         export_jobs.reconcile(job, await route_json("GET", EXPORT_STATUS, caller = caller))
 
     # Checked again with no await before start, so two calls at once cannot both get past the guard.
