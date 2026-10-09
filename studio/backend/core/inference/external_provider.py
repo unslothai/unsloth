@@ -4242,16 +4242,69 @@ class ExternalProviderClient:
                                                     }
                                                 }
                                             )
-            # Gemini 3 strict function-calling requires text-part thoughtSignatures to be replayed on history; the
-            # frontend stows the latest one as extra_content.google.thought_signature on the assistant message and we
-            # pin it onto the last text part here.
-            if role == "assistant" and parts:
+            # Gemini history must keep every native thought/answer boundary intact so a signature is never moved
+            # onto adjacent unsigned text. The frontend carries those exact parts because OpenAI reasoning_content
+            # is not otherwise replayed to native Gemini.
+            if role == "assistant":
                 _msg_extra = msg.get("extra_content") if isinstance(msg, dict) else None
                 if isinstance(_msg_extra, dict):
                     _msg_g = _msg_extra.get("google") or {}
                     if isinstance(_msg_g, dict):
+                        _replayed_thoughts: list[dict[str, Any]] = []
+                        _thought_parts = _msg_g.get("thought_parts")
+                        if isinstance(_thought_parts, list):
+                            for _thought_part in _thought_parts:
+                                if not isinstance(_thought_part, dict):
+                                    continue
+                                _thought_text = _thought_part.get("text")
+                                _thought_sig = _thought_part.get(
+                                    "thought_signature"
+                                ) or _thought_part.get("thoughtSignature")
+                                if not isinstance(_thought_text, str):
+                                    continue
+                                if _thought_sig is not None and (
+                                    not isinstance(_thought_sig, str) or not _thought_sig
+                                ):
+                                    continue
+                                _replayed_thought: dict[str, Any] = {
+                                    "text": _thought_text,
+                                    "thought": True,
+                                }
+                                if isinstance(_thought_sig, str):
+                                    _replayed_thought["thoughtSignature"] = _thought_sig
+                                _replayed_thoughts.append(_replayed_thought)
+                        _signed_answers = _msg_g.get("answer_parts")
+                        _replayed_answers: list[dict[str, Any]] = []
+                        if isinstance(_signed_answers, list):
+                            for _signed_answer in _signed_answers:
+                                if not isinstance(_signed_answer, dict):
+                                    continue
+                                _answer_text = _signed_answer.get("text")
+                                _answer_sig = _signed_answer.get(
+                                    "thought_signature"
+                                ) or _signed_answer.get("thoughtSignature")
+                                if not isinstance(_answer_text, str):
+                                    continue
+                                if _answer_sig is not None and (
+                                    not isinstance(_answer_sig, str) or not _answer_sig
+                                ):
+                                    continue
+                                _answer_part: dict[str, Any] = {"text": _answer_text}
+                                if isinstance(_answer_sig, str):
+                                    _answer_part["thoughtSignature"] = _answer_sig
+                                _replayed_answers.append(_answer_part)
+                        if _replayed_answers:
+                            # `content` is the UI's merged rendering of these exact native parts. Replace its text
+                            # rather than appending a second copy, and keep empty signature-only parts intact.
+                            parts = [
+                                *_replayed_thoughts,
+                                *_replayed_answers,
+                                *(part for part in parts if "text" not in part),
+                            ]
+                        else:
+                            parts[:0] = _replayed_thoughts
                         _msg_sig = _msg_g.get("thought_signature") or _msg_g.get("thoughtSignature")
-                        if isinstance(_msg_sig, str) and _msg_sig:
+                        if not _replayed_answers and isinstance(_msg_sig, str) and _msg_sig:
                             for _idx in range(len(parts) - 1, -1, -1):
                                 if "text" in parts[_idx]:
                                     parts[_idx] = {
@@ -4590,8 +4643,7 @@ class ExternalProviderClient:
             }
             thinking_budget: Optional[int] = None
             if effort_lc == "none" or enable_thinking is False:
-                # Pro-tier 2.5 rejects budget=0 (400 "only works in thinking mode"), so coerce to a small positive
-                # value.
+                # Gemini 2.5 Pro rejects zero, so use a small positive budget.
                 thinking_budget = 128 if _is_pro_thinking_only else 0
             elif effort_lc in _EFFORT_TO_BUDGET:
                 thinking_budget = _EFFORT_TO_BUDGET[effort_lc]
@@ -4601,12 +4653,17 @@ class ExternalProviderClient:
                 gen_config["thinkingConfig"] = {
                     "thinkingBudget": thinking_budget,
                 }
+        if (
+            "thinkingConfig" in gen_config
+            and effort_lc not in ("none", "off")
+            and enable_thinking is not False
+        ):
+            gen_config["thinkingConfig"]["includeThoughts"] = True
 
         if gen_config:
             body["generationConfig"] = gen_config
 
-        # Hosted tools: googleSearch (grounding) and codeExecution. Image-mode rejects codeExecution; only Gemini 3
-        # image models accept googleSearch.
+        # Image models reject codeExecution; only Gemini 3 image models accept googleSearch.
         def _gemini_image_model_allows_google_search(_m: str) -> bool:
             return (
                 _m.startswith("gemini-3-pro-image")
@@ -4876,8 +4933,12 @@ class ExternalProviderClient:
             }
             return f"data: {_json.dumps(chunk)}"
 
-        def _text_chunk(text: str, extra_content: Optional[dict[str, Any]] = None) -> str:
-            delta: dict[str, Any] = {"content": text}
+        def _text_chunk(
+            text: str,
+            extra_content: Optional[dict[str, Any]] = None,
+            field: str = "content",
+        ) -> str:
+            delta: dict[str, Any] = {field: text}
             if extra_content:
                 delta["extra_content"] = extra_content
             chunk = {
@@ -4894,13 +4955,41 @@ class ExternalProviderClient:
             return f"data: {_json.dumps(chunk)}"
 
         def _gemini_part_extra(part: dict[str, Any]) -> Optional[dict[str, Any]]:
-            """Return ``{"google": {"thought_signature": ...}}`` when the Gemini stream part carries
-            a `thoughtSignature` we must replay on a follow-up turn (Gemini 3 image editing and
-            tool contexts both require an exact signature echo)."""
+            """Return replay metadata for one Gemini native stream part.
+
+            Thought and answer parts keep their exact boundaries, including unsigned text beside signed
+            text and signature-only empty parts. Gemini validates a signature against the part it originally
+            signed, so collapsing these to one scalar signature corrupts follow-up history.
+            """
             sig = part.get("thoughtSignature") or part.get("thought_signature")
-            if isinstance(sig, str) and sig:
-                return {"google": {"thought_signature": sig}}
-            return None
+            valid_sig = sig if isinstance(sig, str) and sig else None
+            google: dict[str, Any] = {}
+            if valid_sig is not None:
+                google["thought_signature"] = valid_sig
+            if part.get("thought") is True:
+                thought_part: dict[str, Any] = {"text": part.get("text", "")}
+                if valid_sig is not None:
+                    thought_part["thought_signature"] = valid_sig
+                google["thought_part"] = thought_part
+                if valid_sig is not None:
+                    google["thought"] = True
+            elif ("text" in part and isinstance(part.get("text"), str)) or (
+                valid_sig is not None
+                and not any(
+                    key in part
+                    for key in (
+                        "functionCall",
+                        "executableCode",
+                        "codeExecutionResult",
+                        "inlineData",
+                    )
+                )
+            ):
+                answer_part: dict[str, Any] = {"text": part.get("text", "")}
+                if valid_sig is not None:
+                    answer_part["thought_signature"] = valid_sig
+                google["answer_part"] = answer_part
+            return {"google": google} if google else None
 
         # Gemini finish reasons -> OpenAI vocabulary.
         _finish_reason_map: dict[str, Optional[str]] = {
@@ -5099,14 +5188,18 @@ class ExternalProviderClient:
                                 for part in parts:
                                     if not isinstance(part, dict):
                                         continue
-                                    # Text delta. Stow part-level `thoughtSignature` on the delta so Gemini 3 turns
-                                    # needing an exact signature echo round-trip cleanly.
+                                    # Preserve thoughtSignature for Gemini 3's exact follow-up echo.
                                     text = part.get("text")
                                     _part_extra = _gemini_part_extra(part)
                                     if isinstance(text, str) and text:
                                         yield _text_chunk(
                                             text,
                                             extra_content = _part_extra,
+                                            field = (
+                                                "reasoning_content"
+                                                if part.get("thought")
+                                                else "content"
+                                            ),
                                         )
                                     elif _part_extra is not None and not any(
                                         k in part
@@ -5117,8 +5210,7 @@ class ExternalProviderClient:
                                             "inlineData",
                                         )
                                     ):
-                                        # Empty-content part carrying a thoughtSignature: emit an empty delta to
-                                        # preserve the signature.
+                                        # Emit an empty delta when a signature has no payload.
                                         yield _text_chunk(
                                             "",
                                             extra_content = _part_extra,
