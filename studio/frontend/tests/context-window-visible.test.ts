@@ -147,15 +147,10 @@ test("an uncounted chat reports no per-turn rows", () => {
 
 test("the header renders the bar for single chats and active project threads", () => {
   const page = readSrc("features/chat/chat-page.tsx");
-  const gate = page.match(
-    /\{showContextWindowUsage &&([\s\S]*?)\? \(/,
-  )?.[1];
-  assert.ok(gate);
   assert.match(
-    gate,
-    /view\.mode === "single"\s*\|\|\s*\(view\.mode === "project" && activeThreadId != null\)/,
+    page,
+    /\{showContextWindowUsage &&\s*\(view\.mode === "single" \|\|\s*\(view\.mode === "project" && activeThreadId != null\)\) &&\s*\(contextUsage \|\| contextWindowKnown\) \? \(/,
   );
-  assert.match(gate, /\(contextUsage \|\| contextWindowKnown\)/);
   assert.match(
     page,
     /used=\{contextUsage\?\.contextTokens \?\? contextUsage\?\.totalTokens \?\? null\}/,
