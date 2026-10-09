@@ -8,6 +8,7 @@ Runs anywhere: sys.platform and ctypes' Windows entry points are faked."""
 import ctypes
 import os
 import sys
+import types
 
 import pytest
 
@@ -92,6 +93,7 @@ def clean_thread_env():
         "OMP_NUM_THREADS",
         "MKL_NUM_THREADS",
         "NUMEXPR_NUM_THREADS",
+        "UNSLOTH_OPENBLAS_DEFAULTED",
     ):
         os.environ.pop(name, None)
     yield
@@ -99,15 +101,43 @@ def clean_thread_env():
     os.environ.update(saved)
 
 
-# The defect: on Windows ROCm the env default never reaches the loaded DLL. Fails before the fix.
-def test_process_configuration_caps_a_loaded_rocm_openblas(
-    fake_windows, clean_thread_env, monkeypatch
-):
-    monkeypatch.setitem(sys.modules, "torch", sys.modules.get("torch") or object())
+def _fake_torch(threads):
+    return types.SimpleNamespace(get_num_threads = lambda: threads)
+
+
+# The defect: on Windows ROCm a user's OPENBLAS_NUM_THREADS never reaches the loaded DLL. Fails before the fix.
+def test_user_openblas_one_reaches_the_dll(fake_windows, clean_thread_env, monkeypatch):
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(12))
+    monkeypatch.setenv("OPENBLAS_NUM_THREADS", "1")
 
     configure_cpu_threads()
 
     assert fake_windows == [1]
+
+
+# Studio's own default of 1 is meant for numpy; the DLL is torch's CPU BLAS and gets torch's thread count.
+def test_studio_default_gives_the_dll_torchs_thread_count(
+    fake_windows, clean_thread_env, monkeypatch
+):
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(12))
+
+    configure_cpu_threads()
+
+    assert os.environ["OPENBLAS_NUM_THREADS"] == "1"
+    assert fake_windows == [12]
+
+
+# A spawned worker only sees the inherited env, so the marker must tell it the 1 is Studio's default.
+def test_a_worker_inheriting_the_default_gives_the_dll_torchs_thread_count(
+    fake_windows, clean_thread_env, monkeypatch
+):
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(12))
+    monkeypatch.setenv("OPENBLAS_NUM_THREADS", "1")
+    monkeypatch.setenv("UNSLOTH_OPENBLAS_DEFAULTED", "1")
+
+    assert cpu_threads.install_openblas_runtime_cap()
+
+    assert fake_windows == [12]
 
 
 def test_user_openblas_value_is_what_reaches_the_dll(fake_windows, clean_thread_env, monkeypatch):

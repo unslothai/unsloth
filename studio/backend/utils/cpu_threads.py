@@ -32,6 +32,9 @@ def configure_cpu_threads(env: Optional[MutableMapping[str, str]] = None) -> Non
         # OpenBLAS reads a blank value as 0 (one thread per core), so blank counts as unset.
         if not environ.get("OPENBLAS_NUM_THREADS", "").strip():
             environ["OPENBLAS_NUM_THREADS"] = "1"
+            if env is None:
+                # Inherited by spawned workers, so they can tell this default from a user's own 1.
+                environ[_OPENBLAS_DEFAULT_MARKER] = "1"
         if env is None:
             install_openblas_runtime_cap()
         return
@@ -52,17 +55,33 @@ def configure_cpu_threads(env: Optional[MutableMapping[str, str]] = None) -> Non
 
 # AMD's Windows ROCm torch wheels load this OpenBLAS, which ignores OPENBLAS_NUM_THREADS and
 # OMP_NUM_THREADS and starts one worker per logical CPU (measured on gfx1151: 32 with
-# OPENBLAS_NUM_THREADS=1), so the cap above never reaches it; its runtime setter does (#12942).
+# OPENBLAS_NUM_THREADS=1), so the env vars never reach it; its runtime setter does (#12942).
 _RUNTIME_CAPPED_OPENBLAS = ("rocm-openblas.dll",)
 _OPENBLAS_CAP_SENTINEL = "_unsloth_openblas_cap_finder"
+_OPENBLAS_DEFAULT_MARKER = "UNSLOTH_OPENBLAS_DEFAULTED"
+
+
+def _torch_thread_count() -> Optional[int]:
+    try:
+        count = int(sys.modules["torch"].get_num_threads())
+    except Exception:  # noqa: BLE001
+        return None
+    return count if count >= 1 else None
 
 
 def _openblas_thread_target(environ: Optional[MutableMapping[str, str]] = None) -> Optional[int]:
     environ = os.environ if environ is None else environ
-    try:
-        target = int(environ.get("OPENBLAS_NUM_THREADS", "").strip())
-    except ValueError:
-        return None
+    raw = environ.get("OPENBLAS_NUM_THREADS", "").strip()
+    target = None
+    if raw == "1" and environ.get(_OPENBLAS_DEFAULT_MARKER) == "1":
+        # The default of 1 is for numpy's OpenBLAS (#12374). This DLL is torch's own CPU BLAS, so it gets the
+        # thread count torch uses everywhere else (one per physical core, or OMP_NUM_THREADS).
+        target = _torch_thread_count()
+    if target is None:
+        try:
+            target = int(raw)
+        except ValueError:
+            return None
     if target < 1:
         return None
     # OpenBLAS clamps an env value to the core count; its runtime setter only to MAX_THREADS.
