@@ -123,9 +123,11 @@ async def cancel(
                 return CancelResult(
                     kind = kind, id = id, cancelled = False, message = "No export is running."
                 )
-            # Its export may have just finished: give its own call a moment to settle the job
-            # rather than call it cancelled.
-            await export_jobs.settle(job, SETTLE_S)
+            # Its export already returned and the job is only recording the result: let it, rather
+            # than call a finished export cancelled. Between steps nothing is waited for, so no
+            # step can start on the worker before the job is stopped.
+            if job.phase == "finishing":
+                await export_jobs.settle(job, SETTLE_S)
             if job.finished:
                 return CancelResult(
                     kind = kind, id = id, cancelled = False, message = f"The export already {job.status}."
