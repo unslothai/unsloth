@@ -136,7 +136,7 @@ SDPA_MATH = "math"
 _SDPA_SUBQUADRATIC = (SDPA_FLASH, SDPA_MEM_EFFICIENT, SDPA_CUDNN)
 
 _SDPA_PROBE_LOCK = threading.Lock()
-# (indexed device, dtype name) -> capability. Process flags are checked separately on every read.
+# (indexed device, dtype name) -> capability; process flags are applied on every read.
 _SDPA_PROBE_CACHE: dict[tuple[str, str], tuple[str, ...]] = {}
 
 
@@ -180,8 +180,7 @@ def _probe_rocm_sdpa_kernels(device: str, dtype: Any) -> tuple[str, ...]:
 
     if probe("MATH") != "available":
         return ()
-    # Overlap Torch imports and HIP context setup, while retaining one process per backend.
-    # A failed in-process fused probe could poison Studio before this isolation can help.
+    # One child per backend, run concurrently: an in-process fused failure would poison Studio.
     candidates = (
         (SDPA_FLASH, "FLASH_ATTENTION"),
         (SDPA_MEM_EFFICIENT, "EFFICIENT_ATTENTION"),
@@ -198,9 +197,7 @@ def _probe_rocm_sdpa_kernels(device: str, dtype: Any) -> tuple[str, ...]:
 
 
 def _enabled_sdpa_kernels(kernels: tuple[str, ...]) -> tuple[str, ...]:
-    """The native dispatcher also obeys current process flags, even after a cached probe."""
     import torch
-
     flags = {
         SDPA_FLASH: "flash_sdp_enabled",
         SDPA_MEM_EFFICIENT: "mem_efficient_sdp_enabled",
@@ -211,7 +208,7 @@ def _enabled_sdpa_kernels(kernels: tuple[str, ...]) -> tuple[str, ...]:
 
 
 def _probe_sdpa_kernels(device: str, dtype: Any) -> tuple[str, ...]:
-    """Probe execution, isolating ROCm launch errors in fresh child processes."""
+    """Probe execution; ROCm runs in fresh children so launch errors stay isolated."""
     import torch
     from torch.nn.attention import SDPBackend, sdpa_kernel
 
@@ -252,7 +249,6 @@ def available_sdpa_kernels(target: Any) -> tuple[str, ...]:
 
 
 def _sdpa_capability(target: Any) -> tuple[str, ...]:
-    """The cached per-device probe result, before the current process flags are applied."""
     device = str(getattr(target, "torch_device", None) or getattr(target, "device", "") or "")
     if device == "cuda":
         ordinal = getattr(target, "ordinal", None)

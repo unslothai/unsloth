@@ -377,11 +377,8 @@ def _windows_routes_multiarch(gfx_arch: "str | None") -> bool:
 
 
 def _multiarch_device_pack_installed(gfx_arch: "str | None") -> bool:
-    """Check the selected device extra, including its versioned family kernel packs.
-
-    A leaf wheel alone can import torch but leave fused attention without AOTriton images.
-    Read the installed wheel's requirements: family names differ between AMD releases.
-    """
+    """Whether the selected device extra is fully installed, family kernel packs included.
+    Names come from wheel metadata: family names differ between AMD releases."""
     try:
         from importlib import metadata
         from packaging.requirements import Requirement
@@ -419,7 +416,6 @@ def _multiarch_device_pack_installed(gfx_arch: "str | None") -> bool:
                 return False
         return True
     except Exception:
-        # Missing metadata or an incomplete install must go through pip's dependency resolver.
         return False
 
 
@@ -6086,7 +6082,6 @@ def _ensure_rocm_torch() -> "bool | None":
             # (pre-release wheel, else PyPI >=0.50.0).
             _install_bnb_windows_rocm()
             return
-        # Missing torch or device packs: fall through to the full repair path.
     if IS_MACOS:
         return
 
