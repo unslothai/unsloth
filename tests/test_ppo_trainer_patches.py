@@ -1,18 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""TRL PPOTrainer under Unsloth: rollout generation and the rollout sampling distribution.
+"""TRL PPOTrainer under Unsloth: the generate target, rollout sampling and the PPO padding mask.
 
-TRL's PPOTrainer generates inside ``unwrap_model_for_generation`` on a ``PolicyAndValueWrapper``,
-which has no ``generate()`` and, before TRL 0.26, no ``gradient_checkpointing_disable()``. Unsloth's
-wrapper of that context manager used to crash on both. Separately, transformers replaces every
-field of TRL's rollout GenerationConfig left at its global default (``top_p = 1.0``) with the
-model's own default (Qwen3 Instruct ships ``top_p = 0.8``), so PPO's KL and ratio would read
-logprobs from a truncated distribution. Finally Unsloth's training forward drops the attention
-mask (it assumes right padding), while PPO left-pads every query, so the policy, reference and
-value forwards attended to the pads; PPO training opts those models into keeping the mask.
-
-The helpers are lifted with ``ast`` from ``unsloth/models/rl.py`` so the test stays CPU-only.
+Helpers are lifted from ``unsloth/models/rl.py`` with ``ast`` so the test stays CPU-only.
 """
 
 from __future__ import annotations

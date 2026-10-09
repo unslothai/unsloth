@@ -170,10 +170,8 @@ def _generate_accepts_use_model_defaults():
 
 
 def _caller_sampling_only(model, kwargs):
-    # transformers 4.50+ (before 5.0) fills every field of a passed GenerationConfig left at its global
-    # default (top_p = 1.0) from the model's own, so PPO rollouts of Qwen3 Instruct sampled with
-    # top_p = 0.8 and generate's scores no longer matched the logprobs PPO trains on. Keep the
-    # caller's sampling settings; only the token ids still come from the model (TRL sets eos there).
+    # transformers 4.50-4.x refills TRL's default-valued fields from the model (Qwen3: top_p 0.8),
+    # skewing rollout logprobs vs training; keep TRL's sampling, take only token ids (TRL's eos) from the model.
     generation_config = kwargs.get("generation_config", None)
     if (
         generation_config is None
