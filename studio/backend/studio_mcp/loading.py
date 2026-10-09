@@ -73,6 +73,7 @@ async def load_llm(
     max_seq_length: Optional[int],
     load_in_4bit: bool,
     hf_token: Optional[str],
+    kind: str = "llm",
 ) -> LoadResult:
     body: dict[str, Any] = {
         "model_path": model,
@@ -85,6 +86,7 @@ async def load_llm(
     token = hf_token or caller.hf_token
     if token:
         body["hf_token"] = token
+    before = await _serving_or_empty(caller)
     payload = await with_progress(
         ctx,
         route_json("POST", "/api/inference/load", caller = caller, json_body = body),
@@ -92,13 +94,29 @@ async def load_llm(
     )
     if not isinstance(payload, dict):
         raise ToolError("Unsloth Studio did not confirm the load")
-    evicted = payload.get("evicted")
+    loaded = opt_text(payload.get("model")) or model
+    evicted = _strings(payload.get("evicted"))
+    # Some loads (an engine switch for an audio model, say) unload the chat model without the
+    # route listing it, so name whatever was serving before and is gone now.
+    if before:
+        after = set(await _serving_or_empty(caller))
+        evicted += [
+            m for m in before if m not in after and m not in evicted and m not in (model, loaded)
+        ]
     return LoadResult(
-        kind = "llm",
-        model = opt_text(payload.get("model")) or model,
+        kind = kind,
+        model = loaded,
         display_name = opt_text(payload.get("display_name")),
-        evicted = [e for e in evicted if isinstance(e, str)] if isinstance(evicted, list) else [],
+        evicted = evicted,
     )
+
+
+async def _serving_or_empty(caller: Caller) -> list[str]:
+    try:
+        serving, _checkpoints, _resident = await _llm_resident(caller)
+    except ToolError:
+        return []
+    return serving
 
 
 def _strings(values: Any) -> list[str]:

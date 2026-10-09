@@ -160,6 +160,11 @@ def test_model_adds_scalar_training_defaults(monkeypatch):
     }
 
 
+def test_model_narrows_the_list_to_that_model(monkeypatch):
+    result, _studio = _list(monkeypatch, {"model": "unsloth/Qwen3-0.6B"})
+    assert [m["id"] for m in result["structuredContent"]["models"]] == ["unsloth/Qwen3-0.6B"]
+
+
 def test_the_config_request_carries_the_hub_token_only_when_given(monkeypatch):
     _result, studio = _list(monkeypatch, {"model": "unsloth/Qwen3-0.6B"})
     config_headers = [

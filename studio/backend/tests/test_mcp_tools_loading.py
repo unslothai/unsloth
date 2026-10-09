@@ -87,6 +87,30 @@ def test_the_kinds_list_models_reports_for_audio_load_as_llm(monkeypatch, kind):
     assert _bodies(studio, "/api/inference/load")[0]["model_path"] == LLM
 
 
+def test_the_kind_asked_for_is_reported(monkeypatch):
+    result = _call(monkeypatch, _studio(), "load_model", {"model": LLM, "kind": "tts"})
+    assert result["structuredContent"]["kind"] == "tts"
+
+
+def test_a_chat_model_unloaded_without_the_route_saying_so_is_evicted(monkeypatch):
+    # An audio model's engine switch unloads the chat model, and the route's evicted list misses it.
+    statuses = iter([{**STATUS, "serving": ["unsloth/Qwen3-0.6B-GGUF"]}, EMPTY_STATUS])
+    studio = _studio(
+        {
+            ("POST", "/api/inference/load"): lambda r, b: {**LOADED, "evicted": []},
+            ("GET", "/api/inference/status"): lambda r, b: next(statuses, EMPTY_STATUS),
+        }
+    )
+    result = _call(monkeypatch, studio, "load_model", {"model": LLM, "kind": "tts"})
+    assert result["structuredContent"]["evicted"] == ["unsloth/Qwen3-0.6B-GGUF"]
+
+
+def test_a_model_still_serving_is_not_evicted(monkeypatch):
+    result = _call(monkeypatch, _studio(), "load_model", {"model": LLM})
+    # STATUS serves LLM before and after; only the route's own list counts.
+    assert result["structuredContent"]["evicted"] == ["unsloth/Qwen3-0.6B"]
+
+
 def test_the_hub_token_goes_in_the_body_not_the_header(monkeypatch):
     studio = _studio()
     _call(
