@@ -2204,7 +2204,6 @@ class FastModel(FastBaseModel):
                 diffusion_config = AutoConfig.from_pretrained(
                     peft_config.base_model_name_or_path,
                     token = token,
-                    revision = getattr(peft_config, "revision", None),
                     trust_remote_code = trust_remote_code,
                     local_files_only = local_files_only,
                 )

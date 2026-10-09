@@ -5,6 +5,7 @@ import os
 import types
 
 import pytest
+from real_accelerator import has_real_cuda
 
 torch = pytest.importorskip("torch")
 transformers = pytest.importorskip("transformers")
@@ -236,7 +237,7 @@ def test_diffusion_load_restores_progress_bars():
     assert not are_progress_bars_disabled()
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "bitsandbytes needs a GPU")
+@pytest.mark.skipif(not has_real_cuda(), reason = "bitsandbytes needs a GPU")
 def test_caller_quantization_config_is_kept():
     from transformers import BitsAndBytesConfig
 
