@@ -15,6 +15,7 @@ from core.training.account_jobs import (
     validate_job_paths,
 )
 import atexit
+import os
 import structlog
 from collections import deque
 from loggers import get_logger
@@ -37,6 +38,9 @@ _LOG_BUFFER_MAXLEN = 4000
 # How long an export op may go without a single log or status line before the worker is treated as
 # dead. Not how long an export may run: a reporting worker resets it on every line.
 _EXPORT_INACTIVITY_TIMEOUT = 3600.0
+CHECKPOINT_CHANGED = (
+    "The loaded checkpoint changed since this export was requested; nothing was exported."
+)
 
 # Teardown is a bounded amount of work, so it is capped outright rather than by silence: the log
 # gate an export opens is never closed, and teardown chatter would otherwise renew this forever.
@@ -607,6 +611,7 @@ class ExportOrchestrator:
         private: bool = False,
         compressed_method: Optional[str] = None,
         install_missing_dependencies: bool = False,
+        expected_checkpoint: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[str]]:
         return self._run_export(
             "merged",
@@ -620,6 +625,7 @@ class ExportOrchestrator:
                 "compressed_method": compressed_method,
                 "install_missing_dependencies": install_missing_dependencies,
             },
+            expected_checkpoint = expected_checkpoint,
         )
 
     def export_base_model(
@@ -630,6 +636,7 @@ class ExportOrchestrator:
         hf_token: HfTokenArg = None,
         private: bool = False,
         base_model_id: Optional[str] = None,
+        expected_checkpoint: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[str]]:
         return self._run_export(
             "base",
@@ -641,6 +648,7 @@ class ExportOrchestrator:
                 "private": private,
                 "base_model_id": base_model_id,
             },
+            expected_checkpoint = expected_checkpoint,
         )
 
     def export_gguf(
@@ -653,6 +661,7 @@ class ExportOrchestrator:
         imatrix_file = None,
         private: bool = False,
         npu_q4nx: bool = False,
+        expected_checkpoint: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[str]]:
         """Export model in GGUF format. `quantization_method` may be a single method or a list."""
         return self._run_export(
@@ -667,6 +676,7 @@ class ExportOrchestrator:
                 "private": private,
                 "npu_q4nx": npu_q4nx,
             },
+            expected_checkpoint = expected_checkpoint,
         )
 
     def export_lora_adapter(
@@ -679,6 +689,7 @@ class ExportOrchestrator:
         gguf: bool = False,
         gguf_outtype: str = "q8_0",
         adapter_format: Optional[str] = None,
+        expected_checkpoint: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[str]]:
         """Export LoRA adapter only (optionally also as a GGUF LoRA file)."""
         return self._run_export(
@@ -693,10 +704,16 @@ class ExportOrchestrator:
                 "gguf_outtype": gguf_outtype,
                 "adapter_format": adapter_format,
             },
+            expected_checkpoint = expected_checkpoint,
         )
 
     @owned_job(continuation = True)
-    def _run_export(self, export_type: str, params: dict) -> Tuple[bool, str, Optional[str]]:
+    def _run_export(
+        self,
+        export_type: str,
+        params: dict,
+        expected_checkpoint: Optional[str] = None,
+    ) -> Tuple[bool, str, Optional[str]]:
         """Send an export command and wait for the result.
 
         Returns ``(success, message, output_path)``. ``output_path`` is the on-disk
@@ -710,6 +727,11 @@ class ExportOrchestrator:
                     "No export subprocess running. Load a checkpoint first.",
                     None,
                 )
+            # Checked under the lock the export holds, so no load can slip in before it starts.
+            if expected_checkpoint is not None and not _same_checkpoint(
+                self.current_checkpoint, expected_checkpoint
+            ):
+                return False, CHECKPOINT_CHANGED, None
 
             self.clear_logs()
             self._cancel_requested = False
@@ -799,6 +821,12 @@ class ExportOrchestrator:
 
 
 _export_backend = None
+
+
+def _same_checkpoint(loaded: Optional[str], expected: str) -> bool:
+    if not loaded:
+        return False
+    return os.path.realpath(loaded) == os.path.realpath(expected)
 
 
 def get_export_backend() -> ExportOrchestrator:

@@ -186,6 +186,12 @@ class ExportCommonOptions(BaseModel):
         None,
         description = "HuggingFace model ID of the base model (for model card metadata)",
     )
+    expected_checkpoint: Optional[str] = Field(
+        None,
+        max_length = 4096,
+        description = "Export only while this checkpoint is still the loaded one. A client that loads and then "
+        "exports in two calls sends it so another load in between is refused instead of exported.",
+    )
 
 
 class ExportMergedModelRequest(ExportCommonOptions):
@@ -223,6 +229,13 @@ class ExportBaseModelRequest(ExportCommonOptions):
 
 class ExportGGUFRequest(BaseModel):
     """Request for exporting the current model to GGUF format."""
+
+    expected_checkpoint: Optional[str] = Field(
+        None,
+        max_length = 4096,
+        description = "Export only while this checkpoint is still the loaded one. A client that loads and then "
+        "exports in two calls sends it so another load in between is refused instead of exported.",
+    )
 
     save_directory: str = Field(
         ...,
