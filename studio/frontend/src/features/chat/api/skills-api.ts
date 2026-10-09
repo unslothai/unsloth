@@ -5,6 +5,9 @@ import { authFetch } from "@/features/auth";
 import { AUTH_SESSION_CLEARED_EVENT } from "@/features/auth/session";
 import { useEffect, useSyncExternalStore } from "react";
 import { refreshContextUsage } from "../utils/refresh-context-usage";
+import { SKILL_MENTION_PATTERN } from "./skill-tools";
+
+export { SKILL_MENTION_PATTERN } from "./skill-tools";
 
 export type SkillRecord = {
   name: string;
@@ -150,6 +153,24 @@ export async function setSkillEnabled(
   return updated;
 }
 
+/** Every skill on or off; null restores the fresh-install defaults. */
+export async function setAllSkillsEnabled(
+  enabled: boolean | null,
+): Promise<readonly SkillRecord[]> {
+  const response = await authFetch("/api/skills", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled }),
+  });
+  const skills = await parseResponse<SkillRecord[]>(response);
+  requestGeneration += 1;
+  lastFetchedAt = Date.now();
+  publish({ skills, loading: false, initialized: true, error: null });
+  channel?.postMessage("changed");
+  void refreshContextUsage({ invalidate: true });
+  return skills;
+}
+
 export const SKILL_NAME_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 
 export function isValidSkillName(name: string): boolean {
@@ -199,10 +220,6 @@ export async function deleteSkill(name: string): Promise<void> {
   await parseResponse<unknown>(response);
   await skillsMutated();
 }
-
-// Spec skill names only, ending at a word boundary: `@example.com`, `@3pm`, `@Probe` are not mentions.
-export const SKILL_MENTION_PATTERN =
-  /(^|\s)@([a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)(?=$|\s|[.,;:!?)\]'"]+(?:$|\s))/g;
 
 // authFetch has no deadline, so a hung /api/skills must not stall the send.
 const SETTLE_TIMEOUT_MS = 3000;

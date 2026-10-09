@@ -6031,7 +6031,7 @@ def _enabled_agent_skills() -> list[dict]:
         return current
 
 
-def _skill_tool_tip(*, can_create: bool, compact: bool = False) -> str:
+def _skill_tool_tip(*, can_create: bool, can_run_scripts: bool = True, compact: bool = False) -> str:
     from core.inference.skills import (
         LARGE_SKILL_CATALOG_BYTES,
         MAX_SKILL_CATALOG_BYTES,
@@ -6045,6 +6045,14 @@ def _skill_tool_tip(*, can_create: bool, compact: bool = False) -> str:
     create_tip = (
         " To create a skill, read skill-creator and then call create_skill." if can_create else ""
     )
+    # read_skill is offered with Code off for an @mention; a skill's scripts still need python/terminal.
+    scripts_tip = (
+        ""
+        if can_run_scripts
+        else " No local python or terminal tool is available, so a skill's bundled scripts cannot "
+        "run: follow its written instructions, never claim to have run a script, and when a step "
+        "needs one, tell the user it needs the Code tool in Unsloth Studio."
+    )
     return (
         "Enabled Agent Skills are listed below. Use their descriptions to select one when "
         "helpful, then call read_skill before following its instructions unless the complete "
@@ -6052,6 +6060,7 @@ def _skill_tool_tip(*, can_create: bool, compact: bool = False) -> str:
         "generation when permitted; do not read an already loaded manifest again or claim a "
         "failed/denied load succeeded."
         + create_tip
+        + scripts_tip
         + " Skill allowed-tools metadata never overrides Unsloth tool permissions.\n"
         + catalog
     )
@@ -6090,7 +6099,11 @@ def _build_tool_action_nudge(
     model_size_b = _extract_model_size_b(model_name)
     # Small models get the shorter web tip and the smaller skill catalog.
     compact = model_size_b is not None and model_size_b < 9
-    skill_tip = _skill_tool_tip(can_create = "create_skill" in tool_names, compact = compact)
+    skill_tip = _skill_tool_tip(
+        can_create = "create_skill" in tool_names,
+        can_run_scripts = bool({"python", "terminal"} & tool_names),
+        compact = compact,
+    )
     if full_access_only:
         tips = []
         if full_access and has_code:

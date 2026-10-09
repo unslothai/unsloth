@@ -36,14 +36,10 @@ import {
 import {
   type MentionToken,
   mentionTokenAt,
+  mentionableSkills,
+  rankMentionSkills,
   replaceMentionToken,
 } from "./skill-mention-token";
-
-function enabled(records: readonly SkillRecord[]): readonly SkillRecord[] {
-  return records.filter(
-    (skill) => skill.valid && !skill.shadowed && skill.enabled,
-  );
-}
 
 // The catalog allows 1,000 skills per root; a keystroke must not render them all.
 const MAX_MENTION_RESULTS = 50;
@@ -131,6 +127,29 @@ function MentionOpenSignal({
   return null;
 }
 
+// The library picks on Enter only; Tab accepts the highlighted row too, as the shared composer does.
+function MentionTabAccept(): null {
+  const { open, items, handleKeyDown } = unstable_useTriggerPopoverScopeContext();
+  const active = open && items.length > 0;
+  useEffect(() => {
+    if (!active) return;
+    const accept = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Tab" || event.shiftKey || event.isComposing) return;
+      if (!(event.target instanceof HTMLTextAreaElement)) return;
+      const enter = {
+        key: "Enter",
+        shiftKey: false,
+        preventDefault: () => event.preventDefault(),
+      };
+      if (handleKeyDown(enter)) event.stopPropagation();
+    };
+    // Capture, so the browser's focus move and the composer's own handlers never see it.
+    window.addEventListener("keydown", accept, true);
+    return () => window.removeEventListener("keydown", accept, true);
+  }, [active, handleKeyDown]);
+  return null;
+}
+
 // The library's insert stops at the caret, leaving "@calculator tor"; replace the whole token.
 function MentionTokenReplacer(): null {
   const aui = useAui();
@@ -174,7 +193,10 @@ export function SkillMentionPopover({
   const t = useT();
   const { skills } = useSkillsCatalog();
   const [listElement, setListElement] = useState<HTMLDivElement | null>(null);
-  const available = mentionsEnabled ? enabled(skills) : [];
+  const available = useMemo(
+    () => (mentionsEnabled ? mentionableSkills(skills) : []),
+    [mentionsEnabled, skills],
+  );
   const items = useMemo(
     () =>
       available.map((skill) => ({
@@ -190,15 +212,17 @@ export function SkillMentionPopover({
     includeModelContextTools: false,
     formatter: skillMentionFormatter,
   });
-  // Cap the search itself: the popover navigates and inserts from these results, not the rendered rows.
-  const adapter = useMemo(
-    () => ({
+  // Ranked and capped here: the popover navigates and inserts from these results, not the rendered rows.
+  const adapter = useMemo(() => {
+    const byName = new Map(items.map((item) => [item.id, item]));
+    return {
       ...mention.adapter,
       search: (query: string) =>
-        (mention.adapter.search?.(query) ?? []).slice(0, MAX_MENTION_RESULTS),
-    }),
-    [mention.adapter],
-  );
+        rankMentionSkills(available, query, MAX_MENTION_RESULTS).flatMap(
+          (skill) => byName.get(skill.name) ?? [],
+        ),
+    };
+  }, [available, items, mention.adapter]);
   useHighlightedItemScroll(listElement);
   if (items.length === 0) return null;
 
@@ -214,6 +238,7 @@ export function SkillMentionPopover({
       />
       <MentionOpenSignal onChange={onOpenChange} />
       <MentionTokenReplacer />
+      <MentionTabAccept />
       <ComposerPrimitive.Unstable_TriggerPopoverItems>
         {(results) => (
           <>
@@ -279,22 +304,17 @@ export function useTextareaSkillMentions({
   const [range, setRange] = useState<MentionRange>(null);
   const listboxId = useId();
   const [highlighted, setHighlighted] = useState(0);
-  const results = useMemo(() => {
-    if (!range) return [];
-    const query = range.query.toLowerCase();
-    if (!mentionsEnabled) return [];
-    const matches: SkillRecord[] = [];
-    for (const skill of enabled(skills)) {
-      if (
-        skill.name.toLowerCase().includes(query) ||
-        skill.description.toLowerCase().includes(query)
-      ) {
-        matches.push(skill);
-        if (matches.length === MAX_MENTION_RESULTS) break;
-      }
-    }
-    return matches;
-  }, [mentionsEnabled, range, skills]);
+  const results = useMemo(
+    () =>
+      range && mentionsEnabled
+        ? rankMentionSkills(
+            mentionableSkills(skills),
+            range.query,
+            MAX_MENTION_RESULTS,
+          )
+        : [],
+    [mentionsEnabled, range, skills],
+  );
 
   const open = range !== null && results.length > 0;
   const activeOptionId = open

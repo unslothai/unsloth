@@ -3825,6 +3825,13 @@ export const de = {
     discard: "Verwerfen",
     mentions: "Fähigkeiten",
     manage: "Fähigkeiten verwalten",
+    bulkActions: "Fähigkeiten-Aktionen",
+    enableAll: "Alle aktivieren",
+    disableAll: "Alle deaktivieren",
+    resetAll: "Auf Standard zurücksetzen",
+    resetTitle: "Alle Fähigkeiten zurücksetzen?",
+    resetDescription: "Jede Fähigkeit kehrt zum Zustand einer Neuinstallation zurück: deine Fähigkeiten und Claude-Fähigkeiten an, mitgelieferte Fähigkeiten aus. Deine An/Aus-Auswahl wird gelöscht.",
+    reset: "Zurücksetzen",
   },
   library: {
     tabs: {

@@ -3836,6 +3836,13 @@ export const fr = {
     discard: "Abandonner",
     mentions: "Compétences",
     manage: "Gérer les compétences",
+    bulkActions: "Actions sur les compétences",
+    enableAll: "Tout activer",
+    disableAll: "Tout désactiver",
+    resetAll: "Rétablir les valeurs par défaut",
+    resetTitle: "Réinitialiser toutes les compétences ?",
+    resetDescription: "Chaque compétence revient à son état d’installation : vos compétences et celles de Claude activées, les compétences intégrées désactivées. Vos choix d’activation sont effacés.",
+    reset: "Réinitialiser",
   },
   library: {
     tabs: {

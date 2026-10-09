@@ -30,7 +30,18 @@ test("the compare composer exposes its skill suggestions as a linked combobox", 
 
 test("the popover caps the adapter search, so navigation never leaves the rendered rows", () => {
   assert.ok(
-    mentionsSource.includes("(mention.adapter.search?.(query) ?? []).slice(0, MAX_MENTION_RESULTS)"),
+    mentionsSource.includes("rankMentionSkills(available, query, MAX_MENTION_RESULTS)"),
   );
   assert.ok(!mentionsSource.includes("results.slice(0, MAX_MENTION_RESULTS)"));
+});
+
+test("Tab accepts the highlighted row in the main composer, as Enter does", () => {
+  assert.ok(mentionsSource.includes("<MentionTabAccept />"));
+  assert.match(
+    mentionsSource,
+    /if \(event\.key !== "Tab" \|\| event\.shiftKey \|\| event\.isComposing\) return;/,
+  );
+  // Reuses the library's own Enter path, so the token replacer still owns the insert.
+  assert.match(mentionsSource, /key: "Enter",\s*shiftKey: false,/);
+  assert.match(mentionsSource, /const active = open && items\.length > 0;/);
 });

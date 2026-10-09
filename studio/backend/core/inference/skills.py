@@ -625,6 +625,29 @@ def set_skill_enabled(
         return {**record, "enabled": enabled}
 
 
+def set_all_skills_enabled(
+    enabled: Optional[bool],
+    *,
+    home: Optional[Path] = None,
+) -> list[dict]:
+    """Turn every listed skill on or off; None drops every override, back to fresh-install defaults."""
+    if enabled is not None and not isinstance(enabled, bool):
+        raise SkillError("Skill enabled state must be a boolean or null.")
+    with _LOCK:
+        overrides = {} if enabled is None else _load_overrides()
+        if enabled is not None:
+            # Overrides for skills not on disk right now are kept, as a single toggle keeps them.
+            for record, _, _ in _discover(home):
+                if not record["valid"] or record["shadowed"]:
+                    continue
+                if enabled == _default_enabled(record["source"]):
+                    overrides.pop(record["name"], None)
+                else:
+                    overrides[record["name"]] = enabled
+        _save_overrides(overrides)
+        return [record for record, _, _ in _discover(home)]
+
+
 def _validate_draft(description: str, instructions: str) -> str:
     if not isinstance(description, str) or not description.strip() or len(description) > 1024:
         raise SkillError("Skill description must be 1-1024 characters.")

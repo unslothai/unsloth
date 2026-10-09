@@ -3784,6 +3784,13 @@ export const ptBR = {
     discard: "Descartar",
     mentions: "Habilidades",
     manage: "Gerenciar habilidades",
+    bulkActions: "Ações de habilidades",
+    enableAll: "Ativar todas",
+    disableAll: "Desativar todas",
+    resetAll: "Restaurar padrões",
+    resetTitle: "Redefinir todas as habilidades?",
+    resetDescription: "Cada habilidade volta ao estado de uma instalação nova: suas habilidades e as do Claude ativadas, as incluídas desativadas. Suas escolhas de ativar e desativar são apagadas.",
+    reset: "Redefinir",
   },
   library: {
     tabs: {

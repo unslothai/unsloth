@@ -20,6 +20,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
@@ -32,6 +39,7 @@ import {
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
+  MoreHorizontalIcon,
   PlusSignIcon,
   Refresh01Icon,
   Scroll01Icon,
@@ -54,6 +62,7 @@ import {
   getSkillManifest,
   isValidSkillName,
   listSkills,
+  setAllSkillsEnabled,
   setSkillEnabled,
   type SkillDraft,
   type SkillManifest,
@@ -68,6 +77,8 @@ type View = { kind: "library" } | { kind: "new" } | { kind: "skill"; key: string
 const EMPTY_DRAFT: SkillDraft = { name: "", description: "", instructions: "" };
 const LIBRARY: View = { kind: "library" };
 const SECTIONS: ReadonlyArray<SkillRecord["source"]> = ["agents", "claude", "bundled"];
+// `changing` value while a bulk change is in flight; skill names cannot contain "*".
+const ALL_SKILLS = "*";
 
 // A shadowed row shares its name with the one that wins, so skills are keyed by source too.
 const keyOf = (skill: SkillRecord) => `${skill.source}:${skill.name}`;
@@ -108,6 +119,7 @@ export function ChatSkillsDialog({
   const [changing, setChanging] = useState<string | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState<SkillRecord | null>(null);
   const [confirmingDiscard, setConfirmingDiscard] = useState<(() => void) | null>(null);
+  const [confirmingReset, setConfirmingReset] = useState(false);
   // Reseeded on render so the first frame after opening is already reset.
   const [seenOpen, setSeenOpen] = useState(open);
   if (open !== seenOpen) {
@@ -120,6 +132,7 @@ export function ChatSkillsDialog({
       setManifests(new Map());
       setConfirmingDelete(null);
       setConfirmingDiscard(null);
+      setConfirmingReset(false);
     }
   }
   useEffect(() => {
@@ -254,6 +267,18 @@ export function ChatSkillsDialog({
     setManifests(new Map());
     void listSkills(true).catch(() => undefined);
     if (selected) readManifest(selected);
+  };
+
+  const usable = skills.filter((skill) => skill.valid && !skill.shadowed);
+  const toggleAll = async (enabled: boolean | null) => {
+    setChanging(ALL_SKILLS);
+    try {
+      await setAllSkillsEnabled(enabled);
+    } catch (cause) {
+      toast.error(t("skills.updateError"), { description: describe(cause) });
+    } finally {
+      setChanging(null);
+    }
   };
 
   const toggle = async (name: string, enabled: boolean) => {
@@ -393,6 +418,42 @@ export function ChatSkillsDialog({
               >
                 {loading ? <Spinner /> : <HugeiconsIcon icon={Refresh01Icon} strokeWidth={2} />}
               </Button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild={true}>
+                  <Button
+                    type="button"
+                    size="icon-sm"
+                    variant="ghost"
+                    disabled={loading || usable.length === 0 || changing !== null}
+                    aria-label={t("skills.bulkActions")}
+                    title={t("skills.bulkActions")}
+                  >
+                    {changing === ALL_SKILLS ? (
+                      <Spinner />
+                    ) : (
+                      <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={2} />
+                    )}
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem
+                    disabled={usable.every((skill) => skill.enabled)}
+                    onSelect={() => void toggleAll(true)}
+                  >
+                    {t("skills.enableAll")}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    disabled={!usable.some((skill) => skill.enabled)}
+                    onSelect={() => void toggleAll(false)}
+                  >
+                    {t("skills.disableAll")}
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onSelect={() => setConfirmingReset(true)}>
+                    {t("skills.resetAll")}
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
               <Button type="button" size="sm" onClick={openNew}>
                 <HugeiconsIcon icon={PlusSignIcon} strokeWidth={2} />
                 {t("skills.newSkill")}
@@ -423,7 +484,7 @@ export function ChatSkillsDialog({
                         <SkillRow
                           key={keyOf(skill)}
                           skill={skill}
-                          changing={changing === skill.name}
+                          changing={changing === skill.name || changing === ALL_SKILLS}
                           onOpen={() => openSkill(skill)}
                           onToggle={(enabled) => void toggle(skill.name, enabled)}
                         />
@@ -646,6 +707,27 @@ export function ChatSkillsDialog({
               }}
             >
               {t("common.delete")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={open && confirmingReset} onOpenChange={setConfirmingReset}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("skills.resetTitle")}</AlertDialogTitle>
+            <AlertDialogDescription>{t("skills.resetDescription")}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => {
+                setConfirmingReset(false);
+                void toggleAll(null);
+              }}
+            >
+              {t("skills.reset")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

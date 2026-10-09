@@ -1194,3 +1194,78 @@ def test_explicit_manifest_loading_uses_current_account_discovery(managed_accoun
     assert not any(e["status"] == "loaded" for e in bob_events)
     assert "ALICE_ONLY_INSTRUCTIONS" not in str(bob_messages)
     assert "OWNER_ONLY_INSTRUCTIONS" not in str(bob_messages)
+
+
+def test_bulk_enable_disable_and_reset_follow_the_defaults(isolated_skills, monkeypatch):
+    home, studio = isolated_skills
+    _write_skill(home, "agents", "mine")
+    _write_skill(home, "claude", "theirs")
+    roots = (
+        ("agents", home / ".agents" / "skills"),
+        ("claude", home / ".claude" / "skills"),
+        ("bundled", Path(skills.__file__).with_name("bundled_skills")),
+    )
+    monkeypatch.setattr(skills, "_skill_roots", lambda home = None: roots)
+    overrides = studio / "skill-overrides.json"
+    bundled = {r["name"] for r in skills.list_skills() if r["source"] == "bundled"}
+    assert bundled
+    # A choice for a skill not on disk right now survives enable/disable all, like a single toggle.
+    skills._save_overrides({"gone-for-now": False})
+
+    records = skills.set_all_skills_enabled(False)
+    assert all(not record["enabled"] for record in records)
+    assert json.loads(overrides.read_text()) == {
+        "gone-for-now": False,
+        "mine": False,
+        "theirs": False,
+    }
+
+    records = skills.set_all_skills_enabled(True)
+    assert all(record["enabled"] for record in records)
+    assert json.loads(overrides.read_text()) == {
+        "gone-for-now": False,
+        **{name: True for name in bundled},
+    }
+
+    # Reset is a fresh install: home skills on, bundled off, no override left at all.
+    records = skills.set_all_skills_enabled(None)
+    assert {record["name"]: record["enabled"] for record in records} == {
+        "mine": True,
+        "theirs": True,
+        **{name: False for name in bundled},
+    }
+    assert json.loads(overrides.read_text()) == {}
+    with pytest.raises(skills.SkillError):
+        skills.set_all_skills_enabled("false")
+
+
+def test_bulk_enabled_route(isolated_skills, monkeypatch):
+    home, _ = isolated_skills
+    _write_skill(home, "agents", "api-skill")
+    roots = (
+        ("agents", home / ".agents" / "skills"),
+        ("claude", home / ".claude" / "skills"),
+    )
+    monkeypatch.setattr(skills, "_skill_roots", lambda home = None: roots)
+    from routes import inference as inference_routes
+
+    app = FastAPI()
+    app.include_router(router, prefix = "/api/skills")
+    assert TestClient(app).put("/api/skills", json = {"enabled": False}).status_code in (401, 403)
+    app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    client = TestClient(app)
+
+    monkeypatch.setattr(
+        inference_routes, "_AGENT_SKILLS_CACHE", {None: (float("inf"), [{"name": "stale"}])}
+    )
+    response = client.put("/api/skills", json = {"enabled": False})
+    assert response.status_code == 200
+    assert [(r["name"], r["enabled"]) for r in response.json()] == [("api-skill", False)]
+    assert inference_routes._AGENT_SKILLS_CACHE == {}
+    response = client.put("/api/skills", json = {"enabled": None})
+    assert [(r["name"], r["enabled"]) for r in response.json()] == [("api-skill", True)]
+    # Required and strict: a missing or stringly field is rejected, not read as a reset.
+    assert client.put("/api/skills", json = {}).status_code == 422
+    assert client.put("/api/skills", json = {"enabled": "false"}).status_code == 422
+    # The per-skill route is untouched.
+    assert client.put("/api/skills/api-skill/enabled", json = {"enabled": False}).status_code == 200

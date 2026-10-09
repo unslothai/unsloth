@@ -2677,8 +2677,6 @@ const Composer: FC<{
 
   const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
   const codeToolsEnabled = useChatRuntimeStore((s) => s.codeToolsEnabled);
-  // Effective Code (Full Access implies it), the same gate the request uses to offer read_skill.
-  const codeToolsEffective = useChatRuntimeStore(codeToolsOn);
   const imageToolsEnabled = useChatRuntimeStore((s) => s.imageToolsEnabled);
   const supportsBuiltinImageGeneration = useChatRuntimeStore(
     (s) => s.supportsBuiltinImageGeneration,
@@ -5583,7 +5581,8 @@ const Composer: FC<{
     <PromptQueueContext.Provider value={queueContextValue}>
     <ComposerPrimitive.Unstable_TriggerPopoverRoot>
       <SkillMentionPopover
-        enabled={supportsTools && codeToolsEffective}
+        // Not gated on Code: a mention offers read_skill on its own.
+        enabled={supportsTools}
         onConsumesEnterChange={setMentionConsumesEnter}
         onOpenChange={setMentionOpen}
       />

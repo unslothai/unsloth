@@ -117,3 +117,31 @@ def test_actual_local_request_gates_do_not_load(mention_client, gate):
         m.get("content", "") for m in backend.requests[0]["messages"]
     )
     assert '"status": "loaded"' not in response.text
+
+
+@pytest.mark.parametrize("code_on", [False, True])
+def test_code_off_mention_loads_and_says_scripts_need_code(mention_client, code_on):
+    client, backend, manifest = mention_client
+    response = client.post(
+        "/chat/completions",
+        json = {
+            "messages": [{"role": "user", "content": "@skill-creator what did i just paste?"}],
+            "stream": True,
+            "enable_tools": True,
+            # What the composer sends for an @mention with Code off: read_skill alone.
+            "enabled_tools": ["read_skill", "python", "terminal"] if code_on else ["read_skill"],
+            "permission_mode": "auto",
+        },
+        headers = {"X-Unsloth-Events": "1"},
+    )
+    assert response.status_code == 200, response.text
+    context = "\n".join(m.get("content", "") for m in backend.requests[0]["messages"])
+    assert manifest.read_text() in context
+    assert '"status": "loaded"' in response.text
+    names = {t["function"]["name"] for t in backend.requests[0]["tools"]}
+    assert ("python" in names) is code_on
+    assert "create_skill" not in names
+    note = "bundled scripts cannot run"
+    assert (note in context) is not code_on
+    if not code_on:
+        assert "Code tool in Unsloth Studio" in context

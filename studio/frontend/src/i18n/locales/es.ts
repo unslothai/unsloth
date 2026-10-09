@@ -3824,6 +3824,13 @@ export const es = {
     discard: "Descartar",
     mentions: "Habilidades",
     manage: "Gestionar habilidades",
+    bulkActions: "Acciones de habilidades",
+    enableAll: "Activar todas",
+    disableAll: "Desactivar todas",
+    resetAll: "Restablecer valores predeterminados",
+    resetTitle: "¿Restablecer todas las habilidades?",
+    resetDescription: "Cada habilidad vuelve a como está en una instalación nueva: tus habilidades y las de Claude activadas, las incluidas desactivadas. Se borran tus elecciones de activar y desactivar.",
+    reset: "Restablecer",
   },
   library: {
     tabs: {

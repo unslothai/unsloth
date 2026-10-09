@@ -3744,6 +3744,13 @@ export const ko = {
     discard: "버리기",
     mentions: "스킬",
     manage: "스킬 관리",
+    bulkActions: "스킬 작업",
+    enableAll: "모두 사용",
+    disableAll: "모두 사용 안 함",
+    resetAll: "기본값으로 재설정",
+    resetTitle: "모든 스킬을 재설정할까요?",
+    resetDescription: "모든 스킬이 새로 설치한 상태로 돌아갑니다. 내 스킬과 Claude 스킬은 켜지고 번들 스킬은 꺼지며, 켜기/끄기 선택은 지워집니다.",
+    reset: "재설정",
   },
   library: {
     tabs: {

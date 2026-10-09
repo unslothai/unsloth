@@ -3993,6 +3993,13 @@ export const sv = {
     discard: "Ignorera",
     mentions: "Färdigheter",
     manage: "Hantera färdigheter",
+    bulkActions: "Färdighetsåtgärder",
+    enableAll: "Aktivera alla",
+    disableAll: "Inaktivera alla",
+    resetAll: "Återställ standard",
+    resetTitle: "Återställa alla färdigheter?",
+    resetDescription: "Varje färdighet återgår till hur en ny installation har den: dina färdigheter och Claude-färdigheter på, medföljande färdigheter av. Dina val av på och av rensas.",
+    reset: "Återställ",
   },
   library: {
     tabs: {

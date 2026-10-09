@@ -23,3 +23,32 @@ export function replaceMentionToken(
     caret: token.start + directive.length + 1,
   };
 }
+
+type MentionSkill = {
+  name: string;
+  description: string;
+  valid: boolean;
+  shadowed: boolean;
+  enabled: boolean;
+};
+
+export function mentionableSkills<T extends MentionSkill>(skills: readonly T[]): T[] {
+  return skills.filter((skill) => skill.valid && !skill.shadowed && skill.enabled);
+}
+
+// Names that start with the query first, then names containing it, then descriptions; catalog order within each.
+export function rankMentionSkills<T extends MentionSkill>(
+  skills: readonly T[],
+  query: string,
+  limit: number,
+): T[] {
+  const needle = query.toLowerCase();
+  const tiers: T[][] = [[], [], []];
+  for (const skill of skills) {
+    const name = skill.name.toLowerCase();
+    if (name.startsWith(needle)) tiers[0].push(skill);
+    else if (name.includes(needle)) tiers[1].push(skill);
+    else if (skill.description.toLowerCase().includes(needle)) tiers[2].push(skill);
+  }
+  return tiers.flat().slice(0, limit);
+}
