@@ -1811,7 +1811,7 @@ export function useChatModelRuntime() {
       // vLLM and SGLang always replace the loaded models, so they keep the running-chat prompt.
       let keepsOthers =
         keepModelsLoaded && !forceReload && (paramsNow.engine ?? "auto") === "auto";
-      const switchingNote = keepsOthers ? "Keeping the loaded models." : "Switching models.";
+      let switchingNote = keepsOthers ? "Keeping the loaded models." : "Switching models.";
       // Reloading one of several touches only its own slot, so only its chats stop.
       const touchesOnlySelected =
         forceReload && !isExternalModelId(paramsNow.checkpoint) && loadedNow.length > 1;
@@ -2434,10 +2434,23 @@ export function useChatModelRuntime() {
                   "reload",
                 );
                 if (abortCtrl.signal.aborted) throw new Error("Cancelled");
-                if (!stopDecision.proceed) throw new Error("Model load cancelled.");
+                if (!stopDecision.proceed) {
+                  // Declined before anything was unloaded: exit as a cancellation, not a failed load.
+                  if (
+                    modelSelectionIntentEpoch === loadIntentId &&
+                    pendingReplacementRollback?.residentUnloaded === false
+                  ) {
+                    pendingReplacementRollback = null;
+                  }
+                  resetLoadingUiForRun(loadRun);
+                  abortCtrl.abort();
+                  throw new Error("Cancelled");
+                }
                 keepsOthers = false;
                 forceCancelActive = stopDecision.forceCancelActive;
                 loadRun.forceCancelActive = forceCancelActive;
+                loadingDescription = loadingDescription.replace(switchingNote, "Switching models.");
+                switchingNote = "Switching models.";
               }
               // Re-validate as that engine before unloading; a spent Desktop path lease relies on /load.
               if (!nativePathToken) {

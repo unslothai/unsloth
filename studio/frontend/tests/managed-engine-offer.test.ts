@@ -74,6 +74,16 @@ test("the chat load asks before unloading anything and loads with the chosen eng
   const branch = source.slice(offerAt, unloadAt);
   assert.match(branch, /if \(keepsOthers\) \{[\s\S]*?stopDecision = await confirmStopRunningChatsIfNeeded\([\s\S]*?keepsOthers = false;\s*forceCancelActive = stopDecision\.forceCancelActive;\s*loadRun\.forceCancelActive = forceCancelActive;/);
   assert.match(readText("../src/app/routes/__root.tsx"), /<ManagedEngineOfferDialog \/>/);
+  // Declining the replacement prompt this engine needs is a cancellation, and the toast stops promising kept models.
+  const offerBranch = source.slice(offerAt, unloadAt);
+  assert.match(offerBranch, /abortCtrl\.abort\(\);\s*throw new Error\("Cancelled"\);/);
+  assert.match(offerBranch, /loadingDescription = loadingDescription\.replace\(switchingNote, "Switching models\."\);/);
+});
+
+test("the offer dialog says when it cannot read the installed engines", () => {
+  const dialog = readText("../src/features/model-picker/components/managed-engine-offer-dialog.tsx");
+  assert.match(dialog, /const \{ engines, error \} = useEngines\(open\);/);
+  assert.match(dialog, /Could not check installed engines: \{error\}/);
 });
 
 test("an install started in the dialog stays mounted until it hands the load over", () => {

@@ -31,7 +31,7 @@ export function ManagedEngineOfferDialog() {
   const modelName = useManagedEngineOfferStore((s) => s.modelName);
   const offer = useManagedEngineOfferStore((s) => s.offer);
   const resolve = useManagedEngineOfferStore((s) => s.resolve);
-  const { engines } = useEngines(open);
+  const { engines, error } = useEngines(open);
   const offered = (offer?.engines ?? []).flatMap((name) => {
     const engine = engines.find((row) => row.engine === name);
     return engine ? [engine] : [];
@@ -71,10 +71,17 @@ export function ManagedEngineOfferDialog() {
           </AlertDialogDescription>
         </AlertDialogHeader>
         {offered.length === 0 ? (
-          <p className="flex items-center gap-2 text-ui-12 text-muted-foreground">
-            <Spinner className="size-3.5" />
-            Checking installed engines...
-          </p>
+          error ? (
+            // The check keeps retrying; say why it is stuck rather than spinning silently.
+            <p role="alert" className="text-ui-12 text-destructive">
+              Could not check installed engines: {error}
+            </p>
+          ) : (
+            <p className="flex items-center gap-2 text-ui-12 text-muted-foreground">
+              <Spinner className="size-3.5" />
+              Checking installed engines...
+            </p>
+          )
         ) : (
           offered
             .filter(
