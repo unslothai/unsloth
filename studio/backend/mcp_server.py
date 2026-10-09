@@ -47,12 +47,6 @@ def create_studio_mcp() -> FastMCP:
     register_models(mcp)
 
     @mcp.tool
-    async def get_training_status() -> dict[str, Any]:
-        """Read the active training job, phase, progress, and recent metrics."""
-        from routes.training import get_training_status as get_status
-        return _dump(await get_status(current_subject = "mcp"))
-
-    @mcp.tool
     async def start_training(config: dict[str, Any]) -> dict[str, Any]:
         """Start a validated Unsloth training job from a TrainingStartRequest-shaped object.
 

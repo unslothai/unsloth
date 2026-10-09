@@ -126,3 +126,18 @@ class ModelList(ToolOutput):
     training_defaults: Optional[dict[str, Union[StrictBool, StrictInt, StrictFloat, RouteText]]] = (
         None
     )
+
+
+class LoadResult(ToolOutput):
+    kind: RouteText
+    model: RouteText
+    loaded: bool = True
+    display_name: Optional[RouteText] = None
+    # Models Studio unloaded to make room.
+    evicted: list[RouteText] = []
+
+
+class UnloadResult(ToolOutput):
+    kind: RouteText
+    model: Optional[RouteText] = None
+    unloaded: bool

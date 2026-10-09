@@ -19,12 +19,12 @@ from studio_mcp.forward import forward
 from studio_mcp.outputs import RouteText, ToolOutput
 
 from .mcp_harness import SENTINEL_ROOTS, call_tool, fake_studio, poison, served
+from .test_mcp_tools_loading import PAYLOADS as LOADING_PAYLOADS
 from .test_mcp_tools_models import PAYLOADS as MODELS_PAYLOADS
 from .test_mcp_tools_status import PAYLOADS as STATUS_PAYLOADS
 
 # The direct-call tools from before forwarding. Each commit that replaces one removes it here and adds its case.
 LEGACY_UNCHECKED = {
-    "get_training_status",
     "start_training",
     "stop_training",
     "list_training_runs",
@@ -39,6 +39,8 @@ LEGACY_UNCHECKED = {
 CASES: dict[str, tuple[dict, dict]] = {
     "studio_status": (STATUS_PAYLOADS, {}),
     "list_models": (MODELS_PAYLOADS, {"model": "unsloth/Qwen3-0.6B"}),
+    "load_model": (LOADING_PAYLOADS, {"model": "unsloth/Llama-3.2-1B-Instruct-GGUF"}),
+    "unload_model": (LOADING_PAYLOADS, {}),
 }
 
 

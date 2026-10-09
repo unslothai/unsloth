@@ -1,19 +1,22 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Model discovery for agents: ``list_models``."""
+"""Model discovery and residency for agents: ``list_models``, ``load_model``, ``unload_model``."""
 
 from __future__ import annotations
 
 from typing import Any, Literal, Optional
 from urllib.parse import quote
 
-from fastmcp import FastMCP
+from fastmcp import Context, FastMCP
 
-from studio_mcp.outputs import ModelEntry, ModelList
-from studio_mcp.tools import READ_ONLY, integer, route_json, text
+from studio_mcp import loading
+from studio_mcp.caller import current_caller
+from studio_mcp.outputs import LoadResult, ModelEntry, ModelList, UnloadResult
+from studio_mcp.tools import DESTRUCTIVE, READ_ONLY, WRITES, integer, route_json, text
 
 ModelKind = Literal["llm", "image", "video", "stt", "tts", "audio"]
+LoadKind = Literal["llm"]
 
 KIND_BY_TASK = {
     "text-to-image": "image",
@@ -112,5 +115,33 @@ async def list_models(
     return ModelList(models = models, training_defaults = defaults)
 
 
+async def load_model(
+    model: str,
+    kind: LoadKind = "llm",
+    variant: Optional[str] = None,
+    max_seq_length: Optional[int] = None,
+    load_in_4bit: bool = True,
+    hf_token: Optional[str] = None,
+    ctx: Optional[Context] = None,
+) -> LoadResult:
+    """Load a model into Studio, downloading it first if needed, and wait until it is ready; progress is reported while it loads. ``kind`` "llm" covers chat, vision, embedding and text-to-speech models. ``model`` is an id from list_models or a Hugging Face repo id; ``variant`` picks a GGUF quantization such as Q4_K_M. ``max_seq_length`` 0 or unset lets Studio choose the context. ``hf_token`` is for gated repos. Loading may unload other models to make room; they are listed in ``evicted``."""
+    return await loading.load_llm(
+        current_caller(),
+        ctx,
+        model = model,
+        variant = variant,
+        max_seq_length = max_seq_length,
+        load_in_4bit = load_in_4bit,
+        hf_token = hf_token,
+    )
+
+
+async def unload_model(kind: LoadKind = "llm", model: Optional[str] = None) -> UnloadResult:
+    """Unload a model to free memory. Without ``model`` the active one of that kind is unloaded. ``unloaded`` is false when nothing matching was loaded."""
+    return await loading.unload_llm(current_caller(), model)
+
+
 def register_models(mcp: FastMCP) -> None:
     mcp.tool(list_models, annotations = READ_ONLY)
+    mcp.tool(load_model, annotations = WRITES)
+    mcp.tool(unload_model, annotations = DESTRUCTIVE)
