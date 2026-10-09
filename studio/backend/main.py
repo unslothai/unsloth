@@ -3175,6 +3175,10 @@ def setup_frontend(
         # for /v1/* ({"detail": ...} for /api/*). The request path is "/" + full_path.
         if full_path in {"api", "v1"} or full_path.startswith(("api/", "v1/")):
             raise HTTPException(status_code = 404, detail = "API endpoint not found")
+        # MCP clients probe these before connecting; the app shell with a 200 reads as an OAuth server, and
+        # they would start a login Studio does not offer instead of sending the API key.
+        if full_path.startswith(".well-known/oauth-"):
+            raise HTTPException(status_code = 404, detail = "Not Found")
         if not _frontend_request_allowed(request):
             return Response(status_code = 404)
 

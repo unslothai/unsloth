@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.applications import Starlette
 from starlette.routing import Mount
@@ -564,3 +565,36 @@ def test_two_origin_headers_are_refused():
             ],
         )
     assert response.status_code == 403
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/.well-known/oauth-protected-resource",
+        "/.well-known/oauth-protected-resource/mcp/",
+        "/.well-known/oauth-authorization-server",
+        "/.well-known/oauth-authorization-server/mcp",
+    ],
+)
+def test_oauth_discovery_is_a_404_not_the_app_shell(tmp_path, path):
+    import main
+
+    (tmp_path / "index.html").write_text("<!doctype html><title>studio</title>")
+    app = FastAPI()
+    assert main.setup_frontend(app, tmp_path)
+    client = TestClient(app, base_url = "http://127.0.0.1:8888", client = ("127.0.0.1", 40000))
+    response = client.get(path)
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Not Found"}
+    root = client.get("/")
+    assert root.status_code == 200
+    assert "<title>studio</title>" in root.text
+
+
+def test_the_gate_401_advertises_no_oauth_metadata():
+    set_mcp_enabled(True)
+    with TestClient(served(probe_mcp())) as http:
+        response, _result = call_tool(http, "whoami", {})
+    assert response.status_code == 401
+    assert response.headers["www-authenticate"] == "Bearer"
+    assert "resource_metadata" not in response.text
