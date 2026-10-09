@@ -32,6 +32,7 @@ import ast
 import importlib
 import importlib.util
 import json
+import hashlib
 import structlog
 from loggers import get_logger
 import errno
@@ -43,6 +44,8 @@ import stat
 import subprocess
 import sys
 import sysconfig
+import tempfile
+import urllib.request
 import threading
 import time
 from pathlib import Path
@@ -3738,10 +3741,13 @@ def ensure_latest_transformers_venv(
 _LLMC_MAIN_TRANSFORMERS = "5.10.2"
 _LLMC_MAIN_SHA = "973c9c539a84dd9efaf74e115ede5ca419704c18"
 _LLMC_MAIN_COMPRESSED_TENSORS = "0.17.2a20260702"
-# Installed --no-deps (torch untouched); the full runtime set llm-compressor main needs, pinned.
+# GitHub's source archive of _LLMC_MAIN_SHA (stable bytes), and `git describe` of that commit.
+_LLMC_MAIN_ARCHIVE_SHA256 = "4755e18a5466dd29e2247d9682d62cf9becb3679572d05a3a559d4cfaaa5f992"
+_LLMC_MAIN_DESCRIBE = "0.12.0-40"
+# Installed --no-deps (torch untouched) beside llmcompressor's source tree; the full runtime set
+# llm-compressor main needs, pinned.
 _VENV_LLMCOMPRESSOR_SPECS = (
     f"transformers=={_LLMC_MAIN_TRANSFORMERS}",
-    f"llmcompressor @ git+https://github.com/vllm-project/llm-compressor@{_LLMC_MAIN_SHA}",
     f"compressed-tensors=={_LLMC_MAIN_COMPRESSED_TENSORS}",
     "huggingface-hub==1.21.0",
     "hf-xet==1.5.1",
@@ -3808,28 +3814,59 @@ def _ensure_venv_llmcompressor_exists() -> bool:
         )
         return False
 
-    # llmcompressor is a git+ requirement, and uv / pip shell out to git for it.
-    from utils.git_tool import GitUnavailable, ensure_git, with_git_on_path
-
-    try:
-        git_dir = ensure_git()
-    except GitUnavailable as exc:
-        logger.error("Cannot provision llm-compressor-main shadow: %s", exc)
-        return False
-
     logger.warning(
         "Provisioning llm-compressor-main shadow at %s (one-time, ~a few hundred MB, no torch) ...",
         _VENV_LLMCOMPRESSOR_DIR,
     )
     shutil.rmtree(_VENV_LLMCOMPRESSOR_DIR, ignore_errors = True)
     os.makedirs(_VENV_LLMCOMPRESSOR_DIR, exist_ok = True)
+    with tempfile.TemporaryDirectory(
+        dir = os.path.dirname(_VENV_LLMCOMPRESSOR_DIR), prefix = ".llmc-src-"
+    ) as tmp:
+        try:
+            source = _download_llmcompressor_source(Path(tmp))
+        except Exception as exc:  # network, checksum, bad archive
+            logger.error("Cannot provision llm-compressor-main shadow: %s", exc)
+            return False
+        return _install_llmcompressor_shadow(source)
 
+
+def _download_llmcompressor_source(parent: Path) -> Path:
+    """The pinned commit from GitHub's source archive, sha256-checked: no git needed.
+
+    setuptools_scm lists package files and the version from git. Without an expanded
+    .git_archival.txt an archive build silently drops modeling/moe and modeling/patch
+    (no __init__.py) and has no version, so one is written for the pinned commit.
+    """
+    from utils.llama_cpp_source import safe_extract_tar
+
+    url = f"https://github.com/vllm-project/llm-compressor/archive/{_LLMC_MAIN_SHA}.tar.gz"
+    archive = parent / "llm-compressor.tar.gz"
+    digest = hashlib.sha256()
+    request = urllib.request.Request(url, headers = {"User-Agent": "unsloth-studio"})
+    with urllib.request.urlopen(request, timeout = 300) as response, open(archive, "wb") as out:
+        while chunk := response.read(1 << 20):
+            digest.update(chunk)
+            out.write(chunk)
+    if digest.hexdigest() != _LLMC_MAIN_ARCHIVE_SHA256:
+        raise RuntimeError(f"{url} failed its sha256 check")
+    safe_extract_tar(archive, parent)
+    source = parent / f"llm-compressor-{_LLMC_MAIN_SHA}"
+    (source / ".git_archival.txt").write_text(
+        f"node: {_LLMC_MAIN_SHA}\ndescribe-name: {_LLMC_MAIN_DESCRIBE}-g{_LLMC_MAIN_SHA[:8]}\n",
+        encoding = "utf-8",
+    )
+    return source
+
+
+def _install_llmcompressor_shadow(source: Path) -> bool:
     # Prefer uv then pip; every spec at once, --no-deps, prereleases allowed (compressed-tensors).
     base = [
         "--target",
         _VENV_LLMCOMPRESSOR_DIR,
         "--no-deps",
         "--prerelease=allow",
+        str(source),
         *_VENV_LLMCOMPRESSOR_SPECS,
     ]
     cmds = []
@@ -3855,11 +3892,8 @@ def _ensure_venv_llmcompressor_exists() -> bool:
             text = True,
             encoding = "utf-8",
             errors = "replace",
-            env = with_git_on_path(
-                utf8_child_env(
-                    get_hf_cache_paths().child_env(child_env_without_native_path_secret())
-                ),
-                git_dir,
+            env = utf8_child_env(
+                get_hf_cache_paths().child_env(child_env_without_native_path_secret())
             ),
             **_windows_hidden_subprocess_kwargs(),
         )
