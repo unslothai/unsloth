@@ -204,6 +204,9 @@ async def load_media(
     hf_token: Optional[str],
 ) -> LoadResult:
     routes = MEDIA_ROUTES[kind]
+    if hf_token:
+        # The GGUF lookup reads the Hub token from the header, so a gated repo needs it there too.
+        caller = dataclasses.replace(caller, hf_token = hf_token)
     body: dict[str, Any] = {"model_path": model}
     token = hf_token or caller.hf_token
     if token:

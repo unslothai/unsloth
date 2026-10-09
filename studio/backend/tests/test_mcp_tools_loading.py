@@ -552,6 +552,23 @@ def test_stt_downloads_then_loads_in_order(monkeypatch, fast_polls):
     ]
 
 
+def test_the_hf_token_argument_reaches_the_gguf_lookup(monkeypatch, fast_polls):
+    # A gated GGUF repo needs the token on the variant lookup, not only on the load.
+    studio = _media_studio(
+        "image",
+        progress = [{"phase": "ready"}],
+        statuses = [{"loaded": True, "repo_id": FLUX_GGUF, "family": "flux"}],
+    )
+    _call(
+        monkeypatch,
+        studio,
+        "load_model",
+        {"model": FLUX_GGUF, "kind": "image", "hf_token": "hf_arg"},
+    )
+    lookup = next(c for c in studio.state.calls if c[1] == "/api/hub/gguf-variants")
+    assert lookup[2]["x-unsloth-hf-token"] == "hf_arg"
+
+
 def test_the_hf_token_argument_rides_the_download_header(monkeypatch, fast_polls):
     studio = _stt_studio(
         [{"transformers": _stt_state()}, {"transformers": _stt_state(downloaded = [WHISPER])}],
