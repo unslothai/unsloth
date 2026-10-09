@@ -6031,7 +6031,12 @@ def _enabled_agent_skills() -> list[dict]:
         return current
 
 
-def _skill_tool_tip(*, can_create: bool, can_run_scripts: bool = True, compact: bool = False) -> str:
+def _skill_tool_tip(
+    *,
+    can_create: bool,
+    can_run_scripts: bool = True,
+    compact: bool = False,
+) -> str:
     from core.inference.skills import (
         LARGE_SKILL_CATALOG_BYTES,
         MAX_SKILL_CATALOG_BYTES,

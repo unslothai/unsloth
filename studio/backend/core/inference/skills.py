@@ -625,11 +625,7 @@ def set_skill_enabled(
         return {**record, "enabled": enabled}
 
 
-def set_all_skills_enabled(
-    enabled: Optional[bool],
-    *,
-    home: Optional[Path] = None,
-) -> list[dict]:
+def set_all_skills_enabled(enabled: Optional[bool], *, home: Optional[Path] = None) -> list[dict]:
     """Turn every listed skill on or off; None drops every override, back to fresh-install defaults."""
     if enabled is not None and not isinstance(enabled, bool):
         raise SkillError("Skill enabled state must be a boolean or null.")

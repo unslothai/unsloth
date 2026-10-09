@@ -626,9 +626,7 @@ class TestToolActionNudge:
         assert "Code tool in Unsloth Studio" in nudge
 
     @pytest.mark.parametrize("code_tool", ["python", "terminal"])
-    def test_skill_nudge_with_a_code_tool_does_not_warn_about_scripts(
-        self, monkeypatch, code_tool
-    ):
+    def test_skill_nudge_with_a_code_tool_does_not_warn_about_scripts(self, monkeypatch, code_tool):
         import routes.inference as inference_routes
 
         monkeypatch.setattr(
