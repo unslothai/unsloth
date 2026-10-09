@@ -175,3 +175,12 @@ def test_a_drafter_passed_over_keeps_its_reason_on_the_one_that_attaches(monkeyp
             target, spec.SpecResolution("dflash", sources[2:], copies = True), fits = fits
         )
         assert refused == (None, None, spec.RUNTIME_ERROR, None)
+
+
+def test_a_drafter_carrying_its_own_model_module_is_never_found_or_attached(cache):
+    # mlx-vlm imports a config's model_file on load, so such a checkpoint would run its own code.
+    custom = {**_DFLASH, "model_file": "model.py"}
+    _resolve = cache({"a/Qwen3.5-4B-DFlash": custom})
+    assert spec.cached_drafters(_TARGET, {"vocab_size": 10}) == []
+    assert not _resolve("auto").sources and not _resolve("dflash").sources
+    assert _resolve("dflash", "a/Qwen3.5-4B-DFlash").reason == spec.DRAFTER_NOT_FOUND

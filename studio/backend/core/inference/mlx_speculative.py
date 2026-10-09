@@ -81,6 +81,9 @@ def _read_config(path) -> dict:
 
 def companion_kind(config: dict) -> Optional[str]:
     """``dflash2``, ``dflash``, ``dspark``, ``eagle3`` or ``mtp`` (a separate MTP head or a Gemma assistant) for a companion drafter config."""
+    # mlx-vlm executes a checkpoint's own model_file on load; a drafter never gets the target's remote-code grant.
+    if config.get("model_file"):
+        return None
     architectures = " ".join(str(name) for name in config.get("architectures") or ())
     # mlx-vlm loads EAGLE-3 only in the speculators format, not e.g. llama-typed Eagle3 exports.
     if "eagle3" in (config.get("model_type"), config.get("speculators_model_type")):

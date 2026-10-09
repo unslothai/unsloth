@@ -705,6 +705,8 @@ def _drafter_sizing(config: dict, dtype, drafter: tuple) -> tuple:
     from unsloth_zoo.mlx.speculative import companion_drafter, native_mtp_drafter, probe_drafter
 
     path, builtin = drafter
+    if not builtin and (_snapshot_config(path) or {}).get("model_file"):
+        raise ValueError("this drafter carries its own model module")
     target = _whole_model(config, dtype)
     built = (native_mtp_drafter if builtin else companion_drafter)(path, target, lazy = True)
     if built is None:
