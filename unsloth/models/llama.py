@@ -984,6 +984,16 @@ __DTYPE_MAP = {
 }
 
 
+def _has_pad_before_token(attention_mask):
+    # Dropping the training mask is exact only for right padding, where causal attention never
+    # reaches the trailing pads. A label-less forward (custom losses, rerankers) zeroes pad embeddings,
+    # so attending to left pads sends gradients to NaN (#3705). Checked only then: it syncs.
+    if attention_mask.dim() != 2 or attention_mask.shape[-1] < 2:
+        return False
+    mask = attention_mask.bool()
+    return bool((mask[:, 1:] & ~mask[:, :-1]).any())
+
+
 # Ported from transformers models/llama/modeling_llama.py#L825
 def LlamaModel_fast_forward(
     self,
@@ -1127,7 +1137,11 @@ def LlamaModel_fast_forward(
 
     if attention_mask is None:
         padding_mask = None
-    elif self.training and not getattr(self, "_unsloth_keep_padding_mask", False):
+    elif (
+        self.training
+        and not getattr(self, "_unsloth_keep_padding_mask", False)
+        and not (getattr(self, "_has_no_labels", False) and _has_pad_before_token(attention_mask))
+    ):
         attention_mask = None
         padding_mask = None
     else:
