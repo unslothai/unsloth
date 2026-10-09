@@ -66,6 +66,7 @@ from core.inference.mcp_image import (
     image_mapping,
     public_tool,
     settle_image_call,
+    strip_attached_image_note,
 )
 from core.inference.mcp_client import (
     MCP_TOOL_PREFIX,
@@ -13541,9 +13542,19 @@ def mcp_image_share(name, arguments, mcp_image) -> dict | None:
     """
     if mcp_image is None or not isinstance(arguments, dict):
         return None
+    from .tool_loop_controller import UNPARSED_ARGUMENTS_KEY  # noqa: PLC0415
+
     server, tool, tool_name = _mcp_resolve_tool(name)
     mapping = image_mapping(server, tool) if server else None
-    if mapping is None or not settle_image_call(arguments, mapping["field"]):
+    if mapping is None:
+        return None
+    # Arguments that could not be read are not a call to rewrite: they keep their ordinary path.
+    properties = _mcp_input_schema(tool).get("properties") or {}
+    if UNPARSED_ARGUMENTS_KEY in arguments or (
+        set(arguments) == {"raw"} and "raw" not in properties
+    ):
+        return None
+    if not settle_image_call(arguments, mapping["field"]):
         return None
     # The fingerprint covers the server's headers, so it stays on the server: only "disclosure" is streamed.
     return {
@@ -13579,7 +13590,11 @@ def mcp_image_targets(names) -> list[tuple[str, str]]:
 
 def mcp_catalog_takes_image(names) -> bool:
     """Whether any of these catalog tools has a field mapped to the attached image."""
-    return bool(mcp_image_targets(names))
+    for name in names:
+        server, tool, _ = _mcp_resolve_tool(name)
+        if server and image_mapping(server, tool):
+            return True
+    return False
 
 
 def mcp_tool_input_schema(name) -> dict | None:
@@ -14698,14 +14713,15 @@ def _last_user_text(conversation: list[dict]) -> str:
             continue
         content = msg.get("content")
         if isinstance(content, str):
-            return strip_current_date_update_note(content).strip()
+            return strip_current_date_update_note(strip_attached_image_note(content)).strip()
         if isinstance(content, list):
             parts = [
                 p.get("text", "")
                 for p in content
                 if isinstance(p, dict) and p.get("type") in ("text", "input_text")
             ]
-            return strip_current_date_update_note(" ".join(t for t in parts if t)).strip()
+            text = strip_attached_image_note(" ".join(t for t in parts if t))
+            return strip_current_date_update_note(text).strip()
         return ""
     return ""
 

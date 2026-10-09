@@ -406,25 +406,52 @@ def test_a_call_that_leaves_out_or_misspells_the_field_still_sends_after_approva
 def test_siblings_pointed_at_the_attachment_are_not_sent(mapped_server):
     image = McpImage(mime = "image/png", data = _png_bytes())
     args = {
-        "image": ATTACHED_IMAGE,
         "path": "attached_image",
         "url": "https://example.com/attached_image",
-        "note": " ",
+        "question": "Which anime is in the attached image?",
+        "note": "",
         "cut_borders": True,
         "other": "image_path",
     }
     share = tools_mod.mcp_image_share("mcp__srv1__lookup", args, image)
-    assert args == {"image": ATTACHED_IMAGE, "cut_borders": True, "other": "image_path"}
-    tools_mod.execute_tool("mcp__srv1__lookup", args, mcp_image = share["image"])
-    assert mapped_server[-1]["args"] == {
-        "image": image.encoded("data_url"),
+    kept = {
+        "question": "Which anime is in the attached image?",
+        "note": "",
         "cut_borders": True,
         "other": "image_path",
     }
+    assert args == {**kept, "image": ATTACHED_IMAGE}
+    tools_mod.execute_tool("mcp__srv1__lookup", args, mcp_image = share["image"])
+    assert mapped_server[-1]["args"] == {**kept, "image": image.encoded("data_url")}
     # Any other value in the mapped field is the model's own input: no image, nothing rewritten.
     literal = {"image": "/tmp/a.png", "path": "attached_image"}
     assert tools_mod.mcp_image_share("mcp__srv1__lookup", literal, image) is None
     assert literal == {"image": "/tmp/a.png", "path": "attached_image"}
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        {"__unsloth_unparsed_arguments__": '{"image": "attached_image", "cut_borders": tr'},
+        {"raw": '{"image": "attached_image", "cut'},
+    ],
+)
+def test_a_call_whose_arguments_were_cut_off_never_carries_the_image(mapped_server, args):
+    image = McpImage(mime = "image/png", data = _png_bytes())
+    before = dict(args)
+    assert tools_mod.mcp_image_share("mcp__srv1__lookup", args, image) is None
+    assert args == before
+
+
+def test_retrieval_queries_ignore_the_note():
+    noted = note_attached_image(
+        [{"role": "user", "content": "what is this?"}], [("mcp__srv1__lookup", "image")]
+    )
+    assert tools_mod._last_user_text(noted) == "what is this?"
+    parts = note_attached_image(
+        [{"role": "user", "content": [{"type": "text", "text": "what is this?"}]}], [("t", "f")]
+    )
+    assert tools_mod._last_user_text(parts) == "what is this?"
 
 
 def _one_call_turns():
