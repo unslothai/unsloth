@@ -7761,6 +7761,7 @@ export function createOpenAIStreamAdapter(
               // Replay state reaches the message only through a yield, so a Stop while the gate holds one
               // persists a turn that cannot replay. Pace previews, never state.
               let replayStateChanged = false;
+              let geminiReplayStateChanged = false;
               let geminiThoughtSignature: string | undefined;
               let capturedGeminiThoughtPart = false;
               if (deltaExtraContent && typeof deltaExtraContent === "object") {
@@ -7796,7 +7797,7 @@ export function createOpenAIStreamAdapter(
                         toolCallParts.length,
                       );
                       capturedGeminiThoughtPart = true;
-                      replayStateChanged = true;
+                      geminiReplayStateChanged = true;
                     }
                   }
                   let capturedAnswerPart = false;
@@ -7824,7 +7825,7 @@ export function createOpenAIStreamAdapter(
                         toolCallParts.length,
                       );
                       capturedAnswerPart = true;
-                      replayStateChanged = true;
+                      geminiReplayStateChanged = true;
                     }
                   }
                   if (typeof sig === "string" && sig) {
@@ -7832,7 +7833,7 @@ export function createOpenAIStreamAdapter(
                     if (belongsToThought) {
                       geminiThoughtSignature = sig;
                     } else if (!capturedAnswerPart) {
-                      replayStateChanged ||= sig !== legacyGeminiTextSignature;
+                      geminiReplayStateChanged ||= sig !== legacyGeminiTextSignature;
                       legacyGeminiTextSignature = sig;
                     }
                   }
@@ -7902,8 +7903,12 @@ export function createOpenAIStreamAdapter(
                   geminiThoughtSignature,
                   toolCallParts.length,
                 );
-                replayStateChanged = true;
+                geminiReplayStateChanged = true;
               }
+              // Text-bearing replay metadata is published with the same paced preview as its visible delta.
+              // Metadata-only signature parts still need an immediate yield or Stop could lose them.
+              replayStateChanged ||=
+                geminiReplayStateChanged && !delta && !reasoning;
               // OpenAI delta.tool_calls streams fragments by index; accumulate into one part. extra_content
               // carries the Gemini 3 thoughtSignature.
               const rawDeltaToolCalls = (

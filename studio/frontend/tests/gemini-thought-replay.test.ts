@@ -33,6 +33,8 @@ const CAPTURE_THOUGHT_PARTS =
 const CAPTURE_NATIVE_THOUGHT_PART =
   /const thoughtPart = googleRecord\.thought_part/;
 const MERGE_UNSIGNED_THOUGHT_INTO_LATER_SIGNATURE = /pendingGeminiThoughtText/;
+const PACE_TEXT_BEARING_REPLAY_METADATA =
+  /geminiReplayStateChanged && !delta && !reasoning/;
 const FLUSH_BEFORE_REPLAY_CAPTURE =
   /if \(part\.type === "reasoning"\) \{[\s\S]{0,180}flushAssistantAndToolResults\(\);[\s\S]{0,180}pendingGeminiThoughtParts\.push/;
 const PIN_TEXT_SIGNATURE =
@@ -260,6 +262,7 @@ test("the chat adapter retains thought and answer signatures independently", () 
   assert.match(adapter, CAPTURE_THOUGHT_PARTS);
   assert.match(adapter, CAPTURE_NATIVE_THOUGHT_PART);
   assert.doesNotMatch(adapter, MERGE_UNSIGNED_THOUGHT_INTO_LATER_SIGNATURE);
+  assert.match(adapter, PACE_TEXT_BEARING_REPLAY_METADATA);
   assert.match(adapter, FLUSH_BEFORE_REPLAY_CAPTURE);
   assert.match(adapter, PIN_TEXT_SIGNATURE);
 });
