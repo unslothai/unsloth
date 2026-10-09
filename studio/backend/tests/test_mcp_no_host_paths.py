@@ -35,7 +35,7 @@ from .test_mcp_tools_training import PAYLOADS as TRAINING_PAYLOADS
 from .test_mcp_tools_training import RUN_PAYLOADS
 from .test_mcp_tools_video import PAYLOADS as VIDEO_PAYLOADS
 
-# The direct-call tools from before forwarding. Each commit that replaces one removes it here and adds its case.
+# The direct-call tools from before forwarding are all gone; nothing is exempt.
 LEGACY_UNCHECKED: set[str] = set()
 
 # tool name -> (fake Studio routes as {(method, path): payload}, tool arguments), or a list of them
@@ -132,10 +132,10 @@ def _registered_names() -> set[str]:
 
 def test_every_registered_tool_has_a_host_path_case():
     names = _registered_names()
+    assert LEGACY_UNCHECKED == set()
     assert set(MODEL_TEXT) <= set(CASES)
-    assert not (set(CASES) & LEGACY_UNCHECKED)
-    assert LEGACY_UNCHECKED <= names, "a legacy tool was removed; drop it from LEGACY_UNCHECKED"
-    assert names - LEGACY_UNCHECKED == set(CASES)
+    assert names == set(CASES)
+    assert len(names) == 18
 
 
 @pytest.mark.parametrize("name", sorted(CASES))
