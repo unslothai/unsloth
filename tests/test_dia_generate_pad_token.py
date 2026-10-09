@@ -73,16 +73,14 @@ def _captured_generate_kwargs(config, **generate_kwargs):
     return captured
 
 
-# Plain namespaces, not DiaConfig: Dia needs transformers >= 4.53, above Unsloth's 4.52.4 floor.
+# Not DiaConfig: Dia needs transformers >= 4.53, the floor is 4.52.4. Ids sit at the top level before 5, on decoder_config from 5.
 def _legacy_dia_config():
-    # transformers < 5: audio token ids only at the top level (nari-labs/Dia-1.6B-0626's config.json).
     return SimpleNamespace(
         model_type = "dia", pad_token_id = 1025, eos_token_id = 1024, decoder_config = SimpleNamespace()
     )
 
 
 def _dia_config():
-    # transformers 5: ids on decoder_config, top level deprecated and None unless config.json sets it.
     return SimpleNamespace(
         model_type = "dia",
         pad_token_id = None,

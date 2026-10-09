@@ -1622,8 +1622,7 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     config_pad_token_id = getattr(self.config, "pad_token_id", None)
     is_dia = getattr(self.config, "model_type", None) == "dia"
     if is_dia:
-        # Dia's audio pad (1025) fills its delay pattern; EOS there makes the DAC decode index out of range (#2560).
-        # transformers 5 keeps it on decoder_config, older releases only at the top level.
+        # Dia's audio pad fills its delay pattern; EOS there breaks the DAC decode (#2560). transformers 5 moved it to decoder_config.
         decoder_pad_token_id = getattr(
             getattr(self.config, "decoder_config", None), "pad_token_id", None
         )
