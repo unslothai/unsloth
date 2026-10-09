@@ -16843,8 +16843,15 @@ def _managed_engine_offer_for(config, hf_token) -> Optional[dict]:
         if config.is_local:
             path = Path(config.path) / "config.json"
         else:
-            from huggingface_hub import hf_hub_download
-            path = Path(hf_hub_download(config.identifier, "config.json", token = hf_token))
+            from huggingface_hub import hf_hub_download, try_to_load_from_cache
+
+            # Resolving the model already cached config.json; the Hub round trip costs ~45 ms per pick.
+            cached = try_to_load_from_cache(config.identifier, "config.json")
+            path = Path(
+                cached
+                if isinstance(cached, str)
+                else hf_hub_download(config.identifier, "config.json", token = hf_token)
+            )
         metadata = json.loads(path.read_text(encoding = "utf-8"))
         from core.inference.engine_install import _driver_rows, support_reason
 
