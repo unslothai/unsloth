@@ -31,7 +31,7 @@ export interface ResearchPlan {
 }
 
 export interface ResearchEvidenceSource {
-  kind: "knowledge_base";
+  kind: "knowledge_base" | "mcp";
   chunkId?: string | null;
   documentId?: string | null;
   filename: string;
@@ -88,7 +88,7 @@ export interface ResearchBudgets {
   maxSources: number;
   modelTimeoutSeconds: number;
   toolTimeoutSeconds: number;
-  // Optional: runs created before this budget existed do not carry it.
+  // runs created before this budget existed do not carry it.
   firstOutputTimeoutSeconds?: number;
 }
 
@@ -97,16 +97,22 @@ export interface ResearchWebsitePolicy {
   blockedDomains: string[];
 }
 
+export interface ResearchMcpSource {
+  serverId: string;
+  tool: string;
+}
+
 export interface CreateResearchRunInput {
   threadId: string;
   userMessageId: string;
   assistantMessageId?: string;
   inferenceRequest: ResearchInferenceRequest;
   ragScope?: Record<string, unknown>;
+  mcpSources?: ResearchMcpSource[];
   budgets?: Partial<ResearchBudgets>;
   websitePolicy?: ResearchWebsitePolicy;
   instructions?: string;
-  /** The question the model handed off, which is what gets researched. */
+  /** research the question handed off by the model. */
   question?: string;
 }
 

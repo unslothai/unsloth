@@ -256,9 +256,12 @@ def PatchRL(FastLanguageModel):
         else:
             labels = None
 
-        # Force logits during eval, but restore the user's prior setting after so an explicit UNSLOTH_RETURN_LOGITS="1" is not silently turned off.
+        # Force logits only when they are kept (compute_metrics, predict): a loss-only eval stays on the
+        # fused CE path instead of materializing [bsz, seq, vocab] logits per batch (#1801). Restore the
+        # user's prior setting after so an explicit UNSLOTH_RETURN_LOGITS="1" is not silently turned off.
         _old_return_logits = os.environ.get("UNSLOTH_RETURN_LOGITS", "0")
-        os.environ["UNSLOTH_RETURN_LOGITS"] = "1"
+        if not prediction_loss_only:
+            os.environ["UNSLOTH_RETURN_LOGITS"] = "1"
         try:
             with torch.no_grad():
                 if has_labels or loss_without_labels:
