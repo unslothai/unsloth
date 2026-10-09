@@ -4219,14 +4219,24 @@ def resolve_release_asset_choice(
             and selection_host.driver_cuda_version[0] >= _MIN_CUDA_MAJOR
         ):
             # #12842: the Windows source fallback needs a toolkit this driver runs, which
-            # winget rarely offers, so setup would fail. CPU until the driver is updated.
-            cpu_choice = published_asset_choice_for_kind(release, "windows-cpu")
-            if cpu_choice is not None:
+            # winget rarely offers, so setup would fail. Vulkan still runs on the NVIDIA
+            # GPU (the reporter's Vulkan build worked); CPU only after it.
+            vulkan_choice = published_asset_choice_for_kind(release, "windows-vulkan", host = host)
+            choices = [
+                choice
+                for choice in (
+                    vulkan_choice,
+                    published_asset_choice_for_kind(release, "windows-cpu"),
+                )
+                if choice is not None
+            ]
+            if choices:
+                bundle = "Vulkan" if vulkan_choice is not None else "CPU"
                 log(
-                    f"{cuda_driver_floor_message(selection_host)} Installing the CPU "
+                    f"{cuda_driver_floor_message(selection_host)} Installing the {bundle} "
                     "bundle for now."
                 )
-                return apply_approved_hashes([cpu_choice], checksums)
+                return apply_approved_hashes(choices, checksums)
         torch_preference = detect_torch_cuda_runtime_preference(
             selection_host, gpu_hidden_by_mask = masked_host is not None
         )

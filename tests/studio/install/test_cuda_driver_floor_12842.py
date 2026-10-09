@@ -203,37 +203,58 @@ def test_a_driver_below_the_floor_stops_the_release_walk(monkeypatch, system):
     assert len(walked) == 1
 
 
-def _release_with_windows_cpu():
-    cpu = m.parse_published_artifact(
-        {
-            "asset_name": f"app-{TAG}-windows-x64-cpu.zip",
-            "install_kind": "windows-cpu",
-            "bundle_profile": "windows-cpu-x64",
-            "runtime_line": None,
-            "coverage_class": None,
-            "rank": 1000,
-        }
-    )
-    assert cpu is not None
+def _release_with(*kinds):
+    rows = {
+        "windows-vulkan": ("windows-vulkan-x64", 60),
+        "windows-cpu": ("windows-cpu-x64", 1000),
+    }
+    extra = []
+    for kind in kinds:
+        profile, rank = rows[kind]
+        artifact = m.parse_published_artifact(
+            {
+                "asset_name": f"app-{TAG}-{kind.replace('windows-', 'windows-x64-')}.zip",
+                "install_kind": kind,
+                "bundle_profile": profile,
+                "runtime_line": None,
+                "coverage_class": None,
+                "rank": rank,
+            }
+        )
+        assert artifact is not None
+        extra.append(artifact)
     return m.PublishedReleaseBundle(
         repo = RELEASE.repo,
         release_tag = RELEASE.release_tag,
         upstream_tag = RELEASE.upstream_tag,
-        assets = {**RELEASE.assets, cpu.asset_name: f"https://example.com/{cpu.asset_name}"},
-        artifacts = [*RELEASE.artifacts, cpu],
+        assets = {
+            **RELEASE.assets,
+            **{a.asset_name: f"https://example.com/{a.asset_name}" for a in extra},
+        },
+        artifacts = [*RELEASE.artifacts, *extra],
     )
 
 
-class TestWindowsBelowTheFloorGetsTheCpuBundle:
-    def _choices(self, monkeypatch, driver):
+class TestWindowsBelowTheFloorGetsTheVulkanBundle:
+    def _choices(
+        self,
+        monkeypatch,
+        driver,
+        kinds = ("windows-vulkan", "windows-cpu"),
+    ):
         monkeypatch.setattr(m, "apply_approved_hashes", lambda attempts, _checksums: attempts)
         monkeypatch.setattr(m, "github_release_assets", lambda _repo, _tag: {})
         return m.resolve_release_asset_choice(
-            host("Windows", driver), "b11443", _release_with_windows_cpu(), None
+            host("Windows", driver), "b11443", _release_with(*kinds), None
         )
 
-    def test_a_12_2_driver_gets_the_cpu_bundle(self, monkeypatch):
+    def test_a_12_2_driver_gets_vulkan_then_cpu(self, monkeypatch):
         choices = self._choices(monkeypatch, (12, 2))
+        assert [c.install_kind for c in choices] == ["windows-vulkan", "windows-cpu"]
+        assert choices[0].name == f"app-{TAG}-windows-x64-vulkan.zip"
+
+    def test_without_a_vulkan_bundle_it_gets_the_cpu_bundle(self, monkeypatch):
+        choices = self._choices(monkeypatch, (12, 2), kinds = ("windows-cpu",))
         assert [c.install_kind for c in choices] == ["windows-cpu"]
 
     @pytest.mark.parametrize("driver", [(12, 4), (13, 0)])
