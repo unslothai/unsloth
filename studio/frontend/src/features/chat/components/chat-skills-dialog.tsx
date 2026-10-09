@@ -631,7 +631,12 @@ export function ChatSkillsDialog({
                 <label className="flex items-center gap-2 text-sm text-muted-foreground">
                   <Switch
                     checked={selected.valid && !selected.shadowed && selected.enabled}
-                    disabled={!selected.valid || selected.shadowed || changing === selected.name}
+                    disabled={
+                      !selected.valid ||
+                      selected.shadowed ||
+                      changing === selected.name ||
+                      changing === ALL_SKILLS
+                    }
                     aria-label={t(selected.enabled ? "skills.disable" : "skills.enable", {
                       name: selected.name,
                     })}

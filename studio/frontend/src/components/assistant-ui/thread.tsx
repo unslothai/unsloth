@@ -5583,6 +5583,7 @@ const Composer: FC<{
       <SkillMentionPopover
         // Not gated on Code: a mention offers read_skill on its own.
         enabled={supportsTools}
+        composerRef={editorRef}
         onConsumesEnterChange={setMentionConsumesEnter}
         onOpenChange={setMentionOpen}
       />

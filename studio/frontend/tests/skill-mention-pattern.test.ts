@@ -31,6 +31,15 @@ test("emails, underscores, uppercase and dangling hyphens are not mentions", () 
   assert.deepEqual(names("@-probe"), []);
 });
 
+test("one trailing sentence mark, the same rule as the backend preload", () => {
+  for (const text of ["@alpha.", "@alpha,", "@alpha;", "@alpha:", "@alpha!", "@alpha?", "@alpha)"]) {
+    assert.deepEqual(names(`${text} next`), ["alpha"], text);
+  }
+  for (const text of ["@alpha!!", "@alpha]", "@alpha).", "@alpha'", '@alpha"', "@alpha?!"]) {
+    assert.deepEqual(names(text), [], text);
+  }
+});
+
 test("a name is at most 64 characters", () => {
   const sixtyFour = "a".repeat(64);
   assert.deepEqual(names(`@${sixtyFour}`), [sixtyFour]);

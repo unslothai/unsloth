@@ -144,4 +144,4 @@ def test_code_off_mention_loads_and_says_scripts_need_code(mention_client, code_
     note = "bundled scripts cannot run"
     assert (note in context) is not code_on
     if not code_on:
-        assert "Code tool in Unsloth Studio" in context
+        assert "Unsloth Studio's local Code tool" in context

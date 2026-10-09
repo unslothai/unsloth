@@ -157,13 +157,15 @@ export async function setSkillEnabled(
 export async function setAllSkillsEnabled(
   enabled: boolean | null,
 ): Promise<readonly SkillRecord[]> {
+  // A list fetched before the change is stale, and a sign-out mid-request must not get this list back.
+  const generation = ++requestGeneration;
   const response = await authFetch("/api/skills", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ enabled }),
   });
   const skills = await parseResponse<SkillRecord[]>(response);
-  requestGeneration += 1;
+  if (generation !== requestGeneration) return skills;
   lastFetchedAt = Date.now();
   publish({ skills, loading: false, initialized: true, error: null });
   channel?.postMessage("changed");

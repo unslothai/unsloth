@@ -2,8 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // Spec skill names only, ending at a word boundary: `@example.com`, `@3pm`, `@Probe` are not mentions.
+// At most one trailing sentence mark, as the backend preload's _TOKEN, so `@name!!` loads on neither side.
 export const SKILL_MENTION_PATTERN =
-  /(^|\s)@([a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)(?=$|\s|[.,;:!?)\]'"]+(?:$|\s))/g;
+  /(^|\s)@([a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)(?=$|\s|[.,;:!?)](?:$|\s))/g;
 
 export interface SkillToolEntry {
   name: string;

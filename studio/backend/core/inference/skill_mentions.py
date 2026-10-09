@@ -161,8 +161,8 @@ def load_mentioned_skills(
     if not {"python", "terminal"} & tool_names:
         gate += (
             " No local python or terminal tool is available, so its bundled scripts cannot run;"
-            " never claim to have run one, and tell the user a script needs the Code tool in"
-            " Unsloth Studio."
+            " never claim to have run one, and tell the user a script needs Unsloth Studio's"
+            " local Code tool."
         )
     # @john is a person, not a skill: no card or approval. Known-but-unusable skills report unavailable.
     try:

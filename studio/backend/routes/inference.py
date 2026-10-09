@@ -6050,13 +6050,13 @@ def _skill_tool_tip(
     create_tip = (
         " To create a skill, read skill-creator and then call create_skill." if can_create else ""
     )
-    # read_skill is offered with Code off for an @mention; a skill's scripts still need python/terminal.
+    # Code off (a mention offers read_skill alone) or hosted Code: a skill's scripts are local.
     scripts_tip = (
         ""
         if can_run_scripts
         else " No local python or terminal tool is available, so a skill's bundled scripts cannot "
         "run: follow its written instructions, never claim to have run a script, and when a step "
-        "needs one, tell the user it needs the Code tool in Unsloth Studio."
+        "needs one, tell the user it needs Unsloth Studio's local Code tool."
     )
     return (
         "Enabled Agent Skills are listed below. Use their descriptions to select one when "

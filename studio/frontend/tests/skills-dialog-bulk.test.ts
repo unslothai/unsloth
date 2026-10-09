@@ -14,6 +14,9 @@ test("bulk changes go through one PUT on the collection and publish its list", (
     API.indexOf("export const SKILL_NAME_PATTERN"),
   );
   assert.match(body, /enabled: boolean \| null/);
+  // A sign-out (or a newer list) during the request wins; the stale list is never published.
+  assert.match(body, /const generation = \+\+requestGeneration;/);
+  assert.match(body, /if \(generation !== requestGeneration\) return skills;/);
   assert.match(body, /authFetch\("\/api\/skills", \{\s*method: "PUT"/);
   assert.match(body, /JSON\.stringify\(\{ enabled \}\)/);
   assert.match(body, /publish\(\{ skills, loading: false, initialized: true, error: null \}\)/);
@@ -45,4 +48,6 @@ test("reset discards custom choices, so it asks first", () => {
   );
   // Every row's switch waits while a bulk change is in flight.
   assert.match(DIALOG, /changing=\{changing === skill\.name \|\| changing === ALL_SKILLS\}/);
+  // So does the switch in a skill's own view, or flipping it would clear the bulk busy state early.
+  assert.match(DIALOG, /changing === selected\.name \|\|\s*changing === ALL_SKILLS/);
 });

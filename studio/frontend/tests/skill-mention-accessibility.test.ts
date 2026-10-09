@@ -36,7 +36,6 @@ test("the popover caps the adapter search, so navigation never leaves the render
 });
 
 test("Tab accepts the highlighted row in the main composer, as Enter does", () => {
-  assert.ok(mentionsSource.includes("<MentionTabAccept />"));
   assert.match(
     mentionsSource,
     /if \(event\.key !== "Tab" \|\| event\.shiftKey \|\| event\.isComposing\) return;/,
@@ -44,4 +43,12 @@ test("Tab accepts the highlighted row in the main composer, as Enter does", () =
   // Reuses the library's own Enter path, so the token replacer still owns the insert.
   assert.match(mentionsSource, /key: "Enter",\s*shiftKey: false,/);
   assert.match(mentionsSource, /const active = open && items\.length > 0;/);
+  // The popover stays open when focus leaves the composer; Tab elsewhere must stay that field's.
+  assert.match(mentionsSource, /!scopeRef\.current\?\.contains\(event\.target\)/);
+  assert.match(mentionsSource, /<MentionTabAccept scopeRef=\{composerRef\} \/>/);
+  const thread = readFileSync(
+    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(thread, /<SkillMentionPopover[\s\S]*?composerRef=\{editorRef\}/);
 });

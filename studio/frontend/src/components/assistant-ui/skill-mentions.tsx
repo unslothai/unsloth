@@ -128,14 +128,23 @@ function MentionOpenSignal({
 }
 
 // The library picks on Enter only; Tab accepts the highlighted row too, as the shared composer does.
-function MentionTabAccept(): null {
+// Only from inside the composer: the popover stays open when focus moves to another field.
+function MentionTabAccept({
+  scopeRef,
+}: {
+  scopeRef: RefObject<HTMLElement | null>;
+}): null {
   const { open, items, handleKeyDown } = unstable_useTriggerPopoverScopeContext();
   const active = open && items.length > 0;
   useEffect(() => {
     if (!active) return;
     const accept = (event: globalThis.KeyboardEvent) => {
       if (event.key !== "Tab" || event.shiftKey || event.isComposing) return;
-      if (!(event.target instanceof HTMLTextAreaElement)) return;
+      if (
+        !(event.target instanceof HTMLTextAreaElement) ||
+        !scopeRef.current?.contains(event.target)
+      )
+        return;
       const enter = {
         key: "Enter",
         shiftKey: false,
@@ -146,7 +155,7 @@ function MentionTabAccept(): null {
     // Capture, so the browser's focus move and the composer's own handlers never see it.
     window.addEventListener("keydown", accept, true);
     return () => window.removeEventListener("keydown", accept, true);
-  }, [active, handleKeyDown]);
+  }, [active, handleKeyDown, scopeRef]);
   return null;
 }
 
@@ -183,10 +192,12 @@ function MentionTokenReplacer(): null {
 
 export function SkillMentionPopover({
   enabled: mentionsEnabled,
+  composerRef,
   onConsumesEnterChange,
   onOpenChange,
 }: {
   enabled: boolean;
+  composerRef: RefObject<HTMLElement | null>;
   onConsumesEnterChange?: (consumesEnter: boolean) => void;
   onOpenChange?: (open: boolean) => void;
 }): ReactElement | null {
@@ -238,7 +249,7 @@ export function SkillMentionPopover({
       />
       <MentionOpenSignal onChange={onOpenChange} />
       <MentionTokenReplacer />
-      <MentionTabAccept />
+      <MentionTabAccept scopeRef={composerRef} />
       <ComposerPrimitive.Unstable_TriggerPopoverItems>
         {(results) => (
           <>

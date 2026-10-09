@@ -18,6 +18,9 @@ test("Code off keeps a plain chat out of the tool loop (#11671)", () => {
   // Not a mention: no whitespace before the @, or not a spec-shaped name.
   assert.deepEqual(skillToolNames([enabled], false, ["mail me@guided"]), []);
   assert.deepEqual(skillToolNames([enabled], false, ["@Guided"]), []);
+  // The backend would not preload these, so they must not open the loop either.
+  assert.deepEqual(skillToolNames([enabled], false, ["use @guided!!"]), []);
+  assert.deepEqual(skillToolNames([enabled], false, ["[@guided]"]), []);
 });
 
 test("Code off still reads a skill the user @mentions, but never creates one", () => {

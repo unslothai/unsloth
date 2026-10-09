@@ -623,7 +623,7 @@ class TestToolActionNudge:
         assert "create_skill" not in nudge
         # No python/terminal: the model is told a skill's scripts cannot run here.
         assert "bundled scripts cannot run" in nudge
-        assert "Code tool in Unsloth Studio" in nudge
+        assert "Unsloth Studio's local Code tool" in nudge
 
     @pytest.mark.parametrize("code_tool", ["python", "terminal"])
     def test_skill_nudge_with_a_code_tool_does_not_warn_about_scripts(self, monkeypatch, code_tool):
