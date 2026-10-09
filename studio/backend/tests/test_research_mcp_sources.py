@@ -419,3 +419,25 @@ def test_research_ignores_mcp_sources_while_tools_are_disabled(notes_server):
 def test_research_mcp_calls_cannot_reach_built_in_tools():
     from core.inference.tools import execute_mcp_tool
     assert execute_mcp_tool("terminal", {"command": "id"}).startswith("Error:")
+
+
+def test_identically_named_mcp_sources_have_distinct_citations(monkeypatch):
+    from core import research_runs as worker
+    from core.research.citations import _document_source_citation
+
+    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    tools = [
+        {
+            "serverId": server_id,
+            "serverName": "Notes",
+            "tool": "search",
+            "name": f"mcp__{server_id}__search",
+            "argument": "query",
+        }
+        for server_id in ("first", "second")
+    ]
+    monkeypatch.setattr(
+        worker, "execute_mcp_tool", lambda name, *args, **kwargs: f"Evidence from {name}"
+    )
+    sources = asyncio.run(supervisor._search_mcp_tools({"id": "r"}, tools, "query", 0, 10))
+    assert len({_document_source_citation(source) for source in sources}) == 2

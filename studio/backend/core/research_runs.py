@@ -1327,6 +1327,15 @@ class ResearchSupervisor:
     async def _search_mcp_tools(
         self, run: dict, tools: list[dict], query: str, position: int, tool_timeout: int
     ) -> list[dict]:
+        labels = {
+            tool["name"]: _mcp_source_label({"filename": f"{tool['serverName']} · {tool['tool']}"})
+            for tool in tools
+        }
+        label_values = list(labels.values())
+        labels = {
+            name: f"{label} ({name})" if label_values.count(label) > 1 else label
+            for name, label in labels.items()
+        }
         cancel_event = self._cancel_event(run["id"])
         calls = [
             (tool, {tool["argument"]: query})
@@ -1366,9 +1375,7 @@ class ResearchSupervisor:
                     "kind": "mcp",
                     "chunkId": f"{tool['name']}:{position}",
                     "documentId": tool["name"],
-                    "filename": _mcp_source_label(
-                        {"filename": f"{tool['serverName']} · {tool['tool']}"}
-                    ),
+                    "filename": labels[tool["name"]],
                     "page": None,
                     "score": None,
                     "snippet": text[:4000],
