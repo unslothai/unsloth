@@ -38,10 +38,16 @@ NVFP4 = {
 
 def offer(
     metadata,
-    supported = lambda name: True,
+    supported = lambda name, method: True,
     **overrides,
 ):
-    kwargs = {"engine": "auto", "is_gguf": False, "is_lora": False, "supported": supported}
+    kwargs = {
+        "engine": "auto",
+        "is_gguf": False,
+        "is_lora": False,
+        "is_audio": False,
+        "supported": supported,
+    }
     kwargs.update(overrides)
     return route._managed_engine_offer(metadata, **kwargs)
 
@@ -100,25 +106,32 @@ def test_nothing_is_offered_for_anything_else(metadata):
 
 def test_only_the_engines_this_host_can_run_are_offered():
     asked = []
-    assert offer(NVFP4, supported = lambda name: asked.append(name) or False) is None
-    assert asked == ["vllm", "sglang"]
-    assert offer(NVFP4, supported = lambda name: name == "sglang")["engines"] == ["sglang"]
+    assert offer(NVFP4, supported = lambda *a: asked.append(a) or False) is None
+    assert asked == [("vllm", "compressed-tensors"), ("sglang", "compressed-tensors")]
+    assert offer(NVFP4, supported = lambda name, method: name == "sglang")["engines"] == ["sglang"]
 
 
 def test_the_gpu_probe_is_only_asked_about_these_checkpoints():
     asked = []
     offer(
         {"quantization_config": {"quant_method": "bitsandbytes"}},
-        supported = lambda name: asked.append(name),
+        supported = lambda *a: asked.append(a),
     )
-    offer(NVFP4, engine = "vllm", supported = lambda name: asked.append(name))
+    offer(NVFP4, engine = "vllm", supported = lambda *a: asked.append(a))
     assert asked == []
 
 
 @pytest.mark.parametrize(
-    "overrides", [{"engine": "vllm"}, {"engine": "sglang"}, {"is_gguf": True}, {"is_lora": True}]
+    "overrides",
+    [
+        {"engine": "vllm"},
+        {"engine": "sglang"},
+        {"is_gguf": True},
+        {"is_lora": True},
+        {"is_audio": True},
+    ],
 )
-def test_nothing_is_offered_for_an_explicit_engine_a_gguf_or_an_adapter(overrides):
+def test_nothing_is_offered_for_an_explicit_engine_a_gguf_an_adapter_or_audio(overrides):
     assert offer(NVFP4, **overrides) is None
 
 
@@ -127,8 +140,15 @@ def _config(tmp_path, metadata, **extra):
     return SimpleNamespace(is_local = True, path = str(tmp_path), identifier = "local/model", **extra)
 
 
+def _gpus(*capabilities):
+    return patch(
+        "core.inference.engine_install._driver_rows",
+        return_value = [["580.65", cap] for cap in capabilities],
+    )
+
+
 def test_the_check_reads_the_checkpoints_own_config(tmp_path):
-    with patch("core.inference.engine_install.support_reason", return_value = None):
+    with patch("core.inference.engine_install.support_reason", return_value = None), _gpus("10.0"):
         assert route._managed_engine_offer_for(_config(tmp_path, NVFP4), None) == {
             "quantization": "compressed-tensors",
             "engines": ["vllm", "sglang"],
@@ -173,3 +193,32 @@ def test_the_response_carries_the_offer_and_defaults_to_none():
         "quantization": "compressed-tensors",
         "engines": ["vllm"],
     }
+
+
+def test_sglang_is_offered_compressed_tensors_only_on_blackwell(tmp_path):
+    awq = {"quantization_config": {"quant_method": "awq"}}
+    with patch("core.inference.engine_install.support_reason", return_value = None):
+        with _gpus("9.0", "9.0"):
+            assert route._managed_engine_offer_for(_config(tmp_path, NVFP4), None)["engines"] == [
+                "vllm"
+            ]
+            assert route._managed_engine_offer_for(_config(tmp_path, awq), None)["engines"] == [
+                "vllm",
+                "sglang",
+            ]
+        with _gpus("8.0", "12.0"):
+            assert route._managed_engine_offer_for(_config(tmp_path, NVFP4), None)["engines"] == [
+                "vllm",
+                "sglang",
+            ]
+        with _gpus("bad"):
+            assert route._managed_engine_offer_for(_config(tmp_path, NVFP4), None)["engines"] == [
+                "vllm"
+            ]
+
+
+def test_audio_checkpoints_get_no_offer(tmp_path):
+    with patch("core.inference.engine_install.support_reason", return_value = None), _gpus("10.0"):
+        assert (
+            route._managed_engine_offer_for(_config(tmp_path, NVFP4, is_audio = True), None) is None
+        )

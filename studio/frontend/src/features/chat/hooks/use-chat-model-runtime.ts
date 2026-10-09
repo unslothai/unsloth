@@ -2427,6 +2427,27 @@ export function useChatModelRuntime() {
               };
               engineSwitched = true;
               downloadComplete = true;
+              // Judge it again as that engine before anything is unloaded. A Desktop path lease is
+              // single-use, so those picks rely on /load's own engine checks.
+              if (!nativePathToken) {
+                Object.assign(
+                  validation,
+                  await validateModel({
+                    model_path: loadPath,
+                    ...loadEngineFields,
+                    hf_token: hfToken,
+                    max_seq_length: validateMaxSeqLength,
+                    load_in_4bit: false,
+                    is_lora: isLora,
+                    gguf_variant: ggufVariant ?? null,
+                    cache_type_kv: loadKvCacheDtype,
+                    tensor_parallel: loadTensorParallel,
+                    disable_vision: loadDisableVision,
+                    gpu_ids: validateGpuIds ?? undefined,
+                  }),
+                );
+                if (abortCtrl.signal.aborted) throw new Error("Cancelled");
+              }
             }
             if (validation.mlx_loads_base_model) {
               mlxLoadProgress = true;

@@ -16802,11 +16802,20 @@ _MANAGED_ENGINE_QUANTIZATIONS = {
 _OFFERED_ENGINES = ("vllm", "sglang")
 
 
-def _managed_engine_offer(metadata, *, engine, is_gguf, is_lora, supported) -> Optional[dict]:
+def _managed_engine_offer(
+    metadata, *, engine, is_gguf, is_lora, is_audio, supported
+) -> Optional[dict]:
     """The engines to offer for a checkpoint the Default engine cannot run, or None.
 
-    ``supported`` is asked last, so the GPU probe only runs for these checkpoints."""
-    if engine not in (None, "auto") or is_gguf or is_lora or not isinstance(metadata, dict):
+    ``supported(engine, quant_method)`` is asked last, so the GPU probe only runs for these
+    checkpoints. GGUF, adapters and audio models are refused by the optional engines."""
+    if (
+        engine not in (None, "auto")
+        or is_gguf
+        or is_lora
+        or is_audio
+        or not isinstance(metadata, dict)
+    ):
         return None
     text_config = metadata.get("text_config")
     quant = metadata.get("quantization_config") or (
@@ -16826,7 +16835,7 @@ def _managed_engine_offer(metadata, *, engine, is_gguf, is_lora, supported) -> O
                 return None
         except (ImportError, ValueError):
             pass
-    engines = [name for name in _OFFERED_ENGINES if supported(name)]
+    engines = [name for name in _OFFERED_ENGINES if supported(name, method)]
     return {"quantization": method, "engines": engines} if engines else None
 
 
@@ -16839,14 +16848,29 @@ def _managed_engine_offer_for(config, hf_token) -> Optional[dict]:
             from huggingface_hub import hf_hub_download
             path = Path(hf_hub_download(config.identifier, "config.json", token = hf_token))
         metadata = json.loads(path.read_text(encoding = "utf-8"))
-        from core.inference.engine_install import support_reason
+        from core.inference.engine_install import _driver_rows, support_reason
+
+        def supported(name, method):
+            if support_reason(name) is not None:
+                return False
+            if name != "sglang" or method != "compressed-tensors":
+                return True
+            # SGLang 0.5.20's compressed-tensors NVFP4 needs SM 10.0 (get_min_capability 100, no
+            # Marlin fallback; vLLM's starts at 7.5), so it is offered for these on Blackwell only.
+            try:
+                return any(
+                    float(row[1]) >= 10.0 for row in _driver_rows(None) or () if len(row) == 2
+                )
+            except ValueError:
+                return False
 
         return _managed_engine_offer(
             metadata,
             engine = "auto",
             is_gguf = getattr(config, "is_gguf", False),
             is_lora = getattr(config, "is_lora", False),
-            supported = lambda name: support_reason(name) is None,
+            is_audio = getattr(config, "is_audio", False),
+            supported = supported,
         )
     except Exception as exc:
         logger.debug("Managed engine offer check failed for '%s': %s", config.identifier, exc)

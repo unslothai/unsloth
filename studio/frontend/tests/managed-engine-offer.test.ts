@@ -70,5 +70,8 @@ test("the chat load asks before unloading anything and loads with the chosen eng
   const unloadAt = source.indexOf("await unloadModel({ model_path: currentCheckpoint })");
   assert.ok(offerAt > 0 && unloadAt > offerAt, "the offer must come before the preliminary unload");
   assert.match(source, /loadModel\(\{\s*model_path: loadPath,\s*\.\.\.loadEngineFields,/);
+  // The chosen engine's own /validate runs before the unload too.
+  const revalidateAt = source.indexOf("...loadEngineFields,", offerAt);
+  assert.ok(revalidateAt > offerAt && revalidateAt < unloadAt, "the chosen engine must be validated before the unload");
   assert.match(readText("../src/app/routes/__root.tsx"), /<ManagedEngineOfferDialog \/>/);
 });
