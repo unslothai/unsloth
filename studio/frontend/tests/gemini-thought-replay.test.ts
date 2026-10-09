@@ -100,6 +100,34 @@ test("thought parts use a separate replay envelope from signed answer text", () 
   });
 });
 
+test("unsigned stream chunks compact without crossing signature or tool boundaries", () => {
+  const thoughtParts: PositionedGeminiThoughtReplayPart[] = [];
+  const answerParts: PositionedGeminiAnswerReplayPart[] = [];
+  for (let index = 0; index < 1_000; index += 1) {
+    appendGeminiThoughtReplayPart(thoughtParts, "t", undefined, 0);
+    appendGeminiAnswerReplayPart(answerParts, { text: "a" }, 0);
+  }
+  appendGeminiThoughtReplayPart(thoughtParts, "signed", "SIG-T", 0);
+  appendGeminiThoughtReplayPart(thoughtParts, "next", undefined, 1);
+  appendGeminiAnswerReplayPart(
+    answerParts,
+    { text: "signed", thoughtSignature: "SIG-A" },
+    0,
+  );
+  appendGeminiAnswerReplayPart(answerParts, { text: "next" }, 1);
+
+  assert.deepEqual(thoughtParts, [
+    { text: "t".repeat(1_000), afterToolCalls: 0 },
+    { text: "signed", thoughtSignature: "SIG-T", afterToolCalls: 0 },
+    { text: "next", afterToolCalls: 1 },
+  ]);
+  assert.deepEqual(answerParts, [
+    { text: "a".repeat(1_000), afterToolCalls: 0 },
+    { text: "signed", thoughtSignature: "SIG-A", afterToolCalls: 0 },
+    { text: "next", afterToolCalls: 1 },
+  ]);
+});
+
 test("signed and unsigned Gemini answer-part boundaries replay exactly", () => {
   const parts: Array<{
     type: string;

@@ -50,6 +50,15 @@ export function appendGeminiThoughtReplayPart(
   thoughtSignature: string | undefined,
   afterToolCalls: number,
 ): void {
+  const latestPart = parts.at(-1);
+  if (
+    !thoughtSignature &&
+    !latestPart?.thoughtSignature &&
+    latestPart?.afterToolCalls === afterToolCalls
+  ) {
+    latestPart.text += text;
+    return;
+  }
   parts.push({
     text,
     ...(thoughtSignature ? { thoughtSignature } : {}),
@@ -82,6 +91,15 @@ export function appendGeminiAnswerReplayPart(
   part: GeminiAnswerReplayPart,
   afterToolCalls: number,
 ): void {
+  const latestPart = parts.at(-1);
+  if (
+    !part.thoughtSignature &&
+    !latestPart?.thoughtSignature &&
+    latestPart?.afterToolCalls === afterToolCalls
+  ) {
+    latestPart.text += part.text;
+    return;
+  }
   parts.push({ ...part, afterToolCalls });
 }
 
