@@ -13,7 +13,12 @@ import {
   resolveSavedBranchHead,
 } from "../src/features/chat/utils/message-order.ts";
 
-type Row = { id: string; parentId: string | null; createdAt: number; role: string };
+type Row = {
+  id: string;
+  parentId: string | null;
+  createdAt: number;
+  role: string;
+};
 
 // edited user messages can be stored after replies, so createdAt alone orders replies first.
 const ANOMALOUS = [
@@ -70,6 +75,17 @@ test("orderParentsFirst emits every parent before its child", () => {
   assert.equal(countMissingParents(ordered), 0);
 });
 
+test("orderParentsFirst handles a long reversed chain without recursion", () => {
+  const rows = Array.from({ length: 10_000 }, (_, index) => ({
+    id: String(index),
+    parentId: index === 0 ? null : String(index - 1),
+  })).reverse();
+  const ordered = orderParentsFirst(rows);
+  assert.equal(ordered.length, rows.length);
+  assert.equal(ordered[0]?.id, "0");
+  assert.equal(ordered.at(-1)?.id, "9999");
+});
+
 test("the saved-branch head resolves to a leaf, so import keeps every reply", () => {
   // mirror the load path through a real repository import.
   const resolveParent = createParentResolver();
@@ -92,7 +108,8 @@ test("the saved-branch head resolves to a leaf, so import keeps every reply", ()
     })),
   });
   const present = new Set(repo.export().messages.map((m) => m.message.id));
-  for (const row of ANOMALOUS) assert.ok(present.has(row.id), `${row.id} was dropped`);
+  for (const row of ANOMALOUS)
+    assert.ok(present.has(row.id), `${row.id} was dropped`);
 });
 
 test("a missing parent is treated as a root rather than crashing or looping", () => {
@@ -101,5 +118,8 @@ test("a missing parent is treated as a root rather than crashing or looping", ()
     { id: "child", parentId: "orphan", createdAt: 2, role: "assistant" },
   ];
   // ignore missing-parent edges so present parents stay ordered and the walk terminates.
-  assert.deepEqual(orderParentsFirst(rows).map((r) => r.id), ["orphan", "child"]);
+  assert.deepEqual(
+    orderParentsFirst(rows).map((r) => r.id),
+    ["orphan", "child"],
+  );
 });
