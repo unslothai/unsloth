@@ -87,16 +87,14 @@ def test_an_explicit_use_cache_wins():
     assert trainer.seen[0]["use_cache"] is True
 
 
-try:
-    import unsloth.trainer as trainer_module
-except ImportError:
-    trainer_module = None
-
-
 @pytest.fixture
 def _patched(monkeypatch):
-    if trainer_module is None or not hasattr(trainer_module, "_patch_sft_trainer_auto_packing"):
-        pytest.skip("unsloth.trainer is unavailable here")
+    import unsloth
+
+    if getattr(unsloth, "DEVICE_TYPE", None) == "mlx":
+        pytest.skip("unsloth.trainer is the MLX shim, where padding-free does not apply")
+    import unsloth.trainer as trainer_module
+
     monkeypatch.delenv("UNSLOTH_RETURN_LOGITS", raising = False)
     injected = []
     monkeypatch.setattr(
