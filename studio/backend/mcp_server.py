@@ -13,6 +13,8 @@ from typing import Any
 
 from fastmcp import FastMCP
 
+from studio_mcp.tools.status import register_status
+
 
 def _dump(value: Any) -> Any:
     """Convert Pydantic responses to plain JSON values for MCP clients."""
@@ -39,27 +41,7 @@ def create_studio_mcp() -> FastMCP:
         ),
     )
 
-    @mcp.tool
-    async def studio_status() -> dict[str, Any]:
-        """Return the current training, export, inference, and GPU state."""
-        from routes.export import get_export_status
-        from routes.inference import get_status as get_inference_status
-        from routes.training import get_training_status
-
-        from utils.hardware import get_gpu_utilization
-
-        training, export, inference = await _gather_status(
-            get_training_status(current_subject = "mcp"),
-            get_export_status(current_subject = "mcp"),
-            get_inference_status(current_subject = "mcp"),
-        )
-        return {
-            "training": _dump(training),
-            "export": _dump(export),
-            "inference": _dump(inference),
-            # Off-loop: reaches hardware detection, which blocks on the warm's torch import.
-            "hardware": await asyncio.to_thread(get_gpu_utilization),
-        }
+    register_status(mcp)
 
     @mcp.tool
     async def list_local_models(models_dir: str = "./models") -> dict[str, Any]:
@@ -205,13 +187,3 @@ def create_studio_mcp() -> FastMCP:
         return _dump(await export(request, current_subject = "mcp", allow_ambient = False))
 
     return mcp
-
-
-async def _gather_status(*coroutines: Any) -> tuple[Any, ...]:
-    """Gather independent status calls without letting one optional backend fail all state."""
-    import asyncio
-
-    results = await asyncio.gather(*coroutines, return_exceptions = True)
-    return tuple(
-        {"error": str(result)} if isinstance(result, Exception) else result for result in results
-    )

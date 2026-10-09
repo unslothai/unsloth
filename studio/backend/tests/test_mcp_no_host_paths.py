@@ -19,10 +19,10 @@ from studio_mcp.forward import forward
 from studio_mcp.outputs import RouteText, ToolOutput
 
 from .mcp_harness import SENTINEL_ROOTS, call_tool, fake_studio, poison, served
+from .test_mcp_tools_status import PAYLOADS as STATUS_PAYLOADS
 
 # The direct-call tools from before forwarding. Each commit that replaces one removes it here and adds its case.
 LEGACY_UNCHECKED = {
-    "studio_status",
     "list_local_models",
     "get_training_status",
     "start_training",
@@ -36,7 +36,9 @@ LEGACY_UNCHECKED = {
 }
 
 # tool name -> (fake Studio routes as {(method, path): payload}, tool arguments)
-CASES: dict[str, tuple[dict, dict]] = {}
+CASES: dict[str, tuple[dict, dict]] = {
+    "studio_status": (STATUS_PAYLOADS, {}),
+}
 
 
 def leaks(result: dict) -> Optional[str]:
