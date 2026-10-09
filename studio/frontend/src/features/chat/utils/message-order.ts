@@ -76,9 +76,10 @@ export function orderBySelectedBranch<T extends ParentLinkedMessage>(
   return chain.reverse();
 }
 
-// A saved branch head, followed down to its newest leaf: turns added under it since, from another
-// tab or device, extend that branch, and assistant-ui's import drops every descendant of the head
-// it is given. Undefined when the row is gone, which means the newest one. Parents resolve as the
+// A saved branch head, followed down to the newest leaf below it: turns added under it since, from
+// another tab or device, extend that branch, and assistant-ui's import drops every descendant of the
+// head it is given. The newest leaf, not the newest child at each level: an older child can hold the
+// newest turn. Undefined when the row is gone, which means the newest one. Parents resolve as the
 // history loader resolves them, so the leaf here is a leaf there.
 export function resolveSavedBranchHead<T extends ParentLinkedMessage>(
   messages: T[],
@@ -88,24 +89,33 @@ export function resolveSavedBranchHead<T extends ParentLinkedMessage>(
   const sorted = messages.slice().sort(compareStoredMessages);
   const resolveParent = createParentResolver();
   const children = new Map<string, string[]>();
-  let found = false;
-  for (const message of sorted) {
-    if (message.id === savedHeadId) found = true;
+  const order = new Map<string, number>();
+  sorted.forEach((message, index) => {
+    order.set(message.id, index);
     const parentId = resolveParent(message);
-    if (parentId == null) continue;
+    if (parentId == null) return;
     const siblings = children.get(parentId) ?? [];
     siblings.push(message.id);
     children.set(parentId, siblings);
-  }
-  if (!found) return undefined;
+  });
+  if (!order.has(savedHeadId)) return undefined;
   let headId = savedHeadId;
-  const seen = new Set<string>([headId]);
-  for (;;) {
-    const next = children.get(headId)?.at(-1);
-    if (next === undefined || seen.has(next)) return headId;
-    seen.add(next);
-    headId = next;
+  let headOrder = -1;
+  const seen = new Set<string>();
+  const pending = [savedHeadId];
+  while (pending.length > 0) {
+    const id = pending.pop()!;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const below = children.get(id);
+    if (below?.length) {
+      pending.push(...below);
+    } else if ((order.get(id) ?? -1) > headOrder) {
+      headId = id;
+      headOrder = order.get(id) ?? -1;
+    }
   }
+  return headId;
 }
 
 // follow the newest parent chain because response slots can predate the next user message.

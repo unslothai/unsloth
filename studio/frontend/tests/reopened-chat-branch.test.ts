@@ -65,6 +65,17 @@ test("a saved head with retried children follows the newest child", () => {
   assert.equal(resolveSavedBranchHead(retriedLast, "u3"), "a3-retry");
 });
 
+test("the newest turn under the saved head wins over a newer sibling", () => {
+  // Another device retried a3 under u3, then went back to a3 and continued from it.
+  const continuedOlder = [
+    ...RETRIED_FIRST_REPLY,
+    { id: "a3-retry", parentId: "u3", createdAt: 8, role: "assistant" },
+    { id: "u4", parentId: "a3", createdAt: 9, role: "user" },
+    { id: "a4", parentId: "u4", createdAt: 10, role: "assistant" },
+  ];
+  assert.equal(resolveSavedBranchHead(continuedOlder, "u3"), "a4");
+});
+
 test("legacy rows without parents chain through to the newest", () => {
   const legacy = [
     { id: "u1", createdAt: 1, role: "user" },
