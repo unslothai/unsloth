@@ -3,8 +3,12 @@
 
 import asyncio
 import json
+import os
 import secrets
 import sqlite3
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -434,11 +438,63 @@ def test_current_caller_outside_the_gate_is_an_error():
         current_caller()
 
 
-def test_the_static_token_still_works_until_it_is_retired(monkeypatch):
+def test_the_static_token_is_retired(monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_MCP_TOKEN", "static-token")
     set_mcp_enabled(True)
     with TestClient(served(create_studio_mcp())) as http:
         response = http.post(
             "/mcp/", json = LISTING, headers = {**MCP_HEADERS, **bearer("static-token")}
         )
-    assert response.status_code == 200, response.text
+    assert response.status_code == 401
+    assert response.json() == {
+        "detail": "The MCP static token is no longer supported; use a Studio API key (sk-unsloth-…)"
+    }
+    assert response.headers["www-authenticate"] == "Bearer"
+
+
+def test_a_non_ascii_authorization_header_is_a_clean_401(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_MCP_TOKEN", "static-token")
+    set_mcp_enabled(True)
+    with TestClient(served(probe_mcp())) as http:
+        response = http.post(
+            "/mcp/",
+            json = LISTING,
+            headers = [("accept", MCP_HEADERS["Accept"]), ("authorization", b"Bearer \xff\xff")],
+        )
+    assert response.status_code == 401
+    assert response.json() == {"detail": NEED_KEY}
+
+
+def _import_main(extra_env):
+    env = {
+        name: value
+        for name, value in os.environ.items()
+        if name not in ("UNSLOTH_STUDIO_ENABLE_MCP", "UNSLOTH_STUDIO_MCP_TOKEN")
+    }
+    env.update(extra_env)
+    return subprocess.run(
+        [sys.executable, "-c", "import main"],
+        cwd = Path(__file__).resolve().parent.parent,
+        env = env,
+        capture_output = True,
+        text = True,
+        timeout = 600,
+    )
+
+
+def test_enabling_by_env_without_a_token_starts():
+    result = _import_main({"UNSLOTH_STUDIO_ENABLE_MCP": "1"})
+    assert result.returncode == 0, result.stderr[-2000:]
+    assert "UNSLOTH_STUDIO_MCP_TOKEN" not in result.stdout + result.stderr
+
+
+def test_a_leftover_static_token_logs_one_warning():
+    result = _import_main({"UNSLOTH_STUDIO_ENABLE_MCP": "1", "UNSLOTH_STUDIO_MCP_TOKEN": "legacy"})
+    assert result.returncode == 0, result.stderr[-2000:]
+    lines = [
+        line
+        for line in (result.stdout + result.stderr).splitlines()
+        if "UNSLOTH_STUDIO_MCP_TOKEN" in line
+    ]
+    assert len(lines) == 1, lines
+    assert json.loads(lines[0])["level"] == "warning"

@@ -8,61 +8,10 @@ GPU work or write model artifacts.
 
 from __future__ import annotations
 
-import hmac
 import asyncio
 from typing import Any
 
 from fastmcp import FastMCP
-
-
-class BearerTokenMiddleware:
-    """Require an exact bearer token when Unsloth MCP is exposed remotely."""
-
-    def __init__(self, app: Any, token: str) -> None:
-        if not token or not token.strip():
-            raise ValueError("Unsloth MCP bearer token must be a non-empty value")
-        if not token.isascii():
-            # A non-ASCII token cannot be sent in an HTTP header; reject it here.
-            raise ValueError("Unsloth MCP bearer token must contain ASCII characters only")
-        self.app = app
-        # Compare on raw header bytes: str hmac.compare_digest raises on non-ASCII input, which would
-        # surface as a 500 instead of a clean 401.
-        self.expected = token.encode("utf-8")
-
-    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
-        scope_type = scope.get("type")
-        if scope_type not in ("http", "websocket"):
-            await self.app(scope, receive, send)
-            return
-
-        headers = dict(scope.get("headers", []))
-        raw_auth = headers.get(b"authorization", b"")
-        scheme, _, supplied = raw_auth.partition(b" ")
-        if scheme.lower() != b"bearer" or not hmac.compare_digest(supplied, self.expected):
-            await _send_unauthorized(send, scope_type)
-            return
-
-        await self.app(scope, receive, send)
-
-
-async def _send_unauthorized(send: Any, scope_type: str) -> None:
-    if scope_type == "websocket":
-        await send({"type": "websocket.close", "code": 4401})
-        return
-
-    await send(
-        {
-            "type": "http.response.start",
-            "status": 401,
-            "headers": [(b"content-type", b"application/json"), (b"www-authenticate", b"Bearer")],
-        }
-    )
-    await send(
-        {
-            "type": "http.response.body",
-            "body": b'{"detail":"MCP bearer token required"}',
-        }
-    )
 
 
 def _dump(value: Any) -> Any:

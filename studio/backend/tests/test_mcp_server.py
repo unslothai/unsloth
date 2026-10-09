@@ -7,7 +7,7 @@ import types
 
 import pytest
 
-from mcp_server import BearerTokenMiddleware, _clamp, _dump, create_studio_mcp
+from mcp_server import _clamp, _dump, create_studio_mcp
 
 
 def _get_tool(name):
@@ -41,129 +41,6 @@ def test_dump_serializes_pydantic_values():
 
     assert _dump(Response()) == {"ok": True}
     assert _dump({"already": "json"}) == {"already": "json"}
-
-
-def test_bearer_token_middleware_rejects_wrong_token():
-    events = []
-
-    async def app(scope, receive, send):
-        events.append("app")
-
-    async def send(message):
-        events.append(message)
-
-    middleware = BearerTokenMiddleware(app, "secret")
-    asyncio.run(
-        middleware(
-            {"type": "http", "headers": [(b"authorization", b"Bearer wrong")]},
-            None,
-            send,
-        )
-    )
-
-    assert events[0]["status"] == 401
-    assert "app" not in events
-
-
-def test_bearer_token_middleware_closes_unauthorized_websocket():
-    events = []
-
-    async def app(scope, receive, send):
-        events.append("app")
-
-    async def send(message):
-        events.append(message)
-
-    middleware = BearerTokenMiddleware(app, "secret")
-    asyncio.run(
-        middleware(
-            {"type": "websocket", "headers": []},
-            None,
-            send,
-        )
-    )
-
-    assert events == [{"type": "websocket.close", "code": 4401}]
-
-
-def test_bearer_token_middleware_rejects_non_ascii_authorization():
-    # A non-ASCII bearer value must produce a clean 401, not a 500. Comparing on
-    # bytes avoids the str hmac.compare_digest TypeError on non-ASCII input.
-    events = []
-
-    async def app(scope, receive, send):
-        events.append("app")
-
-    async def send(message):
-        events.append(message)
-
-    middleware = BearerTokenMiddleware(app, "secret")
-    asyncio.run(
-        middleware(
-            {"type": "http", "headers": [(b"authorization", b"Bearer \xff\xff")]},
-            None,
-            send,
-        )
-    )
-
-    assert events[0]["status"] == 401
-    assert "app" not in events
-
-
-def test_bearer_token_middleware_accepts_correct_token():
-    events = []
-
-    async def app(scope, receive, send):
-        events.append("app")
-
-    async def send(message):
-        events.append(message)
-
-    middleware = BearerTokenMiddleware(app, "secret")
-    asyncio.run(
-        middleware(
-            {"type": "http", "headers": [(b"authorization", b"Bearer secret")]},
-            None,
-            send,
-        )
-    )
-
-    assert events == ["app"]
-
-
-def test_bearer_token_middleware_requires_non_empty_token():
-    async def app(scope, receive, send):
-        pass
-
-    for bad in ("", "   "):
-        with pytest.raises(ValueError):
-            BearerTokenMiddleware(app, bad)
-
-
-def test_bearer_token_middleware_rejects_non_ascii_token():
-    async def app(scope, receive, send):
-        pass
-
-    # non-ASCII tokens cannot be transmitted in an HTTP header by a standard
-    # client, so they are rejected at construction instead of locking out.
-    for bad in ("töken", "\U0001f600"):
-        with pytest.raises(ValueError):
-            BearerTokenMiddleware(app, bad)
-
-
-def test_bearer_token_middleware_passes_through_non_http_scopes():
-    events = []
-
-    async def app(scope, receive, send):
-        events.append("app")
-
-    async def send(message):
-        events.append(message)
-
-    middleware = BearerTokenMiddleware(app, "secret")
-    asyncio.run(middleware({"type": "lifespan"}, None, send))
-
-    assert events == ["app"]
 
 
 def test_clamp_restricts_to_inclusive_bounds():

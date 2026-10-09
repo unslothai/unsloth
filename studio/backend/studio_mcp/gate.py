@@ -26,6 +26,7 @@ NEED_KEY = "Studio MCP needs a Studio API key (sk-unsloth-…). Create one in Se
 ONE_HEADER = "Send one Authorization header"
 INVALID_KEY = "Invalid or expired API key"
 WORKFLOW_KEY = "Workflow keys cannot use Studio MCP"
+RETIRED_TOKEN = "The MCP static token is no longer supported; use a Studio API key (sk-unsloth-…)"
 
 
 async def send_json(
@@ -121,7 +122,7 @@ class StudioMcpGate:
             await _unauthorized(send, NEED_KEY)
             return
         if _is_legacy_token(token):
-            await self.app(scope, receive, send)
+            await _unauthorized(send, RETIRED_TOKEN)
             return
         from auth.storage import API_KEY_PREFIX
 

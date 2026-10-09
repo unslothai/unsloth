@@ -1082,6 +1082,12 @@ logger = LogConfig.setup_logging(
 
 app.add_middleware(LoggingMiddleware)
 
+if os.environ.get("UNSLOTH_STUDIO_MCP_TOKEN", "").strip():
+    logger.warning(
+        "UNSLOTH_STUDIO_MCP_TOKEN is no longer used and /mcp refuses it. "
+        "Agents connect with a Studio API key (sk-unsloth-…) from Settings > API."
+    )
+
 
 class ResearchPortMiddleware:
     """Capture the bound port without replacing the ASGI receive channel."""
