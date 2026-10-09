@@ -41,6 +41,25 @@ def _message(answer: Any) -> Optional[str]:
     return None
 
 
+def _stopped(kind: str, answer: Any) -> bool:
+    """Whether the route says it stopped something. Each route answers an idle cancel normally, so success alone means nothing."""
+    if not isinstance(answer, dict):
+        return False
+    if kind in ("image", "video", "chat"):
+        return bool(answer.get("cancelled"))
+    if kind == "training":
+        return answer.get("status") == "stopped"
+    if kind == "training_start":
+        return answer.get("state") == "rejected"
+    if kind == "diffusion_training":
+        return answer.get("status") == "stopping"
+    if kind == "export":
+        return answer.get("message") == "Export cancelled"
+    if kind == "recipe":
+        return answer.get("status") in ("cancelling", "cancelled")
+    return answer.get("state") in ("cancelling", "cancelled")
+
+
 async def cancel(
     kind: CancelKind,
     id: Optional[str] = None,
@@ -72,7 +91,14 @@ async def cancel(
         answer = await route_json("POST", "/api/train/diffusion/stop", caller = caller)
     elif kind == "export":
         job = export_jobs.lookup(caller.account_id, id) if id else None
+        # Studio has one export slot, so cancelling a finished job would stop whatever export runs now.
+        if job is not None and job.finished:
+            return CancelResult(
+                kind = kind, id = id, cancelled = False, message = f"The export already {job.status}."
+            )
         answer = await route_json("POST", "/api/export/cancel", caller = caller)
+        if not _stopped(kind, answer):
+            return CancelResult(kind = kind, id = id, cancelled = False, message = _message(answer))
         if job is not None:
             export_jobs.mark_cancelled(job)
         return CancelResult(
@@ -97,7 +123,9 @@ async def cancel(
         answer = await route_json(
             "POST", "/api/hub/datasets/download/cancel", caller = caller, json_body = {"repo_id": id}
         )
-    return CancelResult(kind = kind, id = id, cancelled = True, message = _message(answer))
+    return CancelResult(
+        kind = kind, id = id, cancelled = _stopped(kind, answer), message = _message(answer)
+    )
 
 
 def register_cancel(mcp: FastMCP) -> None:

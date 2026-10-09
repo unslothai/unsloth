@@ -21,12 +21,14 @@ PAYLOADS = {
         "phase": "training",
     },
     ("POST", "/api/train/stop"): {
-        "status": "stopping",
-        "message": "Stopping after the current step",
+        "status": "stopped",
+        "message": "Stop requested. Training will stop at the next safe step.",
     },
     ("POST", "/api/train/start-requests/req-1/cancel"): {
         "start_request_id": "req-1",
+        "job_id": "",
         "state": "rejected",
+        "message": "Cancelled",
     },
     ("POST", "/api/train/diffusion/stop"): {"status": "stopping"},
     ("POST", "/api/export/cancel"): {"success": True, "message": "Export cancelled"},
@@ -34,7 +36,7 @@ PAYLOADS = {
     ("POST", "/api/inference/images/generate/cancel"): {"cancelled": True},
     ("POST", "/api/inference/video/generate/cancel"): {"cancelled": True},
     ("POST", "/api/inference/cancel"): {"cancelled": 1},
-    ("POST", "/api/hub/datasets/download/cancel"): {"repo_id": "a/b", "cancelled": True},
+    ("POST", "/api/hub/datasets/download/cancel"): {"repo_id": "a/b", "state": "cancelling"},
 }
 
 
@@ -97,7 +99,7 @@ def test_training_without_an_id_stops_the_running_job(monkeypatch):
         "kind": "training",
         "id": "job-7",
         "cancelled": True,
-        "message": "Stopping after the current step",
+        "message": "Stop requested. Training will stop at the next safe step.",
     }
     assert [c[1] for c in studio.state.calls] == ["/api/train/status", "/api/train/stop"]
     assert json.loads(studio.state.calls[1][3]) == {"save": True, "expected_job_id": "job-7"}
@@ -137,6 +139,72 @@ def test_an_export_cancel_marks_the_job_and_says_the_checkpoint_was_unloaded(mon
     )
     assert job.status == "cancelled"
     assert [c[1] for c in studio.state.calls] == ["/api/export/cancel"]
+
+
+# What each route answers when there was nothing of the caller's to stop.
+IDLE_ANSWERS = {
+    "training": (
+        "/api/train/stop",
+        {"status": "idle", "message": "No training job is currently running"},
+    ),
+    "training_start": (
+        "/api/train/start-requests/req-1/cancel",
+        {"start_request_id": "req-1", "job_id": "job-7", "state": "accepted", "message": "Started"},
+    ),
+    "diffusion_training": ("/api/train/diffusion/stop", {"status": "idle"}),
+    "export": ("/api/export/cancel", {"success": True, "message": "No active export to cancel"}),
+    "recipe": ("/api/data-recipe/jobs/rec-1/cancel", {"job_id": "rec-1", "status": "completed"}),
+    "image": ("/api/inference/images/generate/cancel", {"cancelled": False}),
+    "video": ("/api/inference/video/generate/cancel", {"cancelled": False}),
+    "chat": ("/api/inference/cancel", {"cancelled": 0}),
+    "dataset_download": (
+        "/api/hub/datasets/download/cancel",
+        {"repo_id": "a/b", "state": "completed"},
+    ),
+}
+IDS = {
+    "training": "job-7",
+    "training_start": "req-1",
+    "recipe": "rec-1",
+    "chat": "mcp-abc",
+    "dataset_download": "a/b",
+}
+
+
+@pytest.mark.parametrize("kind", sorted(IDLE_ANSWERS))
+def test_a_cancel_that_stopped_nothing_says_so(monkeypatch, kind):
+    route, answer = IDLE_ANSWERS[kind]
+    studio = _studio({("POST", route): lambda request, body: answer})
+    args = {"kind": kind, **({"id": IDS[kind]} if kind in IDS else {})}
+    result = _call(monkeypatch, studio, args)
+    assert result["structuredContent"]["cancelled"] is False
+
+
+def test_an_idle_export_cancel_leaves_the_job_running(monkeypatch):
+    job = ExportJob(job_id = "exp-1", account_id = "owner", format = "gguf")
+    export_jobs._jobs["owner:exp-1"] = job
+    route, answer = IDLE_ANSWERS["export"]
+    studio = _studio({("POST", route): lambda request, body: answer})
+    result = _call(monkeypatch, studio, {"kind": "export", "id": "exp-1"})
+    assert result["structuredContent"] == {
+        "kind": "export",
+        "id": "exp-1",
+        "cancelled": False,
+        "message": "No active export to cancel",
+    }
+    assert job.status == "running"
+
+
+@pytest.mark.parametrize("status", ["completed", "failed", "cancelled"])
+def test_a_finished_export_job_never_stops_the_export_running_now(monkeypatch, status):
+    job = ExportJob(job_id = "exp-1", account_id = "owner", format = "gguf")
+    job.status = status
+    export_jobs._jobs["owner:exp-1"] = job
+    studio = _studio()
+    result = _call(monkeypatch, studio, {"kind": "export", "id": "exp-1"})
+    assert result["structuredContent"]["cancelled"] is False
+    assert result["structuredContent"]["message"] == f"The export already {status}."
+    assert studio.state.calls == []
 
 
 def test_another_accounts_export_is_not_cancelled(monkeypatch):
