@@ -71,11 +71,15 @@ def _row_images(row: dict) -> list:
 
             data = image.get("bytes")
             # A nullable image column holds an empty struct where a row has no image.
-            image = (
-                Image.open(io.BytesIO(data) if data is not None else image["path"])
-                if data is not None or image.get("path")
-                else None
-            )
+            try:
+                image = (
+                    Image.open(io.BytesIO(data) if data is not None else image["path"])
+                    if data is not None or image.get("path")
+                    else None
+                )
+            except Image.DecompressionBombError as exc:
+                # Not an OSError: without this one oversized image aborts the whole dataset.
+                raise ValueError(str(exc)) from None
         if image is not None:
             found.append(image)
     return found

@@ -455,6 +455,12 @@ def test_the_images_of_a_row_reach_the_clef_trainer_and_predict(
     assert items[0]["images"] == [url, url]
     keep.clear()
     assert "cannot identify image" in report["reason"]
+    bomb = io.BytesIO()
+    Image.new("1", (14000, 14000)).save(bomb, "PNG")
+    items, report = FastDecisionModel.build_dataset(
+        [_row(0), {**_row(1), "images": [{"bytes": bomb.getvalue()}]}], tokenizer, model
+    )
+    assert [item["row"] for item in items] == [0] and "decompression bomb" in report["reason"]
     FastDecisionModel.predict(
         model, tokenizer, "s", {"q": {"type": "noul", "instructions": "i"}}, images = url
     )
