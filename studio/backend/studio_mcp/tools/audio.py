@@ -322,7 +322,8 @@ async def transcribe(
     return TranscriptResult(
         text = payload.get("text") if isinstance(payload.get("text"), str) else "",
         # This route answers with the text alone, so report what was asked for and what ran.
-        language = opt_text(payload.get("language")) or ("en" if translate else language),
+        # A translation is always English; its verbose form spells it "english".
+        language = "en" if translate else (opt_text(payload.get("language")) or language),
         model = model or await _resident_stt(caller),
         segments = _segments(payload) if timestamps else None,
         saved_to_history = False,

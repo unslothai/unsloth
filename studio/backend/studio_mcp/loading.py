@@ -97,8 +97,9 @@ async def load_llm(
     loaded = opt_text(payload.get("model")) or model
     evicted = _strings(payload.get("evicted"))
     # Some loads (an engine switch for an audio model, say) unload the chat model without the
-    # route listing it, so name whatever was serving before and is gone now.
-    if before:
+    # route listing it, so name whatever was serving before and is gone now. Only then: the
+    # route names what it did drop by another id form, which would list it twice.
+    if before and not evicted:
         after = set(await _serving_or_empty(caller))
         evicted += [
             m for m in before if m not in after and m not in evicted and m not in (model, loaded)
@@ -114,7 +115,8 @@ async def load_llm(
 async def _serving_or_empty(caller: Caller) -> list[str]:
     try:
         serving, _checkpoints, _resident = await _llm_resident(caller)
-    except ToolError:
+    except Exception:
+        # Only a report: a status read that fails must not turn a finished load into an error.
         return []
     return serving
 

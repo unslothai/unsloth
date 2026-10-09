@@ -89,6 +89,11 @@ def _training_defaults(details: Any) -> Optional[dict[str, Any]]:
     return defaults
 
 
+def _same_model_id(listed: str, asked: str) -> bool:
+    # Hub ids are case-insensitive, and a GGUF may be asked for with its ":variant".
+    return listed.lower() == asked.split(":", 1)[0].lower() or listed.lower() == asked.lower()
+
+
 async def list_models(
     kind: Optional[ModelKind] = None,
     loaded_only: bool = False,
@@ -106,7 +111,7 @@ async def list_models(
         entry = _entry(row) if isinstance(row, dict) else None
         if entry is None or (kind and entry.kind != kind) or (loaded_only and not entry.loaded):
             continue
-        if model and entry.id != model:
+        if model and not _same_model_id(entry.id, model):
             continue
         models.append(entry)
     defaults = None

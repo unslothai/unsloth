@@ -165,6 +165,13 @@ def test_model_narrows_the_list_to_that_model(monkeypatch):
     assert [m["id"] for m in result["structuredContent"]["models"]] == ["unsloth/Qwen3-0.6B"]
 
 
+@pytest.mark.parametrize("asked", ["unsloth/qwen3-0.6b", "unsloth/Qwen3-0.6B:Q4_K_M"])
+def test_model_matches_whatever_case_or_variant_is_asked_for(monkeypatch, asked):
+    monkeypatch.setitem(PAYLOADS, ("GET", f"/api/models/config/{asked}"), CONFIG)
+    result, _studio = _list(monkeypatch, {"model": asked})
+    assert [m["id"] for m in result["structuredContent"]["models"]] == ["unsloth/Qwen3-0.6B"]
+
+
 def test_the_config_request_carries_the_hub_token_only_when_given(monkeypatch):
     _result, studio = _list(monkeypatch, {"model": "unsloth/Qwen3-0.6B"})
     config_headers = [

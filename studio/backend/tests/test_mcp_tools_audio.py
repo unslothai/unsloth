@@ -367,7 +367,7 @@ def test_without_a_model_the_resident_one_is_named(monkeypatch):
         {
             ("POST", "/v1/audio/transcriptions"): lambda request, body: TRANSCRIPT,
             ("GET", "/api/inference/audio/stt/status"): lambda request, body: {
-                "whisper": {"loaded_model": "small", "loading": False}
+                "transformers": {"loaded_model": "small", "loading": False}
             },
         }
     )
@@ -464,6 +464,21 @@ def test_translate_uses_the_translations_route_without_language(monkeypatch):
     form = _sent_form(studio, "/v1/audio/translations")
     assert "language" not in form
     assert [c[1] for c in studio.state.calls] == ["/v1/audio/translations"]
+
+
+def test_a_translation_reports_english_however_the_route_spells_it(monkeypatch):
+    verbose = {**VERBOSE, "task": "translate", "language": "english"}
+    studio = fake_studio({("POST", "/v1/audio/translations"): lambda request, body: verbose})
+    result = _transcribe(
+        monkeypatch,
+        studio,
+        {
+            "audio": {"data_base64": _b64(WAV), "filename": "a.wav"},
+            "translate": True,
+            "timestamps": True,
+        },
+    )
+    assert result["structuredContent"]["language"] == "en"
 
 
 def test_a_501_for_timestamps_says_what_to_change(monkeypatch):

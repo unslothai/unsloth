@@ -105,6 +105,22 @@ def test_a_chat_model_unloaded_without_the_route_saying_so_is_evicted(monkeypatc
     assert result["structuredContent"]["evicted"] == ["unsloth/Qwen3-0.6B-GGUF"]
 
 
+def test_what_the_route_names_is_not_listed_again_by_its_serving_id(monkeypatch):
+    # The route keys a dropped GGUF as repo:variant while status serves the bare repo id.
+    statuses = iter([{**STATUS, "serving": [LLM, "unsloth/Qwen3-8B-GGUF"]}, STATUS])
+    studio = _studio(
+        {
+            ("POST", "/api/inference/load"): lambda r, b: {
+                **LOADED,
+                "evicted": ["unsloth/Qwen3-8B-GGUF:Q4_K_M"],
+            },
+            ("GET", "/api/inference/status"): lambda r, b: next(statuses, STATUS),
+        }
+    )
+    result = _call(monkeypatch, studio, "load_model", {"model": LLM})
+    assert result["structuredContent"]["evicted"] == ["unsloth/Qwen3-8B-GGUF:Q4_K_M"]
+
+
 def test_a_model_still_serving_is_not_evicted(monkeypatch):
     result = _call(monkeypatch, _studio(), "load_model", {"model": LLM})
     # STATUS serves LLM before and after; only the route's own list counts.
