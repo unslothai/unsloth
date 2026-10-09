@@ -68,8 +68,6 @@ class _StrictTemplateTokenizer:
 
 
 class _StrictToolOrderTokenizer:
-    """Rejects tool results unless the preceding message can supply their call."""
-
     def __init__(self):
         self.seen_messages = []
 
@@ -177,8 +175,6 @@ def test_render_gives_an_assistant_text_turn_the_orphan_call():
 
 
 class _FirstCallNamesResultsTokenizer(_CallLinkedToolTokenizer):
-    """gpt-oss: renders only tool_calls[0] and names every later result after it."""
-
     def apply_chat_template(self, messages, **kw):
         super().apply_chat_template(messages, **kw)
         lines, last = [], None
