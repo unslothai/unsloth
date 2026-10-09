@@ -1,14 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""Evaluation under auto padding-free (#3470).
-
-1. compute_metrics / preprocess_logits_for_metrics must block padding-free, as UNSLOTH_RETURN_LOGITS=1
-   does: the generated trainer only sets that flag after the padding-free decision, so the metrics
-   function used to receive one packed row per batch instead of one row per example.
-2. A packed eval batch runs without a KV cache: transformers skips its packed-sequence mask once a
-   cache exists, and outside train() for_inference turns use_cache back on, so evaluate() let every
-   packed example attend to the ones before it (Gemma 3 270M eval_loss 3.82 instead of 2.37).
-"""
+"""Evaluation under auto padding-free (#3470): compute_metrics must block it (the generated trainer sets
+UNSLOTH_RETURN_LOGITS only after the decision), and packed eval batches must run without a KV cache,
+which would make transformers drop its packed-sequence mask."""
 
 from __future__ import annotations
 
@@ -103,7 +97,6 @@ def _patched(monkeypatch):
     monkeypatch.setattr(trainer_module, "enable_sample_packing", lambda m, t: None)
 
     class _StubSFTTrainer:
-        # The generated UnslothSFTTrainer sets UNSLOTH_RETURN_LOGITS here, after the wrapper decided.
         def __init__(
             self,
             model = None,
