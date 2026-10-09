@@ -64,6 +64,10 @@ def _stopped(kind: str, answer: Any) -> bool:
     return answer.get("state") == "cancelling"
 
 
+# How long a cancel waits for a job whose export just finished to record its own result.
+SETTLE_S = 2.0
+
+
 def _export_is_this_job(job: export_jobs.ExportJob, status: Any) -> bool:
     """Unsloth Studio has one export worker and no op ids: the running op is this job's only when its kind is the step the job is on."""
     if not isinstance(status, dict) or not status.get("is_export_active"):
@@ -119,8 +123,9 @@ async def cancel(
                 return CancelResult(
                     kind = kind, id = id, cancelled = False, message = "No export is running."
                 )
-            # Its export may have just finished; settle that rather than call it cancelled.
-            export_jobs.reconcile(job, status)
+            # Its export may have just finished: give its own call a moment to settle the job
+            # rather than call it cancelled.
+            await export_jobs.settle(job, SETTLE_S)
             if job.finished:
                 return CancelResult(
                     kind = kind, id = id, cancelled = False, message = f"The export already {job.status}."

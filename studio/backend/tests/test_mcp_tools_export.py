@@ -56,81 +56,64 @@ def test_an_unknown_id_is_refused(monkeypatch):
     assert result["content"][0]["text"] == "No such export job"
 
 
-def test_a_running_job_settles_from_the_export_status(monkeypatch):
-    from utils.paths import exports_root
-
-    inside = Path(exports_root()) / "my-model" / "gguf"
-    _register(started_seq = 3, phase = "exporting")
+def test_a_running_job_is_not_settled_from_the_export_status(monkeypatch):
+    # The status names whatever op ran last, here an export from the Export page; only the
+    # job's own export call settles it.
+    _register(phase = "exporting")
     status = {
         "last_op_seq": 4,
         "last_op_kind": "export_gguf",
         "last_op_status": "success",
-        "last_op_output_path": str(inside),
+        "last_op_output_path": "theirs",
         "is_export_active": False,
     }
-    result = _get(monkeypatch, _status(status), {"kind": "export", "id": "job-a"})
-    assert result["structuredContent"]["status"] == "completed"
-    assert result["structuredContent"]["export"] == {
-        "format": "gguf",
-        "output": "my-model/gguf",
-        "phase": "done",
-    }
-
-
-def test_an_op_from_before_the_job_does_not_settle_it(monkeypatch):
-    _register(started_seq = 4, phase = "exporting")
-    status = {"last_op_seq": 4, "last_op_status": "error", "last_op_error": "old failure"}
-    result = _get(monkeypatch, _status(status), {"kind": "export", "id": "job-a"})
-    assert result["structuredContent"]["status"] == "running"
-    assert result["structuredContent"]["error"] is None
-
-
-@pytest.mark.parametrize(
-    "later",
-    [
-        # An export from the Export page that ran after this job's own op.
-        {"last_op_seq": 5, "last_op_kind": "export_gguf"},
-        # The op right after the load, but not this job's export.
-        {"last_op_seq": 4, "last_op_kind": "export_merged"},
-        {"last_op_seq": 4, "last_op_kind": "load_checkpoint"},
-    ],
-)
-def test_someone_elses_op_does_not_settle_the_job(monkeypatch, later):
-    _register(started_seq = 3, phase = "exporting")
-    status = {**later, "last_op_status": "success", "last_op_output_path": "theirs"}
-    result = _get(monkeypatch, _status(status), {"kind": "export", "id": "job-a"})
+    studio = _status(status)
+    result = _get(monkeypatch, studio, {"kind": "export", "id": "job-a"})
     assert result["structuredContent"]["status"] == "running"
     assert result["structuredContent"]["export"]["output"] is None
+    assert studio.state.calls == []
 
 
-def test_a_failed_op_reports_its_error_scrubbed(monkeypatch):
-    _register(started_seq = 1)
-    status = {
-        "last_op_seq": 2,
-        "last_op_kind": "export_gguf",
-        "last_op_status": "error",
-        "last_op_error": "Disk full writing /srv/exports/x.gguf",
-    }
-    result = _get(monkeypatch, _status(status), {"kind": "export", "id": "job-a"})
+def test_a_failed_job_reports_its_error_scrubbed(monkeypatch):
+    job = _register()
+    export_jobs.finish(job, "failed", error = "Disk full writing /srv/exports/x.gguf")
+    result = _get(monkeypatch, _status({}), {"kind": "export", "id": "job-a"})
     out = result["structuredContent"]
     assert out["status"] == "failed"
     assert out["error"].startswith("Disk full writing")
     assert "/srv" not in json.dumps(result)
 
 
-def test_an_absolute_output_outside_exports_is_reduced_to_its_name(monkeypatch):
-    _register(started_seq = 1)
-    status = {
-        "last_op_seq": 2,
-        "last_op_kind": "export_gguf",
-        "last_op_status": "success",
-        "last_op_output_path": "/srv/elsewhere/my-gguf",
-    }
-    result = _get(monkeypatch, _status(status), {"kind": "export", "id": "job-a"})
-    assert result["structuredContent"]["export"]["output"] == "my-gguf (outside exports folder)"
-    assert "/srv" not in json.dumps(result)
+def test_an_absolute_output_outside_exports_is_reduced_to_its_name():
+    from utils.paths import exports_root
+
+    assert (
+        export_jobs.output_name(str(Path(exports_root()) / "my-model" / "gguf")) == "my-model/gguf"
+    )
+    assert export_jobs.output_name("/srv/elsewhere/my-gguf") == "my-gguf (outside exports folder)"
     assert export_jobs.output_name("C:\\Users\\me\\out\\model") == "model (outside exports folder)"
     assert export_jobs.output_name("my-model/gguf") == "my-model/gguf"
+
+
+def test_settle_waits_for_the_job_to_finish_on_its_own():
+    async def run():
+        async def quick(job):
+            await asyncio.sleep(0.01)
+
+        async def hangs(job):
+            await asyncio.Event().wait()
+
+        done = export_jobs.start("owner", "gguf", quick)
+        await export_jobs.settle(done, 1.0)
+        stuck = export_jobs.start("owner", "lora", hangs)
+        await export_jobs.settle(stuck, 0.01)
+        status = stuck.status
+        export_jobs.mark_cancelled(stuck)
+        await asyncio.gather(stuck.task, return_exceptions = True)
+        return done.status, status
+
+    # settle never cancels: a job still busy after the wait is left running.
+    assert asyncio.run(run()) == ("completed", "running")
 
 
 def test_without_an_id_only_this_accounts_jobs_are_listed(monkeypatch):

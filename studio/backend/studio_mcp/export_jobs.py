@@ -19,7 +19,6 @@ from fastmcp.exceptions import ToolError
 from hub.utils.host_paths import redact_paths_in_text
 
 CAPACITY = 64
-OP_STATUS = {"success": "completed", "error": "failed", "cancelled": "cancelled"}
 
 
 @dataclass
@@ -31,8 +30,6 @@ class ExportJob:
     phase: str = "starting"
     output: Optional[str] = None
     error: Optional[str] = None
-    # The export status's op counter before this job ran, so its own outcome can be told apart.
-    started_seq: Optional[int] = None
     finished_at: Optional[float] = None
     # Held here so the task outlives the tool call that started it.
     task: Optional[asyncio.Task] = field(default = None, repr = False)
@@ -85,22 +82,10 @@ def finish(
     job.finished_at = time.monotonic()
 
 
-def reconcile(job: ExportJob, export_status: Any) -> None:
-    """Settle a job from the export status, once it shows this job's export finished: the op right after
-    the job's checkpoint load, of the job's format. A later op is someone else's, such as an export from
-    the Export page, and must not settle this job."""
-    if not isinstance(export_status, dict) or job.started_seq is None:
-        return
-    seq = export_status.get("last_op_seq")
-    if not isinstance(seq, int) or seq != job.started_seq + 1:
-        return
-    if export_status.get("last_op_kind") != f"export_{job.format}":
-        return
-    status = OP_STATUS.get(export_status.get("last_op_status"))
-    if status is None:
-        return
-    job.output = output_name(export_status.get("last_op_output_path")) or job.output
-    finish(job, status, error = export_status.get("last_op_error"))
+async def settle(job: ExportJob, timeout: float) -> None:
+    """Wait up to ``timeout`` seconds for the job's task to finish on its own, without cancelling it."""
+    if job.task is not None and not job.task.done():
+        await asyncio.wait({job.task}, timeout = timeout)
 
 
 async def _drive(job: ExportJob, run: Callable[[ExportJob], Awaitable[None]]) -> None:

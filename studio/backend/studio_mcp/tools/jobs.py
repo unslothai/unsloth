@@ -153,10 +153,9 @@ async def _export_job(caller: Caller, job_id: Optional[str]) -> ToolResult:
             for job in export_jobs.jobs_of(caller.account_id)
         ]
         return media_result([], JobStatus(kind = "export", jobs = jobs))
-    job = export_jobs.lookup(caller.account_id, job_id)
-    if not job.finished and job.started_seq is not None:
-        export_jobs.reconcile(job, await route_json("GET", "/api/export/status", caller = caller))
-    return media_result([], _export_status(job))
+    # The job settles from its own export call. The export status is not read here: it describes
+    # whichever op ran last, which may be an export started from the Export page.
+    return media_result([], _export_status(export_jobs.lookup(caller.account_id, job_id)))
 
 
 async def get_job(

@@ -116,7 +116,6 @@ async def export_model(
     async def run(job: export_jobs.ExportJob) -> None:
         job.phase = "loading"
         await _op(caller, "/api/export/load-checkpoint", load)
-        # Counted after the load, which is an op of its own, so only the export can settle the job.
         before = await route_json("GET", EXPORT_STATUS, caller = caller)
         # The load and the export are two calls, so a load from the Export page between them would
         # be exported in this job's name.
@@ -124,7 +123,6 @@ async def export_model(
             raise ToolError(
                 "Another checkpoint was loaded for export before this job's export began; nothing was exported."
             )
-        job.started_seq = integer(before.get("last_op_seq")) if isinstance(before, dict) else None
         job.phase = "exporting"
         # The route checks this under the export lock, which closes the gap the status check leaves.
         result = await _op(
