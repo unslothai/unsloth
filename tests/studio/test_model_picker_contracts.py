@@ -3260,6 +3260,8 @@ def test_the_settings_page_judges_the_config_storage_actually_keeps():
         "const normalized = normalizePerModelConfig(storedSpeculativeAuto(next, targetIsMlx));"
         in src
     )
+    # Server hydration writes the same record, so a GGUF row's stored "auto" folds there too.
+    assert "storedSpeculativeAuto(rememberedConfig, !target.isGguf)" in src
     assert "defaultConfig: isDefaultConfig(normalized)" in src
     # The same object goes to storage and to the server, or they disagree again.
     assert "savePerModelConfig(configId, target.ggufVariant, normalized, evicted)" in src

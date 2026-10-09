@@ -2833,7 +2833,7 @@ export function ModelConfigPage({
           const hydrationSaved = savePerModelConfig(
             configId,
             target.ggufVariant,
-            rememberedConfig,
+            storedSpeculativeAuto(rememberedConfig, !target.isGguf),
             hydrationEvicted,
           );
           setSavedRemember(hydrationSaved);
