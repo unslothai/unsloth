@@ -57,6 +57,7 @@ class _Processor:
 
     def apply_chat_template(self, conversation, **kwargs):
         self.calls.append(conversation)
+        self.kwargs = kwargs
         grids, rows, seconds = [], [], []
         for prompt in conversation:
             pid = int(prompt[0]["content"][-1]["text"])
@@ -143,6 +144,16 @@ def test_in_memory_videos_are_never_shared_between_prompts(zoo_with_video_keys):
     prompts = [_video_prompt(a, text = "1"), _video_prompt(b, text = "1")]
     _unsloth_grpo_video_inputs(_trainer(processor), prompts)
     assert len(processor.calls[0]) == 2
+
+
+def test_the_trainers_chat_template_is_used(zoo_with_video_keys):
+    from unsloth.models.rl_replacements import _unsloth_grpo_video_inputs
+
+    processor = _Processor()
+    trainer = _trainer(processor)
+    trainer.chat_template = "{{ messages }}"
+    _unsloth_grpo_video_inputs(trainer, [_video_prompt("a.mp4", text = "1")])
+    assert processor.kwargs["chat_template"] == "{{ messages }}"
 
 
 def test_a_batch_without_video_costs_nothing():

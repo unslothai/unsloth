@@ -1361,6 +1361,10 @@ def _unsloth_grpo_video_inputs(
     for i, u in enumerate(order):
         first.setdefault(u, i)
     unique_prompts = [prompts[first[u]] for u in range(len(unique))]
+    template_kwargs = dict(getattr(trainer, "chat_template_kwargs", None) or {})
+    if getattr(trainer, "chat_template", None) is not None:
+        # GRPOConfig.chat_template, which generation renders with too
+        template_kwargs["chat_template"] = trainer.chat_template
     processed = trainer.processing_class.apply_chat_template(
         conversation = unique_prompts,
         add_generation_prompt = True,
@@ -1368,7 +1372,7 @@ def _unsloth_grpo_video_inputs(
         return_dict = True,
         padding = True,
         return_tensors = "pt",
-        **(getattr(trainer, "chat_template_kwargs", None) or {}),
+        **template_kwargs,
     )
     pixel_values_videos = processed.get("pixel_values_videos", None)
     video_grid_thw = processed.get("video_grid_thw", None)
