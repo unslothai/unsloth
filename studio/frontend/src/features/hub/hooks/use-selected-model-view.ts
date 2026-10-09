@@ -4,11 +4,7 @@
 import { useMemo } from "react";
 import { useHubName } from "@/lib/hf-endpoint";
 import { detectCapabilities, detectLicense } from "../lib/model-capabilities";
-import {
-  buildSummary,
-  localSourceLabel,
-  toHfModelResult,
-} from "../lib/view-models";
+import { buildSummary, toHfModelResult } from "../lib/view-models";
 import type {
   CachedInventoryRow,
   DiscoverRow,
@@ -366,7 +362,7 @@ export function useSelectedModelView({
         hubRepoId: localHubRepoId,
         owner: selectedLocalRow.owner,
         title: selectedLocalRow.title,
-        summary: `${localSourceLabel(selectedLocalRow.source)} · ${localFormatLabel(
+        summary: `${selectedLocalRow.sourceLabel} · ${localFormatLabel(
           selectedLocalRow,
         )}`,
         sourceLabel: selectedLocalRow.sourceLabel,

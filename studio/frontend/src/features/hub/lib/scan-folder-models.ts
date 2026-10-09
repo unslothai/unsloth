@@ -31,3 +31,11 @@ export function folderDisplayName(path: string): string {
   const parts = path.split(/[\\/]/).filter(Boolean);
   return parts.at(-1) ?? path;
 }
+
+/** The name the user gave a scan folder, else its last path segment. */
+export function scanFolderName(folder: {
+  path: string;
+  label?: string | null;
+}): string {
+  return folder.label?.trim() || folderDisplayName(folder.path);
+}
