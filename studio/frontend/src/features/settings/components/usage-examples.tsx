@@ -395,6 +395,16 @@ export function readUseTunnelPref(): boolean {
   }
 }
 
+// The agent access (MCP) section reads the same preference, so a toggle here must reach it.
+const useTunnelListeners = new Set<() => void>();
+
+export function subscribeUseTunnelPref(listener: () => void): () => void {
+  useTunnelListeners.add(listener);
+  return () => {
+    useTunnelListeners.delete(listener);
+  };
+}
+
 function writeUseTunnelPref(value: boolean): void {
   if (typeof window === "undefined") return;
   try {
@@ -402,6 +412,7 @@ function writeUseTunnelPref(value: boolean): void {
   } catch {
     // Non-fatal
   }
+  for (const listener of useTunnelListeners) listener();
 }
 
 // A checkpoint can be an on-disk load path, which /v1 never advertises. Mirrors _looks_like_path.

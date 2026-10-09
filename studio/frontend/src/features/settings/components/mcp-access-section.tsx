@@ -14,7 +14,12 @@ import { translate, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { McpServerIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type ReactElement, useEffect, useState } from "react";
+import {
+  type ReactElement,
+  useEffect,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import {
   type McpAccessSettings,
   loadMcpAccess,
@@ -32,7 +37,7 @@ import {
   buildMcpSnippet,
 } from "./mcp-agent-snippet";
 import { SettingsRow } from "./settings-row";
-import { readUseTunnelPref } from "./usage-examples";
+import { readUseTunnelPref, subscribeUseTunnelPref } from "./usage-examples";
 
 const ENV_FORCE = "UNSLOTH_STUDIO_ENABLE_MCP";
 const OS_OPTIONS = [
@@ -106,6 +111,13 @@ export function McpAccessSection({
     }
   };
 
+  // Follows the API tab's tunnel toggle as it changes, not only when this section renders.
+  const useTunnel = useSyncExternalStore(
+    subscribeUseTunnelPref,
+    readUseTunnelPref,
+    () => true,
+  );
+
   if (!(settings || error)) {
     return null;
   }
@@ -113,9 +125,7 @@ export function McpAccessSection({
   // The same address the API usage examples show, so both point at one server.
   const origin = typeof window !== "undefined" ? window.location.origin : "";
   const base =
-    readUseTunnelPref() && cloudflareUrl
-      ? cloudflareUrl
-      : (serverUrl ?? origin);
+    useTunnel && cloudflareUrl ? cloudflareUrl : (serverUrl ?? origin);
   const snippet = settings?.enabled
     ? (buildMcpSnippet(agent, base, os, apiKey) ??
       buildMcpSnippet(agent, settings.url, os, apiKey))

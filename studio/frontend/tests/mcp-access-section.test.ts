@@ -25,6 +25,7 @@ import { readSrc } from "./helpers/kit.ts";
 
 const SECTION = readSrc("features/settings/components/mcp-access-section.tsx");
 const API_TAB = readSrc("features/settings/tabs/api-keys-tab.tsx");
+const USAGE = readSrc("features/settings/components/usage-examples.tsx");
 
 const LOCALES = { ar, de, en, es, fr, he, hi, it, ja, ko, ptBR, ru, sv, zhCN };
 
@@ -99,7 +100,16 @@ test("the setup snippet shows only while on, targets the usage examples' address
   assert.match(SECTION, /buildMcpSnippet\(agent, settings\.url, os, apiKey\)/);
   assert.match(
     SECTION,
-    /readUseTunnelPref\(\) && cloudflareUrl\s*\?\s*cloudflareUrl\s*:\s*\(serverUrl \?\? origin\)/,
+    /useTunnel && cloudflareUrl\s*\?\s*cloudflareUrl\s*:\s*\(serverUrl \?\? origin\)/,
+  );
+  // The API tab's tunnel toggle must reach this section as it changes, not on its next render.
+  assert.match(
+    SECTION,
+    /useSyncExternalStore\(\s*subscribeUseTunnelPref,\s*readUseTunnelPref,/,
+  );
+  assert.match(
+    USAGE,
+    /function writeUseTunnelPref[\s\S]*?for \(const listener of useTunnelListeners\) listener\(\);/,
   );
   assert.match(
     SECTION,
