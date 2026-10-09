@@ -16,7 +16,9 @@ __all__ = [
 
 import torch
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
+import copy
 import copyreg
+import functools
 import importlib
 import importlib.util
 import collections
@@ -152,6 +154,32 @@ def _patch_resume_from_checkpoint_memory(trainer_class):
     trainer_class.train = _unsloth_train_with_resume_guard
 
 
+def _generate_accepts_use_model_defaults():
+    try:
+        from transformers.generation.utils import GenerationMixin
+        return "use_model_defaults" in inspect.signature(GenerationMixin.generate).parameters
+    except Exception:
+        return False
+
+
+def _caller_sampling_only(model, kwargs):
+    # transformers 4.50-4.x refills TRL's default-valued fields from the model (Qwen3: top_p 0.8),
+    # skewing rollout logprobs vs training; keep TRL's sampling, take only token ids (TRL's eos) from the model.
+    generation_config = kwargs.get("generation_config", None)
+    if (
+        generation_config is None
+        or "use_model_defaults" in kwargs
+        or not _generate_accepts_use_model_defaults()
+    ):
+        return kwargs
+    generation_config = copy.deepcopy(generation_config)
+    model_config = getattr(model, "generation_config", None)
+    for key in ("bos_token_id", "eos_token_id", "pad_token_id", "decoder_start_token_id"):
+        if getattr(generation_config, key, None) is None:
+            setattr(generation_config, key, getattr(model_config, key, None))
+    return {**kwargs, "generation_config": generation_config, "use_model_defaults": False}
+
+
 def PatchRL(FastLanguageModel):
     try:
         from trl.models.utils import unwrap_model_for_generation
@@ -213,6 +241,8 @@ def PatchRL(FastLanguageModel):
             original_generate = generating_model.generate
 
             def generate_with_clone(*args, **kwargs):
+                if generating_model is not unwrapped_model:
+                    kwargs = _caller_sampling_only(generating_model, kwargs)
                 out = original_generate(*args, **kwargs)
                 if isinstance(out, torch.Tensor):
                     return out.clone()
@@ -335,6 +365,10 @@ def PatchRL(FastLanguageModel):
                 setattr(current_trainer, unwrap, unsloth_unwrap_model_for_generation)
             except:
                 continue
+    # TRL >= 0.29 keeps PPO only under trl.experimental, which the trl.trainer walk above never sees.
+    ppo_module = _import_trl_experimental_trainers().get("ppo")
+    if ppo_module is not None and hasattr(ppo_module, unwrap):
+        setattr(ppo_module, unwrap, unsloth_unwrap_model_for_generation)
     Trainer.prediction_step = unsloth_prediction_step
 
 
@@ -745,6 +779,42 @@ def _wrap_full_eval_keeps_trainable_dtype(trainer_cls):
             return wrapped
 
         setattr(trainer_cls, loop_name, _make(original, loop_name))
+
+
+def _ppo_padding_mask_modules(trainer):
+    # Unsloth's training forward drops the attention mask (it assumes right padding), but PPO
+    # left-pads every query, so policy and value forwards would attend to the pads.
+    seen = set()
+    for name in ("policy_model", "value_model", "ref_model"):
+        model = getattr(trainer, name, None)
+        if model is None or not hasattr(model, "modules"):
+            continue
+        for module in model.modules():
+            if hasattr(module, "embed_tokens") and id(module) not in seen:
+                seen.add(id(module))
+                yield module
+
+
+def _wrap_ppo_train(trainer_cls):
+    if not hasattr(trainer_cls, "train"):
+        return
+    original = trainer_cls.train
+    if getattr(original, "_unsloth_ppo_train_wrapped", False):
+        return
+
+    def wrapped(self, *args, **kwargs):
+        masked = list(_ppo_padding_mask_modules(self))
+        for module in masked:
+            module._unsloth_keep_padding_mask = True
+        try:
+            return original(self, *args, **kwargs)
+        finally:
+            for module in masked:
+                module._unsloth_keep_padding_mask = False
+
+    functools.update_wrapper(wrapped, original)
+    wrapped._unsloth_ppo_train_wrapped = True
+    trainer_cls.train = wrapped
 
 
 def _wrap_grpo_generate_and_score(trainer_cls):
@@ -3617,6 +3687,11 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             _wrap_grpo_ddp_gradient_sync(getattr(created_module, f"Unsloth{RLTrainer_name}"))
         except Exception as e:
             logger.info(f"Unsloth: Could not wrap GRPO DDP gradient sync for {RLTrainer_name}: {e}")
+    if trainer_file == "ppo_trainer":
+        try:
+            _wrap_ppo_train(getattr(created_module, f"Unsloth{RLTrainer_name}"))
+        except Exception as e:
+            logger.info(f"Unsloth: Could not wrap PPO rollouts for {RLTrainer_name}: {e}")
     if trainer_file == "gkd_trainer" and "_unsloth_trl_compute_loss" in RLTrainer_source:
         try:
             _wrap_grpo_hidden_states_fallback(

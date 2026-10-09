@@ -12,6 +12,9 @@ The rl.py helpers are lifted out with ``ast`` so those checks run without ``impo
 from __future__ import annotations
 
 import ast
+import copy
+import functools
+import inspect
 import sys
 from contextlib import contextmanager
 from pathlib import Path
@@ -135,7 +138,11 @@ def _unsloth_unwrap(calls):
         "contextmanager": contextmanager,
         "unwrap_model_for_generation": _trl_unwrap,
         "FastLanguageModel": fast,
+        "copy": copy,
+        "inspect": inspect,
     }
+    _lift("_generate_accepts_use_model_defaults", namespace)
+    _lift("_caller_sampling_only", namespace)
     return _lift("unsloth_unwrap_model_for_generation", namespace, parent = "PatchRL")
 
 
@@ -201,3 +208,150 @@ def test_rope_extension_ignores_a_refilled_inv_freq(garbage):
     torch.testing.assert_close(cos, ref_cos, rtol = 0, atol = 0)
     torch.testing.assert_close(sin, ref_sin, rtol = 0, atol = 0)
     torch.testing.assert_close(rope.inv_freq, reference.inv_freq, rtol = 0, atol = 0)
+
+
+def _rollout_helpers():
+    namespace = {"copy": copy, "functools": functools, "inspect": inspect}
+    for name in (
+        "_generate_accepts_use_model_defaults",
+        "_caller_sampling_only",
+        "_ppo_padding_mask_modules",
+        "_wrap_ppo_train",
+    ):
+        _lift(name, namespace)
+    return namespace
+
+
+NS = _rollout_helpers()
+
+
+class _Generator:
+    def __init__(self, generation_config):
+        self.generation_config = generation_config
+
+
+def test_ppo_rollouts_keep_caller_sampling():
+    transformers = pytest.importorskip("transformers")
+    model_config = transformers.GenerationConfig(
+        top_p = 0.8, top_k = 20, temperature = 0.7, min_p = 0.05, eos_token_id = 5, pad_token_id = 7
+    )
+    trl_config = transformers.GenerationConfig(
+        max_new_tokens = 8, temperature = 0.7, top_k = 0, top_p = 1.0, do_sample = True
+    )
+    kwargs = {"input_ids": "ids", "generation_config": trl_config}
+    out = NS["_caller_sampling_only"](_Generator(model_config), kwargs)
+    if not NS["_generate_accepts_use_model_defaults"]():
+        # transformers 5 only fills fields left unset, and TRL sets its sampling fields explicitly.
+        assert out is kwargs
+        return
+    assert out["use_model_defaults"] is False and out["input_ids"] == "ids"
+    passed = out["generation_config"]
+    assert (passed.top_p, passed.top_k, passed.min_p) == (1.0, 0, None)
+    # Stopping still follows the model (TRL writes its stop token there).
+    assert (passed.eos_token_id, passed.pad_token_id) == (5, 7)
+    assert trl_config.eos_token_id is None and model_config.top_p == 0.8
+
+
+def test_ppo_rollouts_respect_explicit_use_model_defaults():
+    transformers = pytest.importorskip("transformers")
+    kwargs = {"generation_config": transformers.GenerationConfig(), "use_model_defaults": True}
+    assert (
+        NS["_caller_sampling_only"](_Generator(transformers.GenerationConfig()), kwargs) is kwargs
+    )
+    assert NS["_caller_sampling_only"](_Generator(None), {"max_new_tokens": 4}) == {
+        "max_new_tokens": 4
+    }
+
+
+def test_ppo_train_wrapped_once_and_mask_cleared_on_error():
+    base = _Module(base = True)
+
+    class _Trainer:
+        policy_model = _Module(base)
+
+        def train(self):
+            assert base._unsloth_keep_padding_mask is True
+            raise RuntimeError("oom")
+
+    NS["_wrap_ppo_train"](_Trainer)
+    first = _Trainer.train
+    NS["_wrap_ppo_train"](_Trainer)
+    assert _Trainer.train is first
+    with pytest.raises(RuntimeError):
+        _Trainer().train()
+    assert base._unsloth_keep_padding_mask is False
+
+
+def test_rollout_logits_freed_after_scoring():
+    ppo = pytest.importorskip("trl.trainer.ppo_trainer")
+    if not hasattr(ppo, "PPOTrainer"):
+        pytest.skip("TRL without trl.trainer.ppo_trainer.PPOTrainer")
+    path = RL_PY.with_name("rl_replacements.py")
+    tree = ast.parse(path.read_text(encoding = "utf-8"))
+    node = next(
+        n
+        for n in tree.body
+        if isinstance(n, ast.FunctionDef) and n.name == "ppo_trainer_free_rollout_logits"
+    )
+    namespace = {}
+    exec(compile(ast.Module(body = [node], type_ignores = []), str(path), "exec"), namespace)
+    edit = namespace["ppo_trainer_free_rollout_logits"]
+
+    source = inspect.getsource(ppo.PPOTrainer.train)
+    patched = edit("train", source)
+    assert "unwrapped_model, logitss)" in patched
+    # Nothing past the rollout reads them.
+    tail = patched.split("unwrapped_model, logitss)", 1)[1]
+    assert "logitss" not in tail
+    assert edit("generate_completions", source) == source
+
+
+class _Module:
+    def __init__(
+        self,
+        *children,
+        base = False,
+    ):
+        self.children = children
+        if base:
+            self.embed_tokens = object()
+
+    def modules(self):
+        yield self
+        for child in self.children:
+            yield from child.modules()
+
+
+def test_ppo_training_keeps_padding_masks_then_restores():
+    transformers = pytest.importorskip("transformers")
+    policy_base, value_base, other_base = _Module(base = True), _Module(base = True), _Module(base = True)
+    seen = {}
+
+    class _Trainer:
+        def __init__(self):
+            self.policy_model = _Module(_Module(policy_base))
+            self.policy_model.generation_config = transformers.GenerationConfig()
+            self.value_model = _Module(value_base)
+            self.ref_model = None
+            self.reward_model = _Module(other_base)
+
+        def train(self):
+            seen["policy"] = policy_base._unsloth_keep_padding_mask
+            seen["value"] = value_base._unsloth_keep_padding_mask
+            seen["reward"] = getattr(other_base, "_unsloth_keep_padding_mask", None)
+
+    NS["_wrap_ppo_train"](_Trainer)
+    _Trainer().train()
+    # The reward model runs in eval mode, which already keeps the mask.
+    assert seen == {"policy": True, "value": True, "reward": None}
+    assert policy_base._unsloth_keep_padding_mask is False
+    assert value_base._unsloth_keep_padding_mask is False
+
+
+def test_llama_training_forward_mask_is_opt_in():
+    # Every other trainer keeps today's behaviour: training mode drops the mask unless the flag is set.
+    source = (RL_PY.parent / "llama.py").read_text(encoding = "utf-8")
+    assert (
+        'elif self.training and not getattr(self, "_unsloth_keep_padding_mask", False):\n'
+        "        attention_mask = None\n"
+    ) in source
