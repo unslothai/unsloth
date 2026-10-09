@@ -15,6 +15,7 @@ from fastmcp.tools import ToolResult
 from pydantic import Field
 
 from studio_mcp.caller import Caller, current_caller
+from studio_mcp.errors import raise_for_route
 from studio_mcp.forward import forward
 from studio_mcp.media import INLINE_CAP, image_content, media_result, public_url, resource_link
 from studio_mcp import export_jobs
@@ -96,7 +97,14 @@ async def _recipe_job(
         if job_id
         else f"{RECIPE_ROUTES}/jobs/current"
     )
-    job = await route_json("GET", path, caller = caller)
+    if job_id:
+        job = await route_json("GET", path, caller = caller)
+    else:
+        response = await forward(caller, "GET", path)
+        # No recipe has run since Unsloth Studio started: nothing to report, not an error.
+        if response.status_code == 404:
+            return JobStatus(kind = "recipe", jobs = [])
+        job = raise_for_route(response)
     job = job if isinstance(job, dict) else {}
     job_id = opt_text(job.get("job_id")) or job_id
     progress = job.get("progress") if isinstance(job.get("progress"), dict) else {}

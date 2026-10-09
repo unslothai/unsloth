@@ -146,7 +146,7 @@ def test_rows_are_bounded(monkeypatch):
     assert studio.state.calls == []
 
 
-def test_no_current_job_is_a_tool_error(monkeypatch):
+def test_no_current_job_is_an_empty_result(monkeypatch):
     studio = _studio(
         {
             ("GET", "/api/data-recipe/jobs/current"): lambda r, b: JSONResponse(
@@ -155,7 +155,21 @@ def test_no_current_job_is_a_tool_error(monkeypatch):
         }
     )
     result = _call(monkeypatch, studio, "get_job", {"kind": "recipe"})
-    assert result["content"][0]["text"] == "no job (HTTP 404)"
+    assert result["isError"] is False
+    assert result["structuredContent"]["jobs"] == []
+
+
+def test_an_unknown_recipe_id_is_still_an_error(monkeypatch):
+    studio = _studio(
+        {
+            ("GET", "/api/data-recipe/jobs/nope/status"): lambda r, b: JSONResponse(
+                {"detail": "job not found"}, status_code = 404
+            )
+        }
+    )
+    result = _call(monkeypatch, studio, "get_job", {"kind": "recipe", "id": "nope"})
+    assert result["isError"] is True
+    assert "job not found" in result["content"][0]["text"]
 
 
 def test_recipe_annotations():
