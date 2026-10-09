@@ -3281,9 +3281,7 @@ def test_cancel_folder_sync_stops_a_running_job_without_unlinking(
 
     monkeypatch.setattr(folder_sync, "_check_running", gated_check)
     job_id = folder_sync.request_sync(folder["id"])
-    worker = threading.Thread(
-        target = folder_sync.reconcile_folder, args = (job_id,), daemon = True
-    )
+    worker = threading.Thread(target = folder_sync.reconcile_folder, args = (job_id,), daemon = True)
     worker.start()
     assert entered.wait(5), "reconcile never reached the first health check"
     cancelled = folder_sync.cancel_folder_sync(folder["id"])
