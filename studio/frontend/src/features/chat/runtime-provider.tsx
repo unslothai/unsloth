@@ -2712,17 +2712,14 @@ function useStudioRuntimeAdapters(
         // rebuild branches when parentIds exist; infer sequential parents for mixed legacy threads
         const hasParentIds = msgs.some((m) => m.parentId != null);
         if (hasParentIds) {
-          // Resolve in storage order (the resolver is stateful and infers legacy parents from
-          // position), then reorder parents-first so the import doesn't abort on a child that
-          // postdates its parent.
+          // resolve legacy parents in storage order before sorting parents ahead of children.
           const resolveParent = createParentResolver();
           const ordered = orderParentsFirst(
             msgs.map((m) => ({ record: m, id: m.id, parentId: resolveParent(m) })),
           );
           return completeLoad(
             {
-              // headId comes from savedBranchHead (the newest leaf below the saved head), so
-              // import won't drop the head's descendants; ordered keeps parents before children.
+              // savedBranchHead selects a leaf so import retains its descendants.
               headId,
               messages: ordered.map(({ record, parentId }) => ({
                 parentId,

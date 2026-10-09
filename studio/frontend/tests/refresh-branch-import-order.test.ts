@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { ThreadMessage } from "@assistant-ui/core";
-import { MessageRepository } from "@assistant-ui/core/internal"; // internal API: intentional
+import { MessageRepository } from "@assistant-ui/core/internal"; // intentional internal API
 import {
   compareStoredMessages,
   createParentResolver,
@@ -15,23 +15,22 @@ import {
 
 type Row = { id: string; parentId: string | null; createdAt: number; role: string };
 
-// Mirrors the real failure: an edited user message is written after its reply, so the
-// reply's createdAt predates its user parent. createdAt order alone puts the reply first.
+// edited user messages can be stored after replies, so createdAt alone orders replies first.
 const ANOMALOUS = [
   { id: "R", parentId: null, createdAt: 1, role: "user" },
   { id: "A1", parentId: "R", createdAt: 2, role: "assistant" },
   { id: "E1", parentId: "A1", createdAt: 10, role: "user" },
-  { id: "R1", parentId: "E1", createdAt: 9, role: "assistant" }, // before E1
+  { id: "R1", parentId: "E1", createdAt: 9, role: "assistant" },
   { id: "E2", parentId: "A1", createdAt: 20, role: "user" },
-  { id: "R2", parentId: "E2", createdAt: 19, role: "assistant" }, // before E2
+  { id: "R2", parentId: "E2", createdAt: 19, role: "assistant" },
 ];
 
-// Same comparator the production load path uses, so the test exercises the real ordering.
+// use the production comparator to exercise the load path's ordering.
 function byCreatedAt(rows: Row[]): Row[] {
   return [...rows].sort(compareStoredMessages);
 }
 
-// assistant-ui's import() throws on the first item whose parentId isn't inserted yet.
+// assistant-ui import fails when a message precedes its parent.
 function countMissingParents(ordered: Row[]): number {
   const seen = new Set<string>();
   let missing = 0;
@@ -42,8 +41,7 @@ function countMissingParents(ordered: Row[]): number {
   return missing;
 }
 
-// Minimal ThreadMessage for a real MessageRepository.import(). The user/assistant branches
-// carry different required props, so the literal is asserted to the union type.
+// user and assistant messages require distinct properties, so assert the literal as the union type.
 function threadMessage(id: string, role: string): ThreadMessage {
   return {
     id,
@@ -64,7 +62,6 @@ function threadMessage(id: string, role: string): ThreadMessage {
 }
 
 test("createdAt order alone misorders a reply before its edited user parent", () => {
-  // Documents the bug: in raw storage order the import would throw.
   assert.ok(countMissingParents(byCreatedAt(ANOMALOUS)) > 0);
 });
 
@@ -74,8 +71,7 @@ test("orderParentsFirst emits every parent before its child", () => {
 });
 
 test("the saved-branch head resolves to a leaf, so import keeps every reply", () => {
-  // Mirrors the load() path: reorder parents-first, resolve the head via the saved-branch
-  // logic (newest leaf below the saved head), and hand it to a real import().
+  // mirror the load path through a real repository import.
   const resolveParent = createParentResolver();
   const ordered = orderParentsFirst(
     byCreatedAt(ANOMALOUS).map((m) => ({
@@ -84,7 +80,7 @@ test("the saved-branch head resolves to a leaf, so import keeps every reply", ()
       parentId: resolveParent(m),
     })),
   );
-  // The user was last viewing A1 (a non-leaf); the head must advance to a leaf below it.
+  // choose leaf R2 because resetHead drops a non-leaf head's descendants.
   const headId = resolveSavedBranchHead(byCreatedAt(ANOMALOUS), "A1");
   assert.equal(headId, "R2");
   const repo = new MessageRepository();
@@ -95,7 +91,6 @@ test("the saved-branch head resolves to a leaf, so import keeps every reply", ()
       message: threadMessage(record.id, record.role),
     })),
   });
-  // import drops a non-leaf head's descendants, so the leaf head must keep every row.
   const present = new Set(repo.export().messages.map((m) => m.message.id));
   for (const row of ANOMALOUS) assert.ok(present.has(row.id), `${row.id} was dropped`);
 });
@@ -105,7 +100,6 @@ test("a missing parent is treated as a root rather than crashing or looping", ()
     { id: "orphan", parentId: "gone", createdAt: 1, role: "user" },
     { id: "child", parentId: "orphan", createdAt: 2, role: "assistant" },
   ];
-  // The dangling reference is not an ordering constraint; the child must still follow
-  // its (present) parent, and the walk must terminate.
+  // ignore missing-parent edges so present parents stay ordered and the walk terminates.
   assert.deepEqual(orderParentsFirst(rows).map((r) => r.id), ["orphan", "child"]);
 });

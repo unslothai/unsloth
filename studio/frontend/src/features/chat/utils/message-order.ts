@@ -29,10 +29,7 @@ export function createParentResolver(): (
   };
 }
 
-// Stable topological order: parents before children, siblings keep input order.
-// assistant-ui's import() throws on a child whose parent isn't inserted yet, so this keeps
-// imports succeeding even when an edited user message is timestamped after its reply.
-// A missing parent is treated as a root; cycles can't recurse.
+// assistant-ui import requires parents first, even when edited timestamps place replies earlier.
 export function orderParentsFirst<T extends {
   id: string;
   parentId?: string | null;
