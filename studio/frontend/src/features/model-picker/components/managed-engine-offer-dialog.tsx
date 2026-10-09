@@ -37,15 +37,15 @@ export function ManagedEngineOfferDialog() {
     return engine ? [engine] : [];
   });
   const ready = offered.filter((engine) => isEngineReady(engine));
-  // An install started here stays mounted until its success hands the load to it.
-  const [installing, setInstalling] = useState<readonly string[]>([]);
-  const running = offered
-    .filter((engine) => engine.job.state === "running")
+  // Install sections stay mounted while open, so even an install that finishes between polls
+  // still reaches its success effect and hands the load to that engine.
+  const [shown, setShown] = useState<readonly string[]>([]);
+  const unshown = offered
+    .filter((engine) => !shown.includes(engine.engine))
     .map((engine) => engine.engine);
-  const started = running.filter((name) => !installing.includes(name));
-  if (!open && installing.length > 0) setInstalling([]);
-  else if (open && started.length > 0)
-    setInstalling([...installing, ...started]);
+  if (!open && shown.length > 0) setShown([]);
+  else if (open && ready.length === 0 && unshown.length > 0)
+    setShown([...shown, ...unshown]);
   const names = (offer?.engines ?? []).map((name) => ENGINE_NAMES[name]);
   const displayName = modelName?.split("/").pop() || "This model";
   const quantization =
@@ -85,8 +85,7 @@ export function ManagedEngineOfferDialog() {
         ) : (
           offered
             .filter(
-              (engine) =>
-                ready.length === 0 || installing.includes(engine.engine),
+              (engine) => ready.length === 0 || shown.includes(engine.engine),
             )
             .map((engine) => (
               <section

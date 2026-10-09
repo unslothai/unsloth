@@ -77,6 +77,7 @@ test("the chat load asks before unloading anything and loads with the chosen eng
   // Declining the replacement prompt this engine needs is a cancellation, and the toast stops promising kept models.
   const offerBranch = source.slice(offerAt, unloadAt);
   assert.match(offerBranch, /abortCtrl\.abort\(\);\s*throw new Error\("Cancelled"\);/);
+  assert.match(offerBranch, /\},\s*\{ signal: abortCtrl\.signal \},\s*\),/);
   assert.match(offerBranch, /loadingDescription = loadingDescription\.replace\(switchingNote, "Switching models\."\);/);
 });
 
@@ -87,9 +88,10 @@ test("the offer dialog says when it cannot read the installed engines", () => {
 });
 
 test("an install started in the dialog stays mounted until it hands the load over", () => {
-  // Unmounting on the first ready poll would drop EngineInstall's success effect, and with it onUse.
+  // Unmounting on the first ready poll would drop EngineInstall's success effect, and with it onUse,
+  // even for an install that finished between two polls.
   const dialog = readText("../src/features/model-picker/components/managed-engine-offer-dialog.tsx");
-  assert.match(dialog, /ready\.length === 0 \|\| installing\.includes\(engine\.engine\)/);
-  assert.match(dialog, /engine\.job\.state === "running"/);
+  assert.match(dialog, /ready\.length === 0 \|\| shown\.includes\(engine\.engine\)/);
+  assert.match(dialog, /open && ready\.length === 0 && unshown\.length > 0/);
   assert.match(dialog, /onUse=\{\(\) => resolve\(engine\.engine\)\}/);
 });

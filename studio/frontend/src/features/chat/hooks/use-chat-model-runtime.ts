@@ -2456,19 +2456,22 @@ export function useChatModelRuntime() {
               if (!nativePathToken) {
                 Object.assign(
                   validation,
-                  await validateModel({
-                    model_path: loadPath,
-                    ...loadEngineFields,
-                    hf_token: hfToken,
-                    max_seq_length: validateMaxSeqLength,
-                    load_in_4bit: false,
-                    is_lora: isLora,
-                    gguf_variant: ggufVariant ?? null,
-                    cache_type_kv: loadKvCacheDtype,
-                    tensor_parallel: loadTensorParallel,
-                    disable_vision: loadDisableVision,
-                    gpu_ids: validateGpuIds ?? undefined,
-                  }),
+                  await validateModel(
+                    {
+                      model_path: loadPath,
+                      ...loadEngineFields,
+                      hf_token: hfToken,
+                      max_seq_length: validateMaxSeqLength,
+                      load_in_4bit: false,
+                      is_lora: isLora,
+                      gguf_variant: ggufVariant ?? null,
+                      cache_type_kv: loadKvCacheDtype,
+                      tensor_parallel: loadTensorParallel,
+                      disable_vision: loadDisableVision,
+                      gpu_ids: validateGpuIds ?? undefined,
+                    },
+                    { signal: abortCtrl.signal },
+                  ),
                 );
                 if (abortCtrl.signal.aborted) throw new Error("Cancelled");
               }
