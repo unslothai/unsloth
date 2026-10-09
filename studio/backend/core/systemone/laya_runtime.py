@@ -265,8 +265,14 @@ def _mlx_dirs(checkpoint: Checkpoint, local_only: bool) -> tuple[Path, Path | No
     return folders[-1], (folders[0] if len(folders) > 1 else None)
 
 
-def _mlx_choice(checkpoint: Checkpoint, unread, questions, preference: str) -> Checkpoint | None:
-    """Auto on Apple Silicon answers through the MLX engine, unless only the llama.cpp form is at hand or the request has images MLX does not read (`unread`)."""
+def _mlx_choice(
+    checkpoint: Checkpoint,
+    unread,
+    questions,
+    preference: str,
+    seen: bool = False,
+) -> Checkpoint | None:
+    """Auto on Apple Silicon answers through the MLX engine, unless only the llama.cpp form is at hand or the request has images MLX does not read (`unread`); `seen` says it has images MLX reads."""
     from .native_worker import request_gap
 
     if preference != "auto" or unread or request_gap(questions or {}) is not None:
@@ -276,6 +282,9 @@ def _mlx_choice(checkpoint: Checkpoint, unread, questions, preference: str) -> C
     if _loaded == target and _agent is not None:
         return target
     native = _native_target(checkpoint)
+    if seen and native is not None and not _native_reads_images(native):
+        # Without a vision projector the llama.cpp form would refuse the images MLX reads.
+        return target
     if native is not None and _native_unavailable(checkpoint, native) is None:
         # A resident llama.cpp server keeps answering, and a downloaded GGUF serves before the MLX form is fetched.
         if _loaded == native and _agent is not None:
@@ -423,7 +432,9 @@ def select(
     unread = bool(state_images or (images and not _mlx_reads_images(checkpoint)))
     if (preference or get_backend()) == MLX and checkpoint.layout in ("clef", GGUF):
         return _select_mlx(checkpoint, unread), None
-    mlx = _mlx_choice(checkpoint, unread, questions, preference or get_backend())
+    mlx = _mlx_choice(
+        checkpoint, unread, questions, preference or get_backend(), bool(images) and not unread
+    )
     if mlx is not None:
         return mlx, None
     if checkpoint.layout == GGUF:
@@ -563,12 +574,15 @@ def input_modalities(checkpoint) -> list[str]:
         return ["text", "image"]
     if not native_ready(checkpoint):
         return ["text"]
-    native = _native_target(checkpoint)
+    return ["text", "image"] if _native_reads_images(_native_target(checkpoint)) else ["text"]
+
+
+def _native_reads_images(native: Checkpoint) -> bool:
     if native.is_local:
         from .gguf_export_contract import served_files
         files = served_files(Path(native.source).expanduser(), "clef")
-        return ["text", "image"] if files is not None and files[2] is not None else ["text"]
-    return ["text", "image"] if GGUF_COMPANIONS[native.name].mmproj else ["text"]
+        return files is not None and files[2] is not None
+    return bool(GGUF_COMPANIONS[native.name].mmproj)
 
 
 def _native_gpu() -> bool:

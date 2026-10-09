@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import asyncio
+import dataclasses
 import json
 import os
 import shutil
@@ -931,6 +932,21 @@ def test_a_clef_with_its_vision_tower_reads_images_through_the_mlx_engine(
     with monkeypatch.context() as patch:
         patch.setattr(laya_runtime, "mlx_ready", lambda checkpoint: False)
         assert laya_runtime.input_modalities(tuned) == ["text"]
+
+    # A resident llama.cpp server keeps answering, except the images it has no vision projector for.
+    native = dataclasses.replace(tuned, backend = "llama.cpp")
+    with monkeypatch.context() as patch:
+        patch.setattr(laya_runtime, "_native_target", lambda checkpoint: native)
+        patch.setattr(laya_runtime, "_native_unavailable", lambda *args: None)
+        patch.setattr(laya_runtime, "_loaded", native)
+        patch.setattr(laya_runtime, "_agent", object())
+        for projector, backends in (
+            (False, ["llama.cpp", "mlx"]),
+            (True, ["llama.cpp", "llama.cpp"]),
+        ):
+            patch.setattr(laya_runtime, "_native_reads_images", lambda native: projector)
+            routed = [laya_runtime.select(tuned, images)[0].backend for images in (None, [image])]
+            assert routed == backends
 
     # The engine gets the images beside the state; a request without them is asked as before.
     questions = {"q": {"type": "noul", "instructions": "i"}}
