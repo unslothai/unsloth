@@ -610,6 +610,12 @@ class _Turn:
                             compacted.append(part)
                     google[plural] = compacted
                 google.pop(singular, None)
+            if google.get("thought_parts") or google.get("answer_parts"):
+                # Native ledgers already pin every signature to its original part. Retaining the legacy scalar
+                # would let the translator move an earlier thought signature onto later unsigned text.
+                google.pop("thought_signature", None)
+                google.pop("thoughtSignature", None)
+                google.pop("thought", None)
             merged["google"] = google
         self.reasoning_extra = merged
 

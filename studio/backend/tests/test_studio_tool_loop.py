@@ -1220,6 +1220,7 @@ def test_gemini_part_replay_ledgers_accumulate_across_a_tool_turn(executed):
     assert assistant["extra_content"]["google"]["answer_parts"] == [
         {"text": "answer tail"}
     ]
+    assert "thought_signature" not in assistant["extra_content"]["google"]
 
 
 def _call_delta(index, call_id, name, arguments):
