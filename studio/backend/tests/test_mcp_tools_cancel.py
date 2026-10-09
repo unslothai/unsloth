@@ -182,7 +182,8 @@ def test_an_idle_export_worker_keeps_its_checkpoint(monkeypatch):
     assert [c[1] for c in studio.state.calls] == ["/api/export/status"]
 
 
-@pytest.mark.parametrize("phase", ["starting", "loading", "exporting"])
+# "exporting" waits for the job's own answer first; see the direct tests below.
+@pytest.mark.parametrize("phase", ["starting", "loading"])
 def test_a_job_between_steps_is_stopped_without_touching_the_worker(monkeypatch, phase):
     job = ExportJob(job_id = "exp-1", account_id = "owner", format = "gguf", phase = phase)
     export_jobs._jobs["owner:exp-1"] = job
@@ -199,54 +200,74 @@ def test_a_job_between_steps_is_stopped_without_touching_the_worker(monkeypatch,
 def _cancel_directly(
     monkeypatch,
     job_run,
-    status = IDLE_WORKER,
+    statuses = (IDLE_WORKER,),
 ):
     """Run cancel on the loop the job's task lives on, which a served tool call cannot share."""
     from studio_mcp.tools import cancel as cancel_module
 
+    statuses = list(statuses)
+    calls = []
+
     async def route_json(method, path, **_kwargs):
-        return status
+        calls.append((method, path))
+        if path.endswith("/cancel"):
+            return {"success": True, "message": "Export cancelled"}
+        return statuses.pop(0) if len(statuses) > 1 else statuses[0]
 
     monkeypatch.setattr(cancel_module, "route_json", route_json)
     # cancel reads only the account from its caller.
     monkeypatch.setattr(
         cancel_module, "current_caller", lambda: types.SimpleNamespace(account_id = "owner")
     )
+    monkeypatch.setattr(cancel_module, "SETTLE_S", 0.2)
 
     async def run():
         job = export_jobs.start("owner", "gguf", job_run)
         await asyncio.sleep(0)
         result = await cancel_module.cancel("export", job.job_id)
-        if job.task is not None:
-            await asyncio.gather(job.task, return_exceptions = True)
-        return job, result
+        await asyncio.gather(job.task, return_exceptions = True)
+        return job, result, calls
 
     return asyncio.run(run())
 
 
-def test_a_job_recording_its_finished_export_is_let_finish(monkeypatch):
-    async def finishing(job):
-        job.phase = "finishing"
+def test_an_export_whose_answer_is_on_its_way_is_reported_done(monkeypatch):
+    # The worker already finished the export; the route is still writing its answer.
+    async def answered_soon(job):
+        job.phase = "exporting"
         await asyncio.sleep(0.05)
 
-    job, result = _cancel_directly(monkeypatch, finishing)
+    job, result, _calls = _cancel_directly(monkeypatch, answered_soon)
     assert (result.cancelled, result.message) == (False, "The export already completed.")
     assert job.status == "completed"
+
+
+def test_an_export_that_starts_while_waiting_is_stopped_on_the_worker(monkeypatch):
+    async def exports(job):
+        job.phase = "exporting"
+        await asyncio.Event().wait()
+
+    running = {"is_export_active": True, "active_op_kind": "export_gguf"}
+    job, result, calls = _cancel_directly(monkeypatch, exports, statuses = (IDLE_WORKER, running))
+    assert result.cancelled is True
+    assert ("POST", "/api/export/cancel") in calls
+    assert job.status == "cancelled"
 
 
 def test_a_job_between_steps_is_stopped_at_once(monkeypatch):
     started = []
 
     async def between(job):
-        job.phase = "exporting"
+        job.phase = "loading"
         await asyncio.sleep(0.05)
         # The next step must never start once the job was cancelled.
         started.append("export")
 
-    job, result = _cancel_directly(monkeypatch, between)
+    job, result, calls = _cancel_directly(monkeypatch, between)
     assert result.cancelled is True
     assert job.status == "cancelled"
     assert started == []
+    assert calls == [("GET", "/api/export/status")]
 
 
 def test_a_start_request_rejected_for_another_reason_was_not_cancelled(monkeypatch):

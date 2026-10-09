@@ -123,24 +123,29 @@ async def cancel(
                 return CancelResult(
                     kind = kind, id = id, cancelled = False, message = "No export is running."
                 )
-            # Its export already returned and the job is only recording the result: let it, rather
-            # than call a finished export cancelled. Between steps nothing is waited for, so no
-            # step can start on the worker before the job is stopped.
-            if job.phase == "finishing":
+            if job.phase == "exporting":
+                # Either its export just ended and the answer is on its way, or it is about to
+                # send the export. Give it a moment, then look again: a finished export is
+                # reported as such, and one that has started is stopped on the worker below.
                 await export_jobs.settle(job, SETTLE_S)
-            if job.finished:
+                if job.finished:
+                    return CancelResult(
+                        kind = kind,
+                        id = id,
+                        cancelled = False,
+                        message = f"The export already {job.status}.",
+                    )
+                status = await route_json("GET", EXPORT_STATUS, caller = caller)
+            if not _export_is_this_job(job, status):
+                # Between steps: stop the job's own task and leave the worker alone.
+                export_jobs.mark_cancelled(job)
                 return CancelResult(
-                    kind = kind, id = id, cancelled = False, message = f"The export already {job.status}."
+                    kind = kind,
+                    id = id,
+                    cancelled = True,
+                    message = "The export job was stopped before its next step.",
                 )
-            # Between steps: stop the job's own task and leave the worker alone.
-            export_jobs.mark_cancelled(job)
-            return CancelResult(
-                kind = kind,
-                id = id,
-                cancelled = True,
-                message = "The export job was stopped before its next step.",
-            )
-        if job is not None and not _export_is_this_job(job, status):
+        elif job is not None and not _export_is_this_job(job, status):
             return CancelResult(
                 kind = kind,
                 id = id,

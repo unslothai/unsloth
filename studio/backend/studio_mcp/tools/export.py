@@ -128,8 +128,6 @@ async def export_model(
         result = await _op(
             caller, f"/api/export/export/{format}", {**body, "expected_checkpoint": found.path}
         )
-        # Its export is over; only recording the result is left, so a cancel now waits for that.
-        job.phase = "finishing"
         # This call's own answer, not the export status: another export may have finished since.
         details = result.get("details") if isinstance(result, dict) else None
         if isinstance(details, dict):
