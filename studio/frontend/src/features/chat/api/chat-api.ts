@@ -745,6 +745,8 @@ export interface LocalModelInfo {
   display_name: string;
   path: string;
   source: "models_dir" | "hf_cache" | "lmstudio" | "omlx" | "ollama" | "hermes" | "custom";
+  /** Name the user gave the custom scan folder this row came from. */
+  source_label?: string | null;
   model_id?: string | null;
   // Backend-detected weights format ("gguf" when known), for folders whose name lacks -GGUF.
   model_format?: string | null;
@@ -898,6 +900,8 @@ export interface ScanFolderInfo {
   recursive?: boolean;
   /** Result of the last scan. Absent on older backends, which means "ok". */
   status?: "ok" | "permission_denied" | "missing" | "unreadable" | "partial";
+  /** User-chosen display name, shown in place of "Custom folder". */
+  label?: string | null;
 }
 
 export async function listScanFolders(): Promise<ScanFolderInfo[]> {

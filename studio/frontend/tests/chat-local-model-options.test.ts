@@ -54,6 +54,16 @@ test("Ollama rows are offered under their own label", () => {
   assert.equal(localGgufKindFor(option, true), "direct");
 });
 
+test("a named custom folder is offered under its name", () => {
+  const [named, unnamed] = chatLocalModelOptions([
+    // biome-ignore lint/style/useNamingConvention: API schema
+    row({ id: "/jan/a", path: "/jan/a", source: "custom", source_label: "Jan" }),
+    row({ id: "/misc/b", path: "/misc/b", source: "custom" }),
+  ]);
+  assert.equal(named?.baseModel, "Jan");
+  assert.equal(unnamed?.baseModel, "Custom Folders");
+});
+
 test("Hermes downloads are offered under their own label", () => {
   // Hermes Desktop stages one-click downloads as flat GGUFs in ~/.hermes/models. The row is a
   // plain file path, loadable as-is; it must clear CHAT_LOCAL_SOURCES or the model Hermes

@@ -7815,6 +7815,11 @@ export function HubModelPicker({
                               className="size-3 shrink-0 text-muted-foreground/80"
                             />
                             <div className="min-w-0 flex-1">
+                              {f.label ? (
+                                <span className="block truncate text-ui-10 font-medium text-foreground/90">
+                                  {f.label}
+                                </span>
+                              ) : null}
                               <span
                                 className="block truncate font-mono text-ui-10 text-muted-foreground/80"
                                 title={f.path}

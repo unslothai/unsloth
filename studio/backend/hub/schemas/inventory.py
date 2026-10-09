@@ -197,6 +197,10 @@ class LocalModelInfo(BaseModel):
         ...,
         description = "Discovery source",
     )
+    source_label: Optional[str] = Field(
+        None,
+        description = "Display name of the custom scan folder this row came from, if the user named it",
+    )
     model_id: Optional[str] = Field(
         None,
         description = "HF repo id for cached models, e.g. org/model",
@@ -391,6 +395,21 @@ class AddScanFolderRequest(BaseModel):
         None,
         description = "Also scan sub-folders. Omitted keeps the stored setting of an already registered folder.",
     )
+    label: Optional[str] = Field(
+        None,
+        max_length = 40,  # storage.studio_db.SCAN_FOLDER_LABEL_MAX_LENGTH
+        description = 'Display name shown in place of "Custom folder", e.g. the engine that owns the folder. Omitted keeps the stored name; blank clears it.',
+    )
+
+
+class UpdateScanFolderRequest(BaseModel):
+    """Request body for renaming a custom scan folder."""
+
+    label: Optional[str] = Field(
+        None,
+        max_length = 40,  # storage.studio_db.SCAN_FOLDER_LABEL_MAX_LENGTH
+        description = 'Display name shown in place of "Custom folder"; null or blank clears it',
+    )
 
 
 class ScanFolderInfo(BaseModel):
@@ -400,6 +419,7 @@ class ScanFolderInfo(BaseModel):
     path: str = Field(..., description = "Normalized absolute path")
     created_at: str = Field(..., description = "ISO 8601 creation timestamp")
     recursive: bool = Field(False, description = "Sub-folders are scanned too")
+    label: Optional[str] = Field(None, description = "User-chosen display name, if any")
     status: str = Field(
         default = "ok",
         description = "Last scan result: ok, permission_denied, missing, or unreadable",

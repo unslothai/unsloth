@@ -97,6 +97,7 @@ export {
   normalizeTimestamp,
   partialSetFromRows,
   removeScanFolder,
+  renameScanFolder,
   resolveInventoryResource,
   useDeviceInventorySources,
   useDeviceInventoryStore,

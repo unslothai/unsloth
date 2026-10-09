@@ -81,6 +81,8 @@ export interface LocalInventoryRow {
   title: string;
   source: LocalSource;
   sourceLabel: string;
+  /** Name the user gave the custom scan folder this row came from. */
+  folderLabel?: string | null;
   datasetSource?: "recipe" | "upload";
   modelId?: string | null;
   displayName?: string;

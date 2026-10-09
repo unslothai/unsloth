@@ -22,6 +22,7 @@ from hub.storage.scan_folders import (
     add_scan_folder_with_status,
     list_scan_folders,
     remove_scan_folder,
+    update_scan_folder_label,
 )
 from hub.utils import download_manifest, gguf, inventory_scan as hf_cache_scan
 from hub.utils.host_paths import scrub_paths, short_path_for_log
@@ -1074,7 +1075,13 @@ async def _collect_models_from_default_sources(
             )
         # Carry the registered path: the status registry is keyed on the row, not on the normalized Path this scan walks.
         custom_sources.append(
-            (folder_path, hf_caches, str(folder["path"]), bool(folder.get("recursive")))
+            (
+                folder_path,
+                hf_caches,
+                str(folder["path"]),
+                bool(folder.get("recursive")),
+                folder.get("label") or None,
+            )
         )
     try:
         variant_states = await asyncio.to_thread(
@@ -1115,7 +1122,7 @@ async def _collect_models_from_default_sources(
         local_models += await _scan_source("Hermes", scan_hermes_dir, hermes_dir)
 
     hermes_identities = {_inventory_physical_identity(str(d)) for d in hermes_dirs}
-    for folder_path, hf_caches, row_path, recursive in custom_sources:
+    for folder_path, hf_caches, row_path, recursive, folder_label in custom_sources:
         try:
             nested_roots = (
                 tuple(await asyncio.to_thread(nested_scan_roots, folder_path)) if recursive else ()
@@ -1154,7 +1161,7 @@ async def _collect_models_from_default_sources(
         # Off the loop, like the scan above it: the probe opens directories, and on a stalled network mount scandir sits in the kernel with nothing to yield to.
         await asyncio.to_thread(note_scan_folder_scanned, row_path, found = bool(custom_models))
         for model in custom_models:
-            row = _promote_to_custom_source(model)
+            row = _promote_to_custom_source(model, folder_label)
             row._scan_root = str(folder_path)
             local_models.append(row)
 
@@ -1281,12 +1288,15 @@ def _scan_custom_folder(
     return selectable[:_MAX_MODELS_PER_CUSTOM_FOLDER]
 
 
-def _promote_to_custom_source(model: LocalModelInfo) -> LocalModelInfo:
+def _promote_to_custom_source(
+    model: LocalModelInfo, folder_label: Optional[str] = None
+) -> LocalModelInfo:
     if model.source in {"hf_cache", "ollama", "hermes"}:
         return model
     return model.model_copy(
         update = {
             "source": "custom",
+            "source_label": folder_label,
             "model_id": None,
             "inventory_id": _local_inventory_id(
                 "custom",
@@ -1564,6 +1574,8 @@ async def list_local_models_response(models_dir: str = "./models") -> LocalModel
             tuple(
                 _inventory_path_identity(str(folder.get("path", "")))
                 + ("\x00r" if folder.get("recursive") else "")
+                # The name is stamped on the rows, so a rename must not join a scan already in flight.
+                + ("\x00l" + folder["label"] if folder.get("label") else "")
                 for folder in custom_folders
             ),
             epoch,
@@ -1611,10 +1623,16 @@ def get_scan_folders_response() -> dict:
     return {"folders": annotate_scan_folders(folders)}
 
 
-def add_scan_folder_response(path: str, recursive: Optional[bool] = None) -> dict:
+def add_scan_folder_response(
+    path: str,
+    recursive: Optional[bool] = None,
+    label: Optional[str] = None,
+) -> dict:
     path = _account_access().private_directory(path, "")
     try:
-        folder, inserted = add_scan_folder_with_status(_coerce_scan_folder_path(path), recursive)
+        folder, inserted = add_scan_folder_with_status(
+            _coerce_scan_folder_path(path), recursive, label
+        )
     except ValueError as e:
         logger.warning(
             "Scan folder rejected: %s (path=%s)", scrub_paths(e), short_path_for_log(path)
@@ -1658,6 +1676,17 @@ def register_launch_scan_folders(raw: Optional[str] = None) -> list[str]:
         from core.inference.local_model_resolver import invalidate_index
         invalidate_index()
     return added
+
+
+def update_scan_folder_response(folder_id: int, label: Optional[str]) -> dict:
+    try:
+        folder = update_scan_folder_label(folder_id, label)
+    except ValueError as e:
+        raise _http_error(status_code = 400, detail = str(e))
+    if folder is None:
+        raise _http_error(status_code = 404, detail = "Scan folder not found")
+    logger.info("Scan folder renamed: id=%s", folder_id)
+    return annotate_scan_folders([folder])[0]
 
 
 def remove_scan_folder_response(folder_id: int) -> dict:

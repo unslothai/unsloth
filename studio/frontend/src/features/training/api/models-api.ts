@@ -122,6 +122,8 @@ export interface LocalModelInfo {
   display_name: string;
   path: string;
   source: "models_dir" | "hf_cache" | "lmstudio" | "omlx" | "ollama" | "hermes" | "custom";
+  /** Name the user gave the custom scan folder this row came from. */
+  source_label?: string | null;
   model_id?: string | null;
   updated_at?: number | null;
 }
