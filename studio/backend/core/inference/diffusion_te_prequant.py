@@ -777,7 +777,11 @@ def _te_prequant_pipe_kwargs(
     Gated exactly like the runtime cast (mode normalized, device-supported, family not
     denied), so injection can never engage where ``quantize_text_encoders`` would not.
     The later ``quantize_text_encoders`` call re-applies the cast idempotently and keeps
-    status reporting truthful."""
+    status reporting truthful.
+
+    Raises when a pre-cast encoder fails to load and its dense weights are not on disk: the plan
+    left those shards out of the prefetch, so assembly would die on a missing shard instead."""
+    unavailable: list[str] = []
     try:
         from .diffusion_precision import TE_QUANT_FP8, normalize_te_quant, te_quant_supported
         from .diffusion_text_encoder_trim import family_trims_lm_head
@@ -836,10 +840,25 @@ def _te_prequant_pipe_kwargs(
                 )
             if encoder is not None:
                 injected[component] = encoder
-        return injected
+            elif not _dense_component_cached(base, component):
+                unavailable.append(component)
+        if not unavailable:
+            return injected
     except Exception as exc:  # noqa: BLE001 - injection is an optimisation, never a blocker
         _warn(logger, "pipe_kwargs", exc)
         return {}
+    raise RuntimeError(
+        f"The pre-quantized {', '.join(unavailable)} for {base} could not be loaded (see the "
+        "diffusion.te_prequant warning above), and its dense weights were never downloaded because "
+        "the pre-quantized copy replaces them. Close other apps (or enlarge the Windows page file) "
+        "and load again, or set Text encoder precision to Dense (bf16)."
+    )
+
+
+def _dense_component_cached(base: str, component: str) -> bool:
+    """Whether ``base``'s dense ``component`` weights are on disk (local directory or Hub cache)."""
+    from .media_locality import _hosted_component_cached
+    return _hosted_component_cached(base, component, "", "")
 
 
 def _held_locally(repo_id: str, name: Optional[str], hf_token: Optional[str]) -> bool:
