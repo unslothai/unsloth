@@ -94,7 +94,7 @@ def test_pdf_markdown_does_not_render_scanned_pages(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "PDF_MARKDOWN", True)
     doc = pymupdf.open()
     scan = doc.new_page()
-    pix = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 60, 80), False)
+    pix = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 1000, 1300), False)
     pix.set_rect(pix.irect, (250, 250, 240))
     scan.insert_image(scan.rect, pixmap = pix, keep_proportion = False)
     scan.insert_text((60, 120), "Chapter one covers shelter.", fontsize = 10)
@@ -130,7 +130,7 @@ def test_scan_corner_check_follows_page_rotation(rotation):
 
     doc = pymupdf.open()
     page = doc.new_page()
-    pix = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 60, 20), False)
+    pix = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 2000, 500), False)
     pix.set_rect(pix.irect, (250, 250, 240))
     # A strip along the unrotated bottom edge covers two corners at every rotation.
     page.insert_image(pymupdf.Rect(0, 700, 595, 842), pixmap = pix, keep_proportion = False)
@@ -140,6 +140,20 @@ def test_scan_corner_check_follows_page_rotation(rotation):
         doc[number].set_rotation(rotation)
     assert parsers._image_covers_a_corner(doc, 0)
     assert not parsers._image_covers_a_corner(doc, 1)
+
+
+def test_scan_corner_check_ignores_small_corner_logos():
+    # A logo is cheap to decode, so its page keeps pymupdf4llm's background probe.
+    import pymupdf
+
+    from core.rag import parsers
+
+    doc = pymupdf.open()
+    page = doc.new_page()
+    logo = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 200, 200), False)
+    logo.set_rect(logo.irect, (200, 30, 30))
+    page.insert_image(pymupdf.Rect(0, 0, 60, 60), pixmap = logo)
+    assert not parsers._image_covers_a_corner(doc, 0)
 
 
 def test_pdf_markdown_off_uses_plain_text(tmp_path, monkeypatch):

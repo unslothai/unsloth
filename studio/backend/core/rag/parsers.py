@@ -159,11 +159,15 @@ def _markdown_incomplete(markdown: str, plain: str) -> bool:
     return markdown_letters < _PDF_INCOMPLETE_RATIO * plain_letters
 
 
+# JPEG2000 decodes at ~45 ms per megapixel; a logo stays far below this, a 300 dpi scan far above.
+_SCAN_IMAGE_MIN_PIXELS = 1_000_000
+
+
 def _image_covers_a_corner(doc, number: int) -> bool:
-    """True when a raster image overlaps one of the 10pt page corners pymupdf4llm renders to
-    guess the background colour. That render decodes the whole image in one C call holding
-    the GIL (~2 s per JPEG2000 scan page), starving the server's event loop until the desktop
-    watchdog kills it (#13094)."""
+    """True when a scan-sized raster image overlaps one of the 10pt page corners pymupdf4llm
+    renders to guess the background colour. That render decodes the whole image in one C call
+    holding the GIL (~2 s per JPEG2000 scan page), starving the server's event loop until the
+    desktop watchdog kills it (#13094)."""
     try:
         import fitz
 
@@ -176,7 +180,11 @@ def _image_covers_a_corner(doc, number: int) -> bool:
             for y in (r.y0, r.y1 - 10)
         ]
         # Image boxes are unrotated; the probe clips page.rect, which is rotated.
-        boxes = [fitz.Rect(info["bbox"]) * page.rotation_matrix for info in page.get_image_info()]
+        boxes = [
+            fitz.Rect(info["bbox"]) * page.rotation_matrix
+            for info in page.get_image_info()
+            if info["width"] * info["height"] >= _SCAN_IMAGE_MIN_PIXELS
+        ]
     except Exception:
         return False
     return any(box.intersects(corner) for box in boxes for corner in corners)
@@ -199,11 +207,8 @@ def _pdf_markdown(doc, pages: range | None = None) -> list[str] | None:
                 kwargs["pages"] = indices
             chunks = pymupdf4llm.to_markdown(doc, **kwargs)
         else:
-            # Background detection only on pages where it is cheap; the header table is the
-            # whole-document one to_markdown would build, shared so both calls agree.
-            identify = getattr(pymupdf4llm, "IdentifyHeaders", None)
-            if identify is not None:
-                kwargs["hdr_info"] = identify(doc)
+            # Background detection only where it is cheap. Each call still builds its header
+            # table from the whole (baked) document, so both halves agree on heading levels.
             by_page = {}
             for group, detect in (
                 ([i for i in indices if i not in scans], True),
