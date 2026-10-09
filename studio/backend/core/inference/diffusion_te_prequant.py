@@ -507,6 +507,7 @@ def load_prequant_text_encoder(
     config_overrides: Optional[dict] = None,
     local_files_only: bool = False,
     trim_lm_head: bool = False,
+    failures: Optional[list] = None,
 ) -> Optional[Any]:
     """Load the pre-cast text encoder described by ``source`` (on CPU, for pipeline
     assembly to place), with the layerwise upcast hooks already installed.
@@ -521,7 +522,7 @@ def load_prequant_text_encoder(
     the pipeline's assembly normally passes to ``from_pretrained`` (forward-behaviour
     flags only; the state dict is unaffected by them).
     ``trim_lm_head`` builds the encoder without its untied ``lm_head`` and never reads that tensor
-    (``diffusion_text_encoder_trim``)."""
+    (``diffusion_text_encoder_trim``). ``failures`` collects the exception of a load that raised."""
     try:
         if source.kind == "path" and not _local_prequant_path_allowed(source.location):
             _warn(
@@ -682,6 +683,8 @@ def load_prequant_text_encoder(
         return encoder
     except Exception as exc:  # noqa: BLE001 - fall back to the dense download + cast
         _warn(logger, f"{scheme}:{component}:{source.kind}", exc)
+        if failures is not None:
+            failures.append(exc)
         return None
 
 
@@ -782,6 +785,8 @@ def _te_prequant_pipe_kwargs(
     Raises when a pre-cast encoder fails to load and its dense weights are not on disk: the plan
     left those shards out of the prefetch, so assembly would die on a missing shard instead."""
     unavailable: list[str] = []
+    failures: list = []
+    cause = ""
     try:
         from .diffusion_precision import TE_QUANT_FP8, normalize_te_quant, te_quant_supported
         from .diffusion_text_encoder_trim import family_trims_lm_head
@@ -798,6 +803,7 @@ def _te_prequant_pipe_kwargs(
         for component, source in sources.items():
             if component in skip_components:
                 continue
+            failures.clear()
             trim = component == "text_encoder" and family_trims_lm_head(getattr(fam, "name", None))
             encoder = load_prequant_text_encoder(
                 base,
@@ -809,6 +815,7 @@ def _te_prequant_pipe_kwargs(
                 logger = logger,
                 local_files_only = local_files_only,
                 trim_lm_head = trim,
+                failures = failures,
             )
             fp8_names = tuple(
                 n for n in te_candidate_filenames(source) if n != getattr(source, "filename", None)
@@ -837,21 +844,23 @@ def _te_prequant_pipe_kwargs(
                     logger = logger,
                     local_files_only = local_files_only,
                     trim_lm_head = trim,
+                    failures = failures,
                 )
             if encoder is not None:
                 injected[component] = encoder
             elif not _dense_component_cached(base, component):
                 unavailable.append(component)
+                cause = f" ({failures[-1]})" if failures else cause
         if not unavailable:
             return injected
     except Exception as exc:  # noqa: BLE001 - injection is an optimisation, never a blocker
         _warn(logger, "pipe_kwargs", exc)
         return {}
     raise RuntimeError(
-        f"The pre-quantized {', '.join(unavailable)} for {base} could not be loaded (see the "
-        "diffusion.te_prequant warning above), and its dense weights were never downloaded because "
-        "the pre-quantized copy replaces them. Close other apps (or enlarge the Windows page file) "
-        "and load again, or set Text encoder precision to Dense (bf16)."
+        f"The pre-quantized {', '.join(unavailable)} for {base} could not be loaded{cause}. Its dense "
+        "weights were not downloaded because the pre-quantized copy replaces them. If memory ran out "
+        "(os error 1455 means the Windows page file is too small), close other apps or enlarge the page "
+        "file and load again, or set Text encoder precision to Dense (bf16)."
     )
 
 

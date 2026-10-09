@@ -406,10 +406,20 @@ def test_pipe_kwargs_raises_when_load_fails_and_dense_shards_were_skipped(monkey
     import json
 
     import core.inference.diffusion_precision as precision
+    import core.inference.prequant_safetensors as prequant_safetensors
 
     fam = _fam(te_prequant_repos = (("fp8", "text_encoder", "org/hosted"),), base_repo = str(tmp_path))
     monkeypatch.setattr(precision, "te_quant_supported", lambda target, mode: True)
-    monkeypatch.setattr(tpq, "load_prequant_text_encoder", lambda *a, **k: None)
+    ckpt = tmp_path / "te.safetensors"
+    ckpt.write_bytes(b"")
+    monkeypatch.setattr(tpq, "_resolve_checkpoint_path", lambda *a, **k: str(ckpt))
+
+    def out_of_commit(*a, **k):
+        raise OSError(
+            "The paging file is too small for this operation to complete. (os error 1455)"
+        )
+
+    monkeypatch.setattr(prequant_safetensors, "load_plain_prequant_safetensors", out_of_commit)
     encoder = tmp_path / "text_encoder"
     encoder.mkdir()
     (encoder / "config.json").write_text("{}")
@@ -421,7 +431,7 @@ def test_pipe_kwargs_raises_when_load_fails_and_dense_shards_were_skipped(monkey
             fam, str(tmp_path), te_quant_mode = "fp8", target = _target(), dtype = None
         )
 
-    with pytest.raises(RuntimeError, match = r"text_encoder .*Dense \(bf16\)"):
+    with pytest.raises(RuntimeError, match = r"text_encoder .*\(os error 1455\).*Dense \(bf16\)"):
         load()
     (encoder / shard).write_bytes(b"")
     assert load() == {}
