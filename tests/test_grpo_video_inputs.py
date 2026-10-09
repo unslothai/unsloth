@@ -39,6 +39,11 @@ def test_arrow_none_keys_are_stripped_from_video_prompts_only():
         {"type": "text", "text": "What happens?"},
     ]
     assert video[0]["content"][1]["video"] is None, "the dataset row was mutated"
+    # a text row of a column that also holds videos carries the key too
+    text_row = [{"role": "user", "content": [{"type": "text", "text": "hi", "video": None}]}]
+    assert _unsloth_grpo_clean_video_prompts([text_row])[0][0]["content"] == [
+        {"type": "text", "text": "hi"}
+    ]
     batch = [text_only]
     assert _unsloth_grpo_clean_video_prompts(batch) is batch
 
@@ -123,6 +128,21 @@ def test_each_distinct_prompt_is_decoded_once_and_repeated_per_generation(zoo_wi
     owners = out["pixel_values_videos"][:, 0].tolist()
     assert owners == [1.0] * 8 + [2.0] * 12 + [2.0] * 12
     assert out["second_per_grid_ts"].tolist() == pytest.approx([1.0, 1.0, 2.0, 2.1, 2.0, 2.1])
+
+
+def test_in_memory_videos_are_never_shared_between_prompts(zoo_with_video_keys):
+    import numpy as np
+
+    from unsloth.models.rl_replacements import _unsloth_grpo_video_inputs
+
+    processor = _Processor()
+    a = np.zeros((64, 64, 3))
+    b = np.zeros((64, 64, 3))
+    b[32, 32, 0] = 1.0  # same repr() as a
+    assert repr(a) == repr(b)
+    prompts = [_video_prompt(a, text = "1"), _video_prompt(b, text = "1")]
+    _unsloth_grpo_video_inputs(_trainer(processor), prompts)
+    assert len(processor.calls[0]) == 2
 
 
 def test_a_batch_without_video_costs_nothing():

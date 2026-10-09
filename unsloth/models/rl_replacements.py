@@ -1268,16 +1268,29 @@ def _unsloth_grpo_prompt_videos(prompt):
     return count
 
 
+def _unsloth_grpo_has_video_key(prompt):
+    if not isinstance(prompt, list):
+        return False
+    for message in prompt:
+        content = message.get("content", None) if isinstance(message, dict) else None
+        if isinstance(content, list) and any(
+            isinstance(part, dict) and "video" in part for part in content
+        ):
+            return True
+    return False
+
+
 def _unsloth_grpo_clean_video_prompts(prompts):
-    """Arrow gives every content part of a column the union of the keys, so a text part arrives
-    as {"type": "text", "text": ..., "video": None}. Qwen2-VL style templates test
-    `'video' in content`, render a video placeholder for each such part, and the processor then
-    runs out of videos. Strip the None keys, only in prompts that carry a video."""
-    if not any(_unsloth_grpo_prompt_videos(prompt) for prompt in prompts):
+    """Arrow gives every content part of a column the union of the keys, so in a dataset with
+    any video a text part arrives as {"type": "text", "text": ..., "video": None}, in text only
+    rows too. Qwen2-VL style templates test `'video' in content`, render a video placeholder for
+    each such part, and the processor then runs out of videos. Strip the None keys from every
+    prompt carrying a `video` key; prompts without one are passed through untouched."""
+    if not any(_unsloth_grpo_has_video_key(prompt) for prompt in prompts):
         return prompts
     cleaned = []
     for prompt in prompts:
-        if not _unsloth_grpo_prompt_videos(prompt):
+        if not _unsloth_grpo_has_video_key(prompt):
             cleaned.append(prompt)
             continue
         messages = []
@@ -1294,6 +1307,18 @@ def _unsloth_grpo_clean_video_prompts(prompts):
             messages.append(message)
         cleaned.append(messages)
     return cleaned
+
+
+def _unsloth_grpo_prompt_key(value):
+    """Dedup key: equal for the repeated copies of a prompt, never shared by different media.
+    repr() truncates arrays, so in-memory frames are keyed by identity, not by content."""
+    if isinstance(value, dict):
+        return tuple((k, _unsloth_grpo_prompt_key(v)) for k, v in value.items())
+    if isinstance(value, (list, tuple)):
+        return tuple(_unsloth_grpo_prompt_key(v) for v in value)
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return ("id", id(value))
 
 
 def _unsloth_grpo_video_inputs(
@@ -1331,7 +1356,7 @@ def _unsloth_grpo_video_inputs(
         )
     unique, order = {}, []
     for prompt in prompts:
-        order.append(unique.setdefault(repr(prompt), len(unique)))
+        order.append(unique.setdefault(_unsloth_grpo_prompt_key(prompt), len(unique)))
     first = {}
     for i, u in enumerate(order):
         first.setdefault(u, i)
@@ -3144,7 +3169,9 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_split_vision
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_unsplit_vision))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_split_videos_by_sample))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_prompt_videos))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_has_video_key))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_clean_video_prompts))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_prompt_key))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_video_inputs))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_image_cell))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_reject_grpo_image_list))
