@@ -101,7 +101,7 @@ test("the setup snippet shows only while agent access is on", () => {
   assert.match(SECTION, /const snippet = enabled\s*\?/);
   assert.match(SECTION, /\{snippet \? \(/);
   assert.match(SECTION, /<CommandBlock command=\{snippet\.text\} \/>/);
-  assert.match(SECTION, /buildMcpSnippet\(agent, settings\.url, os\)/);
+  assert.match(SECTION, /buildMcpSnippet\(agent, settings\.url, os, apiKey\)/);
 });
 
 test("the agent picker keeps the default pill trigger and the shared list", () => {
@@ -148,5 +148,17 @@ test("the hints name the variable and the file", () => {
   assert.equal(
     en.settings.apiKeys.mcp.exportKeyHint,
     "Set {name} to an access token from this page before you start the agent.",
+  );
+});
+
+test("a key created on this page fills the snippet and is kept out of reload snapshots", () => {
+  assert.match(
+    API_TAB,
+    /\{isOwner \? <McpAccessSection apiKey=\{revealed\} \/> : null\}/,
+  );
+  assert.match(SECTION, /buildMcpSnippet\(agent, base, os, apiKey\)/);
+  assert.match(
+    SECTION,
+    /data-reload-snapshot-sensitive=\{apiKey \? "" : undefined\}\s*>\s*<CommandBlock command=\{snippet\.text\} \/>/,
   );
 });

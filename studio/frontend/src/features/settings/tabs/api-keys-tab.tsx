@@ -208,7 +208,7 @@ export function ApiKeysTab() {
 
       {isOwner ? <DecisionApiSection /> : null}
 
-      {isOwner ? <McpAccessSection /> : null}
+      {isOwner ? <McpAccessSection apiKey={revealed} /> : null}
 
       <Dialog
         open={revokeTarget !== null}

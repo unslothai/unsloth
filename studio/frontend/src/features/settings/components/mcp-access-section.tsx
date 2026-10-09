@@ -44,7 +44,12 @@ function errorMessage(error: unknown): string | null {
   return error instanceof Error ? error.message : null;
 }
 
-export function McpAccessSection(): ReactElement | null {
+export function McpAccessSection({
+  apiKey = null,
+}: {
+  /** a key created on this page a moment ago; it goes into the snippet in place of the variable */
+  apiKey?: string | null;
+}): ReactElement | null {
   const t = useT();
   const [settings, setSettings] = useState<McpAccessSettings | null>(null);
   const [busy, setBusy] = useState(false);
@@ -147,8 +152,8 @@ export function McpAccessSection(): ReactElement | null {
       ? cloudflareUrl
       : (serverUrl ?? origin);
   const snippet = enabled
-    ? (buildMcpSnippet(agent, base, os) ??
-      buildMcpSnippet(agent, settings.url, os))
+    ? (buildMcpSnippet(agent, base, os, apiKey) ??
+      buildMcpSnippet(agent, settings.url, os, apiKey))
     : null;
   const agentDetails = detailsFor(agent);
 
@@ -243,7 +248,13 @@ export function McpAccessSection(): ReactElement | null {
                 </fieldset>
               ) : null}
 
-              <CommandBlock command={snippet.text} />
+              {/* A just-created key sits in the text, so keep it out of reload snapshots. */}
+              <div
+                className="min-w-0"
+                data-reload-snapshot-sensitive={apiKey ? "" : undefined}
+              >
+                <CommandBlock command={snippet.text} />
+              </div>
 
               {snippet.configPath ? (
                 <p className="text-xs leading-snug text-muted-foreground">
