@@ -79,7 +79,7 @@ def _rope_embedding_QK(
     batch_id = row_position // seqlen
     seq_index = row_position - batch_id * seqlen
     if LONG_INDEXING:
-        # Widen after the int32 div/mod: int64 everywhere costs ~2% at normal sizes.
+        # Widen after the int32 div/mod: 64-bit div/mod is slow at normal sizes.
         batch_id = batch_id.to(tl.int64)
         seq_index = seq_index.to(tl.int64)
         head_position = head_position.to(tl.int64)
