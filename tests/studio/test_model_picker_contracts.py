@@ -801,8 +801,8 @@ def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
     assert (
         '(typeof selection === "string" ? null : selection.loadId) || modelId' in runtime
     ), "loadPath must fall back to the id, so an unpinned pick is unchanged"
-    # Staged metadata, validate and load: all three read the copy that loads.
-    assert runtime.count("model_path: loadPath,") == 3
+    # Staged metadata, validate, the engine-switch revalidate and load all read the copy that loads.
+    assert runtime.count("model_path: loadPath,") == 4
     assert "model_path: modelId," not in runtime
     # A rollback reads the approval under the snapshot path, so store it under both keys.
     assert "rememberApprovedRemoteCode(loadPath, approvedRemoteCodeFingerprint);" in runtime

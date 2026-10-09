@@ -16839,6 +16839,96 @@ def _vllm_engine_hint(engine: Optional[str]) -> str:
         return ""
 
 
+# Quantizations the Default engine cannot run, with the packages that would let it (Studio ships none).
+_MANAGED_ENGINE_QUANTIZATIONS = {
+    "compressed-tensors": (),
+    "awq": ("gptqmodel", "awq"),
+    "gptq": ("gptqmodel", "auto_gptq"),
+}
+_OFFERED_ENGINES = ("vllm", "sglang")
+
+
+def _managed_engine_offer(
+    metadata, *, engine, is_gguf, is_lora, is_audio, supported
+) -> Optional[dict]:
+    """The engines to offer for a checkpoint the Default engine cannot run, or None.
+
+    ``supported(engine, quant_method)`` is asked last, so the GPU probe only runs for these
+    checkpoints. GGUF, adapters and audio models are refused by the optional engines."""
+    if (
+        engine not in (None, "auto")
+        or is_gguf
+        or is_lora
+        or is_audio
+        or not isinstance(metadata, dict)
+    ):
+        return None
+    text_config = metadata.get("text_config")
+    quant = metadata.get("quantization_config") or (
+        text_config.get("quantization_config") if isinstance(text_config, dict) else None
+    )
+    method = quant.get("quant_method") if isinstance(quant, dict) else None
+    if not isinstance(method, str):
+        return None
+    method = method.strip().lower()
+    if method not in _MANAGED_ENGINE_QUANTIZATIONS:
+        return None
+    import importlib.util
+
+    for module in _MANAGED_ENGINE_QUANTIZATIONS[method]:
+        try:
+            if importlib.util.find_spec(module) is not None:
+                return None
+        except (ImportError, ValueError):
+            pass
+    engines = [name for name in _OFFERED_ENGINES if supported(name, method)]
+    return {"quantization": method, "engines": engines} if engines else None
+
+
+def _managed_engine_offer_for(config, hf_token) -> Optional[dict]:
+    """``_managed_engine_offer`` from the checkpoint's own config.json; None on any failure."""
+    try:
+        if config.is_local:
+            path = Path(config.path) / "config.json"
+        else:
+            from huggingface_hub import hf_hub_download, try_to_load_from_cache
+
+            # Resolving the model already cached config.json; the Hub round trip costs ~45 ms per pick.
+            cached = try_to_load_from_cache(config.identifier, "config.json")
+            path = Path(
+                cached
+                if isinstance(cached, str)
+                else hf_hub_download(config.identifier, "config.json", token = hf_token)
+            )
+        metadata = json.loads(path.read_text(encoding = "utf-8"))
+        from core.inference.engine_install import _driver_rows, support_reason
+
+        def supported(name, method):
+            if support_reason(name) is not None:
+                return False
+            if name != "sglang" or method != "compressed-tensors":
+                return True
+            # SGLang 0.5.20's compressed-tensors NVFP4 needs SM 10.0; vLLM falls back to Marlin from 7.5.
+            try:
+                return any(
+                    float(row[1]) >= 10.0 for row in _driver_rows(None) or () if len(row) == 2
+                )
+            except ValueError:
+                return False
+
+        return _managed_engine_offer(
+            metadata,
+            engine = "auto",
+            is_gguf = getattr(config, "is_gguf", False),
+            is_lora = getattr(config, "is_lora", False),
+            is_audio = getattr(config, "is_audio", False),
+            supported = supported,
+        )
+    except Exception as exc:
+        logger.debug("Managed engine offer check failed for '%s': %s", config.identifier, exc)
+        return None
+
+
 def _diagnosis_text(msg: str) -> str:
     """``msg`` up to the startup-diagnostics block, which is not ours to read.
 
@@ -20122,6 +20212,16 @@ async def validate_model(
             except Exception as e:
                 logger.debug("Header probe failed for %s: %s", model_log_label, e)
 
+        managed_engine_offer = None
+        if request.engine == "auto" and not is_gguf:
+            managed_engine_offer = await asyncio.to_thread(
+                _offline_guarded,
+                (model_identifier, config.identifier, getattr(config, "base_model", None)),
+                _managed_engine_offer_for,
+                config,
+                request.hf_token,
+            )
+
         return restore_inventory_handles(
             ValidateModelResponse(
                 valid = True,
@@ -20155,6 +20255,7 @@ async def validate_model(
                 requires_transformers_upgrade = transformers_upgrade is not None,
                 transformers_upgrade = transformers_upgrade,
                 mlx_loads_base_model = await asyncio.to_thread(_mlx_base_for_config, config),
+                managed_engine_offer = managed_engine_offer,
             )
         )
 
