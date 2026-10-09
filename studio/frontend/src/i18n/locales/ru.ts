@@ -3951,6 +3951,7 @@ export const ru = {
       chatAboutThis: "Обсудить в чате",
       chatWithModel: "Чат с этой моделью",
       addToFavorites: "Добавить в избранное",
+      regenerateTitle: "Создать название заново",
       removeFromFavorites: "Удалить из избранного",
       download: "Скачать",
       addToFolder: "Добавить в папку",

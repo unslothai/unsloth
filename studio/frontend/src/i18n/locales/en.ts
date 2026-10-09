@@ -3991,6 +3991,7 @@ export const en = {
       chatAboutThis: "Chat about this",
       chatWithModel: "Chat with this model",
       addToFavorites: "Add to Favorites",
+      regenerateTitle: "Regenerate title",
       removeFromFavorites: "Remove from Favorites",
       download: "Download",
       addToFolder: "Add to folder",

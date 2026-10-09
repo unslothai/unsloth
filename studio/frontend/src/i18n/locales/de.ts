@@ -3996,6 +3996,7 @@ export const de = {
       chatAboutThis: "Darüber chatten",
       chatWithModel: "Mit diesem Modell chatten",
       addToFavorites: "Zu Favoriten hinzufügen",
+      regenerateTitle: "Titel neu generieren",
       removeFromFavorites: "Aus Favoriten entfernen",
       download: "Herunterladen",
       addToFolder: "Zu Ordner hinzufügen",

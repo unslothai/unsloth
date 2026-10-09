@@ -3932,6 +3932,7 @@ export const hi = {
       chatAboutThis: "इसके बारे में चैट करें",
       chatWithModel: "इस मॉडल से चैट करें",
       addToFavorites: "पसंदीदा में जोड़ें",
+      regenerateTitle: "शीर्षक फिर से बनाएं",
       removeFromFavorites: "पसंदीदा से हटाएँ",
       download: "डाउनलोड करें",
       addToFolder: "फ़ोल्डर में जोड़ें",

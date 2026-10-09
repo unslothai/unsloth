@@ -382,9 +382,53 @@ function titleMaxTokens(connection: ResolvedExternalConnection): number {
 const TITLE_SYSTEM_PROMPT =
   "Write 1 concise chat title summarizing the conversation topic, not the user's exact wording. Use the assistant reply as context when provided. Rules: 2-6 words, no quotes, no punctuation, ASCII only, do not echo input. Output title only.";
 
+const TITLE_REFRESH_SYSTEM_PROMPT =
+  "Write 1 concise chat title for what this conversation is about now. The excerpt holds its latest messages, oldest first; weight the newest most. Rules: 2-6 words, no quotes, no punctuation, ASCII only, do not echo input. Output title only.";
+
+// The excerpt is all a refresh prefills, so it stays a few hundred tokens however long the chat is.
+const REFRESH_MESSAGE_CHARS = 300;
+const REFRESH_EXCERPT_CHARS = 1200;
+
+function textPartsOf(content: MessageRecord["content"]): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((part) => (part?.type === "text" ? part.text : ""))
+    .join("");
+}
+
+/** The newest user and assistant turns that fit the budget, oldest first; text parts only. */
+export function titleRefreshExcerpt(messages: readonly MessageRecord[]): string {
+  const lines: string[] = [];
+  let used = 0;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (message.role !== "user" && message.role !== "assistant") continue;
+    const text = dropLoneSurrogates(textPartsOf(message.content))
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!text) continue;
+    const label = message.role === "user" ? "User: " : "Assistant: ";
+    const room = Math.min(REFRESH_MESSAGE_CHARS, REFRESH_EXCERPT_CHARS - used - label.length);
+    if (room <= 0) break;
+    const line = label + cutToUnits(text, room).trimEnd();
+    lines.push(line);
+    used += line.length + 1;
+  }
+  return lines.reverse().join("\n");
+}
+
+export function buildTitleRefreshRequest(
+  checkpoint: string,
+  excerpt: string,
+): Promise<OpenAIChatCompletionsRequest | null> {
+  return buildTitleRequest(checkpoint, excerpt, TITLE_REFRESH_SYSTEM_PROMPT);
+}
+
 export async function buildTitleRequest(
   checkpoint: string,
   prompt: string,
+  systemPrompt: string = TITLE_SYSTEM_PROMPT,
 ): Promise<OpenAIChatCompletionsRequest | null> {
   const routing = resolveExternalRouting(checkpoint);
   if (routing.kind === "unavailable") return null;
@@ -416,7 +460,7 @@ export async function buildTitleRequest(
     // Else the server's tools-on default adds tool schemas.
     enable_tools: false,
     messages: [
-      { role: "system", content: TITLE_SYSTEM_PROMPT },
+      { role: "system", content: systemPrompt },
       { role: "user", content: prompt },
     ],
     ...(routing.kind === "external"

@@ -3829,6 +3829,7 @@ export const zhCN = {
       chatAboutThis: "就此聊天",
       chatWithModel: "与此模型聊天",
       addToFavorites: "加入收藏",
+      regenerateTitle: "重新生成标题",
       removeFromFavorites: "取消收藏",
       download: "下载",
       addToFolder: "添加到文件夹",

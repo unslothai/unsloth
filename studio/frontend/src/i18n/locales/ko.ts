@@ -3915,6 +3915,7 @@ export const ko = {
       chatAboutThis: "이 파일로 채팅",
       chatWithModel: "이 모델과 채팅",
       addToFavorites: "즐겨찾기에 추가",
+      regenerateTitle: "제목 다시 생성",
       removeFromFavorites: "즐겨찾기에서 제거",
       download: "다운로드",
       addToFolder: "폴더에 추가",

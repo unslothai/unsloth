@@ -4007,6 +4007,7 @@ export const fr = {
       chatAboutThis: "Discuter de ce fichier",
       chatWithModel: "Discuter avec ce modèle",
       addToFavorites: "Ajouter aux favoris",
+      regenerateTitle: "Régénérer le titre",
       removeFromFavorites: "Retirer des favoris",
       download: "Télécharger",
       addToFolder: "Ajouter à un dossier",

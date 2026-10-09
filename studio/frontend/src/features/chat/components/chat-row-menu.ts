@@ -13,9 +13,15 @@ import {
 } from "../utils/conversation-markdown";
 import { allRecordedSandboxSessionIds } from "../utils/recorded-sandbox-session";
 import { liveThreadBranch } from "../utils/live-thread-head";
-import { forkChatThread } from "../api/chat-api";
-import { settleThreadScopedSettingsForCopy } from "../stores/chat-runtime-store";
-import type { SidebarItem } from "../hooks/use-chat-sidebar-items";
+import { forkChatThread, streamChatCompletions } from "../api/chat-api";
+import {
+  settleThreadScopedSettingsForCopy,
+  useChatRuntimeStore,
+} from "../stores/chat-runtime-store";
+import {
+  renameChatItem,
+  type SidebarItem,
+} from "../hooks/use-chat-sidebar-items";
 import {
   exportConversationCsv,
   exportConversationMarkdown,
@@ -23,7 +29,17 @@ import {
   exportConversationRawJsonl,
   exportConversationShareGPT,
 } from "../prompt-storage/prompt-storage-dialog";
-import { listStoredChatMessages } from "../utils/chat-history-storage";
+import {
+  getStoredChatThread,
+  listStoredChatMessages,
+} from "../utils/chat-history-storage";
+import { savedBranchHead } from "../utils/branch-head";
+import { orderByParentChain } from "../utils/message-order";
+import {
+  buildTitleRefreshRequest,
+  titleFromStream,
+  titleRefreshExcerpt,
+} from "../utils/chat-title";
 
 export type ConversationExportFormat =
   | "raw-jsonl"
@@ -108,6 +124,64 @@ function forkRefused(): Error {
     new Error("This chat is still generating. Fork it once it finishes."),
     { unslothForkRefused: true },
   );
+}
+
+export type RegenerateTitleOutcome =
+  | "renamed"
+  | "unchanged"
+  | "no-model"
+  | "empty"
+  | "busy"
+  | "failed";
+
+const regeneratingTitles = new Set<string>();
+const REGENERATE_TITLE_TIMEOUT_MS = 60_000;
+
+/**
+ * Re-titles a chat from its latest turns with the model the user has selected, never the one that
+ * answered: an idle local model would be reloaded for a few words. A comparison's panes share their
+ * user turns and title, so one pane is read.
+ */
+export async function regenerateChatTitle(
+  item: SidebarItem,
+): Promise<RegenerateTitleOutcome> {
+  const { params, modelLoading } = useChatRuntimeStore.getState();
+  if (!params.checkpoint || modelLoading) return "no-model";
+  if (regeneratingTitles.has(item.id)) return "busy";
+  regeneratingTitles.add(item.id);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REGENERATE_TITLE_TIMEOUT_MS);
+  try {
+    const threadId = getSidebarItemThreadIds(item)[0];
+    const liveBranch = liveThreadBranch(threadId);
+    const raw = await listStoredChatMessages(threadId);
+    // The branch on screen, else the one reopening the chat shows, as the exports read it.
+    const storedIds = new Set(raw.map((m) => m.id));
+    const headId = liveBranch?.length
+      ? ([...liveBranch].reverse().find((id) => storedIds.has(id)) ?? null)
+      : savedBranchHead(threadId, raw);
+    const branch = raw.some((m) => m.parentId != null)
+      ? orderByParentChain(raw, { includeSiblings: false, headId })
+      : raw;
+    const excerpt = titleRefreshExcerpt(branch);
+    if (!excerpt) return "empty";
+    const request = await buildTitleRefreshRequest(params.checkpoint, excerpt);
+    if (!request) return "no-model";
+    const title = await titleFromStream(
+      streamChatCompletions(request, controller.signal),
+    );
+    if (!title) return "failed";
+    // A rename made while the model answered wins.
+    const current = (await getStoredChatThread(threadId))?.title ?? item.title;
+    if (current !== item.title || title === current) return "unchanged";
+    await renameChatItem(item, title);
+    return "renamed";
+  } catch {
+    return "failed";
+  } finally {
+    clearTimeout(timer);
+    regeneratingTitles.delete(item.id);
+  }
 }
 
 /** The sandbox sessions this chat's stored tool results name, if any. */

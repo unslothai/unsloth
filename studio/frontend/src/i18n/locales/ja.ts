@@ -3872,6 +3872,7 @@ export const ja = {
       chatAboutThis: "これについてチャット",
       chatWithModel: "このモデルとチャット",
       addToFavorites: "お気に入りに追加",
+      regenerateTitle: "タイトルを再生成",
       removeFromFavorites: "お気に入りから削除",
       download: "ダウンロード",
       addToFolder: "フォルダに追加",
