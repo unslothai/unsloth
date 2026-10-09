@@ -214,7 +214,6 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.apiKeys.description",
     "settings.apiKeys.accessTokens",
     "settings.apiKeys.decisionApi.title",
-    "settings.apiKeys.mcp.title",
   ],
   // The two cards label themselves in English in every locale, so keys naming them
   // would never match their own anchor. The header carries both entries instead.
@@ -378,13 +377,11 @@ const HUGGING_FACE_ONLY_ENTRIES: ReadonlySet<TranslationKey> = new Set([
   "settings.general.hub.datasetsServer",
 ]);
 
-// Rows of a tab every account sees that render only for the owner (the OS sandbox
-// sections, agent access on the API tab).
+// Rows of a tab every account sees that render only for the owner (the OS sandbox sections).
 const OWNER_ONLY_ENTRIES: ReadonlySet<TranslationKey> = new Set([
   "settings.sandbox.toolsSection",
   "settings.sandbox.python",
   "settings.sandbox.terminal",
-  "settings.apiKeys.mcp.title",
 ]);
 
 export function renderedSearchEntries(
@@ -430,6 +427,4 @@ export const SETTINGS_SEARCH_KEYWORDS: Partial<
   "settings.chat.tools.foldIntoThinking": "settings.chat.visibilityKeywords",
   "settings.chat.autoScroll": "settings.chat.autoScrollKeywords",
   "settings.chat.scrollToBottomButton": "settings.chat.scrollToBottomButtonKeywords",
-  // People search for the protocol or the agent they use, neither of which is in the title.
-  "settings.apiKeys.mcp.title": "settings.apiKeys.mcp.keywords",
 };

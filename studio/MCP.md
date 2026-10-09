@@ -76,12 +76,8 @@ your API key, so it sees what that key may see and nothing more.
 
 ### Turn it on
 
-The server is off by default. While it is off, `/mcp/` answers 404.
-
-- In Unsloth Studio, open **Settings → API** and turn on **Agent access (MCP)**. Only
-  the owner can change it, and only from a signed-in Unsloth Studio session.
-- Or start Unsloth Studio with `UNSLOTH_STUDIO_ENABLE_MCP=1`. The switch then shows as
-  on and cannot be turned off in Settings.
+The server is off by default. While it is off, `/mcp/` answers 404. Start Unsloth
+Studio with `UNSLOTH_STUDIO_ENABLE_MCP=1` to turn it on.
 
 The endpoint is `http://127.0.0.1:8888/mcp/` on the default port. Always use
 the trailing slash. Use your own address and port when they differ, for example
@@ -134,7 +130,6 @@ The tools changed:
 
 ### Set up an agent
 
-Unsloth Studio's **Settings → API** page builds these for you, with your real address.
 Each one reads the key from the `UNSLOTH_API_KEY` environment variable, so set
 it before you start the agent. Replace `http://127.0.0.1:8888` with your own
 address.
