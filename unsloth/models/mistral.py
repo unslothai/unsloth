@@ -387,6 +387,7 @@ def MistralForCausalLM_fast_forward(
     loss = None
     # Same answer the fused branch above reads, so the two branches cannot drift apart.
     logit_softcapping, logit_scaling = resolve_logit_scaling(self.config)
+    logits = apply_logit_transforms(logits, logit_softcapping, logit_scaling)
 
     if labels is not None:
         shift_logits = logits
@@ -403,11 +404,8 @@ def MistralForCausalLM_fast_forward(
         loss = fast_cross_entropy_loss(
             logits = shift_logits,
             labels = shift_labels,
-            logit_softcapping = logit_softcapping,
-            logit_scaling = logit_scaling,
             n_items = n_items,
         )
-    logits = apply_logit_transforms(logits, logit_softcapping, logit_scaling)
 
     if not return_dict:
         output = (logits,) + outputs[1:]

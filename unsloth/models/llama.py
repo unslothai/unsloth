@@ -1512,8 +1512,8 @@ def resolve_logit_scaling(config):
 
 
 def apply_logit_transforms(logits, logit_softcapping, logit_scaling):
-    """Scale, then soft cap, the order the kernels and the reference both use. Only for
-    branches that return the logits; the loss paths let the kernel apply them."""
+    """Scale, then soft cap, the order the kernels and the reference both use. When
+    logits are returned, loss paths consume this transformed tensor directly."""
     if logit_scaling != 0:
         if logits.requires_grad:
             logits = logit_scaling * logits
@@ -1701,6 +1701,7 @@ def CausalLM_fast_forward(fast_forward_inference):
         loss = None
         # Same answer the fused branch above reads, so the two branches cannot drift apart.
         logit_softcapping, logit_scaling = resolve_logit_scaling(self.config)
+        logits = apply_logit_transforms(logits, logit_softcapping, logit_scaling)
 
         if labels is not None:
             shift_logits = logits
@@ -1717,11 +1718,8 @@ def CausalLM_fast_forward(fast_forward_inference):
             loss = fast_cross_entropy_loss(
                 logits = shift_logits,
                 labels = shift_labels,
-                logit_softcapping = logit_softcapping,
-                logit_scaling = logit_scaling,
                 n_items = n_items,
             )
-        logits = apply_logit_transforms(logits, logit_softcapping, logit_scaling)
 
         if not return_dict:
             output = (logits,) + outputs[1:]
