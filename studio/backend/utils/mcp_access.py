@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Installation-wide switch for agent access to Studio over MCP (``/mcp``). Off by default; the owner turns it on from Settings, and ``UNSLOTH_STUDIO_ENABLE_MCP=1`` forces it on. The value is read as the owner, so a managed account's API key sees the owner's switch and not its own settings database, and an unreadable setting counts as off."""
+"""Installation-wide switch for agent access to Unsloth Studio over MCP (``/mcp``). Off by default; the owner turns it on from Settings, and ``UNSLOTH_STUDIO_ENABLE_MCP=1`` forces it on. The value is read as the owner, so a managed account's API key sees the owner's switch and not its own settings database, and an unreadable setting counts as off."""
 
 from __future__ import annotations
 

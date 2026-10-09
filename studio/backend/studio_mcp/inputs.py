@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Media an agent hands to a tool: by Studio id, as inline data, or as a file path. A path makes the server read a file on the Studio computer, so it is honoured only when the agent itself runs there (a direct loopback /mcp request); anyone else gets told to send the bytes or an id, and the file is never touched."""
+"""Media an agent hands to a tool: by Unsloth Studio id, as inline data, or as a file path. A path makes the server read a file on the Unsloth Studio computer, so it is honoured only when the agent itself runs there (a direct loopback /mcp request); anyone else gets told to send the bytes or an id, and the file is never touched."""
 
 from __future__ import annotations
 
@@ -20,8 +20,8 @@ from studio_mcp.errors import raise_for_route
 from studio_mcp.forward import forward
 
 PATH_REMOTE = (
-    "File paths work only when the agent runs on the Studio computer. "
-    "Send data_url/data_base64 or a Studio id instead."
+    "File paths work only when the agent runs on the Unsloth Studio computer. "
+    "Send data_url/data_base64 or an Unsloth Studio id instead."
 )
 # The image routes take at most 32 MiB of base64 per image.
 MAX_IMAGE_BYTES = 32 * 1024 * 1024 * 3 // 4
@@ -30,7 +30,7 @@ _DATA_URL = re.compile(r"^data:(image/(?:png|jpeg|webp));base64,(.*)$", re.DOTAL
 
 
 class ImageInput(BaseModel):
-    """Exactly one of ``path`` (a file on the Studio computer), ``data_url`` (data:image/png|jpeg|webp;base64,...) or ``gallery_id`` (an image in the Studio Images gallery). Inline data rides in the MCP request, which is limited to 4 MiB."""
+    """Exactly one of ``path`` (a file on the Unsloth Studio computer), ``data_url`` (data:image/png|jpeg|webp;base64,...) or ``gallery_id`` (an image in the Unsloth Studio Images gallery). Inline data rides in the MCP request, which is limited to 4 MiB."""
 
     model_config = ConfigDict(extra = "forbid")
 
@@ -126,7 +126,7 @@ _AUDIO_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
 
 class AudioInput(BaseModel):
-    """Exactly one of ``path`` (a file on the Studio computer), ``data_base64`` with a ``filename``, or a Studio id: ``input_id`` (an uploaded clip), ``clip_id`` (an Audio history clip) or ``voice_id`` (a saved voice). Inline data rides in the MCP request, which is limited to 4 MiB."""
+    """Exactly one of ``path`` (a file on the Unsloth Studio computer), ``data_base64`` with a ``filename``, or an Unsloth Studio id: ``input_id`` (an uploaded clip), ``clip_id`` (an Audio history clip) or ``voice_id`` (a saved voice). Inline data rides in the MCP request, which is limited to 4 MiB."""
 
     model_config = ConfigDict(extra = "forbid")
 
@@ -148,7 +148,7 @@ class AudioInput(BaseModel):
             raise ValueError("filename goes with data_base64, and data_base64 needs one.")
         for value in (self.input_id, self.clip_id, self.voice_id):
             if value is not None and not _AUDIO_ID.match(value):
-                raise ValueError("Studio audio ids are letters, digits, - and _.")
+                raise ValueError("Unsloth Studio audio ids are letters, digits, - and _.")
         return self
 
     @property
@@ -164,7 +164,7 @@ def audio_bytes(caller: Caller, audio: AudioInput) -> tuple[bytes, str]:
 
 
 async def upload_audio(caller: Caller, data: bytes, name: str) -> str:
-    """Store audio with Studio and return its input id. Raw bytes, so the upload route sees a Content-Length; a re-upload of the same audio answers 200 with the existing id."""
+    """Store audio with Unsloth Studio and return its input id. Raw bytes, so the upload route sees a Content-Length; a re-upload of the same audio answers 200 with the existing id."""
     if len(data) > MAX_AUDIO_BYTES:
         raise ToolError("Audio is larger than 200 MiB")
     response = await forward(
@@ -172,12 +172,12 @@ async def upload_audio(caller: Caller, data: bytes, name: str) -> str:
     )
     record = raise_for_route(response)
     if not isinstance(record, dict) or not isinstance(record.get("id"), str):
-        raise ToolError("Studio did not store the audio")
+        raise ToolError("Unsloth Studio did not store the audio")
     return record["id"]
 
 
 async def audio_ref(caller: Caller, audio: AudioInput) -> dict[str, str]:
-    """The ``{input_id|clip_id|voice_id}`` reference a Studio audio route takes, uploading first when needed."""
+    """The ``{input_id|clip_id|voice_id}`` reference an Unsloth Studio audio route takes, uploading first when needed."""
     if audio.is_upload:
         data, name = audio_bytes(caller, audio)
         return {"input_id": await upload_audio(caller, data, name)}

@@ -30,12 +30,12 @@ TRAINING_ROUTES = {"llm": "/api/train/start", "diffusion": "/api/train/diffusion
 async def start_training(
     config: dict[str, Any], kind: Literal["llm", "diffusion"] = "llm"
 ) -> TrainingStarted:
-    """Start a training job and return at once; follow it with studio_status. kind "llm": ``config`` is a TrainingStartRequest, the same one the Studio UI sends (list_models with ``model`` gives its training defaults; hf_token for a gated model goes in the config). kind "diffusion": an image LoRA, where ``config`` is a DiffusionTrainingStartRequest and ``data_dir`` names an image dataset already in Studio (there is no upload tool). Studio refuses while another training run or an API inference request is active."""
+    """Start a training job and return at once; follow it with studio_status. kind "llm": ``config`` is a TrainingStartRequest, the same one the Unsloth Studio UI sends (list_models with ``model`` gives its training defaults; hf_token for a gated model goes in the config). kind "diffusion": an image LoRA, where ``config`` is a DiffusionTrainingStartRequest and ``data_dir`` names an image dataset already in Unsloth Studio (there is no upload tool). Unsloth Studio refuses while another training run or an API inference request is active."""
     payload = await route_json("POST", TRAINING_ROUTES[kind], json_body = config)
     # The route refuses some starts with a 200 and status "error".
     raise_for_status_field(payload)
     if not isinstance(payload, dict) or not opt_text(payload.get("job_id")):
-        raise ToolError("Studio did not start the training job")
+        raise ToolError("Unsloth Studio did not start the training job")
     return TrainingStarted(
         job_id = payload["job_id"],
         status = opt_text(payload.get("status")) or "queued",

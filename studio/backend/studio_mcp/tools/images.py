@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""``generate_image``: images saved to the Studio gallery and returned inline when small."""
+"""``generate_image``: images saved to the Unsloth Studio gallery and returned inline when small."""
 
 from __future__ import annotations
 
@@ -81,7 +81,7 @@ async def run_generation(
     payload = await loading.with_progress(ctx, generate(), _progress_poll(caller))
     rows = payload.get("images") if isinstance(payload, dict) else None
     if not isinstance(rows, list) or not rows:
-        raise ToolError("Studio returned no images")
+        raise ToolError("Unsloth Studio returned no images")
     items, contents = [], []
     for row in rows:
         if not isinstance(row, dict) or not opt_text(row.get("id")):
@@ -143,7 +143,7 @@ async def generate_image(
     allow_oversized: bool = False,
     ctx: Optional[Context] = None,
 ) -> ToolResult:
-    """Generate or edit images with the image model loaded in Studio (load_model(kind="image") first). Each image is saved to the Studio Images gallery and returned with its id and URL; images up to 1.5 MiB come back inline, larger ones as a 1024 px preview plus a link. Width and height are pixels, multiples of 16. With ``init_image`` it is img2img (``strength`` 0 to 1 sets how much is redrawn); add ``mask_image`` to inpaint (white is repainted); ``upscale`` 1 to 4 enlarges ``init_image``; ``workflow`` "edit" follows the prompt as an instruction over init_image and ``reference_images``, "reference" draws a new image guided by them, "outpaint" fills a padded init_image under its mask. A refusal on memory grounds can be overridden with ``allow_oversized``. Progress is reported while it runs."""
+    """Generate or edit images with the image model loaded in Unsloth Studio (load_model(kind="image") first). Each image is saved to the Unsloth Studio Images gallery and returned with its id and URL; images up to 1.5 MiB come back inline, larger ones as a 1024 px preview plus a link. Width and height are pixels, multiples of 16. With ``init_image`` it is img2img (``strength`` 0 to 1 sets how much is redrawn); add ``mask_image`` to inpaint (white is repainted); ``upscale`` 1 to 4 enlarges ``init_image``; ``workflow`` "edit" follows the prompt as an instruction over init_image and ``reference_images``, "reference" draws a new image guided by them, "outpaint" fills a padded init_image under its mask. A refusal on memory grounds can be overridden with ``allow_oversized``. Progress is reported while it runs."""
     if upscale is not None and init_image is None:
         raise ToolError("upscale needs init_image: it enlarges that image.")
     caller = current_caller()

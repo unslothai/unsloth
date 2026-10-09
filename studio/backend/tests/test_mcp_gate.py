@@ -309,7 +309,7 @@ def test_a_workflow_key_is_refused():
     with TestClient(served(probe_mcp())) as http:
         response, _result = call_tool(http, "whoami", bearer(raw_key))
     assert response.status_code == 401
-    assert response.json() == {"detail": "Workflow keys cannot use Studio MCP"}
+    assert response.json() == {"detail": "Workflow keys cannot use Unsloth Studio MCP"}
 
 
 def test_a_managed_account_key_carries_its_account():
@@ -530,7 +530,7 @@ def test_the_static_token_is_retired(monkeypatch):
         )
     assert response.status_code == 401
     assert response.json() == {
-        "detail": "The MCP static token is no longer supported; use a Studio API key (sk-unsloth-…)"
+        "detail": "The MCP static token is no longer supported; use an Unsloth Studio API key (sk-unsloth-…)"
     }
     assert response.headers["www-authenticate"] == "Bearer"
 
@@ -614,7 +614,7 @@ def test_origin_allowlist(key_spy, base_url, origin, allowed):
         assert response.status_code == 200, response.text
     else:
         assert response.status_code == 403
-        assert response.json() == {"detail": "Origin not allowed for Studio MCP"}
+        assert response.json() == {"detail": "Origin not allowed for Unsloth Studio MCP"}
         assert key_spy == []
 
 

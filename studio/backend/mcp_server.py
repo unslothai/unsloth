@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Studio's MCP server at /mcp: curated tools that reach Studio through its own routes as the agent's API key. Off until the owner turns it on, because several tools start GPU work or write files."""
+"""Unsloth Studio's MCP server at /mcp: curated tools that reach Unsloth Studio through its own routes as the agent's API key. Off until the owner turns it on, because several tools start GPU work or write files."""
 
 from __future__ import annotations
 
@@ -28,9 +28,9 @@ INSTRUCTIONS = (
     "generate_video. "
     "Long work returns at once: start it, then poll get_job (video, recipe, export) or studio_status "
     "(training), and stop it with cancel. "
-    "File paths in inputs work only when you run on the Studio computer; otherwise send data or a "
-    "Studio id. "
-    "Generated images, audio and videos are saved to the Studio galleries and returned with their id "
+    "File paths in inputs work only when you run on the Unsloth Studio computer; otherwise send data or a "
+    "Unsloth Studio id. "
+    "Generated images, audio and videos are saved to the Unsloth Studio galleries and returned with their id "
     "and URL. "
     "Training, generation and exports use the GPU and can take minutes."
 )

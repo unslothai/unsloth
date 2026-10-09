@@ -79,7 +79,7 @@ def _is_literal_ip(host: str) -> bool:
 def mcp_origin_allowed(
     origin: str, *, request_scheme: str, request_netloc: str, app_state: Any
 ) -> bool:
-    """Whether a browser page at ``origin`` may call /mcp. "Origin equals Host" is not enough: a DNS-rebound page has both set to its own name, so a named host is trusted only when Studio itself published it (the tunnel, Tauri, UNSLOTH_CORS_ORIGINS)."""
+    """Whether a browser page at ``origin`` may call /mcp. "Origin equals Host" is not enough: a DNS-rebound page has both set to its own name, so a named host is trusted only when Unsloth Studio itself published it (the tunnel, Tauri, UNSLOTH_CORS_ORIGINS)."""
     if not origin or origin == "null":
         return False
     canon = origin_of(origin)

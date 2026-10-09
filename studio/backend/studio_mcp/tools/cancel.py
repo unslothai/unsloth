@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""``cancel``: stop Studio work by kind."""
+"""``cancel``: stop Unsloth Studio work by kind."""
 
 from __future__ import annotations
 
@@ -65,7 +65,7 @@ def _stopped(kind: str, answer: Any) -> bool:
 
 
 def _export_is_this_job(job: export_jobs.ExportJob, status: Any) -> bool:
-    """Studio has one export worker and no op ids: the running op is this job's only when its kind is the step the job is on."""
+    """Unsloth Studio has one export worker and no op ids: the running op is this job's only when its kind is the step the job is on."""
     if not isinstance(status, dict) or not status.get("is_export_active"):
         return False
     op = opt_text(status.get("active_op_kind")) or ""
@@ -81,7 +81,7 @@ async def cancel(
     id: Optional[str] = None,
     save: bool = True,
 ) -> CancelResult:
-    """Stop Studio work. "training" stops the LLM training run ``id`` (or the current one) at its next safe point, saving a checkpoint unless ``save`` is false. "training_start" withdraws a start request that has not begun. "diffusion_training" stops image LoRA training. "export" stops the running export and unloads its checkpoint; with ``id`` (an export_model job) only while that job's own step is running. "recipe" stops recipe job ``id``. "image" and "video" stop the generation in progress. "chat" stops the reply with cancel_id ``id``. "dataset_download" stops downloading the dataset ``id`` (its repo id). Audio runs cannot be cancelled. ``cancelled`` says whether this call stopped something."""
+    """Stop Unsloth Studio work. "training" stops the LLM training run ``id`` (or the current one) at its next safe point, saving a checkpoint unless ``save`` is false. "training_start" withdraws a start request that has not begun. "diffusion_training" stops image LoRA training. "export" stops the running export and unloads its checkpoint; with ``id`` (an export_model job) only while that job's own step is running. "recipe" stops recipe job ``id``. "image" and "video" stop the generation in progress. "chat" stops the reply with cancel_id ``id``. "dataset_download" stops downloading the dataset ``id`` (its repo id). Audio runs cannot be cancelled. ``cancelled`` says whether this call stopped something."""
     caller = current_caller()
     if kind in NEEDS_ID and not id:
         raise ToolError(f"cancel(kind={kind!r}) needs id: {NEEDS_ID[kind]}.")

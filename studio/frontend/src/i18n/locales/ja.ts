@@ -2817,9 +2817,9 @@ export const ja = {
       },
       mcp: {
         title: "エージェントアクセス (MCP)",
-        description: "Claude Code や Codex などのコーディングエージェントが MCP 経由で Studio を使えるようにします。エージェントはこのページのアクセストークンでサインインします。",
+        description: "Claude Code や Codex などのコーディングエージェントが MCP 経由で Unsloth Studio を使えるようにします。エージェントはこのページのアクセストークンでサインインします。",
         enable: "エージェントの接続を許可",
-        enableDescription: "Studio のアクセストークンを持つリクエストに /mcp/ を提供します。",
+        enableDescription: "Unsloth Studio のアクセストークンを持つリクエストに /mcp/ を提供します。",
         lockedByEnv: "{name} で設定されています。",
         loadError: "エージェントアクセスの設定を読み込めませんでした。",
         saveError: "エージェントアクセスの設定を保存できませんでした。",

@@ -34,5 +34,5 @@ def current_caller() -> Caller:
 
     caller = caller_from_scope(get_http_request().scope)
     if caller is None:
-        raise RuntimeError("Studio MCP tools need a caller admitted by the /mcp gate.")
+        raise RuntimeError("Unsloth Studio MCP tools need a caller admitted by the /mcp gate.")
     return caller

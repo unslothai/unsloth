@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Turn a forwarded route's failure into an MCP ToolError the agent can act on. Studio routes fail in several shapes (``{"detail"}`` on /api, the OpenAI envelope on /v1, gpu_busy three ways, a 200 that carries ``_deferred_error`` or ``status: "error"``, an NDJSON error line), and every message is scrubbed of host paths before it leaves."""
+"""Turn a forwarded route's failure into an MCP ToolError the agent can act on. Unsloth Studio routes fail in several shapes (``{"detail"}`` on /api, the OpenAI envelope on /v1, gpu_busy three ways, a 200 that carries ``_deferred_error`` or ``status: "error"``, an NDJSON error line), and every message is scrubbed of host paths before it leaves."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ MEMORY_REFUSAL = "memory-estimate"
 
 def tool_error(message: Any, hint: Optional[str] = None) -> ToolError:
     """A scrubbed ToolError. ``hint`` is the tool's own guidance and goes on after the scrub, which would otherwise read a route like /v1/models as a path and drop it."""
-    text = redact_paths_in_text(message).strip() or "Studio returned an error"
+    text = redact_paths_in_text(message).strip() or "Unsloth Studio returned an error"
     if len(text) > _MAX_MESSAGE_CHARS:
         text = text[:_MAX_MESSAGE_CHARS] + "…"
     return ToolError(f"{text} {hint}" if hint else text)

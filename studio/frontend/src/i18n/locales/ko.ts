@@ -2837,9 +2837,9 @@ export const ko = {
       },
       mcp: {
         title: "에이전트 액세스 (MCP)",
-        description: "Claude Code, Codex 같은 코딩 에이전트가 MCP로 Studio를 사용하게 합니다. 에이전트는 이 페이지의 액세스 토큰으로 로그인합니다.",
+        description: "Claude Code, Codex 같은 코딩 에이전트가 MCP로 Unsloth Studio를 사용하게 합니다. 에이전트는 이 페이지의 액세스 토큰으로 로그인합니다.",
         enable: "에이전트 연결 허용",
-        enableDescription: "Studio 액세스 토큰이 있는 요청에 /mcp/를 제공합니다.",
+        enableDescription: "Unsloth Studio 액세스 토큰이 있는 요청에 /mcp/를 제공합니다.",
         lockedByEnv: "{name}(으)로 설정됨.",
         loadError: "에이전트 액세스 설정을 불러오지 못했습니다.",
         saveError: "에이전트 액세스 설정을 저장하지 못했습니다.",

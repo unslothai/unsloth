@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The ASGI gate in front of the Studio MCP app. ``/mcp`` is always mounted, so the gate is what keeps it hidden: while the owner's switch is off every request gets the same 404 as an unknown path, before anything about the caller is read. Once on, a browser page from a foreign Origin is refused, and only a valid Studio API key gets through; keyless access, UI sessions and workflow keys never do, whatever the keyless scope."""
+"""The ASGI gate in front of the Unsloth Studio MCP app. ``/mcp`` is always mounted, so the gate is what keeps it hidden: while the owner's switch is off every request gets the same 404 as an unknown path, before anything about the caller is read. Once on, a browser page from a foreign Origin is refused, and only a valid Unsloth Studio API key gets through; keyless access, UI sessions and workflow keys never do, whatever the keyless scope."""
 
 from __future__ import annotations
 
@@ -23,17 +23,19 @@ MOUNT = "/mcp"
 HF_TOKEN_HEADER = b"x-unsloth-hf-token"
 HF_TOKEN_MAX_LENGTH = 512
 
-NEED_KEY = "Studio MCP needs a Studio API key (sk-unsloth-…). Create one in Settings > API."
+NEED_KEY = "Unsloth Studio MCP needs an Unsloth Studio API key (sk-unsloth-…). Create one in Settings > API."
 ONE_HEADER = "Send one Authorization header"
 INVALID_KEY = "Invalid or expired API key"
-WORKFLOW_KEY = "Workflow keys cannot use Studio MCP"
-RETIRED_TOKEN = "The MCP static token is no longer supported; use a Studio API key (sk-unsloth-…)"
+WORKFLOW_KEY = "Workflow keys cannot use Unsloth Studio MCP"
+RETIRED_TOKEN = (
+    "The MCP static token is no longer supported; use an Unsloth Studio API key (sk-unsloth-…)"
+)
 # The mcp SDK refuses bodies over 4 MiB from 1.29 on, as a bare 413 before any tool runs. Holding
 # every version to it here keeps the limit the same everywhere and says what to send instead.
 MAX_REQUEST_BYTES = 4 * 1024 * 1024
 TOO_LARGE = (
-    "Studio MCP requests are limited to 4 MiB. Send larger media as a Studio id "
-    "(gallery_id, input_id, clip_id or voice_id) or, from the Studio computer, as a file path."
+    "Unsloth Studio MCP requests are limited to 4 MiB. Send larger media as an Unsloth Studio id "
+    "(gallery_id, input_id, clip_id or voice_id) or, from the Unsloth Studio computer, as a file path."
 )
 
 
@@ -159,7 +161,7 @@ class StudioMcpGate:
                 request_netloc = outer.netloc,
                 app_state = getattr(scope.get("app"), "state", None),
             ):
-                await send_json(send, 403, {"detail": "Origin not allowed for Studio MCP"})
+                await send_json(send, 403, {"detail": "Origin not allowed for Unsloth Studio MCP"})
                 return
 
         authorization = [value for name, value in headers if name.lower() == b"authorization"]

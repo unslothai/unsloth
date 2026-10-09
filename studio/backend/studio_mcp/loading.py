@@ -91,7 +91,7 @@ async def load_llm(
         _llm_poll(caller, model),
     )
     if not isinstance(payload, dict):
-        raise ToolError("Studio did not confirm the load")
+        raise ToolError("Unsloth Studio did not confirm the load")
     evicted = payload.get("evicted")
     return LoadResult(
         kind = "llm",
@@ -248,7 +248,9 @@ async def load_media(
                 break
             idle += 1
             if idle >= _IDLE_POLLS:
-                raise ToolError(f"Studio stopped reporting the {kind} load without loading {model}")
+                raise ToolError(
+                    f"Unsloth Studio stopped reporting the {kind} load without loading {model}"
+                )
         else:
             idle = 0
             fraction = _media_fraction(progress)
@@ -259,7 +261,7 @@ async def load_media(
         await asyncio.sleep(POLL_INTERVAL_S)
     status = await route_json("GET", routes["status"], caller = caller)
     if not _resident_matches(status, model):
-        raise ToolError(f"Studio did not finish loading {model} as the {kind} model")
+        raise ToolError(f"Unsloth Studio did not finish loading {model} as the {kind} model")
     return LoadResult(
         kind = kind,
         model = opt_text(status.get("display_repo_id")) or opt_text(status.get("repo_id")) or model,
@@ -333,7 +335,7 @@ async def download_stt(
             return
         if model in _strings(state.get("downloaded_models") if isinstance(state, dict) else None):
             return
-        raise ToolError(f"Studio stopped downloading {model} before it finished")
+        raise ToolError(f"Unsloth Studio stopped downloading {model} before it finished")
 
 
 async def load_stt(
@@ -358,7 +360,9 @@ async def load_stt(
     )
     resident = opt_text(loaded.get("loaded_model")) if isinstance(loaded, dict) else None
     if resident is None:
-        raise ToolError(f"Studio did not keep {model} loaded; another load may have replaced it")
+        raise ToolError(
+            f"Unsloth Studio did not keep {model} loaded; another load may have replaced it"
+        )
     return LoadResult(kind = "stt", model = resident)
 
 

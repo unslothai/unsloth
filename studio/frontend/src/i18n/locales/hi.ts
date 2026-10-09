@@ -2853,9 +2853,9 @@ export const hi = {
       },
       mcp: {
         title: "एजेंट एक्सेस (MCP)",
-        description: "Claude Code और Codex जैसे कोडिंग एजेंट को MCP के ज़रिए Studio इस्तेमाल करने दें। एजेंट इस पेज के एक्सेस टोकन से साइन इन करते हैं।",
+        description: "Claude Code और Codex जैसे कोडिंग एजेंट को MCP के ज़रिए Unsloth Studio इस्तेमाल करने दें। एजेंट इस पेज के एक्सेस टोकन से साइन इन करते हैं।",
         enable: "एजेंट कनेक्शन की अनुमति दें",
-        enableDescription: "Studio एक्सेस टोकन वाले अनुरोधों के लिए /mcp/ उपलब्ध कराता है।",
+        enableDescription: "Unsloth Studio एक्सेस टोकन वाले अनुरोधों के लिए /mcp/ उपलब्ध कराता है।",
         lockedByEnv: "{name} द्वारा सेट।",
         loadError: "एजेंट एक्सेस सेटिंग्स लोड नहीं हो सकीं।",
         saveError: "एजेंट एक्सेस सेटिंग सहेजी नहीं जा सकी।",

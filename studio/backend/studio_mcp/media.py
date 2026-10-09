@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""How generated media reaches the agent: inline when small, otherwise a link to the Studio gallery. Links are built from the address the agent used to reach /mcp, never from a forwarded answer, which only knows the in-process ``unsloth-mcp.invalid`` host."""
+"""How generated media reaches the agent: inline when small, otherwise a link to the Unsloth Studio gallery. Links are built from the address the agent used to reach /mcp, never from a forwarded answer, which only knows the in-process ``unsloth-mcp.invalid`` host."""
 
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ def resource_link(
 
 
 def _base(caller: Caller) -> str:
-    """The outer request's base, with the tunnel's scheme when it came through cloudflared, which reaches Studio over plain http."""
+    """The outer request's base, with the tunnel's scheme when it came through cloudflared, which reaches Unsloth Studio over plain http."""
     base = urlsplit(caller.public_base)
     tunnel = getattr(getattr(caller.studio_app, "state", None), "cloudflare_url", None)
     if isinstance(tunnel, str) and tunnel:
@@ -55,10 +55,10 @@ def _base(caller: Caller) -> str:
 
 
 def public_url(caller: Caller, path: str) -> str:
-    """An absolute Studio URL for a media route, from a path or from a URL a route built for itself."""
+    """An absolute Unsloth Studio URL for a media route, from a path or from a URL a route built for itself."""
     parts = urlsplit(path)
     if not parts.path.startswith(MEDIA_PREFIXES):
-        raise ToolError("Studio returned a media link this tool cannot share")
+        raise ToolError("Unsloth Studio returned a media link this tool cannot share")
     query = f"?{parts.query}" if parts.query else ""
     return f"{_base(caller)}{parts.path}{query}"
 

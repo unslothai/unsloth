@@ -19,17 +19,19 @@ from studio_mcp.outputs import ExportJobRef
 from studio_mcp.tools import WRITES, integer, route_json
 
 EXPORT_STATUS = "/api/export/status"
-RUNNING = "Another export is running. Studio exports one at a time, so try again when it ends."
+RUNNING = (
+    "Another export is running. Unsloth Studio exports one at a time, so try again when it ends."
+)
 
 
 def checked_save_directory(value: str) -> str:
-    """A folder under Studio's exports folder; the route alone would also take any path on the host."""
+    """A folder under Unsloth Studio's exports folder; the route alone would also take any path on the host."""
     text = value.strip()
     if not text:
         raise ToolError("save_directory must name a folder.")
     if text.startswith(("/", "\\", "~")) or re.match(r"^[A-Za-z]:", text):
         raise ToolError(
-            "save_directory must be relative to Studio's exports folder, not an absolute path."
+            "save_directory must be relative to Unsloth Studio's exports folder, not an absolute path."
         )
     if ".." in re.split(r"[\\/]", text):
         raise ToolError("save_directory must not contain '..'.")
@@ -86,7 +88,7 @@ async def export_model(
     max_seq_length: int = 2048,
     load_in_4bit: Optional[bool] = None,
 ) -> ExportJobRef:
-    """Export a trained checkpoint and return a job id at once; follow it with get_job(kind="export"). ``checkpoint`` is a name from list_training_runs(include_checkpoints=true): "<run folder>" or "<run folder>/checkpoint-N". ``format``: "gguf" (``quantization_method`` one or a list, e.g. Q4_K_M, Q8_0), "merged" (LoRA merged into 16-bit weights), "lora" (the adapter only) or "base". ``save_directory`` is a folder name under Studio's exports folder. ``push_to_hub`` uploads to ``repo_id`` and needs ``hf_token``. Leave ``load_in_4bit`` unset to let Studio choose. Studio exports one at a time, so this is refused while another export runs."""
+    """Export a trained checkpoint and return a job id at once; follow it with get_job(kind="export"). ``checkpoint`` is a name from list_training_runs(include_checkpoints=true): "<run folder>" or "<run folder>/checkpoint-N". ``format``: "gguf" (``quantization_method`` one or a list, e.g. Q4_K_M, Q8_0), "merged" (LoRA merged into 16-bit weights), "lora" (the adapter only) or "base". ``save_directory`` is a folder name under Unsloth Studio's exports folder. ``push_to_hub`` uploads to ``repo_id`` and needs ``hf_token``. Leave ``load_in_4bit`` unset to let Unsloth Studio choose. Unsloth Studio exports one at a time, so this is refused while another export runs."""
     caller = current_caller()
     save_directory = checked_save_directory(save_directory)
     # One export worker: a job queued behind another could not be told apart from it when cancelled.

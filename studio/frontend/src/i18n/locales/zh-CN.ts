@@ -2796,9 +2796,9 @@ export const zhCN = {
       },
       mcp: {
         title: "智能体访问 (MCP)",
-        description: "允许 Claude Code、Codex 等编程智能体通过 MCP 使用 Studio。智能体使用本页的访问 token 登录。",
+        description: "允许 Claude Code、Codex 等编程智能体通过 MCP 使用 Unsloth Studio。智能体使用本页的访问 token 登录。",
         enable: "允许智能体连接",
-        enableDescription: "为携带 Studio 访问 token 的请求提供 /mcp/。",
+        enableDescription: "为携带 Unsloth Studio 访问 token 的请求提供 /mcp/。",
         lockedByEnv: "由 {name} 设置。",
         loadError: "无法加载智能体访问设置。",
         saveError: "无法保存智能体访问设置。",

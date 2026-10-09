@@ -2919,9 +2919,9 @@ export const en = {
       },
       mcp: {
         title: "Agent access (MCP)",
-        description: "Let coding agents such as Claude Code and Codex use Studio over MCP. Agents sign in with an access token from this page.",
+        description: "Let coding agents such as Claude Code and Codex use Unsloth Studio over MCP. Agents sign in with an access token from this page.",
         enable: "Allow agent connections",
-        enableDescription: "Serves /mcp/ to requests that carry a Studio access token.",
+        enableDescription: "Serves /mcp/ to requests that carry an Unsloth Studio access token.",
         lockedByEnv: "Set by {name}.",
         loadError: "Couldn't load agent access settings.",
         saveError: "Couldn't save the agent access setting.",

@@ -67,7 +67,7 @@ async def generate_audio(
     max_tokens: Optional[int] = None,
     options: Optional[dict[str, Any]] = None,
 ) -> ToolResult:
-    """Run an Audio page workflow with the audio model loaded in Studio; clips are saved to Audio history and returned inline when small, else as links. clone: speak ``text`` in the voice of ``reference`` (a clip, or a saved voice as voice_id; ``reference_text`` is its transcript). speak: ``text`` in the loaded model's voice, or a saved voice via ``reference``. edit: change the words or delivery of ``source`` per ``edit``. convert: make ``source`` sound like ``target``. music: ``mode`` song or sfx from ``text`` (the style) and ``lyrics``; ``variations`` up to 4 share a group_id. separate: split ``source`` into stems. Audio inputs are a Studio id, inline base64 with a filename, or a path on the Studio computer."""
+    """Run an Audio page workflow with the audio model loaded in Unsloth Studio; clips are saved to Audio history and returned inline when small, else as links. clone: speak ``text`` in the voice of ``reference`` (a clip, or a saved voice as voice_id; ``reference_text`` is its transcript). speak: ``text`` in the loaded model's voice, or a saved voice via ``reference``. edit: change the words or delivery of ``source`` per ``edit``. convert: make ``source`` sound like ``target``. music: ``mode`` song or sfx from ``text`` (the style) and ``lyrics``; ``variations`` up to 4 share a group_id. separate: split ``source`` into stems. Audio inputs are an Unsloth Studio id, inline base64 with a filename, or a path on the Unsloth Studio computer."""
     caller = current_caller()
     inputs: dict[str, Any] = {}
     for key, audio in (
@@ -107,7 +107,7 @@ async def generate_audio(
     hints = {400: LOAD_AUDIO_HINT} if NOT_LOADED in response.text else None
     payload = raise_for_route(response, hints = hints)
     if not isinstance(payload, dict):
-        raise ToolError("Studio returned no audio")
+        raise ToolError("Unsloth Studio returned no audio")
     clips, contents = [], []
     for row in payload.get("clips") or []:
         if not isinstance(row, dict) or not opt_text(row.get("id")):
@@ -129,15 +129,15 @@ async def generate_audio(
         try:
             data = base64.b64decode(fallback["data"], validate = True)
         except (binascii.Error, ValueError):
-            raise ToolError("Studio returned unreadable audio") from None
+            raise ToolError("Unsloth Studio returned unreadable audio") from None
         if len(data) > INLINE_CAP:
             raise ToolError(
-                f"Studio could not save the clip to Audio history, and at "
+                f"Unsloth Studio could not save the clip to Audio history, and at "
                 f"{len(data) / (1024 * 1024):.1f} MiB it is too large to return inline."
             )
         contents.append(audio_content(data, f"audio/{opt_text(fallback.get('format')) or 'wav'}"))
     if not clips and saved:
-        raise ToolError("Studio returned no audio")
+        raise ToolError("Unsloth Studio returned no audio")
     result = AudioResult(
         model = opt_text(payload.get("model")),
         group_id = opt_text(payload.get("group_id")),
@@ -177,7 +177,7 @@ async def _download_then_retry(
         default = status.get("transformers") if isinstance(status.get("transformers"), dict) else {}
         model = opt_text(default.get("default_model")) or opt_text(status.get("default_model"))
     if model is None:
-        raise ToolError("Studio did not name a default speech-to-text model to download")
+        raise ToolError("Unsloth Studio did not name a default speech-to-text model to download")
     engine = loading.stt_engine(status, model)
     await loading.download_stt(caller, ctx, model = model, engine = engine, hf_token = None)
 
@@ -204,7 +204,7 @@ async def _multipart(
 
 
 async def _stt_model(caller: Caller, model: Optional[str]) -> tuple[str, str]:
-    """The model and engine to transcribe with: the one asked for, else the loaded one, else Studio's default."""
+    """The model and engine to transcribe with: the one asked for, else the loaded one, else Unsloth Studio's default."""
     status = await loading.stt_status(caller, model)
     if model is None:
         for engine in loading.STT_ENGINES:
@@ -214,7 +214,7 @@ async def _stt_model(caller: Caller, model: Optional[str]) -> tuple[str, str]:
         default = status.get("transformers") if isinstance(status.get("transformers"), dict) else {}
         model = opt_text(default.get("default_model")) or opt_text(status.get("default_model"))
     if model is None:
-        raise ToolError("Studio did not name a speech-to-text model; pass model.")
+        raise ToolError("Unsloth Studio did not name a speech-to-text model; pass model.")
     return model, loading.stt_engine(status, model)
 
 
@@ -227,7 +227,7 @@ async def _transcribe_source(
     timestamps: bool,
     model: Optional[str],
 ) -> TranscriptResult:
-    """Audio Studio already holds, transcribed by id; this route saves the transcript to history and streams NDJSON."""
+    """Audio Unsloth Studio already holds, transcribed by id; this route saves the transcript to history and streams NDJSON."""
     model, engine = await _stt_model(caller, model)
     body: dict[str, Any] = {
         "source": source,
@@ -247,7 +247,7 @@ async def _transcribe_source(
         try:
             return response, ndjson_last(response.content)
         except ValueError:
-            raise ToolError("Studio returned no transcript") from None
+            raise ToolError("Unsloth Studio returned no transcript") from None
 
     response, payload = await send()
     # A missing model is refused as a 409 before the stream starts, or as an error line within it.
@@ -285,7 +285,7 @@ async def transcribe(
     model: Optional[str] = None,
     ctx: Optional[Context] = None,
 ) -> TranscriptResult:
-    """Transcribe speech with Studio's speech-to-text, or translate it to English with ``translate``. ``audio`` is inline base64 with a filename, a path on the Studio computer, or a Studio id. Audio over 25 MB or given by id is stored with Studio first and its transcript is saved to Audio history (``saved_to_history``); translation needs a smaller file. ``timestamps`` adds segments; most engines then need ``language``. A missing model is downloaded first. Without ``model`` the loaded speech-to-text model or Studio's default is used."""
+    """Transcribe speech with Unsloth Studio's speech-to-text, or translate it to English with ``translate``. ``audio`` is inline base64 with a filename, a path on the Unsloth Studio computer, or an Unsloth Studio id. Audio over 25 MB or given by id is stored with Unsloth Studio first and its transcript is saved to Audio history (``saved_to_history``); translation needs a smaller file. ``timestamps`` adds segments; most engines then need ``language``. A missing model is downloaded first. Without ``model`` the loaded speech-to-text model or Unsloth Studio's default is used."""
     caller = current_caller()
     data, name = audio_bytes(caller, audio) if audio.is_upload else (None, None)
     if data is None or len(data) > MULTIPART_LIMIT:
@@ -318,7 +318,7 @@ async def transcribe(
     hints = {501: TIMESTAMPS_HINT} if timestamps else None
     payload = raise_for_route(response, hints = hints)
     if not isinstance(payload, dict):
-        raise ToolError("Studio returned no transcript")
+        raise ToolError("Unsloth Studio returned no transcript")
     return TranscriptResult(
         text = payload.get("text") if isinstance(payload.get("text"), str) else "",
         language = opt_text(payload.get("language")),

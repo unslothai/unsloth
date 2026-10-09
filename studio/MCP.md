@@ -69,18 +69,18 @@ send an Unsloth API key as `Authorization: Bearer sk-unsloth-...`.
 
 ## Unsloth Studio's own MCP server
 
-Studio has its own MCP server at `/mcp/`. Coding agents such as Claude Code and
+Unsloth Studio has its own MCP server at `/mcp/`. Coding agents such as Claude Code and
 Codex can use it to load models, chat, generate images, audio and video,
-transcribe, train and export. Every tool goes through Studio's own routes as
+transcribe, train and export. Every tool goes through Unsloth Studio's own routes as
 your API key, so it sees what that key may see and nothing more.
 
 ### Turn it on
 
 The server is off by default. While it is off, `/mcp/` answers 404.
 
-- In Studio, open **Settings → API** and turn on **Agent access (MCP)**. Only
-  the owner can change it, and only from a signed-in Studio session.
-- Or start Studio with `UNSLOTH_STUDIO_ENABLE_MCP=1`. The switch then shows as
+- In Unsloth Studio, open **Settings → API** and turn on **Agent access (MCP)**. Only
+  the owner can change it, and only from a signed-in Unsloth Studio session.
+- Or start Unsloth Studio with `UNSLOTH_STUDIO_ENABLE_MCP=1`. The switch then shows as
   on and cannot be turned off in Settings.
 
 The endpoint is `http://127.0.0.1:8888/mcp/` on the default port. Always use
@@ -89,21 +89,21 @@ the LAN address or the Cloudflare tunnel URL.
 
 ### Authentication
 
-Every request needs a Studio API key: `Authorization: Bearer sk-unsloth-…`.
-Create one in **Settings → API**. Studio refuses everything else with 401:
+Every request needs an Unsloth Studio API key: `Authorization: Bearer sk-unsloth-…`.
+Create one in **Settings → API**. Unsloth Studio refuses everything else with 401:
 
 - no key, an empty key, or a placeholder key such as `not-needed`, even when
   keyless API access is on;
 - a signed-in session token;
 - a revoked or expired key;
-- the keys Studio mints for its own recipe and Deep Research workflows.
+- the keys Unsloth Studio mints for its own recipe and Deep Research workflows.
 
 A managed account's key works too. Its tools act for that account only.
 
-Studio does not offer OAuth. The OAuth discovery paths answer 404, so clients
+Unsloth Studio does not offer OAuth. The OAuth discovery paths answer 404, so clients
 that probe them fall back to the key.
 
-A browser page from another site gets 403 `Origin not allowed for Studio MCP`.
+A browser page from another site gets 403 `Origin not allowed for Unsloth Studio MCP`.
 This also blocks browser-based MCP inspectors. Command-line agents send no
 Origin and are not affected.
 
@@ -113,10 +113,10 @@ The static `UNSLOTH_STUDIO_MCP_TOKEN` is retired. A request that sends it gets
 401 with this detail:
 
 ```
-The MCP static token is no longer supported; use a Studio API key (sk-unsloth-…)
+The MCP static token is no longer supported; use an Unsloth Studio API key (sk-unsloth-…)
 ```
 
-If the variable is still set, Studio logs one warning at startup. Studio no
+If the variable is still set, Unsloth Studio logs one warning at startup. Unsloth Studio no
 longer refuses to start when the token is missing.
 
 The tools changed:
@@ -134,7 +134,7 @@ The tools changed:
 
 ### Set up an agent
 
-Studio's **Settings → API** page builds these for you, with your real address.
+Unsloth Studio's **Settings → API** page builds these for you, with your real address.
 Each one reads the key from the `UNSLOTH_API_KEY` environment variable, so set
 it before you start the agent. Replace `http://127.0.0.1:8888` with your own
 address.
@@ -238,7 +238,7 @@ api_key_format = "Bearer {token}"
 | Tool | What it does |
 |---|---|
 | `studio_status` | What is loaded, loading and running: chat, image, video, speech-to-text and embedding models, training, export and GPUs. |
-| `list_models` | Models Studio can serve, by kind. With `model`, its training defaults. |
+| `list_models` | Models Unsloth Studio can serve, by kind. With `model`, its training defaults. |
 | `load_model` | Load a chat, image, video or speech-to-text model, downloading it first if needed. Reports progress. |
 | `unload_model` | Unload a model. |
 | `chat` | Ask the loaded model, with optional images. Returns a `cancel_id`. |
@@ -257,44 +257,44 @@ api_key_format = "Bearer {token}"
 | `cancel` | Stop training, a start request, image training, an export, a recipe, an image or video generation, a chat reply or a dataset download. |
 
 Long work returns at once. Start it, then poll `get_job` or `studio_status`,
-and stop it with `cancel`. Audio runs cannot be cancelled. Studio runs one
+and stop it with `cancel`. Audio runs cannot be cancelled. Unsloth Studio runs one
 export at a time, so `export_model` is refused while another export runs, and
 cancelling an export job stops only that job's own step.
 
 ### Media and files
 
-Generated images, audio and videos are saved to Studio's galleries, the same as
+Generated images, audio and videos are saved to Unsloth Studio's galleries, the same as
 in the UI. Tools return each item's id and URL. Small items also come back
 inline. Large images come back as a preview plus a link. A video comes back as a
 thumbnail plus a link, and the MP4 is never sent inline. Links point at
-Studio's API, so fetch them with the same `Authorization: Bearer` key.
+Unsloth Studio's API, so fetch them with the same `Authorization: Bearer` key.
 
-Media inputs can be a Studio id, inline data, or a file path. **A file path
-works only when the agent runs on the Studio computer** and connects over
-loopback. From any other computer, send the data or a Studio id instead.
+Media inputs can be an Unsloth Studio id, inline data, or a file path. **A file path
+works only when the agent runs on the Unsloth Studio computer** and connects over
+loopback. From any other computer, send the data or an Unsloth Studio id instead.
 An MCP request is limited to 4 MiB, so inline data has to fit in that. Send
-larger media as a Studio id, or as a path from the Studio computer. A remote
+larger media as an Unsloth Studio id, or as a path from the Unsloth Studio computer. A remote
 agent can upload a large audio file to `POST /v1/audio/inputs` with its API key
 and pass the returned id as `input_id`.
 
 `transcribe` sends files up to 25 MB directly. Larger files, and audio given by
-id, are uploaded to Studio first, and their transcript is saved to Audio
+id, are uploaded to Unsloth Studio first, and their transcript is saved to Audio
 history. Translation needs a file under 25 MB. Transcribing from a URL or a
 YouTube link is not supported.
 
-Tool results never contain paths on the Studio computer. Checkpoints are named
+Tool results never contain paths on the Unsloth Studio computer. Checkpoints are named
 `<run folder>` or `<run folder>/checkpoint-N`. Exports are named relative to
-Studio's exports folder, and `export_model` takes only a relative
+Unsloth Studio's exports folder, and `export_model` takes only a relative
 `save_directory`.
 
 ### Known limits
 
 - An API key cannot unload a chat model that was loaded from a local folder.
-  Studio shows such a model to API keys under an opaque reference, and the
-  unload route does not resolve it. Unload it in the Studio UI.
-- Studio runs one Data Recipe job at a time, and a recipe job id is not tied to
+  Unsloth Studio shows such a model to API keys under an opaque reference, and the
+  unload route does not resolve it. Unload it in the Unsloth Studio UI.
+- Unsloth Studio runs one Data Recipe job at a time, and a recipe job id is not tied to
   an account. Anyone with a key who knows the id can read that job's status.
-- Image LoRA training takes a dataset that is already in Studio. There is no
+- Image LoRA training takes a dataset that is already in Unsloth Studio. There is no
   upload tool.
 - Models can be unloaded between calls when an idle timeout is set. Tools then
   say to load the model again.

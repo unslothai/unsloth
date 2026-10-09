@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Long-running Studio jobs: ``run_recipe`` starts a data recipe and ``get_job`` reports on any job."""
+"""Long-running Unsloth Studio jobs: ``run_recipe`` starts a data recipe and ``get_job`` reports on any job."""
 
 from __future__ import annotations
 
@@ -157,7 +157,7 @@ async def get_job(
     rows: Annotated[Optional[int], Field(ge = 1, le = 500)] = None,
     offset: Annotated[int, Field(ge = 0)] = 0,
 ) -> ToolResult:
-    """The state of a long-running job. kind "video": with ``id``, its status and progress, and once completed a thumbnail plus the video's URL; without ``id``, recent video jobs. kind "recipe": a data recipe job's status and progress (without ``id``, the current one), and with ``rows`` that many generated rows from ``offset``. Studio runs one recipe at a time; a recipe job id is not tied to an account. kind "export": an export_model job by its id (without ``id``, this key's export jobs), with its output named relative to Studio's exports folder."""
+    """The state of a long-running job. kind "video": with ``id``, its status and progress, and once completed a thumbnail plus the video's URL; without ``id``, recent video jobs. kind "recipe": a data recipe job's status and progress (without ``id``, the current one), and with ``rows`` that many generated rows from ``offset``. Unsloth Studio runs one recipe at a time; a recipe job id is not tied to an account. kind "export": an export_model job by its id (without ``id``, this key's export jobs), with its output named relative to Unsloth Studio's exports folder."""
     caller = current_caller()
     if kind == "recipe":
         return await _recipe_job(caller, id, rows, offset)
@@ -171,7 +171,7 @@ async def get_job(
 async def run_recipe(
     recipe: dict[str, Any], mode: Literal["validate", "preview", "full"] = "validate"
 ) -> RecipeResult:
-    """Validate a Data Recipe, or run it. "validate" checks it and returns any errors; "preview" generates a few rows; "full" generates the whole dataset and saves it. A run returns a job id at once: follow it with get_job(kind="recipe"). Recipes that define a local (stdio) MCP server can only be run from the Studio UI."""
+    """Validate a Data Recipe, or run it. "validate" checks it and returns any errors; "preview" generates a few rows; "full" generates the whole dataset and saves it. A run returns a job id at once: follow it with get_job(kind="recipe"). Recipes that define a local (stdio) MCP server can only be run from the Unsloth Studio UI."""
     if mode == "validate":
         payload = await route_json(
             "POST", f"{RECIPE_ROUTES}/validate", json_body = {"recipe": recipe}
@@ -192,7 +192,7 @@ async def run_recipe(
     )
     job_id = opt_text(created.get("job_id")) if isinstance(created, dict) else None
     if job_id is None:
-        raise ToolError("Studio did not start the recipe")
+        raise ToolError("Unsloth Studio did not start the recipe")
     return RecipeResult(mode = mode, job_id = job_id)
 
 

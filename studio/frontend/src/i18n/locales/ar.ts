@@ -2847,9 +2847,9 @@ export const ar = {
       },
       mcp: {
         title: "وصول الوكلاء (MCP)",
-        description: "اسمح لوكلاء البرمجة مثل Claude Code وCodex باستخدام Studio عبر MCP. يسجّل الوكلاء الدخول بتوكن وصول من هذه الصفحة.",
+        description: "اسمح لوكلاء البرمجة مثل Claude Code وCodex باستخدام Unsloth Studio عبر MCP. يسجّل الوكلاء الدخول بتوكن وصول من هذه الصفحة.",
         enable: "السماح باتصالات الوكلاء",
-        enableDescription: "يخدم /mcp/ للطلبات التي تحمل توكن وصول من Studio.",
+        enableDescription: "يخدم /mcp/ للطلبات التي تحمل توكن وصول من Unsloth Studio.",
         lockedByEnv: "مضبوط بواسطة {name}.",
         loadError: "تعذّر تحميل إعدادات وصول الوكلاء.",
         saveError: "تعذّر حفظ إعداد وصول الوكلاء.",

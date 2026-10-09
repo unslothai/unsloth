@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""MCP tools reach Studio through its own HTTP routes, in-process, as the API-key caller. Calling the route functions directly would skip the auth dependency, so the call would run as the owner and see host paths; going through the app means each call is authenticated, account-scoped and redacted exactly as the same request from the agent would be.
+"""MCP tools reach Unsloth Studio through its own HTTP routes, in-process, as the API-key caller. Calling the route functions directly would skip the auth dependency, so the call would run as the owner and see host paths; going through the app means each call is authenticated, account-scoped and redacted exactly as the same request from the agent would be.
 
-The in-process client is deliberately remote: a TEST-NET peer and an ``.invalid`` Host fail every loopback, LAN and keyless check, so a forwarded call can never use keyless access, whatever Studio's keyless scope. Only the caller's key and, where a route reads it, the Hub token header are sent; nothing from the inbound request is copied."""
+The in-process client is deliberately remote: a TEST-NET peer and an ``.invalid`` Host fail every loopback, LAN and keyless check, so a forwarded call can never use keyless access, whatever Unsloth Studio's keyless scope. Only the caller's key and, where a route reads it, the Hub token header are sent; nothing from the inbound request is copied."""
 
 from __future__ import annotations
 
@@ -38,7 +38,7 @@ def checked_path(url: httpx.URL) -> str:
     path = url.path
     segments = path.split("/")
     if not path.startswith(ALLOWED_PREFIXES) or any(s in (".", "..") for s in segments):
-        raise RuntimeError(f"Studio MCP does not forward to {path!r}")
+        raise RuntimeError(f"Unsloth Studio MCP does not forward to {path!r}")
     return path
 
 
@@ -64,7 +64,7 @@ async def forward(
     data: Optional[dict[str, Any]] = None,
     hub_header: bool = False,
 ) -> httpx.Response:
-    """Send one request to Studio as ``caller`` and return the buffered response. ``content`` must be bytes, so httpx sets Content-Length: the upload routes answer a streamed body with 411."""
+    """Send one request to Unsloth Studio as ``caller`` and return the buffered response. ``content`` must be bytes, so httpx sets Content-Length: the upload routes answer a streamed body with 411."""
     if content is not None and not isinstance(content, (bytes, bytearray)):
         raise TypeError("forward() uploads need bytes")
     # The route binds the account ContextVar in whatever task runs it; its own task keeps that out of the tool.

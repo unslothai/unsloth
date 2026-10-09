@@ -2892,9 +2892,9 @@ export const fr = {
       },
       mcp: {
         title: "Accès des agents (MCP)",
-        description: "Permettez aux agents de code comme Claude Code et Codex d’utiliser Studio via MCP. Les agents se connectent avec un jeton d’accès de cette page.",
+        description: "Permettez aux agents de code comme Claude Code et Codex d’utiliser Unsloth Studio via MCP. Les agents se connectent avec un jeton d’accès de cette page.",
         enable: "Autoriser les connexions des agents",
-        enableDescription: "Sert /mcp/ aux requêtes qui portent un jeton d’accès Studio.",
+        enableDescription: "Sert /mcp/ aux requêtes qui portent un jeton d’accès Unsloth Studio.",
         lockedByEnv: "Défini par {name}.",
         loadError: "Impossible de charger les paramètres d’accès des agents.",
         saveError: "Impossible d’enregistrer le paramètre d’accès des agents.",

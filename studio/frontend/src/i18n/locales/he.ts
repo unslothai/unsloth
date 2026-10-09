@@ -2960,9 +2960,9 @@ export const he = {
       },
       mcp: {
         title: "גישת סוכנים (MCP)",
-        description: "אפשר לסוכני קוד כמו Claude Code ו-Codex להשתמש ב-Studio דרך MCP. סוכנים מתחברים עם טוקן גישה מהדף הזה.",
+        description: "אפשר לסוכני קוד כמו Claude Code ו-Codex להשתמש ב-Unsloth Studio דרך MCP. סוכנים מתחברים עם טוקן גישה מהדף הזה.",
         enable: "אפשר חיבורי סוכנים",
-        enableDescription: "מגיש את /mcp/ לבקשות שנושאות טוקן גישה של Studio.",
+        enableDescription: "מגיש את /mcp/ לבקשות שנושאות טוקן גישה של Unsloth Studio.",
         lockedByEnv: "נקבע על ידי {name}.",
         loadError: "לא ניתן לטעון את הגדרות גישת הסוכנים.",
         saveError: "לא ניתן לשמור את הגדרת גישת הסוכנים.",

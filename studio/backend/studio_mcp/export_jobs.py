@@ -58,7 +58,7 @@ def _evict() -> None:
 
 
 def output_name(path: Any) -> Optional[str]:
-    """An export's output as the agent may see it: relative to Studio's exports folder, or just its name."""
+    """An export's output as the agent may see it: relative to Unsloth Studio's exports folder, or just its name."""
     if not isinstance(path, str) or not path:
         return None
     if not (path.startswith(("/", "\\")) or re.match(r"^[A-Za-z]:[\\/]", path)):

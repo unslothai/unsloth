@@ -191,7 +191,7 @@ async def _read_slot(caller: Caller, slot: str) -> Any:
 
 
 async def studio_status() -> StudioStatus:
-    """What Studio is doing right now: the loaded chat, image, video, speech-to-text and embedding models, any model still loading or downloading, the training job, the export job and GPU use. Call this before loading a model or starting GPU work. A slot that could not be read is listed under ``unavailable`` with the reason."""
+    """What Unsloth Studio is doing right now: the loaded chat, image, video, speech-to-text and embedding models, any model still loading or downloading, the training job, the export job and GPU use. Call this before loading a model or starting GPU work. A slot that could not be read is listed under ``unavailable`` with the reason."""
     caller = current_caller()
     slots = list(SLOT_ROUTES)
     results = await asyncio.gather(

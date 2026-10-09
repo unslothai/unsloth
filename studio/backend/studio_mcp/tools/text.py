@@ -26,7 +26,7 @@ NOT_LOADED = "No model loaded"
 # The chat route takes 128 MiB of base64 images per request.
 MAX_CHAT_IMAGE_BYTES = 128 * 1024 * 1024 * 3 // 4
 EMBED_DOWNLOAD_HINT = (
-    "Download the embedding model in Studio first (Settings), or load an embedding GGUF with "
+    "Download the embedding model in Unsloth Studio first (Settings), or load an embedding GGUF with "
     "load_model(kind='llm') and call embed again."
 )
 
@@ -68,7 +68,7 @@ async def chat(
     temperature: Optional[float] = None,
     model: Optional[str] = None,
 ) -> ChatResult:
-    """Chat with the model loaded in Studio and return its reply. Send either ``prompt`` (one user turn) or ``messages`` (the whole conversation), plus an optional ``system`` prompt. ``images`` go with the last user turn and need a vision model. ``model`` names which loaded model should answer; without it the active one does. Load a model with load_model first. Studio's server-side tools are not used."""
+    """Chat with the model loaded in Unsloth Studio and return its reply. Send either ``prompt`` (one user turn) or ``messages`` (the whole conversation), plus an optional ``system`` prompt. ``images`` go with the last user turn and need a vision model. ``model`` names which loaded model should answer; without it the active one does. Load a model with load_model first. Unsloth Studio's server-side tools are not used."""
     if (messages is None) == (prompt is None):
         raise ToolError("Send either prompt or messages, not both and not neither.")
     turns = (
@@ -99,7 +99,7 @@ async def chat(
     payload = raise_for_route(response, hints = hints)
     choices = payload.get("choices") if isinstance(payload, dict) else None
     if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
-        raise ToolError("Studio returned no reply")
+        raise ToolError("Unsloth Studio returned no reply")
     message = choices[0].get("message") if isinstance(choices[0].get("message"), dict) else {}
     usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else None
     answered = opt_text(payload.get("model"))
@@ -126,7 +126,7 @@ async def embed(
     texts: Annotated[list[str], Field(min_length = 1, max_length = MAX_EMBED_INPUTS)],
     model: Optional[str] = None,
 ) -> EmbedResult:
-    """Embed up to 2048 texts and return one vector per text, in order. Uses the embedding GGUF loaded in Studio when there is one, else Studio's configured embedding model. ``model`` names a specific one."""
+    """Embed up to 2048 texts and return one vector per text, in order. Uses the embedding GGUF loaded in Unsloth Studio when there is one, else Unsloth Studio's configured embedding model. ``model`` names a specific one."""
     body = {"input": texts}
     if model:
         body["model"] = model
@@ -143,7 +143,7 @@ async def embed(
         key = lambda row: integer(row.get("index")) or 0,
     )
     if len(rows) != len(texts):
-        raise ToolError(f"Studio returned {len(rows)} embeddings for {len(texts)} texts")
+        raise ToolError(f"Unsloth Studio returned {len(rows)} embeddings for {len(texts)} texts")
     embeddings = [[float(value) for value in row["embedding"]] for row in rows]
     return EmbedResult(
         model = opt_text(payload.get("model")),
@@ -200,7 +200,7 @@ async def system_one(
     images: Annotated[Optional[list[ImageInput]], Field(max_length = MAX_DECISION_IMAGES)] = None,
     model: str = "default",
 ) -> SystemOneResult:
-    """Ask Studio's decision model (SystemOne) typed questions about a state, given as text or JSON. ``questions`` maps a name you pick to {"type", "instructions", "criteria"}, for example {"urgent": {"type": "noul", "instructions": "Does this need a reply within the hour?"}}. "noul" is yes or no and answers a probability; "choice" needs criteria mapping each option name to a description; "score" needs criteria listing 1 to 10 levels, lowest first. ``images`` (at most 4, PNG or JPEG) need a Clef model. ``model`` "default" uses the model picked in Settings. The Decision API must be on (Settings > API)."""
+    """Ask Unsloth Studio's decision model (SystemOne) typed questions about a state, given as text or JSON. ``questions`` maps a name you pick to {"type", "instructions", "criteria"}, for example {"urgent": {"type": "noul", "instructions": "Does this need a reply within the hour?"}}. "noul" is yes or no and answers a probability; "choice" needs criteria mapping each option name to a description; "score" needs criteria listing 1 to 10 levels, lowest first. ``images`` (at most 4, PNG or JPEG) need a Clef model. ``model`` "default" uses the model picked in Settings. The Decision API must be on (Settings > API)."""
     body: dict[str, Any] = {
         "state": state,
         "model": model,
@@ -221,7 +221,7 @@ async def system_one(
     payload = raise_for_route(response, hints = {404: DECISION_API_OFF_HINT})
     answers = payload.get("answers") if isinstance(payload, dict) else None
     if not isinstance(answers, dict):
-        raise ToolError("Studio returned no answers")
+        raise ToolError("Unsloth Studio returned no answers")
     return SystemOneResult(
         model = opt_text(payload.get("model")),
         answers = {str(k): _answer(v) for k, v in answers.items() if isinstance(v, dict)},

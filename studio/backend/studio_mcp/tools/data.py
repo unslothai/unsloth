@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""``datasets``: the training datasets Studio has, and getting more."""
+"""``datasets``: the training datasets Unsloth Studio has, and getting more."""
 
 from __future__ import annotations
 
@@ -37,7 +37,7 @@ async def datasets(
     train_split: str = "train",
     hf_token: Optional[str] = None,
 ) -> DatasetsResult:
-    """Training datasets. "list": datasets uploaded to Studio and Hugging Face datasets already downloaded. "check_format" (``name``: a Hub repo id or a listed dataset): the detected format, columns and a suggested column mapping. "download" (``repo_id``): start downloading a Hub dataset; "status" (``repo_id``): how that download is going. ``hf_token`` is for gated datasets."""
+    """Training datasets. "list": datasets uploaded to Unsloth Studio and Hugging Face datasets already downloaded. "check_format" (``name``: a Hub repo id or a listed dataset): the detected format, columns and a suggested column mapping. "download" (``repo_id``): start downloading a Hub dataset; "status" (``repo_id``): how that download is going. ``hf_token`` is for gated datasets."""
     caller = current_caller()
     if hf_token:
         caller = dataclasses.replace(caller, hf_token = hf_token)

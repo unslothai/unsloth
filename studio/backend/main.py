@@ -1085,7 +1085,7 @@ app.add_middleware(LoggingMiddleware)
 if os.environ.get("UNSLOTH_STUDIO_MCP_TOKEN", "").strip():
     logger.warning(
         "UNSLOTH_STUDIO_MCP_TOKEN is no longer used and /mcp refuses it. "
-        "Agents connect with a Studio API key (sk-unsloth-…) from Settings > API."
+        "Agents connect with an Unsloth Studio API key (sk-unsloth-…) from Settings > API."
     )
 
 
@@ -3176,7 +3176,7 @@ def setup_frontend(
         if full_path in {"api", "v1"} or full_path.startswith(("api/", "v1/")):
             raise HTTPException(status_code = 404, detail = "API endpoint not found")
         # MCP clients probe these before connecting; the app shell with a 200 reads as an OAuth server, and
-        # they would start a login Studio does not offer instead of sending the API key.
+        # they would start a login Unsloth Studio does not offer instead of sending the API key.
         if full_path.startswith(".well-known/oauth-"):
             raise HTTPException(status_code = 404, detail = "Not Found")
         if not _frontend_request_allowed(request):

@@ -93,7 +93,7 @@ async def list_models(
     loaded_only: bool = False,
     model: Optional[str] = None,
 ) -> ModelList:
-    """Models this Studio can serve: loaded ones and those already downloaded. Each entry has the id to pass to load_model, its kind and whether it is loaded. ``kind`` is read from the model's task; a model with no task is reported as "llm", which also covers embedding models and unloaded text-to-speech models Studio cannot classify yet, so pass the kind explicitly to load_model. ``loaded_only`` returns just the resident models. ``model`` adds Studio's training defaults for that model (send X-Unsloth-HF-Token for a gated repo)."""
+    """Models this Unsloth Studio can serve: loaded ones and those already downloaded. Each entry has the id to pass to load_model, its kind and whether it is loaded. ``kind`` is read from the model's task; a model with no task is reported as "llm", which also covers embedding models and unloaded text-to-speech models Unsloth Studio cannot classify yet, so pass the kind explicitly to load_model. ``loaded_only`` returns just the resident models. ``model`` adds Unsloth Studio's training defaults for that model (send X-Unsloth-HF-Token for a gated repo)."""
     if loaded_only and kind in (None, "llm"):
         # Resident chat models without a scan of every model folder.
         listing = await route_json("GET", "/api/inference/loaded-models")
@@ -124,7 +124,7 @@ async def load_model(
     hf_token: Optional[str] = None,
     ctx: Optional[Context] = None,
 ) -> LoadResult:
-    """Load a model into Studio, downloading it first if needed, and wait until it is ready; progress is reported while it loads. ``kind`` "llm" covers chat, vision, embedding and text-to-speech models; "image" and "video" load the generation models and "stt" a speech-to-text model (downloaded first when needed). ``model`` is an id from list_models or a Hugging Face repo id; ``variant`` picks a GGUF quantization such as Q4_K_M. ``max_seq_length`` 0 or unset lets Studio choose the context (llm only). ``hf_token`` is for gated repos. Loading may unload other models to make room; they are listed in ``evicted``."""
+    """Load a model into Unsloth Studio, downloading it first if needed, and wait until it is ready; progress is reported while it loads. ``kind`` "llm" covers chat, vision, embedding and text-to-speech models; "image" and "video" load the generation models and "stt" a speech-to-text model (downloaded first when needed). ``model`` is an id from list_models or a Hugging Face repo id; ``variant`` picks a GGUF quantization such as Q4_K_M. ``max_seq_length`` 0 or unset lets Unsloth Studio choose the context (llm only). ``hf_token`` is for gated repos. Loading may unload other models to make room; they are listed in ``evicted``."""
     caller = current_caller()
     if kind == "stt":
         return await loading.load_stt(caller, ctx, model = model, variant = variant, hf_token = hf_token)
