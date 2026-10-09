@@ -1143,6 +1143,85 @@ def test_gemini_thought_signature_is_replayed_on_the_assistant_turn(executed):
     assert json.loads(call["function"]["arguments"]) == {"query": "u"}
 
 
+def test_gemini_part_replay_ledgers_accumulate_across_a_tool_turn(executed):
+    transport = FakeTransport(
+        [
+            [
+                _sse(
+                    {
+                        "reasoning_content": "signed thought",
+                        "extra_content": {
+                            "google": {
+                                "thought": True,
+                                "thought_signature": "SIG-T",
+                                "thought_part": {
+                                    "text": "signed thought",
+                                    "thought_signature": "SIG-T",
+                                },
+                            }
+                        },
+                    }
+                ),
+                _sse(
+                    {
+                        "reasoning_content": " unsigned thought",
+                        "extra_content": {
+                            "google": {"thought_part": {"text": " unsigned thought"}}
+                        },
+                    }
+                ),
+                _sse(
+                    {
+                        "content": "answer ",
+                        "extra_content": {
+                            "google": {"answer_part": {"text": "answer "}}
+                        },
+                    }
+                ),
+                _sse(
+                    {
+                        "content": "tail",
+                        "extra_content": {"google": {"answer_part": {"text": "tail"}}},
+                    }
+                ),
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_a",
+                                "function": {
+                                    "name": "web_search",
+                                    "arguments": '{"query":"u"}',
+                                },
+                            }
+                        ]
+                    }
+                ),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "ok"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+    transport.preserves_reasoning = True
+    _run(transport)
+
+    assistant = [
+        message
+        for message in transport.requests[1]["messages"]
+        if message.get("role") == "assistant"
+    ][-1]
+    assert assistant["extra_content"]["google"]["thought_parts"] == [
+        {"text": "signed thought", "thought_signature": "SIG-T"},
+        {"text": " unsigned thought"},
+    ]
+    assert assistant["extra_content"]["google"]["answer_parts"] == [
+        {"text": "answer tail"}
+    ]
+
+
 def _call_delta(index, call_id, name, arguments):
     return {
         "index": index,
