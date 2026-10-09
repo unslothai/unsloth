@@ -4220,8 +4220,13 @@ def resolve_release_asset_choice(
         ):
             # #12842: the Windows source fallback needs a toolkit this driver runs, which
             # winget rarely offers, so setup would fail. Vulkan still runs on the NVIDIA
-            # GPU (the reporter's Vulkan build worked); CPU only after it.
-            vulkan_choice = published_asset_choice_for_kind(release, "windows-vulkan", host = host)
+            # GPU (the reporter's Vulkan build worked); CPU only after it. Not under a CUDA
+            # mask: Vulkan ignores it, so it could take a card the caller hid.
+            vulkan_choice = (
+                published_asset_choice_for_kind(release, "windows-vulkan", host = host)
+                if masked_host is None
+                else None
+            )
             choices = [
                 choice
                 for choice in (

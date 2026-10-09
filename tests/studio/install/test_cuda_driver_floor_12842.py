@@ -253,6 +253,20 @@ class TestWindowsBelowTheFloorGetsTheVulkanBundle:
         assert [c.install_kind for c in choices] == ["windows-vulkan", "windows-cpu"]
         assert choices[0].name == f"app-{TAG}-windows-x64-vulkan.zip"
 
+    def test_a_masked_gpu_stays_off_vulkan(self, monkeypatch):
+        # Vulkan ignores CUDA_VISIBLE_DEVICES, so a hidden card must not be reached through it.
+        monkeypatch.setattr(m, "apply_approved_hashes", lambda attempts, _checksums: attempts)
+        masked = m.dataclasses_replace(
+            host("Windows", (12, 2)),
+            compute_caps = [],
+            visible_cuda_devices = "-1",
+            has_usable_nvidia = False,
+        )
+        choices = m.resolve_release_asset_choice(
+            masked, "b11443", _release_with("windows-vulkan", "windows-cpu"), None
+        )
+        assert [c.install_kind for c in choices] == ["windows-cpu"]
+
     def test_without_a_vulkan_bundle_it_gets_the_cpu_bundle(self, monkeypatch):
         choices = self._choices(monkeypatch, (12, 2), kinds = ("windows-cpu",))
         assert [c.install_kind for c in choices] == ["windows-cpu"]
