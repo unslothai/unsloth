@@ -3290,7 +3290,8 @@ def apply_chat_template_for_generation(
         repaired = _repair_orphan_tool_results(split)
         if repaired is not split:
             try:
-                return _render_with_fallback(repaired)
+                # Split again: gpt-oss renders only tool_calls[0] and names every later result after it.
+                return _render_with_fallback(_split_parallel_tool_calls(repaired))
             except Exception:
                 pass
         raise

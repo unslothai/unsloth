@@ -176,21 +176,43 @@ def test_render_gives_an_assistant_text_turn_the_orphan_call():
     assert "tool_calls" not in messages[1]
 
 
-def test_render_links_every_result_of_an_orphan_run():
-    tok = _CallLinkedToolTokenizer()
+class _FirstCallNamesResultsTokenizer(_CallLinkedToolTokenizer):
+    """gpt-oss: renders only tool_calls[0] and names every later result after it."""
+
+    def apply_chat_template(self, messages, **kw):
+        super().apply_chat_template(messages, **kw)
+        lines, last = [], None
+        for message in messages:
+            if message.get("tool_calls"):
+                last = message["tool_calls"][0]["function"]["name"]
+            elif message.get("role") == "tool":
+                lines.append(f"functions.{last}: {message['content']}")
+        return "\n".join(lines)
+
+
+def test_render_gives_each_orphan_result_its_own_call():
+    tok = _FirstCallNamesResultsTokenizer()
     messages = [
         {"role": "user", "content": "weather?"},
         {"role": "tool", "tool_call_id": "c1", "name": "web_search", "content": "21C sunny"},
         {"role": "tool", "name": "web_fetch", "content": "rain later"},
     ]
 
-    assert apply_chat_template_for_generation(tok, messages) == "RENDERED"
+    rendered = apply_chat_template_for_generation(tok, messages)
+    assert rendered == "functions.web_search: 21C sunny\nfunctions.web_fetch: rain later"
     repaired = tok.seen_messages[-1]
-    assert [message["role"] for message in repaired] == ["user", "assistant", "tool", "tool"]
-    calls = repaired[1]["tool_calls"]
-    assert [call["id"] for call in calls] == ["c1", "replayed_tool_3"]
-    assert [call["function"]["name"] for call in calls] == ["web_search", "web_fetch"]
-    assert repaired[3]["tool_call_id"] == "replayed_tool_3"
+    assert [message["role"] for message in repaired] == [
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+        "tool",
+    ]
+    assert [m["tool_calls"][0]["id"] for m in repaired if m.get("tool_calls")] == [
+        "c1",
+        "replayed_tool_3",
+    ]
+    assert repaired[4]["tool_call_id"] == "replayed_tool_3"
 
 
 def test_orphan_repair_is_idempotent_and_leaves_linked_results_alone():
