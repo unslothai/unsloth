@@ -1634,7 +1634,13 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
             _unsloth_video_images = images
         except NameError:
             _unsloth_video_images = None
-        _unsloth_video_kwargs = _unsloth_grpo_video_inputs(self, prompts, _unsloth_video_images)
+        try:
+            _unsloth_video_prompts = prompts
+        except NameError:
+            _unsloth_video_prompts = []
+        _unsloth_video_kwargs = _unsloth_grpo_video_inputs(
+            self, _unsloth_video_prompts, _unsloth_video_images
+        )
         if _unsloth_video_kwargs is not None:
             _unsloth_text_only = False
         if _unsloth_text_only:
@@ -1886,7 +1892,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
             + "            forward_kwargs = {**forward_kwargs, **_unsloth_video_kwargs}\n",
             1,
         )
-    elif "_unsloth_grpo_video_inputs(self, prompts" in function:
+    elif "_unsloth_grpo_video_inputs(" in function:
         function = function.replace(
             "        if _unsloth_video_kwargs is not None:\n            _unsloth_text_only = False\n",
             "        if _unsloth_video_kwargs is not None:\n"

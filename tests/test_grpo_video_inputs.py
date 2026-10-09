@@ -257,7 +257,7 @@ def test_the_trl_trainer_gets_the_videos_merged_into_its_forward_kwargs():
         "_generate_and_score_completions", source
     )
     assert "prompts = _unsloth_grpo_clean_video_prompts(prompts, self)" in patched
-    assert "_unsloth_video_kwargs = _unsloth_grpo_video_inputs(self, prompts" in patched
+    assert "_unsloth_video_kwargs = _unsloth_grpo_video_inputs(" in patched
     merge = patched.index("forward_kwargs = {**forward_kwargs, **_unsloth_video_kwargs}")
     old_logps = patched.index("_get_per_token_logps_and_entropies(")
     assert merge < old_logps, "the videos arrive after the old and reference logprobs"
