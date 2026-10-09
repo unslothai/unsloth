@@ -231,30 +231,41 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             }
 
             if (modelDetails.is_lora) {
+              // LoRA / CPT can continue from a saved adapter; full finetune cannot (#13140).
+              if (!isAdapterMethod(get().trainingMethod)) {
+                set({
+                  ...(shouldApplyTrainingDefaults
+                    ? {
+                        trainingMethodProvenance: {
+                          ...get().trainingMethodProvenance,
+                          learningRateManuallySet: false,
+                          modelAdapterLearningRate: null,
+                        },
+                      }
+                    : {}),
+                  modelType: null,
+                  modelFormat: "adapter",
+                  isVisionModel: false,
+                  isEmbeddingModel: false,
+                  isAudioModel: false,
+                  audioCapabilityUnknown: false,
+                  isLoadingModelDefaults: false,
+                  isCheckingVision: false,
+                  modelDefaultsError: null,
+                  modelDefaultsAppliedFor: modelName,
+                  maxPositionEmbeddings: null,
+                });
+                toast.error(translate("studio.modelPicker.cantUseModel"), {
+                  description: translate("studio.modelPicker.reasonAdapter"),
+                });
+                return;
+              }
               set({
-                ...(shouldApplyTrainingDefaults
-                  ? {
-                      trainingMethodProvenance: {
-                        ...get().trainingMethodProvenance,
-                        learningRateManuallySet: false,
-                        modelAdapterLearningRate: null,
-                      },
-                    }
-                  : {}),
-                modelType: null,
                 modelFormat: "adapter",
-                isVisionModel: false,
-                isEmbeddingModel: false,
-                isAudioModel: false,
-                audioCapabilityUnknown: false,
                 isLoadingModelDefaults: false,
                 isCheckingVision: false,
                 modelDefaultsError: null,
                 modelDefaultsAppliedFor: modelName,
-                maxPositionEmbeddings: null,
-              });
-              toast.error(translate("studio.modelPicker.cantUseModel"), {
-                description: translate("studio.modelPicker.reasonAdapter"),
               });
               return;
             }

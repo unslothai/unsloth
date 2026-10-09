@@ -130,6 +130,9 @@ def _untrainable_model_format_error(config: dict) -> str | None:
     if model_format == "gguf":
         return "GGUF models are inference-only and cannot be trained."
     if model_format == "adapter":
+        # LoRA / CPT may continue from a saved adapter; full finetune still cannot (#13140).
+        if config.get("training_type") in ("LoRA/QLoRA", "Continued Pretraining"):
+            return None
         return "Adapter models are inference-only and cannot be trained as base models."
     return None
 

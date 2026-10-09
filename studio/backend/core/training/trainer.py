@@ -1273,6 +1273,17 @@ class UnslothTrainer:
 
             self._use_gradient_checkpointing = use_gradient_checkpointing
 
+            # Saved LoRA dirs load as PeftModel via from_pretrained; do not stack a second adapter (#13140).
+            if getattr(self.model, "peft_config", None):
+                self._update_progress(
+                    status_message = "Continuing from existing LoRA adapters"
+                )
+                logger.info(
+                    "Model already has LoRA adapters from the checkpoint; "
+                    "continuing training without creating a new adapter\n"
+                )
+                return True
+
             # LoRA/QLoRA. "all-linear" is a PEFT keyword targeting every linear layer.
             if isinstance(target_modules, list) and "all-linear" in target_modules:
                 if len(target_modules) == 1:

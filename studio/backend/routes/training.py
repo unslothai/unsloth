@@ -438,6 +438,17 @@ def _has_adapter_metadata(path: Path) -> bool:
     return path.is_dir() and (path / "adapter_config.json").is_file()
 
 
+def _continue_from_adapter_allowed(request: TrainingStartRequest) -> bool:
+    """LoRA / CPT can load a saved adapter as the starting point; full finetune cannot (#13140)."""
+    return request.training_type in ("LoRA/QLoRA", "Continued Pretraining")
+
+
+def _has_local_adapter_weights(path: Path) -> bool:
+    from utils.transformers_version import _has_adapter_weights
+
+    return path.is_dir() and _has_adapter_weights(path)
+
+
 def _remote_untrainable_model_format(model_name: str, hf_token: Optional[str]) -> Optional[str]:
     from huggingface_hub import model_info as hf_model_info
     from hub.utils.hf_errors import hf_error_status
@@ -700,7 +711,7 @@ def _reject_untrainable_model_request(
             "training_model_gguf_not_trainable",
             "GGUF models are inference-only and cannot be trained.",
         )
-    if model_format == "adapter":
+    if model_format == "adapter" and not _continue_from_adapter_allowed(request):
         raise _training_start_error(
             400,
             "training_model_adapter_not_trainable",
@@ -810,20 +821,32 @@ def _reject_untrainable_model_request(
                     "training_remote_model_gguf_only",
                     "GGUF-only remote models are inference-only and cannot be trained.",
                 )
-            raise _training_start_error(
-                400,
-                "training_remote_model_adapter_only",
-                "Adapter models are inference-only and cannot be trained as base models.",
-            )
+            if not _continue_from_adapter_allowed(request):
+                raise _training_start_error(
+                    400,
+                    "training_remote_model_adapter_only",
+                    "Adapter models are inference-only and cannot be trained as base models.",
+                )
+            return _ModelPreflightResult(model_name, model_local_path, cached_model_pin)
     has_trainable_weights = _has_trainable_local_weights(path, request.model_name)
     if has_trainable_weights:
         return _ModelPreflightResult(model_name, model_local_path, cached_model_pin)
-    if _has_adapter_metadata(path):
-        raise _training_start_error(
-            400,
-            "training_local_model_adapter_only",
-            "Adapter-only local models are inference-only and cannot be trained as base models.",
-        )
+    if _has_adapter_metadata(path) or (
+        model_format == "adapter" and _has_local_adapter_weights(path)
+    ):
+        if not _continue_from_adapter_allowed(request):
+            raise _training_start_error(
+                400,
+                "training_local_model_adapter_only",
+                "Adapter-only local models are inference-only and cannot be trained as base models.",
+            )
+        if not _has_local_adapter_weights(path):
+            raise _training_start_error(
+                400,
+                "training_local_model_adapter_weights_missing",
+                "Adapter directory is missing adapter_model weights.",
+            )
+        return _ModelPreflightResult(model_name, model_local_path, cached_model_pin)
     try:
         has_gguf = _detect_local_gguf(path) is not None
     except _LocalModelProbeIncomplete:

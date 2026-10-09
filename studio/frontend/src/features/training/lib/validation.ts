@@ -10,6 +10,7 @@ import {
   validateManualDatasetSubset,
 } from "./manual-dataset-options";
 import { isLocalTrainingModelSelection } from "./model-selection";
+import { isAdapterMethod } from "@/types/training";
 import { isUntrainableModelFormat } from "./model-support";
 import {
   isTrainingLoraVariantSupportedOnDevice,
@@ -182,13 +183,13 @@ export function validateTrainingConfig(
     };
   }
   if (isUntrainableModelFormat(config.modelFormat)) {
-    return {
-      ok: false,
-      errorKey:
-        config.modelFormat === "gguf"
-          ? "studio.modelPicker.reasonGguf"
-          : "studio.modelPicker.reasonAdapter",
-    };
+    if (config.modelFormat === "gguf") {
+      return { ok: false, errorKey: "studio.modelPicker.reasonGguf" };
+    }
+    // Adapter format is valid when continuing LoRA / CPT from a saved adapter (#13140).
+    if (!isAdapterMethod(config.trainingMethod)) {
+      return { ok: false, errorKey: "studio.modelPicker.reasonAdapter" };
+    }
   }
 
   if (!isTrainingConfigSupportedOnDevice(config, deviceType)) {

@@ -438,34 +438,52 @@ def test_hf_dataset_preflight_rejects_before_backend_start():
 
 
 @pytest.mark.parametrize(
-    ("model_format", "code", "expected"),
+    ("model_format", "training_type", "code", "expected"),
     [
-        ("gguf", "training_model_gguf_not_trainable", "GGUF models are inference-only"),
+        (
+            "gguf",
+            "LoRA/QLoRA",
+            "training_model_gguf_not_trainable",
+            "GGUF models are inference-only",
+        ),
         (
             "adapter",
+            "Full Finetuning",
             "training_model_adapter_not_trainable",
             "Adapter models are inference-only",
         ),
     ],
 )
-def test_start_rejects_untrainable_model_formats(model_format, code, expected):
+def test_start_rejects_untrainable_model_formats(
+    model_format, training_type, code, expected
+):
     route = _load_route_module(f"training_route_reject_{model_format}")
-    request = _request(model_format = model_format)
+    request = _request(model_format = model_format, training_type = training_type)
 
     exc_info = _shared_setup_5(request, route)
     assert exc_info.value.detail["code"] == code
     assert expected in exc_info.value.detail["message"]
 
 
-def test_start_rejects_adapter_only_local_dir(tmp_path):
-    route = _load_route_module("training_route_reject_adapter_dir")
+def test_start_rejects_adapter_only_local_dir_for_full_finetuning(tmp_path):
+    route = _load_route_module("training_route_reject_adapter_dir_full")
     (tmp_path / "adapter_config.json").write_text("{}")
     (tmp_path / "adapter_model.safetensors").write_bytes(b"x")
-    request = _request(model_name = str(tmp_path))
+    request = _request(model_name = str(tmp_path), training_type = "Full Finetuning")
 
     exc_info = _shared_setup_5(request, route)
     assert exc_info.value.detail["code"] == "training_local_model_adapter_only"
     assert "Adapter-only local models" in exc_info.value.detail["message"]
+
+
+def test_start_allows_adapter_only_local_dir_for_lora(tmp_path):
+    route = _load_route_module("training_route_allow_adapter_dir_lora")
+    (tmp_path / "adapter_config.json").write_text("{}")
+    (tmp_path / "adapter_model.safetensors").write_bytes(b"x")
+    request = _request(model_name = str(tmp_path), model_format = "adapter")
+
+    result = route._reject_untrainable_model_request(request)
+    assert result.model_name == str(tmp_path.resolve())
 
 
 def test_start_rejects_missing_local_model(tmp_path):
@@ -522,8 +540,8 @@ def test_start_rejects_partial_adapter_local_dir(tmp_path):
     request = _request(model_name = str(tmp_path), model_format = "safetensors")
 
     exc_info = _shared_setup_2(request, route)
-    assert exc_info.value.detail["code"] == "training_local_model_adapter_only"
-    assert "Adapter-only local models" in exc_info.value.detail["message"]
+    assert exc_info.value.detail["code"] == "training_local_model_adapter_weights_missing"
+    assert "missing adapter_model weights" in exc_info.value.detail["message"]
 
 
 def test_start_rejects_gguf_only_local_dir(tmp_path):
@@ -1009,9 +1027,9 @@ def test_mlx_pinned_fallback_rejects_cross_repository_bnb_remap():
     )
 
 
-def test_untrainable_gate_rejects_remote_adapter():
-    route = _load_route_module("training_route_remote_adapter")
-    request = _request()
+def test_untrainable_gate_rejects_remote_adapter_for_full_finetuning():
+    route = _load_route_module("training_route_remote_adapter_full")
+    request = _request(training_type = "Full Finetuning")
 
     with patch.object(route, "_remote_untrainable_model_format", return_value = "adapter"):
         with pytest.raises(HTTPException) as exc_info:
@@ -1020,6 +1038,16 @@ def test_untrainable_gate_rejects_remote_adapter():
     assert exc_info.value.status_code == 400
     assert exc_info.value.detail["code"] == "training_remote_model_adapter_only"
     assert "Adapter models are inference-only" in exc_info.value.detail["message"]
+
+
+def test_untrainable_gate_allows_remote_adapter_for_lora():
+    route = _load_route_module("training_route_remote_adapter_lora")
+    request = _request(model_format = "adapter")
+
+    with patch.object(route, "_remote_untrainable_model_format", return_value = "adapter"):
+        result = route._reject_untrainable_model_request(request)
+
+    assert result.model_name == "unsloth/test"
 
 
 def test_untrainable_gate_rejects_remote_gguf_only_repository():
@@ -2295,6 +2323,18 @@ def test_worker_rejects_inference_only_model_formats():
 
     assert "GGUF" in worker._untrainable_model_format_error({"model_format": "gguf"})
     assert "Adapter" in worker._untrainable_model_format_error({"model_format": "adapter"})
+    assert (
+        worker._untrainable_model_format_error(
+            {"model_format": "adapter", "training_type": "Full Finetuning"}
+        )
+        is not None
+    )
+    assert (
+        worker._untrainable_model_format_error(
+            {"model_format": "adapter", "training_type": "LoRA/QLoRA"}
+        )
+        is None
+    )
     assert worker._untrainable_model_format_error({"model_format": "safetensors"}) is None
     assert worker._untrainable_model_format_error({}) is None
 

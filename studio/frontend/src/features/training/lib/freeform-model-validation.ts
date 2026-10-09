@@ -8,19 +8,6 @@ import type {
 import { classifyUnslothSupport, isGgufLike } from "@/features/hub";
 import type { TranslationKey } from "@/i18n";
 
-const ADAPTER_ARTIFACT_PATTERN =
-  /(?:^|[/\\])adapter_(?:config\.json|model\.(?:safetensors|bin))$/i;
-
-function hasPeftMetadata({
-  tags,
-  libraryName,
-}: Pick<TrainingModelValidationCandidate, "tags" | "libraryName">): boolean {
-  if (libraryName?.trim().toLowerCase() === "peft") {
-    return true;
-  }
-  return tags?.some((tag) => tag.trim().toLowerCase() === "peft") ?? false;
-}
-
 export type TrainingModelValidationCandidate = {
   id: string;
   modelFormat?: ModelInventoryFormat | null;
@@ -46,13 +33,8 @@ export function validateTrainingModelCandidate(
   if (candidate.modelFormat === "gguf" || isGgufLike(id)) {
     return { ok: false, reasonKey: "studio.modelPicker.reasonGguf" };
   }
-  if (
-    candidate.modelFormat === "adapter" ||
-    ADAPTER_ARTIFACT_PATTERN.test(id) ||
-    hasPeftMetadata(candidate)
-  ) {
-    return { ok: false, reasonKey: "studio.modelPicker.reasonAdapter" };
-  }
+  // Adapter / PEFT dirs are allowed here: LoRA and CPT can continue from a saved
+  // adapter (#13140). Full finetune is refused later in validateTrainingConfig.
   if (candidate.capabilities && !candidate.capabilities.canTrain) {
     return { ok: false, reasonKey: "studio.modelPicker.reasonNotTrainable" };
   }
