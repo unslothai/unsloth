@@ -118,3 +118,71 @@ async def resolve_image(
 
 def data_url(data: bytes, mime: str) -> str:
     return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
+
+
+# The /audio/inputs route's own limit.
+MAX_AUDIO_BYTES = 200 * 1024 * 1024
+_AUDIO_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+
+
+class AudioInput(BaseModel):
+    """Exactly one of ``path`` (a file on the Studio computer), ``data_base64`` with a ``filename``, or a Studio id: ``input_id`` (an uploaded clip), ``clip_id`` (an Audio history clip) or ``voice_id`` (a saved voice)."""
+
+    model_config = ConfigDict(extra = "forbid")
+
+    path: Optional[str] = None
+    data_base64: Optional[str] = None
+    filename: Optional[str] = None
+    input_id: Optional[str] = None
+    clip_id: Optional[str] = None
+    voice_id: Optional[str] = None
+
+    @model_validator(mode = "after")
+    def _exactly_one(self) -> "AudioInput":
+        sources = (self.path, self.data_base64, self.input_id, self.clip_id, self.voice_id)
+        if sum(value is not None for value in sources) != 1:
+            raise ValueError(
+                "Give exactly one of path, data_base64, input_id, clip_id or voice_id."
+            )
+        if (self.filename is not None) != (self.data_base64 is not None):
+            raise ValueError("filename goes with data_base64, and data_base64 needs one.")
+        for value in (self.input_id, self.clip_id, self.voice_id):
+            if value is not None and not _AUDIO_ID.match(value):
+                raise ValueError("Studio audio ids are letters, digits, - and _.")
+        return self
+
+    @property
+    def is_upload(self) -> bool:
+        return self.path is not None or self.data_base64 is not None
+
+
+def audio_bytes(caller: Caller, audio: AudioInput) -> tuple[bytes, str]:
+    """The bytes and a display name of an audio input given as a path or inline data."""
+    if audio.path is not None:
+        return read_local(caller, audio.path, MAX_AUDIO_BYTES), Path(audio.path).name
+    return decode_base64(audio.data_base64, MAX_AUDIO_BYTES, "data_base64"), audio.filename
+
+
+async def upload_audio(caller: Caller, data: bytes, name: str) -> str:
+    """Store audio with Studio and return its input id. Raw bytes, so the upload route sees a Content-Length; a re-upload of the same audio answers 200 with the existing id."""
+    if len(data) > MAX_AUDIO_BYTES:
+        raise ToolError("Audio is larger than 200 MiB")
+    response = await forward(
+        caller, "POST", "/v1/audio/inputs", params = {"name": name[:255] or "audio"}, content = data
+    )
+    record = raise_for_route(response)
+    if not isinstance(record, dict) or not isinstance(record.get("id"), str):
+        raise ToolError("Studio did not store the audio")
+    return record["id"]
+
+
+async def audio_ref(caller: Caller, audio: AudioInput) -> dict[str, str]:
+    """The ``{input_id|clip_id|voice_id}`` reference a Studio audio route takes, uploading first when needed."""
+    if audio.is_upload:
+        data, name = audio_bytes(caller, audio)
+        return {"input_id": await upload_audio(caller, data, name)}
+    for key in ("input_id", "clip_id", "voice_id"):
+        value = getattr(audio, key)
+        if value is not None:
+            return {key: value}
+    raise ToolError("No audio was given")

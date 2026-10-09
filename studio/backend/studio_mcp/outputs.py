@@ -192,3 +192,19 @@ class ImageItem(ToolOutput):
 
 class ImageResult(ToolOutput):
     images: list[ImageItem]
+
+
+class AudioClip(ToolOutput):
+    id: RouteText
+    role: RouteText = "output"
+    url: str
+    duration_s: Optional[float] = None
+    sample_rate: Optional[int] = None
+
+
+class AudioResult(ToolOutput):
+    model: Optional[RouteText] = None
+    group_id: Optional[RouteText] = None
+    clips: list[AudioClip] = []
+    # False when Studio could not save the clip to Audio history; the audio then comes back inline only.
+    saved: bool = True

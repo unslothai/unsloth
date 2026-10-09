@@ -20,6 +20,7 @@ from studio_mcp.forward import forward
 from studio_mcp.outputs import RouteText, ToolOutput
 
 from .mcp_harness import SENTINEL_ROOTS, call_tool, fake_studio, poison, served
+from .test_mcp_tools_audio import PAYLOADS as AUDIO_PAYLOADS
 from .test_mcp_tools_images import PAYLOADS as IMAGES_PAYLOADS
 from .test_mcp_tools_loading import PAYLOADS as LOADING_PAYLOADS
 from .test_mcp_tools_models import PAYLOADS as MODELS_PAYLOADS
@@ -48,6 +49,14 @@ CASES: dict[str, tuple[dict, dict]] = {
     "embed": (TEXT_PAYLOADS, {"texts": ["a", "b"]}),
     "system_one": (TEXT_PAYLOADS, {"state": "x", "questions": {"urgent": {"type": "noul"}}}),
     "generate_image": (IMAGES_PAYLOADS, {"prompt": "a red fox"}),
+    "generate_audio": (
+        AUDIO_PAYLOADS,
+        {
+            "workflow": "clone",
+            "text": "hi",
+            "reference": {"data_base64": "UklGRg==", "filename": "a.wav"},
+        },
+    ),
 }
 
 # Output keys that carry model-written text, which is the model's to say and is never rewritten.

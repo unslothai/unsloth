@@ -13,6 +13,7 @@ from typing import Any
 
 from fastmcp import FastMCP
 
+from studio_mcp.tools.audio import register_audio
 from studio_mcp.tools.images import register_images
 from studio_mcp.tools.models import register_models
 from studio_mcp.tools.status import register_status
@@ -49,6 +50,7 @@ def create_studio_mcp() -> FastMCP:
     register_models(mcp)
     register_text(mcp)
     register_images(mcp)
+    register_audio(mcp)
 
     @mcp.tool
     async def start_training(config: dict[str, Any]) -> dict[str, Any]:
