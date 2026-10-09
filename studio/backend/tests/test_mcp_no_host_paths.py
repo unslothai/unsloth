@@ -30,12 +30,12 @@ from .test_mcp_tools_recipe import PAYLOADS as RECIPE_PAYLOADS
 from .test_mcp_tools_status import PAYLOADS as STATUS_PAYLOADS
 from .test_mcp_tools_text import PAYLOADS as TEXT_PAYLOADS
 from .test_mcp_tools_training import PAYLOADS as TRAINING_PAYLOADS
+from .test_mcp_tools_training import RUN_PAYLOADS
 from .test_mcp_tools_video import PAYLOADS as VIDEO_PAYLOADS
 
 # The direct-call tools from before forwarding. Each commit that replaces one removes it here and adds its case.
 LEGACY_UNCHECKED = {
     "stop_training",
-    "list_training_runs",
     "load_checkpoint",
     "export_gguf",
 }
@@ -60,6 +60,7 @@ CASES: dict[str, Any] = {
         (TRAINING_PAYLOADS, {"config": {"model_name": "m"}}),
         (TRAINING_PAYLOADS, {"config": {"base_model": "m", "data_dir": "d"}, "kind": "diffusion"}),
     ],
+    "list_training_runs": (RUN_PAYLOADS, {"run_id": "run-1", "include_checkpoints": True}),
     "run_recipe": (RECIPE_PAYLOADS, {"recipe": {"columns": [{"name": "q"}]}}),
     "datasets": [
         (DATASETS_PAYLOADS, {"action": "list"}),

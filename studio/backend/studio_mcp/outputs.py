@@ -321,3 +321,46 @@ class TrainingStarted(ToolOutput):
     job_id: RouteText
     status: RouteText
     message: Optional[RouteText] = None
+
+
+TrainingScalar = Union[StrictBool, StrictInt, StrictFloat, RouteText]
+
+
+class TrainingRun(ToolOutput):
+    id: RouteText
+    status: RouteText
+    model_name: Optional[RouteText] = None
+    dataset_name: Optional[RouteText] = None
+    display_name: Optional[RouteText] = None
+    started_at: Optional[RouteText] = None
+    ended_at: Optional[RouteText] = None
+    final_step: Optional[int] = None
+    final_loss: Optional[float] = None
+    can_resume: bool = False
+    error_message: Optional[RouteText] = None
+    # The run's folder name, which is also its checkpoint name for export_model.
+    run_folder: Optional[RouteText] = None
+
+
+class TrainingRunDetail(TrainingRun):
+    config: dict[str, TrainingScalar] = {}
+    step_history: Optional[list[int]] = None
+    loss_history: Optional[list[float]] = None
+
+
+class CheckpointName(ToolOutput):
+    run: RouteText
+    # "<run folder>" for the final weights, "<run folder>/<checkpoint>" for an intermediate one.
+    name: RouteText
+    loss: Optional[float] = None
+    base_model: Optional[RouteText] = None
+    peft_type: Optional[RouteText] = None
+    lora_rank: Optional[int] = None
+    is_quantized: bool = False
+
+
+class TrainingRuns(ToolOutput):
+    runs: list[TrainingRun] = []
+    total: Optional[int] = None
+    run: Optional[TrainingRunDetail] = None
+    checkpoints: Optional[list[CheckpointName]] = None

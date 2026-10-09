@@ -198,21 +198,3 @@ def test_stop_training_forwards_job_scope(monkeypatch):
     assert captured["save"] is False
     assert captured["current_subject"] == "mcp"
     assert result == {"status": "stopped"}
-
-
-def test_list_training_runs_clamps_pagination(monkeypatch):
-    captured = {}
-
-    async def fake_list_runs(limit, offset, current_subject):
-        captured["limit"] = limit
-        captured["offset"] = offset
-        return {"ok": True}
-
-    _stub_module(monkeypatch, "routes")
-    _stub_module(monkeypatch, "routes.training_history", list_training_runs = fake_list_runs)
-
-    tool = _get_tool("list_training_runs")
-    asyncio.run(tool.fn(limit = 10_000, offset = -5))
-
-    assert captured["limit"] == 200
-    assert captured["offset"] == 0

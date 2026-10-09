@@ -72,16 +72,6 @@ def create_studio_mcp() -> FastMCP:
         )
 
     @mcp.tool
-    async def list_training_runs(limit: int = 50, offset: int = 0) -> dict[str, Any]:
-        """List completed and stopped training runs, newest first."""
-        from routes.training_history import list_training_runs as list_runs
-
-        # Clamp here (direct call skips Query bounds); a negative LIMIT = no limit.
-        limit = _clamp(limit, 1, 200)
-        offset = max(0, offset)
-        return _dump(await list_runs(limit = limit, offset = offset, current_subject = "mcp"))
-
-    @mcp.tool
     async def load_checkpoint(
         checkpoint_path: str,
         max_seq_length: int = 2048,
