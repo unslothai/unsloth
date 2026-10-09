@@ -1,11 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""Left-padded, label-less training forwards keep their padding mask (#3705).
-
-LlamaModel_fast_forward drops the 2D mask in training, which is exact only for right padding.
-ms-swift's generative reranker left-pads, pops its per-sequence labels and reads the last token,
-so every real token attended to zeroed pad embeddings and gradients went NaN.
-"""
+"""Left-padded, label-less training forwards keep their padding mask (ms-swift rerankers, #3705)."""
 
 from __future__ import annotations
 
