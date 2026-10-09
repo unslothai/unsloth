@@ -13,7 +13,11 @@ import textwrap
 
 import pytest
 
+from real_accelerator import has_real_cuda
+
 pytest.importorskip("trl")
+# The probe imports unsloth in a fresh process, outside the conftest CPU spoof.
+pytestmark = pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA GPU")
 
 _PROBE = textwrap.dedent(
     """
