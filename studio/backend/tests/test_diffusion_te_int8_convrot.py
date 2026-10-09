@@ -463,8 +463,6 @@ def test_an_int8_file_that_will_not_build_falls_back_to_the_fp8_names(monkeypatc
         return None if source.filename == INT8_NAME else sentinel
 
     monkeypatch.setattr(tpq, "load_prequant_text_encoder", fake_load)
-    # Dense on disk, so a failed load falls back rather than raising (#12860).
-    monkeypatch.setattr(tpq, "_dense_component_cached", lambda base, component: True)
     for held, expected in ((True, sentinel), (False, None)):
         calls.clear()
         monkeypatch.setattr(tpq, "_held_locally", lambda *a, held = held: held)

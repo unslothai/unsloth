@@ -391,7 +391,6 @@ def test_pipe_kwargs_empty_when_load_fails(monkeypatch):
     fam = _fam(te_prequant_repos = (("fp8", "text_encoder", "org/hosted"),))
     monkeypatch.setattr(precision, "te_quant_supported", lambda target, mode: True)
     monkeypatch.setattr(tpq, "load_prequant_text_encoder", lambda *a, **k: None)
-    monkeypatch.setattr(tpq, "_dense_component_cached", lambda base, component: True)
     assert (
         te_prequant_pipe_kwargs(
             fam, "Lightricks/LTX-2", te_quant_mode = "fp8", target = _target(), dtype = None
@@ -426,15 +425,22 @@ def test_pipe_kwargs_raises_when_load_fails_and_dense_shards_were_skipped(monkey
     shard = "model-00001-of-00001.safetensors"
     (encoder / "model.safetensors.index.json").write_text(json.dumps({"weight_map": {"w": shard}}))
 
-    def load():
+    def load(dense_source):
         return te_prequant_pipe_kwargs(
-            fam, str(tmp_path), te_quant_mode = "fp8", target = _target(), dtype = None
+            fam,
+            str(tmp_path),
+            te_quant_mode = "fp8",
+            target = _target(),
+            dtype = None,
+            dense_source = dense_source,
         )
 
+    # assembly that can still fetch the shards keeps the dense fallback
+    assert load(None) == {}
     with pytest.raises(RuntimeError, match = r"text_encoder .*\(os error 1455\).*Dense \(bf16\)"):
-        load()
+        load(str(tmp_path))
     (encoder / shard).write_bytes(b"")
-    assert load() == {}
+    assert load(str(tmp_path)) == {}
 
 
 def test_pipe_kwargs_injects_every_hosted_component(monkeypatch):

@@ -684,7 +684,8 @@ def load_prequant_text_encoder(
     except Exception as exc:  # noqa: BLE001 - fall back to the dense download + cast
         _warn(logger, f"{scheme}:{component}:{source.kind}", exc)
         if failures is not None:
-            failures.append(exc)
+            # text only: the exception's traceback would pin this frame's checkpoint through the fp8 retry
+            failures.append(str(exc))
         return None
 
 
@@ -736,6 +737,7 @@ def te_prequant_pipe_kwargs(
     hf_token: Optional[str] = None,
     logger: Any = None,
     local_files_only: bool = False,
+    dense_source: Optional[str] = None,
 ) -> dict[str, Any]:
     supplied = supplied_component_pipe_kwargs(
         base,
@@ -755,6 +757,7 @@ def te_prequant_pipe_kwargs(
         logger = logger,
         local_files_only = local_files_only,
         skip_components = tuple(supplied),
+        dense_source = dense_source,
     )
     injected.update(supplied)
     return injected
@@ -771,6 +774,7 @@ def _te_prequant_pipe_kwargs(
     logger: Any = None,
     local_files_only: bool = False,
     skip_components: tuple = (),
+    dense_source: Optional[str] = None,
 ) -> dict[str, Any]:
     """Component overrides for pipeline assembly: ``{<component>: <pre-cast encoder>}``
     for every ``TE_PREQUANT_COMPONENTS`` attr the family hosts a pre-cast checkpoint for
@@ -782,14 +786,16 @@ def _te_prequant_pipe_kwargs(
     The later ``quantize_text_encoders`` call re-applies the cast idempotently and keeps
     status reporting truthful.
 
-    Raises when a pre-cast encoder fails to load and its dense weights are not on disk: the plan
-    left those shards out of the prefetch, so assembly would die on a missing shard instead."""
+    ``dense_source`` is the local directory or repo id assembly reads without fetching (None when it can
+    still fetch). A pre-cast encoder that fails to load with no dense weights there raises: the plan left
+    those shards out of the prefetch, so assembly would die on a missing shard instead."""
     unavailable: list[str] = []
     failures: list = []
     cause = ""
     try:
         from .diffusion_precision import TE_QUANT_FP8, normalize_te_quant, te_quant_supported
         from .diffusion_text_encoder_trim import family_trims_lm_head
+        from .media_locality import _hosted_component_cached
 
         sources = te_prequant_sources_for_base(
             fam,
@@ -848,7 +854,7 @@ def _te_prequant_pipe_kwargs(
                 )
             if encoder is not None:
                 injected[component] = encoder
-            elif not _dense_component_cached(base, component):
+            elif dense_source and not _hosted_component_cached(dense_source, component, "", ""):
                 unavailable.append(component)
                 cause = f" ({failures[-1]})" if failures else cause
         if not unavailable:
@@ -862,12 +868,6 @@ def _te_prequant_pipe_kwargs(
         "(os error 1455 means the Windows page file is too small), close other apps or enlarge the page "
         "file and load again, or set Text encoder precision to Dense (bf16)."
     )
-
-
-def _dense_component_cached(base: str, component: str) -> bool:
-    """Whether ``base``'s dense ``component`` weights are on disk (local directory or Hub cache)."""
-    from .media_locality import _hosted_component_cached
-    return _hosted_component_cached(base, component, "", "")
 
 
 def _held_locally(repo_id: str, name: Optional[str], hf_token: Optional[str]) -> bool:
