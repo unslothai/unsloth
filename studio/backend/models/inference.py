@@ -215,7 +215,11 @@ class LoadRequest(BaseModel):
             "Legacy values 'default' (-> auto), 'draft-mtp' (-> mtp), "
             "'draft-dspark' (-> dspark), 'draft-dflash' (-> dflash), "
             "'ngram-mod' (-> ngram), and 'ngram-simple' (kept as-is) are "
-            "still accepted. Ignored for non-GGUF models."
+            "still accepted. MLX models read 'auto', 'mtp', 'dflash', 'dspark', 'eagle3', "
+            "'ngram' and 'off'; every drafter kind also copies repeated text (n-gram), "
+            "so 'mtp+ngram' reads as 'mtp'. On MLX, 'auto' attaches the first "
+            "cached drafter (an MTP head or assistant, then DFlash2, DFlash, DSpark, EAGLE-3) that "
+            "costs no context, on loads served through mlx-vlm. Ignored for other non-GGUF models."
         ),
     )
     spec_draft_n_max: Optional[int] = Field(
@@ -228,7 +232,21 @@ class LoadRequest(BaseModel):
             "CPU/Mac when unset (upstream-bench sweet spot for dense Qwen3.6 "
             "MTP quants, and the measured sweet spot for DFlash too). Only "
             "applied when speculative_type resolves to 'mtp', 'mtp+ngram', "
-            "'dspark' or 'dflash'."
+            "'dspark' or 'dflash'. On MLX, up to the drafter's trained depth (3 for "
+            "MTP heads and assistants) every step drafts exactly this many (or takes an "
+            "n-gram copy expected to yield more), even when "
+            "plain decoding would be faster; above it, or for n-gram copies alone, it "
+            "is a ceiling and the controller decides when to draft."
+        ),
+    )
+    spec_draft_model: Optional[str] = Field(
+        None,
+        max_length = 1024,
+        description = (
+            "MLX only: a companion drafter (DFlash, DFlash2, DSpark, EAGLE-3 or Gemma "
+            "assistant) to speculate with, as a local directory or an already-cached "
+            "repo id; never downloaded. Tried before the model's own MTP head and the "
+            "cached companions discovery would pick."
         ),
     )
     n_parallel: Optional[int] = Field(
@@ -994,6 +1012,11 @@ class EstimateMemoryRequest(BaseModel):
     speculative_type: Optional[str] = Field(
         None, description = "Speculative mode; decides which drafter's weights are charged."
     )
+    spec_draft_model: Optional[str] = Field(
+        None,
+        max_length = 1024,
+        description = "MLX companion drafter intended for the follow-up load, as on /load.",
+    )
     spec_draft_n_max: Optional[int] = Field(
         None,
         ge = 1,
@@ -1082,6 +1105,28 @@ class Int8PrefillAvailabilityResponse(BaseModel):
         "'unsupported_zoo', or unsloth_zoo's own reason ('nax_unavailable', "
         "'no_eligible_projections', 'probe_failed').",
     )
+
+
+class MlxDraftersRequest(BaseModel):
+    model_path: str = Field(..., description = "Model identifier or local path of the target")
+
+    _resolve_the_handle = field_validator("model_path")(resolve_inventory_handle)
+
+
+class MlxDrafter(BaseModel):
+    repo_id: str = Field(..., description = "Cached Hugging Face repo, usable as spec_draft_model")
+    kind: str = Field(..., description = "'mtp', 'dflash', 'dspark' or 'eagle3'")
+    named: bool = Field(
+        True,
+        description = "Whether the repo is named for this model. False: it fits the model's "
+        "architecture only (another generation or a fine-tune), so Auto does not use it.",
+    )
+
+
+class MlxDraftersResponse(BaseModel):
+    """Cached drafters an MLX load of the target could name: those named for it first, in Auto's order."""
+
+    drafters: list[MlxDrafter] = Field(default_factory = list)
 
 
 class EstimateMemoryResponse(BaseModel):
@@ -1665,6 +1710,55 @@ class _InferenceRuntimeFields(BaseModel):
             "None when the platform default is in effect."
         ),
     )
+    spec_draft_model: Optional[str] = Field(
+        None,
+        description = "The companion drafter an MLX load was asked for; None elsewhere.",
+    )
+    spec_drafter_kind: Optional[str] = Field(
+        None,
+        description = (
+            "Which drafter the resolution was about: 'mtp', 'dspark' or "
+            "'dflash' ('eagle3' or 'ngram' too on MLX, where 'mtp' also names a Gemma "
+            "assistant). Needed "
+            "because Auto resolves the kind itself, so speculative_type still "
+            "reads 'auto', and a fallback leaves the engaged type at 'default': "
+            "neither still says which file the UI should tell the user to fix."
+        ),
+    )
+    spec_fallback_reason: Optional[str] = Field(
+        None,
+        description = (
+            "Why a speculative drafter was disabled despite being requested. "
+            "'binary_no_mtp' / 'binary_outdated' -> a newer prebuilt would "
+            "re-enable it (show the update affordance); 'runtime_error' -> the "
+            "current build could not run it; 'drafter_not_found' -> the model's "
+            "separate MTP or DSpark drafter could not be resolved; "
+            "'drafter_no_vram' -> an Auto-mode fit downgrade: the model pins on "
+            "GPU but the drafter's reserve does not, and Auto keeps the context "
+            "rather than shrink it; select the drafter in Settings to force it. "
+            "'mla_mtp_disabled' -> "
+            "an Auto-mode policy downgrade: the model is MLA (GLM-5.2 et al.) "
+            "whose llama.cpp MTP path runs slower than no speculation, so Auto "
+            "used ngram-mod or spec-off instead -- updating won't help; choose "
+            "MTP in Settings (or set UNSLOTH_MLA_MTP_ENABLED=1) to force it. "
+            "'mtp_partial_offload' -> an Auto-mode policy downgrade: the model "
+            "has an embedded Hybrid Mamba MTP head and the placement offloads "
+            "only part of it, where the recurrent rollback copies cost more "
+            "layers than the drafting wins back -- updating won't help; choose "
+            "MTP in Settings to force it. "
+            "MLX loads report 'drafter_not_found' (no drafter of the requested kind "
+            "is cached), 'drafter_incompatible' (the named or found drafter does not "
+            "fit this model), 'drafter_no_memory' (its weights and cache leave no "
+            "context that fits), 'kv_quant' (KV cache quantization is on) or "
+            "'runtime_error' (the installed MLX packages cannot speculate, or cannot "
+            "load this model the way speculation needs), also when a later drafter "
+            "or n-gram copies stood in for the one asked for. Under auto an MLX load "
+            "reports no refusal; it reports 'auto_context_cost' (a found drafter would "
+            "shrink the fitted context) or the drafter codes above for a named or "
+            "unbuildable drafter. "
+            "None when the requested strategy engaged or was not requested."
+        ),
+    )
     tensor_parallel: bool = Field(
         False,
         description = "Whether tensor-parallel split (--split-mode tensor) is active.",
@@ -2043,40 +2137,6 @@ class InferenceStatusResponse(_InferenceRuntimeFields):
         description = (
             "Whether llama.cpp supports MTP (--spec-type mtp/draft-mtp). "
             "False -> recommend `unsloth studio update`."
-        ),
-    )
-    spec_drafter_kind: Optional[str] = Field(
-        None,
-        description = (
-            "Which drafter the resolution was about: 'mtp', 'dspark' or "
-            "'dflash'. Needed "
-            "because Auto resolves the kind itself, so speculative_type still "
-            "reads 'auto', and a fallback leaves the engaged type at 'default': "
-            "neither still says which file the UI should tell the user to fix."
-        ),
-    )
-    spec_fallback_reason: Optional[str] = Field(
-        None,
-        description = (
-            "Why a speculative drafter was disabled despite being requested. "
-            "'binary_no_mtp' / 'binary_outdated' -> a newer prebuilt would "
-            "re-enable it (show the update affordance); 'runtime_error' -> the "
-            "current build could not run it; 'drafter_not_found' -> the model's "
-            "separate MTP or DSpark drafter could not be resolved; "
-            "'drafter_no_vram' -> an Auto-mode fit downgrade: the model pins on "
-            "GPU but the drafter's reserve does not, and Auto keeps the context "
-            "rather than shrink it; select the drafter in Settings to force it. "
-            "'mla_mtp_disabled' -> "
-            "an Auto-mode policy downgrade: the model is MLA (GLM-5.2 et al.) "
-            "whose llama.cpp MTP path runs slower than no speculation, so Auto "
-            "used ngram-mod or spec-off instead -- updating won't help; choose "
-            "MTP in Settings (or set UNSLOTH_MLA_MTP_ENABLED=1) to force it. "
-            "'mtp_partial_offload' -> an Auto-mode policy downgrade: the model "
-            "has an embedded Hybrid Mamba MTP head and the placement offloads "
-            "only part of it, where the recurrent rollback copies cost more "
-            "layers than the drafting wins back -- updating won't help; choose "
-            "MTP in Settings to force it. "
-            "None when the requested strategy engaged or was not requested."
         ),
     )
     spec_fallback_binary_changed: Optional[bool] = Field(

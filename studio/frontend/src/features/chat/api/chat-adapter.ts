@@ -48,6 +48,7 @@ import { loadManagedLlamaFlags } from "@/features/model-picker/api/llama-flags";
 import { fetchLoadExtraArgs } from "@/features/model-picker/api/model-overrides";
 import { sanitizeStoredExtraArgs } from "@/features/model-picker/model-config/llama-extra-args";
 import { usePlatformStore } from "@/config/env";
+import { resolveSpeculativeType } from "@/lib/speculative-modes";
 
 import { getSkillsSnapshot, settleSkillsForText } from "./skills-api";
 
@@ -2693,6 +2694,8 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "specFallbackReason",
   "specDraftNMax",
   "loadedSpecDraftNMax",
+  "specDraftModel",
+  "loadedSpecDraftModel",
 ] as const satisfies readonly (keyof ChatRuntimeState)[];
 
 type VisibleModelRuntimeState = Pick<
@@ -3657,10 +3660,25 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       config.customContextLength ?? null,
       effectiveMaxSeqLength,
     );
-    const effectiveSpeculativeType =
-      config.speculativeType ?? specSettings.speculativeType;
+    const candidateIsMlx = isServedByMlx(
+      candidate.kind === "gguf",
+      platform.deviceType,
+      platform.chatOnlyReason,
+    );
+    // MLX falls back to the standing preference: the live store may hold another model's settings.
+    const standingSpec = candidateIsMlx
+      ? resolveSpeculativeSettingsForLoad({ usePersistedPreference: true })
+      : specSettings;
+    const effectiveSpeculativeType = resolveSpeculativeType(
+      config.speculativeType,
+      standingSpec.speculativeType ?? "auto",
+      candidateIsMlx,
+    );
     const effectiveSpecDraftNMax =
-      config.specDraftNMax ?? specSettings.specDraftNMax;
+      config.specDraftNMax ?? standingSpec.specDraftNMax;
+    const mlxDrafter = candidateIsMlx
+      ? { spec_draft_model: config.specDraftModel ?? null }
+      : {};
     const effectiveChatTemplateOverride = config.chatTemplateOverride?.trim()
       ? config.chatTemplateOverride
       : null;
@@ -3735,6 +3753,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       mlx_int8_prefill: config.mlxInt8Prefill ?? false,
       speculative_type: effectiveSpeculativeType,
       spec_draft_n_max: effectiveSpecDraftNMax,
+      ...mlxDrafter,
       reasoning_budget:
         candidate.kind === "gguf" && !isDiffusion ? config.reasoningBudget : -1,
       reasoning_budget_message:
@@ -3773,8 +3792,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     options?.abortSignal?.throwIfAborted();
     applyAutoLoadRuntimeState(options, () => {
       // Persist the global preference only when the value came from global settings, or autoloading
-      // a remembered model rewrites the default.
-      if (config.speculativeType == null) {
+      // a remembered model rewrites the default. MLX only reads it.
+      if (config.speculativeType == null && !candidateIsMlx) {
         saveSpeculativeType(effectiveSpeculativeType);
       }
       // Self-gates on is_gguf (skips diffusion), so persists only for a real GGUF load.

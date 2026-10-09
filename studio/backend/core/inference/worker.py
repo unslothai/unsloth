@@ -741,6 +741,10 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 load_kwargs["distributed_group"] = config.get("_mlx_distributed_group")
                 load_kwargs["kv_quant"] = config.get("mlx_kv_quant")
                 load_kwargs["int8_prefill"] = bool(config.get("mlx_int8_prefill"))
+                load_kwargs["speculative_type"] = config.get("speculative_type")
+                load_kwargs["spec_draft_n_max"] = config.get("spec_draft_n_max")
+                load_kwargs["spec_draft_model"] = config.get("spec_draft_model")
+                load_kwargs["spec_drafters_allowed"] = config.get("spec_drafters_allowed")
                 load_kwargs["chat_template_override"] = config.get("chat_template_override")
             success = backend.load_model(**load_kwargs)
         finally:
@@ -829,6 +833,11 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                         "mlx_int8_prefill_reason",
                         "chat_template_override_requested",
                         "chat_template_override_reason",
+                        "speculative_type",
+                        "spec_draft_n_max",
+                        "spec_draft_model",
+                        "spec_drafter_kind",
+                        "spec_fallback_reason",
                     )
                     if k in _entry
                 }
@@ -952,6 +961,9 @@ class _Stops:
 
     def __contains__(self, request_id) -> bool:
         return request_id in self._stopped
+
+    def unread(self) -> bool:
+        return self._ledger is not None and self._ledger.snapshot(self._written)[1] is not None
 
 
 class _StopWhileItRuns:
@@ -1474,11 +1486,11 @@ class _ResidentBatch:
             if request_id in stopped:
                 self.cancel(request_id)
 
-    def step(self) -> None:
+    def step(self, waiting = None) -> None:
         if self.session is None or not self.session.rows_in_flight:
             return
         try:
-            for handle, snapshot in self.session.step():
+            for handle, snapshot in self.session.step(waiting):
                 self._report(handle, snapshot)
         except Exception as exc:
             logger.error("Batched generation error: %s", exc, exc_info = True)
@@ -2065,6 +2077,7 @@ def run_inference_process(
         warmth = _MLXIdleWarmth()
         deferred: list[dict] = []
         stops = _Stops(stop_ledger, resp_queue, batch, deferred)
+        waiting = lambda: stops.unread() or not cmd_queue.empty()
         if stop_ledger is not None:
             stop_ledger.worker_reads_this()
         while True:
@@ -2073,7 +2086,7 @@ def run_inference_process(
             if not tearing_down:
                 if batch.rows_in_flight:
                     warmth.active()
-                batch.step()
+                batch.step(waiting)
             from_deferred = False
             if _held_head_leaves_the_hold(batch, deferred):
                 cmd = deferred.pop(0)

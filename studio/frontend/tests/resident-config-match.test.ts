@@ -720,6 +720,27 @@ test("a binary stand-down that cannot repair does not decline the shortcut", () 
   );
 });
 
+test("an MLX resident is judged on its speculative settings, a standing ngram reading as auto", () => {
+  const mlx = { ...DEFAULTS, is_gguf: false, is_mlx: true, speculative_type: "auto" };
+  const ngram = { ...STANDING, speculativeType: "ngram" };
+  assert.equal(matches(mlx, BLANK, ngram), true);
+  assert.equal(matches({ ...mlx, speculative_type: "ngram" }, BLANK, ngram), false);
+  assert.equal(matches(mlx, { ...BLANK, speculativeType: "eagle3" }), false);
+  const drafted = { ...BLANK, speculativeType: "auto", specDraftModel: "o/d" };
+  assert.equal(matches({ ...mlx, spec_draft_model: "o/d" }, drafted), true);
+  assert.equal(matches(mlx, drafted), false);
+  const deep = { ...BLANK, speculativeType: "mtp", specDraftNMax: 6 };
+  assert.equal(matches({ ...mlx, speculative_type: "mtp", spec_draft_n_max: 6 }, deep), true);
+  assert.equal(matches({ ...mlx, speculative_type: "mtp", spec_draft_n_max: 4 }, deep), false);
+  // An MLX load reads "+ngram" as its kind, which already copies; GGUF keeps the two apart.
+  const copying = { ...BLANK, speculativeType: "mtp+ngram" };
+  assert.equal(matches({ ...mlx, speculative_type: "mtp" }, copying), true);
+  assert.equal(matches({ ...DEFAULTS, speculative_type: "mtp" }, copying), false);
+  // llama.cpp's retry arms: an identical MLX load dedupes.
+  const notFound = { ...mlx, spec_fallback_reason: "drafter_not_found" };
+  assert.equal(residentSpeculativeNeedsRepair(notFound, "auto"), false);
+});
+
 test("a non-GGUF resident is not judged on a GGUF invocation field", () => {
   // requested_context_length is set only by the llama.cpp path. A safetensors or MLX
   // status never carries it, and the resolver answers the generation length for a
