@@ -849,7 +849,9 @@ function collectImageParts(
     parts.push({
       type: "image_url",
       image_url: {
-        url: src.startsWith("data:") ? src : `data:image/png;base64,${src}`,
+        url: /^(?:data:|https?:\/\/)/i.test(src)
+          ? src
+          : `data:image/png;base64,${src}`,
       },
     });
   };
