@@ -2,8 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
+  type GeminiAnswerReplayPart,
   type GeminiContinuationReplayTurn,
   type GeminiThoughtReplayPart,
+  parseGeminiAnswerReplayParts,
   parseGeminiContinuationReplayTurns,
   parseGeminiThoughtReplayParts,
 } from "../gemini-thought-replay.ts";
@@ -388,6 +390,8 @@ export type ContinuationRequest = {
   thoughtSignature?: string;
   /** Signed Gemini thought-summary parts from the turn being resumed. */
   thoughtParts?: GeminiThoughtReplayPart[];
+  /** Exact Gemini answer-part boundaries from the turn being resumed. */
+  answerParts?: GeminiAnswerReplayPart[];
   /** Gemini responses hidden behind the merged continuation bubble, in provider order. */
   geminiReplayTurns?: GeminiContinuationReplayTurn[];
   providerCompaction?: ProviderCompactionContentPart;
@@ -465,6 +469,7 @@ export function readContinuationRequest(
         reasoningDuration?: unknown;
         thoughtSignature?: unknown;
         thoughtParts?: unknown;
+        answerParts?: unknown;
         geminiReplayTurns?: unknown;
         providerCompaction?: unknown;
         providerCompactionAfterToolCalls?: unknown;
@@ -484,6 +489,7 @@ export function readContinuationRequest(
   const duration = request?.reasoningDuration;
   const signature = request?.thoughtSignature;
   const thoughtParts = parseGeminiThoughtReplayParts(request?.thoughtParts);
+  const answerParts = parseGeminiAnswerReplayParts(request?.answerParts);
   const geminiReplayTurns = parseGeminiContinuationReplayTurns(
     request?.geminiReplayTurns,
   );
@@ -500,6 +506,7 @@ export function readContinuationRequest(
       ? { thoughtSignature: signature }
       : {}),
     ...(thoughtParts.length > 0 ? { thoughtParts } : {}),
+    ...(answerParts.length > 0 ? { answerParts } : {}),
     ...(geminiReplayTurns.length > 0 ? { geminiReplayTurns } : {}),
     ...providerCompactionFields(request),
   };

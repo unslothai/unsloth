@@ -10,10 +10,20 @@ export type PositionedGeminiThoughtReplayPart = GeminiThoughtReplayPart & {
   afterToolCalls: number;
 };
 
+export type GeminiAnswerReplayPart = {
+  text: string;
+  thoughtSignature?: string;
+};
+
+export type PositionedGeminiAnswerReplayPart = GeminiAnswerReplayPart & {
+  afterToolCalls: number;
+};
+
 export type GeminiContinuationReplayTurn = {
   text: string;
   thoughtSignature?: string;
   thoughtParts?: GeminiThoughtReplayPart[];
+  answerParts?: GeminiAnswerReplayPart[];
 };
 
 export type GeminiContinuationReplay = {
@@ -31,6 +41,7 @@ type ReplayableMessagePart = {
   text?: unknown;
   _google_thought_signature?: unknown;
   _google_thought_parts?: unknown;
+  _google_answer_parts?: unknown;
 };
 
 export function appendGeminiThoughtReplayPart(
@@ -68,6 +79,14 @@ export function pinGeminiTextThoughtSignature<T extends { type: string }>(
     break;
   }
   return parts;
+}
+
+export function appendGeminiAnswerReplayPart(
+  parts: PositionedGeminiAnswerReplayPart[],
+  part: GeminiAnswerReplayPart,
+  afterToolCalls: number,
+): void {
+  parts.push({ ...part, afterToolCalls });
 }
 
 function replayPlacement<T extends { type: string }>(
@@ -131,6 +150,47 @@ export function pinGeminiThoughtReplayParts<T extends { type: string }>(
   return parts;
 }
 
+export function pinGeminiAnswerReplayParts<T extends { type: string }>(
+  parts: T[],
+  answerParts: PositionedGeminiAnswerReplayPart[],
+): T[] {
+  if (answerParts.length === 0) return parts;
+  const byToolRound = new Map<number, GeminiAnswerReplayPart[]>();
+  for (const { afterToolCalls, text, thoughtSignature } of answerParts) {
+    const round = byToolRound.get(afterToolCalls) ?? [];
+    round.push({ text, ...(thoughtSignature ? { thoughtSignature } : {}) });
+    byToolRound.set(afterToolCalls, round);
+  }
+  for (const [afterToolCalls, replayMetadata] of byToolRound) {
+    let toolCallsSeen = 0;
+    let targetIndex = -1;
+    let insertIndex = parts.length;
+    for (let index = 0; index < parts.length; index += 1) {
+      const type = parts[index].type;
+      if (type === "tool-call") {
+        if (toolCallsSeen === afterToolCalls) insertIndex = index;
+        toolCallsSeen += 1;
+      } else if (toolCallsSeen === afterToolCalls) {
+        if (type === "text") targetIndex = index;
+        insertIndex = index + 1;
+      }
+    }
+    if (targetIndex === -1) {
+      parts.splice(insertIndex, 0, {
+        type: "text",
+        text: "",
+        _google_answer_parts: replayMetadata,
+      } as unknown as T);
+    } else {
+      parts[targetIndex] = {
+        ...parts[targetIndex],
+        _google_answer_parts: replayMetadata,
+      } as T;
+    }
+  }
+  return parts;
+}
+
 export function parseGeminiThoughtReplayParts(
   value: unknown,
 ): GeminiThoughtReplayPart[] {
@@ -155,6 +215,28 @@ export function parseGeminiThoughtReplayParts(
   });
 }
 
+export function parseGeminiAnswerReplayParts(
+  value: unknown,
+): GeminiAnswerReplayPart[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
+    const record = entry as Record<string, unknown>;
+    if (typeof record.text !== "string") return [];
+    const thoughtSignature = record.thoughtSignature;
+    if (
+      thoughtSignature !== undefined &&
+      (typeof thoughtSignature !== "string" || !thoughtSignature)
+    ) {
+      return [];
+    }
+    return [{
+      text: record.text,
+      ...(typeof thoughtSignature === "string" ? { thoughtSignature } : {}),
+    }];
+  });
+}
+
 export function geminiThoughtReplayParts(
   part: ReplayableMessagePart,
 ): GeminiThoughtReplayPart[] {
@@ -174,6 +256,23 @@ export function collectGeminiThoughtReplayParts(
   );
 }
 
+export function geminiAnswerReplayParts(
+  part: ReplayableMessagePart,
+): GeminiAnswerReplayPart[] {
+  return parseGeminiAnswerReplayParts(part._google_answer_parts);
+}
+
+export function collectGeminiAnswerReplayParts(
+  content: readonly unknown[] | undefined,
+): GeminiAnswerReplayPart[] {
+  if (!content) return [];
+  return content.flatMap((part) =>
+    part && typeof part === "object" && !Array.isArray(part)
+      ? geminiAnswerReplayParts(part as ReplayableMessagePart)
+      : [],
+  );
+}
+
 function parseGeminiContinuationReplayTurn(
   value: unknown,
 ): GeminiContinuationReplayTurn | null {
@@ -185,6 +284,7 @@ function parseGeminiContinuationReplayTurn(
     return null;
   }
   const thoughtParts = parseGeminiThoughtReplayParts(record.thoughtParts);
+  const answerParts = parseGeminiAnswerReplayParts(record.answerParts);
   const thoughtSignature = record.thoughtSignature;
   return {
     text: record.text,
@@ -192,6 +292,7 @@ function parseGeminiContinuationReplayTurn(
       ? { thoughtSignature }
       : {}),
     ...(thoughtParts.length > 0 ? { thoughtParts } : {}),
+    ...(answerParts.length > 0 ? { answerParts } : {}),
   };
 }
 
@@ -235,7 +336,9 @@ export function continuationGeminiReplayTurns(
 ): GeminiContinuationReplayTurn[] {
   const replay = readGeminiContinuationReplay(metadata);
   const hasSignedCurrentPart = Boolean(
-    current.thoughtSignature || (current.thoughtParts?.length ?? 0) > 0,
+    current.thoughtSignature ||
+      (current.thoughtParts?.length ?? 0) > 0 ||
+      (current.answerParts?.length ?? 0) > 0,
   );
   if (!replay && !hasSignedCurrentPart) {
     return [];
@@ -248,7 +351,8 @@ export function continuationGeminiReplayTurns(
   const hasCurrentTurn = Boolean(
     currentTurn.text ||
       currentTurn.thoughtSignature ||
-      (currentTurn.thoughtParts?.length ?? 0) > 0,
+      (currentTurn.thoughtParts?.length ?? 0) > 0 ||
+      (currentTurn.answerParts?.length ?? 0) > 0,
   );
   return [...(replay?.turns ?? []), ...(hasCurrentTurn ? [currentTurn] : [])];
 }
@@ -291,6 +395,31 @@ export function withGeminiThoughtReplayParts(
       thought_parts: thoughtParts.map((part) => ({
         text: part.text,
         thought_signature: part.thoughtSignature,
+      })),
+    },
+  };
+}
+
+export function withGeminiAnswerReplayParts(
+  extraContent: unknown,
+  answerParts: GeminiAnswerReplayPart[],
+): unknown {
+  if (answerParts.length === 0) return extraContent;
+  const extra =
+    extraContent && typeof extraContent === "object" && !Array.isArray(extraContent)
+      ? (extraContent as Record<string, unknown>)
+      : {};
+  const google =
+    extra.google && typeof extra.google === "object" && !Array.isArray(extra.google)
+      ? (extra.google as Record<string, unknown>)
+      : {};
+  return {
+    ...extra,
+    google: {
+      ...google,
+      answer_parts: answerParts.map((part) => ({
+        text: part.text,
+        ...(part.thoughtSignature ? { thought_signature: part.thoughtSignature } : {}),
       })),
     },
   };

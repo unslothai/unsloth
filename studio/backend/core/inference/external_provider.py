@@ -4251,9 +4251,9 @@ class ExternalProviderClient:
                 if isinstance(_msg_extra, dict):
                     _msg_g = _msg_extra.get("google") or {}
                     if isinstance(_msg_g, dict):
+                        _replayed_thoughts: list[dict[str, Any]] = []
                         _signed_thoughts = _msg_g.get("thought_parts")
                         if isinstance(_signed_thoughts, list):
-                            _replayed_thoughts: list[dict[str, Any]] = []
                             for _signed_thought in _signed_thoughts:
                                 if not isinstance(_signed_thought, dict):
                                     continue
@@ -4272,9 +4272,38 @@ class ExternalProviderClient:
                                         "thoughtSignature": _thought_sig,
                                     }
                                 )
+                        _signed_answers = _msg_g.get("answer_parts")
+                        _replayed_answers: list[dict[str, Any]] = []
+                        if isinstance(_signed_answers, list):
+                            for _signed_answer in _signed_answers:
+                                if not isinstance(_signed_answer, dict):
+                                    continue
+                                _answer_text = _signed_answer.get("text")
+                                _answer_sig = _signed_answer.get(
+                                    "thought_signature"
+                                ) or _signed_answer.get("thoughtSignature")
+                                if not isinstance(_answer_text, str):
+                                    continue
+                                if _answer_sig is not None and (
+                                    not isinstance(_answer_sig, str) or not _answer_sig
+                                ):
+                                    continue
+                                _answer_part: dict[str, Any] = {"text": _answer_text}
+                                if isinstance(_answer_sig, str):
+                                    _answer_part["thoughtSignature"] = _answer_sig
+                                _replayed_answers.append(_answer_part)
+                        if _replayed_answers:
+                            # `content` is the UI's merged rendering of these exact native parts. Replace its text
+                            # rather than appending a second copy, and keep empty signature-only parts intact.
+                            parts = [
+                                *_replayed_thoughts,
+                                *_replayed_answers,
+                                *(part for part in parts if "text" not in part),
+                            ]
+                        else:
                             parts[:0] = _replayed_thoughts
                         _msg_sig = _msg_g.get("thought_signature") or _msg_g.get("thoughtSignature")
-                        if isinstance(_msg_sig, str) and _msg_sig:
+                        if not _replayed_answers and isinstance(_msg_sig, str) and _msg_sig:
                             for _idx in range(len(parts) - 1, -1, -1):
                                 if "text" in parts[_idx]:
                                     parts[_idx] = {
@@ -4925,17 +4954,39 @@ class ExternalProviderClient:
             return f"data: {_json.dumps(chunk)}"
 
         def _gemini_part_extra(part: dict[str, Any]) -> Optional[dict[str, Any]]:
-            """Return ``{"google": {"thought_signature": ...}}`` when the Gemini stream part carries
-            a `thoughtSignature` we must replay on a follow-up turn (Gemini 3 image editing and
-            tool contexts both require an exact signature echo). Mark thought-summary signatures
-            so clients can keep them bound to reasoning rather than answer text."""
+            """Return replay metadata for one Gemini native stream part.
+
+            Answer parts keep their exact boundaries, including unsigned text beside signed text and
+            signature-only empty parts. Gemini validates a signature against the part it originally signed,
+            so collapsing these to one scalar signature corrupts follow-up history.
+            """
             sig = part.get("thoughtSignature") or part.get("thought_signature")
-            if isinstance(sig, str) and sig:
-                google: dict[str, Any] = {"thought_signature": sig}
-                if part.get("thought") is True:
+            valid_sig = sig if isinstance(sig, str) and sig else None
+            google: dict[str, Any] = {}
+            if valid_sig is not None:
+                google["thought_signature"] = valid_sig
+            if part.get("thought") is True:
+                if valid_sig is not None:
                     google["thought"] = True
-                return {"google": google}
-            return None
+            elif (
+                "text" in part and isinstance(part.get("text"), str)
+            ) or (
+                valid_sig is not None
+                and not any(
+                    key in part
+                    for key in (
+                        "functionCall",
+                        "executableCode",
+                        "codeExecutionResult",
+                        "inlineData",
+                    )
+                )
+            ):
+                answer_part: dict[str, Any] = {"text": part.get("text", "")}
+                if valid_sig is not None:
+                    answer_part["thought_signature"] = valid_sig
+                google["answer_part"] = answer_part
+            return {"google": google} if google else None
 
         # Gemini finish reasons -> OpenAI vocabulary.
         _finish_reason_map: dict[str, Optional[str]] = {

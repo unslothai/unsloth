@@ -625,6 +625,26 @@ test("a continuation carries the Gemini signature of the turn it resumes", () =>
     }),
     { partial: "half", thoughtSignature: "SIG" },
   );
+  assert.deepEqual(
+    readContinuationRequest({
+      custom: {
+        unslothContinuation: {
+          partial: "half",
+          answerParts: [
+            { text: "half" },
+            { text: "", thoughtSignature: "SIG-END" },
+          ],
+        },
+      },
+    }),
+    {
+      partial: "half",
+      answerParts: [
+        { text: "half" },
+        { text: "", thoughtSignature: "SIG-END" },
+      ],
+    },
+  );
   // An unsigned turn stays unsigned rather than gaining an empty key.
   assert.deepEqual(
     readContinuationRequest({

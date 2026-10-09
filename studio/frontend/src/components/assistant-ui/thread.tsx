@@ -182,6 +182,7 @@ import { toolStatusKind } from "@/features/chat/utils/tool-status";
 import { replySourceMarkdown } from "@/features/chat/utils/reply-source-markdown";
 import { toolResultModelText } from "@/features/chat/api/chat-adapter";
 import {
+  collectGeminiAnswerReplayParts,
   collectGeminiThoughtReplayParts,
   continuationGeminiReplayTurns,
 } from "@/features/chat/gemini-thought-replay";
@@ -7503,14 +7504,19 @@ function useContinuation() {
     () => collectGeminiThoughtReplayParts(messageContent),
     [messageContent],
   );
+  const answerParts = useMemo(
+    () => collectGeminiAnswerReplayParts(messageContent),
+    [messageContent],
+  );
   const geminiReplayTurns = useMemo(
     () =>
       continuationGeminiReplayTurns(metadata, {
         text: partial,
         ...(thoughtSignature ? { thoughtSignature } : {}),
         ...(thoughtParts.length > 0 ? { thoughtParts } : {}),
+        ...(answerParts.length > 0 ? { answerParts } : {}),
       }),
-    [metadata, partial, thoughtSignature, thoughtParts],
+    [metadata, partial, thoughtSignature, thoughtParts, answerParts],
   );
   // Audio input re-listens to the recording and answers afresh rather than resuming,
   // so continuing there would append a second answer.
@@ -7561,6 +7567,7 @@ function useContinuation() {
       ...(carriedReasoning ? { reasoning: carriedReasoning, reasoningDuration } : {}),
       ...(thoughtSignature ? { thoughtSignature } : {}),
       ...(thoughtParts.length > 0 ? { thoughtParts } : {}),
+      ...(answerParts.length > 0 ? { answerParts } : {}),
       ...(geminiReplayTurns.length > 0 ? { geminiReplayTurns } : {}),
       ...providerCompactionContinuationFields(metadata),
     };
@@ -7578,6 +7585,7 @@ function useContinuation() {
     reasoningDuration,
     thoughtSignature,
     thoughtParts,
+    answerParts,
     geminiReplayTurns,
     metadata,
   ]);

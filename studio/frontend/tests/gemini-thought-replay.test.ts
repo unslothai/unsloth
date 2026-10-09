@@ -5,16 +5,22 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  type GeminiAnswerReplayPart,
   type GeminiThoughtReplayPart,
+  type PositionedGeminiAnswerReplayPart,
   type PositionedGeminiThoughtReplayPart,
+  appendGeminiAnswerReplayPart,
   appendGeminiThoughtReplayPart,
+  collectGeminiAnswerReplayParts,
   collectGeminiThoughtReplayParts,
   continuationGeminiReplayTurns,
   geminiContinuationReplayEntries,
   geminiThoughtReplayParts,
+  pinGeminiAnswerReplayParts,
   pinGeminiTextThoughtSignature,
   pinGeminiThoughtReplayParts,
   readGeminiContinuationReplay,
+  withGeminiAnswerReplayParts,
   withGeminiThoughtReplayParts,
 } from "../src/features/chat/gemini-thought-replay.ts";
 import { readSrc } from "./helpers/kit.ts";
@@ -27,7 +33,7 @@ const CAPTURE_THOUGHT_PARTS =
 const FLUSH_BEFORE_REPLAY_CAPTURE =
   /if \(part\.type === "reasoning"\) \{[\s\S]{0,180}flushAssistantAndToolResults\(\);[\s\S]{0,180}pendingGeminiThoughtParts\.push/;
 const PIN_TEXT_SIGNATURE =
-  /pinGeminiTextThoughtSignature\([\s\S]*latestGeminiTextSignature,[\s\S]*\)/;
+  /pinGeminiTextThoughtSignature\([\s\S]*legacyGeminiTextSignature,[\s\S]*\)/;
 
 test("every signed thought stays separate from signed answer text", () => {
   const parts: Array<{
@@ -83,6 +89,44 @@ test("signed thoughts use a separate replay envelope from signed answer text", (
   });
 });
 
+test("signed and unsigned Gemini answer-part boundaries replay exactly", () => {
+  const parts: Array<{
+    type: string;
+    text?: string;
+    _google_answer_parts?: GeminiAnswerReplayPart[];
+  }> = [{ type: "text", text: "firstsecond" }];
+  const answerParts: PositionedGeminiAnswerReplayPart[] = [];
+  appendGeminiAnswerReplayPart(answerParts, { text: "first" }, 0);
+  appendGeminiAnswerReplayPart(
+    answerParts,
+    { text: "second", thoughtSignature: "SIG-SECOND" },
+    0,
+  );
+  appendGeminiAnswerReplayPart(
+    answerParts,
+    { text: "", thoughtSignature: "SIG-EMPTY" },
+    0,
+  );
+  pinGeminiAnswerReplayParts(parts, answerParts);
+  assert.deepEqual(collectGeminiAnswerReplayParts(parts), [
+    { text: "first" },
+    { text: "second", thoughtSignature: "SIG-SECOND" },
+    { text: "", thoughtSignature: "SIG-EMPTY" },
+  ]);
+  assert.deepEqual(
+    withGeminiAnswerReplayParts(undefined, collectGeminiAnswerReplayParts(parts)),
+    {
+      google: {
+        answer_parts: [
+          { text: "first" },
+          { text: "second", thought_signature: "SIG-SECOND" },
+          { text: "", thought_signature: "SIG-EMPTY" },
+        ],
+      },
+    },
+  );
+});
+
 test("continued Gemini turns keep the hidden user boundary", () => {
   const metadata = {
     custom: {
@@ -93,6 +137,10 @@ test("continued Gemini turns keep the hidden user boundary", () => {
             thoughtSignature: "SIG-ANSWER-1",
             thoughtParts: [
               { text: "first thought", thoughtSignature: "SIG-THOUGHT-1" },
+            ],
+            answerParts: [
+              { text: "first answer" },
+              { text: "", thoughtSignature: "SIG-ANSWER-1" },
             ],
           },
         ],
@@ -109,6 +157,10 @@ test("continued Gemini turns keep the hidden user boundary", () => {
         thoughtSignature: "SIG-ANSWER-1",
         thoughtParts: [
           { text: "first thought", thoughtSignature: "SIG-THOUGHT-1" },
+        ],
+        answerParts: [
+          { text: "first answer" },
+          { text: "", thoughtSignature: "SIG-ANSWER-1" },
         ],
       },
     ],
@@ -129,6 +181,10 @@ test("continued Gemini turns keep the hidden user boundary", () => {
         thoughtSignature: "SIG-ANSWER-1",
         thoughtParts: [
           { text: "first thought", thoughtSignature: "SIG-THOUGHT-1" },
+        ],
+        answerParts: [
+          { text: "first answer" },
+          { text: "", thoughtSignature: "SIG-ANSWER-1" },
         ],
       },
       {

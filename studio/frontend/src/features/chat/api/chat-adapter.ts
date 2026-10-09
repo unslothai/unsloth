@@ -180,14 +180,20 @@ import {
 import {
   type GeminiContinuationReplay,
   type GeminiContinuationReplayTurn,
+  type GeminiAnswerReplayPart,
   type GeminiThoughtReplayPart,
+  type PositionedGeminiAnswerReplayPart,
   type PositionedGeminiThoughtReplayPart,
+  appendGeminiAnswerReplayPart,
   appendGeminiThoughtReplayPart,
+  geminiAnswerReplayParts,
   geminiContinuationReplayEntries,
   geminiThoughtReplayParts,
+  pinGeminiAnswerReplayParts,
   pinGeminiTextThoughtSignature,
   pinGeminiThoughtReplayParts,
   readGeminiContinuationReplay,
+  withGeminiAnswerReplayParts,
   withGeminiThoughtReplayParts,
 } from "../gemini-thought-replay";
 
@@ -1403,11 +1409,11 @@ function serializeGeminiContinuationTurns(
     const assistant: SerializedMessage = {
       role: "assistant",
       content: turn.text,
-      ...(turn.thoughtParts?.length
+      ...(turn.thoughtParts?.length || turn.answerParts?.length
         ? {
-            extra_content: withGeminiThoughtReplayParts(
-              undefined,
-              turn.thoughtParts,
+            extra_content: withGeminiAnswerReplayParts(
+              withGeminiThoughtReplayParts(undefined, turn.thoughtParts ?? []),
+              turn.answerParts ?? [],
             ),
           }
         : {}),
@@ -1490,6 +1496,7 @@ function serializeAssistantReplayMessages(
   let pendingToolCalls: SerializedToolCall[] = [];
   let pendingToolResults: SerializedToolResult[] = [];
   let pendingGeminiThoughtParts: GeminiThoughtReplayPart[] = [];
+  let pendingGeminiAnswerParts: GeminiAnswerReplayPart[] = [];
   let imagePartsPending = imageParts.length > 0;
 
   let pendingLocalToolRoundId: number | null = null;
@@ -1502,6 +1509,7 @@ function serializeAssistantReplayMessages(
     const hasContent = textContent.length > 0 || includeImageParts.length > 0;
     const hasToolCalls = pendingToolCalls.length > 0;
     const hasGeminiThoughtParts = pendingGeminiThoughtParts.length > 0;
+    const hasGeminiAnswerParts = pendingGeminiAnswerParts.length > 0;
     const reasoningContent = pendingReasoningParts.join("\n");
     const incomplete =
       message.status?.type === "incomplete" ||
@@ -1519,7 +1527,8 @@ function serializeAssistantReplayMessages(
       !hasContent &&
       !hasToolCalls &&
       !hasReasoningContent &&
-      !hasGeminiThoughtParts
+      !hasGeminiThoughtParts &&
+      !hasGeminiAnswerParts
     ) {
       return;
     }
@@ -1544,6 +1553,12 @@ function serializeAssistantReplayMessages(
       assistantMessage.extra_content = withGeminiThoughtReplayParts(
         assistantMessage.extra_content,
         pendingGeminiThoughtParts,
+      );
+    }
+    if (hasGeminiAnswerParts) {
+      assistantMessage.extra_content = withGeminiAnswerReplayParts(
+        assistantMessage.extra_content,
+        pendingGeminiAnswerParts,
       );
     }
 
@@ -1574,6 +1589,7 @@ function serializeAssistantReplayMessages(
     pendingToolCalls = [];
     pendingToolResults = [];
     pendingGeminiThoughtParts = [];
+    pendingGeminiAnswerParts = [];
     imagePartsPending = false;
 
     pendingLocalToolRoundId = null;
@@ -1594,6 +1610,7 @@ function serializeAssistantReplayMessages(
         flushAssistantAndToolResults();
       }
       pendingGeminiThoughtParts.push(...geminiThoughtReplayParts(part));
+      pendingGeminiAnswerParts.push(...geminiAnswerReplayParts(part));
       pendingTextParts.push(part.text);
       continue;
     }
@@ -6154,12 +6171,19 @@ export function createOpenAIStreamAdapter(
           toolCallParts[toolCallParts.length - 1]?.toolCallId ?? "",
           () => `${backendToolCallId}:${crypto.randomUUID()}`,
         );
-      let latestGeminiTextSignature: string | undefined;
+      let legacyGeminiTextSignature: string | undefined;
       let pendingGeminiThoughtText = "";
       const geminiThoughtParts: PositionedGeminiThoughtReplayPart[] =
         geminiContinuationReplayTurns
           ? []
           : (continuation?.thoughtParts?.map((part) => ({
+              ...part,
+              afterToolCalls: 0,
+            })) ?? []);
+      const geminiAnswerParts: PositionedGeminiAnswerReplayPart[] =
+        geminiContinuationReplayTurns
+          ? []
+          : (continuation?.answerParts?.map((part) => ({
               ...part,
               afterToolCalls: 0,
             })) ?? []);
@@ -6206,9 +6230,12 @@ export function createOpenAIStreamAdapter(
         assembled.push(...runs[boundaries.length]);
 
         pinGeminiThoughtReplayParts(assembled, geminiThoughtParts);
+        pinGeminiAnswerReplayParts(assembled, geminiAnswerParts);
         return pinGeminiTextThoughtSignature(
           assembled,
-          latestGeminiTextSignature,
+          geminiAnswerParts.length > 0
+            ? undefined
+            : legacyGeminiTextSignature,
         );
       };
 
@@ -7746,13 +7773,42 @@ export function createOpenAIStreamAdapter(
                 if (eGoogle && typeof eGoogle === "object") {
                   const googleRecord = eGoogle as Record<string, unknown>;
                   const sig = googleRecord.thought_signature;
+                  const answerPart = googleRecord.answer_part;
+                  let capturedAnswerPart = false;
+                  if (
+                    answerPart &&
+                    typeof answerPart === "object" &&
+                    !Array.isArray(answerPart)
+                  ) {
+                    const answerRecord = answerPart as Record<string, unknown>;
+                    const answerText = answerRecord.text;
+                    const answerSignature = answerRecord.thought_signature;
+                    if (
+                      typeof answerText === "string" &&
+                      (answerSignature === undefined ||
+                        (typeof answerSignature === "string" && answerSignature))
+                    ) {
+                      appendGeminiAnswerReplayPart(
+                        geminiAnswerParts,
+                        {
+                          text: answerText,
+                          ...(typeof answerSignature === "string"
+                            ? { thoughtSignature: answerSignature }
+                            : {}),
+                        },
+                        toolCallParts.length,
+                      );
+                      capturedAnswerPart = true;
+                      replayStateChanged = true;
+                    }
+                  }
                   if (typeof sig === "string" && sig) {
                     const belongsToThought = googleRecord.thought === true;
                     if (belongsToThought) {
                       geminiThoughtSignature = sig;
-                    } else {
-                      replayStateChanged ||= sig !== latestGeminiTextSignature;
-                      latestGeminiTextSignature = sig;
+                    } else if (!capturedAnswerPart) {
+                      replayStateChanged ||= sig !== legacyGeminiTextSignature;
+                      legacyGeminiTextSignature = sig;
                     }
                   }
                 }

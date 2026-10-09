@@ -1397,9 +1397,43 @@ def test_empty_text_part_with_thought_signature_emits_extra_content(monkeypatch)
         for c in chunks
         if c.get("choices")
         and c["choices"][0]["delta"].get("extra_content")
-        == {"google": {"thought_signature": "SIG-FINAL"}}
+        == {
+            "google": {
+                "thought_signature": "SIG-FINAL",
+                "answer_part": {"text": "", "thought_signature": "SIG-FINAL"},
+            }
+        }
     ]
     assert extra_carriers, chunks
+
+
+def test_answer_part_boundaries_surface_even_when_unsigned(monkeypatch):
+    sse = [
+        _event(
+            [
+                {"text": "first"},
+                {"text": "second", "thoughtSignature": "SIG-SECOND"},
+                {"thoughtSignature": "SIG-EMPTY"},
+            ],
+            usage = {"promptTokenCount": 2, "candidatesTokenCount": 2},
+        ),
+    ]
+    deltas = [
+        chunk["choices"][0]["delta"]
+        for chunk in _parse_chunks(_collect(monkeypatch, sse))
+        if chunk.get("choices") and chunk["choices"][0].get("delta")
+    ]
+    answer_parts = [
+        delta["extra_content"]["google"]["answer_part"]
+        for delta in deltas
+        if (delta.get("extra_content") or {}).get("google", {}).get("answer_part")
+        is not None
+    ]
+    assert answer_parts == [
+        {"text": "first"},
+        {"text": "second", "thought_signature": "SIG-SECOND"},
+        {"text": "", "thought_signature": "SIG-EMPTY"},
+    ]
 
 
 def test_enable_prompt_caching_false_string_coerces_to_bool():
@@ -1838,7 +1872,12 @@ def test_text_chunk_carries_thought_signature(monkeypatch):
     ]
     assert text_chunks, chunks
     extra = text_chunks[0]["choices"][0]["delta"].get("extra_content")
-    assert extra == {"google": {"thought_signature": "SIG-TEXT"}}, text_chunks
+    assert extra == {
+        "google": {
+            "thought_signature": "SIG-TEXT",
+            "answer_part": {"text": "hello", "thought_signature": "SIG-TEXT"},
+        }
+    }, text_chunks
 
 
 def test_openai_tools_translated_into_function_declarations(monkeypatch):
@@ -2072,6 +2111,34 @@ def test_assistant_text_thought_signature_replays_on_outbound_text_part(monkeypa
     text_parts = [p for p in parts if "text" in p]
     assert text_parts, parts
     assert text_parts[-1].get("thoughtSignature") == "SIG-TEXT", text_parts
+
+
+def test_assistant_answer_parts_replay_exact_signed_boundaries(monkeypatch):
+    captured = _capture_body(
+        monkeypatch,
+        messages = [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": "firstsecond",
+                "extra_content": {
+                    "google": {
+                        "answer_parts": [
+                            {"text": "first"},
+                            {"text": "second", "thought_signature": "SIG-SECOND"},
+                            {"text": "", "thought_signature": "SIG-EMPTY"},
+                        ],
+                    },
+                },
+            },
+            {"role": "user", "content": "again"},
+        ],
+    )
+    assert captured["body"]["contents"][1]["parts"] == [
+        {"text": "first"},
+        {"text": "second", "thoughtSignature": "SIG-SECOND"},
+        {"text": "", "thoughtSignature": "SIG-EMPTY"},
+    ]
 
 
 def test_assistant_signed_thought_replays_before_answer(monkeypatch):
