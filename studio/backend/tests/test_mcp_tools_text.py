@@ -217,6 +217,26 @@ def test_a_bad_data_url_is_refused(monkeypatch):
     assert studio.state.calls == []
 
 
+def test_chat_with_no_model_loaded_says_to_load_one(monkeypatch):
+    def unloaded(request, body):
+        return JSONResponse(
+            {
+                "error": {
+                    "message": "No model loaded. Call POST /inference/load first.",
+                    "type": "invalid_request_error",
+                }
+            },
+            status_code = 400,
+        )
+
+    studio = _studio({("POST", "/v1/chat/completions"): unloaded})
+    result = _call(monkeypatch, studio, "chat", {"prompt": "hi"})
+    assert result["isError"] is True
+    assert result["content"][0]["text"].endswith(
+        "Load a chat model with load_model first; list_models shows the downloaded ones."
+    )
+
+
 def test_gpu_busy_is_a_tool_error_with_a_retry_hint(monkeypatch):
     def busy(request, body):
         return JSONResponse(

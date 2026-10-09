@@ -21,6 +21,8 @@ from studio_mcp.outputs import ChatResult, DecisionAnswer, EmbedResult, SystemOn
 from studio_mcp.tools import READ_ONLY, WRITES, integer, number, route_json, opt_text
 
 MAX_EMBED_INPUTS = 2048
+LOAD_CHAT_HINT = "Load a chat model with load_model first; list_models shows the downloaded ones."
+NOT_LOADED = "No model loaded"
 # The chat route takes 128 MiB of base64 images per request.
 MAX_CHAT_IMAGE_BYTES = 128 * 1024 * 1024 * 3 // 4
 EMBED_DOWNLOAD_HINT = (
@@ -92,7 +94,9 @@ async def chat(
         body["max_tokens"] = max_tokens
     if temperature is not None:
         body["temperature"] = temperature
-    payload = await route_json("POST", "/v1/chat/completions", json_body = body)
+    response = await forward(current_caller(), "POST", "/v1/chat/completions", json_body = body)
+    hints = {400: LOAD_CHAT_HINT} if NOT_LOADED in response.text else None
+    payload = raise_for_route(response, hints = hints)
     choices = payload.get("choices") if isinstance(payload, dict) else None
     if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
         raise ToolError("Studio returned no reply")
