@@ -263,6 +263,18 @@ def test_a_cancelled_load_still_reports_the_repos_it_is_reading(backend):
     assert backend.draining_repo_ids() == ()
 
 
+def test_a_cancelled_load_still_reports_its_claimed_asset_repos(backend):
+    """The encoder download ignores the cancel event, so its repo stays undeletable after an eject."""
+    backend._loading = _LoadingState(
+        repo_id = "unsloth/Qwen-Image-2.1-GGUF",
+        base_repo = "Qwen/Qwen-Image-2.1",
+        account_id = ALICE,
+        asset_repos = ("unsloth/Qwen-Image-2.1-FP8",),
+    )
+    backend.unload(expected_account = ALICE)
+    assert "unsloth/Qwen-Image-2.1-FP8" in backend.draining_repo_ids()
+
+
 def test_the_load_thread_releases_its_own_drain(backend, monkeypatch):
     """Nothing else knows when a prefetch returned, and during one there is no record to key on."""
     backend._loading = _LoadingState(

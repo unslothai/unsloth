@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A page pinned from a tab's menu, as a row of the sidebar's Pinned section: its icon and name,
-// a one-click unpin, and the tab's menu (3-dot and right-click). Clicking it shows its tab in the
-// browser panel, opening one at the pinned address when none is open.
+// A pinned page's sidebar row: icon, name, unpin and the tab's menu. Clicking shows its tab,
+// opening one if needed. The sidebar places and drags it like a chat (`rowProps`).
 
 import {
   ContextMenu,
@@ -18,7 +17,7 @@ import { cn } from "@/lib/utils";
 import { MoreHorizontalIcon, PinOffIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
-import { useRef, useState } from "react";
+import { type HTMLAttributes, useRef, useState } from "react";
 import { browserPanelAvailable } from "./panel-availability";
 import { type PinnedPage, usePinnedPagesStore } from "./pinned-pages-store";
 import { SiteFavicon } from "./site-favicon";
@@ -33,28 +32,27 @@ import {
   usePinnedTab,
 } from "./tab-menu";
 
-const MENU = "unsloth-plus-menu sidebar-row-menu sidebar-menu w-60";
+const SURFACE = "unsloth-plus-menu sidebar-row-menu sidebar-menu";
+const MENU = `${SURFACE} w-60`;
 // As a chat row's: the pin and the kebab show on hover, and while the menu is open.
 const ACTION =
   "sidebar-row-action sidebar-touch-reveal group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto group-has-[.sidebar-row-action[data-state=open]]/recent-item:opacity-100 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pointer-events-auto";
 
-/** The Pinned section's page rows, after its chats and folders. */
-export function PinnedPageRows() {
-  const pages = usePinnedPagesStore((state) => state.pages);
-  return (
-    <>
-      {pages.map((page) => (
-        <PinnedPageRow key={page.id} page={page} />
-      ))}
-    </>
-  );
+/** Every pinned page, in pin order. */
+export function usePinnedPages(): PinnedPage[] {
+  return usePinnedPagesStore((state) => state.pages);
 }
 
-export function usePinnedPageCount(): number {
-  return usePinnedPagesStore((state) => state.pages.length);
-}
-
-function PinnedPageRow({ page }: { page: PinnedPage }) {
+export function PinnedPageRow({
+  page,
+  className,
+  rowProps,
+}: {
+  page: PinnedPage;
+  className?: string;
+  /** Sidebar drag and drop props, as on a chat row. */
+  rowProps?: HTMLAttributes<HTMLLIElement> & Record<`data-${string}`, string>;
+}) {
   const t = useT();
   const navigate = useNavigate();
   const onChat = useRouterState({ select: (state) => state.location.pathname.startsWith("/chat") });
@@ -105,7 +103,11 @@ function PinnedPageRow({ page }: { page: PinnedPage }) {
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild={true}>
-        <SidebarMenuItem className="group/recent-item relative" data-pinned-page={page.id}>
+        <SidebarMenuItem
+          {...rowProps}
+          className={cn("group/recent-item relative", className)}
+          data-pinned-page={page.id}
+        >
           <SidebarMenuButton
             isActive={active}
             title={page.url}
@@ -157,12 +159,12 @@ function PinnedPageRow({ page }: { page: PinnedPage }) {
               </button>
             )}
           >
-            <TabMenuItems P={DROPDOWN_TAB_MENU} tab={tab} pinned={page} onRename={startRename} />
+            <TabMenuItems P={DROPDOWN_TAB_MENU} tab={tab} pinned={page} subClassName={SURFACE} onRename={startRename} />
           </NonModalDropdownMenu>
         </SidebarMenuItem>
       </ContextMenuTrigger>
       <ContextMenuContent className={MENU} onCloseAutoFocus={keepMenuFocus}>
-        <TabMenuItems P={CONTEXT_TAB_MENU} tab={tab} pinned={page} onRename={startRename} />
+        <TabMenuItems P={CONTEXT_TAB_MENU} tab={tab} pinned={page} subClassName={SURFACE} onRename={startRename} />
       </ContextMenuContent>
     </ContextMenu>
   );

@@ -11,6 +11,7 @@ from collections import deque
 import fnmatch
 import functools
 import hashlib
+from html.parser import HTMLParser
 import json
 import http.client
 import os
@@ -115,6 +116,15 @@ EMPTY_SEARCH_RESULTS = (
 )
 # ddgs signals an empty sweep by raising rather than returning [].
 _DDGS_EMPTY_SWEEP = "No results found"
+# Not "connection error": DNS failures and refused connections are not resets (#12638).
+_DDGS_RESET_MARKERS = (
+    "connection reset",
+    "h2 connection driver error",
+    "server disconnected",
+    "broken pipe",
+    "forcibly closed",  # Windows WSAECONNRESET (10054)
+)
+_DDGS_HTTP1_RETRY_LOCK = threading.Lock()
 
 # Tier 2 is only asked when tier 1 found nothing. Naming is the only way ddgs reaches an engine, so
 # an engine in neither tier (yandex, bing, the mullvad_* mirrors) is never contacted.
@@ -2809,6 +2819,9 @@ _AUTO_UNSAFE_PY_ATTRS = frozenset(
 # Loaders that can execute code embedded in the data they deserialize; gated by receiver module (torch.load,
 # yaml.load) since bare `load` is too common.
 _AUTO_UNSAFE_PY_LOAD_MODULES = frozenset({"torch", "joblib", "cloudpickle", "yaml"})
+# numpy loaders that unpickle under allow_pickle -> its positional index. The gate checks positions 1 and 2 of all of
+# them, so an alias pointing at another loader cannot shift the flag out of view.
+_NUMPY_PICKLE_FLAG_POS = {"load": 2, "read_array": 1, "NpzFile": 2}
 # The load entry points on those modules. yaml.load runs whatever its Loader= builds, and !!python/object/apply in the
 # data is a call, so it asks like the pickle-backed ones. yaml.safe_load is untouched.
 _AUTO_UNSAFE_PY_LOAD_ATTRS = frozenset({"load", "load_all"})
@@ -2988,9 +3001,12 @@ _STUDIO_CREDENTIAL_BASENAME_RE = re.compile(
     # Dotted names nothing else spells, so they match bare too.
     r"(?:^|[/\\\s'\"=])(?:\.cli_api_key_[^/\\\s'\";&|)(<>`]*|\.bootstrap_password|\.desktop_secret)"
     + _WORD_END
+    # The per-launch key file, bare or as a glob (find / -name 'llama_api_key_*').
+    + r"|(?:^|[/\\\s'\"=])llama_api_key_[^/\\\s'\";&|)(<>`]*"
+    + _WORD_END
     # Path form only: the bare name is an ordinary identifier. auth.db is absent for the same reason,
     # and Studio's copy is covered by the auth-directory patterns below.
-    + r"|[/\\]llama_api_key"
+    + r"|[/\\]llama_api_key(?:_\w+)?"
     + _WORD_END
     # `unsloth start` keeps the coding-agent keys here. Path form only: matching the bare name
     # refused `print('agent_api_key.json')`.
@@ -6135,6 +6151,17 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
     return False
 
 
+def _is_literal_false(node: ast.AST) -> bool:
+    return isinstance(node, ast.Constant) and node.value is False
+
+
+def _is_inert_loader_arg(node: ast.AST, mmap_slot: bool) -> bool:
+    # False, None, or a string in load's mmap_mode slot.
+    return isinstance(node, ast.Constant) and (
+        node.value is None or node.value is False or (mmap_slot and isinstance(node.value, str))
+    )
+
+
 def _python_is_potentially_unsafe(code: str) -> bool:
     """Classify python-tool code for auto mode (fail closed)."""
     if not code or not code.strip():
@@ -6177,6 +6204,10 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     # Module names bound to a pickle-backed loader (import torch as t), so t.load(...) is still gated as a
     # code-executing deserialize.
     load_module_aliases = set(_AUTO_UNSAFE_PY_LOAD_MODULES)
+    # numpy module aliases, and names / attributes bound to a numpy pickle loader -> its allow_pickle position.
+    numpy_aliases = {"numpy"}
+    pickle_fn_aliases: "dict[str, int]" = {}
+    pickle_fn_attr_aliases: "dict[str, int]" = {}
     # Names bound to the builtin getattr (g = getattr), so a dynamic lookup aliased through it still fails closed.
     getattr_aliases = {"getattr"}
     # Names bound to functools.partial, so a partial that wraps open/a writer fails closed when it is called.
@@ -6195,6 +6226,29 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     # direct open() site. Track aliases so an aliased invoker is still checked; the write-callable gate keeps map(len,
     # ...) safe.
     invoker_aliases = set(_HIGHER_ORDER_INVOKERS)
+
+    def _in_numpy(node) -> bool:
+        while isinstance(node, ast.Attribute):
+            node = node.value
+        return isinstance(node, ast.Name) and node.id in numpy_aliases
+
+    def _allow_pickle_position(node) -> "int | None":
+        # A conditional or boolean callee counts if any branch is a loader.
+        if isinstance(node, ast.NamedExpr):
+            return _allow_pickle_position(node.value)
+        if isinstance(node, (ast.IfExp, ast.BoolOp)):
+            branches = [node.body, node.orelse] if isinstance(node, ast.IfExp) else node.values
+            return next(
+                (pos for pos in map(_allow_pickle_position, branches) if pos is not None), None
+            )
+        if isinstance(node, ast.Name):
+            return pickle_fn_aliases.get(node.id)
+        if isinstance(node, ast.Attribute):
+            if node.attr in pickle_fn_attr_aliases:
+                return pickle_fn_attr_aliases[node.attr]
+            if node.attr in _NUMPY_PICKLE_FLAG_POS and _in_numpy(node.value):
+                return _NUMPY_PICKLE_FLAG_POS[node.attr]
+        return None
 
     def _is_dynamic_namespace(node) -> bool:
         # A namespace mapping whose .get/.pop/.setdefault (or subscript) can return open/eval/a mutator:
@@ -6304,11 +6358,23 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     os_aliases.add(alias.asname or alias.name)
                 elif alias.name in _AUTO_UNSAFE_PY_LOAD_MODULES:
                     load_module_aliases.add(alias.asname or alias.name)
+                elif alias.name.split(".")[0] == "numpy":
+                    numpy_aliases.add(alias.asname or "numpy")
                 elif alias.name == "operator":
                     operator_aliases.add(alias.asname or "operator")
                 elif alias.name == "fileinput":
                     fileinput_aliases.add(alias.asname or "fileinput")
         elif isinstance(node, ast.ImportFrom):
+            if node.module and node.module.split(".")[0] == "numpy":
+                for alias in node.names:
+                    if alias.name == "*":
+                        pickle_fn_aliases.update(_NUMPY_PICKLE_FLAG_POS)
+                    elif alias.name in _NUMPY_PICKLE_FLAG_POS:
+                        pickle_fn_aliases[alias.asname or alias.name] = _NUMPY_PICKLE_FLAG_POS[
+                            alias.name
+                        ]
+                    else:
+                        numpy_aliases.add(alias.asname or alias.name)
             if node.module == "operator":
                 for alias in node.names:
                     if alias.name == "methodcaller":
@@ -6360,6 +6426,11 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 assign_targets = node.targets
             targets = [t.id for t in assign_targets if isinstance(t, ast.Name)]
             attr_targets = [t.attr for t in assign_targets if isinstance(t, ast.Attribute)]
+            if _in_numpy(value):
+                numpy_aliases.update(targets)
+            if (_pos := _allow_pickle_position(value)) is not None:
+                pickle_fn_aliases.update(dict.fromkeys(targets, _pos))
+                pickle_fn_attr_aliases.update(dict.fromkeys(attr_targets, _pos))
             if isinstance(value, ast.Name) and value.id in open_aliases:
                 open_aliases.update(targets)
                 attr_open_aliases.update(attr_targets)  # box.f = open
@@ -6465,9 +6536,16 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                         value.elts
                     ):
                         for tgt_el, val_el in zip(target.elts, value.elts):
+                            if (
+                                isinstance(tgt_el, ast.Attribute)
+                                and (_pos := _allow_pickle_position(val_el)) is not None
+                            ):
+                                pickle_fn_attr_aliases[tgt_el.attr] = _pos
                             if not isinstance(tgt_el, ast.Name):
                                 continue
                             tid = tgt_el.id
+                            if (_pos := _allow_pickle_position(val_el)) is not None:
+                                pickle_fn_aliases[tid] = _pos
                             if isinstance(val_el, ast.Name) and val_el.id in open_aliases:
                                 open_aliases.add(tid)
                             elif isinstance(val_el, ast.Name) and val_el.id in getattr_aliases:
@@ -6508,6 +6586,8 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 )
             ) + [(p, d) for p, d in zip(_a.kwonlyargs, _a.kw_defaults) if d is not None]
             for _param, _default in _defaulted:
+                if (_pos := _allow_pickle_position(_default)) is not None:
+                    pickle_fn_aliases[_param.arg] = _pos
                 if isinstance(_default, ast.Name):
                     _did = _default.id
                     if _did in open_aliases:
@@ -6622,6 +6702,9 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 # rm("x")).
                 if node.attr in _AUTO_UNSAFE_PY_ATTRS:
                     return True
+                # z = np.load("a.npz"); z.allow_pickle = True turns pickling on for the next z["x"].
+                if node.attr == "allow_pickle" and isinstance(node.ctx, ast.Store):
+                    return True
                 # builtins.exec / eval / __import__ (and compile/breakpoint) are dynamic code execution, matching the
                 # bare-name code_exec_aliases path; __builtins__.__import__(...) is a dynamic import that dodges the
                 # static import check.
@@ -6664,11 +6747,32 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     func = func.value
                 if isinstance(func, (ast.Call, ast.Subscript)):
                     return True  # calling a call/subscript result is dynamic
+                # numpy allow_pickle unpickles like torch.load: only a literal False (None/False positionally) is safe.
+                if any(
+                    kw.arg == "allow_pickle" and not _is_literal_false(kw.value)
+                    for kw in node.keywords
+                ) or (
+                    (_flag_pos := _allow_pickle_position(func)) is not None
+                    and (
+                        not all(
+                            _is_inert_loader_arg(arg, mmap_slot = i == 1 and _flag_pos == 2)
+                            for i, arg in enumerate(node.args[1:3], start = 1)
+                        )
+                        or any(isinstance(arg, ast.Starred) for arg in node.args)
+                        or any(kw.arg is None for kw in node.keywords)
+                    )
+                ):
+                    return True
                 # A concrete write callable handed as an argument to any call escapes into a helper that can invoke it
                 # without a direct open()/writer site: the same bypass the map/starmap/reduce branches gate, but
                 # through a user-defined helper. A benign callable argument (run(len)) is unaffected.
                 if any(_passed_write_callable(a) for a in node.args) or any(
                     _passed_write_callable(kw.value) for kw in node.keywords
+                ):
+                    return True
+                # A numpy loader handed to a helper can be called there with allow_pickle positionally.
+                if any(_allow_pickle_position(a) is not None for a in node.args) or any(
+                    _allow_pickle_position(kw.value) is not None for kw in node.keywords
                 ):
                     return True
                 if isinstance(func, ast.Name):
@@ -13709,17 +13813,19 @@ def cached_mcp_tools() -> tuple[list[dict], bool]:
     return _mcp_listing(listed), complete
 
 
-async def get_enabled_mcp_tools() -> list[dict]:
-    # Keep the SQLite-backed server list off the event loop.
+async def get_enabled_mcp_tools(
+    include_stdio: bool = True, server_ids: set[str] | None = None
+) -> list[dict]:
+    # keep the SQLite-backed server list off the event loop.
     servers = await asyncio.to_thread(lambda: _enabled_mcp_servers(mcp_servers_db.list_servers()))
-    # Never spawn stdio servers when stdio is disabled on this host.
-    if not stdio_mcp_enabled():
+    if server_ids is not None:
+        servers = [server for server in servers if server["id"] in server_ids]
+    if not include_stdio or not stdio_mcp_enabled():
         servers = [s for s in servers if not is_stdio(s["url"])]
     if not servers:
         return []
 
-    # Skip servers still in their post-failure cool-off, otherwise a down server gets re-probed, and blocks the send
-    # for the full timeout, on every message.
+    # cool-off avoids blocking every send for the full probe timeout when a server is down.
     uncached = [
         s for s in servers if get_cached_tools(s["id"]) is None and not in_failure_cooloff(s["id"])
     ]
@@ -13769,8 +13875,64 @@ async def get_enabled_mcp_tools() -> list[dict]:
     return _mcp_listing(listed)
 
 
+def mcp_search_argument(name: str, tool: dict) -> str | None:
+    schema = _mcp_input_schema(tool)
+    required = schema.get("required") or []
+    properties = schema.get("properties") or {}
+    if len(required) != 1 or not isinstance(properties, dict):
+        return None
+    key = required[0]
+    prop = properties.get(key) if isinstance(key, str) else None
+    if not isinstance(prop, dict) or prop.get("type") != "string" or "enum" in prop:
+        return None
+    if is_potentially_unsafe_tool_call(name, {key: ""}):
+        return None
+    return key
+
+
+async def mcp_search_tools(
+    include_stdio: bool = True, server_ids: set[str] | None = None
+) -> list[dict]:
+    from state.tool_policy import get_tool_policy
+
+    if get_tool_policy() is False:
+        return []
+    await get_enabled_mcp_tools(include_stdio = include_stdio, server_ids = server_ids)
+    servers = _enabled_mcp_servers(await asyncio.to_thread(mcp_servers_db.list_servers))
+    if server_ids is not None:
+        servers = [server for server in servers if server["id"] in server_ids]
+    if not include_stdio or not stdio_mcp_enabled():
+        servers = [s for s in servers if not is_stdio(s["url"])]
+    found = []
+    for server in servers:
+        for tool in get_cached_tools(server["id"]) or ():
+            raw_name = tool.get("name") if isinstance(tool, dict) else None
+            if not isinstance(raw_name, str) or not tool_visible_to(tool, "model"):
+                continue
+            name = f"{MCP_TOOL_PREFIX}{server['id']}__{raw_name}"
+            argument = mcp_search_argument(name, public_tool(server, tool))
+            if argument:
+                found.append(
+                    {
+                        "name": name,
+                        "serverId": server["id"],
+                        "serverName": server.get("display_name") or server["id"],
+                        "tool": raw_name,
+                        "description": tool.get("description") or "",
+                        "argument": argument,
+                    }
+                )
+    return found
+
+
+def execute_mcp_tool(name: str, arguments: dict, **kwargs) -> str:
+    if not name.startswith(MCP_TOOL_PREFIX):
+        return f"Error: '{name}' is not an MCP tool"
+    return execute_tool(name, arguments, **kwargs)
+
+
 def mcp_tool_definition(server_id: str, tool_name: str) -> "dict | None":
-    """Cache only: callers must not spawn a stdio subprocess or block on a probe."""
+    """cache only: callers must not spawn a stdio subprocess or block on a probe."""
     tools = get_cached_tools(server_id) or ()
     return next((t for t in tools if isinstance(t, dict) and t.get("name") == tool_name), None)
 
@@ -13884,7 +14046,10 @@ def execute_tool(
             "arguments to save room, not content, so nothing ran. Write the actual content "
             "out in full."
         )
-    effective_timeout = _EXEC_TIMEOUT if timeout is _TIMEOUT_UNSET else timeout
+    # By type, not `is _TIMEOUT_UNSET`: see `_request_context_tokens`.
+    effective_timeout = (
+        timeout if timeout is None or isinstance(timeout, (int, float)) else _EXEC_TIMEOUT
+    )
     if name == "create_skill":
         from .skills import SkillError, create_skill
 
@@ -14961,34 +15126,31 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
     return built
 
 
-_MAX_PAGE_CHARS = 16000  # cap fetched page text (after HTML-to-MD conversion)
+_MAX_PAGE_CHARS = 16000  # fetched page cap after HTML-to-Markdown conversion
 
-# Share of the loaded window one fetched page may claim. The same window also has to hold the system prompt, the
-# carried-forward block, the user's turn, the call itself and room to answer, so a third is already generous.
+# one page may use 35% of the window, leaving room for prompts, context, calls, and answers.
 _PAGE_CONTEXT_SHARE = 0.35
-# Below this a page is too clipped to answer from, so the fetch is not worth making small. Half, when the room has to
-# be converted to characters with no way to check the answer: see `_dense_char_limit`, the conversion charges ASCII an
-# English four characters per token and the dense ASCII these tools print runs nearer two.
+# unmeasurable token budgets are halved because dense ASCII can cost twice the English estimate.
 _UNMEASURED_ROOM_MARGIN = 0.5
 
 _MIN_PAGE_CHARS = 2000
-# A percent-escape is one non-ASCII byte written in ASCII, and tokenises like one.
+# a percent escape is one non-ASCII byte in ASCII and tokenizes like one.
 _HEX_PAIR_RE = re.compile(r"[0-9A-Fa-f]{2}")
-# Raw download cap > _MAX_PAGE_CHARS since SSR pages embed large <head> sections stripped during conversion; 512 KB
-# still reaches article content.
+# raw cap exceeds _MAX_PAGE_CHARS because conversion strips large SSR <head> sections.
 _MAX_FETCH_BYTES = 512 * 1024
-# "%" is safe so an already-encoded URL is not re-encoded into %25.
+# news pages can inline about 2.5 MB in <head>, so reserve _MAX_FETCH_BYTES beyond its end.
+_MAX_HTML_FETCH_BYTES = 8 * 1024 * 1024
+# keep % safe to avoid encoding existing escapes as %25.
 _IRI_PATH_SAFE = "/%:@!$&'()*+,;="
 _IRI_QUERY_SAFE = "/%:@!$&'()*+,;=?"
-# PDF cross-reference data lives at EOF, so extraction needs the whole body.
+# PDF cross-reference data at EOF requires the whole body.
 _MAX_PDF_FETCH_BYTES = 10 * 1024 * 1024
 _MAX_WEB_PDF_PAGES = 50
-# Control/undecodable chars, excluding text whitespace and ESC (for ANSI logs). Binary when they exceed 12.5%, after
-# allowing 16 minor encoding glitches.
+# binary threshold excludes whitespace and ESC; allow 16 glitches or 12.5%, whichever is larger.
 _BINARY_CHAR_RE = re.compile("[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1a\\x1c-\\x1f\\x7f-\\x9f\\ufffd]")
 _MIN_BINARY_CHARS = 16
 _BINARY_CHAR_DIVISOR = 8
-# Common binary signatures that can otherwise look text-heavy when mislabeled.
+# signatures catch mislabeled binaries that pass text heuristics.
 _PDF_MAGIC = b"%PDF-"
 _BINARY_MAGIC = (
     _PDF_MAGIC,
@@ -15650,7 +15812,7 @@ def _resolve_with_budget(hostname, port, deadline, cancel_event):
     def _resolve():
         try:
             result.put(_validate_and_resolve_host(hostname, port))
-        except Exception as exc:  # defensive: never let the worker die silently
+        except Exception as exc:  # prevent the resolver thread from failing silently
             result.put((False, f"Failed to resolve host: {exc}", []))
 
     threading.Thread(target = _resolve, name = "web-fetch-dns", daemon = True).start()
@@ -15664,20 +15826,184 @@ def _resolve_with_budget(hostname, port, deadline, cancel_event):
             continue
 
 
-def _read_capped_body(resp, max_bytes, timeout, deadline, cancel_event):
-    """Read up to ``max_bytes``, enforcing the overall budget between chunks. A single
-    ``resp.read(max_bytes)`` can block for the whole transfer if the server dribbles bytes just
-    inside each socket-inactivity timeout, so the body is read in chunks with the budget
-    re-checked (and the socket timeout re-tightened toward the deadline) each round. The joined
-    bytes are identical to one capped read. Returns ``(error_or_None, body_bytes)``."""
-    # Best-effort handle on the underlying socket so its timeout tightens as the deadline nears; absent on test
-    # doubles, where the between-chunk budget check still bounds the read.
-    sock = getattr(getattr(getattr(resp, "fp", None), "raw", None), "_sock", None)
-    # A buffered read(n) keeps receiving until n bytes arrive, so a drip never reaches the
-    # budget check; read1 returns after one receive.
+class _HTMLBodyLocator(HTMLParser):
+    """locate the explicit or implied document body without matching markup inside head content."""
+
+    _PENDING_LIMIT = 65536
+    _CDATA_TAIL_BYTES = 64
+    _HEAD_ELEMENTS = frozenset(
+        {
+            "base",
+            "basefont",
+            "bgsound",
+            "link",
+            "meta",
+            "noframes",
+            "noscript",
+            "script",
+            "style",
+            "template",
+            "title",
+        }
+    )
+    _HEAD_TEXT_ELEMENTS = frozenset({"noframes", "noscript", "script", "style", "title"})
+
+    def __init__(self, charset = None):
+        super().__init__(convert_charrefs = False)
+        self.body_at = None
+        self._absolute_offset = 0
+        self._head_text_depth = 0
+        self._template_depth = 0
+        self._prefix = b""
+        self._decoder = None
+        self._codec = "latin-1"
+        self._deferred = []
+        self._deferred_chars = 0
+        try:
+            codec = codecs.lookup(charset).name if charset else None
+        except (LookupError, ValueError):
+            codec = None
+        if codec in ("utf-16", "utf-16-le", "utf-16-be", "utf-32", "utf-32-le", "utf-32-be"):
+            self._codec = codec if codec.endswith(("-le", "-be")) else codec + "-le"
+
+    def feed_bytes(self, data):
+        if self._decoder is None:
+            self._prefix += data
+            if len(self._prefix) < 4:
+                return
+            data, self._prefix = self._prefix, b""
+            for bom, codec in (
+                (codecs.BOM_UTF32_LE, "utf-32-le"),
+                (codecs.BOM_UTF32_BE, "utf-32-be"),
+                (codecs.BOM_UTF16_LE, "utf-16-le"),
+                (codecs.BOM_UTF16_BE, "utf-16-be"),
+            ):
+                if data.startswith(bom):
+                    self._codec = codec
+                    self._absolute_offset = len(bom)
+                    data = data[len(bom) :]
+                    break
+            self._decoder = codecs.getincrementaldecoder(self._codec)(errors = "replace")
+        decoded = self._decoder.decode(data)
+        if len(self.rawdata) > self._PENDING_LIMIT and not self.cdata_elem:
+            self._deferred.append(decoded)
+            self._deferred_chars += len(decoded)
+            if self._deferred_chars < len(self.rawdata):
+                return
+            decoded = "".join(self._deferred)
+            self._deferred.clear()
+            self._deferred_chars = 0
+        self.feed(decoded)
+        if self.body_at is not None or len(self.rawdata) <= self._PENDING_LIMIT:
+            return
+        if self.cdata_elem:
+            discard = len(self.rawdata) - self._CDATA_TAIL_BYTES
+            self.updatepos(0, discard)
+            self.rawdata = self.rawdata[discard:]
+
+    def updatepos(self, i, j):
+        if j > i:
+            self._absolute_offset += (
+                j - i
+                if self._codec == "latin-1"
+                else len(self.rawdata[i:j].encode(self._codec, errors = "replace"))
+            )
+        return super().updatepos(i, j)
+
+    def _offset(self):
+        return self._absolute_offset
+
+    def _mark_body(self):
+        if self.body_at is None:
+            self.body_at = self._offset()
+
+    def handle_starttag(self, tag, attrs):
+        if self.body_at is not None:
+            return
+        if self._template_depth:
+            if tag == "template":
+                self._template_depth += 1
+            return
+        if tag == "template":
+            self._template_depth = 1
+            return
+        if self._head_text_depth:
+            if tag in self._HEAD_TEXT_ELEMENTS:
+                self._head_text_depth += 1
+            return
+        if tag in ("html", "head"):
+            return
+        if tag == "body":
+            self._mark_body()
+            return
+        if tag in self._HEAD_ELEMENTS:
+            if tag in self._HEAD_TEXT_ELEMENTS:
+                self._head_text_depth = 1
+            return
+        self._mark_body()
+
+    def handle_startendtag(self, tag, attrs):
+        if (
+            self.body_at is None
+            and not self._template_depth
+            and not self._head_text_depth
+            and tag not in self._HEAD_ELEMENTS
+            and tag not in ("html", "head")
+        ):
+            self._mark_body()
+
+    def handle_endtag(self, tag):
+        if self.body_at is not None:
+            return
+        if self._template_depth:
+            if tag == "template":
+                self._template_depth -= 1
+            return
+        if self._head_text_depth:
+            if tag in self._HEAD_TEXT_ELEMENTS:
+                self._head_text_depth -= 1
+            return
+        if tag == "head":
+            self._mark_body()
+
+    def handle_data(self, data):
+        if self._offset() == 0 and data.startswith(codecs.BOM_UTF8.decode("latin-1")):
+            data = data[len(codecs.BOM_UTF8) :]
+        if (
+            self.body_at is None
+            and not self._template_depth
+            and not self._head_text_depth
+            and data.strip()
+        ):
+            self._mark_body()
+
+    def handle_entityref(self, name):
+        from html import unescape
+        self.handle_data(unescape("&" + name + ";"))
+
+    def handle_charref(self, name):
+        self.handle_entityref("#" + name)
+
+
+def _read_capped_body(
+    resp,
+    max_bytes,
+    timeout,
+    deadline,
+    cancel_event,
+    body_window = None,
+    charset = None,
+):
+    """read at most ``max_bytes``, and ``body_window`` past the end of ``<head>``; returns ``(error, body)``."""
+    # HTTPError exposes the socket for deadline updates; chunk checks bound test doubles without one
+    fp = getattr(resp, "fp", None)
+    sock = getattr(getattr(getattr(fp, "fp", fp), "raw", None), "_sock", None)
+    # read1 avoids buffered read(n) waiting for n bytes past the budget
     read = getattr(resp, "read1", None) or resp.read
     chunks = []
     remaining = max_bytes
+    body_at = None
+    body_locator = _HTMLBodyLocator(charset) if body_window is not None else None
     while remaining > 0:
         budget_error = _fetch_budget_exceeded(deadline, cancel_event)
         if budget_error is not None:
@@ -15696,6 +16022,15 @@ def _read_capped_body(resp, max_bytes, timeout, deadline, cancel_event):
             break
         chunks.append(chunk)
         remaining -= len(chunk)
+        if body_locator is not None and body_at is None:
+            got = max_bytes - remaining
+            try:
+                body_locator.feed_bytes(chunk)
+            except Exception:
+                body_locator = None
+            if body_locator is not None and body_locator.body_at is not None:
+                body_at = body_locator.body_at
+                remaining = max(0, min(remaining, body_at + body_window - got))
     budget_error = _fetch_budget_exceeded(deadline, cancel_event)
     if budget_error is not None:
         try:
@@ -15707,8 +16042,7 @@ def _read_capped_body(resp, max_bytes, timeout, deadline, cancel_event):
 
 
 _DOTTED_HOST_RE = re.compile(r"[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+")
-# ASCII-only because str.isdigit() is True for digits int() refuses, and capped at 5 digits so the range check never
-# converts an unbounded integer.
+# ASCII-only: str.isdigit() accepts digits int() rejects; five digits bounds integer conversion
 _PORT_RE = re.compile(r"[0-9]{1,5}")
 
 
@@ -15798,34 +16132,13 @@ def _fetch_url_raw(
     post_data: bytes | None = None,
     meta_out: dict | None = None,
     host_headers = None,
+    error_page: bool = False,
 ) -> tuple[str | None, "str | bytes", str]:
-    """Fetch a URL with SSRF protection; return ``(error, body_text, content_type)``.
-
-    ``host_headers(host)`` adds headers for one hop, chosen by the host that hop goes to, so a
-    redirect to another site does not carry them.
-
-    ``post_data`` sends a urlencoded POST (kept on 307/308, dropped on other redirects).
-    ``meta_out`` receives the final ``url``, ``charset`` and ``filename`` (Content-Disposition) of a
-    successful binary-mode fetch, and
-    ``bot_check`` on HTTP errors.
-
-    ``raw_bytes_max`` switches to binary mode: the body is returned as ``bytes`` untouched (no PDF
-    or text handling) and refused past that many bytes. The same scheme, host, redirect and budget
-    gates apply either way.
-
-    ``error`` is a user-facing message string when the fetch failed, else ``None``. Blocks
-    private/loopback/link-local targets and caps the download size. No input reaches the caller as
-    an exception: the URL is model-supplied, so every malformed form resolves to one of these
-    strings.
-
-    ``deadline`` is an optional ``time.monotonic`` cutoff for the whole fetch (redirect hops and
-    body read included) and ``cancel_event`` aborts it when the caller goes away; both default off.
-    """
+    """fetch with SSRF protection; binary reads stay capped, HTML error pages require binary mode, per-hop headers do not cross redirects, and deadlines cover redirects and body reads."""
     from urllib.parse import urlparse
     from .web_access_policy import check_url_access
 
-    # Before the policy gate: it requires an http(s) scheme, so a bare host would be refused there and never reach the
-    # fetch.
+    # normalize before the policy gate because a bare host would otherwise fail its http(s) scheme check.
     url = _normalize_url_scheme(url)
     allowed, reason, canonical_host = check_url_access(url, website_policy)
     if not allowed:
@@ -15852,6 +16165,7 @@ def _fetch_url_raw(
         current_host = canonical_host
         ua = random.choice(_USER_AGENTS)
         pending_post = post_data
+        http_error = None
 
         for _hop in range(5):
             budget_error = _fetch_budget_exceeded(deadline, cancel_event)
@@ -15903,45 +16217,57 @@ def _fetch_url_raw(
                 headers.setdefault("Content-Type", "application/x-www-form-urlencoded")
             req = urllib.request.Request(request_url, headers = headers, data = pending_post)
             try:
-                # Cap the socket timeout at the time left on the overall deadline so a single slow hop cannot outlast
-                # the whole fetch budget.
+                # cap the socket timeout at the remaining deadline so one slow hop cannot outlast the fetch budget.
                 resp = opener.open(req, timeout = _fetch_hop_timeout(timeout, deadline))
             except _HTTPError as e:
                 if e.code not in (301, 302, 303, 307, 308):
                     if meta_out is not None:
                         meta_out["bot_check"] = _is_bot_check(e.code, e.headers)
-                    return f"Failed to fetch URL: HTTP {e.code} {getattr(e, 'reason', '')}", "", ""
-                location = e.headers.get("Location")
-                if not location:
-                    return "Failed to fetch URL: redirect missing Location header.", "", ""
-                current_url = urljoin(current_url, location)
-                # 307/308 keep the POST; other redirects turn it into a GET.
-                if e.code not in (307, 308):
-                    pending_post = None
-                hop_error, current_host, pinned_ips = _redirect_hop(
-                    current_url,
-                    website_policy,
-                    deadline,
-                    cancel_event,
-                )
-                if hop_error is not None:
-                    return hop_error, "", ""
-                continue
+                    http_error = f"Failed to fetch URL: HTTP {e.code} {getattr(e, 'reason', '')}"
+                    declared = e.headers.get("Content-Type") and e.headers.get_content_type()
+                    if (
+                        not error_page
+                        or raw_bytes_max is None
+                        or declared not in (None, "", "text/html", "application/xhtml+xml")
+                    ):
+                        return http_error, "", ""
+                    resp = e
+                else:
+                    location = e.headers.get("Location")
+                    if not location:
+                        return "Failed to fetch URL: redirect missing Location header.", "", ""
+                    current_url = urljoin(current_url, location)
+                    # 307/308 preserve POST; other redirects switch to GET.
+                    if e.code not in (307, 308):
+                        pending_post = None
+                    hop_error, current_host, pinned_ips = _redirect_hop(
+                        current_url,
+                        website_policy,
+                        deadline,
+                        cancel_event,
+                    )
+                    if hop_error is not None:
+                        return hop_error, "", ""
+                    continue
 
-            # get_content_type() defaults to "text/plain" when the header is absent (RFC 2045); report "" instead so
-            # callers can tell a missing header apart from a server that really declared text/plain.
+            # get_content_type() maps absent headers to text/plain per RFC 2045; "" marks absence.
             if resp.headers.get("Content-Type") is None:
                 content_type = ""
             else:
                 content_type = (resp.headers.get_content_type() or "").lower()
 
-            # Success: read the capped body enforcing the budget between chunks (see _read_capped_body), so a
-            # slow-drip server can't stretch a single resp.read past the deadline.
+            # chunked reads recheck the fetch budget between chunks.
             declared_pdf = raw_bytes_max is None and content_type == "application/pdf"
+            declared_html = raw_bytes_max is None and content_type in (
+                "text/html",
+                "application/xhtml+xml",
+            )
             if raw_bytes_max is not None:
                 read_limit = raw_bytes_max + 1
             elif declared_pdf:
                 read_limit = _MAX_PDF_FETCH_BYTES + 1
+            elif declared_html:
+                read_limit = _MAX_HTML_FETCH_BYTES
             else:
                 read_limit = max_bytes
             body_error, raw_bytes = _read_capped_body(
@@ -15950,12 +16276,13 @@ def _fetch_url_raw(
                 timeout,
                 deadline,
                 cancel_event,
+                body_window = max_bytes if declared_html else None,
+                charset = resp.headers.get_content_charset() if declared_html else None,
             )
             if body_error is not None:
                 return body_error, "", ""
 
-            # A missing or wrong PDF MIME type is common: once the initial text-sized read identifies PDF magic,
-            # finish the bounded download to reach the EOF xref.
+            # missing or wrong PDF MIME types require a bounded tail read to reach the EOF xref.
             if raw_bytes_max is not None:
                 if len(raw_bytes) > raw_bytes_max:
                     return f"(content exceeds the {raw_bytes_max} byte limit)", "", content_type
@@ -15963,11 +16290,14 @@ def _fetch_url_raw(
                     meta_out["url"] = current_url
                     meta_out["charset"] = resp.headers.get_content_charset()
                     meta_out["filename"] = resp.headers.get_filename()
-                return None, raw_bytes, content_type
-            if not declared_pdf and len(raw_bytes) == max_bytes and _has_pdf_magic(raw_bytes):
+                    meta_out["allow_origin"] = resp.headers.get("Access-Control-Allow-Origin")
+                    meta_out["cache_control"] = resp.headers.get("Cache-Control")
+                    meta_out["age"] = resp.headers.get("Age")
+                return http_error, raw_bytes, content_type
+            if not declared_pdf and _has_pdf_magic(raw_bytes):
                 tail_error, tail = _read_capped_body(
                     resp,
-                    _MAX_PDF_FETCH_BYTES - max_bytes + 1,
+                    _MAX_PDF_FETCH_BYTES - len(raw_bytes) + 1,
                     timeout,
                     deadline,
                     cancel_event,
@@ -15981,7 +16311,7 @@ def _fetch_url_raw(
             if not refresh_url:
                 break
             current_url = refresh_url
-            # A refresh is a new GET, like a browser's.
+            # a refresh starts a new GET like a browser.
             pending_post = None
             hop_error, current_host, pinned_ips = _redirect_hop(
                 current_url,
@@ -16182,6 +16512,15 @@ def _loaded_context_tokens() -> int | None:
     return None
 
 
+def _request_context_tokens() -> int | None:
+    """The request's window (an int, or None = unknowable: never probed), else the process probe. By type, not
+    `is _UNSET_CONTEXT_TOKENS`: an `execute_tool` held across a reload stores the old sentinel (#11384)."""
+    scoped = _REQUEST_CONTEXT_TOKENS.get()
+    if scoped is None or isinstance(scoped, int):
+        return scoped
+    return _loaded_context_tokens()
+
+
 def _result_char_budget(cap: int) -> int:
     """`cap`, lowered to what the serving window can actually hold. Shared by fetched pages and by
     terminal/python results, because the failure is the same: a fixed character cap has no
@@ -16190,10 +16529,7 @@ def _result_char_budget(cap: int) -> int:
     that does not fit and the request goes irreducible. Measured live on a 5120-token window:
     7043 and 6684 token requests refused, both on the code tools, whose 16,000-character cap is
     about 4,000 tokens on its own."""
-    scoped = _REQUEST_CONTEXT_TOKENS.get()
-    # An explicit 0/None means asked, and unknowable (external provider), and must NOT fall through to the probe. Only
-    # an absent value keeps the process-global read.
-    ctx = _loaded_context_tokens() if scoped is _UNSET_CONTEXT_TOKENS else scoped
+    ctx = _request_context_tokens()
     if not ctx:
         return cap
     # Clamped to `cap` on the way out, not only on the way in. The floor keeps a result worth reading when the WINDOW
@@ -16221,10 +16557,7 @@ def _page_char_budget() -> int:
     Above roughly an 11k window this returns the old constant unchanged, so only the models that
     cannot afford a whole page are affected.
     """
-    scoped = _REQUEST_CONTEXT_TOKENS.get()
-    # An explicit 0/None means asked, and unknowable (external provider), and must NOT fall through to the probe. Only
-    # an absent value keeps the process-global read.
-    ctx = _loaded_context_tokens() if scoped is _UNSET_CONTEXT_TOKENS else scoped
+    ctx = _request_context_tokens()
     if not ctx:
         return _MAX_PAGE_CHARS
     return max(_MIN_PAGE_CHARS, min(_MAX_PAGE_CHARS, int(ctx * 4 * _PAGE_CONTEXT_SHARE)))
@@ -16246,10 +16579,7 @@ def _request_result_room() -> int | None:
 
 def _window_context_tokens() -> int | None:
     """The window this request is served by, or None when it cannot be read."""
-    scoped = _REQUEST_CONTEXT_TOKENS.get()
-    # An explicit 0/None means asked, and unknowable (external provider), and must NOT fall through to the probe. Only
-    # an absent value keeps the process-global read.
-    ctx = _loaded_context_tokens() if scoped is _UNSET_CONTEXT_TOKENS else scoped
+    ctx = _request_context_tokens()
     return ctx if ctx else None
 
 
@@ -16825,9 +17155,14 @@ def _fetch_page_text(
         return _truncate_page_text(body.strip(), max_chars)
 
     # Convert HTML to Markdown with the builtin converter (no external deps).
-    from ._html_to_md import html_to_markdown
+    from ._html_to_md import SiteLinks, html_to_markdown
 
-    return _truncate_page_text(html_to_markdown(body, main_content = True), max_chars)
+    site_links = SiteLinks(url)
+    text = html_to_markdown(body, main_content = True, site_links = site_links)
+    # a page that fits keeps same-site links so the model can follow them.
+    if text and len(text) <= max_chars and len(text) <= _dense_char_limit(text, max_chars):
+        return text
+    return _truncate_page_text(site_links.strip(text), max_chars)
 
 
 def _search_failure_message(exc: BaseException, timeout: int) -> str:
@@ -16877,6 +17212,165 @@ def _resolve_engine_tiers(text_engines) -> list:
     return resolved
 
 
+def _class_token(name: str) -> str:
+    return f"contains(concat(' ', normalize-space(@class), ' '), ' {name} ')"
+
+
+# Each section.algo leaves a div unclosed, so lxml nests every later result inside it: match the
+# nearest section, and take the next s-desc before the next title (a descendant search takes them all).
+_YAHOO_SECTION_TITLES = (
+    f"//a[{_class_token('s-title')}][ancestor::section[1][{_class_token('algo')}]]"
+)
+_YAHOO_SECTION_SNIPPET = f"following::*[self::p[{_class_token('s-desc')}] or self::a[{_class_token('s-title')}]][1][self::p]"
+
+
+def _install_yahoo_layout_parser(text_engines) -> None:
+    """Parse Yahoo's ``section.algo`` pages, which ddgs 9.8.0-9.16.0 (``div.relsrch`` only) read as
+    empty. ddgs builds engines from this registry by name; ``relsrch`` pages keep ddgs's parser."""
+    yahoo = (text_engines or {}).get("yahoo")
+    if not isinstance(yahoo, type) or getattr(yahoo, "_parses_section_layout", False):
+        return
+
+    class _Yahoo(yahoo):
+        _parses_section_layout = True
+
+        def extract_results(self, html_text):
+            results = super().extract_results(html_text)
+            if results:
+                return results
+            tree = self.extract_tree(self.pre_process_html(html_text))
+            for link in tree.xpath(_YAHOO_SECTION_TITLES):
+                # TextResult strips tags and collapses whitespace on assignment.
+                result = self.result_type()
+                result.title = link.get("aria-label") or "".join(
+                    link.xpath(f".//text()[not(ancestor::span[{_class_token('title-url')}])]")
+                )
+                result.href = link.get("href") or ""
+                snippet = link.xpath(_YAHOO_SECTION_SNIPPET)
+                if snippet:
+                    result.body = snippet[0].xpath("string()")
+                results.append(result)
+            return results
+
+    text_engines["yahoo"] = _Yahoo
+
+
+def _is_connection_reset(exc) -> bool:
+    return any(marker in f"{type(exc).__name__}: {exc}".lower() for marker in _DDGS_RESET_MARKERS)
+
+
+def _ddgs_http1_replay(args, kwargs, config):
+    import httpx
+
+    verify = config["verify"]
+    if isinstance(verify, str):
+        verify = ssl.create_default_context(cafile = verify)
+    with httpx.Client(
+        headers = config["headers"],
+        cookies = config["cookies"],
+        proxy = config["proxy"],
+        timeout = config["timeout"],
+        verify = verify,
+        follow_redirects = config["follow_redirects"],
+        http1 = True,
+        http2 = False,
+    ) as client:
+        resp = client.request(*args, **kwargs)
+        resp.read()
+        return resp
+
+
+def _install_ddgs_http1_retry() -> None:
+    """Replay a ddgs request once over plain HTTP/1.1 after a connection reset (#12638): primp has
+    no HTTP/1.1-only mode. Successful requests are untouched; wraps each class once; never raises."""
+    try:
+        import inspect
+
+        from ddgs import http_client
+        from ddgs.exceptions import DDGSException
+
+        def _wrapper(response_cls):
+            # ddgs 9.14's primp Response wraps the raw response; 9.8.0's and HttpClient2's take fields.
+            if "status_code" not in inspect.signature(response_cls).parameters:
+                return response_cls
+            return lambda resp: response_cls(
+                status_code = resp.status_code, content = resp.content, text = resp.text
+            )
+
+        targets = [(http_client.HttpClient, _wrapper(http_client.Response), True)]
+        try:
+            from ddgs import http_client2
+        except ImportError:
+            http_client2 = None
+        if http_client2 is not None and hasattr(http_client2, "HttpClient2"):
+            # HttpClient2 does not follow redirects; primp does.
+            targets.append((http_client2.HttpClient2, _wrapper(http_client2.Response), False))
+
+        with _DDGS_HTTP1_RETRY_LOCK:
+            for cls, wrap, follow_redirects in targets:
+                if cls.__dict__.get("_unsloth_http1_retry"):
+                    continue
+                _wrap_ddgs_client(
+                    cls, wrap, follow_redirects, inspect.signature(cls.__init__), DDGSException
+                )
+    except Exception:  # noqa: BLE001 - the retry is a hardening layer, never a reason to fail a search
+        logger.debug("ddgs HTTP/1.1 retry not installed", exc_info = True)
+
+
+def _wrap_ddgs_client(cls, wrap, follow_redirects, signature, ddgs_exception) -> None:
+    orig_init, orig_request = cls.__init__, cls.request
+
+    @functools.wraps(orig_init)
+    def __init__(self, *args, **kwargs):
+        orig_init(self, *args, **kwargs)
+        try:
+            bound = signature.bind(self, *args, **kwargs)
+            bound.apply_defaults()
+            config = dict(bound.arguments)
+            config.pop("self", None)  # no client -> config -> client cycle
+            self._unsloth_http1_config = config
+        except TypeError:
+            pass
+
+    @functools.wraps(orig_request)
+    def request(self, *args, **kwargs):
+        start = time.monotonic()
+        try:
+            return orig_request(self, *args, **kwargs)
+        except Exception as exc:
+            config = getattr(self, "_unsloth_http1_config", None)
+            if config is None or not _is_connection_reset(exc):
+                raise
+            timeout = config.get("timeout")
+            if timeout:
+                timeout -= time.monotonic() - start
+                if timeout <= 0:
+                    raise
+            client = getattr(self, "client", None)
+            # httpx's jar only: primp 0.15 (ddgs 9.8.0) get_cookies aborts the process on a miss.
+            cookies = getattr(client, "cookies", None)
+            # httpx may lack primp's zstd decoder, so let it pick accept-encoding.
+            session = getattr(client, "headers", None) or {}
+            headers = {k: v for k, v in dict(session).items() if k.lower() != "accept-encoding"}
+            replay = {
+                "headers": headers,
+                "cookies": cookies,
+                "proxy": config.get("proxy"),
+                "timeout": timeout,
+                "verify": config.get("verify", True),
+                "follow_redirects": follow_redirects,
+            }
+            try:
+                return wrap(_ddgs_http1_replay(args, kwargs, replay))
+            except Exception as retry_exc:
+                raise ddgs_exception(
+                    f"{exc}; HTTP/1.1 retry failed: {type(retry_exc).__name__}: {retry_exc}"
+                ) from retry_exc
+
+    cls.__init__, cls.request = __init__, request
+    cls._unsloth_http1_retry = True
+
+
 def _image_search_or_none(subjects: list, timeout, cancel_event, website_policy) -> "str | None":
     """``_image_search`` that reports a failure as None instead of raising. Every caller sits inside
     ``_web_search``'s own ``except``, which would turn a raise into Search failed: ... and throw
@@ -16915,6 +17409,57 @@ def _empty_result_with_requested_images(
     return empty_text + "\n\n---\n\n" + found
 
 
+def _wikipedia_search(query, max_results, timeout, deadline, cancel_event, website_policy):
+    """search English Wikipedia independently of ddgs through the guarded HTTP fetcher."""
+    # ddgs uses a one-result Wikipedia lookup, so full-text search recovers misses and failures.
+    from html import unescape
+
+    params = urllib.parse.urlencode(
+        {
+            "action": "query",
+            "list": "search",
+            "srsearch": query,
+            "format": "json",
+            "srlimit": min(max_results, 50),
+            "srnamespace": 0,
+        }
+    )
+    error, body, _ = _fetch_url_raw(
+        "https://en.wikipedia.org/w/api.php?" + params,
+        timeout = timeout,
+        deadline = deadline,
+        cancel_event = cancel_event,
+        website_policy = website_policy,
+        raw_bytes_max = 1024 * 1024,
+        extra_headers = {"User-Agent": "UnslothStudio/1.0 (https://github.com/unslothai/unsloth)"},
+    )
+    if error:
+        raise RuntimeError(error)
+    payload = json.loads(body)
+    if "error" in payload:
+        raise RuntimeError("Wikipedia search API returned an error")
+    return [
+        {
+            "title": item["title"],
+            "href": "https://en.wikipedia.org/wiki/"
+            + urllib.parse.quote(item["title"].replace(" ", "_"), safe = ""),
+            "body": unescape(re.sub(r"<[^>]+>", "", item.get("snippet", ""))),
+        }
+        for item in payload["query"]["search"]
+        if isinstance(item, dict) and isinstance(item.get("title"), str) and item["title"].strip()
+    ]
+
+
+def _usable_search_results(results, website_policy):
+    from .web_access_policy import check_url_access
+    return [
+        r
+        for r in results
+        if isinstance(r, dict)
+        and check_url_access(str(r.get("href") or "").strip(), website_policy)[0]
+    ]
+
+
 def _web_search(
     query: str,
     max_results: int = 5,
@@ -16925,11 +17470,7 @@ def _web_search(
     include_images: bool = False,
     image_queries = None,
 ) -> str:
-    """Search the web through the approved engine tiers and return formatted results. If ``url`` is provided,
-    fetches that page directly instead of searching. ``include_images`` adds image results registered
-    server-side and offered to the model as ``[[img:<id>]]`` tokens, with a frontend-only
-    envelope appended: one picture per ``image_queries`` subject when the model named them, else
-    a handful for the query. ``image_queries`` alone (no query) is a pure image lookup."""
+    """search approved tiers, fetch a URL, or return registered ``[[img:<id>]]`` images alone."""
     # Direct URL fetch mode.
     if url and url.strip():
         fetch_timeout = 60 if timeout is None else min(timeout, 60)
@@ -16944,8 +17485,7 @@ def _web_search(
     if subjects and not (query and query.strip()):
         if not include_images:
             return IMAGE_SEARCH_DISABLED
-        # Ahead of the try below, so this one has to carry its own guard: execute_tool returns a string for every
-        # input, and a raise here would escape _web_search.
+        # guard here because execute_tool requires a string result and this is outside the try.
         found = _image_search_or_none(subjects, timeout, cancel_event, website_policy)
         if found is None:
             return "No images found for: " + ", ".join(subjects)
@@ -16953,57 +17493,91 @@ def _web_search(
 
     if not query or not query.strip():
         return "No query provided."
-    # A disconnect sets cancel_event; DDGS.text() is blocking and cannot be interrupted mid-flight, so gate on either
-    # side: skip an already-cancelled request, and discard results that land after the client has gone.
+    # DDGS.text() is blocking, so cancellation is checked before and after the call.
     if cancel_event is not None and cancel_event.is_set():
         return "Search cancelled."
     try:
-        from ddgs import DDGS
-        from ddgs.engines import ENGINES
-
         from .web_access_policy import check_url_access, scope_search_query
 
-        engine_tiers = _resolve_engine_tiers(ENGINES.get("text", {}))
-        if not engine_tiers:
-            return "Search failed: no approved search engine is available."
-
         effective_query = scope_search_query(query, website_policy)
-        # The policy filters below, so ask for a deeper pool when one actually restricts: a page whose top hits are
-        # all disallowed otherwise yields nothing even when valid results rank just under them. Test the domain lists,
-        # not the dict: a run always stores a normalized policy, which is truthy even when unrestricted.
+        # overfetch for allowed hits below blocked ones; normalized policy remains truthy.
         restricted = any(
             (website_policy or {}).get(key) for key in ("allowedDomains", "blockedDomains")
         )
         wanted = max_results * _POLICY_OVERFETCH if restricted else max_results
-        # ddgs applies `timeout` per client, as both the engine HTTP timeout and its fan-out wait, so
-        # a client per tier would restart the budget and a 7s web_search could block ~14s.
+        # bound fallback even if importing or resolving ddgs fails before its normal budget starts.
         deadline = time.monotonic() + timeout if timeout else None
-        client = DDGS(timeout = timeout)
-        # ddgs signals an empty sweep by RAISING, so a tier's exception means try the next tier; the
-        # last is re-raised for _search_failure_message to classify as a single-tier failure would be.
-        results, last_error = [], None
-        for backend in engine_tiers:
-            if cancel_event is not None and cancel_event.is_set():
-                return "Search cancelled."
-            if deadline is not None:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
+        client, results, last_error = None, [], None
+        rejected_results = False
+        wikipedia_fallback = False
+        try:
+            from ddgs import DDGS
+            from ddgs.engines import ENGINES
+
+            text_engines = ENGINES.get("text") or {}
+            _install_yahoo_layout_parser(text_engines)
+            _install_ddgs_http1_retry()
+            engine_tiers = _resolve_engine_tiers(text_engines)
+            if not engine_tiers:
+                raise RuntimeError("no approved search engine is available.")
+            # reset after setup to keep the primary budget; the earlier deadline bounds fallback.
+            deadline = time.monotonic() + timeout if timeout else None
+            client = DDGS(timeout = timeout)
+            # DDGS uses per-client timeouts; tiers share one budget and images reuse the client.
+            for backend in engine_tiers:
+                if cancel_event is not None and cancel_event.is_set():
+                    return "Search cancelled."
+                if deadline is not None:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    client = DDGS(timeout = remaining)
+                try:
+                    candidates = client.text(effective_query, max_results = wanted, backend = backend)
+                    results = _usable_search_results(candidates, website_policy)
+                    rejected_results = rejected_results or bool(candidates and not results)
+                except Exception as exc:  # noqa: BLE001 - try the next tier before classifying the failure
+                    last_error = exc
+                    continue
+                if results:
                     break
-                client = DDGS(timeout = remaining)
-            try:
-                results = client.text(effective_query, max_results = wanted, backend = backend)
-            except Exception as exc:  # noqa: BLE001 - re-raised below when no tier produced anything
-                last_error = exc
-                continue
-            if results:
-                break
-        if not results and last_error is not None:
-            raise last_error
+        except Exception as exc:
+            last_error = exc
         if cancel_event is not None and cancel_event.is_set():
             return "Search cancelled."
         if not results:
+            remaining = deadline - time.monotonic() if deadline else 5.0
+            allowed, _, _ = check_url_access("https://en.wikipedia.org/w/api.php", website_policy)
+            if allowed and remaining > 0:
+                try:
+                    fallback_timeout = min(remaining, 5.0)
+                    fallback_deadline = time.monotonic() + fallback_timeout
+                    if deadline is not None:
+                        fallback_deadline = min(fallback_deadline, deadline)
+                    results = _usable_search_results(
+                        _wikipedia_search(
+                            query,
+                            wanted,
+                            fallback_timeout,
+                            fallback_deadline,
+                            cancel_event,
+                            website_policy,
+                        ),
+                        website_policy,
+                    )
+                    wikipedia_fallback = bool(results)
+                except Exception:
+                    logger.debug("Independent Wikipedia search failed", exc_info = True)
+            if cancel_event is not None and cancel_event.is_set():
+                return "Search cancelled."
+        # blocked results take precedence over earlier tier exceptions.
+        if not results and last_error is not None and not rejected_results:
+            raise last_error
+        if not results:
             return _empty_result_with_requested_images(
-                EMPTY_SEARCH_RESULTS[0],
+                EMPTY_SEARCH_RESULTS[1]
+                if rejected_results and restricted
+                else EMPTY_SEARCH_RESULTS[0],
                 subjects,
                 include_images,
                 timeout,
@@ -17018,7 +17592,7 @@ def _web_search(
             allowed, _reason, _hostname = check_url_access(href, website_policy)
             if not allowed:
                 continue
-            title = " ".join(str(r.get("title") or "").split())
+            title = " ".join(str(r.get("title") or href).split())
             snippet = " ".join(str(r.get("body") or "").split())
             parts.append(f"Title: {title}\nURL: {href}\nSnippet: {snippet}")
         if not parts:
@@ -17031,17 +17605,23 @@ def _web_search(
                 website_policy,
             )
         text = "\n\n---\n\n".join(parts)
+        if wikipedia_fallback:
+            text = (
+                "General web search was unavailable or returned no usable results. "
+                "These are Wikipedia-only encyclopedia results, not current web coverage.\n\n"
+                + text
+            )
         text += (
             "\n\n---\n\nIMPORTANT: These are only short snippets. "
             "To get the full page content, call web_search with "
             'the url parameter (e.g. {"url": "<URL>"}).'
         )
         if include_images and subjects:
-            # The model named what it will show: one picture per subject, no generic pile.
+            # named subjects require one image each rather than a generic image batch.
             found = _image_search_or_none(subjects, timeout, cancel_event, website_policy)
             if found is not None:
                 text += "\n\n---\n\n" + found
-        elif include_images:
+        elif include_images and not wikipedia_fallback:
             text += _web_search_images_suffix(
                 client,
                 effective_query,
@@ -17050,13 +17630,12 @@ def _web_search(
                 website_policy,
             )
         elif subjects:
-            # Replayed history keeps teaching the parameter; say so, don't drop it.
+            # replayed history must retain the disabled-search reminder.
             text += "\n\n---\n\n" + IMAGE_SEARCH_DISABLED
         return text
     except Exception as e:
         failure = _search_failure_message(e, timeout)
-        # ddgs signals an empty sweep by RAISING, so that exit is an empty result too and owes the named subjects
-        # their pictures. A genuine failure keeps its message alone: pictures under an error read as a partial answer.
+        # ddgs raises on an empty sweep; attach requested images only to empty results, not genuine errors.
         if failure == EMPTY_SEARCH_RESULTS[0]:
             return _empty_result_with_requested_images(
                 failure,
@@ -17117,6 +17696,7 @@ def _image_search(
         from .web_access_policy import scope_search_query
     except Exception as e:
         return _search_failure_message(e, timeout)
+    _install_ddgs_http1_retry()
     if not callable(getattr(DDGS, "images", None)):
         return "Image search is unavailable in this install."
 
@@ -20868,7 +21448,7 @@ def sandbox_attachment_path(sha256: str, name: str) -> str:
         stem, ext = os.path.splitext(base)
         ext = ext if len(ext.encode()) <= 16 else ""
         room = _ATTACHMENT_NAME_BYTES - len(ext.encode())
-        # Stripped again so the basename the frontend sends back derives this same path.
+        # strip again so the basename the frontend sends back derives the same path.
         base = (stem.encode()[:room].decode("utf-8", "ignore").rstrip(" .") or "attachment") + ext
     if _RESERVED_NAME.fullmatch(base.split(".", 1)[0].rstrip(" ")):
         base = "_" + base
@@ -20878,24 +21458,34 @@ def sandbox_attachment_path(sha256: str, name: str) -> str:
 def materialize_sandbox_attachments(
     session_id: "str | None", attachments: "list[tuple[str, str]]"
 ) -> None:
-    """Copy chat attachment originals into the sandbox, leaving one already there so edits survive."""
+    """copy chat attachment originals into the sandbox, preserving existing copies so edits survive."""
     from core import chat_originals
     with _session_in_flight(session_id):
         workdir = _get_workdir(session_id)
-        for sha256, name in attachments:
-            source = chat_originals.originals_dir() / sha256
-            if not source.is_file():
-                continue
-            try:
-                _install_attachment_copy(workdir, sandbox_attachment_path(sha256, name), source)
-            except (OSError, ValueError):
-                logger.warning(
-                    "could not copy attachment %s into the sandbox", sha256, exc_info = True
-                )
+        missing = [
+            (sha256, name, chat_originals.originals_dir() / sha256)
+            for sha256, name in attachments
+            if not os.path.lexists(os.path.join(workdir, sandbox_attachment_path(sha256, name)))
+        ]
+        missing = [entry for entry in missing if entry[2].is_file()]
+        if not missing:
+            return
+        # register the copy as a call so concurrent chats sharing the workdir cannot claim it.
+        token = _call_started(workdir)
+        try:
+            for sha256, name, source in missing:
+                try:
+                    _install_attachment_copy(workdir, sandbox_attachment_path(sha256, name), source)
+                except (OSError, ValueError):
+                    logger.warning(
+                        "could not copy attachment %s into the sandbox", sha256, exc_info = True
+                    )
+        finally:
+            _call_finished(token)
 
 
 def _install_attachment_copy(workdir: str, relative: str, source: Path) -> None:
-    """The spill writer's discipline: no link followed, and `os.link` never replaces a name."""
+    """match the spill writer: follow no links; `os.link` never replaces existing names."""
     *dirs, name = relative.split("/")
     tmp = f".tmp-{uuid.uuid4().hex[:12]}"
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
@@ -21737,8 +22327,7 @@ def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
     # this walk runs twice per tool call.
     visited = 0
     hash_budget = 0 if _volume_timestamps_finely(workdir) else _MAX_SNAPSHOT_HASH_BYTES
-    # Walked, not listed: a script writing outputs/report.csv is ordinary, and a top-level listing saw only the
-    # directory and dropped it.
+    # walked to include nested outputs such as outputs/report.csv that a top-level listing drops.
     for base, dirs, names in os.walk(workdir):
         visited += 1
         if visited > _MAX_SNAPSHOT_DIRS:
@@ -21746,24 +22335,26 @@ def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
         # depth 0 is the workdir itself, whose files are one segment.
         relative = base[len(workdir) :].strip(os.sep)
         depth = len(_user_path_parts(relative.split(os.sep) if relative else []))
-        # Dot-directories stay out: .git, .cache and friends are where the noise lives. Dot-FILES are reported, since
-        # .gitignore is a real artifact.
+        # skip noisy dot directories except attachments; dot files like .gitignore remain valid artifacts.
         dirs[:] = (
             []
             if depth >= _MAX_SANDBOX_PATH_SEGMENTS - 1
-            else [d for d in dirs if not d.startswith(".") and _servable_segment(d)]
+            else [
+                d
+                for d in dirs
+                if (not d.startswith(".") or (base == workdir and d == _ATTACHMENTS_DIR))
+                and _servable_segment(d)
+            ]
         )
         for name in names:
-            # Only at the top: a tool that wrote archive/.unsloth_sandbox made an ordinary file, and dropping it hid
-            # it from every listing while still counting it as a reason to keep the sandbox.
+            # ignore internal markers only at the root; nested files with these names remain valid artifacts.
             if base == workdir and name in _INTERNAL_SANDBOX_FILES:
                 continue
             if not _servable_segment(name):
                 continue
             path = os.path.join(base, name)
             try:
-                # One lstat where isfile + islink + stat were three, on every file of every walk. A link is not a
-                # regular file to lstat, so this drops the same entries the pair did.
+                # one lstat replaces isfile, islink, and stat while rejecting the same non-regular entries.
                 stat = os.lstat(path)
                 if not S_ISREG(stat.st_mode):
                     continue

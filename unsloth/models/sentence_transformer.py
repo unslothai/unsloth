@@ -153,11 +153,32 @@ def _maybe_upcast_force_float32_inference(st_model):
     return True
 
 
+def _apply_max_seq_length(st_model, max_seq_length):
+    if max_seq_length is None:
+        return
+    limits = []
+    for module in st_model[0].modules():
+        embeddings = getattr(getattr(module, "auto_model", None), "embeddings", None)
+        position_embeddings = getattr(embeddings, "position_embeddings", None)
+        if isinstance(position_embeddings, torch.nn.Embedding):
+            # RoBERTa-style positions start after padding_idx, so 514 rows hold 512 tokens.
+            padding_idx = position_embeddings.padding_idx
+            limits.append(
+                position_embeddings.num_embeddings - (0 if padding_idx is None else padding_idx + 1)
+            )
+    if limits and max_seq_length > (limit := min(limits)):
+        print(
+            f"Unsloth: max_seq_length = {max_seq_length} is longer than this model supports. "
+            f"Using {limit}."
+        )
+        max_seq_length = limit
+    st_model.max_seq_length = max_seq_length
+
+
 def _normalize_save_method(save_method):
-    """Fold "MERGED_16BIT" and "merged 16bit" onto "merged_16bit". unsloth_save_model (save.py) normalizes case and spaces before validating, so the same spelling has to mean the same thing here, else a keyword call that worked before starts raising."""
+    """match unsloth_save_model case and spacing normalization before routing save requests."""
     if isinstance(save_method, str):
-        # Stripped BEFORE the spaces are folded, or " lora " becomes "_lora_" and the
-        # adapter guard below sends the request to the merge path instead.
+        # strip before replacing spaces so " lora " does not become "_lora_" and bypass the adapter guard.
         return save_method.strip().lower().replace(" ", "_")
     return save_method
 
@@ -2392,26 +2413,19 @@ class FastSentenceTransformer(FastModel):
                 cache_dir = st_kwargs.get("cache_folder"),
                 revision = revision,
             )
-            # Load the snapshot that was checked. Without this the gate reads one commit of
-            # a branch and the load resolves the branch again, so a repository that advances
-            # in between is validated on the old files and loaded from the new ones.
-            #
-            # Whenever the gate resolved a commit, including when the caller named a
-            # revision. Restricting it to a falsey revision left `revision = "main"` racing
-            # exactly as before, and it does not override anyone's choice: _validated IS
-            # what the caller's own revision resolved to, so pinning only removes the second
-            # resolution. An explicit commit resolves to itself and the pin is a no-op.
+            # pin the validated commit so a moving branch cannot change between checking and loading.
             if _validated:
                 st_kwargs["revision"] = _validated
             st_model = SentenceTransformer(model_name, **st_kwargs)
-            # "auto" keeps a bfloat16 checkpoint in bfloat16 on GPUs without it (T4, V100): emulated and slow. An explicit float16 request is what these families cannot run at all (non-finite activations). Either way move to bfloat16 where supported, else float32 when the copy fits.
+            # unsupported GPUs emulate bfloat16 slowly; float16 can yield non-finite activations.
             if (dtype is None and not SUPPORTS_BFLOAT16) or dtype == torch.float16:
                 _maybe_upcast_force_float32_inference(st_model)
             if _ensure_sentence_attention_masks(
                 getattr(st_model[0], "auto_model", None)
             ) and hasattr(st_model[0], "unpad_inputs"):
-                # Refresh ST's cached capability decision after changing the backend.
+                # refresh ST cached backend capability after attention-mask patching.
                 st_model[0].unpad_inputs = st_model[0].unpad_inputs
+            _apply_max_seq_length(st_model, max_seq_length)
             st_model._unsloth_trust_remote_code = trust_remote_code
             return st_model
 
@@ -2419,14 +2433,14 @@ class FastSentenceTransformer(FastModel):
             kwargs["auto_model"] = AutoModel
 
         transformers4 = Version(transformers.__version__).major < 5
-        # SentenceTransformer's config_kwargs (e.g. {"vision_config": None} to skip a multimodal model's vision tower) must reach the config, not the model constructor.
+        # config_kwargs must reach the config, not the model constructor.
         config_kwargs = kwargs.pop("config_kwargs", None) or {}
         model_type = ""
         config = kwargs.get("config", None)
         if config is not None:
             model_type = getattr(config, "model_type", "")
         else:
-            # One dict, caller's config_kwargs last, so {"trust_remote_code": True} overrides instead of duplicating a keyword (as SentenceTransformer merges them). Same revision and cache as the weight load, since this config builds the model when config_kwargs is set.
+            # merge caller config last to avoid duplicates and reuse the weight revision and cache.
             _config_load_kwargs = {
                 "token": token,
                 "trust_remote_code": trust_remote_code,
@@ -2526,7 +2540,7 @@ class FastSentenceTransformer(FastModel):
                 cache_dir = kwargs.get("cache_dir") or kwargs.get("cache_folder"),
                 revision = revision,
             )
-            # Same race as the delegated route above, same pin.
+            # the delegated route has the same race and revision pin.
             st_model = SentenceTransformer(
                 model_name,
                 device = st_device,
@@ -2539,6 +2553,7 @@ class FastSentenceTransformer(FastModel):
             )
 
             st_model._unsloth_fast_encoder = True
+            _apply_max_seq_length(st_model, max_seq_length)
             _mark_full_finetuning(st_model[0].auto_model, full_finetuning)
             st_model._compile_mode = compile_mode
             st_model._dtype = dtype
@@ -3014,6 +3029,9 @@ class FastSentenceTransformer(FastModel):
                 )
 
                 peft_model = peft_get_peft_model(inner_model, lora_config)
+                from ._utils import _mark_unsloth_disable_data_parallel
+
+                _mark_unsloth_disable_data_parallel(peft_model)
 
                 qat_scheme = kwargs.get("qat_scheme", None)
                 if qat_scheme is not None:
@@ -3359,6 +3377,42 @@ def _patch_pooling_float16_accumulation():
     Pooling._unsloth_float16_pooling = True
 
 
+def _patch_dense_input_dtype():
+    """Cast Dense input to its weight dtype: the float32 pooled vector meets float16 Dense
+    weights (EmbeddingGemma on T4), which F.linear refuses without autocast."""
+    try:
+        from sentence_transformers.models import Dense
+    except Exception:
+        return
+    if getattr(Dense, "_unsloth_input_dtype", False):
+        return
+    _original_forward = Dense.forward
+
+    def forward(self, features, *args, **kwargs):
+        key = getattr(self, "module_input_name", "sentence_embedding")
+        weight = getattr(getattr(self, "linear", None), "weight", None)
+        x = features.get(key, None) if hasattr(features, "get") else None
+        if not (
+            torch.is_tensor(x)
+            and torch.is_tensor(weight)
+            and x.is_floating_point()
+            and x.dtype != weight.dtype
+            and not torch.is_autocast_enabled(x.device.type)
+        ):
+            return _original_forward(self, features, *args, **kwargs)
+        features[key] = x.to(weight.dtype)
+        try:
+            return _original_forward(self, features, *args, **kwargs)
+        finally:
+            if getattr(self, "module_output_name", key) != key:
+                features[key] = x
+
+    forward.__wrapped__ = _original_forward
+    Dense.forward = forward
+    Dense._unsloth_input_dtype = True
+
+
 _patch_sentence_transformer_trainer()
 _patch_st_trainer_load_from_checkpoint()
 _patch_pooling_float16_accumulation()
+_patch_dense_input_dtype()

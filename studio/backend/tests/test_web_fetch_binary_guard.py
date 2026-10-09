@@ -6,8 +6,10 @@
 from __future__ import annotations
 
 import codecs
+import random
 import sys
 import time
+import tracemalloc
 from email.message import Message
 from pathlib import Path
 
@@ -155,6 +157,20 @@ def test_mislabeled_pdf_is_read_past_text_download_cap(monkeypatch):
     monkeypatch.setattr(tools, "_MAX_PDF_FETCH_BYTES", len(body) + 100)
     out = _fetch_with(monkeypatch, body, "text/plain")
     assert "Cross-reference data was fetched" in out
+
+
+def test_html_labeled_pdf_with_body_bytes_is_read_to_eof(monkeypatch):
+    pymupdf = pytest.importorskip("pymupdf")
+    doc = pymupdf.open()
+    payload = b"<body>" + random.Random(0).randbytes(1024 * 1024)
+    doc.embfile_add("blob.bin", payload, ufilename = "blob.bin")
+    page = doc.new_page()
+    page.insert_text((40, 40), "PDF body-window marker")
+    body = doc.tobytes(deflate = False, use_objstms = 0, compression_effort = 0)
+    doc.close()
+
+    out = _fetch_with(monkeypatch, body, "text/html")
+    assert "PDF body-window marker" in out
 
 
 def test_pdf_extraction_caps_pages_and_intermediate_text(monkeypatch):
@@ -402,6 +418,160 @@ def test_html_page_unaffected(monkeypatch):
     out = _fetch_with(monkeypatch, html, "text/html; charset=utf-8")
     assert "Hello" in out
     assert "non-text content" not in out and "binary content" not in out
+
+
+def test_article_after_a_large_inline_head_is_read(monkeypatch):
+    style = b".c{color:red}\n" * (2 * 1024 * 1024 // 14)
+    html = (
+        b"<html><head><style>"
+        + style
+        + b"</style></head><body><article><h1>Brightline files for bankruptcy</h1>"
+        + b"<p>The rail operator filed for Chapter 11 protection on Friday.</p></article></body></html>"
+    )
+    out = _fetch_with(monkeypatch, html, "text/html; charset=utf-8")
+    assert "Brightline files for bankruptcy" in out
+    assert "Chapter 11 protection" in out
+
+
+def test_article_after_a_utf8_bom_and_large_inline_head_is_read(monkeypatch):
+    html = (
+        codecs.BOM_UTF8
+        + b"<html><head><style>"
+        + b"x" * (768 * 1024)
+        + b"</style></head><body><article><h1>BOM article body</h1></article></body></html>"
+    )
+    out = _fetch_with(monkeypatch, html, "text/html; charset=utf-8")
+    assert "BOM article body" in out
+
+
+def test_body_text_inside_head_script_does_not_end_the_read(monkeypatch):
+    html = (
+        b'<html><head><script>const example = "<body>";</script><style>'
+        + b"x" * (768 * 1024)
+        + b"</style></head><body><article><h1>Actual article body</h1></article></body></html>"
+    )
+    out = _fetch_with(monkeypatch, html, "text/html; charset=utf-8")
+    assert "Actual article body" in out
+
+
+@pytest.mark.parametrize("reference", ["&#10;", "&#x20;", "&Tab;", "&NewLine;"])
+def test_whitespace_reference_in_large_head_keeps_article(monkeypatch, reference):
+    html = (
+        "<html><head>"
+        + reference
+        + "<style>"
+        + "x" * (768 * 1024)
+        + "</style></head><body><h1>Whitespace article marker</h1></body></html>"
+    ).encode()
+    assert "Whitespace article marker" in _fetch_with(monkeypatch, html, "text/html")
+
+
+@pytest.mark.parametrize(
+    "codec", ["utf-16", "utf-32", "utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be"]
+)
+def test_wide_encoded_large_head_keeps_article(monkeypatch, codec):
+    html = (
+        "<html><head><style>/*"
+        + "🌍" * (200 * 1024)
+        + "*/</style></head><body><h1>Wide article marker</h1></body></html>"
+    ).encode(codec)
+    content_type = "text/html" if codec in ("utf-16", "utf-32") else f"text/html; charset={codec}"
+    assert "Wide article marker" in _fetch_with(monkeypatch, html, content_type)
+
+
+def test_html_body_locator_does_not_store_every_newline():
+    tracemalloc.start()
+    try:
+        locator = tools._HTMLBodyLocator()
+        locator.feed_bytes(b"\n" * (256 * 1024))
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert locator.body_at is None
+    assert peak < 4 * 1024 * 1024
+
+
+def test_unterminated_html_token_has_linear_reparse_work(monkeypatch):
+    payload = b"<" + b"x" * (4 * 1024 * 1024)
+    resp = _FakeResp(payload, "text/html")
+    scanned = 0
+    feed = tools.HTMLParser.feed
+
+    def counted_feed(parser, data):
+        nonlocal scanned
+        scanned += len(parser.rawdata) + len(data)
+        return feed(parser, data)
+
+    monkeypatch.setattr(tools.HTMLParser, "feed", counted_feed)
+    error, body = tools._read_capped_body(
+        resp,
+        tools._MAX_HTML_FETCH_BYTES,
+        timeout = 5,
+        deadline = None,
+        cancel_event = None,
+        body_window = tools._MAX_FETCH_BYTES,
+    )
+    assert error is None
+    assert body == payload
+    assert scanned < 3 * len(payload)
+
+
+@pytest.mark.parametrize(
+    "opening,closing", [(b"<!--", b"-->"), (b'<link href="data:image/png;base64,', b'">')]
+)
+def test_large_head_token_keeps_article(monkeypatch, opening, closing):
+    html = (
+        b"<html><head>"
+        + opening
+        + b"x" * (768 * 1024)
+        + closing
+        + b"</head><body><h1>Long token article marker</h1></body></html>"
+    )
+    assert "Long token article marker" in _fetch_with(monkeypatch, html, "text/html")
+
+
+@pytest.mark.parametrize(
+    "content_type,body",
+    [
+        (
+            "text/html",
+            b"<html><head><title>t</title></head><body><article>"
+            + b"<h1>Harbor ferry adds night service</h1><p>Boats run every thirty minutes.</p></article>"
+            + b"<script>"
+            + b"x" * (4 * 1024 * 1024)
+            + b"</script></body></html>",
+        ),
+        (
+            "text/html",
+            b"<html><head><title>t</title></head><main>"
+            + b"<h1>Harbor ferry adds night service</h1><p>Boats run every thirty minutes.</p></main>"
+            + b"<script>"
+            + b"x" * (4 * 1024 * 1024)
+            + b"</script></html>",
+        ),
+        ("text/plain", b"Harbor ferry adds night service\n" + b"log line\n" * (512 * 1024)),
+    ],
+    ids = ["html", "html-without-body-tag", "text"],
+)
+def test_large_page_on_a_slow_link_still_returns_its_start(monkeypatch, content_type, body):
+    clock = {"time": 1000.0}
+    monkeypatch.setattr(tools.time, "monotonic", lambda: clock["time"])
+    resp = _FakeResp(body, content_type)
+    read = resp.read
+
+    def slow_read(n = None):
+        chunk = read(n)
+        clock["time"] += len(chunk) / (64 * 1024)
+        return chunk
+
+    resp.read = slow_read
+    monkeypatch.setattr(
+        tools, "_validate_and_resolve_host", lambda host, port: (True, "", ["93.184.216.34"])
+    )
+    monkeypatch.setattr(tools.urllib.request, "build_opener", lambda *a, **k: _FakeOpener(resp))
+    out = tools._fetch_page_text("https://example.com/thing", timeout = 30)
+    assert "Harbor ferry adds night service" in out
 
 
 def test_content_type_sanitized_in_message(monkeypatch):

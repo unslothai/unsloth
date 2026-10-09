@@ -24,7 +24,7 @@ import { type TranslationKey, useT } from "@/i18n";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { ShieldIcon } from "@/lib/shield-cog-icon";
 import { cn } from "@/lib/utils";
-import { Refresh01Icon } from "@hugeicons/core-free-icons";
+import { ArrowUpRight01Icon, Refresh01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -231,18 +231,33 @@ function PermissionsSection() {
   );
 }
 
+const SANDBOX_DOCS_URL = "https://unsloth.ai/docs/new/studio/sandboxing-in-unsloth";
+
 export function SandboxTab() {
   const t = useT();
   const isOwner = useIsAccountOwner();
   return (
     <div className="settings-page">
       <header className="flex min-w-0 flex-col gap-1">
-        <h1
-          data-settings-label={t("settings.sandbox.title")}
-          className="text-xl font-semibold font-heading"
-        >
-          {t("settings.sandbox.title")}
-        </h1>
+        <div className="flex min-w-0 items-baseline gap-2">
+          <h1
+            data-settings-label={t("settings.sandbox.title")}
+            className="text-xl font-semibold font-heading"
+          >
+            {t("settings.sandbox.title")}
+          </h1>
+          {/* title, not aria-label, so the accessible name stays the visible text. */}
+          <a
+            href={SANDBOX_DOCS_URL}
+            target="_blank"
+            rel="noreferrer"
+            title={t("settings.sandbox.docsLabel")}
+            className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          >
+            {t("settings.sandbox.docs")}
+            <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
+          </a>
+        </div>
         <p
           data-settings-label={t("settings.sandbox.description")}
           className="text-xs text-muted-foreground"
@@ -685,9 +700,27 @@ function OsSandboxSections() {
                 </div>
               ) : (
                 <>
+                  {view.builtinInUse ? (
+                    <SettingsRow
+                      label={t("settings.sandbox.builtinLabel")}
+                      description={t("settings.sandbox.builtinDescription")}
+                    >
+                      <Badge
+                        variant="outline"
+                        className="h-8 gap-1.5 border-transparent bg-muted px-3 text-sm text-foreground [&>svg]:size-3.5!"
+                      >
+                        <HugeiconsIcon icon={ShieldIcon} strokeWidth={1.75} />
+                        {t("settings.sandbox.builtinInUse")}
+                      </Badge>
+                    </SettingsRow>
+                  ) : null}
                   <SettingsRow
                     label={t("settings.sandbox.optInLabel")}
-                    description={t("settings.sandbox.optInDescription")}
+                    description={
+                      view.builtinInUse
+                        ? t("settings.sandbox.optInNotNeeded")
+                        : t("settings.sandbox.optInDescription")
+                    }
                   >
                     <div className="flex flex-col items-end gap-1">
                       <Switch

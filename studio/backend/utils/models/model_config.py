@@ -3752,12 +3752,27 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
 
 
 _LAYA_MARKER = "rl_agent_config.json"
-# Cloudflare's Clef layout: a Qwen3.5 backbone plus the joint schema head.
-CLEF_MARKERS = ("config.json", "joint_head.safetensors", "joint_head_config.json")
+# Clef: a backbone (merged, or LoRA adapters over the base LLM) plus the joint schema head.
+CLEF_HEAD_MARKERS = ("joint_head.safetensors", "joint_head_config.json")
+CLEF_MARKERS = ("config.json", *CLEF_HEAD_MARKERS)
+CLEF_ADAPTER_MARKERS = ("adapter_config.json", *CLEF_HEAD_MARKERS)
+
+
+def clef_files_kind(has) -> Optional[str]:
+    """ "merged", "adapter" or None, from has(name) -> bool over a folder's files."""
+    if all(has(name) for name in CLEF_MARKERS):
+        return "merged"
+    if all(has(name) for name in CLEF_ADAPTER_MARKERS):
+        return "adapter"
+    return None
+
+
+def clef_folder_kind(folder: Path) -> Optional[str]:
+    return clef_files_kind(lambda name: (folder / name).is_file())
 
 
 def _folder_decision_layout(folder: Path) -> Optional[str]:
-    if all((folder / name).is_file() for name in CLEF_MARKERS):
+    if clef_folder_kind(folder) is not None:
         return "clef"
     if all((folder / name).is_file() for name in (_LAYA_MARKER, "model.safetensors")) and all(
         (folder / name).is_dir() for name in ("encoder", "tokenizer")
@@ -3787,7 +3802,7 @@ def decision_layout(
         try:
             info = _hub_model_info(model_name, hf_token)
             files = {getattr(sibling, "rfilename", None) for sibling in info.siblings or ()}
-            if all(prefix + name in files for name in CLEF_MARKERS):
+            if clef_files_kind(lambda name: prefix + name in files) is not None:
                 return "clef"
             return "laya" if prefix + _LAYA_MARKER in files else None
         except Exception as e:
@@ -3797,7 +3812,7 @@ def decision_layout(
     snapshot = hf_cache_snapshot_dir(model_name)
     if snapshot is None:
         return None
-    if all((snapshot / prefix / name).is_file() for name in CLEF_MARKERS):
+    if clef_folder_kind(snapshot / prefix) is not None:
         return "clef"
     # The Decision API caches only the checkpoint subfolder it serves.
     laya = (snapshot / _LAYA_MARKER, *snapshot.glob(f"*/{_LAYA_MARKER}"))
@@ -3811,6 +3826,22 @@ def is_decision_model(
     subfolder: Optional[str] = None,
 ) -> bool:
     return decision_layout(model_name, hf_token, local_files_only, subfolder) is not None
+
+
+LLM_DECISION_DEFAULTS = (
+    Path(__file__).parent.parent.parent
+    / "assets"
+    / "configs"
+    / "model_defaults"
+    / "decision"
+    / "llm_decision_defaults.yaml"
+)
+
+
+def load_llm_decision_defaults() -> Dict[str, Any]:
+    """The recipe for training a text or vision LLM as a decision model (a new Clef head)."""
+    with open(LLM_DECISION_DEFAULTS, "r", encoding = "utf-8") as f:
+        return yaml.safe_load(f) or {}
 
 
 def _has_model_weight_files(model_dir: Path) -> bool:

@@ -2480,8 +2480,9 @@ def _validate_checkpoint(
             )
             return False
     # The int8 exclusion set is scheme-derived, so a token-list change would leave old checkpoints with a stale baked
-    # set that passes scheme+min_features then crashes at the first denoise. Reject a recorded mismatch; absent is
-    # accepted.
+    # set that passes scheme+min_features then crashes at the first denoise. Reject a checkpoint that quantised a
+    # layer the runtime excludes; absent is accepted, and so is a superset (extra bf16 Linears load as stored; the
+    # hosted Wan2.2 fp8 files keep ``condition_embedder`` bf16).
     ckpt_excludes = meta.get("exclude_name_tokens")
     if ckpt_excludes is not None:
         from .diffusion_transformer_quant import exclude_tokens_for_scheme
@@ -2489,12 +2490,12 @@ def _validate_checkpoint(
         # The exclude set derives from scheme AND family, so use the recorded family: an artifact baked under an older
         # token list is rejected and re-quantised, not loaded crashing.
         expected = tuple(exclude_tokens_for_scheme(scheme, meta.get("family")))
-        if tuple(ckpt_excludes) != expected:
+        if not isinstance(ckpt_excludes, (list, tuple)) or not set(expected) <= set(ckpt_excludes):
             _warn(
                 logger,
                 scheme,
                 ValueError(
-                    f"checkpoint exclude_name_tokens {tuple(ckpt_excludes)!r} != {expected!r}"
+                    f"checkpoint exclude_name_tokens {ckpt_excludes!r} do not cover the runtime {expected!r}"
                 ),
             )
             return False

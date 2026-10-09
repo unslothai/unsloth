@@ -7,6 +7,7 @@
 import asyncio
 import base64
 import contextlib
+import hashlib
 import io
 import json as _json
 import math
@@ -37,26 +38,41 @@ from models.providers import (
     validate_provider_reasoning_contract,
 )
 
-# Local servers, not hosted APIs: each applies the model's own chat template on the way in, so a prompt built here is
-# templated just like an in-process one (#7066). "custom" is a user-supplied OpenAI-compatible base_url, i.e. how a
-# self-hosted vLLM or llama.cpp registers without its preset. Unknown endpoint means assume a template applies:
-# sweeping a hosted API costs a space in delimiter-like text, not sweeping a local one costs a forged turn.
+# custom endpoints are treated as local because skipping their chat template can forge a turn (#7066).
 _TEMPLATE_APPLYING_PROVIDERS = frozenset({"vllm", "llama_cpp", "ollama", "custom", "lemonade"})
 
-# The subset documenting "continue_final_message" + "add_generation_prompt" on /v1/chat/completions.
+# only vLLM and llama.cpp document both continuation flags on /v1/chat/completions.
 _CONTINUATION_FLAG_PROVIDERS = frozenset({"vllm", "llama_cpp"})
 
-# The subset documenting stream_options.include_usage. An OAI-compatible stream omits usage without it, leaving the
-# chat context bar without prompt_tokens and, where no llama.cpp timings arrive, the monitor without a speed. Same
-# caution as the flag above: "custom" is any user-supplied base_url and a strict endpoint 400s on an unknown field.
-# "openai" is absent because it routes to /v1/responses, which reports usage on its own.
-_USAGE_STREAM_OPTION_PROVIDERS = frozenset({"vllm", "llama_cpp", "openrouter", "kimi", "lemonade"})
+# custom may reject include_usage; OpenAI Responses supplies usage, while listed streams require it.
+_USAGE_STREAM_OPTION_PROVIDERS = frozenset(
+    {"vllm", "llama_cpp", "ollama", "openrouter", "kimi", "lemonade"}
+)
 
-# llama-server reads repeat_penalty, not repetition_penalty (as routes/inference does).
+# launch-time windows are absent from catalogues; custom covers unregistered self-hosted servers.
+_SERVED_WINDOW_PROVIDERS = frozenset({"vllm", "llama_cpp", "custom"})
+# refresh within one or two turns to detect server restarts.
+_SERVED_WINDOW_TTL_S = 60.0
+_SERVED_WINDOW_TIMEOUT_S = 5.0
+_served_windows: dict[tuple[str, str, str], tuple[float, Optional[int]]] = {}
+
+
+def _positive_int(value: Any) -> Optional[int]:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
+
+
+def _reported_window(entry: dict[str, Any]) -> Optional[int]:
+    # llama-server's served window is meta.n_ctx, not meta.n_ctx_train; others use max_model_len.
+    meta = entry.get("meta")
+    return _positive_int(meta.get("n_ctx") if isinstance(meta, dict) else None) or _positive_int(
+        entry.get("max_model_len")
+    )
+
+
+# llama-server expects repeat_penalty rather than repetition_penalty.
 _REPETITION_PENALTY_BODY_KEY = {"llama_cpp": "repeat_penalty"}
 
-# structlog so INFO diagnostics reach the backend's JSON log stream (the stdlib root logger defaults to WARNING with
-# no handlers). It accepts the existing printf-style positional args.
+# structlog sends INFO diagnostics to the backend JSON stream and accepts printf-style arguments.
 logger = structlog.get_logger(__name__)
 
 _MAX_CONCATENATED_WAV_BYTES = 64 * 1024 * 1024
@@ -502,9 +518,7 @@ def _extract_web_search_action(item: dict[str, Any]) -> dict[str, Any]:
     return arguments
 
 
-# Families that accept `prompt_cache_retention: "24h"`. Everything else 400s with "prompt_cache_retention is not
-# supported on this model" and the turn dies (openai/codex#39397), while an unmatched model just falls back to
-# in-memory caching -- so guess narrow.
+# unsupported families return 400 for `prompt_cache_retention`; omit it to retain in-memory caching.
 _OPENAI_EXTENDED_CACHE_FAMILY = re.compile(r"^(?:gpt-5(?:\.\d+)?(?:[-.]|$)|gpt-4\.1$)")
 
 
@@ -512,19 +526,26 @@ class _AnthropicThinkingSpec(NamedTuple):
     prefixes: tuple[str, ...]
     kind: Literal["adaptive", "manual"]
     efforts: tuple[str, ...]
-    # Claude 5 thinks unless told otherwise, so "Thinking: off" must send an explicit disable. Fable/Mythos 5 400 on
-    # it (thinking is always on).
+    # off must be explicit; Fable/Mythos 5 and Opus 5.5 reject it; Sonnet 5.5 uses `between_tools`.
     thinking_default_on: bool = False
     can_disable: bool = True
+    disable_type: str = "disabled"
 
 
 _ANTHROPIC_THINKING_SPECS = (
     _AnthropicThinkingSpec(
-        prefixes = ("claude-fable-5", "claude-mythos-5"),
+        prefixes = ("claude-fable-5", "claude-mythos-5", "claude-opus-5-5"),
         kind = "adaptive",
         efforts = ("none", "low", "medium", "high", "xhigh", "max"),
         thinking_default_on = True,
         can_disable = False,
+    ),
+    _AnthropicThinkingSpec(
+        prefixes = ("claude-sonnet-5-5",),
+        kind = "adaptive",
+        efforts = ("none", "low", "medium", "high", "xhigh", "max"),
+        thinking_default_on = True,
+        disable_type = "between_tools",
     ),
     _AnthropicThinkingSpec(
         prefixes = ("claude-opus-5", "claude-sonnet-5"),
@@ -2859,22 +2880,19 @@ class ExternalProviderClient:
                 effort = "none"
             elif enable_thinking is True:
                 effort = "medium"
-        # Models that think by default need an explicit disable; omitting the field leaves thinking on. Anthropic only
-        # accepts it at effort <= high, so send it alone (server default effort is high).
+        # send default-on disables alone: Anthropic defaults to valid `high` effort, while higher efforts reject them.
         if (
             effort == "none"
             and thinking_spec
             and thinking_spec.thinking_default_on
             and thinking_spec.can_disable
         ):
-            body["thinking"] = {"type": "disabled"}
-        # Normalize one semantic Thinking control into Anthropic's two model-era APIs: adaptive effort on Claude 4.6+,
-        # manual budget_tokens on 4.5.
+            body["thinking"] = {"type": thinking_spec.disable_type}
+        # the shared control maps to adaptive effort on Claude 4.6+ and manual `budget_tokens` on Claude 4.5.
         if effort and effort != "none":
-            # Anthropic rejects top_k whenever thinking is enabled.
+            # Anthropic rejects `top_k` while thinking is enabled.
             body.pop("top_k", None)
-            # 4.5/4.6 require temperature=1 with thinking and forbid top_p in the same request; 4.7 removed
-            # temperature entirely (any value 400s), so skip the override there.
+            # Claude 4.5/4.6 require `temperature=1` and forbid `top_p` with thinking; Claude 4.7 rejects temperature.
             if not sampling_removed:
                 body["temperature"] = 1
             body.pop("top_p", None)
@@ -2882,9 +2900,7 @@ class ExternalProviderClient:
                 thinking_spec is None and _anthropic_model_newer_than_specs(model)
             )
             if adaptive:
-                # Force display="summarized": it defaults to "omitted" on Opus 4.7, which emits an empty thinking
-                # block and leaves the panel blank. Harmless no-op on 4.6. An unlisted id older than that gets no
-                # thinking field, since Claude 4.5 and earlier reject the adaptive shape.
+                # summarized display prevents blank Opus 4.7 panels; unlisted older models reject adaptive thinking.
                 body["thinking"] = {"type": "adaptive", "display": "summarized"}
                 # Adaptive effort lives under `output_config.effort`, not top-level (top-level 400s "Extra inputs are
                 # not permitted"). Allowed: low|medium|high|xhigh|max.
@@ -7397,30 +7413,15 @@ class ExternalProviderClient:
         ]
 
     async def list_models(self) -> list[dict[str, Any]]:
-        """GET /models to discover available models. Returns dicts with at least 'id'. All providers
-        expose /models with the OpenAI {"data": [...]} shape, Anthropic included."""
+        """return each provider's OpenAI-compatible /models entries, including Anthropic."""
         try:
-            response = await _client().get(
-                f"{self.base_url}/models",
-                headers = self._auth_headers(),
-                timeout = self._timeout,
-            )
-            response.raise_for_status()
-            data = response.json()
-            # Some local servers (Ollama with no models) return data: null.
-            models: list[dict[str, Any]] = []
-            if isinstance(data, dict):
-                raw_models = data.get("data") or []
-                if isinstance(raw_models, list):
-                    models = [model for model in raw_models if isinstance(model, dict)]
+            data, models = await self._models_payload(self._timeout)
             if self.provider_type == "ollama":
-                # Only /api/tags carries the per-model "thinking" capability.
+                # only /api/tags carries each model's "thinking" capability.
                 if not models:
                     models = await self._list_ollama_native_models()
                 else:
                     models = await self._with_ollama_capabilities(models)
-            # Gemini's native /v1beta/models uses a different shape; repackage into the OpenAI-compatible one Unsloth
-            # expects.
             if not models and self.provider_type == "gemini":
                 models = self._parse_gemini_models(data)
             return models
@@ -7428,11 +7429,75 @@ class ExternalProviderClient:
             logger.error("Failed to list models from %s: %s", self.provider_type, exc)
             raise
 
+    async def _models_payload(self, timeout: Any) -> tuple[Any, list[dict[str, Any]]]:
+        response = await _client().get(
+            f"{self.base_url}/models", headers = self._auth_headers(), timeout = timeout
+        )
+        response.raise_for_status()
+        data = response.json()
+        # Ollama returns data: null when no models are installed.
+        raw = data.get("data") if isinstance(data, dict) else None
+        return data, [e for e in raw if isinstance(e, dict)] if isinstance(raw, list) else []
+
+    async def _read_served_window(self, model: str) -> Optional[int]:
+        _, entries = await self._models_payload(_SERVED_WINDOW_TIMEOUT_S)
+        by_id = {e["id"]: e for e in entries if isinstance(e.get("id"), str)}
+        entry = by_id.get(model) or next(
+            (e for e in entries if isinstance(e.get("aliases"), list) and model in e["aliases"]),
+            # a single-model llama-server serves its only model for any requested id.
+            entries[0] if len(entries) == 1 else None,
+        )
+        if entry is None:
+            return None
+        window = _reported_window(entry)
+        parent = entry.get("parent")
+        if window is None and isinstance(parent, str) and parent in by_id:
+            # vLLM and SGLang LoRA adapters use their base model's context window.
+            window = _reported_window(by_id[parent])
+        if window is not None or entry.get("owned_by") != "llamacpp":
+            return window
+        # before b9500 added meta.n_ctx, /props reports n_ctx; ?model= routes only in router mode.
+        entry_id = entry.get("id")
+        props = await _client().get(
+            f"{self.base_url.removesuffix('/v1')}/props",
+            params = {"model": entry_id if isinstance(entry_id, str) else model},
+            headers = self._auth_headers(),
+            timeout = _SERVED_WINDOW_TIMEOUT_S,
+        )
+        props.raise_for_status()
+        body = props.json()
+        settings = body.get("default_generation_settings") if isinstance(body, dict) else None
+        return _positive_int(settings.get("n_ctx") if isinstance(settings, dict) else None)
+
+    async def served_context_window(self, model: str) -> Optional[int]:
+        """cache served windows and missing results for one minute to limit silent-server reads."""
+        if self.provider_type not in _SERVED_WINDOW_PROVIDERS:
+            return None
+        now = time.monotonic()
+        key = (self.base_url, hashlib.sha256((self.api_key or "").encode()).hexdigest(), model)
+        cached = _served_windows.get(key)
+        if cached is not None and cached[0] > now:
+            return cached[1]
+        window = None
+        try:
+            # both reads share one deadline because the first token waits for them.
+            window = await asyncio.wait_for(
+                self._read_served_window(model), timeout = _SERVED_WINDOW_TIMEOUT_S
+            )
+        except httpx.ConnectError as exc:
+            # retry a down or restarting server next turn instead of caching the miss for a minute.
+            logger.info("No served context window from %s: %s", self.provider_type, exc)
+            return None
+        except (httpx.HTTPError, ValueError, asyncio.TimeoutError) as exc:
+            logger.info("No served context window from %s: %r", self.provider_type, exc)
+        for stale in [k for k, (expiry, _) in _served_windows.items() if expiry <= now]:
+            del _served_windows[stale]
+        _served_windows[key] = (now + _SERVED_WINDOW_TTL_S, window)
+        return window
+
     @staticmethod
     def _parse_gemini_models(payload: Any) -> list[dict[str, Any]]:
-        """Translate Gemini's native /v1beta/models payload to OpenAI shape, keeping only entries
-        advertising generateContent / streamGenerateContent so embedding-only models do not reach
-        the chat picker."""
+        """map Gemini models to OpenAI entries and exclude advertised embedding-only models."""
         if not isinstance(payload, dict):
             return []
         entries = payload.get("models") or []

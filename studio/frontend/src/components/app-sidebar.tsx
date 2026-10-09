@@ -61,6 +61,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
@@ -71,7 +72,7 @@ import {
   shouldUseCustomWindowTitlebar,
   shouldUseNativeMacWindowTitlebar,
 } from "@/components/tauri/window-titlebar";
-// Deep imports on purpose: the Images index re-exports ImagesPage, which would undo its code split.
+// deep imports avoid the Images index because its ImagesPage re-export would undo the code split.
 /* eslint-disable no-restricted-imports */
 import {
   isWorkflowEnabled,
@@ -148,7 +149,7 @@ import {
 } from "@/components/ui/tooltip";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { ArrowRightIcon, ChevronDown, Moon } from "lucide-react";
+import { ArrowRightIcon, ChevronDown, Copy, Moon } from "lucide-react";
 import { ForkIcon } from "@/lib/fork-icon";
 import {
   Link,
@@ -259,6 +260,7 @@ import {
   isTrainingStartPending,
   removeTrainingUnloadGuard,
   renameTrainingRun,
+  useDuplicateTrainingRun,
   useTrainingCompletionWatch,
   useTrainingHistorySidebarItems,
   useTrainingRuntimeStore,
@@ -292,7 +294,7 @@ import {
 import { ShutdownDialog } from "@/components/shutdown-dialog";
 import { buildChatItemMarkdown } from "@/features/chat/prompt-storage/prompt-storage-dialog";
 import { useActiveChatMenuStore } from "@/features/chat/stores/active-chat-menu-store";
-import { PinnedPageRows, usePinnedPageCount } from "@/features/browser";
+import { type PinnedPage, PinnedPageRow, usePinnedPages } from "@/features/browser";
 import { translate, useT, type TranslationKey } from "@/i18n";
 
 const RECENT_SLOT_NUMBERS = [1, 2, 3, 4, 5, 6] as const;
@@ -470,10 +472,11 @@ type SectionTarget = {
   selection?: boolean;
 };
 
-// One row of the Pinned list, which holds folders and chats together.
+// One row of Pinned or a custom section: a folder, chat or pinned page.
 type PinnedRow =
   | { kind: "project"; id: string; project: ProjectRecord }
-  | { kind: "chat"; id: string; item: SidebarItem };
+  | { kind: "chat"; id: string; item: SidebarItem }
+  | { kind: "page"; id: string; page: PinnedPage };
 
 // A row's menu is written once and rendered into both the 3-dot dropdown and the right-click
 // menu, which offer the same actions. Typed as the props the rows pass, not as a union of the
@@ -589,19 +592,6 @@ function preloadSilently(request: Promise<unknown>): void {
   void request.catch(() => undefined);
 }
 
-function NavBadge({ label, className }: { label: string; className?: string }) {
-  return (
-    <span
-      className={cn(
-        "nav-badge inline-flex shrink-0 items-center justify-center rounded-full border border-nav-beta-border px-[calc(5px*var(--ui-space-scale,1))] pt-[calc(3px*var(--ui-space-scale,1))] pb-[calc(2px*var(--ui-space-scale,1))] text-[calc(0.5rem*var(--ui-font-scale,1))] font-medium uppercase leading-none tracking-[0.04em] text-nav-fg-muted antialiased subpixel-antialiased shadow-[0_1px_2px_rgba(0,0,0,0.06)] dark:shadow-[0_1px_2px_var(--background)]",
-        className,
-      )}
-    >
-      {label}
-    </span>
-  );
-}
-
 function NavItem({
   icon,
   label,
@@ -660,18 +650,16 @@ function NavItem({
           <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-icon! shrink-0 translate-x-0.5 group-data-[collapsible=icon]:translate-x-0 group-hover/menu-button:animate-icon-pop" />
           <span className="text-ui-14p5 leading-ui-19 tracking-nav">{label}</span>
           {badge && (
-            <NavBadge
-              label={badge}
-              className="ml-auto group-data-[collapsible=icon]:hidden"
-            />
+            <Badge variant="secondary" className="group-data-[collapsible=icon]:hidden">
+              {badge}
+            </Badge>
           )}
           {spinner && (
-            // mr-1.5 over the row's pr-2.5 = 16px, matching the chat rows' pr-4: one spinner column.
+            // mr-1.5 plus the row's pr-2.5 makes 16px, matching the chat row spinner column.
             <Spinner className="ml-auto mr-1.5 size-3.5 shrink-0 text-muted-foreground group-data-[collapsible=icon]:hidden" />
           )}
         </SidebarMenuButton>
         {spinner && (
-          // Collapsed (icon-only) rail: small spinner badge over the icon corner.
           <Spinner className="pointer-events-none absolute right-1 top-1 hidden size-2.5 text-muted-foreground group-data-[collapsible=icon]:block" />
         )}
         {overlay}
@@ -936,8 +924,7 @@ function MoreMenuItem({
   return (
     <DropdownMenuItem
       disabled={disabled}
-      // Whenever there is one: gated on `disabled` it dropped the tooltip of a row that is
-      // still being measured, which is enabled and has something to say.
+      // keep the tooltip while capability measurement leaves the row enabled.
       title={tooltip}
       onSelect={onSelect}
       onPointerEnter={disabled ? undefined : onIntent}
@@ -946,13 +933,27 @@ function MoreMenuItem({
     >
       <HugeiconsIcon icon={icon} strokeWidth={1.75} />
       <span className="min-w-0 flex-1 truncate">{label}</span>
-      {badge && <NavBadge label={badge} />}
+      {badge && <Badge variant="secondary">{badge}</Badge>}
       {spinner && <Spinner className="size-3.5 shrink-0 text-muted-foreground" />}
     </DropdownMenuItem>
   );
 }
 
-function AudioMoreSubmenu({
+type MediaMoreSubmenuProps<Id extends string> = {
+  icon: typeof ZapIcon;
+  label: string;
+  active: boolean;
+  disabled?: boolean;
+  tooltip?: string;
+  badge?: string;
+  spinner?: boolean;
+  onIntent?: () => void;
+  onOpen: () => void;
+  onPick: (id: Id) => void;
+  contentProps: ComponentProps<typeof DropdownMenuSubContent>;
+};
+
+function MediaMoreSubmenu<Id extends string>({
   icon,
   label,
   active,
@@ -964,22 +965,14 @@ function AudioMoreSubmenu({
   onOpen,
   onPick,
   contentProps,
-}: {
-  icon: typeof ZapIcon;
-  label: string;
-  active: boolean;
-  disabled?: boolean;
-  tooltip?: string;
-  badge?: string;
-  spinner?: boolean;
-  onIntent?: () => void;
-  onOpen: () => void;
-  onPick: (id: AudioWorkflowId) => void;
-  contentProps: ComponentProps<typeof DropdownMenuSubContent>;
+  tabs,
+  current,
+  enabled,
+}: MediaMoreSubmenuProps<Id> & {
+  tabs: ReadonlyArray<{ id: Id; icon: IconSvgElement; label: string }>;
+  current: Id | null;
+  enabled: (id: Id) => boolean;
 }) {
-  const workflow = useAudioWorkspaceStore((s) => s.workflow);
-  const requested = useAudioWorkspaceStore((s) => s.requestedWorkflow);
-  const current = active ? (requested ?? workflow) : null;
   return (
     <DropdownMenuSub>
       <DropdownMenuSubTrigger
@@ -987,7 +980,7 @@ function AudioMoreSubmenu({
         title={tooltip}
         onPointerEnter={disabled ? undefined : onIntent}
         onFocus={disabled ? undefined : onIntent}
-        // A click opens Audio itself; hover and the keyboard still open the workflows.
+        // click opens the page; hover or keyboard opens its workflows.
         onClick={(event) => {
           if (disabled) return;
           event.preventDefault();
@@ -997,15 +990,17 @@ function AudioMoreSubmenu({
       >
         <HugeiconsIcon icon={icon} strokeWidth={1.75} />
         <span className="min-w-0 flex-1 truncate">{label}</span>
-        {badge && <NavBadge label={badge} />}
+        {badge && <Badge variant="secondary">{badge}</Badge>}
         {spinner && (
           <Spinner className="size-3.5 shrink-0 text-muted-foreground" />
         )}
       </DropdownMenuSubTrigger>
       <DropdownMenuSubContent {...contentProps} className="sidebar-more-menu w-44 p-1">
-        {AUDIO_WORKFLOWS.map((tab) => (
+        {tabs.map((tab) => (
           <DropdownMenuItem
             key={tab.id}
+            disabled={!enabled(tab.id)}
+            title={enabled(tab.id) ? undefined : WORKFLOW_UNAVAILABLE}
             onSelect={() => onPick(tab.id)}
             className={cn(current === tab.id && "bg-accent/60")}
           >
@@ -1015,6 +1010,35 @@ function AudioMoreSubmenu({
         ))}
       </DropdownMenuSubContent>
     </DropdownMenuSub>
+  );
+}
+
+function ImagesMoreSubmenu(props: MediaMoreSubmenuProps<WorkflowId>) {
+  const workflow = useImageWorkflowStore((s) => s.workflow);
+  const supported = useImageWorkflowStore((s) => s.supported);
+  const pageMode = useImageWorkflowStore((s) => s.pageMode);
+  const current = props.active && pageMode === "create" ? workflow : null;
+  return (
+    <MediaMoreSubmenu
+      {...props}
+      tabs={WORKFLOW_TABS}
+      current={current}
+      enabled={(id) => isWorkflowEnabled(id, supported)}
+    />
+  );
+}
+
+function AudioMoreSubmenu(props: MediaMoreSubmenuProps<AudioWorkflowId>) {
+  const workflow = useAudioWorkspaceStore((s) => s.workflow);
+  const requested = useAudioWorkspaceStore((s) => s.requestedWorkflow);
+  const current = props.active ? (requested ?? workflow) : null;
+  return (
+    <MediaMoreSubmenu
+      {...props}
+      tabs={AUDIO_WORKFLOWS}
+      current={current}
+      enabled={audioWorkflowAlwaysEnabled}
+    />
   );
 }
 
@@ -1376,6 +1400,7 @@ export function AppSidebar() {
   // User-made sections, what is filed in them, and which sections "Show" turned off.
   const customSections = useSidebarOrganizationStore((s) => s.customSections);
   const sectionByChatId = useSidebarOrganizationStore((s) => s.sectionByChatId);
+  const sectionByPageId = useSidebarOrganizationStore((s) => s.sectionByPageId);
   const sectionByProjectId = useSidebarOrganizationStore(
     (s) => s.sectionByProjectId,
   );
@@ -1446,6 +1471,7 @@ export function AppSidebar() {
   );
   const setChatsSection = useSidebarOrganizationStore((s) => s.setChatsSection);
   const setProjectsSection = useSidebarOrganizationStore((s) => s.setProjectsSection);
+  const setPagesSection = useSidebarOrganizationStore((s) => s.setPagesSection);
   const setSectionHidden = useSidebarOrganizationStore((s) => s.setSectionHidden);
   // With the Projects section on, a project chat lives in its folder and repeating it here would be
   // noise. With it off there are no folders, so Recents is where those chats go. Pinned chats are
@@ -1461,7 +1487,7 @@ export function AppSidebar() {
     [allChatItems, pinnedIdSet, sectionByChatId, organizeBy],
   );
   const [pinnedOpen, setPinnedOpen] = useState(true);
-  const pinnedPageCount = usePinnedPageCount();
+  const pinnedPages = usePinnedPages();
   const [projectsOpen, setProjectsOpen] = useState(true);
   const [showAllProjects, setShowAllProjects] = useState(false);
   // Pinning a project moves its folder into the Pinned section, beside the pinned chats.
@@ -1813,19 +1839,25 @@ export function AppSidebar() {
     for (const item of sortedPinnedChatItems) {
       rows.push({ kind: "chat", id: item.id, item });
     }
+    // Pages go after sorted chats, in pin order. Pages filed in a section show there instead.
+    for (const page of pinnedPages) {
+      if (!sectionByPageId[page.id]) rows.push({ kind: "page", id: page.id, page });
+    }
     return pinnedSort === "manual"
       ? applyManualOrder(rows, manualOrder[PINNED_ORDER_SCOPE], (row) => row.id)
       : rows;
-  }, [pinnedProjectBase, sortedPinnedChatItems, pinnedSort, manualOrder]);
+  }, [pinnedProjectBase, sortedPinnedChatItems, pinnedPages, sectionByPageId, pinnedSort, manualOrder]);
   const pinnedRowIds = useMemo(() => pinnedRows.map((row) => row.id), [pinnedRows]);
   // Each custom section is one list of folders and chats, as Pinned is: folders lead until a drop
   // says otherwise. A pinned row stays in Pinned and keeps its section for when it is unpinned.
   const customSectionRows = useMemo(() => {
     const folders = new Map<string, PinnedRow[]>();
     const chats = new Map<string, SidebarItem[]>();
+    const pages = new Map<string, PinnedRow[]>();
     for (const section of customSections) {
       folders.set(section.id, []);
       chats.set(section.id, []);
+      pages.set(section.id, []);
     }
     for (const project of projects) {
       const sectionId = sectionByProjectId[project.id];
@@ -1837,6 +1869,10 @@ export function AppSidebar() {
       if (!sectionId || pinnedIdSet.has(item.id)) continue;
       chats.get(sectionId)?.push(item);
     }
+    for (const page of pinnedPages) {
+      const sectionId = sectionByPageId[page.id];
+      if (sectionId) pages.get(sectionId)?.push({ kind: "page", id: page.id, page });
+    }
     const rows = new Map<string, PinnedRow[]>();
     for (const section of customSections) {
       const scope = customSectionScope(section.id);
@@ -1845,6 +1881,7 @@ export function AppSidebar() {
         ...sortChatItems(chats.get(section.id) ?? [], scope, section.sort).map(
           (item): PinnedRow => ({ kind: "chat", id: item.id, item }),
         ),
+        ...(pages.get(section.id) ?? []),
       ];
       rows.set(
         section.id,
@@ -1860,6 +1897,8 @@ export function AppSidebar() {
     allChatItems,
     sectionByProjectId,
     sectionByChatId,
+    pinnedPages,
+    sectionByPageId,
     pinnedProjectIdSet,
     pinnedIdSet,
     sortChatItems,
@@ -1972,7 +2011,9 @@ export function AppSidebar() {
         ? pinnedRows.flatMap((row) =>
             row.kind === "project"
               ? folderChatItems(true, [row.project])
-              : [row.item],
+              : row.kind === "chat"
+                ? [row.item]
+                : [],
           )
         : [],
     [chatListsOnScreen, pinnedOpen, pinnedRows, folderChatItems],
@@ -1986,7 +2027,11 @@ export function AppSidebar() {
       bySection.set(
         section.id,
         (customSectionRows.get(section.id) ?? []).flatMap((row) =>
-          row.kind === "project" ? folderChatItems(true, [row.project]) : [row.item],
+          row.kind === "project"
+            ? folderChatItems(true, [row.project])
+            : row.kind === "chat"
+              ? [row.item]
+              : [],
         ),
       );
     }
@@ -2417,6 +2462,7 @@ export function AppSidebar() {
       pinnedProjectIds: pinnedProjectIdSet,
       sectionByChatId,
       sectionByProjectId,
+      sectionByPageId,
       sectionSort: (sectionId) =>
         customSections.find((section) => section.id === sectionId)?.sort ?? "manual",
       orders: {
@@ -2430,6 +2476,7 @@ export function AppSidebar() {
     [
       sectionByChatId,
       sectionByProjectId,
+      sectionByPageId,
       customSections,
       customSectionIds,
       organizeBy,
@@ -2537,6 +2584,7 @@ export function AppSidebar() {
       const filing = effects.fileInSection;
       if (!filing) return;
       if (filing.kind === "chat") setChatsSection([filing.id], filing.sectionId);
+      else if (filing.kind === "page") setPagesSection([filing.id], filing.sectionId);
       else setProjectsSection([filing.id], filing.sectionId);
       if (filing.sectionId) setCustomSectionOpen(filing.sectionId, true);
     };
@@ -2674,6 +2722,10 @@ export function AppSidebar() {
   const activeJobId = useTrainingRuntimeStore((s) => s.jobId);
   const currentRunViewActive = useTrainingRuntimeStore((s) => s.currentRunViewActive);
   const selectedHistoryRunId = useTrainingRuntimeStore((s) => s.selectedHistoryRunId);
+  const {
+    duplicate: duplicateTrainingRun,
+    disabled: duplicateTrainingRunDisabled,
+  } = useDuplicateTrainingRun();
   const setSelectedHistoryRunId = useTrainingRuntimeStore((s) => s.setSelectedHistoryRunId);
   // Running or starting up. Drives the Train spinner + New Chat / Return to Chat swap.
   const trainingInProgress = useTrainingRuntimeStore(isTrainingStartPending);
@@ -2819,6 +2871,7 @@ export function AppSidebar() {
     audio: {
       icon: AudioWave01Icon,
       label: t("shell.navigation.audio"),
+      badge: t("shell.navigation.newBadge"),
       active: pathname === "/audio" || pathname.startsWith("/audio/"),
       onClick: () => {
         navigateFromRow({ to: "/audio" });
@@ -2880,10 +2933,10 @@ export function AppSidebar() {
   // The Projects row repeats the section, so it only earns its place while the section is absent.
   const navRowPinned = (item: SidebarNavItemPref) =>
     sidebarNavRowPinned(item, sidebarNavAuto, { projectsSectionShowing });
-  // Audio steps out of More while its page is open: a pin for the visit, never saved.
+  // audio and images are temporarily pinned while active without saving the preference.
   const { inline: inlineNavIds, overflow: overflowNavIds } = placeNavRows(
     sidebarNav.map((item) => ({ id: item.id, pinned: navRowPinned(item) })),
-    navRows.audio.active ? "audio" : null,
+    navRows.audio.active ? "audio" : navRows.images.active ? "images" : null,
   );
   // The mobile sheet shows labels regardless of the desktop pin state.
   const sidebarRowsLabelled = isMobile || sidebarState !== "collapsed";
@@ -2892,6 +2945,11 @@ export function AppSidebar() {
     sidebarRowsLabelled &&
     !(navRows.images.active && imagesPageMode === "train");
   const audioWorkflowsListed = sidebarRowsLabelled;
+  const pickImagesWorkflow = (workflowId: WorkflowId) => {
+    useImageWorkflowStore.getState().setWorkflow(workflowId);
+    navigate({ to: "/images" });
+    closeMobileIfOpen();
+  };
   // Sidebar and More-flyout picks only ask; the Audio page switches once it is free to.
   const pickAudioWorkflow = (workflowId: AudioWorkflowId) => {
     useAudioWorkspaceStore.getState().requestWorkflow(workflowId);
@@ -3988,7 +4046,8 @@ export function AppSidebar() {
   // them into decides where it goes.
   // Pinned: folders and chats in one list, in the order they were dropped into.
   function renderPinnedSection(): ReactNode {
-    if (isStudioRoute || showTrainingRecents || (pinnedRows.length === 0 && pinnedPageCount === 0)) return null;
+    // Kept while pages are filed elsewhere, so they can be dragged back.
+    if (isStudioRoute || showTrainingRecents || (pinnedRows.length === 0 && pinnedPages.length === 0)) return null;
     const firstPinnedRow = pinnedRows[0];
     return (
       <Collapsible open={pinnedOpen} onOpenChange={setPinnedOpen} asChild>
@@ -4026,7 +4085,11 @@ export function AppSidebar() {
           <CollapsibleContent>
             {/* The space under the rows lands a drop last. */}
             <SidebarGroupContent
-              className={cn(unrailedRowPadding, "relative")}
+              className={cn(
+                unrailedRowPadding,
+                "relative",
+                dnd.ringLit(sectionRingKey("pinned")) && DROP_INTO_CUE,
+              )}
               {...dnd.dropZoneProps({ section: "pinned" })}
             >
               <SidebarMenu>
@@ -4039,16 +4102,29 @@ export function AppSidebar() {
                         section: "pinned",
                         sort: { value: pinnedSort, set: setPinnedSort },
                       })
-                    : renderChatSidebarItem(row.item, "recent", {
-                        scope: PINNED_ORDER_SCOPE,
-                        ids: pinnedChatRowIds,
-                        orderIds: pinnedRowIds,
-                        section: "pinned",
-                        sort: { value: pinnedSort, set: setPinnedSort },
-                      }),
+                    : row.kind === "page"
+                      ? renderPinnedPageRow(row.page, {
+                          scope: PINNED_ORDER_SCOPE,
+                          orderedIds: pinnedRowIds,
+                          section: "pinned",
+                          sort: { value: pinnedSort, set: setPinnedSort },
+                        })
+                      : renderChatSidebarItem(row.item, "recent", {
+                          scope: PINNED_ORDER_SCOPE,
+                          ids: pinnedChatRowIds,
+                          orderIds: pinnedRowIds,
+                          section: "pinned",
+                          sort: { value: pinnedSort, set: setPinnedSort },
+                        }),
                 )}
-                {/* Pages pinned from a browser tab's menu, after the chats and folders. */}
-                <PinnedPageRows />
+                {pinnedRows.length === 0 ? (
+                  // Every pinned page is filed elsewhere: somewhere to drag them back to.
+                  <SidebarMenuItem>
+                    <p className="flex h-[calc(30px*var(--ui-space-scale,1))] items-center pl-3 pr-4 text-ui-13 leading-ui-18 tracking-nav text-nav-fg-muted">
+                      {t("shell.sections.empty")}
+                    </p>
+                  </SidebarMenuItem>
+                ) : null}
                 {/* The end of the list, as somewhere to aim. A folder last in Pinned runs its
                     block to the bottom of the section, so every pixel down there is inside it
                     and a chat meant to go after the folder was filed into it instead.
@@ -4166,13 +4242,15 @@ export function AppSidebar() {
                         section: scope,
                         sort,
                       })
-                    : renderChatSidebarItem(row.item, "recent", {
-                        scope,
-                        ids: ids.chats,
-                        orderIds: ids.rows,
-                        section: scope,
-                        sort,
-                      }),
+                    : row.kind === "page"
+                      ? renderPinnedPageRow(row.page, { scope, orderedIds: ids.rows, section: scope, sort })
+                      : renderChatSidebarItem(row.item, "recent", {
+                          scope,
+                          ids: ids.chats,
+                          orderIds: ids.rows,
+                          section: scope,
+                          sort,
+                        }),
                 )}
                 {rows.length === 0 ? (
                   // Gives an empty section a body to hit, as the empty Projects line does.
@@ -4677,6 +4755,35 @@ export function AppSidebar() {
               <span>Delete</span>
             </P.Item>
       </>
+    );
+  }
+
+  /** A pinned page row, draggable and keyboard-reorderable like a chat row. */
+  function renderPinnedPageRow(
+    page: PinnedPage,
+    list: { scope: string; orderedIds: string[]; section: SidebarSection; sort?: RowSort },
+  ): ReactNode {
+    return (
+      <PinnedPageRow
+        key={page.id}
+        page={page}
+        className={cn(
+          DROP_ROW_HIT,
+          draggingRow?.id === page.id && "opacity-40",
+          dropCueClass(list.scope, page.id),
+        )}
+        rowProps={{
+          ...rowDragProps({
+            item: { kind: "page", id: page.id, section: list.section, scope: list.scope, projectId: null },
+            orderedIds: list.orderedIds,
+            sort: list.sort,
+          }),
+          ...dnd.dropZoneProps({
+            section: list.section,
+            row: { id: page.id, kind: "page", scope: list.scope },
+          }),
+        }}
+      />
     );
   }
 
@@ -5495,13 +5602,7 @@ export function AppSidebar() {
                       <ImagesWorkflowList
                         active={row.active}
                         collapsed={!sidebarRowsLabelled}
-                        onPick={(workflowId) => {
-                          useImageWorkflowStore
-                            .getState()
-                            .setWorkflow(workflowId);
-                          navigate({ to: "/images" });
-                          closeMobileIfOpen();
-                        }}
+                        onPick={pickImagesWorkflow}
                       />
                     ) : id === "audio" ? (
                       <AudioWorkflowList
@@ -5599,28 +5700,37 @@ export function AppSidebar() {
                         const row = navRows[id];
                         // Same pending handling as the inline rows above.
                         const rowState = resolveNavRowState(row);
-                        if (id === "audio") {
-                          return (
+                        if (id === "images" || id === "audio") {
+                          const submenu = {
+                            icon: row.icon,
+                            label: row.label,
+                            badge: row.badge,
+                            active: row.active,
+                            disabled: rowState.disabled,
+                            tooltip: rowState.tooltip,
+                            spinner: rowState.spinner,
+                            onIntent: row.onIntent,
+                            onOpen: () => {
+                              setMoreOpen(false);
+                              row.onClick();
+                            },
+                            contentProps: {
+                              ...sidebarSubmenuOffsets,
+                              // portaled outside the flyout, so its hover grace must include the submenu.
+                              ...moreHover.content,
+                            },
+                          };
+                          return id === "images" ? (
+                            <ImagesMoreSubmenu
+                              key={id}
+                              {...submenu}
+                              onPick={pickImagesWorkflow}
+                            />
+                          ) : (
                             <AudioMoreSubmenu
                               key={id}
-                              icon={row.icon}
-                              label={row.label}
-                              badge={row.badge}
-                              active={row.active}
-                              disabled={rowState.disabled}
-                              tooltip={rowState.tooltip}
-                              spinner={rowState.spinner}
-                              onIntent={row.onIntent}
-                              onOpen={() => {
-                                setMoreOpen(false);
-                                row.onClick();
-                              }}
+                              {...submenu}
                               onPick={pickAudioWorkflow}
-                              contentProps={{
-                                ...sidebarSubmenuOffsets,
-                                // Portaled outside the flyout, so the flyout's hover grace has to cover it too.
-                                ...moreHover.content,
-                              }}
                             />
                           );
                         }
@@ -5841,6 +5951,16 @@ export function AppSidebar() {
                             </button>
                           )}
                         >
+                          <DropdownMenuItem
+                            disabled={duplicateTrainingRunDisabled}
+                            onSelect={() => {
+                              void duplicateTrainingRun(run.id);
+                              closeMobileIfOpen();
+                            }}
+                          >
+                            <Copy className="size-icon" />
+                            <span>{t("common.duplicate")}</span>
+                          </DropdownMenuItem>
                           <DropdownMenuItem onSelect={() => openRenameRun(run)}>
                             <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
                             <span>{t("common.rename")}</span>
