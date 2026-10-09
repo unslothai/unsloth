@@ -3028,7 +3028,7 @@ export const sv = {
         backendDescription:
           "Automatisk kör Clef via llama.cpp när modellen har en GGUF-version och faller annars tillbaka på PyTorch. llama.cpp läser också bilder.",
         backendDescriptionMlx:
-          "Automatisk kör Clef-text via MLX på Apple Silicon och via llama.cpp när bara modellens GGUF-version är laddad eller nedladdad. MLX läser bara text; llama.cpp läser också bilder.",
+          "Automatisk kör Clef via MLX på Apple Silicon och via llama.cpp när bara modellens GGUF-version är laddad eller nedladdad. MLX läser bilder bara för Clef-modeller; llama.cpp läser också bilder.",
         backendStatus: "Körmiljö: {backend}",
         backendNone: "inte tillgänglig",
         mediaImages: "Läser text och bilder.",

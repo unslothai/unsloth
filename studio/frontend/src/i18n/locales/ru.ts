@@ -2828,7 +2828,7 @@ export const ru = {
         backendDescription:
           "В режиме «Авто» Clef работает через llama.cpp, если у модели есть сборка GGUF, а иначе через PyTorch. llama.cpp также читает изображения.",
         backendDescriptionMlx:
-          "В режиме «Авто» текст Clef на Apple Silicon обрабатывается через MLX, а через llama.cpp — если загружена или скачана только сборка GGUF модели. MLX читает только текст; llama.cpp также читает изображения.",
+          "В режиме «Авто» Clef на Apple Silicon обрабатывается через MLX, а через llama.cpp — если загружена или скачана только сборка GGUF модели. MLX читает изображения только для моделей Clef; llama.cpp также читает изображения.",
         backendStatus: "Среда выполнения: {backend}",
         backendNone: "недоступна",
         mediaImages: "Читает текст и изображения.",
