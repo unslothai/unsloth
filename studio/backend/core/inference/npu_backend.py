@@ -45,7 +45,6 @@ PROVIDER_TYPE = "lemonade"
 DEFAULT_CONTEXT_LENGTH = 8192
 # Names the lemond install whose NPU passed `flm validate`, so a restart needs no new Enable.
 _VALIDATED_MARKER = "npu_validated.json"
-_ENABLING_STATES = frozenset({"installing", "starting", "installing_flm", "validating"})
 
 # Model modes Unsloth's chat cannot serve: embeddings and transcription have no chat endpoint,
 # and a single-turn ("flash") model answers only the first message of a conversation.
@@ -240,6 +239,7 @@ class LemonadeNpuBackend:
         self._state = "idle"
         self._error: Optional[str] = None
         self._flm_version_cache: Optional[tuple[tuple[str, int, int], Optional[str]]] = None
+        self._last_versions: dict[str, Optional[str]] = {"lemonade": None, "fastflowlm": None}
 
     @property
     def root(self) -> Path:
@@ -356,21 +356,35 @@ class LemonadeNpuBackend:
         self._flm_version_cache = (key, version)
         return version
 
+    def _installed_lemonade_version(self, lemond: Optional[Path]) -> Optional[str]:
+        if lemond is None:
+            return None
+        try:
+            return _installer_module().installed_version(lemond)
+        except Exception as exc:  # noqa: BLE001 -- a missing version never hides the status
+            logger.warning("Could not read the Lemonade version: %s", exc)
+            return None
+
     def _versions(
         self, binary: Optional[Path], validated: Optional[str]
     ) -> dict[str, Optional[str]]:
         """Installed runtime versions. A pending upgrade reports the ones it will replace."""
-        # Running flm while Enable replaces it could block the update on Windows.
-        if self._state in _ENABLING_STATES:
-            return {"lemonade": None, "fastflowlm": None}
-        lemond = binary or (Path(validated) if isinstance(validated, str) and validated else None)
-        lemonade = None
-        if lemond is not None:
-            try:
-                lemonade = _installer_module().installed_version(lemond)
-            except Exception as exc:  # noqa: BLE001 -- a missing version never hides the status
-                logger.warning("Could not read the Lemonade version: %s", exc)
-        return {"lemonade": lemonade, "fastflowlm": self._installed_flm_version()}
+        # Enable replaces flm under this lock, and running flm then could block the update on
+        # Windows. Not waiting keeps status prompt through an Enable or a load: it answers with
+        # the versions last read instead.
+        if not self._lock.acquire(blocking = False):
+            return dict(self._last_versions)
+        try:
+            lemond = binary or (
+                Path(validated) if isinstance(validated, str) and validated else None
+            )
+            self._last_versions = {
+                "lemonade": self._installed_lemonade_version(lemond),
+                "fastflowlm": self._installed_flm_version(),
+            }
+            return dict(self._last_versions)
+        finally:
+            self._lock.release()
 
     def status(self) -> dict[str, Any]:
         hardware = self.hardware()
