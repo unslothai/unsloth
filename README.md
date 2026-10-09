@@ -238,10 +238,10 @@ winget install -e --id Python.Python.3.13
 winget install --id=astral-sh.uv  -e
 uv venv unsloth_env --python 3.13
 .\unsloth_env\Scripts\activate
-uv pip install torch torchvision --torch-backend=auto
-uv pip install unsloth
+uv pip install torchao
+uv pip install unsloth --torch-backend=auto
 ```
-Install PyTorch first on Windows: `--torch-backend` also pulls torchao from the PyTorch index, which has no recent Windows torchao, so a one-step install silently resolves an old Unsloth.
+Install torchao first on Windows: `--torch-backend` looks for it only on the PyTorch index, which has no recent Windows torchao, so a one-step install silently resolves an old Unsloth.
 
 #### AMD, Intel, DGX Spark, Blackwell:
 See our [Blackwell guide](https://unsloth.ai/docs/blog/fine-tuning-llms-with-blackwell-rtx-50-series-and-unsloth) and [DGX Spark guide](https://unsloth.ai/docs/blog/fine-tuning-llms-with-nvidia-dgx-spark-and-unsloth). <br>
