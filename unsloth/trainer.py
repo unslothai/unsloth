@@ -740,11 +740,24 @@ def _create_unsloth_optimizer(
     # A subset of non_embeddings, not its own dict: legacy resume replays the old two-group order.
     lora_plus_names = set()
 
+    # Full finetuning has no modules_to_save copy, so the trainable embedding and lm_head
+    # are found by identity; matching on the PEFT name alone trained them at the base lr.
+    embedding_ids = set()
+    for owner in (model, getattr(model, "module", None)):
+        for getter in ("get_input_embeddings", "get_output_embeddings"):
+            try:
+                weight = getattr(getattr(owner, getter)(), "weight", None)
+            except Exception:
+                continue
+            if weight is not None:
+                embedding_ids.add(id(weight))
+
     for name, param in model.named_parameters():
         if not param.requires_grad:
             continue
-        if name.endswith("modules_to_save.default.weight"):
-            partial_name = name[: -len(".modules_to_save.default.weight")]
+        if name.endswith("modules_to_save.default.weight") or id(param) in embedding_ids:
+            partial_name = name.removesuffix(".modules_to_save.default.weight")
+            partial_name = partial_name.removesuffix(".weight")
             partial_name = partial_name[partial_name.rfind(".") + 1 :]
             if embedding_lr != lr:
                 print(
