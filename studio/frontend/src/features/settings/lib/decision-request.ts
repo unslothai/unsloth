@@ -375,12 +375,16 @@ export function choiceCriterion(
 
 export function scoreLevels(
   answer: Extract<DecisionAnswer, { type: "score" }>,
-): { keys: string[]; nearest: string; max: number } {
+): { keys: string[]; top: string; max: number } {
   const keys = Object.keys(answer.legend).sort((a, b) => Number(a) - Number(b));
   const distance = (key: string) => Math.abs(Number(key) - answer.score);
   const nearest = keys.reduce(
     (best, key) => (distance(key) < distance(best) ? key : best),
     keys[0] ?? "0",
   );
-  return { keys, nearest, max: Number(keys.at(-1) ?? 0) };
+  // The score is an expectation, so on a split answer (83% on 0, 17% on 3) its nearest level can be one
+  // the model gave almost nothing. Head with the most likely level when probabilities came back.
+  const p = (key: string) => answer.probabilities[key] ?? -1;
+  const top = keys.reduce((best, key) => (p(key) > p(best) ? key : best), nearest);
+  return { keys, top, max: Number(keys.at(-1) ?? 0) };
 }
