@@ -207,6 +207,8 @@ def _export_studio(
             },
         ]
     )
+    # export_model first checks that no export is running.
+    statuses.insert(0, {"is_export_active": False, "last_op_seq": 5})
 
     def record(name, answer):
         def handler(request, body):
@@ -283,6 +285,39 @@ def test_export_returns_a_job_at_once_and_the_job_completes(monkeypatch):
         ),
     ]
     assert OUT not in json.dumps([started, job])
+
+
+def test_an_export_is_refused_while_another_one_runs(monkeypatch):
+    studio = fake_studio(
+        {
+            ("GET", "/api/export/status"): lambda request, body: {
+                "is_export_active": True,
+                "active_op_kind": "export_gguf",
+            },
+            ("GET", "/api/models/checkpoints"): lambda request, body: CHECKPOINTS,
+        }
+    )
+    with TestClient(served(create_studio_mcp(), studio, monkeypatch = monkeypatch)) as http:
+        result = call_tool(
+            http,
+            "export_model",
+            {"checkpoint": "qwen-lora", "format": "gguf", "save_directory": "out"},
+        )
+    assert result["isError"] is True
+    assert result["content"][0]["text"].startswith("Another export is running.")
+    assert [c[0] for c in studio.state.calls] == ["GET"]
+
+
+def test_an_export_is_refused_while_an_mcp_export_job_runs(monkeypatch):
+    _register(account_id = "alice-id", job_id = "job-a")
+    calls = []
+    result, _job = _run_export(
+        monkeypatch,
+        _export_studio(recorder = calls),
+        {"checkpoint": "qwen-lora", "format": "gguf", "save_directory": "out"},
+    )
+    assert result["isError"] is True
+    assert calls == []
 
 
 def test_each_format_reaches_its_route(monkeypatch):

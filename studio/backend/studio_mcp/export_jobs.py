@@ -128,6 +128,10 @@ def lookup(account_id: str, job_id: str) -> ExportJob:
     return job
 
 
+def any_running() -> bool:
+    return any(not job.finished for job in _jobs.values())
+
+
 def jobs_of(account_id: str) -> list[ExportJob]:
     return [job for job in _jobs.values() if job.account_id == account_id]
 

@@ -257,7 +257,9 @@ api_key_format = "Bearer {token}"
 | `cancel` | Stop training, a start request, image training, an export, a recipe, an image or video generation, a chat reply or a dataset download. |
 
 Long work returns at once. Start it, then poll `get_job` or `studio_status`,
-and stop it with `cancel`. Audio runs cannot be cancelled.
+and stop it with `cancel`. Audio runs cannot be cancelled. Studio runs one
+export at a time, so `export_model` is refused while another export runs, and
+cancelling an export job stops only that job's own step.
 
 ### Media and files
 

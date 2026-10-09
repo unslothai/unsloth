@@ -28,11 +28,13 @@ PAYLOADS = {
         "start_request_id": "req-1",
         "job_id": "",
         "state": "rejected",
-        "message": "Cancelled",
+        "message": "Training start was cancelled",
+        "error_code": "training_start_cancelled",
     },
     ("POST", "/api/train/diffusion/stop"): {"status": "stopping"},
+    ("GET", "/api/export/status"): {"is_export_active": True, "active_op_kind": "export_gguf"},
     ("POST", "/api/export/cancel"): {"success": True, "message": "Export cancelled"},
-    ("POST", "/api/data-recipe/jobs/rec-1/cancel"): {"job_id": "rec-1", "status": "cancelled"},
+    ("POST", "/api/data-recipe/jobs/rec-1/cancel"): {"job_id": "rec-1", "status": "cancelling"},
     ("POST", "/api/inference/images/generate/cancel"): {"cancelled": True},
     ("POST", "/api/inference/video/generate/cancel"): {"cancelled": True},
     ("POST", "/api/inference/cancel"): {"cancelled": 1},
@@ -129,7 +131,7 @@ def test_a_foreign_training_job_gives_the_routes_404(monkeypatch):
 
 
 def test_an_export_cancel_marks_the_job_and_says_the_checkpoint_was_unloaded(monkeypatch):
-    job = ExportJob(job_id = "exp-1", account_id = "owner", format = "gguf")
+    job = ExportJob(job_id = "exp-1", account_id = "owner", format = "gguf", phase = "exporting")
     export_jobs._jobs["owner:exp-1"] = job
     studio = _studio()
     result = _call(monkeypatch, studio, {"kind": "export", "id": "exp-1"})
@@ -138,7 +140,86 @@ def test_an_export_cancel_marks_the_job_and_says_the_checkpoint_was_unloaded(mon
         == "The export was stopped and its checkpoint unloaded."
     )
     assert job.status == "cancelled"
-    assert [c[1] for c in studio.state.calls] == ["/api/export/cancel"]
+    assert [c[1] for c in studio.state.calls] == ["/api/export/status", "/api/export/cancel"]
+
+
+@pytest.mark.parametrize(
+    "phase,op",
+    [
+        ("loading", "export_gguf"),
+        ("starting", "load_checkpoint"),
+        ("exporting", "export_merged"),
+        ("exporting", "cleanup"),
+    ],
+)
+def test_an_export_cancel_leaves_another_jobs_op_alone(monkeypatch, phase, op):
+    job = ExportJob(job_id = "exp-1", account_id = "owner", format = "gguf", phase = phase)
+    export_jobs._jobs["owner:exp-1"] = job
+    studio = _studio(
+        {
+            ("GET", "/api/export/status"): lambda r, b: {
+                "is_export_active": True,
+                "active_op_kind": op,
+            }
+        }
+    )
+    result = _call(monkeypatch, studio, {"kind": "export", "id": "exp-1"})
+    assert result["structuredContent"]["cancelled"] is False
+    assert job.status == "running"
+    assert [c[1] for c in studio.state.calls] == ["/api/export/status"]
+
+
+@pytest.mark.parametrize("args", [{"kind": "export"}, {"kind": "export", "id": "exp-1"}])
+def test_an_idle_export_worker_keeps_its_checkpoint(monkeypatch, args):
+    # Between ops the worker is alive and holds a checkpoint; the cancel route would kill it.
+    job = ExportJob(job_id = "exp-1", account_id = "owner", format = "gguf", phase = "exporting")
+    export_jobs._jobs["owner:exp-1"] = job
+    studio = _studio(
+        {
+            ("GET", "/api/export/status"): lambda r, b: {
+                "is_export_active": False,
+                "current_checkpoint": "ref:abc",
+            }
+        }
+    )
+    result = _call(monkeypatch, studio, args)
+    assert result["structuredContent"]["cancelled"] is False
+    assert result["structuredContent"]["message"] == "No export is running."
+    assert [c[1] for c in studio.state.calls] == ["/api/export/status"]
+
+
+def test_a_start_request_rejected_for_another_reason_was_not_cancelled(monkeypatch):
+    rejected = {
+        "start_request_id": "req-1",
+        "job_id": "",
+        "state": "rejected",
+        "message": "Model not found",
+        "error_code": "model_not_found",
+    }
+    studio = _studio({("POST", "/api/train/start-requests/req-1/cancel"): lambda r, b: rejected})
+    result = _call(monkeypatch, studio, {"kind": "training_start", "id": "req-1"})
+    assert result["structuredContent"]["cancelled"] is False
+
+
+@pytest.mark.parametrize(
+    "kind,route,answer",
+    [
+        (
+            "recipe",
+            "/api/data-recipe/jobs/rec-1/cancel",
+            {"job_id": "rec-1", "status": "cancelled"},
+        ),
+        (
+            "dataset_download",
+            "/api/hub/datasets/download/cancel",
+            {"repo_id": "a/b", "state": "cancelled"},
+        ),
+    ],
+)
+def test_cancelling_an_already_cancelled_job_stops_nothing(monkeypatch, kind, route, answer):
+    studio = _studio({("POST", route): lambda r, b: answer})
+    result = _call(monkeypatch, studio, {"kind": kind, "id": IDS[kind]})
+    assert result["structuredContent"]["cancelled"] is False
 
 
 # What each route answers when there was nothing of the caller's to stop.
@@ -180,8 +261,9 @@ def test_a_cancel_that_stopped_nothing_says_so(monkeypatch, kind):
     assert result["structuredContent"]["cancelled"] is False
 
 
-def test_an_idle_export_cancel_leaves_the_job_running(monkeypatch):
-    job = ExportJob(job_id = "exp-1", account_id = "owner", format = "gguf")
+def test_an_export_the_route_found_gone_leaves_the_job_running(monkeypatch):
+    # The op ended between the status read and the cancel.
+    job = ExportJob(job_id = "exp-1", account_id = "owner", format = "gguf", phase = "exporting")
     export_jobs._jobs["owner:exp-1"] = job
     route, answer = IDLE_ANSWERS["export"]
     studio = _studio({("POST", route): lambda request, body: answer})

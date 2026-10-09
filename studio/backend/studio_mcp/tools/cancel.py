@@ -27,6 +27,8 @@ CancelKind = Literal[
     "chat",
     "dataset_download",
 ]
+START_CANCELLED = "training_start_cancelled"
+EXPORT_STATUS = "/api/export/status"
 NEEDS_ID = {
     "training_start": "the start request id",
     "recipe": "the recipe job id",
@@ -50,14 +52,28 @@ def _stopped(kind: str, answer: Any) -> bool:
     if kind == "training":
         return answer.get("status") == "stopped"
     if kind == "training_start":
-        return answer.get("state") == "rejected"
+        # Rejected for another reason (a bad model, say) is not a cancel.
+        return answer.get("state") == "rejected" and answer.get("error_code") == START_CANCELLED
     if kind == "diffusion_training":
         return answer.get("status") == "stopping"
     if kind == "export":
         return answer.get("message") == "Export cancelled"
+    # "cancelled" here is a job that had already ended; only "cancelling" means this call stopped it.
     if kind == "recipe":
-        return answer.get("status") in ("cancelling", "cancelled")
-    return answer.get("state") in ("cancelling", "cancelled")
+        return answer.get("status") == "cancelling"
+    return answer.get("state") == "cancelling"
+
+
+def _export_is_this_job(job: export_jobs.ExportJob, status: Any) -> bool:
+    """Studio has one export worker and no op ids: the running op is this job's only when its kind is the step the job is on."""
+    if not isinstance(status, dict) or not status.get("is_export_active"):
+        return False
+    op = opt_text(status.get("active_op_kind")) or ""
+    if job.phase == "loading":
+        return op == "load_checkpoint"
+    if job.phase == "exporting":
+        return op == f"export_{job.format}"
+    return False
 
 
 async def cancel(
@@ -65,7 +81,7 @@ async def cancel(
     id: Optional[str] = None,
     save: bool = True,
 ) -> CancelResult:
-    """Stop Studio work. "training" stops the LLM training run ``id`` (or the current one) at its next safe point, saving a checkpoint unless ``save`` is false. "training_start" withdraws a start request that has not begun. "diffusion_training" stops image LoRA training. "export" stops the running export and unloads its checkpoint; ``id`` is an export_model job. "recipe" stops recipe job ``id``. "image" and "video" stop the generation in progress. "chat" stops the reply with cancel_id ``id``. "dataset_download" stops downloading the dataset ``id`` (its repo id). Audio runs cannot be cancelled."""
+    """Stop Studio work. "training" stops the LLM training run ``id`` (or the current one) at its next safe point, saving a checkpoint unless ``save`` is false. "training_start" withdraws a start request that has not begun. "diffusion_training" stops image LoRA training. "export" stops the running export and unloads its checkpoint; with ``id`` (an export_model job) only while that job's own step is running. "recipe" stops recipe job ``id``. "image" and "video" stop the generation in progress. "chat" stops the reply with cancel_id ``id``. "dataset_download" stops downloading the dataset ``id`` (its repo id). Audio runs cannot be cancelled. ``cancelled`` says whether this call stopped something."""
     caller = current_caller()
     if kind in NEEDS_ID and not id:
         raise ToolError(f"cancel(kind={kind!r}) needs id: {NEEDS_ID[kind]}.")
@@ -91,10 +107,21 @@ async def cancel(
         answer = await route_json("POST", "/api/train/diffusion/stop", caller = caller)
     elif kind == "export":
         job = export_jobs.lookup(caller.account_id, id) if id else None
-        # Studio has one export slot, so cancelling a finished job would stop whatever export runs now.
+        # Studio has one export worker, and cancelling it stops whatever it is doing, so only cancel
+        # when the op it is running is the one meant. An idle worker still holds its checkpoint.
         if job is not None and job.finished:
             return CancelResult(
                 kind = kind, id = id, cancelled = False, message = f"The export already {job.status}."
+            )
+        status = await route_json("GET", EXPORT_STATUS, caller = caller)
+        if not (isinstance(status, dict) and status.get("is_export_active")):
+            return CancelResult(kind = kind, id = id, cancelled = False, message = "No export is running.")
+        if job is not None and not _export_is_this_job(job, status):
+            return CancelResult(
+                kind = kind,
+                id = id,
+                cancelled = False,
+                message = "The export running now is not this job; it was left alone.",
             )
         answer = await route_json("POST", "/api/export/cancel", caller = caller)
         if not _stopped(kind, answer):
