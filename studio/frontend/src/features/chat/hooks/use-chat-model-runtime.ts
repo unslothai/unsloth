@@ -1862,7 +1862,7 @@ export function useChatModelRuntime() {
         releasePreflightLifecycleLease();
         throw error;
       }
-      const forceCancelActive = stopDecision.forceCancelActive;
+      let forceCancelActive = stopDecision.forceCancelActive;
 
       const explicitIsLora =
         typeof selection === "string" ? undefined : selection.isLora;
@@ -2436,6 +2436,8 @@ export function useChatModelRuntime() {
                 if (abortCtrl.signal.aborted) throw new Error("Cancelled");
                 if (!stopDecision.proceed) throw new Error("Model load cancelled.");
                 keepsOthers = false;
+                forceCancelActive = stopDecision.forceCancelActive;
+                loadRun.forceCancelActive = forceCancelActive;
               }
               // Judge it again as that engine before anything is unloaded. A Desktop path lease is
               // single-use, so those picks rely on /load's own engine checks.
