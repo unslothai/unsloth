@@ -130,6 +130,11 @@ async def generate_audio(
             data = base64.b64decode(fallback["data"], validate = True)
         except (binascii.Error, ValueError):
             raise ToolError("Studio returned unreadable audio") from None
+        if len(data) > INLINE_CAP:
+            raise ToolError(
+                f"Studio could not save the clip to Audio history, and at "
+                f"{len(data) / (1024 * 1024):.1f} MiB it is too large to return inline."
+            )
         contents.append(audio_content(data, f"audio/{opt_text(fallback.get('format')) or 'wav'}"))
     if not clips and saved:
         raise ToolError("Studio returned no audio")

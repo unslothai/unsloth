@@ -186,6 +186,18 @@ def test_short_clips_are_inline_and_long_ones_are_links_never_fetched(monkeypatc
     )
 
 
+def test_an_unsaved_clip_over_the_inline_cap_is_not_inlined(monkeypatch):
+    from studio_mcp.media import INLINE_CAP
+
+    big = WAV + b"\x00" * INLINE_CAP
+    fallback = {"model": "kokoro", "clips": [], "audio": {"data": _b64(big), "format": "wav"}}
+    studio = _studio({("POST", "/v1/audio/run"): lambda request, body: fallback})
+    result = _call(monkeypatch, studio, {"workflow": "speak", "text": "Hi"})
+    assert result["isError"] is True
+    assert "too large to return inline" in result["content"][0]["text"]
+    assert all(c["type"] != "audio" for c in result["content"])
+
+
 def test_the_history_fallback_comes_back_inline_and_unsaved(monkeypatch):
     fallback = {
         "clips": [],
