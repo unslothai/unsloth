@@ -225,7 +225,11 @@ def _cancel_directly(
         job = export_jobs.start("owner", "gguf", job_run)
         await asyncio.sleep(0)
         result = await cancel_module.cancel("export", job.job_id)
+        status = job.status
+        # Clean up a job the cancel left running.
+        export_jobs.mark_cancelled(job)
         await asyncio.gather(job.task, return_exceptions = True)
+        job.status = status
         return job, result, calls
 
     return asyncio.run(run())
@@ -252,6 +256,19 @@ def test_an_export_that_starts_while_waiting_is_stopped_on_the_worker(monkeypatc
     assert result.cancelled is True
     assert ("POST", "/api/export/cancel") in calls
     assert job.status == "cancelled"
+
+
+def test_an_export_queued_behind_someone_elses_op_is_left_alone(monkeypatch):
+    async def queued(job):
+        job.phase = "exporting"
+        await asyncio.Event().wait()
+
+    theirs = {"is_export_active": True, "active_op_kind": "cleanup"}
+    job, result, calls = _cancel_directly(monkeypatch, queued, statuses = (IDLE_WORKER, theirs))
+    assert result.cancelled is False
+    assert result.message == "The export running now is not this job; it was left alone."
+    assert ("POST", "/api/export/cancel") not in calls
+    assert job.status == "running"
 
 
 def test_a_job_between_steps_is_stopped_at_once(monkeypatch):

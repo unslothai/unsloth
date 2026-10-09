@@ -136,6 +136,18 @@ async def cancel(
                         message = f"The export already {job.status}.",
                     )
                 status = await route_json("GET", EXPORT_STATUS, caller = caller)
+                if (
+                    isinstance(status, dict)
+                    and status.get("is_export_active")
+                    and not _export_is_this_job(job, status)
+                ):
+                    # Someone else's op took the worker first and this job's export waits behind it.
+                    return CancelResult(
+                        kind = kind,
+                        id = id,
+                        cancelled = False,
+                        message = "The export running now is not this job; it was left alone.",
+                    )
             if not _export_is_this_job(job, status):
                 # Between steps: stop the job's own task and leave the worker alone.
                 export_jobs.mark_cancelled(job)
