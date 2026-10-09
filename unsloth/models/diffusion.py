@@ -18,11 +18,17 @@ bit-identical to transformers), keeping only the safe conveniences: 4bit/8bit lo
 """
 
 import os
+import re
 import torch
 from transformers import AutoConfig, AutoProcessor, AutoTokenizer
 from unsloth_zoo.hf_utils import add_dtype_kwargs
 
 from ._utils import is_bfloat16_supported, maybe_prefetch_hf_snapshot
+from .diffusion_profiles import (
+    diffusion_model_types,
+    resolve_diffusion_profile,
+    restore_rotary_buffers,
+)
 from .llama import logger
 from .loader_utils import (
     planner_config_overrides,
@@ -58,7 +64,33 @@ def is_diffusion_model_type(model_types):
     """model_types: str or iterable -> True if any is a known diffusion model_type."""
     if isinstance(model_types, str):
         model_types = (model_types,)
-    return any(mt in DIFFUSION_MODEL_TYPES for mt in model_types)
+    known = DIFFUSION_MODEL_TYPES + diffusion_model_types()
+    return any(mt in known for mt in model_types)
+
+
+def _refuse_tied_lora_merge(model):
+    """DiffusionGemma's encoder and decoder layers share one base tensor but get separate adapters, so a merge
+    adds both deltas to both. Refuse it instead of writing a silently wrong checkpoint."""
+    owners = {}
+    for name, module in model.named_modules():
+        weight = getattr(getattr(module, "base_layer", None), "weight", None)
+        if weight is None or not hasattr(module, "lora_A") or weight.is_meta:
+            continue
+        if owners.setdefault(weight.data_ptr(), name) != name:
+            break
+    else:
+        return model
+
+    def refuse(*args, **kwargs):
+        raise RuntimeError(
+            "Unsloth: this diffusion model's encoder and decoder share base weights but train separate LoRA "
+            "adapters, so merging would add both deltas to both. Save the adapter with "
+            "model.save_pretrained(...) and load it on top of the base model unmerged."
+        )
+
+    for attr in ("merge_and_unload", "merge_adapter"):
+        setattr(model, attr, refuse)
+    return model
 
 
 def _resolve_diffusion_model_class(config):
@@ -153,7 +185,7 @@ class FastDiffusionModel:
         # Planner hints for device_map = "unsloth"; see resolve_unsloth_device_map.
         device_map_planner_kwargs = None,
         trust_remote_code = False,
-        attn_implementation = "eager",  # exact match with the reference golden logits
+        attn_implementation = None,  # family default: eager for DiffusionGemma (reference golden logits)
         revision = None,
         return_tokenizer = True,
         **kwargs,
@@ -176,6 +208,24 @@ class FastDiffusionModel:
 
         cache_dir = kwargs.get("cache_dir")
 
+        # A saved LoRA directory: load its base, then attach the adapter below.
+        adapter_name = None
+        try:
+            from peft import PeftConfig
+            adapter_config = PeftConfig.from_pretrained(
+                model_name,
+                token = token,
+                revision = revision,
+                local_files_only = local_files_only,
+            )
+            adapter_name, model_name, revision = (
+                model_name,
+                adapter_config.base_model_name_or_path,
+                adapter_config.revision,
+            )
+        except Exception:
+            pass
+
         config = _load_diffusion_config(
             model_name,
             token,
@@ -185,13 +235,26 @@ class FastDiffusionModel:
             cache_dir = cache_dir,
         )
         model_type = getattr(config, "model_type", None)
-        if not is_diffusion_model_type(model_type):
+        profile = resolve_diffusion_profile(config)
+        if profile is None and not is_diffusion_model_type(model_type):
             raise RuntimeError(
-                f"Unsloth: FastDiffusionModel only supports diffusion model_types {DIFFUSION_MODEL_TYPES}, "
+                f"Unsloth: FastDiffusionModel only supports diffusion model_types "
+                f"{tuple(dict.fromkeys(DIFFUSION_MODEL_TYPES + diffusion_model_types()))}, "
                 f"got '{model_type}'. Use FastModel/FastLanguageModel for autoregressive models."
             )
+        if profile is not None and profile.requires_remote_code and not trust_remote_code:
+            raise RuntimeError(
+                f"Unsloth: {model_name} ships its own modeling code. Pass trust_remote_code = True."
+            )
+        if attn_implementation is None:
+            attn_implementation = (
+                profile.defaults.get("attn_implementation") if profile else None
+            ) or "eager"
 
-        model_cls = _resolve_diffusion_model_class(config)
+        if profile is not None and model_type not in DIFFUSION_MODEL_TYPES:
+            model_cls = profile.model_class(config, trust_remote_code)
+        else:
+            model_cls = _resolve_diffusion_model_class(config)
 
         # Prefetch the whole repo root so the weight load is a cache hit. No subfolder: the pipeline loads
         # every component subfolder, so narrowing would leave unet/vae/text_encoder to Xet.
@@ -221,13 +284,11 @@ class FastDiffusionModel:
                     bnb_4bit_use_double_quant = True,
                     bnb_4bit_quant_type = "nf4",
                     bnb_4bit_compute_dtype = dtype,
-                    llm_int8_skip_modules = [
-                        "lm_head",
-                        "embed_tokens",
-                        "experts",
-                        "self_conditioning",
-                        "router",
-                    ],
+                    llm_int8_skip_modules = (
+                        profile.quant_skip_modules
+                        if profile is not None and profile.quant_skip_modules is not None
+                        else ["lm_head", "embed_tokens", "experts", "self_conditioning", "router"]
+                    ),
                 )
             else:
                 qcfg = BitsAndBytesConfig(load_in_8bit = True)
@@ -292,23 +353,51 @@ class FastDiffusionModel:
             load_kwargs["quantization_config"] = qcfg
 
         print(f"==((  Unsloth: FastDiffusionModel (slow / transformers-only path)  ))==")
-        print(f"   Model: {model_name}  | class: {model_cls.__name__}  | model_type: {model_type}")
+        print(
+            f"   Model: {model_name}  | class: {model_cls.__name__}  | model_type: {model_type}"
+            f"  | recipe: {profile.name if profile else 'none'}"
+        )
         print(
             f"   dtype: {dtype} | 4bit: {load_in_4bit} | 8bit: {load_in_8bit} | attn: {attn_implementation}"
         )
 
         model = model_cls.from_pretrained(model_name, **load_kwargs).eval()
+        if trust_remote_code:
+            # 4.x remote code builds RoPE inv_freq in __init__; transformers 5 leaves it uninitialised.
+            from ._remote_code_buffers import restore_remote_code_non_persistent_buffers
+            restore_remote_code_non_persistent_buffers(model)
+            # That helper misses rotary modules whose class overrides _init_weights (LLaDA, LLaDA2, SDAR, Dream).
+            restore_rotary_buffers(model)
         # Mark before any early return so get_peft_model/for_* route to the slow path.
         model._unsloth_slow_diffusion = True
+        if profile is not None:
+            model._unsloth_diffusion_profile = profile.name
+
+        if adapter_name is not None:
+            from peft import PeftModel
+            model = PeftModel.from_pretrained(
+                model,
+                adapter_name,
+                is_trainable = True,
+                token = token,
+                local_files_only = local_files_only,
+            )
+            model._unsloth_slow_diffusion = True
 
         if not return_tokenizer:
+            if profile is not None:
+                model = profile.prepare_model(model, None)
             return model, None
 
         # Prefer the processor (chat template plus tokenizer), falling back to a bare tokenizer, returned as
         # "tokenizer" to match the Unsloth (model, tokenizer) contract.
+        tokenizer_source = model_name
+        if adapter_name is not None:
+            if os.path.isfile(os.path.join(adapter_name, "tokenizer_config.json")):
+                tokenizer_source = adapter_name
         try:
             tokenizer = AutoProcessor.from_pretrained(
-                model_name,
+                tokenizer_source,
                 token = token,
                 trust_remote_code = trust_remote_code,
                 revision = revision,
@@ -317,7 +406,7 @@ class FastDiffusionModel:
             )
         except Exception:
             tokenizer = AutoTokenizer.from_pretrained(
-                model_name,
+                tokenizer_source,
                 token = token,
                 trust_remote_code = trust_remote_code,
                 revision = revision,
@@ -325,6 +414,8 @@ class FastDiffusionModel:
                 cache_dir = cache_dir,
             )
 
+        if profile is not None:
+            model = profile.prepare_model(model, tokenizer)
         return model, tokenizer
 
     @staticmethod
@@ -343,8 +434,11 @@ class FastDiffusionModel:
         """Attach a PEFT LoRA to the diffusion backbone (attention + dense MLP). No fused kernels."""
         from peft import LoraConfig, get_peft_model as peft_get_peft_model
 
+        profile = resolve_diffusion_profile(getattr(model, "config", None))
         if target_modules is None:
-            target_modules = DIFFUSION_LORA_TARGETS
+            target_modules = (
+                profile.lora_target_modules if profile is not None else DIFFUSION_LORA_TARGETS
+            )
 
         # use_dora, and any other LoraConfig kwarg outside this allowlist, is silently dropped: Unsloth does
         # not reach this path today, so it is untested on diffusion models.
@@ -358,9 +452,18 @@ class FastDiffusionModel:
             **{k: v for k, v in kwargs.items() if k in ("modules_to_save", "init_lora_weights")},
         )
         # Exclude the vision tower's custom (non-Linear) modules that share suffix names.
-        exclude = kwargs.get("exclude_modules", DIFFUSION_LORA_EXCLUDE)
+        default_exclude = None
+        if profile is not None and profile.lora_exclude_modules is not None:
+            default_exclude = profile.lora_exclude_modules
+        elif any(re.match(DIFFUSION_LORA_EXCLUDE, name) for name, _ in model.named_modules()):
+            default_exclude = DIFFUSION_LORA_EXCLUDE
+        exclude = kwargs.get("exclude_modules", default_exclude)
         try:
-            lora_config = LoraConfig(exclude_modules = exclude, **lora_kwargs)
+            lora_config = (
+                LoraConfig(exclude_modules = exclude, **lora_kwargs)
+                if exclude is not None
+                else LoraConfig(**lora_kwargs)
+            )
         except TypeError:
             # Older PEFT without exclude_modules: scope the target to the text decoder by regex.
             lora_kwargs["target_modules"] = (
@@ -373,6 +476,7 @@ class FastDiffusionModel:
                 model.enable_input_require_grads()
 
         model = peft_get_peft_model(model, lora_config)
+        model = _refuse_tied_lora_merge(model)
         model._unsloth_slow_diffusion = True
         model._unsloth_gradient_checkpointing = use_gradient_checkpointing
         try:

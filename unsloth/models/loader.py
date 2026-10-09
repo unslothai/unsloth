@@ -1738,6 +1738,7 @@ from ..kernels import (
 )
 from .vision import FastBaseModel, _is_text_seq2seq_config
 from .diffusion import FastDiffusionModel, is_diffusion_model_type
+from .diffusion_profiles import resolve_diffusion_profile
 from transformers import (
     AutoModelForCausalLM,
 )
@@ -2192,7 +2193,22 @@ class FastModel(FastBaseModel):
         _raise_if_modeling_ignores_config(model_config, model_types)
 
         # Text-diffusion models (DiffusionGemma) take a transformers-only slow path: a custom block-diffusion generate over a novel backbone, so Unsloth's autoregressive kernel/compile patching is skipped and the unmodified HF model is loaded, keeping 4bit/8bit and PEFT LoRA.
-        if is_diffusion_model_type(model_types):
+        # Remote-code checkpoints can report their backbone's type (Nemotron-Labs-Diffusion says "nemotron"), so also match the raw config.
+        diffusion_config = model_config
+        if diffusion_config is None and peft_config is not None:
+            try:
+                diffusion_config = AutoConfig.from_pretrained(
+                    peft_config.base_model_name_or_path,
+                    token = token,
+                    trust_remote_code = trust_remote_code,
+                    local_files_only = local_files_only,
+                )
+            except Exception:
+                diffusion_config = None
+        if (
+            is_diffusion_model_type(model_types)
+            or resolve_diffusion_profile(diffusion_config) is not None
+        ):
             return _dispatch_diffusion()
 
         lowered_model_name = model_name.lower()
