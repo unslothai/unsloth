@@ -30,6 +30,7 @@ def test_studio_mcp_registers_control_plane_tools():
         "generate_video",
         "get_job",
         "run_recipe",
+        "datasets",
         "load_model",
         "unload_model",
         "start_training",

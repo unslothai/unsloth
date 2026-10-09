@@ -279,3 +279,39 @@ class JobStatus(ToolOutput):
     recipe: Optional[RecipeInfo] = None
     # Recent jobs, when no id was given.
     jobs: Optional[list[JobSummary]] = None
+
+
+class LocalDataset(ToolOutput):
+    id: RouteText
+    label: RouteText
+    source: RouteText = "local"
+    rows: Optional[int] = None
+
+
+class CachedDataset(ToolOutput):
+    repo_id: RouteText
+    size_bytes: Optional[int] = None
+
+
+class DatasetFormat(ToolOutput):
+    detected_format: Optional[RouteText] = None
+    requires_manual_mapping: Optional[bool] = None
+    columns: list[RouteText] = []
+    suggested_mapping: Optional[dict[str, RouteText]] = None
+    is_image: Optional[bool] = None
+    is_audio: Optional[bool] = None
+    total_rows: Optional[int] = None
+    warning: Optional[RouteText] = None
+
+
+class DatasetDownload(ToolOutput):
+    repo_id: RouteText
+    state: RouteText
+    error: Optional[RouteText] = None
+
+
+class DatasetsResult(ToolOutput):
+    local: Optional[list[LocalDataset]] = None
+    cached: Optional[list[CachedDataset]] = None
+    format: Optional[DatasetFormat] = None
+    download: Optional[DatasetDownload] = None

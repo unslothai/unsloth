@@ -22,6 +22,7 @@ from studio_mcp.outputs import RouteText, ToolOutput
 from .mcp_harness import SENTINEL_ROOTS, call_tool, fake_studio, poison, served
 from .test_mcp_tools_audio import PAYLOADS as AUDIO_PAYLOADS
 from .test_mcp_tools_audio import TRANSCRIBE_PAYLOADS
+from .test_mcp_tools_datasets import PAYLOADS as DATASETS_PAYLOADS
 from .test_mcp_tools_images import PAYLOADS as IMAGES_PAYLOADS
 from .test_mcp_tools_loading import PAYLOADS as LOADING_PAYLOADS
 from .test_mcp_tools_models import PAYLOADS as MODELS_PAYLOADS
@@ -56,6 +57,11 @@ CASES: dict[str, Any] = {
         (RECIPE_PAYLOADS, {"kind": "recipe", "id": "job-1", "rows": 2}),
     ],
     "run_recipe": (RECIPE_PAYLOADS, {"recipe": {"columns": [{"name": "q"}]}}),
+    "datasets": [
+        (DATASETS_PAYLOADS, {"action": "list"}),
+        (DATASETS_PAYLOADS, {"action": "check_format", "name": "a/b"}),
+        (DATASETS_PAYLOADS, {"action": "status", "repo_id": "a/b"}),
+    ],
     "transcribe": (
         TRANSCRIBE_PAYLOADS,
         {
