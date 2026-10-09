@@ -418,7 +418,11 @@ def test_the_images_of_a_row_reach_the_clef_trainer_and_predict(
     buffer = io.BytesIO()
     Image.new("RGB", (5, 4)).save(buffer, "PNG")
     url = "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode()
-    rows = [{**_row(0), "images": [url, url]}, {**_row(1), "images": json.dumps([url])}, _row(2)]
+    rows = [
+        {**_row(0), "images": [url, url]},
+        {**_row(1), "images": json.dumps([url])},
+        {**_row(2), "images": [None, {"bytes": None, "path": None}]},
+    ]
     (tmp_path / "i.png").write_bytes(buffer.getvalue())
     rows += [
         {**_row(3), "images": {"bytes": buffer.getvalue()}},

@@ -64,14 +64,20 @@ def _row_images(row: dict) -> list:
         return []
     found = []
     for image in images if isinstance(images, (list, tuple)) else [images]:
-        if isinstance(image, dict) and (image.get("bytes") is not None or image.get("path")):
+        if isinstance(image, dict) and set(image) <= {"bytes", "path"}:
             import io
 
             from PIL import Image
 
             data = image.get("bytes")
-            image = Image.open(image["path"] if data is None else io.BytesIO(data))
-        found.append(image)
+            # A nullable image column holds an empty struct where a row has no image.
+            image = (
+                Image.open(io.BytesIO(data) if data is not None else image["path"])
+                if data is not None or image.get("path")
+                else None
+            )
+        if image is not None:
+            found.append(image)
     return found
 
 
