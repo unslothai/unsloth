@@ -17128,7 +17128,7 @@ def _fetch_page_text(
             # Markdown README that merely opens with a block tag is kept as-is (see _HTML_DOCUMENT_RE).
             if _looks_like_html_document(body):
                 from ._html_to_md import html_to_markdown
-                converted = html_to_markdown(body, main_content = True)
+                converted = html_to_markdown(body, main_content = True, max_span_chars = max_chars // 2)
                 readme_body = converted if converted.strip() else body
             if readme_body.strip():
                 return _truncate_page_text(
@@ -17158,7 +17158,10 @@ def _fetch_page_text(
     from ._html_to_md import SiteLinks, html_to_markdown
 
     site_links = SiteLinks(url)
-    text = html_to_markdown(body, main_content = True, site_links = site_links)
+    # generated span cells get half the window budget, as html_to_markdown's own cap does for 16K
+    text = html_to_markdown(
+        body, main_content = True, site_links = site_links, max_span_chars = max_chars // 2
+    )
     # a page that fits keeps same-site links so the model can follow them.
     if text and len(text) <= max_chars and len(text) <= _dense_char_limit(text, max_chars):
         return text

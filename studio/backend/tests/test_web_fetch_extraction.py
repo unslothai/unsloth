@@ -23,7 +23,7 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-from core.inference._html_to_md import _is_aria_heading, html_to_markdown
+from core.inference._html_to_md import SiteLinks, _is_aria_heading, html_to_markdown
 from core.inference.tools import (
     _fetch_page_text,
     _fetch_url_raw,
@@ -2225,6 +2225,187 @@ def test_table_nested_in_a_header_inside_a_cell_keeps_its_columns():
     assert html_to_markdown(f"<body>{html}</body>", main_content = True) == html_to_markdown(
         f"<body>{html}</body>"
     )
+    continued = "<table><tr><td><header><table><tr><td>x</td></tr></table></header>after</td><td>sibling</td></tr></table>"
+    assert html_to_markdown(continued, main_content = True) == html_to_markdown(continued)
+
+
+def test_nested_tables_flatten_into_their_outer_cell():
+    nested = "<table><tr><td>A</td><td><table><tr><td>x | y</td><td>z</td></tr></table></td><td>C</td></tr></table>"
+    assert html_to_markdown(nested).splitlines() == ["| A | x \\| y z | C |", "| --- | --- | --- |"]
+    deep = "<table><tr><td>" * 500 + "x" + "</td></tr></table>" * 500
+    assert html_to_markdown(deep) == "| x |\n| --- |"
+    article = "<article>" + "<table><tr><td>" * 8 + "x" + "</td></tr></table>" * 8 + "</article>"
+    main = "<main>" + "<p>Real page body.</p>" * 20 + "</main>"
+    assert "Real page body." in html_to_markdown(article + main, main_content = True)
+
+
+def test_spanned_table_cells_stay_in_their_columns():
+    html = (
+        "<table>"
+        "<tr><th>Rank</th><th>Nation</th><th>Gold</th><th>Silver</th><th>Bronze</th><th>Total</th></tr>"
+        "<tr><td rowspan='2'>25</td><th>Latvia</th><td>0</td><td>1</td><td>0</td><td>1</td></tr>"
+        "<tr><th>Estonia</th><td>0</td><td>1</td><td>0</td><td>1</td></tr>"
+        "<tr><td>27</td><th>Spain</th><td>0</td><td>0</td><td>1</td><td rowspan='2'>1</td></tr>"
+        "<tr><td>28</td><th>Chile</th><td>0</td><td>0</td><td>1</td></tr>"
+        "<tr><th colspan='2'>Totals (5 entries)</th><td>0</td><td>2</td><td>2</td><td>4</td></tr>"
+        "</table>"
+    )
+    lines = html_to_markdown(f"<body>{html}</body>").splitlines()
+    assert lines == [
+        "| Rank | Nation | Gold | Silver | Bronze | Total |",
+        "| --- | --- | --- | --- | --- | --- |",
+        "| 25 | Latvia | 0 | 1 | 0 | 1 |",
+        "| 25 | Estonia | 0 | 1 | 0 | 1 |",
+        "| 27 | Spain | 0 | 0 | 1 | 1 |",
+        "| 28 | Chile | 0 | 0 | 1 | 1 |",
+        "| Totals (5 entries) |  | 0 | 2 | 2 | 4 |",
+    ]
+
+
+def test_spanned_site_links_strip_on_every_repeated_row():
+    html = (
+        "<table><tr><th>Rank</th><th>Nation</th></tr>"
+        "<tr><td rowspan='2'><a href='/r25'>25</a></td><td>Estonia</td></tr>"
+        "<tr><td>Georgia</td></tr>"
+        "<tr><td colspan='2'><a href='https://ex.com/t'>Totals | all</a></td></tr></table>"
+    )
+    site_links = SiteLinks("https://ex.com/page")
+    full = html_to_markdown(f"<body>{html}</body>", site_links = site_links)
+    assert full.splitlines()[2:] == [
+        "| [25](/r25) | Estonia |",
+        "| [25](/r25) | Georgia |",
+        "| [Totals \\| all](https://ex.com/t) |  |",
+    ]
+    assert site_links.strip(full).splitlines()[2:] == [
+        "| 25 | Estonia |",
+        "| 25 | Georgia |",
+        "| Totals \\| all |  |",
+    ]
+
+
+def test_table_spans_do_not_multiply_the_page_size():
+    small_wide = "<table><tr>" + "<td colspan='1000'>x</td>" * 3 + "</tr></table>"
+    wide = "<table><tr>" + "<td colspan='1000'>x" * 30000 + "</table>"
+    tall = "<table><tr><td rowspan='65534'>" + "word " * 2000 + "<tr><td>b" * 5000 + "</table>"
+    for html in (small_wide, wide, tall):
+        assert len(html_to_markdown(html)) < 3 * len(html)
+
+    repeated = (
+        "<table><tr><td rowspan='1001'>"
+        + "x" * 100
+        + "</td></tr>"
+        + "<tr></tr>" * 1000
+        + "</table>"
+    )
+    rendered = html_to_markdown(repeated + "<p>Article sentinel.</p>")
+    assert rendered.index("Article sentinel.") < 16_000
+    quoted = (
+        "<blockquote><table><tr><td rowspan='3000'>x</td></tr>"
+        + "<tr></tr>" * 2999
+        + "</table></blockquote><p>Article sentinel.</p>"
+    )
+    assert html_to_markdown(quoted).index("Article sentinel.") < 16_000
+    nested = (
+        "<table><tr><td>"
+        + "s" * 7000
+        + "<table><tr><td rowspan='3000'>x</td></tr>"
+        + "<tr></tr>" * 2999
+        + "</table></td></tr></table><p>Article sentinel.</p>"
+    )
+    assert html_to_markdown(nested).index("Article sentinel.") < 16_000
+
+
+def test_table_spans_fit_a_small_fetch_budget(monkeypatch):
+    tall = (
+        "<html><body><table><tr><td rowspan='3000'>x</td></tr>"
+        + "<tr></tr>" * 2999
+        + "</table><p>Article sentinel.</p></body></html>"
+    )
+    assert html_to_markdown(tall, max_span_chars = 1000).index("Article sentinel.") < 2000
+
+    def fake_fetch(url, **kwargs):
+        return None, tall, "text/html"
+
+    monkeypatch.setattr("core.inference.tools._fetch_url_raw", fake_fetch)
+    assert "Article sentinel." in _fetch_page_text("https://example.com/t", max_chars = 2000)
+
+
+def test_table_span_budget_is_page_wide_and_token_weighted():
+    from core.inference._html_to_md import _new_renderer
+
+    candidate = "<article><table><tr><td colspan='1000'>x</td></tr></table></article>"
+    page = candidate * 3000
+    renderer = _new_renderer(page, frozenset({"article"}), True)
+    assert sum(len(seg) for seg in renderer.scope_segments) < 10 * len(page)
+
+    cell = "中文表格单元内容很长" * 20
+    rows = "".join(f"<tr><td>r{i}</td></tr>" for i in range(1, 50))
+    html = f"<table><tr><td rowspan='50'>{cell}</td><td>r0</td></tr>{rows}</table><p>Article sentinel.</p>"
+    assert html_to_markdown(html, max_span_chars = 3404).count(cell) == 1
+
+
+def test_nested_colspan_padding_does_not_spend_the_span_budget():
+    layout = "<table><tr><td><table><tr><td colspan='1000'>x</td></tr></table></td></tr></table>"
+    data = (
+        "<table><tr><th>Rank</th><th>Nation</th></tr>"
+        "<tr><td rowspan='2'>25</td><td>Estonia</td></tr><tr><td>Georgia</td></tr></table>"
+    )
+    pad = "<p>" + "Body text. " * 400 + "</p>"
+    assert html_to_markdown(pad + layout + data).splitlines()[-1] == "| 25 | Georgia |"
+
+
+def test_generated_table_spans_do_not_make_a_main_content_candidate():
+    body = "<main><p>" + "Real page body. " * 20 + "</p></main>"
+    decoys = (
+        "<article><table><tr><td rowspan='51'>x</td></tr>"
+        + "<tr></tr>" * 50
+        + "</table></article>",
+        "<article><blockquote><table><tr><td rowspan='101'>x</td></tr>"
+        + "<tr></tr>" * 100
+        + "</table></blockquote></article>",
+        "<article><header><table><tr><td colspan='1000'><a href='/nav'>"
+        + "Navigation " * 12
+        + "</a></td></tr></table></header><p>"
+        + "Teaser. " * 12
+        + "</p></article>",
+    )
+    for decoy in decoys:
+        out = html_to_markdown(f"<body>{decoy}{body}</body>", main_content = True)
+        assert "Real page body." in out
+
+    exhausted = (
+        "<article><table><tr><td colspan='1000' rowspan='2'>x</td></tr><tr></tr></table></article>"
+    )
+    substantive = (
+        "<article><p>"
+        + "Real page body. " * 20
+        + "</p><table><tr><td rowspan='2'>rank</td><td>one</td></tr><tr><td>two</td></tr></table></article>"
+    )
+    assert "| rank | two |" in html_to_markdown(exhausted + substantive, main_content = True)
+
+
+def test_table_spans_stop_at_row_groups_tables_and_long_cells():
+    def rows(html):
+        return html_to_markdown(f"<body>{html}</body>").splitlines()
+
+    covered_row = "<table><tr><th>A</th><th>B</th></tr><tr><td rowspan=2>a</td><td rowspan=2>b</td></tr><tr></tr><tr><td>c</td><td>d</td></tr></table>"
+    assert rows(covered_row)[-3:] == ["| a | b |", "| a | b |", "| c | d |"]
+    footer = "<table><thead><tr><th>Item</th><th>Qty</th></tr></thead><tbody><tr><td>x</td><td rowspan=2>5</td></tr></tbody><tfoot><tr><td>Total</td><td>5</td></tr></tfoot></table>"
+    assert rows(footer)[-1] == "| Total | 5 |"
+    nested = "<table><tr><td>T1</td><td><table><tr><td rowspan=2>GK</td><td>P1</td></tr></table></td></tr><tr><td>T2</td><td>S2</td></tr></table>"
+    assert rows(nested)[-1] == "| T2 | S2 |"
+    nested_under_span = "<table><tr><td rowspan=2>A</td><td><table><tr><td>B</td></tr></table></td></tr><tr><td>C</td></tr></table>"
+    assert rows(nested_under_span)[-1] == "| A | C |"
+    to_group_end = "<table><tr><th>G</th><th>N</th></tr><tbody><tr><th rowspan=0>g</th><td>1</td></tr><tr><td>2</td></tr></tbody><tbody><tr><td>h</td><td>3</td></tr></tbody></table>"
+    assert rows(to_group_end)[-3:] == ["| g | 1 |", "| g | 2 |", "| h | 3 |"]
+    sidebar = (
+        "<table><tr><td rowspan=5>"
+        + "Article body text. " * 120
+        + "</td><td>Home</td></tr>"
+        + "<tr><td>Link</td></tr>" * 4
+        + "</table>"
+    )
+    assert html_to_markdown(sidebar).count("Article body text.") == 120
 
 
 def test_truncated_header_and_blockquote_keep_source_order():
@@ -2232,7 +2413,7 @@ def test_truncated_header_and_blockquote_keep_source_order():
     assert out.index("Title") < out.index("Quote")
 
 
-# Headers interact with every buffer, so enumerate the grid: that is where the one-off bugs live.
+# headers interact with every buffer, where one-off bugs occur
 _GRID_HEADINGS = {
     "h1": "<h1>Page Title</h1>",
     "aria": "<div role='heading'>Page Title</div>",
