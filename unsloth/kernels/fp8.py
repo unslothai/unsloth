@@ -220,7 +220,13 @@ def _needs_int64_offsets(*tensors):
 
 # Copied from huggingface.co/deepseek-ai/DeepSeek-V3 inference/kernel.py
 @triton.jit
-def act_quant_kernel(x_ptr, y_ptr, s_ptr, BLOCK_SIZE: tl.constexpr, LONG_INDEXING: tl.constexpr):
+def act_quant_kernel(
+    x_ptr,
+    y_ptr,
+    s_ptr,
+    BLOCK_SIZE: tl.constexpr,
+    LONG_INDEXING: tl.constexpr = False,
+):
     pid = tl.program_id(axis = 0)
     if LONG_INDEXING:
         offs = pid.to(tl.int64) * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE).to(tl.int64)
@@ -289,7 +295,7 @@ def _w8a8_block_fp8_matmul(
     BLOCK_SIZE_N: tl.constexpr,
     BLOCK_SIZE_K: tl.constexpr,
     GROUP_SIZE_M: tl.constexpr,
-    LONG_INDEXING: tl.constexpr,
+    LONG_INDEXING: tl.constexpr = False,
 ):
     """Triton-accelerated function used to perform linear operations (dot
     product) on input tensors `A` and `B` with block-wise quantization, and
