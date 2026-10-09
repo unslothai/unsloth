@@ -7693,6 +7693,27 @@ def _write_direct_stream_key(key: str, previous: "Optional[Path]" = None) -> "Pa
     return path
 
 
+def _llama_server_key_via_env() -> bool:
+    """True where llama-server cannot open a key file under Studio's auth directory.
+
+    On Windows llama-server re-encodes argv to UTF-8 and opens --api-key-file with a narrow std::ifstream,
+    which reads the path in the ANSI code page (common/arg.cpp), so a non-ASCII profile path never opens (#13123).
+    """
+    from utils.paths.storage_roots import auth_root
+    return sys.platform == "win32" and not str(auth_root()).isascii()
+
+
+def _llama_server_key_launch(
+    key: str, previous: "Optional[Path]" = None
+) -> "tuple[list[str], dict[str, str], Optional[Path]]":
+    """argv and child env that hand ``key`` to llama-server, plus the key file when one was written."""
+    if _llama_server_key_via_env():
+        # Like the 0600 file, a process environment is readable only by this user, and it stays off the command line.
+        return [], {"LLAMA_API_KEY": key}, None
+    path = _write_direct_stream_key(key, previous)
+    return ["--api-key-file", str(path)], {}, path
+
+
 def _extra_args_have_tensor_split(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]]
 ) -> bool:
@@ -28802,11 +28823,14 @@ class LlamaCppBackend:
                         "This llama-server build has no --api-key-file; starting it without an API key."
                     )
                     _key_on = False
+                _key_env: dict[str, str] = {}
                 if _key_on:
                     self._api_key = _secrets.token_urlsafe(32)
-                    # Through a file, not argv: a command line is readable by every process of this Unix user, and the auth directory is not.
-                    self._api_key_file = _write_direct_stream_key(self._api_key, self._api_key_file)
-                    cmd.extend(["--api-key-file", str(self._api_key_file)])
+                    # Through a file or the child env, not argv: a command line is readable by every process of this Unix user, and the auth directory is not.
+                    _key_argv, _key_env, self._api_key_file = _llama_server_key_launch(
+                        self._api_key, self._api_key_file
+                    )
+                    cmd.extend(_key_argv)
                 else:
                     self._api_key = None
 
@@ -29395,6 +29419,8 @@ class LlamaCppBackend:
                         "dropped inherited %s: managed by Unsloth Studio",
                         ", ".join(_denied_scrubbed),
                     )
+                # After the scrub, which drops an inherited LLAMA_API_KEY.
+                env.update(_key_env)
                 # Record what the child will ACTUALLY run with (env defaults plus
                 # last-wins argv), not just what Unsloth emitted, so the reload
                 # hint also catches a user-supplied --mlock / --no-mmap.

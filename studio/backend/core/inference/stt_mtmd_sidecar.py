@@ -976,19 +976,20 @@ class MtmdSttSidecar:
             from core.inference.llama_cpp import (
                 LlamaCppBackend,
                 _llama_server_api_key_enabled,
-                _write_direct_stream_key,
+                _llama_server_key_launch,
             )
 
             api_key = key_file = None
+            key_env: dict = {}
             # A custom build without --api-key-file would exit on the flag; it runs keyless as before.
             if _llama_server_api_key_enabled() and LlamaCppBackend.probe_server_capabilities(
                 binary
             ).get("supports_api_key_file", True):
                 # Per-launch key against permissive CORS; read once at startup, so deleted once ready.
                 api_key = secrets.token_urlsafe(32)
-                key_file = _write_direct_stream_key(api_key)
+                key_argv, key_env, key_file = _llama_server_key_launch(api_key)
                 # Right after the binary: --no-mmproj-offload has to stay last.
-                cmd[1:1] = ["--api-key-file", str(key_file)]
+                cmd[1:1] = key_argv
             process = subprocess.Popen(
                 cmd,
                 # nothing reads these, and an undrained pipe blocks llama-server mid-startup once its logs fill the
@@ -998,7 +999,7 @@ class MtmdSttSidecar:
                 stdin = subprocess.DEVNULL,
                 # bundled libs and pip CUDA runtimes on the loader path, secrets scrubbed, as the chat backend spawns
                 # the same binary
-                env = _llama_server_child_env(binary),
+                env = {**_llama_server_child_env(binary), **key_env},
                 # Die with Unsloth, so a crash never orphans a server on the GPU.
                 **child_popen_kwargs(),
             )
