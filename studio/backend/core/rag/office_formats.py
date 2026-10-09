@@ -151,15 +151,40 @@ _BUILTIN_DATE_FORMATS = {
 }
 
 
-def _is_date_format(code: str) -> bool:
-    code = re.sub(r'"[^"]*"|\[[^\]]*\]|\\.', "", code).lower()
-    return bool(re.search(r"[dy]", code)) or ("m" in code and ("h" in code or "s" in code))
+_BUILTIN_DURATION_FORMATS = {46}  # [h]:mm:ss
+# Classified as openpyxl does: quoted text and locale tags aside, any date or time token.
+_FORMAT_STRIP = re.compile(r'".*?"|\[(?!hh?\]|mm?\]|ss?\])[^\]]*\]')
+_FORMAT_DURATION = re.compile(
+    r"\[hh?\](:mm(:ss(\.0*)?)?)?|\[mm?\](:ss(\.0*)?)?|\[ss?\](\.0*)?", re.I
+)
 
 
-def _serial_date(serial: float, date1904: bool) -> str:
+def _format_kind(format_id: int, code: str) -> str | None:
+    """ "date" for dates and times of day, "duration" for elapsed time, else None."""
+    if not code:
+        if format_id in _BUILTIN_DURATION_FORMATS:
+            return "duration"
+        return "date" if format_id in _BUILTIN_DATE_FORMATS else None
+    code = code.split(";")[0]
+    if _FORMAT_DURATION.search(code):
+        return "duration"
+    return "date" if re.search(r"(?<![_\\])[dmhysDMHYS]", _FORMAT_STRIP.sub("", code)) else None
+
+
+def _serial_text(serial: float, kind: str, date1904: bool) -> str:
+    if kind == "duration":
+        seconds = round(serial * 86_400)
+        hours, rest = divmod(abs(seconds), 3600)
+        return f"{'-' if seconds < 0 else ''}{hours}:{rest // 60:02}:{rest % 60:02}"
+    day, fraction = divmod(serial, 1)
+    clock = dt.timedelta(milliseconds = round(fraction * 86_400_000))
+    if 0 <= serial < 1 and clock.days == 0:
+        return (dt.datetime.min + clock).time().isoformat()
+    if not date1904 and 0 < serial < 60:
+        day += 1  # Excel counts a 29 February 1900 that never was.
     base = dt.datetime(1904, 1, 1) if date1904 else dt.datetime(1899, 12, 30)
     try:
-        moment = base + dt.timedelta(days = serial)
+        moment = base + dt.timedelta(days = day) + clock
     except (OverflowError, ValueError):
         return _number(serial)
     return moment.date().isoformat() if moment.time() == dt.time() else moment.isoformat(" ")
@@ -198,7 +223,7 @@ def xlsx(path: str) -> list[Section]:
         if zf.has("xl/sharedStrings.xml"):
             strings = [_xlsx_text(si) for si in zf.xml("xl/sharedStrings.xml").iter(_q("s", "si"))]
 
-        date_styles: list[bool] = []
+        style_kinds: list[str | None] = []
         if zf.has("xl/styles.xml"):
             styles = zf.xml("xl/styles.xml")
             custom = {
@@ -208,9 +233,7 @@ def xlsx(path: str) -> list[Section]:
             xfs = styles.find(_q("s", "cellXfs"))
             for xf in xfs.findall(_q("s", "xf")) if xfs is not None else []:
                 fmt = int(xf.get("numFmtId", "0") or 0)
-                date_styles.append(
-                    fmt in _BUILTIN_DATE_FORMATS or _is_date_format(custom.get(fmt, ""))
-                )
+                style_kinds.append(_format_kind(fmt, custom.get(fmt, "")))
 
         sections: list[Section] = []
         for sheet in workbook.iter(_q("s", "sheet")):
@@ -244,8 +267,10 @@ def xlsx(path: str) -> list[Section]:
                             value = raw
                         else:
                             style = int(c.get("s", "0") or 0)
-                            is_date = style < len(date_styles) and date_styles[style]
-                            value = _serial_date(number, date1904) if is_date else _number(number)
+                            kind = style_kinds[style] if style < len(style_kinds) else None
+                            value = (
+                                _serial_text(number, kind, date1904) if kind else _number(number)
+                            )
                     cells.extend([""] * (col - len(cells)))
                     if col == len(cells):
                         cells.append(value)
@@ -540,9 +565,12 @@ def _email_text(message, html_text) -> str:
         value = message.get(header)
         if value:
             lines.append(f"{header}: {value}")
-    body = message.get_body(preferencelist = ("plain", "html"))
     text = ""
-    if body is not None:
+    # Plain text first; some mailers leave it empty beside a full HTML part.
+    for preference in (("plain", "html"), ("html",)):
+        body = message.get_body(preferencelist = preference)
+        if body is None:
+            continue
         try:
             content = body.get_content()
         except (LookupError, ValueError):
@@ -552,6 +580,8 @@ def _email_text(message, html_text) -> str:
             text = html_text(content.encode("utf-8") if isinstance(content, str) else content)
         else:
             text = content
+        if text.strip():
+            break
     names = [part.get_filename() for part in message.iter_attachments() if part.get_filename()]
     if names:
         lines.append("Attachments: " + ", ".join(names))
@@ -594,6 +624,63 @@ _RTF_BREAKS = {
 }
 
 
+_RTF_MAX_DEPTH = 1000
+# Font \fcharset -> code page. 0 (ANSI) and 1 (default) follow the document's \ansicpg.
+_RTF_CHARSETS = {
+    77: "mac_roman",
+    128: "cp932",
+    129: "cp949",
+    130: "johab",
+    134: "cp936",
+    136: "cp950",
+    161: "cp1253",
+    162: "cp1254",
+    163: "cp1258",
+    177: "cp1255",
+    178: "cp1256",
+    186: "cp1257",
+    204: "cp1251",
+    222: "cp874",
+    238: "cp1250",
+    254: "cp437",
+    255: "cp850",
+}
+
+
+def _rtf_codec(code_page: str) -> str | None:
+    try:
+        b"".decode(code_page)
+    except LookupError:
+        return None
+    return code_page
+
+
+def _rtf_font_codecs(data: str) -> dict[int, str]:
+    """Font number -> codec, from each font table entry's cpg or fcharset."""
+    start = data.find("{\\fonttbl")
+    if start < 0:
+        return {}
+    depth, end = 0, start
+    for end in range(start, min(len(data), start + 1_000_000)):
+        if data[end] in "{}" and data[end - 1] != "\\":
+            depth += 1 if data[end] == "{" else -1
+            if depth == 0:
+                break
+    table = data[start:end]
+    fonts = {}
+    entries = list(re.finditer(r"\\f(\d+)", table))
+    for entry, following in zip(entries, entries[1:] + [None]):
+        segment = table[entry.end() : following.start() if following else len(table)]
+        cpg = re.search(r"\\cpg(\d+)", segment)
+        charset = re.search(r"\\fcharset(\d+)", segment)
+        codec = _rtf_codec(f"cp{cpg.group(1)}") if cpg else None
+        if codec is None and charset:
+            codec = _RTF_CHARSETS.get(int(charset.group(1)))
+        if codec:
+            fonts[int(entry.group(1))] = codec
+    return fonts
+
+
 def rtf(path: str) -> list[Section]:
     with open(path, "rb") as f:
         data = f.read().decode("latin-1")
@@ -605,8 +692,11 @@ def rtf(path: str) -> list[Section]:
 def _rtf_text(data: str) -> str:
     out: list[str] = []
     pending = bytearray()
-    codepage = "cp1252"
-    stack: list[tuple[bool, int, bool]] = []
+    # Bytes decode in the active font's code page, else the document's.
+    fonts = _rtf_font_codecs(data)
+    document_codepage, default_font = "cp1252", None
+    codepage = document_codepage
+    stack: list[tuple[bool, int, bool, str]] = []
     skip, uc, to_skip = False, 1, 0
     deleted = False  # tracked deletion
     ignorable = False
@@ -633,11 +723,13 @@ def _rtf_text(data: str) -> str:
                 continue
         if brace == "{":
             flush()
-            stack.append((skip, uc, deleted))
+            if len(stack) >= _RTF_MAX_DEPTH:
+                raise ValueError("RTF groups are nested too deeply")
+            stack.append((skip, uc, deleted, codepage))
             ignorable = False
         elif brace == "}":
             flush()
-            skip, uc, deleted = stack.pop() if stack else (False, 1, False)
+            skip, uc, deleted, codepage = stack.pop() if stack else (False, 1, False, codepage)
             to_skip = 0
         elif symbol is not None:
             if symbol == "*":
@@ -653,23 +745,28 @@ def _rtf_text(data: str) -> str:
                 pos = min(len(data), pos + max(int(arg or 0), 0))
                 continue
             if word == "ansicpg" and arg:
-                codepage = f"cp{arg}"
-                try:
-                    b"".decode(codepage)
-                except LookupError:
-                    codepage = "cp1252"
+                document_codepage = _rtf_codec(f"cp{arg}") or "cp1252"
+                codepage = fonts.get(default_font, document_codepage)
+            elif word == "deff" and arg:
+                default_font = int(arg)
+                codepage = fonts.get(default_font, document_codepage)
             elif word == "uc" and arg:
                 uc = int(arg)
             elif word == "deleted":
                 deleted = arg != "0"
             elif word == "plain":
+                flush()
                 deleted = False
+                codepage = fonts.get(default_font, document_codepage)
             if ignorable or word in _RTF_SKIP:
                 skip, ignorable = True, False
                 continue
             if skip:
                 continue
-            if word == "u" and arg:
+            if word == "f" and arg:
+                flush()
+                codepage = fonts.get(int(arg), document_codepage)
+            elif word == "u" and arg:
                 flush()
                 code = int(arg)
                 if not deleted:
@@ -880,6 +977,18 @@ def _xls_short_string(body: bytes, pos: int, length_bytes: int) -> str:
     return raw.decode("utf-16-le" if wide else "latin-1", "replace")
 
 
+_XLS_ERRORS = {
+    0x00: "#NULL!",
+    0x07: "#DIV/0!",
+    0x0F: "#VALUE!",
+    0x17: "#REF!",
+    0x1D: "#NAME?",
+    0x24: "#NUM!",
+    0x2A: "#N/A",
+    0x2B: "#GETTING_DATA",
+}
+
+
 def xls(path: str) -> list[Section]:
     cf = _compound(path)
     stream = next((name for name in ("Workbook", "Book") if cf.exists(name)), None)
@@ -917,26 +1026,39 @@ def xls(path: str) -> list[Section]:
             date1904 = struct.unpack_from("<H", body)[0] == 1
         elif kind == 0x000A:  # end of the workbook globals
             break
-    date_xfs = {
-        i
-        for i, fmt in enumerate(xf_formats)
-        if fmt in _BUILTIN_DATE_FORMATS or _is_date_format(formats.get(fmt, ""))
-    }
+    xf_kinds = [_format_kind(fmt, formats.get(fmt, "")) for fmt in xf_formats]
 
     def number(value: float, xf: int) -> str:
-        return _serial_date(value, date1904) if xf in date_xfs else _number(value)
+        kind = xf_kinds[xf] if xf < len(xf_kinds) else None
+        return _serial_text(value, kind, date1904) if kind else _number(value)
 
     sections: list[Section] = []
     for name, offset in sheets:
         cells: dict[int, dict[int, str]] = {}
         last_formula: tuple[int, int] | None = None
+        # A long STRING result goes on in CONTINUE records: (cell, segments).
+        string: tuple[tuple[int, int], list[bytes]] | None = None
 
         def put(r, c, value):
             if c < _MAX_COLUMNS:
                 cells.setdefault(r, {})[c] = value
 
+        def put_string():
+            nonlocal string
+            if string is not None:
+                try:
+                    put(*string[0], _xls_string(string[1], 0, 0)[0])
+                except (ValueError, struct.error, IndexError):
+                    pass
+                string = None
+
         depth = 0
         for kind, body in _Records(data, offset):
+            if string is not None:
+                if kind == 0x003C:
+                    string[1].append(body)
+                    continue
+                put_string()
             # Embedded charts nest their own BOF/EOF inside the sheet.
             if kind == 0x0809:
                 depth += 1
@@ -944,7 +1066,7 @@ def xls(path: str) -> list[Section]:
                 depth -= 1
                 if depth <= 0:
                     break
-            if len(body) < 6 and kind not in (0x0207,):
+            if len(body) < 6 and kind != 0x0207:
                 continue
             if kind == 0x00FD:  # LABELSST
                 r, c, _xf, i = struct.unpack_from("<HHHI", body)
@@ -967,6 +1089,8 @@ def xls(path: str) -> list[Section]:
                 r, c, _xf, v, is_error = struct.unpack_from("<HHHBB", body)
                 if not is_error:
                     put(r, c, "TRUE" if v else "FALSE")
+                elif v in _XLS_ERRORS:
+                    put(r, c, _XLS_ERRORS[v])
             elif kind == 0x0006 and len(body) >= 14:  # FORMULA, cached result
                 r, c, xf = struct.unpack_from("<HHH", body)
                 result = body[6:14]
@@ -977,9 +1101,11 @@ def xls(path: str) -> list[Section]:
                     last_formula = (r, c)
                 elif result[0] == 1:
                     put(r, c, "TRUE" if result[2] else "FALSE")
+                elif result[0] == 2 and result[2] in _XLS_ERRORS:
+                    put(r, c, _XLS_ERRORS[result[2]])
             elif kind == 0x0207 and last_formula and len(body) >= 3:  # STRING after FORMULA
-                put(*last_formula, _xls_short_string(body, 0, 2))
-                last_formula = None
+                string, last_formula = (last_formula, [body]), None
+        put_string()
         rows = []
         for r in sorted(cells):
             row = cells[r]
@@ -1329,7 +1455,11 @@ def msg(path: str, html_text) -> list[Section]:
         label: (_msg_prop(cf, (), prop, codec) or "").strip() for prop, label in _MSG_HEADERS
     }
     address = (_msg_prop(cf, (), "0C1F", codec) or "").strip()
-    # Exchange senders carry an X.500 path, not an address.
+    # Exchange senders carry an X.500 path; their SMTP address is stored separately.
+    if not address or address.startswith("/"):
+        address = (
+            _msg_prop(cf, (), "5D01", codec) or _msg_prop(cf, (), "5D02", codec) or ""
+        ).strip()
     if address and not address.startswith("/") and address != headers["From"]:
         headers["From"] = f"{headers['From']} <{address}>".strip()
     headers["Date"] = _msg_date(props) or ""

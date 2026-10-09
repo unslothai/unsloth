@@ -491,6 +491,34 @@ def test_ods_reads_typed_values_without_text(tmp_path):
     assert _text(path) == "Sheet: S\n1200 | 2026-03-31 | TRUE | zebramarker | 7.00"
 
 
+# Expected values match what openpyxl reads back from the same cells.
+@pytest.mark.parametrize(
+    "serial, number_format, expected",
+    [
+        (0.5, "h:mm AM/PM", "12:00:00"),
+        (1.5, "[h]:mm:ss", "36:00:00"),
+        (1.5, "h:mm", "1900-01-01 12:00:00"),
+        (1, "yyyy-mm-dd", "1900-01-01"),
+        (59, "yyyy-mm-dd", "1900-02-28"),
+        (61, "yyyy-mm-dd", "1900-03-01"),
+        (0.25, "mm-dd-yy", "06:00:00"),
+        (3, '"day" 0', "3"),
+    ],
+)
+def test_xlsx_formats_times_durations_and_early_dates(tmp_path, serial, number_format, expected):
+    path = _zip(
+        tmp_path / "times.xlsx",
+        {
+            "xl/workbook.xml": f'<workbook {S}><sheets><sheet name="T" sheetId="1" r:id="rId1"/></sheets></workbook>',
+            "xl/_rels/workbook.xml.rels": f'<Relationships {REL}><Relationship Id="rId1" Target="worksheets/sheet1.xml"/></Relationships>',
+            "xl/styles.xml": f'<styleSheet {S}><numFmts><numFmt numFmtId="164" formatCode="{number_format.replace(chr(34), "&quot;")}"/></numFmts>'
+            '<cellXfs><xf numFmtId="0"/><xf numFmtId="164"/></cellXfs></styleSheet>',
+            "xl/worksheets/sheet1.xml": f'<worksheet {S}><sheetData><row r="1"><c r="A1" s="1"><v>{serial}</v></c></row></sheetData></worksheet>',
+        },
+    )
+    assert _text(path) == f"Sheet: T\n{expected}"
+
+
 @pytest.mark.parametrize("format_id", [14, 31, 57, 75])
 def test_xlsx_builtin_date_formats_include_locale_ids(tmp_path, format_id):
     serial = (dt.date(2026, 3, 31) - dt.date(1899, 12, 30)).days
@@ -542,6 +570,30 @@ def test_doc_reads_compressed_and_unicode_pieces_and_note_stories(tmp_path):
     )
 
 
+def test_xls_reads_errors_and_continued_formula_strings(tmp_path):
+    long_text = "A" * 8000 + "Ж" * 300
+    string = struct.pack("<HB", len(long_text), 0) + b"A" * 8000
+    sheet = (
+        _record(0x0809, b"\0" * 16)
+        + _record(0x0205, struct.pack("<HHHBB", 0, 0, 0, 0x07, 1))  # BOOLERR #DIV/0!
+        + _record(0x0006, struct.pack("<HHH", 0, 1, 0) + b"\x02\0\x2a\0\0\0\xff\xff" + b"\0" * 6)
+        + _record(0x0006, struct.pack("<HHH", 1, 0, 0) + b"\0" * 6 + b"\xff\xff" + b"\0" * 6)
+        + _record(0x0207, string)
+        + _record(0x003C, b"\x01" + "Ж".encode("utf-16-le") * 300)
+        + _record(0x000A, b"")
+    )
+    globals_ = (
+        _record(0x0809, b"\0" * 16)
+        + _record(0x0085, b"\0" * 4 + b"\0\0" + struct.pack("<B", 1) + b"\0S")
+        + _record(0x000A, b"")
+    )
+    stream = bytearray(globals_ + sheet)
+    struct.pack_into("<I", stream, 4 + 16 + 4, len(globals_))
+    path = tmp_path / "errors.xls"
+    path.write_bytes(compound_file({("Workbook",): bytes(stream)}))
+    assert _text(path) == f"Sheet: S\n#DIV/0! | #N/A\n{long_text}"
+
+
 def test_xls_reads_continued_strings_numbers_formulas_and_dates(tmp_path):
     assert _text(build_xls(tmp_path / "book.xls")) == (
         "Sheet: Revenue\nRegion | 1200.5\nZebramarker€ | -7\n3 | 4\nformula text | TRUE"
@@ -575,6 +627,32 @@ def test_msg_reads_headers_body_and_attachment_names(tmp_path):
         "From: Ann <ann@example.com>\nTo: Bob\nDate: 2026-10-06 10:00 UTC\nSubject: Q1 numbers\n"
         "Attachments: data.csv\n\nRevenue increased.\nZebramarker in the body."
     )
+
+
+def test_msg_uses_the_smtp_address_for_exchange_senders(tmp_path):
+    utf16 = lambda text: text.encode("utf-16-le")
+    path = tmp_path / "exchange.msg"
+    path.write_bytes(
+        compound_file(
+            {
+                ("__substg1.0_0C1A001F",): utf16("Ann"),
+                ("__substg1.0_0C1F001F",): utf16("/O=EXAMPLE/OU=EXCHANGE/CN=RECIPIENTS/CN=ANN"),
+                ("__substg1.0_5D01001F",): utf16("ann@example.com"),
+                ("__substg1.0_1000001F",): utf16("Body zebramarker"),
+            }
+        )
+    )
+    assert _text(path) == "From: Ann <ann@example.com>\n\nBody zebramarker"
+
+
+def test_eml_falls_back_to_html_when_plain_is_empty(tmp_path):
+    message = EmailMessage()
+    message["Subject"] = "HTML only"
+    message.set_content("   \n")
+    message.add_alternative("<p>zebramarker in html</p>", subtype = "html")
+    path = tmp_path / "html.eml"
+    path.write_bytes(bytes(message))
+    assert _text(path).endswith("zebramarker in html")
 
 
 def test_msg_decodes_ansi_properties_and_compressed_rtf_body(tmp_path):
@@ -694,6 +772,23 @@ def test_compressed_rtf_stops_at_the_declared_size():
     assert len(office_formats._decompress_rtf(data)) == 1000
     with pytest.raises(ValueError, match = "too large"):
         office_formats._decompress_rtf(struct.pack("<IIII", 16, 2**31, 0x75465A4C, 0))
+
+
+def test_rtf_decodes_bytes_with_the_font_charset(tmp_path):
+    path = tmp_path / "fonts.rtf"
+    path.write_bytes(
+        rb"{\rtf1\ansi\ansicpg1252\deff0{\fonttbl{\f0\fswiss\fcharset0 Arial;}"
+        rb"{\f1\froman\fcharset204 Times New Roman Cyr;}{\f2\fnil\cpg1253 Greek;}}"
+        rb"\f0 Hello {\f1 \'cf\'f0\'e8\'e2\'e5\'f2} back {\f2 \'e1} \plain\'e9\par}"
+    )
+    assert _text(path) == "Hello Привет back α é"
+
+
+def test_rtf_refuses_runaway_nesting(tmp_path):
+    path = tmp_path / "deep.rtf"
+    path.write_bytes(b"{\\rtf1 " + b"{" * 5000)
+    with pytest.raises(ValueError, match = "nested too deeply"):
+        parsers.parse(str(path))
 
 
 def test_rtf_negative_binary_length_is_ignored(tmp_path):
