@@ -272,7 +272,7 @@ def _mlx_choice(
     preference: str,
     seen: bool = False,
 ) -> Checkpoint | None:
-    """Auto on Apple Silicon answers through the MLX engine, unless only the llama.cpp form is at hand or the request has images MLX does not read (`unread`); `seen` says it has images MLX reads."""
+    """Auto on Apple Silicon prefers MLX unless only llama.cpp is at hand or MLX cannot read the images (`unread`); `seen` = it can."""
     from .native_worker import request_gap
 
     if preference != "auto" or unread or request_gap(questions or {}) is not None:
@@ -427,8 +427,7 @@ def select(
 
     from .native_worker import request_gap
 
-    # MLX reads the images the route has checked, for a Clef. Images in the state keep a request off it: every other
-    # route reads them as before.
+    # Only route-checked images reach MLX: state images would be decoded unvalidated in this process.
     unread = bool(state_images or (images and not _mlx_reads_images(checkpoint)))
     if (preference or get_backend()) == MLX and checkpoint.layout in ("clef", GGUF):
         return _select_mlx(checkpoint, unread), None
