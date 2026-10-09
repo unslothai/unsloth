@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""A distributed rank that holds its whole bnb model on one non-default card gets no dispatch hooks (#3459).
-
-On ranks >= 1 the hooks graph-break the compiled forward, so under DDP's non-reentrant checkpointing the
-recompute stops matching the forward and training dies at step 0 with a CheckpointError. A single process
-on a non-default card (#5068) and a model split across cards must keep their hooks.
-"""
+"""A DDP rank holding its whole bnb model on one card gets no dispatch hooks: on ranks >= 1 they broke the
+non-reentrant checkpoint recompute (#3459). A single process on a non-default card (#5068) keeps them."""
 
 import types
 
