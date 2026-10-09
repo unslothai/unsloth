@@ -13,6 +13,7 @@ from typing import Any
 
 from fastmcp import FastMCP
 
+from studio_mcp.tools.models import register_models
 from studio_mcp.tools.status import register_status
 
 
@@ -43,11 +44,7 @@ def create_studio_mcp() -> FastMCP:
 
     register_status(mcp)
 
-    @mcp.tool
-    async def list_local_models(models_dir: str = "./models") -> dict[str, Any]:
-        """List local and cached models available to Unsloth."""
-        from routes.models import list_local_models as list_models
-        return _dump(await list_models(models_dir = models_dir, current_subject = "mcp"))
+    register_models(mcp)
 
     @mcp.tool
     async def get_training_status() -> dict[str, Any]:

@@ -5,9 +5,9 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Optional
+from typing import Annotated, Optional, Union
 
-from pydantic import AfterValidator, BaseModel, ConfigDict
+from pydantic import AfterValidator, BaseModel, ConfigDict, StrictBool, StrictFloat, StrictInt
 
 from hub.utils.host_paths import redact_paths_in_text
 
@@ -107,3 +107,22 @@ class StudioStatus(ToolOutput):
     hardware: HardwareSlot = HardwareSlot()
     # Slots whose route failed, with the reason; the other slots are still reported.
     unavailable: dict[str, RouteText] = {}
+
+
+class ModelEntry(ToolOutput):
+    id: RouteText
+    # From the route's task; "llm" when there is none.
+    kind: RouteText
+    loaded: bool = False
+    display_name: Optional[RouteText] = None
+    quant: Optional[RouteText] = None
+    context_length: Optional[int] = None
+    audio_workflows: Optional[list[RouteText]] = None
+
+
+class ModelList(ToolOutput):
+    models: list[ModelEntry] = []
+    # Studio's training defaults for the model named in the call.
+    training_defaults: Optional[dict[str, Union[StrictBool, StrictInt, StrictFloat, RouteText]]] = (
+        None
+    )

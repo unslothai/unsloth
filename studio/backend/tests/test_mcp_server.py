@@ -20,7 +20,7 @@ def test_studio_mcp_registers_control_plane_tools():
 
     assert {tool.name for tool in tools} == {
         "studio_status",
-        "list_local_models",
+        "list_models",
         "get_training_status",
         "start_training",
         "stop_training",
