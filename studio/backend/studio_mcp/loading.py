@@ -280,14 +280,14 @@ STT_STATUS = "/api/inference/audio/stt/status"
 STT_ENGINES = ("transformers", "mtmd", "audiocpp", "gguf")
 
 
-async def _stt_status(caller: Caller, model: Optional[str] = None) -> dict:
+async def stt_status(caller: Caller, model: Optional[str] = None) -> dict:
     status = await route_json(
         "GET", STT_STATUS, caller = caller, params = {"model": model} if model else None
     )
     return status if isinstance(status, dict) else {}
 
 
-def _stt_engine(status: dict, model: str) -> str:
+def stt_engine(status: dict, model: str) -> str:
     for engine in STT_ENGINES:
         state = status.get(engine)
         if isinstance(state, dict) and model in {
@@ -314,7 +314,7 @@ async def download_stt(
     download_id = started.get("download_id") if isinstance(started, dict) else None
     while True:
         await asyncio.sleep(POLL_INTERVAL_S)
-        state = (await _stt_status(caller, model)).get(engine)
+        state = (await stt_status(caller, model)).get(engine)
         download = state.get("download") if isinstance(state, dict) else None
         download = download if isinstance(download, dict) else {}
         if download.get("downloading"):
@@ -341,8 +341,8 @@ async def load_stt(
     variant: Optional[str],
     hf_token: Optional[str],
 ) -> LoadResult:
-    status = await _stt_status(caller, model)
-    engine = _stt_engine(status, model)
+    status = await stt_status(caller, model)
+    engine = stt_engine(status, model)
     state = status.get(engine) if isinstance(status.get(engine), dict) else {}
     # Load refuses a model that is not on disk, so download first and load only once that finished.
     if model not in _strings(state.get("downloaded_models")):
@@ -360,7 +360,7 @@ async def load_stt(
 
 
 async def unload_stt(caller: Caller, model: Optional[str]) -> UnloadResult:
-    status = await _stt_status(caller)
+    status = await stt_status(caller)
     resident = {
         engine: status[engine]["loaded_model"]
         for engine in STT_ENGINES
@@ -376,6 +376,6 @@ async def unload_stt(caller: Caller, model: Optional[str]) -> UnloadResult:
         caller = caller,
         params = {"engine": engine, "model": name, "wait": "true"},
     )
-    after = (await _stt_status(caller)).get(engine)
+    after = (await stt_status(caller)).get(engine)
     still = isinstance(after, dict) and after.get("loaded_model") == name
     return UnloadResult(kind = "stt", model = name, unloaded = not still)

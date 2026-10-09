@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Audio tools: ``generate_audio`` runs any Audio page workflow."""
+"""Audio tools: ``generate_audio`` runs any Audio page workflow and ``transcribe`` turns speech into text."""
 
 from __future__ import annotations
 
@@ -10,16 +10,17 @@ import binascii
 from typing import Any, Literal, Optional
 from urllib.parse import quote
 
-from fastmcp import FastMCP
+from fastmcp import Context, FastMCP
 from fastmcp.exceptions import ToolError
 from fastmcp.tools import ToolResult
 
+from studio_mcp import loading
 from studio_mcp.caller import Caller, current_caller
 from studio_mcp.errors import raise_for_route
 from studio_mcp.forward import forward
-from studio_mcp.inputs import AudioInput, audio_ref
+from studio_mcp.inputs import AudioInput, audio_bytes, audio_ref
 from studio_mcp.media import INLINE_CAP, audio_content, media_result, public_url, resource_link
-from studio_mcp.outputs import AudioClip, AudioResult
+from studio_mcp.outputs import AudioClip, AudioResult, TranscriptResult, TranscriptSegment
 from studio_mcp.tools import WRITES, integer, number
 from studio_mcp.tools import text as route_text
 
@@ -142,5 +143,106 @@ async def generate_audio(
     return media_result(contents, result)
 
 
+# OpenAI's own upload limit for /audio/transcriptions; past it the tool uploads first.
+MULTIPART_LIMIT = 25 * 1024 * 1024
+NOT_DOWNLOADED = "is not downloaded"
+TIMESTAMPS_HINT = "Pass language with timestamps, or use an audio.cpp speech-to-text model."
+
+
+def _segments(payload: dict) -> Optional[list[TranscriptSegment]]:
+    rows = payload.get("segments")
+    if not isinstance(rows, list):
+        return None
+    return [
+        TranscriptSegment(
+            start = number(row.get("start")),
+            end = number(row.get("end")),
+            text = row.get("text") if isinstance(row.get("text"), str) else "",
+        )
+        for row in rows
+        if isinstance(row, dict)
+    ]
+
+
+async def _download_then_retry(
+    caller: Caller, ctx: Optional[Context], model: Optional[str]
+) -> None:
+    """Fetch the STT model a transcription refused as missing, the way load_model does."""
+    status = await loading.stt_status(caller, model)
+    if model is None:
+        default = status.get("transformers") if isinstance(status.get("transformers"), dict) else {}
+        model = route_text(default.get("default_model")) or route_text(status.get("default_model"))
+    if model is None:
+        raise ToolError("Studio did not name a default speech-to-text model to download")
+    engine = loading.stt_engine(status, model)
+    await loading.download_stt(caller, ctx, model = model, engine = engine, hf_token = None)
+
+
+async def _multipart(
+    caller: Caller,
+    data: bytes,
+    name: str,
+    *,
+    language: Optional[str],
+    translate: bool,
+    timestamps: bool,
+    model: Optional[str],
+):
+    fields = {"response_format": "verbose_json" if timestamps else "json"}
+    if model:
+        fields["model"] = model
+    if language and not translate:
+        fields["language"] = language
+    path = "/v1/audio/translations" if translate else "/v1/audio/transcriptions"
+    return await forward(
+        caller, "POST", path, files = {"file": (name, data, "application/octet-stream")}, data = fields
+    )
+
+
+async def transcribe(
+    audio: AudioInput,
+    language: Optional[str] = None,
+    translate: bool = False,
+    timestamps: bool = False,
+    model: Optional[str] = None,
+    ctx: Optional[Context] = None,
+) -> TranscriptResult:
+    """Transcribe speech with Studio's speech-to-text, or translate it to English with ``translate``. ``audio`` is inline base64 with a filename, a path on the Studio computer, or a Studio id. ``timestamps`` adds segments; most engines then need ``language``. A missing model is downloaded first. Without ``model`` Studio's default is used."""
+    caller = current_caller()
+    if not audio.is_upload:
+        raise ToolError("transcribe takes inline audio or a path for now.")
+    data, name = audio_bytes(caller, audio)
+    if len(data) > MULTIPART_LIMIT:
+        raise ToolError("Audio over 25 MiB cannot be transcribed yet.")
+
+    async def send():
+        return await _multipart(
+            caller,
+            data,
+            name,
+            language = language,
+            translate = translate,
+            timestamps = timestamps,
+            model = model,
+        )
+
+    response = await send()
+    if response.status_code == 409 and NOT_DOWNLOADED in response.text:
+        await _download_then_retry(caller, ctx, model)
+        response = await send()
+    hints = {501: TIMESTAMPS_HINT} if timestamps else None
+    payload = raise_for_route(response, hints = hints)
+    if not isinstance(payload, dict):
+        raise ToolError("Studio returned no transcript")
+    return TranscriptResult(
+        text = payload.get("text") if isinstance(payload.get("text"), str) else "",
+        language = route_text(payload.get("language")),
+        model = model,
+        segments = _segments(payload) if timestamps else None,
+        saved_to_history = False,
+    )
+
+
 def register_audio(mcp: FastMCP) -> None:
     mcp.tool(generate_audio, annotations = WRITES, output_schema = AudioResult.model_json_schema())
+    mcp.tool(transcribe, annotations = WRITES)

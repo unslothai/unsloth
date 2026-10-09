@@ -208,3 +208,19 @@ class AudioResult(ToolOutput):
     clips: list[AudioClip] = []
     # False when Studio could not save the clip to Audio history; the audio then comes back inline only.
     saved: bool = True
+
+
+class TranscriptSegment(ToolOutput):
+    start: Optional[float] = None
+    end: Optional[float] = None
+    # Model-written.
+    text: str = ""
+
+
+class TranscriptResult(ToolOutput):
+    # Model-written.
+    text: str
+    language: Optional[RouteText] = None
+    model: Optional[RouteText] = None
+    segments: Optional[list[TranscriptSegment]] = None
+    saved_to_history: bool = False

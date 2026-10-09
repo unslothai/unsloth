@@ -328,3 +328,269 @@ def test_generate_audio_annotations():
     assert tool.annotations.openWorldHint is False
     assert "text" in tool.parameters["properties"]
     assert tool.output_schema["additionalProperties"] is False
+
+
+# ---------------------------------------------------------------- transcribe
+
+TRANSCRIPT = {"text": "Hello from Studio."}
+VERBOSE = {
+    "task": "transcribe",
+    "language": "en",
+    "duration": 2.0,
+    "text": "Hello from Studio.",
+    "segments": [
+        {"id": 0, "start": 0.0, "end": 1.2, "text": "Hello"},
+        {"id": 1, "start": 1.2, "end": 2.0, "text": "from Studio."},
+    ],
+}
+TRANSCRIBE_PAYLOADS = {
+    ("POST", "/v1/audio/transcriptions"): VERBOSE,
+    ("POST", "/v1/audio/translations"): TRANSCRIPT,
+}
+
+
+def _form(request_body: bytes, content_type: str):
+    from email.parser import BytesParser
+    from email.policy import default
+
+    message = BytesParser(policy = default).parsebytes(
+        b"Content-Type: " + content_type.encode() + b"\r\n\r\n" + request_body
+    )
+    fields = {}
+    for part in message.iter_parts():
+        name = part.get_param("name", header = "content-disposition")
+        fields[name] = (part.get_filename(), part.get_payload(decode = True))
+    return fields
+
+
+def _transcribe(monkeypatch, studio, args, **client):
+    with TestClient(served(create_studio_mcp(), studio, monkeypatch = monkeypatch), **client) as http:
+        return call_tool(http, "transcribe", args)
+
+
+def _sent_form(studio, path):
+    (_m, _p, headers, body) = next(c for c in studio.state.calls if c[1] == path)
+    return _form(body, headers["content-type"])
+
+
+def test_small_audio_goes_as_multipart_with_openai_field_names(monkeypatch):
+    studio = fake_studio({("POST", "/v1/audio/transcriptions"): lambda request, body: TRANSCRIPT})
+    result = _transcribe(
+        monkeypatch,
+        studio,
+        {
+            "audio": {"data_base64": _b64(WAV), "filename": "memo.wav"},
+            "language": "en",
+            "model": "openai/whisper-small",
+        },
+    )
+    assert result["structuredContent"] == {
+        "text": "Hello from Studio.",
+        "language": None,
+        "model": "openai/whisper-small",
+        "segments": None,
+        "saved_to_history": False,
+    }
+    form = _sent_form(studio, "/v1/audio/transcriptions")
+    assert form["file"] == ("memo.wav", WAV)
+    assert {k: v[1] for k, v in form.items() if k != "file"} == {
+        "response_format": b"json",
+        "model": b"openai/whisper-small",
+        "language": b"en",
+    }
+
+
+def test_timestamps_ask_for_verbose_json_and_return_segments(monkeypatch):
+    studio = fake_studio({("POST", "/v1/audio/transcriptions"): lambda request, body: VERBOSE})
+    result = _transcribe(
+        monkeypatch,
+        studio,
+        {
+            "audio": {"data_base64": _b64(WAV), "filename": "a.wav"},
+            "timestamps": True,
+            "language": "en",
+        },
+    )
+    out = result["structuredContent"]
+    assert out["language"] == "en"
+    assert out["segments"] == [
+        {"start": 0.0, "end": 1.2, "text": "Hello"},
+        {"start": 1.2, "end": 2.0, "text": "from Studio."},
+    ]
+    assert _sent_form(studio, "/v1/audio/transcriptions")["response_format"][1] == b"verbose_json"
+
+
+def test_translate_uses_the_translations_route_without_language(monkeypatch):
+    studio = fake_studio({("POST", "/v1/audio/translations"): lambda request, body: TRANSCRIPT})
+    _transcribe(
+        monkeypatch,
+        studio,
+        {
+            "audio": {"data_base64": _b64(WAV), "filename": "a.wav"},
+            "translate": True,
+            "language": "de",
+        },
+    )
+    form = _sent_form(studio, "/v1/audio/translations")
+    assert "language" not in form
+    assert [c[1] for c in studio.state.calls] == ["/v1/audio/translations"]
+
+
+def test_a_501_for_timestamps_says_what_to_change(monkeypatch):
+    def unsupported(request, body):
+        return JSONResponse(
+            {
+                "error": {
+                    "message": "verbose_json reports the language of the audio and the local STT engine cannot detect it.",
+                    "type": "api_error",
+                    "param": None,
+                    "code": None,
+                }
+            },
+            status_code = 501,
+        )
+
+    studio = fake_studio({("POST", "/v1/audio/transcriptions"): unsupported})
+    result = _transcribe(
+        monkeypatch,
+        studio,
+        {"audio": {"data_base64": _b64(WAV), "filename": "a.wav"}, "timestamps": True},
+    )
+    assert result["isError"] is True
+    assert result["content"][0]["text"].endswith(
+        "(HTTP 501) Pass language with timestamps, or use an audio.cpp speech-to-text model."
+    )
+
+
+def test_a_missing_model_is_downloaded_then_the_transcription_retried_once(monkeypatch):
+    from studio_mcp import loading
+
+    monkeypatch.setattr(loading, "POLL_INTERVAL_S", 0.01)
+    answers = [
+        JSONResponse(
+            {
+                "error": {
+                    "message": "STT model 'openai/whisper-small' is not downloaded. Download it in Settings, then Voice, before loading it.",
+                    "type": "conflict_error",
+                    "param": None,
+                    "code": None,
+                }
+            },
+            status_code = 409,
+        ),
+        JSONResponse(TRANSCRIPT),
+    ]
+    statuses = [
+        {
+            "transformers": {
+                "models": ["openai/whisper-small"],
+                "downloaded_models": [],
+                "default_model": "openai/whisper-small",
+                "download": {"downloading": False},
+            }
+        },
+        {
+            "transformers": {
+                "models": ["openai/whisper-small"],
+                "downloaded_models": ["openai/whisper-small"],
+                "download": {"downloading": False, "completed_download_ids": ["d1"]},
+            }
+        },
+    ]
+    studio = fake_studio(
+        {
+            ("POST", "/v1/audio/transcriptions"): lambda request, body: answers.pop(0),
+            ("GET", "/api/inference/audio/stt/status"): lambda request, body: statuses.pop(0)
+            if len(statuses) > 1
+            else statuses[0],
+            ("POST", "/api/inference/audio/stt/download"): lambda request, body: {
+                "downloading": True,
+                "download_id": "d1",
+            },
+        }
+    )
+    result = _transcribe(
+        monkeypatch, studio, {"audio": {"data_base64": _b64(WAV), "filename": "a.wav"}}
+    )
+    assert result["structuredContent"]["text"] == "Hello from Studio."
+    assert [c[1] for c in studio.state.calls] == [
+        "/v1/audio/transcriptions",
+        "/api/inference/audio/stt/status",
+        "/api/inference/audio/stt/download",
+        "/api/inference/audio/stt/status",
+        "/v1/audio/transcriptions",
+    ]
+    download = next(c for c in studio.state.calls if c[1].endswith("/download"))
+    assert json.loads(download[3]) == {"model": "openai/whisper-small", "engine": "transformers"}
+
+
+def test_a_second_refusal_is_not_retried_again(monkeypatch):
+    from studio_mcp import loading
+
+    monkeypatch.setattr(loading, "POLL_INTERVAL_S", 0.01)
+    refusal = {
+        "error": {
+            "message": "STT model 'x' is not downloaded.",
+            "type": "conflict_error",
+            "param": None,
+            "code": None,
+        }
+    }
+    studio = fake_studio(
+        {
+            ("POST", "/v1/audio/transcriptions"): lambda request, body: JSONResponse(
+                refusal, status_code = 409
+            ),
+            ("GET", "/api/inference/audio/stt/status"): lambda request, body: {
+                "transformers": {
+                    "models": ["x"],
+                    "downloaded_models": ["x"],
+                    "download": {"downloading": False},
+                }
+            },
+            ("POST", "/api/inference/audio/stt/download"): lambda request, body: {
+                "downloading": True
+            },
+        }
+    )
+    result = _transcribe(
+        monkeypatch,
+        studio,
+        {"audio": {"data_base64": _b64(WAV), "filename": "a.wav"}, "model": "x"},
+    )
+    assert result["isError"] is True
+    assert [c[1] for c in studio.state.calls].count("/v1/audio/transcriptions") == 2
+
+
+def test_a_remote_agent_cannot_transcribe_a_path(monkeypatch, tmp_path):
+    source = tmp_path / "mcp-input.wav"
+    source.write_bytes(WAV)
+    opened = []
+    monkeypatch.setattr(type(source), "read_bytes", lambda self: opened.append(self) or WAV)
+    studio = fake_studio({("POST", "/v1/audio/transcriptions"): lambda request, body: TRANSCRIPT})
+    remote = _transcribe(
+        monkeypatch,
+        studio,
+        {"audio": {"path": str(source)}},
+        base_url = "http://192.168.1.20:8888",
+        client = ("192.0.2.7", 50000),
+    )
+    assert remote["content"][0]["text"] == PATH_REMOTE
+    assert opened == [] and studio.state.calls == []
+    local = _transcribe(
+        monkeypatch,
+        studio,
+        {"audio": {"path": str(source)}},
+        base_url = "http://127.0.0.1:8888",
+        client = ("127.0.0.1", 50000),
+    )
+    assert local["structuredContent"]["text"] == "Hello from Studio."
+    assert _sent_form(studio, "/v1/audio/transcriptions")["file"] == ("mcp-input.wav", WAV)
+
+
+def test_transcribe_annotations():
+    tool = {t.name: t for t in asyncio.run(create_studio_mcp().list_tools())}["transcribe"]
+    assert tool.annotations.readOnlyHint is False
+    assert tool.annotations.destructiveHint is False
+    assert tool.annotations.openWorldHint is False
+    assert tool.output_schema is not None
