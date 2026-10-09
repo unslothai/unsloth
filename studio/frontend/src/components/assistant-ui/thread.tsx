@@ -181,7 +181,10 @@ import {
 import { toolStatusKind } from "@/features/chat/utils/tool-status";
 import { replySourceMarkdown } from "@/features/chat/utils/reply-source-markdown";
 import { toolResultModelText } from "@/features/chat/api/chat-adapter";
-import { collectGeminiThoughtReplayParts } from "@/features/chat/gemini-thought-replay";
+import {
+  collectGeminiThoughtReplayParts,
+  continuationGeminiReplayTurns,
+} from "@/features/chat/gemini-thought-replay";
 import {
   CONTINUATION_RUN_CONFIG_KEY,
   type ContinuationRequest,
@@ -7500,6 +7503,15 @@ function useContinuation() {
     () => collectGeminiThoughtReplayParts(messageContent),
     [messageContent],
   );
+  const geminiReplayTurns = useMemo(
+    () =>
+      continuationGeminiReplayTurns(metadata, {
+        text: partial,
+        ...(thoughtSignature ? { thoughtSignature } : {}),
+        ...(thoughtParts.length > 0 ? { thoughtParts } : {}),
+      }),
+    [metadata, partial, thoughtSignature, thoughtParts],
+  );
   // Audio input re-listens to the recording and answers afresh rather than resuming,
   // so continuing there would append a second answer.
   const fromAudioInput = useAuiState(({ thread }) =>
@@ -7549,6 +7561,7 @@ function useContinuation() {
       ...(carriedReasoning ? { reasoning: carriedReasoning, reasoningDuration } : {}),
       ...(thoughtSignature ? { thoughtSignature } : {}),
       ...(thoughtParts.length > 0 ? { thoughtParts } : {}),
+      ...(geminiReplayTurns.length > 0 ? { geminiReplayTurns } : {}),
       ...providerCompactionContinuationFields(metadata),
     };
     return aui.thread().startRun({
@@ -7565,6 +7578,7 @@ function useContinuation() {
     reasoningDuration,
     thoughtSignature,
     thoughtParts,
+    geminiReplayTurns,
     metadata,
   ]);
 

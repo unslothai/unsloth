@@ -178,12 +178,16 @@ import {
   type CodexReasoningLedger,
 } from "../codex-reasoning";
 import {
+  type GeminiContinuationReplay,
+  type GeminiContinuationReplayTurn,
   type GeminiThoughtReplayPart,
   type PositionedGeminiThoughtReplayPart,
   appendGeminiThoughtReplayPart,
+  geminiContinuationReplayEntries,
   geminiThoughtReplayParts,
   pinGeminiTextThoughtSignature,
   pinGeminiThoughtReplayParts,
+  readGeminiContinuationReplay,
   withGeminiThoughtReplayParts,
 } from "../gemini-thought-replay";
 
@@ -1381,6 +1385,85 @@ function attachAssistantThoughtSignature(
   }
 }
 
+function serializeGeminiContinuationTurns(
+  turns: GeminiContinuationReplayTurn[],
+  includeTrailingInstruction: boolean,
+): SerializedMessage[] {
+  const messages: SerializedMessage[] = [];
+  for (const entry of geminiContinuationReplayEntries(
+    turns,
+    includeTrailingInstruction,
+  )) {
+    if (entry.role === "user") {
+      messages.push({ role: "user", content: CONTINUE_INSTRUCTION });
+      continue;
+    }
+    const { turn } = entry;
+    const assistant: SerializedMessage = {
+      role: "assistant",
+      content: turn.text,
+      ...(turn.thoughtParts?.length
+        ? {
+            extra_content: withGeminiThoughtReplayParts(
+              undefined,
+              turn.thoughtParts,
+            ),
+          }
+        : {}),
+    };
+    attachAssistantThoughtSignature([assistant], turn.thoughtSignature);
+    messages.push(assistant);
+  }
+  return messages;
+}
+
+function stripGeminiContinuationVisiblePrefix(
+  messages: SerializedMessage[],
+  visiblePrefix: string,
+): void {
+  if (!visiblePrefix) return;
+  const assistant = messages.find((message) => message.role === "assistant");
+  if (!assistant) return;
+  if (typeof assistant.content === "string") {
+    if (assistant.content.startsWith(visiblePrefix)) {
+      assistant.content = assistant.content.slice(visiblePrefix.length);
+    }
+    return;
+  }
+  if (!Array.isArray(assistant.content)) return;
+  const content = assistant.content as Array<Record<string, unknown>>;
+  const text = content
+    .filter((part) => part.type === "text" && typeof part.text === "string")
+    .map((part) => part.text as string)
+    .join("");
+  if (!text.startsWith(visiblePrefix)) return;
+  let remaining = visiblePrefix.length;
+  assistant.content = content.flatMap((part) => {
+    if (remaining === 0 || part.type !== "text" || typeof part.text !== "string") {
+      return [part];
+    }
+    const drop = Math.min(remaining, part.text.length);
+    remaining -= drop;
+    const trimmed = part.text.slice(drop);
+    return trimmed ? [{ ...part, text: trimmed }] : [];
+  }) as OpenAIMessageContent;
+}
+
+function expandGeminiContinuationReplay(
+  message: RunMessage,
+  serialized: SerializedMessage[],
+): SerializedMessage[] {
+  const replay = readGeminiContinuationReplay(
+    (message as { metadata?: unknown }).metadata,
+  );
+  if (!replay) return serialized;
+  stripGeminiContinuationVisiblePrefix(serialized, replay.visiblePrefix);
+  return [
+    ...serializeGeminiContinuationTurns(replay.turns, true),
+    ...serialized,
+  ];
+}
+
 function serializeAssistantReplayMessages(
   message: RunMessage,
   includeReasoningContent = false,
@@ -1568,6 +1651,7 @@ function serializeAssistantReplayMessages(
 function toOpenAIMessages(
   message: RunMessage,
   includeReasoningContent = false,
+  expandGeminiContinuations = false,
 ): SerializedMessage[] {
   message = modelVisibleMessage(message);
   if (
@@ -1579,10 +1663,13 @@ function toOpenAIMessages(
   }
 
   if (message.role === "assistant") {
-    return fillStoppedAssistantReplay(
+    const serialized = fillStoppedAssistantReplay(
       message,
       serializeAssistantReplayMessages(message, includeReasoningContent),
     );
+    return expandGeminiContinuations
+      ? expandGeminiContinuationReplay(message, serialized)
+      : serialized;
   }
 
   const textContent = collectTextParts(message).join("\n");
@@ -5129,7 +5216,11 @@ export function createOpenAIStreamAdapter(
       // translator rebuilds the functionCall/functionResponse parts.
       let outboundMessages = renderedMessages
         .flatMap((message) => {
-          const serialized = toOpenAIMessages(message, replayReasoning);
+          const serialized = toOpenAIMessages(
+            message,
+            replayReasoning,
+            externalProvider?.providerType === "gemini",
+          );
           return isExternalRequest
             ? withProviderCompaction(message, serialized, {
                 providerType: toExternalBackendProviderType(
@@ -5200,32 +5291,40 @@ export function createOpenAIStreamAdapter(
         : null;
       // The run's messages stop at the user turn, so the partial is appended here for the backend to resume.
       if (continuation) {
-        outboundMessages.push({
-          role: "assistant",
-          content: continuationCompaction
-            ? [
-                continuationCompaction,
-                ...(continuation.partial
-                  ? [{ type: "text" as const, text: continuation.partial }]
-                  : []),
-              ]
-            : continuation.partial,
-          ...(resumedThought ? { reasoning_content: resumedThought } : {}),
-          ...(continuation.thoughtParts && continuation.thoughtParts.length > 0
-            ? {
-                extra_content: withGeminiThoughtReplayParts(
-                  undefined,
-                  continuation.thoughtParts,
-                ),
-              }
-            : {}),
-        });
-        // The original assistant message is not in this branch, so without its signature the history
-        // goes back unsigned.
-        attachAssistantThoughtSignature(
-          outboundMessages,
-          continuation.thoughtSignature,
-        );
+        const geminiReplayTurns =
+          externalProvider?.providerType === "gemini"
+            ? continuation.geminiReplayTurns
+            : undefined;
+        if (geminiReplayTurns?.length) {
+          outboundMessages.push(
+            ...serializeGeminiContinuationTurns(geminiReplayTurns, false),
+          );
+        } else {
+          outboundMessages.push({
+            role: "assistant",
+            content: continuationCompaction
+              ? [
+                  continuationCompaction,
+                  ...(continuation.partial
+                    ? [{ type: "text" as const, text: continuation.partial }]
+                    : []),
+                ]
+              : continuation.partial,
+            ...(resumedThought ? { reasoning_content: resumedThought } : {}),
+            ...(continuation.thoughtParts && continuation.thoughtParts.length > 0
+              ? {
+                  extra_content: withGeminiThoughtReplayParts(
+                    undefined,
+                    continuation.thoughtParts,
+                  ),
+                }
+              : {}),
+          });
+          attachAssistantThoughtSignature(
+            outboundMessages,
+            continuation.thoughtSignature,
+          );
+        }
         // Anthropic 400s when the last message is an assistant turn, so append an instruction turn
         // instead of a prefill.
         if (rejectsAssistantPrefill(externalProvider?.providerType)) {
@@ -5623,6 +5722,14 @@ export function createOpenAIStreamAdapter(
       const continuationPartial = continuation
         ? continuationSeed(continuation.partial, resumedThought)
         : "";
+      const geminiContinuationReplay: GeminiContinuationReplay | undefined =
+        externalProvider?.providerType === "gemini" &&
+        continuation?.geminiReplayTurns?.length
+          ? {
+              turns: continuation.geminiReplayTurns,
+              visiblePrefix: continuation.partial,
+            }
+          : undefined;
       // A seed that ends inside the thought: the next reasoning delta extends it.
       const resumesInsideThought = Boolean(resumedThought) && !continuation?.partial;
       let cumulativeText = continuationPartial;
@@ -5725,6 +5832,7 @@ export function createOpenAIStreamAdapter(
         providerCompactionProviderType,
         providerCompactionModelId,
         providerCompactionConnectionKey: providerCompactionOriginConnectionKey,
+        geminiContinuationReplay,
         // A legacy (browser-tool / attachment / incognito) run that ends because you closed the tab has no
         // server-side run to resume from, so its last streamed yield is what persists. Mark it an interruption
         // — partial kept + Resume — instead of a silent blank/ambiguous state. Durable runs keep "cancelled":
@@ -6034,10 +6142,12 @@ export function createOpenAIStreamAdapter(
       let latestGeminiTextSignature: string | undefined;
       let pendingGeminiThoughtText = "";
       const geminiThoughtParts: PositionedGeminiThoughtReplayPart[] =
-        continuation?.thoughtParts?.map((part) => ({
-          ...part,
-          afterToolCalls: 0,
-        })) ?? [];
+        geminiContinuationReplay
+          ? []
+          : (continuation?.thoughtParts?.map((part) => ({
+              ...part,
+              afterToolCalls: 0,
+            })) ?? []);
       const buildAssistantContent = (rawText: string) => {
         const positionedTools = toolCallParts
           .map((part, index) => {
@@ -8504,6 +8614,7 @@ export function createOpenAIStreamAdapter(
               providerCompactionModelId,
               providerCompactionConnectionKey:
                 providerCompactionOriginConnectionKey,
+              geminiContinuationReplay,
               incomplete: finalIncompleteReason
                 ? { reason: finalIncompleteReason }
                 : undefined,
@@ -8682,6 +8793,7 @@ export function createOpenAIStreamAdapter(
                 providerCompactionModelId,
                 providerCompactionConnectionKey:
                   providerCompactionOriginConnectionKey,
+                geminiContinuationReplay,
                 // Unfinished too, so it also offers Continue -- unless the provider already
                 // said why the model stopped.
                 incomplete: {

@@ -10,6 +10,21 @@ export type PositionedGeminiThoughtReplayPart = GeminiThoughtReplayPart & {
   afterToolCalls: number;
 };
 
+export type GeminiContinuationReplayTurn = {
+  text: string;
+  thoughtSignature?: string;
+  thoughtParts?: GeminiThoughtReplayPart[];
+};
+
+export type GeminiContinuationReplay = {
+  turns: GeminiContinuationReplayTurn[];
+  visiblePrefix: string;
+};
+
+export type GeminiContinuationReplayEntry =
+  | { role: "assistant"; turn: GeminiContinuationReplayTurn }
+  | { role: "user" };
+
 type ReplayableMessagePart = {
   type: string;
   text?: unknown;
@@ -156,6 +171,89 @@ export function collectGeminiThoughtReplayParts(
       ? geminiThoughtReplayParts(part as ReplayableMessagePart)
       : [],
   );
+}
+
+function parseGeminiContinuationReplayTurn(
+  value: unknown,
+): GeminiContinuationReplayTurn | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  if (typeof record.text !== "string") {
+    return null;
+  }
+  const thoughtParts = parseGeminiThoughtReplayParts(record.thoughtParts);
+  const thoughtSignature = record.thoughtSignature;
+  return {
+    text: record.text,
+    ...(typeof thoughtSignature === "string" && thoughtSignature
+      ? { thoughtSignature }
+      : {}),
+    ...(thoughtParts.length > 0 ? { thoughtParts } : {}),
+  };
+}
+
+export function parseGeminiContinuationReplayTurns(
+  value: unknown,
+): GeminiContinuationReplayTurn[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((entry) => {
+    const turn = parseGeminiContinuationReplayTurn(entry);
+    return turn ? [turn] : [];
+  });
+}
+
+export function readGeminiContinuationReplay(
+  metadata: unknown,
+): GeminiContinuationReplay | null {
+  const custom = (metadata as { custom?: Record<string, unknown> } | undefined)
+    ?.custom;
+  const replay = custom?.geminiContinuationReplay as
+    | { turns?: unknown; visiblePrefix?: unknown }
+    | undefined;
+  const turns = parseGeminiContinuationReplayTurns(replay?.turns);
+  return turns.length > 0 && typeof replay?.visiblePrefix === "string"
+    ? { turns, visiblePrefix: replay.visiblePrefix }
+    : null;
+}
+
+export function continuationGeminiReplayTurns(
+  metadata: unknown,
+  current: GeminiContinuationReplayTurn,
+): GeminiContinuationReplayTurn[] {
+  const replay = readGeminiContinuationReplay(metadata);
+  const hasSignedCurrentPart = Boolean(
+    current.thoughtSignature || (current.thoughtParts?.length ?? 0) > 0,
+  );
+  if (!replay && !hasSignedCurrentPart) {
+    return [];
+  }
+  const currentText =
+    replay && current.text.startsWith(replay.visiblePrefix)
+      ? current.text.slice(replay.visiblePrefix.length)
+      : current.text;
+  const currentTurn = { ...current, text: currentText };
+  const hasCurrentTurn = Boolean(
+    currentTurn.text ||
+      currentTurn.thoughtSignature ||
+      (currentTurn.thoughtParts?.length ?? 0) > 0,
+  );
+  return [...(replay?.turns ?? []), ...(hasCurrentTurn ? [currentTurn] : [])];
+}
+
+export function geminiContinuationReplayEntries(
+  turns: GeminiContinuationReplayTurn[],
+  includeTrailingUser: boolean,
+): GeminiContinuationReplayEntry[] {
+  return turns.flatMap((turn, index) => [
+    { role: "assistant" as const, turn },
+    ...(includeTrailingUser || index < turns.length - 1
+      ? [{ role: "user" as const }]
+      : []),
+  ]);
 }
 
 export function withGeminiThoughtReplayParts(

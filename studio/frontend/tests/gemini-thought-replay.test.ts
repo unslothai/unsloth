@@ -9,9 +9,12 @@ import {
   type PositionedGeminiThoughtReplayPart,
   appendGeminiThoughtReplayPart,
   collectGeminiThoughtReplayParts,
+  continuationGeminiReplayTurns,
+  geminiContinuationReplayEntries,
   geminiThoughtReplayParts,
   pinGeminiTextThoughtSignature,
   pinGeminiThoughtReplayParts,
+  readGeminiContinuationReplay,
   withGeminiThoughtReplayParts,
 } from "../src/features/chat/gemini-thought-replay.ts";
 import { readSrc } from "./helpers/kit.ts";
@@ -78,6 +81,84 @@ test("signed thoughts use a separate replay envelope from signed answer text", (
       ],
     },
   });
+});
+
+test("continued Gemini turns keep the hidden user boundary", () => {
+  const metadata = {
+    custom: {
+      geminiContinuationReplay: {
+        turns: [
+          {
+            text: "first answer",
+            thoughtSignature: "SIG-ANSWER-1",
+            thoughtParts: [
+              { text: "first thought", thoughtSignature: "SIG-THOUGHT-1" },
+            ],
+          },
+        ],
+        visiblePrefix: "first answer",
+      },
+    },
+  };
+
+  assert.deepEqual(readGeminiContinuationReplay(metadata), {
+    turns: [
+      {
+        text: "first answer",
+        thoughtSignature: "SIG-ANSWER-1",
+        thoughtParts: [
+          { text: "first thought", thoughtSignature: "SIG-THOUGHT-1" },
+        ],
+      },
+    ],
+    visiblePrefix: "first answer",
+  });
+  assert.deepEqual(
+    continuationGeminiReplayTurns(metadata, {
+      text: "first answer and the rest",
+      thoughtSignature: "SIG-ANSWER-2",
+      thoughtParts: [
+        { text: "second thought", thoughtSignature: "SIG-THOUGHT-2" },
+      ],
+    }),
+    [
+      {
+        text: "first answer",
+        thoughtSignature: "SIG-ANSWER-1",
+        thoughtParts: [
+          { text: "first thought", thoughtSignature: "SIG-THOUGHT-1" },
+        ],
+      },
+      {
+        text: " and the rest",
+        thoughtSignature: "SIG-ANSWER-2",
+        thoughtParts: [
+          { text: "second thought", thoughtSignature: "SIG-THOUGHT-2" },
+        ],
+      },
+    ],
+  );
+  assert.deepEqual(
+    geminiContinuationReplayEntries(
+      [
+        { text: "first", thoughtSignature: "SIG-1" },
+        { text: "second", thoughtSignature: "SIG-2" },
+      ],
+      true,
+    ),
+    [
+      {
+        role: "assistant",
+        turn: { text: "first", thoughtSignature: "SIG-1" },
+      },
+      { role: "user" },
+      {
+        role: "assistant",
+        turn: { text: "second", thoughtSignature: "SIG-2" },
+      },
+      { role: "user" },
+    ],
+  );
 });
 
 test("the chat adapter retains thought and answer signatures independently", () => {
