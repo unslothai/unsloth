@@ -16,7 +16,7 @@ from studio_mcp.outputs import LoadResult, ModelEntry, ModelList, UnloadResult
 from studio_mcp.tools import DESTRUCTIVE, READ_ONLY, WRITES, integer, route_json, text
 
 ModelKind = Literal["llm", "image", "video", "stt", "tts", "audio"]
-LoadKind = Literal["llm"]
+LoadKind = Literal["llm", "image", "video"]
 
 KIND_BY_TASK = {
     "text-to-image": "image",
@@ -124,9 +124,14 @@ async def load_model(
     hf_token: Optional[str] = None,
     ctx: Optional[Context] = None,
 ) -> LoadResult:
-    """Load a model into Studio, downloading it first if needed, and wait until it is ready; progress is reported while it loads. ``kind`` "llm" covers chat, vision, embedding and text-to-speech models. ``model`` is an id from list_models or a Hugging Face repo id; ``variant`` picks a GGUF quantization such as Q4_K_M. ``max_seq_length`` 0 or unset lets Studio choose the context. ``hf_token`` is for gated repos. Loading may unload other models to make room; they are listed in ``evicted``."""
+    """Load a model into Studio, downloading it first if needed, and wait until it is ready; progress is reported while it loads. ``kind`` "llm" covers chat, vision, embedding and text-to-speech models; "image" and "video" load the generation models. ``model`` is an id from list_models or a Hugging Face repo id; ``variant`` picks a GGUF quantization such as Q4_K_M. ``max_seq_length`` 0 or unset lets Studio choose the context (llm only). ``hf_token`` is for gated repos. Loading may unload other models to make room; they are listed in ``evicted``."""
+    caller = current_caller()
+    if kind in loading.MEDIA_ROUTES:
+        return await loading.load_media(
+            caller, ctx, kind = kind, model = model, variant = variant, hf_token = hf_token
+        )
     return await loading.load_llm(
-        current_caller(),
+        caller,
         ctx,
         model = model,
         variant = variant,
@@ -137,7 +142,9 @@ async def load_model(
 
 
 async def unload_model(kind: LoadKind = "llm", model: Optional[str] = None) -> UnloadResult:
-    """Unload a model to free memory. Without ``model`` the active one of that kind is unloaded. ``unloaded`` is false when nothing matching was loaded."""
+    """Unload a model to free memory. Without ``model`` the active one of that kind is unloaded; image and video have one slot each, so ``model`` is ignored there. ``unloaded`` is false when nothing matching was loaded."""
+    if kind in loading.MEDIA_ROUTES:
+        return await loading.unload_media(current_caller(), kind)
     return await loading.unload_llm(current_caller(), model)
 
 

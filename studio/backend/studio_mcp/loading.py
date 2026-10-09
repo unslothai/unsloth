@@ -131,3 +131,143 @@ async def unload_llm(caller: Caller, model: Optional[str]) -> UnloadResult:
     return UnloadResult(
         kind = "llm", model = model, unloaded = was_loaded and not ({model, target} & after)
     )
+
+
+MEDIA_ROUTES = {
+    "image": {
+        "plan": "/api/inference/images/download-plan",
+        "load": "/api/inference/images/load",
+        "progress": "/api/inference/images/load-progress",
+        "status": "/api/inference/images/status",
+        "unload": "/api/inference/images/unload",
+    },
+    "video": {
+        "plan": "/api/inference/video/download-plan",
+        "load": "/api/inference/video/load",
+        "progress": "/api/inference/video/load-progress",
+        "status": "/api/inference/video/status",
+        "unload": "/api/inference/video/unload",
+    },
+}
+# Polls with no load in flight and the model still not resident before the load counts as lost.
+_IDLE_POLLS = 5
+
+
+def _media_fraction(progress: dict) -> Optional[float]:
+    # Images report bytes_downloaded/bytes_total, video downloaded_bytes/expected_bytes.
+    done = number(progress.get("bytes_downloaded", progress.get("downloaded_bytes")))
+    total = number(progress.get("bytes_total", progress.get("expected_bytes")))
+    if done is not None and total:
+        return min(done / total, 1.0)
+    return number(progress.get("fraction"))
+
+
+def _resident_matches(status: Any, model: str) -> bool:
+    if not isinstance(status, dict) or status.get("loaded") is not True:
+        return False
+    names = {text(status.get("repo_id")), text(status.get("display_repo_id"))}
+    return model.lower() in {name.lower() for name in names if name}
+
+
+async def _gguf_filename(caller: Caller, model: str, variant: Optional[str]) -> Optional[str]:
+    """The checkpoint file to load from a GGUF repo: the named variant, else the repo's default."""
+    listing = await route_json(
+        "GET", "/api/hub/gguf-variants", caller = caller, params = {"repo_id": model}, hub_header = True
+    )
+    variants = (
+        [v for v in listing.get("variants") or [] if isinstance(v, dict)]
+        if isinstance(listing, dict)
+        else []
+    )
+    wanted = (
+        (variant or text(listing.get("default_variant")) or "").lower()
+        if isinstance(listing, dict)
+        else ""
+    )
+    for entry in variants:
+        if str(entry.get("quant", "")).lower() == wanted and text(entry.get("filename")):
+            return entry["filename"]
+    if variant:
+        raise ToolError(f"{model} has no GGUF variant {variant}")
+    return text(variants[0].get("filename")) if variants else None
+
+
+async def load_media(
+    caller: Caller,
+    ctx: Optional[Context],
+    *,
+    kind: str,
+    model: str,
+    variant: Optional[str],
+    hf_token: Optional[str],
+) -> LoadResult:
+    routes = MEDIA_ROUTES[kind]
+    body: dict[str, Any] = {"model_path": model}
+    token = hf_token or caller.hf_token
+    if token:
+        body["hf_token"] = token
+    if variant or "gguf" in model.lower():
+        filename = await _gguf_filename(caller, model, variant)
+        if filename:
+            body["gguf_filename"] = filename
+            body["model_kind"] = "gguf"
+    # The plan validates the pick the way the load does, before any download.
+    plan = await route_json("POST", routes["plan"], caller = caller, json_body = body)
+    if isinstance(plan, dict):
+        if text(plan.get("incompatible_reason")):
+            raise ToolError(plan["incompatible_reason"])
+        if "gguf_filename" not in body:
+            for entry in plan.get("entries") or []:
+                if (
+                    isinstance(entry, dict)
+                    and entry.get("checkpoint")
+                    and text(entry.get("gguf_filename"))
+                ):
+                    body["gguf_filename"] = entry["gguf_filename"]
+                    break
+    # Starts the load in the background; its answer describes whatever was resident before.
+    await route_json("POST", routes["load"], caller = caller, json_body = body)
+    idle = 0
+    while True:
+        progress = await route_json("GET", routes["progress"], caller = caller)
+        progress = progress if isinstance(progress, dict) else {}
+        phase = progress.get("phase")
+        if phase == "error":
+            raise ToolError(text(progress.get("error")) or f"The {kind} model failed to load")
+        if phase == "ready":
+            break
+        status = None
+        if phase is None:
+            status = await route_json("GET", routes["status"], caller = caller)
+            if _resident_matches(status, model):
+                break
+            idle += 1
+            if idle >= _IDLE_POLLS:
+                raise ToolError(f"Studio stopped reporting the {kind} load without loading {model}")
+        else:
+            idle = 0
+            fraction = _media_fraction(progress)
+            if ctx is not None and fraction is not None:
+                await ctx.report_progress(
+                    fraction, 1.0, "Downloading" if phase == "downloading" else str(phase)
+                )
+        await asyncio.sleep(POLL_INTERVAL_S)
+    status = await route_json("GET", routes["status"], caller = caller)
+    if not _resident_matches(status, model):
+        raise ToolError(f"Studio did not finish loading {model} as the {kind} model")
+    return LoadResult(
+        kind = kind,
+        model = text(status.get("display_repo_id")) or text(status.get("repo_id")) or model,
+    )
+
+
+async def unload_media(caller: Caller, kind: str) -> UnloadResult:
+    routes = MEDIA_ROUTES[kind]
+    before = await route_json("GET", routes["status"], caller = caller)
+    before = before if isinstance(before, dict) else {}
+    if before.get("loaded") is not True:
+        return UnloadResult(kind = kind, unloaded = False)
+    after = await route_json("POST", routes["unload"], caller = caller)
+    model = text(before.get("display_repo_id")) or text(before.get("repo_id"))
+    unloaded = isinstance(after, dict) and after.get("loaded") is not True
+    return UnloadResult(kind = kind, model = model, unloaded = unloaded)

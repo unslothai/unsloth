@@ -234,3 +234,230 @@ def test_annotations_and_schemas():
         "hf_token",
     }
     assert load.parameters["properties"]["kind"]["default"] == "llm"
+
+
+FLUX_GGUF = "city96/FLUX.1-schnell-gguf"
+LTX = "Lightricks/LTX-Video"
+
+
+def _media_studio(
+    kind,
+    *,
+    progress,
+    statuses,
+    load_answer = None,
+    variants = None,
+    plan = None,
+):
+    """``progress`` and ``statuses`` are consumed in order; the last one repeats."""
+    progress, statuses = list(progress), list(statuses)
+
+    def next_of(items):
+        return lambda request, body: items.pop(0) if len(items) > 1 else items[0]
+
+    prefix = "/api/inference/images" if kind == "image" else "/api/inference/video"
+    return fake_studio(
+        {
+            ("GET", "/api/hub/gguf-variants"): _answer(
+                variants
+                or {
+                    "repo_id": FLUX_GGUF,
+                    "default_variant": "Q4_K_S",
+                    "variants": [
+                        {"filename": "flux1-schnell-Q4_K_S.gguf", "quant": "Q4_K_S"},
+                        {"filename": "flux1-schnell-Q8_0.gguf", "quant": "Q8_0"},
+                    ],
+                }
+            ),
+            ("POST", f"{prefix}/download-plan"): _answer(
+                plan or {"entries": [], "plan_failed": False}
+            ),
+            ("POST", f"{prefix}/load"): _answer(load_answer or {"loaded": False}),
+            ("GET", f"{prefix}/load-progress"): next_of(progress),
+            ("GET", f"{prefix}/status"): next_of(statuses),
+            ("POST", f"{prefix}/unload"): _answer({"loaded": False}),
+        }
+    )
+
+
+@pytest.fixture
+def fast_polls(monkeypatch):
+    monkeypatch.setattr(loading, "POLL_INTERVAL_S", 0.01)
+
+
+def test_a_gguf_image_repo_sends_its_gguf_filename(monkeypatch, fast_polls):
+    studio = _media_studio(
+        "image",
+        progress = [
+            {"phase": "downloading", "bytes_downloaded": 1, "bytes_total": 2},
+            {"phase": "ready"},
+        ],
+        statuses = [{"loaded": True, "repo_id": FLUX_GGUF, "family": "flux"}],
+    )
+    result = _call(
+        monkeypatch, studio, "load_model", {"model": FLUX_GGUF, "kind": "image", "variant": "Q8_0"}
+    )
+    assert result["structuredContent"] == {
+        "kind": "image",
+        "model": FLUX_GGUF,
+        "loaded": True,
+        "display_name": None,
+        "evicted": [],
+    }
+    expected = {
+        "model_path": FLUX_GGUF,
+        "gguf_filename": "flux1-schnell-Q8_0.gguf",
+        "model_kind": "gguf",
+    }
+    assert _bodies(studio, "/api/inference/images/download-plan") == [expected]
+    assert _bodies(studio, "/api/inference/images/load") == [expected]
+
+
+def test_the_default_variant_is_used_when_none_is_named(monkeypatch, fast_polls):
+    studio = _media_studio(
+        "image", progress = [{"phase": "ready"}], statuses = [{"loaded": True, "repo_id": FLUX_GGUF}]
+    )
+    _call(monkeypatch, studio, "load_model", {"model": FLUX_GGUF, "kind": "image"})
+    assert (
+        _bodies(studio, "/api/inference/images/load")[0]["gguf_filename"]
+        == "flux1-schnell-Q4_K_S.gguf"
+    )
+
+
+def test_an_unknown_variant_is_refused_before_any_load(monkeypatch, fast_polls):
+    studio = _media_studio("image", progress = [{"phase": "ready"}], statuses = [{"loaded": False}])
+    result = _call(
+        monkeypatch, studio, "load_model", {"model": FLUX_GGUF, "kind": "image", "variant": "Q2_K"}
+    )
+    assert result["isError"] is True
+    assert "Q2_K" in result["content"][0]["text"]
+    assert _bodies(studio, "/api/inference/images/load") == []
+
+
+def test_a_plan_entry_supplies_the_checkpoint_file(monkeypatch, fast_polls):
+    plan = {
+        "entries": [
+            {
+                "repo_id": "a/b",
+                "files": [],
+                "bytes": 1,
+                "gguf_filename": "model.safetensors",
+                "checkpoint": True,
+            }
+        ]
+    }
+    studio = _media_studio(
+        "image",
+        progress = [{"phase": "ready"}],
+        statuses = [{"loaded": True, "repo_id": "a/b"}],
+        plan = plan,
+    )
+    _call(monkeypatch, studio, "load_model", {"model": "a/b", "kind": "image"})
+    assert _bodies(studio, "/api/inference/images/load") == [
+        {"model_path": "a/b", "gguf_filename": "model.safetensors"}
+    ]
+    assert [c for c in studio.state.calls if c[1] == "/api/hub/gguf-variants"] == []
+
+
+def test_an_incompatible_plan_is_a_tool_error(monkeypatch, fast_polls):
+    studio = _media_studio(
+        "image",
+        progress = [{"phase": "ready"}],
+        statuses = [{"loaded": False}],
+        plan = {"entries": [], "incompatible_reason": "Needs a CUDA GPU"},
+    )
+    result = _call(monkeypatch, studio, "load_model", {"model": "a/b", "kind": "image"})
+    assert result["isError"] is True
+    assert "Needs a CUDA GPU" in result["content"][0]["text"]
+
+
+def test_a_load_error_phase_is_a_tool_error(monkeypatch, fast_polls):
+    studio = _media_studio(
+        "image",
+        progress = [{"phase": "downloading"}, {"phase": "error", "error": "Out of disk space"}],
+        statuses = [{"loaded": False}],
+    )
+    result = _call(monkeypatch, studio, "load_model", {"model": "a/b", "kind": "image"})
+    assert result["isError"] is True
+    assert "Out of disk space" in result["content"][0]["text"]
+
+
+def test_the_previous_model_in_the_load_answer_is_not_success(monkeypatch, fast_polls):
+    previous = {"loaded": True, "repo_id": "old/model"}
+    studio = _media_studio(
+        "image", progress = [{"phase": "ready"}], statuses = [previous], load_answer = previous
+    )
+    result = _call(monkeypatch, studio, "load_model", {"model": "new/model", "kind": "image"})
+    assert result["isError"] is True
+    assert "did not finish loading new/model" in result["content"][0]["text"]
+
+    studio = _media_studio(
+        "image",
+        progress = [{"phase": None}, {"phase": "downloading"}, {"phase": "ready"}],
+        statuses = [previous, {"loaded": True, "repo_id": "new/model"}],
+        load_answer = previous,
+    )
+    result = _call(monkeypatch, studio, "load_model", {"model": "new/model", "kind": "image"})
+    assert result["structuredContent"]["model"] == "new/model"
+
+
+def test_a_load_that_never_starts_gives_up(monkeypatch, fast_polls):
+    studio = _media_studio(
+        "video", progress = [{"phase": None}], statuses = [{"loaded": True, "repo_id": "old/model"}]
+    )
+    result = _call(monkeypatch, studio, "load_model", {"model": LTX, "kind": "video"})
+    assert result["isError"] is True
+    assert "stopped reporting" in result["content"][0]["text"]
+
+
+def test_video_progress_uses_its_own_field_names(monkeypatch, fast_polls):
+    studio = _media_studio(
+        "video",
+        progress = [
+            {"phase": "downloading", "downloaded_bytes": 1, "expected_bytes": 4},
+            {"phase": "finalizing", "downloaded_bytes": 4, "expected_bytes": 4},
+            {"phase": "ready"},
+        ],
+        statuses = [{"loaded": True, "repo_id": LTX}],
+    )
+    request = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": "load_model",
+            "arguments": {"model": LTX, "kind": "video"},
+            "_meta": {"progressToken": 7},
+        },
+    }
+    with TestClient(served(create_studio_mcp(), studio, monkeypatch = monkeypatch)) as http:
+        response = http.post(
+            "/mcp/", json = request, headers = {**MCP_HEADERS, "Authorization": f"Bearer {TEST_TOKEN}"}
+        )
+    messages = [
+        json.loads(line[5:]) for line in response.text.splitlines() if line.startswith("data:")
+    ]
+    progress = [m["params"] for m in messages if m.get("method") == "notifications/progress"]
+    assert [p["progress"] for p in progress] == [0.25, 1.0]
+    assert progress[0]["message"] == "Downloading"
+    assert messages[-1]["result"]["structuredContent"]["model"] == LTX
+    assert _bodies(studio, "/api/inference/video/load") == [{"model_path": LTX}]
+
+
+@pytest.mark.parametrize("kind", ["image", "video"])
+def test_media_unload_takes_no_body(monkeypatch, kind):
+    studio = _media_studio(
+        kind, progress = [{"phase": None}], statuses = [{"loaded": True, "repo_id": LTX}]
+    )
+    result = _call(monkeypatch, studio, "unload_model", {"kind": kind})
+    assert result["structuredContent"] == {"kind": kind, "model": LTX, "unloaded": True}
+    prefix = "/api/inference/images" if kind == "image" else "/api/inference/video"
+    (unload,) = [c for c in studio.state.calls if c[1] == f"{prefix}/unload"]
+    assert unload[3] == b""
+
+
+def test_media_unload_with_nothing_loaded(monkeypatch):
+    studio = _media_studio("image", progress = [{"phase": None}], statuses = [{"loaded": False}])
+    result = _call(monkeypatch, studio, "unload_model", {"kind": "image"})
+    assert result["structuredContent"] == {"kind": "image", "model": None, "unloaded": False}
+    assert [c for c in studio.state.calls if c[1].endswith("/unload")] == []
