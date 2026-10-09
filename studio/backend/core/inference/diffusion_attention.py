@@ -1946,7 +1946,6 @@ def _cudnn_serves_pipe(
 def _configure_native_attention(pipe: Any, target: Any, logger: Any) -> None:
     rocm = _is_cuda_rocm(target)
     if rocm:
-        # An earlier incomplete probe left the flags alone; apply a retry's answer before dispatching.
         try:
             guard_rocm_fused_sdpa(target, logger)
         except Exception as exc:
