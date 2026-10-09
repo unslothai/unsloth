@@ -519,14 +519,34 @@ def test_list_shows_stdio_rows_to_a_ui_session(tmp_path, monkeypatch, stdio_on):
     assert rows[0].headers == {"API_KEY": "sk-env-secret"}
 
 
-def test_studio_mcp_surface_refuses_stdio_recipes():
-    """mcp_server.py calls the validate route function directly, so the ViaApiKey
-    dependency never runs and its `= False` default would read as a UI session.
-    That remote static bearer surface must pass True itself or the gate is dead."""
-    import inspect
+@pytest.mark.parametrize("mode", ["validate", "preview", "full"])
+def test_studio_mcp_surface_refuses_stdio_recipes(monkeypatch, mode):
+    """Studio MCP reaches the recipe routes as the agent's API key, so the routes' own
+    UI-session gate holds: a recipe that defines a local (stdio) MCP command is refused
+    with the route's 403 text, whichever mode runs it."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
 
-    import mcp_server
+    from auth.authentication import get_current_credential, get_current_subject
+    from mcp_server import create_studio_mcp
+    from routes.data_recipe import router as data_recipe_router
 
-    assert "validate(RecipePayload(recipe = recipe), via_api_key = True)" in inspect.getsource(
-        mcp_server
+    from .mcp_harness import call_tool, served
+
+    studio = FastAPI()
+    studio.state.bind_host = "127.0.0.1"
+    studio.include_router(data_recipe_router, prefix = "/api/data-recipe")
+    studio.dependency_overrides[get_current_subject] = lambda: "unsloth"
+    studio.dependency_overrides[get_current_credential] = lambda: ("unsloth", None)
+    recipe = {
+        "columns": [{"name": "q", "column_type": "sampler"}],
+        "mcp_providers": [
+            {"name": "fs", "provider_type": "stdio", "command": "npx", "args": ["server"]}
+        ],
+    }
+    with TestClient(served(create_studio_mcp(), studio, monkeypatch = monkeypatch)) as http:
+        result = call_tool(http, "run_recipe", {"recipe": recipe, "mode": mode})
+    assert result["isError"] is True
+    assert result["content"][0]["text"].startswith(
+        "Local (stdio) MCP servers can only be configured from the Unsloth UI, not with an API key."
     )

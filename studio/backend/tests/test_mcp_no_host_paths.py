@@ -25,6 +25,7 @@ from .test_mcp_tools_audio import TRANSCRIBE_PAYLOADS
 from .test_mcp_tools_images import PAYLOADS as IMAGES_PAYLOADS
 from .test_mcp_tools_loading import PAYLOADS as LOADING_PAYLOADS
 from .test_mcp_tools_models import PAYLOADS as MODELS_PAYLOADS
+from .test_mcp_tools_recipe import PAYLOADS as RECIPE_PAYLOADS
 from .test_mcp_tools_status import PAYLOADS as STATUS_PAYLOADS
 from .test_mcp_tools_text import PAYLOADS as TEXT_PAYLOADS
 from .test_mcp_tools_video import PAYLOADS as VIDEO_PAYLOADS
@@ -34,15 +35,12 @@ LEGACY_UNCHECKED = {
     "start_training",
     "stop_training",
     "list_training_runs",
-    "validate_recipe",
-    "get_recipe_job_status",
-    "get_recipe_job_dataset",
     "load_checkpoint",
     "export_gguf",
 }
 
-# tool name -> (fake Studio routes as {(method, path): payload}, tool arguments)
-CASES: dict[str, tuple[dict, dict]] = {
+# tool name -> (fake Studio routes as {(method, path): payload}, tool arguments), or a list of them
+CASES: dict[str, Any] = {
     "studio_status": (STATUS_PAYLOADS, {}),
     "list_models": (MODELS_PAYLOADS, {"model": "unsloth/Qwen3-0.6B"}),
     "load_model": (LOADING_PAYLOADS, {"model": "unsloth/Llama-3.2-1B-Instruct-GGUF"}),
@@ -52,7 +50,12 @@ CASES: dict[str, tuple[dict, dict]] = {
     "system_one": (TEXT_PAYLOADS, {"state": "x", "questions": {"urgent": {"type": "noul"}}}),
     "generate_image": (IMAGES_PAYLOADS, {"prompt": "a red fox"}),
     "generate_video": (VIDEO_PAYLOADS, {"prompt": "waves"}),
-    "get_job": (VIDEO_PAYLOADS, {"kind": "video"}),
+    "get_job": [
+        (VIDEO_PAYLOADS, {"kind": "video"}),
+        (VIDEO_PAYLOADS, {"kind": "video", "id": "video-1"}),
+        (RECIPE_PAYLOADS, {"kind": "recipe", "id": "job-1", "rows": 2}),
+    ],
+    "run_recipe": (RECIPE_PAYLOADS, {"recipe": {"columns": [{"name": "q"}]}}),
     "transcribe": (
         TRANSCRIBE_PAYLOADS,
         {
@@ -72,7 +75,7 @@ CASES: dict[str, tuple[dict, dict]] = {
 }
 
 # Output keys that carry model-written text, which is the model's to say and is never rewritten.
-MODEL_TEXT = {"chat": {"text"}, "transcribe": {"text"}}
+MODEL_TEXT = {"chat": {"text"}, "transcribe": {"text"}, "get_job": {"data_rows"}}
 
 
 def leaks(result: dict, ignore: frozenset = frozenset()) -> Optional[str]:
@@ -120,9 +123,10 @@ def test_every_registered_tool_has_a_host_path_case():
 
 @pytest.mark.parametrize("name", sorted(CASES))
 def test_no_host_path_in_tool_output(monkeypatch, name):
-    routes, args = CASES[name]
-    result = run_case(monkeypatch, create_studio_mcp(), name, routes, args)
-    assert leaks(result, frozenset(MODEL_TEXT.get(name, ()))) is None
+    cases = CASES[name] if isinstance(CASES[name], list) else [CASES[name]]
+    for routes, args in cases:
+        result = run_case(monkeypatch, create_studio_mcp(), name, routes, args)
+        assert leaks(result, frozenset(MODEL_TEXT.get(name, ()))) is None, args
 
 
 class _Status(ToolOutput):

@@ -29,14 +29,12 @@ def test_studio_mcp_registers_control_plane_tools():
         "transcribe",
         "generate_video",
         "get_job",
+        "run_recipe",
         "load_model",
         "unload_model",
         "start_training",
         "stop_training",
         "list_training_runs",
-        "validate_recipe",
-        "get_recipe_job_status",
-        "get_recipe_job_dataset",
         "load_checkpoint",
         "export_gguf",
     }
@@ -244,23 +242,4 @@ def test_list_training_runs_clamps_pagination(monkeypatch):
     asyncio.run(tool.fn(limit = 10_000, offset = -5))
 
     assert captured["limit"] == 200
-    assert captured["offset"] == 0
-
-
-def test_get_recipe_job_dataset_clamps_pagination(monkeypatch):
-    captured = {}
-
-    def fake_job_dataset(job_id, limit, offset):
-        captured["limit"] = limit
-        captured["offset"] = offset
-        return {"ok": True}
-
-    _stub_module(monkeypatch, "routes")
-    _stub_module(monkeypatch, "routes.data_recipe")
-    _stub_module(monkeypatch, "routes.data_recipe.jobs", job_dataset = fake_job_dataset)
-
-    tool = _get_tool("get_recipe_job_dataset")  # this tool is synchronous
-    tool.fn(job_id = "job-1", limit = -1, offset = -9)
-
-    assert captured["limit"] == 1
     assert captured["offset"] == 0

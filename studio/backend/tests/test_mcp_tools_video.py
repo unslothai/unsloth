@@ -144,6 +144,7 @@ def test_a_completed_job_returns_its_thumbnail_and_a_link_never_the_mp4(monkeypa
             "url": "http://192.168.1.20:8888/v1/videos/video-1/content",
             "thumbnail_inline": True,
         },
+        "recipe": None,
         "jobs": None,
     }
     content = result["content"]
@@ -257,4 +258,4 @@ def test_video_annotations():
         assert tool.annotations.openWorldHint is False
         assert tool.output_schema is not None
     kind = job.parameters["properties"]["kind"]
-    assert kind.get("enum", [kind.get("const")]) == ["video"]
+    assert "video" in kind.get("enum", [kind.get("const")])

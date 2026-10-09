@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Optional, Union
+from typing import Annotated, Any, Optional, Union
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, StrictBool, StrictFloat, StrictInt
 
@@ -247,6 +247,28 @@ class JobSummary(ToolOutput):
     progress_percent: Optional[float] = None
 
 
+class RecipeError(ToolOutput):
+    message: RouteText
+    path: Optional[RouteText] = None
+
+
+class RecipeResult(ToolOutput):
+    mode: RouteText
+    valid: Optional[bool] = None
+    errors: Optional[list[RecipeError]] = None
+    job_id: Optional[RouteText] = None
+
+
+class RecipeInfo(ToolOutput):
+    stage: Optional[RouteText] = None
+    rows: Optional[int] = None
+    # The saved dataset's name under Studio's recipes folder, never its path.
+    dataset: Optional[RouteText] = None
+    total_rows: Optional[int] = None
+    # Generated rows, as the recipe wrote them.
+    data_rows: Optional[list[dict[str, Any]]] = None
+
+
 class JobStatus(ToolOutput):
     kind: RouteText
     id: Optional[RouteText] = None
@@ -254,5 +276,6 @@ class JobStatus(ToolOutput):
     progress_percent: Optional[float] = None
     error: Optional[RouteText] = None
     video: Optional[VideoInfo] = None
+    recipe: Optional[RecipeInfo] = None
     # Recent jobs, when no id was given.
     jobs: Optional[list[JobSummary]] = None

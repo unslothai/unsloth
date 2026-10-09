@@ -91,36 +91,6 @@ def create_studio_mcp() -> FastMCP:
         return _dump(await list_runs(limit = limit, offset = offset, current_subject = "mcp"))
 
     @mcp.tool
-    def validate_recipe(recipe: dict[str, Any]) -> dict[str, Any]:
-        """Validate a Data Recipe with the same validator used by Unsloth."""
-        from models.data_recipe import RecipePayload
-        from routes.data_recipe.validate import validate
-
-        # Direct call, so the ViaApiKey dependency never runs and its `= False` default would read as a UI
-        # session; this surface is a remote static bearer.
-        return _dump(validate(RecipePayload(recipe = recipe), via_api_key = True))
-
-    @mcp.tool
-    def get_recipe_job_status(job_id: str) -> dict[str, Any]:
-        """Read the status of a Data Recipe job."""
-        from routes.data_recipe.jobs import job_status
-        return _dump(job_status(job_id))
-
-    @mcp.tool
-    def get_recipe_job_dataset(
-        job_id: str,
-        limit: int = 20,
-        offset: int = 0,
-    ) -> dict[str, Any]:
-        """Read a bounded page of generated Data Recipe rows."""
-        from routes.data_recipe.jobs import job_dataset
-
-        # Clamp here (direct call skips FastAPI's Query bounds).
-        limit = _clamp(limit, 1, 500)
-        offset = max(0, offset)
-        return _dump(job_dataset(job_id, limit = limit, offset = offset))
-
-    @mcp.tool
     async def load_checkpoint(
         checkpoint_path: str,
         max_seq_length: int = 2048,
