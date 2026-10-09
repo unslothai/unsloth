@@ -18,8 +18,8 @@ from .qwen3_moe import FastQwen3MoeModel
 from .granite import FastGraniteModel
 from .sentence_transformer import FastSentenceTransformer
 from .decision import *
-from .diffusion import FastDiffusionModel
-from .diffusion_trainer import DiffusionConfig, DiffusionTrainer
+from .diffusion import *
+from .diffusion_trainer import *
 
 try:
     from .falcon_h1 import FastFalconH1Model
