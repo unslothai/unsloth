@@ -126,7 +126,7 @@ def _is_cuda_nvidia(target: Any) -> bool:
 # build in #8225 (gfx1200, torch 2.11+rocm7) both answer True while every dispatch to them raises "No available
 # kernel. Aborting execution.", so the dispatcher degrades silently to MATH -- the one backend that materialises the
 # whole B x heads x N x N score matrix, which is how a 3.4 GB Q4_K_M video model asked a 16 GB card for a single 66.54
-# GiB allocation. So do not read the flags: run one tiny attention per backend and record what happens.
+# GiB allocation. Probe actual execution first, then intersect that capability with the current process flags.
 SDPA_FLASH = "flash"
 SDPA_MEM_EFFICIENT = "mem_efficient"
 SDPA_CUDNN = "cudnn"
@@ -136,13 +136,69 @@ SDPA_MATH = "math"
 _SDPA_SUBQUADRATIC = (SDPA_FLASH, SDPA_MEM_EFFICIENT, SDPA_CUDNN)
 
 _SDPA_PROBE_LOCK = threading.Lock()
-# (device type, dtype name) -> the kernels that ran. A kernel cannot appear or vanish under a running interpreter, so
-# one probe per device/dtype for the life of the process.
+# (indexed device, dtype name) -> capability. Process flags are checked separately on every read.
 _SDPA_PROBE_CACHE: dict[tuple[str, str], tuple[str, ...]] = {}
 
 
+def _probe_rocm_sdpa_kernels(device: str, dtype: Any) -> tuple[str, ...]:
+    """Isolate each backend's HIP error state from Studio and from the other probes."""
+    import json
+    from pathlib import Path
+    import subprocess
+    import sys
+    from .rocm_sdpa_probe import RESULT_PREFIX
+
+    available = []
+    for name, backend in (
+        (SDPA_MATH, "MATH"),
+        (SDPA_FLASH, "FLASH_ATTENTION"),
+        (SDPA_MEM_EFFICIENT, "EFFICIENT_ATTENTION"),
+    ):
+        try:
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(Path(__file__).with_name("rocm_sdpa_probe.py")),
+                    device,
+                    str(dtype).removeprefix("torch."),
+                    backend,
+                ],
+                capture_output = True,
+                text = True,
+                timeout = 45,
+            )
+            replies = [
+                line[len(RESULT_PREFIX) :]
+                for line in result.stdout.splitlines()
+                if line.startswith(RESULT_PREFIX)
+            ]
+            status = json.loads(replies[-1]) if result.returncode == 0 and replies else "unknown"
+        except Exception:
+            return ()
+        if status not in ("available", "unavailable", "failed"):
+            return ()
+        if name == SDPA_MATH and status != "available":
+            return ()
+        if status == "available":
+            available.append(name)
+    return tuple(available)
+
+
+def _enabled_sdpa_kernels(kernels: tuple[str, ...]) -> tuple[str, ...]:
+    """The native dispatcher also obeys current process flags, even after a cached probe."""
+    import torch
+
+    flags = {
+        SDPA_FLASH: "flash_sdp_enabled",
+        SDPA_MEM_EFFICIENT: "mem_efficient_sdp_enabled",
+        SDPA_CUDNN: "cudnn_sdp_enabled",
+        SDPA_MATH: "math_sdp_enabled",
+    }
+    return tuple(k for k in kernels if getattr(torch.backends.cuda, flags[k], lambda: True)())
+
+
 def _probe_sdpa_kernels(device: str, dtype: Any) -> tuple[str, ...]:
-    """Run a 4 KB attention under each SDPA backend; return the ones that did not raise."""
+    """Probe execution, isolating ROCm launch errors in fresh child processes."""
     import torch
     from torch.nn.attention import SDPBackend, sdpa_kernel
 
@@ -152,6 +208,10 @@ def _probe_sdpa_kernels(device: str, dtype: Any) -> tuple[str, ...]:
         (SDPA_CUDNN, getattr(SDPBackend, "CUDNN_ATTENTION", None)),
         (SDPA_MATH, getattr(SDPBackend, "MATH", None)),
     )
+    from core._torchao_stub import _module_is_rocm
+
+    if device.split(":")[0] == "cuda" and _module_is_rocm(torch):
+        return _probe_rocm_sdpa_kernels(device, dtype)
     # Small enough to be free, but shaped like real attention: the fused kernels reject head_dim they cannot serve, and
     # a degenerate 1-element tensor would not exercise that.
     q = torch.zeros((1, 2, 8, 64), device = device, dtype = dtype)
@@ -175,7 +235,10 @@ def available_sdpa_kernels(target: Any) -> tuple[str, ...]:
 
     Empty when the probe could not run at all (no torch, no device, an allocator failure) -- an
     unanswerable probe must never be read as "only math", which is a claim about the hardware."""
-    device = str(getattr(target, "device", "") or "")
+    device = str(getattr(target, "torch_device", None) or getattr(target, "device", "") or "")
+    if device == "cuda":
+        ordinal = getattr(target, "ordinal", None)
+        device = f"cuda:{ordinal}" if ordinal is not None else _indexed_cuda_device(device)
     if not device:
         return ()
     dtype = getattr(target, "dtype", None)
@@ -188,11 +251,11 @@ def available_sdpa_kernels(target: Any) -> tuple[str, ...]:
             dtype = torch.float16
         except Exception:  # noqa: BLE001
             return ()
-    key = (device.split(":")[0], str(dtype))
+    key = (device, str(dtype))
     with _SDPA_PROBE_LOCK:
         cached = _SDPA_PROBE_CACHE.get(key)
         if cached is not None:
-            return cached
+            return _enabled_sdpa_kernels(cached)
     try:
         available = _probe_sdpa_kernels(device, dtype)
     except Exception:  # noqa: BLE001 - a probe is a diagnostic; it may never fail a load
@@ -203,7 +266,7 @@ def available_sdpa_kernels(target: Any) -> tuple[str, ...]:
         return ()
     with _SDPA_PROBE_LOCK:
         _SDPA_PROBE_CACHE.setdefault(key, available)
-        return _SDPA_PROBE_CACHE[key]
+        return _enabled_sdpa_kernels(_SDPA_PROBE_CACHE[key])
 
 
 def sdpa_math_only(target: Any) -> bool:
@@ -245,6 +308,57 @@ def warn_if_sdpa_math_only(target: Any, logger: Any = None) -> bool:
             SDPA_MATH_ONLY_MESSAGE,
         )
     return True
+
+
+ROCM_FUSED_SDPA_ALLOW_ENV = "UNSLOTH_ALLOW_ROCM_FUSED_SDPA"
+
+
+def guard_rocm_fused_sdpa(target: Any, logger: Any = None) -> tuple[str, ...]:
+    """Disable failed ROCm fused backends only after math has been verified in isolation."""
+    if not _is_cuda_rocm(target):
+        return ()
+    if os.environ.get(ROCM_FUSED_SDPA_ALLOW_ENV, "").strip().lower() in ("1", "true", "yes", "on"):
+        return ()
+    import torch
+
+    from types import SimpleNamespace
+    from .rocm_bf16 import rocm_bf16_supported
+
+    device = str(getattr(target, "torch_device", None) or getattr(target, "device", "cuda"))
+    ordinal = getattr(target, "ordinal", None)
+    if device == "cuda":
+        device = f"cuda:{ordinal}" if ordinal is not None else _indexed_cuda_device(device)
+    dtype = getattr(target, "dtype", None)
+    if dtype not in (torch.float16, torch.bfloat16):
+        dtype = (
+            torch.bfloat16
+            if rocm_bf16_supported(torch, torch.device(device).index)
+            else torch.float16
+        )
+    available = available_sdpa_kernels(SimpleNamespace(device = device, dtype = dtype))
+    if SDPA_MATH not in available:
+        return ()
+    disabled = []
+    for name, enabled, switch in (
+        (SDPA_FLASH, torch.backends.cuda.flash_sdp_enabled, torch.backends.cuda.enable_flash_sdp),
+        (
+            SDPA_MEM_EFFICIENT,
+            torch.backends.cuda.mem_efficient_sdp_enabled,
+            torch.backends.cuda.enable_mem_efficient_sdp,
+        ),
+    ):
+        if name not in available and enabled():
+            switch(False)
+            disabled.append(name)
+    if disabled:
+        (logger or _module_logger()).warning(
+            "diffusion.attention: disabled unavailable ROCm SDPA kernels %s; using the remaining kernels. "
+            "If fused kernels are expected on this GPU, run 'unsloth studio update' to repair "
+            "the AMD device packages. %s=1 skips this check.",
+            ", ".join(disabled),
+            ROCM_FUSED_SDPA_ALLOW_ENV,
+        )
+    return tuple(disabled)
 
 
 def select_attention_backend(
@@ -1756,6 +1870,22 @@ def _cudnn_serves_pipe(
     return not missing
 
 
+def _configure_native_attention(pipe: Any, target: Any, logger: Any) -> None:
+    if _is_cuda_rocm(target) and sdpa_math_only(target):
+        try:
+            from .diffusion_qwenimage21_math import install
+            if install(pipe, target, logger):
+                if logger is not None:
+                    logger.warning(
+                        "diffusion.attention: Qwen-Image-2.1 is using bounded math attention; "
+                        "check the AMD device packages if fused kernels are expected on this GPU"
+                    )
+                return
+        except Exception as exc:
+            _warn(logger, "bounded Qwen-Image-2.1 math attention", exc)
+    warn_if_sdpa_math_only(target, logger)
+
+
 def apply_attention_backend(
     pipe: Any,
     backend: Optional[str],
@@ -1776,6 +1906,11 @@ def apply_attention_backend(
     a fresh transformer's processors follow it (default None). So a load wanting native must
     restore it explicitly, else it inherits a backend an earlier load pinned (e.g. cuDNN under a
     speed profile), breaking the ``off`` guarantee. Best-effort."""
+    if target is not None:
+        try:
+            guard_rocm_fused_sdpa(target, logger)
+        except Exception as exc:
+            _warn(logger, "ROCm fused SDPA check", exc)
     setters = [
         s
         for s in (getattr(t, "set_attention_backend", None) for t in _attention_dits(pipe))
@@ -1786,7 +1921,7 @@ def apply_attention_backend(
         # runs through torch SDPA, so the math-only diagnosis applies exactly as it does to a DiT. Report it here or an
         # SDXL load gets no warning at all.
         if target is not None:
-            warn_if_sdpa_math_only(target, logger)
+            _configure_native_attention(pipe, target, logger)
         return None
     if backend is not None:
         _ensure_attention_backend_installed(backend, logger)
@@ -1857,7 +1992,7 @@ def apply_attention_backend(
     # Native means torch's SDPA dispatch decides per call, and on a device with no fused kernel that decision is MATH.
     # Say so now; the flags this would otherwise be read off lie (#8225).
     if target is not None:
-        warn_if_sdpa_math_only(target, logger)
+        _configure_native_attention(pipe, target, logger)
     return None
 
 

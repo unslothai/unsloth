@@ -941,15 +941,18 @@ def test_a_target_with_no_device_is_never_probed(monkeypatch):
 
 def test_the_probe_runs_once_per_device_and_dtype(monkeypatch):
     # A kernel cannot appear or vanish under a running interpreter, and this sits on the load
-    # path, so the probe is memoised. cuda:0 and cuda:1 are the same device TYPE.
+    # path, so the probe is memoised. each indexed GPU has its own capability result.
+    import torch
+
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
     seen: list = []
     _stub_probe(monkeypatch, ("math",), record = seen)
     for device in ("cuda", "cuda:0", "cuda:1"):
         assert att.sdpa_math_only(types.SimpleNamespace(device = device, dtype = "fp16")) is True
-    assert len(seen) == 1
+    assert len(seen) == 2
     # A different dtype is a different question: fused kernels are half-precision only.
     att.sdpa_math_only(types.SimpleNamespace(device = "cuda", dtype = "fp32"))
-    assert len(seen) == 2
+    assert len(seen) == 3
 
 
 def test_a_dtypeless_target_probes_in_half_precision(monkeypatch):
@@ -960,7 +963,7 @@ def test_a_dtypeless_target_probes_in_half_precision(monkeypatch):
     seen: list = []
     _stub_probe(monkeypatch, ("flash", "math"), record = seen)
     att.available_sdpa_kernels(types.SimpleNamespace(device = "cuda", dtype = None))
-    assert seen == [("cuda", torch.float16)]
+    assert seen == [(att._indexed_cuda_device("cuda"), torch.float16)]
 
 
 def test_warn_names_the_quadratic_cost(monkeypatch):
