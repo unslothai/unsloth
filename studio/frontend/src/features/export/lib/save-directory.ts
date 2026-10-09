@@ -5,6 +5,10 @@ export function saveDirectoryField(
   custom: string | null,
   defaultSaveDirectory: string,
 ): { inputValue: string; saveDirectory: string } {
-  const saveDirectory = custom?.trim() || defaultSaveDirectory;
-  return { inputValue: saveDirectory, saveDirectory };
+  // Echoing the trimmed path back into the input would drop a space as it is
+  // typed and refill a cleared field with the default.
+  return {
+    inputValue: custom ?? defaultSaveDirectory,
+    saveDirectory: custom?.trim() || defaultSaveDirectory,
+  };
 }
