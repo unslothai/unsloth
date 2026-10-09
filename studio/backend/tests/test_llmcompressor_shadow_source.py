@@ -141,6 +141,43 @@ def test_the_download_goes_through_the_proxy_aware_opener(monkeypatch, shadow):
     assert opened
 
 
+def test_a_socks_proxy_is_used_through_httpx_never_bypassed(monkeypatch, shadow):
+    import httpx
+
+    from utils import utils as studio_utils
+
+    payload = _archive_bytes()
+    _serve(monkeypatch, shadow, payload)
+    monkeypatch.setattr(
+        studio_utils, "hf_proxy_for_endpoint", lambda url = None: "socks5://proxy:1080"
+    )
+    monkeypatch.setattr(
+        tv.urllib.request, "urlopen", lambda *a, **k: pytest.fail("bypassed the socks proxy")
+    )
+    streamed = []
+
+    class _Stream:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def raise_for_status(self):
+            pass
+
+        def iter_bytes(self, size):
+            yield payload
+
+    def fake_stream(method, url, **kwargs):
+        streamed.append(url)
+        return _Stream()
+
+    monkeypatch.setattr(httpx, "stream", fake_stream)
+    assert tv._download_llmcompressor_source(shadow).is_dir()
+    assert streamed
+
+
 @pytest.mark.allow_network
 def test_pinned_archive_matches_its_checksum(tmp_path):
     source = tv._download_llmcompressor_source(tmp_path)

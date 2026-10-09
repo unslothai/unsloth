@@ -3844,11 +3844,23 @@ def _download_llmcompressor_source(parent: Path) -> Path:
 
     url = f"https://github.com/vllm-project/llm-compressor/archive/{_LLMC_MAIN_SHA}.tar.gz"
     archive = parent / "llm-compressor.tar.gz"
-    request = urllib.request.Request(url, headers = {"User-Agent": "unsloth-studio"})
+    headers = {"User-Agent": "unsloth-studio"}
     opener = _hf_proxy_opener(url)  # honours ALL_PROXY, which plain urlopen ignores for https
-    with (opener.open if opener else urllib.request.urlopen)(request, timeout = 300) as response:
-        with open(archive, "wb") as out:
-            shutil.copyfileobj(response, out, 1 << 20)
+    from utils.utils import hf_proxy_for_endpoint, hf_proxy_usable_by_urllib
+
+    if opener is None and not hf_proxy_usable_by_urllib(hf_proxy_for_endpoint(url)):
+        # A socks proxy urllib cannot speak: go through it as the Hub client does, never direct.
+        import httpx
+        with httpx.stream("GET", url, headers = headers, follow_redirects = True, timeout = 300) as r:
+            r.raise_for_status()
+            with open(archive, "wb") as out:
+                for chunk in r.iter_bytes(1 << 20):
+                    out.write(chunk)
+    else:
+        request = urllib.request.Request(url, headers = headers)
+        with (opener.open if opener else urllib.request.urlopen)(request, timeout = 300) as response:
+            with open(archive, "wb") as out:
+                shutil.copyfileobj(response, out, 1 << 20)
     if _archive_content_digest(archive) != _LLMC_MAIN_ARCHIVE_DIGEST:
         raise RuntimeError(f"{url} failed its content checksum")
     safe_extract_tar(archive, parent)
