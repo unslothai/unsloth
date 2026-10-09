@@ -200,8 +200,7 @@ _BLOCK_TAGS = frozenset(
     }
 )
 _HEADING_TAGS = frozenset({"h1", "h2", "h3", "h4", "h5", "h6"})
-# rowspan/colspan repeat cells, so a few spanned cells could otherwise consume the 16K fetched-page result by
-# themselves. Leave half that result for source-backed content following the table.
+# half the 16K fetch result: repeated span cells must leave room for the source text after the table
 _MAX_SPAN_CHARS = 8_000
 # a long rowspan cell is usually page layout, so only its first row keeps the text
 _MAX_REPEATED_CELL_CHARS = 200
@@ -1371,8 +1370,7 @@ def _select_main_scope_render(
     renderer = _new_renderer(
         source_html, frozenset({tag}), strip_header = True, site_links = site_links
     )
-    # Generated span cells belong in the returned Markdown but must not help a tiny scope clear the content gate or
-    # outrank source-backed prose. Only span-bearing pages pay for this second, unexpanded scoring pass.
+    # generated span cells must not lift a scope past the content gate or rank; only span pages pay this second pass
     scoring = (
         _new_renderer(
             source_html,
