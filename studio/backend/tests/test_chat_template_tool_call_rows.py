@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from datasets import Dataset
 
-from utils.datasets import apply_chat_template_to_dataset
+from utils.datasets import apply_chat_template_to_dataset, format_and_template_dataset
 from utils.datasets.chat_templates import keep_renderable_chat_template
 
 _GEMMA4_TEMPLATE = (
@@ -221,3 +221,64 @@ def test_template_probe_counts_rows_after_cleaning():
 
     assert note is None
     assert tokenizer.chat_template == _LLAMA3_TEMPLATE
+
+
+def _sharegpt_tool_row(call):
+    return {
+        "conversations": [
+            {"from": "human", "value": "Weather in Paris?"},
+            {"from": "function_call", "value": call},
+            {"from": "observation", "value": '{"temp": 18}'},
+            {"from": "gpt", "value": "It is 18C in Paris."},
+        ]
+    }
+
+
+def _format_sharegpt(rows, template):
+    return format_and_template_dataset(
+        Dataset.from_list(rows),
+        model_name = "stub-model",
+        tokenizer = _JinjaTokenizer(template),
+        num_proc = 1,
+    )
+
+
+def test_sharegpt_function_call_and_observation_train_as_tool_turns():
+    call = json.dumps({"name": "get_weather", "arguments": {"city": "Paris"}})
+
+    result = _format_sharegpt([_sharegpt_tool_row(call)], _LLAMA3_TEMPLATE)
+
+    assert result["success"] is True, result["errors"]
+    text = result["dataset"][0]["text"]
+    assert (
+        '<|start_header_id|>assistant<|end_header_id|>\n\n'
+        '{"name": "get_weather", "parameters": {"city": "Paris"}}' in text
+    )
+    assert '<|start_header_id|>ipython<|end_header_id|>\n\n{"temp": 18}' in text
+    assert "function_call" not in text
+    assert "observation" not in text
+
+
+def test_sharegpt_function_call_list_trains_every_call():
+    call = json.dumps(
+        [
+            {"name": "get_weather", "arguments": {"city": "Paris"}},
+            {"name": "get_weather", "arguments": '{"city": "Rome"}'},
+        ]
+    )
+
+    result = _format_sharegpt([_sharegpt_tool_row(call)], _QWEN35_TEMPLATE)
+
+    assert result["success"] is True, result["errors"]
+    text = result["dataset"][0]["text"]
+    assert "<|im_start|>assistant\n<tool_call>\n<function=get_weather>" in text
+    assert "<parameter=city>\nParis\n</parameter>" in text
+    assert "<parameter=city>\nRome\n</parameter>" in text
+    assert '<|im_start|>tool\n{"temp": 18}' in text
+
+
+def test_sharegpt_function_call_that_is_not_json_is_kept_as_written():
+    result = _format_sharegpt([_sharegpt_tool_row("get_weather(Paris)")], _QWEN35_TEMPLATE)
+
+    assert result["success"] is True, result["errors"]
+    assert "<|im_start|>function_call\nget_weather(Paris)" in result["dataset"][0]["text"]

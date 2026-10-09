@@ -3,6 +3,7 @@
 
 """Chat template utilities for dataset processing: apply chat templates to datasets and generate dataset info summaries."""
 
+import json
 import warnings as python_warnings
 
 from .cells import cell_text
@@ -173,9 +174,41 @@ def _drop_none_values(value):
     return value
 
 
+def _sharegpt_tool_turns(conversation):
+    turns = []
+    for message in conversation:
+        role = message.get("role") if isinstance(message, dict) else None
+        if role == "observation":
+            message = {**message, "role": "tool"}
+        elif role == "function_call":
+            try:
+                calls = json.loads(message.get("content"))
+            except (TypeError, ValueError):
+                calls = None
+            calls = calls if isinstance(calls, list) else [calls]
+            if calls and all(isinstance(call, dict) and call.get("name") for call in calls):
+                message = {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": call["name"],
+                                "arguments": call.get("arguments", {}),
+                            },
+                        }
+                        for call in calls
+                    ],
+                }
+        turns.append(message)
+    return turns
+
+
 def _render_conversation(tokenizer, conversation):
     from core.inference.chat_template_helpers import _normalize_tool_call_arguments
 
+    conversation = _sharegpt_tool_turns(conversation)
     attempts = []
     for messages in (_drop_none_values(conversation), conversation):
         for attempt in (_normalize_tool_call_arguments(messages), messages):
