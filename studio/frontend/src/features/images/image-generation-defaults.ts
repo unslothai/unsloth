@@ -27,6 +27,7 @@ const MODEL_DEFAULTS: Array<{
   // Qwen-Image-2.1 and its aliases, before the generic key. Turbo first: its card's 8-step schedule.
   { match: "qwen-image-2.1-turbo", steps: 8, guidance: 1 },
   { match: "qwen-image-21-turbo", steps: 8, guidance: 1 },
+  { match: "qwenimage21-turbo", steps: 8, guidance: 1 },
   { match: "qwen-image-2.1", steps: 25, guidance: 1 },
   { match: "qwen-image-21", steps: 25, guidance: 1 },
   { match: "qwen_image_21", steps: 25, guidance: 1 },
@@ -55,8 +56,13 @@ export function defaultsFor(repoId: string): {
   steps: number;
   guidance: number;
 } {
+  // The backend's name_key_in: raw, then with separator runs folded, so both tables resolve one spelling alike.
+  const fold = (text: string) => text.replace(/[-_.\s]+/g, "-");
   const id = repoId.toLowerCase();
-  const matched = MODEL_DEFAULTS.find((entry) => id.includes(entry.match));
+  const folded = fold(id);
+  const matched = MODEL_DEFAULTS.find(
+    (entry) => id.includes(entry.match) || folded.includes(fold(entry.match)),
+  );
   return matched
     ? { steps: matched.steps, guidance: matched.guidance }
     : DEFAULT_GEN;

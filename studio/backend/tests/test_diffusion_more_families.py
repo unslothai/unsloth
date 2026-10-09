@@ -701,9 +701,14 @@ def test_qwen_image_21_turbo_loads_as_its_own_checkpoint_of_the_family():
         turbo,
         "qwen_image_2.1_turbo_Q4_K_M.gguf",
         "/models/qwen-image-21-turbo",
+        "/models/qwen_image_21_turbo",
+        "/models/qwen-image-21_turbo",
+        "/models/qwenimage21-turbo",
+        "/models/qwenimage21_turbo",
     ):
         assert default_generation_params(identifier) == (8, 1.0), identifier
-    assert default_generation_params("Qwen/Qwen-Image-2.1") == (25, 1.0)
+    for identifier in ("Qwen/Qwen-Image-2.1", "/models/qwen_image_21", "/models/qwenimage21"):
+        assert default_generation_params(identifier) == (25, 1.0), identifier
     # The hosted denoisers are baked from 2.1's weights: planning must not fetch one for Turbo.
     for scheme in ("int8", "fp8", "nvfp4"):
         assert family_prequant_repo(fam, scheme, base_repo = turbo) is None

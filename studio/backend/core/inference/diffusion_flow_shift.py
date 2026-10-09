@@ -132,7 +132,8 @@ def install_sample_sigmas(
 
 def sample_sigmas_for_steps(grid: tuple[float, ...], steps: int) -> list[float]:
     """The grid at ``steps`` steps: itself at its own length, else resampled along it (linear in step index), so another
-    step count still follows the checkpoint's curve rather than a linear 1 -> 0 ramp. Measured on Qwen-Image-2.1-Turbo
+    step count still follows the checkpoint's curve rather than a linear 1 -> 0 ramp. Studio's own, experimental: the
+    Turbo card evaluates only the saved 8-step grid. Measured on Qwen-Image-2.1-Turbo
     at 4 / 6 / 12 / 16 steps: the ramp ghosts at 4-6 and turns grainy at 12-16, the resampled grid stays clean."""
     steps = max(1, int(steps))
     if steps == len(grid):
