@@ -819,6 +819,12 @@ export function ThreadDocumentsBar({
     },
     [attach],
   );
+  // Still claim the drop, or it falls through and attaches to the message instead.
+  const refuseBusyDrop = useCallback(() => {
+    toast.info("Chat with files is busy", {
+      description: "Drop the files again once the current upload finishes.",
+    });
+  }, []);
   const pickFiles = useCallback(() => {
     openFilePicker(CHAT_FILES_ACCEPT, attachIndexable);
   }, [attachIndexable]);
@@ -1006,7 +1012,7 @@ export function ThreadDocumentsBar({
         icon={FileDatabaseIcon}
         title="Chat with files"
         titleSuffix="(RAG)"
-        onDropFiles={busy ? undefined : attachIndexable}
+        onDropFiles={busy ? refuseBusyDrop : attachIndexable}
         onClose={() => setRagEnabled(false)}
         closeLabel="Stop chatting with files"
         note={

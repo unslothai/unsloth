@@ -2600,6 +2600,8 @@ export const ProjectComposer: FC<{
         placeholder={placeholder}
         disableQueue
       />
+      {/* Its file cards open previews; the thread's mount is not on this page. */}
+      <DocumentPreviewMount />
     </GeneratedImageOverlayProvider>
   );
 };
