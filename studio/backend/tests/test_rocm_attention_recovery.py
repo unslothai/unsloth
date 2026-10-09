@@ -218,3 +218,13 @@ def test_probe_rejects_numerically_wrong_fused_result(monkeypatch):
 
     monkeypatch.setattr(torch.nn.functional, "scaled_dot_product_attention", sdpa)
     assert probe.probe("cpu", "float32", "FLASH_ATTENTION") == "failed"
+
+
+def test_a_successful_retry_after_an_incomplete_probe_still_disables_failed_kernels(monkeypatch):
+    answers = iter([(), ("math",)])
+    monkeypatch.setattr(att, "_is_cuda_rocm", lambda t: True)
+    monkeypatch.setattr(att, "_probe_sdpa_kernels", lambda *a: next(answers, ("math",)))
+    target = SimpleNamespace(device = "cuda:0", dtype = torch.bfloat16)
+    att.apply_attention_backend(SimpleNamespace(), None, target = target)
+    assert not torch.backends.cuda.flash_sdp_enabled()
+    assert not torch.backends.cuda.mem_efficient_sdp_enabled()

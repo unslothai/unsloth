@@ -1891,7 +1891,14 @@ def _cudnn_serves_pipe(
 
 
 def _configure_native_attention(pipe: Any, target: Any, logger: Any) -> None:
-    if _is_cuda_rocm(target) and sdpa_math_only(target):
+    rocm = _is_cuda_rocm(target)
+    if rocm:
+        # An earlier incomplete probe left the flags alone; apply a retry's answer before dispatching.
+        try:
+            guard_rocm_fused_sdpa(target, logger)
+        except Exception as exc:
+            _warn(logger, "ROCm fused SDPA check", exc)
+    if rocm and sdpa_math_only(target):
         try:
             from .diffusion_qwenimage21_math import install
             if install(pipe, target, logger):
