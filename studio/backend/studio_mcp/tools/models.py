@@ -16,7 +16,8 @@ from studio_mcp.outputs import LoadResult, ModelEntry, ModelList, UnloadResult
 from studio_mcp.tools import DESTRUCTIVE, READ_ONLY, WRITES, integer, route_json, opt_text
 
 ModelKind = Literal["llm", "image", "video", "stt", "tts", "audio"]
-LoadKind = Literal["llm", "image", "video", "stt"]
+# "tts" and "audio" are what list_models reports for audio models; they load in the llm slot.
+LoadKind = Literal["llm", "image", "video", "stt", "tts", "audio"]
 
 KIND_BY_TASK = {
     "text-to-image": "image",
@@ -124,7 +125,7 @@ async def load_model(
     hf_token: Optional[str] = None,
     ctx: Optional[Context] = None,
 ) -> LoadResult:
-    """Load a model into Unsloth Studio, downloading it first if needed, and wait until it is ready; progress is reported while it loads. ``kind`` "llm" covers chat, vision, embedding and text-to-speech models; "image" and "video" load the generation models and "stt" a speech-to-text model (downloaded first when needed). ``model`` is an id from list_models or a Hugging Face repo id; ``variant`` picks a GGUF quantization such as Q4_K_M. ``max_seq_length`` 0 or unset lets Unsloth Studio choose the context (llm only). ``hf_token`` is for gated repos. Loading may unload other models to make room; they are listed in ``evicted``."""
+    """Load a model into Unsloth Studio, downloading it first if needed, and wait until it is ready; progress is reported while it loads. ``kind`` "llm" covers chat, vision, embedding and audio models, and the "tts" and "audio" kinds list_models reports load the same way; "image" and "video" load the generation models and "stt" a speech-to-text model (downloaded first when needed). ``model`` is an id from list_models or a Hugging Face repo id; ``variant`` picks a GGUF quantization such as Q4_K_M. ``max_seq_length`` 0 or unset lets Unsloth Studio choose the context, and ``load_in_4bit`` picks 4-bit weights (both llm only). ``hf_token`` is for gated repos. Loading may unload other models to make room, for example a chat model to fit an image model; they are listed in ``evicted``."""
     caller = current_caller()
     if kind == "stt":
         return await loading.load_stt(caller, ctx, model = model, variant = variant, hf_token = hf_token)
@@ -144,7 +145,7 @@ async def load_model(
 
 
 async def unload_model(kind: LoadKind = "llm", model: Optional[str] = None) -> UnloadResult:
-    """Unload a model to free memory. Without ``model`` the active one of that kind is unloaded; image and video have one slot each, so ``model`` is ignored there. ``unloaded`` is false when nothing matching was loaded."""
+    """Unload a model to free memory. Without ``model`` the active one of that kind is unloaded; image and video have one slot each, so ``model`` is ignored there. The embedding model is managed by Unsloth Studio and is not unloaded here. ``unloaded`` is false when nothing matching was loaded."""
     if kind == "stt":
         return await loading.unload_stt(current_caller(), model)
     if kind in loading.MEDIA_ROUTES:

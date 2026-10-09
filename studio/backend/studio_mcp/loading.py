@@ -249,7 +249,8 @@ async def load_media(
             idle += 1
             if idle >= _IDLE_POLLS:
                 raise ToolError(
-                    f"Unsloth Studio stopped reporting the {kind} load without loading {model}"
+                    f"Unsloth Studio stopped reporting the {kind} load without loading {model}. "
+                    "Another model load or a training run may be using the GPU; check studio_status and try again."
                 )
         else:
             idle = 0

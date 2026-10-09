@@ -79,6 +79,14 @@ def test_load_sends_the_body_and_reports_the_result(monkeypatch):
     ]
 
 
+@pytest.mark.parametrize("kind", ["tts", "audio"])
+def test_the_kinds_list_models_reports_for_audio_load_as_llm(monkeypatch, kind):
+    studio = _studio()
+    result = _call(monkeypatch, studio, "load_model", {"model": LLM, "kind": kind})
+    assert result["isError"] is False
+    assert _bodies(studio, "/api/inference/load")[0]["model_path"] == LLM
+
+
 def test_the_hub_token_goes_in_the_body_not_the_header(monkeypatch):
     studio = _studio()
     _call(
