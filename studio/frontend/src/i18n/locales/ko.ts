@@ -2846,6 +2846,7 @@ export const ko = {
         agent: "에이전트",
         exportKeyHint: "에이전트를 시작하기 전에 {name}에 이 페이지의 액세스 토큰을 설정하세요.",
         configFileHint: "이 내용을 {path}에 추가하세요.",
+        keywords: "mcp model context protocol agents claude codex tools 에이전트 도구 모델 컨텍스트 프로토콜",
       },
       usageNoModel:
         "모델을 로드하거나 다운로드하면 실행 가능한 예제가 표시됩니다. 이 서버에는 아직 지정할 모델이 없습니다.",

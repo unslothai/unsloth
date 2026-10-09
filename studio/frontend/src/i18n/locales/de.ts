@@ -2900,6 +2900,7 @@ export const de = {
         agent: "Agent",
         exportKeyHint: "Setze {name} auf ein Zugriffstoken von dieser Seite, bevor du den Agenten startest.",
         configFileHint: "Füge das zu {path} hinzu.",
+        keywords: "mcp model context protocol agents claude codex tools Agenten Agent Werkzeuge Tools Modellkontextprotokoll",
       },
       usageNoModel:
         "Laden Sie ein Modell oder laden Sie eines herunter, um ausführbare Beispiele zu sehen. Dieser Server kennt noch kein Modell, das in den Beispielen verwendet werden könnte.",

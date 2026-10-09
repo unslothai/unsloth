@@ -2826,6 +2826,7 @@ export const ja = {
         agent: "エージェント",
         exportKeyHint: "エージェントを起動する前に、{name} にこのページのアクセストークンを設定してください。",
         configFileHint: "これを {path} に追加してください。",
+        keywords: "mcp model context protocol agents claude codex tools エージェント ツール モデルコンテキストプロトコル",
       },
       usageNoModel:
         "モデルを読み込むかダウンロードすると、実行できる例が表示されます。このサーバーにはまだ指定できるモデルがありません。",

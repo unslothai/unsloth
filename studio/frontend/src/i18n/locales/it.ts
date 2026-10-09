@@ -2859,6 +2859,7 @@ export const it = {
         agent: "Agente",
         exportKeyHint: "Imposta {name} su un token di accesso di questa pagina prima di avviare l’agente.",
         configFileHint: "Aggiungi questo a {path}.",
+        keywords: "mcp model context protocol agents claude codex tools agenti agente strumenti protocollo di contesto del modello",
       },
     },
     about: {

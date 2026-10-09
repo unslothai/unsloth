@@ -2856,6 +2856,7 @@ export const ar = {
         agent: "الوكيل",
         exportKeyHint: "اضبط {name} على توكن وصول من هذه الصفحة قبل تشغيل الوكيل.",
         configFileHint: "أضف هذا إلى {path}.",
+        keywords: "mcp model context protocol agents claude codex tools وكلاء وكيل أدوات بروتوكول سياق النموذج",
       },
       usageNoModel:
         "حمّل نموذجًا أو نزّله لعرض أمثلة قابلة للتشغيل. لا يوجد في هذا الخادم أي نموذج يمكن استخدامه في الأمثلة بعد.",

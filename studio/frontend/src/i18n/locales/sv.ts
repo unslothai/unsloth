@@ -3070,6 +3070,7 @@ export const sv = {
         agent: "Agent",
         exportKeyHint: "Sätt {name} till en åtkomsttoken från den här sidan innan du startar agenten.",
         configFileHint: "Lägg till det här i {path}.",
+        keywords: "mcp model context protocol agents claude codex tools agenter agent verktyg modellkontextprotokoll",
       },
     },
     about: {

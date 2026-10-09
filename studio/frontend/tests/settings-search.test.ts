@@ -10,6 +10,7 @@ import {
   renderedSearchEntries,
 } from "../src/features/settings/settings-search.ts";
 import { en } from "../src/i18n/locales/en.ts";
+import { readSrc } from "./helpers/kit.ts";
 
 const UPDATE_ENTRY = "settings.about.updates";
 const INTERFACE_SCALE_ENTRY = "settings.appearance.custom.interfaceScale.label";
@@ -121,4 +122,46 @@ test("the endpoint rows are searchable only while Hugging Face serves, as they r
   const huggingFace = renderedSearchEntries(index, "general", "huggingface");
   assert.deepEqual(endpoint.map((key) => [huggingFace.includes(key), modelScope.includes(key)]), [[true, false], [true, false]]);
   assert.ok(modelScope.includes("settings.general.hub.source"));
+});
+
+const MCP_ENTRY = "settings.apiKeys.mcp.title";
+
+test("agent access (MCP) is found by the protocol and the agents' names", () => {
+  const index = createSettingsSearchIndex({
+    desktop: false,
+    closeToTray: false,
+  });
+  assert.ok(index["api-keys"].includes(MCP_ENTRY));
+  const keywordsKey = SETTINGS_SEARCH_KEYWORDS[MCP_ENTRY];
+  assert.equal(keywordsKey, "settings.apiKeys.mcp.keywords");
+  // The dialog matches a lowercase query against the label, then the keywords.
+  const haystack =
+    `${en.settings.apiKeys.mcp.title} ${en.settings.apiKeys.mcp.keywords}`.toLowerCase();
+  for (const term of ["mcp", "claude", "codex", "model context protocol"]) {
+    assert.ok(haystack.includes(term), `search matches "${term}"`);
+  }
+});
+
+test("agent access (MCP) is offered only to the owner, who is the only one to see it", () => {
+  const index = createSettingsSearchIndex({
+    desktop: false,
+    closeToTray: false,
+  });
+  assert.ok(
+    renderedSearchEntries(index, "api-keys", "huggingface", true).includes(
+      MCP_ENTRY,
+    ),
+  );
+  assert.ok(
+    !renderedSearchEntries(index, "api-keys", "huggingface", false).includes(
+      MCP_ENTRY,
+    ),
+  );
+});
+
+test("agent access (MCP) has a rendered anchor for a hit to scroll to", () => {
+  assert.match(
+    readSrc("features/settings/components/mcp-access-section.tsx"),
+    /data-settings-label=\{t\("settings.apiKeys.mcp.title"\)\}/,
+  );
 });

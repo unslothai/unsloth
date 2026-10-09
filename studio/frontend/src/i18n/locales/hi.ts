@@ -2862,6 +2862,7 @@ export const hi = {
         agent: "एजेंट",
         exportKeyHint: "एजेंट शुरू करने से पहले {name} को इस पेज के किसी एक्सेस टोकन पर सेट करें।",
         configFileHint: "इसे {path} में जोड़ें।",
+        keywords: "mcp model context protocol agents claude codex tools एजेंट टूल्स मॉडल कॉन्टेक्स्ट प्रोटोकॉल",
       },
       usageNoModel:
         "चलाने योग्य उदाहरण देखने के लिए कोई मॉडल लोड या डाउनलोड करें। इस सर्वर के पास अभी बताने को कोई मॉडल नहीं है।",

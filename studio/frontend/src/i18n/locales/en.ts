@@ -2928,6 +2928,7 @@ export const en = {
         agent: "Agent",
         exportKeyHint: "Set {name} to an access token from this page before you start the agent.",
         configFileHint: "Add this to {path}.",
+        keywords: "mcp model context protocol agents claude codex tools",
       },
     },
     about: {

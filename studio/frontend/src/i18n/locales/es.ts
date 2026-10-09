@@ -2893,6 +2893,7 @@ export const es = {
         agent: "Agente",
         exportKeyHint: "Define {name} con un token de acceso de esta página antes de iniciar el agente.",
         configFileHint: "Añade esto a {path}.",
+        keywords: "mcp model context protocol agents claude codex tools agentes agente herramientas protocolo de contexto de modelo",
       },
       usageNoModel:
         "Carga o descarga un modelo para ver ejemplos ejecutables. Este servidor todavía no tiene ningún modelo que indicar.",

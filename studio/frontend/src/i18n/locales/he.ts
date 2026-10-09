@@ -2969,6 +2969,7 @@ export const he = {
         agent: "סוכן",
         exportKeyHint: "הגדר את {name} לטוקן גישה מהדף הזה לפני שתפעיל את הסוכן.",
         configFileHint: "הוסף את זה ל-{path}.",
+        keywords: "mcp model context protocol agents claude codex tools סוכנים סוכן כלים פרוטוקול הקשר מודל",
       },
     },
     about: {
