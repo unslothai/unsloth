@@ -38,7 +38,7 @@ async def generate_video(
     first_frame: Optional[ImageInput] = None,
     model: Optional[str] = None,
 ) -> VideoJobRef:
-    """Start a video with the video model loaded in Unsloth Studio (load_model(kind="video") first) and return its job at once; poll get_job(kind="video", id=...) until it is completed, which returns a thumbnail and the video's URL. ``seconds`` and ``size`` ("WIDTHxHEIGHT") are strings, as in the OpenAI API. ``first_frame`` starts the video from an image."""
+    """Start a video with the video model loaded in Unsloth Studio (load_model(kind="video") first) and return its job at once; poll get_job(kind="video", id=...) until it is completed, which returns a thumbnail and the video's URL. ``seconds`` and ``size`` ("WIDTHxHEIGHT") are strings, as in the OpenAI API; leave them out to use the model's defaults. Each video model takes only certain sizes, and an unsupported one is refused with the list it accepts. ``first_frame`` starts the video from an image."""
     caller = current_caller()
     body: dict[str, Any] = {"prompt": prompt}
     for key, value in (("seconds", seconds), ("size", size), ("model", model)):

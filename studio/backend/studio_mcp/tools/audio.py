@@ -67,7 +67,7 @@ async def generate_audio(
     max_tokens: Optional[int] = None,
     options: Optional[dict[str, Any]] = None,
 ) -> ToolResult:
-    """Run an Audio page workflow with the audio model loaded in Unsloth Studio; clips are saved to Audio history and returned inline when small, else as links. clone: speak ``text`` in the voice of ``reference`` (a clip, or a saved voice as voice_id; ``reference_text`` is its transcript). speak: ``text`` in the loaded model's voice, or a saved voice via ``reference``. edit: change the words or delivery of ``source`` per ``edit``. convert: make ``source`` sound like ``target``. music: ``mode`` song or sfx from ``text`` (the style) and ``lyrics``; ``variations`` up to 4 share a group_id. separate: split ``source`` into stems. Audio inputs are an Unsloth Studio id, inline base64 with a filename, or a path on the Unsloth Studio computer."""
+    """Run an Audio page workflow with the audio model loaded in Unsloth Studio; clips are saved to Audio history and returned inline when small, else as links. clone: speak ``text`` in the voice of ``reference`` (a clip, or a saved voice as voice_id; ``reference_text`` is its transcript). speak: ``text`` in the loaded model's default voice, or a saved voice via ``reference``. edit: change the words or delivery of ``source`` per ``edit``. convert: make ``source`` sound like ``target``. music: ``mode`` song or sfx from ``text`` (the style) and ``lyrics``; ``variations`` up to 4 share a group_id. separate: split ``source`` into stems. Audio inputs are an Unsloth Studio id, inline base64 with a filename, or a path on the Unsloth Studio computer."""
     caller = current_caller()
     inputs: dict[str, Any] = {}
     for key, audio in (

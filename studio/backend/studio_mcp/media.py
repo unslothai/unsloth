@@ -75,5 +75,8 @@ def inline_or_link(
 def media_result(contents: list[Any], output: ToolOutput) -> ToolResult:
     """Media plus the typed output, which also goes first as JSON text for clients that ignore structuredContent."""
     structured = output.model_dump(mode = "json")
-    text = TextContent(type = "text", text = json.dumps(structured, ensure_ascii = False))
+    # Compact, like the JSON FastMCP writes for the other tools.
+    text = TextContent(
+        type = "text", text = json.dumps(structured, ensure_ascii = False, separators = (",", ":"))
+    )
     return ToolResult(content = [text, *contents], structured_content = structured)
