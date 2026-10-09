@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import json
 from typing import Any, Literal, Optional
 from urllib.parse import quote
 
@@ -220,6 +221,7 @@ async def _stt_model(caller: Caller, model: Optional[str]) -> tuple[str, str]:
 
 async def _transcribe_source(
     caller: Caller,
+    ctx: Optional[Context],
     source: dict[str, str],
     *,
     language: Optional[str],
@@ -236,15 +238,26 @@ async def _transcribe_source(
     }
     if language:
         body["language"] = language
-    response = await forward(
-        caller, "POST", "/api/inference/audio/transcribe/source", json_body = body
-    )
-    if response.status_code >= 400:
+
+    async def send():
+        response = await forward(
+            caller, "POST", "/api/inference/audio/transcribe/source", json_body = body
+        )
+        if response.status_code >= 400:
+            return response, None
+        try:
+            return response, ndjson_last(response.content)
+        except ValueError:
+            raise ToolError("Studio returned no transcript") from None
+
+    response, payload = await send()
+    # A missing model is refused as a 409 before the stream starts, or as an error line within it.
+    refusal = response.text if payload is None else json.dumps(payload)
+    if NOT_DOWNLOADED in refusal:
+        await _download_then_retry(caller, ctx, model)
+        response, payload = await send()
+    if payload is None:
         raise_for_route(response)
-    try:
-        payload = ndjson_last(response.content)
-    except ValueError:
-        raise ToolError("Studio returned no transcript") from None
     raise_for_route(response, payload = payload)
     if not isinstance(payload, dict) or payload.get("type") != "complete":
         raise ToolError("The transcription did not finish")
@@ -277,7 +290,7 @@ async def transcribe(
             else await audio_ref(caller, audio)
         )
         return await _transcribe_source(
-            caller, source, language = language, timestamps = timestamps, model = model
+            caller, ctx, source, language = language, timestamps = timestamps, model = model
         )
 
     async def send():

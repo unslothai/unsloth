@@ -712,6 +712,58 @@ def test_audio_over_25_mib_is_uploaded_then_transcribed(monkeypatch):
     assert body["source"] == {"input_id": "in-1"}
 
 
+MISSING = "STT model 'openai/whisper-small' is not downloaded. Download it in Settings, then Voice, before loading it."
+
+
+@pytest.mark.parametrize("as_stream", [True, False])
+def test_a_missing_model_is_downloaded_before_a_stored_clip_is_retried(monkeypatch, as_stream):
+    from studio_mcp import loading
+
+    monkeypatch.setattr(loading, "POLL_INTERVAL_S", 0.01)
+    refusal = (
+        _ndjson({"type": "error", "message": MISSING})
+        if as_stream
+        else JSONResponse({"detail": MISSING}, status_code = 409)
+    )
+    answers = [refusal, _ndjson(COMPLETE)]
+    missing = {
+        "transformers": {
+            "models": ["openai/whisper-small"],
+            "downloaded_models": [],
+            "default_model": "openai/whisper-small",
+            "download": {"downloading": False},
+        }
+    }
+    done = {
+        "transformers": {
+            "models": ["openai/whisper-small"],
+            "downloaded_models": ["openai/whisper-small"],
+            "default_model": "openai/whisper-small",
+            "download": {"downloading": False, "completed_download_ids": ["d1"]},
+        }
+    }
+    statuses = [missing, missing, done]
+    studio = fake_studio(
+        {
+            ("POST", "/api/inference/audio/transcribe/source"): lambda request, body: answers.pop(
+                0
+            ),
+            ("GET", "/api/inference/audio/stt/status"): lambda request, body: statuses.pop(0)
+            if len(statuses) > 1
+            else statuses[0],
+            ("POST", "/api/inference/audio/stt/download"): lambda request, body: {
+                "downloading": True,
+                "download_id": "d1",
+            },
+        }
+    )
+    result = _transcribe(monkeypatch, studio, {"audio": {"clip_id": "clip-7"}})
+    assert result["structuredContent"]["text"] == "A long meeting."
+    paths = [c[1] for c in studio.state.calls]
+    assert paths.count("/api/inference/audio/transcribe/source") == 2
+    assert "/api/inference/audio/stt/download" in paths
+
+
 def test_an_ndjson_error_line_is_a_tool_error(monkeypatch):
     studio = _source_studio(
         events = [
