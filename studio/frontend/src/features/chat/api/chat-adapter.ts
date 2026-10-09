@@ -6171,7 +6171,6 @@ export function createOpenAIStreamAdapter(
           () => `${backendToolCallId}:${crypto.randomUUID()}`,
         );
       let legacyGeminiTextSignature: string | undefined;
-      let pendingGeminiThoughtText = "";
       const geminiThoughtParts: PositionedGeminiThoughtReplayPart[] =
         geminiContinuationReplayTurns
           ? []
@@ -7763,6 +7762,7 @@ export function createOpenAIStreamAdapter(
               // persists a turn that cannot replay. Pace previews, never state.
               let replayStateChanged = false;
               let geminiThoughtSignature: string | undefined;
+              let capturedGeminiThoughtPart = false;
               if (deltaExtraContent && typeof deltaExtraContent === "object") {
                 const extraRecord = deltaExtraContent as Record<
                   string,
@@ -7772,7 +7772,33 @@ export function createOpenAIStreamAdapter(
                 if (eGoogle && typeof eGoogle === "object") {
                   const googleRecord = eGoogle as Record<string, unknown>;
                   const sig = googleRecord.thought_signature;
+                  const thoughtPart = googleRecord.thought_part;
                   const answerPart = googleRecord.answer_part;
+                  if (
+                    thoughtPart &&
+                    typeof thoughtPart === "object" &&
+                    !Array.isArray(thoughtPart)
+                  ) {
+                    const thoughtRecord = thoughtPart as Record<string, unknown>;
+                    const thoughtText = thoughtRecord.text;
+                    const thoughtSignature = thoughtRecord.thought_signature;
+                    if (
+                      typeof thoughtText === "string" &&
+                      (thoughtSignature === undefined ||
+                        (typeof thoughtSignature === "string" && thoughtSignature))
+                    ) {
+                      appendGeminiThoughtReplayPart(
+                        geminiThoughtParts,
+                        thoughtText,
+                        typeof thoughtSignature === "string"
+                          ? thoughtSignature
+                          : undefined,
+                        toolCallParts.length,
+                      );
+                      capturedGeminiThoughtPart = true;
+                      replayStateChanged = true;
+                    }
+                  }
                   let capturedAnswerPart = false;
                   if (
                     answerPart &&
@@ -7865,15 +7891,17 @@ export function createOpenAIStreamAdapter(
               const reasoning =
                 (typeof rawReasoning === "string" ? rawReasoning : "") +
                 reasoningFromDetails;
-              pendingGeminiThoughtText += reasoning;
-              if (geminiThoughtSignature) {
+              if (
+                !capturedGeminiThoughtPart &&
+                externalProvider?.providerType === "gemini" &&
+                (reasoning || geminiThoughtSignature)
+              ) {
                 appendGeminiThoughtReplayPart(
                   geminiThoughtParts,
-                  pendingGeminiThoughtText,
+                  reasoning,
                   geminiThoughtSignature,
                   toolCallParts.length,
                 );
-                pendingGeminiThoughtText = "";
                 replayStateChanged = true;
               }
               // OpenAI delta.tool_calls streams fragments by index; accumulate into one part. extra_content

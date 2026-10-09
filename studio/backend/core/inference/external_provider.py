@@ -4243,35 +4243,37 @@ class ExternalProviderClient:
                                                     }
                                                 }
                                             )
-            # Gemini requires signed parts to be replayed without moving their signatures between thought and answer
-            # text. The frontend keeps signed thoughts separate because OpenAI reasoning_content is not otherwise
-            # replayed to native Gemini.
+            # Gemini history must keep every native thought/answer boundary intact so a signature is never moved
+            # onto adjacent unsigned text. The frontend carries those exact parts because OpenAI reasoning_content
+            # is not otherwise replayed to native Gemini.
             if role == "assistant":
                 _msg_extra = msg.get("extra_content") if isinstance(msg, dict) else None
                 if isinstance(_msg_extra, dict):
                     _msg_g = _msg_extra.get("google") or {}
                     if isinstance(_msg_g, dict):
                         _replayed_thoughts: list[dict[str, Any]] = []
-                        _signed_thoughts = _msg_g.get("thought_parts")
-                        if isinstance(_signed_thoughts, list):
-                            for _signed_thought in _signed_thoughts:
-                                if not isinstance(_signed_thought, dict):
+                        _thought_parts = _msg_g.get("thought_parts")
+                        if isinstance(_thought_parts, list):
+                            for _thought_part in _thought_parts:
+                                if not isinstance(_thought_part, dict):
                                     continue
-                                _thought_text = _signed_thought.get("text")
-                                _thought_sig = _signed_thought.get("thought_signature")
-                                if (
-                                    not isinstance(_thought_text, str)
-                                    or not isinstance(_thought_sig, str)
-                                    or not _thought_sig
+                                _thought_text = _thought_part.get("text")
+                                _thought_sig = _thought_part.get(
+                                    "thought_signature"
+                                ) or _thought_part.get("thoughtSignature")
+                                if not isinstance(_thought_text, str):
+                                    continue
+                                if _thought_sig is not None and (
+                                    not isinstance(_thought_sig, str) or not _thought_sig
                                 ):
                                     continue
-                                _replayed_thoughts.append(
-                                    {
-                                        "text": _thought_text,
-                                        "thought": True,
-                                        "thoughtSignature": _thought_sig,
-                                    }
-                                )
+                                _replayed_thought: dict[str, Any] = {
+                                    "text": _thought_text,
+                                    "thought": True,
+                                }
+                                if isinstance(_thought_sig, str):
+                                    _replayed_thought["thoughtSignature"] = _thought_sig
+                                _replayed_thoughts.append(_replayed_thought)
                         _signed_answers = _msg_g.get("answer_parts")
                         _replayed_answers: list[dict[str, Any]] = []
                         if isinstance(_signed_answers, list):
@@ -4956,9 +4958,9 @@ class ExternalProviderClient:
         def _gemini_part_extra(part: dict[str, Any]) -> Optional[dict[str, Any]]:
             """Return replay metadata for one Gemini native stream part.
 
-            Answer parts keep their exact boundaries, including unsigned text beside signed text and
-            signature-only empty parts. Gemini validates a signature against the part it originally signed,
-            so collapsing these to one scalar signature corrupts follow-up history.
+            Thought and answer parts keep their exact boundaries, including unsigned text beside signed
+            text and signature-only empty parts. Gemini validates a signature against the part it originally
+            signed, so collapsing these to one scalar signature corrupts follow-up history.
             """
             sig = part.get("thoughtSignature") or part.get("thought_signature")
             valid_sig = sig if isinstance(sig, str) and sig else None
@@ -4966,6 +4968,10 @@ class ExternalProviderClient:
             if valid_sig is not None:
                 google["thought_signature"] = valid_sig
             if part.get("thought") is True:
+                thought_part: dict[str, Any] = {"text": part.get("text", "")}
+                if valid_sig is not None:
+                    thought_part["thought_signature"] = valid_sig
+                google["thought_part"] = thought_part
                 if valid_sig is not None:
                     google["thought"] = True
             elif (

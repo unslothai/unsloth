@@ -3,7 +3,7 @@
 
 export type GeminiThoughtReplayPart = {
   text: string;
-  thoughtSignature: string;
+  thoughtSignature?: string;
 };
 
 export type PositionedGeminiThoughtReplayPart = GeminiThoughtReplayPart & {
@@ -47,18 +47,14 @@ type ReplayableMessagePart = {
 export function appendGeminiThoughtReplayPart(
   parts: PositionedGeminiThoughtReplayPart[],
   text: string,
-  thoughtSignature: string,
+  thoughtSignature: string | undefined,
   afterToolCalls: number,
 ): void {
-  const latestPart = parts.at(-1);
-  if (
-    latestPart?.thoughtSignature === thoughtSignature &&
-    latestPart.afterToolCalls === afterToolCalls
-  ) {
-    latestPart.text += text;
-    return;
-  }
-  parts.push({ text, thoughtSignature, afterToolCalls });
+  parts.push({
+    text,
+    ...(thoughtSignature ? { thoughtSignature } : {}),
+    afterToolCalls,
+  });
 }
 
 export function pinGeminiTextThoughtSignature<T extends { type: string }>(
@@ -129,7 +125,7 @@ export function pinGeminiThoughtReplayParts<T extends { type: string }>(
   const byToolRound = new Map<number, GeminiThoughtReplayPart[]>();
   for (const { afterToolCalls, text, thoughtSignature } of thoughtParts) {
     const round = byToolRound.get(afterToolCalls) ?? [];
-    round.push({ text, thoughtSignature });
+    round.push({ text, ...(thoughtSignature ? { thoughtSignature } : {}) });
     byToolRound.set(afterToolCalls, round);
   }
   for (const [afterToolCalls, replayMetadata] of byToolRound) {
@@ -202,16 +198,18 @@ export function parseGeminiThoughtReplayParts(
       return [];
     }
     const record = entry as Record<string, unknown>;
-    return typeof record.text === "string" &&
-      typeof record.thoughtSignature === "string" &&
-      record.thoughtSignature
-      ? [
-          {
-            text: record.text,
-            thoughtSignature: record.thoughtSignature,
-          },
-        ]
-      : [];
+    if (typeof record.text !== "string") return [];
+    const thoughtSignature = record.thoughtSignature;
+    if (
+      thoughtSignature !== undefined &&
+      (typeof thoughtSignature !== "string" || !thoughtSignature)
+    ) {
+      return [];
+    }
+    return [{
+      text: record.text,
+      ...(typeof thoughtSignature === "string" ? { thoughtSignature } : {}),
+    }];
   });
 }
 
@@ -394,7 +392,7 @@ export function withGeminiThoughtReplayParts(
       ...google,
       thought_parts: thoughtParts.map((part) => ({
         text: part.text,
-        thought_signature: part.thoughtSignature,
+        ...(part.thoughtSignature ? { thought_signature: part.thoughtSignature } : {}),
       })),
     },
   };

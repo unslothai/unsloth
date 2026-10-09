@@ -509,6 +509,10 @@ def test_thinking_off_does_not_ask_for_thoughts(monkeypatch, model, kwargs):
 def test_thought_parts_stream_as_reasoning_not_answer(monkeypatch):
     sse = [
         _event(
+            [{"text": "Unsigned preface. ", "thought": True}],
+            finish_reason = None,
+        ),
+        _event(
             [
                 {
                     "text": "**Reading the riddle**",
@@ -527,14 +531,17 @@ def test_thought_parts_stream_as_reasoning_not_answer(monkeypatch):
     deltas = [c["choices"][0]["delta"] for c in chunks if c.get("choices")]
     reasoning = "".join(d.get("reasoning_content", "") for d in deltas)
     answer = "".join(d.get("content") or "" for d in deltas)
-    assert reasoning == "**Reading the riddle**", deltas
+    assert reasoning == "Unsigned preface. **Reading the riddle**", deltas
     assert answer == "The man is your son.", deltas
-    thought_extra = next(
-        delta["extra_content"]
+    thought_extras = [
+        delta["extra_content"]["google"]["thought_part"]
         for delta in deltas
-        if delta.get("reasoning_content") == "**Reading the riddle**"
-    )
-    assert thought_extra == {"google": {"thought": True, "thought_signature": "SIG-THOUGHT"}}
+        if delta.get("reasoning_content")
+    ]
+    assert thought_extras == [
+        {"text": "Unsigned preface. "},
+        {"text": "**Reading the riddle**", "thought_signature": "SIG-THOUGHT"},
+    ]
 
 
 def test_nano_banana_alias_routes_through_image_modalities(monkeypatch):
@@ -2141,7 +2148,7 @@ def test_assistant_answer_parts_replay_exact_signed_boundaries(monkeypatch):
     ]
 
 
-def test_assistant_signed_thought_replays_before_answer(monkeypatch):
+def test_assistant_thought_parts_replay_exact_boundaries_before_answer(monkeypatch):
     captured = _capture_body(
         monkeypatch,
         messages = [
@@ -2152,6 +2159,7 @@ def test_assistant_signed_thought_replays_before_answer(monkeypatch):
                 "extra_content": {
                     "google": {
                         "thought_parts": [
+                            {"text": "unsigned preface"},
                             {
                                 "text": "consider the clues",
                                 "thought_signature": "SIG-THOUGHT-1",
@@ -2169,16 +2177,20 @@ def test_assistant_signed_thought_replays_before_answer(monkeypatch):
     )
     parts = captured["body"]["contents"][1]["parts"]
     assert parts[0] == {
+        "text": "unsigned preface",
+        "thought": True,
+    }
+    assert parts[1] == {
         "text": "consider the clues",
         "thought": True,
         "thoughtSignature": "SIG-THOUGHT-1",
     }
-    assert parts[1] == {
+    assert parts[2] == {
         "text": "check the conclusion",
         "thought": True,
         "thoughtSignature": "SIG-THOUGHT-2",
     }
-    assert parts[2] == {"text": "the answer"}
+    assert parts[3] == {"text": "the answer"}
 
 
 def test_function_declarations_strip_openai_only_schema_keys(monkeypatch):
