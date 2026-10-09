@@ -402,6 +402,7 @@ def test_pipe_kwargs_empty_when_load_fails(monkeypatch):
 def test_pipe_kwargs_raises_when_load_fails_and_dense_shards_were_skipped(monkeypatch, tmp_path):
     """#12860: the plan skips the dense shards a pre-cast encoder replaces, so a failed pre-cast load
     (os error 1455 on Windows) must stop with a clear error, not fall back to shards that are not there."""
+    pytest.importorskip("torch")
     import json
 
     import core.inference.diffusion_precision as precision
