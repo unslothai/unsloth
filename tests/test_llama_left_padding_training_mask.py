@@ -10,7 +10,6 @@ so every real token attended to zeroed pad embeddings and gradients went NaN.
 from __future__ import annotations
 
 import ast
-import os
 from pathlib import Path
 
 import pytest
@@ -49,7 +48,6 @@ TINY = "trl-internal-testing/tiny-Qwen3ForCausalLM"
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "Unsloth fast forward needs a GPU")
 def test_left_padded_label_less_training_forward_matches_unpadded():
-    os.environ.setdefault("UNSLOTH_RETURN_LOGITS", "1")
     from unsloth import FastLanguageModel
 
     model, _ = FastLanguageModel.from_pretrained(
