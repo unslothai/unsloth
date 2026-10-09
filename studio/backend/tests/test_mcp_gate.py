@@ -2,17 +2,30 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import asyncio
+import json
+import secrets
+import sqlite3
 
 import pytest
 from fastapi.testclient import TestClient
 from starlette.applications import Starlette
 from starlette.routing import Mount
 
-from auth import storage
-from mcp_server import BearerTokenMiddleware, create_studio_mcp
-from studio_mcp.gate import StudioMcpGate
+from fastmcp import FastMCP
+
+from auth import policy, storage
+from auth.authentication import create_access_token
+from mcp_server import create_studio_mcp
+from studio_mcp.caller import current_caller
+from studio_mcp.gate import NEED_KEY, StudioMcpGate
 from utils import mcp_access
-from utils.keyless_api_access import _reset_scope_cache
+from utils.account_context import AccountContext, bind_account, current_account, reset_account
+from utils.keyless_api_access import (
+    APPROVED_DUMMY_BEARERS,
+    KEYLESS_SCOPES,
+    _reset_scope_cache,
+    set_keyless_api_access,
+)
 from utils.mcp_access import ENV_FORCE, set_mcp_enabled
 
 MCP_HEADERS = {"Accept": "application/json, text/event-stream"}
@@ -26,13 +39,76 @@ def isolated_state(tmp_path, monkeypatch):
     monkeypatch.setattr(storage, "_bootstrap_password", None)
     monkeypatch.setattr(storage, "_api_key_pbkdf2_salt_cache", None)
     monkeypatch.delenv(ENV_FORCE, raising = False)
+    monkeypatch.delenv("UNSLOTH_STUDIO_MCP_TOKEN", raising = False)
     storage._reset_api_key_hash_cache()
+    policy.invalidate_account_cache()
     _reset_scope_cache()
     mcp_access._reset_cache()
     yield
     storage._reset_api_key_hash_cache()
+    policy.invalidate_account_cache()
     _reset_scope_cache()
     mcp_access._reset_cache()
+
+
+def seed_owner():
+    storage.create_initial_user(
+        username = storage.DEFAULT_ADMIN_USERNAME,
+        password = "human-password-123",
+        jwt_secret = secrets.token_urlsafe(64),
+        must_change_password = False,
+    )
+
+
+def owner_key(**kwargs):
+    return storage.create_api_key(storage.DEFAULT_ADMIN_USERNAME, name = "agent", **kwargs)
+
+
+def probe_mcp():
+    mcp = FastMCP("probe")
+
+    @mcp.tool
+    async def whoami() -> dict:
+        caller = current_caller()
+        return {
+            "token": caller.token,
+            "account_id": caller.account_id,
+            "direct_local": caller.direct_local,
+            "public_base": caller.public_base,
+            "hf_token": caller.hf_token,
+            "has_studio_app": caller.studio_app is not None,
+            "bound_account": current_account().account_id,
+        }
+
+    return mcp
+
+
+def served(mcp):
+    mcp_app = mcp.http_app(path = "/", stateless_http = True)
+    return Starlette(routes = [Mount("/mcp", StudioMcpGate(mcp_app))], lifespan = mcp_app.lifespan)
+
+
+def call_tool(
+    http,
+    name,
+    headers,
+    arguments = None,
+):
+    body = {
+        "jsonrpc": "2.0",
+        "id": 7,
+        "method": "tools/call",
+        "params": {"name": name, "arguments": arguments or {}},
+    }
+    response = http.post("/mcp/", json = body, headers = {**MCP_HEADERS, **headers})
+    if response.status_code != 200:
+        return response, None
+    data = [line[5:].strip() for line in response.text.splitlines() if line.startswith("data:")]
+    return response, json.loads(data[-1])["result"]["structuredContent"]
+
+
+def bearer(token):
+    return {"Authorization": f"Bearer {token}"}
 
 
 @pytest.fixture
@@ -47,7 +123,7 @@ def key_spy(monkeypatch):
     real = storage.validate_api_key_account
 
     def spy(*args, **kwargs):
-        calls.append(args)
+        calls.append(kwargs)
         return real(*args, **kwargs)
 
     monkeypatch.setattr(storage, "validate_api_key_account", spy)
@@ -129,14 +205,11 @@ def test_a_websocket_is_closed():
 
 
 def test_the_mcp_app_is_stateless_and_streams():
+    seed_owner()
+    raw_key, _row = owner_key()
     set_mcp_enabled(True)
-    mcp_app = create_studio_mcp().http_app(path = "/", stateless_http = True)
-    served = Starlette(
-        routes = [Mount("/mcp", StudioMcpGate(BearerTokenMiddleware(mcp_app, "static-token")))],
-        lifespan = mcp_app.lifespan,
-    )
-    headers = {**MCP_HEADERS, "Authorization": "Bearer static-token"}
-    with TestClient(served) as http:
+    headers = {**MCP_HEADERS, **bearer(raw_key)}
+    with TestClient(served(create_studio_mcp())) as http:
         first = http.post("/mcp/", json = LISTING, headers = headers)
         second = http.post("/mcp/", json = {**LISTING, "id": 2}, headers = headers)
     for response in (first, second):
@@ -144,3 +217,228 @@ def test_the_mcp_app_is_stateless_and_streams():
         assert "mcp-session-id" not in response.headers
         assert response.headers["content-type"].startswith("text/event-stream")
         assert '"tools"' in response.text
+
+
+KEYLESS_BEARERS = [
+    None,
+    "Bearer ",
+    "Bearer",
+    *(f"Bearer {dummy}" for dummy in sorted(APPROVED_DUMMY_BEARERS)),
+]
+
+
+@pytest.mark.parametrize("scope", KEYLESS_SCOPES)
+@pytest.mark.parametrize("authorization", KEYLESS_BEARERS)
+def test_keyless_is_never_admitted(scope, authorization):
+    seed_owner()
+    set_keyless_api_access(scope, tools = scope != "off")
+    set_mcp_enabled(True)
+    headers = {"Authorization": authorization} if authorization is not None else {}
+    with TestClient(
+        served(probe_mcp()), base_url = "http://127.0.0.1:8888", client = ("127.0.0.1", 50000)
+    ) as http:
+        response, result = call_tool(http, "whoami", headers)
+    assert response.status_code == 401
+    assert response.json() == {"detail": NEED_KEY}
+    assert response.headers["www-authenticate"] == "Bearer"
+    assert result is None
+
+
+@pytest.mark.parametrize(
+    "authorization", ["Basic dXNlcjpwYXNz", "Token sk-unsloth-x", "Bearer not-a-key"]
+)
+def test_other_schemes_and_non_keys_need_a_key(authorization):
+    seed_owner()
+    set_mcp_enabled(True)
+    with TestClient(served(probe_mcp())) as http:
+        response, _result = call_tool(http, "whoami", {"Authorization": authorization})
+    assert response.status_code == 401
+    assert response.json() == {"detail": NEED_KEY}
+
+
+def test_a_ui_session_jwt_is_refused():
+    seed_owner()
+    set_mcp_enabled(True)
+    session = create_access_token(subject = storage.DEFAULT_ADMIN_USERNAME)
+    with TestClient(served(probe_mcp())) as http:
+        response, _result = call_tool(http, "whoami", bearer(session))
+    assert response.status_code == 401
+    assert response.json() == {"detail": NEED_KEY}
+
+
+def test_a_valid_key_passes_and_a_revoked_one_does_not():
+    seed_owner()
+    raw_key, row = owner_key()
+    set_mcp_enabled(True)
+    with TestClient(served(probe_mcp())) as http:
+        response, result = call_tool(http, "whoami", bearer(raw_key))
+        assert response.status_code == 200, response.text
+        assert result["token"] == raw_key
+        assert result["account_id"] == storage.get_user_record("unsloth")["account_id"]
+        assert storage.revoke_api_key(storage.DEFAULT_ADMIN_USERNAME, row["id"])
+        storage._reset_api_key_hash_cache()
+        revoked, _result = call_tool(http, "whoami", bearer(raw_key))
+    assert revoked.status_code == 401
+    assert revoked.json() == {"detail": "Invalid or expired API key"}
+
+
+def test_an_unknown_key_is_refused():
+    seed_owner()
+    set_mcp_enabled(True)
+    with TestClient(served(probe_mcp())) as http:
+        response, _result = call_tool(http, "whoami", bearer("sk-unsloth-" + "0" * 32))
+    assert response.status_code == 401
+    assert response.json() == {"detail": "Invalid or expired API key"}
+
+
+def test_a_workflow_key_is_refused():
+    seed_owner()
+    raw_key, _row = owner_key(internal = True)
+    set_mcp_enabled(True)
+    with TestClient(served(probe_mcp())) as http:
+        response, _result = call_tool(http, "whoami", bearer(raw_key))
+    assert response.status_code == 401
+    assert response.json() == {"detail": "Workflow keys cannot use Studio MCP"}
+
+
+def test_a_managed_account_key_carries_its_account():
+    seed_owner()
+    alice = storage.issue_account_setup_code(username = "alice")["account"]["account_id"]
+    raw_key, _row = storage.create_api_key("alice", name = "agent", account_id = alice)
+    set_mcp_enabled(True)
+    with TestClient(served(probe_mcp())) as http:
+        response, result = call_tool(http, "whoami", bearer(raw_key))
+    assert response.status_code == 200, response.text
+    assert result["account_id"] == alice
+    # The gate validates; the forwarded route call is what binds the account.
+    assert result["bound_account"] == "owner"
+
+
+def test_two_authorization_headers_are_refused():
+    seed_owner()
+    raw_key, _row = owner_key()
+    set_mcp_enabled(True)
+    with TestClient(served(probe_mcp())) as http:
+        response = http.post(
+            "/mcp/",
+            json = LISTING,
+            headers = [
+                ("accept", MCP_HEADERS["Accept"]),
+                ("authorization", f"Bearer {raw_key}"),
+                ("authorization", f"Bearer {raw_key}"),
+            ],
+        )
+    assert response.status_code == 401
+    assert response.json() == {"detail": "Send one Authorization header"}
+
+
+def test_the_gate_validates_without_touching_last_used(key_spy):
+    seed_owner()
+    raw_key, row = owner_key()
+    set_mcp_enabled(True)
+    with TestClient(served(probe_mcp())) as http:
+        response, _result = call_tool(http, "whoami", bearer(raw_key))
+    assert response.status_code == 200, response.text
+    assert key_spy == [{"touch": False}]
+    conn = sqlite3.connect(storage.DB_PATH)
+    try:
+        last_used = conn.execute(
+            "SELECT last_used_at FROM api_keys WHERE id = ?", (row["id"],)
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert last_used is None
+
+
+def test_the_gate_never_binds_an_account():
+    seed_owner()
+    raw_key, _row = owner_key()
+    set_mcp_enabled(True)
+    sentinel = AccountContext("sentinel-account", "sentinel")
+    seen = []
+
+    async def inner(scope, receive, send):
+        seen.append(current_account())
+        await send({"type": "http.response.start", "status": 204, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    async def run():
+        sent = []
+
+        async def send(message):
+            sent.append(message)
+
+        token = bind_account(sentinel)
+        try:
+            scope = {
+                "type": "http",
+                "method": "POST",
+                "path": "/mcp/",
+                "root_path": "/mcp",
+                "scheme": "http",
+                "query_string": b"",
+                "server": ("127.0.0.1", 8888),
+                "client": ("127.0.0.1", 50000),
+                "headers": [
+                    (b"host", b"127.0.0.1:8888"),
+                    (b"authorization", f"Bearer {raw_key}".encode()),
+                ],
+            }
+            await StudioMcpGate(inner)(scope, None, send)
+            return sent, current_account()
+        finally:
+            reset_account(token)
+
+    sent, after = asyncio.run(run())
+    assert sent[0]["status"] == 204
+    assert seen == [sentinel]
+    assert after == sentinel
+
+
+def test_tools_see_the_outer_request():
+    seed_owner()
+    raw_key, _row = owner_key()
+    set_mcp_enabled(True)
+    with TestClient(
+        served(probe_mcp()), base_url = "http://127.0.0.1:8888", client = ("127.0.0.1", 50000)
+    ) as http:
+        _response, local = call_tool(
+            http, "whoami", {**bearer(raw_key), "X-Unsloth-HF-Token": " hf_abc "}
+        )
+    with TestClient(
+        served(probe_mcp()), base_url = "http://192.168.1.20:8888", client = ("192.168.1.30", 50000)
+    ) as http:
+        _response, remote = call_tool(http, "whoami", bearer(raw_key))
+    assert local["direct_local"] is True
+    assert local["public_base"] == "http://127.0.0.1:8888"
+    assert local["hf_token"] == "hf_abc"
+    assert local["has_studio_app"] is True
+    assert remote["direct_local"] is False
+    assert remote["public_base"] == "http://192.168.1.20:8888"
+    assert remote["hf_token"] is None
+
+
+def test_an_oversized_hf_token_is_refused():
+    seed_owner()
+    raw_key, _row = owner_key()
+    set_mcp_enabled(True)
+    with TestClient(served(probe_mcp())) as http:
+        response, _result = call_tool(
+            http, "whoami", {**bearer(raw_key), "X-Unsloth-HF-Token": "h" * 513}
+        )
+    assert response.status_code == 400
+
+
+def test_current_caller_outside_the_gate_is_an_error():
+    with pytest.raises(RuntimeError):
+        current_caller()
+
+
+def test_the_static_token_still_works_until_it_is_retired(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_MCP_TOKEN", "static-token")
+    set_mcp_enabled(True)
+    with TestClient(served(create_studio_mcp())) as http:
+        response = http.post(
+            "/mcp/", json = LISTING, headers = {**MCP_HEADERS, **bearer("static-token")}
+        )
+    assert response.status_code == 200, response.text

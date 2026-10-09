@@ -1063,22 +1063,14 @@ app.router.lifespan_context = combine_lifespans(lifespan, _decisions_mcp_app.lif
 app.mount(DECISIONS_MCP_PATH, RequireStudioAuth(_decisions_mcp_app))
 
 # Always mounted; the gate answers 404 until the owner turns agent access on.
-from mcp_server import BearerTokenMiddleware, create_studio_mcp  # noqa: E402
-from studio_mcp.gate import StudioMcpGate, deny_all  # noqa: E402
+from mcp_server import create_studio_mcp  # noqa: E402
+from studio_mcp.gate import StudioMcpGate  # noqa: E402
 
 _studio_mcp_app = create_studio_mcp().http_app(path = "/", stateless_http = True)
 app.router.lifespan_context = combine_lifespans(
     app.router.lifespan_context, _studio_mcp_app.lifespan
 )
-_mcp_token = os.environ.get("UNSLOTH_STUDIO_MCP_TOKEN", "")
-app.mount(
-    "/mcp",
-    StudioMcpGate(
-        BearerTokenMiddleware(_studio_mcp_app, _mcp_token)
-        if _mcp_token.strip() and _mcp_token.isascii()
-        else deny_all
-    ),
-)
+app.mount("/mcp", StudioMcpGate(_studio_mcp_app))
 
 from loggers.config import LogConfig
 from loggers.handlers import LoggingMiddleware
