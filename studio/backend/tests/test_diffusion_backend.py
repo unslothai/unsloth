@@ -11717,7 +11717,7 @@ def _upscale_with_tiling_vae(backend, monkeypatch, **kw):
 
     vae = _TilingVae()
     monkeypatch.setattr(_FakeImg2ImgPipe, "vae", vae, raising = False)
-    monkeypatch.setattr(dmod, "_quadratic_attention", lambda target, backend = None: False)
+    monkeypatch.setattr(dmod, "_quadratic_attention", lambda target, backend = None, pipe = None: False)
     seen = {}
     real_call = _FakeImg2ImgPipe.__call__
 
@@ -11753,7 +11753,7 @@ def test_generate_upscale_that_fits_is_not_tiled(fake_runtime, tmp_path, monkeyp
 
     vae = _TilingVae()
     monkeypatch.setattr(_FakeImg2ImgPipe, "vae", vae, raising = False)
-    monkeypatch.setattr(dmod, "_quadratic_attention", lambda target, backend = None: False)
+    monkeypatch.setattr(dmod, "_quadratic_attention", lambda target, backend = None, pipe = None: False)
     backend.generate(prompt = "a sloth", steps = 4, seed = 1, init_image = _png_b64(512), upscale = 2.0)
     assert vae.calls == []
 
@@ -11766,7 +11766,7 @@ def test_generate_upscale_restores_the_vae_when_the_render_fails(
 
     vae = _TilingVae()
     monkeypatch.setattr(_FakeImg2ImgPipe, "vae", vae, raising = False)
-    monkeypatch.setattr(dmod, "_quadratic_attention", lambda target, backend = None: False)
+    monkeypatch.setattr(dmod, "_quadratic_attention", lambda target, backend = None, pipe = None: False)
 
     def _boom(self, **kwargs):
         raise RuntimeError("decode failed")
@@ -11782,7 +11782,7 @@ def test_generate_upscale_on_math_only_attention_still_refuses(fake_runtime, tmp
 
     backend = _loaded_backend_on_a_16g_card(tmp_path, monkeypatch)
     monkeypatch.setattr(_FakeImg2ImgPipe, "vae", _TilingVae(), raising = False)
-    monkeypatch.setattr(dmod, "_quadratic_attention", lambda target, backend = None: True)
+    monkeypatch.setattr(dmod, "_quadratic_attention", lambda target, backend = None, pipe = None: True)
     with pytest.raises(ValueError) as excinfo:
         backend.generate(prompt = "a sloth", steps = 4, seed = 1, init_image = _png_b64(1024), upscale = 2.0)
     message = str(excinfo.value)
@@ -11809,7 +11809,7 @@ def test_generate_windows_batch_prices_tiles_at_the_batch_without_slicing(
     backend = _loaded_backend_on_a_16g_card(tmp_path, monkeypatch)
     vae = vae_cls()
     monkeypatch.setattr(_FakeImg2ImgPipe, "vae", vae, raising = False)
-    monkeypatch.setattr(dmod, "_quadratic_attention", lambda target, backend = None: False)
+    monkeypatch.setattr(dmod, "_quadratic_attention", lambda target, backend = None, pipe = None: False)
     monkeypatch.setattr(dmod.sys, "platform", "win32")
     kw = dict(prompt = "a sloth", steps = 4, init_image = _png_b64(1024), upscale = 2.0, seeds = [1, 2])
     if vae_cls is _TilingVae:
@@ -11836,7 +11836,7 @@ def test_generate_upscale_refuses_when_the_vae_tiling_does_not_engage(
     backend = _loaded_backend_on_a_16g_card(tmp_path, monkeypatch)
     vae = _BrokenTilingVae()
     monkeypatch.setattr(_FakeImg2ImgPipe, "vae", vae, raising = False)
-    monkeypatch.setattr(dmod, "_quadratic_attention", lambda target, backend = None: False)
+    monkeypatch.setattr(dmod, "_quadratic_attention", lambda target, backend = None, pipe = None: False)
     calls = []
     real_call = _FakeImg2ImgPipe.__call__
 

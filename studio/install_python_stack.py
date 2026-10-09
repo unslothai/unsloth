@@ -377,17 +377,46 @@ def _windows_routes_multiarch(gfx_arch: "str | None") -> bool:
 
 
 def _multiarch_device_pack_installed(gfx_arch: "str | None") -> bool:
-    """Whether the venv carries AMD's torch and torchvision kernel packs for this card."""
+    """Whether the selected device extra is fully installed, family kernel packs included.
+    Names come from wheel metadata: family names differ between AMD releases."""
     try:
         from importlib import metadata
-        names = {
-            (d.metadata["Name"] or "").strip().lower().replace("_", "-")
-            for d in metadata.distributions()
-        }
+        from packaging.requirements import Requirement
+        from packaging.utils import canonicalize_name
+
+        gfx = _bare_gfx(gfx_arch)
+        extra = f"device-{gfx}"
+        for package in ("torch", "torchvision"):
+            root = metadata.distribution(package)
+            pending = [(root, extra)]
+            visited = set()
+            found_leaf = False
+            while pending:
+                dist, selected_extra = pending.pop()
+                key = (canonicalize_name(dist.metadata["Name"]), selected_extra)
+                if key in visited:
+                    continue
+                visited.add(key)
+                for raw in dist.requires or ():
+                    req = Requirement(raw)
+                    name = canonicalize_name(req.name)
+                    if not name.startswith(("amd-torch-device-", "amd-torchvision-device-")):
+                        continue
+                    if req.marker is not None and not req.marker.evaluate(
+                        {"extra": selected_extra}
+                    ):
+                        continue
+                    child = metadata.distribution(name)
+                    if not req.specifier.contains(child.version, prereleases = True):
+                        return False
+                    found_leaf |= name == f"amd-{package}-device-{gfx}"
+                    pending.append((child, ""))
+                    pending.extend((child, e) for e in req.extras)
+            if not found_leaf:
+                return False
+        return True
     except Exception:
         return False
-    gfx = _bare_gfx(gfx_arch)
-    return {f"amd-torch-device-{gfx}", f"amd-torchvision-device-{gfx}"} <= names
 
 
 def _windows_multiarch_torch_pkg_specs(gfx_arch: str) -> tuple[str, str, str]:
@@ -6009,6 +6038,34 @@ def _rocm_torch_family_needs_repair(
     ) or _generic_only_target_below_floor(runtime_gfx, _installed_tag)
 
 
+def _windows_rocm_device_packs_need_dependency_pass() -> bool:
+    """For setup.ps1's fast path: would _ensure_rocm_torch repair this multi-arch ROCm torch?
+
+    Same gates as that repair, read from wheel metadata only; fails closed and never installs.
+    """
+    if not IS_WINDOWS or NO_TORCH or _TORCH_BACKEND in ("cuda", "cpu", "xpu"):
+        return False
+    try:
+        if (
+            _explicit_unknown_family_torch_index_url() is not None
+            or _explicit_torch_index_is_unusable()
+            or _explicit_rocm_torch_index_url() is not None
+            or _has_usable_nvidia_gpu()
+        ):
+            return False
+        gfx_arch = _detect_windows_gfx_arch()
+        if not gfx_arch or not _windows_routes_multiarch(gfx_arch):
+            return False
+        from importlib import metadata
+
+        tag = metadata.version("torch").lower().rpartition("+")[2]
+    except Exception:  # noqa: BLE001 - an unreadable host keeps the fast path
+        return False
+    if not tag.startswith("rocm"):
+        return False
+    return tag in _ROCM_MULTIARCH_BROKEN_TAGS or not _multiarch_device_pack_installed(gfx_arch)
+
+
 def _ensure_rocm_torch() -> "bool | None":
     """Reinstall torch with ROCm wheels when the venv received CPU-only torch.
 
@@ -6035,17 +6092,24 @@ def _ensure_rocm_torch() -> "bool | None":
     )
     if _explicit_torch_index_is_unusable() and (IS_WINDOWS or not _rocm_pin_unusable):
         return
-    # setup.ps1's marker; trust it only when torch imports as ROCm (a wiped venv leaves it stale).
+    # setup.ps1's marker cannot prove that the device extra is still complete.
     if os.environ.get("UNSLOTH_ROCM_TORCH_INSTALLED") == "1":
         _ran, _importable, _version, _hip, _cuda = _probe_torch_runtime()
         _torch_ok = _ran and _importable and (bool(_hip) or "rocm" in (_version or "").lower())
+        if _torch_ok and IS_WINDOWS and _explicit_rocm_torch_index_url() is None:
+            _marker_gfx = _detect_windows_gfx_arch()
+            if _windows_routes_multiarch(_marker_gfx):
+                _torch_ok = (
+                    _multiarch_device_pack_installed(_marker_gfx)
+                    and (_version or "").lower().rpartition("+")[2]
+                    not in _ROCM_MULTIARCH_BROKEN_TAGS
+                )
         if _torch_ok:
             _rocm_windows_torch_installed = True
             # ROCm torch is already installed, but bnb still needs the ROCm build
             # (pre-release wheel, else PyPI >=0.50.0).
             _install_bnb_windows_rocm()
             return
-        # torch was wiped between runs; fall through to the full install path
     if IS_MACOS:
         return
 
@@ -6077,7 +6141,7 @@ def _ensure_rocm_torch() -> "bool | None":
             and not _multiarch_device_pack_installed(gfx_arch)
         ):
             _safe_print(
-                f"   installed ROCm torch has no {gfx_arch} device pack -- reinstalling from "
+                f"   installed ROCm torch has incomplete or mismatched {gfx_arch} device packs -- reinstalling from "
                 "AMD's multi-arch index"
             )
             _torch_already_rocm = False
@@ -12820,6 +12884,9 @@ if __name__ == "__main__":
             f"probe={_TORCH_RUNTIME_PROBE!r}"
         )
         sys.exit(0 if _needs_pass else 1)
+    if sys.argv[1:] == ["--windows-rocm-device-packs-need-dependency-pass"]:
+        # Exit 0 forces the dependency pass; exit 1 keeps the fast path.
+        sys.exit(0 if _windows_rocm_device_packs_need_dependency_pass() else 1)
     if sys.argv[1:] == ["--cuda-torch-needs-dependency-pass"]:
         # Exit 0 forces the dependency pass; exit 1 keeps the fast path.
         sys.exit(0 if _cuda_torch_needs_dependency_pass() else 1)

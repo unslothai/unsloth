@@ -1951,15 +1951,25 @@ def _calibrated_activation(fam: Any, target: Any) -> Any:
         return None
 
 
-def _quadratic_attention(target: Any, engaged_backend: Optional[str] = None) -> bool:
+def _quadratic_attention(
+    target: Any,
+    engaged_backend: Optional[str] = None,
+    pipe: Any = None,
+) -> bool:
     """Whether attention can only run on SDPA math (quadratic memory); False when unknown.
     Any engaged non-native backend is a fused kernel, so the SDPA probe only speaks for native."""
     if engaged_backend is not None and str(engaged_backend) != "native":
         return False
     try:
-        return bool(sdpa_math_only(target))
+        if not sdpa_math_only(target):
+            return False
     except Exception:  # noqa: BLE001 - a broken probe must never block a generation
         return False
+    try:
+        from .diffusion_qwenimage21_math import bounded_math_attention
+        return not bounded_math_attention(pipe)
+    except Exception:  # noqa: BLE001 - known math stays quadratic unless every processor is verified
+        return True
 
 
 def _activation_guard_batch(chunks: Sequence[Sequence[Any]]) -> int:
@@ -10639,7 +10649,7 @@ class DiffusionBackend:
                         vae_tile_side = vae_tile_side(getattr(pipe, "vae", None)),
                         vae_sliced = vae_can_slice(getattr(pipe, "vae", None)),
                         quadratic_attention = _quadratic_attention(
-                            guard_target, getattr(state, "attention_backend", None)
+                            guard_target, getattr(state, "attention_backend", None), pipe
                         ),
                         allow_oversized = allow_oversized,
                         calibrated_placement = bool(getattr(state, "calibrated_placement", False)),
