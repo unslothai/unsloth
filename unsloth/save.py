@@ -3348,7 +3348,10 @@ def _gguf_reuses_loaded_checkpoint(model, state_dict = None):
         return False
     if state_dict is not None or getattr(model, "_unsloth_full_finetuning", False):
         return False
-    name_or_path = getattr(getattr(model, "config", None), "_name_or_path", None)
+    # A ModelScope load keeps its snapshot here, since `_name_or_path` holds the repo id (#3726).
+    name_or_path = getattr(model, "_unsloth_modelscope_snapshot", None) or getattr(
+        getattr(model, "config", None), "_name_or_path", None
+    )
     try:
         return bool(name_or_path and os.path.isdir(str(name_or_path)))
     except Exception:
@@ -3438,7 +3441,9 @@ def _gguf_model_input_directory(
 ):
     """The folder the converter reads, which is not always `save_directory`: a reused loaded checkpoint, which `unsloth_save_pretrained_gguf` assigns to `save_directory` before calling `save_to_gguf`. It matters only in the unwritable-CWD fallback, where the intermediate GGUF lands beside the reused checkpoint rather than the requested output, and the two can be on different filesystems."""
     if _gguf_reuses_loaded_checkpoint(model, state_dict):
-        return str(model.config._name_or_path)
+        return str(
+            getattr(model, "_unsloth_modelscope_snapshot", None) or model.config._name_or_path
+        )
     return save_directory
 
 
@@ -4094,7 +4099,9 @@ def unsloth_save_pretrained_gguf(
             ) from e
     else:
         # Non-PEFT model: convert the loaded checkpoint in place when it still holds the weights to export.
-        original_path = getattr(self.config, "_name_or_path", None)
+        original_path = getattr(self, "_unsloth_modelscope_snapshot", None) or getattr(
+            self.config, "_name_or_path", None
+        )
         if _gguf_reuses_loaded_checkpoint(self, state_dict):
             print(
                 f"Unsloth: Model is not a PEFT model. Using existing checkpoint at {original_path}"
@@ -5726,7 +5733,7 @@ def unsloth_generic_save(
         with nullcontext() if in_place else lora_relative_to_original_base(model):
             merge_and_overwrite_lora(
                 _modelscope_base_model_name
-                if os.environ.get("UNSLOTH_USE_MODELSCOPE", "0") == "1"
+                if os.environ.get("UNSLOTH_USE_MODELSCOPE", "0") == "1" and not in_place
                 else get_model_name,
                 model = model,
                 tokenizer = tokenizer,

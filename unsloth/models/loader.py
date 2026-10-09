@@ -200,14 +200,16 @@ def _record_modelscope_repo_id(model, repo_id, local_dir):
         return
     from transformers import PreTrainedModel
 
-    local_dir = os.path.realpath(str(local_dir))
+    resolved = os.path.realpath(str(local_dir))
     for module in model.modules():
         if not isinstance(module, PreTrainedModel):
             continue
         for owner, attr in ((module, "name_or_path"), (module.config, "_name_or_path")):
             value = getattr(owner, attr, None)
-            if isinstance(value, str) and value and os.path.realpath(value) == local_dir:
+            if isinstance(value, str) and value and os.path.realpath(value) == resolved:
                 setattr(owner, attr, repo_id)
+                # A non-PEFT GGUF export still converts the snapshot in place.
+                module._unsloth_modelscope_snapshot = str(local_dir)
 
 
 def _revision_for_tokenizer_repo(

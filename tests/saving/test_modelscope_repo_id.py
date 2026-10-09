@@ -61,6 +61,7 @@ def test_snapshot_path_replaced_and_peft_records_repo_id(record, tmp_path):
 
     assert model.config._name_or_path == "unsloth/Qwen3-0.6B-unsloth-bnb-4bit"
     assert model.name_or_path == "unsloth/Qwen3-0.6B-unsloth-bnb-4bit"
+    assert model._unsloth_modelscope_snapshot == str(snapshot)
     peft_model = get_peft_model(model, LoraConfig(r = 2, target_modules = ["q_proj"]))
     assert (
         peft_model.peft_config["default"].base_model_name_or_path
@@ -128,3 +129,18 @@ def test_modelscope_merge_keeps_local_dir_and_falls_back(merge_name, tmp_path):
     assert fn("unsloth/missing", load_in_4bit = False) == "unsloth/missing"
     assert calls == ["unsloth/missing"]
     assert "trying Hugging Face" in logger.messages[0]
+
+
+def test_gguf_still_converts_the_modelscope_snapshot(tmp_path):
+    class _Peft:
+        pass
+
+    reuses = _load(
+        "unsloth/save.py",
+        "_gguf_reuses_loaded_checkpoint",
+        {"os": os, "PeftModel": _Peft, "PeftModelForCausalLM": _Peft},
+    )
+    model = types.SimpleNamespace(config = types.SimpleNamespace(_name_or_path = "unsloth/x"))
+    assert not reuses(model)
+    model._unsloth_modelscope_snapshot = str(tmp_path)
+    assert reuses(model)
