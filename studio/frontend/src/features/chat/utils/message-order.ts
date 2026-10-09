@@ -29,6 +29,40 @@ export function createParentResolver(): (
   };
 }
 
+// assistant-ui import requires parents first, even when edited timestamps place replies earlier.
+export function orderParentsFirst<
+  T extends {
+    id: string;
+    parentId?: string | null;
+  },
+>(messages: readonly T[]): T[] {
+  const byId = new Map(messages.map((message) => [message.id, message]));
+  const seen = new Set<string>();
+  const ordered: T[] = [];
+  for (const message of messages) {
+    if (seen.has(message.id)) continue;
+    const stack: { message: T; emit: boolean }[] = [{ message, emit: false }];
+    while (stack.length > 0) {
+      const current = stack.pop();
+      if (!current) break;
+      if (current.emit) {
+        ordered.push(current.message);
+        continue;
+      }
+      if (seen.has(current.message.id)) continue;
+      seen.add(current.message.id);
+      stack.push({ message: current.message, emit: true });
+      const parent = current.message.parentId
+        ? byId.get(current.message.parentId)
+        : undefined;
+      if (parent && !seen.has(parent.id)) {
+        stack.push({ message: parent, emit: false });
+      }
+    }
+  }
+  return ordered;
+}
+
 export function compareStoredMessages(
   a: ParentLinkedMessage,
   b: ParentLinkedMessage,
