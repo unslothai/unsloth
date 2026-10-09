@@ -2417,12 +2417,15 @@ async def get_model_config(
     hf_token: Optional[str] = Query(None),
     prefer_local_cache: bool = False,
     local_path: Optional[str] = None,
+    as_decision: bool = False,
     header_hf_token: Optional[str] = Depends(get_hf_token),
     allow_ambient_token: bool = Depends(allow_ambient_hf_token),
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    """Get configuration for a specific model (wraps load_model_defaults)."""
+    """Get configuration for a specific model (wraps load_model_defaults).
+
+    ``as_decision`` asks for a text or vision LLM as a decision model: a fresh Clef head on it."""
     # An API-key caller is shown a filesystem-backed row under an opaque `ref:` handle and hands
     # it back here, where it would otherwise read as a Hugging Face id.
     from core.inference.npu_backend import is_npu_model_path
@@ -2553,6 +2556,15 @@ async def get_model_config(
                         max_position_embeddings = _get_max_position_embeddings(_to_ns(_cfg))
                 except Exception:
                     pass
+
+            if (
+                as_decision
+                and not is_decision
+                and not (is_embedding or is_lora or audio_type is not None)
+            ):
+                from utils.models.model_config import load_llm_decision_defaults
+                is_decision, layout = True, "llm"
+                config_dict = load_llm_decision_defaults()
 
             logger.info(
                 f"Model config result for {model_name}: is_vision={is_vision}, is_embedding={is_embedding}, audio_type={audio_type}, audio_type_known={audio_type_definitive}, is_lora={is_lora}, max_position_embeddings={max_position_embeddings}"
@@ -5773,7 +5785,7 @@ async def list_checkpoints(
     outputs_dir = account_access.private_directory(outputs_dir, "outputs")
     try:
         resolved_outputs_dir = str(resolve_output_dir(outputs_dir))
-        raw_models = scan_checkpoints(outputs_dir = resolved_outputs_dir)
+        raw_models = scan_checkpoints(outputs_dir = resolved_outputs_dir, include_decision = True)
 
         models = [
             ModelCheckpoints(

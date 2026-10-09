@@ -23,7 +23,9 @@ from core.inference import video_families as vf
 from core.inference.family_name_match import normalize_family_name, token_in_name, token_length
 
 _FIXTURE = json.loads(
-    (Path(__file__).parent / "fixtures" / "comfy_checkpoint_headers.json").read_text()
+    (Path(__file__).parent / "fixtures" / "comfy_checkpoint_headers.json").read_text(
+        encoding = "utf-8"
+    )
 )
 _AUDIT = {k: v for k, v in _FIXTURE.items() if not k.startswith("diffusers/")}
 _DIFFUSERS = {k: v for k, v in _FIXTURE.items() if k.startswith("diffusers/")}

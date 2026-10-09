@@ -66,6 +66,9 @@ pub fn new_browser_downloads() -> BrowserDownloads {
 pub struct SavedDownload {
     id: String,
     name: String,
+    /// False when the internet mark couldn't be written (FAT, exFAT, some network drives): the panel
+    /// warns. None when nothing marks it (no web source, or Linux).
+    marked: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -204,9 +207,9 @@ pub async fn browser_download_save(
         return Ok(None);
     };
     // Quarantined like a page download, so Gatekeeper or SmartScreen checks it.
-    if let Some(source) = &source {
-        crate::browser_webview::mark_downloaded(&path, source);
-    }
+    let marked = source
+        .as_ref()
+        .and_then(|source| crate::browser_webview::mark_downloaded(&path, source));
     let name = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -214,6 +217,7 @@ pub async fn browser_download_save(
     Ok(Some(SavedDownload {
         id: record(&app, path),
         name,
+        marked,
     }))
 }
 
@@ -232,6 +236,53 @@ pub fn browser_download_reveal(
         return Err("The file was moved or deleted.".to_string());
     }
     crate::native_intents::reveal_in_file_manager(&path)
+}
+
+/// Extensions that run code when opened, shared with download-safety.ts.
+fn runs_code(path: &Path) -> bool {
+    static EXTENSIONS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    let extensions = EXTENSIONS.get_or_init(|| {
+        #[derive(Deserialize)]
+        struct Policy {
+            extensions: Vec<String>,
+        }
+        serde_json::from_str::<Policy>(include_str!(
+            "../../frontend/src/features/browser/dangerous-file-types.json"
+        ))
+        .map(|policy| policy.extensions)
+        .unwrap_or_default()
+    });
+    // Windows drops trailing dots and spaces, so `setup.exe.` still runs.
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy())
+        .unwrap_or_default();
+    let name = name.trim_end_matches(['.', ' ']);
+    name.rsplit_once('.').is_some_and(|(_, ext)| {
+        // Windows compares names upper-cased, so `.m\u{17f}i` (long s) is `.MSI`.
+        let folded = [ext.to_lowercase(), ext.to_uppercase().to_lowercase()];
+        extensions.iter().any(|known| folded.contains(known))
+    })
+}
+
+/// Open a download with its default app. Programs and scripts are refused: they stay a reveal away.
+#[tauri::command]
+pub fn browser_download_open(
+    webview: tauri::Webview,
+    app: AppHandle,
+    state: State<'_, BrowserDownloads>,
+    id: String,
+) -> Result<(), String> {
+    crate::native_intents::ensure_main_window(&webview)?;
+    let path = with_entries(&app, &state, |entries| (path_of(entries, &id), false))
+        .ok_or_else(|| "Unknown download.".to_string())?;
+    if !path.is_file() {
+        return Err("The file was moved or deleted.".to_string());
+    }
+    if runs_code(&path) {
+        return Err("Programs and scripts open from their folder.".to_string());
+    }
+    tauri_plugin_opener::open_path(&path, None::<&str>).map_err(|error| error.to_string())
 }
 
 /// Whether each download is still where it was saved, in the order asked.
@@ -438,11 +489,51 @@ pub(crate) fn add_pending<R: Runtime>(
     });
 }
 
-pub(crate) fn finished<R: Runtime>(app: &AppHandle<R>, staged: &Path, success: bool) {
+/// Windows and macOS file systems ignore case, so `Report.pdf` and `report.pdf` are one file.
+pub(crate) fn same_path(a: &Path, b: &Path) -> bool {
+    if cfg!(any(windows, target_os = "macos")) {
+        // Compared upper-cased as Windows does (`m\u{17f}i` is `MSI`); on Windows `\\?\C:\x` is
+        // `C:\x` and `\\?\UNC\h\s` is `\\h\s`.
+        let plain = |p: &Path| {
+            let text = p.to_string_lossy().to_uppercase();
+            if !cfg!(windows) {
+                text
+            } else if let Some(share) = text.strip_prefix(r"\\?\UNC\") {
+                format!(r"\\{share}")
+            } else if let Some(local) = text.strip_prefix(r"\\?\") {
+                local.to_string()
+            } else {
+                text
+            }
+        };
+        plain(a) == plain(b)
+    } else {
+        a == b
+    }
+}
+
+fn pending_for<'a>(
+    pending: &'a mut HashMap<String, Pending>,
+    candidates: &[Option<&Path>],
+) -> Option<(&'a String, &'a mut Pending)> {
+    pending.iter_mut().find(|(_, entry)| {
+        candidates
+            .iter()
+            .flatten()
+            .any(|candidate| same_path(&entry.staged, candidate))
+    })
+}
+
+/// `candidates`: the path reserved for the download, then the one the engine reported.
+pub(crate) fn finished<R: Runtime>(
+    app: &AppHandle<R>,
+    candidates: [Option<&Path>; 2],
+    success: bool,
+) {
     let id = {
         let state = app.state::<BrowserDownloads>();
         let mut pending = state.pending.lock().unwrap();
-        let Some((id, entry)) = pending.iter_mut().find(|(_, entry)| entry.staged == staged) else {
+        let Some((id, entry)) = pending_for(&mut pending, &candidates) else {
             return;
         };
         entry.finished = Some(success);
@@ -506,6 +597,7 @@ fn settle<R: Runtime>(app: &AppHandle<R>, id: &str) {
         return;
     };
     let app = app.clone();
+    let id = id.to_string();
     tauri::async_runtime::spawn(async move {
         let staging = entry.staged.parent().map(Path::to_path_buf);
         let result = match (entry.decision, entry.finished) {
@@ -517,19 +609,30 @@ fn settle<R: Runtime>(app: &AppHandle<R>, id: &str) {
             let _ = fs::remove_dir_all(staging);
         }
         match result {
-            Ok(Some((path, download_id))) => crate::browser_webview::emit_download_done(
+            Ok(Some((path, download_id, marked))) => crate::browser_webview::emit_download_done(
                 &app,
                 &entry.tab_id,
                 &entry.url,
                 &path,
                 Some(download_id),
+                marked,
+                &id,
             ),
+            Ok(None) if matches!(entry.decision, Some(Decision::Allow { .. })) => {
+                crate::browser_webview::emit_download_cancelled(
+                    &app,
+                    &entry.tab_id,
+                    &entry.url,
+                    &id,
+                )
+            }
             Ok(None) => {}
             Err(_) => crate::browser_webview::emit_download_failed(
                 &app,
                 &entry.tab_id,
                 &entry.url,
                 &entry.name,
+                Some(&id),
             ),
         }
     });
@@ -540,7 +643,7 @@ async fn deliver<R: Runtime>(
     app: &AppHandle<R>,
     entry: &Pending,
     ask: bool,
-) -> Result<Option<(PathBuf, String)>, String> {
+) -> Result<Option<(PathBuf, String, Option<bool>)>, String> {
     let folder = download_folder(app)?;
     let staged = entry.staged.clone();
     let target = if ask {
@@ -568,15 +671,24 @@ async fn deliver<R: Runtime>(
         blocking(move || {
             let state = app.state::<BrowserDownloads>();
             let _naming = state.naming.lock().unwrap();
-            let target = crate::native_file_dialogs::unique_destination(&folder, &name)?;
-            move_file(&staged, &target)?;
-            Ok(target)
+            // A name another program took since it was picked is never replaced: pick again.
+            for _ in 0..3 {
+                let target = crate::native_file_dialogs::unique_destination(&folder, &name)?;
+                match place_new(&staged, &target) {
+                    Ok(()) => return Ok(target),
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                    Err(error) => {
+                        return Err(format!("Failed to save {}: {error}", target.display()))
+                    }
+                }
+            }
+            Err(format!("Failed to save {name}: its name keeps being taken"))
         })
         .await?
     };
-    crate::browser_webview::mark_downloaded(&target, &entry.url);
+    let marked = crate::browser_webview::mark_downloaded(&target, &entry.url);
     let id = record(app, target.clone());
-    Ok(Some((target, id)))
+    Ok(Some((target, id, marked)))
 }
 
 /// A cross-volume copy can take minutes; keep it off the workers IPC and timers share.
@@ -586,6 +698,31 @@ async fn blocking<T: Send + 'static>(
     tauri::async_runtime::spawn_blocking(work)
         .await
         .map_err(|error| format!("Failed to save the download: {error}"))?
+}
+
+/// Put a staged download at a new name without ever replacing a file there: a hard link where the
+/// volume allows it (no copy, and AlreadyExists if the name was taken), else a copy that only lands
+/// while the name is still free.
+fn place_new(from: &Path, to: &Path) -> std::io::Result<()> {
+    match fs::hard_link(from, to) {
+        Ok(()) => {
+            let _ = fs::remove_file(from);
+            return Ok(());
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => return Err(error),
+        // Another volume (a chosen folder elsewhere) or no hard links (FAT, exFAT): copy.
+        Err(_) => {}
+    }
+    // Created like any new file (0666 less the umask on Unix), not a tempfile's 0600.
+    let mut temporary =
+        crate::native_file_dialogs::staged_temp_file(to).map_err(std::io::Error::other)?;
+    let mut source = fs::File::open(from)?;
+    std::io::copy(&mut source, temporary.as_file_mut())?;
+    temporary.as_file().sync_all()?;
+    temporary
+        .persist_noclobber(to)
+        .map(|_| ())
+        .map_err(|error| error.error)
 }
 
 fn move_file(from: &Path, to: &Path) -> Result<(), String> {
@@ -612,6 +749,31 @@ fn copy_into_place(from: &Path, to: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn programs_and_scripts_are_not_opened() {
+        for name in [
+            "setup.exe",
+            "Install.CMD",
+            "run.sh",
+            "tool.command",
+            "x.jar",
+            "Foo.app",
+            "a.exe. ",
+            "installer.m\u{17f}i",
+        ] {
+            assert!(runs_code(Path::new(name)), "{name}");
+        }
+        for name in [
+            "report.pdf",
+            "data.csv",
+            "clip.mp4",
+            "noext",
+            ".exe-notes.txt",
+        ] {
+            assert!(!runs_code(Path::new(name)), "{name}");
+        }
+    }
 
     #[test]
     fn ids_are_random_hex_and_checked() {
@@ -698,6 +860,66 @@ mod tests {
         move_file(&from, &to).unwrap();
         assert_eq!(fs::read(&to).unwrap(), b"zip");
         assert!(!from.exists());
+    }
+
+    #[test]
+    fn placing_a_download_never_replaces_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let from = dir.path().join("staged.exe");
+        let taken = dir.path().join("setup.exe");
+        fs::write(&from, b"new").unwrap();
+        fs::write(&taken, b"mine").unwrap();
+        let error = place_new(&from, &taken).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read(&taken).unwrap(), b"mine");
+        assert!(from.exists());
+        let free = dir.path().join("setup (1).exe");
+        place_new(&from, &free).unwrap();
+        assert_eq!(fs::read(&free).unwrap(), b"new");
+        assert!(!from.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_verbatim_path_is_the_same_file() {
+        assert!(same_path(
+            Path::new(r"\\?\C:\Users\A\x.zip"),
+            Path::new(r"c:\users\a\X.zip")
+        ));
+        assert!(same_path(
+            Path::new(r"\\?\UNC\host\share\x.zip"),
+            Path::new(r"\\HOST\share\X.zip")
+        ));
+        assert!(same_path(
+            Path::new("C:\\d\\payload.m\u{17f}i"),
+            Path::new(r"C:\d\PAYLOAD.MSI")
+        ));
+    }
+
+    #[test]
+    fn a_finished_download_is_found_by_its_reserved_path() {
+        let mut pending = HashMap::new();
+        let staged = PathBuf::from("/cache/staging/a/Report.pdf");
+        pending.insert(
+            "a".to_string(),
+            Pending {
+                tab_id: "t".into(),
+                url: Url::parse("https://example.com/Report.pdf").unwrap(),
+                name: "Report.pdf".into(),
+                staged: staged.clone(),
+                decision: None,
+                finished: None,
+            },
+        );
+        // The engine reported no path (macOS) or another one: the reserved path still finds it.
+        let other = PathBuf::from("/elsewhere/x.pdf");
+        assert!(pending_for(&mut pending, &[Some(&staged), Some(&other)]).is_some());
+        assert!(pending_for(&mut pending, &[None, Some(&other)]).is_none());
+        let respelled = PathBuf::from("/cache/staging/a/report.pdf");
+        assert_eq!(
+            pending_for(&mut pending, &[None, Some(&respelled)]).is_some(),
+            cfg!(any(windows, target_os = "macos"))
+        );
     }
 
     #[test]

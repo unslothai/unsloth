@@ -173,6 +173,19 @@ def gkd_trainer_mask_prompt(function_name, function):
 RL_FUNCTIONS["gkd_trainer"].append(gkd_trainer_mask_prompt)
 
 
+def ppo_trainer_free_rollout_logits(function_name, function):
+    # TRL keeps the float32 (batch, response_length, vocab) generation logits alive through every PPO
+    # epoch, though only the logprobs taken from them are read: 1.2 GB on a T4 for 8 x 256 Qwen3 tokens.
+    if function_name != "train" or "logitss" not in function:
+        return function
+    old = "del (logprob, ref_logprob, full_value, value, score, unwrapped_model)"
+    new = "del (logprob, ref_logprob, full_value, value, score, unwrapped_model, logitss)"
+    return function.replace(old, new, 1)
+
+
+RL_FUNCTIONS["ppo_trainer"].append(ppo_trainer_free_rollout_logits)
+
+
 def dpo_trainer_fix_columns(call_args, extra_args):
     if "model" in call_args and "train_dataset" in call_args:
         fix_dpo = (
@@ -456,8 +469,10 @@ _ONLINE_DPO_MODEL_CALL = re.compile(
     r"(?P<kwargs>attention_mask=prompt_completion_mask|\*\*model_kwargs)\)[ \t]*$",
     flags = re.MULTILINE,
 )
+# TRL 0.18-0.19 slice from `prompt_ids.size(1) - 1`, TRL 0.20+ name it start_idx.
 _ONLINE_DPO_LOGITS_SLICE = re.compile(
-    r"^(?P<indent>[ \t]*)(?P<line>logits = output\.logits\[:, start_idx:(?:end_idx|-1)\])[ \t]*$",
+    r"^(?P<indent>[ \t]*)(?P<line>logits = output\.logits\[:, "
+    r"(?P<start>start_idx|prompt_ids\.size\(1\) - 1) ?: ?(?:end_idx|-1)\])[ \t]*$",
     flags = re.MULTILINE,
 )
 
@@ -494,7 +509,7 @@ def online_dpo_trainer__forward(function_name, function):
     j = logits_slice.group("indent")
     gather = (
         f"{j}if _unsloth_left_pad is not None:\n"
-        f"{j}    _unsloth_index = (start_idx - _unsloth_left_pad).unsqueeze(1) + torch.arange(\n"
+        f"{j}    _unsloth_index = ({logits_slice.group('start')} - _unsloth_left_pad).unsqueeze(1) + torch.arange(\n"
         f"{j}        completion_ids.size(1), device = completion_ids.device\n"
         f"{j}    ).unsqueeze(0)\n"
         f"{j}    _unsloth_index = _unsloth_index.clamp(0, output.logits.size(1) - 1)\n"

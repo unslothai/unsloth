@@ -151,6 +151,7 @@ type RecoveryUsage = {
   prompt_tokens?: unknown;
   completion_tokens?: unknown;
   total_tokens?: unknown;
+  context_tokens?: unknown;
   prompt_tokens_details?: { cached_tokens?: unknown; cache_write_tokens?: unknown };
   cache_creation_input_tokens?: unknown;
   cache_read_input_tokens?: unknown;
@@ -218,6 +219,9 @@ export function recoveredGenerationFinalMetadata(options: {
       promptTokens: usage.prompt_tokens,
       completionTokens,
       totalTokens: usage.total_tokens,
+      ...(typeof usage.context_tokens === "number"
+        ? { contextTokens: usage.context_tokens }
+        : {}),
       cachedTokens:
         (typeof timings?.cache_n === "number" ? timings.cache_n : undefined) ??
         (typeof usage.prompt_tokens_details?.cached_tokens === "number"
@@ -402,7 +406,16 @@ export function requestParsesThinkTags(payload: {
   enable_thinking?: boolean | null;
   reasoning_effort?: string | null;
   thinking?: { type?: string } | null;
+  provider_type?: string | null;
+  external_model?: string | null;
+  model?: string | null;
 }): boolean {
+  const provider = payload.provider_type?.trim().toLowerCase();
+  const model = (payload.external_model ?? payload.model)?.trim().toLowerCase();
+  const sonnet55BetweenTools =
+    provider === "anthropic" &&
+    (model === "claude-sonnet-5-5" || model?.startsWith("claude-sonnet-5-5-") === true);
+  if (sonnet55BetweenTools) return true;
   return !(
     payload.thinking?.type === "disabled" ||
     payload.enable_thinking === false ||

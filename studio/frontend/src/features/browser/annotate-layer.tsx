@@ -55,9 +55,12 @@ type Annotation = {
   id: number;
   ranges: Range[];
   quote: string;
+  frame?: Frame;
   request: string;
 };
-type Pending = { id: number | null; ranges: Range[]; quote: string };
+/** A drag's box, offset from its content so it scrolls with it, at the zoom it was drawn at. */
+type Frame = { left: number; top: number; width: number; height: number; zoom: number };
+type Pending = { id: number | null; ranges: Range[]; quote: string; frame?: Frame };
 type Box = { left: number; top: number; width: number; height: number };
 
 function hasOwnText(element: Element): boolean {
@@ -197,6 +200,50 @@ function boxOf(ranges: Range[], origin: DOMRect): Box | null {
   };
 }
 
+/** Effective CSS zoom of an element. */
+function cssZoomOf(element: Element | null): number {
+  if (!element) return 1;
+  // Typed as always present, but older engines lack it.
+  const reported: unknown = element.currentCSSZoom;
+  if (typeof reported === "number") return reported;
+  // Older engines: multiply each ancestor's own zoom.
+  let zoom = 1;
+  for (let el: Element | null = element; el; el = el.parentElement) {
+    zoom *= Number.parseFloat(getComputedStyle(el).zoom) || 1;
+  }
+  return zoom;
+}
+
+/** Effective CSS zoom at the content. */
+function zoomAt(ranges: Range[]): number {
+  const range = ranges[0];
+  if (!range) return 1;
+  const node = range.startContainer;
+  // A selected node (an image) can carry its own zoom; its range starts at the parent.
+  const selected = node.childNodes[range.startOffset];
+  const element =
+    selected instanceof Element && range.endContainer === node && range.endOffset === range.startOffset + 1
+      ? selected
+      : node instanceof Element
+        ? node
+        : node.parentElement;
+  return cssZoomOf(element);
+}
+
+/** A drag's box if any, else the box around the content. */
+function markBoxOf(ranges: Range[], frame: Frame | undefined, origin: DOMRect): Box | null {
+  const content = boxOf(ranges, origin);
+  if (!content || !frame) return content;
+  // Scale by the zoom change since the drag, as the content did.
+  const k = zoomAt(ranges) / frame.zoom;
+  return {
+    left: content.left + PAD + frame.left * k,
+    top: content.top + PAD + frame.top * k,
+    width: frame.width * k,
+    height: frame.height * k,
+  };
+}
+
 const sameRanges = (a: Range[] | null, b: Range[] | null) =>
   a !== null &&
   b !== null &&
@@ -214,7 +261,8 @@ export function AnnotateLayer({
   page,
   fileName,
   url,
-}: { page: HTMLElement; fileName: string; url?: string }) {
+  zoom = 1,
+}: { page: HTMLElement; fileName: string; url?: string; zoom?: number }) {
   const t = useT();
   const layerRef = useRef<HTMLDivElement | null>(null);
   const cursorRef = useRef<HTMLDivElement | null>(null);
@@ -237,7 +285,10 @@ export function AnnotateLayer({
     const request = draft.trim();
     if (pending.id === null) {
       if (!request) return items;
-      return [...items, { id: nextId.current++, ranges: pending.ranges, quote: pending.quote, request }];
+      return [
+        ...items,
+        { id: nextId.current++, ranges: pending.ranges, quote: pending.quote, frame: pending.frame, request },
+      ];
     }
     return request
       ? items.map((item) => (item.id === pending.id ? { ...item, request } : item))
@@ -279,16 +330,26 @@ export function AnnotateLayer({
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(() => setFrame((value) => value + 1));
     };
+    // Reduced motion gives zoom a 0.01ms transition, so content settles when it ends.
+    const zoomed = (event: TransitionEvent) => event.propertyName === "zoom" && redraw();
     page.addEventListener("scroll", redraw, { capture: true, passive: true });
+    page.addEventListener("transitionend", zoomed, true);
     const resize = new ResizeObserver(redraw);
     resize.observe(page);
     return () => {
       cancelAnimationFrame(frame);
       window.clearTimeout(settle);
       page.removeEventListener("scroll", redraw, { capture: true });
+      page.removeEventListener("transitionend", zoomed, true);
       resize.disconnect();
     };
   }, [page]);
+
+  // A zoom resizes the content after this render measured it, and fires no scroll or resize.
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => setFrame((value) => value + 1));
+    return () => cancelAnimationFrame(frame);
+  }, [zoom]);
 
   // Capture phase, so the page's own links and click handlers never see a marking press.
   useEffect(() => {
@@ -316,7 +377,7 @@ export function AnnotateLayer({
         Math.abs(event.clientY - press.y),
       );
     };
-    const mark = (ranges: Range[] | null) => {
+    const mark = (ranges: Range[] | null, area?: DOMRect) => {
       if (!ranges || ranges.length === 0) return;
       const image = ranges.some((range) =>
         range.cloneContents().querySelector("img"),
@@ -324,7 +385,18 @@ export function AnnotateLayer({
       const quote =
         quoteOf(ranges) || (image ? t("browser.annotate.imageQuote") : "");
       if (!quote) return;
-      setPending({ id: null, ranges, quote });
+      // Keep a drag's box as drawn, not shrunk to its text.
+      const content = area ? boxOf(ranges, new DOMRect()) : null;
+      const frame = area && content
+        ? {
+            left: area.left - content.left - PAD,
+            top: area.top - content.top - PAD,
+            width: area.width,
+            height: area.height,
+            zoom: zoomAt(ranges),
+          }
+        : undefined;
+      setPending({ id: null, ranges, quote, frame });
       setDraft("");
     };
     const onDown = (event: PointerEvent) => {
@@ -384,7 +456,7 @@ export function AnnotateLayer({
       press = null;
       setArea(null);
       saveRef.current();
-      if (dragging && rect) mark(blocksIn(page, rect));
+      if (dragging && rect) mark(blocksIn(page, rect), rect);
       else if (event.target instanceof Element && !ownUi(event.target))
         mark(blockAt(event.target, page));
     };
@@ -436,7 +508,7 @@ export function AnnotateLayer({
   const hoverBox = hover ? boxOf(hover, origin) : null;
   if (hoverBox) lastHoverBox.current = hoverBox;
   const shownHover = hoverBox ?? lastHoverBox.current;
-  const pendingBox = pending ? boxOf(pending.ranges, origin) : null;
+  const pendingBox = pending ? markBoxOf(pending.ranges, pending.frame, origin) : null;
   const count = items.length;
   // A first comment still being typed can go too: Send commits it.
   const canSend = count > 0 || (pending?.id === null && draft.trim() !== "");
@@ -463,7 +535,7 @@ export function AnnotateLayer({
         />
       ) : null}
       {items.map((item, index) => {
-        const box = item.id === pending?.id ? null : boxOf(item.ranges, origin);
+        const box = item.id === pending?.id ? null : markBoxOf(item.ranges, item.frame, origin);
         return box ? (
           <Mark
             key={item.id}
@@ -475,6 +547,7 @@ export function AnnotateLayer({
                 id: item.id,
                 ranges: item.ranges,
                 quote: item.quote,
+                frame: item.frame,
               });
               setDraft(item.request);
             }}
@@ -545,8 +618,9 @@ function markNumber<Item extends { id: number }>(items: Item[], id: number | nul
   return index === -1 ? items.length + 1 : index + 1;
 }
 
+// Deep shadow and faint rim so it stands out on dark pages.
 const SURFACE =
-  "border border-border bg-background text-foreground shadow-[0_8px_28px_-6px_rgba(0,0,0,0.18)] dark:border-transparent dark:bg-neutral-800 dark:text-white dark:shadow-xl";
+  "border border-border bg-background text-foreground shadow-[0_8px_28px_-6px_rgba(0,0,0,0.18)] dark:border-white/10 dark:bg-neutral-800 dark:text-white dark:shadow-[0_12px_40px_-4px_rgba(0,0,0,0.85),0_4px_12px_-2px_rgba(0,0,0,0.6)]";
 
 /** Voice typing into a comment, as the composer's microphone does. */
 function useCommentDictation(draft: string, onDraft: (value: string) => void) {

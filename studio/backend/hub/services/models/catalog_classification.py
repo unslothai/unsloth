@@ -138,11 +138,12 @@ def _name_hint_media_task(
     an unrecognised name means, hence *unmatched*.
     """
     from core.inference.video_families import detect_video_family
+    from core.inference.video_moe_pair import moe_pick_pairs
 
     for hint in name_hints:
         family = detect_video_family(hint) if hint else None
         if family is not None:
-            if not getattr(family, "is_moe", False) and _video_family_buildable(family):
+            if moe_pick_pairs(family, *name_hints) and _video_family_buildable(family):
                 return _VIDEO_GEN_TASK
             return _UNSUPPORTED_DIFFUSION_TASK
     from core.inference.diffusion_families import detect_family_for_pick
@@ -251,7 +252,29 @@ def _gguf_file_task(path: str | Path, name_hints: tuple[Optional[str], ...]) -> 
     arch = _gguf_architecture(str(path))
     if is_audio_cpp_gguf_architecture(arch):
         return _audio_cpp_classification(path, name_hints)[0]
+    if arch is None or arch.lower() == "sdxl":
+        whole = _whole_pipeline_gguf_task(path)
+        if whole is not None:
+            return whole
     return _arch_to_task(arch, name_hints = name_hints)
+
+
+def _whole_pipeline_gguf_task(path: str | Path) -> Optional[str]:
+    """Images task for a whole-pipeline SDXL GGUF: sd.cpp ``convert`` writes no architecture, so the name fallback
+    would call it a chat model."""
+    try:
+        from core.inference.diffusion_content import whole_pipeline_gguf_family
+
+        family = whole_pipeline_gguf_family(str(path))
+        if family is None:
+            return None
+        from core.inference.diffusion_engine_router import family_buildable_here
+        from core.inference.diffusion_families import detect_family
+
+        buildable = family_buildable_here(detect_family("", override = family), model_kind = "gguf")
+    except Exception:
+        return None
+    return "text-to-image" if buildable else _UNSUPPORTED_DIFFUSION_TASK
 
 
 def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = ()) -> Optional[str]:
@@ -281,6 +304,7 @@ def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = (
         )
     if normalized in _VIDEO_GGUF_ARCHS:
         from core.inference.video_families import detect_video_family
+        from core.inference.video_moe_pair import moe_pick_pairs
 
         family = detect_video_family("", override = normalized)
         if family is None:
@@ -291,7 +315,7 @@ def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = (
                         break
         if (
             family is not None
-            and not getattr(family, "is_moe", False)
+            and moe_pick_pairs(family, *name_hints)
             and _video_family_buildable(family)
         ):
             return _VIDEO_GEN_TASK
@@ -667,6 +691,22 @@ def _is_sd_cpp_companion_repo(repo_id: str) -> bool:
         return False
 
 
+def _untrusted_repo_single_files_loadable(repo_info, selected: Optional[Path] = None) -> bool:
+    """An untrusted cached repo of single ``.safetensors`` files (no pipeline index) still loads per
+    file; mirrors ``single_file_load_allowed``."""
+    try:
+        if _repo_has_pipeline_index(repo_info, selected):
+            return False
+        from core.inference.diffusion_single_file_trust import SAFETENSORS_SUFFIX
+        for revision in getattr(repo_info, "revisions", None) or ():
+            for cached in getattr(revision, "files", None) or ():
+                if str(getattr(cached, "file_name", "")).endswith(SAFETENSORS_SUFFIX):
+                    return True
+    except Exception:  # noqa: BLE001 -- a classification failure keeps the row untrusted
+        return False
+    return False
+
+
 def _cached_repo_task(repo_info, selected: Optional[Path] = None) -> Optional[str]:
     repo_id = getattr(repo_info, "repo_id", "") or ""
     try:
@@ -675,7 +715,10 @@ def _cached_repo_task(repo_info, selected: Optional[Path] = None) -> Optional[st
 
         family = detect_video_family(repo_id)
         if family is not None:
-            if not _is_trusted_video_repo(repo_id) or not _video_family_buildable(family):
+            trusted = _is_trusted_video_repo(repo_id) or _untrusted_repo_single_files_loadable(
+                repo_info, selected
+            )
+            if not trusted or not _video_family_buildable(family):
                 return None
             return _VIDEO_GEN_TASK
     except Exception:
@@ -689,7 +732,10 @@ def _cached_repo_task(repo_info, selected: Optional[Path] = None) -> Optional[st
         if _is_sd_cpp_companion_repo(repo_id):
             return None
         family = detect_family(repo_id)
-        if not _is_trusted_diffusion_repo(repo_id) or family is None:
+        trusted = _is_trusted_diffusion_repo(repo_id) or _untrusted_repo_single_files_loadable(
+            repo_info, selected
+        )
+        if not trusted or family is None:
             return None
         if not family_pipeline_available(family):
             return None

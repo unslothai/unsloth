@@ -15,6 +15,7 @@ from transformers import (
     AutoProcessor,
     AutoTokenizer,
     AutoModelForCausalLM,
+    AutoModelForSpeechSeq2Seq,
 )
 
 try:
@@ -53,8 +54,8 @@ def _multimodal_auto_classes():
     # Looked up, not referenced: which names exist varies (4.51.3 has both, 5.5.0
     # dropped AutoModelForVision2Seq), so only the alias above is always bound.
     classes = [AutoModelForVision2Seq]
-    # AutoModelForSpeechSeq2Seq is deliberately absent: Whisper already reaches
-    # AutoProcessor through is_whisper, so adding it would move a cell for nothing.
+    # AutoModelForSpeechSeq2Seq is deliberately absent: it would move Granite Speech in
+    # _is_text_seq2seq_config on transformers 4.57; from_pretrained adds its processor itself.
     for name in (
         "AutoModelForImageTextToText",
         "AutoModelForTextToWaveform",
@@ -89,6 +90,9 @@ def _is_text_seq2seq_config(config):
 
 def _generation_padding_side(config):
     # BART / Marian encoder positions are absolute, so left padding would shift every real token.
+    # Any encoder-decoder (Whisper, SeamlessM4T): left-padded labels put pads before the decoder's target.
+    if getattr(config, "is_encoder_decoder", False):
+        return "right"
     return "right" if _is_text_seq2seq_config(config) else "left"
 
 
@@ -146,14 +150,18 @@ from .loader_utils import (
     _get_fp8_mode_and_check_settings,
     _dequantize_leftover_fp8_params,
     _restore_dropped_fp8_scales,
+    _dequantize_multihead_attention_out_proj,
     _prepare_compressed_tensors_model,
+    _dequantize_bitsandbytes_for_full_finetuning,
     planner_class_mismatch_reason,
     planner_model_class,
     exclude_no_placement_params,
     planner_quantization_kwargs,
+    raise_if_bnb_cpu_spill,
     requested_device_map,
     resolve_auto_block_swap,
     resolve_unsloth_device_map,
+    sync_load_when_quantizing,
     warn_if_bitsandbytes_quantized_nothing,
 )
 # `unsloth.save` imports `.models.loader_utils`, so binding a name out of it here at module
@@ -2781,6 +2789,8 @@ class FastBaseModel:
         if auto_config is None and user_config is not None:
             auto_config = user_config
         _offload_layers = legacy_offload_layers(kwargs, kwargs.pop("offload_layers", None))
+        _offload_layers_requested = _offload_layers
+        _quantization_config_requested = kwargs.get("quantization_config")
         if _offload_layers and load_layers_to_host is None:
             _offload_layers = refuse_block_swap_load(
                 _offload_layers,
@@ -2899,6 +2909,8 @@ class FastBaseModel:
         # Audio and omni classes need a processor but are NOT image models, so they
         # must not widen is_vlm, which arms the image-processor repair path below.
         needs_processor = is_vlm or auto_model in _multimodal_auto_classes()
+        # FastModel routes Whisper here without auto_model (#2726); audio features need the processor.
+        needs_processor = needs_processor or auto_model is AutoModelForSpeechSeq2Seq
         # A repo-code VLM may register only AutoModel / AutoModelForCausalLM (DeepSeek-OCR, Nemotron-VL), so auto_model is not a VLM class though the config is a vision model. Keep is_vlm for processor selection, but treat it as a VLM on the vLLM path so a vision_config model is never silently loaded as text-only.
         is_vlm_config = (
             is_vlm
@@ -3130,6 +3142,7 @@ class FastBaseModel:
 
         from .loader_utils import (
             check_and_disable_bitsandbytes_loading,
+            gptq_trainable_quantization_config,
             quantization_config_selects_bnb_4bit,
             sync_unsloth_model_name_bnb_flags,
         )
@@ -3485,6 +3498,12 @@ class FastBaseModel:
                     if user_quantization_config is None:
                         kwargs["quantization_config"] = quantization_config
 
+        # Replaces the checkpoint's own GPTQ config built above; vLLM reads the checkpoint itself and picks its own kernel.
+        if not (fast_inference and is_vLLM_available()):
+            _gptq_config = gptq_trainable_quantization_config(auto_config, user_quantization_config)
+            if _gptq_config is not None:
+                kwargs["quantization_config"] = _gptq_config
+
         # torch_dtype is resolved above, where the device-map planner also needs it.
         kwargs = add_dtype_kwargs(torch_dtype, kwargs)
 
@@ -3537,9 +3556,14 @@ class FastBaseModel:
                     )
                 ):
                     try:
-                        with begin_block_swap_load(
-                            _offload_layers, device_map, embeddings = bool(_embedding_needed)
-                        ) as (_block_swap_state):
+                        with (
+                            begin_block_swap_load(
+                                _offload_layers, device_map, embeddings = bool(_embedding_needed)
+                            ) as (_block_swap_state),
+                            sync_load_when_quantizing(
+                                kwargs.get("quantization_config"), model_config
+                            ),
+                        ):
                             model = auto_model.from_pretrained(
                                 model_name,
                                 config = model_config,
@@ -3607,7 +3631,13 @@ class FastBaseModel:
                     variant = kwargs.get("variant"),
                     dtype = torch_dtype,
                 )
+                if _dequantize_multihead_attention_out_proj(model):
+                    logger.info(
+                        "Unsloth: dequantized 4-bit nn.MultiheadAttention out_proj weights."
+                    )
                 _prepare_compressed_tensors_model(model, full_finetuning = full_finetuning)
+                if full_finetuning:
+                    _dequantize_bitsandbytes_for_full_finetuning(model, torch_dtype, model_name)
                 if load_in_16bit and not load_in_4bit and not load_in_8bit:
                     _dequantize_leftover_fp8_params(
                         model,
@@ -3730,6 +3760,17 @@ class FastBaseModel:
                 model.fast_generate = model.vllm_engine.generate
                 model.fast_generate_batches = functools.partial(generate_batches, model.vllm_engine)
 
+        except ValueError as error:
+            raise_if_bnb_cpu_spill(
+                error,
+                model_name,
+                _offload_layers_requested,
+                device_map = device_map,
+                load_in_8bit = load_in_8bit,
+                quantization_config = _quantization_config_requested,
+                max_memory = kwargs.get("max_memory"),
+            )
+            raise
         finally:
             raise_handler.remove()
             os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = old_hf_transfer
@@ -4164,6 +4205,8 @@ class FastBaseModel:
         **kwargs,
     ):
         offload_layers = legacy_offload_layers(kwargs, offload_layers)
+        prefetch_depth = prefetch_depth_arg(kwargs)
+        reject_alora(model, kwargs.get("alora_invocation_tokens"))
         if os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1":
             print("Unsloth: Full finetuning is enabled, so .get_peft_model has no effect")
             # Full finetuning still compiles, so a stray pre-train forward can poison the cache; install the detector here too (idempotent).
@@ -4545,7 +4588,10 @@ class FastBaseModel:
             module.max_seq_length = max_seq_length
         offload_embedding_if_tight(model)
         install_block_swap(
-            model, offload_layers, use_gradient_checkpointing = use_gradient_checkpointing
+            model,
+            offload_layers,
+            prefetch_depth = prefetch_depth,
+            use_gradient_checkpointing = use_gradient_checkpointing,
         )
         skip_checkpointing(model, checkpoint_skip_layers)
         for _ in range(3):
@@ -4575,6 +4621,7 @@ class FastBaseModel:
         tokenizer = None,
         float32_mixed_precision = None,
     ):
+        reject_alora(model)
         full_finetuning = os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1"
 
         if type(float32_mixed_precision) is bool:
@@ -4702,15 +4749,16 @@ class FastBaseModel:
             raise RuntimeError("Unsloth: Unsuccessfully patched inner_training_loop")
         patch_saving_functions(model, vision = True)
 
+        _padding_side = _generation_padding_side(getattr(model, "config", None))
         m = model
         while hasattr(m, "model"):
             if hasattr(m, "_saved_temp_tokenizer"):
                 if hasattr(m._saved_temp_tokenizer, "tokenizer"):
-                    m._saved_temp_tokenizer.tokenizer.padding_side = "left"
+                    m._saved_temp_tokenizer.tokenizer.padding_side = _padding_side
             m = m.model
         if hasattr(m, "_saved_temp_tokenizer"):
             if hasattr(m._saved_temp_tokenizer, "tokenizer"):
-                m._saved_temp_tokenizer.tokenizer.padding_side = "left"
+                m._saved_temp_tokenizer.tokenizer.padding_side = _padding_side
         # Prevent Transformers Trainer from auto-wrapping Unsloth LoRA models in DP.
         _mark_unsloth_disable_data_parallel(model, disable = not full_finetuning)
 

@@ -181,6 +181,7 @@ export const de = {
     downloadPrompt: {
       title: "Diese Datei herunterladen?",
       description: "{host} möchte {name} auf deinem Computer speichern.",
+      dangerous: "Dateien wie diese können Programme auf deinem Computer ausführen. Lade sie nur herunter, wenn du {host} vertraust.",
       remember: "Für das nächste Mal merken",
       cancel: "Abbrechen",
       download: "Herunterladen",
@@ -368,6 +369,7 @@ export const de = {
       downloading: "{name} wird heruntergeladen",
       downloaded: "{name} in Downloads gespeichert",
       downloadFailed: "{name} konnte nicht heruntergeladen werden",
+      notMarked: "{name} wurde gespeichert, konnte aber nicht als aus dem Internet heruntergeladen markiert werden. Dein System warnt deshalb vor dem Öffnen nicht.",
       blocked: "Diese Adresse kann im Browserbereich nicht geöffnet werden. Er öffnet nur öffentliche Websites.",
       clearDataSettingDescription: "Browserverlauf, Downloadverlauf, zwischengespeicherte Seiten sowie Cookies und Websitedaten löschen. Du wirst dabei von Websites abgemeldet.",
       clearDataDescription: "Dadurch werden Browserverlauf, Downloadverlauf, zwischengespeicherte Seiten sowie Cookies und Websitedaten gelöscht, und du wirst von Websites abgemeldet. Heruntergeladene Dateien bleiben auf deinem Computer.",
@@ -509,6 +511,7 @@ export const de = {
     },
   },
   common: {
+    duplicate: "Duplizieren",
     cancel: "Abbrechen",
     close: "Schließen",
     delete: "Löschen",
@@ -1164,6 +1167,8 @@ export const de = {
     sandbox: {
       title: "Sandbox",
       description: "Ob Python- und Terminal-Tool-Aufrufe auf diesem Computer in einer OS-Sandbox laufen.",
+      docs: "Dokumentation",
+      docsLabel: "Sandbox-Dokumentation öffnen",
       toolsSection: "Dieser Computer",
       refresh: "Aktualisieren",
       python: "Python",
@@ -1631,6 +1636,9 @@ export const de = {
         showWhisperUpdates: "whisper.cpp-Update-Benachrichtigungen",
         showWhisperUpdatesDescription:
           "Benachrichtigt, wenn ein neuerer whisper.cpp-Build für Speech-to-Text-Modelle verfügbar ist. Deaktivieren Sie dies, wenn Sie nie Audio transkribieren.",
+        showAudioCppUpdates: "audio.cpp-Update-Benachrichtigungen",
+        showAudioCppUpdatesDescription:
+          "Benachrichtigt, wenn die audio.cpp-Laufzeit ein Update für die Audio-Seiten braucht. Deaktivieren Sie dies, wenn Sie Audio nie verwenden.",
       },
       startup: {
         sectionTitle: "Autostart",
@@ -2286,6 +2294,7 @@ export const de = {
         "Es konnten nicht alle Quantisierungen geladen werden. Der Befehl verwendet den verfügbaren Modellwert.",
       generatedCommand: "Generierter Befehl",
       docs: "Dokumentation",
+      docsLabel: "Dokumentation zu unsloth start öffnen",
       agentDocs: "Einrichtungsdokumentation zu {agent} öffnen",
       copyGeneratedCommand: "Generierten Befehl kopieren",
       // English is the baseline until translated: the three-part sentence is assembled around an
@@ -2828,6 +2837,8 @@ export const de = {
       revoking: "Wird widerrufen...",
       decisionApi: {
         title: "Entscheidungs-API",
+        docs: "Dokumentation",
+        docsLabel: "Dokumentation zur Entscheidungs-API öffnen",
         description: "Beantworte Ja/Nein-, Auswahl- und Bewertungsfragen zu Text mit einem Modell auf diesem Rechner oder einem Entscheidungsmodell aus den Verbindungen. Funktioniert mit dem TypeSafe-SDK.",
         enable: "Anfragen beantworten",
         enableDescription: "Stellt /v1/systemone bereit. Beim Einschalten wird das Modell heruntergeladen.",
@@ -2845,6 +2856,16 @@ export const de = {
         deviceDescription: "Die GPU antwortet schneller, hält ihren Speicher aber bis zum Neustart reserviert.",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
+        backend: "Laufzeit",
+        backendAuto: "Automatisch",
+        backendDescription:
+          "Automatisch stellt Clef über llama.cpp bereit, wenn das Modell einen GGUF-Build hat, und weicht sonst auf PyTorch aus. llama.cpp liest auch Bilder.",
+        backendDescriptionMlx:
+          "Automatisch stellt Clef-Text auf Apple Silicon über MLX bereit und über llama.cpp, wenn nur der GGUF-Build des Modells geladen oder heruntergeladen ist. MLX liest nur Text; llama.cpp liest auch Bilder.",
+        backendStatus: "Laufzeit: {backend}",
+        backendNone: "nicht verfügbar",
+        mediaImages: "Liest Text und Bilder.",
+        mediaText: "Liest nur Text.",
         checking: "Wird geprüft…",
         notDownloaded: "Nicht heruntergeladen · {size}",
         downloading: "Wird heruntergeladen…",
@@ -2984,6 +3005,11 @@ export const de = {
       datasetLabel: "Datensatz",
       modelTooltip: "Das Basismodell, das du feinabstimmen möchtest.",
       methodTooltip: "Wie das Modell trainiert wird. LoRA und QLoRA aktualisieren kleine Adapter statt aller Gewichte.",
+      trainAsLabel: "Trainieren als",
+      trainAsTooltip:
+        "Ein Sprachmodell schreibt Text. Ein Entscheidungsmodell wählt eine der vorgegebenen Optionen mit einer Wahrscheinlichkeit und läuft in der Decision API.",
+      trainAsLanguage: "Sprachmodell",
+      trainAsDecision: "Entscheidungsmodell",
       checkpointLabel: "Checkpoint",
       checkpointTooltip:
         "Der Laya-Checkpoint, der feinabgestimmt wird. Multilingual passt zu den meisten Datensätzen.",
@@ -3426,6 +3452,31 @@ export const de = {
         "Anteil der gesamten Trainingsschritte zwischen Auswertungen (0-1). Auf 0 setzen, um die Auswertung zu deaktivieren. Z. B. 0.01 = alle 1 % der Schritte auswerten.",
       seed: "Seed",
       seedTooltip: "Zufalls-Seed für Reproduzierbarkeit.",
+      offloadLayers: "Schichten auslagern",
+      offloadLayersTooltip: "Decoder-Schichten im Arbeitsspeicher halten und jede kurz vor ihrer Ausführung auf die GPU streamen, damit ein Modell, das größer als der VRAM ist, mit LoRA trainiert. Auto lagert so wenige wie nötig aus, eine Zahl genau so viele. Benötigt Gradient Checkpointing.",
+      offloadOff: "Aus",
+      offloadAuto: "Auto",
+      offloadCount: "Anzahl",
+      offloadVramBudget: "VRAM-Budget (GiB)",
+      offloadVramBudgetTooltip: "Der meiste VRAM, den dieser Lauf nutzen darf. Auto lagert genug Schichten aus, um darunter zu bleiben, und zwei Läufe können sich eine Karte teilen. Leer nutzt die ganze Karte.",
+      offloadWholeCard: "ganze Karte",
+      offloadVramBudgetGpu: "VRAM-Budget GPU {index} (GiB)",
+      prefetchDepth: "Prefetch-Tiefe",
+      prefetchDepthTooltip: "Wie viele ausgelagerte Schichten vor der laufenden kopiert werden. Auto beginnt bei 1 und behält eine tiefere Reserve nur, solange sie das Warten auf Kopien messbar verkürzt.",
+      offloadPanelTitle: "Ausgelagerte Schichten",
+      offloadPanelGpu: "Auf der GPU",
+      offloadPanelHost: "Im Arbeitsspeicher",
+      offloadPanelCopying: "Wird kopiert",
+      offloadPanelSwapped: "ausgelagert",
+      offloadPanelStall: "Warten auf Kopien",
+      offloadPanelCopy: "Kopie pro Schicht",
+      offloadPanelCompute: "Rechnen pro Schicht",
+      offloadPanelVram: "VRAM",
+      offloadPanelDepth: "Prefetch-Tiefe",
+      offloadPanelPinned: "gepinnt",
+      offloadPanelSweepNote: "Das wandernde Fenster zeigt, in welcher Reihenfolge Schichten geholt werden, verlangsamt, damit man es sieht; die Zahlen sind am letzten Schritt gemessen.",
+      offloadPanelCard: "GPU {index}",
+      offloadPanelCardUnknown: "Unbekannte Karte",
       gradCheckpoint: "Grad-Checkpoint",
       gradCheckpointTooltip:
         "Rechenaufwand gegen Speicher tauschen, indem Aktivierungen neu berechnet werden.",
@@ -3436,6 +3487,11 @@ export const de = {
       readMore: "Mehr erfahren",
     },
     training: {
+      duplicateFailed: "Lauf konnte nicht dupliziert werden",
+      duplicateDraftChanged:
+        "Die Trainingseinstellungen haben sich beim Laden geändert. Duplizieren Sie den Lauf erneut.",
+      duplicateNoModel:
+        "Für diesen Lauf ist keine Modellkonfiguration gespeichert.",
       startTraining: "Training starten",
       starting: "Wird gestartet...",
       loadingModel: "Modell wird geladen...",
@@ -4148,6 +4204,17 @@ export const de = {
       readVideoFailed: "Das Video konnte nicht gelesen werden ({status}).",
       openFileFailed: "Die Datei konnte nicht geöffnet werden",
     },
+  },
+  exportDecision: {
+    title: "Entscheidungsmodell",
+    description: "{layout}-Entscheidungsmodelle werden für den Entscheidungsserver von llama.cpp nach GGUF exportiert. Wähle eine oder mehrere Quantisierungen.",
+    adapterNote: "Dieser Checkpoint enthält LoRA-Adapter; sie werden vor der Konvertierung zusammengeführt.",
+    notEligibleTitle: "GGUF-Export nicht verfügbar",
+    ggufOnly: "Entscheidungsmodelle werden nur nach GGUF exportiert",
+    existing: "Bereits exportiert: {quantizations}",
+    outputNote: "GGUF-Dateien werden im Run-Ordner gespeichert: {path}",
+    methodLabel: "GGUF des Entscheidungsmodells",
+    outputLabel: "Entscheidungs-GGUF ({quantizations})",
   },
   decisions: {
     title: "Eine Entscheidung testen",

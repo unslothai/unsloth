@@ -23,10 +23,14 @@ import { usePlatformStore } from "@/config/env";
 import { MLX_OPTIMIZER_OPTIONS, OPTIMIZER_OPTIONS } from "@/config/training";
 import { useIsAccountOwner } from "@/features/auth";
 import { setTrainingCompareHandoff } from "@/features/chat";
-import { updateSystemOneSettings } from "@/features/settings";
+import {
+  updateSystemOneSettings,
+  useSettingsDialogStore,
+} from "@/features/settings";
 import {
   getTrainingMethodLabel,
   type TrainingViewData,
+  useDuplicateTrainingRun,
   useTrainingActions,
   useTrainingConfigStore,
   useTrainingRuntimeStore,
@@ -92,12 +96,14 @@ interface ProgressSectionProps {
   data: TrainingViewData;
   isHistorical?: boolean;
   configOverride?: RunConfigOverride;
+  runId?: string | null;
 }
 
 export function ProgressSection({
   data,
   isHistorical = false,
   configOverride,
+  runId,
 }: ProgressSectionProps): ReactElement {
   const t = useT();
   const navigate = useNavigate();
@@ -187,10 +193,9 @@ export function ProgressSection({
     }
     setEnablingDecisionApi(true);
     try {
-      await updateSystemOneSettings({
-        enabled: true,
-        model: `laya-ft:${exportRunName}`,
-      });
+      const model = `laya-ft:${exportRunName}`;
+      await updateSystemOneSettings({ enabled: true, model });
+      useSettingsDialogStore.getState().openDecisionTry(model);
       toast.success(
         t("studio.progress.decisionApiEnabled", { name: exportRunName }),
       );
@@ -309,9 +314,10 @@ export function ProgressSection({
             </Button>
           )}
           {isHistorical ? (
-            <ConfigPopoverButton configItems={configItems} />
+            <ConfigPopoverButton configItems={configItems} runId={runId} />
           ) : (
             <LiveTrainingHeaderActions
+              runId={runId}
               configItems={configItems}
               isTrainingRunning={data.isTrainingRunning}
               onOpenStopDialog={setStopDialogOpen}
@@ -546,6 +552,7 @@ function LiveGpuPanel({
 }
 
 function LiveTrainingHeaderActions({
+  runId,
   configItems,
   isTrainingRunning,
   onOpenStopDialog,
@@ -553,6 +560,7 @@ function LiveTrainingHeaderActions({
   stopRequested,
   onSetStopRequested,
 }: {
+  runId?: string | null;
   configItems: ConfigGroup[];
   isTrainingRunning: boolean;
   onOpenStopDialog: (open: boolean) => void;
@@ -578,6 +586,7 @@ function LiveTrainingHeaderActions({
 
   return (
     <TrainingHeaderActions
+      runId={runId}
       configItems={configItems}
       isTrainingRunning={isTrainingRunning}
       onOpenStopDialog={onOpenStopDialog}
@@ -589,11 +598,14 @@ function LiveTrainingHeaderActions({
 }
 
 function ConfigPopoverButton({
+  runId,
   configItems,
 }: {
+  runId?: string | null;
   configItems: ConfigGroup[];
 }): ReactElement {
   const t = useT();
+  const { duplicate, disabled } = useDuplicateTrainingRun();
   return (
     <Popover>
       <PopoverTrigger asChild={true}>
@@ -625,6 +637,16 @@ function ConfigPopoverButton({
               ))}
             </div>
           ))}
+          {runId && (
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={disabled}
+              onClick={() => void duplicate(runId)}
+            >
+              {t("common.duplicate")}
+            </Button>
+          )}
         </div>
       </PopoverContent>
     </Popover>
@@ -632,6 +654,7 @@ function ConfigPopoverButton({
 }
 
 function TrainingHeaderActions({
+  runId,
   configItems,
   isTrainingRunning,
   onOpenStopDialog,
@@ -639,6 +662,7 @@ function TrainingHeaderActions({
   stopDialogOpen,
   stopRequested,
 }: {
+  runId?: string | null;
   configItems: ConfigGroup[];
   isTrainingRunning: boolean;
   onOpenStopDialog: (open: boolean) => void;
@@ -649,7 +673,7 @@ function TrainingHeaderActions({
   const t = useT();
   return (
     <div className="flex items-center gap-2">
-      <ConfigPopoverButton configItems={configItems} />
+      <ConfigPopoverButton configItems={configItems} runId={runId} />
       <ChartSettingsSheet />
       <AlertDialog open={stopDialogOpen} onOpenChange={onOpenStopDialog}>
         <Button

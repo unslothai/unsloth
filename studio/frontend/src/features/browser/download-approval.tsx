@@ -37,8 +37,14 @@ export function DownloadApprovalDialog() {
           <AlertDialogDescription className="break-words">
             {request ? t("browser.downloadPrompt.description", { host: request.label, name: request.name }) : null}
           </AlertDialogDescription>
+          {request?.dangerous ? (
+            <p className="text-sm font-medium text-destructive">
+              {t("browser.downloadPrompt.dangerous", { host: request.label })}
+            </p>
+          ) : null}
         </AlertDialogHeader>
-        {request?.origin ? (
+        {/* Files that run code ask every time, so there's nothing to remember. */}
+        {request?.origin && !request.dangerous ? (
           <label htmlFor={checkboxId} className="flex cursor-pointer items-center gap-2 text-sm text-foreground">
             <Checkbox id={checkboxId} checked={remember} onCheckedChange={(checked) => setRemember(checked === true)} />
             {t("browser.downloadPrompt.remember")}

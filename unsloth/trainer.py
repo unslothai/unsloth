@@ -33,7 +33,7 @@ from unsloth.utils import (
     enable_padding_free_metadata,
     enable_sample_packing,
 )
-from unsloth.utils.packing import patch_hybrid_linear_attention_varlen
+from unsloth.utils.packing import _stateful_mixer_kind, patch_hybrid_linear_attention_varlen
 from unsloth_zoo.training_utils import (
     unsloth_train as _unsloth_train,
 )
@@ -465,11 +465,8 @@ def _resolve_string_model_class(model_name, model_config, config_arg):
     # explicit `model_init_kwargs["trust_remote_code"] = None` keeps its falsy meaning.
     # Disagreeing with that function would execute a module under a grant the config
     # load itself did not accept.
+    trust_remote_code = _string_model_trust_remote_code(config_arg)
     init_kwargs = getattr(config_arg, "model_init_kwargs", None) or {}
-    if "trust_remote_code" in init_kwargs:
-        trust_remote_code = init_kwargs["trust_remote_code"]
-    else:
-        trust_remote_code = getattr(config_arg, "trust_remote_code", None)
 
     auto_map = getattr(model_config, "auto_map", None) or {}
     if not trust_remote_code or not isinstance(auto_map, dict):
@@ -508,6 +505,13 @@ def _resolve_string_model_class(model_name, model_config, config_arg):
     return None
 
 
+def _string_model_trust_remote_code(config_arg):
+    init_kwargs = getattr(config_arg, "model_init_kwargs", None) or {}
+    if "trust_remote_code" in init_kwargs:
+        return init_kwargs["trust_remote_code"]
+    return getattr(config_arg, "trust_remote_code", None)
+
+
 def _is_hybrid_linear_attention_model(model) -> bool:
     """Detect models mixing linear-attention / state-space mixers (gated-delta,
     Mamba-style) with a causal conv1d, e.g. Qwen3.5 / Qwen3-Next. Packing and
@@ -532,27 +536,34 @@ def _is_hybrid_linear_attention_model(model) -> bool:
         if any(hasattr(config, marker) for marker in _HYBRID_CONFIG_MARKERS):
             return True
 
-    # Module-level: a mixer carrying a recurrent gated-delta op plus a conv1d.
-    named_modules = getattr(model, "named_modules", None)
-    if named_modules is None:
-        return False
-    seen = set()
-    for _, module in named_modules():
-        if id(module) in seen:
-            continue
-        seen.add(id(module))
-        cls = type(module).__name__
-        if not (
-            cls.endswith("GatedDeltaNet") or "LinearAttention" in cls or cls.endswith("Mamba2Mixer")
-        ):
-            continue
-        has_recurrent = any(
-            hasattr(module, attr)
-            for attr in ("chunk_gated_delta_rule", "recurrent_gated_delta_rule", "A_log")
+    # Module-level: any recurrent / causal-conv mixer, whether or not the varlen shim can serve it.
+    modules = getattr(model, "modules", None)
+    if modules is None:
+        return _config_has_stateful_mixer(
+            getattr(model, "config", None),
+            trust_remote_code = bool(getattr(model, "trust_remote_code", False)),
         )
-        if has_recurrent and hasattr(module, "conv1d"):
-            return True
-    return False
+    return any(_stateful_mixer_kind(module) is not None for module in modules())
+
+
+def _config_has_stateful_mixer(config, trust_remote_code = False) -> bool:
+    # A string model= only has its config here: build it on the meta device and classify its modules.
+    if config is None or not hasattr(config, "model_type"):
+        return False
+    try:
+        import torch
+        from transformers import AutoModel, AutoModelForCausalLM
+        with torch.device("meta"):
+            try:
+                model = AutoModelForCausalLM.from_config(
+                    config, trust_remote_code = trust_remote_code
+                )
+            except Exception:
+                model = AutoModel.from_config(config, trust_remote_code = trust_remote_code)
+    except Exception:
+        # Unclassifiable remote code may hide a recurrent mixer: fail closed.
+        return bool(trust_remote_code and getattr(config, "auto_map", None))
+    return any(_stateful_mixer_kind(module) is not None for module in model.modules())
 
 
 def _resolve_string_model_config(model_name, config_arg):
@@ -665,12 +676,20 @@ class UnslothTrainingArguments(TrainingArguments):
         embedding_learning_rate: float = None,
         q_galore_config: Optional[QGaloreConfig] = None,
         *args,
+        loraplus_lr_ratio: Optional[float] = None,
         **kwargs,
     ):
+        # LoRA+ (arXiv 2402.12354): lora_B trains at learning_rate * loraplus_lr_ratio; 16 is the paper's pick.
+        if loraplus_lr_ratio is not None and not loraplus_lr_ratio > 0:
+            raise ValueError(
+                f"Unsloth: loraplus_lr_ratio must be a positive number, got {loraplus_lr_ratio!r}."
+            )
         self.q_galore_config = q_galore_config
         self.embedding_learning_rate = embedding_learning_rate
+        self.loraplus_lr_ratio = loraplus_lr_ratio
         super().__init__(*args, **kwargs)
         self.embedding_learning_rate = embedding_learning_rate
+        self.loraplus_lr_ratio = loraplus_lr_ratio
         if self.eval_steps is not None and self.eval_strategy != "steps":
             warnings.warn(
                 f"Unsloth: `eval_steps = {self.eval_steps}` is ignored because `eval_strategy` is "
@@ -688,8 +707,11 @@ def _create_unsloth_optimizer(
     require_embedding_match = False,
     weight_decay = 0.0,
     decay_parameter_names = None,
+    loraplus_lr_ratio = None,
 ):
     lr = optimizer_kwargs["lr"]
+    if embedding_lr is None:
+        embedding_lr = lr
     # transformers puts weight_decay in optimizer_kwargs only for schedule-free and stable_adamw,
     # so reading it from there alone meant the 0.0 default always won (Trainer.create_optimizer).
     weight_decay = optimizer_kwargs.get("weight_decay", weight_decay)
@@ -703,18 +725,36 @@ def _create_unsloth_optimizer(
         "embeddings": {},
     }
 
+    # A subset of non_embeddings, not its own dict: legacy resume replays the old two-group order.
+    lora_plus_names = set()
+
     for name, param in model.named_parameters():
         if not param.requires_grad:
             continue
         if name.endswith("modules_to_save.default.weight"):
             partial_name = name[: -len(".modules_to_save.default.weight")]
             partial_name = partial_name[partial_name.rfind(".") + 1 :]
-            print(
-                f"Unsloth: Setting lr = {embedding_lr:.2e} instead of {lr:.2e} for {partial_name}."
-            )
+            if embedding_lr != lr:
+                print(
+                    f"Unsloth: Setting lr = {embedding_lr:.2e} instead of {lr:.2e} for {partial_name}."
+                )
             param_groups["embeddings"][name] = param
         else:
             param_groups["non_embeddings"][name] = param
+            if loraplus_lr_ratio is not None and ".lora_B." in name:
+                lora_plus_names.add(name)
+
+    if loraplus_lr_ratio is not None:
+        if not lora_plus_names:
+            raise ValueError(
+                "Unsloth: loraplus_lr_ratio was set but no trainable LoRA B parameter was found, "
+                "so LoRA+ would do nothing. Add LoRA adapters with get_peft_model, train "
+                "without FSDP1, or drop loraplus_lr_ratio."
+            )
+        print(
+            f"Unsloth: LoRA+ enabled, lora_B lr = {lr * loraplus_lr_ratio:.2e} "
+            f"({loraplus_lr_ratio:g} x {lr:.2e}) for {len(lora_plus_names)} tensors."
+        )
 
     if require_embedding_match and not param_groups["embeddings"]:
         # Only checked on the delayed path, where the model has been through
@@ -734,12 +774,17 @@ def _create_unsloth_optimizer(
     # rejects a checkpoint whose group count differs, which would break resume.
     optimizer_grouped_parameters = []
     group_roles = []
-    for group, group_lr in (("non_embeddings", lr), ("embeddings", embedding_lr)):
+    for group, source, group_lr in (
+        ("non_embeddings", "non_embeddings", lr),
+        ("lora_plus", "non_embeddings", lr * (loraplus_lr_ratio or 1.0)),
+        ("embeddings", "embeddings", embedding_lr),
+    ):
         for decays in (True, False):
             params = [
                 param
-                for name, param in param_groups[group].items()
+                for name, param in param_groups[source].items()
                 if (name in decay_parameter_names) is decays
+                and (group == "lora_plus") is (name in lora_plus_names)
             ]
             if not params:
                 continue
@@ -787,6 +832,9 @@ def _migrate_legacy_optimizer_state(
     """
     saved_groups = state_dict.get("param_groups") or []
     if len(saved_groups) != len(_LEGACY_ROLE_ORDER):
+        return None
+    # A LoRA+ group has no legacy counterpart to take hyperparameters from.
+    if any(role not in _LEGACY_ROLE_ORDER for role in group_roles):
         return None
     if tuple(len(g["params"]) for g in saved_groups) != tuple(legacy_sizes):
         return None
@@ -941,21 +989,29 @@ class UnslothTrainer(SFTTrainer):
             )
 
         embedding_learning_rate = getattr(self.args, "embedding_learning_rate", None)
-        if embedding_learning_rate is None:
+        loraplus_lr_ratio = getattr(self.args, "loraplus_lr_ratio", None)
+        if embedding_learning_rate is None and loraplus_lr_ratio is None:
             if model is not None and _super_create_optimizer_takes_model():
                 return super().create_optimizer(model)
             return super().create_optimizer()
 
         if self.optimizer is None:
-            optimizer_cls, optimizer_kwargs = SFTTrainer.get_optimizer_cls_and_kwargs(self.args)
+            # Trainer.create_optimizer prefers a user optimizer_cls_and_kwargs over args.optim.
+            custom = getattr(self, "optimizer_cls_and_kwargs", None)
+            if custom is not None:
+                optimizer_cls, optimizer_kwargs = custom[0], dict(custom[1])
+                optimizer_kwargs.setdefault("lr", self.args.learning_rate)
+            else:
+                optimizer_cls, optimizer_kwargs = SFTTrainer.get_optimizer_cls_and_kwargs(self.args)
             self.optimizer = _create_unsloth_optimizer(
                 target_model,
                 optimizer_cls,
                 optimizer_kwargs,
                 embedding_learning_rate,
-                require_embedding_match = model is not None,
+                require_embedding_match = model is not None and embedding_learning_rate is not None,
                 weight_decay = self.args.weight_decay,
                 decay_parameter_names = self.get_decay_parameter_names(target_model),
+                loraplus_lr_ratio = loraplus_lr_ratio,
             )
         return self.optimizer
 
@@ -1361,13 +1417,16 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 is_vlm = _is_vlm_config(model_config, model_types)
                 is_encoder_decoder = bool(getattr(model_config, "is_encoder_decoder", False))
             hybrid_target = (
-                SimpleNamespace(config = model_config)
+                SimpleNamespace(
+                    config = model_config,
+                    trust_remote_code = _string_model_trust_remote_code(config_arg),
+                )
                 if isinstance(model, str) and model_config is not None
                 else model
             )
             is_hybrid = _is_hybrid_linear_attention_model(hybrid_target)
-            # Hybrid models corrupt packed batches unless the gated-delta conv and scan reset at sequence
-            # boundaries, so enable the experimental varlen shim (flag plus kernels) or keep them blocked.
+            # Hybrid models corrupt packed batches unless the gated-delta / Mamba2 conv and scan reset at
+            # sequence boundaries, so enable the experimental varlen shim (flag plus kernels) or keep them blocked.
             if (
                 is_hybrid
                 and not isinstance(model, str)

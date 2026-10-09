@@ -181,6 +181,7 @@ export const fr = {
     downloadPrompt: {
       title: "Télécharger ce fichier ?",
       description: "{host} souhaite enregistrer {name} sur votre ordinateur.",
+      dangerous: "Ce type de fichier peut exécuter des programmes sur votre ordinateur. Ne le téléchargez que si vous faites confiance à {host}.",
       remember: "Se souvenir pour la prochaine fois",
       cancel: "Annuler",
       download: "Télécharger",
@@ -368,6 +369,7 @@ export const fr = {
       downloading: "Téléchargement de {name}",
       downloaded: "{name} enregistré dans Téléchargements",
       downloadFailed: "Impossible de télécharger {name}",
+      notMarked: "{name} a été enregistré mais n'a pas pu être marqué comme téléchargé depuis Internet ; votre système n'avertira donc pas avant de l'ouvrir.",
       blocked: "Cette adresse ne peut pas s'ouvrir dans le panneau du navigateur. Il n'ouvre que les sites web publics.",
       clearDataSettingDescription: "Effacer l'historique de navigation, l'historique des téléchargements, les pages en cache ainsi que les cookies et données de sites, ce qui vous déconnecte des sites.",
       clearDataDescription: "Cela efface l'historique de navigation, l'historique des téléchargements, les pages en cache ainsi que les cookies et données de sites, ce qui vous déconnecte des sites. Les fichiers téléchargés restent sur votre ordinateur.",
@@ -509,6 +511,7 @@ export const fr = {
     },
   },
   common: {
+    duplicate: "Dupliquer",
     cancel: "Annuler",
     close: "Fermer",
     delete: "Supprimer",
@@ -1164,6 +1167,8 @@ export const fr = {
     sandbox: {
       title: "Sandbox",
       description: "Indique si les appels d'outils Python et Terminal s'exécutent dans un bac à sable du système sur cet ordinateur.",
+      docs: "Documentation",
+      docsLabel: "Ouvrir la documentation du sandbox",
       toolsSection: "Cet ordinateur",
       refresh: "Actualiser",
       python: "Python",
@@ -1629,6 +1634,9 @@ export const fr = {
         showWhisperUpdates: "Notifications de mise à jour de whisper.cpp",
         showWhisperUpdatesDescription:
           "Notifier lorsqu'une nouvelle version de whisper.cpp est disponible pour les modèles de transcription vocale. Désactivez si vous ne transcrivez jamais d'audio.",
+        showAudioCppUpdates: "Notifications de mise à jour d'audio.cpp",
+        showAudioCppUpdatesDescription:
+          "Notifier lorsque le moteur audio.cpp doit être mis à jour pour les pages Audio. Désactivez si vous n'utilisez jamais Audio.",
       },
       startup: {
         sectionTitle: "Démarrage",
@@ -2284,6 +2292,7 @@ export const fr = {
         "Impossible de charger toutes les quantifications. La commande utilisera la valeur de modèle disponible.",
       generatedCommand: "Commande générée",
       docs: "Documentation",
+      docsLabel: "Ouvrir la documentation de unsloth start",
       agentDocs: "Ouvrir la documentation de configuration de {agent}",
       copyGeneratedCommand: "Copier la commande générée",
       // English is the baseline until translated: the three-part sentence is assembled around an
@@ -2829,6 +2838,8 @@ export const fr = {
       revoking: "Révocation...",
       decisionApi: {
         title: "API de décision",
+        docs: "Documentation",
+        docsLabel: "Ouvrir la documentation de l'API de décision",
         description: "Répondez à des questions oui/non, à choix multiples et à score sur du texte avec un modèle sur cette machine ou un modèle de décision issu des Connexions. Compatible avec le SDK TypeSafe.",
         enable: "Répondre aux requêtes",
         enableDescription: "Sert /v1/systemone. L'activer télécharge le modèle.",
@@ -2846,6 +2857,16 @@ export const fr = {
         deviceDescription: "Le GPU répond plus vite, mais garde sa mémoire réservée jusqu'au redémarrage.",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
+        backend: "Moteur d'exécution",
+        backendAuto: "Automatique",
+        backendDescription:
+          "Automatique sert Clef via llama.cpp lorsque le modèle a une version GGUF, et se rabat sur PyTorch sinon. llama.cpp lit aussi les images.",
+        backendDescriptionMlx:
+          "Automatique sert le texte de Clef via MLX sur Apple Silicon, et via llama.cpp lorsque seule la version GGUF du modèle est chargée ou téléchargée. MLX ne lit que le texte ; llama.cpp lit aussi les images.",
+        backendStatus: "Moteur d'exécution : {backend}",
+        backendNone: "indisponible",
+        mediaImages: "Lit le texte et les images.",
+        mediaText: "Lit uniquement le texte.",
         checking: "Vérification…",
         notDownloaded: "Non téléchargé · {size}",
         downloading: "Téléchargement…",
@@ -2988,6 +3009,11 @@ export const fr = {
       datasetLabel: "Jeu de données",
       modelTooltip: "Le modèle de base que vous souhaitez affiner.",
       methodTooltip: "Comment le modèle est entraîné. LoRA et QLoRA mettent à jour de petits adaptateurs au lieu de tous les poids.",
+      trainAsLabel: "Entraîner comme",
+      trainAsTooltip:
+        "Un modèle de langage écrit du texte. Un modèle de décision choisit l'une des options que vous lui donnez, avec une probabilité, et fonctionne dans la Decision API.",
+      trainAsLanguage: "Modèle de langage",
+      trainAsDecision: "Modèle de décision",
       checkpointLabel: "Checkpoint",
       checkpointTooltip:
         "Le checkpoint Laya à affiner. Multilingue convient à la plupart des jeux de données.",
@@ -3436,6 +3462,31 @@ export const fr = {
         "Fraction du nombre total d'étapes d'entraînement entre les évaluations (0-1). Définissez 0 pour désactiver l'évaluation. Ex. 0,01 = évaluer tous les 1 % d'étapes.",
       seed: "Graine",
       seedTooltip: "Graine aléatoire pour la reproductibilité.",
+      offloadLayers: "Décharger des couches",
+      offloadLayersTooltip: "Garde des couches du décodeur en RAM système et transfère chacune vers le GPU juste avant son exécution, pour entraîner avec LoRA un modèle plus grand que votre VRAM. Auto en décharge le moins possible ; un nombre en décharge exactement autant. Nécessite le gradient checkpointing.",
+      offloadOff: "Désactivé",
+      offloadAuto: "Auto",
+      offloadCount: "Nombre",
+      offloadVramBudget: "Budget VRAM (Gio)",
+      offloadVramBudgetTooltip: "La VRAM maximale que cet entraînement peut utiliser. Auto décharge assez de couches pour rester en dessous, et deux entraînements peuvent partager une carte. Vide utilise toute la carte.",
+      offloadWholeCard: "toute la carte",
+      offloadVramBudgetGpu: "Budget VRAM GPU {index} (Gio)",
+      prefetchDepth: "Profondeur de préchargement",
+      prefetchDepthTooltip: "Nombre de couches déchargées copiées avant celle qui s'exécute. Auto commence à 1 et ne garde une réserve plus profonde que si elle réduit l'attente des copies de façon mesurable.",
+      offloadPanelTitle: "Couches déchargées",
+      offloadPanelGpu: "Sur le GPU",
+      offloadPanelHost: "En RAM système",
+      offloadPanelCopying: "Copie en cours",
+      offloadPanelSwapped: "déchargées",
+      offloadPanelStall: "attente des copies",
+      offloadPanelCopy: "copie par couche",
+      offloadPanelCompute: "calcul par couche",
+      offloadPanelVram: "VRAM",
+      offloadPanelDepth: "profondeur de préchargement",
+      offloadPanelPinned: "épinglée",
+      offloadPanelSweepNote: "La fenêtre mobile montre l'ordre de chargement des couches, ralenti pour être visible ; les chiffres sont mesurés sur la dernière étape.",
+      offloadPanelCard: "GPU {index}",
+      offloadPanelCardUnknown: "Carte inconnue",
       gradCheckpoint: "Checkpoint de gradient",
       gradCheckpointTooltip:
         "Échanger du calcul contre de la mémoire en recalculant les activations.",
@@ -3446,6 +3497,11 @@ export const fr = {
       readMore: "En savoir plus",
     },
     training: {
+      duplicateFailed: "Impossible de dupliquer l'entraînement",
+      duplicateDraftChanged:
+        "Les paramètres d'entraînement ont changé pendant le chargement. Réessayez de le dupliquer.",
+      duplicateNoModel:
+        "Cet entraînement n'a pas de configuration de modèle enregistrée.",
       startTraining: "Démarrer l'entraînement",
       starting: "Démarrage...",
       loadingModel: "Chargement du modèle...",
@@ -4159,6 +4215,17 @@ export const fr = {
       readVideoFailed: "Impossible de lire la vidéo ({status}).",
       openFileFailed: "Impossible d'ouvrir le fichier",
     },
+  },
+  exportDecision: {
+    title: "Modèle de décision",
+    description: "Les modèles de décision {layout} s'exportent en GGUF pour le serveur de décision de llama.cpp. Choisissez une ou plusieurs quantifications.",
+    adapterNote: "Ce checkpoint contient des adaptateurs LoRA ; ils sont fusionnés avant la conversion.",
+    notEligibleTitle: "Export GGUF indisponible",
+    ggufOnly: "Les modèles de décision s'exportent uniquement en GGUF",
+    existing: "Déjà exporté : {quantizations}",
+    outputNote: "Les fichiers GGUF sont enregistrés dans le dossier de l'exécution : {path}",
+    methodLabel: "GGUF du modèle de décision",
+    outputLabel: "GGUF de décision ({quantizations})",
   },
   decisions: {
     title: "Essayer une décision",

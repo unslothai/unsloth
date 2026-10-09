@@ -1474,6 +1474,7 @@ def _openai_stream_usage_chunk(
             completion_tokens = _completion_tokens,
             total_tokens = _total_tokens,
             prompt_tokens_details = _prompt_tokens_details(_usage.get("prompt_tokens_details")),
+            context_tokens = _usage.get("context_tokens"),
         ),
         timings = stream_timings,
     )
@@ -8073,11 +8074,15 @@ def _owner_chosen_launch(
     or was the owner's). Replaying these is not a new path, so auto-switch loads and the UI resending
     an inherited or echoed setting keep working."""
     from core.inference.llama_server_args import owner_only_path_args
+    from utils.account_context import OWNER
     from utils.openai_auto_switch_settings import resolve_override_for_load
 
     sources = []
     if identifier:
-        _, override = resolve_override_for_load(identifier, config_identifier, variant)
+        # The owner's row only: a managed account's own saved override is not the owner's choice.
+        _, override = run_as(
+            OWNER, resolve_override_for_load, identifier, config_identifier, variant
+        )
         sources.append(override.get("llama_extra_args"))
         intent = getattr(get_llama_cpp_backend(), "last_load_intent", None)
         if (
@@ -8801,6 +8806,52 @@ def _as_ollama_manifest_request(request):
         # A tag whose manifest no longer reads is no improvement on a link that still resolves.
         return request
     return request.model_copy(update = {"model_path": ref})
+
+
+def _as_local_scan_folder_request(request, owner_session: bool):
+    """*request* with a repo id whose GGUF copy sits outside the active hub cache (e.g. a scan folder) rewritten to it."""
+    from core.inference.local_model_resolver import _is_abs_path_id, resolve_local_gguf
+    from core.inference.model_ids import hf_cache_repo_id
+
+    identifier = (request.model_path or "").strip()
+    # Bare names mean unsloth/<name> remotely; a same-stemmed local file must not win them.
+    if (
+        not identifier
+        or "/" not in identifier
+        or is_ollama_manifest_ref(identifier)
+        or _is_abs_path_id(identifier)
+    ):
+        return request
+    # Owner session only (as _refused_repo_cached_gguf); a native lease names one exact artifact.
+    if not owner_session or getattr(request, "native_path_lease", None):
+        return request
+    wanted = f"{identifier}:{request.gguf_variant}" if request.gguf_variant else identifier
+    try:
+        resolved = resolve_local_gguf(wanted)
+    except Exception:
+        return request
+    if resolved is None:
+        return request
+    load_path, variant = str(resolved[0]), resolved[1]
+    # Only a GGUF snapshot of this repo: its path maps back to the repo id (status, unload, consent).
+    if not variant or (hf_cache_repo_id(load_path) or "").lower() != identifier.lower():
+        return request
+    # A repo directly in the active hub cache already loads by repo id without downloading.
+    try:
+        from hub.utils.hf_cache_state import same_existing_path
+        from routes.models import _resolve_hf_cache_dir
+
+        repo_dir = next(p for p in Path(load_path).parents if p.name.startswith("models--"))
+        if same_existing_path(repo_dir.parent, Path(_resolve_hf_cache_dir())):
+            return request
+    except Exception:
+        return request
+    logger.info(
+        "Resolved repo id '%s' to local path %s instead of downloading",
+        identifier,
+        load_path,
+    )
+    return request.model_copy(update = {"model_path": load_path, "gguf_variant": variant})
 
 
 async def _lease_ollama_model_ref(
@@ -11546,6 +11597,7 @@ async def _maybe_auto_switch_model(
                             # Stale pin (GPU removed, another host, or a backend change
                             # renumbering these ids): drop it rather than 400 the load.
                             load_kwargs.pop("gpu_ids", None)
+                            load_kwargs.pop("tensor_split", None)
                             logger.warning(
                                 "Dropping saved gpu_ids %s for %s: not available here.",
                                 saved_gpu_ids,
@@ -11606,6 +11658,7 @@ async def _maybe_auto_switch_model(
                                     exc.detail,
                                 )
                                 load_kwargs.pop("gpu_ids", None)
+                                load_kwargs.pop("tensor_split", None)
                                 load_request = LoadRequest(**load_kwargs)
                                 load_request._gguf_companion_roots = gguf_companion_roots
                                 load_request._gguf_companion_roots_set = True
@@ -13215,6 +13268,25 @@ def _estimate_gguf_required_gb(
             and not _extras_own_drafter
             and not _draft_pinned_to_cpu
         )
+        # Mirrors load_model's #11308 rule: Auto on tensor split runs a loadable MTP sidecar, not DFlash.
+        if _auto_dflash:
+            from core.inference.llama_server_args import _effective_tensor_parallel
+            from utils.models.gguf_metadata import read_gguf_nextn_predict_layers
+
+            _tp_mtp = getattr(config, "gguf_mtp_file", None)
+            _tp_main = getattr(config, "gguf_file", None)
+            if (
+                _tp_mtp
+                and _effective_tensor_parallel(llama_extra_args, tensor_parallel)
+                and Path(_tp_mtp).is_file()
+                and not (_tp_main and (read_gguf_nextn_predict_layers(str(_tp_main)) or 0) > 0)
+                and _mtp_drafter_loads_standalone(str(_tp_mtp))
+            ):
+                try:
+                    if LlamaCppBackend.probe_server_capabilities().get("mtp_token"):
+                        _auto_dflash = False
+                except Exception:
+                    pass
         _dflash_capable = True
         if _forced_dflash or _auto_dflash:
             try:
@@ -13879,6 +13951,7 @@ def _gguf_resident_file_gb(
     speculative_type: Optional[str] = None,
     disable_vision: bool = False,
     local_only: bool = False,
+    tensor_parallel: bool = False,
 ) -> Optional[float]:
     """GB of files a launch would make resident: weights, projector, drafter.
 
@@ -13904,7 +13977,7 @@ def _gguf_resident_file_gb(
     )
     # In the key: a local-only answer served to the admission guard would drop a
     # remote drafter it must charge for.
-    key = (*key, local_only)
+    key = (*key, local_only, bool(tensor_parallel))
     now = time.monotonic()
     hit = _estimate_files_cache.get(key)
     if hit is not None and now - hit[0] < _ESTIMATE_FILES_TTL_SECONDS:
@@ -13916,6 +13989,7 @@ def _gguf_resident_file_gb(
         disable_vision = disable_vision,
         hf_token = hf_token,
         local_only = local_only,
+        tensor_parallel = tensor_parallel,
     )
     required_gb = _estimate_gguf_required_gb(config, max_seq_length = 0, **priced)
     if required_gb is None:
@@ -14503,6 +14577,7 @@ def _gguf_memory_breakdown(
         # No Hub listing behind a slider: a --spec-draft-hf repo is left uncharged here
         # and marked below, rather than costing a model_info per settings change.
         local_only = True,
+        tensor_parallel = tensor_parallel,
     )
     if files_gb is None:
         return None
@@ -14539,6 +14614,7 @@ def _gguf_memory_breakdown(
         speculative_type = speculative_type,
         disable_vision = disable_vision,
         local_only = True,
+        tensor_parallel = tensor_parallel,
     )
 
     def _files_bytes_with(extra: tuple[str, ...]) -> Optional[int]:
@@ -16698,6 +16774,22 @@ _COMPRESSED_TENSORS_INFERENCE_UNSUPPORTED_MESSAGE = (
     "build of this model instead."
 )
 
+# The optional vLLM engine loads compressed-tensors checkpoints (#11728); said only where it can run.
+_COMPRESSED_TENSORS_VLLM_HINT = (
+    " Or run it with vLLM: open this model's run settings and set Inference engine to vLLM."
+)
+
+
+def _vllm_engine_hint(engine: Optional[str]) -> str:
+    """Empty unless this host can run vLLM; ``wait = False`` keeps the GPU probe off this path."""
+    if engine not in (None, "auto"):
+        return ""
+    try:
+        from core.inference.engine_install import support_reason
+        return _COMPRESSED_TENSORS_VLLM_HINT if support_reason("vllm", wait = False) is None else ""
+    except Exception:
+        return ""
+
 
 def _diagnosis_text(msg: str) -> str:
     """``msg`` up to the startup-diagnostics block, which is not ours to read.
@@ -16742,7 +16834,7 @@ def _is_missing_compressed_tensors_error(msg: str) -> bool:
     return any(sig in lower_msg for sig in _MISSING_COMPRESSED_TENSORS_SIGNATURES)
 
 
-def _unsupported_quantization_detail(msg: str) -> Optional[str]:
+def _unsupported_quantization_detail(msg: str, engine: Optional[str] = None) -> Optional[str]:
     """The refusal to show for ``msg``, or None when it is not about quantization.
 
     One place to add a signature to, so load, native load and validate cannot drift.
@@ -16750,7 +16842,7 @@ def _unsupported_quantization_detail(msg: str) -> Optional[str]:
     if _is_unsupported_nvfp4_inference_error(msg):
         return _NVFP4_INFERENCE_UNSUPPORTED_MESSAGE
     if _is_missing_compressed_tensors_error(msg):
-        return _COMPRESSED_TENSORS_INFERENCE_UNSUPPORTED_MESSAGE
+        return _COMPRESSED_TENSORS_INFERENCE_UNSUPPORTED_MESSAGE + _vllm_engine_hint(engine)
     return None
 
 
@@ -18042,6 +18134,14 @@ async def _load_model_impl(
     if account_access.managed_account() and not native_access_deferred:
         await asyncio.to_thread(account_access.require_model_access, request.model_path)
     request = await asyncio.to_thread(_as_ollama_manifest_request, request)
+    _requested_model_id = request.model_path
+    request = await asyncio.to_thread(
+        _as_local_scan_folder_request, request, _owner_session(fastapi_request)
+    )
+    # The client keeps the repo id it picked as the checkpoint; only the load reads the copy.
+    scan_folder_public_id = (
+        _requested_model_id if request.model_path != _requested_model_id else None
+    )
     if account_access.managed_account():
         request = request.model_copy(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}
@@ -18268,7 +18368,17 @@ async def _load_model_impl(
                 == tuple(request._gguf_companion_roots)
                 and getattr(llama_backend, "_openai_gguf_companion_state", ())
                 == gguf_companion_state
-                and llama_backend.adopt_load_intent_if_matched(intent)
+                and (
+                    llama_backend.adopt_load_intent_if_matched(intent)
+                    # Another account's capacity mismatch is its defaults, not a reconfig (#12365).
+                    or (
+                        replacing
+                        and account_access.joins_resident_runtime(
+                            "chat", llama_backend.model_identifier
+                        )
+                        and llama_backend.components_match_intent(intent)
+                    )
+                )
                 and getattr(llama_backend, "_audio_probed", True)
             ):
                 return None
@@ -18283,7 +18393,9 @@ async def _load_model_impl(
             return _gguf_load_response(
                 llama_backend,
                 "already_loaded",
-                model_log_label if native_grant_backed else llama_backend.model_identifier,
+                model_log_label
+                if native_grant_backed
+                else scan_folder_public_id or llama_backend.model_identifier,
                 display_name = model_log_label if native_grant_backed else display_name,
                 is_local_model = _loaded_is_local_model(
                     llama_backend, native_grant_backed, llama_backend.model_identifier
@@ -18990,7 +19102,9 @@ async def _load_model_impl(
             return _gguf_load_response(
                 llama_backend,
                 "loaded",
-                model_log_label if native_grant_backed else public_model_identifier,
+                model_log_label
+                if native_grant_backed
+                else scan_folder_public_id or public_model_identifier,
                 display_name = model_log_label if native_grant_backed else config.display_name,
                 is_local_model = config.is_local,
                 inference_identifier = config.identifier,
@@ -19291,7 +19405,9 @@ async def _load_model_impl(
         raise
     except ValueError as e:
         redacted_msg = redact_native_paths(str(e))
-        _unsupported_quantization = _unsupported_quantization_detail(redacted_msg)
+        _unsupported_quantization = _unsupported_quantization_detail(
+            redacted_msg, getattr(request, "engine", None)
+        )
         if _unsupported_quantization is not None:
             logger.warning(
                 "Unsupported quantization while loading '%s': %s",
@@ -19319,11 +19435,18 @@ async def _load_model_impl(
         logger.warning("GGUF runtime missing while loading '%s': %s", model_log_label, e)
         raise HTTPException(status_code = 400, detail = str(e))
     except Exception as e:
-        from core.inference.gpu_arbiter import GpuOwnerBusyError
+        from core.inference.gpu_arbiter import DECISIONS, GpuOwnerBusyError
         from utils.transformers_version import SidecarSwapInProgress
 
         if isinstance(e, account_access.GpuBusyForAnotherAccountError):
             raise account_access.gpu_busy_error() from e
+        if isinstance(e, GpuOwnerBusyError) and e.owner == DECISIONS:
+            # A llama.cpp decision server loading or deciding refuses eviction until it is idle.
+            raise HTTPException(
+                status_code = 409,
+                detail = "The Decision API is using the GPU; retry shortly.",
+                headers = {"Retry-After": "5"},
+            ) from e
         if isinstance(e, GpuOwnerBusyError):
             raise
         if isinstance(e, SidecarSwapInProgress):
@@ -19334,7 +19457,9 @@ async def _load_model_impl(
             raise HTTPException(status_code = 400, detail = HUB_TOKEN_REJECTED_ERROR)
         # Friendlier message for models Unsloth cannot load.
         redacted_msg = redact_native_paths(str(e))
-        _unsupported_quantization = _unsupported_quantization_detail(redacted_msg)
+        _unsupported_quantization = _unsupported_quantization_detail(
+            redacted_msg, getattr(request, "engine", None)
+        )
         if _unsupported_quantization is not None:
             logger.warning(
                 "Unsupported quantization while loading '%s': %s",
@@ -19552,6 +19677,10 @@ async def validate_model(
     if account_access.managed_account() and not native_access_deferred:
         await asyncio.to_thread(account_access.require_model_access, request.model_path)
     request = await asyncio.to_thread(_as_ollama_manifest_request, request)
+    # The chat flow validates before /load; offline the remote probe would refuse the id.
+    request = await asyncio.to_thread(
+        _as_local_scan_folder_request, request, _owner_session(fastapi_request)
+    )
     from core.inference.llama_cpp import (
         LlamaServerNotFoundError,
         _hf_offline_if_unreachable_for,
@@ -19821,8 +19950,7 @@ async def validate_model(
             from utils.transformers_version import latest_tier_active_for
             _install_only_upgrade = (
                 transformers_upgrade is not None
-                and transformers_upgrade.supported_in_pypi
-                and transformers_upgrade.pypi_version
+                and transformers_upgrade.installable
                 and not requires_trust_remote_code
             )
             if _install_only_upgrade or await asyncio.to_thread(
@@ -19985,7 +20113,9 @@ async def validate_model(
                     "Check the name, or add a token with access to it in Settings."
                 ),
             )
-        _unsupported_quantization = _unsupported_quantization_detail(redacted_msg)
+        _unsupported_quantization = _unsupported_quantization_detail(
+            redacted_msg, getattr(request, "engine", None)
+        )
         if _unsupported_quantization is not None:
             logger.warning(
                 "Unsupported quantization while validating '%s': %s",
@@ -20231,15 +20361,14 @@ async def check_transformers_upgrade_route(
 
     # An offered install lands the model on the latest sidecar, which forces 16-bit (bnb
     # 4-bit feeds quantized experts into unvalidated paths for brand-new architectures).
-    # A dev-only upgrade is never installed, so it changes nothing. Same rule /validate
+    # An upgrade with nothing to install changes nothing. Same rule /validate
     # applies: a model with a custom-code fallback still loads 4-bit on the current
     # transformers and the dialog offers that way out, so a merely offered upgrade
     # cannot be claimed as 16-bit. Only an install-only upgrade, or a sidecar already
     # routing the model, forces it.
     install_only_upgrade = bool(
         transformers_upgrade is not None
-        and transformers_upgrade.supported_in_pypi
-        and transformers_upgrade.pypi_version
+        and transformers_upgrade.installable
         and not requires_trust_remote_code
     )
     # Already on the sidecar: the install is not what would strand the checkpoint, and
@@ -20279,7 +20408,8 @@ async def install_latest_transformers_route(
 
     Called after the user confirms the transformers-upgrade dialog raised by /validate
     (requires_transformers_upgrade). The requested version must match the current latest
-    PyPI release (re-verified server-side); the sidecar then participates in routing on
+    PyPI release, or transformers main when only main ships the architecture (both
+    re-verified server-side); the sidecar then participates in routing on
     this and every future start. A pip install runs off-loop, so this can take a minute.
     """
     from utils.transformers_latest import install_latest_transformers
@@ -20479,7 +20609,7 @@ async def install_latest_transformers_route(
         if owns_reservation:
             end_sidecar_swap()
     if not result["success"]:
-        if result.get("latest_version"):
+        if result.get("latest_version") or result.get("latest_main_version"):
             # Structured failure so the dialog can update to the newer release
             # and offer a retry that can actually succeed.
             return InstallLatestTransformersResponse(**result, model_unloaded = unloaded_chat["v"])
@@ -24666,15 +24796,6 @@ _AUDIO_CPP_RUNTIME_MISSING = {
 }
 
 
-def _audio_cpp_release_ladder() -> list:
-    studio_dir = str(Path(__file__).resolve().parents[2])
-    if studio_dir not in sys.path:
-        sys.path.insert(0, studio_dir)
-    import install_audio_cpp_prebuilt
-
-    return install_audio_cpp_prebuilt._release_ladder()
-
-
 def _audio_cpp_runtime_status() -> dict:
     try:
         from core.inference import audio_cpp_server
@@ -24696,26 +24817,11 @@ def _audio_cpp_runtime_status() -> dict:
     except Exception as exc:  # noqa: BLE001 - a status poll must not fail on a probe
         logger.debug("audio.cpp runtime probe failed: %s", exc)
         return dict(_AUDIO_CPP_RUNTIME_MISSING)
-    # only the managed tree is updatable; setup skips it under any of these, whatever the path.
-    setup_skips = (
-        os.environ.get("AUDIOCPP_SERVER_PATH")
-        or os.environ.get("UNSLOTH_AUDIO_CPP_PATH")
-        or os.environ.get("UNSLOTH_SKIP_AUDIO_CPP_INSTALL") == "1"
-    )
     try:
-        managed_dir = audio_cpp_server.managed_audio_cpp_dir().resolve()
-        managed = not setup_skips and (
-            Path(binary).resolve().is_relative_to(managed_dir)
-            and (managed_dir / ".unsloth-studio-owned").is_file()
-        )
-        ladder = _audio_cpp_release_ladder() if managed else []
+        from utils import audio_cpp_update
+        status.update(audio_cpp_update.release_status(binary, record))
     except Exception as exc:  # noqa: BLE001 - cannot tell is not outdated
         logger.debug("audio.cpp release lookup failed: %s", exc)
-        ladder = []
-    # a None tag tracks the latest release, so an installed release cannot be compared.
-    if status["release_tag"] and ladder and all(tag for _, tag in ladder):
-        status["expected_tag"] = ladder[0][1]
-        status["outdated"] = (record.get("published_repo"), release_tag) not in ladder
     return status
 
 
@@ -27415,6 +27521,9 @@ def _build_external_messages(
             if provider_type == "llama_cpp" and msg.role == "assistant" and msg.reasoning_content
             else {}
         )
+        has_message_extra_content = bool(
+            emit_message_extra_content and msg.role == "assistant" and msg.extra_content
+        )
         if anthropic and msg.role == "assistant" and isinstance(msg.extra_content, dict):
             native = msg.extra_content.get("anthropic")
             if (
@@ -27432,7 +27541,9 @@ def _build_external_messages(
             and msg.tool_call_id in dropped_server_builtin_tool_call_ids
         ):
             continue
-        if isinstance(msg.content, str) or (msg.content is None and replay):
+        if isinstance(msg.content, str) or (
+            msg.content is None and (replay or has_message_extra_content)
+        ):
             # Drop bare assistant messages with no content AND no tool_calls
             # (some providers reject empty assistant turns). Preserve assistant
             # turns whose only payload is tool_calls so multi-turn
@@ -27442,6 +27553,7 @@ def _build_external_messages(
                 and not (msg.content or "").strip()
                 and not msg.tool_calls
                 and not replay
+                and not has_message_extra_content
             ):
                 continue
             out: dict[str, Any] = {"role": msg.role, "content": msg.content or "", **replay}
@@ -27449,7 +27561,9 @@ def _build_external_messages(
                 _tcs = _filter_tool_calls(msg.tool_calls)
                 if _tcs:
                     out["tool_calls"] = _tcs
-                elif not (msg.content or "").strip() and not replay:
+                elif (
+                    not (msg.content or "").strip() and not replay and not has_message_extra_content
+                ):
                     # Every tool_call was a dropped synthetic provider card;
                     # the turn would be an empty
                     # `{"role":"assistant","content":""}` that some providers
@@ -27532,12 +27646,17 @@ def _build_external_messages(
                     _tcs = _filter_tool_calls(msg.tool_calls)
                     if _tcs:
                         entry["tool_calls"] = _tcs
-                    elif not parts and not replay:
+                    elif not parts and not replay and not has_message_extra_content:
                         # All tool_calls were synthetic and dropped, and no
                         # content parts survived. Skip rather than forward an
                         # empty assistant turn that downstream providers reject.
                         continue
-                elif msg.role == "assistant" and not parts and not replay:
+                elif (
+                    msg.role == "assistant"
+                    and not parts
+                    and not replay
+                    and not has_message_extra_content
+                ):
                     continue
                 if msg.role == "tool":
                     if msg.tool_call_id:
@@ -27567,7 +27686,12 @@ def _build_external_messages(
                         if p.content and p.encrypted_content:
                             compaction["encrypted_content"] = p.encrypted_content
                         preserved.append(compaction)
-                if msg.role == "assistant" and not preserved and not replay:
+                if (
+                    msg.role == "assistant"
+                    and not preserved
+                    and not replay
+                    and not has_message_extra_content
+                ):
                     continue
                 if len(preserved) == 1 and preserved[0]["type"] == "text":
                     # Single text part collapses to a string for providers that
@@ -27586,7 +27710,7 @@ def _build_external_messages(
                         _has_text = (
                             isinstance(_entry_content, str) and _entry_content.strip()
                         ) or (isinstance(_entry_content, list) and len(_entry_content) > 0)
-                        if not _has_text and not replay:
+                        if not _has_text and not replay and not has_message_extra_content:
                             continue
                 if msg.role == "tool":
                     if msg.tool_call_id:
@@ -27788,6 +27912,11 @@ async def _stop_on_cancel(agen, cancel_event: threading.Event):
             await agen.aclose()
         except RuntimeError:
             pass
+
+
+# keep these limits aligned with auto-compaction.ts, which derives catalogued-window thresholds.
+_EXTERNAL_COMPACTION_HEADROOM = 0.25
+_EXTERNAL_COMPACTION_THRESHOLD_MAX = 2_000_000
 
 
 def _fit_external_context(
@@ -28657,6 +28786,25 @@ async def _proxy_to_external_provider(
     if _external_nudge:
         chat_messages = _append_to_system_message(chat_messages, _external_nudge)
     _provider_compacts = compacts_server_side(provider_type, base_url, api_type, model)
+    # UNSLOTH_CONTEXT_OVERFLOW must not bypass Studio's auto-compact switch.
+    if (
+        managed is None
+        and payload.context_overflow == "truncate_oldest"
+        and not payload.compaction_threshold
+        and not _provider_compacts
+    ):
+        # a self-hosted server reports its startup window when the catalog has none.
+        _served_window = payload.context_window or await client.served_context_window(model)
+        if _served_window:
+            payload = payload.model_copy(
+                update = {
+                    "context_window": _served_window,
+                    "compaction_threshold": min(
+                        _EXTERNAL_COMPACTION_THRESHOLD_MAX,
+                        int(_served_window * (1 - _EXTERNAL_COMPACTION_HEADROOM)),
+                    ),
+                }
+            )
     _external_truncation = None
     _external_max_tokens = _effective_max_tokens(payload)
     _external_context_fitter = None
@@ -36415,7 +36563,10 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             _direct_llama_request_started()
             try:
                 req = client.build_request(
-                    "POST", target_url, json = upstream_body, headers = {"Connection": "close"}
+                    "POST",
+                    target_url,
+                    json = upstream_body,
+                    headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend),
                 )
                 first_token_deadline = time.monotonic() + _first_token_timeout_s()
                 # Same event the relay loop polls, so a forced swap ends the request during prefill
@@ -36562,6 +36713,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                 resp = await _client.post(
                     target_url,
                     json = body,
+                    headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend),
                     timeout = _llama_non_streaming_generation_timeout(),
                 )
             except httpx.RequestError:
@@ -37188,6 +37340,7 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
             resp = await _client.post(
                 target_url,
                 json = body,
+                headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend),
                 timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
             )
         except httpx.RequestError:
@@ -38831,7 +38984,10 @@ async def _responses_stream(
         disconnect_event = cancel_event
         try:
             req = client.build_request(
-                "POST", target_url, json = body, headers = {"Connection": "close"}
+                "POST",
+                target_url,
+                json = body,
+                headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend),
             )
             first_token_deadline = time.monotonic() + _first_token_timeout_s()
             try:
@@ -43133,7 +43289,12 @@ async def _anthropic_passthrough_stream(
         try:
             url = target_url
             try:
-                req = client.build_request("POST", url, json = body, headers = {"Connection": "close"})
+                req = client.build_request(
+                    "POST",
+                    url,
+                    json = body,
+                    headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend),
+                )
                 first_token_deadline = time.monotonic() + _first_token_timeout_s()
                 resp = await _send_stream_with_preheader_cancel(
                     client, req, cancel_event, request = request
@@ -43144,7 +43305,12 @@ async def _anthropic_passthrough_stream(
                 url = await _passthrough_retry_url(llama_backend, exc)
                 if url is None:
                     raise
-                req = client.build_request("POST", url, json = body, headers = {"Connection": "close"})
+                req = client.build_request(
+                    "POST",
+                    url,
+                    json = body,
+                    headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend),
+                )
                 first_token_deadline = time.monotonic() + _first_token_timeout_s()
                 resp = await _send_stream_with_preheader_cancel(
                     client, req, cancel_event, request = request
@@ -43364,6 +43530,7 @@ async def _anthropic_passthrough_non_streaming(
             response = await _client.post(
                 target_url,
                 json = payload_body,
+                headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend),
                 timeout = _llama_non_streaming_generation_timeout(),
             )
         except httpx.RequestError:
@@ -45717,6 +45884,28 @@ async def _refuse_disabled_nvfp4_checkpoint(request: Any) -> None:
         raise HTTPException(status_code = 400, detail = str(exc))
 
 
+def _component_file_kwargs(request: DiffusionLoadRequest) -> dict:
+    """Empty when none, so the native engine and older callers see the same keywords as before."""
+    files = getattr(request, "text_encoder_file", None)
+    files = [files] if isinstance(files, str) else list(files or ())
+    out: dict = {}
+    if files:
+        out["text_encoder_files"] = files
+    vae_file = getattr(request, "vae_file", None)
+    if vae_file:
+        out["vae_file"] = vae_file
+    return out
+
+
+def _refuse_native_component_files(request: DiffusionLoadRequest) -> None:
+    if _component_file_kwargs(request):
+        raise HTTPException(
+            status_code = 400,
+            detail = "Separate text-encoder / VAE files load on the diffusers engine (a CUDA / ROCm GPU); "
+            "this host routes the pick to the native engine. Omit text_encoder_file / vae_file.",
+        )
+
+
 @studio_router.post("/images/download-plan", response_model = DiffusionDownloadPlanResponse)
 async def diffusion_download_plan(
     request: DiffusionLoadRequest, current_subject: str = Depends(get_current_subject)
@@ -45773,6 +45962,7 @@ async def diffusion_download_plan(
             family_override = request.family_override,
             model_kind = kind,
             base_repo = request.base_repo,
+            **_component_file_kwargs(request),
         )
         planner = backend
         # BEFORE the plan is handed back and staged. The load route refuses a precision this
@@ -45801,6 +45991,7 @@ async def diffusion_download_plan(
             fam is not None
             and predict_engine(fam, model_kind = kind, gpu_ordinal = gpu_ordinal) == ENGINE_SD_CPP
         ):
+            _refuse_native_component_files(request)
             from core.inference.sd_cpp_backend import get_sd_cpp_backend
             planner = get_sd_cpp_backend()
         if fam is not None and not training:
@@ -45849,6 +46040,7 @@ async def diffusion_download_plan(
             # this the plan stages a file the load refuses and replaces with dense shards.
             transformer_quant_fast_accum = request.transformer_quant_fast_accum,
             loras = request.loras,
+            **_component_file_kwargs(request),
             # Only the verdict, not the probe: the panel stages exactly what this reports.
             # Clearing the probe drops the hosted DiT prequant, so a GGUF pick naming an explicit
             # transformer_quant reports ~21 GB short, stages that, says done, and the load pulls
@@ -45964,7 +46156,16 @@ async def load_diffusion_model_gated(
     # deferred to the launch below, since the validation in between 400s without moving a byte.
     _media_repos_to_record = [
         ref
-        for ref in (request.model_path, request.base_repo)
+        for ref in (
+            request.model_path,
+            request.base_repo,
+            # Hub-hosted text-encoder / VAE files are fetched with this request's token too.
+            *(
+                r
+                for r in account_access.media_component_file_references(request)
+                if r and not Path(r).is_absolute()
+            ),
+        )
         if ref and _repo_is_in_the_hub_cache(ref) is not True
     ]
     from core.inference.diffusion import (
@@ -46023,6 +46224,7 @@ async def load_diffusion_model_gated(
             family_override = request.family_override,
             model_kind = kind,
             base_repo = request.base_repo,
+            **_component_file_kwargs(request),
         )
         # Off-torch native shares no VRAM with training or chat; re-settled after selection (diffusers lands on torch's card).
         off_torch = await asyncio.to_thread(off_torch_sd_cpp_device)
@@ -46089,6 +46291,7 @@ async def load_diffusion_model_gated(
                 base_repo = request.base_repo,
             )
         elif fam is not None and pending_name == ENGINE_SD_CPP:
+            _refuse_native_component_files(request)
             # The native engine accepts both knobs for interface parity and ignores them. It was
             # excluded from the gate above so as not to refuse loads that work today, but the
             # loads it "works" for are precisely the silent mismatch this whole change exists to
@@ -46151,6 +46354,7 @@ async def load_diffusion_model_gated(
         activated = active_engine_name()
         if fam is not None and activated != pending_name:
             if activated == ENGINE_SD_CPP:
+                _refuse_native_component_files(request)
                 _assert_native_precision_unset(
                     transformer_quant = request.transformer_quant,
                     text_encoder_quant = request.text_encoder_quant,
@@ -46208,6 +46412,7 @@ async def load_diffusion_model_gated(
                 # The winner this route already ranked and preflighted, so the load cannot pick a
                 # different card from free VRAM that has moved since.
                 gpu_ordinal = gpu_ordinal,
+                **_component_file_kwargs(request),
             )
 
         def _begin_load():
@@ -46244,6 +46449,7 @@ async def load_diffusion_model_gated(
             request.model_path,
             request.base_repo,
             *account_access.media_adapter_references(request),
+            *(r for r in account_access.media_component_file_references(request) if r),
         )
         reset_media_load_progress("image")
         return DiffusionStatusResponse(**(await asyncio.to_thread(annotate_status, status_dict)))

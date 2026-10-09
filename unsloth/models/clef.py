@@ -43,8 +43,11 @@ def _fast_enabled() -> bool:
 _COMPILED = {}
 
 
+# Eager unless UNSLOTH_CLEF_COMPILE=1: compiling costs 7-20 minutes per process and is no faster (L4, G4).
+
+
 def _compile_supported(device) -> bool:
-    if os.environ.get("UNSLOTH_CLEF_COMPILE", "1") == "0" or device.type != "cuda":
+    if os.environ.get("UNSLOTH_CLEF_COMPILE") != "1" or device.type != "cuda":
         return False
     try:
         from torch.utils._triton import has_triton

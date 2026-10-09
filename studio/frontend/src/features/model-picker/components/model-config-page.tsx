@@ -208,6 +208,7 @@ import {
 import { ChatTemplateEditorDialog } from "./chat-template-editor-dialog";
 import { MemoryEstimateRow } from "./memory-estimate-row";
 import type { ModelPickTarget } from "./model-selector/types";
+import { reconcileTensorSplit } from "@/hooks/gpu-tensor-split";
 import {
   NumericValueInput,
   type NumericValueInputHandle,
@@ -346,6 +347,7 @@ function withoutUnsupportedDiffusionSettings(
     (config.gpuMemoryMode ?? "auto") === "auto" &&
     config.gpuLayers == null &&
     config.nCpuMoe == null &&
+    config.tensorSplit == null &&
     config.reasoningBudget === -1 &&
     config.reasoningBudgetMessage === "" &&
     !config.tensorParallel &&
@@ -362,6 +364,7 @@ function withoutUnsupportedDiffusionSettings(
     gpuMemoryMode: "auto",
     gpuLayers: undefined,
     nCpuMoe: undefined,
+    tensorSplit: null,
     reasoningBudget: -1,
     reasoningBudgetMessage: "",
     tensorParallel: false,
@@ -403,6 +406,7 @@ function reconcileConfigGpuSelection(
   const next = {
     ...supported,
     selectedGpuIds: reconciled.ids ?? undefined,
+    tensorSplit: reconcileTensorSplit(supported.tensorSplit, supported.selectedGpuIds, reconciled.ids),
     selectedGpuIndexKind:
       reconciled.ids === null ? undefined : reconciled.indexKind,
   };
@@ -855,7 +859,12 @@ function GpuMemorySettings({
   const setSplitShare = (id: number, value: number) => {
     const k = orderedGpuIds.indexOf(id);
     if (k < 0) return;
-    update({ tensorSplit: rebalanceSplit(splitScale, splitShares, k, value) });
+    update({
+      // Bind even an all-GPU split to the exact ordered set before it can be saved.
+      selectedGpuIds: [...orderedGpuIds],
+      selectedGpuIndexKind: gpuIndexKind,
+      tensorSplit: rebalanceSplit(splitScale, splitShares, k, value),
+    });
   };
   const commitGpuIds = (next: number[], nextSplit: number[] | null = null) => {
     if (next.length === 0) return; // keep at least one GPU selected

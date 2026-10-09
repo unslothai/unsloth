@@ -190,6 +190,7 @@ export const he = {
     downloadPrompt: {
       title: "להוריד את הקובץ הזה?",
       description: "{host} רוצה לשמור את {name} במחשב שלכם.",
+      dangerous: "קבצים כאלה יכולים להריץ תוכנות במחשב שלך. הורד אותו רק אם אתה סומך על {host}.",
       remember: "לזכור לפעם הבאה",
       cancel: "ביטול",
       download: "הורדה",
@@ -384,6 +385,7 @@ export const he = {
       downloading: "מוריד את {name}",
       downloaded: "{name} נשמר בהורדות",
       downloadFailed: "הורדת {name} נכשלה",
+      notMarked: "{name} נשמר, אך לא ניתן היה לסמן אותו כקובץ שהורד מהאינטרנט, ולכן המערכת לא תזהיר לפני שתפתח אותו.",
       blocked:
         "לא ניתן לפתוח כתובת זו בחלונית הדפדפן. היא פותחת רק אתרים ציבוריים.",
       clearDataSettingDescription:
@@ -582,6 +584,7 @@ export const he = {
     },
   },
   common: {
+    duplicate: "שכפול",
     cancel: "ביטול",
     close: "סגירה",
     delete: "מחיקה",
@@ -1242,6 +1245,8 @@ export const he = {
       title: "ארגז חול",
       description:
         "האם קריאות לכלי Python ו-Terminal רצות בתוך ארגז חול של מערכת ההפעלה במחשב זה.",
+      docs: "תיעוד",
+      docsLabel: "פתח את תיעוד ארגז החול",
       toolsSection: "מחשב זה",
       refresh: "רענון",
       python: "Python",
@@ -1710,6 +1715,9 @@ export const he = {
         showWhisperUpdates: "התראות עדכון של whisper.cpp",
         showWhisperUpdatesDescription:
           "הודע כאשר גרסת build חדשה יותר של whisper.cpp זמינה עבור מודלים של המרת דיבור לטקסט. כבה אם אינך מתמלל אודיו אף פעם.",
+        showAudioCppUpdates: "התראות עדכון של audio.cpp",
+        showAudioCppUpdatesDescription:
+          "הודע כאשר סביבת הריצה של audio.cpp צריכה עדכון עבור דפי האודיו. כבה אם אינך משתמש באודיו אף פעם.",
       },
       startup: {
         sectionTitle: "הפעלה",
@@ -2353,6 +2361,7 @@ export const he = {
         "לא ניתן לטעון את כל הקוונטיזציות. הפקודה תשתמש בערך המודל הזמין.",
       generatedCommand: "פקודה שנוצרה",
       docs: "תיעוד",
+      docsLabel: "פתח את התיעוד של unsloth start",
       agentDocs: "פתח תיעוד הגדרה של {agent}",
       copyGeneratedCommand: "העתק פקודה שנוצרה",
       automaticSettingsNote:
@@ -2893,6 +2902,8 @@ export const he = {
       revoking: "מבטל...",
       decisionApi: {
         title: "ממשק API להחלטות",
+        docs: "תיעוד",
+        docsLabel: "פתח את התיעוד של ממשק ה-API להחלטות",
         description:
           "ענה על שאלות כן/לא, רב-ברירה ודירוג לגבי טקסט באמצעות מודל במחשב זה או מודל החלטות מ'חיבורים'. עובד עם TypeSafe SDK.",
         enable: "הגש בקשות",
@@ -2912,6 +2923,16 @@ export const he = {
           "GPU עונה מהר יותר, אך שומר את הזיכרון שלו שמור עד להפעלה מחדש.",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
+        backend: "סביבת ריצה",
+        backendAuto: "אוטומטי",
+        backendDescription:
+          "במצב אוטומטי Clef מוגש דרך llama.cpp כשלמודל יש גרסת GGUF, ואחרת דרך PyTorch. llama.cpp קורא גם תמונות.",
+        backendDescriptionMlx:
+          "במצב אוטומטי טקסט של Clef מוגש דרך MLX ב-Apple Silicon, ודרך llama.cpp כשרק גרסת ה-GGUF של המודל טעונה או הורדה. MLX קורא טקסט בלבד; llama.cpp קורא גם תמונות.",
+        backendStatus: "סביבת ריצה: {backend}",
+        backendNone: "לא זמין",
+        mediaImages: "קורא טקסט ותמונות.",
+        mediaText: "קורא טקסט בלבד.",
         checking: "בודק…",
         notDownloaded: "לא הורד · {size}",
         downloading: "מוריד…",
@@ -3049,6 +3070,11 @@ export const he = {
       methodLabel: "שיטה",
       methodTooltip:
         "האופן שבו המודל מאומן. LoRA ו-QLoRA מעדכנים מתאמים (Adapters) קטנים במקום את כל המשקולות.",
+      trainAsLabel: "אימון בתור",
+      trainAsTooltip:
+        "מודל שפה כותב טקסט. מודל החלטות בוחר אחת מהאפשרויות שנתת לו, עם הסתברות, ופועל ב-Decision API.",
+      trainAsLanguage: "מודל שפה",
+      trainAsDecision: "מודל החלטות",
       datasetLabel: "מערך נתונים",
       datasetTooltip: "נתוני האימון המשמשים לכוונון עדין של המודל.",
       hfTokenDescription: "נדרש עבור מודלים ומערכי נתונים פרטיים או מוגבלים.",
@@ -3466,6 +3492,31 @@ export const he = {
         "חלק מסך כל צעדי האימון בין הערכות (0-1). הגדר 0 כדי להשבית הערכה. לדוגמה 0.01 = הערכה בכל 1% מהצעדים.",
       seed: "גרעין אקראיות (Seed)",
       seedTooltip: "גרעין אקראי לשחזור מדויק של תוצאות.",
+      offloadLayers: "העברת שכבות לזיכרון המערכת",
+      offloadLayersTooltip: "שמירת שכבות המפענח בזיכרון המערכת והזרמת כל אחת ל-GPU רגע לפני שהיא רצה, כך שמודל גדול מה-VRAM שלך מתאמן עם LoRA. אוטומטי מעביר כמה שפחות שכבות שנדרש; מספר מעביר בדיוק כמה שצוין. דורש gradient checkpointing.",
+      offloadOff: "כבוי",
+      offloadAuto: "אוטומטי",
+      offloadCount: "מספר",
+      offloadVramBudget: "תקציב VRAM ‏(GiB)",
+      offloadVramBudgetTooltip: "כמות ה-VRAM המרבית שהריצה הזו רשאית להשתמש בה. אוטומטי מעביר מספיק שכבות כדי להיכנס מתחתיה, ושתי ריצות יכולות לחלוק כרטיס אחד כשכל אחת לוקחת חלק ממנו. שדה ריק משתמש בכרטיס כולו.",
+      offloadVramBudgetGpu: "תקציב VRAM של GPU {index} ‏(GiB)",
+      offloadWholeCard: "הכרטיס כולו",
+      prefetchDepth: "עומק טעינה מוקדמת",
+      prefetchDepthTooltip: "כמה שכבות מועברות מועתקות מראש לפני השכבה שרצה. אוטומטי מתחיל ב-1 ושומר מאגר עמוק יותר רק כל עוד הוא מקצר בפועל את ההמתנה להעתקות.",
+      offloadPanelTitle: "שכבות שהועברו",
+      offloadPanelCard: "GPU {index}",
+      offloadPanelCardUnknown: "כרטיס לא ידוע",
+      offloadPanelGpu: "ב-GPU",
+      offloadPanelHost: "בזיכרון המערכת",
+      offloadPanelCopying: "מועתקת",
+      offloadPanelSwapped: "הועברו",
+      offloadPanelStall: "המתנה להעתקות",
+      offloadPanelCopy: "העתקה לשכבה",
+      offloadPanelCompute: "חישוב לשכבה",
+      offloadPanelVram: "VRAM",
+      offloadPanelDepth: "עומק טעינה מוקדמת",
+      offloadPanelPinned: "נעול בזיכרון",
+      offloadPanelSweepNote: "החלון הנע מראה את הסדר שבו השכבות נטענות, מואט כדי שיהיה אפשר לראותו; המספרים נמדדו בצעד האחרון.",
       gradCheckpoint: "נקודות ביקורת לגרדיאנט",
       gradCheckpointTooltip:
         "פשרה בין זמן חישוב לזיכרון על ידי חישוב מחדש של אקטיבציות.",
@@ -3476,6 +3527,9 @@ export const he = {
       readMore: "קרא עוד",
     },
     training: {
+      duplicateFailed: "שכפול ההרצה נכשל",
+      duplicateDraftChanged: "הגדרות האימון השתנו במהלך הטעינה. נסה לשכפל שוב.",
+      duplicateNoModel: "להרצה זו אין תצורת מודל שמורה.",
       startTraining: "התחל אימון",
       starting: "מתחיל...",
       loadingModel: "טוען מודל...",
@@ -4200,6 +4254,18 @@ export const he = {
       readVideoFailed: "לא ניתן לקרוא את הסרטון ({status}).",
       openFileFailed: "לא ניתן לפתוח את הקובץ",
     },
+  },
+  exportDecision: {
+    title: "מודל החלטות",
+    description:
+      "מודלי החלטות מסוג {layout} מיוצאים ל-GGUF עבור שרת ההחלטות של llama.cpp. בחר קוונטיזציה אחת או יותר.",
+    adapterNote: "נקודת ביקורת זו מכילה מתאמי LoRA; הם ממוזגים לפני ההמרה.",
+    notEligibleTitle: "ייצוא GGUF אינו זמין",
+    ggufOnly: "מודלי החלטות מיוצאים ל-GGUF בלבד",
+    existing: "כבר יוצא: {quantizations}",
+    outputNote: "קובצי GGUF נשמרים בתיקיית ההרצה: {path}",
+    methodLabel: "GGUF של מודל החלטות",
+    outputLabel: "GGUF החלטות ({quantizations})",
   },
   decisions: {
     title: "נסו החלטה",

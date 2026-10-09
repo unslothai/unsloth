@@ -582,12 +582,20 @@ const WINDOWS_DEVICE_NAMES: [&str; 22] = [
     "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
 ];
 
+fn is_bidi_control(c: char) -> bool {
+    matches!(
+        c,
+        '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+    )
+}
+
 /// A website's file name made safe everywhere: no separators, control or reserved characters, trailing dots/spaces or device names; length capped.
 pub(crate) fn safe_download_name(name: &str) -> String {
     let mut name: String = name
         .chars()
         .map(|c| {
-            if c.is_control() || "/\\:*?\"<>|".contains(c) {
+            // Bidi controls too: `invoice\u{202e}fdp.exe` must not read as `invoiceexe.pdf`.
+            if c.is_control() || is_bidi_control(c) || "/\\:*?\"<>|".contains(c) {
                 '_'
             } else {
                 c
@@ -1105,6 +1113,11 @@ mod tests {
             "a_b_c_d_e_f_g.txt"
         );
         assert_eq!(safe_download_name("evil\u{7}name.sh"), "evil_name.sh");
+        assert_eq!(
+            safe_download_name("invoice\u{202e}fdp.exe"),
+            "invoice_fdp.exe"
+        );
+        assert_eq!(safe_download_name("a\u{2066}b\u{061c}.txt"), "a_b_.txt");
         assert_eq!(safe_download_name("CON"), "_CON");
         assert_eq!(safe_download_name("nul.tar.gz"), "_nul.tar.gz");
         assert_eq!(safe_download_name("console.log"), "console.log");

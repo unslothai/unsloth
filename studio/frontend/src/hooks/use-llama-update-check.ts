@@ -50,11 +50,13 @@ export interface LlamaUpdateStatus {
   supported: boolean;
   update_available: boolean;
   source_build: boolean;
-  component: "llama.cpp" | "whisper.cpp";
-  // Carried per component whatever the card names: both can be behind at once,
+  component: "llama.cpp" | "whisper.cpp" | "audio.cpp";
+  // Carried per component whatever the card names: several can be behind at once,
   // and the card shows whichever one the notification switches allow.
   llama: ComponentOffer;
   whisper: ComponentOffer | null;
+  // The release this Studio pins, when the managed audio.cpp runtime is another one.
+  audio: ComponentOffer | null;
   installed_tag: string | null;
   latest_tag: string | null;
   // Prebuilt download size in bytes, if known.
@@ -101,19 +103,45 @@ function parseJob(value: unknown): LlamaUpdateJob {
   };
 }
 
+function parseOffer(offer: Record<string, unknown>): ComponentOffer {
+  return {
+    update_available: offer.update_available === true,
+    installed_tag:
+      typeof offer.installed_tag === "string" ? offer.installed_tag : null,
+    latest_tag: typeof offer.latest_tag === "string" ? offer.latest_tag : null,
+    update_size_bytes:
+      typeof offer.update_size_bytes === "number"
+        ? offer.update_size_bytes
+        : null,
+  };
+}
+
+function nestedOffer(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object"
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
 function parseStatus(value: unknown): LlamaUpdateStatus | null {
   if (!value || typeof value !== "object") return null;
   const s = value as Record<string, unknown>;
   const component =
-    s.update_component === "whisper" ? "whisper.cpp" : "llama.cpp";
-  const whisper =
-    s.whisper && typeof s.whisper === "object"
-      ? (s.whisper as Record<string, unknown>)
-      : null;
+    s.update_component === "whisper"
+      ? "whisper.cpp"
+      : s.update_component === "audio"
+        ? "audio.cpp"
+        : "llama.cpp";
+  const whisper = nestedOffer(s.whisper);
+  const audio = nestedOffer(s.audio);
   // Legacy top-level version fields intentionally retain their llama meaning.
-  // A whisper-only update must display the nested whisper release instead of
-  // presenting equal llama tags as a new llama update.
-  const details = component === "whisper.cpp" && whisper ? whisper : s;
+  // A whisper-only or audio-only update must display the nested release instead
+  // of presenting equal llama tags as a new llama update.
+  const details =
+    component === "whisper.cpp" && whisper
+      ? whisper
+      : component === "audio.cpp" && audio
+        ? audio
+        : s;
   return {
     supported: s.supported === true,
     update_available: s.update_available === true,
@@ -140,21 +168,8 @@ function parseStatus(value: unknown): LlamaUpdateStatus | null {
       update_size_bytes:
         typeof s.update_size_bytes === "number" ? s.update_size_bytes : null,
     },
-    whisper: whisper
-      ? {
-          update_available: whisper.update_available === true,
-          installed_tag:
-            typeof whisper.installed_tag === "string"
-              ? whisper.installed_tag
-              : null,
-          latest_tag:
-            typeof whisper.latest_tag === "string" ? whisper.latest_tag : null,
-          update_size_bytes:
-            typeof whisper.update_size_bytes === "number"
-              ? whisper.update_size_bytes
-              : null,
-        }
-      : null,
+    whisper: whisper ? parseOffer(whisper) : null,
+    audio: audio ? parseOffer(audio) : null,
     // Always from the top level: the backend belongs to the llama.cpp install whatever
     // component the version fields describe.
     backend_migration_available: s.backend_migration_available === true,
@@ -181,7 +196,7 @@ let retainedSuppression: {
   persisted: boolean;
 } = { value: null, persisted: true };
 
-function offerKey(status: LlamaUpdateStatus): string {
+export function offerKey(status: LlamaUpdateStatus): string {
   return JSON.stringify({
     llama: status.llama.update_available
       ? [status.llama.installed_tag, status.llama.latest_tag]
@@ -197,6 +212,10 @@ function offerKey(status: LlamaUpdateStatus): string {
           status.to_backend,
         ]
       : null,
+    // Only when offered, so keys stored before audio.cpp joined the card still match.
+    ...(status.audio?.update_available
+      ? { audio: [status.audio.installed_tag, status.audio.latest_tag] }
+      : {}),
   });
 }
 
