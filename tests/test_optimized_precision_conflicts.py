@@ -37,11 +37,12 @@ def loader():
         n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "from_pretrained"
     )
     method.decorator_list = []
-    helper = next(
+    helpers = [
         n
         for n in tree.body
-        if isinstance(n, ast.FunctionDef) and n.name == "_precision_flags_conflict"
-    )
+        if isinstance(n, ast.FunctionDef)
+        and n.name in ("_precision_flags_conflict", "_modelscope_snapshot_or_none")
+    ]
     captured = {"config_calls": 0}
 
     def dispatch(**kwargs):
@@ -70,6 +71,7 @@ def loader():
         ALLOW_BITSANDBYTES = True,
         ALLOW_PREQUANTIZED_MODELS = True,
         USE_MODELSCOPE = False,
+        logger = SimpleNamespace(warning_once = lambda *args, **kwargs: None),
         SUPPORTS_LLAMA32 = True,
         get_model_name = lambda name, **kwargs: name,
         _revision_for_resolved_repo = lambda revision, *args: revision,
@@ -89,7 +91,7 @@ def loader():
     # is an exception nothing raises. Read off loader.py so a new helper is covered too.
     for name in _mistral_format_names(tree):
         env.setdefault(name, RuntimeError if name[0].isupper() else (lambda *args, **kwargs: False))
-    exec(compile(ast.Module(body = [helper, method], type_ignores = []), str(path), "exec"), env)
+    exec(compile(ast.Module(body = [*helpers, method], type_ignores = []), str(path), "exec"), env)
     return env, captured
 
 
@@ -162,6 +164,8 @@ def modelscope_snapshot(monkeypatch, tmp_path):
 
     def snapshot_download(name, allow_file_pattern = None):
         calls.append((name, allow_file_pattern))
+        if name.startswith("hf-only/"):
+            raise ValueError(f"{name} is not on ModelScope")
         snapshot = cache / name.replace("/", "--")
         snapshot.mkdir(exist_ok = True)
         for filename in (
@@ -251,3 +255,17 @@ def test_modelscope_valid_loads_download_weights(
     assert captured["dispatch"]["load_in_4bit"] is expected_4bit
     assert calls[-1] == ("owner/model", None)
     assert (loaded, None) in calls
+
+
+def test_modelscope_adapter_base_missing_there_loads_from_the_hub(loader, modelscope_snapshot):
+    """#3726: an adapter on ModelScope whose base is only on the Hub still loads that base by repo id."""
+    env, captured = loader
+    cache, downloaded, calls = modelscope_snapshot
+    env["USE_MODELSCOPE"] = True
+    use_modelscope_adapter(env, cache, "hf-only/base")
+
+    with pytest.raises(DispatchReached):
+        env["from_pretrained"](model_name = "owner/model", load_in_4bit = False, load_in_16bit = True)
+
+    assert captured["dispatch"]["model_name"] == "hf-only/base"
+    assert ("hf-only/base", None) in calls

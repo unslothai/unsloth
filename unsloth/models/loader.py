@@ -212,6 +212,18 @@ def _record_modelscope_repo_id(model, repo_id, local_dir):
                 module._unsloth_modelscope_snapshot = str(local_dir)
 
 
+def _modelscope_snapshot_or_none(repo_id):
+    """ModelScope snapshot of an adapter's base, or None to load it by repo id from the Hugging Face Hub as before: the base need not be mirrored on ModelScope."""
+    from modelscope import snapshot_download
+    try:
+        return snapshot_download(repo_id)
+    except Exception as e:
+        logger.warning_once(
+            f"Unsloth: Could not download `{repo_id}` from ModelScope ({e}), loading it from Hugging Face."
+        )
+        return None
+
+
 def _revision_for_tokenizer_repo(
     tokenizer_name,
     model_name,
@@ -1415,9 +1427,10 @@ class FastLanguageModel(FastLlamaModel):
                     )
                 )
             ):
-                from modelscope import snapshot_download
-                modelscope_repo_id = model_name
-                model_name = modelscope_dir = snapshot_download(model_name)
+                _snapshot = _modelscope_snapshot_or_none(model_name)
+                if _snapshot is not None:
+                    modelscope_repo_id, model_name = model_name, _snapshot
+                    modelscope_dir = _snapshot
             # After the -bf16 rule: the view path no longer carries the source's suffix.
             # No revision: the caller's ref names the adapter repo, and the base loads unpinned below.
             _cache_dir = kwargs.get("cache_dir", None)
@@ -2438,9 +2451,10 @@ class FastModel(FastBaseModel):
                 load_in_16bit = True
             # The adapter names its base by repo id, so fetch that from ModelScope too.
             if USE_MODELSCOPE and not os.path.exists(model_name):
-                from modelscope import snapshot_download
-                modelscope_repo_id = model_name
-                model_name = modelscope_dir = snapshot_download(model_name)
+                _snapshot = _modelscope_snapshot_or_none(model_name)
+                if _snapshot is not None:
+                    modelscope_repo_id, model_name = model_name, _snapshot
+                    modelscope_dir = _snapshot
             # After the -bf16 rule: the view path no longer carries the source's suffix.
             # No revision: the caller's ref names the adapter repo, and the base loads unpinned below.
             _cache_dir = kwargs.get("cache_dir", None)
