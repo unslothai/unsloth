@@ -455,6 +455,22 @@ def test_the_images_of_a_row_reach_the_clef_trainer_and_predict(
         model, tokenizer, "s", {"q": {"type": "noul", "instructions": "i"}}, images = url
     )
     assert seen[-1] == [url]
+    # An unsloth-zoo that takes no images says so, where skipping the rows would train without them.
+    monkeypatch.setattr(
+        zoo,
+        "clef_training_item",
+        lambda pipeline, state, questions, max_length = None: real(
+            pipeline, state, questions, max_length
+        ),
+    )
+    assert len(FastDecisionModel.build_dataset(rows[2:3], tokenizer, model)[0]) == 1
+    question = {"q": {"type": "noul", "instructions": "i"}}
+    for call in (
+        lambda: FastDecisionModel.build_dataset(rows, tokenizer, model),
+        lambda: FastDecisionModel.predict(model, tokenizer, "s", question, images = url),
+    ):
+        with pytest.raises(ImportError, match = "newer unsloth-zoo"):
+            call()
     laya, laya_tokenizer = FastDecisionModel.from_pretrained(str(checkpoint))
     with pytest.raises(unsloth._decision_mlx.DecisionDataError, match = "Laya reads text only"):
         FastDecisionModel.predict(

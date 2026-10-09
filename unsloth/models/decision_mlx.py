@@ -12,6 +12,7 @@ __all__ = [
 import copy
 import dataclasses
 import functools
+import inspect
 import importlib.util
 import json
 import random
@@ -431,13 +432,25 @@ def _decision_pad_token_id(tokenizer) -> int:
     return getattr(tokenizer, "tokenizer", tokenizer).pad_token_id
 
 
+def _clef_item(zoo, pipeline, state, questions, max_length, images):
+    if not images:
+        return zoo.clef_training_item(pipeline, state, questions, max_length)
+    if "images" not in inspect.signature(zoo.clef_training_item).parameters:
+        # Left to fail as a row that does not fit, a dataset would train without its image rows.
+        raise ImportError(
+            "Unsloth: images in decision rows need a newer unsloth-zoo. "
+            "Upgrade with `pip install -U unsloth-zoo`."
+        )
+    return zoo.clef_training_item(pipeline, state, questions, max_length, images)
+
+
 def _clef_items(pipeline, rows, tokenizer, max_len, validate, report, skip) -> list:
     zoo = _decision_zoo()
     return _decision_clef_items(
         rows,
         functools.partial(zoo.clef_option_keys, pipeline),
-        lambda state, questions, images: zoo.clef_training_item(
-            pipeline, state, questions, max_len, *([images] if images else [])
+        lambda state, questions, images: _clef_item(
+            zoo, pipeline, state, questions, max_len, images
         ),
         validate,
         report,
@@ -866,9 +879,7 @@ class FastDecisionModel:
             # Read up to CLEF_SERVE_MAX_LEN tokens, like serving, even past the training cut.
             max_length = max(int(config.get("max_len", CLEF_MAX_LEN)), CLEF_SERVE_MAX_LEN)
             images = _row_images({"images": images})
-            item = zoo.clef_training_item(
-                pipeline, state, questions, max_length, *([images] if images else [])
-            )
+            item = _clef_item(zoo, pipeline, state, questions, max_length, images)
             logits = zoo.clef_logits(model, [item])[0]
             keys = [zoo.clef_option_keys(pipeline, q) for q in questions.values()]
             kinds = [QUESTION_TYPES.index(q["type"]) for q in questions.values()]
