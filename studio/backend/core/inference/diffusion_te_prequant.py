@@ -522,7 +522,7 @@ def load_prequant_text_encoder(
     the pipeline's assembly normally passes to ``from_pretrained`` (forward-behaviour
     flags only; the state dict is unaffected by them).
     ``trim_lm_head`` builds the encoder without its untied ``lm_head`` and never reads that tensor
-    (``diffusion_text_encoder_trim``). ``failures`` collects the exception of a load that raised."""
+    (``diffusion_text_encoder_trim``). ``failures`` collects the error text of a load that raised."""
     try:
         if source.kind == "path" and not _local_prequant_path_allowed(source.location):
             _warn(
