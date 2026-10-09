@@ -34,7 +34,6 @@ test("choosing the engine resumes the load with it; declining resumes with null"
   const declined = confirmManagedEngineIfNeeded("m", OFFER);
   store().resolve(null);
   assert.equal(await declined, null);
-  // A second resolve (Escape after Cancel) is a no-op.
   store().resolve("vllm");
 });
 
@@ -56,7 +55,6 @@ test("a cancelled load closes its dialog and an already-cancelled one never open
   assert.equal(store().open, false);
   assert.equal(await confirmManagedEngineIfNeeded("m", OFFER, controller.signal), null);
   assert.equal(store().open, false);
-  // An abort after the user already chose changes nothing.
   const later = new AbortController();
   const chosen = confirmManagedEngineIfNeeded("m", OFFER, later.signal);
   store().resolve("vllm");
@@ -70,7 +68,6 @@ test("the chat load asks before unloading anything and loads with the chosen eng
   const unloadAt = source.indexOf("await unloadModel({ model_path: currentCheckpoint })");
   assert.ok(offerAt > 0 && unloadAt > offerAt, "the offer must come before the preliminary unload");
   assert.match(source, /loadModel\(\{\s*model_path: loadPath,\s*\.\.\.loadEngineFields,/);
-  // The chosen engine's own /validate runs before the unload too.
   const revalidateAt = source.indexOf("...loadEngineFields,", offerAt);
   assert.ok(revalidateAt > offerAt && revalidateAt < unloadAt, "the chosen engine must be validated before the unload");
   // Keep loaded models: the switch re-asks about running chats and then replaces, like any managed load.

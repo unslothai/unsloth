@@ -16791,14 +16791,12 @@ def _vllm_engine_hint(engine: Optional[str]) -> str:
         return ""
 
 
-# Quantizations the Default engine cannot run, with the packages that would let it (none
-# ship with Studio); the optional engines run them all.
+# Quantizations the Default engine cannot run, with the packages that would let it (Studio ships none).
 _MANAGED_ENGINE_QUANTIZATIONS = {
     "compressed-tensors": (),
     "awq": ("gptqmodel", "awq"),
     "gptq": ("gptqmodel", "auto_gptq"),
 }
-# Both load Qwen3.8-27B-NVFP4 on a B200; vLLM first, as the engine most checkpoints target.
 _OFFERED_ENGINES = ("vllm", "sglang")
 
 
@@ -16855,8 +16853,7 @@ def _managed_engine_offer_for(config, hf_token) -> Optional[dict]:
                 return False
             if name != "sglang" or method != "compressed-tensors":
                 return True
-            # SGLang 0.5.20's compressed-tensors NVFP4 needs SM 10.0 (get_min_capability 100, no
-            # Marlin fallback; vLLM's starts at 7.5), so it is offered for these on Blackwell only.
+            # SGLang 0.5.20's compressed-tensors NVFP4 needs SM 10.0; vLLM falls back to Marlin from 7.5.
             try:
                 return any(
                     float(row[1]) >= 10.0 for row in _driver_rows(None) or () if len(row) == 2

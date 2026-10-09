@@ -25,8 +25,7 @@ const QUANTIZATION_NAMES: Record<string, string> = {
   gptq: "GPTQ",
 };
 
-/** Root-mounted: a Default-engine load of a checkpoint only an optional engine can run waits here.
- *  An installed engine is reused; otherwise the engine's own install prompt runs, then the load. */
+/** Root-mounted: a Default-engine load only vLLM / SGLang can run waits here for an engine. */
 export function ManagedEngineOfferDialog() {
   const open = useManagedEngineOfferStore((s) => s.open);
   const modelName = useManagedEngineOfferStore((s) => s.modelName);

@@ -2439,8 +2439,7 @@ export function useChatModelRuntime() {
                 forceCancelActive = stopDecision.forceCancelActive;
                 loadRun.forceCancelActive = forceCancelActive;
               }
-              // Judge it again as that engine before anything is unloaded. A Desktop path lease is
-              // single-use, so those picks rely on /load's own engine checks.
+              // Re-validate as that engine before unloading; a spent Desktop path lease relies on /load.
               if (!nativePathToken) {
                 Object.assign(
                   validation,
