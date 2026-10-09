@@ -1128,7 +1128,8 @@
       "check": "DNS exfiltration / tunneling patterns",
       "severity": "HIGH",
       "evidence": "DNS: L142:                 import dns.resolver | L144:                 resolver = dns.resolver.Resolver() | L414:     resolver: Optional[\"dns.resolver.Resolver\"], | L415: ) -> \"dns.resolver.Resolver\": | L421:         import dns.resolver | L423:         resolver = dns.resolver.Resolver() | L457:     resolver: Optional[\"dns.resolver.Resolver\"] = None,\nNetwork: L175: ) -> socket.socket: | L176:     return socket.socket(af, kind, proto) | L182:     [socket.AddressFamily | int, socket.SocketKind, int], socket.socket | L328: ) -> socket.socket: | L566:     if session and not isinstance(session, httpx.Client): | L567:         raise ValueError(\"session parameter must be an httpx.Client\") | L598:         cm = httpx.Client(\nL599:             http1=h1, http2=h2, verify=verify, transport=transport\nL600:         ) | L1545:     s: socket.socket | ssl.SSLSocket, | L1556:     is_udp = isinstance(s, socket.socket) and s.type == socket.SOCK_DGRAM",
-      "evidence_hash": "3e75075b489bf6a8bd1cc110c41194ab85f2a9bb2eecc862c6f89cbf29264971"
+      "evidence_hash": "3e75075b489bf6a8bd1cc110c41194ab85f2a9bb2eecc862c6f89cbf29264971",
+      "file_sha256": "f3911694c0f584324ee71a3367bb456b331b665769434e0bd2c405a107c16622"
     },
     {
       "package": "fastmcp-slim",
@@ -2455,7 +2456,8 @@
       "check": "DNS exfiltration / tunneling patterns",
       "severity": "HIGH",
       "evidence": "DNS: L144:                 import dns.resolver | L146:                 resolver = dns.resolver.Resolver() | L402:     resolver: \"dns.resolver.Resolver | None\", | L403: ) -> \"dns.resolver.Resolver\": | L409:         import dns.resolver | L411:         resolver = dns.resolver.Resolver() | L445:     resolver: \"dns.resolver.Resolver | None\" = None,\nNetwork: L177: ) -> socket.socket: | L178:     return socket.socket(af, kind, proto) | L184:     [socket.AddressFamily | int, socket.SocketKind, int], socket.socket | L330: ) -> socket.socket: | L551:     if session and not isinstance(session, httpx2.Client): | L552:         raise ValueError(\"session parameter must be an httpx2.Client\") | L583:         cm = httpx2.Client(\nL584:             http1=h1, http2=h2, verify=verify, transport=transport\nL585:         ) | L1498:     s: socket.socket | ssl.SSLSocket, | L1510:     is_udp = isinstance(s, socket.socket) and s.type == socket.SOCK_DGRAM",
-      "evidence_hash": "06a7ae5b55d6f5f13ca756f54773b910f597d82d9f02b10f7f6e701bf5110abc"
+      "evidence_hash": "06a7ae5b55d6f5f13ca756f54773b910f597d82d9f02b10f7f6e701bf5110abc",
+      "file_sha256": "fab950c3b5ae218768c4130f930310b0c0e50034ddc6350ede5db98049c6b47d"
     }
   ]
 }
