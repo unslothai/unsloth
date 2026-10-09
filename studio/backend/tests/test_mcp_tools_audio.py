@@ -330,7 +330,7 @@ def test_no_loaded_model_says_what_to_load(monkeypatch):
     studio = _studio({("POST", "/v1/audio/run"): none})
     result = _call(monkeypatch, studio, {"workflow": "speak", "text": "Hi"})
     assert result["content"][0]["text"] == (
-        "No model loaded. (HTTP 400) Load a text-to-speech or music model with load_model(kind='llm') first."
+        "No model loaded. (HTTP 400) Load a text-to-speech or music model with load_model(kind='tts') first."
     )
 
 

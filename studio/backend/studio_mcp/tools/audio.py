@@ -23,7 +23,7 @@ from studio_mcp.media import INLINE_CAP, audio_content, media_result, public_url
 from studio_mcp.outputs import AudioClip, AudioResult, TranscriptResult, TranscriptSegment
 from studio_mcp.tools import WRITES, integer, number, opt_text
 
-LOAD_AUDIO_HINT = "Load a text-to-speech or music model with load_model(kind='llm') first."
+LOAD_AUDIO_HINT = "Load a text-to-speech or music model with load_model(kind='tts') first."
 NOT_LOADED = "No model loaded"
 # 16-bit samples; channels are not reported, so mono is assumed and a stereo clip may still be fetched and then linked.
 _WAV_BYTES_PER_SAMPLE = 2
