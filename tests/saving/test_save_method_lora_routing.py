@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import ast
 import contextlib
+import os
 import sys
 import types
 from pathlib import Path
@@ -254,6 +255,7 @@ def _routing_environment(monkeypatch, model):
     namespace = _load(
         *_GENERIC_SAVE_REAL_HELPERS,
         "unsloth_generic_save",
+        os = os,
         PeftModel = _PeftModel,
         PreTrainedTokenizerBase = type("Tokenizer", (), {}),
         ProcessorMixin = type("Processor", (), {}),
