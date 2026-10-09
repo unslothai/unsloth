@@ -24,7 +24,9 @@ const MODEL_DEFAULTS: Array<{
   { match: "flux.2-klein-base", steps: 20, guidance: 5 },
   { match: "flux.2-klein", steps: 4, guidance: 1 },
   { match: "flux.2-dev", steps: 20, guidance: 4 },
-  // Qwen-Image-2.1 and its aliases, before the generic key.
+  // Qwen-Image-2.1 and its aliases, before the generic key. Turbo first: its card's 8-step schedule.
+  { match: "qwen-image-2.1-turbo", steps: 8, guidance: 1 },
+  { match: "qwen-image-21-turbo", steps: 8, guidance: 1 },
   { match: "qwen-image-2.1", steps: 25, guidance: 1 },
   { match: "qwen-image-21", steps: 25, guidance: 1 },
   { match: "qwen_image_21", steps: 25, guidance: 1 },

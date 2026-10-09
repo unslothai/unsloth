@@ -526,6 +526,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ("fp8", "unsloth/Qwen-Image-2.1-FP8"),
             ("nvfp4", "unsloth/Qwen-Image-2.1-NVFP4"),
         ),
+        # All three are baked from the 2.1 denoiser; Turbo's is a different distill and quantizes its own weights.
+        prequant_excluded_bases = ("qwen/qwen-image-2.1-turbo",),
         # The artifacts are safetensors, not the historical torch.save pickle, so the family has to
         # NAME them: every derived fallback ends in .pt, and without these rows the loader would ask
         # the Hub for a file that is not there and silently fall back to the dense bf16 download.
@@ -1330,7 +1332,9 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("flux.2-klein-base", 20, 5.0),
     ("flux.2-klein", 4, 1.0),
     ("flux.2-dev", 20, 4.0),  # full (non-distilled)
-    # Before the generic qwen-image key (also the two below).
+    # Before the generic qwen-image key (also the two below). Turbo: its card's 8-step schedule, CFG 1.
+    ("qwen-image-2.1-turbo", 8, 1.0),
+    ("qwen-image-21-turbo", 8, 1.0),
     ("qwen-image-2.1", 25, 1.0),
     ("qwen-image-21", 25, 1.0),
     ("qwen_image_21", 25, 1.0),

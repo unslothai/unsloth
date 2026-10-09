@@ -682,6 +682,37 @@ def test_qwen_image_21_is_reachable_end_to_end_not_just_detectable():
     )
 
 
+def test_qwen_image_21_turbo_loads_as_its_own_checkpoint_of_the_family():
+    """The official 8-step distill is trusted, gets its card's defaults, never borrows 2.1's hosted denoisers, and
+    shares 2.1's text encoder."""
+    from core.inference.diffusion_families import (
+        default_generation_params,
+        detect_family,
+        family_prequant_repo,
+    )
+    from core.inference.diffusion_te_prequant import te_base_equivalent
+
+    turbo = "Qwen/Qwen-Image-2.1-Turbo"
+    fam = detect_family(turbo)
+    assert fam is not None and fam.name == "qwen-image-2.1"
+    assert _is_trusted_diffusion_repo(turbo)
+    # The card's recipe, for the repo, its GGUFs and a renamed local copy alike; the base keeps its own.
+    for identifier in (
+        turbo,
+        "qwen_image_2.1_turbo_Q4_K_M.gguf",
+        "/models/qwen-image-21-turbo",
+    ):
+        assert default_generation_params(identifier) == (8, 1.0), identifier
+    assert default_generation_params("Qwen/Qwen-Image-2.1") == (25, 1.0)
+    # The hosted denoisers are baked from 2.1's weights: planning must not fetch one for Turbo.
+    for scheme in ("int8", "fp8", "nvfp4"):
+        assert family_prequant_repo(fam, scheme, base_repo = turbo) is None
+    assert family_prequant_repo(fam, "fp8", base_repo = "Qwen/Qwen-Image-2.1") is not None
+    # Its Qwen3-VL encoder is byte-identical to 2.1's, so the hosted int8 ConvRot encoder serves both.
+    assert te_base_equivalent("Qwen/Qwen-Image-2.1", turbo)
+    assert not te_base_equivalent("Qwen/Qwen-Image", turbo)
+
+
 def test_every_image_family_base_repo_is_loadable():
     """The general form of the above, so the next family cannot ship inert the same way."""
     from core.inference.diffusion_families import _FAMILIES
