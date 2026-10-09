@@ -193,6 +193,60 @@ def image_mapping(server: dict, tool: Optional[dict]) -> Optional[dict]:
     return None
 
 
+def _loose(value: str) -> str:
+    return re.sub(r"[\s-]+", "_", value.strip(" \"'`<>[]{}").lower())
+
+
+def settle_image_call(arguments: dict, field: str) -> bool:
+    """Rewrite a mapped call made while an image is attached to what will be sent, in place.
+
+    Small models leave an optional field out, spell the placeholder loosely, or point a sibling such
+    as a path at the attachment too. Such a call gets the placeholder in ``field`` and loses the
+    siblings that are empty or name it, so the approval card shows exactly what goes out. Returns
+    False and changes nothing when ``field`` holds anything else.
+    """
+    value = arguments.get(field)
+    if not (
+        value is None or value == "" or isinstance(value, str) and _loose(value) == ATTACHED_IMAGE
+    ):
+        return False
+    for key, other in list(arguments.items()):
+        if (
+            key != field
+            and isinstance(other, str)
+            and (not other.strip() or ATTACHED_IMAGE in _loose(other))
+        ):
+            del arguments[key]
+    arguments[field] = ATTACHED_IMAGE
+    return True
+
+
+def note_attached_image(messages: list, targets: list[tuple[str, str]]) -> list:
+    """``messages`` with the latest user turn saying its image is attached and which fields take it.
+
+    The model never sees the image itself, so without this note it asks the user to attach one.
+    """
+    if not targets:
+        return messages
+    calls = " or ".join(
+        f"{name} with {json.dumps({field: ATTACHED_IMAGE})}" for name, field in targets
+    )
+    note = (
+        f"[The user attached an image to this message. You cannot see it. To use it, call {calls}.]"
+    )
+    for index in range(len(messages) - 1, -1, -1):
+        message = messages[index]
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, list):
+            content = [*content, {"type": "text", "text": note}]
+        else:
+            content = f"{content}\n\n{note}" if content else note
+        return [*messages[:index], {**message, "content": content}, *messages[index + 1 :]]
+    return messages
+
+
 def public_tool(server: dict, tool: dict) -> dict:
     """``tool`` as the model sees it: a mapped field accepts only the placeholder."""
     mapping = image_mapping(server, tool)
@@ -204,7 +258,8 @@ def public_tool(server: dict, tool: dict) -> dict:
         "enum": [ATTACHED_IMAGE],
         "description": (
             f'Pass "{ATTACHED_IMAGE}" to send the image the user attached to their latest '
-            "message. Studio inserts it after the user approves; never pass image data or a URL."
+            "message. Unsloth Studio inserts it after the user approves; never pass image data, a "
+            "path or a URL."
         ),
     }
     public = {k: v for k, v in tool.items() if k not in ("inputSchema", "input_schema")}

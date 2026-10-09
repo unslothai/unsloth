@@ -726,6 +726,25 @@ def test_sharing_the_attached_image_asks_even_with_bypass(executed, monkeypatch)
     assert "mcp_image" not in executed[0]
 
 
+def test_the_model_is_told_about_the_attached_image(executed, monkeypatch):
+    from core.inference.mcp_image import McpImage
+
+    monkeypatch.setattr(
+        loop_mod, "mcp_image_targets", lambda names: [("mcp__srv1__lookup", "image")]
+    )
+    turns = [[_sse({"content": "ok"}), _sse(finish = "stop"), _DONE]]
+    messages = [{"role": "user", "content": "what anime is this?"}]
+    transport = FakeTransport(turns)
+    _run(transport, messages = messages, mcp_image = McpImage(mime = "image/png", data = b"IMG"))
+    sent = transport.requests[0]["messages"][-1]["content"]
+    assert sent.startswith("what anime is this?\n\n[The user attached an image")
+    assert 'mcp__srv1__lookup with {"image": "attached_image"}' in sent
+    assert messages == [{"role": "user", "content": "what anime is this?"}]
+    transport = FakeTransport(turns)
+    _run(transport, messages = messages)
+    assert transport.requests[0]["messages"][-1]["content"] == "what anime is this?"
+
+
 def test_full_access_disables_the_sandbox_at_execution(executed):
     transport = _shared_setup_1()
     _run(transport, tools = [PY], bypass_permissions = True)

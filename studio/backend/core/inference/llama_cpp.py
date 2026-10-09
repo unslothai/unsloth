@@ -36752,8 +36752,10 @@ class LlamaCppBackend:
             has_text_only_provisional_card,
             is_high_risk_tool_call,
             mcp_image_share,
+            mcp_image_targets,
             never_needs_approval,
         )
+        from core.inference.mcp_image import note_attached_image
 
         # "full" and bypass_permissions are the same switch, whichever arrives
         # first wins. "off" keeps the sandbox but never prompts. Unset defaults to
@@ -36779,6 +36781,10 @@ class LlamaCppBackend:
         if not self.is_loaded:
             raise RuntimeError("llama-server is not loaded")
 
+        if mcp_image is not None:
+            messages = note_attached_image(
+                messages, mcp_image_targets(_gguf_active_tool_names(tools))
+            )
         conversation = list(messages)
         # Seeded with tool results an explicit skill load relies on, so fitting keeps them.
         _rolling_anchor_ids: set[int] = set(instruction_anchor_ids or ())

@@ -18,6 +18,7 @@ from core.inference.mcp_image import (
     McpImage,
     WITHHELD_RESULT,
     McpImageError,
+    note_attached_image,
     parse_mcp_image,
     public_tool,
 )
@@ -358,6 +359,74 @@ def test_unmapped_and_literal_arguments_take_the_ordinary_path(mapped_server):
     )
 
 
+def test_the_model_is_told_the_image_is_attached_and_where_it_goes():
+    # The image never reaches the model, so without this note small models ask the user to attach one.
+    history = [
+        {"role": "user", "content": "earlier"},
+        {"role": "assistant", "content": "ok"},
+        {"role": "user", "content": "what anime is this?"},
+    ]
+    noted = note_attached_image(history, [("mcp__srv1__lookup", "image")])
+    assert noted[:2] == history[:2] and history[2]["content"] == "what anime is this?"
+    assert noted[2]["content"].startswith("what anime is this?\n\n[The user attached an image")
+    assert 'call mcp__srv1__lookup with {"image": "attached_image"}.]' in noted[2]["content"]
+    parts = [{"type": "text", "text": "which anime?"}]
+    noted = note_attached_image([{"role": "user", "content": parts}], [("t", "f")])
+    assert (
+        noted[0]["content"][0] == parts[0] and "attached an image" in noted[0]["content"][1]["text"]
+    )
+    assert note_attached_image(history, []) is history
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        {},
+        {"cut_borders": True},
+        {"image": ""},
+        {"image": "ATTACHED IMAGE"},
+        {"image": "<attached-image>"},
+    ],
+)
+def test_a_call_that_leaves_out_or_misspells_the_field_still_sends_after_approval(
+    mapped_server, args
+):
+    image = McpImage(mime = "image/png", data = _png_bytes())
+    # Without an attached image the call keeps the ordinary path, untouched.
+    before = dict(args)
+    assert tools_mod.mcp_image_share("mcp__srv1__lookup", args, None) is None and args == before
+    share = tools_mod.mcp_image_share("mcp__srv1__lookup", args, image)
+    # The card shows what is sent: the placeholder, in the mapped field.
+    assert share["disclosure"]["tool"] == "lookup" and args["image"] == ATTACHED_IMAGE
+    out = tools_mod.execute_tool("mcp__srv1__lookup", args, mcp_image = share["image"])
+    assert mapped_server[-1]["args"]["image"] == image.encoded("data_url")
+    assert out == "match for [attached image]"
+
+
+def test_siblings_pointed_at_the_attachment_are_not_sent(mapped_server):
+    image = McpImage(mime = "image/png", data = _png_bytes())
+    args = {
+        "image": ATTACHED_IMAGE,
+        "path": "attached_image",
+        "url": "https://example.com/attached_image",
+        "note": " ",
+        "cut_borders": True,
+        "other": "image_path",
+    }
+    share = tools_mod.mcp_image_share("mcp__srv1__lookup", args, image)
+    assert args == {"image": ATTACHED_IMAGE, "cut_borders": True, "other": "image_path"}
+    tools_mod.execute_tool("mcp__srv1__lookup", args, mcp_image = share["image"])
+    assert mapped_server[-1]["args"] == {
+        "image": image.encoded("data_url"),
+        "cut_borders": True,
+        "other": "image_path",
+    }
+    # Any other value in the mapped field is the model's own input: no image, nothing rewritten.
+    literal = {"image": "/tmp/a.png", "path": "attached_image"}
+    assert tools_mod.mcp_image_share("mcp__srv1__lookup", literal, image) is None
+    assert literal == {"image": "/tmp/a.png", "path": "attached_image"}
+
+
 def _one_call_turns():
     turns = iter(
         [
@@ -406,6 +475,57 @@ def test_safetensors_loop_always_asks_before_sending_the_image(mapped_server, de
     assert [getattr(s, "data", None) for s in seen] == ([image.data] if decision == "allow" else [])
     assert "recipient" not in starts[0]["image_disclosure"]
     assert all(s.recipient for s in seen)
+
+
+def test_the_card_shows_the_arguments_the_call_is_sent_with(mapped_server):
+    from core.inference.safetensors_agentic import run_safetensors_tool_loop
+    from state.tool_approvals import resolve_tool_decision
+
+    turns = iter(
+        [
+            '<tool_call>{"name": "mcp__srv1__lookup", "arguments": {"path": "attached_image", "cut_borders": true}}</tool_call>',
+            "done",
+        ]
+    )
+    sent = []
+    starts = []
+    for event in run_safetensors_tool_loop(
+        single_turn = lambda _messages: iter([next(turns, "")]),
+        messages = [{"role": "user", "content": "what anime is this?"}],
+        tools = [{"type": "function", "function": {"name": "mcp__srv1__lookup"}}],
+        execute_tool = lambda name, arguments, **kwargs: sent.append(dict(arguments)) or "ok",
+        session_id = "s",
+        mcp_image = McpImage(mime = "image/png", data = _png_bytes()),
+    ):
+        if event["type"] == "tool_start":
+            starts.append(event)
+            assert resolve_tool_decision(event["approval_id"], "allow", session_id = "s")
+    assert starts[0]["image_disclosure"]["tool"] == "lookup"
+    assert starts[0]["arguments"] == sent[0] == {"cut_borders": True, "image": ATTACHED_IMAGE}
+
+
+def test_safetensors_loop_tells_the_model_about_the_image(mapped_server):
+    from core.inference.safetensors_agentic import run_safetensors_tool_loop
+
+    prompts = []
+
+    def single_turn(messages):
+        prompts.append(messages[-1]["content"])
+        yield "done"
+
+    for image in (McpImage(mime = "image/png", data = _png_bytes()), None):
+        list(
+            run_safetensors_tool_loop(
+                single_turn = single_turn,
+                messages = [{"role": "user", "content": "what anime is this?"}],
+                tools = [{"type": "function", "function": {"name": "mcp__srv1__lookup"}}],
+                execute_tool = lambda *a, **k: "ok",
+                session_id = "s",
+                mcp_image = image,
+            )
+        )
+    assert 'call mcp__srv1__lookup with {"image": "attached_image"}' in prompts[0]
+    assert prompts[1] == "what anime is this?"
 
 
 def test_route_requires_an_interactive_stream_for_the_image():
@@ -529,4 +649,8 @@ def test_gguf_loop_gates_and_forwards_the_image_like_the_other_loops():
         ast.unparse(node) for node in ast.walk(ast.parse(src)) if isinstance(node, ast.stmt)
     }
     assert "needs_confirm = needs_confirm or image_share is not None" in statements
+    assert (
+        "messages = note_attached_image(messages, mcp_image_targets(_gguf_active_tool_names(tools)))"
+        in statements
+    )
     assert "kwargs['mcp_image'] = image_share['image']" in statements

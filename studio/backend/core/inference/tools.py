@@ -65,6 +65,7 @@ from core.inference.mcp_image import (
     image_input_mappings,
     image_mapping,
     public_tool,
+    settle_image_call,
 )
 from core.inference.mcp_client import (
     MCP_TOOL_PREFIX,
@@ -13534,12 +13535,15 @@ def _mcp_image_destination(url: str) -> str:
 
 
 def mcp_image_share(name, arguments, mcp_image) -> dict | None:
-    """Approval-card details plus the image bound to this server when the call would send it, else None."""
+    """Approval-card details plus the image bound to this server when the call would send it, else None.
+
+    A call that would send it has ``arguments`` rewritten in place to what goes out (settle_image_call).
+    """
     if mcp_image is None or not isinstance(arguments, dict):
         return None
     server, tool, tool_name = _mcp_resolve_tool(name)
     mapping = image_mapping(server, tool) if server else None
-    if mapping is None or arguments.get(mapping["field"]) != ATTACHED_IMAGE:
+    if mapping is None or not settle_image_call(arguments, mapping["field"]):
         return None
     # The fingerprint covers the server's headers, so it stays on the server: only "disclosure" is streamed.
     return {
@@ -13562,13 +13566,20 @@ def _mcp_resolve_tool(name) -> "tuple[dict | None, dict | None, str]":
     return server, _mcp_cached_tool(server, tool_name) if server else None, tool_name
 
 
-def mcp_catalog_takes_image(names) -> bool:
-    """Whether any of these catalog tools has a field mapped to the attached image."""
+def mcp_image_targets(names) -> list[tuple[str, str]]:
+    """(catalog name, field) for each of these tools with a field mapped to the attached image."""
+    targets = []
     for name in names:
         server, tool, _ = _mcp_resolve_tool(name)
-        if server and image_mapping(server, tool):
-            return True
-    return False
+        mapping = image_mapping(server, tool) if server else None
+        if mapping:
+            targets.append((name, mapping["field"]))
+    return targets
+
+
+def mcp_catalog_takes_image(names) -> bool:
+    """Whether any of these catalog tools has a field mapped to the attached image."""
+    return bool(mcp_image_targets(names))
 
 
 def mcp_tool_input_schema(name) -> dict | None:

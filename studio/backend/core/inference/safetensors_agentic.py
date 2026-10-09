@@ -663,6 +663,10 @@ def run_safetensors_tool_loop(
 
     * ``{"type": "tool_end", "tool_name", "tool_call_id", "result"}``
     """
+    if mcp_image is not None:
+        from core.inference.mcp_image import note_attached_image
+        from core.inference.tools import mcp_image_targets
+        messages = note_attached_image(messages, mcp_image_targets(_active_tool_names(tools)))
     conversation = list(messages)
     # Where the caller's own attachment sits in the seeded sink. The cap is about what
     # the loop RE-SENDS, so that entry is never the one it drops -- but it is not the

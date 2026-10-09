@@ -56,6 +56,7 @@ from core.inference.tool_call_parser import (
     strip_tool_markup,
 )
 from core.inference.mcp_images import append_image_turn as append_mcp_image_turn
+from core.inference.mcp_image import note_attached_image
 
 
 def _append_mcp_images_owned(
@@ -102,6 +103,7 @@ from core.inference.tools import (
     execute_tool,
     is_high_risk_tool_call,
     mcp_image_share,
+    mcp_image_targets,
     never_needs_approval,
 )
 from state.tool_approvals import (
@@ -1390,6 +1392,9 @@ async def stream_with_studio_tools(
 ) -> AsyncIterator[str]:
     """Stream a provider, execute requested Unsloth tools, continue to a final answer."""
     conversation = [dict(message) for message in run.messages]
+    if mcp_image is not None:
+        targets = await asyncio.to_thread(mcp_image_targets, sorted(_tool_names(policy.tools)))
+        conversation = note_attached_image(conversation, targets)
     openai_compaction: tuple[list[dict[str, Any]], str] | None = None
     resumes_partial = run.continue_final_message
     # The image parts this run appends, so its cap never counts a caller's own
