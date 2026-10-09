@@ -1426,7 +1426,9 @@ def run_safetensors_tool_loop(
             for _tc in tool_calls:
                 _fn = _tc.get("function", {}) or {}
                 _key = (_fn.get("name", ""), str(_fn.get("arguments", "")))
-                if _fn.get("name") in _WORKSPACE_TOOLS:
+                if not deduplicate_tool_calls:
+                    pass
+                elif _fn.get("name") in _WORKSPACE_TOOLS:
                     if _key == last_workspace_key:
                         continue
                     if _key in seen_keys:

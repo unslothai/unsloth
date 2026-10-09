@@ -5251,6 +5251,33 @@ def test_gguf_textual_fallback_collapses_duplicate_tool_calls(monkeypatch):
     assert len(calls) == 1, [c[0] for c in calls]
 
 
+@pytest.mark.parametrize("deduplicate", [True, False])
+def test_gguf_textual_fallback_keeps_identical_calls_when_deduplication_is_off(
+    monkeypatch, deduplicate
+):
+    blocks = '<tool_call>{"name":"web_search","arguments":{"query":"cats"}}</tool_call>' * 3
+    first_stream = [_sse({"content": blocks}), _done()]
+    final_stream = [_sse({"content": "done"}), _done()]
+    backend, _payloads = _backend_and_payloads(monkeypatch, [first_stream, final_stream])
+
+    calls: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda name, arguments, **_k: calls.append((name, arguments)) or "OK",
+    )
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "cats"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+            deduplicate_tool_calls = deduplicate,
+        )
+    )
+
+    assert len(calls) == (1 if deduplicate else 3), [c[0] for c in calls]
+
+
 def test_gguf_drain_truncated_enabled_name_json_preserved_when_auto_heal_disabled(monkeypatch):
     """Auto-Heal OFF keeps a truncated enabled-name fragment visible; ON suppresses it (strip gated on auto_heal_tool_calls)."""
 
