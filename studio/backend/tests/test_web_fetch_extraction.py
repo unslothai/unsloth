@@ -338,6 +338,51 @@ def test_skipped_tag_implicitly_closes_hidden_paragraph():
         assert "VISIBLE" in out
 
 
+@pytest.mark.parametrize(
+    "html, heading",
+    [
+        (
+            '<h3 data-state="closed"><button type="button" aria-controls="r1" aria-expanded="false">'
+            'What is the right plan for me?<span aria-hidden="true">v</span></button></h3>'
+            '<div id="r1" role="region"><p>Answer text.</p></div>',
+            "### What is the right plan for me?",
+        ),
+        (
+            '<h2 class="accordion-header">\n  <button class="accordion-button" type="button" '
+            'aria-expanded="true" aria-controls="c1">\n    What is the right plan for me?\n  </button>\n</h2>'
+            '<div id="c1"><div class="accordion-body">Answer text.</div></div>',
+            "What is the right plan for me?",
+        ),
+        (
+            "<h3><button>What is the right plan for me?</button></h3><p>Answer text.</p>",
+            "### What is the right plan for me?",
+        ),
+        (
+            '<div role="heading" aria-level="3"><button aria-expanded="false">'
+            "What is the right plan for me?</button></div><p>Answer text.</p>",
+            "What is the right plan for me?",
+        ),
+    ],
+)
+def test_accordion_question_in_a_heading_button_is_kept(html, heading):
+    out = html_to_markdown(html)
+    assert heading in out
+    assert "Answer text." in out
+
+
+def test_buttons_that_are_not_a_heading_title_are_still_dropped():
+    html = (
+        "<h4><span>Create Artifacts</span><button aria-expanded='false'>"
+        "<span class='sr-only'>More information</span></button></h4>"
+        "<p>Body text.</p><button>Subscribe</button>"
+    )
+    out = html_to_markdown(html)
+    assert "#### Create Artifacts" in out
+    assert "Body text." in out
+    assert "More information" not in out
+    assert "Subscribe" not in out
+
+
 def test_visible_void_hr_still_renders():
     # Guard: the suppression must not affect non-hidden void elements.
     html = "<body><p>a</p><hr><p>b</p></body>"
