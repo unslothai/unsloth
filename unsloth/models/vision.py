@@ -3132,6 +3132,7 @@ class FastBaseModel:
 
         from .loader_utils import (
             check_and_disable_bitsandbytes_loading,
+            gptq_trainable_quantization_config,
             quantization_config_selects_bnb_4bit,
             sync_unsloth_model_name_bnb_flags,
         )
@@ -3486,6 +3487,12 @@ class FastBaseModel:
                         pass
                     if user_quantization_config is None:
                         kwargs["quantization_config"] = quantization_config
+
+        # Replaces the checkpoint's own GPTQ config built above; vLLM reads the checkpoint itself and picks its own kernel.
+        if not (fast_inference and is_vLLM_available()):
+            _gptq_config = gptq_trainable_quantization_config(auto_config, user_quantization_config)
+            if _gptq_config is not None:
+                kwargs["quantization_config"] = _gptq_config
 
         # torch_dtype is resolved above, where the device-map planner also needs it.
         kwargs = add_dtype_kwargs(torch_dtype, kwargs)
