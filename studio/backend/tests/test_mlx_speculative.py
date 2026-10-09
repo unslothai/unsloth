@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import json
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -55,13 +56,17 @@ def test_an_explicit_kind_tries_the_named_drafter_then_the_head_then_cached_comp
         },
         builtin = True,
     )
-    assert [s.path.split("/")[-1] for s in _resolve("dflash").sources] == ["a--Qwen3.5-4B-DFlash"]
+    assert [os.path.basename(s.path) for s in _resolve("dflash").sources] == [
+        "a--Qwen3.5-4B-DFlash"
+    ]
     assert _resolve("dflash").copies and spec.mlx_spec_mode("mtp+ngram") == "mtp"
     assert spec.mlx_spec_mode("eagle3+ngram") == "auto"
-    assert [s.path.split("/")[-1] for s in _resolve("eagle3").sources] == ["b--Qwen3.5-4B-Eagle3"]
+    assert [os.path.basename(s.path) for s in _resolve("eagle3").sources] == [
+        "b--Qwen3.5-4B-Eagle3"
+    ]
     named = _resolve("eagle3", "b/Qwen3.5-4B-Eagle3")
     assert [s.kind for s in named.sources] == ["eagle3"] and named.copies and named.speculative
-    mtp = [(s.path.split("/")[-1], s.builtin) for s in _resolve("draft-mtp").sources]
+    mtp = [(os.path.basename(s.path), s.builtin) for s in _resolve("draft-mtp").sources]
     assert mtp == [("org--Qwen3.5-4B-4bit", True), ("g--Qwen3.5-4B-assistant", False)]
     assert _resolve("mtp", "g/Qwen3.5-4B-assistant").sources[0].builtin is False
     # A named drafter of another kind is refused with a reason, never substituted silently.
