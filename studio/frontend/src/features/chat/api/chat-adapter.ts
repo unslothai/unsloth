@@ -5294,7 +5294,20 @@ export function createOpenAIStreamAdapter(
         })
           ? (continuation.reasoning ?? "")
           : "";
-      if (continuation && !continuation.partial && !resumedThought) {
+      const hasGeminiReplayContinuation = Boolean(
+        continuation &&
+          externalProvider?.providerType === "gemini" &&
+          (continuation.geminiReplayTurns?.length ||
+            continuation.thoughtParts?.length ||
+            continuation.answerParts?.length ||
+            continuation.thoughtSignature),
+      );
+      if (
+        continuation &&
+        !continuation.partial &&
+        !resumedThought &&
+        !hasGeminiReplayContinuation
+      ) {
         toast.error("This response cannot be resumed", {
           description:
             "It stopped mid-thought, and only GGUF and MLX models can resume a thought. Use Retry instead.",

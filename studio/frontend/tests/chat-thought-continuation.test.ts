@@ -34,6 +34,8 @@ const RETAIN_GEMINI_BOUNDARY_ACROSS_PROVIDER_SWITCH =
   /const geminiContinuationReplayTurns =\s*continuation\?\.geminiReplayTurns\?\.length/;
 const ACTIVE_PROVIDER_DOES_NOT_GATE_GEMINI_BOUNDARY =
   /externalProvider\?\.providerType === "gemini" &&\s*continuation\?\.geminiReplayTurns/;
+const ALLOW_GEMINI_REPLAY_WITHOUT_VISIBLE_TEXT =
+  /const hasGeminiReplayContinuation = Boolean\([\s\S]{0,500}!hasGeminiReplayContinuation/;
 
 test("the source splits a reply into the answer and the thought before it", () => {
   assert.deepEqual(
@@ -72,6 +74,16 @@ test("a thought-only turn is continuable only where a thought resumes", () => {
   assert.equal(
     isContinuableContent([...cut, { type: "tool-call", toolName: "web_search" }], {
       thought: true,
+    }),
+    false,
+  );
+  assert.equal(
+    isContinuableContent([{ type: "reasoning", text: "" }], { replay: true }),
+    true,
+  );
+  assert.equal(
+    isContinuableContent([{ type: "tool-call", toolName: "web_search" }], {
+      replay: true,
     }),
     false,
   );
@@ -132,6 +144,32 @@ test("a thought-only request is read, and its duration only travels with a thoug
     }),
     null,
   );
+  assert.deepEqual(
+    readContinuationRequest({
+      custom: {
+        unslothContinuation: {
+          partial: "",
+          thoughtParts: [{ text: "", thoughtSignature: "SIG-THOUGHT" }],
+          geminiReplayTurns: [
+            {
+              text: "",
+              thoughtParts: [{ text: "", thoughtSignature: "SIG-THOUGHT" }],
+            },
+          ],
+        },
+      },
+    }),
+    {
+      partial: "",
+      thoughtParts: [{ text: "", thoughtSignature: "SIG-THOUGHT" }],
+      geminiReplayTurns: [
+        {
+          text: "",
+          thoughtParts: [{ text: "", thoughtSignature: "SIG-THOUGHT" }],
+        },
+      ],
+    },
+  );
 });
 
 test("Gemini continuations retain the provider turn boundary", () => {
@@ -145,6 +183,7 @@ test("Gemini continuations retain the provider turn boundary", () => {
   assert.match(adapter, PRESERVE_GEMINI_BOUNDARY);
   assert.match(adapter, RETAIN_GEMINI_BOUNDARY_ACROSS_PROVIDER_SWITCH);
   assert.doesNotMatch(adapter, ACTIVE_PROVIDER_DOES_NOT_GATE_GEMINI_BOUNDARY);
+  assert.match(adapter, ALLOW_GEMINI_REPLAY_WITHOUT_VISIBLE_TEXT);
 });
 
 /** What the adapter's stream loop appends, per delta, to a seeded buffer. */

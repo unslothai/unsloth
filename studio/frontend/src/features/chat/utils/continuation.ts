@@ -258,10 +258,13 @@ export function budgetImpliesTruncation({
 /** Mirrors the backend guard: tool calls block; reasoning-only needs `thought`. */
 export function isContinuableContent(
   content: readonly unknown[] | undefined,
-  { thought = false }: { thought?: boolean } = {},
+  {
+    thought = false,
+    replay = false,
+  }: { thought?: boolean; replay?: boolean } = {},
 ): boolean {
   if (!content) {
-    return false;
+    return replay;
   }
   let hasText = false;
   let hasReasoning = false;
@@ -282,7 +285,7 @@ export function isContinuableContent(
     }
     return false;
   }
-  return hasText || (thought && hasReasoning);
+  return hasText || (thought && hasReasoning) || replay;
 }
 
 /** Reasoning is kept only when it all precedes the answer, as reasoning_content does. */
@@ -486,16 +489,22 @@ export function readContinuationRequest(
     typeof request?.reasoning === "string" && request.reasoning.trim()
       ? request.reasoning
       : "";
-  if (!partial && !reasoning) {
-    return null;
-  }
-  const duration = request?.reasoningDuration;
   const signature = request?.thoughtSignature;
   const thoughtParts = parseGeminiThoughtReplayParts(request?.thoughtParts);
   const answerParts = parseGeminiAnswerReplayParts(request?.answerParts);
   const geminiReplayTurns = parseGeminiContinuationReplayTurns(
     request?.geminiReplayTurns,
   );
+  const hasGeminiReplay = Boolean(
+    (typeof signature === "string" && signature) ||
+      thoughtParts.length > 0 ||
+      answerParts.length > 0 ||
+      geminiReplayTurns.length > 0,
+  );
+  if (!partial && !reasoning && !hasGeminiReplay) {
+    return null;
+  }
+  const duration = request?.reasoningDuration;
   return {
     partial,
     ...(reasoning ? { reasoning } : {}),
