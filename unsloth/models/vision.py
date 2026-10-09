@@ -1618,11 +1618,11 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
         model_eos_token_id = model_eos_token_id[0]
 
     # Encoder-decoders keep their own pad (T5: pad 0, EOS 1), used to infer the encoder mask and pad finished rows.
+    # Dia's audio pad (1025) fills its delay pattern; EOS there makes the DAC decode index out of range (#2560).
     default_pad_token_id = model_eos_token_id
     if (
-        _is_text_seq2seq_config(self.config)
-        and getattr(self.config, "pad_token_id", None) is not None
-    ):
+        _is_text_seq2seq_config(self.config) or getattr(self.config, "model_type", None) == "dia"
+    ) and getattr(self.config, "pad_token_id", None) is not None:
         default_pad_token_id = self.config.pad_token_id
     kwargs["pad_token_id"] = kwargs.pop("pad_token_id", default_pad_token_id)
 
