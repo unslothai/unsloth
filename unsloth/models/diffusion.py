@@ -229,14 +229,16 @@ class FastDiffusionModel:
         except Exception:
             pass
 
-        config = _load_diffusion_config(
-            model_name,
-            token,
-            trust_remote_code,
-            revision,
-            local_files_only,
-            cache_dir = cache_dir,
-        )
+        config = kwargs.pop("config", None)
+        if config is None:
+            config = _load_diffusion_config(
+                model_name,
+                token,
+                trust_remote_code,
+                revision,
+                local_files_only,
+                cache_dir = cache_dir,
+            )
         model_type = getattr(config, "model_type", None)
         profile = resolve_diffusion_profile(config)
         if profile is None and not is_diffusion_model_type(model_type):
@@ -372,7 +374,9 @@ class FastDiffusionModel:
             f"   dtype: {dtype} | 4bit: {load_in_4bit} | 8bit: {load_in_8bit} | attn: {attn_implementation}"
         )
 
-        model = model_cls.from_pretrained(model_name, **load_kwargs).eval()
+        # The config chosen above (a caller's overrides, or the legacy rewrite) is the one instantiated.
+        model = model_cls.from_pretrained(model_name, config = config, **load_kwargs).eval()
+        model._unsloth_full_finetuning = bool(full_finetuning)
         if trust_remote_code:
             # 4.x remote code builds RoPE inv_freq in __init__; transformers 5 leaves it uninitialised.
             from ._remote_code_buffers import restore_remote_code_non_persistent_buffers
@@ -471,6 +475,9 @@ class FastDiffusionModel:
         **kwargs,
     ):
         """Attach a PEFT LoRA to the diffusion backbone (attention + dense MLP). No fused kernels."""
+        if getattr(model, "_unsloth_full_finetuning", False):
+            print("Unsloth: Full finetuning is enabled, so .get_peft_model has no effect")
+            return model
         from peft import LoraConfig, get_peft_model as peft_get_peft_model
 
         profile = resolve_diffusion_profile(getattr(model, "config", None))

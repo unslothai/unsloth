@@ -257,3 +257,22 @@ def test_self_conditioning_off_skips_the_conditioning_pass(model):
     finally:
         hook.remove()
     assert len(calls) == 1
+
+
+def test_full_finetuning_skips_lora():
+    from unsloth import FastModel
+
+    m, _ = FastModel.from_pretrained(
+        TINY, dtype = torch.float32, device_map = "cpu", full_finetuning = True
+    )
+    assert FastModel.get_peft_model(m, r = 4) is m
+    assert not any("lora_" in name for name, _ in m.named_parameters())
+
+
+def test_caller_config_is_the_one_loaded():
+    from unsloth import FastModel
+
+    config = transformers.AutoConfig.from_pretrained(TINY)
+    config.unsloth_test_marker = 7
+    m, _ = FastModel.from_pretrained(TINY, config = config, dtype = torch.float32, device_map = "cpu")
+    assert getattr(m.config, "unsloth_test_marker", None) == 7

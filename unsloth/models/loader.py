@@ -2078,6 +2078,7 @@ class FastModel(FastBaseModel):
                 device_map_planner_kwargs = device_map_planner_kwargs,
                 trust_remote_code = trust_remote_code,
                 revision = base_revision,
+                **({"config": user_config} if user_config is not None else {}),
                 **kwargs,
             )
             # Returns before the FORCE_FLOAT32 scan and no diffusion type is on that list, so False. Stamped, not left unset, or the trainer reads whatever an earlier load wrote.
