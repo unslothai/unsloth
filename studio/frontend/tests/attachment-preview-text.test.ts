@@ -37,6 +37,7 @@ const {
   repackDocxPreviewArchive,
   truncateAttachmentPreviewText,
   writeDocxBreaksAndCheckboxes,
+  writeDocxListNumbers,
   writeDocxTableRows,
 } = await import("../src/features/chat/attachment-content.ts");
 const { definePDFJSModule } = await import("unpdf");
@@ -1678,6 +1679,84 @@ test("an html rowspan keeps its full standards-defined range", async () => {
   );
 
   assert.equal(extracted, ["Group\trow 0", ...labels.map((label) => `\t${label}`)].join("\n\n"));
+});
+
+test("a Word numbered list keeps its numbers", async () => {
+  const w = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
+  const lvl = (ilvl: number, format: string, text: string) =>
+    `<w:lvl w:ilvl="${ilvl}"><w:start w:val="1"/><w:numFmt w:val="${format}"/><w:lvlText w:val="${text}"/></w:lvl>`;
+  const p = (text: string, pPr = "") => `<w:p>${pPr && `<w:pPr>${pPr}</w:pPr>`}<w:r><w:t>${text}</w:t></w:r></w:p>`;
+  const numPr = (numId: number, ilvl = 0) => `<w:numPr><w:ilvl w:val="${ilvl}"/><w:numId w:val="${numId}"/></w:numPr>`;
+  const bytes = zipSync({
+    "[Content_Types].xml": strToU8("<Types/>"),
+    "_rels/.rels": relationships([["officeDocument", "word/document.xml"]]),
+    "word/_rels/document.xml.rels": relationships([["numbering", "numbering.xml"], ["styles", "styles.xml"]]),
+    "word/document.xml": strToU8(
+      `<w:document ${w}><w:body>` +
+        p("Terms") +
+        p("Payment is due within 30 days.", numPr(2)) +
+        p("By bank transfer", numPr(2, 1)) +
+        p("Late payments incur a 2% fee.", numPr(2)) +
+        p("Termination", '<w:pStyle w:val="ListNumber"/>') +
+        p("Restarted", numPr(3)) +
+        p("Bullet", numPr(4)) +
+        "</w:body></w:document>",
+    ),
+    "word/numbering.xml": strToU8(
+      `<w:numbering ${w}>` +
+        `<w:abstractNum w:abstractNumId="1">${lvl(0, "decimal", "%1.")}${lvl(1, "lowerLetter", "(%2)")}</w:abstractNum>` +
+        `<w:abstractNum w:abstractNumId="2">${lvl(0, "bullet", "\u2022")}</w:abstractNum>` +
+        '<w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num>' +
+        '<w:num w:numId="2"><w:abstractNumId w:val="1"/></w:num>' +
+        '<w:num w:numId="3"><w:abstractNumId w:val="1"/><w:lvlOverride w:ilvl="0"><w:startOverride w:val="1"/></w:lvlOverride></w:num>' +
+        '<w:num w:numId="4"><w:abstractNumId w:val="2"/></w:num>' +
+        "</w:numbering>",
+    ),
+    "word/styles.xml": strToU8(
+      `<w:styles ${w}><w:style w:type="paragraph" w:styleId="ListNumber"><w:pPr><w:numPr><w:numId w:val="1"/></w:numPr></w:pPr></w:style></w:styles>`,
+    ),
+  });
+  const globals = globalThis as { DOMParser?: unknown; XMLSerializer?: unknown };
+  const original = { DOMParser: globals.DOMParser, XMLSerializer: globals.XMLSerializer };
+  globals.DOMParser = XmlDomParser;
+  globals.XMLSerializer = XmlSerializer;
+  try {
+    const { default: mammoth } = await import("mammoth");
+    const { value } = await mammoth.extractRawText({
+      buffer: Buffer.from(writeDocxTableRows(writeDocxBreaksAndCheckboxes(writeDocxListNumbers(bytes)))),
+    });
+    assert.equal(
+      value,
+      "Terms\n\n1. Payment is due within 30 days.\n\n(a) By bank transfer\n\n2. Late payments incur a 2% fee.\n\n" +
+        "3. Termination\n\n1. Restarted\n\nBullet\n\n",
+    );
+  } finally {
+    Object.assign(globals, original);
+  }
+});
+
+test("an html ordered list keeps its numbers", async () => {
+  const withAttributes = (node: StubNode, attributes: Record<string, string> = {}) =>
+    Object.assign(node, { getAttribute: (name: string) => attributes[name] ?? null });
+  const item = (text: string, attributes?: Record<string, string>) =>
+    withAttributes(element("li", textNode(text)), attributes);
+  const extracted = await withStubDom(
+    () =>
+      element(
+        "body",
+        element("p", textNode("Steps:")),
+        withAttributes(element("ol", textNode("\n  "), item("Build the image"), textNode("\n  "), item("Push the image"))),
+        withAttributes(element("ol", item("five"), item("nine", { value: "9" }), item("ten")), { start: "5" }),
+        withAttributes(element("ol", item("third"), item("second"), item("first")), { reversed: "", type: "I" }),
+        element("ul", element("li", textNode("bullet"))),
+      ),
+    () => extractHtmlAttachmentText("<html/>"),
+  );
+
+  assert.equal(
+    extracted,
+    "Steps:\n\n1. Build the image\n\n2. Push the image\n\n5. five\n\n9. nine\n\n10. ten\n\nIII. third\n\nII. second\n\nI. first\n\nbullet",
+  );
 });
 
 test("attachmentTextLanguage maps source files and leaves prose alone", () => {
