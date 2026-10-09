@@ -866,6 +866,8 @@ def _stub_probe(
         return tuple(kernels)
 
     monkeypatch.setattr(att, "_probe_sdpa_kernels", _probe)
+    # Importing unsloth on SM100 turns cuDNN SDPA off process-wide; these tests pin the probe alone.
+    monkeypatch.setattr(att, "_enabled_sdpa_kernels", lambda found: found)
 
 
 def test_math_only_is_read_off_a_probe_not_the_flags(monkeypatch):
