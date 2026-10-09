@@ -103,13 +103,18 @@ async def chat(
     message = choices[0].get("message") if isinstance(choices[0].get("message"), dict) else {}
     usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else None
     answered = opt_text(payload.get("model"))
+    text = message.get("content") if isinstance(message.get("content"), str) else ""
+    finish_reason = opt_text(choices[0].get("finish_reason"))
     note = None
     if model and answered and not _same_model(model, answered):
         note = f"{answered} answered; {model} is not the model that served this request."
+    elif not text.strip() and finish_reason == "length":
+        # Thinking models can spend the whole budget before the visible reply starts.
+        note = "The reply ran out of tokens before any text, likely spent on the model's reasoning; raise max_tokens."
     return ChatResult(
-        text = message.get("content") if isinstance(message.get("content"), str) else "",
+        text = text,
         model = answered,
-        finish_reason = opt_text(choices[0].get("finish_reason")),
+        finish_reason = finish_reason,
         usage = Usage(
             prompt_tokens = integer(usage.get("prompt_tokens")),
             completion_tokens = integer(usage.get("completion_tokens")),

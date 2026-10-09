@@ -272,6 +272,18 @@ def test_a_different_answering_model_is_noted(monkeypatch):
     assert result["structuredContent"]["note"] is None
 
 
+@pytest.mark.parametrize("finish_reason,noted", [("length", True), ("stop", False)])
+def test_an_empty_reply_cut_off_by_the_budget_says_so(monkeypatch, finish_reason, noted):
+    reply = {
+        **COMPLETION,
+        "choices": [{"message": {"content": ""}, "finish_reason": finish_reason}],
+    }
+    studio = _studio({("POST", "/v1/chat/completions"): lambda request, body: reply})
+    result = _call(monkeypatch, studio, "chat", {"prompt": "hi", "max_tokens": 300})
+    note = result["structuredContent"]["note"]
+    assert ("raise max_tokens" in note) if noted else note is None
+
+
 def test_model_text_is_returned_untouched(monkeypatch):
     reply = {
         **COMPLETION,
