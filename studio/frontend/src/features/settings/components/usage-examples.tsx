@@ -385,7 +385,8 @@ const CATALOG_RETRY_MS = 15000;
 // touching the store, so residency is never settled for good.
 const CATALOG_IDLE_MS = 60000;
 
-function readUseTunnelPref(): boolean {
+/** Whether the API tab offers the tunnel URL, shared with the agent access (MCP) snippet. */
+export function readUseTunnelPref(): boolean {
   if (typeof window === "undefined") return true;
   try {
     return window.localStorage.getItem(USE_TUNNEL_KEY) !== "false";
