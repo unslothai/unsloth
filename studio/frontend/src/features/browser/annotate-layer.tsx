@@ -54,13 +54,18 @@ async function annotationScreenshot(page: HTMLElement | null): Promise<File[]> {
 type Annotation = {
   id: number;
   ranges: Range[];
+  places?: (Place | null)[];
   quote: string;
   frame?: Frame;
   request: string;
 };
-/** A drag's box, offset from its content so it scrolls with it, at the zoom it was drawn at. */
-type Frame = { left: number; top: number; width: number; height: number; zoom: number };
-type Pending = { id: number | null; ranges: Range[]; quote: string; frame?: Frame };
+/** A drag's box, offset from its content so it scrolls with it, at the zoom and page width it was drawn at. */
+type Frame = { left: number; top: number; width: number; height: number; zoom: number; item?: number };
+type Pending = { id: number | null; ranges: Range[]; places?: (Place | null)[]; quote: string; frame?: Frame };
+/** A range end as a virtualized page and a text offset into it. */
+type Spot = { item: string; offset: number };
+/** Where a range's text sits, to find it again once its page remounts. */
+type Place = { start: Spot; end: Spot; text: string };
 type Box = { left: number; top: number; width: number; height: number };
 
 function hasOwnText(element: Element): boolean {
@@ -230,12 +235,78 @@ function zoomAt(ranges: Range[]): number {
   return cssZoomOf(element);
 }
 
+// PDF pages and slides: virtualized, and remounted at a new width on zoom.
+const ITEM = "[data-index]";
+
+const itemOf = (node: Node): HTMLElement | null =>
+  (node instanceof Element ? node : node.parentElement)?.closest<HTMLElement>(ITEM) ?? null;
+
+function spotOf(node: Node, offset: number): Spot | null {
+  const item = itemOf(node);
+  if (!item) return null;
+  const before = document.createRange();
+  before.setStart(item, 0);
+  before.setEnd(node, offset);
+  return { item: item.dataset.index ?? "", offset: before.toString().length };
+}
+
+function placeOf(range: Range): Place | null {
+  const text = range.toString();
+  const start = spotOf(range.startContainer, range.startOffset);
+  const end = spotOf(range.endContainer, range.endOffset);
+  return text.trim() && start && end ? { start, end, text } : null;
+}
+
+/** The text node and offset `offset` characters into `root`; a start between nodes takes the next. */
+function pointAt(root: Element, offset: number, start: boolean): [Node, number] | null {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let left = offset;
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const length = node.textContent?.length ?? 0;
+    if (start ? left < length : left <= length) return [node, left];
+    left -= length;
+  }
+  return null;
+}
+
+/** The place's text in its remounted page, if that page shows the same text. */
+function rangeAt(place: Place, page: HTMLElement): Range | null {
+  const find = (spot: Spot, start: boolean) => {
+    const item = page.querySelector(`${ITEM}[data-index="${CSS.escape(spot.item)}"]`);
+    return item ? pointAt(item, spot.offset, start) : null;
+  };
+  const start = find(place.start, true);
+  const end = find(place.end, false);
+  if (!start || !end) return null;
+  const range = document.createRange();
+  range.setStart(...start);
+  range.setEnd(...end);
+  return range.toString() === place.text ? range : null;
+}
+
+const rebound = new WeakMap<Range, Range>();
+
+/** The ranges, found again where their page remounted. */
+function liveRanges(mark: { ranges: Range[]; places?: (Place | null)[] }, page: HTMLElement): Range[] {
+  return mark.ranges.map((range, index) => {
+    const place = mark.places?.[index];
+    // Removed nodes collapse a range onto what is left, so its text tells it is lost.
+    if (!place || range.toString() === place.text) return range;
+    const known = rebound.get(range);
+    if (known?.toString() === place.text) return known;
+    const found = rangeAt(place, page);
+    if (found) rebound.set(range, found);
+    return found ?? range;
+  });
+}
+
 /** A drag's box if any, else the box around the content. */
 function markBoxOf(ranges: Range[], frame: Frame | undefined, origin: DOMRect): Box | null {
   const content = boxOf(ranges, origin);
   if (!content || !frame) return content;
-  // Scale by the zoom change since the drag, as the content did.
-  const k = zoomAt(ranges) / frame.zoom;
+  // Scale by the zoom and page width change since the drag, as the content did.
+  const item = ranges[0] && frame.item ? itemOf(ranges[0].startContainer) : null;
+  const k = (zoomAt(ranges) / frame.zoom) * (item && frame.item ? item.offsetWidth / frame.item : 1);
   return {
     left: content.left + PAD + frame.left * k,
     top: content.top + PAD + frame.top * k,
@@ -287,7 +358,14 @@ export function AnnotateLayer({
       if (!request) return items;
       return [
         ...items,
-        { id: nextId.current++, ranges: pending.ranges, quote: pending.quote, frame: pending.frame, request },
+        {
+          id: nextId.current++,
+          ranges: pending.ranges,
+          places: pending.places,
+          quote: pending.quote,
+          frame: pending.frame,
+          request,
+        },
       ];
     }
     return request
@@ -336,12 +414,18 @@ export function AnnotateLayer({
     page.addEventListener("transitionend", zoomed, true);
     const resize = new ResizeObserver(redraw);
     resize.observe(page);
+    // A remounted page renders its text later; marks are found again then.
+    const added = new MutationObserver((records) => {
+      if (records.some((record) => record.addedNodes.length && !layerRef.current?.contains(record.target))) redraw();
+    });
+    added.observe(page, { childList: true, subtree: true });
     return () => {
       cancelAnimationFrame(frame);
       window.clearTimeout(settle);
       page.removeEventListener("scroll", redraw, { capture: true });
       page.removeEventListener("transitionend", zoomed, true);
       resize.disconnect();
+      added.disconnect();
     };
   }, [page]);
 
@@ -394,9 +478,10 @@ export function AnnotateLayer({
             width: area.width,
             height: area.height,
             zoom: zoomAt(ranges),
+            item: itemOf(ranges[0]!.startContainer)?.offsetWidth,
           }
         : undefined;
-      setPending({ id: null, ranges, quote, frame });
+      setPending({ id: null, ranges, places: ranges.map(placeOf), quote, frame });
       setDraft("");
     };
     const onDown = (event: PointerEvent) => {
@@ -508,7 +593,7 @@ export function AnnotateLayer({
   const hoverBox = hover ? boxOf(hover, origin) : null;
   if (hoverBox) lastHoverBox.current = hoverBox;
   const shownHover = hoverBox ?? lastHoverBox.current;
-  const pendingBox = pending ? markBoxOf(pending.ranges, pending.frame, origin) : null;
+  const pendingBox = pending ? markBoxOf(liveRanges(pending, page), pending.frame, origin) : null;
   const count = items.length;
   // A first comment still being typed can go too: Send commits it.
   const canSend = count > 0 || (pending?.id === null && draft.trim() !== "");
@@ -535,7 +620,7 @@ export function AnnotateLayer({
         />
       ) : null}
       {items.map((item, index) => {
-        const box = item.id === pending?.id ? null : markBoxOf(item.ranges, item.frame, origin);
+        const box = item.id === pending?.id ? null : markBoxOf(liveRanges(item, page), item.frame, origin);
         return box ? (
           <Mark
             key={item.id}
@@ -546,6 +631,7 @@ export function AnnotateLayer({
               setPending({
                 id: item.id,
                 ranges: item.ranges,
+                places: item.places,
                 quote: item.quote,
                 frame: item.frame,
               });
