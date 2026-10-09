@@ -38,10 +38,11 @@ def checked_save_directory(value: str) -> str:
     return text
 
 
-async def _op(caller: Caller, path: str, body: dict[str, Any]) -> None:
+async def _op(caller: Caller, path: str, body: dict[str, Any]) -> Any:
     result = await route_json("POST", path, caller = caller, json_body = body)
     if isinstance(result, dict) and result.get("success") is False:
         raise tool_error(result.get("message") or "The export step failed")
+    return result
 
 
 def _export_body(
@@ -126,10 +127,13 @@ async def export_model(
         job.started_seq = integer(before.get("last_op_seq")) if isinstance(before, dict) else None
         job.phase = "exporting"
         # The route checks this under the export lock, which closes the gap the status check leaves.
-        await _op(
+        result = await _op(
             caller, f"/api/export/export/{format}", {**body, "expected_checkpoint": found.path}
         )
-        export_jobs.reconcile(job, await route_json("GET", EXPORT_STATUS, caller = caller))
+        # This call's own answer, not the export status: another export may have finished since.
+        details = result.get("details") if isinstance(result, dict) else None
+        if isinstance(details, dict):
+            job.output = export_jobs.output_name(details.get("output_path")) or job.output
 
     # Checked again with no await before start, so two calls at once cannot both get past the guard.
     if export_jobs.any_running():

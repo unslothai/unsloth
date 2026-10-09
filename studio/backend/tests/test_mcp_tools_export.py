@@ -63,6 +63,7 @@ def test_a_running_job_settles_from_the_export_status(monkeypatch):
     _register(started_seq = 3, phase = "exporting")
     status = {
         "last_op_seq": 4,
+        "last_op_kind": "export_gguf",
         "last_op_status": "success",
         "last_op_output_path": str(inside),
         "is_export_active": False,
@@ -84,10 +85,29 @@ def test_an_op_from_before_the_job_does_not_settle_it(monkeypatch):
     assert result["structuredContent"]["error"] is None
 
 
+@pytest.mark.parametrize(
+    "later",
+    [
+        # An export from the Export page that ran after this job's own op.
+        {"last_op_seq": 5, "last_op_kind": "export_gguf"},
+        # The op right after the load, but not this job's export.
+        {"last_op_seq": 4, "last_op_kind": "export_merged"},
+        {"last_op_seq": 4, "last_op_kind": "load_checkpoint"},
+    ],
+)
+def test_someone_elses_op_does_not_settle_the_job(monkeypatch, later):
+    _register(started_seq = 3, phase = "exporting")
+    status = {**later, "last_op_status": "success", "last_op_output_path": "theirs"}
+    result = _get(monkeypatch, _status(status), {"kind": "export", "id": "job-a"})
+    assert result["structuredContent"]["status"] == "running"
+    assert result["structuredContent"]["export"]["output"] is None
+
+
 def test_a_failed_op_reports_its_error_scrubbed(monkeypatch):
     _register(started_seq = 1)
     status = {
         "last_op_seq": 2,
+        "last_op_kind": "export_gguf",
         "last_op_status": "error",
         "last_op_error": "Disk full writing /srv/exports/x.gguf",
     }
@@ -102,6 +122,7 @@ def test_an_absolute_output_outside_exports_is_reduced_to_its_name(monkeypatch):
     _register(started_seq = 1)
     status = {
         "last_op_seq": 2,
+        "last_op_kind": "export_gguf",
         "last_op_status": "success",
         "last_op_output_path": "/srv/elsewhere/my-gguf",
     }
@@ -237,7 +258,9 @@ def _export_studio(
     }
     for fmt in ("gguf", "merged", "lora", "base"):
         routes[("POST", f"/api/export/export/{fmt}")] = record(
-            fmt, export_answer or {"success": True, "message": "Exported"}
+            fmt,
+            export_answer
+            or {"success": True, "message": "Exported", "details": {"output_path": "my-gguf"}},
         )
     return fake_studio(routes)
 
@@ -258,6 +281,31 @@ def _run_export(
             if job["structuredContent"]["status"] != "running":
                 break
     return started, job
+
+
+def test_an_export_finishing_after_this_one_does_not_become_its_result(monkeypatch):
+    # The Export page's own export finished before the status was read again; this job keeps
+    # the answer its own export call returned.
+    studio = _export_studio(
+        statuses = [
+            {"last_op_seq": 5},
+            {
+                "last_op_seq": 7,
+                "last_op_kind": "export_gguf",
+                "last_op_status": "error",
+                "last_op_error": "theirs failed",
+                "current_checkpoint": f"{OUT}/qwen-lora",
+            },
+        ]
+    )
+    _started, job = _run_export(
+        monkeypatch,
+        studio,
+        {"checkpoint": "qwen-lora", "format": "gguf", "save_directory": "my-gguf"},
+    )
+    assert job["structuredContent"]["status"] == "completed"
+    assert job["structuredContent"]["error"] is None
+    assert job["structuredContent"]["export"]["output"] == "my-gguf"
 
 
 def test_export_returns_a_job_at_once_and_the_job_completes(monkeypatch):

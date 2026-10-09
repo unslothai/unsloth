@@ -203,6 +203,7 @@ def test_a_cancel_just_after_the_export_finished_reports_it_done(monkeypatch):
     finished = {
         "is_export_active": False,
         "last_op_seq": 6,
+        "last_op_kind": "export_gguf",
         "last_op_status": "success",
         "last_op_output_path": "my-gguf",
     }

@@ -86,11 +86,15 @@ def finish(
 
 
 def reconcile(job: ExportJob, export_status: Any) -> None:
-    """Settle a job from the export status, once its counter shows an op finished after this job began."""
+    """Settle a job from the export status, once it shows this job's export finished: the op right after
+    the job's checkpoint load, of the job's format. A later op is someone else's, such as an export from
+    the Export page, and must not settle this job."""
     if not isinstance(export_status, dict) or job.started_seq is None:
         return
     seq = export_status.get("last_op_seq")
-    if not isinstance(seq, int) or seq <= job.started_seq:
+    if not isinstance(seq, int) or seq != job.started_seq + 1:
+        return
+    if export_status.get("last_op_kind") != f"export_{job.format}":
         return
     status = OP_STATUS.get(export_status.get("last_op_status"))
     if status is None:
