@@ -1173,9 +1173,7 @@ def test_gemini_part_replay_ledgers_accumulate_across_a_tool_turn(executed):
                 _sse(
                     {
                         "content": "answer ",
-                        "extra_content": {
-                            "google": {"answer_part": {"text": "answer "}}
-                        },
+                        "extra_content": {"google": {"answer_part": {"text": "answer "}}},
                     }
                 ),
                 _sse(
@@ -1217,9 +1215,7 @@ def test_gemini_part_replay_ledgers_accumulate_across_a_tool_turn(executed):
         {"text": "signed thought", "thought_signature": "SIG-T"},
         {"text": " unsigned thought"},
     ]
-    assert assistant["extra_content"]["google"]["answer_parts"] == [
-        {"text": "answer tail"}
-    ]
+    assert assistant["extra_content"]["google"]["answer_parts"] == [{"text": "answer tail"}]
     assert "thought_signature" not in assistant["extra_content"]["google"]
 
 

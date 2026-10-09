@@ -592,9 +592,7 @@ class _Turn:
                 if accumulated:
                     compacted: list[dict[str, Any]] = []
                     for part in accumulated:
-                        signature = part.get("thought_signature") or part.get(
-                            "thoughtSignature"
-                        )
+                        signature = part.get("thought_signature") or part.get("thoughtSignature")
                         if (
                             compacted
                             and not signature

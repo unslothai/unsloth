@@ -1433,8 +1433,7 @@ def test_answer_part_boundaries_surface_even_when_unsigned(monkeypatch):
     answer_parts = [
         delta["extra_content"]["google"]["answer_part"]
         for delta in deltas
-        if (delta.get("extra_content") or {}).get("google", {}).get("answer_part")
-        is not None
+        if (delta.get("extra_content") or {}).get("google", {}).get("answer_part") is not None
     ]
     assert answer_parts == [
         {"text": "first"},
@@ -2176,10 +2175,7 @@ def test_assistant_thought_parts_replay_exact_boundaries_before_answer(monkeypat
         ],
     )
     parts = captured["body"]["contents"][1]["parts"]
-    assert parts[0] == {
-        "text": "unsigned preface",
-        "thought": True,
-    }
+    assert parts[0] == {"text": "unsigned preface", "thought": True}
     assert parts[1] == {
         "text": "consider the clues",
         "thought": True,
@@ -2680,9 +2676,7 @@ def test_metadata_only_gemini_assistant_turn_survives_external_message_build():
         "content": "",
         "extra_content": {
             "google": {
-                "thought_parts": [
-                    {"text": "private summary", "thought_signature": "SIG-ONLY"}
-                ]
+                "thought_parts": [{"text": "private summary", "thought_signature": "SIG-ONLY"}]
             }
         },
     }

@@ -27562,9 +27562,7 @@ def _build_external_messages(
                 if _tcs:
                     out["tool_calls"] = _tcs
                 elif (
-                    not (msg.content or "").strip()
-                    and not replay
-                    and not has_message_extra_content
+                    not (msg.content or "").strip() and not replay and not has_message_extra_content
                 ):
                     # Every tool_call was a dropped synthetic provider card;
                     # the turn would be an empty

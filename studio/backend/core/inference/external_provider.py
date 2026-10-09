@@ -4974,9 +4974,7 @@ class ExternalProviderClient:
                 google["thought_part"] = thought_part
                 if valid_sig is not None:
                     google["thought"] = True
-            elif (
-                "text" in part and isinstance(part.get("text"), str)
-            ) or (
+            elif ("text" in part and isinstance(part.get("text"), str)) or (
                 valid_sig is not None
                 and not any(
                     key in part
