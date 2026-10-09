@@ -22,8 +22,9 @@ import { useEffect, useState } from "react";
 import { exportDiffusionLora } from "../api/export-api";
 
 function imageLoraLabel(lora: DiffusionLoraInfo): string {
-  return lora.families.length > 0
-    ? `${lora.display_name} (${lora.families.join(", ")})`
+  const tags = [...lora.families, ...(lora.fine_tuned ? ["fine-tuned"] : [])];
+  return tags.length > 0
+    ? `${lora.display_name} (${tags.join(", ")})`
     : lora.display_name;
 }
 
@@ -83,7 +84,7 @@ export function ImageLoraExportCard() {
     <SectionCard
       icon={<HugeiconsIcon icon={ImageAdd02Icon} className="size-5" />}
       title="Export an image LoRA"
-      description="Save a copy of an image generation LoRA you trained (or added) on the Images page: the .safetensors adapter plus its .json metadata."
+      description="Save a copy of an image generation LoRA you trained (or added) on the Images page: the .safetensors adapter plus its .json metadata. Any Unsloth install lists it again from a custom models folder."
       className="mt-6"
     >
       <div className="grid gap-4 sm:grid-cols-2">

@@ -20,6 +20,7 @@ import {
   Refresh01Icon,
   Delete02Icon,
   Download01Icon,
+  FolderAddIcon,
   Image03Icon,
   ImageAdd02Icon,
   InformationCircleIcon,
@@ -151,6 +152,7 @@ import {
 } from "@/features/generation-presets";
 import { getHfToken, hfApiToken } from "@/features/hub/stores/hf-token-store";
 import { formatBytes, formatEta } from "@/features/hub/lib/format";
+import { OnDeviceFoldersDialog } from "@/features/hub/catalog/on-device-folders-dialog";
 import { generatePhaseLabel, sameGenerateProgress } from "@/lib/media-generate-phase";
 import { ChevronDown } from "lucide-react";
 import { NegativePromptField } from "@/components/negative-prompt-field";
@@ -1566,6 +1568,7 @@ export function ImagesPage({
   const [trainBaseChoice, setTrainBaseChoice] = useState("");
   // Bumped when a training run completes, so the LoRA discovery effect rescans without a model reload.
   const [loraRefreshKey, setLoraRefreshKey] = useState(0);
+  const [loraFoldersOpen, setLoraFoldersOpen] = useState(false);
   // ControlNet for the next generation: model id, control image, how to derive the map, and the strength.
   const [controlnetId, setControlnetId] = useState<string>("");
   const [controlImage, setControlImage] = useState<string | null>(null);
@@ -5462,11 +5465,14 @@ export function ImagesPage({
                 <div className="space-y-2">
                   {availableLoras.length > 0 && (
                     <datalist id="diffusion-lora-suggestions">
-                      {availableLoras.map((a) => (
-                        <option key={a.id} value={a.id}>
-                          {a.display_name}
-                        </option>
-                      ))}
+                      {/* Fine-tuned (trained in Unsloth) first; a datalist has no groups, so the label carries it. */}
+                      {[...availableLoras]
+                        .sort((a, b) => Number(Boolean(b.fine_tuned)) - Number(Boolean(a.fine_tuned)))
+                        .map((a) => (
+                          <option key={a.id} value={a.id}>
+                            {a.fine_tuned ? `${a.display_name} (fine-tuned)` : a.display_name}
+                          </option>
+                        ))}
                     </datalist>
                   )}
                   {loras.map((sel, i) => (
@@ -5515,27 +5521,44 @@ export function ImagesPage({
                       />
                     </div>
                   ))}
-                  {loras.length < 8 && (
+                  <div className="flex gap-2">
+                    {loras.length < 8 && (
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="sm"
+                        className="flex-1"
+                        onClick={() => {
+                          // Prefill with the first unused suggestion when a curated catalog exists, else an empty row.
+                          const taken = new Set(loras.map((l) => l.id));
+                          const next = availableLoras.find((a) => !taken.has(a.id));
+                          setLoras((prev) => [
+                            ...prev,
+                            next ? { id: next.id, weight: next.weight_default || 1 } : { id: "", weight: 1 },
+                          ]);
+                        }}
+                      >
+                        <HugeiconsIcon icon={ImageAdd02Icon} className="size-3.5" />
+                        Add LoRA
+                      </Button>
+                    )}
                     <Button
                       type="button"
-                      variant="secondary"
+                      variant="ghost"
                       size="sm"
-                      className="w-full"
-                      onClick={() => {
-                        // Prefill with the first unused suggestion when a curated catalog exists, else an empty row.
-                        const taken = new Set(loras.map((l) => l.id));
-                        const next = availableLoras.find((a) => !taken.has(a.id));
-                        setLoras((prev) => [
-                          ...prev,
-                          next ? { id: next.id, weight: next.weight_default || 1 } : { id: "", weight: 1 },
-                        ]);
-                      }}
+                      title="Add a custom models folder. Image LoRAs exported from Unsloth in it show up here."
+                      onClick={() => setLoraFoldersOpen(true)}
                     >
-                      <HugeiconsIcon icon={ImageAdd02Icon} className="size-3.5" />
-                      Add LoRA
+                      <HugeiconsIcon icon={FolderAddIcon} className="size-3.5" />
+                      Folders
                     </Button>
-                  )}
+                  </div>
                 </div>
+                <OnDeviceFoldersDialog
+                  open={loraFoldersOpen}
+                  onOpenChange={setLoraFoldersOpen}
+                  onInventoryChange={() => setLoraRefreshKey((k) => k + 1)}
+                />
               </Field>
             )}
             {/* ControlNet: shown when the model supports it, one is discoverable, and txt2img is active. */}

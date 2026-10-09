@@ -417,7 +417,13 @@ def _has_non_gguf_weights(path: Path) -> bool:
     try:
         # Only the safetensors arm needs the check: a weight ".bin" is recognised by its name prefix, which a
         # "._" already fails.
-        if any(not is_appledouble_metadata(f) for f in path.glob("*.safetensors")):
+        from core.inference.diffusion_lora import is_image_lora_file
+
+        # An exported or trained image LoRA is an add-on for the Images page, not a model to load.
+        if any(
+            not is_appledouble_metadata(f) and not is_image_lora_file(f)
+            for f in path.glob("*.safetensors")
+        ):
             return True
         return any(_is_weight_bin(f.name) for f in path.glob("*.bin"))
     except OSError:
@@ -524,6 +530,8 @@ def _scan_models_dir(
             ),
         )
     if limit is None or len(found) < limit:
+        from core.inference.diffusion_lora import is_image_lora_file
+
         for gguf_file in models_dir.glob("*.gguf"):
             if limit is not None and len(found) >= limit:
                 break
@@ -532,6 +540,7 @@ def _scan_models_dir(
                 gguf_file.is_file()
                 and _is_main_gguf_filename(gguf_file.name)
                 and not is_appledouble_metadata(gguf_file)
+                and not is_image_lora_file(gguf_file)
             ):
                 try:
                     updated_at = gguf_file.stat().st_mtime
@@ -3194,6 +3203,7 @@ async def scan_diffusion_loras(
                 "families": list(e.families),
                 "size_bytes": e.size_bytes,
                 "weight_default": e.weight_default,
+                "fine_tuned": e.fine_tuned,
             }
             for e in entries
         ],

@@ -27,24 +27,27 @@ def loras(tmp_path, monkeypatch):
     return d
 
 
-def test_export_copies_weights_and_sidecar(loras, tmp_path):
+def test_export_copies_weights_and_a_marked_sidecar(loras, tmp_path):
     out = dl.export_local_lora("mystyle", tmp_path / "out")
     assert out == tmp_path / "out" / "mystyle.safetensors"
     assert out.read_bytes() == b"weights"
-    assert json.loads(out.with_suffix(".json").read_text())["family"] == "sdxl"
+    meta = json.loads(out.with_suffix(".json").read_text())
+    assert meta == {"family": "sdxl", "source": "studio-trained", "kind": "diffusion-lora"}
+    assert dl.is_image_lora_file(out)
     # The source stays in the catalog.
     assert (loras / "mystyle.safetensors").is_file()
 
 
-def test_export_without_sidecar_copies_only_weights(loras, tmp_path):
+def test_export_without_sidecar_still_writes_the_marker(loras, tmp_path):
     out = dl.export_local_lora("bare", tmp_path / "out")
     assert out.read_bytes() == b"bare"
-    assert not out.with_suffix(".json").exists()
+    assert json.loads(out.with_suffix(".json").read_text()) == {"kind": "diffusion-lora"}
 
 
-def test_export_into_the_catalog_itself_is_a_no_op(loras):
+def test_export_into_the_catalog_itself_keeps_the_file(loras):
     out = dl.export_local_lora("mystyle", loras)
     assert out.read_bytes() == b"weights"
+    assert json.loads(out.with_suffix(".json").read_text())["family"] == "sdxl"
 
 
 def test_export_refuses_ids_outside_the_local_catalog(loras, tmp_path):

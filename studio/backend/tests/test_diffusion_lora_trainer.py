@@ -590,6 +590,7 @@ def test_publish_writes_metadata_sidecar(tmp_path, monkeypatch):
     assert meta["lora_rank"] == 8
     assert meta["trigger_prompt"] == "a photo in sks style"
     assert meta["source"] == "studio-trained"
+    assert meta["kind"] == "diffusion-lora"
 
 
 def test_publish_does_not_clobber_same_name_adapter(tmp_path, monkeypatch):

@@ -241,6 +241,8 @@ export interface DiffusionLoraInfo {
   families: string[];
   size_bytes: number;
   weight_default: number;
+  // Trained in Unsloth (wherever the file sits now: loras/diffusion or a custom models folder).
+  fine_tuned?: boolean;
 }
 
 // A persisted image's full generation recipe (also embedded in the PNG).
