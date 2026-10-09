@@ -664,9 +664,14 @@ class _MarkdownRenderer(HTMLParser):
             return
         outer_cells = sum(frame.in_cell for frame in self._table_stack)
         extra_col_cost = 9 + 2 * outer_cells if not self._header_row_done else 3 + outer_cells
-        extra_cols = min(
-            self._cell_colspan - 1,
-            (self._span_char_limit - self._span_chars) // extra_col_cost,
+        # a nested table flattens and drops empty cells, so its colspan padding would only spend budget
+        extra_cols = (
+            0
+            if self._table_stack
+            else min(
+                self._cell_colspan - 1,
+                (self._span_char_limit - self._span_chars) // extra_col_cost,
+            )
         )
         self._current_row.extend([""] * extra_cols)
         generated = extra_col_cost * extra_cols

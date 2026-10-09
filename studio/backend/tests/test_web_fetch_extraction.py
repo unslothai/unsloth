@@ -2344,6 +2344,16 @@ def test_table_span_budget_is_page_wide_and_token_weighted():
     assert html_to_markdown(html, max_span_chars = 3404).count(cell) == 1
 
 
+def test_nested_colspan_padding_does_not_spend_the_span_budget():
+    layout = "<table><tr><td><table><tr><td colspan='1000'>x</td></tr></table></td></tr></table>"
+    data = (
+        "<table><tr><th>Rank</th><th>Nation</th></tr>"
+        "<tr><td rowspan='2'>25</td><td>Estonia</td></tr><tr><td>Georgia</td></tr></table>"
+    )
+    pad = "<p>" + "Body text. " * 400 + "</p>"
+    assert html_to_markdown(pad + layout + data).splitlines()[-1] == "| 25 | Georgia |"
+
+
 def test_generated_table_spans_do_not_make_a_main_content_candidate():
     body = "<main><p>" + "Real page body. " * 20 + "</p></main>"
     decoys = (
