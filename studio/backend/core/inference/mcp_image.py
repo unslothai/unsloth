@@ -205,13 +205,17 @@ def _names_the_image(value) -> bool:
     )
 
 
-def settle_image_call(arguments: dict, field: str) -> bool:
+def settle_image_call(
+    arguments: dict,
+    field: str,
+    required = (),
+) -> bool:
     """Rewrite a mapped call made while an image is attached to what will be sent, in place.
 
     Small models leave an optional field out, spell the placeholder loosely, or point a sibling such
     as a path at the attachment too. Such a call gets the placeholder in ``field`` and loses the
-    siblings that name it, so the approval card shows exactly what goes out. Returns False and
-    changes nothing when ``field`` holds anything else.
+    optional siblings that name it, so the approval card shows exactly what goes out. A sibling in
+    ``required`` is kept. Returns False and changes nothing when ``field`` holds anything else.
     """
     value = arguments.get(field)
     if not (
@@ -219,7 +223,9 @@ def settle_image_call(arguments: dict, field: str) -> bool:
     ):
         return False
     for key in [
-        key for key, other in arguments.items() if key != field and _names_the_image(other)
+        key
+        for key, other in arguments.items()
+        if key != field and key not in required and _names_the_image(other)
     ]:
         del arguments[key]
     arguments[field] = ATTACHED_IMAGE

@@ -13549,12 +13549,13 @@ def mcp_image_share(name, arguments, mcp_image) -> dict | None:
     if mapping is None:
         return None
     # Arguments that could not be read are not a call to rewrite: they keep their ordinary path.
-    properties = _mcp_input_schema(tool).get("properties") or {}
+    schema = _mcp_input_schema(tool)
+    properties = schema.get("properties") or {}
     if UNPARSED_ARGUMENTS_KEY in arguments or (
         set(arguments) == {"raw"} and "raw" not in properties
     ):
         return None
-    if not settle_image_call(arguments, mapping["field"]):
+    if not settle_image_call(arguments, mapping["field"], schema.get("required") or ()):
         return None
     # The fingerprint covers the server's headers, so it stays on the server: only "disclosure" is streamed.
     return {

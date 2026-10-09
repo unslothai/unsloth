@@ -429,6 +429,23 @@ def test_siblings_pointed_at_the_attachment_are_not_sent(mapped_server):
     assert literal == {"image": "/tmp/a.png", "path": "attached_image"}
 
 
+def test_a_required_sibling_is_kept_even_when_it_names_the_image(mapped_server):
+    lookup = {
+        **LOOKUP,
+        "inputSchema": {
+            "type": "object",
+            "properties": {"image": {"type": "string"}, "filename": {"type": "string"}},
+            "required": ["image", "filename"],
+        },
+    }
+    mcp_client.cache_tools("srv1", [lookup])
+    args = {"filename": "attached_image"}
+    tools_mod.mcp_image_share(
+        "mcp__srv1__lookup", args, McpImage(mime = "image/png", data = _png_bytes())
+    )
+    assert args == {"filename": "attached_image", "image": ATTACHED_IMAGE}
+
+
 @pytest.mark.parametrize(
     "args",
     [
