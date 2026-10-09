@@ -1,6 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-# Block-FP8 kernels past 2**31 elements (8 GRPO rows x 16K tokens x QwQ-32B's 27648-wide MLP) raised
-# "illegal memory access" from int32 offsets (#3921).
+# Block-FP8 kernels past 2**31 elements hit an illegal memory access from int32 offsets (#3921).
 import os
 
 import pytest
@@ -62,7 +61,6 @@ def test_torchao_route_hands_large_launches_to_int64_kernel(F, monkeypatch):
     monkeypatch.setattr(
         F, "torchao_blockwise_gemm", lambda *a, **k: calls.append("torchao") or a[0]
     )
-    # meta tensors: only shapes matter for routing
     meta = lambda *shape: torch.empty(*shape, device = "meta", dtype = torch.float8_e4m3fn)
     w_s = torch.empty(216, 40, device = "meta")
     F.torchao_block_matmul(

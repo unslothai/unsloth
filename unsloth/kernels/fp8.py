@@ -213,8 +213,7 @@ def weight_dequant(
 
 
 def _needs_int64_offsets(*tensors):
-    # Triton offsets are int32: past 2**31 elements (e.g. 8 GRPO rows x 16K tokens x a 27648-wide MLP) they wrap
-    # into an illegal memory access (#3921). A constexpr switch keeps smaller launches on the same int32 kernel.
+    # int32 offsets wrap past 2**31 elements (illegal memory access, #3921); smaller launches keep the int32 kernel.
     return max(t.numel() for t in tensors) >= 2**31
 
 
