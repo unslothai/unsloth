@@ -176,3 +176,25 @@ def test_remote_prefix_rejects_truncation(tmp_path):
     data = Path(path).read_bytes()
     assert classify_gguf_tts_audio_prefix(data) == ("dac", True)
     assert classify_gguf_tts_audio_prefix(data[:-1]) == (None, False)
+
+
+def test_both_tts_backends_honour_the_requested_seed():
+    import ast
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text(
+        encoding = "utf-8"
+    )
+    fn = next(
+        n
+        for n in ast.walk(ast.parse(src))
+        if isinstance(n, ast.AsyncFunctionDef) and n.name == "_generate_tts_wav"
+    )
+    calls = [
+        n
+        for n in ast.walk(fn)
+        if isinstance(n, ast.Call) and getattr(n.func, "attr", None) == "generate_audio_response"
+    ]
+    assert len(calls) == 2
+    for call in calls:
+        assert "payload.seed" in ast.unparse(call), ast.unparse(call.func)

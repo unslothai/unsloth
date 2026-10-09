@@ -1376,6 +1376,12 @@ def test_empty_probe_cpu_recovery_releases_chat_ownership(monkeypatch):
             owner[0] = None
         released.append(requested)
 
+    def _release_if(requested, predicate):
+        if owner[0] != requested or not predicate():
+            return False
+        _release(requested)
+        return True
+
     import core.inference.gpu_arbiter as arbiter
     import core.inference.llama_keepwarm as keepwarm
 
@@ -1411,6 +1417,7 @@ def test_empty_probe_cpu_recovery_releases_chat_ownership(monkeypatch):
     monkeypatch.setattr(arbiter, "acquire_for", _acquire)
     monkeypatch.setattr(arbiter, "current_owner", lambda: owner[0])
     monkeypatch.setattr(arbiter, "release", _release)
+    monkeypatch.setattr(arbiter, "release_if", _release_if)
 
     request = route.LoadRequest(model_path = config.identifier)
     fastapi_request = SimpleNamespace(

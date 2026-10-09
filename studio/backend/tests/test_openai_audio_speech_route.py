@@ -13,6 +13,8 @@ import json
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
+import re
+
 import pytest
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
@@ -255,12 +257,228 @@ def test_only_resident_requests_use_the_pre_switch_budget(monkeypatch, named):
     assert str(error.value) == "reached the switch" if named else error.value.status_code == 400
 
 
+@pytest.mark.parametrize("named", [False, True])
+def test_a_loaded_voice_slot_serves_only_the_resident_model_form(monkeypatch, named):
+    """The voice slot owns speech when the caller names no model, which is what the
+    conversation loop sends. A caller that names one keeps main's switch path exactly,
+    voice slot or not: the switch is that request, so it must be reached."""
+
+    async def _switch(_model, *_a, **kw):
+        assert kw["require_speech"] is True
+        raise RuntimeError("reached the switch")
+
+    def _picked_voice(_backend):
+        raise RuntimeError("reached the voice slot")
+
+    voice_backend = SimpleNamespace(
+        is_loaded = True,
+        _is_audio = True,
+        _audio_type = "snac",
+        _process = SimpleNamespace(poll = lambda: None),
+    )
+    monkeypatch.setattr(routes_module, "get_voice_llama_backend", lambda: voice_backend)
+    monkeypatch.setattr(routes_module, "_maybe_auto_switch_model", _switch)
+    monkeypatch.setattr(routes_module, "_llama_public_model_id", _picked_voice)
+    monkeypatch.setattr(routes_module, "_monitor_context_length", lambda: 2048)
+    monkeypatch.setattr(routes_module, "_prompt_token_estimate", lambda _t: 8)
+    payload = SimpleNamespace(audio_instructions = None, audio_language = None)
+    request = SimpleNamespace(state = SimpleNamespace(skip_api_monitor = True))
+    model = "org/B-GGUF" if named else routes_module._RELOAD_ONLY_MODEL
+    with pytest.raises(RuntimeError) as error:
+        asyncio.run(
+            routes_module._generate_tts_wav(
+                "hi",
+                payload,
+                request,
+                "tester",
+                requested_model = model,
+            )
+        )
+    assert str(error.value) == ("reached the switch" if named else "reached the voice slot")
+
+
+@pytest.mark.parametrize(
+    "run_inputs, workflow",
+    [
+        ({"workflow": "clone", "audio_inputs": {"reference": "r.wav"}}, "clone"),
+        ({"workflow": "speak", "audio_inputs": {"reference": "r.wav"}}, "clone"),
+        ({"workflow": "convert", "audio_inputs": {"source": "s.wav"}}, "convert"),
+    ],
+)
+def test_the_voice_slot_leaves_cloning_and_conversion_to_the_workflow_check(
+    monkeypatch, run_inputs, workflow
+):
+    """The voice slot's GGUF path only speaks, so a clone or conversion must reach the
+    switch, whose workflow check refuses a model that can't do it."""
+    seen = {}
+
+    async def _switch(_model, *_a, **kw):
+        seen.update(kw)
+        raise RuntimeError("reached the switch")
+
+    voice_backend = SimpleNamespace(
+        is_loaded = True,
+        _is_audio = True,
+        _audio_type = "snac",
+        _process = SimpleNamespace(poll = lambda: None),
+    )
+    monkeypatch.setattr(routes_module, "get_voice_llama_backend", lambda: voice_backend)
+    monkeypatch.setattr(routes_module, "_maybe_auto_switch_model", _switch)
+    monkeypatch.setattr(routes_module, "_monitor_context_length", lambda: 2048)
+    monkeypatch.setattr(routes_module, "_prompt_token_estimate", lambda _t: 8)
+    payload = SimpleNamespace(audio_instructions = None, audio_language = None)
+    request = SimpleNamespace(state = SimpleNamespace(skip_api_monitor = True))
+    with pytest.raises(RuntimeError, match = "reached the switch"):
+        asyncio.run(
+            routes_module._generate_tts_wav("hi", payload, request, "tester", run_inputs = run_inputs)
+        )
+    assert seen["require_audio_workflow"] == workflow
+
+
+def test_the_voice_slot_budgets_speech_against_its_own_context(monkeypatch):
+    """The chat slot can hold a far larger context than the voice server; budgeting against
+    it admits text the voice server would then truncate or reject."""
+
+    def _picked_voice(_backend):
+        raise RuntimeError("reached the voice slot")
+
+    voice_backend = SimpleNamespace(
+        is_loaded = True,
+        _is_audio = True,
+        _audio_type = "snac",
+        context_length = 512,
+        _process = SimpleNamespace(poll = lambda: None),
+    )
+    monkeypatch.setattr(routes_module, "get_voice_llama_backend", lambda: voice_backend)
+    monkeypatch.setattr(routes_module, "_llama_public_model_id", _picked_voice)
+    monkeypatch.setattr(routes_module, "_monitor_context_length", lambda: 32768)
+    monkeypatch.setattr(routes_module, "_prompt_token_estimate", lambda _t: 600)
+    payload = SimpleNamespace(audio_instructions = None, audio_language = None)
+    request = SimpleNamespace(state = SimpleNamespace(skip_api_monitor = True))
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(routes_module._generate_tts_wav("long text", payload, request, "tester"))
+    assert error.value.status_code == 400 and "512-token context" in error.value.detail
+    budget = routes_module._tts_max_new_tokens(
+        SimpleNamespace(max_completion_tokens = 8192, max_tokens = None), "x", context_length = 512
+    )
+    assert budget < 512
+
+
+@pytest.mark.parametrize("prompt_tokens, refused", [(100, False), (600, True)])
+def test_streaming_speech_fits_the_voice_servers_context(monkeypatch, prompt_tokens, refused):
+    """No max_new_tokens used to send the 8192 ceiling into a 4096 voice server, which ended
+    the stream early after a 200 had already gone out."""
+    seen = {}
+
+    def _stream(**kwargs):
+        seen.update(kwargs)
+        yield b"\x00\x00"
+
+    voice_backend = SimpleNamespace(
+        is_loaded = True,
+        _process = SimpleNamespace(poll = lambda: None),
+        _audio_type = "snac",
+        context_length = 512,
+        _orpheus_voice_prefix_ok = lambda: True,
+        generate_audio_response_stream = _stream,
+    )
+    monkeypatch.setattr(routes_module, "get_voice_llama_backend", lambda: voice_backend)
+    monkeypatch.setattr(routes_module, "_prompt_token_estimate", lambda _t: prompt_tokens)
+    request = SimpleNamespace(state = SimpleNamespace(skip_api_monitor = True))
+
+    async def _run():
+        response = await routes_module.openai_audio_speech_stream(
+            AudioSpeechRequest(input = "hello"), request, "tester"
+        )
+        return [chunk async for chunk in response.body_iterator]
+
+    if refused:
+        with pytest.raises(HTTPException) as error:
+            asyncio.run(_run())
+        assert error.value.status_code == 400 and "512-token context" in error.value.detail
+        assert seen == {}
+    else:
+        asyncio.run(_run())
+        reserve = routes_module._TTS_PROMPT_FORMAT_RESERVE
+        assert seen["max_new_tokens"] == 512 - prompt_tokens - reserve
+
+
+def test_streaming_speech_honours_the_requested_model(monkeypatch):
+    """`model` used to be a monitor label only: the first loaded SNAC backend spoke, whichever
+    voice the caller named."""
+    spoken = []
+
+    def _backend(public_id):
+        def _stream(**_kwargs):
+            spoken.append(public_id)
+            yield b"\x00\x00"
+
+        return SimpleNamespace(
+            is_loaded = True,
+            _process = SimpleNamespace(poll = lambda: None),
+            _audio_type = "snac",
+            context_length = None,
+            model_identifier = f"/models/{public_id.split('/')[-1]}/model.gguf",
+            _openai_advertised_id = public_id,
+            _orpheus_voice_prefix_ok = lambda: True,
+            generate_audio_response_stream = _stream,
+        )
+
+    voice = _backend("unsloth/orpheus-3b-0.1-ft-GGUF")
+    chat = _backend("me/my-orpheus-finetune-GGUF")
+    monkeypatch.setattr(routes_module, "get_voice_llama_backend", lambda: voice)
+    monkeypatch.setattr(routes_module, "get_llama_cpp_backend", lambda: chat)
+    request = SimpleNamespace(state = SimpleNamespace(skip_api_monitor = True))
+
+    async def _run(model):
+        response = await routes_module.openai_audio_speech_stream(
+            AudioSpeechRequest(input = "hello", model = model), request, "tester"
+        )
+        return [chunk async for chunk in response.body_iterator]
+
+    asyncio.run(_run(None))
+    asyncio.run(_run("me/my-orpheus-finetune-GGUF"))
+    asyncio.run(_run("unsloth/orpheus-3b-0.1-ft-GGUF"))
+    assert spoken == [
+        "unsloth/orpheus-3b-0.1-ft-GGUF",
+        "me/my-orpheus-finetune-GGUF",
+        "unsloth/orpheus-3b-0.1-ft-GGUF",
+    ]
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(_run("unsloth/Spark-TTS-0.5B-GGUF"))
+    assert error.value.status_code == 400
+    assert "Spark-TTS-0.5B-GGUF" in error.value.detail and "Load it first" in error.value.detail
+    assert len(spoken) == 3
+
+    # Two local GGUFs sharing a basename: the exact path picks the slot, not the public id.
+    voice.model_identifier = "/voices/a/model.gguf"
+    voice._openai_advertised_id = None
+    chat.model_identifier = "/voices/b/model.gguf"
+    chat._openai_advertised_id = None
+    spoken.clear()
+    asyncio.run(_run("/voices/b/model.gguf"))
+    asyncio.run(_run("/voices/a/model.gguf"))
+    assert spoken == ["me/my-orpheus-finetune-GGUF", "unsloth/orpheus-3b-0.1-ft-GGUF"]
+
+
+def test_streaming_speech_talks_to_llama_server_over_local_transport():
+    """The streaming client went through an ambient HTTP(S)_PROXY while the blocking one did not."""
+    import inspect
+
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    source = inspect.getsource(LlamaCppBackend.generate_audio_response_stream)
+    client = source[source.index("httpx.Client(") :]
+    client = client[: client.index(") as client")]
+    assert "trust_env = False" in client and "verify = _local_ssl_context()" in client
+
+
 def test_the_shared_core_guards_before_generating():
     """Wired in _generate_tts_wav so /audio/generate inherits it, not only /audio/speech."""
     import inspect
 
     source = inspect.getsource(routes_module._generate_tts_wav)
-    assert "_raise_if_prompt_leaves_no_speech_budget(text)" in source
+    assert "_raise_if_prompt_leaves_no_speech_budget(text," in source
 
 
 def test_the_budget_is_rechecked_after_an_idle_model_is_restored():
@@ -274,7 +492,7 @@ def test_the_budget_is_rechecked_after_an_idle_model_is_restored():
     guards = [
         i
         for i, line in enumerate(source.splitlines())
-        if "_raise_if_prompt_leaves_no_speech_budget(text)" in line
+        if "_raise_if_prompt_leaves_no_speech_budget(text," in line
     ]
     restore = next(
         i for i, line in enumerate(source.splitlines()) if "await _maybe_auto_switch_model(" in line
@@ -1050,6 +1268,368 @@ def test_an_ordinary_model_id_is_still_recorded_verbatim(monkeypatch):
         assert api_monitor.snapshot(include_details = False)[0]["model"] == requested
 
 
+def test_voice_load_applies_the_managed_account_gate_before_resolving(monkeypatch):
+    """A managed account may only load a model within its grants, and an absent token is
+    the account's own, never the installation's ambient Hub credential. /load and
+    /validate apply both before resolving; /voice/load resolved the caller's identifier
+    with the caller's token first, which made the voice slot a second door past both."""
+    from hub.services.models import account_access
+    from utils import models as models_module
+
+    monkeypatch.setattr(account_access, "managed_account", lambda: True)
+
+    def _resolve_before_gate(*_a, **_k):
+        raise AssertionError("resolved the model before the access check")
+
+    monkeypatch.setattr(models_module.ModelConfig, "from_identifier", _resolve_before_gate)
+
+    def _deny(reference, repo_type = "model"):
+        raise HTTPException(status_code = 403, detail = f"no grant for {reference}")
+
+    monkeypatch.setattr(account_access, "require_model_access", _deny)
+    monkeypatch.setattr(account_access, "account_hf_token", lambda token: "account-token")
+    request = routes_module._VoiceLoadRequest(model_path = "org/private-voice-GGUF")
+    with pytest.raises(HTTPException) as denied:
+        asyncio.run(routes_module.voice_load_model(request, "tester"))
+    assert denied.value.status_code == 403
+
+
+def test_voice_load_resolves_with_the_account_token_not_the_callers(monkeypatch):
+    from hub.services.models import account_access
+    from utils import models as models_module
+
+    seen = {}
+
+    def _resolve(**kwargs):
+        seen.update(kwargs)
+        raise RuntimeError("stop after resolve")
+
+    monkeypatch.setattr(account_access, "managed_account", lambda: True)
+    monkeypatch.setattr(account_access, "require_model_access", lambda *a, **k: None)
+    monkeypatch.setattr(account_access, "account_hf_token", lambda token: "account-token")
+    monkeypatch.setattr(models_module.ModelConfig, "from_identifier", staticmethod(_resolve))
+    request = routes_module._VoiceLoadRequest(
+        model_path = "org/voice-GGUF", hf_token = "callers-own-token"
+    )
+    with pytest.raises(HTTPException) as failed:
+        asyncio.run(routes_module.voice_load_model(request, "tester"))
+    assert failed.value.status_code == 400  # the route wraps the resolve failure
+    assert seen["hf_token"] == "account-token"
+
+
+def test_voice_load_claims_the_gpu_for_chat_before_spawning():
+    """A voice load went around the GPU arbiter, so a resident Images/Video pipeline stayed put
+    beside the new llama-server."""
+    import inspect
+
+    source = inspect.getsource(routes_module.voice_load_model)
+    claim = source.index("acquire_for_request, _CHAT, None, alongside = True")
+    spawn = source.index("voice_backend.load_model, intent, load_cancel_event = load_cancel")
+    assert claim < spawn
+    # The in-flight marker covers the whole request, resolution and warm-up included, so an
+    # unload or an Images/Video acquire anywhere in it finds a load to cancel.
+    assert source.index("in_flight.__enter__()") < source.index("_resolve_config")
+    assert "_leave_in_flight()" in source[source.index('"status": "loaded"') :]
+    unload = inspect.getsource(routes_module.voice_unload_model)
+    assert "require_no_foreign_generations(scope)" in unload
+
+
+def test_release_chat_gpu_claim_keeps_chat_while_the_voice_slot_is_live(monkeypatch):
+    """Unloading the chat model released CHAT with the voice llama-server still holding VRAM, so
+    the next Images/Video load saw no owner and allocated beside it."""
+    import core.inference.gpu_arbiter as arb
+
+    monkeypatch.setattr(arb, "_owner", None)
+    monkeypatch.setattr(arb, "_owner_account", None)
+    live = {"active": True}
+    voice = type("Voice", (), {"is_active": property(lambda self: live["active"])})()
+    monkeypatch.setattr(routes_module, "get_voice_llama_backend", lambda: voice)
+    arb.acquire_for(arb.CHAT)
+    assert routes_module.release_chat_gpu_claim() is False
+    assert arb.current_owner() == arb.CHAT
+    live["active"] = False
+    assert routes_module.release_chat_gpu_claim() is True
+    assert arb.current_owner() is None
+
+
+def test_a_zero_vram_primary_keeps_the_chat_claim_while_the_voice_slot_is_live(monkeypatch):
+    """Replacing the primary with a CPU-only chat model released CHAT straight away with no extra
+    slot kept, so a live voice llama-server was left beside the next Images/Video load."""
+    import core.inference.gpu_arbiter as arb
+    from core.inference import model_slots
+
+    monkeypatch.setattr(arb, "_owner", None)
+    monkeypatch.setattr(arb, "_owner_account", None)
+    monkeypatch.setattr(model_slots, "slots", [])
+    monkeypatch.setattr(model_slots, "stuck", [])
+    monkeypatch.setattr(model_slots, "loading", None)
+    live = {"active": True}
+    voice = type("Voice", (), {"is_active": property(lambda self: live["active"])})()
+    monkeypatch.setattr(routes_module, "get_voice_llama_backend", lambda: voice)
+    arb.acquire_for(arb.CHAT)
+    routes_module._release_chat_for_zero_vram_primary()
+    assert arb.current_owner() == arb.CHAT
+    live["active"] = False
+    routes_module._release_chat_for_zero_vram_primary()
+    assert arb.current_owner() is None
+
+
+def test_voice_load_undoes_itself_when_the_gpu_changed_hands_during_the_spawn():
+    """load_model clears the cancel event an eviction set between the claim and the spawn, so
+    the loader rechecks the owner after the load, like /load, instead of trusting the event."""
+    import inspect
+
+    source = inspect.getsource(routes_module.voice_load_model)
+    spawn = source.index("voice_backend.load_model, intent, load_cancel_event = load_cancel")
+    recheck = source.index("if current_owner() != _CHAT:")
+    assert recheck > spawn
+    assert "await asyncio.to_thread(voice_backend.unload_model)" in source[recheck:]
+    assert "status_code = 409" in source[recheck:]
+
+
+def test_voice_unload_cancels_a_load_that_has_not_spawned_yet(monkeypatch):
+    """/voice/unload during the GGUF download answered not_loaded (no process yet) and left the
+    in-flight load to finish onto the GPU after an explicit unload."""
+    from core.inference.llama_cpp import voice_load_in_flight
+
+    calls = []
+    voice = type(
+        "Voice",
+        (),
+        {
+            "is_active": False,
+            "model_identifier": "voice.gguf",
+            "unload_model": lambda self: calls.append("unload") or True,
+        },
+    )()
+    monkeypatch.setattr(routes_module, "get_voice_llama_backend", lambda: voice)
+    monkeypatch.setattr(routes_module.account_access, "account_scope", lambda: None)
+    assert asyncio.run(routes_module.voice_unload_model("s")) == {"status": "not_loaded"}
+    assert calls == []
+    with voice_load_in_flight():
+        assert asyncio.run(routes_module.voice_unload_model("s"))["status"] == "unloaded"
+    assert calls == ["unload"]
+
+
+def test_voice_unload_drops_an_empty_chat_claim(monkeypatch):
+    """The voice slot as the last CHAT resident left the claim with the previous account after
+    its unload, so the next account saw a hidden foreign resident with no model behind it."""
+    import core.inference.gpu_arbiter as arb
+
+    monkeypatch.setattr(arb, "_owner", None)
+    monkeypatch.setattr(arb, "_owner_account", None)
+    live = {"active": True}
+    voice = type(
+        "Voice",
+        (),
+        {
+            "is_active": property(lambda self: live["active"]),
+            "model_identifier": "voice.gguf",
+            "unload_model": lambda self: live.update(active = False) or True,
+        },
+    )()
+    monkeypatch.setattr(routes_module, "get_voice_llama_backend", lambda: voice)
+    monkeypatch.setattr(routes_module.account_access, "account_scope", lambda: None)
+    arb.acquire_for(arb.CHAT)
+    assert asyncio.run(routes_module.voice_unload_model("s"))["status"] == "unloaded"
+    assert arb.current_owner() is None
+
+
+def test_voice_load_undoes_itself_when_an_unload_landed_before_the_spawn():
+    """An unload between the in-flight mark and load_model set a cancel event load_model then
+    cleared, with CHAT still the owner, so the server came up after an explicit unload. The
+    unload epoch is read before the claim and compared after the load."""
+    import inspect
+
+    source = inspect.getsource(routes_module.voice_load_model)
+    read = source.index('unload_epoch = getattr(voice_backend, "_unload_epoch", None)')
+    resolve = (
+        source.index("resolve_audio_model_config(")
+        if "resolve_audio_model_config(" in source
+        else source.index("GgufLoadIntent(")
+    )
+    claim = source.index("acquire_for_request, _CHAT, None, alongside = True")
+    spawn = source.index("voice_backend.load_model, intent, load_cancel_event = load_cancel")
+    check = source.index('getattr(voice_backend, "_unload_epoch", None) != unload_epoch')
+    warm = source.index('generate_audio_response, "Hi there."')
+    after_warm = source.index('getattr(voice_backend, "_unload_epoch", None) != unload_epoch', warm)
+    # Read before the model is resolved, so an unload during resolution or preflight counts too,
+    # and checked again after the warm-up, whose errors are swallowed.
+    assert read < resolve < claim < spawn < check < warm < after_warm
+    assert "status_code = 409" in source[check:]
+
+
+def test_voice_status_hides_another_accounts_resident(monkeypatch):
+    """Every authenticated account read the loaded voice's identifier (a local GGUF's absolute
+    path) off the singleton slot; the chat status hides a foreign resident and this now does too."""
+    import json
+
+    voice = type(
+        "Voice",
+        (),
+        {
+            "is_active": True,
+            "is_loaded": True,
+            "model_identifier": "C:/voices/private.gguf",
+            "_process": SimpleNamespace(poll = lambda: None),
+        },
+    )()
+    monkeypatch.setattr(routes_module, "get_voice_llama_backend", lambda: voice)
+    monkeypatch.setattr(routes_module.account_access, "resident_hidden", lambda *a, **k: True)
+    hidden = asyncio.run(routes_module.voice_slot_status("s"))
+    assert json.loads(hidden.body) == {"loaded": True, "yours": False}
+    monkeypatch.setattr(routes_module.account_access, "resident_hidden", lambda *a, **k: False)
+    shown = asyncio.run(routes_module.voice_slot_status("s"))
+    assert shown["model"] == "C:/voices/private.gguf"
+
+
+def test_voice_unload_refuses_another_accounts_resident(monkeypatch):
+    """Any account could stop the singleton voice slot while the status hid it from them; /unload
+    answers 404 for a hidden chat resident, and this now does too."""
+    from fastapi import HTTPException
+
+    stopped = []
+    voice = type(
+        "Voice",
+        (),
+        {
+            "is_active": True,
+            "is_loaded": True,
+            "model_identifier": "C:/voices/private.gguf",
+            "unload_model": lambda self: stopped.append(True),
+        },
+    )()
+    monkeypatch.setattr(routes_module, "get_voice_llama_backend", lambda: voice)
+    monkeypatch.setattr(routes_module.account_access, "account_scope", lambda: None)
+    monkeypatch.setattr(routes_module.account_access, "resident_hidden", lambda *a, **k: True)
+    with pytest.raises(HTTPException) as refused:
+        asyncio.run(routes_module.voice_unload_model("s"))
+    assert refused.value.status_code == 404
+    assert stopped == []
+
+
+@pytest.mark.parametrize("voice_active", [True, False])
+def test_voice_load_refuses_to_replace_another_accounts_resident(monkeypatch, voice_active):
+    """A load replaced the singleton voice server another account had loaded, and with the slot
+    empty it joined another account's chat claim, hidden from the account that loaded it."""
+    from fastapi import HTTPException
+
+    loads = []
+    voice = type(
+        "Voice",
+        (),
+        {
+            "is_active": voice_active,
+            "is_loaded": voice_active,
+            "load_model": lambda self, *a, **k: loads.append(a),
+        },
+    )()
+    monkeypatch.setattr(routes_module, "get_voice_llama_backend", lambda: voice)
+    monkeypatch.setattr(routes_module.account_access, "managed_account", lambda: False)
+    monkeypatch.setattr(
+        routes_module.account_access, "require_idle_other_accounts", lambda *a, **k: None
+    )
+    monkeypatch.setattr(routes_module.account_access, "resident_hidden", lambda *a, **k: True)
+    request = routes_module._VoiceLoadRequest(model_path = "x.gguf")
+    with pytest.raises(HTTPException) as refused:
+        asyncio.run(routes_module.voice_load_model(request, "s"))
+    assert refused.value.status_code == 404
+    assert loads == []
+
+
+def test_voice_unload_leaves_another_accounts_load_in_flight(monkeypatch):
+    """Before a load spawns or claims CHAT, nothing marked it as another account's, so any
+    account could cancel it through /voice/unload."""
+    from fastapi import HTTPException
+
+    import core.inference.llama_cpp as llama_cpp
+
+    stopped = []
+    voice = type(
+        "Voice",
+        (),
+        {"is_active": False, "is_loaded": False, "unload_model": lambda self: stopped.append(True)},
+    )()
+    monkeypatch.setattr(routes_module, "get_voice_llama_backend", lambda: voice)
+    monkeypatch.setattr(llama_cpp, "voice_load_active", lambda: True)
+    monkeypatch.setattr(routes_module.account_access, "resident_hidden", lambda *a, **k: False)
+    monkeypatch.setattr(routes_module, "_voice_loading_account", ["account-a"])
+    monkeypatch.setattr(routes_module.account_access, "account_scope", lambda: "account-b")
+    monkeypatch.setattr(
+        "core.inference.gpu_arbiter.require_no_foreign_generations", lambda *a, **k: None
+    )
+    with pytest.raises(HTTPException) as refused:
+        asyncio.run(routes_module.voice_unload_model("s"))
+    assert refused.value.status_code == 404
+    assert stopped == []
+
+
+def test_a_voice_server_that_exited_is_not_reported_or_reused_as_loaded(monkeypatch):
+    """is_loaded stayed true after the voice llama-server died, so /voice/status said loaded and
+    /voice/load answered already_loaded instead of relaunching it."""
+    import inspect
+
+    dead = SimpleNamespace(poll = lambda: 1)
+    voice = SimpleNamespace(
+        is_active = True,
+        is_loaded = True,
+        _process = dead,
+        model_identifier = "unsloth/orpheus-3b-0.1-ft-GGUF",
+        _audio_type = "snac",
+    )
+    monkeypatch.setattr(routes_module, "get_voice_llama_backend", lambda: voice)
+    monkeypatch.setattr(routes_module.account_access, "resident_hidden", lambda *a, **k: False)
+    status = asyncio.run(routes_module.voice_slot_status("s"))
+    assert status["loaded"] is False and status["loading"] is False and status["model"] is None
+
+    source = inspect.getsource(routes_module.voice_load_model)
+    fast_path = source[
+        source.index("voice_backend.is_loaded") : source.index('"status": "already_loaded"')
+    ]
+    assert "_voice_server_alive(voice_backend)" in fast_path
+    # Neither speech route serves from it, so the client's 400-then-reload path runs.
+    tts = inspect.getsource(routes_module._generate_tts_wav)
+    serves = tts[tts.index("_voice_slot_serves = bool(") :][:400]
+    assert "_voice_server_alive(_voice_backend)" in serves
+    stream = inspect.getsource(routes_module.openai_audio_speech_stream)
+    assert "_voice_server_alive(candidate)" in stream[stream.index("loaded = [") :][:500]
+
+
+def test_voice_loads_run_one_at_a_time():
+    """Two loads for different voices both passed the already-loaded check, and the second then
+    replaced the server the first had just reported as loaded."""
+    import inspect
+
+    source = inspect.getsource(routes_module.voice_load_model)
+    lock = source.index("async with _voice_load_lock():")
+    fast_path = source.index('"status": "already_loaded"')
+    spawn = source.index("voice_backend.load_model, intent, load_cancel_event = load_cancel")
+    assert lock < fast_path < spawn
+
+
+def test_voice_load_rejects_a_context_above_the_requestable_ceiling():
+    """/voice/load models its load as a chat LoadRequest for the training-coexistence
+    guard, and that model caps max_seq_length at MAX_REQUESTABLE_CONTEXT. Without the
+    same bound on n_ctx, an oversized value passed validation and then blew up inside
+    the handler as a 500, after the HF resolve, instead of a 422 up front."""
+    from pydantic import ValidationError
+
+    from core.inference.runtime_context import MAX_REQUESTABLE_CONTEXT
+
+    with pytest.raises(ValidationError):
+        routes_module._VoiceLoadRequest(
+            model_path = "unsloth/orpheus-3b-0.1-ft-GGUF", n_ctx = MAX_REQUESTABLE_CONTEXT + 1
+        )
+    assert (
+        routes_module._VoiceLoadRequest(
+            model_path = "unsloth/orpheus-3b-0.1-ft-GGUF", n_ctx = MAX_REQUESTABLE_CONTEXT
+        ).n_ctx
+        == MAX_REQUESTABLE_CONTEXT
+    )
+    # 0 keeps meaning "model default".
+    assert routes_module._VoiceLoadRequest(model_path = "x.gguf", n_ctx = 0).n_ctx == 0
+
+
 def test_audio_generate_answers_with_the_text_the_clip_speaks(monkeypatch):
     """Content is the whole spoken text, not a status label cut at 100 characters."""
     cli, _calls, _saved = _make_client(monkeypatch)
@@ -1063,3 +1643,512 @@ def test_audio_generate_answers_with_the_text_the_clip_speaks(monkeypatch):
     )
     assert resp.status_code == 200
     assert resp.json()["choices"][0]["message"]["content"] == text
+
+
+def test_a_foreign_resident_voice_is_not_served(monkeypatch):
+    """Account B could take speech from account A's loaded voice through the omitted-model form
+    of /audio/speech and through the stream route, while /voice/status hid it."""
+    import inspect
+
+    tts = inspect.getsource(routes_module._generate_tts_wav)
+    serves = tts.index("_voice_slot_serves = bool(")
+    assert 'not account_access.resident_hidden("chat")' in tts[serves : serves + 400]
+    stream = inspect.getsource(routes_module.openai_audio_speech_stream)
+    assert stream.index('account_access.resident_hidden("chat")') < stream.index("loaded = [")
+
+
+def test_a_streaming_clip_counts_as_a_generation_while_it_plays(monkeypatch):
+    """The stream route registered no generation, so another account's /voice/unload passed the
+    foreign-generation gate and stopped the voice server mid-clip."""
+    from state import active_generations
+
+    counts = []
+
+    def _stream(**kwargs):
+        counts.append(active_generations.count())
+        yield b"\x00\x00"
+        counts.append(active_generations.count())
+
+    voice_backend = SimpleNamespace(
+        is_loaded = True,
+        _process = SimpleNamespace(poll = lambda: None),
+        _audio_type = "snac",
+        context_length = None,
+        _orpheus_voice_prefix_ok = lambda: True,
+        generate_audio_response_stream = _stream,
+    )
+    monkeypatch.setattr(routes_module, "get_voice_llama_backend", lambda: voice_backend)
+    monkeypatch.setattr(routes_module, "_llama_public_model_id", lambda _b: "voice")
+    request = SimpleNamespace(state = SimpleNamespace(skip_api_monitor = True))
+    before = active_generations.count()
+
+    async def _run():
+        response = await routes_module.openai_audio_speech_stream(
+            AudioSpeechRequest(input = "hello"), request, "tester"
+        )
+        return [chunk async for chunk in response.body_iterator]
+
+    assert asyncio.run(_run()) == [b"\x00\x00"]
+    assert counts == [before + 1, before + 1]
+    assert active_generations.count() == before
+
+
+def test_a_rejected_voice_load_gives_the_chat_claim_back():
+    """A GGUF that started but was not a supported TTS type (or failed to start) was torn down
+    with the CHAT claim left under the caller's account and nothing resident."""
+    import inspect
+
+    source = inspect.getsource(routes_module.voice_load_model)
+    undo = source.index("async def _undo_load():")
+    body = source[undo : undo + 500]
+    # The marker counts as a live voice slot to the release predicate, so it ends first.
+    assert body.index("_leave_in_flight()") < body.index(
+        "await asyncio.to_thread(release_chat_gpu_claim)"
+    )
+    for marker in (
+        'detail = f"Failed to load voice model: {e}"',
+        'detail = "Voice model failed to start."',
+        "Not a supported TTS type",
+    ):
+        at = source.index(marker)
+        assert "await _undo_load()" in source[at - 400 : at + 200], marker
+    # Both unload-epoch rejections too: the unload that moved the epoch could not release the
+    # claim itself, since this load was still marked in flight when it ran.
+    epoch = 'detail = "The voice model was unloaded while it was loading. Load it again."'
+    hits = [m.start() for m in re.finditer(re.escape(epoch), source)]
+    assert len(hits) == 3
+    for at in hits:
+        assert "await _undo_load()" in source[at - 300 : at]
+
+
+def test_the_in_flight_marker_keeps_the_chat_claim_until_it_ends(monkeypatch):
+    """release_chat_gpu_claim treats a load still marked in flight as a live voice slot, so a
+    cleanup that releases inside the marker keeps the stale claim."""
+    import core.inference.gpu_arbiter as arb
+    from core.inference.llama_cpp import voice_load_in_flight
+
+    monkeypatch.setattr(arb, "_owner", None)
+    monkeypatch.setattr(arb, "_owner_account", None)
+    voice = type("Voice", (), {"is_active": False, "model_identifier": None})()
+    monkeypatch.setattr(routes_module, "get_voice_llama_backend", lambda: voice)
+    arb.acquire_for(arb.CHAT)
+    with voice_load_in_flight():
+        routes_module.release_chat_gpu_claim()
+        assert arb.current_owner() == arb.CHAT
+    routes_module.release_chat_gpu_claim()
+    assert arb.current_owner() is None
+
+
+def test_voice_load_with_a_new_context_size_is_not_already_loaded():
+    """The fast path compared model, variant and --parallel but not n_ctx, so a reload for a
+    bigger context answered already_loaded and the old server kept serving."""
+    import inspect
+
+    source = inspect.getsource(routes_module.voice_load_model)
+    fast_path = source.index('"status": "already_loaded"')
+    condition = source[source.rindex("if (", 0, fast_path) : fast_path]
+    assert 'getattr(voice_backend, "requested_n_ctx", 0)' in condition
+    assert "int(request.n_ctx or 0)" in condition
+
+
+def test_an_eviction_before_the_spawn_cancels_the_voice_load_durably(monkeypatch):
+    """load_model clears the backend's cancel event at startup, so an Images/Video eviction (or an
+    unload) landing between the claim and the spawn was lost and the server spawned beside the new
+    owner. The load now carries its own event, set by the eviction and by /voice/unload."""
+    import inspect
+
+    from core.inference import gpu_arbiter
+    from core.inference.llama_cpp import cancel_voice_loads, voice_load_in_flight
+
+    own = threading.Event()
+    with voice_load_in_flight(own):
+        assert cancel_voice_loads() == 1
+        assert own.is_set()
+    assert cancel_voice_loads() == 0
+
+    source = inspect.getsource(routes_module.voice_load_model)
+    marker = source.index("voice_load_in_flight(load_cancel)")
+    check = source.index("if load_cancel.is_set():")
+    spawn = source.index("voice_backend.load_model, intent, load_cancel_event = load_cancel")
+    assert marker < check < spawn
+    assert "cancel_voice_loads()" in inspect.getsource(gpu_arbiter._evict_chat)
+    assert "cancel_voice_loads()" in inspect.getsource(routes_module.voice_unload_model)
+
+
+def test_a_cancel_landing_at_the_spawn_never_leaves_a_child_running():
+    """load_model does not hold the backend lock across the spawn, so an unload or an eviction
+    can set the cancel after the last pre-spawn check. The spawn lock now re-reads the cancel
+    before Popen (no child) and right after it (the child is killed here, not by the route)."""
+    import inspect
+
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    source = inspect.getsource(LlamaCppBackend.load_model)
+    helper = source[source.index("def _spawn_and_wait(") :]
+    popen = helper.index("_spawned = subprocess.Popen(")
+    lock = helper.rindex("with self._spawn_lock:", 0, popen)
+    assert "if _load_cancelled():" in helper[lock:popen]
+    after = helper[popen : popen + 2500]
+    recheck = after.index("if self._spawn_is_stale() or _load_cancelled():")
+    assert "self._kill_process()" in after[recheck : recheck + 400]
+
+
+def test_a_forced_swap_cancels_a_streaming_clip(monkeypatch):
+    """The stream route registered its generation with an event nothing read, so a forced
+    model swap's cancel_all left the clip reading from llama-server until it finished."""
+    from state import active_generations
+
+    seen = []
+
+    def _stream(**kwargs):
+        cancel = kwargs["cancel_event"]
+        active_generations.cancel_all()
+        seen.append(cancel.is_set())
+        yield b"\x00\x00"
+
+    voice_backend = SimpleNamespace(
+        is_loaded = True,
+        _process = SimpleNamespace(poll = lambda: None),
+        _audio_type = "snac",
+        context_length = None,
+        _orpheus_voice_prefix_ok = lambda: True,
+        generate_audio_response_stream = _stream,
+    )
+    monkeypatch.setattr(routes_module, "get_voice_llama_backend", lambda: voice_backend)
+    monkeypatch.setattr(routes_module, "_llama_public_model_id", lambda _b: "voice")
+    request = SimpleNamespace(state = SimpleNamespace(skip_api_monitor = True))
+
+    async def _run():
+        response = await routes_module.openai_audio_speech_stream(
+            AudioSpeechRequest(input = "hello"), request, "tester"
+        )
+        return [chunk async for chunk in response.body_iterator]
+
+    asyncio.run(_run())
+    assert seen == [True]
+
+
+def test_the_streaming_backend_stops_reading_once_cancelled(monkeypatch):
+    import contextlib
+    import threading
+
+    import core.inference.llama_cpp as llama_cpp
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    cancel = threading.Event()
+    read = []
+
+    class _Response:
+        status_code = 200
+
+        def iter_lines(self):
+            for i in range(5):
+                read.append(i)
+                if i == 1:
+                    cancel.set()
+                yield 'data: {"content": ""}'
+
+    class _Client:
+        def __init__(self, *a, **k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        @contextlib.contextmanager
+        def stream(self, *a, **k):
+            yield _Response()
+
+    monkeypatch.setattr(llama_cpp.httpx, "Client", _Client)
+    codec = SimpleNamespace(has_codec = lambda _t: True)
+    monkeypatch.setattr(LlamaCppBackend, "_codec_mgr", codec)
+    backend = LlamaCppBackend.__new__(LlamaCppBackend)
+    monkeypatch.setattr(LlamaCppBackend, "_auth_headers", {}, raising = False)
+    monkeypatch.setattr(LlamaCppBackend, "base_url", "http://127.0.0.1:1", raising = False)
+    # Pin the device pick: a __new__ backend has no load state, and the host may have CUDA.
+    monkeypatch.setattr(LlamaCppBackend, "holds_no_vram", True)
+
+    out = list(backend.generate_audio_response_stream("hi", "snac", cancel_event = cancel))
+    assert out == []
+    assert read == [0, 1]
+
+
+def test_a_cancel_wakes_a_stream_read_blocked_in_prefill(monkeypatch):
+    """The cancel check only ran between SSE lines, so a read blocked in prefill sat out its
+    300 s timeout past the forced swap's drain window."""
+    import contextlib
+    import threading
+    import time
+
+    import httpx
+
+    import core.inference.llama_cpp as llama_cpp
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    cancel, shut = threading.Event(), threading.Event()
+
+    class _Response:
+        status_code = 200
+
+        def iter_lines(self):
+            shut.wait(10)  # recv() blocked until the socket is shut down
+            raise httpx.ReadError("socket shut down")
+
+    class _Client:
+        def __init__(self, *a, **k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def close(self):
+            pass
+
+        @contextlib.contextmanager
+        def stream(self, *a, **k):
+            yield _Response()
+
+    monkeypatch.setattr(llama_cpp.httpx, "Client", _Client)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_shutdown_active_httpx_sockets", staticmethod(lambda client: shut.set())
+    )
+    monkeypatch.setattr(LlamaCppBackend, "_codec_mgr", SimpleNamespace(has_codec = lambda _t: True))
+    monkeypatch.setattr(LlamaCppBackend, "_auth_headers", {}, raising = False)
+    monkeypatch.setattr(LlamaCppBackend, "base_url", "http://127.0.0.1:1", raising = False)
+    # Pin the device pick: a __new__ backend has no load state, and the host may have CUDA.
+    monkeypatch.setattr(LlamaCppBackend, "holds_no_vram", True)
+    backend = LlamaCppBackend.__new__(LlamaCppBackend)
+
+    threading.Timer(0.2, cancel.set).start()
+    start = time.monotonic()
+    out = list(backend.generate_audio_response_stream("hi", "snac", cancel_event = cancel))
+    assert out == []
+    assert time.monotonic() - start < 2
+
+
+def _dead_foreign_voice(monkeypatch):
+    """Account A's voice child exited on its own; account B is the caller and CHAT is A's."""
+    import core.inference.gpu_arbiter as arb
+
+    monkeypatch.setattr(arb, "_owner", arb.CHAT)
+    monkeypatch.setattr(arb, "_owner_account", "account-a")
+
+    class Voice:
+        _process = SimpleNamespace(poll = lambda: 1)
+        is_loaded = True
+        model_identifier = "C:/voices/a.gguf"
+        is_active = property(lambda self: self._process is not None)
+
+        def unload_model(self):
+            self._process = None
+            return True
+
+    voice = Voice()
+    monkeypatch.setattr(routes_module, "get_voice_llama_backend", lambda: voice)
+    aa = routes_module.account_access
+    monkeypatch.setattr(aa, "managed_account", lambda: True)
+    monkeypatch.setattr(aa, "current_account_id", lambda: "account-b")
+    monkeypatch.setattr(aa, "resident_shared_with", lambda *a, **k: False)
+    return arb, voice
+
+
+def test_a_dead_voice_slot_does_not_hide_the_gpu_from_other_accounts(monkeypatch):
+    """A voice child that exited on its own still read is_active, so /voice/status and /voice/load
+    treated it as account A's resident and the CHAT claim stayed until A unloaded by hand."""
+    arb, voice = _dead_foreign_voice(monkeypatch)
+    status = asyncio.run(routes_module.voice_slot_status("s"))
+    assert status == {"loaded": False, "loading": False, "model": None, "audio_type": None}
+    assert voice._process is None
+    assert arb.current_owner() is None
+
+
+def test_voice_load_reaps_a_dead_voice_slot_before_the_ownership_check(monkeypatch):
+    arb, voice = _dead_foreign_voice(monkeypatch)
+    aa = routes_module.account_access
+    monkeypatch.setattr(aa, "account_hf_token", lambda token: token)
+    monkeypatch.setattr(aa, "require_model_access", lambda *a, **k: None)
+    monkeypatch.setattr(aa, "require_idle_other_accounts", lambda *a, **k: None)
+
+    def _unresolvable(**kwargs):
+        raise RuntimeError("not on the Hub")
+
+    monkeypatch.setattr("utils.models.ModelConfig.from_identifier", _unresolvable)
+    request = routes_module._VoiceLoadRequest(model_path = "b.gguf")
+    with pytest.raises(HTTPException) as failed:
+        asyncio.run(routes_module.voice_load_model(request, "s"))
+    # Past the foreign-resident 404: the dead slot was reaped and its claim dropped.
+    assert failed.value.status_code == 400
+    assert voice._process is None
+    assert arb.current_owner() is None
+
+
+@pytest.mark.parametrize("outcome", ["csm", "not_ok", "raises"])
+def test_a_rejected_voice_load_leaves_no_chat_claim_behind(monkeypatch, outcome):
+    """Driven through the handler: a GGUF that started with an unsupported codec, or failed to
+    start, is torn down and the CHAT claim it took goes with it."""
+    import core.inference.gpu_arbiter as arb
+
+    monkeypatch.setattr(arb, "_owner", None)
+    monkeypatch.setattr(arb, "_owner_account", None)
+
+    class Voice:
+        _process = None
+        is_loaded = False
+        model_identifier = None
+        _unload_epoch = 0
+        is_active = property(lambda self: self._process is not None)
+
+        def load_model(
+            self,
+            intent,
+            load_cancel_event = None,
+        ):
+            if outcome == "raises":
+                raise RuntimeError("spawn failed")
+            self._process = SimpleNamespace(poll = lambda: None)
+            self._is_audio, self._audio_type = True, "csm"
+            return outcome != "not_ok"
+
+        def unload_model(self):
+            self._process = None
+            return True
+
+    voice = Voice()
+    monkeypatch.setattr(routes_module, "get_voice_llama_backend", lambda: voice)
+    aa = routes_module.account_access
+    monkeypatch.setattr(aa, "managed_account", lambda: False)
+    monkeypatch.setattr(aa, "require_idle_other_accounts", lambda *a, **k: None)
+    monkeypatch.setattr(aa, "resident_hidden", lambda *a, **k: False)
+    config = SimpleNamespace(
+        is_gguf = True,
+        identifier = "voices/csm-GGUF",
+        gguf_variant = "Q4_K_M",
+        gguf_hf_repo = "voices/csm-GGUF",
+        gguf_file = None,
+        base_model = None,
+    )
+    monkeypatch.setattr("utils.models.ModelConfig.from_identifier", lambda **k: config)
+
+    async def _placement(*a, **k):
+        return None
+
+    monkeypatch.setattr(routes_module, "_prepare_load_placement", _placement)
+    monkeypatch.setattr(routes_module, "_offline_guarded", lambda *a, **k: None)
+    request = routes_module._VoiceLoadRequest(model_path = "voices/csm-GGUF")
+    with pytest.raises(HTTPException) as rejected:
+        asyncio.run(routes_module.voice_load_model(request, "s"))
+    assert rejected.value.status_code == (400 if outcome == "csm" else 500)
+    assert voice._process is None
+    assert arb.current_owner() is None
+
+
+def test_status_reaping_holds_the_voice_load_lock(monkeypatch):
+    """/voice/status checked the lock and then tore the dead server down off-loop, so a load that
+    took the lock in between was cancelled by a status poll. The reap now holds the lock."""
+    arb, voice = _dead_foreign_voice(monkeypatch)
+    started, finish = threading.Event(), threading.Event()
+
+    def _slow_unload():
+        started.set()
+        finish.wait(5)
+        voice._process = None
+        return True
+
+    voice.unload_model = _slow_unload
+
+    async def _run():
+        status = asyncio.create_task(routes_module.voice_slot_status("s"))
+        while not started.is_set():
+            await asyncio.sleep(0.01)
+        held = routes_module._voice_load_lock().locked()
+        finish.set()
+        await status
+        return held
+
+    assert asyncio.run(_run()) is True
+    assert arb.current_owner() is None
+
+
+def test_a_voice_whose_parallel_slots_were_clamped_is_still_already_loaded(monkeypatch):
+    """A build without a unified KV cache launches --parallel 1 for a request of 2, and the reuse
+    check compared that effective count to the request, so the same load relaunched every time."""
+    relaunched = []
+
+    class Voice:
+        _process = SimpleNamespace(poll = lambda: None)
+        is_active = is_loaded = True
+        model_identifier = "voices/orpheus-GGUF"
+        hf_variant = "Q4_K_M"
+        _n_parallel = 1
+        requested_parallel_slots = 2
+        requested_n_ctx = 4096
+        _is_audio, _audio_type = True, "snac"
+
+        def load_model(self, *a, **k):
+            relaunched.append(True)
+
+    monkeypatch.setattr(routes_module, "get_voice_llama_backend", lambda: Voice())
+    aa = routes_module.account_access
+    monkeypatch.setattr(aa, "managed_account", lambda: False)
+    monkeypatch.setattr(aa, "require_idle_other_accounts", lambda *a, **k: None)
+    monkeypatch.setattr(aa, "resident_hidden", lambda *a, **k: False)
+    config = SimpleNamespace(
+        is_gguf = True,
+        identifier = "voices/orpheus-GGUF",
+        gguf_variant = "Q4_K_M",
+        gguf_hf_repo = "voices/orpheus-GGUF",
+        gguf_file = None,
+        base_model = None,
+    )
+    monkeypatch.setattr("utils.models.ModelConfig.from_identifier", lambda **k: config)
+
+    async def _placement(*a, **k):
+        return None
+
+    monkeypatch.setattr(routes_module, "_prepare_load_placement", _placement)
+    monkeypatch.setattr(routes_module, "_offline_guarded", lambda *a, **k: None)
+    request = routes_module._VoiceLoadRequest(model_path = "voices/orpheus-GGUF", parallel = 2)
+    result = asyncio.run(routes_module.voice_load_model(request, "s"))
+    assert result["status"] == "already_loaded"
+    assert relaunched == []
+
+
+@pytest.mark.parametrize(
+    "requested, expected",
+    [(None, "ceiling"), (1000, 1000), (50_000, "ceiling")],
+)
+def test_streaming_speech_keeps_the_blocking_routes_token_ceiling(monkeypatch, requested, expected):
+    """Only the voice server's context bounded max_new_tokens, so a large-context voice took
+    tens of thousands of audio tokens past the ceiling /audio/speech enforces."""
+    seen = {}
+
+    def _stream(**kwargs):
+        seen.update(kwargs)
+        yield b"\x00\x00"
+
+    voice_backend = SimpleNamespace(
+        is_loaded = True,
+        _process = SimpleNamespace(poll = lambda: None),
+        _audio_type = "snac",
+        context_length = 131072,
+        _orpheus_voice_prefix_ok = lambda: True,
+        generate_audio_response_stream = _stream,
+    )
+    monkeypatch.setattr(routes_module, "get_voice_llama_backend", lambda: voice_backend)
+    request = SimpleNamespace(state = SimpleNamespace(skip_api_monitor = True))
+
+    async def _run():
+        response = await routes_module.openai_audio_speech_stream(
+            AudioSpeechRequest(input = "hello", max_new_tokens = requested), request, "tester"
+        )
+        return [chunk async for chunk in response.body_iterator]
+
+    asyncio.run(_run())
+    ceiling = routes_module.AUDIO_GENERATION_MAX_TOKENS
+    assert seen["max_new_tokens"] == (ceiling if expected == "ceiling" else expected)

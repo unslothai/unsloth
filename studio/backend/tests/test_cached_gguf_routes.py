@@ -6644,3 +6644,33 @@ def test_the_video_page_probe_resolves_the_helper_it_imports():
     """The exact import that broke, asserted at its own call site."""
     from routes.models import _video_family_buildable
     assert callable(_video_family_buildable)
+
+
+def test_a_cached_gguf_row_names_its_audio_codec(monkeypatch, tmp_path):
+    """The voice picker kept only repos named like a TTS model, so a renamed SNAC voice the voice
+    slot would load never showed; the row now carries the codec read from the GGUF."""
+    rows = {}
+    for repo_id, codec in (("acme/custom-voice-GGUF", "snac"), ("acme/chat-GGUF", None)):
+        repo_dir = tmp_path / f"models--{repo_id.replace('/', '--')}"
+        gguf = _arch_gguf(repo_dir / "snapshots" / "main" / "model-Q4_K_M.gguf", "llama")
+        repo_info = _repo(
+            repo_id,
+            [],
+            repo_dir,
+            revisions = [
+                SimpleNamespace(
+                    files = [_file(gguf.name, gguf.stat().st_size)],
+                    snapshot_path = gguf.parent,
+                )
+            ],
+        )
+        monkeypatch.setattr(
+            models_route,
+            "_repo_gguf_audio_type",
+            lambda info, selected = None, codec = codec: codec,
+        )
+        monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: tmp_path)
+        [rows[repo_id]] = models_route.cached_gguf_rows([SimpleNamespace(repos = [repo_info])])
+
+    assert rows["acme/custom-voice-GGUF"]["audio_type"] == "snac"
+    assert "audio_type" not in rows["acme/chat-GGUF"]

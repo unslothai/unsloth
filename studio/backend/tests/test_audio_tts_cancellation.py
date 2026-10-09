@@ -806,6 +806,8 @@ def test_gguf_speech_cut_at_max_tokens_is_reported(monkeypatch, stop_type, finis
         model_identifier = "unsloth/orpheus-3b-0.1-ft-GGUF"
         base_url = "http://127.0.0.1:8080"
         _auth_headers: dict = {}
+        _hf_variant = None
+        _gguf_path = None
 
     async def _noop_switch(*_args, **_kwargs):
         return None
@@ -814,7 +816,10 @@ def test_gguf_speech_cut_at_max_tokens_is_reported(monkeypatch, stop_type, finis
     monkeypatch.setattr(
         llama_cpp.LlamaCppBackend,
         "_codec_mgr",
-        types.SimpleNamespace(decode = lambda *_args, **_kwargs: (b"RIFFfake", 24000)),
+        types.SimpleNamespace(
+            decode = lambda *_args, **_kwargs: (b"RIFFfake", 24000),
+            has_codec = lambda _audio_type: True,
+        ),
     )
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _Llama.__new__(_Llama))
     monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _noop_switch)
@@ -933,3 +938,166 @@ def test_token_codec_speech_cut_at_max_tokens_is_reported(audio_type, last_token
     backend.generate_audio_response("A long paragraph.", max_new_tokens = 14)
 
     assert backend.last_generation_stats["truncated"] is truncated
+
+
+def test_a_gpu_codec_left_to_cpu_only_slots_moves_to_the_cpu(monkeypatch):
+    """The voice slot loaded the shared codec on the GPU; once it unloaded, a zero-VRAM chat
+    slot kept that codec alive, holding VRAM training admission does not count."""
+    import core.inference.audio_codecs as audio_codecs
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    loaded, unloaded = [], []
+
+    class _Manager:
+        def __init__(self):
+            self._codec_devices = {}
+
+        def load_codec(
+            self,
+            audio_type,
+            device,
+            model_repo_path = None,
+        ):
+            self._codec_devices[audio_type] = device
+            loaded.append((audio_type, device, model_repo_path))
+
+        def unload(self):
+            unloaded.append(dict(self._codec_devices))
+
+    class _Slot(LlamaCppBackend):
+        def __init__(self, zero_vram):
+            self._owns_codec = False
+            self._zero_vram = zero_vram
+            self._audio_type = "snac"
+            self._codec_repo_path = None
+
+        @property
+        def holds_no_vram(self):
+            return self._zero_vram
+
+    monkeypatch.setattr(audio_codecs, "AudioCodecManager", _Manager)
+    monkeypatch.setattr(LlamaCppBackend, "_codec_owners", 0)
+    monkeypatch.setattr(LlamaCppBackend, "_codec_holders", set())
+    gpu_mgr = _Manager()
+    gpu_mgr.load_codec("snac", "cuda")
+    monkeypatch.setattr(LlamaCppBackend, "_codec_mgr", gpu_mgr)
+    voice, cpu_chat, gpu_chat = _Slot(False), _Slot(True), _Slot(False)
+    for slot in (voice, cpu_chat, gpu_chat):
+        slot._claim_audio_codec()
+    loaded.clear()
+
+    voice._unload_audio_codec()  # a GPU slot still holds it: nothing moves
+    assert LlamaCppBackend._codec_mgr is gpu_mgr and unloaded == []
+
+    gpu_chat._unload_audio_codec()  # only the zero-VRAM slot is left
+    assert loaded == [("snac", "cpu", None)]
+    assert unloaded == [{"snac": "cuda"}]
+    assert LlamaCppBackend._codec_mgr._codec_devices == {"snac": "cpu"}
+    assert LlamaCppBackend._codec_owners == 1
+
+
+def test_two_slots_never_load_the_shared_codec_at_once(monkeypatch):
+    """The voice slot and the chat slot load under different backend locks, so both could see no
+    codec and load it on the GPU together, doubling the peak allocation."""
+    import threading
+    import time
+
+    import core.inference.audio_codecs as audio_codecs
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    active, peak = [0], [0]
+    guard = threading.Lock()
+
+    class _Manager:
+        def __init__(self):
+            self._codec_devices = {}
+
+        def load_codec(
+            self,
+            audio_type,
+            device,
+            model_repo_path = None,
+        ):
+            with guard:
+                active[0] += 1
+                peak[0] = max(peak[0], active[0])
+            time.sleep(0.2)
+            with guard:
+                active[0] -= 1
+            self._codec_devices[audio_type] = device
+
+    class _Slot(LlamaCppBackend):
+        def __init__(self):
+            self._owns_codec = False
+
+        @property
+        def holds_no_vram(self):
+            return True
+
+    monkeypatch.setattr(audio_codecs, "AudioCodecManager", _Manager)
+    monkeypatch.setattr(LlamaCppBackend, "_codec_mgr", None)
+    monkeypatch.setattr(LlamaCppBackend, "_codec_owners", 0)
+    monkeypatch.setattr(LlamaCppBackend, "_codec_holders", set())
+    slots = [_Slot(), _Slot()]
+    threads = [threading.Thread(target = s.init_audio_codec, args = ("snac",)) for s in slots]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(5)
+
+    assert peak[0] == 1
+    assert LlamaCppBackend._codec_owners == 2
+
+
+def test_a_slot_unloading_waits_for_the_other_slots_codec_load(monkeypatch):
+    """Teardown ran under the owner lock only, so it could free the manager between the other
+    slot's codec load and its claim, leaving that slot on an unloaded codec."""
+    import threading
+    import time
+
+    import core.inference.audio_codecs as audio_codecs
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    events = []
+
+    class _Manager:
+        def __init__(self):
+            self._codec_devices = {}
+
+        def load_codec(
+            self,
+            audio_type,
+            device,
+            model_repo_path = None,
+        ):
+            events.append("load start")
+            time.sleep(0.3)
+            self._codec_devices[audio_type] = device
+            events.append("load end")
+
+        def unload(self):
+            events.append("unload")
+
+    class _Slot(LlamaCppBackend):
+        def __init__(self):
+            self._owns_codec = False
+
+        @property
+        def holds_no_vram(self):
+            return True
+
+    monkeypatch.setattr(audio_codecs, "AudioCodecManager", _Manager)
+    monkeypatch.setattr(LlamaCppBackend, "_codec_owners", 0)
+    monkeypatch.setattr(LlamaCppBackend, "_codec_holders", set())
+    leaving, arriving = _Slot(), _Slot()
+    monkeypatch.setattr(LlamaCppBackend, "_codec_mgr", _Manager())
+    leaving._claim_audio_codec()
+
+    loader = threading.Thread(target = arriving.init_audio_codec, args = ("snac",))
+    loader.start()
+    time.sleep(0.1)  # inside load_codec, before the claim
+    leaving._unload_audio_codec()
+    loader.join(5)
+
+    assert "unload" not in events
+    assert LlamaCppBackend._codec_mgr is not None and LlamaCppBackend._codec_owners == 1

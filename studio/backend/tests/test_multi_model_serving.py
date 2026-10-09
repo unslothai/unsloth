@@ -484,6 +484,15 @@ def test_a_slot_load_drops_no_claim_and_a_load_that_tears_nothing_down_stops_no_
     assert "if on_reload_confirmed is not None:" not in source
 
 
+def test_the_voice_slot_and_the_chat_slot_price_each_others_vram(monkeypatch):
+    chat, voice = inf._llama_cpp_backend, inf._voice_llama_backend
+    for backend, planned in ((chat, {0: 3000}), (voice, {0: 900})):
+        monkeypatch.setattr(backend, "_process", object())
+        monkeypatch.setattr(backend, "_planned_vram_mib", planned)
+    assert chat._other_planned_vram_mib() == {0: 900}
+    assert voice._other_planned_vram_mib() == {0: 3000}
+
+
 def test_a_load_prices_the_vram_the_other_servers_hold():
     from core.inference.llama_cpp import LlamaCppBackend
 

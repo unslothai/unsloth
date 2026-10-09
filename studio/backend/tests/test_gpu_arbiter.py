@@ -113,6 +113,58 @@ def test_evict_chat_unloads_a_still_loading_chat_backend(monkeypatch):
     assert unloaded == [True]  # still-loading chat backend was unloaded, not skipped
 
 
+def test_evict_chat_unloads_the_voice_slot_too(monkeypatch):
+    # The voice slot is a second chat-owned llama-server; eviction for Images/Video must not leave it resident.
+    import core.inference as core_inference
+    import routes.inference as routes_inference
+
+    unloaded: list[str] = []
+
+    class _Idle:
+        is_active = False
+        is_loaded = False
+
+        def unload_model(self):
+            unloaded.append("chat")
+
+        def _wait_for_vram_settle(self, *, since_kill):
+            pass
+
+    class _Voice:
+        is_active = True
+        is_loaded = True
+
+        def unload_model(self):
+            unloaded.append("voice")
+
+    class _FakeOrchestrator:
+        active_model_name = None
+
+        def unload_model(self, name):
+            pass
+
+        def _shutdown_subprocess(self, timeout = 5.0):
+            pass
+
+    monkeypatch.setattr(routes_inference, "get_llama_cpp_backend", lambda: _Idle())
+    monkeypatch.setattr(routes_inference, "get_voice_llama_backend", lambda: _Voice())
+    monkeypatch.setattr(core_inference, "get_inference_backend", lambda: _FakeOrchestrator())
+
+    arb._evict_chat()
+
+    assert unloaded == ["voice"]
+
+    # A voice load that has not spawned yet is still a load to cancel, as a chat HF load is.
+    from core.inference import llama_cpp
+
+    _Voice.is_active = False
+    with llama_cpp.voice_load_in_flight():
+        arb._evict_chat()
+    assert unloaded == ["voice", "voice"]
+    arb._evict_chat()
+    assert unloaded == ["voice", "voice"]
+
+
 def test_release_if_drops_only_when_predicate_true(calls):
     arb.acquire_for(arb.DIFFUSION)
     # Predicate false -> ownership kept.
