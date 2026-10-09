@@ -266,7 +266,8 @@ cancelling an export job stops only that job's own step.
 Generated images, audio and videos are saved to Studio's galleries, the same as
 in the UI. Tools return each item's id and URL. Small items also come back
 inline. Large images come back as a preview plus a link. A video comes back as a
-thumbnail plus a link, and the MP4 is never sent inline.
+thumbnail plus a link, and the MP4 is never sent inline. Links point at
+Studio's API, so fetch them with the same `Authorization: Bearer` key.
 
 Media inputs can be a Studio id, inline data, or a file path. **A file path
 works only when the agent runs on the Studio computer** and connects over
