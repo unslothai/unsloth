@@ -13,7 +13,7 @@ from fastmcp import Context, FastMCP
 from studio_mcp import loading
 from studio_mcp.caller import current_caller
 from studio_mcp.outputs import LoadResult, ModelEntry, ModelList, UnloadResult
-from studio_mcp.tools import DESTRUCTIVE, READ_ONLY, WRITES, integer, route_json, text
+from studio_mcp.tools import DESTRUCTIVE, READ_ONLY, WRITES, integer, route_json, opt_text
 
 ModelKind = Literal["llm", "image", "video", "stt", "tts", "audio"]
 LoadKind = Literal["llm", "image", "video", "stt"]
@@ -57,15 +57,15 @@ def kind_of(entry: dict) -> str:
 
 
 def _entry(entry: dict) -> Optional[ModelEntry]:
-    if not text(entry.get("id")):
+    if not opt_text(entry.get("id")):
         return None
     workflows = entry.get("audio_workflows")
     return ModelEntry(
         id = entry["id"],
         kind = kind_of(entry),
         loaded = entry.get("loaded") is True,
-        display_name = text(entry.get("display_name")),
-        quant = text(entry.get("quant")),
+        display_name = opt_text(entry.get("display_name")),
+        quant = opt_text(entry.get("quant")),
         context_length = integer(entry.get("context_length")),
         audio_workflows = [w for w in workflows if isinstance(w, str)]
         if isinstance(workflows, list)

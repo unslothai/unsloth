@@ -15,7 +15,7 @@ from fastmcp.exceptions import ToolError
 from studio_mcp.caller import Caller
 from studio_mcp.errors import tool_error
 from studio_mcp.outputs import LoadResult, UnloadResult
-from studio_mcp.tools import number, route_json, text
+from studio_mcp.tools import number, route_json, opt_text
 
 POLL_INTERVAL_S = 2.0
 
@@ -47,7 +47,7 @@ def _llm_poll(caller: Caller, model: str) -> Callable[[], Awaitable[Progress]]:
     async def poll() -> Progress:
         loading = await route_json("GET", "/api/inference/load-progress", caller = caller)
         fraction = number(loading.get("fraction")) if isinstance(loading, dict) else None
-        if fraction and text(loading.get("phase")):
+        if fraction and opt_text(loading.get("phase")):
             return min(fraction, 1.0), f"Loading into memory ({loading['phase']})"
         if model.startswith(("/", "\\")) or ":" in model[:3]:
             return None
@@ -95,8 +95,8 @@ async def load_llm(
     evicted = payload.get("evicted")
     return LoadResult(
         kind = "llm",
-        model = text(payload.get("model")) or model,
-        display_name = text(payload.get("display_name")),
+        model = opt_text(payload.get("model")) or model,
+        display_name = opt_text(payload.get("display_name")),
         evicted = [e for e in evicted if isinstance(e, str)] if isinstance(evicted, list) else [],
     )
 
@@ -167,7 +167,7 @@ def _media_fraction(progress: dict) -> Optional[float]:
 def _resident_matches(status: Any, model: str) -> bool:
     if not isinstance(status, dict) or status.get("loaded") is not True:
         return False
-    names = {text(status.get("repo_id")), text(status.get("display_repo_id"))}
+    names = {opt_text(status.get("repo_id")), opt_text(status.get("display_repo_id"))}
     return model.lower() in {name.lower() for name in names if name}
 
 
@@ -182,16 +182,16 @@ async def _gguf_filename(caller: Caller, model: str, variant: Optional[str]) -> 
         else []
     )
     wanted = (
-        (variant or text(listing.get("default_variant")) or "").lower()
+        (variant or opt_text(listing.get("default_variant")) or "").lower()
         if isinstance(listing, dict)
         else ""
     )
     for entry in variants:
-        if str(entry.get("quant", "")).lower() == wanted and text(entry.get("filename")):
+        if str(entry.get("quant", "")).lower() == wanted and opt_text(entry.get("filename")):
             return entry["filename"]
     if variant:
         raise ToolError(f"{model} has no GGUF variant {variant}")
-    return text(variants[0].get("filename")) if variants else None
+    return opt_text(variants[0].get("filename")) if variants else None
 
 
 async def load_media(
@@ -216,14 +216,14 @@ async def load_media(
     # The plan validates the pick the way the load does, before any download.
     plan = await route_json("POST", routes["plan"], caller = caller, json_body = body)
     if isinstance(plan, dict):
-        if text(plan.get("incompatible_reason")):
+        if opt_text(plan.get("incompatible_reason")):
             raise tool_error(plan["incompatible_reason"])
         if "gguf_filename" not in body:
             for entry in plan.get("entries") or []:
                 if (
                     isinstance(entry, dict)
                     and entry.get("checkpoint")
-                    and text(entry.get("gguf_filename"))
+                    and opt_text(entry.get("gguf_filename"))
                 ):
                     body["gguf_filename"] = entry["gguf_filename"]
                     break
@@ -235,7 +235,7 @@ async def load_media(
         progress = progress if isinstance(progress, dict) else {}
         phase = progress.get("phase")
         if phase == "error":
-            raise tool_error(text(progress.get("error")) or f"The {kind} model failed to load")
+            raise tool_error(opt_text(progress.get("error")) or f"The {kind} model failed to load")
         if phase == "ready":
             break
         status = None
@@ -259,7 +259,7 @@ async def load_media(
         raise ToolError(f"Studio did not finish loading {model} as the {kind} model")
     return LoadResult(
         kind = kind,
-        model = text(status.get("display_repo_id")) or text(status.get("repo_id")) or model,
+        model = opt_text(status.get("display_repo_id")) or opt_text(status.get("repo_id")) or model,
     )
 
 
@@ -270,7 +270,7 @@ async def unload_media(caller: Caller, kind: str) -> UnloadResult:
     if before.get("loaded") is not True:
         return UnloadResult(kind = kind, unloaded = False)
     after = await route_json("POST", routes["unload"], caller = caller)
-    model = text(before.get("display_repo_id")) or text(before.get("repo_id"))
+    model = opt_text(before.get("display_repo_id")) or opt_text(before.get("repo_id"))
     unloaded = isinstance(after, dict) and after.get("loaded") is not True
     return UnloadResult(kind = kind, model = model, unloaded = unloaded)
 
@@ -322,7 +322,7 @@ async def download_stt(
             if ctx is not None and done is not None and total:
                 await ctx.report_progress(min(done / total, 1.0), 1.0, "Downloading")
             continue
-        if text(download.get("error")):
+        if opt_text(download.get("error")):
             raise tool_error(f"Downloading {model} failed: {download['error']}")
         if download.get("cancelled"):
             raise ToolError(f"The download of {model} was cancelled")
@@ -353,7 +353,7 @@ async def load_stt(
     loaded = await route_json(
         "POST", "/api/inference/audio/stt/load", caller = caller, json_body = body
     )
-    resident = text(loaded.get("loaded_model")) if isinstance(loaded, dict) else None
+    resident = opt_text(loaded.get("loaded_model")) if isinstance(loaded, dict) else None
     if resident is None:
         raise ToolError(f"Studio did not keep {model} loaded; another load may have replaced it")
     return LoadResult(kind = "stt", model = resident)
@@ -364,7 +364,7 @@ async def unload_stt(caller: Caller, model: Optional[str]) -> UnloadResult:
     resident = {
         engine: status[engine]["loaded_model"]
         for engine in STT_ENGINES
-        if isinstance(status.get(engine), dict) and text(status[engine].get("loaded_model"))
+        if isinstance(status.get(engine), dict) and opt_text(status[engine].get("loaded_model"))
     }
     targets = [(e, m) for e, m in resident.items() if model is None or m == model]
     if not targets:

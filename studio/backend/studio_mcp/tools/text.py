@@ -18,7 +18,7 @@ from studio_mcp.errors import raise_for_route
 from studio_mcp.forward import forward
 from studio_mcp.inputs import ImageInput, data_url, resolve_image
 from studio_mcp.outputs import ChatResult, DecisionAnswer, EmbedResult, SystemOneResult, Usage
-from studio_mcp.tools import READ_ONLY, WRITES, integer, number, route_json, text
+from studio_mcp.tools import READ_ONLY, WRITES, integer, number, route_json, opt_text
 
 MAX_EMBED_INPUTS = 2048
 # The chat route takes 128 MiB of base64 images per request.
@@ -97,14 +97,14 @@ async def chat(
         raise ToolError("Studio returned no reply")
     message = choices[0].get("message") if isinstance(choices[0].get("message"), dict) else {}
     usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else None
-    answered = text(payload.get("model"))
+    answered = opt_text(payload.get("model"))
     note = None
     if model and answered and not _same_model(model, answered):
         note = f"{answered} answered; {model} is not the model that served this request."
     return ChatResult(
         text = message.get("content") if isinstance(message.get("content"), str) else "",
         model = answered,
-        finish_reason = text(choices[0].get("finish_reason")),
+        finish_reason = opt_text(choices[0].get("finish_reason")),
         usage = Usage(
             prompt_tokens = integer(usage.get("prompt_tokens")),
             completion_tokens = integer(usage.get("completion_tokens")),
@@ -140,7 +140,7 @@ async def embed(
         raise ToolError(f"Studio returned {len(rows)} embeddings for {len(texts)} texts")
     embeddings = [[float(value) for value in row["embedding"]] for row in rows]
     return EmbedResult(
-        model = text(payload.get("model")),
+        model = opt_text(payload.get("model")),
         dimensions = len(embeddings[0]),
         embeddings = embeddings,
     )
@@ -173,7 +173,7 @@ def _answer(answer: dict) -> DecisionAnswer:
     return DecisionAnswer(
         type = str(answer.get("type")),
         noul = number(answer.get("noul")),
-        choice = text(answer.get("choice")),
+        choice = opt_text(answer.get("choice")),
         score = number(answer.get("score")),
         confidence = number(answer.get("confidence")),
         probabilities = _floats(answer.get("probabilities")),
@@ -217,9 +217,9 @@ async def system_one(
     if not isinstance(answers, dict):
         raise ToolError("Studio returned no answers")
     return SystemOneResult(
-        model = text(payload.get("model")),
+        model = opt_text(payload.get("model")),
         answers = {str(k): _answer(v) for k, v in answers.items() if isinstance(v, dict)},
-        request_id = text(response.headers.get("x-typesafe-request-id")),
+        request_id = opt_text(response.headers.get("x-typesafe-request-id")),
     )
 
 

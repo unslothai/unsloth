@@ -27,6 +27,8 @@ def test_studio_mcp_registers_control_plane_tools():
         "generate_image",
         "generate_audio",
         "transcribe",
+        "generate_video",
+        "get_job",
         "load_model",
         "unload_model",
         "start_training",

@@ -29,7 +29,7 @@ from studio_mcp.outputs import (
     TrainingSlot,
     VideoSlot,
 )
-from studio_mcp.tools import READ_ONLY, integer, number, text
+from studio_mcp.tools import READ_ONLY, integer, number, opt_text
 
 SLOT_ROUTES = {
     "chat": "/api/inference/status",
@@ -55,7 +55,7 @@ def _chat(payload: dict) -> ChatSlot:
         loaded.append(
             ChatModel(
                 id = model_id,
-                display_name = text(payload.get("active_model")) if is_active else None,
+                display_name = opt_text(payload.get("active_model")) if is_active else None,
                 is_gguf = bool(payload.get("is_gguf")) if is_active else None,
             )
         )
@@ -67,10 +67,10 @@ def _image(payload: dict) -> ImageSlot:
     loaded = payload.get("loaded") is True
     return ImageSlot(
         loaded = loaded,
-        model = (text(payload.get("display_repo_id")) or text(payload.get("repo_id")))
+        model = (opt_text(payload.get("display_repo_id")) or opt_text(payload.get("repo_id")))
         if loaded
         else None,
-        family = text(payload.get("family")) if loaded else None,
+        family = opt_text(payload.get("family")) if loaded else None,
     )
 
 
@@ -78,7 +78,7 @@ def _video(payload: dict) -> VideoSlot:
     loaded = payload.get("loaded") is True
     return VideoSlot(
         loaded = loaded,
-        model = (text(payload.get("display_repo_id")) or text(payload.get("repo_id")))
+        model = (opt_text(payload.get("display_repo_id")) or opt_text(payload.get("repo_id")))
         if loaded
         else None,
     )
@@ -92,14 +92,14 @@ def _stt(payload: dict) -> SttSlot:
         state = payload.get(name)
         if not isinstance(state, dict):
             continue
-        if model is None and text(state.get("loaded_model")):
+        if model is None and opt_text(state.get("loaded_model")):
             engine, model = name, state["loaded_model"]
         loading = loading or state.get("loading") is True
         download = state.get("download")
         if (
             isinstance(download, dict)
             and download.get("downloading")
-            and text(download.get("model"))
+            and opt_text(download.get("model"))
         ):
             done, total = number(download.get("bytes_done")), number(download.get("bytes_total"))
             fraction = min(1.0, done / total) if done is not None and total else None
@@ -112,7 +112,7 @@ def _embedder(payload: dict) -> EmbedderSlot:
     return EmbedderSlot(
         available = True,
         loaded = payload.get("loaded") is True,
-        model = "custom" if custom else text(payload.get("embedding_model")),
+        model = "custom" if custom else opt_text(payload.get("embedding_model")),
     )
 
 
@@ -120,11 +120,11 @@ def _training(payload: dict) -> TrainingSlot:
     details = payload.get("details") if isinstance(payload.get("details"), dict) else {}
     step, total = integer(details.get("step")), integer(details.get("total_steps"))
     return TrainingSlot(
-        job_id = text(payload.get("job_id")),
-        phase = text(payload.get("phase")) or "idle",
+        job_id = opt_text(payload.get("job_id")),
+        phase = opt_text(payload.get("phase")) or "idle",
         is_training_running = payload.get("is_training_running") is True,
-        message = text(payload.get("message")) or "",
-        error = text(payload.get("error")),
+        message = opt_text(payload.get("message")) or "",
+        error = opt_text(payload.get("error")),
         step = step,
         total_steps = total,
         loss = number(details.get("loss")),
@@ -134,7 +134,7 @@ def _training(payload: dict) -> TrainingSlot:
 
 
 def _folder_name(value: Any) -> Any:
-    if not text(value):
+    if not opt_text(value):
         return None
     return re.split(r"[\\/]", value.rstrip("\\/"))[-1] or None
 
@@ -142,8 +142,8 @@ def _folder_name(value: Any) -> Any:
 def _export(payload: dict) -> ExportSlot:
     return ExportSlot(
         active = payload.get("is_export_active") is True,
-        op_kind = text(payload.get("active_op_kind")),
-        last_op_status = text(payload.get("last_op_status")),
+        op_kind = opt_text(payload.get("active_op_kind")),
+        last_op_status = opt_text(payload.get("last_op_status")),
         last_output = _folder_name(payload.get("last_op_output_path")),
     )
 
@@ -162,7 +162,7 @@ def _hardware(payload: dict) -> HardwareSlot:
     ]
     return HardwareSlot(
         available = payload.get("available") is True,
-        backend = text(payload.get("backend")),
+        backend = opt_text(payload.get("backend")),
         devices = devices,
     )
 

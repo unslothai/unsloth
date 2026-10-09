@@ -20,7 +20,7 @@ from studio_mcp.forward import forward
 from studio_mcp.inputs import ImageInput, data_url, resolve_image
 from studio_mcp.media import INLINE_CAP, image_content, media_result, public_url, resource_link
 from studio_mcp.outputs import ImageItem, ImageResult
-from studio_mcp.tools import WRITES, integer, number, route_json, text
+from studio_mcp.tools import WRITES, integer, number, route_json, opt_text
 
 LOAD_IMAGE_HINT = "Load an image model with load_model(kind='image') first."
 NOT_LOADED = "No diffusion model is loaded"
@@ -83,7 +83,7 @@ async def run_generation(
         raise ToolError("Studio returned no images")
     items, contents = [], []
     for row in rows:
-        if not isinstance(row, dict) or not text(row.get("id")):
+        if not isinstance(row, dict) or not opt_text(row.get("id")):
             continue
         item = ImageItem(
             id = row["id"],

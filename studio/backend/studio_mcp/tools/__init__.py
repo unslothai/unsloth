@@ -44,5 +44,5 @@ def integer(value: Any) -> Optional[int]:
     return value
 
 
-def text(value: Any) -> Optional[str]:
+def opt_text(value: Any) -> Optional[str]:
     return value if isinstance(value, str) and value else None

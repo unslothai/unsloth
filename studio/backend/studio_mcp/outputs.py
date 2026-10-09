@@ -224,3 +224,35 @@ class TranscriptResult(ToolOutput):
     model: Optional[RouteText] = None
     segments: Optional[list[TranscriptSegment]] = None
     saved_to_history: bool = False
+
+
+class VideoJobRef(ToolOutput):
+    id: RouteText
+    status: RouteText
+    progress: Optional[int] = None
+    model: Optional[RouteText] = None
+    seconds: Optional[RouteText] = None
+    size: Optional[RouteText] = None
+
+
+class VideoInfo(ToolOutput):
+    # The MP4, for the agent or its user to download; the tool never fetches it.
+    url: str
+    thumbnail_inline: bool = False
+
+
+class JobSummary(ToolOutput):
+    id: RouteText
+    status: RouteText
+    progress_percent: Optional[float] = None
+
+
+class JobStatus(ToolOutput):
+    kind: RouteText
+    id: Optional[RouteText] = None
+    status: Optional[RouteText] = None
+    progress_percent: Optional[float] = None
+    error: Optional[RouteText] = None
+    video: Optional[VideoInfo] = None
+    # Recent jobs, when no id was given.
+    jobs: Optional[list[JobSummary]] = None

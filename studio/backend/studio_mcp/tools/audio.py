@@ -21,8 +21,7 @@ from studio_mcp.forward import forward, ndjson_last
 from studio_mcp.inputs import AudioInput, audio_bytes, audio_ref, upload_audio
 from studio_mcp.media import INLINE_CAP, audio_content, media_result, public_url, resource_link
 from studio_mcp.outputs import AudioClip, AudioResult, TranscriptResult, TranscriptSegment
-from studio_mcp.tools import WRITES, integer, number
-from studio_mcp.tools import text as route_text
+from studio_mcp.tools import WRITES, integer, number, opt_text
 
 LOAD_AUDIO_HINT = "Load a text-to-speech or music model with load_model(kind='llm') first."
 NOT_LOADED = "No model loaded"
@@ -111,11 +110,11 @@ async def generate_audio(
         raise ToolError("Studio returned no audio")
     clips, contents = [], []
     for row in payload.get("clips") or []:
-        if not isinstance(row, dict) or not route_text(row.get("id")):
+        if not isinstance(row, dict) or not opt_text(row.get("id")):
             continue
         clip = AudioClip(
             id = row["id"],
-            role = route_text(row.get("role")) or "output",
+            role = opt_text(row.get("role")) or "output",
             url = public_url(caller, _gallery_path(row["id"])),
             duration_s = number(row.get("duration_s")),
             sample_rate = integer(row.get("sample_rate")),
@@ -131,12 +130,12 @@ async def generate_audio(
             data = base64.b64decode(fallback["data"], validate = True)
         except (binascii.Error, ValueError):
             raise ToolError("Studio returned unreadable audio") from None
-        contents.append(audio_content(data, f"audio/{route_text(fallback.get('format')) or 'wav'}"))
+        contents.append(audio_content(data, f"audio/{opt_text(fallback.get('format')) or 'wav'}"))
     if not clips and saved:
         raise ToolError("Studio returned no audio")
     result = AudioResult(
-        model = route_text(payload.get("model")),
-        group_id = route_text(payload.get("group_id")),
+        model = opt_text(payload.get("model")),
+        group_id = opt_text(payload.get("group_id")),
         clips = clips,
         saved = saved,
     )
@@ -171,7 +170,7 @@ async def _download_then_retry(
     status = await loading.stt_status(caller, model)
     if model is None:
         default = status.get("transformers") if isinstance(status.get("transformers"), dict) else {}
-        model = route_text(default.get("default_model")) or route_text(status.get("default_model"))
+        model = opt_text(default.get("default_model")) or opt_text(status.get("default_model"))
     if model is None:
         raise ToolError("Studio did not name a default speech-to-text model to download")
     engine = loading.stt_engine(status, model)
@@ -205,10 +204,10 @@ async def _stt_model(caller: Caller, model: Optional[str]) -> tuple[str, str]:
     if model is None:
         for engine in loading.STT_ENGINES:
             state = status.get(engine)
-            if isinstance(state, dict) and route_text(state.get("loaded_model")):
+            if isinstance(state, dict) and opt_text(state.get("loaded_model")):
                 return state["loaded_model"], engine
         default = status.get("transformers") if isinstance(status.get("transformers"), dict) else {}
-        model = route_text(default.get("default_model")) or route_text(status.get("default_model"))
+        model = opt_text(default.get("default_model")) or opt_text(status.get("default_model"))
     if model is None:
         raise ToolError("Studio did not name a speech-to-text model; pass model.")
     return model, loading.stt_engine(status, model)
@@ -246,7 +245,7 @@ async def _transcribe_source(
         raise ToolError("The transcription did not finish")
     return TranscriptResult(
         text = payload.get("text") if isinstance(payload.get("text"), str) else "",
-        language = route_text(payload.get("language")),
+        language = opt_text(payload.get("language")),
         model = model,
         segments = _segments(payload) if timestamps else None,
         saved_to_history = True,
@@ -297,7 +296,7 @@ async def transcribe(
         raise ToolError("Studio returned no transcript")
     return TranscriptResult(
         text = payload.get("text") if isinstance(payload.get("text"), str) else "",
-        language = route_text(payload.get("language")),
+        language = opt_text(payload.get("language")),
         model = model,
         segments = _segments(payload) if timestamps else None,
         saved_to_history = False,

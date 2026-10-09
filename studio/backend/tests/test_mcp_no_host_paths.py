@@ -27,6 +27,7 @@ from .test_mcp_tools_loading import PAYLOADS as LOADING_PAYLOADS
 from .test_mcp_tools_models import PAYLOADS as MODELS_PAYLOADS
 from .test_mcp_tools_status import PAYLOADS as STATUS_PAYLOADS
 from .test_mcp_tools_text import PAYLOADS as TEXT_PAYLOADS
+from .test_mcp_tools_video import PAYLOADS as VIDEO_PAYLOADS
 
 # The direct-call tools from before forwarding. Each commit that replaces one removes it here and adds its case.
 LEGACY_UNCHECKED = {
@@ -50,6 +51,8 @@ CASES: dict[str, tuple[dict, dict]] = {
     "embed": (TEXT_PAYLOADS, {"texts": ["a", "b"]}),
     "system_one": (TEXT_PAYLOADS, {"state": "x", "questions": {"urgent": {"type": "noul"}}}),
     "generate_image": (IMAGES_PAYLOADS, {"prompt": "a red fox"}),
+    "generate_video": (VIDEO_PAYLOADS, {"prompt": "waves"}),
+    "get_job": (VIDEO_PAYLOADS, {"kind": "video"}),
     "transcribe": (
         TRANSCRIBE_PAYLOADS,
         {
