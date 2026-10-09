@@ -192,6 +192,7 @@ import {
   createParentResolver,
   orderBySelectedBranch,
   orderParentsFirst,
+  resolveSavedBranchHead,
 } from "./utils/message-order";
 import { estimateContextUsage } from "./utils/estimate-chat-tokens";
 import {
@@ -2664,7 +2665,12 @@ function useStudioRuntimeAdapters(
         }
 
         // select the persisted branch for import and context-usage restoration
-        const headId = savedBranchHead(remoteId, msgs);
+        const savedHeadId = savedBranchHead(remoteId, msgs);
+        // follow the newest stored row to a leaf before parent-first ordering moves the tail.
+        const headId = resolveSavedBranchHead(
+          msgs,
+          savedHeadId ?? msgs.at(-1)?.id,
+        );
         const branch = orderBySelectedBranch(msgs, headId);
 
         // restore usage from the selected branch's last assistant message when the model matches

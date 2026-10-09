@@ -86,6 +86,25 @@ test("orderParentsFirst handles a long reversed chain without recursion", () => 
   assert.equal(ordered.at(-1)?.id, "9999");
 });
 
+test("the fallback head stays on the newest row's branch after reordering", () => {
+  const rows = byCreatedAt([
+    { id: "root", parentId: null, createdAt: 0, role: "user" },
+    { id: "reply", parentId: "edited", createdAt: 1, role: "assistant" },
+    { id: "other", parentId: "root", createdAt: 2, role: "assistant" },
+    { id: "edited", parentId: "root", createdAt: 3, role: "user" },
+  ]);
+  const resolveParent = createParentResolver();
+  const ordered = orderParentsFirst(
+    rows.map((record) => ({
+      record,
+      id: record.id,
+      parentId: resolveParent(record),
+    })),
+  );
+  assert.equal(ordered.at(-1)?.id, "other");
+  assert.equal(resolveSavedBranchHead(rows, rows.at(-1)?.id), "reply");
+});
+
 test("the saved-branch head resolves to a leaf, so import keeps every reply", () => {
   // mirror the load path through a real repository import.
   const resolveParent = createParentResolver();
