@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-from typing import Literal, Optional
+from typing import Annotated, Literal, Optional
 
-from pydantic import BaseModel, Field, StrictStr
+from pydantic import AfterValidator, BaseModel, Field, StrictStr
 
 
 class McpImageInputMapping(BaseModel):
@@ -14,6 +14,17 @@ class McpImageInputMapping(BaseModel):
     encoding: Literal["base64", "data_url"] = "base64"
 
 
+def _one_field_per_tool(mappings: list[McpImageInputMapping]) -> list[McpImageInputMapping]:
+    # Only one field of a tool receives the image (image_mapping), so a second one would silently do nothing.
+    tools = [mapping.tool for mapping in mappings]
+    if len(tools) != len(set(tools)):
+        raise ValueError("each tool can map only one image field")
+    return mappings
+
+
+McpImageInputMappings = Annotated[list[McpImageInputMapping], AfterValidator(_one_field_per_tool)]
+
+
 class McpServerCreate(BaseModel):
     display_name: str
     url: str
@@ -22,7 +33,7 @@ class McpServerCreate(BaseModel):
     use_oauth: bool = False
     oauth_client_id: Optional[str] = None
     oauth_client_secret: Optional[str] = None
-    image_input_mappings: list[McpImageInputMapping] = Field(default_factory = list, max_length = 64)
+    image_input_mappings: McpImageInputMappings = Field(default_factory = list, max_length = 64)
 
 
 class McpServerUpdate(BaseModel):
@@ -34,7 +45,7 @@ class McpServerUpdate(BaseModel):
     use_oauth: Optional[bool] = None
     oauth_client_id: Optional[str] = None
     oauth_client_secret: Optional[str] = None
-    image_input_mappings: Optional[list[McpImageInputMapping]] = Field(None, max_length = 64)
+    image_input_mappings: Optional[McpImageInputMappings] = Field(None, max_length = 64)
 
 
 class McpServerResponse(BaseModel):

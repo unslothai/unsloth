@@ -463,6 +463,21 @@ def test_mappings_round_trip_through_the_routes(mapped_server):
     assert cleared.image_input_mappings == []
 
 
+def test_a_tool_maps_one_image_field():
+    from pydantic import ValidationError
+
+    from models.mcp_servers import McpServerCreate, McpServerUpdate
+
+    two_fields = [{"tool": "lookup", "field": "image"}, {"tool": "lookup", "field": "url"}]
+    with pytest.raises(ValidationError, match = "only one image field"):
+        McpServerCreate(display_name = "x", url = "https://x", image_input_mappings = two_fields)
+    with pytest.raises(ValidationError, match = "only one image field"):
+        McpServerUpdate(image_input_mappings = two_fields)
+    two_tools = [{"tool": "lookup", "field": "image"}, {"tool": "search", "field": "image"}]
+    assert len(McpServerUpdate(image_input_mappings = two_tools).image_input_mappings) == 2
+    assert McpServerUpdate().image_input_mappings is None
+
+
 def test_every_local_exit_without_a_tool_loop_refuses_the_image():
     import ast
     import inspect

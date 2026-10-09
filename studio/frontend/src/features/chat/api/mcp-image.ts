@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type { McpServerConfig } from "./mcp-servers-api";
+import type { McpImageInputMapping, McpServerConfig } from "./mcp-servers-api";
 
 /** Sent with a tool_start that would send the user's image; approval covers this one call. */
 export type ImageDisclosure = {
@@ -75,4 +75,32 @@ export function imageFieldCandidates(schema: unknown): string[] {
       ([, field]) => (field as { type?: unknown } | null)?.type === "string",
     )
     .map(([name]) => name);
+}
+
+type ImageField = { tool: string; field: string };
+
+/** The tool / field pairs not mapped yet, so picking one always changes something. */
+export function unmappedImageFields<T extends ImageField>(
+  options: readonly T[],
+  mappings: readonly McpImageInputMapping[],
+): T[] {
+  return options.filter(
+    (option) =>
+      !mappings.some((m) => m.tool === option.tool && m.field === option.field),
+  );
+}
+
+/** Maps `option`; the backend takes one field per tool, so it replaces that tool's row in place. */
+export function withImageField(
+  mappings: readonly McpImageInputMapping[],
+  option: ImageField,
+): McpImageInputMapping[] {
+  const next: McpImageInputMapping = {
+    tool: option.tool,
+    field: option.field,
+    encoding: "base64",
+  };
+  return mappings.some((m) => m.tool === option.tool)
+    ? mappings.map((m) => (m.tool === option.tool ? next : m))
+    : [...mappings, next];
 }

@@ -9,6 +9,8 @@ import {
   mcpImageMappingsEnabled,
   modelVisibleMessage,
   toolOnlyImages,
+  unmappedImageFields,
+  withImageField,
 } from "../src/features/chat/api/mcp-image.ts";
 
 const PRIVATE = "data:image/png;base64,UFJJVkFURQ==";
@@ -97,4 +99,37 @@ test("mapping candidates are the top-level string fields", () => {
     ["image", "url"],
   );
   assert.deepEqual(imageFieldCandidates(undefined), []);
+});
+
+test("the add list leaves out pairs that are already mapped", () => {
+  const options = [
+    { tool: "search_by_file", field: "filePath" },
+    { tool: "search_by_file", field: "imageBase64" },
+    { tool: "search_by_url", field: "url" },
+  ];
+  assert.deepEqual(
+    unmappedImageFields(options, [
+      { tool: "search_by_file", field: "imageBase64", encoding: "data_url" },
+    ]),
+    [options[0], options[2]],
+  );
+  assert.deepEqual(unmappedImageFields(options, []), options);
+});
+
+test("adding a field keeps one row per tool, in place", () => {
+  const mapped = [
+    { tool: "search_by_file", field: "imageBase64", encoding: "data_url" },
+    { tool: "search_by_url", field: "url", encoding: "base64" },
+  ] as const;
+  assert.deepEqual(
+    withImageField(mapped, { tool: "search_by_file", field: "filePath" }),
+    [
+      { tool: "search_by_file", field: "filePath", encoding: "base64" },
+      mapped[1],
+    ],
+  );
+  assert.deepEqual(withImageField(mapped, { tool: "lookup", field: "image" }), [
+    ...mapped,
+    { tool: "lookup", field: "image", encoding: "base64" },
+  ]);
 });
