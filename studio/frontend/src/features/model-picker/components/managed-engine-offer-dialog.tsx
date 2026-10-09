@@ -12,6 +12,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Spinner } from "@/components/ui/spinner";
+import { useState } from "react";
 import { isEngineReady } from "../api/engines";
 import { useManagedEngineOfferStore } from "../hooks/managed-engine-offer";
 import { useEngines } from "../hooks/use-engines";
@@ -37,6 +38,15 @@ export function ManagedEngineOfferDialog() {
     return engine ? [engine] : [];
   });
   const ready = offered.filter((engine) => isEngineReady(engine));
+  // An install started here stays mounted until its success hands the load to it.
+  const [installing, setInstalling] = useState<readonly string[]>([]);
+  const running = offered
+    .filter((engine) => engine.job.state === "running")
+    .map((engine) => engine.engine);
+  const started = running.filter((name) => !installing.includes(name));
+  if (!open && installing.length > 0) setInstalling([]);
+  else if (open && started.length > 0)
+    setInstalling([...installing, ...started]);
   const names = (offer?.engines ?? []).map((name) => ENGINE_NAMES[name]);
   const displayName = modelName?.split("/").pop() || "This model";
   const quantization =
@@ -55,8 +65,8 @@ export function ManagedEngineOfferDialog() {
             {displayName} needs {names.join(" or ")}
           </AlertDialogTitle>
           <AlertDialogDescription>
-            This model is quantized with {quantization}, which Unsloth's
-            default engine cannot run. {names.join(" and ")}{" "}
+            This model is quantized with {quantization}, which Unsloth's default
+            engine cannot run. {names.join(" and ")}{" "}
             {names.length > 1 ? "can each" : "can"} run it on this computer
             {ready.length > 0 ? "." : " once installed."}
           </AlertDialogDescription>
@@ -67,22 +77,26 @@ export function ManagedEngineOfferDialog() {
             Checking installed engines...
           </p>
         ) : (
-          ready.length === 0 &&
-          offered.map((engine) => (
-            <section
-              key={engine.engine}
-              aria-label={ENGINE_NAMES[engine.engine]}
-              className="space-y-2 rounded-lg border p-3"
-            >
-              <p className="text-ui-13 font-medium">
-                {ENGINE_NAMES[engine.engine]}
-              </p>
-              <EngineInstall
-                engine={engine}
-                onUse={() => resolve(engine.engine)}
-              />
-            </section>
-          ))
+          offered
+            .filter(
+              (engine) =>
+                ready.length === 0 || installing.includes(engine.engine),
+            )
+            .map((engine) => (
+              <section
+                key={engine.engine}
+                aria-label={ENGINE_NAMES[engine.engine]}
+                className="space-y-2 rounded-lg border p-3"
+              >
+                <p className="text-ui-13 font-medium">
+                  {ENGINE_NAMES[engine.engine]}
+                </p>
+                <EngineInstall
+                  engine={engine}
+                  onUse={() => resolve(engine.engine)}
+                />
+              </section>
+            ))
         )}
         <AlertDialogFooter>
           <AlertDialogCancel>Cancel</AlertDialogCancel>

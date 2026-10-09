@@ -78,3 +78,11 @@ test("the chat load asks before unloading anything and loads with the chosen eng
   assert.match(branch, /if \(keepsOthers\) \{[\s\S]*?stopDecision = await confirmStopRunningChatsIfNeeded\([\s\S]*?keepsOthers = false;\s*forceCancelActive = stopDecision\.forceCancelActive;\s*loadRun\.forceCancelActive = forceCancelActive;/);
   assert.match(readText("../src/app/routes/__root.tsx"), /<ManagedEngineOfferDialog \/>/);
 });
+
+test("an install started in the dialog stays mounted until it hands the load over", () => {
+  // Unmounting on the first ready poll would drop EngineInstall's success effect, and with it onUse.
+  const dialog = readText("../src/features/model-picker/components/managed-engine-offer-dialog.tsx");
+  assert.match(dialog, /ready\.length === 0 \|\| installing\.includes\(engine\.engine\)/);
+  assert.match(dialog, /engine\.job\.state === "running"/);
+  assert.match(dialog, /onUse=\{\(\) => resolve\(engine\.engine\)\}/);
+});
