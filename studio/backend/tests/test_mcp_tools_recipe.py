@@ -165,4 +165,4 @@ def test_recipe_annotations():
     assert run.annotations.destructiveHint is False
     assert run.annotations.openWorldHint is False
     assert run.output_schema is not None
-    assert tools["get_job"].parameters["properties"]["kind"]["enum"] == ["video", "recipe"]
+    assert "recipe" in tools["get_job"].parameters["properties"]["kind"]["enum"]

@@ -17,7 +17,9 @@ from pydantic import Field
 from studio_mcp.caller import Caller, current_caller
 from studio_mcp.forward import forward
 from studio_mcp.media import INLINE_CAP, image_content, media_result, public_url, resource_link
+from studio_mcp import export_jobs
 from studio_mcp.outputs import (
+    ExportInfo,
     JobStatus,
     JobSummary,
     RecipeError,
@@ -126,16 +128,41 @@ async def _recipe_job(
     return media_result([], status)
 
 
+def _export_status(job: export_jobs.ExportJob) -> JobStatus:
+    return JobStatus(
+        kind = "export",
+        id = job.job_id,
+        status = job.status,
+        error = job.error,
+        export = ExportInfo(format = job.format, output = job.output, phase = job.phase),
+    )
+
+
+async def _export_job(caller: Caller, job_id: Optional[str]) -> ToolResult:
+    if job_id is None:
+        jobs = [
+            JobSummary(id = job.job_id, status = job.status)
+            for job in export_jobs.jobs_of(caller.account_id)
+        ]
+        return media_result([], JobStatus(kind = "export", jobs = jobs))
+    job = export_jobs.lookup(caller.account_id, job_id)
+    if not job.finished and job.started_seq is not None:
+        export_jobs.reconcile(job, await route_json("GET", "/api/export/status", caller = caller))
+    return media_result([], _export_status(job))
+
+
 async def get_job(
-    kind: Literal["video", "recipe"],
+    kind: Literal["video", "recipe", "export"],
     id: Optional[str] = None,
     rows: Annotated[Optional[int], Field(ge = 1, le = 500)] = None,
     offset: Annotated[int, Field(ge = 0)] = 0,
 ) -> ToolResult:
-    """The state of a long-running job. kind "video": with ``id``, its status and progress, and once completed a thumbnail plus the video's URL; without ``id``, recent video jobs. kind "recipe": a data recipe job's status and progress (without ``id``, the current one), and with ``rows`` that many generated rows from ``offset``. Studio runs one recipe at a time; a recipe job id is not tied to an account."""
+    """The state of a long-running job. kind "video": with ``id``, its status and progress, and once completed a thumbnail plus the video's URL; without ``id``, recent video jobs. kind "recipe": a data recipe job's status and progress (without ``id``, the current one), and with ``rows`` that many generated rows from ``offset``. Studio runs one recipe at a time; a recipe job id is not tied to an account. kind "export": an export_model job by its id (without ``id``, this key's export jobs), with its output named relative to Studio's exports folder."""
     caller = current_caller()
     if kind == "recipe":
         return await _recipe_job(caller, id, rows, offset)
+    if kind == "export":
+        return await _export_job(caller, id)
     if id is None:
         return await _video_jobs(caller)
     return await _video_job(caller, id)

@@ -269,6 +269,13 @@ class RecipeInfo(ToolOutput):
     data_rows: Optional[list[dict[str, Any]]] = None
 
 
+class ExportInfo(ToolOutput):
+    format: RouteText
+    # Relative to Studio's exports folder, or only a name; never a host path.
+    output: Optional[RouteText] = None
+    phase: RouteText
+
+
 class JobStatus(ToolOutput):
     kind: RouteText
     id: Optional[RouteText] = None
@@ -277,6 +284,7 @@ class JobStatus(ToolOutput):
     error: Optional[RouteText] = None
     video: Optional[VideoInfo] = None
     recipe: Optional[RecipeInfo] = None
+    export: Optional[ExportInfo] = None
     # Recent jobs, when no id was given.
     jobs: Optional[list[JobSummary]] = None
 
