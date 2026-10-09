@@ -277,6 +277,11 @@ def PatchRL(FastLanguageModel):
         loss_without_labels = True if len(self.label_names) == 0 and return_loss else False
 
         inputs = self._prepare_inputs(inputs)
+        # Outside train(), for_inference restores use_cache, and transformers skips its packed-sequence
+        # mask once a cache exists (masking_utils._preprocess_mask_arguments): packed rows then attend
+        # across each other and evaluate() reports a wrong loss (#3470).
+        if "packed_seq_lengths" in inputs and "use_cache" not in inputs:
+            inputs = {**inputs, "use_cache": False}
         if ignore_keys is None:
             if hasattr(self.model, "config"):
                 ignore_keys = getattr(self.model.config, "keys_to_ignore_at_inference", [])
