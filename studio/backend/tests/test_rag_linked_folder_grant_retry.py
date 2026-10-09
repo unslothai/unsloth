@@ -25,10 +25,6 @@ from storage import rag_db
 SECRET = b"f" * 32
 ORIGIN = "tauri://localhost"
 
-requires_sqlite_vec = pytest.mark.skipif(
-    not rag_db.RAG_AVAILABLE, reason = "sqlite-vec is not installed"
-)
-
 
 def _b64(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
@@ -64,6 +60,9 @@ def _sign(path) -> str:
 def client(rag_home, monkeypatch):
     monkeypatch.setenv(leases.LEASE_SECRET_ENV, _b64(SECRET))
     monkeypatch.setattr(leases, "_CACHED_LEASE_SECRET", None, raising = False)
+    # The package can import while its native vec0 library is missing (the usual macOS venv).
+    if not rag_db.rag_available():
+        pytest.skip("sqlite-vec cannot load here")
     with closing(rag_db.get_connection()) as conn:
         store.create_kb(conn, name = "Knowledge", kb_id = "kb")
     app = FastAPI()
@@ -90,7 +89,6 @@ def _link(client, lease):
     )
 
 
-@requires_sqlite_vec
 def test_an_unexpected_failure_answers_with_cors_headers_and_its_error(
     client, rag_home, monkeypatch
 ):
@@ -117,7 +115,6 @@ def test_an_unexpected_failure_answers_with_cors_headers_and_its_error(
     assert len(folder_sync.list_folders(store.kb_scope("kb"))) == 1
 
 
-@requires_sqlite_vec
 def test_a_grant_that_linked_a_folder_still_refuses_a_replay(client, rag_home):
     lease = _sign(_folder(rag_home, "docs"))
     assert _link(client, lease).status_code == 200
