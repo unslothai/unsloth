@@ -73,5 +73,8 @@ test("the chat load asks before unloading anything and loads with the chosen eng
   // The chosen engine's own /validate runs before the unload too.
   const revalidateAt = source.indexOf("...loadEngineFields,", offerAt);
   assert.ok(revalidateAt > offerAt && revalidateAt < unloadAt, "the chosen engine must be validated before the unload");
+  // Keep loaded models: the switch re-asks about running chats and then replaces, like any managed load.
+  const branch = source.slice(offerAt, unloadAt);
+  assert.match(branch, /if \(keepsOthers\) \{[\s\S]*?stopDecision = await confirmStopRunningChatsIfNeeded\([\s\S]*?keepsOthers = false;/);
   assert.match(readText("../src/app/routes/__root.tsx"), /<ManagedEngineOfferDialog \/>/);
 });

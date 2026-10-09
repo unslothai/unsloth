@@ -1809,7 +1809,7 @@ export function useChatModelRuntime() {
       const { keepModelsLoaded, loadedModels: loadedNow, params: paramsNow } =
         useChatRuntimeStore.getState();
       // vLLM and SGLang always replace the loaded models, so they keep the running-chat prompt.
-      const keepsOthers =
+      let keepsOthers =
         keepModelsLoaded && !forceReload && (paramsNow.engine ?? "auto") === "auto";
       const switchingNote = keepsOthers ? "Keeping the loaded models." : "Switching models.";
       // Reloading one of several touches only its own slot, so only its chats stop.
@@ -2427,6 +2427,16 @@ export function useChatModelRuntime() {
               };
               engineSwitched = true;
               downloadComplete = true;
+              if (keepsOthers) {
+                // vLLM and SGLang replace every loaded model, so ask as any replacing load does.
+                stopDecision = await confirmStopRunningChatsIfNeeded(
+                  "Loading a different model",
+                  "reload",
+                );
+                if (abortCtrl.signal.aborted) throw new Error("Cancelled");
+                if (!stopDecision.proceed) throw new Error("Model load cancelled.");
+                keepsOthers = false;
+              }
               // Judge it again as that engine before anything is unloaded. A Desktop path lease is
               // single-use, so those picks rely on /load's own engine checks.
               if (!nativePathToken) {
