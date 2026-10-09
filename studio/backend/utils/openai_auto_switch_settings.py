@@ -364,7 +364,6 @@ DRAFT_N_MAX_SPEC_TYPES = frozenset(
     {"mtp", "mtp+ngram", "draft-mtp", "dspark", "draft-dspark", "dflash", "draft-dflash"}
     | MLX_ONLY_SPEC_TYPES
 )
-# An MLX load reads a named companion drafter under these, auto included.
 DRAFTER_MODEL_SPEC_TYPES = DRAFT_N_MAX_SPEC_TYPES | {"auto", "default"}
 # Only these load a separate draft model, and so a draft context for the dtype to apply to. Mirrors SEPARATE_DRAFT_MODEL_SPEC_TYPES in the UI.
 SEPARATE_DRAFT_MODEL_SPEC_TYPES = frozenset({"dspark", "draft-dspark", "dflash", "draft-dflash"})

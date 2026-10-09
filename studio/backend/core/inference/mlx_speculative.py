@@ -32,10 +32,8 @@ _LEGACY_MODES = {
     "disable": "off",
     "disabled": "off",
 }
-# Auto's order among cached companions of one target.
 _COMPANION_ORDER = ("mtp", "dflash2", "dflash", "dspark", "eagle3")
 
-# spec_fallback_reason codes an MLX load reports.
 DRAFTER_NOT_FOUND = "drafter_not_found"
 DRAFTER_INCOMPATIBLE = "drafter_incompatible"
 DRAFTER_NO_MEMORY = "drafter_no_memory"
@@ -55,7 +53,7 @@ def mlx_spec_mode(value) -> str:
 
 @dataclass(frozen = True)
 class DrafterSource:
-    kind: str  # as reported: mtp, dflash, dspark or eagle3
+    kind: str
     path: str
     builtin: bool
 
@@ -63,7 +61,7 @@ class DrafterSource:
 @dataclass(frozen = True)
 class SpecResolution:
     mode: str
-    sources: tuple = ()  # DrafterSource candidates, tried in order at load
+    sources: tuple = ()
     copies: bool = False  # n-gram copies alongside a drafter, or alone when an explicit kind's drafter does not attach
     reason: Optional[str] = None
 
@@ -353,7 +351,7 @@ def _carries_encoder_state(target) -> bool:
     for module in (target, getattr(target, "language_model", None)):
         try:
             parameters = inspect.signature(module).parameters
-        except (TypeError, ValueError):  # e.g. a language model its wrapper calls piecewise
+        except (TypeError, ValueError):
             continue
         if "cross_attention_states" in parameters or "encoder_outputs" in parameters:
             return True
@@ -367,10 +365,8 @@ def build_draft(
     fits,
     draft_n_max: Optional[int] = None,
 ) -> tuple:
-    """``(draft, kind, reason, context)``: the first source whose drafter-inclusive fit ``fits(source)``
-    accepts and that builds against ``target``, else copies alone when the mode allows them. ``fits``
-    returns ``(ok, fitted context or None)``, ``ok`` None when nothing could be priced. The reason names why an earlier choice was passed over,
-    so a substitute never attaches silently."""
+    """``(draft, kind, reason, context)`` for the first source ``fits`` accepts that builds, else copies
+    alone when the mode allows. ``reason`` names a passed-over choice, so a substitute never attaches silently."""
     from unsloth_zoo.mlx.speculative import companion_drafter, native_mtp_drafter
 
     if _carries_encoder_state(target):

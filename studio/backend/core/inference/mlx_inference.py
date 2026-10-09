@@ -6325,7 +6325,6 @@ class MLXInferenceBackend:
         ):
             draft = None
         elif "input_ids" not in vlm_kwargs:
-            # Prepared here so the draft is told the prompt exactly as the model receives it.
             vlm_kwargs.update(
                 _vlm_generate_kwargs(
                     _vlm_prepared_inputs(self._model, self._processor, prompt, images)
@@ -6514,7 +6513,7 @@ class MLXInferenceBackend:
         if self._is_vlm:
             reason = self._vlm_batch_unavailable_reason(requests)
             if reason is None and self._speculative_draft is not None:
-                reason = self._vlm_resident_unavailable_reason({})  # the resident session serves it
+                reason = self._vlm_resident_unavailable_reason({})
             if reason is not None:
                 return reason
             if any(_mlx_stop_sequences(request.get("stop")) for request in requests):

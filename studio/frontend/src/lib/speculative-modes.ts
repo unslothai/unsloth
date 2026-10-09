@@ -24,7 +24,6 @@ export const SPECULATIVE_TYPES = [
 /** Values only an MLX load reads (studio/backend/core/inference/mlx_speculative.py). */
 export const MLX_ONLY_SPEC_TYPES = ["eagle3"] as const;
 
-/** What the MLX control offers, in its order. */
 export const MLX_SPECULATIVE_TYPES = [
   "auto",
   "mtp",
@@ -79,7 +78,6 @@ export const DRAFT_N_MAX_SPEC_TYPES: ReadonlySet<string> = new Set([
   ...MLX_ONLY_SPEC_TYPES,
 ]);
 
-/** The modes under which an MLX load reads a named companion drafter (spec_draft_model). */
 export const DRAFTER_MODEL_SPEC_TYPES: ReadonlySet<string> = new Set([
   ...DRAFT_N_MAX_SPEC_TYPES,
   "auto",

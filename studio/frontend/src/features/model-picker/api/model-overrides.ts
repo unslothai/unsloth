@@ -574,7 +574,6 @@ async function sendModelOverride(
       // can still predate.
       // biome-ignore lint/style/useNamingConvention: API schema
       mirrors_reasoning_budget: true,
-      // And for the MLX drafter.
       // biome-ignore lint/style/useNamingConvention: API schema
       mirrors_spec_draft_model: true,
       // Only sent when set, so an older backend is not handed an unknown key every save.
