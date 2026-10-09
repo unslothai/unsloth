@@ -23,7 +23,7 @@ test("token counting waits for the initial skills discovery", () => {
     /if \(pending\) await Promise\.race\(\[pending\.catch\(\(\) => undefined\), deadline\]\);/,
   );
   assert.match(SKILLS_API_SOURCE, /let stale = !snapshot\.initialized;/);
-  assert.match(CHAT_ADAPTER_SOURCE, /await settleSkillsForText\(lastUserText\(messages\)\);/);
+  assert.match(CHAT_ADAPTER_SOURCE, /await settleSkillsForText\(userTexts\(messages\)\.join\("\\n"\)\);/);
   assert.match(
     CHAT_ADAPTER_SOURCE,
     /const skillTools = skillToolNames\(\s*getSkillsSnapshot\(\)\.skills,\s*codeToolsEnabled,\s*userTexts\(messages\),\s*\);/,
@@ -59,7 +59,7 @@ test("request building waits for skills and preserves the launcher tool catalog"
   );
   assert.match(
     payloadBuilder,
-    /if \(supportsStudioToolsForThisTurn\) \{\s*await settleSkillsForText\(lastUserText\(outboundMessages\)\);/,
+    /if \(supportsStudioToolsForThisTurn\) \{\s*\/\/[^\n]*\n\s*await settleSkillsForText\(userTexts\(outboundMessages\)\.join\("\\n"\)\);/,
   );
   assert.match(
     payloadBuilder,

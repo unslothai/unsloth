@@ -71,12 +71,6 @@ function userTexts(
     .filter((message) => message?.role === "user")
     .map((message) => messageText(message.content));
 }
-
-function lastUserText(
-  messages: readonly { role?: string; content?: unknown }[],
-): string {
-  return userTexts(messages).at(-1) ?? "";
-}
 import { projectHasSources } from "@/features/rag/api/rag-api";
 import {
   IMAGE_SENTINEL_TOOLS,
@@ -2282,8 +2276,8 @@ export async function buildLocalTokenCountExtras(
     : false;
   const ragOn = ragEnabled || projectRagEnabled;
 
-  // The counted text, as the send path does, so a skill made since page load is priced like the request.
-  await settleSkillsForText(lastUserText(messages));
+  // Every counted user turn, as the send path does, so a skill made since page load is priced like the request.
+  await settleSkillsForText(userTexts(messages).join("\n"));
   const skillTools = skillToolNames(
     getSkillsSnapshot().skills,
     codeToolsEnabled,
@@ -6581,7 +6575,8 @@ export function createOpenAIStreamAdapter(
           forceRefreshPublicKey = false,
         ): Promise<OpenAIChatCompletionsRequest> => {
           if (supportsStudioToolsForThisTurn) {
-            await settleSkillsForText(lastUserText(outboundMessages));
+            // Every user turn: an earlier mention keeps read_skill offered, so its skill must be known.
+            await settleSkillsForText(userTexts(outboundMessages).join("\n"));
           }
           const skillTools = skillToolNames(
             getSkillsSnapshot().skills,
