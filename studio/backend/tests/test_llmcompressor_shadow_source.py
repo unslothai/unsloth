@@ -45,6 +45,11 @@ class _Response(io.BytesIO):
 
 @pytest.fixture
 def shadow(monkeypatch, tmp_path):
+    from utils import utils as studio_utils
+
+    # No ambient proxy: these tests stub urlopen, a proxy opener would reach GitHub for real.
+    monkeypatch.setattr(tv, "_hf_proxy_opener", lambda url: None)
+    monkeypatch.setattr(studio_utils, "hf_proxy_for_endpoint", lambda url = None: None)
     monkeypatch.setattr(tv, "_llmcompressor_shadow_is_valid", lambda: False)
     monkeypatch.setattr(tv, "_llmcompressor_main_disabled", lambda: False)
     monkeypatch.setattr(tv, "_env_offline", lambda: False)
@@ -176,6 +181,26 @@ def test_a_socks_proxy_is_used_through_httpx_never_bypassed(monkeypatch, shadow)
     monkeypatch.setattr(httpx, "stream", fake_stream)
     assert tv._download_llmcompressor_source(shadow).is_dir()
     assert streamed
+
+
+def test_a_socks_proxy_without_socksio_fails_closed_with_the_fix(monkeypatch, shadow):
+    import httpx
+
+    from utils import utils as studio_utils
+
+    monkeypatch.setattr(
+        studio_utils, "hf_proxy_for_endpoint", lambda url = None: "socks5://proxy:1080"
+    )
+    monkeypatch.setattr(
+        tv.urllib.request, "urlopen", lambda *a, **k: pytest.fail("bypassed the socks proxy")
+    )
+
+    def no_socksio(*a, **k):
+        raise ImportError("Using SOCKS proxy, but the 'socksio' package is not installed.")
+
+    monkeypatch.setattr(httpx, "stream", no_socksio)
+    with pytest.raises(RuntimeError, match = "socksio"):
+        tv._download_llmcompressor_source(shadow)
 
 
 @pytest.mark.allow_network

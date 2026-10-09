@@ -3848,14 +3848,21 @@ def _download_llmcompressor_source(parent: Path) -> Path:
     opener = _hf_proxy_opener(url)  # honours ALL_PROXY, which plain urlopen ignores for https
     from utils.utils import hf_proxy_for_endpoint, hf_proxy_usable_by_urllib
 
-    if opener is None and not hf_proxy_usable_by_urllib(hf_proxy_for_endpoint(url)):
+    proxy = hf_proxy_for_endpoint(url)
+    if opener is None and not hf_proxy_usable_by_urllib(proxy):
         # A socks proxy urllib cannot speak: go through it as the Hub client does, never direct.
         import httpx
-        with httpx.stream("GET", url, headers = headers, follow_redirects = True, timeout = 300) as r:
-            r.raise_for_status()
-            with open(archive, "wb") as out:
-                for chunk in r.iter_bytes(1 << 20):
-                    out.write(chunk)
+        try:
+            with httpx.stream("GET", url, headers = headers, follow_redirects = True, timeout = 300) as r:
+                r.raise_for_status()
+                with open(archive, "wb") as out:
+                    for chunk in r.iter_bytes(1 << 20):
+                        out.write(chunk)
+        except ImportError as exc:  # httpx needs socksio for socks
+            raise RuntimeError(
+                f"the configured proxy {proxy} needs SOCKS support: install socksio "
+                "(pip install socksio) or set HTTPS_PROXY to an http(s) proxy"
+            ) from exc
     else:
         request = urllib.request.Request(url, headers = headers)
         with (opener.open if opener else urllib.request.urlopen)(request, timeout = 300) as response:
