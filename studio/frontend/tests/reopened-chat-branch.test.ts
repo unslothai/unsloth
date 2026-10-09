@@ -9,7 +9,6 @@ import {
   resolveSavedBranchHead,
 } from "../src/features/chat/utils/message-order.ts";
 
-// Three turns, then a retry of the first reply: the retry is the newest row.
 const RETRIED_FIRST_REPLY = [
   { id: "u1", parentId: null, createdAt: 1, role: "user" },
   { id: "a1", parentId: "u1", createdAt: 2, role: "assistant" },
@@ -66,7 +65,7 @@ test("a saved head with retried children follows the newest child", () => {
 });
 
 test("the newest turn under the saved head wins over a newer sibling", () => {
-  // Another device retried a3 under u3, then went back to a3 and continued from it.
+  // a remote retry under u3 may precede continuing from a3
   const continuedOlder = [
     ...RETRIED_FIRST_REPLY,
     { id: "a3-retry", parentId: "u3", createdAt: 8, role: "assistant" },

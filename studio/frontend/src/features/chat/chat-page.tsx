@@ -4238,10 +4238,9 @@ export function ChatPage({
   }, [currentProjectId, navigate, search]);
 
   const exitCompare = useCallback(() => {
-    // Prefer the explicit save; fall back to the last non-compare view so the composer + menu path
-    // also returns where the user started.
+    // the composer and menu exit paths rely on the last non-compare view.
     const saved = viewBeforeCompareRef.current ?? lastNonCompareViewRef.current;
-    // No saved view (compare opened by direct URL); fall back to a fresh chat.
+    // direct compare URLs have no saved view, so return to a fresh chat.
     if (!saved) {
       navigate({ to: "/chat" });
       return;
@@ -4260,8 +4259,7 @@ export function ChatPage({
           );
           const usage = savedUsageFor(branch, store) ?? estimateContextUsage(branch);
           if (!usage) return;
-          // Key by the thread this restore read, like the history loader: the await above can outlast a
-          // switch away, and an unkeyed write would file this usage under the incoming thread.
+          // key usage by the restored thread because this read can outlast a thread switch.
           store.setThreadContextUsage(threadId, usage);
           if (store.activeThreadId === threadId) {
             store.setContextUsage(usage);

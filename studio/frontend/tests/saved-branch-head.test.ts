@@ -8,8 +8,7 @@ import { loadWithStubs } from "./helpers/module-stubs.ts";
 
 type View = { remoteId?: string; messages: { id: string }[]; incognito: boolean };
 
-// Runs the recorder hook against a view the test sets, with an effect that reruns only when its
-// dependencies change, as React's does.
+// rerun the mocked effect only when dependencies change, matching React
 function recorder(temporary: Set<string>) {
   const writes: [string, string][] = [];
   let view: View = { messages: [], incognito: false };
@@ -75,7 +74,7 @@ test("a temporary chat saved after a branch switch records the branch on screen"
   render({ remoteId: "t", messages: branch("u1", "a1-retry"), incognito: true });
   render({ remoteId: "t", messages: branch("u1", "a1", "u2", "a2"), incognito: true });
   assert.deepEqual(writes, []);
-  // Saving unmarks the thread and turns the flag off; the head does not move.
+  // saving unmarks the thread and disables incognito without moving the head
   temporary.delete("t");
   render({ remoteId: "t", messages: branch("u1", "a1", "u2", "a2"), incognito: false });
   assert.deepEqual(writes, [["t", "a2"]]);

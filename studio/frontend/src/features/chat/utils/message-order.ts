@@ -76,11 +76,7 @@ export function orderBySelectedBranch<T extends ParentLinkedMessage>(
   return chain.reverse();
 }
 
-// A saved branch head, followed down to the newest leaf below it: turns added under it since, from
-// another tab or device, extend that branch, and assistant-ui's import drops every descendant of the
-// head it is given. The newest leaf, not the newest child at each level: an older child can hold the
-// newest turn. Undefined when the row is gone, which means the newest one. Parents resolve as the
-// history loader resolves them, so the leaf here is a leaf there.
+// remote turns can extend a saved head; use the newest leaf because assistant-ui drops descendants.
 export function resolveSavedBranchHead<T extends ParentLinkedMessage>(
   messages: T[],
   savedHeadId: string | null | undefined,

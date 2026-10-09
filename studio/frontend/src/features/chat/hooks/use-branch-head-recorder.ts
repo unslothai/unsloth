@@ -7,8 +7,7 @@ import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import { writeBranchHead } from "../utils/branch-head";
 import { isThreadIncognito } from "../utils/chat-history-storage";
 
-// Saves the branch on screen so the history loader reopens it. An empty thread is still loading.
-// `incognito` reruns it when a temporary chat is saved, since saving moves no head.
+// empty threads are loading; `incognito` changes when a temporary chat gets its persistent id.
 export function useBranchHeadRecorder(): void {
   const remoteId = useAuiState(({ threadListItem }) => threadListItem.remoteId);
   const headId = useAuiState(({ thread }) => thread.messages.at(-1)?.id);

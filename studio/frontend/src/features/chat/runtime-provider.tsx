@@ -2671,11 +2671,11 @@ function useStudioRuntimeAdapters(
           }
         }
 
-        // The branch left open, which the import below shows and the usage is restored from.
+        // select the persisted branch for import and context-usage restoration
         const headId = savedBranchHead(remoteId, msgs);
         const branch = orderBySelectedBranch(msgs, headId);
 
-        // Restore context usage from last assistant message if model matches.
+        // restore usage from the selected branch's last assistant message when the model matches
         const lastAssistant = [...branch]
           .reverse()
           .find((m) => m.role === "assistant");
@@ -2692,42 +2692,32 @@ function useStudioRuntimeAdapters(
             }
           | undefined;
         const store = useChatRuntimeStore.getState();
-        // Window check applies only when a local GGUF window is known; external providers have
-        // loadedContextLength === null. llama.cpp stops at the window, so a saved count past it is stale;
-        // MLX runs past it by design, and a thread whose recount is unsupported would never get another.
+        // reject usage beyond a local GGUF window; MLX and external providers have no local bound
         const localLimit = store.loadedIsGguf ? store.loadedContextLength : null;
         const withinLocalLimit =
           !localLimit || (savedUsage?.contextTokens ?? savedUsage?.totalTokens ?? 0) <= localLimit;
-        // Legacy unscoped usage (no modelId) is trusted only when a known local
-        // window bounds the totals, so an old local turn can't be misattributed
-        // to a newly-selected external provider.
+        // trust legacy usage only when a known local window prevents cross-provider attribution
         const modelMatches = savedUsage?.modelId
           ? savedUsage.modelId === store.params.checkpoint
           : typeof store.loadedContextLength === "number" &&
             store.loadedContextLength > 0;
-        // The value, not a boolean: the writes below need the narrowing.
+        // retain the usage object so TypeScript preserves narrowing for later writes
         const restoredUsage =
           savedUsage && withinLocalLimit && modelMatches ? savedUsage : null;
         const shownUsage = restoredUsage ?? estimateContextUsage(branch);
         if (shownUsage) {
-          // Key by the thread this loader read, not whichever is active when the await resolves: a switch
-          // inside it would file this thread's usage under the incoming one.
+          // key usage by the loaded thread because the active thread may change during awaits
           store.setThreadContextUsage(remoteId, shownUsage);
           if (store.activeThreadId === remoteId) {
             store.setContextUsage(shownUsage);
           }
         }
-        // Only when nothing was restored: saved usage is the last completion's exact totals, and
-        // refreshContextUsage does NOT stand down for usage already there, so it would overwrite them with
-        // an estimate whose completionTokens is 0. A thread opened after a model switch fails modelMatches
-        // and still gets priced (#7450). Primary pane only: a compare pane never owns the global bar.
+        // recount only without exact usage; model switches qualify, and compare panes never own the bar (#7450)
         if (!restoredUsage && modelType === "base" && !pairId) {
           void refreshContextUsage({ threadId: remoteId });
         }
 
-        // If any message has a stored parentId, reconstruct the tree so retries load as branches rather
-        // than a flat list, inferring sequential parents for old messages in mixed threads. Fall
-        // back to fromArray for fully legacy threads.
+        // rebuild branches when parentIds exist; infer sequential parents for mixed legacy threads
         const hasParentIds = msgs.some((m) => m.parentId != null);
         if (hasParentIds) {
           const resolveParent = createParentResolver();
@@ -3614,7 +3604,7 @@ function ActiveBranchRegistrar({
       try {
         return aui.thread().getState().messages;
       } catch {
-        // No thread mounted yet; the recount falls back to the stored records.
+        // without a mounted thread, recount from stored records
         return null;
       }
     });
@@ -3624,15 +3614,13 @@ function ActiveBranchRegistrar({
   return null;
 }
 
-// Every pane, hidden ones included: a reply streaming in the background moves the head too.
+// include hidden panes because background replies also move the branch head
 function BranchHeadRecorder(): ReactElement | null {
   useBranchHeadRecorder();
   return null;
 }
 
-// Price whichever thread the bar points at whenever it has nothing to show. Only two paths reach
-// it: a model change empties contextUsageByThreadId while a mounted thread does not rerun
-// its history loader, and on a deep link the loader and status can each land before the other.
+// recount an empty bar after a model change or when deep-link loading races model status
 function ThreadContextUsageRecount({
   enabled,
 }: { enabled: boolean }): ReactElement | null {
@@ -3640,8 +3628,7 @@ function ThreadContextUsageRecount({
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const loadedContextLength = useChatRuntimeStore((s) => s.loadedContextLength);
   const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
-  // A DEPENDENCY, not just a guard: nothing else here changes when a run ends, so a count skipped
-  // for being busy would never be retried. Every run, since that is what the endpoint refuses on.
+  // subscribe to run state so a recount skipped while busy is retried when the run ends
   const runActive = useChatRuntimeStore((s) =>
     Object.values(s.runningByThreadId).some(Boolean),
   );

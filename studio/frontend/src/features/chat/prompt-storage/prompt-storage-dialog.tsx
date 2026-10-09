@@ -244,7 +244,7 @@ async function loadConversationMessages(
     includeSiblings = true,
     includeInstructions = true,
   } = options;
-  // Read before the storage await: switching chats meanwhile would point the lookup at another thread.
+  // read before awaiting storage so a chat switch cannot redirect the lookup
   const liveBranch = liveThreadBranch(threadId);
   const [raw, instructions] = await Promise.all([
     listStoredChatMessages(threadId),
@@ -254,7 +254,7 @@ async function loadConversationMessages(
     toast.info(emptyMessage);
     return null;
   }
-  // No parentId = legacy flat thread (already DB createdAt-sorted); walking the chain would invert order.
+  // preserve DB order for legacy flat threads because parent-chain traversal would reverse it
   const hasParentIds = raw.some((m) => (m as { parentId?: unknown }).parentId != null);
   if (!hasParentIds) return [...instructions, ...raw];
   const headId = branchHeadId(threadId, liveBranch, raw);
@@ -265,7 +265,7 @@ async function loadConversationMessages(
 }
 
 async function chatInstructionsTurn(threadId: string): Promise<MessageRecord[]> {
-  // A debounced or held edit is not on the row yet, and the next reply already runs with it.
+  // pending instruction edits are absent from storage even though the next reply already uses them
   await settleThreadScopedSettingsForCopy(threadId);
   const thread = await getStoredChatThread(threadId);
   if (!thread) return [];
@@ -287,14 +287,14 @@ async function chatInstructionsTurn(threadId: string): Promise<MessageRecord[]> 
   ];
 }
 
-// Newest saved turn of the branch on screen: a reply still generating is not stored yet, and falling back to the newest leaf would export the reply it replaces.
+// use the visible stored turn because a generating reply is absent and the newest leaf may replace it
 function branchHeadId(
   threadId: string,
   liveBranch: string[] | null,
   raw: Array<{ id: string }>,
 ): string | null | undefined {
-  // An empty list is no opinion, not an empty branch: switching chats sets remoteId before the history load refills the view.
-  // A chat not on screen exports the branch it was left on, the one reopening it shows.
+  // an empty live branch means history has not refilled after a chat switch
+  // off-screen chats export the branch that reopening them would show
   if (!liveBranch?.length) return savedBranchHead(threadId, raw);
   const storedIds = new Set(raw.map((m) => m.id));
   return [...liveBranch].reverse().find((id) => storedIds.has(id)) ?? null;
@@ -304,7 +304,7 @@ function exportTs(): string {
   return new Date().toISOString().slice(0, 19).replace(/:/g, "-");
 }
 
-// Attachments live in msg.attachments[].content, not msg.content, so flatten both here or they'd be dropped on export.
+// attachment content is separate from message content and must be flattened for export
 function messageToText(msg: { content: unknown; attachments?: unknown }): string {
   const parts: string[] = [];
   const main = contentBlocksToText(msg.content);
@@ -1009,7 +1009,7 @@ export async function buildFineTuneJsonl(
     const hasParentIds = raw.some(
       (m) => (m as { parentId?: unknown }).parentId != null,
     );
-    // Chain only: retries/regenerations leave sibling branches, and mixing alternate replies into one conversation corrupts the training targets.
+    // exclude sibling retries because alternate replies would corrupt training targets
     const ordered = hasParentIds
       ? (orderByParentChain(raw, {
           includeSiblings: false,
