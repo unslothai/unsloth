@@ -184,7 +184,6 @@ def _run_rocm_sdpa_children(device: str, dtype: Any) -> tuple[str, ...]:
     dll_directories = _rocm_dll_directories()
     if dll_directories:
         child_env[ROCM_DLL_DIRS_ENV_VAR] = os.pathsep.join(dll_directories)
-    child_env = utf8_child_env(child_env)
 
     def probe(backend: str) -> str:
         try:
@@ -201,7 +200,7 @@ def _run_rocm_sdpa_children(device: str, dtype: Any) -> tuple[str, ...]:
                 encoding = "utf-8",
                 errors = "replace",
                 timeout = 45,
-                env = child_env,
+                env = utf8_child_env(child_env),
                 **windows_hidden_subprocess_kwargs(),
             )
             replies = [
