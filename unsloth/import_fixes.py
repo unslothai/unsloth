@@ -4975,6 +4975,37 @@ def patch_enable_input_require_grads():
             return _RequireGrad.apply(output, anchor)
         output.requires_grad_(True)
 
+    def make_inputs_embeds_require_grads(module, args, kwargs):
+        # inputs_embeds skips the embedding hook, so reentrant checkpointing starved the adapters (#2178).
+        inputs_embeds = kwargs.get("inputs_embeds")
+        if (
+            not isinstance(inputs_embeds, torch.Tensor)
+            or inputs_embeds.requires_grad
+            or not torch.is_grad_enabled()
+            or not inputs_embeds.is_floating_point()
+        ):
+            return None
+        if torch.compiler.is_compiling():
+            inputs_embeds = _RequireGrad.apply(inputs_embeds, anchor)
+        else:
+            inputs_embeds = inputs_embeds.detach().requires_grad_(True)
+        return args, {**kwargs, "inputs_embeds": inputs_embeds}
+
+    def register_inputs_embeds_hooks(model):
+        # Replace, not stack: a repeat enable keeps one hook, and disable can remove it.
+        handles = []
+        for module in model.modules():
+            if not isinstance(module, PreTrainedModel):
+                continue
+            for key, hook in list(module._forward_pre_hooks.items()):
+                if getattr(hook, "__name__", None) == make_inputs_embeds_require_grads.__name__:
+                    del module._forward_pre_hooks[key]
+                    module._forward_pre_hooks_with_kwargs.pop(key, None)
+            handles.append(
+                module.register_forward_pre_hook(make_inputs_embeds_require_grads, with_kwargs = True)
+            )
+        return handles
+
     # Older transformers hooks a single embedding (huggingface/transformers#41993 added the loop).
     # wraps keeps inspect.getsource on transformers' source for later source checks.
     original = PreTrainedModel.enable_input_require_grads
@@ -4985,8 +5016,22 @@ def patch_enable_input_require_grads():
             self._require_grads_hook = self.get_input_embeddings().register_forward_hook(
                 make_inputs_require_grads
             )
+            self._require_grads_hooks = [self._require_grads_hook] + register_inputs_embeds_hooks(
+                self
+            )
+
+        original_disable = PreTrainedModel.disable_input_require_grads
+
+        # The old disable only removes _require_grads_hook, which would leave the pre-hooks.
+        @functools.wraps(original_disable)
+        def _patched_single_disable_input_require_grads(self):
+            for hook in getattr(self, "_require_grads_hooks", ()):
+                hook.remove()
+            self._require_grads_hooks = []
+            original_disable(self)
 
         PreTrainedModel.enable_input_require_grads = _patched_single_enable_input_require_grads
+        PreTrainedModel.disable_input_require_grads = _patched_single_disable_input_require_grads
         return
 
     @functools.wraps(original)
@@ -5028,7 +5073,7 @@ def patch_enable_input_require_grads():
             seen_modules.add(embedding_id)
             hooks.append(input_embeddings.register_forward_hook(make_inputs_require_grads))
 
-        self._require_grads_hooks = hooks
+        self._require_grads_hooks = hooks + register_inputs_embeds_hooks(self)
         if hooks:
             self._require_grads_hook = hooks[0]
 
@@ -5103,6 +5148,75 @@ def patch_unsafe_trainer_rng_load():
     _unsloth_safe_load_rng_state._unsloth_safe_rng_load = True
     Trainer._load_rng_state = _unsloth_safe_load_rng_state
     logger.info("Unsloth: Hardened Trainer._load_rng_state rng loading (CVE-2026-1839).")
+
+
+def patch_bitsandbytes_paged_optimizer_resume():
+    """Keep paged bitsandbytes optimizer state paged after a checkpoint resume (#2168).
+    Optimizer8bit.load_state_dict moves every state1/state2 into plain CUDA memory, so a resumed
+    paged_* run holds that state in the CUDA allocator (or OOMs loading it), where a fresh run
+    keeps it in paged memory that can spill to CPU. Load it on the host instead and copy each
+    tensor into the buffer a fresh run would allocate (get_state_buffer, or AdEMAMix's doubled
+    state1); everything else still moves to the parameter's device as before."""
+    if "bitsandbytes" not in sys.modules:
+        return
+    try:
+        from bitsandbytes.optim.optimizer import Optimizer8bit
+    except Exception:
+        return
+    load_state_dict = getattr(Optimizer8bit, "load_state_dict", None)
+    if (
+        load_state_dict is None
+        or not hasattr(Optimizer8bit, "get_state_buffer")
+        or getattr(load_state_dict, "_unsloth_repage", False)
+    ):
+        return
+    try:
+        stages_on_host = "move_to_device" in inspect.signature(load_state_dict).parameters
+    except (TypeError, ValueError):
+        stages_on_host = False
+
+    import torch
+
+    def _paged_buffer(self, p, value):
+        if value.shape == p.shape:
+            buffer = self.get_state_buffer(p, dtype = value.dtype)
+        elif value.shape == (2, *p.shape) and hasattr(self, "_get_state_double_buffer"):
+            buffer = self._get_state_double_buffer(p, dtype = value.dtype)
+        else:
+            return None
+        return buffer if getattr(buffer, "is_paged", False) else None
+
+    @functools.wraps(load_state_dict)
+    def _unsloth_load_state_dict(self, state_dict, *args, **kwargs):
+        if not getattr(self, "is_paged", False):
+            return load_state_dict(self, state_dict, *args, **kwargs)
+        move_to_device = kwargs.pop("move_to_device", args[0] if args else True)
+        if stages_on_host:
+            result = load_state_dict(self, state_dict, False, *args[1:], **kwargs)
+        else:
+            result = load_state_dict(self, state_dict, *args, **kwargs)
+        non_castable = getattr(self, "non_castable_tensor_keys", ("state1", "state2"))
+        for group in self.param_groups:
+            for p in group["params"]:
+                state = self.state.get(p)
+                if not state:
+                    continue
+                for key, value in state.items():
+                    # No is_paged check: torch.save keeps that attribute, so a loaded host copy still claims it.
+                    if key not in non_castable or not isinstance(value, torch.Tensor):
+                        continue
+                    buffer = None
+                    if move_to_device and key in ("state1", "state2") and p.device.type != "cpu":
+                        buffer = _paged_buffer(self, p, value)
+                    if buffer is not None:
+                        buffer.copy_(value)
+                        state[key] = buffer
+                    elif move_to_device and stages_on_host:
+                        state[key] = value.to(p.device)
+        return result
+
+    _unsloth_load_state_dict._unsloth_repage = True
+    Optimizer8bit.load_state_dict = _unsloth_load_state_dict
 
 
 _PT2_UNSAFE_LOAD_ENV = "UNSLOTH_ALLOW_UNSAFE_PT2_LOAD"

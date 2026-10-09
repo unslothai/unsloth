@@ -89,3 +89,51 @@ def test_get_batch_samples_dispatch():
             assert dispatch(trainer, iter([]), 1) == want
     finally:
         _utils._unsloth_get_batch_samples = original
+
+
+@pytest.mark.parametrize(
+    "name, expected",
+    [
+        ("T5Config", "right"),
+        ("BartConfig", "right"),
+        ("WhisperConfig", "right"),
+        ("SeamlessM4Tv2Config", "right"),
+        ("T5Gemma2Config", "right"),
+        ("LlamaConfig", "left"),
+        ("Qwen3Config", "left"),
+        ("Gemma3Config", "left"),
+        ("VoxtralConfig", "left"),
+        ("Qwen2AudioConfig", "left"),
+    ],
+)
+def test_encoder_decoders_pad_right(name, expected):
+    from unsloth.models.vision import _generation_padding_side
+    assert _generation_padding_side(_config(name)) == expected
+
+
+@pytest.mark.parametrize("name", ["SeamlessM4TConfig", "SeamlessM4Tv2Config"])
+def test_seamless_has_a_seq2seq_class_and_no_causal_class(name):
+    from unsloth.models._utils import _is_seq2seq_lm_config, resolve_model_class
+
+    config = _config(name)
+    assert not _is_text_seq2seq_config(config)
+    assert _is_seq2seq_lm_config(config)
+    assert resolve_model_class(transformers.AutoModelForCausalLM, config) is None
+    assert resolve_model_class(transformers.AutoModelForSeq2SeqLM, config).__name__.endswith(
+        "ForTextToText"
+    )
+
+
+@pytest.mark.parametrize("name", ["WhisperConfig", "MoonshineConfig", "Speech2TextConfig"])
+def test_speech_seq2seq_configs_resolve_without_auto_model(name):
+    # FastModel.from_pretrained(whisper_lora) without auto_model used to ask AutoModelForImageTextToText (#2726).
+    from unsloth.models.loader import _resolve_speech_seq2seq_auto_model
+    assert (
+        _resolve_speech_seq2seq_auto_model(_config(name)) is transformers.AutoModelForSpeechSeq2Seq
+    )
+
+
+@pytest.mark.parametrize("name", ["LlamaConfig", "Gemma3Config", "T5Config"])
+def test_non_speech_configs_do_not_resolve_to_speech_seq2seq(name):
+    from unsloth.models.loader import _resolve_speech_seq2seq_auto_model
+    assert _resolve_speech_seq2seq_auto_model(_config(name)) is None

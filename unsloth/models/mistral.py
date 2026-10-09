@@ -407,9 +407,8 @@ def MistralForCausalLM_fast_forward(
             logit_scaling = logit_scaling,
             n_items = n_items,
         )
-    else:
-        # Inference returns the logits, so they carry the transforms themselves.
-        logits = apply_logit_transforms(logits, logit_softcapping, logit_scaling)
+    # After the loss: the kernel reads the raw logits, and this is in place without grad.
+    logits = apply_logit_transforms(logits, logit_softcapping, logit_scaling)
 
     if not return_dict:
         output = (logits,) + outputs[1:]

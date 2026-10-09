@@ -6930,6 +6930,83 @@ def _embedding_batch_ubatch(
     return (n_batch if batch_named else n_ctx), (n_ubatch if ubatch_named else n_ctx)
 
 
+# Micro-batch when MoE experts sit in host RAM. Prompt processing copies each
+# layer's routed experts over PCIe once per micro-batch (ggml op offload), so 4x
+# larger means 4x fewer copies. Measured on T4 / L4 / A100 with Qwen3.6-35B-A3B,
+# gemma-4-26B-A4B, Qwen3.8-Flash-Next and GLM-5.3-Flash: prompt +60% to +260%,
+# decode unchanged. 4096 was slower overall: its bigger compute buffer pushed
+# expert layers off the GPU and cost decode. llama.cpp's default batch (2048)
+# already covers it.
+_MOE_SPILL_N_UBATCH = 2048
+
+
+def _moe_spill_batch_ubatch(
+    n_batch: Optional[int],
+    n_ubatch: Optional[int],
+    *,
+    n_moe_layers: int,
+    experts_on_host: bool,
+    discrete_gpu: bool,
+    user_named_batch: bool,
+) -> tuple[Optional[int], Optional[int]]:
+    """Raise an unset micro-batch to ``_MOE_SPILL_N_UBATCH`` when experts spill.
+
+    Only for an MoE whose experts are (or may be) in host RAM next to a discrete GPU,
+    the transfer-bound prompt path. A batch or micro-batch the user set (first-class
+    field, pass-through flag or LLAMA_ARG_BATCH / LLAMA_ARG_UBATCH) always wins, and
+    a larger projector value already in ``n_ubatch`` is kept, so this only raises.
+    Read ``user_named_batch`` BEFORE the projector and embedding raises set ``n_ubatch``.
+    """
+    if user_named_batch or not experts_on_host or not discrete_gpu or n_moe_layers <= 0:
+        return n_batch, n_ubatch
+    current = _DEFAULT_LLAMA_N_UBATCH if n_ubatch is None else int(n_ubatch)
+    if current >= _MOE_SPILL_N_UBATCH:
+        return n_batch, n_ubatch
+    # llama.cpp caps the micro-batch at the batch, so keep batch >= micro-batch.
+    batch = _DEFAULT_LLAMA_N_BATCH if n_batch is None else int(n_batch)
+    if batch < _MOE_SPILL_N_UBATCH:
+        n_batch = _MOE_SPILL_N_UBATCH
+    return n_batch, _MOE_SPILL_N_UBATCH
+
+
+def _override_targets_host(value: str) -> bool:
+    """Whether an ``--override-tensor`` value sends any tensor to host memory
+    (``CPU``, ``CPU_REPACK``, ``CUDA_Host``, ...), not only to GPUs."""
+    targets = [
+        part.rsplit("=", 1)[-1].strip().lower() for part in str(value).split(",") if "=" in part
+    ]
+    return any(t.startswith("cpu") or t.endswith("_host") for t in targets)
+
+
+def _expert_spill_places_tensors_on_cpu(
+    extra_args: Optional[Iterable[str]] = None, env: Optional[Mapping[str, str]] = None
+) -> bool:
+    """Host placement from extras or env, for the expert-spill micro-batch raise.
+
+    ``_args_place_tensors_on_cpu`` / ``_env_places_tensors_on_cpu`` count any ``-ot``,
+    which suits their residency gates. Here an override counts only when it targets
+    host memory: ``-ot exps=CUDA0`` keeps the weights on a GPU, so there is no copy to
+    amortise, and on ``--fit off`` the larger compute buffer would go unpriced.
+    """
+    args = [str(a) for a in extra_args or ()]
+    kept: list[str] = []
+    i = 0
+    while i < len(args):
+        if _flag_name(args[i]) in {"-ot", "--override-tensor"}:
+            _, eq, inline = args[i].partition("=")
+            step = 1 if eq else 2
+            if _override_targets_host(inline if eq else (args[i + 1] if i + 1 < len(args) else "")):
+                kept.extend(args[i : i + step])
+            i += step
+            continue
+        kept.append(args[i])
+        i += 1
+    source_env = dict(os.environ if env is None else env)
+    if not _override_targets_host(source_env.get("LLAMA_ARG_OVERRIDE_TENSOR") or ""):
+        source_env.pop("LLAMA_ARG_OVERRIDE_TENSOR", None)
+    return _args_place_tensors_on_cpu(kept) or _env_places_tensors_on_cpu(source_env)
+
+
 def _build_ngram_mod_flags(
     caps: Optional[dict],
     n_match: int = 24,
@@ -7783,6 +7860,9 @@ class LlamaCppBackend:
         # --batch-size / --ubatch-size the last load asked for; none = defaults or extras / env
         self._requested_n_batch: Optional[int] = None
         self._requested_n_ubatch: Optional[int] = None
+        # The expert-spill micro-batch raise: the pair before it, and the argv tokens.
+        self._moe_spill_batch_restore: Optional[tuple[Optional[int], Optional[int]]] = None
+        self._moe_spill_batch_tokens: Optional[tuple[list[str], list[str]]] = None
         # The tuning group the last load asked for; none = defaults, or left to
         # extras / env. What was REQUESTED, not what ran: Model Memory can replace
         # the load mode, and Windows full-offload tuning owns the two cache knobs.
@@ -21088,6 +21168,10 @@ class LlamaCppBackend:
         if blocked is not None:
             return code_integrity_user_message(binary or "the llama.cpp runtime", blocked)
 
+        cuda_image_error = LlamaCppBackend._cuda_kernel_image_error(output)
+        if cuda_image_error is not None:
+            return LlamaCppBackend._cuda_kernel_image_message(cuda_image_error, binary, log_path)
+
         # The dynamic loader kills llama-server before main(), so nothing below
         # matches and the fallback blames the file or memory instead. The Linux
         # prebuilt links libgomp.so.1, which a stock container does not ship.
@@ -22354,6 +22438,72 @@ class LlamaCppBackend:
         text = (output or "").lower()
         return any(marker in text for marker in cls._KERNEL_IMAGE_INVALID_MARKERS)
 
+    # #12842. A HIP build prints "ROCm error:", so the #7624 crash never matches. Every
+    # kernel fails alike, so no fit, flash-attn, slot or drafter retry can help.
+    _CUDA_KERNEL_IMAGE_RE = re.compile(
+        r"\bCUDA error: (device kernel image is invalid|no kernel image is available for execution)",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def _cuda_kernel_image_error(cls, output: str) -> Optional[str]:
+        """The CUDA kernel-image error text in ``output`` (lowercased), or None."""
+        match = cls._CUDA_KERNEL_IMAGE_RE.search(output or "")
+        return match.group(1).lower() if match else None
+
+    @staticmethod
+    def _cuda_install_driver_version(binary: Optional[str]) -> Optional[tuple[int, int]]:
+        """The driver CUDA version the installer recorded for the managed install that
+        owns ``binary`` (UNSLOTH_PREBUILT_INFO.json host_profile), or None."""
+        try:
+            from utils.llama_cpp_update import _llama_install_root
+
+            root = _llama_install_root(binary) if binary else None
+            if root is None:
+                return None
+            marker = json.loads((root / "UNSLOTH_PREBUILT_INFO.json").read_text(encoding = "utf-8"))
+            driver = (marker.get("host_profile") or {}).get("driver_cuda_version")
+            if isinstance(driver, list) and len(driver) == 2:
+                return (int(driver[0]), int(driver[1]))
+        except Exception:
+            pass
+        return None
+
+    @classmethod
+    def _cuda_kernel_image_message(
+        cls,
+        error: str,
+        binary: Optional[str],
+        log_path: "Optional[Path | str]" = None,
+    ) -> str:
+        remedy = cls._runtime_remedy(binary)
+        log_hint = f" Full log: {log_path}" if log_path else ""
+        if error == "no kernel image is available for execution":
+            return (
+                'llama-server could not load its CUDA kernels ("no kernel image is available '
+                "for execution\"): this llama.cpp CUDA build has no kernels for this GPU's "
+                "architecture. This is not the GGUF file and not out of memory. "
+                f"{remedy[0].upper()}{remedy[1:]}, or use the CPU or Vulkan backend.{log_hint}"
+            )
+        driver = cls._cuda_install_driver_version(binary)
+        if driver is not None and driver >= (12, 4):
+            return (
+                'llama-server could not load its CUDA kernels ("device kernel image is '
+                f'invalid") although this NVIDIA driver supports CUDA {driver[0]}.{driver[1]}: '
+                "the llama.cpp CUDA libraries look damaged or mismatched. This is not the "
+                f"GGUF file and not out of memory. {remedy[0].upper()}{remedy[1:]}.{log_hint}"
+            )
+        driver_text = (
+            f" (this NVIDIA driver supports CUDA {driver[0]}.{driver[1]})" if driver else ""
+        )
+        return (
+            'llama-server could not load its CUDA kernels ("device kernel image is '
+            'invalid"): the NVIDIA driver is most likely too old for this llama.cpp CUDA '
+            f"build{driver_text}, which needs CUDA 12.4 or newer. This is not the GGUF file "
+            "and not out of memory. Update the NVIDIA driver to R550 or newer (CUDA 12.4+), "
+            f"or {remedy}.{log_hint}"
+        )
+
     @classmethod
     def _arch_crash_retry_gpu_ids(cls, selected, enumerated) -> list[int]:
         """Devices to retry on after a "device kernel image is invalid" crash.
@@ -23110,6 +23260,48 @@ class LlamaCppBackend:
             env.pop(name, None)
         return replay
 
+    def _undo_moe_spill_batch(self, argv: "list[str]") -> "list[str]":
+        """``argv`` with the expert-spill batch pair restored.
+
+        Replaces only Unsloth's own contiguous tokens; a launch that did not raise
+        them comes back unchanged."""
+        tokens = getattr(self, "_moe_spill_batch_tokens", None)
+        if not tokens:
+            return list(argv)
+        raised, before = tokens
+        argv = list(argv)
+        for i in range(len(argv) - len(raised) + 1):
+            if argv[i : i + len(raised)] == raised:
+                return [*argv[:i], *before, *argv[i + len(raised) :]]
+        return argv
+
+    def _discrete_gpu_for_expert_spill(
+        self,
+        gpu_indices: Optional[Iterable[int]],
+        detected_gpus: Optional[Iterable[tuple[int, int]]],
+        shared_gpu_ids: Optional[Iterable[int]] = None,
+    ) -> bool:
+        """Whether host-resident experts would stream to a discrete GPU.
+
+        The raise only pays off over a PCIe copy. Unified memory (Apple Silicon, an
+        AMD APU, an integrated CUDA SoC, a Vulkan iGPU) has nothing to stream, and no
+        GPU means a CPU launch."""
+        detected = list(detected_gpus or ())
+        if not detected or _metal_capable_host():
+            return False
+        on = set(gpu_indices) if gpu_indices else {idx for idx, _free in detected}
+        if on and on <= set(shared_gpu_ids or ()):
+            return False
+        try:
+            if self._amd_apu_wants_unified_memory(
+                gpu_indices
+            ) or self._integrated_cuda_unified_memory(gpu_indices):
+                return False
+        except Exception as e:
+            logger.debug(f"unified-memory probe failed ({e}); not raising the micro-batch")
+            return False
+        return True
+
     def _prepare_cpu_fallback_launch(
         self,
         binary: Optional[str],
@@ -23153,6 +23345,8 @@ class LlamaCppBackend:
         replay = self._drop_managed_dio(
             replay, "the CPU fallback runs entirely from host RAM", clear_record = False
         )
+        # Nothing to stream without a GPU: put back the pre-raise batch pair.
+        replay = self._undo_moe_spill_batch(replay)
         # A user's own "--load-mode none" / "--no-mmap" survives that strip, by design,
         # and on this rung it is no longer the mode they were priced for: the replay
         # appends "--gpu-layers 0 --fit off --device none", so nothing credits VRAM and
@@ -24267,6 +24461,10 @@ class LlamaCppBackend:
                 logger.info("Load cancelled after download phase")
                 return False
 
+            # Whether the user set the batch pair, read before the embedding and projector
+            # raises below overwrite n_batch / n_ubatch. Gates the expert-spill raise.
+            _user_named_batch = any(_named_batch_sizes(extra_args, None, n_batch, n_ubatch)[2:])
+
             # MEAN/CLS inputs must fit one micro-batch (LAST splits). Before the projector raise,
             # which would otherwise read as a user-set micro-batch.
             if self._pooling_type in (1, 2):
@@ -24762,6 +24960,8 @@ class LlamaCppBackend:
                 _ctx_capped_for_vram = False
                 # A path that never prices the launch must not commit the previous one's plan.
                 self._pending_plan_mib = {}
+                # Set by the expert-spill raise after the fit.
+                self._moe_spill_batch_restore: Optional[tuple[Optional[int], Optional[int]]] = None
                 _shared_gpus = frozenset()
                 # Sized inputs for the tensor-spill planner, None when the fit never
                 # priced them. Bound before the try like _placement_verdict_partial:
@@ -25359,6 +25559,8 @@ class LlamaCppBackend:
                         if mtp_overhead_fn is None:
                             return 0
                         if slots is None:
+                            if ubatch:
+                                return mtp_overhead_fn(ctx, _n_ubatch = ubatch)
                             return mtp_overhead_fn(ctx)
                         return mtp_overhead_fn(
                             ctx, _np = slots, _n_ubatch = ubatch if ubatch else _effective_ubatch
@@ -27028,6 +27230,58 @@ class LlamaCppBackend:
                                 # selection inversion #9492 removed, pointing the other way.
                                 max_available_ctx = _ceiling[0]
 
+                    # MoE experts in host RAM: a larger micro-batch amortises the expert
+                    # copies of prompt processing (see _MOE_SPILL_N_UBATCH). The placement
+                    # verdict above was priced at the default micro-batch, so a model that
+                    # fits keeps today's launch. This runs before every term that reads the
+                    # micro-batch (MTP reserve, KV, compute buffer, spill planner, load mode),
+                    # so the larger buffer is priced: the spill planner keeps fewer experts on
+                    # the GPU, and llama.cpp's fitter measures a --fit on launch at the emitted
+                    # value. Manual pinned layers (--fit off) are the user's placement, where an
+                    # unpriced larger buffer could OOM, so they are left alone. A GPU-only -ot
+                    # does not count for the same reason. A user --device none / cpu runs on
+                    # the CPU with nothing to stream, like the CPU fallback.
+                    _moe_experts_on_host = bool(
+                        not (gpu_memory_mode == "manual" and gpu_layers >= 0)
+                        and not intent.cpu_fallback
+                        and not _device_selection_is_cpu(extra_args, os.environ)
+                        and (use_fit or _expert_spill_places_tensors_on_cpu(extra_args, os.environ))
+                    )
+                    _spill_n_batch, _spill_n_ubatch = _moe_spill_batch_ubatch(
+                        n_batch,
+                        n_ubatch,
+                        n_moe_layers = self.n_moe_layers,
+                        experts_on_host = _moe_experts_on_host,
+                        discrete_gpu = (
+                            _moe_experts_on_host
+                            and self._discrete_gpu_for_expert_spill(
+                                gpu_indices, _detected_gpus, _shared_gpu_ids
+                            )
+                        ),
+                        user_named_batch = _user_named_batch,
+                    )
+                    if _spill_n_ubatch != n_ubatch:
+                        logger.info(
+                            "MoE experts are offloaded to system RAM; raising --ubatch-size "
+                            "%s -> %s for faster prompt processing.",
+                            n_ubatch if n_ubatch is not None else _DEFAULT_LLAMA_N_UBATCH,
+                            _spill_n_ubatch,
+                        )
+                        self._moe_spill_batch_restore = (n_batch, n_ubatch)
+                        n_batch, n_ubatch = _spill_n_batch, _spill_n_ubatch
+                        _effective_ubatch = _ubatch_for_slots(n_parallel)
+                        # Same calls and fallbacks as above, at the new micro-batch.
+                        _compute_buffer_pipeline = self._estimate_compute_buffer_bytes(
+                            n_ubatch = _effective_ubatch,
+                            n_parallel = n_parallel,
+                            per_device_tensor = False,
+                        ) or (self._TENSOR_PARALLEL_BUFFER_RESERVE_MIB * 1024 * 1024)
+                        _compute_buffer_tensor = self._estimate_compute_buffer_bytes(
+                            n_ubatch = _effective_ubatch,
+                            n_parallel = n_parallel,
+                            per_device_tensor = True,
+                        ) or (self._TENSOR_PARALLEL_BUFFER_RESERVE_MIB * 1024 * 1024)
+
                     # Pass the final slot and micro-batch values instead of the defaults
                     # captured before slot reduction.
                     _mtp_reserve_bytes = (
@@ -27339,7 +27593,15 @@ class LlamaCppBackend:
                         # Checkpoints are split into host_only_bytes below.
                         kv_cache_bytes = _kv_bytes(effective_ctx, 0),
                         kv_sized = self._can_estimate_kv(),
-                        mtp_bytes = _mtp_bytes(effective_ctx),
+                        # mtp_overhead_fn bound the pre-raise micro-batch; charge the raised one.
+                        mtp_bytes = _mtp_bytes(
+                            effective_ctx,
+                            ubatch = (
+                                _effective_ubatch
+                                if self._moe_spill_batch_restore is not None
+                                else None
+                            ),
+                        ),
                         # _flat_mtp_engages whole: its other arm, _mtp_kv_unsized,
                         # prices weights but NO draft KV, and the placement covers that
                         # gap with a flat cushion this footprint has no term for --
@@ -27748,6 +28010,27 @@ class LlamaCppBackend:
                     cmd.extend(["--batch-size", str(_emit_batch)])
                 if n_ubatch is not None:
                     cmd.extend(["--ubatch-size", str(n_ubatch)])
+                # The expert-spill raise, as emitted and as it was before, so a CPU
+                # replay (no GPU, nothing to stream) can hand back today's pair.
+                self._moe_spill_batch_tokens = None
+                if self._moe_spill_batch_restore is not None:
+                    _orig_batch, _orig_ubatch = self._moe_spill_batch_restore
+                    _raised = ["--ubatch-size", str(n_ubatch)]
+                    _before = [] if _orig_ubatch is None else ["--ubatch-size", str(_orig_ubatch)]
+                    if n_batch is not None and n_batch != _orig_batch:
+                        _raised = ["--batch-size", str(_emit_batch), *_raised]
+                        _before = [
+                            *(
+                                []
+                                if _orig_batch is None
+                                else [
+                                    "--batch-size",
+                                    str(_emitted_n_batch(_orig_batch, n_parallel)),
+                                ]
+                            ),
+                            *_before,
+                        ]
+                    self._moe_spill_batch_tokens = (_raised, _before)
 
                 server_caps = _launch_caps(binary)
 
@@ -30194,6 +30477,9 @@ class LlamaCppBackend:
                         _capability_crash = _tensor_capability_crash or self._is_kv_unified_refused(
                             "\n".join(self._stdout_lines)
                         )
+                        _capability_crash = _capability_crash or (
+                            self._cuda_kernel_image_error("\n".join(self._stdout_lines)) is not None
+                        )
                         if (
                             not _did_rocm_retry
                             and _startup_crashed
@@ -31184,6 +31470,27 @@ class LlamaCppBackend:
                             target_unknown = _cache_target_unknown,
                         )
                         healthy = _spawn_and_wait(cmd, label = "-archfallback")
+
+                # #12842: after the #7624 respawn every rung below keeps the same kernels.
+                if not healthy and not _load_cancelled():
+                    # Whole buffer: a Linux abort appends a debugger backtrace.
+                    _cuda_image_out = "\n".join(self._stdout_lines)
+                    if self._cuda_kernel_image_error(_cuda_image_out) is not None:
+                        _proc_snap_ki = self._process  # snapshot: re-reading races the teardown
+                        _ki_rc = _proc_snap_ki.poll() if _proc_snap_ki is not None else None
+                        self._kill_process()
+                        _raise_terminal_load_failure(
+                            self._classify_llama_start_failure(
+                                _cuda_image_out,
+                                gguf_path,
+                                self._model_identifier,
+                                _ki_rc,
+                                binary,
+                                self._llama_log_path,
+                                (self._api_key,),
+                                self._extra_args,
+                            )
+                        )
 
                 # Studio adds --kv-unified itself above one slot, so nothing the user
                 # changes reaches it: retry at one slot, context intact. It aborts, so
