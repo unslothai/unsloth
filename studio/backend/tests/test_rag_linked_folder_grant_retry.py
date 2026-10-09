@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A failed folder link must not spend its grant: the desktop resends the POST (#13093)."""
+"""A failed folder link must answer with its real error, readable by the desktop webview (#13093)."""
 
 import base64
 import hashlib
@@ -91,8 +91,10 @@ def _link(client, lease):
 
 
 @requires_sqlite_vec
-def test_a_resend_after_an_unexpected_failure_links_the_folder(client, rag_home, monkeypatch):
-    lease = _sign(_folder(rag_home, "docs"))
+def test_an_unexpected_failure_answers_with_cors_headers_and_its_error(
+    client, rag_home, monkeypatch
+):
+    docs = _folder(rag_home, "docs")
     create = folder_sync.create_folder_with_sync
     calls = []
 
@@ -104,28 +106,15 @@ def test_a_resend_after_an_unexpected_failure_links_the_folder(client, rag_home,
 
     monkeypatch.setattr(folder_sync, "create_folder_with_sync", flaky)
 
-    failed = _link(client, lease)
+    failed = _link(client, _sign(docs))
     assert failed.status_code == 500
     assert failed.json()["detail"] == "Could not link the folder: database is locked"
+    # Without it the webview sees a network error and resends the spent grant.
     assert failed.headers.get("access-control-allow-origin") == ORIGIN
 
-    resent = _link(client, lease)
-    assert resent.status_code == 200, resent.text
+    relinked = _link(client, _sign(docs))
+    assert relinked.status_code == 200, relinked.text
     assert len(folder_sync.list_folders(store.kb_scope("kb"))) == 1
-
-
-@requires_sqlite_vec
-def test_a_resend_after_a_rejection_repeats_the_rejection(client, rag_home):
-    outer = _folder(rag_home, "outer")
-    assert _link(client, _sign(outer)).status_code == 200
-    inner = outer / "inner"
-    inner.mkdir()
-    lease = _sign(inner)
-
-    for _ in range(2):
-        refused = _link(client, lease)
-        assert refused.status_code == 400
-        assert refused.json()["detail"] == "Linked folders in the same scope cannot overlap"
 
 
 @requires_sqlite_vec

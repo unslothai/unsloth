@@ -386,7 +386,7 @@ def _require_document_owner(conn: sqlite3.Connection, document: dict) -> None:
 
 
 def _create_linked_folder(scope_type: str, scope_id: str, payload: LinkFolderRequest) -> dict:
-    from utils.native_path_leases import redact_native_paths, release_native_path_lease
+    from utils.native_path_leases import redact_native_paths
     path, signed_identity = _resolve_linked_folder_path(payload.native_path_lease)
     try:
         with folder_sync.scope_lock(_scope_for_owner(scope_type, scope_id)):
@@ -401,19 +401,14 @@ def _create_linked_folder(scope_type: str, scope_id: str, payload: LinkFolderReq
             )
         job = folder_sync.get_job(job_id)
         return {"linkedFolder": _folder_view(folder), "job": _folder_job_view(job)}
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
     except Exception as exc:
-        # The desktop resends a POST whose answer it could not read (an unhandled 500 carries no CORS
-        # headers, so the webview sees a network error), and a spent grant then answered every resend
-        # with "already used" instead of the real error (#13093). Linking one path again reauthorizes
-        # the same row, so a resend after a commit is safe.
-        try:
-            release_native_path_lease(payload.native_path_lease)
-        except ValueError:
-            logger.debug("linked folder grant release failed", exc_info = True)
-        if isinstance(exc, HTTPException):
-            raise
-        if isinstance(exc, ValueError):
-            raise HTTPException(status_code = 400, detail = str(exc)) from exc
+        # As HTTPException, not left to escape: an unhandled 500 carries no CORS headers, the desktop
+        # webview reads it as a network error and resends the POST, and the grant, spent by then,
+        # answered every resend "already used" instead of this error (#13093).
         logger.exception("linked folder creation failed")
         raise HTTPException(
             status_code = 500,
