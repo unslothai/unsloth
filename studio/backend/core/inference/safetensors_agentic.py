@@ -1423,12 +1423,13 @@ def run_safetensors_tool_loop(
             novel_kept = 0
             novel_at_last_keep: dict = {}
             deduped: list = []
-            for _tc in tool_calls:
+            if not deduplicate_tool_calls:
+                deduped = tool_calls[:_MAX_TOOL_CALLS_PER_TURN]
+                over_cap = tool_calls[_MAX_TOOL_CALLS_PER_TURN:]
+            for _tc in tool_calls if deduplicate_tool_calls else ():
                 _fn = _tc.get("function", {}) or {}
                 _key = (_fn.get("name", ""), str(_fn.get("arguments", "")))
-                if not deduplicate_tool_calls:
-                    pass
-                elif _fn.get("name") in _WORKSPACE_TOOLS:
+                if _fn.get("name") in _WORKSPACE_TOOLS:
                     if _key == last_workspace_key:
                         continue
                     if _key in seen_keys:
