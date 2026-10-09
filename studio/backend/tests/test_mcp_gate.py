@@ -87,9 +87,12 @@ def probe_mcp():
     return mcp
 
 
-def served(mcp):
+def served(mcp, **state):
     mcp_app = mcp.http_app(path = "/", stateless_http = True)
-    return Starlette(routes = [Mount("/mcp", StudioMcpGate(mcp_app))], lifespan = mcp_app.lifespan)
+    app = Starlette(routes = [Mount("/mcp", StudioMcpGate(mcp_app))], lifespan = mcp_app.lifespan)
+    for name, value in {"server_port": 8888, "cloudflare_url": None, **state}.items():
+        setattr(app.state, name, value)
+    return app
 
 
 def call_tool(
@@ -137,8 +140,11 @@ def key_spy(monkeypatch):
 @pytest.mark.parametrize("method", ["GET", "POST", "PUT", "DELETE", "PATCH"])
 @pytest.mark.parametrize("path", ["/mcp/", "/mcp/x"])
 @pytest.mark.parametrize("authorization", [None, "Bearer sk-unsloth-0123456789abcdef", "Bearer x"])
-def test_off_is_a_plain_404_before_any_auth(studio, key_spy, method, path, authorization):
+@pytest.mark.parametrize("origin", [None, "https://evil.example"])
+def test_off_is_a_plain_404_before_any_auth(studio, key_spy, method, path, authorization, origin):
     headers = {**MCP_HEADERS, **({"Authorization": authorization} if authorization else {})}
+    if origin:
+        headers["Origin"] = origin
     response = studio.request(method, path, json = LISTING, headers = headers)
     assert response.status_code == 404
     assert response.json() == {"detail": "Not Found"}
@@ -498,3 +504,63 @@ def test_a_leftover_static_token_logs_one_warning():
     ]
     assert len(lines) == 1, lines
     assert json.loads(lines[0])["level"] == "warning"
+
+
+TUNNEL = "https://abc-def.trycloudflare.com"
+
+
+@pytest.mark.parametrize(
+    "base_url,origin,allowed",
+    [
+        ("http://127.0.0.1:8888", None, True),
+        ("http://127.0.0.1:8888", "http://localhost:8888", True),
+        ("http://127.0.0.1:8888", "http://127.0.0.1:8888", True),
+        ("http://127.0.0.1:8888", "http://[::1]:8888", True),
+        ("http://192.168.1.20:8888", "http://192.168.1.20:8888", True),
+        (TUNNEL, TUNNEL, True),
+        ("http://127.0.0.1:8888", "tauri://localhost", True),
+        ("http://127.0.0.1:8888", "http://tauri.localhost", True),
+        ("http://127.0.0.1:8888", "https://evil.example", False),
+        ("http://evil.example:8888", "http://evil.example:8888", False),
+        ("http://127.0.0.1:8888", "null", False),
+        ("http://127.0.0.1:8888", "http://localhost:3000", False),
+    ],
+)
+def test_origin_allowlist(key_spy, base_url, origin, allowed):
+    seed_owner()
+    raw_key, _row = owner_key()
+    set_mcp_enabled(True)
+    headers = {**bearer(raw_key), **({"Origin": origin} if origin else {})}
+    with TestClient(served(probe_mcp(), cloudflare_url = TUNNEL), base_url = base_url) as http:
+        response, _result = call_tool(http, "whoami", headers)
+    if allowed:
+        assert response.status_code == 200, response.text
+    else:
+        assert response.status_code == 403
+        assert response.json() == {"detail": "Origin not allowed for Studio MCP"}
+        assert key_spy == []
+
+
+def test_a_foreign_origin_is_refused_before_auth():
+    set_mcp_enabled(True)
+    with TestClient(served(probe_mcp())) as http:
+        response, _result = call_tool(http, "whoami", {"Origin": "https://evil.example"})
+    assert response.status_code == 403
+
+
+def test_two_origin_headers_are_refused():
+    seed_owner()
+    raw_key, _row = owner_key()
+    set_mcp_enabled(True)
+    with TestClient(served(probe_mcp()), base_url = "http://127.0.0.1:8888") as http:
+        response = http.post(
+            "/mcp/",
+            json = LISTING,
+            headers = [
+                ("accept", MCP_HEADERS["Accept"]),
+                ("authorization", f"Bearer {raw_key}"),
+                ("origin", "http://127.0.0.1:8888"),
+                ("origin", "https://evil.example"),
+            ],
+        )
+    assert response.status_code == 403

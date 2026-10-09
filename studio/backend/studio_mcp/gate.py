@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The ASGI gate in front of the Studio MCP app. ``/mcp`` is always mounted, so the gate is what keeps it hidden: while the owner's switch is off every request gets the same 404 as an unknown path, before anything about the caller is read. Once on, only a valid Studio API key gets through; keyless access, UI sessions and workflow keys never do, whatever the keyless scope."""
+"""The ASGI gate in front of the Studio MCP app. ``/mcp`` is always mounted, so the gate is what keeps it hidden: while the owner's switch is off every request gets the same 404 as an unknown path, before anything about the caller is read. Once on, a browser page from a foreign Origin is refused, and only a valid Studio API key gets through; keyless access, UI sessions and workflow keys never do, whatever the keyless scope."""
 
 from __future__ import annotations
 
@@ -109,6 +109,19 @@ class StudioMcpGate:
             return
 
         headers = scope.get("headers") or []
+        origins = [value for name, value in headers if name.lower() == b"origin"]
+        if origins:
+            from utils.origin_policy import mcp_origin_allowed
+            outer = URL(scope = scope)
+            if len(origins) > 1 or not mcp_origin_allowed(
+                origins[0].decode("latin-1"),
+                request_scheme = outer.scheme,
+                request_netloc = outer.netloc,
+                app_state = getattr(scope.get("app"), "state", None),
+            ):
+                await send_json(send, 403, {"detail": "Origin not allowed for Studio MCP"})
+                return
+
         authorization = [value for name, value in headers if name.lower() == b"authorization"]
         if len(authorization) > 1:
             await _unauthorized(send, ONE_HEADER)

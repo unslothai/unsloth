@@ -2957,57 +2957,11 @@ def _inject_bootstrap(html_bytes: bytes, app: FastAPI):
     return html.encode("utf-8"), nonce
 
 
-_DEFAULT_PORTS = {"http": 80, "https": 443, "ws": 80, "wss": 443}
-
-
-def _canonical_origin(scheme: str, netloc: str) -> Optional[tuple[str, str, int]]:
-    """Canonicalise an Origin to ``(scheme, host, port)`` for equality. Browsers strip default ports (RFC 6454
-    sec 6.1) and scheme/host are case-insensitive (RFC 3986), so a bare string compare misclassifies
-    same-origin requests as cross-origin. Returns ``None`` on unparseable input so callers fall to the safer
-    cross-origin default."""
-    scheme = (scheme or "").strip().lower()
-    if not scheme or not netloc:
-        return None
-    # Strip userinfo (RFC 3986); Origin never carries credentials.
-    if "@" in netloc:
-        netloc = netloc.rsplit("@", 1)[1]
-    # IPv6 hosts use brackets (RFC 3986 3.2.2): bare partition(":") breaks `-H ::1`.
-    if netloc.startswith("["):
-        close = netloc.find("]")
-        if close == -1:
-            return None
-        host = netloc[1:close]
-        rest = netloc[close + 1 :]
-        if rest.startswith(":"):
-            port_str = rest[1:]
-        elif rest == "":
-            port_str = ""
-        else:
-            return None
-    else:
-        host, _, port_str = netloc.partition(":")
-    host = host.strip().lower()
-    if not host:
-        return None
-    if port_str:
-        try:
-            port = int(port_str)
-        except ValueError:
-            return None
-    else:
-        port = _DEFAULT_PORTS.get(scheme, 0)
-    return (scheme, host, port)
-
-
-def _origin_of(url: Optional[str]) -> Optional[tuple[str, str, int]]:
-    """Canonical origin of a URL or of an Origin header value, or ``None`` when it is neither."""
-    if not url:
-        return None
-    try:
-        parsed = urlparse(url)
-    except ValueError:
-        return None
-    return _canonical_origin(parsed.scheme, parsed.netloc)
+# Also used by the /mcp gate, which cannot import main.
+from utils.origin_policy import (  # noqa: E402
+    canonical_origin as _canonical_origin,
+    origin_of as _origin_of,
+)
 
 
 # Shared with the routes that must only answer the person at this computer (Settings > Sandbox).
