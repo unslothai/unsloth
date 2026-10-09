@@ -1629,6 +1629,10 @@ function stopLocalPromptQueueRun(run: PromptQueueRun) {
     clearPromptQueueRetryTimer(run);
     promptQueueDispatchingRunIds.delete(run.id);
     promptQueueActiveRunIds.delete(run.id);
+    // The cleared timer may be the poll that sees the run this queue waits behind end.
+    if (shouldPollPromptQueueTargetState(run)) {
+      refreshPromptQueueTargetIdleWait(run);
+    }
   }
   syncPromptQueueUI();
 }
