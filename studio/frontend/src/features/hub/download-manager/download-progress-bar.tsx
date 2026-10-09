@@ -35,7 +35,7 @@ function PartsBar({ parts }: { parts: DownloadPart[] }) {
   const widths = parts.map((p) => Math.max(2, (p.bytes / total) * 100));
   return (
     <div className="flex flex-col gap-1">
-      <div className="flex h-[5px] gap-0.5">
+      <div className="flex h-[3px] gap-0.5">
         {parts.map((part, i) => (
           <div
             key={part.kind}
