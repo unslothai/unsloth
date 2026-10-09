@@ -358,3 +358,22 @@ def test_sliding_model_that_fits_exactly_keeps_static(fake_cuda):
     fake_cuda["free"] = 2 * exact + 1
     assert bound > fake_cuda["free"] // 2
     assert not _static_cache_does_not_fit(model, ids, {"max_new_tokens": 4095})
+
+
+def test_caller_config_default_values_count_as_unset(monkeypatch):
+    """transformers 4.x leaves max_length=20 / num_beams=1 on a partial GenerationConfig."""
+    from transformers import GenerationConfig
+
+    four_x_defaults = types.SimpleNamespace(max_length = 20, num_beams = 1, num_return_sequences = 1)
+    monkeypatch.setattr(vision, "_default_generation_config", lambda: four_x_defaults)
+
+    config = _llama_config(max_position_embeddings = 131072)
+    model = _model(config)
+    model.generation_config.max_length = 131072
+    model.generation_config.num_beams = 2
+    input_ids = torch.zeros(1, 10, dtype = torch.long)
+    caller = GenerationConfig(do_sample = True, max_length = 20, num_beams = 1)
+    one_beam = _static_cache_bytes(
+        model, torch.zeros(1, 1, dtype = torch.long), {"max_new_tokens": 131071, "num_beams": 1}
+    )
+    assert _static_cache_bytes(model, input_ids, {"generation_config": caller}) == 2 * one_beam

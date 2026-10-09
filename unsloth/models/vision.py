@@ -1426,6 +1426,11 @@ def _dynamic_cache_choice(kwargs):
 
 
 @functools.lru_cache(maxsize = None)
+def _default_generation_config():
+    return GenerationConfig()
+
+
+@functools.lru_cache(maxsize = None)
 def _static_cache_preallocates():
     from transformers import StaticCache
     return "max_batch_size" in inspect.signature(StaticCache.__init__).parameters
@@ -1452,10 +1457,14 @@ def _static_cache_bytes(
     def option(name, default = None):
         if kwargs.get(name) is not None:
             return kwargs[name]
-        for config in configs:
-            if getattr(config, name, None) is not None:
-                return getattr(config, name)
-        return default
+        caller, own = configs
+        value = getattr(caller, name, None)
+        # transformers 4.x fills unset caller fields with the global default, not None.
+        if value is not None and value != getattr(_default_generation_config(), name, None):
+            return value
+        if getattr(own, name, None) is not None:
+            return getattr(own, name)
+        return default if value is None else value
 
     prompt = input_ids.shape[1]
     max_new_tokens = option("max_new_tokens")
