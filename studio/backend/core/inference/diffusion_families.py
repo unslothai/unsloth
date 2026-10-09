@@ -1332,8 +1332,8 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("flux.2-klein-base", 20, 5.0),
     ("flux.2-klein", 4, 1.0),
     ("flux.2-dev", 20, 4.0),  # full (non-distilled)
-    # Before the generic qwen-image key (also the two below). Turbo first: its card's 8-step schedule, CFG 1. Folding
-    # separators covers qwen_image_21_turbo; qwenimage21 has none to fold, so it needs its own row.
+    # Before the generic qwen-image key (also the rows below), Turbo before 2.1. Folding separators covers
+    # qwen_image_21_turbo; qwenimage21 has none to fold, so it needs its own row.
     ("qwen-image-2.1-turbo", 8, 1.0),
     ("qwen-image-21-turbo", 8, 1.0),
     ("qwenimage21-turbo", 8, 1.0),

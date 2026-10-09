@@ -254,8 +254,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     ],
   },
   {
-    // The official 8-step distill: its own denoiser and sampling grid, so its own row rather than a 2.1
-    // artifact. No prequant: the backend quantizes its dense weights at load.
+    // Own row, not a 2.1 artifact: a different denoiser, and no prequant (the backend quantizes it at load).
     canonicalId: "Qwen/Qwen-Image-2.1-Turbo",
     displayName: "Qwen-Image 2.1 Turbo",
     description: "Text-to-image and image editing in 8 steps",

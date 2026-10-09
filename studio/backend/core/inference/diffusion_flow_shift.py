@@ -110,10 +110,8 @@ def install_sample_sigmas(
     raw: Any,
     logger: Any = None,
 ) -> Optional[tuple[float, ...]]:
-    """The checkpoint's fixed sampling grid, carried on ``pipe``. ``raw`` is ``sample_sigmas`` from the model_index.json
-    the pipeline was built from, which the pinned diffusers drops at load (diffusers with #14950 keeps it in the
-    config). None when the checkpoint ships none. A grid replaces the static flow shift: the shipped scheduler is the
-    one it was tuned on."""
+    """``raw`` (model_index.json ``sample_sigmas``, which the pinned diffusers drops at load) validated and carried on
+    ``pipe``. None when the checkpoint ships no grid."""
     grid = pipe_sample_sigmas(pipe)
     if grid is not None or raw is None:
         return grid
@@ -131,10 +129,8 @@ def install_sample_sigmas(
 
 
 def sample_sigmas_for_steps(grid: tuple[float, ...], steps: int) -> list[float]:
-    """The grid at ``steps`` steps: itself at its own length, else resampled along it (linear in step index), so another
-    step count still follows the checkpoint's curve rather than a linear 1 -> 0 ramp. Studio's own, experimental: the
-    Turbo card evaluates only the saved 8-step grid. Measured on Qwen-Image-2.1-Turbo
-    at 4 / 6 / 12 / 16 steps: the ramp ghosts at 4-6 and turns grainy at 12-16, the resampled grid stays clean."""
+    """The grid at ``steps`` steps: itself at its own length, else resampled along it (linear in step index). Studio's
+    own, experimental: the Turbo card evaluates only the saved 8-step grid."""
     steps = max(1, int(steps))
     if steps == len(grid):
         return list(grid)

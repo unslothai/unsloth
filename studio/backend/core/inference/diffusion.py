@@ -842,8 +842,7 @@ _TRUSTED_NON_GGUF_REPOS = frozenset(
         # build is in, and then validate_load_request refuses it as a non-unsloth repo before the
         # pipeline is ever built.
         "qwen/qwen-image-2.1",
-        # The official 8-step distill: same architecture, its own denoiser and sampling schedule. Also the
-        # base_model tag of the community Turbo GGUFs, which otherwise fall back to the 2.1 companions.
+        # Also the base_model of the community Turbo GGUFs, which otherwise fall back to the 2.1 companions.
         "qwen/qwen-image-2.1-turbo",
         # Krea 2: assembled per-component. Turbo = inference; Raw = the LoRA training base.
         "krea/krea-2-turbo",
@@ -7835,8 +7834,7 @@ class DiffusionBackend:
                         )
 
                     self._raise_if_load_cancelled(_load_token)
-                    # A checkpoint's own grid (Qwen-Image-2.1-Turbo) was tuned on its shipped scheduler, so it keeps
-                    # that one.
+                    # A shipped grid was tuned on the shipped scheduler, so it skips the ComfyUI shift.
                     raw_grid = _model_index_sample_sigmas(fetch_base, _base_local_dir)
                     if install_sample_sigmas(pipe, raw_grid, logger) is None:
                         # Before from_pipe copies the scheduler.
@@ -10523,8 +10521,7 @@ class DiffusionBackend:
                     # Most pipelines use "guidance_scale"; Qwen-Image uses "true_cfg_scale".
                     state.family.cfg_kwarg: guidance,
                 }
-                # The checkpoint's own grid at the requested step count, explicitly: the pinned pipeline never reads
-                # it, and a newer one would ignore num_inference_steps in its favour.
+                # Explicit: the pinned pipeline never reads the grid, and a newer one overrides num_inference_steps.
                 sample_sigmas = pipe_sample_sigmas(state.pipe)
                 if sample_sigmas is not None and "sigmas" in call_params:
                     kwargs["sigmas"] = sample_sigmas_for_steps(sample_sigmas, steps)
