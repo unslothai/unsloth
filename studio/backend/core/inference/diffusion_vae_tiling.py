@@ -277,9 +277,9 @@ def decode_tile_budget(vae: Any, z: Any) -> Optional[int]:
     raw = (os.environ.get(MAX_TILE_ENV) or "").strip()
     if raw.isdigit() and int(raw) > 0:
         return int(raw) ** 2
-    # The larger-tile coefficients below were measured on CUDA. Qwen-Image-2.1's unfused
-    # MIOpen decoder needs substantially more workspace for larger tiles: at 17/19 GiB
-    # limits, 40x40, 64x32 and 96x56 attempts OOM before recovering with 32x32 tiles.
+    # The larger-tile coefficients below were measured on CUDA and under-predict
+    # Qwen-Image-2.1 decode memory on ROCm: at 17/19 GiB limits, 40x40, 64x32 and
+    # 96x56 attempts OOM before recovering with 32x32 tiles.
     # Start at that tested floor on ROCm rather than retrying the same oversized tile
     # on every image. An explicit MAX_TILE_ENV above still overrides this policy.
     import torch
@@ -288,7 +288,6 @@ def decode_tile_budget(vae: Any, z: Any) -> Optional[int]:
         z.device.type == "cuda"
         and getattr(torch.version, "hip", None)
         and type(vae).__name__ == "AutoencoderKLQwenImage21"
-        and not _fused(vae)
     ):
         return TILE_LATENTS**2
     try:

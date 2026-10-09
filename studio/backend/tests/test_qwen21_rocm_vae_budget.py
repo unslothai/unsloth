@@ -23,34 +23,25 @@ def decoder(monkeypatch):
 
 
 @pytest.mark.parametrize("side", [64, 96, 128])
-def test_rocm_does_not_grow_qwen_tiles_into_unmeasured_workspace(decoder, side):
+def test_rocm_keeps_qwen_tiles_at_the_measured_floor(decoder, side):
     vae, z = decoder
     for _ in range(2):
         budget = vt.decode_tile_budget(vae, z)
         assert vt.choose_tiles(side, side, budget) == (32, 32)
 
 
-@pytest.mark.parametrize("other_path", ["cuda", "cpu", "fused", "other_vae"])
+@pytest.mark.parametrize("other_path", ["cuda", "cpu", "other_vae"])
 def test_other_decoders_retain_their_adaptive_budget(monkeypatch, decoder, other_path):
     vae, z = decoder
     if other_path == "cuda":
         monkeypatch.setattr(torch.version, "hip", None)
     elif other_path == "cpu":
         z.device.type = "cpu"
-    elif other_path == "fused":
-        vae._unsloth_vae_fused_installed = True
     else:
         other = type("AutoencoderKLQwenImage", (), {})()
         other.__dict__.update(vae.__dict__)
         vae = other
     assert vt.decode_tile_budget(vae, z) > 32**2
-
-
-def test_failed_fused_decoder_uses_the_unfused_limit(decoder):
-    vae, z = decoder
-    vae._unsloth_vae_fused_installed = True
-    vae._unsloth_vae_fused_failed = True
-    assert vt.decode_tile_budget(vae, z) == 32**2
 
 
 def test_explicit_tile_override_still_wins(monkeypatch, decoder):
