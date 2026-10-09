@@ -52,15 +52,12 @@ def test_left_padded_label_less_training_forward_matches_unpadded():
     os.environ.setdefault("UNSLOTH_RETURN_LOGITS", "1")
     from unsloth import FastLanguageModel
 
-    try:
-        model, _ = FastLanguageModel.from_pretrained(
-            TINY,
-            max_seq_length = 64,
-            dtype = torch.bfloat16,
-            load_in_4bit = False,
-        )
-    except Exception as exception:
-        pytest.skip(f"{TINY} unavailable: {exception}")
+    model, _ = FastLanguageModel.from_pretrained(
+        TINY,
+        max_seq_length = 64,
+        dtype = torch.bfloat16,
+        load_in_4bit = False,
+    )
     model = FastLanguageModel.get_peft_model(
         model,
         r = 8,
