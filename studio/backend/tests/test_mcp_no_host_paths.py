@@ -4,6 +4,7 @@
 """No MCP tool may hand a host path to the agent. Every tool gets a case here: the fake Studio answers each route with its payload poisoned by sentinel paths, and nothing the tool returns may contain one."""
 
 import asyncio
+import json
 from typing import Any, Optional
 
 import pytest
@@ -22,6 +23,7 @@ from .mcp_harness import SENTINEL_ROOTS, call_tool, fake_studio, poison, served
 from .test_mcp_tools_loading import PAYLOADS as LOADING_PAYLOADS
 from .test_mcp_tools_models import PAYLOADS as MODELS_PAYLOADS
 from .test_mcp_tools_status import PAYLOADS as STATUS_PAYLOADS
+from .test_mcp_tools_text import PAYLOADS as TEXT_PAYLOADS
 
 # The direct-call tools from before forwarding. Each commit that replaces one removes it here and adds its case.
 LEGACY_UNCHECKED = {
@@ -41,16 +43,26 @@ CASES: dict[str, tuple[dict, dict]] = {
     "list_models": (MODELS_PAYLOADS, {"model": "unsloth/Qwen3-0.6B"}),
     "load_model": (LOADING_PAYLOADS, {"model": "unsloth/Llama-3.2-1B-Instruct-GGUF"}),
     "unload_model": (LOADING_PAYLOADS, {}),
+    "chat": (TEXT_PAYLOADS, {"prompt": "hi"}),
 }
 
+# Output keys that carry model-written text, which is the model's to say and is never rewritten.
+MODEL_TEXT = {"chat": {"text"}}
 
-def leaks(result: dict) -> Optional[str]:
-    found = response_leaks_host_path(result.get("structuredContent"), roots = SENTINEL_ROOTS)
+
+def leaks(result: dict, ignore: frozenset = frozenset()) -> Optional[str]:
+    found = response_leaks_host_path(
+        result.get("structuredContent"), roots = SENTINEL_ROOTS, ignore = ignore
+    )
     if found is not None:
         return found
     for item in result.get("content") or []:
         if item.get("type") == "text":
-            found = response_leaks_host_path(item.get("text"), roots = SENTINEL_ROOTS)
+            try:
+                payload = json.loads(item.get("text"))
+            except (TypeError, ValueError):
+                payload = item.get("text")
+            found = response_leaks_host_path(payload, roots = SENTINEL_ROOTS, ignore = ignore)
             if found is not None:
                 return found
     return None
@@ -75,6 +87,7 @@ def _registered_names() -> set[str]:
 
 def test_every_registered_tool_has_a_host_path_case():
     names = _registered_names()
+    assert set(MODEL_TEXT) <= set(CASES)
     assert not (set(CASES) & LEGACY_UNCHECKED)
     assert LEGACY_UNCHECKED <= names, "a legacy tool was removed; drop it from LEGACY_UNCHECKED"
     assert names - LEGACY_UNCHECKED == set(CASES)
@@ -84,7 +97,7 @@ def test_every_registered_tool_has_a_host_path_case():
 def test_no_host_path_in_tool_output(monkeypatch, name):
     routes, args = CASES[name]
     result = run_case(monkeypatch, create_studio_mcp(), name, routes, args)
-    assert leaks(result) is None
+    assert leaks(result, frozenset(MODEL_TEXT.get(name, ()))) is None
 
 
 class _Status(ToolOutput):

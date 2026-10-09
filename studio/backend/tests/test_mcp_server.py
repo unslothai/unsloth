@@ -21,6 +21,7 @@ def test_studio_mcp_registers_control_plane_tools():
     assert {tool.name for tool in tools} == {
         "studio_status",
         "list_models",
+        "chat",
         "load_model",
         "unload_model",
         "start_training",

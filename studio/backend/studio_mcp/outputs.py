@@ -141,3 +141,18 @@ class UnloadResult(ToolOutput):
     kind: RouteText
     model: Optional[RouteText] = None
     unloaded: bool
+
+
+class Usage(ToolOutput):
+    prompt_tokens: Optional[int] = None
+    completion_tokens: Optional[int] = None
+    total_tokens: Optional[int] = None
+
+
+class ChatResult(ToolOutput):
+    # Model-written, so never rewritten.
+    text: str
+    model: Optional[RouteText] = None
+    finish_reason: Optional[RouteText] = None
+    usage: Optional[Usage] = None
+    note: Optional[RouteText] = None
