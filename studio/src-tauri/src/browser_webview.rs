@@ -26,6 +26,8 @@ const EVENT: &str = "unsloth-browser";
 const MAIN_WEBVIEW: &str = "main";
 const MAIN_WINDOW: &str = "main";
 const URL_POLL: Duration = Duration::from_millis(800);
+/// How far left of the window a parked page sits, in logical pixels.
+const PARK_GAP: f64 = 64.0;
 /// macOS 14+ data store for pages (fixed, so it persists).
 #[cfg(target_os = "macos")]
 const PAGE_DATA_STORE: [u8; 16] = *b"unsloth-browser1";
@@ -1214,6 +1216,8 @@ fn create_view<R: Runtime>(
         .add_child(builder, position, size)
         .map_err(|error| error.to_string())?;
     #[cfg(target_os = "macos")]
+    crate::browser_layer::place(&webview);
+    #[cfg(target_os = "macos")]
     crate::browser_context_downloads::watch(&webview, &tab);
     // A muted tab whose view closed (four at most stay open) opens muted again.
     if app.state::<BrowserViews>().inner.lock().unwrap().muted.contains(&tab) {
@@ -1362,7 +1366,32 @@ pub fn browser_view_supported() -> bool {
     false
 }
 
+/// Whether pages sit under the app's webview (`browser_layer`). Elsewhere covered pages are snapshotted.
+#[tauri::command]
+pub fn browser_view_layered() -> bool {
+    #[cfg(target_os = "macos")]
+    return browser_view_supported();
+    #[cfg(not(target_os = "macos"))]
+    false
+}
+
+/// The panel UI over the page: all of it while a menu or dialog is open, else clickable rects.
+#[tauri::command]
+pub fn browser_view_input<R: Runtime>(
+    webview: Webview<R>,
+    blocked: bool,
+    exclude: Vec<ViewBounds>,
+) -> Result<(), String> {
+    require_main(&webview)?;
+    #[cfg(target_os = "macos")]
+    crate::browser_layer::set_input(blocked, &exclude);
+    #[cfg(not(target_os = "macos"))]
+    let _ = (blocked, exclude);
+    Ok(())
+}
+
 /// Show a tab's page at `bounds` (created at `url` first time), hide the rest; `None` hides all.
+/// `parked` moves the page just off-window instead of hiding it, so it keeps painting under its snapshot.
 /// Async: creating a webview from a sync command deadlocks on Windows (Tauri known issue).
 #[tauri::command]
 pub async fn browser_view_show<R: Runtime>(
@@ -1371,13 +1400,18 @@ pub async fn browser_view_show<R: Runtime>(
     tab_id: Option<String>,
     url: Option<String>,
     bounds: Option<ViewBounds>,
+    parked: Option<bool>,
 ) -> Result<(), String> {
     require_main(&webview)?;
     let app = webview.app_handle().clone();
+    let parked = parked.unwrap_or(false);
     let target = match (&tab_id, &bounds) {
         (Some(tab_id), Some(bounds)) => Some(match app.get_webview(&label_for(tab_id)?) {
             Some(view) => {
-                let (position, size) = logical_rect(&webview, bounds);
+                let (mut position, size) = logical_rect(&webview, bounds);
+                if parked {
+                    position.x = -size.width - PARK_GAP;
+                }
                 view.set_bounds(Rect {
                     position: position.into(),
                     size: size.into(),
@@ -1385,8 +1419,11 @@ pub async fn browser_view_show<R: Runtime>(
                 .map_err(|error| error.to_string())?;
                 view
             }
+            None if parked => return Err("no page to park".into()),
             None => {
                 let url = parse_page_url(url.as_deref().ok_or("no address to open")?)?;
+                #[cfg(target_os = "macos")]
+                crate::browser_layer::install(&webview);
                 create_view(&webview, tab_id, url, bounds)?
             }
         }),

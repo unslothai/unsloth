@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** desktop web pages use per-tab native views for bot checks; native views cover the DOM, so overlays use snapshots. */
+/** desktop web pages use per-tab native views for bot checks. macOS puts each page under the app's webview, so
+ *  overlays draw over the live page; elsewhere native views cover the DOM, so overlays use snapshots. */
 
 import { useChatRuntimeStore } from "@/features/chat";
 import { getLocale, translate } from "@/i18n";
@@ -113,6 +114,7 @@ function closeView(tabId: string): void {
   pageEntries.delete(tabId);
   loadingPages.delete(tabId);
   recency = recency.filter((id) => id !== tabId);
+  if (parkedView === tabId) parkedView = null;
   void call("browser_view_close", { tabId }).catch(() => undefined);
 }
 
@@ -359,23 +361,131 @@ export async function nativeFind(tabId: string, query: string, backwards: boolea
   return call<boolean>("browser_view_find", { tabId, query, backwards }).catch(() => false);
 }
 
-// exclude upward-opening tooltips to avoid hiding the native page on every hover; overlapping toasts still cover it.
+// Snapshot mode: any of these over the page covers it.
 // `data-native-cover`: panel UI over the page, e.g. an annotation comment.
 const OVERLAY_SELECTOR =
-  '[data-radix-popper-content-wrapper], [role="dialog"], [role="alertdialog"], [data-slot$="-overlay"], [data-sonner-toast], [data-native-cover]';
+  '[data-radix-popper-content-wrapper], [role="dialog"], [role="alertdialog"], [data-slot$="-overlay"], [data-sonner-toast], [data-native-cover], .find-bar-surface';
+// Layered mode: menus and dialogs take all page input, so an outside click closes them.
+const BLOCKING_SELECTOR =
+  '[data-radix-popper-content-wrapper], [role="dialog"], [role="alertdialog"], [data-slot$="-overlay"], [data-native-cover]';
+// Layered mode: these take input only within their own rect.
+const CLICKABLE_SELECTOR = "[data-sonner-toast], .find-bar-surface";
+
+// Whether pages sit under the app's webview (macOS); null until the backend answers.
+let layered: boolean | null = null;
+let layeredAsked: Promise<boolean> | null = null;
+
+function askLayered(): Promise<boolean> {
+  layeredAsked ??= call<boolean>("browser_view_layered")
+    .catch(() => false)
+    .then((answer) => (layered = answer === true));
+  return layeredAsked;
+}
 
 function intersects(a: DOMRect, b: DOMRect): boolean {
   return a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
 }
 
-function covered(rect: DOMRect): boolean {
-  for (const element of document.querySelectorAll<HTMLElement>(OVERLAY_SELECTOR)) {
+function overlays(selector: string, rect: DOMRect, tooltips = false): DOMRect[] {
+  const boxes: DOMRect[] = [];
+  for (const element of document.querySelectorAll<HTMLElement>(selector)) {
     if (element.closest("[data-native-page]")) continue;
-    if (element.querySelector('[role="tooltip"]')) continue;
+    if (!tooltips && element.querySelector('[role="tooltip"]')) continue;
     const box = element.getBoundingClientRect();
-    if (box.width > 0 && box.height > 0 && intersects(box, rect)) return true;
+    if (box.width > 0 && box.height > 0 && intersects(box, rect)) boxes.push(box);
   }
-  return false;
+  return boxes;
+}
+
+function covered(rect: DOMRect): boolean {
+  return overlays(OVERLAY_SELECTOR, rect, true).length > 0;
+}
+
+type Input = { blocked: boolean; exclude: Bounds[] };
+
+const NO_INPUT: Input = { blocked: false, exclude: [] };
+
+function panelInput(rect: DOMRect): Input {
+  if (overlays(BLOCKING_SELECTOR, rect).length > 0) return { blocked: true, exclude: [] };
+  const exclude = overlays(CLICKABLE_SELECTOR, rect).map((box) => ({
+    x: Math.floor(box.left),
+    y: Math.floor(box.top),
+    width: Math.ceil(box.width) + 1,
+    height: Math.ceil(box.height) + 1,
+    viewportWidth: window.innerWidth,
+  }));
+  return { blocked: false, exclude };
+}
+
+let sentInput = JSON.stringify(NO_INPUT);
+
+// Sent directly, not queued, so a menu owns the page as soon as it opens.
+function sendInput(input: Input): void {
+  const key = JSON.stringify(input);
+  if (key === sentInput) return;
+  sentInput = key;
+  void call("browser_view_input", input).catch(() => undefined);
+}
+
+// Backgrounds around the page skip its rect so the page shows through.
+const HOLE_ATTRIBUTE = "data-native-hole";
+const HOLE_VARS = ["--native-hole-x", "--native-hole-y", "--native-hole-w", "--native-hole-h"] as const;
+let holed: HTMLElement[] = [];
+let holeSignature = "";
+let holeTab: string | null = null;
+
+function opaque(color: string): boolean {
+  if (color === "transparent") return false;
+  const alpha = /\/\s*([\d.]+)%?\s*\)$/.exec(color) ?? /^rgba\([^)]*,\s*([\d.]+)\s*\)$/.exec(color);
+  return !alpha || Number.parseFloat(alpha[1]) > 0;
+}
+
+function openHole(tabId: string, bounds: Bounds): void {
+  const style = document.documentElement.style;
+  const values = [bounds.x, bounds.y, bounds.width, bounds.height];
+  HOLE_VARS.forEach((name, index) => style.setProperty(name, `${values[index]}px`));
+  holeTab = tabId;
+  markHole();
+}
+
+/** Re-reads background colors when the chain, its classes or the theme change. */
+function markHole(): void {
+  const element = holeTab ? placeholder(holeTab) : null;
+  if (!element) return;
+  const chain: HTMLElement[] = [];
+  for (let node: HTMLElement | null = element; node; node = node.parentElement) chain.push(node);
+  // Theme: html classes, palette and inline color vars, minus our own.
+  const root = document.documentElement;
+  const theme = (root.style.cssText ?? "").replace(/--native-hole-[^;]*;?/g, "");
+  const signature = `${root.dataset.palette}|${theme}|${chain.map((node) => node.className).join("|")}`;
+  if (signature === holeSignature && holed.every((node) => node.isConnected)) return;
+  unmarkHole();
+  holeSignature = signature;
+  const colors = chain.map((node) => getComputedStyle(node));
+  chain.forEach((node, index) => {
+    const computed = colors[index];
+    if (computed.backgroundImage === "none" && !opaque(computed.backgroundColor)) return;
+    node.style.setProperty("--native-hole-bg", computed.backgroundColor);
+    holed.push(node);
+  });
+  for (const node of holed) node.setAttribute(HOLE_ATTRIBUTE, "");
+  // Mid theme switch everything can read transparent: retry next sync.
+  if (holed.length === 0) holeSignature = "";
+}
+
+function unmarkHole(): void {
+  for (const node of holed) {
+    node.removeAttribute(HOLE_ATTRIBUTE);
+    node.style.removeProperty("--native-hole-bg");
+  }
+  holed = [];
+  holeSignature = "";
+}
+
+function closeHole(): void {
+  holeTab = null;
+  unmarkHole();
+  for (const name of HOLE_VARS) document.documentElement.style.removeProperty(name);
 }
 
 function visibleRect(element: HTMLElement): DOMRect | null {
@@ -401,7 +511,7 @@ function visibleRect(element: HTMLElement): DOMRect | null {
 
 type Desired =
   | { tabId: string; url: string; entry: number; zoom: number; bounds: Bounds }
-  | { tabId: string; covered: true }
+  | { tabId: string; covered: true; zoom: number }
   | null;
 
 function placeholder(tabId: string): HTMLElement | null {
@@ -425,10 +535,12 @@ function insetToasts(rect: DOMRect | null): void {
 
 function desiredView(): Desired {
   const page = pageRect();
-  insetToasts(page?.rect ?? null);
+  // Layered mode needs no toast column.
+  if (layered) sendInput(page ? panelInput(page.rect) : NO_INPUT);
+  else insetToasts(page?.rect ?? null);
   if (!page) return null;
   const { tab, entry, rect } = page;
-  if (covered(rect)) return { tabId: tab.id, covered: true };
+  if (!layered && covered(rect)) return { tabId: tab.id, covered: true, zoom: tab.zoom };
   return {
     tabId: tab.id,
     url: entry.url,
@@ -511,7 +623,7 @@ function clearSnapshot(): void {
 async function paintSnapshot(tabId: string): Promise<void> {
   const bounds = shownBounds;
   const element = placeholder(tabId);
-  if (shownView !== tabId || !bounds || !element) return;
+  if ((shownView !== tabId && parkedView !== tabId) || !bounds || !element) return;
   const started = generation;
   const png = await Promise.race([
     call<ArrayBuffer>("browser_capture", { tabId }).catch(() => null),
@@ -519,20 +631,60 @@ async function paintSnapshot(tabId: string): Promise<void> {
   ]);
   if (!png?.byteLength || !element.isConnected || started !== generation) return;
   const url = URL.createObjectURL(new Blob([png], { type: "image/png" }));
+  // Decode before hiding the view, or the placeholder flashes blank.
+  const image = new Image();
+  image.src = url;
+  if (!(await image.decode().then(() => true, () => false)) || !element.isConnected || started !== generation) {
+    URL.revokeObjectURL(url);
+    return;
+  }
   // align snapshots to the visible native bounds because the chat dock can shorten the view.
   const box = element.getBoundingClientRect();
   element.style.backgroundImage = `url(${url})`;
   element.style.backgroundPosition = `${bounds.x - box.left}px ${bounds.y - box.top}px`;
   element.style.backgroundSize = `${bounds.width}px ${bounds.height}px`;
   element.style.backgroundRepeat = "no-repeat";
+  if (snapshot && snapshot.url !== url) URL.revokeObjectURL(snapshot.url);
   snapshot = { tabId, element, url };
+}
+
+// Covered views are parked off-window instead of hidden: a hidden view stops painting and returns blank.
+let parkedView: string | null = null;
+
+function parkable(tabId: string): boolean {
+  return views.has(tabId) && shownBounds !== null && (shownView === tabId || parkedView === tabId);
+}
+
+async function coverView(tabId: string, zoom: number): Promise<void> {
+  if (parkedView !== tabId) {
+    await paintSnapshot(tabId);
+    await call("browser_view_show", { tabId, bounds: shownBounds, parked: true });
+    parkedView = tabId;
+    setShownView(null);
+  }
+  if ((zooms.get(tabId) ?? 1) !== zoom) {
+    zooms.set(tabId, zoom);
+    await call("browser_view_zoom", { tabId, zoom });
+    await paintSnapshot(tabId);
+  }
+}
+
+/** Re-snapshots a covered page after it changes, e.g. a find step. */
+export function refreshCoveredPage(tabId: string): void {
+  if (parkedView === tabId) void paintSnapshot(tabId);
 }
 
 async function applyView(desired: Desired): Promise<void> {
   if (!desired || "covered" in desired) {
+    closeHole();
     // keep the snapshot if an overlay reopens during capture.
     if (snapshot?.tabId !== desired?.tabId) clearSnapshot();
+    if (desired && parkable(desired.tabId)) {
+      await coverView(desired.tabId, desired.zoom);
+      return;
+    }
     if (desired) await paintSnapshot(desired.tabId);
+    parkedView = null;
     setShownView(null);
     await call("browser_view_show", { tabId: null });
     return;
@@ -551,7 +703,10 @@ async function applyView(desired: Desired): Promise<void> {
     openedTabs.add(tabId);
     await call("browser_view_show", { tabId, url: resumed?.entry === entry ? resumed.url : url, bounds });
     if (stale()) return;
+    parkedView = null;
     clearSnapshot();
+    // After the move, so hole and page update together.
+    if (layered) openHole(tabId, bounds);
     shownBounds = bounds;
     viewBounds.set(tabId, bounds);
     setShownView(tabId);
@@ -603,6 +758,7 @@ function apply(desired: Desired): void {
 let epoch = 0;
 onNativeViewsClosed(() => {
   for (const tabId of [...views.keys()]) keepReachedPage(tabId);
+  parkedView = null;
   setShownView(null);
   views.clear();
   viewBounds.clear();
@@ -627,6 +783,8 @@ export function startNativeViews(): () => void {
 
   const sync = () => {
     frame = 0;
+    if (layered === null) return;
+    markHole();
     const desired = desiredView();
     pruneViews(desired?.tabId ?? null);
     const element = desired ? placeholder(desired.tabId) : null;
@@ -647,8 +805,11 @@ export function startNativeViews(): () => void {
   const unsubscribe = useBrowserStore.subscribe(schedule);
   const overlays = new MutationObserver(schedule);
   overlays.observe(document.body, { childList: true });
+  // Theme switches recolor the backgrounds around the hole.
+  overlays.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "style", "data-palette"] });
   window.addEventListener("resize", schedule);
   const interval = window.setInterval(schedule, RECHECK_MS);
+  void askLayered().then(schedule);
   schedule();
 
   return () => {
@@ -661,8 +822,11 @@ export function startNativeViews(): () => void {
     // close pages because hidden native views keep scripts and media running.
     generation += 1;
     pending = null;
+    parkedView = null;
     setShownView(null);
     clearSnapshot();
+    closeHole();
+    sendInput(NO_INPUT);
     insetToasts(null);
     for (const tabId of [...views.keys()]) closeView(tabId);
   };

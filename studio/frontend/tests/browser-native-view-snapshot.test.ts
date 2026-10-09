@@ -65,6 +65,12 @@ Object.assign(globalThis, {
       return rect(x, y, width, height);
     }
   },
+  Image: class {
+    src = "";
+    decode() {
+      return Promise.resolve();
+    }
+  },
   requestAnimationFrame: (callback: () => void) => frames.push(callback),
   cancelAnimationFrame: noop,
   ResizeObserver: class {
@@ -118,6 +124,8 @@ test("a menu that closes and reopens while the page is captured keeps the snapsh
   useBrowserStore.getState().openUrl("https://example.com/");
   const stop = startNativeViews();
   try {
+    // the first frame waits for whether pages layer under the app (not here)
+    await frame();
     await frame();
     const tabId = useBrowserStore.getState().activeTabId;
     assert.ok(
@@ -143,10 +151,27 @@ test("a menu that closes and reopens while the page is captured keeps the snapsh
     const shows = calls.filter(
       ({ command }) => command === "browser_view_show",
     );
+    assert.deepEqual(
+      [shows.at(-1)?.args?.tabId, shows.at(-1)?.args?.parked],
+      [tabId, true],
+      "the page is parked off the window under the menu, not hidden",
+    );
+
+    // zoom from the menu reaches the parked page, and the snapshot follows it
+    const captures = calls.filter(({ command }) => command === "browser_capture").length;
+    const tab = useBrowserStore.getState().tabs.find((candidate) => candidate.id === tabId);
+    if (tab) useBrowserStore.getState().updateTab(tab.id, { zoom: 1.25 });
+    await frame();
+    assert.ok(
+      calls.some(({ command, args }) => command === "browser_view_zoom" && args?.zoom === 1.25),
+      "the zoom applies while the menu is open",
+    );
+    captureDone?.(new Uint8Array([137, 80, 78, 71]).buffer);
+    await settle();
     assert.equal(
-      shows.at(-1)?.args?.tabId,
-      null,
-      "the page stays hidden under the menu",
+      calls.filter(({ command }) => command === "browser_capture").length,
+      captures + 1,
+      "the covered page is captured again at its new zoom",
     );
 
     overlays.length = 0;

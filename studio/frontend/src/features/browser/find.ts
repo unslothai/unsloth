@@ -9,7 +9,7 @@ import {
   notifyFindTargets,
   registerFindTarget,
 } from "@/features/find-in-page";
-import { hasNativeView, nativeFind } from "./native-view";
+import { hasNativeView, nativeFind, refreshCoveredPage } from "./native-view";
 import { sendFrameCommand } from "./page-frame";
 import { type BrowserTab, currentEntry, useBrowserStore } from "./store";
 
@@ -40,6 +40,8 @@ function nativeStep(tabId: string, backwards: boolean): void {
   void nativeFind(tabId, asked, backwards).then((found) => {
     // The native view walks matches without counting them: null keeps the walk open.
     if (asked === query && searchedTabId === tabId) setResult({ count: found ? null : 0, active: found ? 0 : -1 });
+    // Show the new match on a covered page's snapshot.
+    refreshCoveredPage(tabId);
   });
 }
 
