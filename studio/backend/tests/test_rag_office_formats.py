@@ -9,6 +9,7 @@ import re
 import struct
 import zipfile
 from email.message import EmailMessage
+from xml.sax.saxutils import escape
 from pathlib import Path
 
 import pytest
@@ -91,10 +92,11 @@ def build_pptx(path):
 
 
 def _odf(path, body):
+    kind = {".odt": "text", ".ods": "spreadsheet", ".odp": "presentation"}[Path(path).suffix]
     return _zip(
         path,
         {
-            "mimetype": "application/vnd.oasis.opendocument",
+            "mimetype": f"application/vnd.oasis.opendocument.{kind}",
             "content.xml": f"<office:document-content {ODF}><office:body>{body}</office:body></office:document-content>",
         },
     )
@@ -477,6 +479,19 @@ def test_ods_does_not_expand_empty_repeats(tmp_path):
     assert _text(build_ods(tmp_path / "sheet.ods")) == "Sheet: Revenue\nRegion | Q | Q\nZebramarker"
 
 
+def test_ods_keeps_the_width_of_empty_runs_before_content(tmp_path):
+    path = _odf(
+        tmp_path / "gaps.ods",
+        '<office:spreadsheet><table:table table:name="S"><table:table-row>'
+        "<table:table-cell><text:p>A</text:p></table:table-cell>"
+        '<table:table-cell table:number-columns-repeated="4"/>'
+        "<table:table-cell><text:p>F</text:p></table:table-cell>"
+        '<table:table-cell table:number-columns-repeated="16000"/>'
+        "</table:table-row></table:table></office:spreadsheet>",
+    )
+    assert _text(path) == "Sheet: S\nA |  |  |  |  | F"
+
+
 def test_ods_reads_typed_values_without_text(tmp_path):
     path = _odf(
         tmp_path / "values.ods",
@@ -491,7 +506,7 @@ def test_ods_reads_typed_values_without_text(tmp_path):
     assert _text(path) == "Sheet: S\n1200 | 2026-03-31 | TRUE | zebramarker | 7.00"
 
 
-# Expected values match what openpyxl reads back from the same cells.
+# Dates, times and durations match what openpyxl reads back from the same cells.
 @pytest.mark.parametrize(
     "serial, number_format, expected",
     [
@@ -502,21 +517,76 @@ def test_ods_reads_typed_values_without_text(tmp_path):
         (59, "yyyy-mm-dd", "1900-02-28"),
         (61, "yyyy-mm-dd", "1900-03-01"),
         (0.25, "mm-dd-yy", "06:00:00"),
-        (3, '"day" 0', "3"),
+        (3, '"day" 0', "day 3"),
+        (0.25, "0%", "25%"),
+        (0.125, "0.0%", "12.5%"),
+        (123, "000000", "000123"),
+        (-1234.5, "#,##0.00", "-1,234.50"),
+        (-1234.5, "#,##0.00;(#,##0.00)", "(1,234.50)"),
+        (12345.678, "0.00E+00", "1.23E+04"),
+        (12345.678, "##0.0E+0", "12.3E+3"),
+        (1234.5, '"$"#,##0', "$1,235"),
+        (1234.5, "[$\u20ac-407]#,##0.00", "\u20ac1,234.50"),
+        (0.5, "#.##", ".5"),
+        (1.234, "0.0#", "1.23"),
+        (1500000, '#,##0,,"M"', "2M"),
+        (1234.5, "General", "1234.5"),
+        (5, "[>100]0;0.0", "5"),
     ],
 )
-def test_xlsx_formats_times_durations_and_early_dates(tmp_path, serial, number_format, expected):
+def test_xlsx_shows_numbers_as_formatted(tmp_path, serial, number_format, expected):
     path = _zip(
         tmp_path / "times.xlsx",
         {
             "xl/workbook.xml": f'<workbook {S}><sheets><sheet name="T" sheetId="1" r:id="rId1"/></sheets></workbook>',
             "xl/_rels/workbook.xml.rels": f'<Relationships {REL}><Relationship Id="rId1" Target="worksheets/sheet1.xml"/></Relationships>',
-            "xl/styles.xml": f'<styleSheet {S}><numFmts><numFmt numFmtId="164" formatCode="{number_format.replace(chr(34), "&quot;")}"/></numFmts>'
+            "xl/styles.xml": f'<styleSheet {S}><numFmts><numFmt numFmtId="164" formatCode="{escape(number_format, {chr(34): "&quot;"})}"/></numFmts>'
             '<cellXfs><xf numFmtId="0"/><xf numFmtId="164"/></cellXfs></styleSheet>',
             "xl/worksheets/sheet1.xml": f'<worksheet {S}><sheetData><row r="1"><c r="A1" s="1"><v>{serial}</v></c></row></sheetData></worksheet>',
         },
     )
     assert _text(path) == f"Sheet: T\n{expected}"
+
+
+def test_xlsx_finds_the_workbook_through_package_relationships(tmp_path):
+    path = _zip(
+        tmp_path / "moved.xlsx",
+        {
+            "_rels/.rels": f'<Relationships {REL}><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="book/main.xml"/></Relationships>',
+            "book/main.xml": f'<workbook {S}><sheets><sheet name="M" sheetId="1" r:id="rId1"/></sheets></workbook>',
+            "book/_rels/main.xml.rels": f'<Relationships {REL}><Relationship Id="rId1" Target="sheet.xml"/>'
+            '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="strings.xml"/></Relationships>',
+            "book/strings.xml": f"<sst {S}><si><t>zebramarker</t></si></sst>",
+            "book/sheet.xml": f'<worksheet {S}><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c></row></sheetData></worksheet>',
+        },
+    )
+    assert _text(path) == "Sheet: M\nzebramarker"
+
+
+def test_xml_parts_are_bounded_by_element_count(tmp_path):
+    row = "<c/>" * 200_001  # one streamed row
+    sheet_bomb = _zip(
+        tmp_path / "row.xlsx",
+        {
+            "xl/workbook.xml": f'<workbook {S}><sheets><sheet name="B" sheetId="1" r:id="rId1"/></sheets></workbook>',
+            "xl/_rels/workbook.xml.rels": f'<Relationships {REL}><Relationship Id="rId1" Target="worksheets/sheet1.xml"/></Relationships>',
+            "xl/worksheets/sheet1.xml": f"<worksheet {S}><sheetData><row>{row}</row></sheetData></worksheet>",
+        },
+    )
+    tree_bomb = _zip(
+        tmp_path / "tree.xlsx",
+        {"xl/workbook.xml": f"<workbook {S}>" + "<x/>" * 2_000_001 + "</workbook>"},
+    )
+    deep = _zip(
+        tmp_path / "deep.ods",
+        {
+            "mimetype": "application/vnd.oasis.opendocument.spreadsheet",
+            "content.xml": "<a>" * 600 + "</a>" * 600,
+        },
+    )
+    for path in (sheet_bomb, tree_bomb, deep):
+        with pytest.raises(ValueError, match = "too large to index|nested too deeply"):
+            parsers.parse(str(path))
 
 
 @pytest.mark.parametrize("format_id", [14, 31, 57, 75])
@@ -532,6 +602,30 @@ def test_xlsx_builtin_date_formats_include_locale_ids(tmp_path, format_id):
         },
     )
     assert _text(path) == "Sheet: D\n2026-03-31"
+
+
+def test_pptx_reads_chart_titles_and_cached_data(tmp_path):
+    C = 'xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"'
+    pt = lambda i, v: f'<c:pt idx="{i}"><c:v>{v}</c:v></c:pt>'
+    series = lambda name, values: (
+        f"<c:ser><c:tx><c:strRef><c:strCache>{pt(0, name)}</c:strCache></c:strRef></c:tx>"
+        f"<c:cat><c:strRef><c:strCache>{pt(0, 'North')}{pt(1, 'South')}</c:strCache></c:strRef></c:cat>"
+        f"<c:val><c:numRef><c:numCache>{pt(0, values[0])}{pt(1, values[1])}</c:numCache></c:numRef></c:val></c:ser>"
+    )
+    path = _zip(
+        tmp_path / "chart.pptx",
+        {
+            "ppt/presentation.xml": f'<p:presentation {P}><p:sldIdLst><p:sldId id="256" r:id="rId2"/></p:sldIdLst></p:presentation>',
+            "ppt/_rels/presentation.xml.rels": f'<Relationships {REL}><Relationship Id="rId2" Target="slides/slide1.xml"/></Relationships>',
+            "ppt/slides/slide1.xml": f"<p:sld {P}><p:cSld><p:spTree><p:graphicFrame><a:graphic><a:graphicData>"
+            '<c:chart xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" r:id="rId3"/>'
+            "</a:graphicData></a:graphic></p:graphicFrame></p:spTree></p:cSld></p:sld>",
+            "ppt/slides/_rels/slide1.xml.rels": f'<Relationships {REL}><Relationship Id="rId3" Target="../charts/chart1.xml"/></Relationships>',
+            "ppt/charts/chart1.xml": f"<c:chartSpace {C}><c:chart><c:title><c:tx><c:rich><a:p><a:r><a:t>Sales zebramarker</a:t></a:r></a:p></c:rich></c:tx></c:title>"
+            f"<c:plotArea><c:barChart>{series('Q1', (1200, 900))}{series('Q2', (1300, 950))}</c:barChart></c:plotArea></c:chart></c:chartSpace>",
+        },
+    )
+    assert _text(path) == "Sales zebramarker\nQ1 | Q2\nNorth | 1200 | 1300\nSouth | 900 | 950"
 
 
 def test_odp_reads_one_page_per_slide(tmp_path):
@@ -643,6 +737,23 @@ def test_msg_uses_the_smtp_address_for_exchange_senders(tmp_path):
         )
     )
     assert _text(path) == "From: Ann <ann@example.com>\n\nBody zebramarker"
+
+
+def test_eml_reads_every_inline_part(tmp_path):
+    message = EmailMessage()
+    message["Subject"] = "Two parts"
+    message.set_content("first part")
+    message.make_mixed()
+    inline = EmailMessage()
+    inline.set_content("second zebramarker")
+    inline["Content-Disposition"] = "inline"
+    message.attach(inline)
+    message.add_attachment(b"x,y\n", maintype = "text", subtype = "csv", filename = "data.csv")
+    path = tmp_path / "mixed.eml"
+    path.write_bytes(bytes(message))
+    text = _text(path)
+    assert text.endswith("first part\n\nsecond zebramarker")
+    assert "x,y" not in text
 
 
 def test_eml_falls_back_to_html_when_plain_is_empty(tmp_path):
@@ -782,6 +893,12 @@ def test_rtf_decodes_bytes_with_the_font_charset(tmp_path):
         rb"\f0 Hello {\f1 \'cf\'f0\'e8\'e2\'e5\'f2} back {\f2 \'e1} \plain\'e9\par}"
     )
     assert _text(path) == "Hello Привет back α é"
+
+
+def test_rtf_prefers_the_unicode_branch_of_upr(tmp_path):
+    path = tmp_path / "upr.rtf"
+    path.write_bytes(rb"{\rtf1\ansi \upr{?}{\*\ud{\u1040?}} end}")
+    assert _text(path) == "\u0410 end"
 
 
 def test_rtf_refuses_runaway_nesting(tmp_path):

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import codecs
 import datetime as dt
+import decimal
 import email
 import email.policy
 import math
@@ -30,6 +31,10 @@ _MAX_MEMBER_BYTES = 128 * 1024 * 1024
 _MAX_TOTAL_BYTES = 512 * 1024 * 1024
 _MAX_COLUMNS = 1024
 _MAX_REPEAT = 1024
+# Parsed XML costs about 100-300 bytes per element, far more than its compressed size.
+_MAX_XML_ELEMENTS = 2_000_000
+_MAX_UNIT_ELEMENTS = 200_000  # one streamed row or string
+_MAX_XML_DEPTH = 512
 # Text a document may add by repeating cells and rows.
 _MAX_REPEATED_CHARS = 32 * 1024 * 1024
 
@@ -39,6 +44,7 @@ _NS = {
     "rel": "http://schemas.openxmlformats.org/package/2006/relationships",
     "p": "http://schemas.openxmlformats.org/presentationml/2006/main",
     "a": "http://schemas.openxmlformats.org/drawingml/2006/main",
+    "c": "http://schemas.openxmlformats.org/drawingml/2006/chart",
     "office": "urn:oasis:names:tc:opendocument:xmlns:office:1.0",
     "text": "urn:oasis:names:tc:opendocument:xmlns:text:1.0",
     "table": "urn:oasis:names:tc:opendocument:xmlns:table:1.0",
@@ -54,6 +60,7 @@ _STRICT_NS = tuple(
         ("spreadsheetml/main", "s"),
         ("presentationml/main", "p"),
         ("drawingml/main", "a"),
+        ("drawingml/chart", "c"),
         ("officeDocument/relationships", "r"),
     )
 )
@@ -110,7 +117,7 @@ class _Archive:
         self._budget -= len(data)
         return data
 
-    def xml(self, name: str) -> ET.Element:
+    def _xml_events(self, name: str, events: tuple[str, ...]):
         data = self.read(name)
         # Office XML never declares entities; refusing them rules out expansion attacks.
         if b"<!ENTITY" in data:
@@ -118,25 +125,83 @@ class _Archive:
         if b"purl.oclc.org/ooxml/" in data:
             for strict, transitional in _STRICT_NS:
                 data = data.replace(strict, transitional)
+        parser = ET.XMLPullParser(events)
         try:
-            return ET.fromstring(data)
+            for start in range(0, len(data), 1 << 20):
+                parser.feed(data[start : start + (1 << 20)])
+                yield from parser.read_events()
+            parser.close()
+            yield from parser.read_events()
         except ET.ParseError as exc:
             raise ValueError(f"malformed XML in {name}") from exc
 
-    def rels(self, part: str) -> dict[str, str]:
-        """Relationship id -> member name for an OOXML part."""
+    def xml(self, name: str) -> ET.Element:
+        root, count = None, 0
+        for _event, element in self._xml_events(name, ("start",)):
+            root = element if root is None else root
+            count += 1
+            if count > _MAX_XML_ELEMENTS:
+                raise ValueError(f"{name} is too large to index")
+        if root is None:
+            raise ValueError(f"malformed XML in {name}")
+        return root
+
+    def stream(self, name: str, units: frozenset[str]):
+        """("start", element) outside units and ("unit", element) once a unit is complete.
+
+        Handled elements are dropped, so memory holds one unit rather than the whole part.
+        """
+        stack: list[ET.Element] = []
+        unit, count = None, 0
+        for event, element in self._xml_events(name, ("start", "end")):
+            if event == "start":
+                stack.append(element)
+                if len(stack) > _MAX_XML_DEPTH:
+                    raise ValueError(f"{name} is nested too deeply")
+                if unit is not None:
+                    count += 1
+                    if count > _MAX_UNIT_ELEMENTS:
+                        raise ValueError(f"{name} is too large to index")
+                elif element.tag in units:
+                    unit, count = element, 0
+                else:
+                    yield "start", element
+                continue
+            stack.pop()
+            if unit is not None and element is not unit:
+                continue
+            if element is unit:
+                unit = None
+                yield "unit", element
+            if stack:
+                # Earlier siblings are gone already, so this is the parent's first child.
+                stack[-1].remove(element)
+
+    def relationships(self, part: str) -> list[tuple[str, str, str]]:
+        """(id, type, member name) of an OOXML part's relationships; "" for the package."""
         folder, base = posixpath.split(part)
         rels_name = posixpath.join(folder, "_rels", base + ".rels")
         if not self.has(rels_name):
-            return {}
-        out = {}
+            return []
+        out = []
         for rel in self.xml(rels_name).iter(_q("rel", "Relationship")):
             target = rel.get("Target", "")
             if rel.get("TargetMode") == "External" or not target:
                 continue
             path = target.lstrip("/") if target.startswith("/") else posixpath.join(folder, target)
-            out[rel.get("Id", "")] = posixpath.normpath(path)
+            out.append((rel.get("Id", ""), rel.get("Type", ""), posixpath.normpath(path)))
         return out
+
+    def rels(self, part: str) -> dict[str, str]:
+        """Relationship id -> member name for an OOXML part."""
+        return {rel_id: target for rel_id, _type, target in self.relationships(part)}
+
+    def related(self, part: str, kind: str, default: str) -> str | None:
+        """The part's first ``kind`` relationship target, else ``default`` if present."""
+        for _id, rel_type, target in self.relationships(part):
+            if rel_type.endswith("/" + kind) and self.has(target):
+                return target
+        return default if self.has(default) else None
 
 
 # ---------------------------------------------------------------- .xlsx / .xlsm
@@ -190,6 +255,153 @@ def _serial_text(serial: float, kind: str, date1904: bool) -> str:
     return moment.date().isoformat() if moment.time() == dt.time() else moment.isoformat(" ")
 
 
+# Built-in numeric formats ([ECMA-376] 18.8.30); fractions and text are left as stored.
+_BUILTIN_NUMBER_FORMATS = {
+    1: "0",
+    2: "0.00",
+    3: "#,##0",
+    4: "#,##0.00",
+    9: "0%",
+    10: "0.00%",
+    11: "0.00E+00",
+    37: "#,##0 ;(#,##0)",
+    38: "#,##0 ;[Red](#,##0)",
+    39: "#,##0.00;(#,##0.00)",
+    40: "#,##0.00;[Red](#,##0.00)",
+    48: "##0.0E+0",
+}
+_FORMAT_LITERALS = frozenset(" $-+/():!^&'~{}<>=\u20ac\u00a3\u00a5")
+
+
+def _format_tokens(code: str) -> list[tuple[str, str]] | None:
+    """("lit" | "ph" | "exp" | "sep", text) tokens of a number format, or None if unsupported."""
+    tokens, i = [], 0
+    while i < len(code):
+        ch = code[i]
+        if ch == '"':
+            end = code.find('"', i + 1)
+            end = len(code) if end < 0 else end
+            tokens.append(("lit", code[i + 1 : end]))
+            i = end + 1
+        elif ch == "\\" and i + 1 < len(code):
+            tokens.append(("lit", code[i + 1]))
+            i += 2
+        elif ch == "[":
+            end = code.find("]", i)
+            inner = code[i + 1 : end] if end > 0 else ""
+            if inner.startswith("$"):  # currency and locale, such as [$EUR-407]
+                tokens.append(("lit", inner[1:].split("-")[0]))
+            elif not inner.isalnum():  # conditions such as [>100]
+                return None
+            i = end + 1  # colours are dropped
+        elif ch == "_":  # space the width of the next character
+            tokens.append(("lit", " "))
+            i += 2
+        elif ch == "*":  # fill with the next character
+            i += 2
+        elif ch in "0#?.,%":
+            tokens.append(("ph", ch))
+            i += 1
+        elif ch in "Ee" and code[i + 1 : i + 2] in ("+", "-"):
+            tokens.append(("exp", code[i + 1]))
+            i += 2
+        elif ch == ";":
+            tokens.append(("sep", ";"))
+            i += 1
+        elif ch in _FORMAT_LITERALS:
+            tokens.append(("lit", ch))
+            i += 1
+        else:
+            return None
+    return tokens
+
+
+def _round(value: float, places: int) -> str:
+    # Excel rounds halves away from zero.
+    quantum = decimal.Decimal(1).scaleb(-places)
+    return format(decimal.Decimal(repr(value)).quantize(quantum, decimal.ROUND_HALF_UP), "f")
+
+
+def _group(digits: str) -> str:
+    head = len(digits) % 3 or 3
+    return ",".join([digits[:head]] + [digits[i : i + 3] for i in range(head, len(digits), 3)])
+
+
+def _format_section(value: float, tokens: list[tuple[str, str]]) -> str | None:
+    marks = [i for i, (kind, _) in enumerate(tokens) if kind in ("ph", "exp")]
+    if not any(kind == "ph" and ch in "0#?" for kind, ch in tokens):
+        return "".join(text for kind, text in tokens if kind == "lit")
+    first, last = marks[0], marks[-1]
+    if any(kind == "lit" for kind, _ in tokens[first:last]):
+        return None
+    prefix = "".join(text for kind, text in tokens[:first] if kind == "lit")
+    suffix = "".join(text for kind, text in tokens[last + 1 :] if kind == "lit")
+    pattern = "".join(ch if kind == "ph" else "E" + ch for kind, ch in tokens[first : last + 1])
+    percent = "%" * pattern.count("%")
+    value *= 100 ** len(percent)
+    pattern = pattern.replace("%", "")
+    mantissa, _, exponent = pattern.partition("E")
+    sign_style, exponent = (exponent[:1], exponent[1:]) if exponent else ("", "")
+    whole, dot, fraction = mantissa.partition(".")
+    while whole.endswith(","):  # trailing commas scale by thousands
+        whole, value = whole[:-1], value / 1000
+    grouped, whole = "," in whole, whole.replace(",", "")
+    places, required = sum(fraction.count(c) for c in "0#?"), fraction.count("0")
+    min_whole = whole.count("0")
+    power = 0
+    if sign_style:
+        width = max(len(whole), 1)
+        if value:
+            power = math.floor(math.log10(value))
+            power = power - power % width if "#" in whole else power - (max(min_whole, 1) - 1)
+        if float(_round(value / 10**power, places)) >= 10 ** max(width, min_whole, 1):
+            power += width if "#" in whole else 1
+        value /= 10**power
+    digits = _round(value, places)
+    int_part, _, frac_part = digits.partition(".")
+    while len(frac_part) > required and frac_part.endswith("0"):
+        frac_part = frac_part[:-1]
+    int_part = "" if int_part == "0" and min_whole == 0 else int_part.zfill(min_whole)
+    if grouped and int_part:
+        int_part = _group(int_part)
+    text = int_part + (dot + frac_part if dot else "")
+    if sign_style:
+        exp_sign = "-" if power < 0 else ("+" if sign_style == "+" else "")
+        text += f"E{exp_sign}{str(abs(power)).zfill(exponent.count('0'))}"
+    return prefix + text + percent + suffix
+
+
+def _format_number(value: float, code: str) -> str | None:
+    """``value`` as a numeric format displays it, or None for formats left as stored."""
+    tokens = _format_tokens(code) if code else None
+    if not tokens:
+        return None
+    sections: list[list[tuple[str, str]]] = [[]]
+    for token in tokens:
+        if token[0] == "sep":
+            sections.append([])
+        else:
+            sections[-1].append(token)
+    if value < 0 and len(sections) > 1 and sections[1]:
+        return _format_section(-value, sections[1])
+    if value == 0 and len(sections) > 2 and sections[2]:
+        return _format_section(0.0, sections[2])
+    text = _format_section(abs(value), sections[0])
+    return None if text is None else ("-" + text if value < 0 else text)
+
+
+def _cell_number(value: float, format_id: int, code: str, date1904: bool) -> str:
+    """A numeric cell as its format displays it, falling back to the stored number."""
+    kind = _format_kind(format_id, code)
+    if kind:
+        return _serial_text(value, kind, date1904)
+    try:
+        text = _format_number(value, code or _BUILTIN_NUMBER_FORMATS.get(format_id, ""))
+    except (ArithmeticError, ValueError, decimal.InvalidOperation):
+        text = None
+    return _number(value) if text is None else text
+
+
 def _column_index(ref: str) -> int:
     index = 0
     for ch in ref:
@@ -213,19 +425,28 @@ def _xlsx_text(node: ET.Element) -> str:
 
 def xlsx(path: str) -> list[Section]:
     with _Archive(path) as zf:
-        workbook_part = "xl/workbook.xml"
+        workbook_part = zf.related("", "officeDocument", "xl/workbook.xml")
+        if workbook_part is None:
+            raise ValueError("missing archive member: xl/workbook.xml")
         workbook = zf.xml(workbook_part)
         pr = workbook.find(_q("s", "workbookPr"))
         date1904 = pr is not None and pr.get("date1904") in ("1", "true")
         rels = zf.rels(workbook_part)
+        folder = posixpath.dirname(workbook_part)
 
         strings: list[str] = []
-        if zf.has("xl/sharedStrings.xml"):
-            strings = [_xlsx_text(si) for si in zf.xml("xl/sharedStrings.xml").iter(_q("s", "si"))]
+        strings_part = zf.related(workbook_part, "sharedStrings", f"{folder}/sharedStrings.xml")
+        if strings_part:
+            strings = [
+                _xlsx_text(si)
+                for event, si in zf.stream(strings_part, frozenset([_q("s", "si")]))
+                if event == "unit"
+            ]
 
-        style_kinds: list[str | None] = []
-        if zf.has("xl/styles.xml"):
-            styles = zf.xml("xl/styles.xml")
+        style_formats: list[tuple[int, str]] = []
+        styles_part = zf.related(workbook_part, "styles", f"{folder}/styles.xml")
+        if styles_part:
+            styles = zf.xml(styles_part)
             custom = {
                 int(f.get("numFmtId", "-1")): f.get("formatCode", "")
                 for f in styles.iter(_q("s", "numFmt"))
@@ -233,7 +454,7 @@ def xlsx(path: str) -> list[Section]:
             xfs = styles.find(_q("s", "cellXfs"))
             for xf in xfs.findall(_q("s", "xf")) if xfs is not None else []:
                 fmt = int(xf.get("numFmtId", "0") or 0)
-                style_kinds.append(_format_kind(fmt, custom.get(fmt, "")))
+                style_formats.append((fmt, custom.get(fmt, "")))
 
         sections: list[Section] = []
         for sheet in workbook.iter(_q("s", "sheet")):
@@ -241,7 +462,9 @@ def xlsx(path: str) -> list[Section]:
             if not target or not zf.has(target):
                 continue
             rows = []
-            for row in zf.xml(target).iter(_q("s", "row")):
+            for event, row in zf.stream(target, frozenset([_q("s", "row")])):
+                if event != "unit":
+                    continue
                 cells: list[str] = []
                 for c in row.findall(_q("s", "c")):
                     col = _column_index(c.get("r", "")) if c.get("r") else len(cells)
@@ -267,10 +490,10 @@ def xlsx(path: str) -> list[Section]:
                             value = raw
                         else:
                             style = int(c.get("s", "0") or 0)
-                            kind = style_kinds[style] if style < len(style_kinds) else None
-                            value = (
-                                _serial_text(number, kind, date1904) if kind else _number(number)
+                            fmt, code = (
+                                style_formats[style] if style < len(style_formats) else (0, "")
                             )
+                            value = _cell_number(number, fmt, code, date1904)
                     cells.extend([""] * (col - len(cells)))
                     if col == len(cells):
                         cells.append(value)
@@ -331,9 +554,37 @@ def _without_slide_number(root: ET.Element) -> ET.Element:
     return root
 
 
+def _chart_lines(root: ET.Element) -> list[str]:
+    """Chart title and axis titles, then the cached data as rows of category and values."""
+    lines = _drawing_lines(root)
+    names, categories, values = [], {}, []
+    for series in root.iter(_q("c", "ser")):
+        name = series.find(f"{_q('c', 'tx')}//{_q('c', 'v')}")
+        names.append(name.text or "" if name is not None else "")
+        points = {}
+        for axis, store in ((_q("c", "cat"), categories), (_q("c", "val"), points)):
+            for point in series.iterfind(f"{axis}//{_q('c', 'pt')}"):
+                v = point.find(_q("c", "v"))
+                store[int(point.get("idx", "0") or 0)] = v.text or "" if v is not None else ""
+        values.append(points)
+    if any(names) and len(names) > 1:
+        lines.append(_row(["", *names]).lstrip(" |"))
+    for idx in sorted(set(categories) | {i for points in values for i in points}):
+        line = _row([categories.get(idx, ""), *(points.get(idx, "") for points in values)])
+        if line:
+            lines.append(line)
+    if any(names) and len(names) == 1:
+        lines.insert(len(lines) - len(categories), names[0]) if categories else lines.append(
+            names[0]
+        )
+    return lines
+
+
 def pptx(path: str) -> list[Section]:
     with _Archive(path) as zf:
-        presentation_part = "ppt/presentation.xml"
+        presentation_part = zf.related("", "officeDocument", "ppt/presentation.xml")
+        if presentation_part is None:
+            raise ValueError("missing archive member: ppt/presentation.xml")
         presentation = zf.xml(presentation_part)
         rels = zf.rels(presentation_part)
         slide_ids = presentation.find(_q("p", "sldIdLst"))
@@ -344,9 +595,15 @@ def pptx(path: str) -> list[Section]:
             part = rels.get(sld.get(_q("r", "id"), ""))
             if not part or not zf.has(part):
                 continue
-            lines = _drawing_lines(zf.xml(part))
+            slide = zf.xml(part)
+            slide_rels = zf.rels(part)
+            lines = _drawing_lines(slide)
+            for chart in slide.iter(_q("c", "chart")):
+                target = slide_rels.get(chart.get(_q("r", "id"), ""))
+                if target and zf.has(target):
+                    lines += _chart_lines(zf.xml(target))
             notes = next(
-                (t for t in zf.rels(part).values() if "notesslide" in t.lower() and zf.has(t)),
+                (t for t in slide_rels.values() if "notesslide" in t.lower() and zf.has(t)),
                 None,
             )
             if notes:
@@ -443,22 +700,50 @@ def _odf_cell_value(cell: ET.Element) -> str:
     return value
 
 
+def _odf_row(row: ET.Element, budget: _Budget) -> list[str]:
+    """The row's lines: one, repeated as the row is."""
+    cells, gap = [], 0
+    for cell in row:
+        if cell.tag not in (_q("table", "table-cell"), _q("table", "covered-table-cell")):
+            continue
+        text = " ".join(_odf_blocks(cell, budget)) or _odf_cell_value(cell)
+        if not text:
+            # Empty runs before content keep their width; trailing ones are dropped.
+            gap += max(int(cell.get(_q("table", "number-columns-repeated"), "1") or 1), 0)
+            continue
+        cells += [""] * min(gap, _MAX_COLUMNS - len(cells))
+        gap = 0
+        room = _MAX_COLUMNS - len(cells)
+        cells += [text] * _odf_repeat(cell, "number-columns-repeated", text, room, budget)
+        if len(cells) >= _MAX_COLUMNS:
+            break
+    line = _row(cells)
+    if not line:
+        return []
+    return [line] * _odf_repeat(row, "number-rows-repeated", line, _MAX_REPEAT, budget)
+
+
 def _odf_table(table: ET.Element, budget: _Budget) -> list[str]:
-    rows = []
-    for row in _odf_rows(table):
-        cells = []
-        for cell in row:
-            if cell.tag not in (_q("table", "table-cell"), _q("table", "covered-table-cell")):
-                continue
-            text = " ".join(_odf_blocks(cell, budget)) or _odf_cell_value(cell)
-            room = _MAX_COLUMNS - len(cells)
-            cells += [text] * _odf_repeat(cell, "number-columns-repeated", text, room, budget)
-            if len(cells) >= _MAX_COLUMNS:
-                break
-        line = _row(cells)
-        if line:
-            rows += [line] * _odf_repeat(row, "number-rows-repeated", line, _MAX_REPEAT, budget)
-    return rows
+    return [line for row in _odf_rows(table) for line in _odf_row(row, budget)]
+
+
+def _ods_streamed(zf: "_Archive", budget: _Budget) -> list[Section]:
+    """Spreadsheet sheets row by row, without holding content.xml as one tree."""
+    sections: list[Section] = []
+    name, rows = None, []
+
+    def close_sheet():
+        if name is not None and rows:
+            sections.append((f"Sheet: {name}\n" + "\n".join(rows), None))
+
+    for event, element in zf.stream("content.xml", frozenset([_q("table", "table-row")])):
+        if event == "start" and element.tag == _q("table", "table"):
+            close_sheet()
+            name, rows = element.get(_q("table", "name"), ""), []
+        elif event == "unit" and name is not None:
+            rows += _odf_row(element, budget)
+    close_sheet()
+    return sections
 
 
 # Annotations and notes are read separately; tracked changes hold deleted text.
@@ -488,11 +773,13 @@ def opendocument(path: str) -> list[Section]:
         manifest = "META-INF/manifest.xml"
         if zf.has(manifest) and b"encryption-data" in zf.read(manifest):
             raise ValueError("file is password protected")
+        budget = _Budget()
+        if zf.has("mimetype") and zf.read("mimetype").strip().endswith(b".spreadsheet"):
+            return _ods_streamed(zf, budget)
         body = zf.xml("content.xml").find(_q("office", "body"))
         if body is None:
             return []
         sections: list[Section] = []
-        budget = _Budget()
         sheet_doc = body.find(_q("office", "spreadsheet"))
         slides_doc = body.find(_q("office", "presentation"))
         if sheet_doc is not None:
@@ -559,29 +846,39 @@ def eml(path: str, html_text) -> list[Section]:
     return [(_email_text(message, html_text), None)]
 
 
+def _email_parts(part, html_text) -> list[str]:
+    """Inline body text in order: every part of a mixed message, one choice per alternative."""
+    if part.get_content_disposition() == "attachment":
+        return []
+    if part.get_content_maintype() == "multipart":
+        children = list(part.iter_parts())
+        if part.get_content_subtype() != "alternative":
+            return [text for child in children for text in _email_parts(child, html_text)]
+        # Plain text first; some mailers leave it empty beside a full HTML part.
+        for child in sorted(children, key = lambda c: c.get_content_type() != "text/plain"):
+            texts = _email_parts(child, html_text)
+            if any(t.strip() for t in texts):
+                return texts
+        return []
+    if part.get_content_type() not in ("text/plain", "text/html"):
+        return []
+    try:
+        content = part.get_content()
+    except (LookupError, ValueError):
+        content = part.get_payload(decode = True) or b""
+        content = content.decode("utf-8", "replace") if isinstance(content, bytes) else content
+    if part.get_content_subtype() == "html":
+        return [html_text(content.encode("utf-8") if isinstance(content, str) else content)]
+    return [content]
+
+
 def _email_text(message, html_text) -> str:
     lines = []
     for header in ("From", "To", "Cc", "Date", "Subject"):
         value = message.get(header)
         if value:
             lines.append(f"{header}: {value}")
-    text = ""
-    # Plain text first; some mailers leave it empty beside a full HTML part.
-    for preference in (("plain", "html"), ("html",)):
-        body = message.get_body(preferencelist = preference)
-        if body is None:
-            continue
-        try:
-            content = body.get_content()
-        except (LookupError, ValueError):
-            content = body.get_payload(decode = True) or b""
-            content = content.decode("utf-8", "replace") if isinstance(content, bytes) else content
-        if body.get_content_subtype() == "html":
-            text = html_text(content.encode("utf-8") if isinstance(content, str) else content)
-        else:
-            text = content
-        if text.strip():
-            break
+    text = "\n\n".join(t.strip() for t in _email_parts(message, html_text) if t.strip())
     names = [part.get_filename() for part in message.iter_attachments() if part.get_filename()]
     if names:
         lines.append("Attachments: " + ", ".join(names))
@@ -700,6 +997,7 @@ def _rtf_text(data: str) -> str:
     skip, uc, to_skip = False, 1, 0
     deleted = False  # tracked deletion
     ignorable = False
+    upr = False  # the next group is \upr's ANSI branch
 
     def flush():
         if pending:
@@ -727,10 +1025,13 @@ def _rtf_text(data: str) -> str:
                 raise ValueError("RTF groups are nested too deeply")
             stack.append((skip, uc, deleted, codepage))
             ignorable = False
+            if upr:
+                # \upr{ANSI}{\*\ud{Unicode}}: the Unicode branch follows.
+                skip, upr = True, False
         elif brace == "}":
             flush()
             skip, uc, deleted, codepage = stack.pop() if stack else (False, 1, False, codepage)
-            to_skip = 0
+            to_skip, upr = 0, False
         elif symbol is not None:
             if symbol == "*":
                 ignorable = True
@@ -754,6 +1055,10 @@ def _rtf_text(data: str) -> str:
                 uc = int(arg)
             elif word == "deleted":
                 deleted = arg != "0"
+            elif word == "upr":
+                upr = True
+            elif word == "ud":
+                ignorable = False
             elif word == "plain":
                 flush()
                 deleted = False
@@ -1026,11 +1331,10 @@ def xls(path: str) -> list[Section]:
             date1904 = struct.unpack_from("<H", body)[0] == 1
         elif kind == 0x000A:  # end of the workbook globals
             break
-    xf_kinds = [_format_kind(fmt, formats.get(fmt, "")) for fmt in xf_formats]
 
     def number(value: float, xf: int) -> str:
-        kind = xf_kinds[xf] if xf < len(xf_kinds) else None
-        return _serial_text(value, kind, date1904) if kind else _number(value)
+        fmt = xf_formats[xf] if xf < len(xf_formats) else 0
+        return _cell_number(value, fmt, formats.get(fmt, ""), date1904)
 
     sections: list[Section] = []
     for name, offset in sheets:
