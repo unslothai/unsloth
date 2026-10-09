@@ -2454,6 +2454,43 @@ def _offload_store_set(store, key, value):
         raise TypeError(f"Unsloth: cannot write offloaded tensor into {type(store).__name__}")
 
 
+def _dequantize_multihead_attention_out_proj(model):
+    """nn.MultiheadAttention passes out_proj.weight straight to F.linear, so a bitsandbytes 4-bit out_proj
+    (SigLIP pooling head, granite-vision, #2672; transformers 4.x quantizes it) fails with "Half and Byte".
+    Swap each for a float Linear holding the dequantized weight, as transformers 5 loads it. Returns the count."""
+    try:
+        import bitsandbytes as bnb
+    except Exception:
+        return 0
+    n = 0
+    for module in model.modules():
+        if not isinstance(module, torch.nn.MultiheadAttention):
+            continue
+        out_proj = module.out_proj
+        quant_state = getattr(getattr(out_proj, "weight", None), "quant_state", None)
+        if not isinstance(out_proj, bnb.nn.Linear4bit) or quant_state is None:
+            continue
+        dtype = (
+            module.in_proj_weight.dtype if module.in_proj_weight is not None else quant_state.dtype
+        )
+        weight = bnb.functional.dequantize_4bit(out_proj.weight.data, quant_state).to(dtype)
+        new = torch.nn.modules.linear.NonDynamicallyQuantizableLinear(
+            out_proj.in_features,
+            out_proj.out_features,
+            bias = out_proj.bias is not None,
+            device = "meta",
+        )
+        new.weight = torch.nn.Parameter(weight, requires_grad = False)
+        if out_proj.bias is not None:
+            new.bias = out_proj.bias
+        if hasattr(out_proj, "_hf_hook"):
+            from accelerate.hooks import add_hook_to_module
+            add_hook_to_module(new, out_proj._hf_hook)
+        module.out_proj = new
+        n += 1
+    return n
+
+
 def _restore_dropped_fp8_scales(
     model,
     model_name,
