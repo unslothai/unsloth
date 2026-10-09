@@ -207,6 +207,63 @@ def _load_rows(
     return rows, eval_rows
 
 
+def _is_mlx() -> bool:
+    from utils.hardware import hardware
+    return hardware.DEVICE == hardware.DeviceType.MLX
+
+
+def _peak_memory_gb() -> float | None:
+    import torch
+
+    if torch.cuda.is_available():
+        return torch.cuda.max_memory_allocated() / 1e9
+    if _is_mlx():
+        import mlx.core as mx
+        return mx.get_peak_memory() / 1e9
+    return None
+
+
+def _mlx_tracking_callback(report_to: list):
+    from transformers import TrainerCallback
+
+    # transformers' reporting callbacks are added by its own Trainer, which MLX does not run.
+    class Tracking(TrainerCallback):
+        writer = None
+
+        def on_train_begin(self, args, state, control, **kwargs):
+            if "tensorboard" in report_to:
+                try:
+                    from tensorboardX import SummaryWriter
+                except ImportError:
+                    from torch.utils.tensorboard import SummaryWriter
+                self.writer = SummaryWriter(log_dir = os.environ["TENSORBOARD_LOGGING_DIR"])
+
+        def on_log(
+            self,
+            args,
+            state,
+            control,
+            logs = None,
+            **kwargs,
+        ):
+            scalars = {
+                f"eval/{name[5:]}" if name.startswith("eval_") else f"train/{name}": value
+                for name, value in (logs or {}).items()
+                if isinstance(value, (int, float))
+            }
+            for name, value in scalars.items() if self.writer else ():
+                self.writer.add_scalar(name, value, state.global_step)
+            if "wandb" in report_to:
+                import wandb
+                wandb.log(scalars, step = state.global_step)
+
+        def on_train_end(self, args, state, control, **kwargs):
+            if self.writer:
+                self.writer.close()
+
+    return Tracking()
+
+
 def run_decision_training(event_queue: Any, stop_queue: Any, config: dict) -> None:
     import torch
 
@@ -458,7 +515,8 @@ def _run(event_queue: Any, stop_queue: Any, config: dict, output_dir: str) -> No
             report_to.append("wandb")
         except Exception as exc:
             warn(f"Weights & Biases logging is off: {exc}")
-    arguments["report_to"] = report_to or "none"
+    # On MLX the run's own tracking callback reports instead, into the directory and W&B run opened above.
+    arguments["report_to"] = "none" if _is_mlx() or not report_to else report_to
 
     base_metrics = None
     if eval_items:
@@ -487,7 +545,8 @@ def _run(event_queue: Any, stop_queue: Any, config: dict, output_dir: str) -> No
                 training_start_time = time.time(),
                 should_stop = lambda: stop["requested"],
             )
-        ],
+        ]
+        + ([_mlx_tracking_callback(report_to)] if report_to and _is_mlx() else []),
     )
     _drop_hf_stdout_callbacks(trainer)
     start = time.time()
@@ -507,7 +566,7 @@ def _run(event_queue: Any, stop_queue: Any, config: dict, output_dir: str) -> No
         raise _Stopped("Training cancelled")
 
     status("Saving model...")
-    peak_gb = torch.cuda.max_memory_allocated() / 1e9 if torch.cuda.is_available() else None
+    peak_gb = _peak_memory_gb()
     model.decision_config["training"] = {
         "base": model_name,
         "subfolder": subfolder,

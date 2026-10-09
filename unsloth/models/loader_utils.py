@@ -223,6 +223,63 @@ def planner_kwargs_with_max_memory(planner_kwargs, loader_kwargs):
     return merged
 
 
+# transformers' bitsandbytes quantizers (4-bit and 8-bit) raise this when the automatic map spills past the GPU.
+_BNB_CPU_SPILL_PREFIX = "Some modules are dispatched on the CPU or the disk"
+
+
+def raise_if_bnb_cpu_spill(
+    error,
+    model_name,
+    offload_layers = None,
+    device_map = None,
+    load_in_8bit = False,
+    quantization_config = None,
+    max_memory = None,
+):
+    """Replace transformers' bitsandbytes CPU-spill error with what to do in Unsloth (#1629). Its advice, `llm_int8_enable_fp32_cpu_offload`, keeps the spilled weights unquantized in fp32 on the CPU, which is no route to training; `offload_layers = "auto"` is. Returns for any other error, and for a caller's own dict or CPU map (that placement is a choice, and transformers' advice is the relevant one), so the caller re-raises it unchanged. `offload_layers`, `quantization_config` and `max_memory` are what the caller passed, before the loader added its own."""
+    if not isinstance(error, ValueError) or not str(error).startswith(_BNB_CPU_SPILL_PREFIX):
+        return
+    # On transformers 4.x an all-CPU map raises this too unless bitsandbytes' multi-backend is on.
+    if isinstance(device_map, dict) or str(device_map).split(":")[0] in ("cpu", "disk"):
+        return
+    free = ""
+    try:
+        # The current card only: probing others would open a CUDA context on cards the caller may have withheld.
+        # A caller's max_memory may withhold this card; then the figure would be about the wrong one.
+        if DEVICE_TYPE_TORCH == "cuda" and torch.cuda.is_available() and not max_memory:
+            device = torch.cuda.current_device()
+            free = (
+                f" (cuda:{device} has {torch.cuda.mem_get_info(device)[0] / 1024**3:.2f} GB free)"
+            )
+    except Exception:
+        free = ""
+    if load_in_8bit or getattr(quantization_config, "load_in_8bit", False):
+        # offload_layers supports 16-bit and 4-bit loads only.
+        hint = "Load in 4-bit (load_in_4bit = True) to halve the weights, or load a smaller model."
+    elif quantization_config is not None:
+        # offload_layers refuses a quantization_config.
+        hint = (
+            'Pass load_in_4bit = True with `offload_layers = "auto"` instead of a '
+            "quantization_config to stream the layers the GPU cannot hold from host RAM, "
+            "or load a smaller model."
+        )
+    elif offload_layers == "auto":
+        hint = "Lower max_seq_length or the batch size, load a smaller model, or add a GPU."
+    elif offload_layers:
+        hint = 'Raise offload_layers or pass `offload_layers = "auto"`, load a smaller model, or add a GPU.'
+    else:
+        hint = (
+            'Pass `offload_layers = "auto"` to from_pretrained to keep the decoder layers the GPU '
+            "cannot hold in host RAM and stream them in during training (slower, and it needs that "
+            "much free system RAM), "
+            "load a smaller model, or free GPU memory held by other programs."
+        )
+    raise ValueError(
+        f"Unsloth: {model_name} does not fit in GPU memory{free}, so transformers placed "
+        f"part of it on the CPU, which bitsandbytes cannot quantize. {hint}"
+    ) from error
+
+
 def unmarked_device_map(device_map):
     """The default with its marker removed; anything else exactly as it came in. For a nested load that must not re-read the value as "nobody chose this". A bare `str()` would also flatten a caller's `{"": 0}` into text transformers reads as a device name."""
     return str(device_map) if isinstance(device_map, _DefaultDeviceMap) else device_map
@@ -768,6 +825,9 @@ def resolve_auto_block_swap(
         max_memory[d] = free if cap is None else min(free, cap)
 
     options = {k: planner_kwargs[k] for k in _BLOCK_SWAP_PLANNER_KEYS if k in planner_kwargs}
+    if "prefetch_depth" in options:
+        from ._utils import auto_plan_depth
+        options["prefetch_depth"] = auto_plan_depth(options["prefetch_depth"])
     try:
         planner_parameters = inspect.signature(plan_block_swap).parameters
     except (TypeError, ValueError):
@@ -2724,6 +2784,54 @@ def _decompress_compressed_tensors_model(model):
     return True
 
 
+def _dequantize_bitsandbytes_for_full_finetuning(
+    model,
+    dtype = None,
+    model_name = "",
+):
+    """Full finetuning marks every weight trainable, which the uint8 / int8 weights of a pre-quantized bitsandbytes checkpoint (a local `-bnb-4bit` folder, which the name mapper cannot redirect) reject (#2613)."""
+    quantizer = getattr(model, "hf_quantizer", None)
+    method = getattr(getattr(quantizer, "quantization_config", None), "quant_method", None)
+    # pre_quantized False = an explicit on-the-fly config; rounding then restoring would train a lossy copy.
+    if str(getattr(method, "value", method)).lower() != "bitsandbytes" or not getattr(
+        quantizer, "pre_quantized", True
+    ):
+        return False
+    print(
+        f"Unsloth: `{model_name}` is a pre-quantized bitsandbytes checkpoint, so full finetuning "
+        "dequantizes it to 16bit. For the best accuracy, full finetune the original 16bit model instead."
+    )
+    # transformers < 5 deletes these unguarded, and a composite's extracted text core lacks some of them.
+    for owner, attribute in (
+        (model, "quantization_method"),
+        (model.config, "quantization_config"),
+        (model.config, "_pre_quantization_dtype"),
+    ):
+        if not hasattr(owner, attribute):
+            setattr(owner, attribute, None)
+    # transformers < 5 has no dtype argument; prepare_model_for_training casts the weights anyway.
+    if "dtype" in inspect.signature(model.dequantize).parameters:
+        model.dequantize(dtype = dtype)
+    else:
+        model.dequantize()
+    # Left True by dequantize; the trainer's DataParallel gate and PEFT still read them.
+    for attribute in ("is_loaded_in_4bit", "is_loaded_in_8bit"):
+        if getattr(model, attribute, False):
+            setattr(model, attribute, False)
+    # transformers 5 keeps the load's bnb deserialize converter, whose missing reverse op makes save_pretrained raise NotImplementedError.
+    conversions = getattr(model, "_weight_conversions", None)
+    if isinstance(conversions, list):
+        model._weight_conversions = [
+            conversion
+            for conversion in conversions
+            if not any(
+                getattr(op, "hf_quantizer", None) is quantizer
+                for op in getattr(conversion, "operations", None) or ()
+            )
+        ]
+    return True
+
+
 def _prepare_compressed_tensors_model(model, full_finetuning = False):
     # Routed FP8 / NVFP4 weights are frozen, so full finetuning always takes the decompressed bf16 weights.
     if full_finetuning:
@@ -3119,6 +3227,31 @@ def sync_load_when_quantizing(quantization_config, model_config):
         yield
     finally:
         os.environ.pop(_ASYNC_LOAD_ENV, None)
+
+
+def gptq_trainable_quantization_config(model_config, user_quantization_config):
+    """GPTQConfig asking gptqmodel for a trainable kernel on a GPTQ checkpoint, else None.
+
+    gptqmodel's default kernels (Marlin / ExLlama) raise NotImplementedError on model.train(); only
+    `backend` is a loading attribute, so the checkpoint's own bits / group_size still apply.
+    """
+    if user_quantization_config is not None:
+        return None
+    qc = getattr(model_config, "quantization_config", None)
+    if qc is not None and not isinstance(qc, dict):
+        qc = qc.to_dict()
+    if not qc or str(qc.get("quant_method", "")).lower() != "gptq":
+        return None
+    if qc.get("backend") not in (None, "auto"):
+        return None
+    try:
+        from transformers import GPTQConfig
+        from transformers.utils import is_gptqmodel_available
+    except ImportError:
+        return None
+    if not is_gptqmodel_available() or "backend" not in inspect.signature(GPTQConfig).parameters:
+        return None
+    return GPTQConfig(bits = qc["bits"], backend = "auto_trainable")
 
 
 def warn_if_bitsandbytes_quantized_nothing(

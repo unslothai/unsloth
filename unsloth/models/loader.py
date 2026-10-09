@@ -655,6 +655,25 @@ def _resolve_omni_auto_model(
     return None
 
 
+def _resolve_speech_seq2seq_auto_model(
+    model_config,
+    trust_remote_code = None,
+    **hub_kwargs,
+):
+    """AutoModelForSpeechSeq2Seq when it maps this config (Whisper, Moonshine), else None."""
+    import transformers
+
+    auto_class = getattr(transformers, "AutoModelForSpeechSeq2Seq", None)
+    try:
+        if auto_class is not None and resolve_model_class(
+            auto_class, model_config, trust_remote_code = trust_remote_code, **hub_kwargs
+        ):
+            return auto_class
+    except Exception:
+        pass
+    return None
+
+
 def _get_user_task_config_attrs(user_config):
     if user_config is None:
         return {}
@@ -858,6 +877,31 @@ def _fix_rope_inv_freq(model):
     return model
 
 
+def _patch_from_pretrained_rope_fix():
+    """pre_patch swaps Unsloth's rotary classes into transformers, so a plain from_pretrained after an Unsloth load (a reward model TRL loads by name) also gets the corrupted inv_freq (#1494)."""
+    if not _NEEDS_ROPE_FIX:
+        return
+    import functools
+    from transformers import PreTrainedModel
+
+    original = PreTrainedModel.from_pretrained.__func__
+    if getattr(original, "_unsloth_rope_fix", False):
+        return
+
+    @functools.wraps(original)
+    def wrapped(cls, *args, **kwargs):
+        output = original(cls, *args, **kwargs)
+        # output_loading_info = True returns (model, info).
+        _fix_rope_inv_freq(output[0] if isinstance(output, tuple) else output)
+        return output
+
+    wrapped._unsloth_rope_fix = True
+    PreTrainedModel.from_pretrained = classmethod(wrapped)
+
+
+_patch_from_pretrained_rope_fix()
+
+
 def _vllm_unavailable_error():
     # vLLM installed but disabled at import (ABI break, needs transformers 5) is not "not installed".
     from unsloth import import_fixes
@@ -1000,6 +1044,10 @@ class FastLanguageModel(FastLlamaModel):
             or dtype == torch.float32
         )
 
+        # Same fallback as FastModel, before requiring vLLM: it cannot run below compute capability 7.
+        if fast_inference and DEVICE_TYPE == "cuda" and torch.cuda.get_device_capability()[0] < 7:
+            print("Unsloth: vLLM does not work on older GPUs - will switch to Unsloth inference!")
+            fast_inference = False
         if fast_inference:
             if importlib.util.find_spec("vllm") is None:
                 raise _vllm_unavailable_error()
@@ -2653,6 +2701,7 @@ class FastModel(FastBaseModel):
                     if resolve_model_class(auto_model, model_config, **_probe_hub_kwargs) is None:
                         auto_model = (
                             _resolve_omni_auto_model(model_config, **_probe_hub_kwargs)
+                            or _resolve_speech_seq2seq_auto_model(model_config, **_probe_hub_kwargs)
                             or auto_model
                         )
             else:

@@ -122,3 +122,18 @@ def test_seamless_has_a_seq2seq_class_and_no_causal_class(name):
     assert resolve_model_class(transformers.AutoModelForSeq2SeqLM, config).__name__.endswith(
         "ForTextToText"
     )
+
+
+@pytest.mark.parametrize("name", ["WhisperConfig", "MoonshineConfig", "Speech2TextConfig"])
+def test_speech_seq2seq_configs_resolve_without_auto_model(name):
+    # FastModel.from_pretrained(whisper_lora) without auto_model used to ask AutoModelForImageTextToText (#2726).
+    from unsloth.models.loader import _resolve_speech_seq2seq_auto_model
+    assert (
+        _resolve_speech_seq2seq_auto_model(_config(name)) is transformers.AutoModelForSpeechSeq2Seq
+    )
+
+
+@pytest.mark.parametrize("name", ["LlamaConfig", "Gemma3Config", "T5Config"])
+def test_non_speech_configs_do_not_resolve_to_speech_seq2seq(name):
+    from unsloth.models.loader import _resolve_speech_seq2seq_auto_model
+    assert _resolve_speech_seq2seq_auto_model(_config(name)) is None

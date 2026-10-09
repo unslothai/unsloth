@@ -92,7 +92,7 @@ def test_annotate_code_is_sent_only_when_annotating():
     # Not in the shell (so not in every page), installed once and only from the shell's own message.
     assert "const BLOCK =" in code and "const BLOCK =" not in shell
     assert 'const value = node.type === "password" ? "" : node.value;' in code
-    assert code.rstrip().endswith("return { start, stop, forget, number };")
+    assert code.rstrip().endswith("return { start, stop, forget, number, redraw };")
     assert 'if (data.command === "annotateInstall") install(data.code);' in shell
     assert 'if (annotation || typeof code !== "string"' in shell
     assert shell.index("const compile = Function;") < shell.index("const install = ")

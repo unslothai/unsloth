@@ -21,11 +21,8 @@ import {
   useGeneratedImageOverlay,
 } from "@/components/assistant-ui/generated-image-overlay-context";
 import { CompactionNotice } from "@/components/assistant-ui/compaction-notice";
-import {
-  compactionBoundary,
-  shouldShowCompactionNotice,
-  type ContextTruncation,
-} from "@/features/chat/utils/context-truncation";
+import { compactionNoticeMessageIds } from "@/components/assistant-ui/message-derived";
+import type { ContextTruncation } from "@/features/chat/utils/context-truncation";
 import { downloadImagePart } from "@/components/assistant-ui/image";
 import { MarkdownText } from "@/components/assistant-ui/markdown-text";
 import { MessageHtmlArtifacts } from "@/components/assistant-ui/message-html-artifacts";
@@ -42,6 +39,7 @@ import { UserMessageActionBar, UserMessageFooter } from "@/components/assistant-
 import { useActionBarFocusReveal } from "@/components/assistant-ui/use-action-bar-focus-reveal";
 import { MessageTiming } from "@/components/assistant-ui/message-timing";
 import { attachThreadFastCopy } from "@/components/assistant-ui/thread-fast-copy";
+import { attachWheelHoverSuppression } from "@/components/assistant-ui/thread-wheel-hover";
 import { threadHasResearchMessage } from "@/components/assistant-ui/thread-research-presence";
 import { Reasoning, ReasoningGroup } from "@/components/assistant-ui/reasoning";
 import { RagSourcesGroup } from "@/components/assistant-ui/rag-sources";
@@ -181,6 +179,11 @@ import {
 import { toolStatusKind } from "@/features/chat/utils/tool-status";
 import { replySourceMarkdown } from "@/features/chat/utils/reply-source-markdown";
 import { toolResultModelText } from "@/features/chat/api/chat-adapter";
+import {
+  collectGeminiAnswerReplayParts,
+  collectGeminiThoughtReplayParts,
+  continuationGeminiReplayTurns,
+} from "@/features/chat/gemini-thought-replay";
 import {
   CONTINUATION_RUN_CONFIG_KEY,
   type ContinuationRequest,
@@ -412,6 +415,7 @@ import {
   useEffect,
   useId,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
@@ -1970,24 +1974,21 @@ export const Thread: FC<{
     [viewportRef],
   );
 
-  // Copying a selection out of the thread writes the plain text itself rather than letting the
-  // browser serialise the selection, which spends over 99% of a long thread's copy building the
-  // styled clipboard flavour. thread-fast-copy.ts holds the rule for when that substitution is
-  // provably invisible, and hands the event back to the browser whenever it is not.
+  // plain-text copy skips styled data that consumes over 99% of long-thread copy time.
+  // thread-fast-copy.ts falls back to browser copying unless the substitution is invisible.
   useEffect(() => {
     if (!viewportEl) return;
     return attachThreadFastCopy(viewportEl);
   }, [viewportEl]);
 
-  // Bottom spacer sizing. Invariant: chat never moves on its own on composer
-  // resize.
-  // - Grow (attachment added, multiline): grow at once; growth below the
-  //   scroll position is invisible and only adds room.
-  // - Shrink (attachment removed): shrinking scrollHeight near the bottom
-  //   clamps scrollTop and yanks the chat down. Defer until invisible (user
-  //   scrolled up) or a bottom-pinning moment.
-  // Applied imperatively so a remounted spacer can be sized from refs even
-  // when composerHeight did not change (e.g. thread switch).
+  useEffect(() => {
+    if (!viewportEl) return;
+    return attachWheelHoverSuppression(viewportEl);
+  }, [viewportEl]);
+
+  // composer growth applies immediately because content below the scroll position is invisible.
+  // composer shrink waits until clamping scrollTop is safe or a bottom pin owns the motion.
+  // imperative sizing restores remounted spacers even when composerHeight is unchanged.
   const spacerElRef = useRef<HTMLDivElement | null>(null);
   const desiredSpacerPxRef = useRef<number | null>(null);
   const appliedSpacerPxRef = useRef<number | null>(null);
@@ -7483,15 +7484,40 @@ function useContinuation() {
   const reasoning = useAuiState(
     ({ message }) => readContinuationSource(message.content).reasoning,
   );
-  // A tool-calling turn cannot be resumed: the continuation runs as a sibling, so the
-  // call and its result would be missing from the outbound history.
-  const continuable = useAuiState(({ message }) =>
-    isContinuableContent(message.content, { thought: thoughtResumable }),
-  );
-  // Gemini signs its text parts, and the resumed turn is replayed from this branch,
-  // so the signature travels with the partial.
+  // Gemini signs answer and thought parts. A continuation runs from a sibling branch,
+  // so both kinds of replay metadata travel with the partial.
   const thoughtSignature = useAuiState(({ message }) =>
     readTextThoughtSignature(message.content),
+  );
+  const messageContent = useAuiState(({ message }) => message.content);
+  const thoughtParts = useMemo(
+    () => collectGeminiThoughtReplayParts(messageContent),
+    [messageContent],
+  );
+  const answerParts = useMemo(
+    () => collectGeminiAnswerReplayParts(messageContent),
+    [messageContent],
+  );
+  const geminiReplayTurns = useMemo(
+    () =>
+      continuationGeminiReplayTurns(metadata, {
+        text: partial,
+        ...(thoughtSignature ? { thoughtSignature } : {}),
+        ...(thoughtParts.length > 0 ? { thoughtParts } : {}),
+        ...(answerParts.length > 0 ? { answerParts } : {}),
+      }),
+    [metadata, partial, thoughtSignature, thoughtParts, answerParts],
+  );
+  // A tool-calling turn cannot be resumed: the continuation runs as a sibling, so the
+  // call and its result would be missing from the outbound history. A Gemini ledger is
+  // independently replayable even when its signed thought produced no visible text.
+  const continuable = useMemo(
+    () =>
+      isContinuableContent(messageContent, {
+        thought: thoughtResumable,
+        replay: geminiReplayTurns.length > 0,
+      }),
+    [messageContent, thoughtResumable, geminiReplayTurns],
   );
   // Audio input re-listens to the recording and answers afresh rather than resuming,
   // so continuing there would append a second answer.
@@ -7525,7 +7551,11 @@ function useContinuation() {
       fromAudioInput,
       audioOutputModel,
     }) &&
-    Boolean(partial.trim() || carriedReasoning.trim());
+    Boolean(
+      partial.trim() ||
+        carriedReasoning.trim() ||
+        geminiReplayTurns.length > 0,
+    );
 
   const reasoningDuration = readThoughtDuration(metadata);
   // Hands the started run back, untyped: the only handle identified with THIS run.
@@ -7541,6 +7571,9 @@ function useContinuation() {
       partial,
       ...(carriedReasoning ? { reasoning: carriedReasoning, reasoningDuration } : {}),
       ...(thoughtSignature ? { thoughtSignature } : {}),
+      ...(thoughtParts.length > 0 ? { thoughtParts } : {}),
+      ...(answerParts.length > 0 ? { answerParts } : {}),
+      ...(geminiReplayTurns.length > 0 ? { geminiReplayTurns } : {}),
       ...providerCompactionContinuationFields(metadata),
     };
     return aui.thread().startRun({
@@ -7556,6 +7589,9 @@ function useContinuation() {
     carriedReasoning,
     reasoningDuration,
     thoughtSignature,
+    thoughtParts,
+    answerParts,
+    geminiReplayTurns,
     metadata,
   ]);
 
@@ -7895,25 +7931,9 @@ const AssistantMessage: FC = () => {
   // matters is when MORE of the conversation fell out of view: the eviction boundary
   // rising above the last turn that reported one, or a checkpoint starting inside a tool
   // loop (which evicts without moving the boundary). Sticky replays stay quiet.
-  const showsNotice = useAuiState(({ thread }) => {
-    let previousDropped = 0;
-    for (const message of thread.messages) {
-      if (message.role !== "assistant") continue;
-      const value = (
-        message.metadata as
-          | { custom?: { contextTruncation?: unknown } }
-          | undefined
-      )?.custom?.contextTruncation as ContextTruncation | undefined;
-      const dropped = compactionBoundary(value);
-      if (shouldShowCompactionNotice(value, previousDropped)) {
-        if (message.id === messageId) return true;
-        previousDropped = Math.max(previousDropped, dropped);
-      } else if (message.id === messageId) {
-        return false;
-      }
-    }
-    return false;
-  });
+  const showsNotice = useAuiState(({ thread }) =>
+    compactionNoticeMessageIds(thread.messages).has(messageId),
+  );
   const incognito = useChatRuntimeStore((s) => s.incognito);
 
   // Use global store for editing state to ensure a single source of truth

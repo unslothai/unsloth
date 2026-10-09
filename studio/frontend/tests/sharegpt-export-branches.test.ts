@@ -86,6 +86,7 @@ function loadExporters(
     getStoredChatThread: async () => undefined,
     settleThreadScopedSettingsForCopy: async () => {},
     ...liveThreadHead,
+    savedBranchHead: () => undefined,
     orderByParentChain,
     exportFormatIncludesSiblings,
     ndjsonBody,

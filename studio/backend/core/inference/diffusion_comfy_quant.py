@@ -606,6 +606,12 @@ def _fp8_tensor(
 def _mapping(transformer_cls: Any) -> tuple[Any, Any]:
     from diffusers.loaders import single_file_model as sfm
 
+    from .diffusion_single_file_converters import CONVERTERS
+
+    # Ahead of diffusers' own: its Krea 2 converter (0.41) strips only model.diffusion_model.
+    own = CONVERTERS.get(getattr(transformer_cls, "__name__", ""))
+    if own is not None:
+        return own, sfm
     name = sfm._get_single_file_loadable_mapping_class(transformer_cls)
     entry = sfm.SINGLE_FILE_LOADABLE_CLASSES.get(name or "")
     if not entry:

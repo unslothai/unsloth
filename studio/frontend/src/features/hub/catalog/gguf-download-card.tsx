@@ -263,25 +263,31 @@ interface GgufVariantMenuItem {
   footprint: GgufVariantFootprint | null;
 }
 
-/** Model plus uncached companion size, with the breakdown on hover. */
+/** Model plus uncached companion size, with the breakdown on hover; on disk, only what Run still fetches. */
 function GgufVariantSizeLabel({
   label,
   footprint,
+  downloaded = false,
 }: {
   label: string;
   footprint: GgufVariantFootprint | null;
+  downloaded?: boolean;
 }) {
   if (!footprint) return <>{label}</>;
+  const companion = formatFootprintBytes(footprint.companionBytes);
   return (
     <Tooltip delayDuration={0}>
       <TooltipTrigger asChild={true}>
         <span
           data-model-download-footprint={true}
+          data-model-needs-required-assets={downloaded || undefined}
           className="inline-flex items-center gap-1"
         >
-          {formatFootprintBytes(
-            footprint.checkpointBytes + footprint.companionBytes,
-          )}
+          {downloaded
+            ? `${companion} more to run`
+            : formatFootprintBytes(
+                footprint.checkpointBytes + footprint.companionBytes,
+              )}
           {/* Align the icon with the digits. */}
           <HugeiconsIcon
             icon={HelpCircleIcon}
@@ -293,11 +299,13 @@ function GgufVariantSizeLabel({
       </TooltipTrigger>
       <TooltipContent side="top" className="tooltip-compact">
         <span className="font-medium">
-          {formatFootprintBytes(footprint.checkpointBytes)} model +{" "}
-          {formatFootprintBytes(footprint.companionBytes)} required assets
+          {formatFootprintBytes(footprint.checkpointBytes)} model
+          {downloaded ? " on device" : ""} + {companion} required assets
         </span>
         <span className="ml-1 text-muted-foreground">
-          · assets download on Run
+          {downloaded
+            ? "· assets download on Run, once, shared across compatible variants"
+            : "· assets download on Run"}
         </span>
       </TooltipContent>
     </Tooltip>
@@ -624,6 +632,7 @@ const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
           <GgufVariantSizeLabel
             label={item.downloadSizeLabel}
             footprint={item.footprint}
+            downloaded={item.downloaded}
           />
         </span>
         {/* Options only apply to files on disk; placeholder keeps the size
@@ -1232,6 +1241,7 @@ export function GgufDownloadCard({
                       <GgufVariantSizeLabel
                         label={selectedDownloadSizeLabel}
                         footprint={selectedFootprint}
+                        downloaded={Boolean(selected.downloaded)}
                       />
                     </span>
                   )}
