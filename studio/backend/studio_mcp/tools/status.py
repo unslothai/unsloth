@@ -190,12 +190,29 @@ async def _read_slot(caller: Caller, slot: str) -> Any:
     return BUILDERS[slot](payload)
 
 
+# Whether a generation is running; read best-effort, since a missing answer only means "not known".
+GENERATING_ROUTES = {
+    "image": "/api/inference/images/generate-progress",
+    "video": "/api/inference/video/generate-progress",
+}
+
+
+async def _generating(caller: Caller, slot: str) -> bool:
+    try:
+        response = await forward(caller, "GET", GENERATING_ROUTES[slot])
+        payload = response.json() if response.status_code == 200 else {}
+    except Exception:
+        return False
+    return isinstance(payload, dict) and payload.get("active") is True
+
+
 async def studio_status() -> StudioStatus:
-    """What Unsloth Studio is doing right now: the loaded chat, image, video, speech-to-text and embedding models, any model still loading or downloading, the training job, the export job and GPU use. Call this before loading a model or starting GPU work. A slot that could not be read is listed under ``unavailable`` with the reason."""
+    """What Unsloth Studio is doing right now: the loaded chat, image, video, speech-to-text and embedding models, any model still loading or downloading, whether an image or video is generating, the training job, the export job and GPU use. Call this before loading a model or starting GPU work. The embedding model is managed by Unsloth Studio and unload_model does not unload it. A slot that could not be read is listed under ``unavailable`` with the reason."""
     caller = current_caller()
     slots = list(SLOT_ROUTES)
-    results = await asyncio.gather(
-        *(_read_slot(caller, slot) for slot in slots), return_exceptions = True
+    results, generating = await asyncio.gather(
+        asyncio.gather(*(_read_slot(caller, slot) for slot in slots), return_exceptions = True),
+        asyncio.gather(*(_generating(caller, slot) for slot in GENERATING_ROUTES)),
     )
     status: dict[str, Any] = {}
     unavailable: dict[str, str] = {}
@@ -206,6 +223,9 @@ async def studio_status() -> StudioStatus:
             unavailable[slot] = "unexpected response"
         else:
             status[slot] = result
+    for slot, active in zip(GENERATING_ROUTES, generating):
+        if active and slot in status:
+            status[slot] = status[slot].model_copy(update = {"generating": True})
     return StudioStatus(**status, unavailable = unavailable)
 
 

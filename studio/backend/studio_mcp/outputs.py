@@ -34,11 +34,15 @@ class ImageSlot(ToolOutput):
     loaded: bool = False
     model: Optional[RouteText] = None
     family: Optional[RouteText] = None
+    # An image is being generated right now.
+    generating: bool = False
 
 
 class VideoSlot(ToolOutput):
     loaded: bool = False
     model: Optional[RouteText] = None
+    # A video is being generated right now.
+    generating: bool = False
 
 
 class SttDownload(ToolOutput):

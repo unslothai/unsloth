@@ -117,8 +117,9 @@ def test_every_slot_is_reported(monkeypatch):
         "loaded": True,
         "model": "black-forest-labs/FLUX.1-schnell",
         "family": "flux",
+        "generating": False,
     }
-    assert status["video"] == {"loaded": True, "model": "Lightricks/LTX-Video"}
+    assert status["video"] == {"loaded": True, "model": "Lightricks/LTX-Video", "generating": False}
     assert status["stt"] == {
         "engine": "gguf",
         "model": "whisper-large-v3-turbo-q5",
@@ -172,7 +173,7 @@ def test_a_failing_slot_does_not_fail_the_tool(monkeypatch):
     assert set(status["unavailable"]) == {"video"}
     assert "Video backend crashed" in status["unavailable"]["video"]
     assert "/srv/hf" not in status["unavailable"]["video"]
-    assert status["video"] == {"loaded": False, "model": None}
+    assert status["video"] == {"loaded": False, "model": None, "generating": False}
     assert status["chat"]["loaded"]
 
 
@@ -195,8 +196,31 @@ def test_unloaded_slots_name_no_model(monkeypatch):
     }
     result, _studio = _status(monkeypatch, overrides)
     status = result["structuredContent"]
-    assert status["image"] == {"loaded": False, "model": None, "family": None}
-    assert status["video"] == {"loaded": False, "model": None}
+    assert status["image"] == {"loaded": False, "model": None, "family": None, "generating": False}
+    assert status["video"] == {"loaded": False, "model": None, "generating": False}
+
+
+def test_a_running_generation_is_reported(monkeypatch):
+    result, _studio = _status(
+        monkeypatch,
+        {
+            ("GET", "/api/inference/images/generate-progress"): _answer(
+                {"active": True, "step": 3}
+            ),
+            ("GET", "/api/inference/video/generate-progress"): _answer({"active": False}),
+        },
+    )
+    status = result["structuredContent"]
+    assert status["image"]["generating"] is True
+    assert status["video"]["generating"] is False
+
+
+def test_an_unreadable_generation_check_reads_as_not_generating(monkeypatch):
+    result, _studio = _status(monkeypatch)
+    status = result["structuredContent"]
+    assert status["image"]["generating"] is False
+    assert status["video"]["generating"] is False
+    assert "image" not in status["unavailable"]
 
 
 def test_studio_status_is_read_only_with_an_output_schema():
