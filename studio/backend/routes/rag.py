@@ -406,9 +406,8 @@ def _create_linked_folder(scope_type: str, scope_id: str, payload: LinkFolderReq
     except ValueError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
     except Exception as exc:
-        # As HTTPException, not left to escape: an unhandled 500 carries no CORS headers, the desktop
-        # webview reads it as a network error and resends the POST, and the grant, spent by then,
-        # answered every resend "already used" instead of this error (#13093).
+        # Not left to escape: an unhandled 500 has no CORS headers, so the desktop resent the POST and
+        # its spent grant answered "already used" instead of this error (#13093).
         logger.exception("linked folder creation failed")
         raise HTTPException(
             status_code = 500,

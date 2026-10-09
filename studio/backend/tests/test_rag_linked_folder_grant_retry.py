@@ -60,7 +60,7 @@ def _sign(path) -> str:
 def client(rag_home, monkeypatch):
     monkeypatch.setenv(leases.LEASE_SECRET_ENV, _b64(SECRET))
     monkeypatch.setattr(leases, "_CACHED_LEASE_SECRET", None, raising = False)
-    # The package can import while its native vec0 library is missing (the usual macOS venv).
+    # sqlite_vec can import without its native library (macOS venvs).
     if not rag_db.rag_available():
         pytest.skip("sqlite-vec cannot load here")
     with closing(rag_db.get_connection()) as conn:
@@ -107,7 +107,6 @@ def test_an_unexpected_failure_answers_with_cors_headers_and_its_error(
     failed = _link(client, _sign(docs))
     assert failed.status_code == 500
     assert failed.json()["detail"] == "Could not link the folder: database is locked"
-    # Without it the webview sees a network error and resends the spent grant.
     assert failed.headers.get("access-control-allow-origin") == ORIGIN
 
     relinked = _link(client, _sign(docs))
