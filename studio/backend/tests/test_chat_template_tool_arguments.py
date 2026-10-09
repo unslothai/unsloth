@@ -127,8 +127,7 @@ def test_render_repairs_orphan_tool_result_after_native_template_failure():
 
 
 class _CallLinkedToolTokenizer:
-    """gpt-oss rule: a result must answer a call id of the assistant turn before its run of
-    results; two assistant turns in a row fail an alternation check."""
+    """gpt-oss rule: each result answers a call of the preceding assistant; no two assistant turns in a row."""
 
     def __init__(self):
         self.seen_messages = []
@@ -424,7 +423,7 @@ def test_render_succeeds_on_single_call_template_with_parallel_calls():
 
 
 def test_orphan_repair_is_not_built_when_an_earlier_fallback_renders(monkeypatch):
-    # Llama 3.x refuses parallel calls on every such request; the split renders it, so the orphan scan must not run.
+    # Llama 3.x: the split renders parallel calls, so the orphan scan must not run.
     import core.inference.chat_template_helpers as helpers
 
     def _must_not_run(messages):

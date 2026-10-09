@@ -2710,16 +2710,11 @@ def _split_parallel_tool_calls(messages: list) -> list:
 
 
 def _repair_orphan_tool_results(messages: list) -> list:
-    """Give each replayed tool result with no assistant call before it a placeholder call, since
-    strict templates (gpt-oss) refuse an orphan result. Render fallback only: the placeholder is
-    text the model reads, so it is built only after the plain render failed. A preceding assistant
-    text turn takes the calls rather than a second assistant turn, which alternation checks refuse.
-    A repaired list repairs to itself."""
+    """Placeholder call before each tool result lacking one (gpt-oss refuses orphans). Fallback only:
+    the model reads it. A text turn takes the calls, since a second assistant turn breaks alternation."""
     mutated = False
     out: list = []
-    # Whether the previous message is an assistant call or a result answering one.
     linked = False
-    # Index in out of the assistant turn this repair gave calls to, while its results run.
     repaired_at = None
 
     for message in messages:
@@ -3291,7 +3286,7 @@ def apply_chat_template_for_generation(
                 return _render_with_fallback(candidate)
             except Exception:
                 continue
-        # Built only once every other candidate failed, so a history one of them renders pays nothing for it.
+        # Last and lazy: a history an earlier candidate renders never pays for the scan.
         repaired = _repair_orphan_tool_results(split)
         if repaired is not split:
             try:
