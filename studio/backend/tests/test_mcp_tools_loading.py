@@ -3,6 +3,7 @@
 
 import asyncio
 import json
+from urllib.parse import parse_qs
 
 import pytest
 from fastapi.responses import Response
@@ -460,4 +461,177 @@ def test_media_unload_with_nothing_loaded(monkeypatch):
     studio = _media_studio("image", progress = [{"phase": None}], statuses = [{"loaded": False}])
     result = _call(monkeypatch, studio, "unload_model", {"kind": "image"})
     assert result["structuredContent"] == {"kind": "image", "model": None, "unloaded": False}
+    assert [c for c in studio.state.calls if c[1].endswith("/unload")] == []
+
+
+WHISPER = "openai/whisper-small"
+
+
+def _stt_state(
+    *,
+    downloaded = (),
+    loaded = None,
+    download = None,
+):
+    return {
+        "loaded_model": loaded,
+        "loading": False,
+        "models": [WHISPER, "openai/whisper-large-v3"],
+        "downloaded_models": list(downloaded),
+        "download": download or {"downloading": False, "completed_download_ids": []},
+    }
+
+
+def _stt_studio(
+    statuses,
+    *,
+    load = None,
+    download = None,
+):
+    statuses = list(statuses)
+    return fake_studio(
+        {
+            ("GET", "/api/inference/audio/stt/status"): lambda request, body: (
+                statuses.pop(0) if len(statuses) > 1 else statuses[0]
+            ),
+            ("POST", "/api/inference/audio/stt/download"): _answer(
+                download or {"downloading": True, "model": WHISPER, "download_id": "d1"}
+            ),
+            ("POST", "/api/inference/audio/stt/load"): load
+            or _answer({"loaded_model": WHISPER, "device": "cuda"}),
+            ("POST", "/api/inference/audio/stt/unload"): _answer(
+                {"loaded_model": None, "device": None}
+            ),
+        }
+    )
+
+
+def test_stt_downloads_then_loads_in_order(monkeypatch, fast_polls):
+    studio = _stt_studio(
+        [
+            {"transformers": _stt_state()},
+            {
+                "transformers": _stt_state(
+                    download = {
+                        "downloading": True,
+                        "model": WHISPER,
+                        "bytes_done": 1,
+                        "bytes_total": 2,
+                    }
+                )
+            },
+            {
+                "transformers": _stt_state(
+                    downloaded = [WHISPER],
+                    download = {"downloading": False, "completed_download_ids": ["d1"]},
+                )
+            },
+        ]
+    )
+    result = _call(
+        monkeypatch,
+        studio,
+        "load_model",
+        {"model": WHISPER, "kind": "stt"},
+        headers = {"X-Unsloth-HF-Token": "hf_h"},
+    )
+    assert result["structuredContent"]["model"] == WHISPER
+    order = [(m, p) for m, p, _h, _b in studio.state.calls]
+    assert order == [
+        ("GET", "/api/inference/audio/stt/status"),
+        ("POST", "/api/inference/audio/stt/download"),
+        ("GET", "/api/inference/audio/stt/status"),
+        ("GET", "/api/inference/audio/stt/status"),
+        ("POST", "/api/inference/audio/stt/load"),
+    ]
+    download = next(c for c in studio.state.calls if c[1].endswith("/download"))
+    assert json.loads(download[3]) == {"model": WHISPER, "engine": "transformers"}
+    assert download[2]["x-unsloth-hf-token"] == "hf_h"
+    assert _bodies(studio, "/api/inference/audio/stt/load") == [
+        {"model": WHISPER, "engine": "transformers"}
+    ]
+
+
+def test_the_hf_token_argument_rides_the_download_header(monkeypatch, fast_polls):
+    studio = _stt_studio(
+        [{"transformers": _stt_state()}, {"transformers": _stt_state(downloaded = [WHISPER])}],
+        download = {"downloading": True, "model": WHISPER},
+    )
+    _call(
+        monkeypatch, studio, "load_model", {"model": WHISPER, "kind": "stt", "hf_token": "hf_arg"}
+    )
+    download = next(c for c in studio.state.calls if c[1].endswith("/download"))
+    assert download[2]["x-unsloth-hf-token"] == "hf_arg"
+    assert "hf_token" not in json.loads(download[3])
+
+
+def test_a_downloaded_stt_model_loads_straight_away(monkeypatch):
+    studio = _stt_studio(
+        [{"gguf": {**_stt_state(downloaded = ["whisper-small-q5"]), "models": ["whisper-small-q5"]}}]
+    )
+    result = _call(monkeypatch, studio, "load_model", {"model": "whisper-small-q5", "kind": "stt"})
+    assert result["isError"] is False
+    assert [c[1] for c in studio.state.calls if c[0] == "POST"] == ["/api/inference/audio/stt/load"]
+    assert _bodies(studio, "/api/inference/audio/stt/load") == [
+        {"model": "whisper-small-q5", "engine": "gguf"}
+    ]
+
+
+def test_a_failed_download_never_loads(monkeypatch, fast_polls):
+    studio = _stt_studio(
+        [
+            {"transformers": _stt_state()},
+            {
+                "transformers": _stt_state(
+                    download = {"downloading": False, "error": "401 gated repo"}
+                )
+            },
+        ]
+    )
+    result = _call(monkeypatch, studio, "load_model", {"model": WHISPER, "kind": "stt"})
+    assert result["isError"] is True
+    assert "401 gated repo" in result["content"][0]["text"]
+    assert [c for c in studio.state.calls if c[1].endswith("/load")] == []
+
+
+def test_a_missing_stt_runtime_is_reported(monkeypatch):
+    def missing(request, body):
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            {"detail": "whisper-server is not installed. Run unsloth studio update."},
+            status_code = 501,
+        )
+
+    studio = _stt_studio([{"transformers": _stt_state(downloaded = [WHISPER])}], load = missing)
+    result = _call(monkeypatch, studio, "load_model", {"model": WHISPER, "kind": "stt"})
+    assert result["isError"] is True
+    assert "whisper-server is not installed" in result["content"][0]["text"]
+    assert "(HTTP 501)" in result["content"][0]["text"]
+
+
+def test_stt_unload_names_the_engine_and_model_in_the_query(monkeypatch):
+    statuses = [
+        {"transformers": _stt_state(), "mtmd": _stt_state(loaded = "qwen3-asr")},
+        {"transformers": _stt_state(), "mtmd": _stt_state()},
+    ]
+    queries = []
+    studio = fake_studio(
+        {
+            ("GET", "/api/inference/audio/stt/status"): lambda request, body: statuses.pop(0),
+            ("POST", "/api/inference/audio/stt/unload"): lambda request, body: (
+                queries.append(parse_qs(str(request.url.query))) or {"loaded_model": None}
+            ),
+        }
+    )
+    result = _call(monkeypatch, studio, "unload_model", {"kind": "stt"})
+    assert result["structuredContent"] == {"kind": "stt", "model": "qwen3-asr", "unloaded": True}
+    assert queries == [{"engine": ["mtmd"], "model": ["qwen3-asr"], "wait": ["true"]}]
+    (unload,) = [c for c in studio.state.calls if c[1].endswith("/unload")]
+    assert unload[3] == b""
+
+
+def test_stt_unload_of_a_model_that_is_not_loaded(monkeypatch):
+    studio = _stt_studio([{"transformers": _stt_state(loaded = WHISPER)}])
+    result = _call(monkeypatch, studio, "unload_model", {"kind": "stt", "model": "other"})
+    assert result["structuredContent"] == {"kind": "stt", "model": "other", "unloaded": False}
     assert [c for c in studio.state.calls if c[1].endswith("/unload")] == []

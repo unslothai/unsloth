@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from typing import Any, Awaitable, Callable, Optional
 
 from fastmcp import Context
@@ -271,3 +272,109 @@ async def unload_media(caller: Caller, kind: str) -> UnloadResult:
     model = text(before.get("display_repo_id")) or text(before.get("repo_id"))
     unloaded = isinstance(after, dict) and after.get("loaded") is not True
     return UnloadResult(kind = kind, model = model, unloaded = unloaded)
+
+
+STT_STATUS = "/api/inference/audio/stt/status"
+# Transformers first: it is Studio's default and serves custom Whisper repos no list names.
+STT_ENGINES = ("transformers", "mtmd", "audiocpp", "gguf")
+
+
+async def _stt_status(caller: Caller, model: Optional[str] = None) -> dict:
+    status = await route_json(
+        "GET", STT_STATUS, caller = caller, params = {"model": model} if model else None
+    )
+    return status if isinstance(status, dict) else {}
+
+
+def _stt_engine(status: dict, model: str) -> str:
+    for engine in STT_ENGINES:
+        state = status.get(engine)
+        if isinstance(state, dict) and model in {
+            *_strings(state.get("models")),
+            *_strings(state.get("downloaded_models")),
+        }:
+            return engine
+    return "transformers"
+
+
+async def download_stt(
+    caller: Caller, ctx: Optional[Context], *, model: str, engine: str, hf_token: Optional[str]
+) -> None:
+    """Download an STT model and wait for it; the download route reads the Hub token from its header."""
+    if hf_token:
+        caller = dataclasses.replace(caller, hf_token = hf_token)
+    started = await route_json(
+        "POST",
+        "/api/inference/audio/stt/download",
+        caller = caller,
+        json_body = {"model": model, "engine": engine},
+        hub_header = True,
+    )
+    download_id = started.get("download_id") if isinstance(started, dict) else None
+    while True:
+        await asyncio.sleep(POLL_INTERVAL_S)
+        state = (await _stt_status(caller, model)).get(engine)
+        download = state.get("download") if isinstance(state, dict) else None
+        download = download if isinstance(download, dict) else {}
+        if download.get("downloading"):
+            done, total = number(download.get("bytes_done")), number(download.get("bytes_total"))
+            if ctx is not None and done is not None and total:
+                await ctx.report_progress(min(done / total, 1.0), 1.0, "Downloading")
+            continue
+        if text(download.get("error")):
+            raise ToolError(f"Downloading {model} failed: {download['error']}")
+        if download.get("cancelled"):
+            raise ToolError(f"The download of {model} was cancelled")
+        if download_id is None or download_id in _strings(download.get("completed_download_ids")):
+            return
+        if model in _strings(state.get("downloaded_models") if isinstance(state, dict) else None):
+            return
+        raise ToolError(f"Studio stopped downloading {model} before it finished")
+
+
+async def load_stt(
+    caller: Caller,
+    ctx: Optional[Context],
+    *,
+    model: str,
+    variant: Optional[str],
+    hf_token: Optional[str],
+) -> LoadResult:
+    status = await _stt_status(caller, model)
+    engine = _stt_engine(status, model)
+    state = status.get(engine) if isinstance(status.get(engine), dict) else {}
+    # Load refuses a model that is not on disk, so download first and load only once that finished.
+    if model not in _strings(state.get("downloaded_models")):
+        await download_stt(caller, ctx, model = model, engine = engine, hf_token = hf_token)
+    body: dict[str, Any] = {"model": model, "engine": engine}
+    if variant:
+        body["gguf_variant"] = variant
+    loaded = await route_json(
+        "POST", "/api/inference/audio/stt/load", caller = caller, json_body = body
+    )
+    resident = text(loaded.get("loaded_model")) if isinstance(loaded, dict) else None
+    if resident is None:
+        raise ToolError(f"Studio did not keep {model} loaded; another load may have replaced it")
+    return LoadResult(kind = "stt", model = resident)
+
+
+async def unload_stt(caller: Caller, model: Optional[str]) -> UnloadResult:
+    status = await _stt_status(caller)
+    resident = {
+        engine: status[engine]["loaded_model"]
+        for engine in STT_ENGINES
+        if isinstance(status.get(engine), dict) and text(status[engine].get("loaded_model"))
+    }
+    targets = [(e, m) for e, m in resident.items() if model is None or m == model]
+    if not targets:
+        return UnloadResult(kind = "stt", model = model, unloaded = False)
+    engine, name = targets[0]
+    await route_json(
+        "POST",
+        "/api/inference/audio/stt/unload",
+        caller = caller,
+        params = {"engine": engine, "model": name, "wait": "true"},
+    )
+    after = (await _stt_status(caller)).get(engine)
+    still = isinstance(after, dict) and after.get("loaded_model") == name
+    return UnloadResult(kind = "stt", model = name, unloaded = not still)
