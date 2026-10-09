@@ -204,6 +204,8 @@ _HEADING_TAGS = frozenset({"h1", "h2", "h3", "h4", "h5", "h6"})
 _MAX_SPAN_CHARS = 8_000
 # a long rowspan cell is usually page layout, so only its first row keeps the text
 _MAX_REPEATED_CELL_CHARS = 200
+# floor per scope candidate once the page-wide total is spent, so an earlier decoy cannot starve a later article
+_MIN_SCOPE_SPAN_CHARS = 256
 _INLINE_EMPHASIS = {"strong": "**", "b": "**", "em": "*", "i": "*"}
 
 # measured density: 0.94-1.00 for link lists, 0.13-0.90 for content headers
@@ -412,6 +414,7 @@ class _MarkdownRenderer(HTMLParser):
         span_char_limit: int = _MAX_SPAN_CHARS,
         header_decisions: list[bool] | None = None,
         site_links: SiteLinks | None = None,
+        page_span_limit: int | None = None,
     ):
         super().__init__(convert_charrefs = False)
         self._site_links = site_links
@@ -481,6 +484,9 @@ class _MarkdownRenderer(HTMLParser):
         self._span_chars: int = 0
         self._has_generated_spans: bool = False
         self._span_char_limit: int = min(_MAX_SPAN_CHARS, max(0, span_char_limit))
+        # each scope candidate gets its own budget, drawn from one page-wide total
+        self._scope_span_limit: int = self._span_char_limit
+        self._page_span_left: int | None = page_span_limit
         self._in_row: bool = False
 
         self._in_pre: bool = False
@@ -673,7 +679,10 @@ class _MarkdownRenderer(HTMLParser):
 
     def _visible_len(self, text: str) -> int:
         # site-link markers vanish from the output, so they must not spend the span budget
-        return len(self._site_links.clean(text) if self._site_links is not None else text)
+        if self._site_links is not None:
+            text = self._site_links.clean(text)
+        # budgets assume four ASCII chars per token; a CJK char is about one token
+        return len(text) + 3 * sum(not ch.isascii() for ch in text)
 
     def _fill_spanned_cells(self, width: int) -> None:
         outer_cells = sum(frame.in_cell for frame in self._table_stack)
@@ -909,6 +918,11 @@ class _MarkdownRenderer(HTMLParser):
         if self._scope_tags is not None and tag in self._scope_tags:
             self._flush_header_frames()
             if self._scope_depth == 0:
+                if self._page_span_left is not None:
+                    self._page_span_left = max(0, self._page_span_left - self._span_chars)
+                    self._span_char_limit = min(
+                        self._scope_span_limit, max(self._page_span_left, _MIN_SCOPE_SPAN_CHARS)
+                    )
                 self._span_chars = 0
                 self._scope_seg_start = len(self._out)
                 self._seg_dropped_start = self._dropped_chars
@@ -1345,6 +1359,7 @@ def _new_renderer(
         site_links = site_links,
         span_char_limit = 2 * len(source_html) if span_char_limit is None else span_char_limit,
         header_decisions = header_decisions,
+        page_span_limit = 2 * len(source_html),
     )
     renderer.feed(source_html)
     renderer.close()

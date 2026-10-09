@@ -2330,6 +2330,20 @@ def test_table_spans_fit_a_small_fetch_budget(monkeypatch):
     assert "Article sentinel." in _fetch_page_text("https://example.com/t", max_chars = 2000)
 
 
+def test_table_span_budget_is_page_wide_and_token_weighted():
+    from core.inference._html_to_md import _new_renderer
+
+    candidate = "<article><table><tr><td colspan='1000'>x</td></tr></table></article>"
+    page = candidate * 3000
+    renderer = _new_renderer(page, frozenset({"article"}), True)
+    assert sum(len(seg) for seg in renderer.scope_segments) < 10 * len(page)
+
+    cell = "中文表格单元内容很长" * 20
+    rows = "".join(f"<tr><td>r{i}</td></tr>" for i in range(1, 50))
+    html = f"<table><tr><td rowspan='50'>{cell}</td><td>r0</td></tr>{rows}</table><p>Article sentinel.</p>"
+    assert html_to_markdown(html, max_span_chars = 3404).count(cell) == 1
+
+
 def test_generated_table_spans_do_not_make_a_main_content_candidate():
     body = "<main><p>" + "Real page body. " * 20 + "</p></main>"
     decoys = (
