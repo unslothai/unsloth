@@ -576,9 +576,7 @@ def test_enable_waits_for_a_version_probe_already_running(npu, monkeypatch):
     assert npu.status()["state"] == "ready"
 
 
-def test_a_status_read_during_enable_runs_no_probe_and_keeps_the_last_versions(
-    npu, monkeypatch
-):
+def test_a_status_read_during_enable_runs_no_probe_and_keeps_the_last_versions(npu, monkeypatch):
     import threading
 
     monkeypatch.setenv("FAKE_FLM_VERSION", "1.0.7")
