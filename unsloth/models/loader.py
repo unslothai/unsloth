@@ -622,6 +622,13 @@ def _built_by_unsloth_compiler(cls):
     return False
 
 
+def _has_vision_config(config):
+    # Qwen2.5-Omni checkpoints name `Qwen2_5OmniModel` (no ForConditionalGeneration) and nest vision under thinker_config.
+    return any(
+        hasattr(sub, "vision_config") for sub in (config, getattr(config, "thinker_config", None))
+    )
+
+
 def _resolve_omni_auto_model(
     model_config,
     trust_remote_code = None,
@@ -2489,9 +2496,9 @@ class FastModel(FastBaseModel):
 
         # Keep the local checkpoint dir as tokenizer when self-sufficient; a VLM also needs local processor files, else fall back to the base repo so its cached processor loads.
         _ckpt_arch = getattr(model_config, "architectures", None) or []
-        _ckpt_is_vlm = any(x.endswith("ForConditionalGeneration") for x in _ckpt_arch) or hasattr(
-            model_config, "vision_config"
-        )
+        _ckpt_is_vlm = any(
+            x.endswith("ForConditionalGeneration") for x in _ckpt_arch
+        ) or _has_vision_config(model_config)
         # T5 / BART end in ForConditionalGeneration too but ship a tokenizer, not a processor.
         _ckpt_is_vlm = _ckpt_is_vlm and not _is_text_seq2seq_config(model_config)
         tokenizer_name = _resolve_checkpoint_tokenizer_name(
@@ -2523,7 +2530,7 @@ class FastModel(FastBaseModel):
         if architectures is None:
             architectures = []
         is_vlm = any(x.endswith("ForConditionalGeneration") for x in architectures)
-        is_vlm = is_vlm or hasattr(model_config, "vision_config")
+        is_vlm = is_vlm or _has_vision_config(model_config)
         if (
             is_peft
             and not text_only
