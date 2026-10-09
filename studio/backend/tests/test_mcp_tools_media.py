@@ -2,15 +2,23 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import base64
+import builtins
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from fastapi.testclient import TestClient
 from fastmcp.exceptions import ToolError
+from pydantic import ValidationError
 
-from studio_mcp import media
+from mcp_server import create_studio_mcp
+from studio_mcp import inputs, media
 from studio_mcp.caller import Caller
+from studio_mcp.inputs import ImageInput
 from studio_mcp.outputs import ToolOutput
+
+from .mcp_harness import call_tool, fake_studio, served
 
 
 def caller(
@@ -107,3 +115,136 @@ def test_a_media_result_carries_the_output_as_json_text_first():
     assert [c.type for c in result.content] == ["text", "image"]
     assert json.loads(result.content[0].text) == {"id": "a"}
     assert result.structured_content == {"id": "a"}
+
+
+PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+LOCAL = {"base_url": "http://127.0.0.1:8888", "client": ("127.0.0.1", 50000)}
+REMOTE = {"base_url": "http://192.168.1.20:8888", "client": ("192.0.2.7", 50000)}
+DECISION = {"model": "m", "answers": {"q": {"type": "noul", "noul": 0.5}}}
+COMPLETION = {"model": "m", "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}
+
+
+@pytest.fixture
+def file_spy(monkeypatch):
+    """Records every way the tool could open or inspect a file."""
+    touched = []
+    real_open, real_stat, real_read = builtins.open, Path.stat, Path.read_bytes
+
+    def spy_open(file, *args, **kwargs):
+        if "mcp-input" in str(file):
+            touched.append(("open", str(file)))
+        return real_open(file, *args, **kwargs)
+
+    def spy_stat(self, *args, **kwargs):
+        if "mcp-input" in str(self):
+            touched.append(("stat", str(self)))
+        return real_stat(self, *args, **kwargs)
+
+    def spy_read(self):
+        if "mcp-input" in str(self):
+            touched.append(("read", str(self)))
+        return real_read(self)
+
+    monkeypatch.setattr(builtins, "open", spy_open)
+    monkeypatch.setattr(Path, "stat", spy_stat)
+    monkeypatch.setattr(Path, "read_bytes", spy_read)
+    return touched
+
+
+@pytest.fixture
+def image_file(tmp_path):
+    path = tmp_path / "mcp-input.png"
+    path.write_bytes(PNG)
+    return path
+
+
+PATH_CALLS = [
+    (
+        "chat",
+        lambda path: {"prompt": "What is this?", "images": [{"path": path}]},
+        "/v1/chat/completions",
+    ),
+    (
+        "system_one",
+        lambda path: {
+            "state": "x",
+            "questions": {"q": {"type": "noul"}},
+            "images": [{"path": path}],
+        },
+        "/v1/systemone",
+    ),
+]
+
+
+def _studio():
+    return fake_studio(
+        {
+            ("POST", "/v1/chat/completions"): lambda request, body: COMPLETION,
+            ("POST", "/v1/systemone"): lambda request, body: DECISION,
+        }
+    )
+
+
+@pytest.mark.parametrize("tool,args,route", PATH_CALLS)
+def test_a_local_agent_may_send_a_path(monkeypatch, file_spy, image_file, tool, args, route):
+    studio = _studio()
+    with TestClient(served(create_studio_mcp(), studio, monkeypatch = monkeypatch), **LOCAL) as http:
+        result = call_tool(http, tool, args(str(image_file)))
+    assert result["isError"] is False, result
+    assert ("read", str(image_file)) in file_spy
+    assert [c[1] for c in studio.state.calls] == [route]
+
+
+@pytest.mark.parametrize("tool,args,route", PATH_CALLS)
+def test_a_remote_agent_may_not_and_the_file_is_never_opened(
+    monkeypatch, file_spy, image_file, tool, args, route
+):
+    studio = _studio()
+    with TestClient(served(create_studio_mcp(), studio, monkeypatch = monkeypatch), **REMOTE) as http:
+        result = call_tool(http, tool, args(str(image_file)))
+    assert result["isError"] is True
+    assert result["content"][0]["text"] == inputs.PATH_REMOTE
+    assert file_spy == []
+    assert studio.state.calls == []
+
+
+def test_a_proxied_loopback_request_counts_as_remote(monkeypatch, file_spy, image_file):
+    studio = _studio()
+    with TestClient(served(create_studio_mcp(), studio, monkeypatch = monkeypatch), **LOCAL) as http:
+        result = call_tool(
+            http,
+            "chat",
+            PATH_CALLS[0][1](str(image_file)),
+            headers = {"X-Forwarded-For": "203.0.113.9"},
+        )
+    assert result["content"][0]["text"] == inputs.PATH_REMOTE
+    assert file_spy == []
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {},
+        {"path": "/a", "data_url": "data:image/png;base64,AA=="},
+        {"gallery_id": "a", "path": "/a"},
+    ],
+)
+def test_an_image_input_takes_exactly_one_source(fields):
+    with pytest.raises(ValidationError):
+        ImageInput(**fields)
+
+
+def test_an_oversized_file_is_refused_before_it_is_read(file_spy, tmp_path):
+    path = tmp_path / "mcp-input-big.png"
+    path.write_bytes(PNG + b"\x00" * 2048)
+    with pytest.raises(ToolError, match = "larger than"):
+        inputs.read_local(caller(), str(path), max_bytes = 1024)
+    assert {kind for kind, _ in file_spy} == {"stat"}
+
+
+def test_oversized_inline_data_is_refused_before_decoding(monkeypatch):
+    decoded = []
+    monkeypatch.setattr(inputs.base64, "b64decode", lambda *a, **k: decoded.append(a) or b"")
+    with pytest.raises(ToolError, match = "larger than"):
+        inputs.decode_base64("A" * 2000, 1024, "data_url")
+    assert decoded == []

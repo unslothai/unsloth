@@ -2,10 +2,11 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import asyncio
+import base64
 import json
 
 import pytest
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.testclient import TestClient
 
 from mcp_server import create_studio_mcp
@@ -151,13 +152,66 @@ def test_an_unknown_role_is_refused(monkeypatch):
     assert studio.state.calls == []
 
 
-def test_images_are_refused_for_now(monkeypatch):
+PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+JPEG = b"\xff\xd8\xff\xe0" + b"\x00" * 32
+WEBP = b"RIFF\x00\x00\x00\x00WEBPVP8 " + b"\x00" * 16
+
+
+def _data_url(data, mime):
+    return f"data:{mime};base64,{base64.b64encode(data).decode()}"
+
+
+def test_chat_images_ride_the_last_user_turn(monkeypatch):
+    studio = _studio(
+        {
+            ("GET", "/api/inference/images/gallery/img-1/file"): lambda request, body: Response(
+                PNG, media_type = "image/png"
+            )
+        }
+    )
+    messages = [
+        {"role": "user", "content": "Hi"},
+        {"role": "assistant", "content": "Hello"},
+        {"role": "user", "content": "What is in these?"},
+    ]
+    images = [{"data_url": _data_url(JPEG, "image/jpeg")}, {"gallery_id": "img-1"}]
+    result = _call(monkeypatch, studio, "chat", {"messages": messages, "images": images})
+    assert result["isError"] is False
+    (body,) = _sent(studio, "/v1/chat/completions")
+    assert body["messages"][0] == {"role": "user", "content": "Hi"}
+    assert body["messages"][2]["content"] == [
+        {"type": "text", "text": "What is in these?"},
+        {"type": "image_url", "image_url": {"url": _data_url(JPEG, "image/jpeg")}},
+        {"type": "image_url", "image_url": {"url": _data_url(PNG, "image/png")}},
+    ]
+    gallery = next(c for c in studio.state.calls if c[1].endswith("/file"))
+    assert gallery[2]["authorization"] == "Bearer sk-unsloth-test"
+
+
+def test_chat_images_need_a_user_turn(monkeypatch):
     studio = _studio()
     result = _call(
-        monkeypatch, studio, "chat", {"prompt": "What is this?", "images": [{"gallery_id": "abc"}]}
+        monkeypatch,
+        studio,
+        "chat",
+        {
+            "messages": [{"role": "assistant", "content": "x"}],
+            "images": [{"data_url": _data_url(PNG, "image/png")}],
+        },
     )
     assert result["isError"] is True
-    assert "images" in result["content"][0]["text"]
+    assert studio.state.calls == []
+
+
+def test_a_bad_data_url_is_refused(monkeypatch):
+    studio = _studio()
+    for url in (
+        "data:image/gif;base64,R0lG",
+        "data:image/png;base64,@@@",
+        _data_url(b"not an image", "image/png"),
+    ):
+        result = _call(monkeypatch, studio, "chat", {"prompt": "x", "images": [{"data_url": url}]})
+        assert result["isError"] is True
     assert studio.state.calls == []
 
 
@@ -434,17 +488,40 @@ def test_system_one_validates_questions_before_calling(monkeypatch, questions):
     assert studio.state.calls == []
 
 
-def test_system_one_refuses_images_for_now(monkeypatch):
+def test_system_one_sends_up_to_four_png_or_jpeg_images(monkeypatch):
+    studio = _studio()
+    images = [
+        {"data_url": _data_url(PNG, "image/png")},
+        {"data_url": _data_url(JPEG, "image/jpeg")},
+    ]
+    result = _call(
+        monkeypatch,
+        studio,
+        "system_one",
+        {"state": "x", "questions": {"urgent": QUESTIONS["urgent"]}, "images": images},
+    )
+    assert result["isError"] is False
+    assert _sent(studio, "/v1/systemone")[0]["images"] == [
+        _data_url(PNG, "image/png"),
+        _data_url(JPEG, "image/jpeg"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "images",
+    [
+        [{"data_url": _data_url(WEBP, "image/webp")}],
+        [{"data_url": _data_url(PNG, "image/png")}] * 5,
+        [{"data_url": _data_url(PNG + b"\x00" * (4 * 1024 * 1024), "image/png")}],
+    ],
+)
+def test_system_one_refuses_images_the_decision_api_would(monkeypatch, images):
     studio = _studio()
     result = _call(
         monkeypatch,
         studio,
         "system_one",
-        {
-            "state": "x",
-            "questions": {"urgent": QUESTIONS["urgent"]},
-            "images": [{"gallery_id": "a"}],
-        },
+        {"state": "x", "questions": {"urgent": QUESTIONS["urgent"]}, "images": images},
     )
     assert result["isError"] is True
     assert studio.state.calls == []
