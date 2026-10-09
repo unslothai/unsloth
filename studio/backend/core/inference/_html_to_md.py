@@ -648,7 +648,8 @@ class _MarkdownRenderer(HTMLParser):
             return
         self._in_cell = False
         cell_text = "".join(self._cell_parts).strip().replace("\n", " ")
-        cell_text = cell_text.replace("|", "\\|")
+        if not self._table_stack:
+            cell_text = cell_text.replace("|", "\\|")
         self._cell_parts = []
         self._fill_spanned_cells(0)
         col = len(self._current_row)
@@ -707,6 +708,15 @@ class _MarkdownRenderer(HTMLParser):
                 col: (text, rows - 1) for col, (text, rows) in self._row_spans.items() if rows > 1
             }
         if not self._current_row:
+            return
+        if self._table_stack:
+            # nested tables flatten into the outer cell: replaying their pipes re-escaped them per level
+            line = " ".join(cell for cell in self._current_row if cell)
+            if line:
+                self._emit_replay(line + "\n")
+            self._is_first_row = False
+            self._current_row = []
+            self._row_has_th = False
             return
         line = "| " + " | ".join(self._current_row) + " |"
         self._emit_replay(line + "\n")

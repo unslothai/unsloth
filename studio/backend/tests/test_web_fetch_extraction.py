@@ -2229,6 +2229,16 @@ def test_table_nested_in_a_header_inside_a_cell_keeps_its_columns():
     assert html_to_markdown(continued, main_content = True) == html_to_markdown(continued)
 
 
+def test_nested_tables_flatten_into_their_outer_cell():
+    nested = "<table><tr><td>A</td><td><table><tr><td>x | y</td><td>z</td></tr></table></td><td>C</td></tr></table>"
+    assert html_to_markdown(nested).splitlines() == ["| A | x \\| y z | C |", "| --- | --- | --- |"]
+    deep = "<table><tr><td>" * 500 + "x" + "</td></tr></table>" * 500
+    assert html_to_markdown(deep) == "| x |\n| --- |"
+    article = "<article>" + "<table><tr><td>" * 8 + "x" + "</td></tr></table>" * 8 + "</article>"
+    main = "<main>" + "<p>Real page body.</p>" * 20 + "</main>"
+    assert "Real page body." in html_to_markdown(article + main, main_content = True)
+
+
 def test_spanned_table_cells_stay_in_their_columns():
     html = (
         "<table>"
