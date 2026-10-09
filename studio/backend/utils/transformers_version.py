@@ -44,6 +44,7 @@ import stat
 import subprocess
 import sys
 import sysconfig
+import tarfile
 import tempfile
 import urllib.request
 import threading
@@ -3741,8 +3742,9 @@ def ensure_latest_transformers_venv(
 _LLMC_MAIN_TRANSFORMERS = "5.10.2"
 _LLMC_MAIN_SHA = "973c9c539a84dd9efaf74e115ede5ca419704c18"
 _LLMC_MAIN_COMPRESSED_TENSORS = "0.17.2a20260702"
-# GitHub's source archive of _LLMC_MAIN_SHA (stable bytes), and `git describe` of that commit.
-_LLMC_MAIN_ARCHIVE_SHA256 = "4755e18a5466dd29e2247d9682d62cf9becb3679572d05a3a559d4cfaaa5f992"
+# Content digest of GitHub's source archive of _LLMC_MAIN_SHA (_archive_content_digest), and
+# `git describe` of that commit. GitHub keeps an archive's contents stable, not its bytes.
+_LLMC_MAIN_ARCHIVE_DIGEST = "63ccb4f99833e3b24602f18a1e386e6c1127c1a84f7fc4e8ff56336c929138f8"
 _LLMC_MAIN_DESCRIBE = "0.12.0-40"
 # Installed --no-deps (torch untouched) beside llmcompressor's source tree; the full runtime set
 # llm-compressor main needs, pinned.
@@ -3842,14 +3844,13 @@ def _download_llmcompressor_source(parent: Path) -> Path:
 
     url = f"https://github.com/vllm-project/llm-compressor/archive/{_LLMC_MAIN_SHA}.tar.gz"
     archive = parent / "llm-compressor.tar.gz"
-    digest = hashlib.sha256()
     request = urllib.request.Request(url, headers = {"User-Agent": "unsloth-studio"})
-    with urllib.request.urlopen(request, timeout = 300) as response, open(archive, "wb") as out:
-        while chunk := response.read(1 << 20):
-            digest.update(chunk)
-            out.write(chunk)
-    if digest.hexdigest() != _LLMC_MAIN_ARCHIVE_SHA256:
-        raise RuntimeError(f"{url} failed its sha256 check")
+    opener = _hf_proxy_opener(url)  # honours ALL_PROXY, which plain urlopen ignores for https
+    with (opener.open if opener else urllib.request.urlopen)(request, timeout = 300) as response:
+        with open(archive, "wb") as out:
+            shutil.copyfileobj(response, out, 1 << 20)
+    if _archive_content_digest(archive) != _LLMC_MAIN_ARCHIVE_DIGEST:
+        raise RuntimeError(f"{url} failed its content checksum")
     safe_extract_tar(archive, parent)
     source = parent / f"llm-compressor-{_LLMC_MAIN_SHA}"
     (source / ".git_archival.txt").write_text(
@@ -3857,6 +3858,27 @@ def _download_llmcompressor_source(parent: Path) -> Path:
         encoding = "utf-8",
     )
     return source
+
+
+def _archive_content_digest(archive: Path) -> str:
+    """sha256 over each file's path and contents, independent of compression, member order and
+    the root directory name."""
+    entries = []
+    with tarfile.open(archive, "r:gz") as tar:
+        for member in tar:
+            rel = member.name.split("/", 1)[1] if "/" in member.name else ""
+            if member.isfile():
+                file_digest = hashlib.sha256()
+                handle = tar.extractfile(member)
+                while chunk := handle.read(1 << 20):
+                    file_digest.update(chunk)
+                entries.append(f"f {rel} {file_digest.hexdigest()}")
+            elif member.issym() or member.islnk():
+                entries.append(f"l {rel} {member.linkname}")
+    digest = hashlib.sha256()
+    for entry in sorted(entries):
+        digest.update(entry.encode("utf-8") + b"\n")
+    return digest.hexdigest()
 
 
 def _install_llmcompressor_shadow(source: Path) -> bool:

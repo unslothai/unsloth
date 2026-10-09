@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import io
 import tarfile
 
@@ -14,14 +13,26 @@ import pytest
 from utils import transformers_version as tv
 
 
-def _archive_bytes() -> bytes:
+def _archive_bytes(
+    root = None,
+    files = None,
+    level = 9,
+) -> bytes:
+    root = root or f"llm-compressor-{tv._LLMC_MAIN_SHA}"
+    files = files or {"setup.py": b"from setuptools import setup\n"}
     buf = io.BytesIO()
-    with tarfile.open(fileobj = buf, mode = "w:gz") as tar:
-        data = b"from setuptools import setup\n"
-        info = tarfile.TarInfo(f"llm-compressor-{tv._LLMC_MAIN_SHA}/setup.py")
-        info.size = len(data)
-        tar.addfile(info, io.BytesIO(data))
+    with tarfile.open(fileobj = buf, mode = "w:gz", compresslevel = level) as tar:
+        for name, data in files.items():
+            info = tarfile.TarInfo(f"{root}/{name}")
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
     return buf.getvalue()
+
+
+def _digest(tmp_path, payload: bytes) -> str:
+    archive = tmp_path / "digest.tgz"
+    archive.write_bytes(payload)
+    return tv._archive_content_digest(archive)
 
 
 class _Response(io.BytesIO):
@@ -43,12 +54,12 @@ def shadow(monkeypatch, tmp_path):
 
 def _serve(
     monkeypatch,
+    tmp_path,
     payload: bytes,
     digest: str | None = None,
 ):
-    monkeypatch.setattr(
-        tv, "_LLMC_MAIN_ARCHIVE_SHA256", digest or hashlib.sha256(payload).hexdigest()
-    )
+    monkeypatch.setattr(tv, "_LLMC_MAIN_ARCHIVE_DIGEST", digest or _digest(tmp_path, payload))
+    monkeypatch.setattr(tv, "_hf_proxy_opener", lambda url: None)
     urls = []
 
     def fake_urlopen(request, timeout = None):
@@ -60,7 +71,7 @@ def _serve(
 
 
 def test_installs_the_extracted_source_with_no_git_requirement(monkeypatch, shadow):
-    urls = _serve(monkeypatch, _archive_bytes())
+    urls = _serve(monkeypatch, shadow, _archive_bytes())
     seen = []
 
     class _Done:
@@ -86,7 +97,7 @@ def test_installs_the_extracted_source_with_no_git_requirement(monkeypatch, shad
 
 
 def test_checksum_mismatch_installs_nothing(monkeypatch, shadow):
-    _serve(monkeypatch, _archive_bytes(), digest = "0" * 64)
+    _serve(monkeypatch, shadow, _archive_bytes(), digest = "0" * 64)
     monkeypatch.setattr(tv.subprocess, "run", lambda *a, **k: pytest.fail("ran an install"))
     assert tv._ensure_venv_llmcompressor_exists() is False
 
@@ -98,6 +109,36 @@ def test_network_error_fails_cleanly(monkeypatch, shadow):
     monkeypatch.setattr(tv.urllib.request, "urlopen", boom)
     monkeypatch.setattr(tv.subprocess, "run", lambda *a, **k: pytest.fail("ran an install"))
     assert tv._ensure_venv_llmcompressor_exists() is False
+
+
+def test_content_digest_ignores_compression_order_and_root_name(tmp_path):
+    files = {"a.py": b"a = 1\n", "pkg/b.py": b"b = 2\n"}
+    base = _digest(tmp_path, _archive_bytes(files = files))
+    reordered = dict(reversed(list(files.items())))
+    assert _digest(tmp_path, _archive_bytes("renamed-root", reordered, level = 1)) == base
+    assert _digest(tmp_path, _archive_bytes(files = {**files, "a.py": b"a = 3\n"})) != base
+
+
+def test_the_download_goes_through_the_proxy_aware_opener(monkeypatch, shadow):
+    payload = _archive_bytes()
+    _serve(monkeypatch, shadow, payload)
+    opened = []
+
+    class _Opener:
+        def open(
+            self,
+            request,
+            timeout = None,
+        ):
+            opened.append(request.full_url)
+            return _Response(payload)
+
+    monkeypatch.setattr(tv, "_hf_proxy_opener", lambda url: _Opener())
+    monkeypatch.setattr(
+        tv.urllib.request, "urlopen", lambda *a, **k: pytest.fail("bypassed the proxy")
+    )
+    assert tv._download_llmcompressor_source(shadow).is_dir()
+    assert opened
 
 
 @pytest.mark.allow_network
