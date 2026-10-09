@@ -2815,6 +2815,15 @@ export const ja = {
         addConnection: "ホスト型の判定モデルを使うには、接続で TypeSafe、Liquid AI、OpenRouter のいずれかを追加してください。",
         openConnections: "接続を開く",
       },
+      mcp: {
+        title: "エージェントアクセス (MCP)",
+        description: "Claude Code や Codex などのコーディングエージェントが MCP 経由で Studio を使えるようにします。エージェントはこのページのアクセストークンでサインインします。",
+        enable: "エージェントの接続を許可",
+        enableDescription: "Studio のアクセストークンを持つリクエストに /mcp/ を提供します。",
+        lockedByEnv: "{name} で設定されています。",
+        loadError: "エージェントアクセスの設定を読み込めませんでした。",
+        saveError: "エージェントアクセスの設定を保存できませんでした。",
+      },
       usageNoModel:
         "モデルを読み込むかダウンロードすると、実行できる例が表示されます。このサーバーにはまだ指定できるモデルがありません。",
     },

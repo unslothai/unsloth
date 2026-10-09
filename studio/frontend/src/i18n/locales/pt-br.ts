@@ -2861,6 +2861,15 @@ export const ptBR = {
         addConnection: "Para usar um modelo de decisões hospedado, adicione TypeSafe, Liquid AI ou OpenRouter em Conexões.",
         openConnections: "Abrir Conexões",
       },
+      mcp: {
+        title: "Acesso de agentes (MCP)",
+        description: "Permita que agentes de código como Claude Code e Codex usem o Studio via MCP. Os agentes entram com um token de acesso desta página.",
+        enable: "Permitir conexões de agentes",
+        enableDescription: "Atende /mcp/ para solicitações que trazem um token de acesso do Studio.",
+        lockedByEnv: "Definido por {name}.",
+        loadError: "Não foi possível carregar as configurações de acesso de agentes.",
+        saveError: "Não foi possível salvar a configuração de acesso de agentes.",
+      },
       usageNoModel:
         "Carregue ou baixe um modelo para ver exemplos executáveis. Este servidor ainda não tem nenhum modelo para indicar.",
     },

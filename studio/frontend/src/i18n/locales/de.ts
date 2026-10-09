@@ -2889,6 +2889,15 @@ export const de = {
         addConnection: "Für ein gehostetes Entscheidungsmodell füge TypeSafe, Liquid AI oder OpenRouter unter Verbindungen hinzu.",
         openConnections: "Verbindungen öffnen",
       },
+      mcp: {
+        title: "Agentenzugriff (MCP)",
+        description: "Lass Coding-Agenten wie Claude Code und Codex Studio über MCP nutzen. Agenten melden sich mit einem Zugriffstoken von dieser Seite an.",
+        enable: "Agentenverbindungen erlauben",
+        enableDescription: "Stellt /mcp/ für Anfragen mit einem Studio-Zugriffstoken bereit.",
+        lockedByEnv: "Festgelegt durch {name}.",
+        loadError: "Die Einstellungen für den Agentenzugriff konnten nicht geladen werden.",
+        saveError: "Die Einstellung für den Agentenzugriff konnte nicht gespeichert werden.",
+      },
       usageNoModel:
         "Laden Sie ein Modell oder laden Sie eines herunter, um ausführbare Beispiele zu sehen. Dieser Server kennt noch kein Modell, das in den Beispielen verwendet werden könnte.",
     },

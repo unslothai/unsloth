@@ -2835,6 +2835,15 @@ export const ko = {
         addConnection: "호스팅된 판단 모델을 사용하려면 연결에서 TypeSafe, Liquid AI 또는 OpenRouter를 추가하세요.",
         openConnections: "연결 열기",
       },
+      mcp: {
+        title: "에이전트 액세스 (MCP)",
+        description: "Claude Code, Codex 같은 코딩 에이전트가 MCP로 Studio를 사용하게 합니다. 에이전트는 이 페이지의 액세스 토큰으로 로그인합니다.",
+        enable: "에이전트 연결 허용",
+        enableDescription: "Studio 액세스 토큰이 있는 요청에 /mcp/를 제공합니다.",
+        lockedByEnv: "{name}(으)로 설정됨.",
+        loadError: "에이전트 액세스 설정을 불러오지 못했습니다.",
+        saveError: "에이전트 액세스 설정을 저장하지 못했습니다.",
+      },
       usageNoModel:
         "모델을 로드하거나 다운로드하면 실행 가능한 예제가 표시됩니다. 이 서버에는 아직 지정할 모델이 없습니다.",
     },

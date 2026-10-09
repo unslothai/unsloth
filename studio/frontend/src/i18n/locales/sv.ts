@@ -3059,6 +3059,15 @@ export const sv = {
           "Lägg till TypeSafe, Liquid AI eller OpenRouter under Anslutningar för att använda en värdbaserad beslutsmodell.",
         openConnections: "Öppna Anslutningar",
       },
+      mcp: {
+        title: "Agentåtkomst (MCP)",
+        description: "Låt kodagenter som Claude Code och Codex använda Studio via MCP. Agenter loggar in med en åtkomsttoken från den här sidan.",
+        enable: "Tillåt agentanslutningar",
+        enableDescription: "Betjänar /mcp/ för förfrågningar som har en åtkomsttoken för Studio.",
+        lockedByEnv: "Angiven av {name}.",
+        loadError: "Det gick inte att läsa in inställningarna för agentåtkomst.",
+        saveError: "Det gick inte att spara inställningen för agentåtkomst.",
+      },
     },
     about: {
       title: "Om",

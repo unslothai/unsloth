@@ -2958,6 +2958,15 @@ export const he = {
           "כדי להשתמש במודל החלטות מתארח, הוסף את TypeSafe,‏ Liquid AI או OpenRouter ב'חיבורים'.",
         openConnections: "פתח את 'חיבורים'",
       },
+      mcp: {
+        title: "גישת סוכנים (MCP)",
+        description: "אפשר לסוכני קוד כמו Claude Code ו-Codex להשתמש ב-Studio דרך MCP. סוכנים מתחברים עם טוקן גישה מהדף הזה.",
+        enable: "אפשר חיבורי סוכנים",
+        enableDescription: "מגיש את /mcp/ לבקשות שנושאות טוקן גישה של Studio.",
+        lockedByEnv: "נקבע על ידי {name}.",
+        loadError: "לא ניתן לטעון את הגדרות גישת הסוכנים.",
+        saveError: "לא ניתן לשמור את הגדרת גישת הסוכנים.",
+      },
     },
     about: {
       title: "אודות",
