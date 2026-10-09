@@ -30,6 +30,10 @@ const REPLAY_GEMINI_TURNS =
   /serializeGeminiContinuationTurns\(geminiReplayTurns, false\)/;
 const PRESERVE_GEMINI_BOUNDARY =
   /geminiContinuationReplay: geminiContinuationReplay\(false\),[\s\S]*incomplete:/;
+const RETAIN_GEMINI_BOUNDARY_ACROSS_PROVIDER_SWITCH =
+  /const geminiContinuationReplayTurns =\s*continuation\?\.geminiReplayTurns\?\.length/;
+const ACTIVE_PROVIDER_DOES_NOT_GATE_GEMINI_BOUNDARY =
+  /externalProvider\?\.providerType === "gemini" &&\s*continuation\?\.geminiReplayTurns/;
 
 test("the source splits a reply into the answer and the thought before it", () => {
   assert.deepEqual(
@@ -139,6 +143,8 @@ test("Gemini continuations retain the provider turn boundary", () => {
   assert.match(adapter, REPLAY_GEMINI_THOUGHTS);
   assert.match(adapter, REPLAY_GEMINI_TURNS);
   assert.match(adapter, PRESERVE_GEMINI_BOUNDARY);
+  assert.match(adapter, RETAIN_GEMINI_BOUNDARY_ACROSS_PROVIDER_SWITCH);
+  assert.doesNotMatch(adapter, ACTIVE_PROVIDER_DOES_NOT_GATE_GEMINI_BOUNDARY);
 });
 
 /** What the adapter's stream loop appends, per delta, to a seeded buffer. */

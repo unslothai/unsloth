@@ -5743,7 +5743,6 @@ export function createOpenAIStreamAdapter(
         ? continuationSeed(continuation.partial, resumedThought)
         : "";
       const geminiContinuationReplayTurns =
-        externalProvider?.providerType === "gemini" &&
         continuation?.geminiReplayTurns?.length
           ? continuation.geminiReplayTurns
           : undefined;
