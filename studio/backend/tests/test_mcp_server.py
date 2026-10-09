@@ -23,6 +23,7 @@ def test_studio_mcp_registers_control_plane_tools():
         "list_models",
         "chat",
         "embed",
+        "system_one",
         "load_model",
         "unload_model",
         "start_training",

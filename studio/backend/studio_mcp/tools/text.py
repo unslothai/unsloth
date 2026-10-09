@@ -1,19 +1,23 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Text tools: ``chat`` and ``embed``."""
+"""Text tools: ``chat``, ``embed`` and ``system_one``."""
 
 from __future__ import annotations
 
+import json
 import uuid
-from typing import Annotated, Literal, Optional
+from typing import Annotated, Any, Literal, Optional, Union
 
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from pydantic import BaseModel, ConfigDict, Field
 
-from studio_mcp.outputs import ChatResult, EmbedResult, Usage
-from studio_mcp.tools import READ_ONLY, WRITES, integer, route_json, text
+from studio_mcp.caller import current_caller
+from studio_mcp.errors import raise_for_route
+from studio_mcp.forward import forward
+from studio_mcp.outputs import ChatResult, DecisionAnswer, EmbedResult, SystemOneResult, Usage
+from studio_mcp.tools import READ_ONLY, WRITES, integer, number, route_json, text
 
 MAX_EMBED_INPUTS = 2048
 EMBED_DOWNLOAD_HINT = (
@@ -125,6 +129,71 @@ async def embed(
     )
 
 
+MAX_DECISION_QUESTIONS = 64
+DECISION_API_OFF_HINT = "Turn on the Decision API in Settings > API."
+
+
+class DecisionQuestion(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    type: Literal["noul", "choice", "score"]
+    instructions: Optional[Union[str, dict[str, Any], list[Any]]] = None
+    criteria: Optional[Union[str, dict[str, Any], list[Any]]] = None
+
+
+def _floats(values: Any) -> Optional[dict[str, float]]:
+    if not isinstance(values, dict):
+        return None
+    return {str(k): float(v) for k, v in values.items() if number(v) is not None}
+
+
+def _answer(answer: dict) -> DecisionAnswer:
+    legend = answer.get("legend")
+    return DecisionAnswer(
+        type = str(answer.get("type")),
+        noul = number(answer.get("noul")),
+        choice = text(answer.get("choice")),
+        score = number(answer.get("score")),
+        confidence = number(answer.get("confidence")),
+        probabilities = _floats(answer.get("probabilities")),
+        legend = {
+            str(k): v if isinstance(v, str) else json.dumps(v, ensure_ascii = False)
+            for k, v in legend.items()
+        }
+        if isinstance(legend, dict)
+        else None,
+    )
+
+
+async def system_one(
+    state: Union[str, dict[str, Any], list[Any]],
+    questions: Annotated[
+        dict[str, DecisionQuestion], Field(min_length = 1, max_length = MAX_DECISION_QUESTIONS)
+    ],
+    images: Annotated[Optional[list[dict]], Field(max_length = 4)] = None,
+    model: str = "default",
+) -> SystemOneResult:
+    """Ask Studio's decision model (SystemOne) typed questions about a state, given as text or JSON. ``questions`` maps a name you pick to {"type", "instructions", "criteria"}, for example {"urgent": {"type": "noul", "instructions": "Does this need a reply within the hour?"}}. "noul" is yes or no and answers a probability; "choice" needs criteria mapping each option name to a description; "score" needs criteria listing 1 to 10 levels, lowest first. ``model`` "default" uses the model picked in Settings. The Decision API must be on (Settings > API)."""
+    if images:
+        raise ToolError("system_one does not take images yet. Describe them in the state instead.")
+    body = {
+        "state": state,
+        "model": model,
+        "questions": {name: q.model_dump(exclude_none = True) for name, q in questions.items()},
+    }
+    response = await forward(current_caller(), "POST", "/v1/systemone", json_body = body)
+    payload = raise_for_route(response, hints = {404: DECISION_API_OFF_HINT})
+    answers = payload.get("answers") if isinstance(payload, dict) else None
+    if not isinstance(answers, dict):
+        raise ToolError("Studio returned no answers")
+    return SystemOneResult(
+        model = text(payload.get("model")),
+        answers = {str(k): _answer(v) for k, v in answers.items() if isinstance(v, dict)},
+        request_id = text(response.headers.get("x-typesafe-request-id")),
+    )
+
+
 def register_text(mcp: FastMCP) -> None:
     mcp.tool(chat, annotations = WRITES)
     mcp.tool(embed, annotations = READ_ONLY)
+    mcp.tool(system_one, annotations = READ_ONLY)

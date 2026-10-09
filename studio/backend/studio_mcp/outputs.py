@@ -162,3 +162,20 @@ class EmbedResult(ToolOutput):
     model: Optional[RouteText] = None
     dimensions: int
     embeddings: list[list[float]]
+
+
+class DecisionAnswer(ToolOutput):
+    type: RouteText
+    # noul: probability of yes. choice: the picked option. score: the level, 1 being lowest.
+    noul: Optional[float] = None
+    choice: Optional[RouteText] = None
+    score: Optional[float] = None
+    confidence: Optional[float] = None
+    probabilities: Optional[dict[str, float]] = None
+    legend: Optional[dict[str, RouteText]] = None
+
+
+class SystemOneResult(ToolOutput):
+    model: Optional[RouteText] = None
+    answers: dict[str, DecisionAnswer]
+    request_id: Optional[RouteText] = None

@@ -45,6 +45,7 @@ CASES: dict[str, tuple[dict, dict]] = {
     "unload_model": (LOADING_PAYLOADS, {}),
     "chat": (TEXT_PAYLOADS, {"prompt": "hi"}),
     "embed": (TEXT_PAYLOADS, {"texts": ["a", "b"]}),
+    "system_one": (TEXT_PAYLOADS, {"state": "x", "questions": {"urgent": {"type": "noul"}}}),
 }
 
 # Output keys that carry model-written text, which is the model's to say and is never rewritten.

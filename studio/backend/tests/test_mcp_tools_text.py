@@ -32,7 +32,37 @@ EMBEDDINGS = {
     ],
 }
 
-PAYLOADS = {("POST", "/v1/chat/completions"): COMPLETION, ("POST", "/v1/embeddings"): EMBEDDINGS}
+DECISION = {
+    "model": "laya-multilingual",
+    "answers": {
+        "urgent": {"type": "noul", "noul": 0.9},
+        "topic": {
+            "type": "choice",
+            "choice": "billing",
+            "confidence": 0.8,
+            "probabilities": {"billing": 0.8, "bug": 0.2},
+        },
+        "tone": {
+            "type": "score",
+            "score": 2.0,
+            "confidence": 0.7,
+            "legend": {"0": "calm", "1": {"text": "angry"}},
+            "probabilities": {"1": 0.3, "2": 0.7},
+        },
+    },
+    "usage": {"input_tokens": 40, "output_tokens": 0},
+}
+
+PAYLOADS = {
+    ("POST", "/v1/chat/completions"): COMPLETION,
+    ("POST", "/v1/embeddings"): EMBEDDINGS,
+    ("POST", "/v1/systemone"): DECISION,
+}
+QUESTIONS = {
+    "urgent": {"type": "noul", "instructions": "Does this need a reply within the hour?"},
+    "topic": {"type": "choice", "criteria": {"billing": "Money", "bug": "Defect"}},
+    "tone": {"type": "score", "criteria": ["calm", "angry"]},
+}
 
 
 def _studio(overrides = None):
@@ -254,3 +284,176 @@ def test_embed_is_read_only():
     assert tool.output_schema is not None
     texts = tool.parameters["properties"]["texts"]
     assert (texts["minItems"], texts["maxItems"]) == (1, 2048)
+
+
+def test_system_one_sends_the_default_model_and_maps_every_answer_type(monkeypatch):
+    def decide(request, body):
+        return JSONResponse(DECISION, headers = {"x-typesafe-request-id": "req-1"})
+
+    studio = _studio({("POST", "/v1/systemone"): decide})
+    result = _call(
+        monkeypatch,
+        studio,
+        "system_one",
+        {"state": "Customer: I was charged twice!", "questions": QUESTIONS},
+    )
+    assert result["structuredContent"] == {
+        "model": "laya-multilingual",
+        "request_id": "req-1",
+        "answers": {
+            "urgent": {
+                "type": "noul",
+                "noul": 0.9,
+                "choice": None,
+                "score": None,
+                "confidence": None,
+                "probabilities": None,
+                "legend": None,
+            },
+            "topic": {
+                "type": "choice",
+                "noul": None,
+                "choice": "billing",
+                "score": None,
+                "confidence": 0.8,
+                "probabilities": {"billing": 0.8, "bug": 0.2},
+                "legend": None,
+            },
+            "tone": {
+                "type": "score",
+                "noul": None,
+                "choice": None,
+                "score": 2.0,
+                "confidence": 0.7,
+                "probabilities": {"1": 0.3, "2": 0.7},
+                "legend": {"0": "calm", "1": '{"text": "angry"}'},
+            },
+        },
+    }
+    (body,) = _sent(studio, "/v1/systemone")
+    assert body == {
+        "state": "Customer: I was charged twice!",
+        "model": "default",
+        "questions": QUESTIONS,
+    }
+
+
+def test_system_one_takes_json_state(monkeypatch):
+    studio = _studio()
+    _call(
+        monkeypatch,
+        studio,
+        "system_one",
+        {"state": {"ticket": 7}, "questions": {"urgent": QUESTIONS["urgent"]}},
+    )
+    assert _sent(studio, "/v1/systemone")[0]["state"] == {"ticket": 7}
+
+
+def test_the_decision_api_being_off_gives_guidance(monkeypatch):
+    def off(request, body):
+        return JSONResponse(
+            {
+                "detail": {
+                    "error_type": "api_usage_error",
+                    "message": "The Decision API is off. The Studio owner can turn it on in Settings > API.",
+                }
+            },
+            status_code = 404,
+        )
+
+    studio = _studio({("POST", "/v1/systemone"): off})
+    result = _call(
+        monkeypatch,
+        studio,
+        "system_one",
+        {"state": "x", "questions": {"urgent": QUESTIONS["urgent"]}},
+    )
+    assert result["isError"] is True
+    message = result["content"][0]["text"]
+    assert message.startswith("The Decision API is off.")
+    assert message.endswith("Turn on the Decision API in Settings > API.")
+
+
+def test_a_loading_decision_model_says_when_to_retry(monkeypatch):
+    def loading(request, body):
+        return JSONResponse(
+            {
+                "detail": {
+                    "error_type": "model_loading",
+                    "message": "The decision model is loading.",
+                }
+            },
+            status_code = 503,
+            headers = {"Retry-After": "12"},
+        )
+
+    studio = _studio({("POST", "/v1/systemone"): loading})
+    result = _call(
+        monkeypatch,
+        studio,
+        "system_one",
+        {"state": "x", "questions": {"urgent": QUESTIONS["urgent"]}},
+    )
+    assert (
+        result["content"][0]["text"]
+        == "The decision model is loading. (HTTP 503) Retry after 12 s."
+    )
+
+
+def test_a_detail_error_type_message_is_used(monkeypatch):
+    def unknown(request, body):
+        return JSONResponse(
+            {"detail": {"error_type": "api_usage_error", "message": "Unknown model: nope"}},
+            status_code = 400,
+        )
+
+    studio = _studio({("POST", "/v1/systemone"): unknown})
+    result = _call(
+        monkeypatch,
+        studio,
+        "system_one",
+        {"state": "x", "questions": {"urgent": QUESTIONS["urgent"]}, "model": "nope"},
+    )
+    assert result["content"][0]["text"] == "Unknown model: nope (HTTP 400)"
+    assert _sent(studio, "/v1/systemone")[0]["model"] == "nope"
+
+
+@pytest.mark.parametrize(
+    "questions",
+    [
+        {},
+        {f"q{i}": {"type": "noul"} for i in range(65)},
+        {"q": {"type": "maybe"}},
+        {"q": {"type": "noul", "extra": 1}},
+    ],
+)
+def test_system_one_validates_questions_before_calling(monkeypatch, questions):
+    studio = _studio()
+    result = _call(monkeypatch, studio, "system_one", {"state": "x", "questions": questions})
+    assert result["isError"] is True
+    assert studio.state.calls == []
+
+
+def test_system_one_refuses_images_for_now(monkeypatch):
+    studio = _studio()
+    result = _call(
+        monkeypatch,
+        studio,
+        "system_one",
+        {
+            "state": "x",
+            "questions": {"urgent": QUESTIONS["urgent"]},
+            "images": [{"gallery_id": "a"}],
+        },
+    )
+    assert result["isError"] is True
+    assert studio.state.calls == []
+
+
+def test_system_one_is_read_only():
+    tool = {t.name: t for t in asyncio.run(create_studio_mcp().list_tools())}["system_one"]
+    assert tool.annotations.readOnlyHint is True
+    assert tool.annotations.openWorldHint is False
+    assert tool.output_schema is not None
+    assert tool.parameters["properties"]["model"]["default"] == "default"
+    assert tool.parameters["properties"]["images"]["anyOf"][0]["maxItems"] == 4
