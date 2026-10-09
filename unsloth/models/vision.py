@@ -1524,6 +1524,10 @@ def _static_cache_does_not_fit(model, input_ids, kwargs):
         need = _static_cache_bytes(model, input_ids, kwargs, exact = False)
         if need is None:
             return False
+        # mem_get_info is a driver call (p90 7-10 ms on a busy host), so a cache under 1/16
+        # of the card never pays it.
+        if need * 16 <= backend.get_device_properties(device).total_memory:
+            return False
         free = backend.mem_get_info(device)[0]
         if need <= free // 2:
             return False

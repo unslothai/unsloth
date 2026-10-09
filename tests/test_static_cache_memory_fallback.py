@@ -224,8 +224,14 @@ def test_no_estimate_with_caller_cache_or_encoder_decoder():
 
 @pytest.fixture
 def fake_cuda(monkeypatch):
-    state = {"free": 0, "reserved": 0, "allocated": 0}
+    state = {"free": 0, "reserved": 0, "allocated": 0, "total": 1024}
     monkeypatch.setattr(torch.cuda, "mem_get_info", lambda device = None: (state["free"], 80 * GB))
+    # A tiny total keeps every test cache above the 1/16 of the card that skips the probe.
+    monkeypatch.setattr(
+        torch.cuda,
+        "get_device_properties",
+        lambda device = None: types.SimpleNamespace(total_memory = state["total"]),
+    )
     monkeypatch.setattr(torch.cuda, "memory_reserved", lambda device = None: state["reserved"])
     monkeypatch.setattr(torch.cuda, "memory_allocated", lambda device = None: state["allocated"])
     monkeypatch.setattr(vision.logger, "warning_once", lambda *a, **k: None)
@@ -278,6 +284,7 @@ def test_unmeasured_placements_keep_static(fake_cuda, model_kwargs):
 
 def test_xpu_device_is_measured(monkeypatch):
     xpu = types.SimpleNamespace(
+        get_device_properties = lambda device = None: types.SimpleNamespace(total_memory = 1024),
         mem_get_info = lambda device = None: (0, 80 * GB),
         memory_reserved = lambda device = None: 0,
         memory_allocated = lambda device = None: 0,
@@ -313,6 +320,22 @@ def _tiny_generate(monkeypatch, free_bytes):
     model._old_generate = model.generate
     model.generate = types.MethodType(vision.unsloth_base_fast_generate, model)
     monkeypatch.setattr(torch.cuda, "mem_get_info", lambda device = None: (free_bytes, 80 * GB))
+    real_properties = torch.cuda.get_device_properties
+
+    class SmallCard:
+        def __init__(self, props):
+            self.props = props
+
+        total_memory = 1024
+
+        def __getattr__(self, name):
+            return getattr(self.props, name)
+
+    monkeypatch.setattr(
+        torch.cuda,
+        "get_device_properties",
+        lambda device = None: SmallCard(real_properties(device)),
+    )
     monkeypatch.setattr(torch.cuda, "memory_reserved", lambda device = None: 0)
     monkeypatch.setattr(torch.cuda, "memory_allocated", lambda device = None: 0)
     monkeypatch.setattr(vision.logger, "warning_once", lambda *a, **k: None)
@@ -377,3 +400,16 @@ def test_caller_config_default_values_count_as_unset(monkeypatch):
         model, torch.zeros(1, 1, dtype = torch.long), {"max_new_tokens": 131071, "num_beams": 1}
     )
     assert _static_cache_bytes(model, input_ids, {"generation_config": caller}) == 2 * one_beam
+
+
+def test_small_cache_skips_the_driver_probe(fake_cuda, monkeypatch):
+    """A cache under 1/16 of the card never calls mem_get_info (a slow driver call)."""
+
+    def probe(device = None):
+        raise AssertionError("mem_get_info called")
+
+    config, need = _cache_bytes_for(4096)
+    fake_cuda["total"] = 64 * need
+    monkeypatch.setattr(torch.cuda, "mem_get_info", probe)
+    ids = torch.zeros(1, 1, dtype = torch.long)
+    assert not _static_cache_does_not_fit(_model(config), ids, {"max_new_tokens": 4095})
