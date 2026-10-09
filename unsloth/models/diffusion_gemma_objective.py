@@ -140,9 +140,10 @@ class DiffusionGemmaProfile(DiffusionProfile):
             "decoder_position_ids": encoder_len[:, None] + offsets,
         }
         # Two-pass self-conditioning: a no-grad first pass supplies the logits, kept per example with prob p.
-        with torch.no_grad():
-            model_kwargs["self_conditioning_logits"] = model(**model_kwargs).logits
-        model_kwargs["self_conditioning_mask"] = torch.rand(batch_size, device = device) < sc_p
+        if sc_p > 0:
+            with torch.no_grad():
+                model_kwargs["self_conditioning_logits"] = model(**model_kwargs).logits
+            model_kwargs["self_conditioning_mask"] = torch.rand(batch_size, device = device) < sc_p
         outputs = model(**model_kwargs)
 
         # Flat CE over the whole canvas, corrupted and clean alike: the uniform kernel's ELBO has no 1/t weight.

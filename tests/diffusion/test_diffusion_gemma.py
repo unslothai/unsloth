@@ -245,3 +245,15 @@ def test_caller_quantization_config_is_kept():
     qcfg = BitsAndBytesConfig(load_in_4bit = True, bnb_4bit_quant_type = "fp4")
     m, _ = FastModel.from_pretrained(TINY, quantization_config = qcfg, load_in_4bit = True)
     assert m.config.quantization_config.bnb_4bit_quant_type == "fp4"
+
+
+def test_self_conditioning_off_skips_the_conditioning_pass(model):
+    batch = _batch(model.config.text_config.vocab_size, model.config.canvas_length)
+    calls = []
+    hook = model.register_forward_pre_hook(lambda *a: calls.append(1))
+    try:
+        torch.manual_seed(0)
+        DIFFUSION_GEMMA_PROFILE.compute_loss(model, batch, _args(diffusion_self_conditioning_p = 0.0))
+    finally:
+        hook.remove()
+    assert len(calls) == 1
