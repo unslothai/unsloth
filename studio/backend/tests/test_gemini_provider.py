@@ -2640,6 +2640,61 @@ def test_chat_message_extra_content_round_trips_through_validation():
     assert "extra_content" not in built_custom[1], built_custom[1]
 
 
+def test_metadata_only_gemini_assistant_turn_survives_external_message_build():
+    """Gemini can finish with a signed thought summary and no visible answer.
+    Preserve that metadata-only assistant turn for the next native Gemini request."""
+    from models.inference import ChatCompletionRequest
+    from routes.inference import _build_external_messages
+
+    req = ChatCompletionRequest.model_validate(
+        {
+            "model": "gemini-2.5-flash",
+            "messages": [
+                {"role": "user", "content": "think silently"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "extra_content": {
+                        "google": {
+                            "thought_parts": [
+                                {"text": "private summary", "thought_signature": "SIG-ONLY"}
+                            ]
+                        }
+                    },
+                },
+                {"role": "user", "content": "continue"},
+            ],
+            "max_tokens": 64,
+            "stream": True,
+        }
+    )
+
+    built = _build_external_messages(
+        req.messages,
+        supports_vision = True,
+        provider_type = "gemini",
+        base_url = "https://generativelanguage.googleapis.com/v1beta",
+    )
+    assert built[1] == {
+        "role": "assistant",
+        "content": "",
+        "extra_content": {
+            "google": {
+                "thought_parts": [
+                    {"text": "private summary", "thought_signature": "SIG-ONLY"}
+                ]
+            }
+        },
+    }
+
+    built_openai = _build_external_messages(
+        req.messages,
+        supports_vision = True,
+        provider_type = "openai",
+    )
+    assert [message["role"] for message in built_openai] == ["user", "user"]
+
+
 def test_parallel_tool_results_group_into_one_user_block(monkeypatch):
     """Round 14: Gemini docs group parallel functionResponses in a single
     subsequent user content with multiple functionResponse parts. Consecutive
