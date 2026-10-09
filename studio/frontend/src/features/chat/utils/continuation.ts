@@ -34,14 +34,17 @@ export type IncompleteInfo = {
 };
 
 /** Whether a finished turn left anything on screen, which is what separates `empty` from a
- *  real answer. Non-text parts (tool calls, images, sources) always count; text has to be
- *  more than whitespace. */
+ *  real answer. Structured parts (tool calls, images, sources) always count; text and
+ *  reasoning have to contain more than whitespace. */
 export function hasRenderableContent(
   content: readonly { type: string; text?: string }[],
 ): boolean {
-  return content.some(
-    (part) => part.type !== "text" || (part.text ?? "").trim().length > 0,
-  );
+  return content.some((part) => {
+    if (part.type === "text" || part.type === "reasoning") {
+      return (part.text ?? "").trim().length > 0;
+    }
+    return true;
+  });
 }
 
 const INCOMPLETE_REASONS: readonly IncompleteReason[] = [

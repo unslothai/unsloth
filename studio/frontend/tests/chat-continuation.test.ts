@@ -206,11 +206,16 @@ test("every stop reason has a label", () => {
   );
 });
 
-test("only text has to carry weight for a turn to count as rendered", () => {
+test("text-like parts have to carry weight for a turn to count as rendered", () => {
   assert.equal(hasRenderableContent([]), false);
   assert.equal(hasRenderableContent([{ type: "text", text: "" }]), false);
   assert.equal(hasRenderableContent([{ type: "text", text: " \n\t" }]), false);
   assert.equal(hasRenderableContent([{ type: "text", text: "hi" }]), true);
+  assert.equal(hasRenderableContent([{ type: "reasoning", text: "" }]), false);
+  assert.equal(
+    hasRenderableContent([{ type: "reasoning", text: "thought" }]),
+    true,
+  );
   // A turn that only called a tool or drew an image still answered.
   assert.equal(hasRenderableContent([{ type: "tool-call" }]), true);
   assert.equal(hasRenderableContent([{ type: "image" }]), true);
