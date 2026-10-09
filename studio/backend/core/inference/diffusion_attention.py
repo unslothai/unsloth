@@ -147,6 +147,7 @@ def _probe_rocm_sdpa_kernels(device: str, dtype: Any) -> tuple[str, ...]:
     from pathlib import Path
     import subprocess
     import sys
+    from utils.child_stdio import utf8_child_env
     from utils.subprocess_compat import windows_hidden_subprocess_kwargs
     from .rocm_sdpa_probe import RESULT_PREFIX
 
@@ -165,6 +166,7 @@ def _probe_rocm_sdpa_kernels(device: str, dtype: Any) -> tuple[str, ...]:
                 encoding = "utf-8",
                 errors = "replace",
                 timeout = 45,
+                env = utf8_child_env(),
                 **windows_hidden_subprocess_kwargs(),
             )
             replies = [
