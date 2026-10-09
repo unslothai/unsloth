@@ -119,6 +119,13 @@ def is_rdna():
     )
 
 
+def long_indexing(*tensors, block = 0):
+    # True when an element offset into any tensor (+ a block of masked lanes) can pass int32.
+    return any(
+        sum((n - 1) * s for n, s in zip(t.shape, t.stride())) + block >= 2**31 for t in tensors
+    )
+
+
 def calculate_settings(
     n: int,
 ) -> (

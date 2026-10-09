@@ -15,7 +15,7 @@ import triton.language as tl
 import torch
 from ..device_type import DEVICE_COUNT
 from typing import Tuple
-from .utils import calculate_settings, torch_gpu_device, torch_device_stream
+from .utils import calculate_settings, long_indexing, torch_gpu_device, torch_device_stream
 from .rms_layernorm import (
     _BF16_TRACEABLE,
     _TRACEABLE,
@@ -124,6 +124,7 @@ def _rope_embedding(
     head_dim: tl.constexpr,
     n_heads: tl.constexpr,
     BACKWARD_PASS: tl.constexpr,
+    LONG_INDEXING: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
 ):
     """
@@ -158,7 +159,10 @@ def _rope_embedding(
     head_end = min((head_start + ROPE_GROUP_SIZE), n_heads)
 
     # 10% faster kernel from HuyNguyen-hust, unslothai/unsloth#238.
-    Q += row_position.to(tl.int64) * Q_row_stride
+    if LONG_INDEXING:
+        Q += row_position.to(tl.int64) * Q_row_stride
+    else:
+        Q += row_position * Q_row_stride
     for k in range(head_start, head_end):
         offs_q1 = k * head_dim + col_offsets
         offs_q2 = k * head_dim + col_offsets + half_head_dim
@@ -175,6 +179,7 @@ _rope_embedding = triton.jit(_rope_embedding)
 _rope_embedding = triton.heuristics(
     {
         "BACKWARD_PASS": lambda args: bool(args["BACKWARD_PASS"]),
+        "LONG_INDEXING": lambda args: bool(args["LONG_INDEXING"]),
     }
 )(_rope_embedding)
 
@@ -201,6 +206,7 @@ def _rope_rows(Q, cos, sin, seq_len, n_heads, head_dim, backward, wrap):
         head_dim,
         n_heads,
         BACKWARD_PASS = backward,
+        LONG_INDEXING = long_indexing(Q, block = BLOCK_SIZE),
         BLOCK_SIZE = BLOCK_SIZE,
         num_warps = num_warps,
     )
@@ -244,10 +250,6 @@ class Fast_RoPE_Embedding(torch.autograd.Function):
         )
 
 
-def _max_offset(t):
-    return sum((size - 1) * stride for size, stride in zip(t.shape, t.stride()))
-
-
 def _rope_qk(Q, K, cos, sin, rope_ptr, has_indices, backward, wrap):
     # Rotates Q [batch, n_heads_Q, seq_len, head_dim] and K in place, at any strides.
     batch, n_heads_Q, seq_len, head_dim = Q.shape
@@ -272,7 +274,7 @@ def _rope_qk(Q, K, cos, sin, rope_ptr, has_indices, backward, wrap):
         n_heads_K = n_heads_K,
         BACKWARD_PASS = backward,
         HAS_ROPE_INDICES = has_indices,
-        LONG_INDEXING = max(_max_offset(Q), _max_offset(K)) + BLOCK_SIZE >= 2**31,
+        LONG_INDEXING = long_indexing(Q, K, block = BLOCK_SIZE),
         BLOCK_SIZE = BLOCK_SIZE,
         num_warps = num_warps,
     )
