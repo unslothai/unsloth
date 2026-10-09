@@ -141,7 +141,14 @@ class _Archive:
 
 # ---------------------------------------------------------------- .xlsx / .xlsm
 
-_BUILTIN_DATE_FORMATS = {14, 15, 16, 17, 18, 19, 20, 21, 22, 45, 46, 47}
+# Built-in date and time format IDs, including the CJK (27-36, 50-58) and Thai (71-81) ones.
+_BUILTIN_DATE_FORMATS = {
+    *range(14, 23),
+    *range(27, 37),
+    *range(45, 48),
+    *range(50, 59),
+    *range(71, 82),
+}
 
 
 def _is_date_format(code: str) -> bool:
@@ -385,6 +392,32 @@ def _odf_repeat(node: ET.Element, attribute: str, text: str, room: int, budget: 
     return count
 
 
+_ODF_VALUE_ATTRIBUTES = {
+    "float": "value",
+    "percentage": "value",
+    "currency": "value",
+    "date": "date-value",
+    "time": "time-value",
+    "boolean": "boolean-value",
+    "string": "string-value",
+}
+
+
+def _odf_cell_value(cell: ET.Element) -> str:
+    """A cell's typed value, for cells written without a text paragraph."""
+    kind = cell.get(_q("office", "value-type"), "")
+    attribute = _ODF_VALUE_ATTRIBUTES.get(kind)
+    value = cell.get(_q("office", attribute), "") if attribute else ""
+    if kind == "boolean" and value:
+        return "TRUE" if value.lower() == "true" else "FALSE"
+    if attribute == "value" and value:
+        try:
+            return _number(float(value))
+        except ValueError:
+            pass
+    return value
+
+
 def _odf_table(table: ET.Element, budget: _Budget) -> list[str]:
     rows = []
     for row in _odf_rows(table):
@@ -392,7 +425,7 @@ def _odf_table(table: ET.Element, budget: _Budget) -> list[str]:
         for cell in row:
             if cell.tag not in (_q("table", "table-cell"), _q("table", "covered-table-cell")):
                 continue
-            text = " ".join(_odf_blocks(cell, budget))
+            text = " ".join(_odf_blocks(cell, budget)) or _odf_cell_value(cell)
             room = _MAX_COLUMNS - len(cells)
             cells += [text] * _odf_repeat(cell, "number-columns-repeated", text, room, budget)
             if len(cells) >= _MAX_COLUMNS:
@@ -573,8 +606,9 @@ def _rtf_text(data: str) -> str:
     out: list[str] = []
     pending = bytearray()
     codepage = "cp1252"
-    stack: list[tuple[bool, int]] = []
+    stack: list[tuple[bool, int, bool]] = []
     skip, uc, to_skip = False, 1, 0
+    deleted = False  # tracked deletion
     ignorable = False
 
     def flush():
@@ -599,16 +633,16 @@ def _rtf_text(data: str) -> str:
                 continue
         if brace == "{":
             flush()
-            stack.append((skip, uc))
+            stack.append((skip, uc, deleted))
             ignorable = False
         elif brace == "}":
             flush()
-            skip, uc = stack.pop() if stack else (False, 1)
+            skip, uc, deleted = stack.pop() if stack else (False, 1, False)
             to_skip = 0
         elif symbol is not None:
             if symbol == "*":
                 ignorable = True
-            elif not skip:
+            elif not (skip or deleted):
                 flush()
                 out.append(
                     {"~": "\u00a0", "_": "-", "-": "", "\n": "\n", "\r": "\n"}.get(symbol, symbol)
@@ -626,6 +660,10 @@ def _rtf_text(data: str) -> str:
                     codepage = "cp1252"
             elif word == "uc" and arg:
                 uc = int(arg)
+            elif word == "deleted":
+                deleted = arg != "0"
+            elif word == "plain":
+                deleted = False
             if ignorable or word in _RTF_SKIP:
                 skip, ignorable = True, False
                 continue
@@ -634,19 +672,22 @@ def _rtf_text(data: str) -> str:
             if word == "u" and arg:
                 flush()
                 code = int(arg)
-                out.append(chr(code + 65536 if code < 0 else code))
+                if not deleted:
+                    out.append(chr(code + 65536 if code < 0 else code))
                 to_skip = uc
             elif word in _RTF_BREAKS:
                 flush()
                 out.append(_RTF_BREAKS[word])
         elif hex_byte is not None:
-            if not skip:
+            if not (skip or deleted):
                 pending.append(int(hex_byte, 16))
-        elif text is not None and not skip:
+        elif text is not None and not (skip or deleted):
             # Literal 8-bit text is in the document code page, like \'hh escapes.
             pending += text.encode("latin-1")
     flush()
-    text = re.sub(r"( \| )+\n", "\n", "".join(out))
+    # \uN gives astral characters as two surrogates; pair them, and replace any left alone.
+    text = "".join(out).encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace")
+    text = re.sub(r"( \| )+\n", "\n", text)
     return re.sub(r"[ \t]+\n", "\n", text).strip()
 
 
@@ -1078,6 +1119,8 @@ def _decompress_rtf(data: bytes) -> bytes:
     if len(data) < 16:
         raise ValueError("truncated compressed RTF")
     comp_size, raw_size, magic = struct.unpack_from("<III", data)
+    if raw_size > _MAX_MEMBER_BYTES:
+        raise ValueError("compressed RTF body is too large")
     if magic == 0x414C454D:  # "MELA": stored uncompressed
         return data[16 : 16 + raw_size]
     if magic != 0x75465A4C:  # "LZFu"
@@ -1091,8 +1134,9 @@ def _decompress_rtf(data: bytes) -> bytes:
         control = data[pos]
         pos += 1
         for bit in range(8):
-            if pos >= end:
-                break
+            # Stop at the declared size: back-references can expand far beyond it.
+            if pos >= end or len(out) >= raw_size:
+                return bytes(out[:raw_size])
             if control & (1 << bit):
                 if pos + 2 > end:
                     break
@@ -1111,7 +1155,7 @@ def _decompress_rtf(data: bytes) -> bytes:
                 window[write] = data[pos]
                 write = (write + 1) % 4096
                 pos += 1
-    return bytes(out)
+    return bytes(out[:raw_size])
 
 
 def msg(path: str, html_text) -> list[Section]:

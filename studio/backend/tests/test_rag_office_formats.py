@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 from fastapi import UploadFile
 
-from core.rag import cfb, config, ingestion, parsers, store
+from core.rag import cfb, config, ingestion, office_formats, parsers, store
 from routes.rag import _save_upload
 from storage import rag_db
 
@@ -415,6 +415,35 @@ def test_ods_does_not_expand_empty_repeats(tmp_path):
     assert _text(build_ods(tmp_path / "sheet.ods")) == "Sheet: Revenue\nRegion | Q | Q\nZebramarker"
 
 
+def test_ods_reads_typed_values_without_text(tmp_path):
+    path = _odf(
+        tmp_path / "values.ods",
+        '<office:spreadsheet><table:table table:name="S"><table:table-row>'
+        '<table:table-cell office:value-type="float" office:value="1200"/>'
+        '<table:table-cell office:value-type="date" office:date-value="2026-03-31"/>'
+        '<table:table-cell office:value-type="boolean" office:boolean-value="true"/>'
+        '<table:table-cell office:value-type="string" office:string-value="zebramarker"/>'
+        '<table:table-cell office:value-type="float" office:value="7"><text:p>7.00</text:p></table:table-cell>'
+        "</table:table-row></table:table></office:spreadsheet>",
+    )
+    assert _text(path) == "Sheet: S\n1200 | 2026-03-31 | TRUE | zebramarker | 7.00"
+
+
+@pytest.mark.parametrize("format_id", [14, 31, 57, 75])
+def test_xlsx_builtin_date_formats_include_locale_ids(tmp_path, format_id):
+    serial = (dt.date(2026, 3, 31) - dt.date(1899, 12, 30)).days
+    path = _zip(
+        tmp_path / "dates.xlsx",
+        {
+            "xl/workbook.xml": f'<workbook {S}><sheets><sheet name="D" sheetId="1" r:id="rId1"/></sheets></workbook>',
+            "xl/_rels/workbook.xml.rels": f'<Relationships {REL}><Relationship Id="rId1" Target="worksheets/sheet1.xml"/></Relationships>',
+            "xl/styles.xml": f'<styleSheet {S}><cellXfs><xf numFmtId="0"/><xf numFmtId="{format_id}"/></cellXfs></styleSheet>',
+            "xl/worksheets/sheet1.xml": f'<worksheet {S}><sheetData><row r="1"><c r="A1" s="1"><v>{serial}</v></c></row></sheetData></worksheet>',
+        },
+    )
+    assert _text(path) == "Sheet: D\n2026-03-31"
+
+
 def test_odp_reads_one_page_per_slide(tmp_path):
     pages = parsers.parse(str(build_odp(tmp_path / "slides.odp")))
     assert [(p.page_number, p.text) for p in pages] == [
@@ -576,6 +605,25 @@ def test_damaged_archive_is_refused(tmp_path, extension):
     path.write_bytes(b"PK\x03\x04 truncated")
     with pytest.raises(ValueError):
         parsers.parse(str(path))
+
+
+def test_rtf_pairs_surrogates_and_skips_tracked_deletions(tmp_path):
+    path = tmp_path / "changes.rtf"
+    # As macOS textutil writes an emoji; the deletion as Word writes a tracked change.
+    path.write_bytes(
+        rb"{\rtf1\ansi Party \uc0\u55356 \u57225  kept{\deleted\revauthdel1 removedmarker \u8364?}"
+        rb" end\deleted gone\deleted0  back\plain}"
+    )
+    assert _text(path) == "Party \U0001f389 kept end back"
+
+
+def test_compressed_rtf_stops_at_the_declared_size():
+    # One literal, then back-references that would expand to ~5 MB.
+    body = b"\x00A" + (b"\xff" + b"\x00\x0f" * 8) * 40_000
+    data = struct.pack("<IIII", len(body) + 12, 1000, 0x75465A4C, 0) + body
+    assert len(office_formats._decompress_rtf(data)) == 1000
+    with pytest.raises(ValueError, match = "too large"):
+        office_formats._decompress_rtf(struct.pack("<IIII", 16, 2**31, 0x75465A4C, 0))
 
 
 def test_rtf_negative_binary_length_is_ignored(tmp_path):
