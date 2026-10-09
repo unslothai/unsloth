@@ -365,8 +365,7 @@ const MoreVerticalCenteredIcon = MoreVerticalIcon.map(([tag, attrs]) => [
 const PROJECT_CHAT_LIMIT = 4;
 // And the Projects section shows this many folders before its own "Show more".
 const SIDEBAR_PROJECT_LIMIT = 5;
-// Recents mounts this many chat rows at first, and as many more each time its end nears the
-// screen (ProgressiveRows).
+// Recents mounts this many chat rows per page (ProgressiveRows).
 const RECENTS_PAGE_SIZE = 50;
 
 // The shared radio item ticks on the right; these read as settings, so tick first.
@@ -5843,10 +5842,8 @@ export function AppSidebar() {
                   {...dnd.dropZoneProps({ section: "recents" })}
                 >
                   <SidebarMenu>
-                    {/* Where unfiled history piles up, so it mounts a page at a time. Folders show
-                        PROJECT_CHAT_LIMIT until "Show more", and Pinned and custom sections hold
-                        what the user put there. A drop on the end strip lands after the LAST chat,
-                        so it waits until that chat is mounted above it. */}
+                    {/* Unfiled history piles up here, so only Recents is paged. The end strip's
+                        drop lands after the LAST chat, so it waits until that chat is mounted. */}
                     <ProgressiveRows
                       items={sortedRecentChatItems}
                       pageSize={RECENTS_PAGE_SIZE}
