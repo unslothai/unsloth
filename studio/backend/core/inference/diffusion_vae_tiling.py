@@ -277,11 +277,8 @@ def decode_tile_budget(vae: Any, z: Any) -> Optional[int]:
     raw = (os.environ.get(MAX_TILE_ENV) or "").strip()
     if raw.isdigit() and int(raw) > 0:
         return int(raw) ** 2
-    # The larger-tile coefficients below were measured on CUDA and under-predict
-    # Qwen-Image-2.1 decode memory on ROCm: at 17/19 GiB limits, 40x40, 64x32 and
-    # 96x56 attempts OOM before recovering with 32x32 tiles.
-    # Start at that tested floor on ROCm rather than retrying the same oversized tile
-    # on every image. An explicit MAX_TILE_ENV above still overrides this policy.
+    # CUDA-calibrated coefficients under-predict Qwen-Image-2.1 decode on ROCm (40x40, 64x32 and 96x56 OOM at
+    # 17/19 GiB limits): start at the tested 32x32 floor rather than retrying an oversized tile on every image.
     import torch
 
     if (
