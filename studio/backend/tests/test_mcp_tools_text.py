@@ -98,8 +98,10 @@ def test_a_prompt_becomes_one_user_turn(monkeypatch):
         "finish_reason": "stop",
         "usage": {"prompt_tokens": 12, "completion_tokens": 2, "total_tokens": 14},
         "note": None,
+        "cancel_id": result["structuredContent"]["cancel_id"],
     }
     (body,) = _sent(studio, "/v1/chat/completions")
+    assert result["structuredContent"]["cancel_id"] == body["cancel_id"]
     assert body["messages"] == [
         {"role": "system", "content": "Be brief."},
         {"role": "user", "content": "Capital of France?"},

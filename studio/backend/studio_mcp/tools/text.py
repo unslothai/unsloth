@@ -78,6 +78,7 @@ async def chat(
         raise ToolError("messages is empty.")
     if images:
         await _attach_images(turns, images)
+    cancel_id = f"mcp-{uuid.uuid4().hex}"
     if system:
         turns.insert(0, {"role": "system", "content": system})
     body = {
@@ -85,7 +86,7 @@ async def chat(
         "messages": turns,
         "stream": False,
         # Our own id, so this run never matches a cancel aimed at another chat.
-        "cancel_id": f"mcp-{uuid.uuid4().hex}",
+        "cancel_id": cancel_id,
     }
     if max_tokens is not None:
         body["max_tokens"] = max_tokens
@@ -113,6 +114,7 @@ async def chat(
         if usage
         else None,
         note = note,
+        cancel_id = cancel_id,
     )
 
 

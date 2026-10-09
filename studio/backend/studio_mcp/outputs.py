@@ -156,6 +156,8 @@ class ChatResult(ToolOutput):
     finish_reason: Optional[RouteText] = None
     usage: Optional[Usage] = None
     note: Optional[RouteText] = None
+    # Pass to cancel(kind="chat", id=...) from another call to stop a long reply.
+    cancel_id: Optional[str] = None
 
 
 class EmbedResult(ToolOutput):
@@ -377,3 +379,10 @@ class TrainingRuns(ToolOutput):
 class ExportJobRef(ToolOutput):
     job_id: RouteText
     status: RouteText = "running"
+
+
+class CancelResult(ToolOutput):
+    kind: RouteText
+    id: Optional[RouteText] = None
+    cancelled: bool
+    message: Optional[RouteText] = None

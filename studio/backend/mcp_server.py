@@ -14,6 +14,7 @@ from typing import Any
 from fastmcp import FastMCP
 
 from studio_mcp.tools.audio import register_audio
+from studio_mcp.tools.cancel import register_cancel
 from studio_mcp.tools.data import register_data
 from studio_mcp.tools.export import register_export
 from studio_mcp.tools.images import register_images
@@ -23,20 +24,6 @@ from studio_mcp.tools.status import register_status
 from studio_mcp.tools.text import register_text
 from studio_mcp.tools.training import register_training
 from studio_mcp.tools.video import register_video
-
-
-def _dump(value: Any) -> Any:
-    """Convert Pydantic responses to plain JSON values for MCP clients."""
-    if hasattr(value, "model_dump"):
-        return value.model_dump(mode = "json")
-    return value
-
-
-def _clamp(value: int, low: int, high: int) -> int:
-    """Clamp an MCP-supplied integer into an inclusive range. MCP tools call the Unsloth route functions
-    directly, which skips FastAPI's Query(ge=, le=) validation, so we re-apply the same bounds here.
-    """
-    return max(low, min(value, high))
 
 
 def create_studio_mcp() -> FastMCP:
@@ -61,16 +48,6 @@ def create_studio_mcp() -> FastMCP:
     register_data(mcp)
     register_training(mcp)
     register_export(mcp)
-
-    @mcp.tool
-    async def stop_training(expected_job_id: str, save: bool = True) -> dict[str, Any]:
-        """Stop the identified training job at its next safe checkpoint."""
-        from routes.training import TrainingStopRequest, stop_training as stop
-        return _dump(
-            await stop(
-                TrainingStopRequest(save = save, expected_job_id = expected_job_id),
-                current_subject = "mcp",
-            )
-        )
+    register_cancel(mcp)
 
     return mcp
