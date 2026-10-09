@@ -47,6 +47,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { NonModalDropdownMenu } from "@/components/ui/non-modal-dropdown-menu";
+import { ProgressiveRows } from "@/components/progressive-rows";
 import {
   HELP_GROUPS,
   HELP_ITEMS,
@@ -364,6 +365,9 @@ const MoreVerticalCenteredIcon = MoreVerticalIcon.map(([tag, attrs]) => [
 const PROJECT_CHAT_LIMIT = 4;
 // And the Projects section shows this many folders before its own "Show more".
 const SIDEBAR_PROJECT_LIMIT = 5;
+// Recents mounts this many chat rows at first, and as many more each time its end nears the
+// screen (ProgressiveRows).
+const RECENTS_PAGE_SIZE = 50;
 
 // The shared radio item ticks on the right; these read as settings, so tick first.
 // A sidebar or account menu's side and top padding (.sidebar-row-menu in index.css, before the
@@ -5839,29 +5843,39 @@ export function AppSidebar() {
                   {...dnd.dropZoneProps({ section: "recents" })}
                 >
                   <SidebarMenu>
-                    {sortedRecentChatItems.map((item) =>
-                      renderChatSidebarItem(item, "recent", {
-                        scope: RECENTS_ORDER_SCOPE,
-                        ids: recentRowIds,
-                        section: "recents",
-                        sort: { value: chatSort, set: setChatSort },
-                      }),
-                    )}
-                    {sortedRecentChatItems.length > 0 && (
-                      // The end of the list, as somewhere to aim; see Pinned's. The empty sidebar
-                      // below it aims here too (use-sidebar-drag.ts).
-                      <SidebarMenuItem
-                        aria-hidden
-                        className={cn(
-                          "relative z-[1] h-[calc(8px*var(--ui-space-scale,1))]",
-                          dropCueClass(SIDEBAR_TAIL_SCOPE, "recents"),
-                        )}
-                        {...dnd.dropZoneProps({
+                    {/* Where unfiled history piles up, so it mounts a page at a time. Folders show
+                        PROJECT_CHAT_LIMIT until "Show more", and Pinned and custom sections hold
+                        what the user put there. A drop on the end strip lands after the LAST chat,
+                        so it waits until that chat is mounted above it. */}
+                    <ProgressiveRows
+                      items={sortedRecentChatItems}
+                      pageSize={RECENTS_PAGE_SIZE}
+                      renderItem={(item) =>
+                        renderChatSidebarItem(item, "recent", {
+                          scope: RECENTS_ORDER_SCOPE,
+                          ids: recentRowIds,
                           section: "recents",
-                          blockEnd: { scope: SIDEBAR_TAIL_SCOPE, id: "recents" },
-                        })}
-                      />
-                    )}
+                          sort: { value: chatSort, set: setChatSort },
+                        })
+                      }
+                      end={
+                        sortedRecentChatItems.length > 0 && (
+                          // The end of the list, as somewhere to aim; see Pinned's. The empty
+                          // sidebar below it aims here too (use-sidebar-drag.ts).
+                          <SidebarMenuItem
+                            aria-hidden
+                            className={cn(
+                              "relative z-[1] h-[calc(8px*var(--ui-space-scale,1))]",
+                              dropCueClass(SIDEBAR_TAIL_SCOPE, "recents"),
+                            )}
+                            {...dnd.dropZoneProps({
+                              section: "recents",
+                              blockEnd: { scope: SIDEBAR_TAIL_SCOPE, id: "recents" },
+                            })}
+                          />
+                        )
+                      }
+                    />
                   </SidebarMenu>
                   {/* "No chats yet" only when there is truly no history:
                       project-scoped and archived threads leave Recents empty
