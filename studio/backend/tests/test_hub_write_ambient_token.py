@@ -665,6 +665,7 @@ def test_the_mcp_export_tool_never_goes_ambient(monkeypatch):
     in the body of both calls, and a push without one meets the route's refusal instead of
     the server's own Hugging Face token."""
     import json
+    import time
 
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
@@ -722,10 +723,13 @@ def test_the_mcp_export_tool_never_goes_ambient(monkeypatch):
             {"checkpoint": "run", "format": "gguf", "save_directory": "out", **args},
         )
         job_id = started["structuredContent"]["job_id"]
-        for _ in range(20):
+        # The job runs in the background; a fixed number of back-to-back polls can beat it on a slow host.
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
             job = call_tool(http, "get_job", {"kind": "export", "id": job_id})
             if job["structuredContent"]["status"] != "running":
                 return job["structuredContent"]
+            time.sleep(0.05)
         raise AssertionError("the export job never finished")
 
     with TestClient(served(create_studio_mcp(), studio, monkeypatch = monkeypatch)) as http:
