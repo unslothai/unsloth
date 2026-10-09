@@ -6,12 +6,24 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Mapping, Optional
 
 import httpx
 from fastmcp.exceptions import ToolError
 
 from hub.utils.host_paths import redact_paths_in_text
+
+# Route errors sometimes tell a browser client which route to call next ("Call POST /inference/load
+# first."). The path scrub turns that route into <path>, and an MCP agent cannot call routes anyway.
+_ROUTE_CLAUSE = re.compile(
+    r"\s*\b(?:Call|Use|See) (?:GET|POST|PUT|PATCH|DELETE) /[\w/{}.:-]*(?: first)?\.(?=\s|$)"
+)
+
+
+def _scrub(text: Any) -> str:
+    return redact_paths_in_text(_ROUTE_CLAUSE.sub("", text) if isinstance(text, str) else text)
+
 
 _MAX_MESSAGE_CHARS = 2000
 _DEFERRED_ERROR_KEY = "_deferred_error"
@@ -21,7 +33,7 @@ MEMORY_REFUSAL = "memory-estimate"
 
 def tool_error(message: Any, hint: Optional[str] = None) -> ToolError:
     """A scrubbed ToolError. ``hint`` is the tool's own guidance and goes on after the scrub, which would otherwise read a route like /v1/models as a path and drop it."""
-    text = redact_paths_in_text(message).strip() or "Unsloth Studio returned an error"
+    text = _scrub(message).strip() or "Unsloth Studio returned an error"
     if len(text) > _MAX_MESSAGE_CHARS:
         text = text[:_MAX_MESSAGE_CHARS] + "…"
     return ToolError(f"{text} {hint}" if hint else text)
@@ -78,15 +90,15 @@ def _describe(status: int, body: Any, headers: Mapping[str, str]) -> str:
         message, body_retry = busy
         seconds = retry_after or body_retry
         hint = f" Retry after {seconds} s." if seconds is not None else ""
-        return f"GPU busy: {redact_paths_in_text(message).rstrip('.')}.{hint}"
+        return f"GPU busy: {_scrub(message).rstrip('.')}.{hint}"
 
     if isinstance(body, dict) and "detail" in body:
         if isinstance(body["detail"], list):
-            return redact_paths_in_text(_validation_summary(body["detail"]))
+            return _scrub(_validation_summary(body["detail"]))
         message = _detail_message(body["detail"])
     elif isinstance(body, dict) and isinstance(body.get("error"), dict):
         envelope = body["error"]
-        message = redact_paths_in_text(_text(envelope.get("message")))
+        message = _scrub(_text(envelope.get("message")))
         # /v1 validation is a 400 whose envelope names the offending field.
         if status == 400 and envelope.get("param"):
             return f"Invalid arguments: {message}"
@@ -97,7 +109,7 @@ def _describe(status: int, body: Any, headers: Mapping[str, str]) -> str:
     else:
         message = _text(body)
 
-    message = redact_paths_in_text(message)
+    message = _scrub(message)
     if status == 400 and headers.get(REFUSAL_HEADER) == MEMORY_REFUSAL:
         return f"{message} Pass allow_oversized=true to try anyway."
     message = f"{message} (HTTP {status})"

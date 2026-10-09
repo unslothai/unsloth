@@ -272,3 +272,14 @@ def test_gpu_busy_keeps_its_retry_hint_instead_of_tool_guidance():
     )
     message = _message(resp, hints = {409: "Download the model first."})
     assert message == "GPU busy: Another account is generating. Retry after 3 s."
+
+
+def test_a_routes_own_call_this_route_hint_is_dropped():
+    from studio_mcp.errors import tool_error
+
+    error = tool_error(
+        "No model loaded. Call POST /inference/load first.", "Load a chat model first."
+    )
+    assert str(error) == "No model loaded. Load a chat model first."
+    # A path in a sentence that is not a route hint is still scrubbed, not dropped.
+    assert str(tool_error("Saved to /srv/mcp-sentinel/x.png")) == "Saved to <path>"
