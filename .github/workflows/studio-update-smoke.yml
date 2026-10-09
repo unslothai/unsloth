@@ -40,6 +40,7 @@ on:
       - 'studio/frontend/package-lock.json'
       - 'studio/backend/core/data_recipe/oxc-validator/package.json'
       - 'studio/backend/core/data_recipe/oxc-validator/package-lock.json'
+      - 'studio/backend/core/data_recipe/oxc-validator/.npmrc'
       # The harness below and the proxy it measures with.
       - 'tests/studio/install/test_update_idempotency.py'
       - 'tests/studio/install/idempotency_proxy.py'
@@ -113,6 +114,7 @@ on:
       - 'studio/frontend/package-lock.json'
       - 'studio/backend/core/data_recipe/oxc-validator/package.json'
       - 'studio/backend/core/data_recipe/oxc-validator/package-lock.json'
+      - 'studio/backend/core/data_recipe/oxc-validator/.npmrc'
       # The harness below and the proxy it measures with.
       - 'tests/studio/install/test_update_idempotency.py'
       - 'tests/studio/install/idempotency_proxy.py'

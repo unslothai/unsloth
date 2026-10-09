@@ -210,6 +210,7 @@ class LlamaServerBackend:
         self._force_cpu = False
         # trust_env=False skips HTTP(S)_PROXY; full URLs per request survive a respawn.
         self._client = httpx.Client(timeout = config.EMBED_REQUEST_TIMEOUT_S, trust_env = False)
+        self._api_key: str | None = None
         atexit.register(self._shutdown)
 
     @contextmanager
@@ -235,6 +236,9 @@ class LlamaServerBackend:
     @property
     def _base_url(self) -> str:
         return f"http://{config.EMBED_HOST}:{self._port}"
+
+    def _auth_headers(self) -> dict[str, str]:
+        return {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
 
     def _resolve_binary(self) -> str:
         """Find llama-server, verify embeddings support, cache it. Raises if
@@ -942,6 +946,22 @@ class LlamaServerBackend:
             "gpu" if use_gpu else "cpu",
             " ".join(cmd),
         )
+        from core.inference.llama_cpp import (
+            LlamaCppBackend,
+            _llama_server_api_key_enabled,
+            _write_direct_stream_key,
+        )
+
+        self._api_key = key_file = None
+        if _llama_server_api_key_enabled() and LlamaCppBackend.probe_server_capabilities(
+            binary
+        ).get("supports_api_key_file", True):
+            # Per-spawn key against permissive CORS; read once at startup, so deleted once healthy.
+            import secrets
+
+            self._api_key = secrets.token_urlsafe(32)
+            key_file = _write_direct_stream_key(self._api_key)
+            cmd[1:1] = ["--api-key-file", str(key_file)]
         self._stdout_lines = []
         # One flag at every spawn. No _graceful_shutdown step stops this backend, so an
         # encode still resolving or downloading its model as the app quits would
@@ -979,7 +999,15 @@ class LlamaServerBackend:
             name = "llama-embed-stdout",
         )
         self._stdout_thread.start()
-        if not self._wait_for_health(config.EMBED_STARTUP_TIMEOUT_S):
+        try:
+            healthy = self._wait_for_health(config.EMBED_STARTUP_TIMEOUT_S)
+        finally:
+            if key_file is not None:
+                try:
+                    key_file.unlink()
+                except OSError:
+                    pass
+        if not healthy:
             tail = "\n".join(self._stdout_lines[-30:])
             self._kill_process()
             raise RuntimeError(
@@ -1133,7 +1161,9 @@ class LlamaServerBackend:
                 # Held across readiness AND the request, so a swap can only land between whole requests.
                 self._ensure_ready(model_name)
                 try:
-                    resp = self._client.post(f"{self._base_url}{path}", json = payload)
+                    resp = self._client.post(
+                        f"{self._base_url}{path}", json = payload, headers = self._auth_headers()
+                    )
                     resp.raise_for_status()
                     return resp.json()
                 except (*_TRANSPORT_ERRORS, httpx.TimeoutException) as e:
@@ -1229,7 +1259,12 @@ class LlamaServerBackend:
         malformed base URL, which is what an un-started server has.
         """
         try:
-            data = httpx.get(f"{self._base_url}/props", timeout = 2.0, trust_env = False).json()
+            data = httpx.get(
+                f"{self._base_url}/props",
+                headers = self._auth_headers(),
+                timeout = 2.0,
+                trust_env = False,
+            ).json()
         except Exception:  # noqa: BLE001 - see docstring
             return None
         return data if isinstance(data, dict) else None

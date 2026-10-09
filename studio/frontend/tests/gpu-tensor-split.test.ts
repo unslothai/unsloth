@@ -41,15 +41,6 @@ test("no split, whether unset or cleared, reads as the default distribution", as
   );
 });
 
-test("the split is never stored with the model's config", () => {
-  const src = readSrc("features/model-picker/model-config/per-model-config.ts");
-  const stored = src.slice(
-    src.indexOf("const STORED_CONFIG_FIELDS"),
-    src.indexOf("]);", src.indexOf("const STORED_CONFIG_FIELDS")),
-  );
-  assert.doesNotMatch(stored, /tensorSplit/);
-});
-
 test("the picker drops the split when the set changes and carries it on a reorder", () => {
   const src = readSrc("features/model-picker/components/model-config-page.tsx");
   const commit = src.slice(src.indexOf("const commitGpuIds"));
@@ -81,11 +72,11 @@ test("the load sends the editor's split, and the dedupe compares it", () => {
     src,
     /let loadSplitRatio =\s*pendingLoadConfig\?\.tensorSplit !== undefined\s*\? pendingLoadConfig\.tensorSplit/,
   );
-  assert.match(src, /loadSplitRatio = pendingLoadConfig\?\.tensorSplit \?\? null;/);
+  assert.match(src, /loadSplitRatio = reconcileTensorSplit\(/);
   assert.match(
     src,
     /splitRatio:\s*pendingConfig\?\.tensorSplit !== undefined\s*\? pendingConfig\.tensorSplit/,
   );
   const apply = readSrc("features/model-picker/model-config/apply-per-model-config.ts");
-  assert.match(apply, /splitRatio: options\.isDiffusion \? null : cleanTensorSplit\(config\.tensorSplit\)/);
+  assert.match(apply, /reconcileTensorSplit\(config\.tensorSplit, config\.selectedGpuIds, gpuSelection\.ids\)/);
 });

@@ -156,6 +156,9 @@ test("the header renders the bar for single chats and active project threads", (
     /view\.mode === "single"\s*\|\|\s*\(view\.mode === "project" && activeThreadId != null\)/,
   );
   assert.match(gate, /\(contextUsage \|\| contextWindowKnown\)/);
-  assert.match(page, /used=\{contextUsage\?\.totalTokens \?\? null\}/);
+  assert.match(
+    page,
+    /used=\{contextUsage\?\.contextTokens \?\? contextUsage\?\.totalTokens \?\? null\}/,
+  );
 });
 

@@ -43,6 +43,8 @@ from utils.api_errors import install_api_error_handlers
         ("unsloth/FLUX.2-klein-4B-GGUF", (4, 1.0)),
         ("unsloth/Qwen-Image-2512-GGUF", (50, 4.0)),
         ("Qwen/Qwen-Image-Edit-2511", (40, 4.0)),
+        ("Qwen/Qwen-Image-Edit-2509", (20, 4.0)),
+        ("unsloth/Qwen-Image-Edit-2509-GGUF", (20, 4.0)),
         ("black-forest-labs/FLUX.1-Kontext-dev", (20, 2.5)),
         ("black-forest-labs/FLUX.2-dev", (20, 4.0)),
         ("stabilityai/stable-diffusion-xl-base-1.0", (25, 7.0)),
@@ -236,7 +238,6 @@ def test_url_response_shape(client):
     assert "url" in item and "b64_json" not in item  # exclude_none drops the unused key
     # Signed link, not the bearer-gated /file route: an OpenAI client downloads this URL with a plain GET and no auth header.
     assert "/images/gallery/img0/file-signed?token=" in item["url"]
-    # Z-Image-Turbo defaults (8 steps, 0 guidance) flow into the backend call.
     assert client.backend.calls[0] == dict(
         prompt = "a sloth",
         width = 256,

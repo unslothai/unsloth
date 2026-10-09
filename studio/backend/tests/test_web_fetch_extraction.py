@@ -345,6 +345,27 @@ def test_visible_void_hr_still_renders():
     assert "---" in out
 
 
+@pytest.mark.parametrize(
+    "html, expected",
+    [
+        (
+            "<ul>\n<li>\n<p>First item</p>\n</li>\n<li>\n<p>Second item</p>\n</li>\n</ul>",
+            "* First item\n\n* Second item",
+        ),
+        ("<ol><li><p>One</p></li><li><div>Two</div></li></ol>", "1. One\n\n2. Two"),
+        ("<ul><li><p>a</p><ul><li><p>b</p></li></ul></li></ul>", "* a\n\n  * b"),
+        ("<ul><li></li><p>outside</p></ul>", "*\n\noutside"),
+    ],
+)
+def test_block_opening_list_item_stays_on_marker_line(html, expected):
+    assert html_to_markdown(html) == expected
+
+
+def test_empty_header_does_not_consume_the_list_marker():
+    html = "<ul><li><header></header><p>text text text</p></li></ul>"
+    assert html_to_markdown(html, main_content = True) == "* text text text"
+
+
 # ── html_to_markdown: main-content scoping ───────────────────────
 
 
@@ -669,6 +690,121 @@ def test_fetch_page_text_propagates_fetch_errors(monkeypatch):
     assert _fetch_page_text("https://example.com/missing") == (
         "Failed to fetch URL: HTTP 404 Not Found"
     )
+
+
+_WIKI_URL = "https://en.wikipedia.org/wiki/Python_(programming_language)"
+
+
+def _wiki_article(paragraphs):
+    body = "".join(
+        f'<p>Paragraph {i} links <a href="https://en.wikipedia.org/wiki/Some_Long_Article_Title_{i}">'
+        f'topic {i}</a>, <a href="/wiki/Another_Related_Page_{i}">a related page</a> and a note'
+        f'<sup><a href="#cite_note-{i}">[{i}]</a></sup>.</p>'
+        for i in range(paragraphs)
+    )
+    return (
+        f"<html><body><main><article>{body}"
+        "<p>Python 3.0 was released on 3 December 2008.</p>"
+        '<p>See <a href="https://www.python.org/doc/">the docs</a>.</p>'
+        "</article></main></body></html>"
+    )
+
+
+def test_long_page_spends_its_budget_on_text_not_links_into_the_site(monkeypatch):
+    out = _page_text(monkeypatch, _WIKI_URL, _wiki_article(150), "text/html")
+    assert "Python 3.0 was released on 3 December 2008." in out
+    assert "topic 149, a related page and a note[149]." in out
+    assert "[the docs](https://www.python.org/doc/)" in out
+    assert "wikipedia.org" not in out
+    assert "/wiki/" not in out
+    assert "#cite_note" not in out
+
+
+def test_page_that_fits_keeps_its_links(monkeypatch):
+    out = _page_text(monkeypatch, _WIKI_URL, _wiki_article(3), "text/html")
+    assert "[topic 1](https://en.wikipedia.org/wiki/Some_Long_Article_Title_1)" in out
+    assert "[a related page](/wiki/Another_Related_Page_1)" in out
+    assert "[[1]](#cite_note-1)" in out
+
+
+def test_page_cut_by_the_room_left_drops_its_site_link_urls(monkeypatch):
+    from core.inference import tools
+
+    context = tools._REQUEST_CONTEXT_TOKENS.set(32768)
+    room = tools._REQUEST_RESULT_BUDGET.set(1200)
+    try:
+        out = _page_text(monkeypatch, _WIKI_URL, _wiki_article(60), "text/html")
+    finally:
+        tools._REQUEST_RESULT_BUDGET.reset(room)
+        tools._REQUEST_CONTEXT_TOKENS.reset(context)
+    assert "(truncated," in out
+    assert "wikipedia.org" not in out
+
+
+def test_dropping_site_link_urls_leaves_code_samples_alone(monkeypatch):
+    filler = "".join(
+        f"<p>Guide paragraph {i} with enough words to run long.</p>" for i in range(400)
+    )
+    page = (
+        '<html><body><main><p>See <a href="#install">Install</a> or <a href="#usage">Usage</a>.</p>'
+        "<pre>[Install](#install)</pre><p>Inline <code>[Usage](#usage)</code>.</p>"
+        f"{filler}</main></body></html>"
+    )
+    out = _page_text(monkeypatch, "https://docs.example.com/guide", page, "text/html")
+    assert "```\n[Install](#install)\n```" in out
+    assert "Inline `[Usage](#usage)`." in out
+
+
+def test_dropping_site_link_urls_only_rewrites_links_emitted_by_renderer(monkeypatch):
+    filler = "".join(
+        f"<p>Guide paragraph {i} with enough words to run long.</p>" for i in range(400)
+    )
+    page = (
+        "<html><body><main>"
+        "<p>Literal Markdown: [Install](#install).</p>"
+        '<p>Inline code: <code><a href="#install">Install</a></code>.</p>'
+        '<p>Actual link: <a href="#install">Install</a>.</p>'
+        f"{filler}</main></body></html>"
+    )
+    out = _page_text(monkeypatch, "https://docs.example.com/guide", page, "text/html")
+    assert out.startswith(
+        "Literal Markdown: [Install](#install).\n\n"
+        "Inline code: `[Install](#install)`.\n\n"
+        "Actual link: Install."
+    )
+
+
+def test_dropping_site_link_urls_keeps_the_same_article(monkeypatch):
+    linked = "".join(
+        f'<p>Story one fact {i} see <a href="/topics/a-very-long-topic-slug-number-{i}">topic {i}</a>.</p>'
+        for i in range(300)
+    )
+    plain = "".join(
+        f"<p>Story two paragraph {i} with plain prose and no links.</p>" for i in range(300)
+    )
+    page = f"<html><body><article><h1>STORY ONE</h1>{linked}</article><article><h1>STORY TWO</h1>{plain}</article></body></html>"
+    out = _page_text(monkeypatch, "https://news.example.com/story-one", page, "text/html")
+    assert out.startswith("# STORY ONE\n\nStory one fact 0 see topic 0.")
+    assert "STORY TWO" not in out
+
+
+def test_dropping_site_link_urls_keeps_a_link_header_as_furniture(monkeypatch):
+    labels = "machine learning,deep learning,pytorch,cuda,transformers,lora,gguf,llama,quantization,finetuning,inference,qlora"
+    tags = "".join(
+        f'<a href="/category/topics/{t}/archive/page/1/?ref=card-header">{t}</a> '
+        for t in labels.split(",")
+    )
+    prose = "".join(
+        f"<p>Main page prose the user asked about, paragraph {i}, with enough words.</p>"
+        for i in range(250)
+    )
+    page = (
+        f"<html><body><main><h1>Main Post</h1>{prose}<aside><article><header>{tags}</header>"
+        "<p>A short teaser for a related post that is just long enough to read like a real sentence or two here.</p>"
+        "</article></aside></main></body></html>"
+    )
+    out = _page_text(monkeypatch, "https://blog.example.com/main-post", page, "text/html")
+    assert out.startswith("# Main Post\n\nMain page prose the user asked about, paragraph 0")
 
 
 def test_looks_like_html():
@@ -1498,6 +1634,41 @@ def test_fetch_url_raw_overall_deadline_aborts_across_redirects(monkeypatch):
     assert err == "Failed to fetch URL: timed out."
     assert body == ""
     assert hops["n"] < 5
+
+
+def test_fetch_url_raw_host_headers_follow_each_hop(monkeypatch):
+    # A header chosen for unsloth.ai must not ride a redirect to another site.
+    import urllib.request
+    from urllib.error import HTTPError
+
+    import core.inference.tools as tools_mod
+
+    sent = []
+
+    class _Opener:
+        def open(
+            self,
+            req,
+            timeout = None,
+        ):
+            sent.append((req.get_header("Host"), req.get_header("X-unsloth-studio")))
+            raise HTTPError(
+                req.full_url, 302, "Found", {"Location": "https://example.com/next"}, None
+            )
+
+    monkeypatch.setattr(
+        tools_mod,
+        "_validate_and_resolve_host",
+        lambda host, port: (True, "", ["203.0.113.7"]),
+    )
+    monkeypatch.setattr(urllib.request, "build_opener", lambda *handlers: _Opener())
+
+    tools_mod._fetch_url_raw(
+        "https://unsloth.ai/",
+        host_headers = lambda host: {"X-Unsloth-Studio": "1"} if host == "unsloth.ai" else {},
+    )
+    assert sent[0] == ("unsloth.ai", "1")
+    assert sent[1] == ("example.com", None)
 
 
 def test_fetch_url_raw_cancel_event_aborts_before_network(monkeypatch):

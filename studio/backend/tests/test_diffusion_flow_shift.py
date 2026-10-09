@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import types
 
-from core.inference.diffusion_families import detect_family
+from core.inference.diffusion_families import comfy_flow_shift_for, detect_family
 from core.inference.diffusion_flow_shift import apply_comfy_flow_shift, flow_shift_overrides
 from core.inference.video_families import detect_video_family
 
@@ -71,3 +71,19 @@ def test_family_shifts_match_comfy_defaults():
         "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-720p_t2v",
     ):
         assert detect_video_family(repo).comfy_flow_shift == 7.0
+
+
+def test_qwen_image_edit_2509_keeps_its_template_shift():
+    # Comfy-Org image_qwen_image_edit_2509 uses ModelSamplingAuraFlow 3, the 2511 template 3.1.
+    fam = detect_family("Qwen/Qwen-Image-Edit-2509")
+    assert fam.name == "qwen-image-edit"
+    assert comfy_flow_shift_for(fam, None, "Qwen/Qwen-Image-Edit-2509", None) == 3.0
+    assert (
+        comfy_flow_shift_for(
+            fam, "qwen-image-edit-2509-Q4_K_M.gguf", "unsloth/Qwen-Image-Edit-2509-GGUF", None
+        )
+        == 3.0
+    )
+    assert comfy_flow_shift_for(fam, None, "Qwen/Qwen-Image-Edit-2511", None) == 3.1
+    assert comfy_flow_shift_for(fam, None, "unsloth/Qwen-Image-Edit-2511-GGUF", None) == 3.1
+    assert comfy_flow_shift_for(detect_family("Qwen/Qwen-Image"), "Qwen/Qwen-Image") == 3.1

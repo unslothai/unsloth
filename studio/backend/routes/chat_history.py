@@ -468,6 +468,13 @@ class ChatResearchWebsitePolicy(BaseModel):
     )
 
 
+class ChatResearchMcpSource(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    serverId: str = Field(min_length = 1, max_length = 200)
+    tool: str = Field(min_length = 1, max_length = 500)
+
+
 class ChatSettingsPayload(BaseModel):
     model_config = ConfigDict(extra = "forbid", allow_inf_nan = False)
 
@@ -502,6 +509,7 @@ class ChatSettingsPayload(BaseModel):
     webFetchToolsEnabled: Optional[bool] = None
     deepResearchEnabled: Optional[bool] = None
     researchWebsitePolicy: Optional[ChatResearchWebsitePolicy] = None
+    researchMcpSources: Optional[list[ChatResearchMcpSource]] = Field(default = None, max_length = 20)
     # Seconds per Deep Research model request; zero leaves the total wall clock off. Bounded
     # like the run route so a value it would reject cannot be persisted and replayed.
     researchModelTimeoutSeconds: Optional[int] = Field(default = None, ge = 0, le = 365 * 24 * 3600)
@@ -511,6 +519,7 @@ class ChatSettingsPayload(BaseModel):
     confirmToolCalls: Optional[bool] = None
     # "full" (Full access) is session-only by design and never persisted.
     permissionMode: Optional[Literal["ask", "auto", "off"]] = None
+    sandboxLevel: Optional[Literal["high", "low"]] = None
     ragSource: Optional[
         Annotated[
             Union[ChatRagThreadSource, ChatRagKnowledgeBaseSource],
@@ -992,7 +1001,8 @@ def _decode_attachment_base64(payload: str) -> bytes:
         raise HTTPException(status_code = 422, detail = "Attachment data is corrupt") from exc
 
 
-_ATTACHMENT_TAG_RE = re.compile(r"<attachment name=[^\n]*>\n(.*)\n</attachment>", re.DOTALL)
+# A long paste is attached as text under its own tag (attachmentContentText in pasted-text.ts).
+_ATTACHMENT_TAG_RE = re.compile(r"<(attachment|pasted_text) name=[^\n]*>\n(.*)\n</\1>", re.DOTALL)
 _ATTACHMENT_LABEL_RE = re.compile(r"\[(?:PDF|DOCX|HTML|ODS|ODT|XLSX|PPTX|RTF): [^\n]*\]\n")
 
 
@@ -1000,7 +1010,7 @@ def _attachment_body_text(text: str) -> str:
     """An attachment's text without its chat wrapper, as the file itself reads."""
     tagged = _ATTACHMENT_TAG_RE.fullmatch(text)
     if tagged:
-        return tagged.group(1)
+        return tagged.group(2)
     labelled = _ATTACHMENT_LABEL_RE.match(text)
     return text[labelled.end() :] if labelled else text
 
@@ -1229,7 +1239,7 @@ def _delete_project_rag_sources(project_id: str) -> None:
             return
         folder_sync.retire_scope(scope, owned)
         # The purge takes the whole scope, `owned` or not, so bounding retirement buys nothing
-        # unless the purge is skipped too.
+        # unless the purge is skipped too. A recreate racing this is unretired by upsert_chat_project.
         if rag_db.rag_available():
             folder_sync.delete_retired_scope(scope)
 

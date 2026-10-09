@@ -326,7 +326,7 @@ class ManagedEngine:
                     with socket.socket() as sock:
                         sock.bind(("127.0.0.1", 0))
                         port = sock.getsockname()[1]
-                    if port <= 55535:
+                    if self.engine != "sglang" or port <= 55535:
                         break
                 else:
                     raise RuntimeError("Could not allocate an inference server port.")
@@ -494,6 +494,8 @@ class ManagedEngine:
                 str(i) for i in wsl_host.guest_gpu_indices(list(gpu_ids or [0]))
             ),
             "PYTHONNOUSERSITE": "1",
+            # C++ links FlashInfer JIT kernels against WSL's driver, outside the usual linker paths.
+            "LIBRARY_PATH": "/usr/lib/wsl/lib",
             # Weights download inside the distro's own disk; /mnt/c reads are far slower.
             "HF_HOME": f"{guest_root}/hf",
             "VLLM_CACHE_ROOT": cache,

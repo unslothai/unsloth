@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import errno
 import os
 import sys
 import time
@@ -356,8 +357,7 @@ def _verify_global_reachability(
     """Probe check-host.net to confirm display_host:port is reachable from the public internet. Synchronous so
     output lands between the banner URLs and the stop hint. Bounded at ~15s; failures swallowed (verifier
     failing is not Unsloth failing). Only meaningful for a wildcard bind, and skipped entirely by
-    UNSLOTH_STUDIO_DISABLE_PUBLIC_CHECK. ``wsl_nat``: the private address is WSL's NAT side, not a LAN
-    one, and the WSL note already printed says so."""
+    UNSLOTH_STUDIO_DISABLE_PUBLIC_CHECK. ``wsl_nat`` skips the LAN note (the WSL hint replaces it)."""
     global _public_reachable
     # Reset to "unknown" each run; set True/False only when the probe decides.
     _public_reachable = None
@@ -549,16 +549,14 @@ def _is_wsl_nat() -> bool:
     # "unknown" = WSL too old for wslinfo, which is NAT; "none" has no network at all.
     if _wsl_networking_mode() not in ("nat", "unknown"):
         return False
-    # Imported only on WSL: every wildcard bind reaches here. A container on Docker Desktop's WSL2
-    # kernel also reads "unknown", but its host port is whatever -p published.
+    # Lazy import (every wildcard bind gets here); Docker Desktop containers also read "unknown".
     from utils.paths.file_manager import _in_container
 
     return not _in_container()
 
 
 def _print_wsl_windows_hint(port: int) -> None:
-    """WSL2 NAT has no LAN URL to print, but Windows reaches a wildcard bind through localhost
-    forwarding (#11187). Printed where the reachability note goes, which it stands in for."""
+    """WSL2 NAT: Windows reaches a wildcard bind via localhost forwarding (#11187)."""
     dim = "\033[38;5;245m" if _stdout_color_ok() else ""
     reset = "\033[0m" if dim else ""
     print(
@@ -822,10 +820,12 @@ def _addresses_collide(recorded: "str | None", host: str, port: int) -> bool:
 def _is_port_free(host: str, port: int) -> bool:
     """Check if a port is available for binding. For a ``0.0.0.0`` wildcard host, also check whether anything
     is listening on ``127.0.0.1`` (and ``::1`` when IPv6 exists): an SSH tunnel may hold loopback while the
-    wildcard bind succeeds, making Unsloth unreachable via ``localhost``."""
+    wildcard bind succeeds, making Unsloth unreachable via ``localhost``. A specific host is checked too:
+    Windows and macOS let a ``127.0.0.1`` bind sit beside another process's ``0.0.0.0`` listener."""
     import socket
 
     sockets = []
+    bound = []
     try:
         addr_info = socket.getaddrinfo(host, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
         seen = set()
@@ -834,6 +834,7 @@ def _is_port_free(host: str, port: int) -> bool:
             if key in seen:
                 continue
             seen.add(key)
+            bound.append((family, sockaddr))
             probe = socket.socket(family, socktype, proto)
             sockets.append(probe)
             # On Windows, SO_REUSEADDR lets a second socket bind a listening
@@ -855,22 +856,53 @@ def _is_port_free(host: str, port: int) -> bool:
         for probe in sockets:
             probe.close()
 
-    # On a wildcard bind, verify localhost is not already claimed by another process (e.g. an SSH -L
-    # tunnel); a successful connect means it is.
+    # A successful bind can still sit beside a live listener, so a connect that lands means taken. Short
+    # timeout: Windows only refuses a free port after ~2 s of SYN retries.
     if is_wildcard_host(host):
-        for loopback, family in [
-            ("127.0.0.1", socket.AF_INET),
-            ("::1", socket.AF_INET6),
-        ]:
-            try:
-                with socket.socket(family, socket.SOCK_STREAM) as s:
-                    s.settimeout(1)
-                    if s.connect_ex((loopback, port)) == 0:
-                        return False
-            except OSError:
-                continue
+        targets = [
+            (socket.AF_INET, ("127.0.0.1", port)),
+            (socket.AF_INET6, ("::1", port)),
+        ]
+    else:
+        targets = bound
+    for family, sockaddr in targets:
+        try:
+            with socket.socket(family, socket.SOCK_STREAM) as s:
+                s.settimeout(0.25)
+                result = s.connect_ex(sockaddr)
+                if result == 0:
+                    return False
+                # Windows times out on a full-backlog listener exactly as on a free port.
+                if result not in _CONNECT_REFUSED and _listener_collides(sockaddr[0], port):
+                    return False
+        except OSError:
+            continue
 
     return True
+
+
+_CONNECT_REFUSED = {errno.ECONNREFUSED, 10061}  # WSAECONNREFUSED
+
+
+def _listener_collides(address: str, port: int) -> bool:
+    """A same-family listener on *port* at *address* or its wildcard; a v6-only ``::`` shares the port
+    with IPv4. Best effort: no psutil means no."""
+    import socket
+
+    family = socket.AF_INET6 if ":" in address else socket.AF_INET
+    try:
+        import psutil
+        listeners = [
+            c.laddr[0]
+            for c in psutil.net_connections(kind = "tcp")
+            if c.status == psutil.CONN_LISTEN
+            and c.family == family
+            and c.laddr
+            and c.laddr[1] == port
+        ]
+    except Exception:
+        return False
+    return any(_addresses_collide(listener, address, port) for listener in listeners)
 
 
 def _find_free_port(
@@ -1527,6 +1559,7 @@ def _graceful_shutdown(server = None):
         logger.warning("Error shutting down training subprocess: %s", e)
 
     try:
+        from core.inference.model_slots import unload_extra_models
         from routes.inference import _llama_cpp_backend, cancel_pending_loads
 
         # Before the kill: a load still in the lifecycle gate or in preflight is not yet
@@ -1542,6 +1575,7 @@ def _graceful_shutdown(server = None):
             # teardown = True: an app-level stop, not the retry ladder reaping a child it
             # is about to replace. Only the former may end an in-flight health wait.
             _llama_cpp_backend._kill_process(teardown = True)
+        unload_extra_models()
     except Exception as e:
         logger.warning("Error shutting down llama-server: %s", e)
 
@@ -2812,6 +2846,9 @@ def run_server(
     # Run server in a daemon thread with explicit new_event_loop() + run_until_complete() (not asyncio.run) so
     # nest_asyncio's patches do not interfere when Colab/IPython already runs a loop on the main thread.
     def _run():
+        from utils.proactor_self_pipe import install_proactor_self_pipe_guard
+
+        install_proactor_self_pipe_guard()
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         # settings > LAN access adds its listener to this loop from a request thread

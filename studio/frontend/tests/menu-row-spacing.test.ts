@@ -103,11 +103,15 @@ test("menu surfaces keep whole-pixel padding, margin and width, so the hover pil
   assert.match(helper, /new MutationObserver/);
   assert.match(helper, /window\.setTimeout\(\(\) => observer\.disconnect\(\), ROW_WAIT_MS\)/);
   // The model picker's panel is padded 16px left, 8px right (16px with external providers) so
-  // its scroller can run near the edge; the list's own right inset evens the rows out.
+  // its scroller can run near the edge; the list's own right inset evens the rows out, reaching
+  // into the panel padding for an overlay scrollbar.
   assert.match(
     readSrc("features/model-picker/components/model-selector/pickers.tsx"),
-    /model-list-scroll [^"]*pl-0\.5 pr-1\.5 mr-1 in-data-\[external=true\]:pr-0\.5 in-data-\[external=true\]:mr-0/,
+    /"model-list-scroll [^"]*pl-0\.5",/,
   );
+  const css = readSrc("index.css");
+  assert.match(css, /\.model-list-scroll \{[^}]*margin-right: calc\(var\(--spacing\) - var\(--list-reach\)\);[^}]*padding-right: calc\(var\(--spacing\) \* 1\.5 \+ var\(--list-reach\)\);/);
+  assert.match(css, /\[data-external\] \.model-list-scroll \{[^}]*margin-right: calc\(0px - var\(--list-reach\)\);[^}]*padding-right: calc\(var\(--spacing\) \* 0\.5 \+ var\(--list-reach\)\);/);
   assert.match(readSrc("features/model-picker/components/model-selector.tsx"), /data-external=\{hasExternal \|\| undefined\}/);
   assert.match(
     readSrc("components/ui/dropdown-menu.tsx"),
