@@ -15,6 +15,7 @@ from transformers import (
     AutoProcessor,
     AutoTokenizer,
     AutoModelForCausalLM,
+    AutoModelForSpeechSeq2Seq,
 )
 
 try:
@@ -53,8 +54,8 @@ def _multimodal_auto_classes():
     # Looked up, not referenced: which names exist varies (4.51.3 has both, 5.5.0
     # dropped AutoModelForVision2Seq), so only the alias above is always bound.
     classes = [AutoModelForVision2Seq]
-    # AutoModelForSpeechSeq2Seq is deliberately absent: Whisper already reaches
-    # AutoProcessor through is_whisper, so adding it would move a cell for nothing.
+    # AutoModelForSpeechSeq2Seq is deliberately absent: it would move Granite Speech in
+    # _is_text_seq2seq_config on transformers 4.57; from_pretrained adds its processor itself.
     for name in (
         "AutoModelForImageTextToText",
         "AutoModelForTextToWaveform",
@@ -2901,6 +2902,8 @@ class FastBaseModel:
         # Audio and omni classes need a processor but are NOT image models, so they
         # must not widen is_vlm, which arms the image-processor repair path below.
         needs_processor = is_vlm or auto_model in _multimodal_auto_classes()
+        # FastModel routes Whisper here without auto_model (#2726); audio features need the processor.
+        needs_processor = needs_processor or auto_model is AutoModelForSpeechSeq2Seq
         # A repo-code VLM may register only AutoModel / AutoModelForCausalLM (DeepSeek-OCR, Nemotron-VL), so auto_model is not a VLM class though the config is a vision model. Keep is_vlm for processor selection, but treat it as a VLM on the vLLM path so a vision_config model is never silently loaded as text-only.
         is_vlm_config = (
             is_vlm

@@ -654,6 +654,25 @@ def _resolve_omni_auto_model(
     return None
 
 
+def _resolve_speech_seq2seq_auto_model(
+    model_config,
+    trust_remote_code = None,
+    **hub_kwargs,
+):
+    """AutoModelForSpeechSeq2Seq when it maps this config (Whisper, Moonshine), else None."""
+    import transformers
+
+    auto_class = getattr(transformers, "AutoModelForSpeechSeq2Seq", None)
+    try:
+        if auto_class is not None and resolve_model_class(
+            auto_class, model_config, trust_remote_code = trust_remote_code, **hub_kwargs
+        ):
+            return auto_class
+    except Exception:
+        pass
+    return None
+
+
 def _get_user_task_config_attrs(user_config):
     if user_config is None:
         return {}
@@ -2650,6 +2669,7 @@ class FastModel(FastBaseModel):
                     if resolve_model_class(auto_model, model_config, **_probe_hub_kwargs) is None:
                         auto_model = (
                             _resolve_omni_auto_model(model_config, **_probe_hub_kwargs)
+                            or _resolve_speech_seq2seq_auto_model(model_config, **_probe_hub_kwargs)
                             or auto_model
                         )
             else:
