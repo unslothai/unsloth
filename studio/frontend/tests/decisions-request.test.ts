@@ -191,6 +191,16 @@ test("a split score heads with its most likely level, not the one nearest the ex
     probabilities: { "0": 0.8303, "1": 0.0021, "2": 0.0018, "3": 0.1658 },
   };
   assert.equal(scoreLevels(answer).top, "0");
+  const mirrored = { "0": 0.1658, "1": 0.0018, "2": 0.0021, "3": 0.8303 };
+  assert.equal(
+    scoreLevels({ ...answer, score: 2.4968, probabilities: mirrored }).top,
+    "3",
+  );
+  const flat = { "0": 0.25, "1": 0.25, "2": 0.25, "3": 0.25 };
+  assert.equal(
+    scoreLevels({ ...answer, score: 1.5, probabilities: flat }).top,
+    "1",
+  );
 });
 
 test("Try it in Settings > API opens the decision playground", () => {
