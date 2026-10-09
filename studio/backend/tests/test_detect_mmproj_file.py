@@ -498,3 +498,28 @@ def test_mmproj_rejection_names_mismatched_fields(tmp_path, capsys):
     output = capsys.readouterr().out
     assert "general.basename" in output
     assert "Foo" in output and "Bar" in output
+
+
+@pytest.mark.parametrize("projection_dim", [None, 3840, 4096])
+def test_hf_repo_case_mismatch_keeps_compatible_projector(tmp_path, projection_dim):
+    """#6305: URL casing must not drop a projector, even without dimension metadata."""
+    model = _gguf_with_general(
+        tmp_path / "gemma-4-12b-it-Q4_K_M.gguf",
+        {
+            "general.architecture": "gemma4",
+            "general.base_model.0.repo_url": "https://huggingface.co/google/gemma-4-12B-it",
+            "gemma4.embedding_length": 3840,
+        },
+    )
+    fields = {
+        "general.architecture": "clip",
+        "general.type": "mmproj",
+        "general.base_model.0.repo_url": "https://huggingface.co/google/gemma-4-12b-it",
+    }
+    if projection_dim is not None:
+        fields.update(
+            {"clip.vision.projector_type": "gemma4v", "clip.vision.projection_dim": projection_dim}
+        )
+    projector = _gguf_with_general(tmp_path / "mmproj-F16.gguf", fields)
+    expected = None if projection_dim == 4096 else str(projector.resolve())
+    assert detect_mmproj_file(str(model)) == expected
