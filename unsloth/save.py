@@ -5161,6 +5161,21 @@ from unsloth_zoo.llama_cpp import (
 )
 
 
+def _modelscope_base_model_name(model_name, load_in_4bit = True):
+    """`get_model_name` for a merge under UNSLOTH_USE_MODELSCOPE=1: the 16bit base comes from ModelScope, like the model it was trained on, not the Hugging Face Hub (#3726)."""
+    name = get_model_name(model_name, load_in_4bit = load_in_4bit)
+    if not name or os.path.exists(name):
+        return name
+    try:
+        from modelscope import snapshot_download
+        return snapshot_download(name)
+    except Exception as e:
+        logger.warning_once(
+            f"Unsloth: Could not download `{name}` from ModelScope ({e}), trying Hugging Face."
+        )
+        return name
+
+
 def _prewarm_base_model_hub_cache(
     model,
     save_method = "merged_16bit",
@@ -5171,6 +5186,9 @@ def _prewarm_base_model_hub_cache(
     if os.environ.get("UNSLOTH_PREWARM_HUB_CACHE", "1").strip().lower() in _false:
         return
     if IS_KAGGLE_ENVIRONMENT or IS_COLAB_ENVIRONMENT:
+        return
+    # The merge fetches the base from ModelScope, so a Hub cache copy would go unused.
+    if os.environ.get("UNSLOTH_USE_MODELSCOPE", "0") == "1":
         return
     _true = ("1", "true", "yes", "on")
     if (
@@ -5707,7 +5725,9 @@ def unsloth_generic_save(
         in_place = save_method in ("merged_4bit", "forced_merged_4bit")
         with nullcontext() if in_place else lora_relative_to_original_base(model):
             merge_and_overwrite_lora(
-                get_model_name,
+                _modelscope_base_model_name
+                if os.environ.get("UNSLOTH_USE_MODELSCOPE", "0") == "1"
+                else get_model_name,
                 model = model,
                 tokenizer = tokenizer,
                 save_directory = save_directory,

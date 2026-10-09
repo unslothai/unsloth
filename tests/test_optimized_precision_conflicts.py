@@ -162,6 +162,8 @@ def modelscope_snapshot(monkeypatch, tmp_path):
 
     def snapshot_download(name, allow_file_pattern = None):
         calls.append((name, allow_file_pattern))
+        snapshot = cache / name.replace("/", "--")
+        snapshot.mkdir(exist_ok = True)
         for filename in (
             "config.json",
             "adapter_config.json",
@@ -171,9 +173,9 @@ def modelscope_snapshot(monkeypatch, tmp_path):
             if allow_file_pattern is None or any(
                 fnmatch.fnmatch(filename, pattern) for pattern in allow_file_pattern
             ):
-                (cache / filename).write_text("test fixture")
+                (snapshot / filename).write_text("test fixture")
                 downloaded.append(filename)
-        return str(cache)
+        return str(snapshot)
 
     monkeypatch.setitem(
         sys.modules, "modelscope", SimpleNamespace(snapshot_download = snapshot_download)
@@ -183,7 +185,7 @@ def modelscope_snapshot(monkeypatch, tmp_path):
 
 def use_modelscope_adapter(env, cache, base_name):
     def config(name, **kwargs):
-        if name == str(cache):
+        if name == str(cache / "owner--model"):
             raise ValueError("Adapter has no model config")
         return SimpleNamespace(model_type = "llama", rope_scaling = None)
 
@@ -243,6 +245,9 @@ def test_modelscope_valid_loads_download_weights(
         env["from_pretrained"](model_name = "owner/model", **kwargs)
 
     assert "model.safetensors" in downloaded
-    assert captured["dispatch"]["model_name"] == (adapter_base or str(cache))
+    # An adapter's base is fetched from ModelScope as well (#3726).
+    loaded = adapter_base or "owner/model"
+    assert captured["dispatch"]["model_name"] == str(cache / loaded.replace("/", "--"))
     assert captured["dispatch"]["load_in_4bit"] is expected_4bit
     assert calls[-1] == ("owner/model", None)
+    assert (loaded, None) in calls
