@@ -17,8 +17,8 @@ from fastmcp.tools import ToolResult
 from studio_mcp import loading
 from studio_mcp.caller import Caller, current_caller
 from studio_mcp.errors import raise_for_route
-from studio_mcp.forward import forward
-from studio_mcp.inputs import AudioInput, audio_bytes, audio_ref
+from studio_mcp.forward import forward, ndjson_last
+from studio_mcp.inputs import AudioInput, audio_bytes, audio_ref, upload_audio
 from studio_mcp.media import INLINE_CAP, audio_content, media_result, public_url, resource_link
 from studio_mcp.outputs import AudioClip, AudioResult, TranscriptResult, TranscriptSegment
 from studio_mcp.tools import WRITES, integer, number
@@ -199,6 +199,60 @@ async def _multipart(
     )
 
 
+async def _stt_model(caller: Caller, model: Optional[str]) -> tuple[str, str]:
+    """The model and engine to transcribe with: the one asked for, else the loaded one, else Studio's default."""
+    status = await loading.stt_status(caller, model)
+    if model is None:
+        for engine in loading.STT_ENGINES:
+            state = status.get(engine)
+            if isinstance(state, dict) and route_text(state.get("loaded_model")):
+                return state["loaded_model"], engine
+        default = status.get("transformers") if isinstance(status.get("transformers"), dict) else {}
+        model = route_text(default.get("default_model")) or route_text(status.get("default_model"))
+    if model is None:
+        raise ToolError("Studio did not name a speech-to-text model; pass model.")
+    return model, loading.stt_engine(status, model)
+
+
+async def _transcribe_source(
+    caller: Caller,
+    source: dict[str, str],
+    *,
+    language: Optional[str],
+    timestamps: bool,
+    model: Optional[str],
+) -> TranscriptResult:
+    """Audio Studio already holds, transcribed by id; this route saves the transcript to history and streams NDJSON."""
+    model, engine = await _stt_model(caller, model)
+    body: dict[str, Any] = {
+        "source": source,
+        "model": model,
+        "engine": engine,
+        "timestamps": timestamps,
+    }
+    if language:
+        body["language"] = language
+    response = await forward(
+        caller, "POST", "/api/inference/audio/transcribe/source", json_body = body
+    )
+    if response.status_code >= 400:
+        raise_for_route(response)
+    try:
+        payload = ndjson_last(response.content)
+    except ValueError:
+        raise ToolError("Studio returned no transcript") from None
+    raise_for_route(response, payload = payload)
+    if not isinstance(payload, dict) or payload.get("type") != "complete":
+        raise ToolError("The transcription did not finish")
+    return TranscriptResult(
+        text = payload.get("text") if isinstance(payload.get("text"), str) else "",
+        language = route_text(payload.get("language")),
+        model = model,
+        segments = _segments(payload) if timestamps else None,
+        saved_to_history = True,
+    )
+
+
 async def transcribe(
     audio: AudioInput,
     language: Optional[str] = None,
@@ -207,13 +261,20 @@ async def transcribe(
     model: Optional[str] = None,
     ctx: Optional[Context] = None,
 ) -> TranscriptResult:
-    """Transcribe speech with Studio's speech-to-text, or translate it to English with ``translate``. ``audio`` is inline base64 with a filename, a path on the Studio computer, or a Studio id. ``timestamps`` adds segments; most engines then need ``language``. A missing model is downloaded first. Without ``model`` Studio's default is used."""
+    """Transcribe speech with Studio's speech-to-text, or translate it to English with ``translate``. ``audio`` is inline base64 with a filename, a path on the Studio computer, or a Studio id. Audio over 25 MB or given by id is stored with Studio first and its transcript is saved to Audio history (``saved_to_history``); translation needs a smaller file. ``timestamps`` adds segments; most engines then need ``language``. A missing model is downloaded first. Without ``model`` the loaded speech-to-text model or Studio's default is used."""
     caller = current_caller()
-    if not audio.is_upload:
-        raise ToolError("transcribe takes inline audio or a path for now.")
-    data, name = audio_bytes(caller, audio)
-    if len(data) > MULTIPART_LIMIT:
-        raise ToolError("Audio over 25 MiB cannot be transcribed yet.")
+    data, name = audio_bytes(caller, audio) if audio.is_upload else (None, None)
+    if data is None or len(data) > MULTIPART_LIMIT:
+        if translate:
+            raise ToolError("Translation needs a file under 25 MB sent as data or a path.")
+        source = (
+            {"input_id": await upload_audio(caller, data, name)}
+            if data is not None
+            else await audio_ref(caller, audio)
+        )
+        return await _transcribe_source(
+            caller, source, language = language, timestamps = timestamps, model = model
+        )
 
     async def send():
         return await _multipart(

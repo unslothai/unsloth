@@ -594,3 +594,132 @@ def test_transcribe_annotations():
     assert tool.annotations.destructiveHint is False
     assert tool.annotations.openWorldHint is False
     assert tool.output_schema is not None
+
+
+# ---------------------------------------------------------------- large or stored audio
+
+STT_STATUS = {
+    "transformers": {
+        "loaded_model": None,
+        "models": ["openai/whisper-small"],
+        "downloaded_models": ["openai/whisper-small"],
+        "default_model": "openai/whisper-small",
+    },
+    "gguf": {
+        "loaded_model": "whisper-large-v3-turbo-q5",
+        "models": ["whisper-large-v3-turbo-q5"],
+        "downloaded_models": ["whisper-large-v3-turbo-q5"],
+    },
+}
+COMPLETE = {
+    "type": "complete",
+    "text": "A long meeting.",
+    "language": "en",
+    "segments": [{"start": 0.0, "end": 5.0, "text": "A long meeting."}],
+    "record": {"id": "tr-1"},
+}
+
+
+def _ndjson(*events):
+    return Response(
+        b"".join(json.dumps(e).encode() + b"\n" for e in events), media_type = "application/x-ndjson"
+    )
+
+
+SOURCE_PAYLOADS = {
+    ("GET", "/api/inference/audio/stt/status"): STT_STATUS,
+    ("POST", "/api/inference/audio/transcribe/source"): COMPLETE,
+    ("POST", "/v1/audio/inputs"): UPLOADED,
+}
+
+
+def _source_studio(events = None, status = None):
+    return fake_studio(
+        {
+            ("GET", "/api/inference/audio/stt/status"): lambda request, body: status or STT_STATUS,
+            ("POST", "/api/inference/audio/transcribe/source"): lambda request, body: _ndjson(
+                *(
+                    events
+                    or [{"type": "progress", "fraction": 0.5}, {"type": "heartbeat"}, COMPLETE]
+                )
+            ),
+            ("POST", "/v1/audio/inputs"): lambda request, body: JSONResponse(
+                UPLOADED, status_code = 201
+            ),
+        }
+    )
+
+
+def test_a_stored_clip_is_transcribed_by_id_with_the_loaded_model(monkeypatch):
+    studio = _source_studio()
+    result = _transcribe(monkeypatch, studio, {"audio": {"clip_id": "clip-7"}, "timestamps": True})
+    assert result["structuredContent"] == {
+        "text": "A long meeting.",
+        "language": "en",
+        "model": "whisper-large-v3-turbo-q5",
+        "segments": [{"start": 0.0, "end": 5.0, "text": "A long meeting."}],
+        "saved_to_history": True,
+    }
+    body = json.loads(next(c for c in studio.state.calls if c[1].endswith("/transcribe/source"))[3])
+    assert body == {
+        "source": {"clip_id": "clip-7"},
+        "model": "whisper-large-v3-turbo-q5",
+        "engine": "gguf",
+        "timestamps": True,
+    }
+
+
+def test_without_a_loaded_model_the_curated_default_is_used(monkeypatch):
+    idle = {**STT_STATUS, "gguf": {**STT_STATUS["gguf"], "loaded_model": None}}
+    studio = _source_studio(status = idle)
+    _transcribe(monkeypatch, studio, {"audio": {"input_id": "in-3"}, "language": "en"})
+    body = json.loads(next(c for c in studio.state.calls if c[1].endswith("/transcribe/source"))[3])
+    assert body["model"] == "openai/whisper-small"
+    assert body["engine"] == "transformers"
+    assert body["language"] == "en"
+
+
+def test_audio_over_25_mib_is_uploaded_then_transcribed(monkeypatch):
+    from studio_mcp.tools import audio
+
+    monkeypatch.setattr(audio, "MULTIPART_LIMIT", len(WAV) - 1)
+    studio = _source_studio()
+    result = _transcribe(
+        monkeypatch, studio, {"audio": {"data_base64": _b64(WAV), "filename": "meeting.wav"}}
+    )
+    assert result["structuredContent"]["saved_to_history"] is True
+    assert [c[1] for c in studio.state.calls] == [
+        "/v1/audio/inputs",
+        "/api/inference/audio/stt/status",
+        "/api/inference/audio/transcribe/source",
+    ]
+    upload = studio.state.calls[0]
+    assert upload[2]["content-length"] == str(len(WAV))
+    body = json.loads(studio.state.calls[2][3])
+    assert body["source"] == {"input_id": "in-1"}
+
+
+def test_an_ndjson_error_line_is_a_tool_error(monkeypatch):
+    studio = _source_studio(
+        events = [
+            {"type": "progress"},
+            {"type": "error", "message": "Audio is longer than 30 minutes."},
+        ]
+    )
+    result = _transcribe(monkeypatch, studio, {"audio": {"clip_id": "clip-7"}})
+    assert result["isError"] is True
+    assert result["content"][0]["text"] == "Audio is longer than 30 minutes."
+
+
+def test_a_stream_that_stops_early_is_an_error(monkeypatch):
+    studio = _source_studio(events = [{"type": "progress"}, {"type": "heartbeat"}])
+    result = _transcribe(monkeypatch, studio, {"audio": {"clip_id": "clip-7"}})
+    assert result["isError"] is True
+
+
+def test_translation_of_large_or_stored_audio_is_refused(monkeypatch):
+    studio = _source_studio()
+    result = _transcribe(monkeypatch, studio, {"audio": {"clip_id": "clip-7"}, "translate": True})
+    assert result["isError"] is True
+    assert "under 25 MB" in result["content"][0]["text"]
+    assert studio.state.calls == []
