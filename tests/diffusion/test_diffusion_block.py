@@ -287,3 +287,9 @@ def test_restore_rotary_buffers_refills_zeroed_inv_freq():
     assert restore_rotary_buffers(holder) == 1
     torch.testing.assert_close(holder.rotary_emb.inv_freq, init_fn(holder.rotary_emb.config)[0])
     assert restore_rotary_buffers(holder) == 0  # idempotent
+
+
+def test_deepspeed_engine_keeps_its_own_forward():
+    from unsloth.models.diffusion_block import _is_distributed_wrapper
+    engine = type("DeepSpeedEngine", (nn.Module,), {})()
+    assert _is_distributed_wrapper(engine) and not _is_distributed_wrapper(_LM())

@@ -374,9 +374,17 @@ class FastDiffusionModel:
         if trust_remote_code:
             # 4.x remote code builds RoPE inv_freq in __init__; transformers 5 leaves it uninitialised.
             from ._remote_code_buffers import restore_remote_code_non_persistent_buffers
+
             restore_remote_code_non_persistent_buffers(model)
             # That helper misses rotary modules whose class overrides _init_weights (LLaDA, LLaDA2, SDAR, Dream).
             restore_rotary_buffers(model)
+            # Remote classes without GenerationMixin (LLaDA-MoE) have none; TRL 1.x SFTTrainer reads it.
+            if getattr(model, "generation_config", None) is None:
+                from transformers import GenerationConfig
+                try:
+                    model.generation_config = GenerationConfig.from_model_config(model.config)
+                except Exception:
+                    model.generation_config = GenerationConfig()
         # Mark before any early return so get_peft_model/for_* route to the slow path.
         model._unsloth_slow_diffusion = True
         if profile is not None:
@@ -403,16 +411,32 @@ class FastDiffusionModel:
 
         # Prefer the processor (chat template plus tokenizer), falling back to a bare tokenizer, returned as
         # "tokenizer" to match the Unsloth (model, tokenizer) contract.
-        tokenizer_source = model_name
+        tokenizer_source, tokenizer_revision = model_name, revision
         if adapter_name is not None:
-            if os.path.isfile(os.path.join(adapter_name, "tokenizer_config.json")):
-                tokenizer_source = adapter_name
+            from transformers.utils import cached_file
+
+            # A local directory or a Hub repo; the adapter's own tokenizer carries its chat template / tokens.
+            try:
+                saved = cached_file(
+                    adapter_name,
+                    "tokenizer_config.json",
+                    token = token,
+                    revision = adapter_revision,
+                    local_files_only = local_files_only,
+                    cache_dir = cache_dir,
+                    _raise_exceptions_for_missing_entries = False,
+                    _raise_exceptions_for_connection_errors = False,
+                )
+            except Exception:
+                saved = None
+            if saved is not None:
+                tokenizer_source, tokenizer_revision = adapter_name, adapter_revision
         try:
             tokenizer = AutoProcessor.from_pretrained(
                 tokenizer_source,
                 token = token,
                 trust_remote_code = trust_remote_code,
-                revision = revision,
+                revision = tokenizer_revision,
                 local_files_only = local_files_only,
                 cache_dir = cache_dir,
             )
@@ -421,7 +445,7 @@ class FastDiffusionModel:
                 tokenizer_source,
                 token = token,
                 trust_remote_code = trust_remote_code,
-                revision = revision,
+                revision = tokenizer_revision,
                 local_files_only = local_files_only,
                 cache_dir = cache_dir,
             )

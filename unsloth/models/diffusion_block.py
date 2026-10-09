@@ -54,7 +54,11 @@ _unwrap = unwrap_diffusion_model
 
 
 def _is_distributed_wrapper(model):
-    return type(model).__name__ in ("DistributedDataParallel", "FullyShardedDataParallel")
+    return type(model).__name__ in (
+        "DistributedDataParallel",
+        "FullyShardedDataParallel",
+        "DeepSpeedEngine",
+    )
 
 
 class BlockDiffusionProfile(DiffusionProfile):
@@ -206,7 +210,7 @@ class BlockDiffusionProfile(DiffusionProfile):
         dtype = head.weight.dtype if head.weight.dtype.is_floating_point else torch.float32
         mask = self.attention_mask(length, block_size, valid, dtype, clean.device)
         if _is_distributed_wrapper(model):
-            # DDP / FSDP must see their own forward; this path materialises logits for both halves.
+            # DDP / FSDP / DeepSpeed must see their own forward; this path materialises logits for both halves.
             out = model(
                 input_ids = concat, attention_mask = mask, position_ids = position_ids, use_cache = False
             )

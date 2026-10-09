@@ -52,6 +52,10 @@ class DiffusionConfig(SFTConfig):
         # Packed rows share one bidirectional attention window, so documents would see each other.
         self.packing = False
         self.padding_free = False
+        # TRL 1.x turns MoE router logits on from router_aux_loss_coef (0.001, or the config's own); the
+        # diffusion objectives never add that term, so it would only cost router work in every forward.
+        if hasattr(self, "router_aux_loss_coef"):
+            self.router_aux_loss_coef = 0.0
         super().__post_init__()
 
 

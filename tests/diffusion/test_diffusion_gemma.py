@@ -202,3 +202,21 @@ def test_reloaded_adapter_still_refuses_merge(tmp_path):
     reloaded, _ = FastModel.from_pretrained(str(tmp_path), dtype = torch.float32, device_map = "cpu")
     with pytest.raises(RuntimeError, match = "share base weights"):
         reloaded.merge_and_unload()
+
+
+def test_reload_uses_the_adapters_saved_tokenizer(tmp_path):
+    from peft import LoraConfig, get_peft_model
+
+    from unsloth import FastModel
+
+    m = transformers.DiffusionGemmaForBlockDiffusion.from_pretrained(TINY, dtype = torch.float32)
+    m = get_peft_model(
+        m, LoraConfig(r = 4, target_modules = DIFFUSION_GEMMA_PROFILE.lora_target_modules)
+    )
+    m.save_pretrained(tmp_path)
+    tokenizer = transformers.AutoTokenizer.from_pretrained(TINY)
+    tokenizer.chat_template = "{{ 'adapter-template-marker' }}"
+    tokenizer.save_pretrained(tmp_path)
+    _, reloaded = FastModel.from_pretrained(str(tmp_path), dtype = torch.float32, device_map = "cpu")
+    reloaded = getattr(reloaded, "tokenizer", reloaded)
+    assert "adapter-template-marker" in (reloaded.chat_template or "")
