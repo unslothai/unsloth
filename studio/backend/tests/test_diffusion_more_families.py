@@ -683,8 +683,8 @@ def test_qwen_image_21_is_reachable_end_to_end_not_just_detectable():
 
 
 def test_qwen_image_21_turbo_loads_as_its_own_checkpoint_of_the_family():
-    """The official 8-step distill is trusted, gets its card's defaults, never borrows 2.1's hosted denoisers, and
-    shares 2.1's text encoder."""
+    """The official 8-step distill is trusted, gets its card's defaults, loads its own hosted denoisers (never 2.1's),
+    and shares 2.1's text encoder."""
     from core.inference.diffusion_families import (
         default_generation_params,
         detect_family,
@@ -709,13 +709,53 @@ def test_qwen_image_21_turbo_loads_as_its_own_checkpoint_of_the_family():
         assert default_generation_params(identifier) == (8, 1.0), identifier
     for identifier in ("Qwen/Qwen-Image-2.1", "/models/qwen_image_21", "/models/qwenimage21"):
         assert default_generation_params(identifier) == (25, 1.0), identifier
-    # The hosted denoisers are baked from 2.1's weights: planning must not fetch one for Turbo.
-    for scheme in ("int8", "fp8", "nvfp4"):
-        assert family_prequant_repo(fam, scheme, base_repo = turbo) is None
-    assert family_prequant_repo(fam, "fp8", base_repo = "Qwen/Qwen-Image-2.1") is not None
+    # Turbo has its own hosted int8 / fp8 denoisers; 2.1's (baked from 2.1's weights) are never planned for it, and
+    # nvfp4, which Turbo does not host, quantizes its own weights rather than inheriting 2.1's.
+    for scheme in ("int8", "fp8"):
+        assert family_prequant_repo(fam, scheme, base_repo = turbo) == "unsloth/Qwen-Image-2.1-Turbo-FP8"
+        assert family_prequant_repo(fam, scheme, base_repo = "Qwen/Qwen-Image-2.1") == "unsloth/Qwen-Image-2.1-FP8"
+    assert family_prequant_repo(fam, "nvfp4", base_repo = turbo) is None
     # Its Qwen3-VL encoder is byte-identical to 2.1's, so the hosted int8 ConvRot encoder serves both.
     assert te_base_equivalent("Qwen/Qwen-Image-2.1", turbo)
     assert not te_base_equivalent("Qwen/Qwen-Image", turbo)
+
+
+def test_qwen_image_21_turbo_resolves_its_own_artifact_names(monkeypatch):
+    """Turbo's repo is asked for Turbo's files, in the same order 2.1's repo is asked for 2.1's, and declares only
+    files it hosts. 2.1's chain is unchanged."""
+    from core.inference.diffusion_families import detect_family
+    from core.inference.diffusion_prequant import resolve_prequant_source
+
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_INT8_CONVROT", raising = False)
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_PREQUANT_COMFY", "0")
+    fam = detect_family("Qwen/Qwen-Image-2.1")
+    expected = {
+        ("Qwen/Qwen-Image-2.1", "int8"): (
+            "unsloth/Qwen-Image-2.1-FP8",
+            ("Qwen-Image-2.1-INT8-ConvRot.safetensors", "Qwen-Image-2.1-INT8.safetensors"),
+        ),
+        ("Qwen/Qwen-Image-2.1", "fp8"): ("unsloth/Qwen-Image-2.1-FP8", ("Qwen-Image-2.1-FP8.safetensors",)),
+        ("Qwen/Qwen-Image-2.1-Turbo", "int8"): (
+            "unsloth/Qwen-Image-2.1-Turbo-FP8",
+            ("Qwen-Image-2.1-Turbo-INT8-ConvRot.safetensors", "Qwen-Image-2.1-Turbo-INT8.safetensors"),
+        ),
+        ("Qwen/Qwen-Image-2.1-Turbo", "fp8"): (
+            "unsloth/Qwen-Image-2.1-Turbo-FP8",
+            ("Qwen-Image-2.1-Turbo-FP8.safetensors",),
+        ),
+    }
+    for (base, scheme), (repo, declared) in expected.items():
+        source = resolve_prequant_source(fam, scheme, base_repo = base)
+        assert source.location == repo, (base, scheme)
+        assert source.declared_filenames == declared, (base, scheme)
+        assert source.filename == declared[0], (base, scheme)
+        names = [n for n in (source.filename, *source.fallback_filenames) if not n.startswith("transformer_")]
+        assert all(("-Turbo-" in n) == ("Turbo" in base) for n in names), names
+    # The ConvRot kill switch drops the rotated name for both repos alike.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_INT8_CONVROT", "0")
+    for base in ("Qwen/Qwen-Image-2.1", "Qwen/Qwen-Image-2.1-Turbo"):
+        source = resolve_prequant_source(fam, "int8", base_repo = base)
+        assert not any("ConvRot" in n for n in (source.filename, *source.fallback_filenames))
 
 
 def test_every_image_family_base_repo_is_loadable():
