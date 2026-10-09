@@ -333,3 +333,28 @@ def test_generate_uses_dynamic_cache_when_static_does_not_fit(monkeypatch):
 
 def test_generate_keeps_static_cache_when_it_fits(monkeypatch):
     assert _tiny_generate(monkeypatch, free_bytes = 40 * GB) == "StaticCache"
+
+
+def test_upper_bound_is_never_below_the_exact_size():
+    config = _llama_config(
+        sliding_window = 16, layer_types = ["sliding_attention", "full_attention"] * 2
+    )
+    model = _model(config)
+    input_ids = torch.zeros(1, 10, dtype = torch.long)
+    exact = _static_cache_bytes(model, input_ids, {"max_new_tokens": 500})
+    bound = _static_cache_bytes(model, input_ids, {"max_new_tokens": 500}, exact = False)
+    assert bound >= exact and bound == 4 * 509 * 2 * (32 + 32) * 2
+
+
+def test_sliding_model_that_fits_exactly_keeps_static(fake_cuda):
+    """The upper bound alone would fall back; the exact layer plan says it fits."""
+    config = _llama_config(
+        sliding_window = 16, layer_types = ["sliding_attention"] * 3 + ["full_attention"]
+    )
+    model = _model(config)
+    ids = torch.zeros(1, 1, dtype = torch.long)
+    exact = _static_cache_bytes(model, ids, {"max_new_tokens": 4095})
+    bound = _static_cache_bytes(model, ids, {"max_new_tokens": 4095}, exact = False)
+    fake_cuda["free"] = 2 * exact + 1
+    assert bound > fake_cuda["free"] // 2
+    assert not _static_cache_does_not_fit(model, ids, {"max_new_tokens": 4095})

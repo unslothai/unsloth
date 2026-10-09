@@ -1431,9 +1431,15 @@ def _static_cache_preallocates():
     return "max_batch_size" in inspect.signature(StaticCache.__init__).parameters
 
 
-def _static_cache_bytes(model, input_ids, kwargs):
+def _static_cache_bytes(
+    model,
+    input_ids,
+    kwargs,
+    exact = True,
+):
     """Bytes the static KV cache transformers preallocates for this call, or None when it cannot
-    be sized. Worst case length (prompt + max_new_tokens), whatever length the reply turns out."""
+    be sized. Worst case length (prompt + max_new_tokens), whatever length the reply turns out.
+    exact = False skips the layer plan and counts every layer full length: an upper bound."""
     from transformers import StaticCache
 
     config = model.config
@@ -1471,7 +1477,7 @@ def _static_cache_bytes(model, input_ids, kwargs):
     if _compiles_decode(model):
         length = _decode_cache_bucket(length)
     copies = max(option("num_beams", 1), option("num_return_sequences", 1))
-    if _static_cache_preallocates():
+    if not exact or _static_cache_preallocates():
         # Before transformers 4.56 constructing one allocates it, so count every layer as full.
         tokens = text_config.num_hidden_layers * length
     else:
@@ -1505,10 +1511,14 @@ def _static_cache_does_not_fit(model, input_ids, kwargs):
         device_map = getattr(model, "hf_device_map", None)
         if isinstance(device_map, dict) and len(set(map(str, device_map.values()))) > 1:
             return False
-        need = _static_cache_bytes(model, input_ids, kwargs)
+        # The upper bound settles the common case without building the layer plan (~0.3 ms).
+        need = _static_cache_bytes(model, input_ids, kwargs, exact = False)
         if need is None:
             return False
         free = backend.mem_get_info(device)[0]
+        if need <= free // 2:
+            return False
+        need = _static_cache_bytes(model, input_ids, kwargs)
         if need <= free // 2:
             return False
         # memory_stats is slow, so allocator-held free blocks are read only when needed.
