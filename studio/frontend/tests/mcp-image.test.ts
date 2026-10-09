@@ -5,10 +5,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  changedImageMappings,
   imageFieldCandidates,
   mcpImageMappingsEnabled,
   modelVisibleMessage,
-  changedImageMappings,
   toolOnlyImages,
   unmappedImageFields,
   withImageField,
@@ -145,6 +145,16 @@ test("a tool saved with two rows keeps one after picking a field", () => {
     withImageField(saved, { tool: "search_by_file", field: "file" }),
     [{ tool: "search_by_file", field: "file", encoding: "base64" }, saved[1]],
   );
+});
+
+test("changing a row's encoding keeps that field and its tool's other rows go", () => {
+  const saved = [
+    { tool: "search_by_file", field: "imageBase64", encoding: "base64" },
+    { tool: "search_by_file", field: "filePath", encoding: "base64" },
+  ] as const;
+  assert.deepEqual(withImageField(saved, saved[1], "data_url"), [
+    { tool: "search_by_file", field: "filePath", encoding: "data_url" },
+  ]);
 });
 
 test("an edit leaves unchanged mappings out of the update", () => {

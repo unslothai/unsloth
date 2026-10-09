@@ -94,11 +94,12 @@ export function unmappedImageFields<T extends ImageField>(
 export function withImageField(
   mappings: readonly McpImageInputMapping[],
   option: ImageField,
+  encoding: McpImageInputMapping["encoding"] = "base64",
 ): McpImageInputMapping[] {
   const next: McpImageInputMapping = {
     tool: option.tool,
     field: option.field,
-    encoding: "base64",
+    encoding,
   };
   const index = mappings.findIndex((m) => m.tool === option.tool);
   if (index < 0) return [...mappings, next];

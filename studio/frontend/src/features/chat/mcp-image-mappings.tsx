@@ -117,13 +117,10 @@ export function McpImageMappings({
                 disabled={disabled}
                 onValueChange={(next) =>
                   onChange(
-                    value.map((m) =>
-                      m.tool === mapping.tool
-                        ? {
-                            ...m,
-                            encoding: next as McpImageInputMapping["encoding"],
-                          }
-                        : m,
+                    withImageField(
+                      value,
+                      mapping,
+                      next as McpImageInputMapping["encoding"],
                     ),
                   )
                 }
