@@ -484,7 +484,6 @@ class _MarkdownRenderer(HTMLParser):
         self._span_chars: int = 0
         self._has_generated_spans: bool = False
         self._span_char_limit: int = min(_MAX_SPAN_CHARS, max(0, span_char_limit))
-        # each scope candidate gets its own budget, drawn from one page-wide total
         self._scope_span_limit: int = self._span_char_limit
         self._page_span_left: int | None = page_span_limit
         self._in_row: bool = False
@@ -1357,7 +1356,6 @@ def _new_renderer(
     span_char_limit: int | None = None,
     header_decisions: list[bool] | None = None,
 ) -> _MarkdownRenderer:
-    # generated span cells stay proportional to their source and cannot consume the fetch cap alone
     renderer = _MarkdownRenderer(
         scope_tags = scope_tags,
         strip_header = strip_header,
