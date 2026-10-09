@@ -22,6 +22,7 @@ __all__ = [
     "response_mask",
     "sample_noise_level",
     "restore_rotary_buffers",
+    "unwrap_diffusion_model",
 ]
 
 
@@ -57,7 +58,7 @@ class DiffusionProfile:
         archs = getattr(config, "architectures", None) or ()
         return any(arch in self.architectures for arch in archs)
 
-    def model_class(self, config, trust_remote_code):
+    def model_class(self, config, trust_remote_code, **hub_kwargs):
         """The class ``from_pretrained`` is called on. Remote-code families use the auto class."""
         from transformers import AutoModel, AutoModelForCausalLM
 
@@ -132,14 +133,18 @@ def _load_builtin_profiles():
     if _BUILTINS_LOADED:
         return
     _BUILTINS_LOADED = True
-    import importlib
+    # Each module registers its profiles on import.
+    from . import diffusion_block, diffusion_gemma_objective, diffusion_masked  # noqa: F401
 
-    for module in ("diffusion_gemma_objective", "diffusion_masked", "diffusion_block"):
-        try:
-            importlib.import_module(f"{__package__}.{module}")
-        except ModuleNotFoundError as e:
-            if e.name != f"{__package__}.{module}":
-                raise
+
+def unwrap_diffusion_model(model):
+    """The module holding config / heads / Unsloth attributes under DDP, FSDP and PEFT wrappers. Forwards
+    still go through the wrapper so gradients synchronise."""
+    while hasattr(model, "module") and isinstance(model.module, torch.nn.Module):
+        model = model.module
+    if hasattr(model, "get_base_model"):
+        model = model.get_base_model()
+    return model
 
 
 def response_mask(inputs):

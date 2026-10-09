@@ -216,6 +216,26 @@ def test_unsupervised_batch_masks_every_attended_token_and_no_padding():
     assert not (noisy[inputs["attention_mask"] == 0] == MASK_ID).any()
 
 
+class _DistributedLike(torch.nn.Module):
+    """DDP / FSDP expose neither config nor Unsloth attributes; only forward reaches the module."""
+
+    def __init__(self, inner):
+        super().__init__()
+        self.module = inner
+
+    def forward(self, **kwargs):
+        return self.module(**kwargs)
+
+
+@pytest.mark.parametrize("name", ["llada", "dream", "nemotron_labs_diffusion"])
+def test_loss_through_distributed_wrapper(name):
+    inputs, _ = _batch()
+    model = _Bidirectional()
+    plain, _ = _ours(name, model, inputs, 0)
+    wrapped, _ = _ours(name, _DistributedLike(model), inputs, 0)
+    torch.testing.assert_close(wrapped, plain)
+
+
 def test_mask_token_falls_back_to_family_default():
     inputs, _ = _batch()
     model = _Bidirectional(mask_token_id = None)

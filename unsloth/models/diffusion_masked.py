@@ -18,6 +18,7 @@ from .diffusion_profiles import (
     DiffusionProfile,
     register_diffusion_profile,
     response_mask,
+    unwrap_diffusion_model,
 )
 
 __all__ = ["MaskedDiffusionProfile"]
@@ -165,7 +166,7 @@ class MaskedDiffusionProfile(DiffusionProfile):
             **self.defaults,
         }
 
-    def model_class(self, config, trust_remote_code):
+    def model_class(self, config, trust_remote_code, **hub_kwargs):
         from transformers.dynamic_module_utils import get_class_from_dynamic_module
 
         auto_map = getattr(config, "auto_map", None) or {}
@@ -175,11 +176,12 @@ class MaskedDiffusionProfile(DiffusionProfile):
             or auto_map.get("AutoModel")
         )
         if class_ref is None or not trust_remote_code:
-            return super().model_class(config, trust_remote_code)
+            return super().model_class(config, trust_remote_code, **hub_kwargs)
         cls = get_class_from_dynamic_module(
             class_ref,
             config._name_or_path,
             revision = getattr(config, "_commit_hash", None),
+            **hub_kwargs,
         )
         _accept_new_validate_kwargs(cls)
         return _ensure_post_init(cls)
@@ -207,6 +209,7 @@ class MaskedDiffusionProfile(DiffusionProfile):
         return model
 
     def _token_ids(self, model, args):
+        model = unwrap_diffusion_model(model)
         mask_id = self.option(args, "diffusion_mask_token_id")
         if mask_id is None:
             mask_id = getattr(model, "_unsloth_mask_token_id", None)

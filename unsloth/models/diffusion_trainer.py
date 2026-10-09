@@ -119,7 +119,7 @@ class DiffusionTrainer(SFTTrainer):
         ignore_keys = None,
     ):
         inputs = self._prepare_inputs(inputs)
-        with torch.no_grad():
+        with torch.no_grad(), self.compute_loss_context_manager():
             loss = self.compute_loss(model, inputs)
         return (loss.detach(), None, None)
 

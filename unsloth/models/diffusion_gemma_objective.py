@@ -9,7 +9,7 @@ import contextlib
 import torch
 import torch.nn.functional as F
 
-from .diffusion_profiles import DiffusionProfile, register_diffusion_profile
+from .diffusion_profiles import DiffusionProfile, register_diffusion_profile, unwrap_diffusion_model
 
 __all__ = ["DiffusionGemmaProfile"]
 
@@ -80,12 +80,13 @@ class DiffusionGemmaProfile(DiffusionProfile):
                 f"Unsloth: diffusion_prediction_type must be 'mean' or 'mean_loo', got {prediction_type!r}."
             )
 
-        config = model.config
+        base = unwrap_diffusion_model(model)
+        config = base.config
         text_config = config.text_config
         block_size = config.canvas_length
         vocab_size = text_config.vocab_size
         softcap = text_config.final_logit_softcapping
-        eos_token_id = _eos_token_id(model)
+        eos_token_id = _eos_token_id(base)
         max_length = getattr(args, "max_length", None)
 
         input_ids = inputs["input_ids"]
@@ -146,6 +147,8 @@ class DiffusionGemmaProfile(DiffusionProfile):
 
         # Flat CE over the whole canvas, corrupted and clean alike: the uniform kernel's ELBO has no 1/t weight.
         diffusion_target = canvas_target.masked_fill(truncated[:, None] & ~in_response, -100)
+        # A row with no supervised token (completion truncated away) would otherwise train an all-EOS canvas.
+        diffusion_target = diffusion_target.masked_fill((span_end < 0)[:, None], -100)
         diffusion_logits = outputs.logits
         if prediction_type == "mean_loo":
             # The softmax then parameterises the leave-one-out posterior (arXiv 2605.22765); convert it to the
@@ -163,7 +166,7 @@ class DiffusionGemmaProfile(DiffusionProfile):
             diffusion_loss = outputs.logits.sum() * 0.0
 
         # Autoregressive co-loss on the causal encoder over every valid next-token pair.
-        lm_head = model.get_output_embeddings()
+        lm_head = base.get_output_embeddings()
         hidden_states = outputs.encoder_last_hidden_state.to(lm_head.weight.dtype)
         with _gather_lm_head(lm_head.weight, lm_head.bias):
             encoder_logits = hidden_states @ lm_head.weight.t()

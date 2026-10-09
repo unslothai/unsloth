@@ -29,9 +29,11 @@ def _batch(
     vocab,
     canvas,
     max_length = 80,
+    rows = None,
 ):
     g = torch.Generator().manual_seed(0)
-    rows = [(5, 10), (7, canvas * 2 + 3), (4, max_length - 4), (6, 0)]
+    if rows is None:
+        rows = [(5, 10), (7, canvas * 2 + 3), (4, max_length - 4)]
     input_ids = torch.zeros(len(rows), max_length, dtype = torch.long)
     attention_mask = torch.zeros_like(input_ids)
     labels = torch.full_like(input_ids, -100)
@@ -158,3 +160,45 @@ def test_untied_lora_merge_still_allowed():
     )
     assert "merge_and_unload" not in vars(m)
     m.merge_and_unload()
+
+
+class _DistributedLike(torch.nn.Module):
+    """DDP / FSDP expose neither config nor heads; only forward reaches the module."""
+
+    def __init__(self, inner):
+        super().__init__()
+        self.module = inner
+
+    def forward(self, **kwargs):
+        return self.module(**kwargs)
+
+
+def test_loss_through_distributed_wrapper(model):
+    batch = _batch(model.config.text_config.vocab_size, model.config.canvas_length)
+    torch.manual_seed(0)
+    plain = DIFFUSION_GEMMA_PROFILE.compute_loss(model, batch, _args())[0]
+    torch.manual_seed(0)
+    wrapped = DIFFUSION_GEMMA_PROFILE.compute_loss(_DistributedLike(model), batch, _args())[0]
+    torch.testing.assert_close(wrapped, plain)
+
+
+def test_row_without_supervised_tokens_adds_no_canvas_loss(model):
+    batch = _batch(model.config.text_config.vocab_size, model.config.canvas_length, rows = [(6, 0)])
+    torch.manual_seed(0)
+    _, _, metrics = DIFFUSION_GEMMA_PROFILE.compute_loss(model, batch, _args())
+    assert metrics["diffusion_loss"] == 0.0
+
+
+def test_reloaded_adapter_still_refuses_merge(tmp_path):
+    from peft import LoraConfig, get_peft_model
+
+    from unsloth import FastModel
+
+    m = transformers.DiffusionGemmaForBlockDiffusion.from_pretrained(TINY, dtype = torch.float32)
+    m = get_peft_model(
+        m, LoraConfig(r = 4, target_modules = DIFFUSION_GEMMA_PROFILE.lora_target_modules)
+    )
+    m.save_pretrained(tmp_path)
+    reloaded, _ = FastModel.from_pretrained(str(tmp_path), dtype = torch.float32, device_map = "cpu")
+    with pytest.raises(RuntimeError, match = "share base weights"):
+        reloaded.merge_and_unload()

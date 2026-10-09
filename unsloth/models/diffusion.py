@@ -210,6 +210,7 @@ class FastDiffusionModel:
 
         # A saved LoRA directory: load its base, then attach the adapter below.
         adapter_name = None
+        adapter_revision = None
         try:
             from peft import PeftConfig
             adapter_config = PeftConfig.from_pretrained(
@@ -218,8 +219,9 @@ class FastDiffusionModel:
                 revision = revision,
                 local_files_only = local_files_only,
             )
-            adapter_name, model_name, revision = (
+            adapter_name, adapter_revision, model_name, revision = (
                 model_name,
+                revision,
                 adapter_config.base_model_name_or_path,
                 adapter_config.revision,
             )
@@ -252,7 +254,14 @@ class FastDiffusionModel:
             ) or "eager"
 
         if profile is not None and model_type not in DIFFUSION_MODEL_TYPES:
-            model_cls = profile.model_class(config, trust_remote_code)
+            model_cls = profile.model_class(
+                config,
+                trust_remote_code,
+                token = token,
+                cache_dir = cache_dir,
+                local_files_only = local_files_only,
+                code_revision = kwargs.get("code_revision"),
+            )
         else:
             model_cls = _resolve_diffusion_model_class(config)
 
@@ -375,13 +384,16 @@ class FastDiffusionModel:
 
         if adapter_name is not None:
             from peft import PeftModel
+
             model = PeftModel.from_pretrained(
                 model,
                 adapter_name,
                 is_trainable = True,
                 token = token,
+                revision = adapter_revision,
                 local_files_only = local_files_only,
             )
+            model = _refuse_tied_lora_merge(model)
             model._unsloth_slow_diffusion = True
 
         if not return_tokenizer:

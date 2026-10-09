@@ -18,7 +18,12 @@ import types
 import torch
 import torch.nn.functional as F
 
-from .diffusion_profiles import DiffusionProfile, register_diffusion_profile, response_mask
+from .diffusion_profiles import (
+    DiffusionProfile,
+    register_diffusion_profile,
+    response_mask,
+    unwrap_diffusion_model,
+)
 
 __all__ = [
     "BlockDiffusionProfile",
@@ -45,12 +50,7 @@ def block_diffusion_attention_mask(
     return same_noisy_block | noisy_to_past_clean | clean_causal
 
 
-def _unwrap(model):
-    while hasattr(model, "module") and isinstance(model.module, torch.nn.Module):
-        model = model.module
-    if hasattr(model, "get_base_model"):
-        model = model.get_base_model()
-    return model
+_unwrap = unwrap_diffusion_model
 
 
 def _is_distributed_wrapper(model):
@@ -150,7 +150,13 @@ class BlockDiffusionProfile(DiffusionProfile):
         valid = F.pad(valid, (0, pad), value = False)
         real_length = valid.sum(dim = 1, keepdim = True)
         positions = torch.arange(new_length, device = input_ids.device)
-        fill = (positions[None, :] >= real_length) & maskable.any(dim = 1, keepdim = True)
+        # A row clipped at max_length has no real end, so it gets no EOS tail (as for DiffusionGemma).
+        max_length = getattr(args, "max_length", None)
+        truncated = torch.zeros_like(real_length, dtype = torch.bool)
+        if max_length is not None:
+            last = torch.where(maskable, positions[None, :], -1).amax(dim = 1, keepdim = True)
+            truncated = (real_length >= max_length) & (last == real_length - 1)
+        fill = (positions[None, :] >= real_length) & maskable.any(dim = 1, keepdim = True) & ~truncated
         input_ids = torch.where(fill, eos, input_ids)
         return input_ids, maskable | fill, valid | fill
 
@@ -437,7 +443,7 @@ class _SDARProfile(BlockDiffusionProfile):
             config.fuse_cross_entropy = False
         return super().prepare_model(model, tokenizer)
 
-    def model_class(self, config, trust_remote_code):
+    def model_class(self, config, trust_remote_code, **hub_kwargs):
         from transformers import AutoModelForCausalLM
         class _Loader:
             @staticmethod
