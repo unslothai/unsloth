@@ -18,9 +18,11 @@ from __future__ import annotations
 
 import html
 import re
+import secrets
 from html.parser import HTMLParser
+from urllib.parse import urlsplit
 
-__all__ = ["html_to_markdown"]
+__all__ = ["SiteLinks", "html_to_markdown"]
 
 _SKIP_TAGS = frozenset(
     {
@@ -275,6 +277,68 @@ class _HeaderFrame:
         return "".join(self.parts)
 
 
+class SiteLinks:
+    """Same-site links as rendered, so a page too long for its budget can drop their URLs."""
+
+    def __init__(self, page_url: str):
+        self._host = urlsplit(page_url).hostname
+        self._nonce = secrets.token_hex(8)
+        self._marker = re.compile(rf"\x00{self._nonce}:(\d+):([se])\x00")
+        self._found: dict[int, tuple[str, str]] = {}
+        self._full = ""
+        self._stripped = ""
+
+    def note(self, link: str, text: str, href: str) -> str:
+        try:
+            parts = urlsplit(href)
+        except ValueError:
+            return link
+        if parts.scheme not in ("", "http", "https") or parts.hostname not in (
+            None,
+            self._host,
+        ):
+            return link
+        index = len(self._found)
+        self._found[index] = (link, text)
+        return f"\x00{self._nonce}:{index}:s\x00{link}\x00{self._nonce}:{index}:e\x00"
+
+    def clean(self, markdown: str) -> str:
+        return self._marker.sub("", markdown)
+
+    def finish(self, markdown: str) -> str:
+        self._full = self.clean(markdown)
+        self._stripped = self._strip_marked(markdown)
+        return self._full
+
+    def strip(self, markdown: str) -> str:
+        return self._stripped if markdown == self._full else markdown
+
+    def _strip_marked(self, markdown: str) -> str:
+        out: list[str] = []
+        last = 0
+        while match := self._marker.search(markdown, last):
+            index, edge = int(match.group(1)), match.group(2)
+            if edge != "s" or index not in self._found:
+                out.append(markdown[last : match.end()])
+                last = match.end()
+                continue
+            end_marker = f"\x00{self._nonce}:{index}:e\x00"
+            end = markdown.find(end_marker, match.end())
+            if end < 0:
+                out.append(markdown[last : match.end()])
+                last = match.end()
+                continue
+            link, text = self._found[index]
+            rendered_link = markdown[match.end() : end]
+            if rendered_link == link.replace("|", "\\|"):
+                text = text.replace("|", "\\|")
+            out.append(markdown[last : match.start()])
+            out.append(text)
+            last = end + len(end_marker)
+        out.append(markdown[last:])
+        return self.clean("".join(out))
+
+
 class _MarkdownRenderer(HTMLParser):
     """HTMLParser subclass that emits Markdown tokens into a list.
 
@@ -287,8 +351,10 @@ class _MarkdownRenderer(HTMLParser):
         self,
         scope_tags: frozenset[str] | None = None,
         strip_header: bool = False,
+        site_links: SiteLinks | None = None,
     ):
         super().__init__(convert_charrefs = False)
+        self._site_links = site_links
         self._out: list[str] = []
         self._skip_depth: int = 0
 
@@ -381,9 +447,10 @@ class _MarkdownRenderer(HTMLParser):
         as_heading = (
             self._heading_marks and not in_nested_link and not self._replaying
         ) or self._emit_as_heading
+        measured = self._site_links.clean(text) if self._site_links is not None else text
         if frame is not None and as_heading:
             frame.heading_parts.append(text)
-            frame.heading_chars += len(text.strip())
+            frame.heading_chars += len(measured.strip())
         # for the eligibility gate, frame or not; link text waits for _finish_link to count once
         if not self._replaying and (
             (self._heading_marks and not self._in_link) or self._emit_as_heading
@@ -392,7 +459,7 @@ class _MarkdownRenderer(HTMLParser):
         nested_open = self._nested_buffer_open(frame) if frame is not None else False
         # Tally once, on the emit reaching the frame; counting again on flush doubled it.
         if frame is not None and not nested_open:
-            frame.rendered_chars += len(text.strip())
+            frame.rendered_chars += len(measured.strip())
             frame.parts.append(text)
             return
         if self._in_link:
@@ -411,7 +478,10 @@ class _MarkdownRenderer(HTMLParser):
     def _seg_heading_prose(self) -> int:
         """Heading characters in this segment that the gate would otherwise read as
         body prose. ATX headings carry their own ``#`` here and so score zero."""
-        return _visible_chars("".join(self._seg_heading_texts))
+        text = "".join(self._seg_heading_texts)
+        if self._site_links is not None:
+            text = self._site_links.clean(text)
+        return _visible_chars(text)
 
     def _drain_pre(self) -> None:
         """Emit the open ``<pre>`` and empty it, so a late ``</pre>`` cannot replay
@@ -490,7 +560,10 @@ class _MarkdownRenderer(HTMLParser):
         self._link_had_heading = False
         self._link_header_chars = 0
         if href and text:
-            self._emit(f"[{text}]({href})")
+            link = f"[{text}]({href})"
+            if self._site_links is not None and not self._inline_code_depth:
+                link = self._site_links.note(link, text, href)
+            self._emit(link)
         elif text:
             self._emit(text)
         self._emit_as_heading = False
@@ -1031,7 +1104,7 @@ def _fence_state(line: str, fence: int) -> int:
     return 0 if len(stripped) >= fence else fence
 
 
-def _strip_boilerplate_lines(text: str) -> str:
+def _strip_boilerplate_lines(text: str, site_links: SiteLinks | None = None) -> str:
     """Drop short lines that consist entirely of known page-furniture phrases.
 
     Fenced code blocks are preserved verbatim: boilerplate never renders
@@ -1044,7 +1117,12 @@ def _strip_boilerplate_lines(text: str) -> str:
             fence = moved
             out.append(line)
             continue
-        if not fence and len(line) <= _BOILERPLATE_MAX_LINE_CHARS and _line_is_boilerplate(line):
+        measured = site_links.clean(line) if site_links is not None else line
+        if (
+            not fence
+            and len(measured) <= _BOILERPLATE_MAX_LINE_CHARS
+            and _line_is_boilerplate(measured)
+        ):
             continue
         out.append(line)
     # Collapse blank runs the dropped lines may have left behind.
@@ -1052,9 +1130,14 @@ def _strip_boilerplate_lines(text: str) -> str:
 
 
 def _new_renderer(
-    source_html: str, scope_tags: frozenset[str] | None, strip_header: bool
+    source_html: str,
+    scope_tags: frozenset[str] | None,
+    strip_header: bool,
+    site_links: SiteLinks | None,
 ) -> _MarkdownRenderer:
-    renderer = _MarkdownRenderer(scope_tags = scope_tags, strip_header = strip_header)
+    renderer = _MarkdownRenderer(
+        scope_tags = scope_tags, strip_header = strip_header, site_links = site_links
+    )
     renderer.feed(source_html)
     renderer.close()
     renderer.flush_pending()
@@ -1065,11 +1148,14 @@ def _render(
     source_html: str,
     scope_tags: frozenset[str] | None,
     strip_header: bool = False,
+    site_links: SiteLinks | None = None,
 ) -> str:
-    return _cleanup("".join(_new_renderer(source_html, scope_tags, strip_header)._out))
+    return _cleanup("".join(_new_renderer(source_html, scope_tags, strip_header, site_links)._out))
 
 
-def _select_main_scope_render(source_html: str, tag: str) -> tuple[int, str]:
+def _select_main_scope_render(
+    source_html: str, tag: str, site_links: SiteLinks | None
+) -> tuple[int, str]:
     """Length and boilerplate-stripped render of the largest single ``<tag>``
     subtree. Sizing candidates one at a time stops many tiny sibling cards from
     clearing the threshold together, and returning that one subtree keeps
@@ -1083,17 +1169,20 @@ def _select_main_scope_render(source_html: str, tag: str) -> tuple[int, str]:
     Nor may it dominate: the credit is capped at the retained render, so removed
     furniture can never be the majority of a score. Uncapped, a teaser with a
     1000 link header outranked a sibling holding five times its real text."""
-    renderer = _new_renderer(source_html, frozenset({tag}), strip_header = True)
+    renderer = _new_renderer(
+        source_html, frozenset({tag}), strip_header = True, site_links = site_links
+    )
     dropped = renderer.scope_dropped
     heading_prose = renderer.scope_heading_prose
     best_len = 0
     best_render = ""
     for i, seg in enumerate(renderer.scope_segments):
-        rendered = _strip_boilerplate_lines(_cleanup(seg))
-        prose = _visible_chars(rendered) - heading_prose[i]
+        rendered = _strip_boilerplate_lines(_cleanup(seg), site_links)
+        measured = site_links.clean(rendered) if site_links is not None else rendered
+        prose = _visible_chars(measured) - heading_prose[i]
         if prose < _MIN_MAIN_CONTENT_CHARS:
             continue
-        size = len(rendered) + min(dropped[i], len(rendered))
+        size = len(measured) + min(dropped[i], len(measured))
         if size > best_len:
             best_len = size
             best_render = rendered
@@ -1161,7 +1250,12 @@ def _visible_len(line: str) -> int:
 _MIN_MAIN_CONTENT_CHARS = 200
 
 
-def html_to_markdown(source_html: str, *, main_content: bool = False) -> str:
+def html_to_markdown(
+    source_html: str,
+    *,
+    main_content: bool = False,
+    site_links: SiteLinks | None = None,
+) -> str:
     """Convert HTML to Markdown (headings, links, emphasis, lists, tables, blockquotes, code, entities).
 
     ``<script>``, ``<style>``, and ``<head>`` are stripped entirely, as are
@@ -1172,13 +1266,22 @@ def html_to_markdown(source_html: str, *, main_content: bool = False) -> str:
     then ``<main>``, falling back to the whole document, reduce a link-only
     ``<header>`` to the heading it carries, and strip known boilerplate
     fragments from the result.
+
+    ``site_links`` records the links back into the page's own site; the output is unchanged.
     """
     source_html = source_html.replace("\r\n", "\n").replace("\r", "\n")
+    rendered = ""
     if main_content:
         for scope_tag in ("article", "main"):
             # Render only the chosen subtree so sibling <article>/<main> elements do not leak in.
-            length, rendered = _select_main_scope_render(source_html, scope_tag)
+            length, rendered = _select_main_scope_render(source_html, scope_tag, site_links)
             if length >= _MIN_MAIN_CONTENT_CHARS:
-                return rendered
-        return _strip_boilerplate_lines(_render(source_html, None, strip_header = True))
-    return _render(source_html, None)
+                break
+        else:
+            rendered = _strip_boilerplate_lines(
+                _render(source_html, None, strip_header = True, site_links = site_links),
+                site_links,
+            )
+    else:
+        rendered = _render(source_html, None, site_links = site_links)
+    return site_links.finish(rendered) if site_links is not None else rendered

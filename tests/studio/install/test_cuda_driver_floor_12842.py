@@ -242,7 +242,9 @@ class TestWindowsBelowTheFloorGetsTheCpuBundle:
         assert choices and all(c.install_kind == "windows-cuda" for c in choices)
 
     def test_a_cuda_11_driver_keeps_its_old_route(self, monkeypatch):
-        assert self._choices(monkeypatch, (11, 8)) == []
+        # No fork bundle covers it; the caller turned main's empty list into this same fallback.
+        with pytest.raises(m.PrebuiltFallback, match = "no published Windows CUDA bundle"):
+            self._choices(monkeypatch, (11, 8))
 
 
 class TestTheSourceStageDoesNotKeepABrokenCudaPrebuilt:

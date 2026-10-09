@@ -77,6 +77,7 @@ __all__ = [
     "validate_loftq_config",
     "validate_init_lora_weights",
     "validate_init_target_parameters",
+    "reject_alora",
     "RESIDUAL_INIT_LORA_WEIGHTS",
     "snapshot_residual_lora_init",
     "lora_relative_to_original_base",
@@ -5955,6 +5956,19 @@ def validate_init_target_parameters(init_lora_weights, target_parameters):
             f"Unsloth: `init_lora_weights = {init_lora_weights!r}` cannot initialize fused MoE expert "
             f"parameters ({target_parameters}).\n"
             "Pass `target_parameters = []` to apply it to the other layers only, or use another init."
+        )
+
+
+def reject_alora(model, requested = None):
+    # Unsloth's LoRA forwards never apply aLoRA's invocation offsets, so the adapter would fire on every token (#2471).
+    configs = (getattr(model, "peft_config", None) or {}).values()
+    if requested is not None or any(
+        getattr(c, "alora_invocation_tokens", None) is not None for c in configs
+    ):
+        raise NotImplementedError(
+            "Unsloth: Activated LoRA (`alora_invocation_tokens`) is not supported yet. "
+            "Unsloth would apply the adapter to every token, not only after the invocation tokens.\n"
+            "Use plain `transformers` + `peft` for aLoRA, or drop `alora_invocation_tokens` for a normal LoRA."
         )
 
 
