@@ -55,7 +55,7 @@ async def start_training(
     kind: Literal["llm", "diffusion"] = "llm",
     validate_only: bool = False,
 ) -> TrainingStarted:
-    """Start a training job and return at once; follow it with studio_status. This starts real GPU work, so build the config first and check it with ``validate_only`` true, which starts nothing.
+    """Start a training job and return at once; follow it with studio_status. This starts real GPU work, so build the config first and check it with ``validate_only`` true, which starts nothing, for example {"kind": "llm", "config": {...}, "validate_only": true}.
 
     kind "llm": ``config`` is the Unsloth Studio training request. The minimum is {"model_name": a Hugging Face model repo id (not a GGUF; it is downloaded when training starts), "training_type": "LoRA/QLoRA" | "Full Finetuning" | "Continued Pretraining", "format_type": "auto" | "alpaca" | "chatml" | "sharegpt" | "conversational" | "raw", "hf_dataset": a Hugging Face dataset repo id}. Common options: max_steps or num_epochs, learning_rate (a string such as "2e-4"), batch_size, gradient_accumulation_steps, max_seq_length, load_in_4bit, lora_r, lora_alpha, train_split. list_models with ``model`` returns that model's defaults to start from, and datasets(action="check_format") detects the dataset's format: use it when it is one of the format_type values above, otherwise "auto" (image and audio datasets included). hf_token for a gated model goes in the config.
 

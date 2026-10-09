@@ -68,7 +68,7 @@ async def chat(
     temperature: Optional[float] = None,
     model: Optional[str] = None,
 ) -> ChatResult:
-    """Chat with the model loaded in Unsloth Studio and return its reply. Send either ``prompt`` (one user turn) or ``messages`` (the whole conversation), plus an optional ``system`` prompt. ``images`` go with the last user turn and need a vision model. ``model`` names which loaded model should answer; without it the active one does. Load a model with load_model first. Unsloth Studio's server-side tools are not used."""
+    """Chat with the model loaded in Unsloth Studio and return its reply. Send either ``prompt`` (one user turn) or ``messages`` (the whole conversation), plus an optional ``system`` prompt. ``images`` go with the last user turn and need a vision model. ``model`` names which loaded model should answer; without it the active one does. Load a model with load_model first. A thinking model spends tokens on reasoning before the reply, so leave ``max_tokens`` unset or give it a few hundred or more. Unsloth Studio's server-side tools are not used."""
     if (messages is None) == (prompt is None):
         raise ToolError("Send either prompt or messages, not both and not neither.")
     turns = (
@@ -131,7 +131,7 @@ async def embed(
     texts: Annotated[list[str], Field(min_length = 1, max_length = MAX_EMBED_INPUTS)],
     model: Optional[str] = None,
 ) -> EmbedResult:
-    """Embed up to 2048 texts and return one vector per text, in order. Uses the embedding GGUF loaded in Unsloth Studio when there is one, else Unsloth Studio's configured embedding model. ``model`` names a specific one."""
+    """Embed up to 2048 texts and return one vector per text, in order. Uses the embedding GGUF loaded in Unsloth Studio when there is one, else Unsloth Studio's configured embedding model. ``model`` names a specific one; the result names the model that answered. Compare vectors with cosine similarity."""
     body = {"input": texts}
     if model:
         body["model"] = model
