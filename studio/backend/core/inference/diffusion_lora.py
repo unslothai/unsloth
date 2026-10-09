@@ -134,7 +134,6 @@ def _scan_folder_roots() -> list[Path]:
     """Registered custom model folders plus their direct sub-folders (where an export lands)."""
     try:
         from storage.studio_db import list_scan_folders
-
         folders = list_scan_folders()
     except Exception:  # noqa: BLE001 -- discovery never fails on the scan-folder table
         return []

@@ -112,7 +112,6 @@ def _http_error(status_code: int, detail: str):
 def _is_image_lora_file(path: Path) -> bool:
     # An exported or trained image LoRA is an add-on for the Images page, not a model to load.
     from core.inference.diffusion_lora import is_image_lora_file
-
     return is_image_lora_file(path)
 
 

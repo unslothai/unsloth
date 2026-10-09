@@ -531,7 +531,6 @@ def _scan_models_dir(
         )
     if limit is None or len(found) < limit:
         from core.inference.diffusion_lora import is_image_lora_file
-
         for gguf_file in models_dir.glob("*.gguf"):
             if limit is not None and len(found) >= limit:
                 break
