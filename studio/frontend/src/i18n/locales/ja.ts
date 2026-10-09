@@ -2787,7 +2787,7 @@ export const ja = {
         backendDescription:
           "自動では、モデルに GGUF ビルドがあれば Clef を llama.cpp で提供し、なければ PyTorch に切り替えます。llama.cpp は画像も読み取れます。",
         backendDescriptionMlx:
-          "自動では、Apple Silicon 上で Clef のテキストを MLX で提供し、モデルの GGUF ビルドだけが読み込み済みまたはダウンロード済みの場合は llama.cpp で提供します。MLX はテキストのみを読み取り、llama.cpp は画像も読み取れます。",
+          "自動では、Apple Silicon 上で Clef を MLX で提供し、モデルの GGUF ビルドだけが読み込み済みまたはダウンロード済みの場合は llama.cpp で提供します。MLX は Clef モデルでのみ画像を読み取り、llama.cpp は画像も読み取れます。",
         backendStatus: "ランタイム: {backend}",
         backendNone: "利用不可",
         mediaImages: "テキストと画像を読み取ります。",

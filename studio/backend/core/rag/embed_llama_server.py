@@ -949,7 +949,7 @@ class LlamaServerBackend:
         from core.inference.llama_cpp import (
             LlamaCppBackend,
             _llama_server_api_key_enabled,
-            _write_direct_stream_key,
+            _llama_server_key_launch,
         )
 
         self._api_key = key_file = None
@@ -960,8 +960,9 @@ class LlamaServerBackend:
             import secrets
 
             self._api_key = secrets.token_urlsafe(32)
-            key_file = _write_direct_stream_key(self._api_key)
-            cmd[1:1] = ["--api-key-file", str(key_file)]
+            key_argv, key_env, key_file = _llama_server_key_launch(self._api_key)
+            cmd[1:1] = key_argv
+            env.update(key_env)
         self._stdout_lines = []
         # One flag at every spawn. No _graceful_shutdown step stops this backend, so an
         # encode still resolving or downloading its model as the app quits would

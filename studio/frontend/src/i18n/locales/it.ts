@@ -2820,7 +2820,7 @@ export const it = {
         backendDescription:
           "Automatico serve Clef tramite llama.cpp quando il modello ha una build GGUF, altrimenti ripiega su PyTorch. llama.cpp legge anche le immagini.",
         backendDescriptionMlx:
-          "Automatico serve il testo di Clef tramite MLX su Apple Silicon e tramite llama.cpp quando solo la build GGUF del modello è caricata o scaricata. MLX legge solo testo; llama.cpp legge anche le immagini.",
+          "Automatico serve Clef tramite MLX su Apple Silicon e tramite llama.cpp quando solo la build GGUF del modello è caricata o scaricata. MLX legge le immagini solo per i modelli Clef; llama.cpp legge anche le immagini.",
         backendStatus: "Runtime: {backend}",
         backendNone: "non disponibile",
         mediaImages: "Legge testo e immagini.",
