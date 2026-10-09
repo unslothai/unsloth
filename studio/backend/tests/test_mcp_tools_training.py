@@ -18,7 +18,9 @@ from .mcp_harness import call_tool, fake_studio, served
 
 CONFIG = {
     "model_name": "unsloth/Qwen3-0.6B",
-    "dataset": "mlabonne/FineTome-100k",
+    "training_type": "LoRA/QLoRA",
+    "format_type": "auto",
+    "hf_dataset": "mlabonne/FineTome-100k",
     "max_steps": 30,
     "hf_token": "hf_cfg",
 }
@@ -55,12 +57,16 @@ def _bodies(studio, path):
 def test_start_forwards_the_config_as_sent(monkeypatch):
     studio = _studio()
     result = _call(monkeypatch, studio, "start_training", {"config": CONFIG})
+    (sent,) = _bodies(studio, "/api/train/start")
+    request_id = sent.pop("start_request_id")
+    assert request_id.startswith("mcp-")
+    assert sent == CONFIG
     assert result["structuredContent"] == {
         "job_id": "job-7",
         "status": "queued",
         "message": "Training job queued",
+        "start_request_id": request_id,
     }
-    assert _bodies(studio, "/api/train/start") == [CONFIG]
     headers = studio.state.calls[0][2]
     assert "x-unsloth-hf-token" not in headers
 
@@ -76,6 +82,48 @@ def test_an_already_active_200_is_a_tool_error(monkeypatch):
     result = _call(monkeypatch, studio, "start_training", {"config": CONFIG})
     assert result["isError"] is True
     assert result["content"][0]["text"] == refused["message"]
+
+
+def test_validate_only_starts_nothing(monkeypatch):
+    studio = _studio()
+    result = _call(monkeypatch, studio, "start_training", {"config": CONFIG, "validate_only": True})
+    assert result["structuredContent"]["status"] == "valid"
+    assert result["structuredContent"]["job_id"] is None
+    assert studio.state.calls == []
+
+
+@pytest.mark.parametrize(
+    "config,message",
+    [
+        ({**CONFIG, "format_type": "bogus"}, "format_type must be one of"),
+        (
+            {"model_name": "unsloth/Qwen3-0.6B"},
+            "Invalid training config: training_type: Field required",
+        ),
+        ({**CONFIG, "training_type": "Everything"}, "Invalid training config: training_type"),
+    ],
+)
+def test_a_config_the_trainer_would_refuse_never_starts(monkeypatch, config, message):
+    studio = _studio()
+    for validate_only in (False, True):
+        result = _call(
+            monkeypatch,
+            studio,
+            "start_training",
+            {"config": config, "validate_only": validate_only},
+        )
+        assert result["isError"] is True
+        assert message in result["content"][0]["text"]
+    assert studio.state.calls == []
+
+
+def test_a_callers_start_request_id_is_kept(monkeypatch):
+    studio = _studio()
+    result = _call(
+        monkeypatch, studio, "start_training", {"config": {**CONFIG, "start_request_id": "mine-1"}}
+    )
+    assert _bodies(studio, "/api/train/start")[0]["start_request_id"] == "mine-1"
+    assert result["structuredContent"]["start_request_id"] == "mine-1"
 
 
 def test_start_training_annotations():
@@ -107,7 +155,12 @@ def test_kind_routes_to_the_matching_start_route(monkeypatch):
     result = _call(
         monkeypatch, studio, "start_training", {"config": DIFFUSION, "kind": "diffusion"}
     )
-    assert result["structuredContent"] == {"job_id": "diff-1", "status": "queued", "message": None}
+    assert result["structuredContent"] == {
+        "job_id": "diff-1",
+        "status": "queued",
+        "message": None,
+        "start_request_id": None,
+    }
     assert "/srv" not in json.dumps(result)
     assert _bodies(studio, "/api/train/diffusion/start") == [DIFFUSION]
     assert _bodies(studio, "/api/train/start") == []

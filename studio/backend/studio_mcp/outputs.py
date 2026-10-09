@@ -328,9 +328,12 @@ class DatasetsResult(ToolOutput):
 
 
 class TrainingStarted(ToolOutput):
-    job_id: RouteText
+    # None when validate_only checked the config without starting anything.
+    job_id: Optional[RouteText] = None
     status: RouteText
     message: Optional[RouteText] = None
+    # What cancel(kind="training_start") takes while the job has not begun.
+    start_request_id: Optional[RouteText] = None
 
 
 TrainingScalar = Union[StrictBool, StrictInt, StrictFloat, RouteText]

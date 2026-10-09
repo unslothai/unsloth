@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import secrets
 from typing import Any, Literal, Optional
 from urllib.parse import quote
 
@@ -25,12 +26,47 @@ from studio_mcp.tools import READ_ONLY, WRITES, integer, number, opt_text, route
 
 
 TRAINING_ROUTES = {"llm": "/api/train/start", "diffusion": "/api/train/diffusion/start"}
+# The dataset formats the trainer knows; the route itself accepts any string and fails later.
+FORMAT_TYPES = ("auto", "alpaca", "chatml", "sharegpt", "conversational", "raw")
+
+
+def _checked_config(config: dict[str, Any], kind: str) -> None:
+    """Validate the config the way the route will, so a mistake is reported before any GPU work."""
+    from pydantic import ValidationError
+
+    from models.training import DiffusionTrainingStartRequest, TrainingStartRequest
+
+    if kind == "llm" and "format_type" in config and config["format_type"] not in FORMAT_TYPES:
+        raise ToolError(f"format_type must be one of {', '.join(FORMAT_TYPES)}.")
+    model = TrainingStartRequest if kind == "llm" else DiffusionTrainingStartRequest
+    try:
+        model.model_validate(config)
+    except ValidationError as exc:
+        problems = "; ".join(
+            f"{'.'.join(str(part) for part in error['loc'])}: {error['msg']}"
+            for error in exc.errors()[:10]
+        )
+        raise ToolError(f"Invalid training config: {problems}") from None
 
 
 async def start_training(
-    config: dict[str, Any], kind: Literal["llm", "diffusion"] = "llm"
+    config: dict[str, Any],
+    kind: Literal["llm", "diffusion"] = "llm",
+    validate_only: bool = False,
 ) -> TrainingStarted:
-    """Start a training job and return at once; follow it with studio_status. kind "llm": ``config`` is a TrainingStartRequest, the same one the Unsloth Studio UI sends (list_models with ``model`` gives its training defaults; hf_token for a gated model goes in the config). kind "diffusion": an image LoRA, where ``config`` is a DiffusionTrainingStartRequest and ``data_dir`` names an image dataset already in Unsloth Studio (there is no upload tool). Unsloth Studio refuses while another training run or an API inference request is active."""
+    """Start a training job and return at once; follow it with studio_status. This starts real GPU work, so build the config first and check it with ``validate_only`` true, which starts nothing.
+
+    kind "llm": ``config`` is the Unsloth Studio training request. The minimum is {"model_name": an id from list_models, "training_type": "LoRA/QLoRA" | "Full Finetuning" | "Continued Pretraining", "format_type": "auto" | "alpaca" | "chatml" | "sharegpt" | "conversational" | "raw", "hf_dataset": a Hugging Face dataset repo id}. Common options: max_steps or num_epochs, learning_rate (a string such as "2e-4"), batch_size, gradient_accumulation_steps, max_seq_length, load_in_4bit, lora_r, lora_alpha, train_split. list_models with ``model`` returns that model's defaults to start from, and datasets(action="check_format") tells you the format_type. hf_token for a gated model goes in the config.
+
+    kind "diffusion": an image LoRA; ``config`` is the image training request, and ``data_dir`` names an image dataset already in Unsloth Studio (there is no upload tool).
+
+    Unsloth Studio refuses while another training run or an API inference request is active. The result's ``start_request_id`` cancels a start that has not begun (cancel kind "training_start"); ``job_id`` stops a running job (cancel kind "training")."""
+    config = dict(config)
+    if kind == "llm" and not config.get("start_request_id"):
+        config["start_request_id"] = f"mcp-{secrets.token_hex(8)}"
+    _checked_config(config, kind)
+    if validate_only:
+        return TrainingStarted(status = "valid", message = "The config is valid; nothing was started.")
     payload = await route_json("POST", TRAINING_ROUTES[kind], json_body = config)
     # The route refuses some starts with a 200 and status "error".
     raise_for_status_field(payload)
@@ -40,6 +76,7 @@ async def start_training(
         job_id = payload["job_id"],
         status = opt_text(payload.get("status")) or "queued",
         message = opt_text(payload.get("message")),
+        start_request_id = opt_text(config.get("start_request_id")),
     )
 
 
