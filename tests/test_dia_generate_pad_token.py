@@ -10,7 +10,6 @@ from importlib.metadata import version as installed_version
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
 from packaging.version import Version
 
 
@@ -75,10 +74,10 @@ def _captured_generate_kwargs(config, **generate_kwargs):
 
 
 def _dia_config():
-    transformers = pytest.importorskip("transformers")
-    if not hasattr(transformers, "DiaConfig"):
-        pytest.skip("transformers has no Dia")
-    config = transformers.DiaConfig()
+    # Dia landed in transformers 4.53, below Unsloth's floor.
+    from transformers import DiaConfig
+
+    config = DiaConfig()
     # nari-labs/Dia-1.6B-0626 repeats the decoder's audio token ids at the top level.
     config.pad_token_id = config.decoder_config.pad_token_id
     config.eos_token_id = config.decoder_config.eos_token_id
