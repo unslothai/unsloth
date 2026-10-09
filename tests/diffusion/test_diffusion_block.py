@@ -149,7 +149,7 @@ def test_llada2_row_clipped_at_max_length_gets_no_eos_tail():
     llada2, _ = _profiles()
     inputs = _batch([3, 5], [40, 20], 40)
     clean, maskable, valid = llada2.build_batch(_LM(), inputs, SimpleNamespace(max_length = 40))
-    assert not maskable[0, 40:].any() and not valid[0, 40:].any()
+    assert not maskable[0, 40:].any() and valid[0, 40:].all() and (clean[0, 40:] == EOS_ID).all()
     assert (clean[1, 20:] == EOS_ID).all() and maskable[1, 20:].all()
 
 

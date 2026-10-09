@@ -285,8 +285,9 @@ class FastDiffusionModel:
         # them, and lm_head/embeddings stay full precision. Before the plan, since the skip list becomes
         # modules_to_not_convert and sizing those at 4 bits while they load in compute dtype OOMs a tight
         # map.
-        qcfg = None
-        if load_in_4bit or load_in_8bit:
+        # A caller's own quantization_config (NF4 vs FP4, skip modules, non-bnb quantizers) wins.
+        qcfg = kwargs.get("quantization_config")
+        if qcfg is None and (load_in_4bit or load_in_8bit):
             from transformers import BitsAndBytesConfig
             if load_in_4bit:
                 qcfg = BitsAndBytesConfig(

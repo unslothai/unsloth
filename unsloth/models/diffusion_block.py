@@ -160,9 +160,10 @@ class BlockDiffusionProfile(DiffusionProfile):
         if max_length is not None:
             last = torch.where(maskable, positions[None, :], -1).amax(dim = 1, keepdim = True)
             truncated = (real_length >= max_length) & (last == real_length - 1)
-        fill = (positions[None, :] >= real_length) & maskable.any(dim = 1, keepdim = True) & ~truncated
+        fill = (positions[None, :] >= real_length) & maskable.any(dim = 1, keepdim = True)
         input_ids = torch.where(fill, eos, input_ids)
-        return input_ids, maskable | fill, valid | fill
+        # Clipped rows still see an EOS tail rather than pad ids, but it is never a target.
+        return input_ids, maskable | (fill & ~truncated), valid | fill
 
     def noise_range(self, args):
         eps = getattr(args, "diffusion_eps", None)

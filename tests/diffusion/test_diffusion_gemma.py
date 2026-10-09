@@ -224,3 +224,24 @@ def test_reload_uses_the_adapters_saved_tokenizer(tmp_path):
     _, reloaded = FastModel.from_pretrained(str(tmp_path), dtype = torch.float32, device_map = "cpu")
     reloaded = getattr(reloaded, "tokenizer", reloaded)
     assert "adapter-template-marker" in (reloaded.chat_template or "")
+
+
+def test_diffusion_load_restores_progress_bars():
+    from huggingface_hub.utils import are_progress_bars_disabled, enable_progress_bars
+
+    from unsloth import FastModel
+
+    enable_progress_bars()
+    FastModel.from_pretrained(TINY, dtype = torch.float32, device_map = "cpu")
+    assert not are_progress_bars_disabled()
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "bitsandbytes needs a GPU")
+def test_caller_quantization_config_is_kept():
+    from transformers import BitsAndBytesConfig
+
+    from unsloth import FastModel
+
+    qcfg = BitsAndBytesConfig(load_in_4bit = True, bnb_4bit_quant_type = "fp4")
+    m, _ = FastModel.from_pretrained(TINY, quantization_config = qcfg, load_in_4bit = True)
+    assert m.config.quantization_config.bnb_4bit_quant_type == "fp4"

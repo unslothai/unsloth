@@ -247,7 +247,8 @@ class MaskedDiffusionProfile(DiffusionProfile):
             padding = ~attention_mask.bool()
             input_ids = input_ids.masked_fill(padding, eos_id)
             if inputs.get("labels") is not None:
-                maskable = maskable | padding
+                # Only rows with a response get an EOS tail; a fully truncated row contributes nothing.
+                maskable = maskable | (padding & maskable.any(dim = 1, keepdim = True))
             forward_mask = None
 
         # Same draw order as the references (t, then the per-token draw) so a seed reproduces their batch.

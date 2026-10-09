@@ -2083,6 +2083,9 @@ class FastModel(FastBaseModel):
             # Returns before the FORCE_FLOAT32 scan and no diffusion type is on that list, so False. Stamped, not left unset, or the trainer reads whatever an earlier load wrote.
             model = _mark_forced_float32(model, False)
             model = _mark_full_finetuning(model, full_finetuning)
+            # This early return skips the re-enable at the end of from_pretrained.
+            if not was_disabled:
+                enable_progress_bars()
             return _mark_requested_float32(model, user_float32), tokenizer
 
         try:

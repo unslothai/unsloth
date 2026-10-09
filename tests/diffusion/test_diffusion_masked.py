@@ -236,6 +236,16 @@ def test_loss_through_distributed_wrapper(name):
     torch.testing.assert_close(wrapped, plain)
 
 
+def test_row_without_response_gets_no_eos_targets():
+    inputs, _ = _batch()
+    inputs["labels"][1] = -100
+    model = _Bidirectional()
+    torch.manual_seed(0)
+    _profile("llada").compute_loss(model, inputs, None)
+    noisy, _ = model.seen[-1]
+    assert not (noisy[1] == MASK_ID).any()
+
+
 def test_mask_token_falls_back_to_family_default():
     inputs, _ = _batch()
     model = _Bidirectional(mask_token_id = None)
