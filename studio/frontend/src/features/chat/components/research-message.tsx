@@ -24,6 +24,7 @@ import {
 } from "../stores/research-run-store";
 import type { ResearchMessageMetadata } from "../types/research";
 import { researchReplyOwnsRun } from "../utils/research-run-binding";
+import { researchCitation } from "../utils/research-citations";
 import { researchStatusLabel } from "./research-activity-panel";
 
 export function ResearchMessage(): ReactElement | null {
@@ -91,15 +92,9 @@ export function ResearchMessage(): ReactElement | null {
     const documentSources: Citation[] = [];
     const mcpSources: Citation[] = [];
     (run.documentSources ?? []).forEach((source, index) => {
-      (source.kind === "mcp" ? mcpSources : documentSources).push({
-        id: source.chunkId ?? String(source.id ?? index),
-        filename: source.filename,
-        page: source.page,
-        score: source.score,
-        text: source.snippet ?? "",
-        documentId: source.documentId,
-        chunkId: source.chunkId,
-      });
+      (source.kind === "mcp" ? mcpSources : documentSources).push(
+        researchCitation(source, index),
+      );
     });
     const documentCount = new Set(
       [...documentSources, ...mcpSources].map(
