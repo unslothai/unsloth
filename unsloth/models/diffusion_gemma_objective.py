@@ -124,7 +124,6 @@ class DiffusionGemmaProfile(DiffusionProfile):
         in_response = offsets < (response_len - block_idx * block_size)[:, None]
         canvas_target = torch.where(in_response, input_ids.gather(1, abs_idx), eos_token_id)
 
-        # Uniform random-token noise, no mask token.
         t = eps + (1 - 2 * eps) * torch.rand(batch_size, 1, device = device)
         corrupt = torch.rand(batch_size, block_size, device = device) < t
         random_tokens = torch.randint(vocab_size, (batch_size, block_size), device = device)
@@ -152,8 +151,7 @@ class DiffusionGemmaProfile(DiffusionProfile):
         diffusion_target = diffusion_target.masked_fill((span_end < 0)[:, None], -100)
         diffusion_logits = outputs.logits
         if prediction_type == "mean_loo":
-            # The softmax then parameterises the leave-one-out posterior (arXiv 2605.22765); convert it to the
-            # denoiser in fp32, the correction reaches ~log(K) nats.
+            # The softmax parameterises the leave-one-out posterior (arXiv 2605.22765): convert in fp32, ~log(K) nats.
             alpha = (1 - t).float()
             bump = torch.log1p(diffusion_logits.shape[-1] * alpha / (1 - alpha))
             diffusion_logits = diffusion_logits.float().scatter_add(
@@ -166,7 +164,6 @@ class DiffusionGemmaProfile(DiffusionProfile):
         else:
             diffusion_loss = outputs.logits.sum() * 0.0
 
-        # Autoregressive co-loss on the causal encoder over every valid next-token pair.
         lm_head = base.get_output_embeddings()
         hidden_states = outputs.encoder_last_hidden_state.to(lm_head.weight.dtype)
         with _gather_lm_head(lm_head.weight, lm_head.bias):
@@ -200,8 +197,7 @@ DIFFUSION_GEMMA_PROFILE = register_diffusion_profile(
             "DiffusionGemma4ForBlockDiffusion",
         ),
         noise = "uniform",
-        # Text attention + dense MLP of the encoder and decoder only: the suffix list would also wrap the
-        # self-conditioning block, and the experts / router / vision tower stay frozen like the reference.
+        # Encoder + decoder attention / dense MLP only; suffix targets would also wrap the self-conditioning block.
         lora_target_modules = (
             r".*model\.(encoder\.language_model|decoder)\.layers\.\d+\."
             r"(self_attn\.[qkvo]_proj|mlp\.(gate|up|down)_proj)"

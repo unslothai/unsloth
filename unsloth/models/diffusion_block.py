@@ -141,9 +141,8 @@ class BlockDiffusionProfile(DiffusionProfile):
             return input_ids, maskable, valid
         if (valid[:, 1:] & ~valid[:, :-1]).any():
             raise ValueError("Unsloth: block-diffusion training expects right padding.")
-        # The response ends with the turn terminator, not EOS, so the model learns to stop only from an EOS tail
-        # (the reference pads every row to max length with supervised EOS). Pad to the next block boundary past
-        # the longest row so every supervised row gets at least one EOS.
+        # Turns end with a terminator, not EOS, so stopping is learnt only from a supervised EOS tail (as the
+        # reference's max-length EOS padding); pad to the next block past the longest row.
         block = self.block_size(model, args)
         batch, length = input_ids.shape
         new_length = -(-(length + 1) // block) * block
@@ -280,8 +279,7 @@ LLADA2_PROFILE = register_diffusion_profile(
         architectures = ("LLaDA2MoeModelLM",),
         noise = "mask",
         requires_remote_code = True,
-        # Fused qkv + dense attention, the dense first-layer MLP and the always-on shared expert; the routed
-        # experts and the router stay frozen.
+        # Attention, the dense first-layer MLP and the shared expert; routed experts and the router stay frozen.
         lora_target_modules = (
             r".*\.layers\.\d+\.(attention\.(query_key_value|dense)"
             r"|mlp\.(shared_experts\.)?(gate_proj|up_proj|down_proj))"

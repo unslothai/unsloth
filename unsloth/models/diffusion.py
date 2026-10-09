@@ -209,7 +209,6 @@ class FastDiffusionModel:
 
         cache_dir = kwargs.get("cache_dir")
 
-        # A saved LoRA directory: load its base, then attach the adapter below.
         adapter_name = None
         adapter_revision = None
         try:
@@ -374,7 +373,6 @@ class FastDiffusionModel:
             f"   dtype: {dtype} | 4bit: {load_in_4bit} | 8bit: {load_in_8bit} | attn: {attn_implementation}"
         )
 
-        # The config chosen above (a caller's overrides, or the legacy rewrite) is the one instantiated.
         model = model_cls.from_pretrained(model_name, config = config, **load_kwargs).eval()
         model._unsloth_full_finetuning = bool(full_finetuning)
         if trust_remote_code:
