@@ -140,7 +140,9 @@ def _run_legacy(processor_output, inputs, completion_ids):
     import torch
 
     from unsloth.models.rl_replacements import (
+        _unsloth_grpo_clean_video_prompts,
         _unsloth_grpo_image_cell,
+        _unsloth_grpo_video_inputs,
         _unsloth_grpo_vision_inputs,
         _unsloth_reject_grpo_image_list,
         grpo_trainer__generate_and_score_completions,
@@ -153,6 +155,8 @@ def _run_legacy(processor_output, inputs, completion_ids):
         "torch": torch,
         "_unsloth_grpo_vision_inputs": _unsloth_grpo_vision_inputs,
         "_unsloth_grpo_image_cell": _unsloth_grpo_image_cell,
+        "_unsloth_grpo_clean_video_prompts": _unsloth_grpo_clean_video_prompts,
+        "_unsloth_grpo_video_inputs": _unsloth_grpo_video_inputs,
         # Injected on this TRL too now: its vLLM server path cannot carry a multi image row,
         # so the guard is handed the trainer and decides at runtime.
         "_unsloth_reject_grpo_image_list": _unsloth_reject_grpo_image_list,
