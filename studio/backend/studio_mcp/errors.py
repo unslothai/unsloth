@@ -19,11 +19,12 @@ REFUSAL_HEADER = "x-unsloth-refusal"
 MEMORY_REFUSAL = "memory-estimate"
 
 
-def tool_error(message: Any) -> ToolError:
+def tool_error(message: Any, hint: Optional[str] = None) -> ToolError:
+    """A scrubbed ToolError. ``hint`` is the tool's own guidance and goes on after the scrub, which would otherwise read a route like /v1/models as a path and drop it."""
     text = redact_paths_in_text(message).strip() or "Studio returned an error"
     if len(text) > _MAX_MESSAGE_CHARS:
         text = text[:_MAX_MESSAGE_CHARS] + "…"
-    return ToolError(text)
+    return ToolError(f"{text} {hint}" if hint else text)
 
 
 def _text(value: Any) -> str:
@@ -138,10 +139,17 @@ def raise_for_status_field(payload: Any) -> Any:
     return payload
 
 
-def raise_for_route(resp: httpx.Response, *, payload: Any = None) -> Any:
-    """Raise a ToolError when the forwarded call failed; otherwise return its parsed JSON (or ``payload`` when the caller already parsed it, e.g. the last NDJSON line)."""
+def raise_for_route(
+    resp: httpx.Response,
+    *,
+    payload: Any = None,
+    hints: Optional[Mapping[int, str]] = None,
+) -> Any:
+    """Raise a ToolError when the forwarded call failed; otherwise return its parsed JSON (or ``payload`` when the caller already parsed it, e.g. the last NDJSON line). ``hints`` maps a status to what the agent should do about it; a GPU-busy answer keeps its retry hint instead."""
     if resp.status_code >= 400:
-        raise tool_error(_describe(resp.status_code, _body(resp), resp.headers))
+        body = _body(resp)
+        hint = None if _gpu_busy(body) is not None else (hints or {}).get(resp.status_code)
+        raise tool_error(_describe(resp.status_code, body, resp.headers), hint)
     if payload is None:
         try:
             payload = json.loads(resp.content.strip()) if resp.content.strip() else None

@@ -23,7 +23,16 @@ COMPLETION = {
     "usage": {"prompt_tokens": 12, "completion_tokens": 2, "total_tokens": 14},
 }
 
-PAYLOADS = {("POST", "/v1/chat/completions"): COMPLETION}
+EMBEDDINGS = {
+    "object": "list",
+    "model": "nomic-embed-text-v1.5",
+    "data": [
+        {"object": "embedding", "index": 1, "embedding": [0.0, 1.0, 0.5]},
+        {"object": "embedding", "index": 0, "embedding": [1.0, 0.0, 0.25]},
+    ],
+}
+
+PAYLOADS = {("POST", "/v1/chat/completions"): COMPLETION, ("POST", "/v1/embeddings"): EMBEDDINGS}
 
 
 def _studio(overrides = None):
@@ -173,3 +182,75 @@ def test_chat_annotations():
     assert tool.annotations.destructiveHint is False
     assert tool.annotations.openWorldHint is False
     assert tool.output_schema is not None
+
+
+def test_embed_returns_vectors_in_input_order(monkeypatch):
+    studio = _studio()
+    result = _call(monkeypatch, studio, "embed", {"texts": ["first", "second"]})
+    assert result["structuredContent"] == {
+        "model": "nomic-embed-text-v1.5",
+        "dimensions": 3,
+        "embeddings": [[1.0, 0.0, 0.25], [0.0, 1.0, 0.5]],
+    }
+    assert _sent(studio, "/v1/embeddings") == [{"input": ["first", "second"]}]
+
+
+def test_embed_names_a_model_only_when_asked(monkeypatch):
+    studio = _studio()
+    _call(monkeypatch, studio, "embed", {"texts": ["first", "second"], "model": "bge-m3"})
+    assert _sent(studio, "/v1/embeddings") == [{"input": ["first", "second"], "model": "bge-m3"}]
+
+
+@pytest.mark.parametrize("count", [0, 2049])
+def test_embed_refuses_too_few_or_too_many_texts(monkeypatch, count):
+    studio = _studio()
+    result = _call(monkeypatch, studio, "embed", {"texts": ["x"] * count})
+    assert result["isError"] is True
+    assert studio.state.calls == []
+
+
+def test_embed_accepts_the_limit(monkeypatch):
+    rows = {"model": "m", "data": [{"index": i, "embedding": [0.5]} for i in range(2048)]}
+    studio = _studio({("POST", "/v1/embeddings"): lambda request, body: rows})
+    result = _call(monkeypatch, studio, "embed", {"texts": ["x"] * 2048})
+    assert result["structuredContent"]["dimensions"] == 1
+    assert len(result["structuredContent"]["embeddings"]) == 2048
+
+
+def test_a_download_required_409_gives_guidance(monkeypatch):
+    def needs_download(request, body):
+        return JSONResponse(
+            {
+                "error": {
+                    "message": "The embedding model /srv/models/nomic is not downloaded yet.",
+                    "type": "conflict_error",
+                    "param": None,
+                    "code": None,
+                }
+            },
+            status_code = 409,
+        )
+
+    studio = _studio({("POST", "/v1/embeddings"): needs_download})
+    result = _call(monkeypatch, studio, "embed", {"texts": ["x"]})
+    assert result["isError"] is True
+    message = result["content"][0]["text"]
+    assert message.startswith("The embedding model <path>")
+    assert "/srv/models" not in message
+    assert message.endswith("load_model(kind='llm') and call embed again.")
+
+
+def test_a_short_answer_is_an_error(monkeypatch):
+    rows = {"model": "m", "data": [{"index": 0, "embedding": [0.5]}]}
+    studio = _studio({("POST", "/v1/embeddings"): lambda request, body: rows})
+    result = _call(monkeypatch, studio, "embed", {"texts": ["a", "b"]})
+    assert result["isError"] is True
+
+
+def test_embed_is_read_only():
+    tool = {t.name: t for t in asyncio.run(create_studio_mcp().list_tools())}["embed"]
+    assert tool.annotations.readOnlyHint is True
+    assert tool.annotations.openWorldHint is False
+    assert tool.output_schema is not None
+    texts = tool.parameters["properties"]["texts"]
+    assert (texts["minItems"], texts["maxItems"]) == (1, 2048)

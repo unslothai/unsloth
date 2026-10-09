@@ -156,3 +156,9 @@ class ChatResult(ToolOutput):
     finish_reason: Optional[RouteText] = None
     usage: Optional[Usage] = None
     note: Optional[RouteText] = None
+
+
+class EmbedResult(ToolOutput):
+    model: Optional[RouteText] = None
+    dimensions: int
+    embeddings: list[list[float]]

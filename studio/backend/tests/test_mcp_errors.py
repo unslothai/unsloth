@@ -253,3 +253,22 @@ def test_train_start_status_error_is_an_error():
 def test_a_non_json_success_body_returns_none():
     assert raise_for_route(httpx.Response(200, content = b"\x89PNG\r\n")) is None
     assert raise_for_payload(None) is None
+
+
+def test_tool_guidance_survives_the_scrub():
+    hint = "Load one with load_model(kind='image') first, then retry POST /v1/images/generations."
+    resp = _response(409, {"detail": f"No image model is loaded at {SENTINEL}"})
+    message = _message(resp, hints = {409: hint})
+    assert message == f"No image model is loaded at <path> (HTTP 409) {hint}"
+    # A status the hints do not name gets none.
+    assert hint not in _message(_response(500, {"detail": "boom"}), hints = {409: hint})
+
+
+def test_gpu_busy_keeps_its_retry_hint_instead_of_tool_guidance():
+    resp = _response(
+        409,
+        {"error": "gpu_busy", "message": "Another account is generating.", "retry_after": 3},
+        headers = {"Retry-After": "3"},
+    )
+    message = _message(resp, hints = {409: "Download the model first."})
+    assert message == "GPU busy: Another account is generating. Retry after 3 s."

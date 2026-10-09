@@ -13,6 +13,7 @@ from fastmcp import Context
 from fastmcp.exceptions import ToolError
 
 from studio_mcp.caller import Caller
+from studio_mcp.errors import tool_error
 from studio_mcp.outputs import LoadResult, UnloadResult
 from studio_mcp.tools import number, route_json, text
 
@@ -216,7 +217,7 @@ async def load_media(
     plan = await route_json("POST", routes["plan"], caller = caller, json_body = body)
     if isinstance(plan, dict):
         if text(plan.get("incompatible_reason")):
-            raise ToolError(plan["incompatible_reason"])
+            raise tool_error(plan["incompatible_reason"])
         if "gguf_filename" not in body:
             for entry in plan.get("entries") or []:
                 if (
@@ -234,7 +235,7 @@ async def load_media(
         progress = progress if isinstance(progress, dict) else {}
         phase = progress.get("phase")
         if phase == "error":
-            raise ToolError(text(progress.get("error")) or f"The {kind} model failed to load")
+            raise tool_error(text(progress.get("error")) or f"The {kind} model failed to load")
         if phase == "ready":
             break
         status = None
@@ -322,7 +323,7 @@ async def download_stt(
                 await ctx.report_progress(min(done / total, 1.0), 1.0, "Downloading")
             continue
         if text(download.get("error")):
-            raise ToolError(f"Downloading {model} failed: {download['error']}")
+            raise tool_error(f"Downloading {model} failed: {download['error']}")
         if download.get("cancelled"):
             raise ToolError(f"The download of {model} was cancelled")
         if download_id is None or download_id in _strings(download.get("completed_download_ids")):

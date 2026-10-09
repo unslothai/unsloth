@@ -24,11 +24,12 @@ async def route_json(
     path: str,
     *,
     caller: Optional[Caller] = None,
+    hints: Optional[dict[int, str]] = None,
     **kwargs: Any,
 ) -> Any:
-    """Forward one call as the MCP caller and return its JSON, or raise a ToolError."""
+    """Forward one call as the MCP caller and return its JSON, or raise a ToolError with ``hints`` guidance."""
     response = await forward(caller or current_caller(), method, path, **kwargs)
-    return raise_for_route(response)
+    return raise_for_route(response, hints = hints)
 
 
 def number(value: Any) -> Optional[float]:

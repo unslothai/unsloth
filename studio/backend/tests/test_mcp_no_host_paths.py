@@ -44,6 +44,7 @@ CASES: dict[str, tuple[dict, dict]] = {
     "load_model": (LOADING_PAYLOADS, {"model": "unsloth/Llama-3.2-1B-Instruct-GGUF"}),
     "unload_model": (LOADING_PAYLOADS, {}),
     "chat": (TEXT_PAYLOADS, {"prompt": "hi"}),
+    "embed": (TEXT_PAYLOADS, {"texts": ["a", "b"]}),
 }
 
 # Output keys that carry model-written text, which is the model's to say and is never rewritten.

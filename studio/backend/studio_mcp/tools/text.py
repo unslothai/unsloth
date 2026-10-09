@@ -1,19 +1,25 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Text tools: ``chat``."""
+"""Text tools: ``chat`` and ``embed``."""
 
 from __future__ import annotations
 
 import uuid
-from typing import Literal, Optional
+from typing import Annotated, Literal, Optional
 
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
-from studio_mcp.outputs import ChatResult, Usage
-from studio_mcp.tools import WRITES, integer, route_json, text
+from studio_mcp.outputs import ChatResult, EmbedResult, Usage
+from studio_mcp.tools import READ_ONLY, WRITES, integer, route_json, text
+
+MAX_EMBED_INPUTS = 2048
+EMBED_DOWNLOAD_HINT = (
+    "Download the embedding model in Studio first (Settings), or load an embedding GGUF with "
+    "load_model(kind='llm') and call embed again."
+)
 
 
 class ChatTurn(BaseModel):
@@ -89,5 +95,36 @@ async def chat(
     )
 
 
+async def embed(
+    texts: Annotated[list[str], Field(min_length = 1, max_length = MAX_EMBED_INPUTS)],
+    model: Optional[str] = None,
+) -> EmbedResult:
+    """Embed up to 2048 texts and return one vector per text, in order. Uses the embedding GGUF loaded in Studio when there is one, else Studio's configured embedding model. ``model`` names a specific one."""
+    body = {"input": texts}
+    if model:
+        body["model"] = model
+    payload = await route_json(
+        "POST", "/v1/embeddings", json_body = body, hints = {409: EMBED_DOWNLOAD_HINT}
+    )
+    rows = payload.get("data") if isinstance(payload, dict) else None
+    rows = sorted(
+        (
+            row
+            for row in rows or []
+            if isinstance(row, dict) and isinstance(row.get("embedding"), list)
+        ),
+        key = lambda row: integer(row.get("index")) or 0,
+    )
+    if len(rows) != len(texts):
+        raise ToolError(f"Studio returned {len(rows)} embeddings for {len(texts)} texts")
+    embeddings = [[float(value) for value in row["embedding"]] for row in rows]
+    return EmbedResult(
+        model = text(payload.get("model")),
+        dimensions = len(embeddings[0]),
+        embeddings = embeddings,
+    )
+
+
 def register_text(mcp: FastMCP) -> None:
     mcp.tool(chat, annotations = WRITES)
+    mcp.tool(embed, annotations = READ_ONLY)
