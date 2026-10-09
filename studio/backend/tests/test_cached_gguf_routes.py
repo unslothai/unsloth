@@ -242,6 +242,9 @@ def _pin_single_cache(monkeypatch, tmp_path, active: Path) -> None:
     # models there adds rows the exact-equality assertions below would fail on.
     monkeypatch.setattr("utils.paths.ollama_model_dirs", lambda: [])
     monkeypatch.setattr("utils.paths.hermes_model_dirs", lambda: [])
+    # An installed oMLX would join the configured cache roots AND list its models as its own
+    # rows, so the same hermetic pin applies to it.
+    monkeypatch.setattr("utils.paths.omlx_model_dirs", lambda: [])
     monkeypatch.setattr("utils.hf_cache_settings.known_hf_hub_caches", lambda: [active])
 
 
@@ -319,6 +322,40 @@ def test_collect_local_models_keeps_the_cache_label_for_a_folder_over_a_known_ca
     rows = models_route.collect_local_models(tmp_path / "models")
 
     assert [(row.source, row.model_id) for row in rows] == [("hf_cache", "Org/Model-GGUF")]
+
+
+def test_collect_local_models_lists_a_parked_copy_whose_newest_snapshot_holds_no_quant(
+    monkeypatch, tmp_path
+):
+    # Pinned limitation of the parked-copy promotion (#12803): the relabeled row keeps the newest
+    # snapshot's path, and a custom row serves from that one directory alone, so a parked copy
+    # whose newest snapshot holds no quant (an aborted re-download; the complete revision is the
+    # older snapshot) stays in the picker but drops out of /v1/models. An hf_cache row instead
+    # resolves its repo dir to the newest snapshot holding a whole quant, and the resolver keys
+    # that on the row's source -- the relabel loses it. Keying that resolution on the cache
+    # layout (the path) instead would serve the older revision; flip this test when that happens.
+    active = tmp_path / "active"
+    active.mkdir()
+    parked = tmp_path / "parked"
+    complete = _complete_gguf_repo(parked, "Org/Model-GGUF")
+    incomplete = complete.parent / ("1" * 40)
+    incomplete.mkdir()
+    # The inventory row names the newest snapshot dir; force the quant-less one to be newest.
+    os.utime(complete, (1_000_000_000, 1_000_000_000))
+    os.utime(incomplete, (2_000_000_000, 2_000_000_000))
+
+    _pin_single_cache(monkeypatch, tmp_path, active)
+    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [{"path": str(parked)}])
+
+    rows = models_route.collect_local_models(tmp_path / "models")
+
+    assert [(row.source, row.model_id) for row in rows] == [("custom", None)]
+    [parked_row] = rows
+    assert Path(parked_row.path) == incomplete.resolve()
+
+    from core.inference.local_model_resolver import local_servable_model
+
+    assert local_servable_model(parked_row) is None
 
 
 def test_compat_local_inventory_requests_share_scan(monkeypatch, tmp_path):
