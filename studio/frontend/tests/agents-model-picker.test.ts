@@ -10,6 +10,11 @@ import {
   isClassifierOrRerankerHubModel,
   isSpeechOnlyHubModel,
 } from "../src/features/settings/lib/agent-hub-model.ts";
+import {
+  SUPPORTED_AGENTS,
+  UNSLOTH_START_DOCS_URL,
+  detailsFor,
+} from "../src/features/settings/components/coding-agent-list.ts";
 import { en } from "../src/i18n/locales/en.ts";
 
 const TAB = readFileSync(
@@ -179,4 +184,26 @@ test("an adopted resident model does not use a cached load ID", () => {
   assert.ok(
     TAB.includes("const cachedLoadId = selectedModelIsActive\n    ? null"),
   );
+});
+
+test("the shared agent list keeps the seven agents in order", () => {
+  assert.deepEqual(
+    SUPPORTED_AGENTS.map((agent) => agent.id),
+    ["claude", "codex", "hermes", "openclaw", "opencode", "dsh", "vibe"],
+  );
+  assert.equal(detailsFor("codex").name, "OpenAI Codex");
+  assert.deepEqual(detailsFor("pi"), {
+    id: "pi",
+    name: "pi",
+    docsUrl: UNSLOTH_START_DOCS_URL,
+    color: "#64748B",
+    mark: "pi",
+  });
+});
+
+test("the Agents tab uses the shared agent list and copy blocks", () => {
+  assert.match(TAB, /from "\.\.\/components\/coding-agent-list";/);
+  assert.match(TAB, /from "\.\.\/components\/agent-command-block";/);
+  assert.doesNotMatch(TAB, /const SUPPORTED_AGENTS/);
+  assert.doesNotMatch(TAB, /function (CommandBlock|CopyableCode|useCopyButton)\(/);
 });
