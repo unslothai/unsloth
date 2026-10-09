@@ -77,18 +77,12 @@ def _dia_config():
     # Dia landed in transformers 4.53, below Unsloth's floor.
     from transformers import DiaConfig
 
-    config = DiaConfig()
-    # nari-labs/Dia-1.6B-0626 repeats the decoder's audio token ids at the top level.
-    config.pad_token_id = config.decoder_config.pad_token_id
-    config.eos_token_id = config.decoder_config.eos_token_id
-    return config
+    # Top-level ids as nari-labs/Dia-1.6B-0626's config.json sets them; default DiaConfig() leaves them None.
+    return DiaConfig(pad_token_id = 1025, eos_token_id = 1024)
 
 
 def test_dia_defaults_to_its_audio_pad_token():
-    config = _dia_config()
-    # Drift guard: the bug only exists while Dia's pad and EOS differ.
-    assert config.pad_token_id != config.eos_token_id
-    assert _captured_generate_kwargs(config)["pad_token_id"] == config.pad_token_id
+    assert _captured_generate_kwargs(_dia_config())["pad_token_id"] == 1025
 
 
 def test_dia_explicit_pad_token_id_wins():
