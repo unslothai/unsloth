@@ -179,3 +179,16 @@ class SystemOneResult(ToolOutput):
     model: Optional[RouteText] = None
     answers: dict[str, DecisionAnswer]
     request_id: Optional[RouteText] = None
+
+
+class ImageItem(ToolOutput):
+    id: RouteText
+    # Built from the agent's own address for /mcp.
+    url: str
+    width: Optional[int] = None
+    height: Optional[int] = None
+    seed: Optional[int] = None
+
+
+class ImageResult(ToolOutput):
+    images: list[ImageItem]
