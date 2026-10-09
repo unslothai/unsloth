@@ -9,9 +9,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Optional
 
-from fastmcp.exceptions import ToolError
-
 from studio_mcp.caller import Caller
+from studio_mcp.errors import tool_error
 from studio_mcp.tools import integer, number, opt_text, route_json
 
 
@@ -87,4 +86,4 @@ async def resolve(caller: Caller, name: str) -> Checkpoint:
         if checkpoint.name == name:
             return checkpoint
     available = ", ".join(sorted(c.name for c in checkpoints)[:20]) or "none"
-    raise ToolError(f"No checkpoint named {name}. Available: {available}")
+    raise tool_error(f"No checkpoint named {name}. Available: {available}")

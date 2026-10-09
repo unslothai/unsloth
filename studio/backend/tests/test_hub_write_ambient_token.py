@@ -659,19 +659,91 @@ def test_every_hub_write_route_names_the_ambient_policy():
     assert not missing, "these reach a Hub write without the ambient policy: " + ", ".join(missing)
 
 
-def test_every_mcp_tool_that_calls_a_gated_route_names_the_policy():
-    """A direct call never resolves a ``Depends`` default, so each tool passes it or goes
-    ambient in silence."""
-    import inspect
-    import re
+def test_the_mcp_export_tool_never_goes_ambient(monkeypatch):
+    """The MCP export tool reaches the export routes as the agent's API key, so the routes'
+    own policy holds: allow_ambient is False for that caller. The tool sends the agent's token
+    in the body of both calls, and a push without one meets the route's refusal instead of
+    the server's own Hugging Face token."""
+    import json
 
-    import mcp_server
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
 
-    src = inspect.getsource(mcp_server.create_studio_mcp)
-    calls = re.findall(r"await (?:load|export)\(request[^)]*\)", src)
-    assert calls, "the MCP tools no longer call the export routes the way this test reads"
-    for call in calls:
-        assert "allow_ambient = False" in call, f"MCP call goes ambient: {call}"
+    import routes.export as export_routes
+    from auth.authentication import get_current_subject
+    from mcp_server import create_studio_mcp
+    from studio_mcp import export_jobs
+
+    from .mcp_harness import call_tool, served
+
+    export_jobs._reset()
+    backend_calls = []
+
+    async def supported():
+        return None
+
+    class Backend:
+        def export_gguf(self, **kwargs):
+            backend_calls.append(kwargs)
+            return True, "done", "out"
+
+    monkeypatch.setattr(export_routes, "_ensure_export_supported", supported)
+    monkeypatch.setattr(export_routes, "get_export_backend", lambda: Backend())
+
+    bodies = []
+    studio = FastAPI()
+    studio.state.bind_host = "127.0.0.1"
+
+    def checkpoints():
+        return {
+            "outputs_dir": "/o",
+            "models": [{"name": "run", "checkpoints": [{"display_name": "run", "path": "/o/run"}]}],
+        }
+
+    def load(body: dict):
+        bodies.append(("load", body))
+        return {"success": True, "message": "Loaded"}
+
+    def status():
+        return {"last_op_seq": 0}
+
+    studio.add_api_route("/api/models/checkpoints", checkpoints, methods = ["GET"])
+    studio.add_api_route("/api/export/load-checkpoint", load, methods = ["POST"])
+    studio.add_api_route("/api/export/status", status, methods = ["GET"])
+    studio.include_router(export_routes.router, prefix = "/api/export")
+    studio.dependency_overrides[get_current_subject] = lambda: "unsloth"
+
+    def export(http, **args):
+        started = call_tool(
+            http,
+            "export_model",
+            {"checkpoint": "run", "format": "gguf", "save_directory": "out", **args},
+        )
+        job_id = started["structuredContent"]["job_id"]
+        for _ in range(20):
+            job = call_tool(http, "get_job", {"kind": "export", "id": job_id})
+            if job["structuredContent"]["status"] != "running":
+                return job["structuredContent"]
+        raise AssertionError("the export job never finished")
+
+    with TestClient(served(create_studio_mcp(), studio, monkeypatch = monkeypatch)) as http:
+        with_token = export(http, push_to_hub = True, repo_id = "me/m", hf_token = "hf_agent")
+        without = export(http, push_to_hub = True, repo_id = "me/m")
+    export_jobs._reset()
+
+    assert with_token["status"] == "completed"
+    assert bodies[0] == (
+        "load",
+        {"checkpoint_path": "/o/run", "max_seq_length": 2048, "hf_token": "hf_agent"},
+    )
+    assert backend_calls[0]["hf_token"] == "hf_agent"
+    assert without["status"] == "failed"
+    assert without["error"].startswith(
+        "Hugging Face token is required to push to Hub when authenticated via API key."
+    )
+    assert len(backend_calls) == 1
+    assert "hf_token" not in bodies[1][1]
+    assert json.dumps(bodies).count("hf_agent") == 1
 
 
 def test_the_worker_can_still_disable_implicit_tokens_when_it_starts():

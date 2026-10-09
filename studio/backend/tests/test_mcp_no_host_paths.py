@@ -23,6 +23,7 @@ from .mcp_harness import SENTINEL_ROOTS, call_tool, fake_studio, poison, served
 from .test_mcp_tools_audio import PAYLOADS as AUDIO_PAYLOADS
 from .test_mcp_tools_audio import TRANSCRIBE_PAYLOADS
 from .test_mcp_tools_datasets import PAYLOADS as DATASETS_PAYLOADS
+from .test_mcp_tools_export import PAYLOADS as EXPORT_PAYLOADS
 from .test_mcp_tools_images import PAYLOADS as IMAGES_PAYLOADS
 from .test_mcp_tools_loading import PAYLOADS as LOADING_PAYLOADS
 from .test_mcp_tools_models import PAYLOADS as MODELS_PAYLOADS
@@ -36,8 +37,6 @@ from .test_mcp_tools_video import PAYLOADS as VIDEO_PAYLOADS
 # The direct-call tools from before forwarding. Each commit that replaces one removes it here and adds its case.
 LEGACY_UNCHECKED = {
     "stop_training",
-    "load_checkpoint",
-    "export_gguf",
 }
 
 # tool name -> (fake Studio routes as {(method, path): payload}, tool arguments), or a list of them
@@ -61,6 +60,10 @@ CASES: dict[str, Any] = {
         (TRAINING_PAYLOADS, {"config": {"base_model": "m", "data_dir": "d"}, "kind": "diffusion"}),
     ],
     "list_training_runs": (RUN_PAYLOADS, {"run_id": "run-1", "include_checkpoints": True}),
+    "export_model": [
+        (EXPORT_PAYLOADS, {"checkpoint": "qwen-lora", "format": "gguf", "save_directory": "out"}),
+        (EXPORT_PAYLOADS, {"checkpoint": "missing", "format": "gguf", "save_directory": "out"}),
+    ],
     "run_recipe": (RECIPE_PAYLOADS, {"recipe": {"columns": [{"name": "q"}]}}),
     "datasets": [
         (DATASETS_PAYLOADS, {"action": "list"}),

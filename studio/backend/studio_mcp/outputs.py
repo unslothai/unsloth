@@ -372,3 +372,8 @@ class TrainingRuns(ToolOutput):
     total: Optional[int] = None
     run: Optional[TrainingRunDetail] = None
     checkpoints: Optional[list[CheckpointName]] = None
+
+
+class ExportJobRef(ToolOutput):
+    job_id: RouteText
+    status: RouteText = "running"
