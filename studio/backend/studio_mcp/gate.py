@@ -19,6 +19,7 @@ from studio_mcp.caller import STATE_KEY, Caller
 from utils.mcp_access import is_mcp_enabled
 
 LEGACY_TOKEN_ENV = "UNSLOTH_STUDIO_MCP_TOKEN"
+MOUNT = "/mcp"
 HF_TOKEN_HEADER = b"x-unsloth-hf-token"
 HF_TOKEN_MAX_LENGTH = 512
 
@@ -202,11 +203,14 @@ class StudioMcpGate:
         from utils.client_ip import is_direct_local_request
 
         outer = URL(scope = scope)
+        # Behind a root_path, Studio's own routes sit under the same prefix as /mcp.
+        mounted = scope.get("root_path", "")
+        prefix = mounted[: -len(MOUNT)] if mounted.endswith(MOUNT) else ""
         scope.setdefault("state", {})[STATE_KEY] = Caller(
             token = token,
             account_id = record["account_id"],
             direct_local = is_direct_local_request(Request(scope)),
-            public_base = f"{outer.scheme}://{outer.netloc}",
+            public_base = f"{outer.scheme}://{outer.netloc}{prefix}",
             studio_app = scope.get("app"),
             hf_token = hf_token or None,
         )

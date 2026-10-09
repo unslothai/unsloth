@@ -50,8 +50,8 @@ def _base(caller: Caller) -> str:
             published.scheme in ("http", "https")
             and published.netloc.lower() == base.netloc.lower()
         ):
-            return f"{published.scheme}://{base.netloc}"
-    return f"{base.scheme}://{base.netloc}"
+            return f"{published.scheme}://{base.netloc}{base.path}"
+    return f"{base.scheme}://{base.netloc}{base.path}"
 
 
 def public_url(caller: Caller, path: str) -> str:

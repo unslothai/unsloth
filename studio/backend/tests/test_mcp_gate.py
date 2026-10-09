@@ -432,6 +432,30 @@ def test_tools_see_the_outer_request():
     assert remote["hf_token"] is None
 
 
+def test_a_root_path_carries_into_the_public_base():
+    seed_owner()
+    raw_key, _row = owner_key()
+    set_mcp_enabled(True)
+    with TestClient(
+        served(probe_mcp()),
+        base_url = "http://127.0.0.1:8888",
+        client = ("127.0.0.1", 50000),
+        root_path = "/studio",
+    ) as http:
+        response = http.post(
+            "/studio/mcp/",
+            json = {
+                "jsonrpc": "2.0",
+                "id": 7,
+                "method": "tools/call",
+                "params": {"name": "whoami", "arguments": {}},
+            },
+            headers = {**MCP_HEADERS, **bearer(raw_key)},
+        )
+    assert response.status_code == 200
+    assert '"public_base":"http://127.0.0.1:8888/studio"' in response.text.replace(" ", "")
+
+
 def test_an_oversized_hf_token_is_refused():
     seed_owner()
     raw_key, _row = owner_key()

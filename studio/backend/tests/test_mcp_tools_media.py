@@ -248,3 +248,11 @@ def test_oversized_inline_data_is_refused_before_decoding(monkeypatch):
     with pytest.raises(ToolError, match = "larger than"):
         inputs.decode_base64("A" * 2000, 1024, "data_url")
     assert decoded == []
+
+
+def test_media_urls_keep_a_root_path_prefix():
+    prefixed = caller("http://127.0.0.1:8888/studio")
+    assert (
+        media.public_url(prefixed, "/v1/audio/gallery/c1/file")
+        == "http://127.0.0.1:8888/studio/v1/audio/gallery/c1/file"
+    )
