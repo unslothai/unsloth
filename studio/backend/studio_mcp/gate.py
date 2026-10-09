@@ -27,6 +27,13 @@ ONE_HEADER = "Send one Authorization header"
 INVALID_KEY = "Invalid or expired API key"
 WORKFLOW_KEY = "Workflow keys cannot use Studio MCP"
 RETIRED_TOKEN = "The MCP static token is no longer supported; use a Studio API key (sk-unsloth-…)"
+# The mcp SDK refuses bodies over 4 MiB from 1.29 on, as a bare 413 before any tool runs. Holding
+# every version to it here keeps the limit the same everywhere and says what to send instead.
+MAX_REQUEST_BYTES = 4 * 1024 * 1024
+TOO_LARGE = (
+    "Studio MCP requests are limited to 4 MiB. Send larger media as a Studio id "
+    "(gallery_id, input_id, clip_id or voice_id) or, from the Studio computer, as a file path."
+)
 
 
 async def send_json(
@@ -70,6 +77,38 @@ def _validate_key(token: str) -> tuple[Optional[dict], str]:
     except Exception:
         return None, INVALID_KEY
     return verified[0], ""
+
+
+async def _bounded_receive(scope: dict, receive: Any) -> Optional[Any]:
+    """A receive that replays the request body, or None when the body is over MAX_REQUEST_BYTES."""
+    for name, value in scope.get("headers") or []:
+        if name.lower() == b"content-length":
+            try:
+                if int(value) > MAX_REQUEST_BYTES:
+                    return None
+            except ValueError:
+                return None
+    chunks: list[bytes] = []
+    size = 0
+    while True:
+        message = await receive()
+        if message["type"] != "http.request":
+            # The client went away; let the app see the disconnect.
+            pending = [message]
+            break
+        body = message.get("body", b"")
+        size += len(body)
+        if size > MAX_REQUEST_BYTES:
+            return None
+        chunks.append(body)
+        if not message.get("more_body", False):
+            pending = [{"type": "http.request", "body": b"".join(chunks), "more_body": False}]
+            break
+
+    async def replay() -> dict:
+        return pending.pop(0) if pending else await receive()
+
+    return replay
 
 
 def _is_legacy_token(token: str) -> bool:
@@ -155,6 +194,11 @@ class StudioMcpGate:
             )
             return
 
+        bounded = await _bounded_receive(scope, receive)
+        if bounded is None:
+            await send_json(send, 413, {"detail": TOO_LARGE})
+            return
+
         from utils.client_ip import is_direct_local_request
 
         outer = URL(scope = scope)
@@ -166,4 +210,4 @@ class StudioMcpGate:
             studio_app = scope.get("app"),
             hf_token = hf_token or None,
         )
-        await self.app(scope, receive, send)
+        await self.app(scope, bounded, send)

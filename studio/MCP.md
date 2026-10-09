@@ -269,6 +269,10 @@ thumbnail plus a link, and the MP4 is never sent inline.
 Media inputs can be a Studio id, inline data, or a file path. **A file path
 works only when the agent runs on the Studio computer** and connects over
 loopback. From any other computer, send the data or a Studio id instead.
+An MCP request is limited to 4 MiB, so inline data has to fit in that. Send
+larger media as a Studio id, or as a path from the Studio computer. A remote
+agent can upload a large audio file to `POST /v1/audio/inputs` with its API key
+and pass the returned id as `input_id`.
 
 `transcribe` sends files up to 25 MB directly. Larger files, and audio given by
 id, are uploaded to Studio first, and their transcript is saved to Audio

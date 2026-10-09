@@ -514,7 +514,6 @@ def test_system_one_sends_up_to_four_png_or_jpeg_images(monkeypatch):
     [
         [{"data_url": _data_url(WEBP, "image/webp")}],
         [{"data_url": _data_url(PNG, "image/png")}] * 5,
-        [{"data_url": _data_url(PNG + b"\x00" * (4 * 1024 * 1024), "image/png")}],
     ],
 )
 def test_system_one_refuses_images_the_decision_api_would(monkeypatch, images):
@@ -525,6 +524,29 @@ def test_system_one_refuses_images_the_decision_api_would(monkeypatch, images):
         "system_one",
         {"state": "x", "questions": {"urgent": QUESTIONS["urgent"]}, "images": images},
     )
+    assert result["isError"] is True
+    assert studio.state.calls == []
+
+
+def test_system_one_refuses_an_image_over_4_mib(monkeypatch, tmp_path):
+    # Over the Decision API's 4 MiB per image; only a file path can carry it past the request limit.
+    big = tmp_path / "big.png"
+    big.write_bytes(PNG + b"\x00" * (4 * 1024 * 1024))
+    studio = _studio()
+    with TestClient(
+        served(create_studio_mcp(), studio, monkeypatch = monkeypatch),
+        base_url = "http://127.0.0.1:8888",
+        client = ("127.0.0.1", 50000),
+    ) as http:
+        result = call_tool(
+            http,
+            "system_one",
+            {
+                "state": "x",
+                "questions": {"urgent": QUESTIONS["urgent"]},
+                "images": [{"path": str(big)}],
+            },
+        )
     assert result["isError"] is True
     assert studio.state.calls == []
 

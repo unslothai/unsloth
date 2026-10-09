@@ -218,17 +218,18 @@ def test_inline_audio_is_uploaded_with_a_content_length(monkeypatch, status):
     assert _run_body(studio)["inputs"]["reference"] == {"input_id": "in-1"}
 
 
-def test_oversized_audio_is_refused_before_any_upload(monkeypatch):
+def test_oversized_audio_is_refused_before_any_upload(monkeypatch, tmp_path):
+    # Only a file path can carry this much: inline data stops at the 4 MiB request limit.
+    huge = tmp_path / "huge.wav"
+    with huge.open("wb") as handle:
+        handle.truncate(200 * 1024 * 1024 + 1)
     studio = _studio()
-    huge = "A" * (4 * (200 * 1024 * 1024 // 3) + 8)
     result = _call(
         monkeypatch,
         studio,
-        {
-            "workflow": "clone",
-            "text": "Hi",
-            "reference": {"data_base64": huge, "filename": "a.wav"},
-        },
+        {"workflow": "clone", "text": "Hi", "reference": {"path": str(huge)}},
+        base_url = "http://127.0.0.1:8888",
+        client = ("127.0.0.1", 50000),
     )
     assert result["isError"] is True
     assert "larger than 200 MiB" in result["content"][0]["text"]

@@ -22,7 +22,7 @@ from auth import policy, storage
 from auth.authentication import create_access_token
 from mcp_server import create_studio_mcp
 from studio_mcp.caller import current_caller
-from studio_mcp.gate import NEED_KEY, StudioMcpGate
+from studio_mcp.gate import MAX_REQUEST_BYTES, NEED_KEY, TOO_LARGE, StudioMcpGate
 from utils import mcp_access
 from utils.account_context import AccountContext, bind_account, current_account, reset_account
 from utils.keyless_api_access import (
@@ -379,6 +379,9 @@ def test_the_gate_never_binds_an_account():
         async def send(message):
             sent.append(message)
 
+        async def receive():
+            return {"type": "http.request", "body": b"", "more_body": False}
+
         token = bind_account(sentinel)
         try:
             scope = {
@@ -395,7 +398,7 @@ def test_the_gate_never_binds_an_account():
                     (b"authorization", f"Bearer {raw_key}".encode()),
                 ],
             }
-            await StudioMcpGate(inner)(scope, None, send)
+            await StudioMcpGate(inner)(scope, receive, send)
             return sent, current_account()
         finally:
             reset_account(token)
@@ -438,6 +441,55 @@ def test_an_oversized_hf_token_is_refused():
             http, "whoami", {**bearer(raw_key), "X-Unsloth-HF-Token": "h" * 513}
         )
     assert response.status_code == 400
+
+
+def _padded_call(pad):
+    body = {
+        "jsonrpc": "2.0",
+        "id": 7,
+        "method": "tools/call",
+        "params": {"name": "whoami", "arguments": {}, "_meta": {"pad": "x" * pad}},
+    }
+    return json.dumps(body).encode()
+
+
+@pytest.mark.parametrize("chunked", [False, True])
+def test_a_request_over_4_mib_is_refused_with_guidance(chunked):
+    seed_owner()
+    raw_key, _row = owner_key()
+    set_mcp_enabled(True)
+    payload = _padded_call(MAX_REQUEST_BYTES)
+    content = (
+        (payload[i : i + 65536] for i in range(0, len(payload), 65536)) if chunked else payload
+    )
+    with TestClient(served(probe_mcp())) as http:
+        response = http.post(
+            "/mcp/",
+            content = content,
+            headers = {**MCP_HEADERS, **bearer(raw_key), "Content-Type": "application/json"},
+        )
+    assert response.status_code == 413
+    assert response.json() == {"detail": TOO_LARGE}
+
+
+@pytest.mark.parametrize("chunked", [False, True])
+def test_a_request_under_4_mib_reaches_the_tool(chunked):
+    seed_owner()
+    raw_key, _row = owner_key()
+    set_mcp_enabled(True)
+    payload = _padded_call(MAX_REQUEST_BYTES - 4096)
+    assert len(payload) <= MAX_REQUEST_BYTES
+    content = (
+        (payload[i : i + 65536] for i in range(0, len(payload), 65536)) if chunked else payload
+    )
+    with TestClient(served(probe_mcp())) as http:
+        response = http.post(
+            "/mcp/",
+            content = content,
+            headers = {**MCP_HEADERS, **bearer(raw_key), "Content-Type": "application/json"},
+        )
+    assert response.status_code == 200
+    assert '"isError":false' in response.text.replace(" ", "")
 
 
 def test_current_caller_outside_the_gate_is_an_error():

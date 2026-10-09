@@ -30,7 +30,7 @@ _DATA_URL = re.compile(r"^data:(image/(?:png|jpeg|webp));base64,(.*)$", re.DOTAL
 
 
 class ImageInput(BaseModel):
-    """Exactly one of ``path`` (a file on the Studio computer), ``data_url`` (data:image/png|jpeg|webp;base64,...) or ``gallery_id`` (an image in the Studio Images gallery)."""
+    """Exactly one of ``path`` (a file on the Studio computer), ``data_url`` (data:image/png|jpeg|webp;base64,...) or ``gallery_id`` (an image in the Studio Images gallery). Inline data rides in the MCP request, which is limited to 4 MiB."""
 
     model_config = ConfigDict(extra = "forbid")
 
@@ -126,7 +126,7 @@ _AUDIO_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
 
 class AudioInput(BaseModel):
-    """Exactly one of ``path`` (a file on the Studio computer), ``data_base64`` with a ``filename``, or a Studio id: ``input_id`` (an uploaded clip), ``clip_id`` (an Audio history clip) or ``voice_id`` (a saved voice)."""
+    """Exactly one of ``path`` (a file on the Studio computer), ``data_base64`` with a ``filename``, or a Studio id: ``input_id`` (an uploaded clip), ``clip_id`` (an Audio history clip) or ``voice_id`` (a saved voice). Inline data rides in the MCP request, which is limited to 4 MiB."""
 
     model_config = ConfigDict(extra = "forbid")
 
