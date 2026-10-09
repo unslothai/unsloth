@@ -29,6 +29,28 @@ export function createParentResolver(): (
   };
 }
 
+// Stable topological order: parents before children, siblings keep input order.
+// assistant-ui's import() throws on a child whose parent isn't inserted yet, so this keeps
+// imports succeeding even when an edited user message is timestamped after its reply.
+// A missing parent is treated as a root; cycles can't recurse.
+export function orderParentsFirst<T extends {
+  id: string;
+  parentId?: string | null;
+}>(messages: readonly T[]): T[] {
+  const byId = new Map(messages.map((message) => [message.id, message]));
+  const seen = new Set<string>();
+  const ordered: T[] = [];
+  const visit = (message: T): void => {
+    if (seen.has(message.id)) return;
+    seen.add(message.id);
+    const parent = message.parentId ? byId.get(message.parentId) : undefined;
+    if (parent) visit(parent);
+    ordered.push(message);
+  };
+  messages.forEach(visit);
+  return ordered;
+}
+
 export function compareStoredMessages(
   a: ParentLinkedMessage,
   b: ParentLinkedMessage,

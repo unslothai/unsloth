@@ -9,6 +9,7 @@ import { stripTypeScriptTypes } from "node:module";
 import test from "node:test";
 
 import { readSrc } from "./helpers/kit.ts";
+import { orderParentsFirst } from "../src/features/chat/utils/message-order.ts";
 
 const provider = readSrc("features/chat/runtime-provider.tsx");
 const storage = readSrc("features/chat/utils/chat-history-storage.ts");
@@ -16,9 +17,12 @@ const button = readSrc("features/chat/components/temporary-chat-save.tsx");
 const page = readSrc("features/chat/chat-page.tsx");
 
 type Item = { parentId: string | null; message: { id: string } };
+// parentsFirst now delegates to orderParentsFirst, so the isolated scope is handed the
+// real (dependency-free) helper rather than re-extracting its source.
 const parentsFirst = new Function(
+  "orderParentsFirst",
   `${stripTypeScriptTypes(provider.slice(provider.indexOf("function parentsFirst("), provider.indexOf("/** Save a temporary chat to history")))}\nreturn parentsFirst;`,
-)() as (items: Item[]) => Item[];
+)(orderParentsFirst) as (items: Item[]) => Item[];
 
 const item = (id: string, parentId: string | null = null): Item => ({ parentId, message: { id } });
 const ids = (items: Item[]) => items.map((i) => i.message.id);
