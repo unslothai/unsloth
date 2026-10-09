@@ -3355,9 +3355,10 @@ _bwrap_install_command() {
 # Wanted, never required: bubblewrap runs Python and Terminal tool calls in an OS sandbox, and without it they run with software safeguards. Optional like the build tools, so it never asks for sudo: installed when the installer already runs as root, otherwise the one command is printed.
 _check_linux_tool_sandbox() {
     _bw_restrict=""
+    _bw_sysctl="${_BW_USERNS_SYSCTL:-/proc/sys/kernel/apparmor_restrict_unprivileged_userns}"
     # read, not cat: a builtin, so a minimal image without coreutils still gets the right advice.
-    # 2>/dev/null comes first: redirections apply left to right, so a missing sysctl would otherwise print an error.
-    read -r _bw_restrict 2>/dev/null <"${_BW_USERNS_SYSCTL:-/proc/sys/kernel/apparmor_restrict_unprivileged_userns}" || true
+    # The -r test, not 2>/dev/null: a shell reports a failed < open before that redirection applies.
+    if [ -r "$_bw_sysctl" ]; then read -r _bw_restrict <"$_bw_sysctl" 2>/dev/null || true; fi
     if ! command -v bwrap >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
         ( _SMART_APT_OPTIONAL=true; _smart_apt_install bubblewrap ) || true
     fi
