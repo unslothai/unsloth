@@ -69,35 +69,225 @@ send an Unsloth API key as `Authorization: Bearer sk-unsloth-...`.
 
 ## Unsloth Studio's own MCP server
 
-Unsloth can expose a local MCP server so an MCP client can inspect models and
-GPU state, validate recipes, start or stop training, inspect recipe output, and
-export a loaded model.
+Studio has its own MCP server at `/mcp/`. Coding agents such as Claude Code and
+Codex can use it to load models, chat, generate images, audio and video,
+transcribe, train and export. Every tool goes through Studio's own routes as
+your API key, so it sees what that key may see and nothing more.
 
-The server is disabled by default. Enable it for a local Unsloth process with:
+### Turn it on
 
-```bash
-UNSLOTH_STUDIO_ENABLE_MCP=1 \
-UNSLOTH_STUDIO_MCP_TOKEN='use-a-local-secret' \
-unsloth studio
+The server is off by default. While it is off, `/mcp/` answers 404.
+
+- In Studio, open **Settings → API** and turn on **Agent access (MCP)**. Only
+  the owner can change it, and only from a signed-in Studio session.
+- Or start Studio with `UNSLOTH_STUDIO_ENABLE_MCP=1`. The switch then shows as
+  on and cannot be turned off in Settings.
+
+The endpoint is `http://127.0.0.1:8888/mcp/` on the default port. Always use
+the trailing slash. Use your own address and port when they differ, for example
+the LAN address or the Cloudflare tunnel URL.
+
+### Authentication
+
+Every request needs a Studio API key: `Authorization: Bearer sk-unsloth-…`.
+Create one in **Settings → API**. Studio refuses everything else with 401:
+
+- no key, an empty key, or a placeholder key such as `not-needed`, even when
+  keyless API access is on;
+- a signed-in session token;
+- a revoked or expired key;
+- the keys Studio mints for its own recipe and Deep Research workflows.
+
+A managed account's key works too. Its tools act for that account only.
+
+Studio does not offer OAuth. The OAuth discovery paths answer 404, so clients
+that probe them fall back to the key.
+
+A browser page from another site gets 403 `Origin not allowed for Studio MCP`.
+This also blocks browser-based MCP inspectors. Command-line agents send no
+Origin and are not affected.
+
+### Breaking changes
+
+The static `UNSLOTH_STUDIO_MCP_TOKEN` is retired. A request that sends it gets
+401 with this detail:
+
+```
+The MCP static token is no longer supported; use a Studio API key (sk-unsloth-…)
 ```
 
-The endpoint is `http://127.0.0.1:8888/mcp/` when Unsloth uses its default port
-(a request to `/mcp` redirects to the canonical `/mcp/`). Use the actual Unsloth
-port when it is configured differently.
+If the variable is still set, Studio logs one warning at startup. Studio no
+longer refuses to start when the token is missing.
 
-The high-impact tools are:
+The tools changed:
 
-- `studio_status` and `list_local_models` for discovery
-- `get_training_status`, `start_training`, `stop_training`, and `list_training_runs`
-- `validate_recipe`, `get_recipe_job_status`, and `get_recipe_job_dataset`
-- `load_checkpoint` and `export_gguf`
+| Old tool | New tool |
+|---|---|
+| `list_local_models` | `list_models` |
+| `get_training_status` | `studio_status` |
+| `stop_training` | `cancel` with `kind="training"` |
+| `validate_recipe` | `run_recipe` with `mode="validate"` |
+| `get_recipe_job_status`, `get_recipe_job_dataset` | `get_job` with `kind="recipe"` |
+| `load_checkpoint` and `export_gguf` | `export_model` |
 
-`start_training` accepts the same fields as the Unsloth `TrainingStartRequest`.
-The request is validated by the existing Pydantic model before a subprocess is
-started. Export paths use the existing Unsloth validation as well.
+`studio_status` and `start_training` keep their names, but now run as your key.
 
-The endpoint always requires `UNSLOTH_STUDIO_MCP_TOKEN` and checks an exact
-Bearer token for both HTTP and WebSocket connections. Keep it on localhost
-unless the deployment has an authenticated reverse proxy. The MCP endpoint is
-intentionally opt-in because tools can consume GPU memory, write model
-artifacts, and stop active work.
+### Set up an agent
+
+Studio's **Settings → API** page builds these for you, with your real address.
+Each one reads the key from the `UNSLOTH_API_KEY` environment variable, so set
+it before you start the agent. Replace `http://127.0.0.1:8888` with your own
+address.
+
+**Claude Code** (macOS or Linux):
+
+```bash
+claude mcp add --transport http unsloth-studio http://127.0.0.1:8888/mcp/ --header "Authorization: Bearer $UNSLOTH_API_KEY"
+```
+
+**Claude Code** (Windows PowerShell):
+
+```powershell
+claude mcp add --transport http unsloth-studio http://127.0.0.1:8888/mcp/ --header "Authorization: Bearer $env:UNSLOTH_API_KEY"
+```
+
+**OpenAI Codex**:
+
+```bash
+codex mcp add unsloth-studio --url http://127.0.0.1:8888/mcp/ --bearer-token-env-var UNSLOTH_API_KEY
+# Optional, for long jobs, in ~/.codex/config.toml under [mcp_servers.unsloth-studio]:
+# tool_timeout_sec = 300
+```
+
+**OpenCode**, in `~/.config/opencode/opencode.json`:
+
+```json
+{
+  "mcp": {
+    "unsloth-studio": {
+      "type": "remote",
+      "url": "http://127.0.0.1:8888/mcp/",
+      "oauth": false,
+      "headers": {
+        "Authorization": "Bearer {env:UNSLOTH_API_KEY}"
+      }
+    }
+  }
+}
+```
+
+**Hermes Agent**, in `~/.hermes/config.yaml`, then run `/reload-mcp` in Hermes:
+
+```yaml
+mcp_servers:
+  unsloth_studio:
+    url: "http://127.0.0.1:8888/mcp/"
+    headers:
+      Authorization: "Bearer ${UNSLOTH_API_KEY}"
+```
+
+**OpenClaw**, in `~/.openclaw/openclaw.json`:
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "unsloth-studio": {
+        "url": "http://127.0.0.1:8888/mcp/",
+        "transport": "streamable-http",
+        "headers": {
+          "Authorization": "Bearer ${UNSLOTH_API_KEY}"
+        }
+      }
+    }
+  }
+}
+```
+
+**Mistral Vibe**, in `~/.vibe/config.toml`:
+
+```toml
+[[mcp_servers]]
+name = "unsloth_studio"
+transport = "streamable-http"
+url = "http://127.0.0.1:8888/mcp/"
+
+[mcp_servers.auth]
+type = "static"
+api_key_env = "UNSLOTH_API_KEY"
+api_key_header = "Authorization"
+api_key_format = "Bearer {token}"
+```
+
+**DeepSeek Harness**, appended to `~/.dsh/cordis.patch.yml`:
+
+```yaml
+- insert:
+    - id: mcp-unsloth-studio
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: unsloth-studio
+        transport: streamable-http
+        url: "http://127.0.0.1:8888/mcp/"
+        headers:
+          Authorization: !!js '`Bearer ${process.env.UNSLOTH_API_KEY}`'
+```
+
+### Tools
+
+| Tool | What it does |
+|---|---|
+| `studio_status` | What is loaded, loading and running: chat, image, video, speech-to-text and embedding models, training, export and GPUs. |
+| `list_models` | Models Studio can serve, by kind. With `model`, its training defaults. |
+| `load_model` | Load a chat, image, video or speech-to-text model, downloading it first if needed. Reports progress. |
+| `unload_model` | Unload a model. |
+| `chat` | Ask the loaded model, with optional images. Returns a `cancel_id`. |
+| `embed` | Embed up to 2048 texts. |
+| `system_one` | Ask the Decision API typed questions. The Decision API must be on. |
+| `generate_image` | Text to image, image to image, inpaint, edit, outpaint and upscale. |
+| `generate_audio` | Clone, speak, edit, convert, music and separate. |
+| `transcribe` | Speech to text, or translation to English. |
+| `generate_video` | Start a video. Poll it with `get_job`. |
+| `get_job` | The state of a video, recipe or export job. |
+| `run_recipe` | Validate, preview or run a Data Recipe. |
+| `datasets` | List, check, download and follow training datasets. |
+| `start_training` | Start LLM or image LoRA training. Follow it with `studio_status`. |
+| `list_training_runs` | Past runs and their checkpoints, by name. |
+| `export_model` | Export a checkpoint to GGUF, merged weights, a LoRA adapter or the base model. |
+| `cancel` | Stop training, a start request, image training, an export, a recipe, an image or video generation, a chat reply or a dataset download. |
+
+Long work returns at once. Start it, then poll `get_job` or `studio_status`,
+and stop it with `cancel`. Audio runs cannot be cancelled.
+
+### Media and files
+
+Generated images, audio and videos are saved to Studio's galleries, the same as
+in the UI. Tools return each item's id and URL. Small items also come back
+inline. Large images come back as a preview plus a link. A video comes back as a
+thumbnail plus a link, and the MP4 is never sent inline.
+
+Media inputs can be a Studio id, inline data, or a file path. **A file path
+works only when the agent runs on the Studio computer** and connects over
+loopback. From any other computer, send the data or a Studio id instead.
+
+`transcribe` sends files up to 25 MB directly. Larger files, and audio given by
+id, are uploaded to Studio first, and their transcript is saved to Audio
+history. Translation needs a file under 25 MB. Transcribing from a URL or a
+YouTube link is not supported.
+
+Tool results never contain paths on the Studio computer. Checkpoints are named
+`<run folder>` or `<run folder>/checkpoint-N`. Exports are named relative to
+Studio's exports folder, and `export_model` takes only a relative
+`save_directory`.
+
+### Known limits
+
+- An API key cannot unload a chat model that was loaded from a local folder.
+  Studio shows such a model to API keys under an opaque reference, and the
+  unload route does not resolve it. Unload it in the Studio UI.
+- Studio runs one Data Recipe job at a time, and a recipe job id is not tied to
+  an account. Anyone with a key who knows the id can read that job's status.
+- Image LoRA training takes a dataset that is already in Studio. There is no
+  upload tool.
+- Models can be unloaded between calls when an idle timeout is set. Tools then
+  say to load the model again.
