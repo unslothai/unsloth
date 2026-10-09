@@ -740,6 +740,15 @@ class ValidateModelRequest(BaseModel):
     )
 
 
+class ManagedEngineOffer(BaseModel):
+    """Optional engines that can run a checkpoint the Default engine cannot."""
+
+    quantization: str = Field(..., description = "quant_method from the checkpoint's config.json")
+    engines: List[Literal["vllm", "sglang"]] = Field(
+        ..., description = "Engines this host can run, in the order to offer them"
+    )
+
+
 class TransformersUpgradeInfo(BaseModel):
     """A model architecture no installed transformers ships, but a newer release does."""
 
@@ -942,6 +951,11 @@ class ValidateModelResponse(BaseModel):
         description = "On an MLX host, the full-precision repo that will be downloaded and "
         "loaded in place of the requested unsloth bnb-4bit repo (or of a LoRA's bnb base), "
         "because MLX cannot read bitsandbytes weights. None when the pick loads as asked.",
+    )
+    managed_engine_offer: Optional[ManagedEngineOffer] = Field(
+        None,
+        description = "Set when the Default engine cannot run this checkpoint's quantization "
+        "but an optional engine can on this host; the UI offers to load it there.",
     )
 
 

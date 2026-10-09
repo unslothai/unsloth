@@ -166,6 +166,7 @@ import {
   DEFAULT_MAX_SEQ_LENGTH,
   DEFAULT_PER_MODEL_CONFIG,
   applyPerModelConfigToRuntime,
+  confirmManagedEngineIfNeeded,
   currentRuntimePerModelConfig,
   isServedByMlx,
   normalizeMaxSeqLength,
@@ -2008,6 +2009,8 @@ export function useChatModelRuntime() {
         (typeof selection !== "string" ? selection.config?.engine : undefined) ??
         useChatRuntimeStore.getState().params.engine ?? "auto";
       const managedLoad = !isGguf && requestedEngine !== "auto";
+      // Set once the load switches to an optional engine the Default one cannot replace (#11728).
+      let engineSwitched = false;
       let downloadComplete = isDownloaded || isCachedLora || managedLoad;
       let cpuFallbackReason: CpuFallbackReason | null = null;
       let mmprojFallbackReason: MmprojFallbackReason | null = null;
@@ -2271,6 +2274,12 @@ export function useChatModelRuntime() {
               stateBeforeUnload.ctxCheckpoints,
             cacheRam: pendingLoadConfig?.cacheRam ?? stateBeforeUnload.cacheRam,
           };
+          // Switched to an optional engine when the Default one cannot run the checkpoint (#11728).
+          let loadEngineFields = {
+            engine: stateBeforeUnload.params.engine ?? "auto",
+            engine_precision: stateBeforeUnload.params.enginePrecision ?? "auto",
+            engine_parallelism: stateBeforeUnload.params.engineParallelism ?? "tensor",
+          };
           try {
             // Lightweight pre-flight validation: avoid unloading a working model if the new identifier is
             // clearly invalid.
@@ -2396,6 +2405,30 @@ export function useChatModelRuntime() {
             // validateModel cannot be aborted either, and everything below writes shared
             // state, so stop here if a replacement superseded this load meanwhile.
             if (abortCtrl.signal.aborted) throw new Error("Cancelled");
+            const engineOffer =
+              !isGguf && loadEngineFields.engine === "auto"
+                ? validation.managed_engine_offer
+                : null;
+            if (engineOffer) {
+              const engine = await confirmManagedEngineIfNeeded(
+                modelId,
+                engineOffer,
+                abortCtrl.signal,
+              );
+              if (abortCtrl.signal.aborted) throw new Error("Cancelled");
+              if (!engine) {
+                throw new Error(
+                  `${displayName} is quantized with ${engineOffer.quantization}, which the default engine cannot run. Set Inference engine to ${engineOffer.engines[0] === "sglang" ? "SGLang" : "vLLM"} in its run settings to load it.`,
+                );
+              }
+              loadEngineFields = {
+                engine,
+                engine_precision: "auto",
+                engine_parallelism: "tensor",
+              };
+              engineSwitched = true;
+              downloadComplete = true;
+            }
             if (validation.mlx_loads_base_model) {
               mlxLoadProgress = true;
               const mlxBaseDescription = isLora
@@ -2635,9 +2668,8 @@ export function useChatModelRuntime() {
 
             const loadResponse = await loadModel({
               model_path: loadPath,
-              engine_precision: stateBeforeUnload.params.enginePrecision ?? "auto",
-              engine_parallelism: stateBeforeUnload.params.engineParallelism ?? "tensor",
-              engine: isGguf ? "auto" : (stateBeforeUnload.params.engine ?? "auto"),
+              ...loadEngineFields,
+              engine: isGguf ? "auto" : loadEngineFields.engine,
               load_request_id: loadRun.requestId,
               nativePathLease: loadNativePathLease,
               hf_token: hfToken,
@@ -2647,7 +2679,7 @@ export function useChatModelRuntime() {
                 loadCustomContextLength,
                 loadMaxSeqLength,
               ),
-              load_in_4bit: (stateBeforeUnload.params.engine ?? "auto") === "auto",
+              load_in_4bit: loadEngineFields.engine === "auto",
               is_lora: isLora,
               gguf_variant: ggufVariant ?? null,
               trust_remote_code: trustRemoteCode,
@@ -3446,7 +3478,7 @@ export function useChatModelRuntime() {
               if (progressInterval) clearInterval(progressInterval);
               return;
             }
-            if (managedLoad && prog.bytes_total <= 0) {
+            if ((managedLoad || engineSwitched) && prog.bytes_total <= 0) {
               const label = prog.phase === "warming_up"
                 ? "Warming up inference kernels. The first load can take several minutes."
                 : prog.phase === "loading_weights"

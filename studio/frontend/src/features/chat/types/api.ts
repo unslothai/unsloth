@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { TransformersUpgradeInfo } from "@/features/transformers-upgrade";
+import type { ManagedEngineOffer } from "@/features/model-picker";
 import type { CustomReasoningConfig } from "../custom-reasoning";
 
 export type CpuFallbackReason = "vulkan_startup_crash";
@@ -165,6 +166,8 @@ export interface ValidateModelResponse {
   transformers_upgrade?: TransformersUpgradeInfo | null;
   /** Replacement repository for an MLX BNB model or adapter base. */
   mlx_loads_base_model?: string | null;
+  /** The Default engine cannot run this quantization; these optional engines can on this host. */
+  managed_engine_offer?: ManagedEngineOffer | null;
 }
 
 export interface GgufVariantDetail {

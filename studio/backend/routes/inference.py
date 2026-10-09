@@ -16791,6 +16791,68 @@ def _vllm_engine_hint(engine: Optional[str]) -> str:
         return ""
 
 
+# Quantizations the Default engine cannot run, with the packages that would let it (none
+# ship with Studio); the optional engines run them all.
+_MANAGED_ENGINE_QUANTIZATIONS = {
+    "compressed-tensors": (),
+    "awq": ("gptqmodel", "awq"),
+    "gptq": ("gptqmodel", "auto_gptq"),
+}
+# Both load Qwen3.8-27B-NVFP4 on a B200; vLLM first, as the engine most checkpoints target.
+_OFFERED_ENGINES = ("vllm", "sglang")
+
+
+def _managed_engine_offer(metadata, *, engine, is_gguf, is_lora, supported) -> Optional[dict]:
+    """The engines to offer for a checkpoint the Default engine cannot run, or None.
+
+    ``supported`` is asked last, so the GPU probe only runs for these checkpoints."""
+    if engine not in (None, "auto") or is_gguf or is_lora or not isinstance(metadata, dict):
+        return None
+    text_config = metadata.get("text_config")
+    quant = metadata.get("quantization_config") or (
+        text_config.get("quantization_config") if isinstance(text_config, dict) else None
+    )
+    method = quant.get("quant_method") if isinstance(quant, dict) else None
+    if not isinstance(method, str):
+        return None
+    method = method.strip().lower()
+    if method not in _MANAGED_ENGINE_QUANTIZATIONS:
+        return None
+    import importlib.util
+
+    for module in _MANAGED_ENGINE_QUANTIZATIONS[method]:
+        try:
+            if importlib.util.find_spec(module) is not None:
+                return None
+        except (ImportError, ValueError):
+            pass
+    engines = [name for name in _OFFERED_ENGINES if supported(name)]
+    return {"quantization": method, "engines": engines} if engines else None
+
+
+def _managed_engine_offer_for(config, hf_token) -> Optional[dict]:
+    """``_managed_engine_offer`` from the checkpoint's own config.json; None on any failure."""
+    try:
+        if config.is_local:
+            path = Path(config.path) / "config.json"
+        else:
+            from huggingface_hub import hf_hub_download
+            path = Path(hf_hub_download(config.identifier, "config.json", token = hf_token))
+        metadata = json.loads(path.read_text(encoding = "utf-8"))
+        from core.inference.engine_install import support_reason
+
+        return _managed_engine_offer(
+            metadata,
+            engine = "auto",
+            is_gguf = getattr(config, "is_gguf", False),
+            is_lora = getattr(config, "is_lora", False),
+            supported = lambda name: support_reason(name) is None,
+        )
+    except Exception as exc:
+        logger.debug("Managed engine offer check failed for '%s': %s", config.identifier, exc)
+        return None
+
+
 def _diagnosis_text(msg: str) -> str:
     """``msg`` up to the startup-diagnostics block, which is not ours to read.
 
@@ -20048,6 +20110,16 @@ async def validate_model(
             except Exception as e:
                 logger.debug("Header probe failed for %s: %s", model_log_label, e)
 
+        managed_engine_offer = None
+        if request.engine == "auto" and not is_gguf:
+            managed_engine_offer = await asyncio.to_thread(
+                _offline_guarded,
+                (model_identifier, config.identifier),
+                _managed_engine_offer_for,
+                config,
+                request.hf_token,
+            )
+
         return restore_inventory_handles(
             ValidateModelResponse(
                 valid = True,
@@ -20081,6 +20153,7 @@ async def validate_model(
                 requires_transformers_upgrade = transformers_upgrade is not None,
                 transformers_upgrade = transformers_upgrade,
                 mlx_loads_base_model = await asyncio.to_thread(_mlx_base_for_config, config),
+                managed_engine_offer = managed_engine_offer,
             )
         )
 
