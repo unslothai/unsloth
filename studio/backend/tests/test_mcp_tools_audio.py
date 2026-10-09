@@ -362,6 +362,22 @@ TRANSCRIBE_PAYLOADS = {
 }
 
 
+def test_without_a_model_the_resident_one_is_named(monkeypatch):
+    studio = fake_studio(
+        {
+            ("POST", "/v1/audio/transcriptions"): lambda request, body: TRANSCRIPT,
+            ("GET", "/api/inference/audio/stt/status"): lambda request, body: {
+                "whisper": {"loaded_model": "small", "loading": False}
+            },
+        }
+    )
+    result = _transcribe(
+        monkeypatch, studio, {"audio": {"data_base64": _b64(WAV), "filename": "memo.wav"}}
+    )
+    assert result["structuredContent"]["model"] == "small"
+    assert result["structuredContent"]["language"] is None
+
+
 def _form(request_body: bytes, content_type: str):
     from email.parser import BytesParser
     from email.policy import default
@@ -399,7 +415,8 @@ def test_small_audio_goes_as_multipart_with_openai_field_names(monkeypatch):
     )
     assert result["structuredContent"] == {
         "text": "Hello from Studio.",
-        "language": None,
+        # The route answers with text alone; the language asked for is reported.
+        "language": "en",
         "model": "openai/whisper-small",
         "segments": None,
         "saved_to_history": False,
@@ -532,6 +549,8 @@ def test_a_missing_model_is_downloaded_then_the_transcription_retried_once(monke
         "/api/inference/audio/stt/download",
         "/api/inference/audio/stt/status",
         "/v1/audio/transcriptions",
+        # Names the model that ran, since no model was asked for.
+        "/api/inference/audio/stt/status",
     ]
     download = next(c for c in studio.state.calls if c[1].endswith("/download"))
     assert json.loads(download[3]) == {"model": "openai/whisper-small", "engine": "transformers"}

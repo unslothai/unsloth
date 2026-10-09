@@ -321,11 +321,24 @@ async def transcribe(
         raise ToolError("Unsloth Studio returned no transcript")
     return TranscriptResult(
         text = payload.get("text") if isinstance(payload.get("text"), str) else "",
-        language = opt_text(payload.get("language")),
-        model = model,
+        # This route answers with the text alone, so report what was asked for and what ran.
+        language = opt_text(payload.get("language")) or ("en" if translate else language),
+        model = model or await _resident_stt(caller),
         segments = _segments(payload) if timestamps else None,
         saved_to_history = False,
     )
+
+
+async def _resident_stt(caller: Caller) -> Optional[str]:
+    try:
+        response = await forward(caller, "GET", "/api/inference/audio/stt/status")
+        payload = response.json() if response.status_code == 200 else None
+    except Exception:
+        return None
+    for state in payload.values() if isinstance(payload, dict) else ():
+        if isinstance(state, dict) and opt_text(state.get("loaded_model")):
+            return state["loaded_model"]
+    return None
 
 
 def register_audio(mcp: FastMCP) -> None:
