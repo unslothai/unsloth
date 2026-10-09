@@ -20142,7 +20142,7 @@ async def validate_model(
         if request.engine == "auto" and not is_gguf:
             managed_engine_offer = await asyncio.to_thread(
                 _offline_guarded,
-                (model_identifier, config.identifier),
+                (model_identifier, config.identifier, getattr(config, "base_model", None)),
                 _managed_engine_offer_for,
                 config,
                 request.hf_token,
