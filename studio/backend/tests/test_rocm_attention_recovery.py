@@ -280,3 +280,12 @@ def test_an_incomplete_child_probe_is_not_relaunched_by_every_check_of_one_load(
     monkeypatch.setattr(att, "_ROCM_PROBE_RETRY_S", 0.0)
     att.sdpa_math_only(target)
     assert calls == ["MATH", "MATH"]
+
+
+@pytest.mark.parametrize("dtype,disabled", [("bfloat16", True), ("float32", False)])
+def test_any_completed_half_precision_probe_applies_its_answer(monkeypatch, dtype, disabled):
+    monkeypatch.setattr(att, "_run_rocm_sdpa_children", lambda device, dtype: ("math",))
+    monkeypatch.setattr("core._torchao_stub._module_is_rocm", lambda m: True)
+    assert att.sdpa_math_only(SimpleNamespace(device = "cuda:0", dtype = getattr(torch, dtype)))
+    assert torch.backends.cuda.flash_sdp_enabled() is not disabled
+    assert torch.backends.cuda.mem_efficient_sdp_enabled() is not disabled

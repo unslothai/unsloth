@@ -155,6 +155,12 @@ def _probe_rocm_sdpa_kernels(device: str, dtype: Any) -> tuple[str, ...]:
     available = _run_rocm_sdpa_children(device, dtype)
     if available:
         _ROCM_PROBE_INCOMPLETE.pop(key, None)
+        # Whichever check completes the probe applies its answer; fp32 never runs fused kernels.
+        if _rocm_guard_allowed() and str(dtype) in ("torch.float16", "torch.bfloat16"):
+            try:
+                _apply_rocm_guard(available)
+            except Exception:  # noqa: BLE001 - a diagnostic may never fail a load
+                pass
     else:
         _ROCM_PROBE_INCOMPLETE[key] = time.monotonic()
     return available
@@ -363,7 +369,7 @@ def guard_rocm_fused_sdpa(target: Any, logger: Any = None) -> tuple[str, ...]:
     """Disable failed ROCm fused backends only after math has been verified in isolation."""
     if not _is_cuda_rocm(target):
         return ()
-    if os.environ.get(ROCM_FUSED_SDPA_ALLOW_ENV, "").strip().lower() in ("1", "true", "yes", "on"):
+    if not _rocm_guard_allowed():
         return ()
     import torch
 
@@ -382,8 +388,23 @@ def guard_rocm_fused_sdpa(target: Any, logger: Any = None) -> tuple[str, ...]:
             else torch.float16
         )
     available = _sdpa_capability(SimpleNamespace(device = device, dtype = dtype))
+    return _apply_rocm_guard(available, logger)
+
+
+def _rocm_guard_allowed() -> bool:
+    return os.environ.get(ROCM_FUSED_SDPA_ALLOW_ENV, "").strip().lower() not in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def _apply_rocm_guard(available: tuple[str, ...], logger: Any = None) -> tuple[str, ...]:
     if SDPA_MATH not in available:
         return ()
+    import torch
+
     disabled = []
     for name, enabled, switch in (
         (SDPA_FLASH, torch.backends.cuda.flash_sdp_enabled, torch.backends.cuda.enable_flash_sdp),
