@@ -6038,6 +6038,34 @@ def _rocm_torch_family_needs_repair(
     ) or _generic_only_target_below_floor(runtime_gfx, _installed_tag)
 
 
+def _windows_rocm_device_packs_need_dependency_pass() -> bool:
+    """For setup.ps1's fast path: would _ensure_rocm_torch repair this multi-arch ROCm torch?
+
+    Same gates as that repair, read from wheel metadata only; fails closed and never installs.
+    """
+    if not IS_WINDOWS or NO_TORCH or _TORCH_BACKEND in ("cuda", "cpu", "xpu"):
+        return False
+    try:
+        if (
+            _explicit_unknown_family_torch_index_url() is not None
+            or _explicit_torch_index_is_unusable()
+            or _explicit_rocm_torch_index_url() is not None
+            or _has_usable_nvidia_gpu()
+        ):
+            return False
+        gfx_arch = _detect_windows_gfx_arch()
+        if not gfx_arch or not _windows_routes_multiarch(gfx_arch):
+            return False
+        from importlib import metadata
+
+        tag = metadata.version("torch").lower().rpartition("+")[2]
+    except Exception:  # noqa: BLE001 - an unreadable host keeps the fast path
+        return False
+    if not tag.startswith("rocm"):
+        return False
+    return tag in _ROCM_MULTIARCH_BROKEN_TAGS or not _multiarch_device_pack_installed(gfx_arch)
+
+
 def _ensure_rocm_torch() -> "bool | None":
     """Reinstall torch with ROCm wheels when the venv received CPU-only torch.
 
@@ -12856,6 +12884,9 @@ if __name__ == "__main__":
             f"probe={_TORCH_RUNTIME_PROBE!r}"
         )
         sys.exit(0 if _needs_pass else 1)
+    if sys.argv[1:] == ["--windows-rocm-device-packs-need-dependency-pass"]:
+        # Exit 0 forces the dependency pass; exit 1 keeps the fast path.
+        sys.exit(0 if _windows_rocm_device_packs_need_dependency_pass() else 1)
     if sys.argv[1:] == ["--cuda-torch-needs-dependency-pass"]:
         # Exit 0 forces the dependency pass; exit 1 keeps the fast path.
         sys.exit(0 if _cuda_torch_needs_dependency_pass() else 1)

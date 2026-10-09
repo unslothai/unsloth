@@ -127,3 +127,52 @@ def test_update_repairs_the_selected_extra_even_with_setup_marker(
         assert "--force-reinstall" in calls[0]
         assert any(arg.startswith("torch[device-gfx1100]==") for arg in calls[0])
         assert any(arg.startswith("torchvision[device-gfx1100]==") for arg in calls[0])
+
+
+def _fast_path_host(
+    monkeypatch,
+    installed,
+    *,
+    tag = "rocm7.14.0",
+    pinned = False,
+    nvidia = False,
+):
+    packages, _ = installed
+    packages["torch"].version = f"2.11.0+{tag}"
+    monkeypatch.setattr(stack_mod, "IS_WINDOWS", True)
+    monkeypatch.setattr(stack_mod, "NO_TORCH", False)
+    monkeypatch.setattr(stack_mod, "_TORCH_BACKEND", "")
+    monkeypatch.setattr(stack_mod, "_explicit_unknown_family_torch_index_url", lambda: None)
+    monkeypatch.setattr(stack_mod, "_explicit_torch_index_is_unusable", lambda: False)
+    monkeypatch.setattr(
+        stack_mod, "_explicit_rocm_torch_index_url", lambda: "https://pin/" if pinned else None
+    )
+    monkeypatch.setattr(stack_mod, "_has_usable_nvidia_gpu", lambda: nvidia)
+    monkeypatch.setattr(stack_mod, "_detect_windows_gfx_arch", lambda: "gfx1100")
+    monkeypatch.setattr(stack_mod, "_windows_routes_multiarch", lambda gfx: True)
+    monkeypatch.setattr(metadata, "version", lambda name: packages[name].version)
+    return packages
+
+
+def test_setup_fast_path_keeps_a_complete_extra(monkeypatch, installed):
+    _fast_path_host(monkeypatch, installed)
+    assert stack_mod._windows_rocm_device_packs_need_dependency_pass() is False
+
+
+def test_setup_fast_path_runs_the_repair_for_a_missing_family_pack(monkeypatch, installed):
+    packages = _fast_path_host(monkeypatch, installed)
+    del packages["amd-torch-device-gfx110x"]
+    assert stack_mod._windows_rocm_device_packs_need_dependency_pass() is True
+
+
+@pytest.mark.parametrize("host", [dict(pinned = True), dict(nvidia = True), dict(tag = "cpu")])
+def test_setup_fast_path_leaves_other_routes_alone(monkeypatch, installed, host):
+    packages = _fast_path_host(monkeypatch, installed, **host)
+    del packages["amd-torch-device-gfx110x"]
+    assert stack_mod._windows_rocm_device_packs_need_dependency_pass() is False
+
+
+def test_setup_ps1_consults_the_device_pack_probe():
+    from pathlib import Path
+    source = (Path(stack_mod.__file__).parent / "setup.ps1").read_text(encoding = "utf-8")
+    assert "--windows-rocm-device-packs-need-dependency-pass" in source
