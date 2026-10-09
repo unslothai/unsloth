@@ -5,17 +5,19 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Annotated, Any, Literal, Optional
 from urllib.parse import quote
 
 from fastmcp import Context, FastMCP
 from fastmcp.exceptions import ToolError
 from fastmcp.tools import ToolResult
+from pydantic import Field
 
 from studio_mcp import loading
 from studio_mcp.caller import Caller, current_caller
 from studio_mcp.errors import raise_for_route
 from studio_mcp.forward import forward
+from studio_mcp.inputs import ImageInput, data_url, resolve_image
 from studio_mcp.media import INLINE_CAP, image_content, media_result, public_url, resource_link
 from studio_mcp.outputs import ImageItem, ImageResult
 from studio_mcp.tools import WRITES, integer, number, route_json, text
@@ -23,6 +25,8 @@ from studio_mcp.tools import WRITES, integer, number, route_json, text
 LOAD_IMAGE_HINT = "Load an image model with load_model(kind='image') first."
 NOT_LOADED = "No diffusion model is loaded"
 THUMB_SIDE = 1024
+# The route takes 128 MiB of base64 across every image in one request.
+MAX_REQUEST_IMAGE_BYTES = 128 * 1024 * 1024 * 3 // 4
 
 
 def _gallery_path(image_id: str, thumb: bool = False) -> str:
@@ -93,6 +97,33 @@ async def run_generation(
     return media_result(contents, ImageResult(images = items))
 
 
+async def _image_fields(
+    caller: Caller,
+    init_image: Optional[ImageInput],
+    mask_image: Optional[ImageInput],
+    reference_images: Optional[list[ImageInput]],
+) -> dict[str, Any]:
+    if mask_image is not None and init_image is None:
+        raise ToolError("mask_image needs init_image: the mask marks what to repaint in it.")
+    fields: dict[str, Any] = {}
+    total = 0
+    for key, image in (("init_image", init_image), ("mask_image", mask_image)):
+        if image is not None:
+            data, mime = await resolve_image(caller, image)
+            total += len(data)
+            fields[key] = data_url(data, mime)
+    references = []
+    for image in reference_images or []:
+        data, mime = await resolve_image(caller, image)
+        total += len(data)
+        references.append(data_url(data, mime))
+    if references:
+        fields["reference_images"] = references
+    if total > MAX_REQUEST_IMAGE_BYTES:
+        raise ToolError("The images together are larger than the 96 MiB one request takes")
+    return fields
+
+
 async def generate_image(
     prompt: str,
     negative_prompt: Optional[str] = None,
@@ -102,10 +133,21 @@ async def generate_image(
     guidance: Optional[float] = None,
     seed: Optional[int] = None,
     batch_size: Optional[int] = None,
+    init_image: Optional[ImageInput] = None,
+    mask_image: Optional[ImageInput] = None,
+    reference_images: Annotated[Optional[list[ImageInput]], Field(max_length = 9)] = None,
+    workflow: Optional[Literal["edit", "reference", "outpaint"]] = None,
+    strength: Optional[float] = None,
+    upscale: Optional[float] = None,
+    allow_oversized: bool = False,
     ctx: Optional[Context] = None,
 ) -> ToolResult:
-    """Generate images with the image model loaded in Studio (load_model(kind="image") first). Each image is saved to the Studio Images gallery and returned with its id and URL; images up to 1.5 MiB come back inline, larger ones as a 1024 px preview plus a link. Width and height are pixels, multiples of 16. Progress is reported while it runs."""
+    """Generate or edit images with the image model loaded in Studio (load_model(kind="image") first). Each image is saved to the Studio Images gallery and returned with its id and URL; images up to 1.5 MiB come back inline, larger ones as a 1024 px preview plus a link. Width and height are pixels, multiples of 16. With ``init_image`` it is img2img (``strength`` 0 to 1 sets how much is redrawn); add ``mask_image`` to inpaint (white is repainted); ``upscale`` 1 to 4 enlarges ``init_image``; ``workflow`` "edit" follows the prompt as an instruction over init_image and ``reference_images``, "reference" draws a new image guided by them, "outpaint" fills a padded init_image under its mask. A refusal on memory grounds can be overridden with ``allow_oversized``. Progress is reported while it runs."""
+    if upscale is not None and init_image is None:
+        raise ToolError("upscale needs init_image: it enlarges that image.")
+    caller = current_caller()
     body: dict[str, Any] = {"prompt": prompt}
+    body.update(await _image_fields(caller, init_image, mask_image, reference_images))
     for key, value in (
         ("negative_prompt", negative_prompt),
         ("width", width),
@@ -114,10 +156,15 @@ async def generate_image(
         ("guidance", guidance),
         ("seed", seed),
         ("batch_size", batch_size),
+        ("workflow", workflow),
+        ("strength", strength),
+        ("upscale", upscale),
     ):
         if value is not None:
             body[key] = value
-    return await run_generation(current_caller(), ctx, body)
+    if allow_oversized:
+        body["allow_oversized"] = True
+    return await run_generation(caller, ctx, body)
 
 
 def register_images(mcp: FastMCP) -> None:

@@ -221,3 +221,131 @@ def test_generate_image_annotations():
     assert tool.annotations.openWorldHint is False
     assert tool.output_schema["properties"]["images"]["type"] == "array"
     assert tool.output_schema["additionalProperties"] is False
+
+
+JPEG = b"\xff\xd8\xff\xe0" + b"\x00" * 32
+
+
+def _data_url(data, mime):
+    return f"data:{mime};base64,{base64.b64encode(data).decode()}"
+
+
+def _sent_body(studio):
+    return json.loads(
+        next(c for c in studio.state.calls if c[1] == "/api/inference/images/generate")[3]
+    )
+
+
+def test_edit_inputs_land_in_their_body_fields(monkeypatch):
+    studio = _studio({("GET", "/api/inference/images/gallery/src-1/file"): _png})
+    args = {
+        "prompt": "make it night",
+        "init_image": {"gallery_id": "src-1"},
+        "mask_image": {"data_url": _data_url(PNG, "image/png")},
+        "reference_images": [{"data_url": _data_url(JPEG, "image/jpeg")}],
+        "workflow": "edit",
+        "strength": 0.6,
+        "allow_oversized": True,
+    }
+    result = _call(monkeypatch, studio, args)
+    assert result["isError"] is False
+    assert _sent_body(studio) == {
+        "prompt": "make it night",
+        "init_image": _data_url(PNG, "image/png"),
+        "mask_image": _data_url(PNG, "image/png"),
+        "reference_images": [_data_url(JPEG, "image/jpeg")],
+        "workflow": "edit",
+        "strength": 0.6,
+        "allow_oversized": True,
+    }
+
+
+def test_upscale_sends_the_factor_with_its_source(monkeypatch):
+    studio = _studio()
+    _call(
+        monkeypatch,
+        studio,
+        {
+            "prompt": "sharper",
+            "init_image": {"data_url": _data_url(PNG, "image/png")},
+            "upscale": 2,
+        },
+    )
+    body = _sent_body(studio)
+    assert body["upscale"] == 2
+    assert body["init_image"] == _data_url(PNG, "image/png")
+    assert "allow_oversized" not in body
+
+
+def test_a_mask_without_a_source_is_refused(monkeypatch):
+    studio = _studio()
+    result = _call(
+        monkeypatch,
+        studio,
+        {"prompt": "x", "mask_image": {"data_url": _data_url(PNG, "image/png")}},
+    )
+    assert result["isError"] is True
+    assert "mask_image needs init_image" in result["content"][0]["text"]
+    assert studio.state.calls == []
+
+
+def test_upscale_without_a_source_is_refused(monkeypatch):
+    studio = _studio()
+    result = _call(monkeypatch, studio, {"prompt": "x", "upscale": 2})
+    assert result["isError"] is True
+    assert studio.state.calls == []
+
+
+def test_more_than_nine_references_are_refused(monkeypatch):
+    studio = _studio()
+    refs = [{"data_url": _data_url(PNG, "image/png")}] * 10
+    result = _call(
+        monkeypatch, studio, {"prompt": "x", "init_image": refs[0], "reference_images": refs}
+    )
+    assert result["isError"] is True
+    assert studio.state.calls == []
+
+
+def test_a_memory_refusal_says_how_to_override(monkeypatch):
+    def refused(request, body):
+        return JSONResponse(
+            {"detail": "2048x2048 needs about 30 GB; 12 GB is free."},
+            status_code = 400,
+            headers = {"X-Unsloth-Refusal": "memory-estimate"},
+        )
+
+    studio = _studio({("POST", "/api/inference/images/generate"): refused})
+    result = _call(monkeypatch, studio, {"prompt": "x", "width": 2048, "height": 2048})
+    assert result["isError"] is True
+    assert result["content"][0]["text"] == (
+        "2048x2048 needs about 30 GB; 12 GB is free. Pass allow_oversized=true to try anyway."
+    )
+
+
+def test_a_remote_agent_cannot_send_an_image_path(monkeypatch, tmp_path):
+    from studio_mcp.inputs import PATH_REMOTE
+
+    source = tmp_path / "mcp-input.png"
+    source.write_bytes(PNG)
+    opened = []
+    monkeypatch.setattr(type(source), "read_bytes", lambda self: opened.append(self) or PNG)
+    studio = _studio()
+    remote = _call(
+        monkeypatch,
+        studio,
+        {"prompt": "x", "init_image": {"path": str(source)}},
+        base_url = "http://192.168.1.20:8888",
+        client = ("192.0.2.7", 50000),
+    )
+    assert remote["content"][0]["text"] == PATH_REMOTE
+    assert opened == []
+    assert studio.state.calls == []
+    local = _call(
+        monkeypatch,
+        studio,
+        {"prompt": "x", "init_image": {"path": str(source)}},
+        base_url = "http://127.0.0.1:8888",
+        client = ("127.0.0.1", 50000),
+    )
+    assert local["isError"] is False
+    assert opened == [source]
