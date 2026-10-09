@@ -29,7 +29,7 @@ const CARRY_GEMINI_TURNS =
 const REPLAY_GEMINI_TURNS =
   /serializeGeminiContinuationTurns\(geminiReplayTurns, false\)/;
 const PRESERVE_GEMINI_BOUNDARY =
-  /geminiContinuationReplay,[\s\S]*incomplete:/;
+  /geminiContinuationReplay: geminiContinuationReplay\(false\),[\s\S]*incomplete:/;
 
 test("the source splits a reply into the answer and the thought before it", () => {
   assert.deepEqual(

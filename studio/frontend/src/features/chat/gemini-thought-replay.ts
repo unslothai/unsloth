@@ -19,6 +19,7 @@ export type GeminiContinuationReplayTurn = {
 export type GeminiContinuationReplay = {
   turns: GeminiContinuationReplayTurn[];
   visiblePrefix: string;
+  stripVisiblePrefix: boolean;
 };
 
 export type GeminiContinuationReplayEntry =
@@ -212,11 +213,19 @@ export function readGeminiContinuationReplay(
   const custom = (metadata as { custom?: Record<string, unknown> } | undefined)
     ?.custom;
   const replay = custom?.geminiContinuationReplay as
-    | { turns?: unknown; visiblePrefix?: unknown }
+    | {
+        turns?: unknown;
+        visiblePrefix?: unknown;
+        stripVisiblePrefix?: unknown;
+      }
     | undefined;
   const turns = parseGeminiContinuationReplayTurns(replay?.turns);
   return turns.length > 0 && typeof replay?.visiblePrefix === "string"
-    ? { turns, visiblePrefix: replay.visiblePrefix }
+    ? {
+        turns,
+        visiblePrefix: replay.visiblePrefix,
+        stripVisiblePrefix: replay.stripVisiblePrefix !== false,
+      }
     : null;
 }
 
@@ -232,7 +241,7 @@ export function continuationGeminiReplayTurns(
     return [];
   }
   const currentText =
-    replay && current.text.startsWith(replay.visiblePrefix)
+    replay?.stripVisiblePrefix && current.text.startsWith(replay.visiblePrefix)
       ? current.text.slice(replay.visiblePrefix.length)
       : current.text;
   const currentTurn = { ...current, text: currentText };

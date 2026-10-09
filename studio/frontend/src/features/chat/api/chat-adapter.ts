@@ -351,6 +351,7 @@ import {
   incompleteLabel,
   incompleteReasonAfterError,
   type IncompleteReason,
+  isRestart,
   noteRunStartedThisSession,
   readIncompleteInfo,
   resolveIncompleteReason,
@@ -1457,7 +1458,9 @@ function expandGeminiContinuationReplay(
     (message as { metadata?: unknown }).metadata,
   );
   if (!replay) return serialized;
-  stripGeminiContinuationVisiblePrefix(serialized, replay.visiblePrefix);
+  if (replay.stripVisiblePrefix) {
+    stripGeminiContinuationVisiblePrefix(serialized, replay.visiblePrefix);
+  }
   return [
     ...serializeGeminiContinuationTurns(replay.turns, true),
     ...serialized,
@@ -5722,17 +5725,29 @@ export function createOpenAIStreamAdapter(
       const continuationPartial = continuation
         ? continuationSeed(continuation.partial, resumedThought)
         : "";
-      const geminiContinuationReplay: GeminiContinuationReplay | undefined =
+      const geminiContinuationReplayTurns =
         externalProvider?.providerType === "gemini" &&
         continuation?.geminiReplayTurns?.length
-          ? {
-              turns: continuation.geminiReplayTurns,
-              visiblePrefix: continuation.partial,
-            }
+          ? continuation.geminiReplayTurns
           : undefined;
       // A seed that ends inside the thought: the next reasoning delta extends it.
       const resumesInsideThought = Boolean(resumedThought) && !continuation?.partial;
       let cumulativeText = continuationPartial;
+      const geminiContinuationReplay = (
+        final: boolean,
+      ): GeminiContinuationReplay | undefined =>
+        geminiContinuationReplayTurns
+          ? {
+              turns: geminiContinuationReplayTurns,
+              visiblePrefix: continuation?.partial ?? "",
+              stripVisiblePrefix:
+                !final ||
+                !isRestart(
+                  continuation?.partial ?? "",
+                  cumulativeText.slice(continuationPartial.length),
+                ),
+            }
+          : undefined;
       // Reading `cumulativeText` costs O(reply): each `+=` builds a cons string that the first read
       // flattens, so one charCodeAt per arrival is as expensive as a scan. Everything below is fed
       // the delta through `appendCumulative` and the buffer is read only where the reply is
@@ -5832,7 +5847,7 @@ export function createOpenAIStreamAdapter(
         providerCompactionProviderType,
         providerCompactionModelId,
         providerCompactionConnectionKey: providerCompactionOriginConnectionKey,
-        geminiContinuationReplay,
+        geminiContinuationReplay: geminiContinuationReplay(false),
         // A legacy (browser-tool / attachment / incognito) run that ends because you closed the tab has no
         // server-side run to resume from, so its last streamed yield is what persists. Mark it an interruption
         // — partial kept + Resume — instead of a silent blank/ambiguous state. Durable runs keep "cancelled":
@@ -6142,7 +6157,7 @@ export function createOpenAIStreamAdapter(
       let latestGeminiTextSignature: string | undefined;
       let pendingGeminiThoughtText = "";
       const geminiThoughtParts: PositionedGeminiThoughtReplayPart[] =
-        geminiContinuationReplay
+        geminiContinuationReplayTurns
           ? []
           : (continuation?.thoughtParts?.map((part) => ({
               ...part,
@@ -8614,7 +8629,7 @@ export function createOpenAIStreamAdapter(
               providerCompactionModelId,
               providerCompactionConnectionKey:
                 providerCompactionOriginConnectionKey,
-              geminiContinuationReplay,
+              geminiContinuationReplay: geminiContinuationReplay(true),
               incomplete: finalIncompleteReason
                 ? { reason: finalIncompleteReason }
                 : undefined,
@@ -8793,7 +8808,7 @@ export function createOpenAIStreamAdapter(
                 providerCompactionModelId,
                 providerCompactionConnectionKey:
                   providerCompactionOriginConnectionKey,
-                geminiContinuationReplay,
+                geminiContinuationReplay: geminiContinuationReplay(true),
                 // Unfinished too, so it also offers Continue -- unless the provider already
                 // said why the model stopped.
                 incomplete: {

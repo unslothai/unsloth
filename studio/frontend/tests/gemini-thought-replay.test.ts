@@ -97,6 +97,7 @@ test("continued Gemini turns keep the hidden user boundary", () => {
           },
         ],
         visiblePrefix: "first answer",
+        stripVisiblePrefix: true,
       },
     },
   };
@@ -112,6 +113,7 @@ test("continued Gemini turns keep the hidden user boundary", () => {
       },
     ],
     visiblePrefix: "first answer",
+    stripVisiblePrefix: true,
   });
   assert.deepEqual(
     continuationGeminiReplayTurns(metadata, {
@@ -135,6 +137,30 @@ test("continued Gemini turns keep the hidden user boundary", () => {
         thoughtParts: [
           { text: "second thought", thoughtSignature: "SIG-THOUGHT-2" },
         ],
+      },
+    ],
+  );
+  assert.deepEqual(
+    continuationGeminiReplayTurns(
+      {
+        custom: {
+          geminiContinuationReplay: {
+            turns: [{ text: "first answer", thoughtSignature: "SIG-ANSWER-1" }],
+            visiblePrefix: "first answer",
+            stripVisiblePrefix: false,
+          },
+        },
+      },
+      {
+        text: "first answer restarted in full",
+        thoughtSignature: "SIG-ANSWER-2",
+      },
+    ),
+    [
+      { text: "first answer", thoughtSignature: "SIG-ANSWER-1" },
+      {
+        text: "first answer restarted in full",
+        thoughtSignature: "SIG-ANSWER-2",
       },
     ],
   );
