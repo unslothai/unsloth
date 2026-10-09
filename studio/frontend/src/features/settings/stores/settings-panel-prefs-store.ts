@@ -33,6 +33,12 @@ export interface SettingsPanelPrefsState {
   setApiExampleOs: (os: ExampleOs) => void;
   setApiExampleAgent: (agent: string | null) => void;
 
+  // Settings > API agent access (MCP) setup; null os follows the detected device type.
+  mcpAgent: string | null;
+  mcpOs: ExampleOs | null;
+  setMcpAgent: (agent: string) => void;
+  setMcpOs: (os: ExampleOs) => void;
+
   resourcesLiveUpdates: boolean;
   setResourcesLiveUpdates: (enabled: boolean) => void;
 
@@ -85,6 +91,12 @@ function sanitize(
         ? (raw.apiExampleOs as ExampleOs)
         : null,
     apiExampleAgent: text(raw.apiExampleAgent),
+    mcpAgent: text(raw.mcpAgent),
+    mcpOs:
+      typeof raw.mcpOs === "string" &&
+      (EXAMPLE_OS_VALUES as string[]).includes(raw.mcpOs)
+        ? (raw.mcpOs as ExampleOs)
+        : null,
     resourcesLiveUpdates:
       typeof raw.resourcesLiveUpdates === "boolean"
         ? raw.resourcesLiveUpdates
@@ -115,6 +127,11 @@ export const useSettingsPanelPrefsStore = create<SettingsPanelPrefsState>()(
       setApiExampleLang: (apiExampleLang) => set({ apiExampleLang }),
       setApiExampleOs: (apiExampleOs) => set({ apiExampleOs }),
       setApiExampleAgent: (apiExampleAgent) => set({ apiExampleAgent }),
+
+      mcpAgent: null,
+      mcpOs: null,
+      setMcpAgent: (mcpAgent) => set({ mcpAgent }),
+      setMcpOs: (mcpOs) => set({ mcpOs }),
 
       resourcesLiveUpdates: true,
       setResourcesLiveUpdates: (resourcesLiveUpdates) =>

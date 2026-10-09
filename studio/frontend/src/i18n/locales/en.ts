@@ -2925,6 +2925,9 @@ export const en = {
         lockedByEnv: "Set by {name}.",
         loadError: "Couldn't load agent access settings.",
         saveError: "Couldn't save the agent access setting.",
+        agent: "Agent",
+        exportKeyHint: "Set {name} to an access token from this page before you start the agent.",
+        configFileHint: "Add this to {path}.",
       },
     },
     about: {

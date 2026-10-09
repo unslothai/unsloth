@@ -96,3 +96,57 @@ test("the copy stays plain in every locale", () => {
     }
   }
 });
+
+test("the setup snippet shows only while agent access is on", () => {
+  assert.match(SECTION, /const snippet = enabled\s*\?/);
+  assert.match(SECTION, /\{snippet \? \(/);
+  assert.match(SECTION, /<CommandBlock command=\{snippet\.text\} \/>/);
+  assert.match(SECTION, /buildMcpSnippet\(agent, settings\.url, os\)/);
+});
+
+test("the agent picker keeps the default pill trigger and the shared list", () => {
+  const trigger = SECTION.slice(
+    SECTION.indexOf("<SelectTrigger"),
+    SECTION.indexOf("</SelectTrigger>"),
+  );
+  assert.ok(trigger.length > 0);
+  assert.doesNotMatch(trigger, /rounded-/);
+  assert.match(SECTION, /SUPPORTED_AGENTS\.map\(/);
+  assert.match(SECTION, /from "\.\/coding-agent-list";/);
+  assert.match(SECTION, /from "\.\/agent-command-block";/);
+});
+
+test("only the command-line agents get the shell choice", () => {
+  assert.match(SECTION, /MCP_SHELL_AGENT_IDS\.has\(agent\) \? \(\s*<fieldset/);
+  assert.match(SECTION, /className="hub-tab-toggle inline-flex/);
+  assert.match(SECTION, /aria-pressed=\{os === option\.os\}/);
+});
+
+test("the agent and shell picks persist in the settings panel prefs", () => {
+  assert.match(SECTION, /useSettingsPanelPrefsStore\(\(s\) => s\.mcpAgent\)/);
+  assert.match(SECTION, /useSettingsPanelPrefsStore\(\(s\) => s\.mcpOs\)/);
+  assert.match(SECTION, /onValueChange=\{setStoredAgent\}/);
+  assert.match(SECTION, /onClick=\{\(\) => setStoredOs\(option\.os\)\}/);
+});
+
+test("the snippet targets the address the usage examples show", () => {
+  assert.match(
+    SECTION,
+    /readUseTunnelPref\(\) && cloudflareUrl\s*\?\s*cloudflareUrl\s*:\s*\(serverUrl \?\? origin\)/,
+  );
+});
+
+test("the hints name the variable and the file", () => {
+  assert.match(
+    SECTION,
+    /snippet\.readsKeyEnv \? \([\s\S]*?t\("settings.apiKeys.mcp.exportKeyHint", \{\s*name: MCP_API_KEY_ENV,?\s*\}\)/,
+  );
+  assert.match(
+    SECTION,
+    /t\("settings.apiKeys.mcp.configFileHint", \{\s*path: snippet\.configPath,?\s*\}\)/,
+  );
+  assert.equal(
+    en.settings.apiKeys.mcp.exportKeyHint,
+    "Set {name} to an access token from this page before you start the agent.",
+  );
+});

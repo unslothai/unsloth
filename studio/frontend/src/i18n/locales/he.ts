@@ -2966,6 +2966,9 @@ export const he = {
         lockedByEnv: "נקבע על ידי {name}.",
         loadError: "לא ניתן לטעון את הגדרות גישת הסוכנים.",
         saveError: "לא ניתן לשמור את הגדרת גישת הסוכנים.",
+        agent: "סוכן",
+        exportKeyHint: "הגדר את {name} לטוקן גישה מהדף הזה לפני שתפעיל את הסוכן.",
+        configFileHint: "הוסף את זה ל-{path}.",
       },
     },
     about: {

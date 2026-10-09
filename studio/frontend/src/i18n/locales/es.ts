@@ -2890,6 +2890,9 @@ export const es = {
         lockedByEnv: "Definido por {name}.",
         loadError: "No se pudo cargar la configuración de acceso de agentes.",
         saveError: "No se pudo guardar la configuración de acceso de agentes.",
+        agent: "Agente",
+        exportKeyHint: "Define {name} con un token de acceso de esta página antes de iniciar el agente.",
+        configFileHint: "Añade esto a {path}.",
       },
       usageNoModel:
         "Carga o descarga un modelo para ver ejemplos ejecutables. Este servidor todavía no tiene ningún modelo que indicar.",

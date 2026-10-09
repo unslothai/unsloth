@@ -2898,6 +2898,9 @@ export const fr = {
         lockedByEnv: "Défini par {name}.",
         loadError: "Impossible de charger les paramètres d’accès des agents.",
         saveError: "Impossible d’enregistrer le paramètre d’accès des agents.",
+        agent: "Agent",
+        exportKeyHint: "Définissez {name} sur un jeton d’accès de cette page avant de lancer l’agent.",
+        configFileHint: "Ajoutez ceci à {path}.",
       },
       usageNoModel:
         "Chargez ou téléchargez un modèle pour voir des exemples exécutables. Aucun modèle n'est encore disponible sur ce serveur pour figurer dans les exemples.",

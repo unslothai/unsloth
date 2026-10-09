@@ -2869,6 +2869,9 @@ export const ptBR = {
         lockedByEnv: "Definido por {name}.",
         loadError: "Não foi possível carregar as configurações de acesso de agentes.",
         saveError: "Não foi possível salvar a configuração de acesso de agentes.",
+        agent: "Agente",
+        exportKeyHint: "Defina {name} com um token de acesso desta página antes de iniciar o agente.",
+        configFileHint: "Adicione isto a {path}.",
       },
       usageNoModel:
         "Carregue ou baixe um modelo para ver exemplos executáveis. Este servidor ainda não tem nenhum modelo para indicar.",

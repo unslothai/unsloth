@@ -2802,6 +2802,9 @@ export const zhCN = {
         lockedByEnv: "由 {name} 设置。",
         loadError: "无法加载智能体访问设置。",
         saveError: "无法保存智能体访问设置。",
+        agent: "智能体",
+        exportKeyHint: "启动智能体前，请将 {name} 设置为本页的访问 token。",
+        configFileHint: "将此内容添加到 {path}。",
       },
       usageNoModel:
         "加载或下载一个模型后即可看到可运行的示例。此服务器目前还没有可指定的模型。",

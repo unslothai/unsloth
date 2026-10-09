@@ -2856,6 +2856,9 @@ export const it = {
         lockedByEnv: "Impostato da {name}.",
         loadError: "Impossibile caricare le impostazioni di accesso degli agenti.",
         saveError: "Impossibile salvare l’impostazione di accesso degli agenti.",
+        agent: "Agente",
+        exportKeyHint: "Imposta {name} su un token di accesso di questa pagina prima di avviare l’agente.",
+        configFileHint: "Aggiungi questo a {path}.",
       },
     },
     about: {
