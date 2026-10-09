@@ -209,20 +209,28 @@ def _export_studio(
     )
     # export_model first checks that no export is running.
     statuses.insert(0, {"is_export_active": False, "last_op_seq": 5})
+    loaded = []
 
     def record(name, answer):
         def handler(request, body):
             if recorder is not None:
                 recorder.append((name, json.loads(body) if body else None))
+            if name == "load":
+                loaded.append(json.loads(body)["checkpoint_path"])
             return answer
 
         return handler
 
+    def status(request, body):
+        answer = statuses.pop(0) if len(statuses) > 1 else statuses[0]
+        # The status names whatever the last load put in the worker, unless a test says otherwise.
+        if loaded and "current_checkpoint" not in answer:
+            answer = {**answer, "current_checkpoint": loaded[-1]}
+        return answer
+
     routes = {
         ("GET", "/api/models/checkpoints"): lambda request, body: CHECKPOINTS,
-        ("GET", "/api/export/status"): lambda request, body: statuses.pop(0)
-        if len(statuses) > 1
-        else statuses[0],
+        ("GET", "/api/export/status"): status,
         ("POST", "/api/export/load-checkpoint"): record(
             "load", {"success": True, "message": "Loaded"}
         ),
@@ -342,6 +350,23 @@ def test_two_exports_at_once_cannot_both_start(monkeypatch):
     assert result["content"][0]["text"].startswith("Another export is running.")
     assert calls == []
     assert [job.job_id for job in export_jobs._jobs.values()] == ["first"]
+
+
+def test_a_checkpoint_loaded_by_someone_else_in_between_is_never_exported(monkeypatch):
+    calls = []
+    swapped = [
+        {"last_op_seq": 5, "current_checkpoint": f"{OUT}/someone-else"},
+    ]
+    started, job = _run_export(
+        monkeypatch,
+        _export_studio(recorder = calls, statuses = swapped),
+        {"checkpoint": "qwen-lora", "format": "gguf", "save_directory": "out"},
+    )
+    assert started["isError"] is False
+    assert job["structuredContent"]["status"] == "failed"
+    assert "nothing was exported" in job["structuredContent"]["error"]
+    assert [name for name, _ in calls] == ["load"]
+    assert OUT not in json.dumps([started, job])
 
 
 def test_each_format_reaches_its_route(monkeypatch):

@@ -705,7 +705,9 @@ def test_the_mcp_export_tool_never_goes_ambient(monkeypatch):
         return {"success": True, "message": "Loaded"}
 
     def status():
-        return {"last_op_seq": 0}
+        # Like the real route: it names the checkpoint the last load put in the worker.
+        loaded = [body["checkpoint_path"] for kind, body in bodies if kind == "load"]
+        return {"last_op_seq": 0, "current_checkpoint": loaded[-1] if loaded else None}
 
     studio.add_api_route("/api/models/checkpoints", checkpoints, methods = ["GET"])
     studio.add_api_route("/api/export/load-checkpoint", load, methods = ["POST"])

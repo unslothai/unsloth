@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from typing import Any, Literal, Optional, Union
 
@@ -66,6 +67,13 @@ def _export_body(
     return body
 
 
+def _same_checkpoint(status: Any, path: str) -> bool:
+    loaded = status.get("current_checkpoint") if isinstance(status, dict) else None
+    if not isinstance(loaded, str) or not loaded:
+        return False
+    return os.path.realpath(loaded) == os.path.realpath(path)
+
+
 async def export_model(
     checkpoint: str,
     format: Literal["gguf", "merged", "lora", "base"],
@@ -107,6 +115,12 @@ async def export_model(
         await _op(caller, "/api/export/load-checkpoint", load)
         # Counted after the load, which is an op of its own, so only the export can settle the job.
         before = await route_json("GET", EXPORT_STATUS, caller = caller)
+        # The load and the export are two calls, so a load from the Export page between them would
+        # be exported in this job's name.
+        if not _same_checkpoint(before, found.path):
+            raise ToolError(
+                "Another checkpoint was loaded for export before this job's export began; nothing was exported."
+            )
         job.started_seq = integer(before.get("last_op_seq")) if isinstance(before, dict) else None
         job.phase = "exporting"
         await _op(caller, f"/api/export/export/{format}", body)
