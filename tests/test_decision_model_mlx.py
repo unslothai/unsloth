@@ -476,6 +476,10 @@ def test_the_images_of_a_row_reach_the_clef_trainer_and_predict(
         FastDecisionModel.predict(
             laya, laya_tokenizer, "s", {"q": {"type": "noul", "instructions": "i"}}, images = [url]
         )
+    # An empty image cell is no image.
+    assert FastDecisionModel.predict(
+        laya, laya_tokenizer, "s", {"q": {"type": "noul", "instructions": "i"}}, images = "[]"
+    )
 
 
 @pytest.mark.parametrize("four_bit", [False, True])

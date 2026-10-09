@@ -873,12 +873,12 @@ class FastDecisionModel:
         if not isinstance(questions, dict) or not questions:
             raise DecisionDataError("questions must be a non-empty dict of name to question")
         state, config, zoo = _parsed(state), model.decision_config, _decision_zoo()
+        images = _row_images({"images": images})
         if _is_clef(model):
             pipeline = model._unsloth_pipeline
             questions = {str(name): _clef_question(q) for name, q in questions.items()}
             # Read up to CLEF_SERVE_MAX_LEN tokens, like serving, even past the training cut.
             max_length = max(int(config.get("max_len", CLEF_MAX_LEN)), CLEF_SERVE_MAX_LEN)
-            images = _row_images({"images": images})
             item = _clef_item(zoo, pipeline, state, questions, max_length, images)
             logits = zoo.clef_logits(model, [item])[0]
             keys = [zoo.clef_option_keys(pipeline, q) for q in questions.values()]
