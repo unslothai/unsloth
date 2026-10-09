@@ -78,10 +78,14 @@ def _trainer(processor, use_vllm = False):
     )
 
 
-def _zoo_with_video_keys():
+@pytest.fixture
+def zoo_with_video_keys(monkeypatch):
+    """The helper refuses a zoo whose key tuple lacks video; present one that has it."""
     zoo = pytest.importorskip("unsloth_zoo.rl_replacements")
-    if "pixel_values_videos" not in getattr(zoo, "GRPO_VISION_KEYS", ()):
-        pytest.skip("the installed unsloth_zoo does not forward video keys yet")
+    keys = tuple(getattr(zoo, "GRPO_VISION_KEYS", ()))
+    if "pixel_values_videos" not in keys:
+        keys = keys + ("pixel_values_videos", "video_grid_thw", "second_per_grid_ts", "num_videos")
+    monkeypatch.setattr(zoo, "GRPO_VISION_KEYS", keys, raising = False)
 
 
 def _two_video_prompt(pid):
@@ -97,8 +101,7 @@ def _two_video_prompt(pid):
     ]
 
 
-def test_each_distinct_prompt_is_decoded_once_and_repeated_per_generation():
-    _zoo_with_video_keys()
+def test_each_distinct_prompt_is_decoded_once_and_repeated_per_generation(zoo_with_video_keys):
     from unsloth.models.rl_replacements import _unsloth_grpo_video_inputs
 
     processor = _Processor()
@@ -132,8 +135,7 @@ def test_a_batch_without_video_costs_nothing():
     assert processor.calls == []
 
 
-def test_vllm_and_mixed_image_video_batches_are_refused():
-    _zoo_with_video_keys()
+def test_vllm_and_mixed_image_video_batches_are_refused(zoo_with_video_keys):
     from unsloth.models.rl_replacements import _unsloth_grpo_video_inputs
 
     prompts = [_video_prompt("a.mp4", text = "1")]
@@ -141,6 +143,15 @@ def test_vllm_and_mixed_image_video_batches_are_refused():
         _unsloth_grpo_video_inputs(_trainer(_Processor(), use_vllm = True), prompts)
     with pytest.raises(NotImplementedError, match = "image and video"):
         _unsloth_grpo_video_inputs(_trainer(_Processor()), prompts, images = [["img"]])
+
+
+def test_an_old_zoo_is_refused_rather_than_training_on_text(monkeypatch):
+    zoo = pytest.importorskip("unsloth_zoo.rl_replacements")
+    from unsloth.models.rl_replacements import _unsloth_grpo_video_inputs
+
+    monkeypatch.setattr(zoo, "GRPO_VISION_KEYS", ("pixel_values", "image_grid_thw"), raising = False)
+    with pytest.raises(RuntimeError, match = "upgrade"):
+        _unsloth_grpo_video_inputs(_trainer(_Processor()), [_video_prompt("a.mp4", text = "1")])
 
 
 def test_video_rows_survive_the_shuffle_and_the_slice():
