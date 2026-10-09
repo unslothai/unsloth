@@ -297,8 +297,9 @@ _MANAGED_CLI_IMPORT_PROBE = (
 # Generous: cold interpreter start plus package import. A timeout means "no verdict", not failure.
 _MANAGED_CLI_IMPORT_PROBE_TIMEOUT = 60
 
-# ERROR_ACCESS_DISABLED_BY_POLICY, surfaced by Python as OSError.winerror.
-_ERROR_ACCESS_DISABLED_BY_POLICY = 1260
+# OSError.winerror when Windows refuses to start a program by policy: ERROR_ACCESS_DISABLED_BY_POLICY from AppLocker,
+# ERROR_SYSTEM_INTEGRITY_POLICY_VIOLATION from App Control for Business and Smart App Control. Not 577: a bad hash can be a damaged file.
+_APPLICATION_CONTROL_WINERRORS = frozenset({1260, 4551})
 
 
 def _managed_cli_argv(
@@ -314,7 +315,7 @@ def _managed_cli_argv(
 
 def _is_application_control_block(error: OSError) -> bool:
     """True when Windows refused to start a program by policy: nothing ran."""
-    return getattr(error, "winerror", None) == _ERROR_ACCESS_DISABLED_BY_POLICY
+    return getattr(error, "winerror", None) in _APPLICATION_CONTROL_WINERRORS
 
 
 @contextlib.contextmanager
