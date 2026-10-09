@@ -335,6 +335,68 @@ def build_ansi_msg(path):
     return path
 
 
+def build_saved_ppt(path, *, broken_link = False):
+    """Saved twice: the second save replaces the slide, adds notes and leaves the old slide behind."""
+    chars = lambda text: _ppt_atom(0x0FA0, text.encode("utf-16-le"))
+    textbox = lambda *atoms: _ppt_container(0xF00D, list(atoms))
+    drawing = lambda *boxes: _ppt_container(0x040C, [_ppt_container(0xF002, list(boxes))])
+    persist = lambda ref, sheet_id: _ppt_atom(0x03F3, struct.pack("<5I", ref, 0, 1, sheet_id, 0))
+    stale = _ppt_container(0x03EE, [drawing(textbox(chars("Stale slide text")))])
+    slide = _ppt_container(
+        0x03EE,
+        [
+            drawing(
+                textbox(_ppt_atom(0x0F9E, struct.pack("<I", 0))),
+                textbox(chars("Text box zebramarker")),
+            )
+        ],
+    )
+    notes = _ppt_container(
+        0x03F0,
+        [
+            _ppt_atom(0x03F1, struct.pack("<IHH", 256, 0, 0)),
+            drawing(textbox(chars("Speaker notes")), textbox(chars("*"))),
+        ],
+    )
+    document = _ppt_container(
+        0x03E8,
+        [
+            _ppt_container(
+                0x0FF0,
+                [persist(2, 256), _ppt_atom(0x0F9F, b"\0" * 4), chars("Title from list")],
+                inst = 0,
+            ),
+            _ppt_container(0x0FF0, [persist(3, 257)], inst = 2),
+        ],
+    )
+    stream = bytearray()
+
+    def put(record):
+        stream.extend(record)
+        return len(stream) - len(record)
+
+    def directory(entries):
+        body = b"".join(struct.pack("<II", (1 << 20) | pid, offset) for pid, offset in entries)
+        return put(_ppt_atom(0x1772, body))
+
+    def user_edit(last, directory_offset):
+        offset = len(stream)
+        last = offset if broken_link and last else last
+        return put(
+            _ppt_atom(0x0FF5, struct.pack("<IHBBIIII", 0, 0, 0, 3, last, directory_offset, 1, 4))
+        )
+
+    stale_at, doc_at = put(stale), put(document)
+    first = user_edit(0, directory([(1, doc_at), (2, stale_at)]))
+    slide_at, notes_at = put(slide), put(notes)
+    current = user_edit(first, directory([(2, slide_at), (3, notes_at)]))
+    current_user = _ppt_atom(0x0FF6, struct.pack("<III", 20, 0xE391C05F, current))
+    path.write_bytes(
+        compound_file({("PowerPoint Document",): bytes(stream), ("Current User",): current_user})
+    )
+    return path
+
+
 def build_msg(path):
     utf16 = lambda text: text.encode("utf-16-le")
     filetime = int(
@@ -492,6 +554,14 @@ def test_ppt_reads_slide_text_and_skips_masters(tmp_path):
     assert [(p.page_number, p.text) for p in pages] == [
         (1, "Quarterly review\nRevenue up"),
         (2, "Zebramarker slide"),
+    ]
+
+
+@pytest.mark.parametrize("broken_link", [False, True])
+def test_ppt_reads_the_latest_save_with_text_boxes_and_notes(tmp_path, broken_link):
+    pages = parsers.parse(str(build_saved_ppt(tmp_path / "saved.ppt", broken_link = broken_link)))
+    assert [(p.page_number, p.text) for p in pages] == [
+        (1, "Title from list\nText box zebramarker\nNotes:\nSpeaker notes")
     ]
 
 

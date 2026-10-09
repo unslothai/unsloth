@@ -994,7 +994,108 @@ def xls(path: str) -> list[Section]:
 # ---------------------------------------------------------------- .ppt
 
 _PPT_TEXT_CHARS, _PPT_TEXT_BYTES = 0x0FA0, 0x0FA8
-_PPT_SLIDE_LIST, _PPT_SLIDE_PERSIST, _PPT_SLIDE = 0x0FF0, 0x03F3, 0x03EE
+_PPT_TEXT_HEADER, _PPT_OUTLINE_REF = 0x0F9F, 0x0F9E
+_PPT_DOCUMENT, _PPT_SLIDE, _PPT_NOTES, _PPT_NOTES_ATOM = 0x03E8, 0x03EE, 0x03F0, 0x03F1
+_PPT_SLIDE_LIST, _PPT_SLIDE_PERSIST = 0x0FF0, 0x03F3
+_PPT_USER_EDIT, _PPT_PERSIST_DIRECTORY = 0x0FF5, 0x1772
+
+
+def _ppt_records(data: bytes, start: int, end: int):
+    """(type, instance, body start, body end, is container) of the records directly in a range."""
+    pos = start
+    while pos + 8 <= end:
+        ver_inst, kind, size = struct.unpack_from("<HHI", data, pos)
+        body = pos + 8
+        yield kind, ver_inst >> 4, body, min(body + size, end), ver_inst & 0x000F == 0x000F
+        pos = body + size
+
+
+def _ppt_walk(
+    data: bytes,
+    start: int,
+    end: int,
+    depth: int = 0,
+):
+    """Every record in a range, depth first, in stream order."""
+    for record in _ppt_records(data, start, end):
+        yield record
+        if record[4] and depth < 32:
+            yield from _ppt_walk(data, record[2], record[3], depth + 1)
+
+
+def _ppt_text(data: bytes, kind: int, start: int, end: int) -> str:
+    text = data[start:end].decode("utf-16-le" if kind == _PPT_TEXT_CHARS else "latin-1", "replace")
+    return _clean_control(text.replace("\r", "\n").replace("\x0b", "\n")).strip()
+
+
+def _ppt_record_at(data: bytes, offset: int | None, kind: int) -> tuple[int, int] | None:
+    if offset is None or offset + 8 > len(data):
+        return None
+    _ver_inst, found, size = struct.unpack_from("<HHI", data, offset)
+    return (offset + 8, min(offset + 8 + size, len(data))) if found == kind else None
+
+
+def _ppt_current(cf: CompoundFile, data: bytes) -> tuple[dict[int, int], int] | None:
+    """Persist id -> offset as of the latest save, and the document's persist id.
+
+    Incremental saves append new versions of records, so the stream also holds stale ones;
+    the edit chain from "Current User" says which are live.
+    """
+    if not cf.exists("Current User"):
+        return None
+    user = cf.open("Current User")
+    if len(user) < 20:
+        return None
+    offset = struct.unpack_from("<I", user, 16)[0]
+    persist: dict[int, int] = {}
+    document, seen, floor, edits = None, set(), offset, None
+    while offset:
+        floor = min(floor, offset)
+        edit = _ppt_record_at(data, offset, _PPT_USER_EDIT)
+        if edit is None or edit[1] - edit[0] < 20 or offset in seen:
+            if not seen:
+                return None
+            # A broken link (some writers point an edit at itself): go on with the next older edit.
+            if edits is None:
+                edits = [
+                    b - 8
+                    for k, _i, b, _e, _c in _ppt_records(data, 0, len(data))
+                    if k == _PPT_USER_EDIT
+                ]
+            offset = max((o for o in edits if o < floor), default = 0)
+            continue
+        seen.add(offset)
+        last_edit, directory_offset, document_ref = struct.unpack_from("<III", data, edit[0] + 8)
+        document = document_ref if document is None else document
+        directory = _ppt_record_at(data, directory_offset, _PPT_PERSIST_DIRECTORY)
+        pos, end = directory if directory else (0, 0)
+        while pos + 4 <= end:
+            entry = struct.unpack_from("<I", data, pos)[0]
+            pos += 4
+            for i in range(entry >> 20):
+                if pos + 4 > end:
+                    break
+                # Older edits come later in the chain and never replace newer offsets.
+                persist.setdefault((entry & 0xFFFFF) + i, struct.unpack_from("<I", data, pos)[0])
+                pos += 4
+        offset = last_edit
+    return (persist, document) if document is not None else None
+
+
+def _ppt_sheet_lines(data: bytes, start: int, end: int, listed: list[str]) -> list[str]:
+    """Text of a slide or notes page in shape order; placeholders point into ``listed``."""
+    lines, used = [], set()
+    for kind, _inst, body, stop, _container in _ppt_walk(data, start, end):
+        if kind == _PPT_OUTLINE_REF and stop - body >= 4:
+            index = struct.unpack_from("<I", data, body)[0]
+            if index < len(listed) and index not in used:
+                used.add(index)
+                lines.append(listed[index])
+        elif kind in (_PPT_TEXT_CHARS, _PPT_TEXT_BYTES):
+            lines.append(_ppt_text(data, kind, body, stop))
+    lines += [text for i, text in enumerate(listed) if i not in used]
+    # "*" is the slide number field.
+    return [line for line in lines if line and line != "*"]
 
 
 def ppt(path: str) -> list[Section]:
@@ -1005,7 +1106,58 @@ def ppt(path: str) -> list[Section]:
         raise ValueError("not a PowerPoint 97-2003 presentation") from exc
     if cf.exists("EncryptedSummary"):
         raise ValueError("file is password protected")
+    current = _ppt_current(cf, data)
+    document = current and _ppt_record_at(data, current[0].get(current[1]), _PPT_DOCUMENT)
+    if not document:
+        return _ppt_scan(data)
+    persist = current[0]
 
+    # SlideListWithText instance 0 lists slides with their placeholder text; instance 2 lists notes.
+    slides: list[tuple[int, int, list[str]]] = []  # (persist id, slide id, placeholder text)
+    notes_refs: list[int] = []
+    for kind, inst, body, stop, _container in _ppt_records(data, *document):
+        if kind != _PPT_SLIDE_LIST or inst not in (0, 2):
+            continue
+        for child, _i, child_body, child_stop, _c in _ppt_records(data, body, stop):
+            if child == _PPT_SLIDE_PERSIST and child_stop - child_body >= 16:
+                ref, _flags, _texts, slide_id = struct.unpack_from("<IIII", data, child_body)
+                if inst == 0:
+                    slides.append((ref, slide_id, []))
+                else:
+                    notes_refs.append(ref)
+            elif inst == 0 and slides and child == _PPT_TEXT_HEADER:
+                slides[-1][2].append("")
+            elif inst == 0 and slides and child in (_PPT_TEXT_CHARS, _PPT_TEXT_BYTES):
+                if not slides[-1][2]:
+                    slides[-1][2].append("")
+                slides[-1][2][-1] = _ppt_text(data, child, child_body, child_stop)
+
+    notes: dict[int, list[str]] = {}
+    for ref in notes_refs:
+        page = _ppt_record_at(data, persist.get(ref), _PPT_NOTES)
+        if page is None:
+            continue
+        atom = next(
+            (r for r in _ppt_records(data, *page) if r[0] == _PPT_NOTES_ATOM and r[3] - r[2] >= 4),
+            None,
+        )
+        lines = _ppt_sheet_lines(data, *page, [])
+        if atom is not None and lines:
+            notes[struct.unpack_from("<I", data, atom[2])[0]] = lines
+
+    sections: list[Section] = []
+    for number, (ref, slide_id, listed) in enumerate(slides, 1):
+        slide = _ppt_record_at(data, persist.get(ref), _PPT_SLIDE)
+        lines = _ppt_sheet_lines(data, *slide, listed) if slide else [t for t in listed if t]
+        if slide_id in notes:
+            lines += ["Notes:"] + notes[slide_id]
+        if lines:
+            sections.append(("\n".join(lines), number))
+    return sections
+
+
+def _ppt_scan(data: bytes) -> list[Section]:
+    """Slide text by a linear scan, for files whose edit history cannot be followed."""
     listed: list[list[str]] = []  # slide text from SlideListWithText (instance 0)
     drawn: list[list[str]] = []  # slide text from Slide containers, for files without it
     stack: list[tuple[int, int, int]] = []  # (end, type, instance)
