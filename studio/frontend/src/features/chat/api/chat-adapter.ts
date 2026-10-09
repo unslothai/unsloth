@@ -2282,7 +2282,8 @@ export async function buildLocalTokenCountExtras(
     : false;
   const ragOn = ragEnabled || projectRagEnabled;
 
-  await settleSkillsForText("");
+  // The counted text, as the send path does, so a skill made since page load is priced like the request.
+  await settleSkillsForText(lastUserText(messages));
   const skillTools = skillToolNames(
     getSkillsSnapshot().skills,
     codeToolsEnabled,

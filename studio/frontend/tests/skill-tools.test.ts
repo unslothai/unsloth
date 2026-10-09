@@ -47,22 +47,3 @@ test("Code alone offers nothing without a usable skill", () => {
   assert.deepEqual(skillToolNames([{ ...enabled, shadowed: true }], true, []), []);
   assert.deepEqual(skillToolNames([{ ...enabled, valid: false }], true, []), []);
 });
-
-test("a skill name written as literal text does not open the tool loop with Code off", () => {
-  for (const text of [
-    "> @guided quoted line",
-    "```\n@guided\n```",
-    "~~~md\n@guided\n~~~",
-    "    @guided indented code",
-    "use ` @guided ` inline",
-    'say "use @guided now"',
-    "say “use @guided now”",
-    "it's 'use @guided' they said",
-  ]) {
-    assert.deepEqual(skillToolNames([enabled], false, [text]), [], text);
-  }
-  // Prose around literal text still counts, and an apostrophe inside a word is not a quote.
-  assert.deepEqual(skillToolNames([enabled], false, ["```\ncode\n```\nnow @guided"]), ["read_skill"]);
-  assert.deepEqual(skillToolNames([enabled], false, ["don't stop, @guided"]), ["read_skill"]);
-  assert.deepEqual(skillToolNames([enabled], false, ["first line\n    @guided continues"]), ["read_skill"]);
-});

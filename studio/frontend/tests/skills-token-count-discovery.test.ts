@@ -23,7 +23,7 @@ test("token counting waits for the initial skills discovery", () => {
     /if \(pending\) await Promise\.race\(\[pending\.catch\(\(\) => undefined\), deadline\]\);/,
   );
   assert.match(SKILLS_API_SOURCE, /let stale = !snapshot\.initialized;/);
-  assert.match(CHAT_ADAPTER_SOURCE, /await settleSkillsForText\(""\);/);
+  assert.match(CHAT_ADAPTER_SOURCE, /await settleSkillsForText\(lastUserText\(messages\)\);/);
   assert.match(
     CHAT_ADAPTER_SOURCE,
     /const skillTools = skillToolNames\(\s*getSkillsSnapshot\(\)\.skills,\s*codeToolsEnabled,\s*userTexts\(messages\),\s*\);/,
