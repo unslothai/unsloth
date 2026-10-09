@@ -11,6 +11,7 @@ from collections import deque
 import fnmatch
 import functools
 import hashlib
+from html.parser import HTMLParser
 import json
 import http.client
 import os
@@ -15067,34 +15068,31 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
     return built
 
 
-_MAX_PAGE_CHARS = 16000  # cap fetched page text (after HTML-to-MD conversion)
+_MAX_PAGE_CHARS = 16000  # fetched page cap after HTML-to-Markdown conversion
 
-# Share of the loaded window one fetched page may claim. The same window also has to hold the system prompt, the
-# carried-forward block, the user's turn, the call itself and room to answer, so a third is already generous.
+# one page may use 35% of the window, leaving room for prompts, context, calls, and answers.
 _PAGE_CONTEXT_SHARE = 0.35
-# Below this a page is too clipped to answer from, so the fetch is not worth making small. Half, when the room has to
-# be converted to characters with no way to check the answer: see `_dense_char_limit`, the conversion charges ASCII an
-# English four characters per token and the dense ASCII these tools print runs nearer two.
+# unmeasurable token budgets are halved because dense ASCII can cost twice the English estimate.
 _UNMEASURED_ROOM_MARGIN = 0.5
 
 _MIN_PAGE_CHARS = 2000
-# A percent-escape is one non-ASCII byte written in ASCII, and tokenises like one.
+# a percent escape is one non-ASCII byte in ASCII and tokenizes like one.
 _HEX_PAIR_RE = re.compile(r"[0-9A-Fa-f]{2}")
-# Raw download cap > _MAX_PAGE_CHARS since SSR pages embed large <head> sections stripped during conversion; 512 KB
-# still reaches article content.
+# raw cap exceeds _MAX_PAGE_CHARS because conversion strips large SSR <head> sections.
 _MAX_FETCH_BYTES = 512 * 1024
-# "%" is safe so an already-encoded URL is not re-encoded into %25.
+# news pages can inline about 2.5 MB in <head>, so reserve _MAX_FETCH_BYTES beyond its end.
+_MAX_HTML_FETCH_BYTES = 8 * 1024 * 1024
+# keep % safe to avoid encoding existing escapes as %25.
 _IRI_PATH_SAFE = "/%:@!$&'()*+,;="
 _IRI_QUERY_SAFE = "/%:@!$&'()*+,;=?"
-# PDF cross-reference data lives at EOF, so extraction needs the whole body.
+# PDF cross-reference data at EOF requires the whole body.
 _MAX_PDF_FETCH_BYTES = 10 * 1024 * 1024
 _MAX_WEB_PDF_PAGES = 50
-# Control/undecodable chars, excluding text whitespace and ESC (for ANSI logs). Binary when they exceed 12.5%, after
-# allowing 16 minor encoding glitches.
+# binary threshold excludes whitespace and ESC; allow 16 glitches or 12.5%, whichever is larger.
 _BINARY_CHAR_RE = re.compile("[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1a\\x1c-\\x1f\\x7f-\\x9f\\ufffd]")
 _MIN_BINARY_CHARS = 16
 _BINARY_CHAR_DIVISOR = 8
-# Common binary signatures that can otherwise look text-heavy when mislabeled.
+# signatures catch mislabeled binaries that pass text heuristics.
 _PDF_MAGIC = b"%PDF-"
 _BINARY_MAGIC = (
     _PDF_MAGIC,
@@ -15756,7 +15754,7 @@ def _resolve_with_budget(hostname, port, deadline, cancel_event):
     def _resolve():
         try:
             result.put(_validate_and_resolve_host(hostname, port))
-        except Exception as exc:  # defensive: never let the worker die silently
+        except Exception as exc:  # prevent the resolver thread from failing silently
             result.put((False, f"Failed to resolve host: {exc}", []))
 
     threading.Thread(target = _resolve, name = "web-fetch-dns", daemon = True).start()
@@ -15770,15 +15768,184 @@ def _resolve_with_budget(hostname, port, deadline, cancel_event):
             continue
 
 
-def _read_capped_body(resp, max_bytes, timeout, deadline, cancel_event):
-    """read at most ``max_bytes`` within the overall budget and return ``(error_or_None, body_bytes)``."""
-    # HTTPError wraps the socket; tighten its deadline when present, while chunk checks bound test doubles without one
+class _HTMLBodyLocator(HTMLParser):
+    """locate the explicit or implied document body without matching markup inside head content."""
+
+    _PENDING_LIMIT = 65536
+    _CDATA_TAIL_BYTES = 64
+    _HEAD_ELEMENTS = frozenset(
+        {
+            "base",
+            "basefont",
+            "bgsound",
+            "link",
+            "meta",
+            "noframes",
+            "noscript",
+            "script",
+            "style",
+            "template",
+            "title",
+        }
+    )
+    _HEAD_TEXT_ELEMENTS = frozenset({"noframes", "noscript", "script", "style", "title"})
+
+    def __init__(self, charset = None):
+        super().__init__(convert_charrefs = False)
+        self.body_at = None
+        self._absolute_offset = 0
+        self._head_text_depth = 0
+        self._template_depth = 0
+        self._prefix = b""
+        self._decoder = None
+        self._codec = "latin-1"
+        self._deferred = []
+        self._deferred_chars = 0
+        try:
+            codec = codecs.lookup(charset).name if charset else None
+        except (LookupError, ValueError):
+            codec = None
+        if codec in ("utf-16", "utf-16-le", "utf-16-be", "utf-32", "utf-32-le", "utf-32-be"):
+            self._codec = codec if codec.endswith(("-le", "-be")) else codec + "-le"
+
+    def feed_bytes(self, data):
+        if self._decoder is None:
+            self._prefix += data
+            if len(self._prefix) < 4:
+                return
+            data, self._prefix = self._prefix, b""
+            for bom, codec in (
+                (codecs.BOM_UTF32_LE, "utf-32-le"),
+                (codecs.BOM_UTF32_BE, "utf-32-be"),
+                (codecs.BOM_UTF16_LE, "utf-16-le"),
+                (codecs.BOM_UTF16_BE, "utf-16-be"),
+            ):
+                if data.startswith(bom):
+                    self._codec = codec
+                    self._absolute_offset = len(bom)
+                    data = data[len(bom) :]
+                    break
+            self._decoder = codecs.getincrementaldecoder(self._codec)(errors = "replace")
+        decoded = self._decoder.decode(data)
+        if len(self.rawdata) > self._PENDING_LIMIT and not self.cdata_elem:
+            self._deferred.append(decoded)
+            self._deferred_chars += len(decoded)
+            if self._deferred_chars < len(self.rawdata):
+                return
+            decoded = "".join(self._deferred)
+            self._deferred.clear()
+            self._deferred_chars = 0
+        self.feed(decoded)
+        if self.body_at is not None or len(self.rawdata) <= self._PENDING_LIMIT:
+            return
+        if self.cdata_elem:
+            discard = len(self.rawdata) - self._CDATA_TAIL_BYTES
+            self.updatepos(0, discard)
+            self.rawdata = self.rawdata[discard:]
+
+    def updatepos(self, i, j):
+        if j > i:
+            self._absolute_offset += (
+                j - i
+                if self._codec == "latin-1"
+                else len(self.rawdata[i:j].encode(self._codec, errors = "replace"))
+            )
+        return super().updatepos(i, j)
+
+    def _offset(self):
+        return self._absolute_offset
+
+    def _mark_body(self):
+        if self.body_at is None:
+            self.body_at = self._offset()
+
+    def handle_starttag(self, tag, attrs):
+        if self.body_at is not None:
+            return
+        if self._template_depth:
+            if tag == "template":
+                self._template_depth += 1
+            return
+        if tag == "template":
+            self._template_depth = 1
+            return
+        if self._head_text_depth:
+            if tag in self._HEAD_TEXT_ELEMENTS:
+                self._head_text_depth += 1
+            return
+        if tag in ("html", "head"):
+            return
+        if tag == "body":
+            self._mark_body()
+            return
+        if tag in self._HEAD_ELEMENTS:
+            if tag in self._HEAD_TEXT_ELEMENTS:
+                self._head_text_depth = 1
+            return
+        self._mark_body()
+
+    def handle_startendtag(self, tag, attrs):
+        if (
+            self.body_at is None
+            and not self._template_depth
+            and not self._head_text_depth
+            and tag not in self._HEAD_ELEMENTS
+            and tag not in ("html", "head")
+        ):
+            self._mark_body()
+
+    def handle_endtag(self, tag):
+        if self.body_at is not None:
+            return
+        if self._template_depth:
+            if tag == "template":
+                self._template_depth -= 1
+            return
+        if self._head_text_depth:
+            if tag in self._HEAD_TEXT_ELEMENTS:
+                self._head_text_depth -= 1
+            return
+        if tag == "head":
+            self._mark_body()
+
+    def handle_data(self, data):
+        if self._offset() == 0 and data.startswith(codecs.BOM_UTF8.decode("latin-1")):
+            data = data[len(codecs.BOM_UTF8) :]
+        if (
+            self.body_at is None
+            and not self._template_depth
+            and not self._head_text_depth
+            and data.strip()
+        ):
+            self._mark_body()
+
+    def handle_entityref(self, name):
+        from html import unescape
+        self.handle_data(unescape("&" + name + ";"))
+
+    def handle_charref(self, name):
+        self.handle_entityref("#" + name)
+
+
+def _read_capped_body(
+    resp,
+    max_bytes,
+    timeout,
+    deadline,
+    cancel_event,
+    body_window = None,
+    charset = None,
+):
+    """read at most ``max_bytes``, and ``body_window`` past the end of ``<head>``; returns ``(error, body)``."""
+    # HTTPError exposes the socket for deadline updates; chunk checks bound test doubles without one
     fp = getattr(resp, "fp", None)
     sock = getattr(getattr(getattr(fp, "fp", fp), "raw", None), "_sock", None)
-    # use read1 because buffered read(n) can keep receiving until n bytes arrive and bypass the budget check
+    # read1 avoids buffered read(n) waiting for n bytes past the budget
     read = getattr(resp, "read1", None) or resp.read
     chunks = []
     remaining = max_bytes
+    body_at = None
+    body_locator = _HTMLBodyLocator(charset) if body_window is not None else None
     while remaining > 0:
         budget_error = _fetch_budget_exceeded(deadline, cancel_event)
         if budget_error is not None:
@@ -15797,6 +15964,15 @@ def _read_capped_body(resp, max_bytes, timeout, deadline, cancel_event):
             break
         chunks.append(chunk)
         remaining -= len(chunk)
+        if body_locator is not None and body_at is None:
+            got = max_bytes - remaining
+            try:
+                body_locator.feed_bytes(chunk)
+            except Exception:
+                body_locator = None
+            if body_locator is not None and body_locator.body_at is not None:
+                body_at = body_locator.body_at
+                remaining = max(0, min(remaining, body_at + body_window - got))
     budget_error = _fetch_budget_exceeded(deadline, cancel_event)
     if budget_error is not None:
         try:
@@ -15808,8 +15984,7 @@ def _read_capped_body(resp, max_bytes, timeout, deadline, cancel_event):
 
 
 _DOTTED_HOST_RE = re.compile(r"[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+")
-# ASCII-only because str.isdigit() is True for digits int() refuses, and capped at 5 digits so the range check never
-# converts an unbounded integer.
+# ASCII-only: str.isdigit() accepts digits int() rejects; five digits bounds integer conversion
 _PORT_RE = re.compile(r"[0-9]{1,5}")
 
 
@@ -16017,7 +16192,7 @@ def _fetch_url_raw(
                         return hop_error, "", ""
                     continue
 
-            # get_content_type() defaults missing headers to "text/plain" per RFC 2045; use "" to distinguish them.
+            # get_content_type() maps absent headers to text/plain per RFC 2045; "" marks absence.
             if resp.headers.get("Content-Type") is None:
                 content_type = ""
             else:
@@ -16025,10 +16200,16 @@ def _fetch_url_raw(
 
             # chunked reads recheck the fetch budget between chunks.
             declared_pdf = raw_bytes_max is None and content_type == "application/pdf"
+            declared_html = raw_bytes_max is None and content_type in (
+                "text/html",
+                "application/xhtml+xml",
+            )
             if raw_bytes_max is not None:
                 read_limit = raw_bytes_max + 1
             elif declared_pdf:
                 read_limit = _MAX_PDF_FETCH_BYTES + 1
+            elif declared_html:
+                read_limit = _MAX_HTML_FETCH_BYTES
             else:
                 read_limit = max_bytes
             body_error, raw_bytes = _read_capped_body(
@@ -16037,6 +16218,8 @@ def _fetch_url_raw(
                 timeout,
                 deadline,
                 cancel_event,
+                body_window = max_bytes if declared_html else None,
+                charset = resp.headers.get_content_charset() if declared_html else None,
             )
             if body_error is not None:
                 return body_error, "", ""
@@ -16053,10 +16236,10 @@ def _fetch_url_raw(
                     meta_out["cache_control"] = resp.headers.get("Cache-Control")
                     meta_out["age"] = resp.headers.get("Age")
                 return http_error, raw_bytes, content_type
-            if not declared_pdf and len(raw_bytes) == max_bytes and _has_pdf_magic(raw_bytes):
+            if not declared_pdf and _has_pdf_magic(raw_bytes):
                 tail_error, tail = _read_capped_body(
                     resp,
-                    _MAX_PDF_FETCH_BYTES - max_bytes + 1,
+                    _MAX_PDF_FETCH_BYTES - len(raw_bytes) + 1,
                     timeout,
                     deadline,
                     cancel_event,
@@ -16070,7 +16253,7 @@ def _fetch_url_raw(
             if not refresh_url:
                 break
             current_url = refresh_url
-            # A refresh is a new GET, like a browser's.
+            # a refresh starts a new GET like a browser.
             pending_post = None
             hop_error, current_host, pinned_ips = _redirect_hop(
                 current_url,
