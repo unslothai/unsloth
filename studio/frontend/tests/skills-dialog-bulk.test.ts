@@ -14,9 +14,11 @@ test("bulk changes go through one PUT on the collection and publish its list", (
     API.indexOf("export const SKILL_NAME_PATTERN"),
   );
   assert.match(body, /enabled: boolean \| null/);
-  // A sign-out (or a newer list) during the request wins; the stale list is never published.
-  assert.match(body, /const generation = \+\+requestGeneration;/);
-  assert.match(body, /if \(generation !== requestGeneration\) return skills;/);
+  // A sign-out during the request drops it; otherwise the server's list wins over any earlier read.
+  assert.match(body, /const epoch = sessionEpoch;/);
+  assert.match(body, /if \(epoch !== sessionEpoch\) return skills;\s*\/\/[^\n]*\n\s*requestGeneration \+= 1;/);
+  assert.doesNotMatch(body, /\+\+requestGeneration/);
+  assert.match(API, /AUTH_SESSION_CLEARED_EVENT, \(\) => \{\s*sessionEpoch \+= 1;/);
   assert.match(body, /authFetch\("\/api\/skills", \{\s*method: "PUT"/);
   assert.match(body, /JSON\.stringify\(\{ enabled \}\)/);
   assert.match(body, /publish\(\{ skills, loading: false, initialized: true, error: null \}\)/);

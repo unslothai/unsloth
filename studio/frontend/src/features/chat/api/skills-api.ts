@@ -49,6 +49,8 @@ const EMPTY_SNAPSHOT: SkillsSnapshot = {
 };
 let snapshot = EMPTY_SNAPSHOT;
 let requestGeneration = 0;
+// Bumped only by sign-out, so a response for the previous account is never published.
+let sessionEpoch = 0;
 let lastFetchedAt = 0;
 let pending: Promise<readonly SkillRecord[]> | null = null;
 const listeners = new Set<() => void>();
@@ -157,15 +159,16 @@ export async function setSkillEnabled(
 export async function setAllSkillsEnabled(
   enabled: boolean | null,
 ): Promise<readonly SkillRecord[]> {
-  // A list fetched before the change is stale, and a sign-out mid-request must not get this list back.
-  const generation = ++requestGeneration;
+  const epoch = sessionEpoch;
   const response = await authFetch("/api/skills", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ enabled }),
   });
   const skills = await parseResponse<SkillRecord[]>(response);
-  if (generation !== requestGeneration) return skills;
+  if (epoch !== sessionEpoch) return skills;
+  // The server's list after the change; a read that started before it must not overwrite it.
+  requestGeneration += 1;
   lastFetchedAt = Date.now();
   publish({ skills, loading: false, initialized: true, error: null });
   channel?.postMessage("changed");
@@ -273,6 +276,7 @@ export function useSkillsCatalog(): SkillsSnapshot {
 // The snapshot is module state, so a sign-out must drop it or the next account inherits it.
 if (typeof window !== "undefined") {
   window.addEventListener(AUTH_SESSION_CLEARED_EVENT, () => {
+    sessionEpoch += 1;
     requestGeneration += 1;
     pending = null;
     lastFetchedAt = 0;
