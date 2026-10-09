@@ -123,7 +123,7 @@ def test_studio_default_gives_the_dll_torchs_thread_count(
 
     configure_cpu_threads()
 
-    assert os.environ["OPENBLAS_NUM_THREADS"] == "1"
+    assert os.environ["OPENBLAS_NUM_THREADS"] == "8"  # numpy's default; the DLL is torch's
     assert fake_windows == [12]
 
 
@@ -132,8 +132,8 @@ def test_a_worker_inheriting_the_default_gives_the_dll_torchs_thread_count(
     fake_windows, clean_thread_env, monkeypatch
 ):
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(12))
-    monkeypatch.setenv("OPENBLAS_NUM_THREADS", "1")
-    monkeypatch.setenv("UNSLOTH_OPENBLAS_DEFAULTED", "1")
+    monkeypatch.setenv("OPENBLAS_NUM_THREADS", "8")
+    monkeypatch.setenv("UNSLOTH_OPENBLAS_DEFAULTED", "8")
 
     assert cpu_threads.install_openblas_runtime_cap()
 
@@ -163,7 +163,9 @@ def test_cap_waits_for_torch_and_fires_after_its_module_body(
 ):
     package = tmp_path / "torch"
     package.mkdir()
-    (package / "__init__.py").write_text("LOADED = True\n", encoding = "utf-8")
+    (package / "__init__.py").write_text(
+        "LOADED = True\ndef get_num_threads():\n    return 12\n", encoding = "utf-8"
+    )
     monkeypatch.syspath_prepend(str(tmp_path))
     monkeypatch.delitem(sys.modules, "torch", raising = False)
     seen = []
@@ -181,7 +183,7 @@ def test_cap_waits_for_torch_and_fires_after_its_module_body(
     import torch  # noqa: F401 -- the fake package above
 
     assert seen == [True]
-    assert fake_windows == [1]
+    assert fake_windows == [12]
 
 
 def test_torch_keeps_its_own_loader_and_reload_does_not_stack(
@@ -191,7 +193,9 @@ def test_torch_keeps_its_own_loader_and_reload_does_not_stack(
 
     package = tmp_path / "torch"
     package.mkdir()
-    (package / "__init__.py").write_text("LOADED = True\n", encoding = "utf-8")
+    (package / "__init__.py").write_text(
+        "LOADED = True\ndef get_num_threads():\n    return 12\n", encoding = "utf-8"
+    )
     monkeypatch.syspath_prepend(str(tmp_path))
     monkeypatch.delitem(sys.modules, "torch", raising = False)
 
@@ -203,7 +207,7 @@ def test_torch_keeps_its_own_loader_and_reload_does_not_stack(
     assert torch.__spec__.loader is torch.__loader__
     importlib.reload(torch)
     assert type(torch.__loader__) is importlib.machinery.SourceFileLoader
-    assert fake_windows == [1, 1]
+    assert fake_windows == [12, 12]
 
 
 def test_install_is_idempotent(fake_windows, monkeypatch):

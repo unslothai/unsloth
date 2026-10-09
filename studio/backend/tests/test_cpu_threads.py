@@ -11,7 +11,11 @@ from pathlib import Path
 
 import pytest
 
-from utils.cpu_threads import _THREAD_POOL_ENV_VARS, configure_cpu_threads
+from utils.cpu_threads import (
+    _THREAD_POOL_ENV_VARS,
+    configure_cpu_threads,
+    default_openblas_threads,
+)
 
 
 _BACKEND_DIR = Path(__file__).resolve().parent.parent
@@ -51,13 +55,24 @@ def test_cpu_thread_cap_normalises_valid_inputs(raw):
 
 
 @pytest.mark.parametrize("raw", [None, "", "   ", "\t"])
-def test_cpu_thread_cap_unset_limits_only_openblas(raw):
+def test_cpu_thread_cap_unset_limits_only_openblas(raw, monkeypatch):
+    monkeypatch.setattr(os, "cpu_count", lambda: 32)
     env = {} if raw is None else {"UNSLOTH_CPU_THREADS": raw}
     snapshot = dict(env)
 
     configure_cpu_threads(env)
 
-    assert env == {**snapshot, "OPENBLAS_NUM_THREADS": "1"}
+    assert env == {**snapshot, "OPENBLAS_NUM_THREADS": "8"}
+
+
+# About one thread per physical core, at most 8: numpy stays fast and OpenBLAS's per-thread buffers stay bounded.
+@pytest.mark.parametrize(
+    "cpus, expected", [(None, 1), (1, 1), (2, 1), (4, 2), (12, 6), (16, 8), (24, 8), (192, 8)]
+)
+def test_openblas_default_scales_with_cores_and_is_capped(cpus, expected, monkeypatch):
+    monkeypatch.setattr(os, "cpu_count", lambda: cpus)
+
+    assert default_openblas_threads() == expected
 
 
 def test_openblas_default_keeps_user_value():
@@ -69,12 +84,13 @@ def test_openblas_default_keeps_user_value():
 
 
 @pytest.mark.parametrize("raw", ["", "  "])
-def test_openblas_default_replaces_blank_value(raw):
+def test_openblas_default_replaces_blank_value(raw, monkeypatch):
+    monkeypatch.setattr(os, "cpu_count", lambda: 8)
     env = {"OPENBLAS_NUM_THREADS": raw}
 
     configure_cpu_threads(env)
 
-    assert env == {"OPENBLAS_NUM_THREADS": "1"}
+    assert env == {"OPENBLAS_NUM_THREADS": "4"}
 
 
 # Anything that is not a positive integer raises a clear ValueError.

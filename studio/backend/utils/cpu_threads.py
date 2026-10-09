@@ -17,10 +17,19 @@ _THREAD_POOL_ENV_VARS = (
     "OPENBLAS_NUM_THREADS",
     "NUMEXPR_NUM_THREADS",
 )
+# OpenBLAS starts every worker at import with its own buffer, which Windows commits (about 32 MB each for numpy's),
+# and a fault allocating it kills the process (#12374). 8 threads match numpy's default speed on a 32-thread CPU for
+# about a third of the memory; past that SMT siblings mostly add memory.
+_OPENBLAS_DEFAULT_MAX = 8
+
+
+def default_openblas_threads() -> int:
+    """Studio's OPENBLAS_NUM_THREADS when nothing is configured: about one per physical core, at most 8."""
+    return max(1, min(_OPENBLAS_DEFAULT_MAX, (os.cpu_count() or 2) // 2))
 
 
 def configure_cpu_threads(env: Optional[MutableMapping[str, str]] = None) -> None:
-    """Apply ``UNSLOTH_CPU_THREADS`` to native CPU pools when configured, else cap OpenBLAS at one thread.
+    """Apply ``UNSLOTH_CPU_THREADS`` to native CPU pools when configured, else cap OpenBLAS at a few threads.
 
     Must run before importing libraries that initialize an OpenMP or BLAS
     pool. Library-specific vars are left untouched so users can override a
@@ -31,10 +40,11 @@ def configure_cpu_threads(env: Optional[MutableMapping[str, str]] = None) -> Non
     if not configured:
         # OpenBLAS reads a blank value as 0 (one thread per core), so blank counts as unset.
         if not environ.get("OPENBLAS_NUM_THREADS", "").strip():
-            environ["OPENBLAS_NUM_THREADS"] = "1"
+            value = str(default_openblas_threads())
+            environ["OPENBLAS_NUM_THREADS"] = value
             if env is None:
-                # Inherited by spawned workers, so they can tell this default from a user's own 1.
-                environ[_OPENBLAS_DEFAULT_MARKER] = "1"
+                # Inherited by spawned workers, so they can tell this default from a user's own value.
+                environ[_OPENBLAS_DEFAULT_MARKER] = value
         if env is None:
             install_openblas_runtime_cap()
         return
@@ -73,8 +83,8 @@ def _openblas_thread_target(environ: Optional[MutableMapping[str, str]] = None) 
     environ = os.environ if environ is None else environ
     raw = environ.get("OPENBLAS_NUM_THREADS", "").strip()
     target = None
-    if raw == "1" and environ.get(_OPENBLAS_DEFAULT_MARKER) == "1":
-        # The default of 1 is for numpy's OpenBLAS (#12374). This DLL is torch's own CPU BLAS, so it gets the
+    if raw and raw == environ.get(_OPENBLAS_DEFAULT_MARKER):
+        # Studio's default is sized for numpy's OpenBLAS. This DLL is torch's own CPU BLAS, so it gets the
         # thread count torch uses everywhere else (one per physical core, or OMP_NUM_THREADS).
         target = _torch_thread_count()
     if target is None:
