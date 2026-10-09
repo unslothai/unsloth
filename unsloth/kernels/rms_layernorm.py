@@ -38,7 +38,7 @@ def _rms_layernorm_forward(
     Inspiration from a Triton tutorial:
     https://triton-lang.org/main/getting-started/tutorials/05-layer-norm.html
     """
-    row_idx = tl.program_id(0)
+    row_idx = tl.program_id(0).to(tl.int64)
     col_offsets = tl.arange(0, BLOCK_SIZE)
     mask = col_offsets < n_cols
 
@@ -81,7 +81,7 @@ def _rms_layernorm_backward(
     Inspiration from a Triton tutorial:
     https://triton-lang.org/main/getting-started/tutorials/05-layer-norm.html
     """
-    row_idx = tl.program_id(0)
+    row_idx = tl.program_id(0).to(tl.int64)
     col_offsets = tl.arange(0, BLOCK_SIZE)
     mask = col_offsets < n_cols
 
@@ -136,7 +136,7 @@ def _gemma_rms_layernorm_forward(
 ):
     # Copies google-deepmind/gemma layers.py#L31 and keras-nlp gemma/rms_normalization.py#L33 exactly:
     # essentially all in float32.
-    row_idx = tl.program_id(0)
+    row_idx = tl.program_id(0).to(tl.int64)
     col_offsets = tl.arange(0, BLOCK_SIZE)
     mask = col_offsets < n_cols
 

@@ -46,8 +46,8 @@ def _rope_embedding_QK(
     HAS_ROPE_INDICES: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
 ):
-    row_position = tl.program_id(0)
-    head_position = tl.program_id(1)
+    row_position = tl.program_id(0).to(tl.int64)
+    head_position = tl.program_id(1).to(tl.int64)
     col_offsets = tl.arange(0, BLOCK_SIZE)
     half_head_dim = head_dim // 2
     mask = col_offsets < half_head_dim
@@ -125,7 +125,7 @@ def _rope_embedding(
     See our blog post for more info
     """
     ROPE_GROUP_SIZE = 4
-    row_position = tl.program_id(0)
+    row_position = tl.program_id(0).to(tl.int64)
     group_head_position = tl.program_id(1)
     col_offsets = tl.arange(0, BLOCK_SIZE)
     half_head_dim = head_dim // 2

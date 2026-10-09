@@ -33,7 +33,7 @@ def layernorm_forward(
     eps: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
 ):
-    row_idx = tl.program_id(0)
+    row_idx = tl.program_id(0).to(tl.int64)
     col_offsets = tl.arange(0, BLOCK_SIZE)
     mask = col_offsets < n_cols
 
@@ -75,7 +75,7 @@ def layernorm_backward(
     BLOCK_SIZE: tl.constexpr,
 ):
     # Approximately follows karpathy/llm.c doc/layernorm/layernorm.md
-    row_idx = tl.program_id(0)
+    row_idx = tl.program_id(0).to(tl.int64)
     col_offsets = tl.arange(0, BLOCK_SIZE)
     mask = col_offsets < n_cols
 
