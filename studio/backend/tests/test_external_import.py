@@ -287,6 +287,33 @@ def test_claude_rewinds_keep_their_branch(claude_home):
     assert parents == [None, ids[0], ids[1], ids[1]]
 
 
+def test_claude_harness_records_and_compaction_keep_one_conversation(claude_home):
+    path = _session(
+        claude_home,
+        records = [
+            c_user("u1", "one"),
+            c_user("meta", "caveat", parent = "u1", isMeta = True),
+            {"type": "attachment", "uuid": "at1", "parentUuid": "meta", "attachment": {}},
+            c_asst("a1", [{"type": "text", "text": "A"}], parent = "at1"),
+            {"type": "system", "subtype": "turn_duration", "uuid": "s1", "parentUuid": "a1"},
+            c_user("u2", "two", parent = "s1"),
+            c_asst("a2", [{"type": "text", "text": "B"}], parent = "u2"),
+            {
+                "type": "system",
+                "subtype": "compact_boundary",
+                "uuid": "cb",
+                "parentUuid": None,
+                "logicalParentUuid": "a2",
+            },
+            c_user("u3", "three", parent = "cb"),
+            c_asst("a3", [{"type": "text", "text": "C"}], parent = "u3"),
+        ],
+    )
+    messages = claude.read_transcript(path, "t", "s1").messages
+    ids = [m["id"] for m in messages]
+    assert [m["parentId"] for m in messages] == [None, *ids[:-1]]
+
+
 def test_cursor_reads_the_query_and_strips_injected_context(cursor_home):
     path = _write(
         cursor_home / "projects" / "p" / "agent-transcripts" / "s1" / "s1.jsonl",
