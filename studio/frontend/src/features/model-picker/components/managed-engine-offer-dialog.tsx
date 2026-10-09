@@ -36,7 +36,6 @@ export function ManagedEngineOfferDialog() {
     const engine = engines.find((row) => row.engine === name);
     return engine ? [engine] : [];
   });
-  // An engine already installed is reused rather than offering another install.
   const ready = offered.filter((engine) => isEngineReady(engine));
   const names = (offer?.engines ?? []).map((name) => ENGINE_NAMES[name]);
   const displayName = modelName?.split("/").pop() || "This model";

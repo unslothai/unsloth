@@ -2009,7 +2009,7 @@ export function useChatModelRuntime() {
         (typeof selection !== "string" ? selection.config?.engine : undefined) ??
         useChatRuntimeStore.getState().params.engine ?? "auto";
       const managedLoad = !isGguf && requestedEngine !== "auto";
-      // Set once the load switches to an optional engine the Default one cannot replace (#11728).
+      // Set when the Default engine cannot run the checkpoint and the user picked vLLM / SGLang (#11728).
       let engineSwitched = false;
       let downloadComplete = isDownloaded || isCachedLora || managedLoad;
       let cpuFallbackReason: CpuFallbackReason | null = null;
@@ -2274,7 +2274,6 @@ export function useChatModelRuntime() {
               stateBeforeUnload.ctxCheckpoints,
             cacheRam: pendingLoadConfig?.cacheRam ?? stateBeforeUnload.cacheRam,
           };
-          // Switched to an optional engine when the Default one cannot run the checkpoint (#11728).
           let loadEngineFields = {
             engine: stateBeforeUnload.params.engine ?? "auto",
             engine_precision: stateBeforeUnload.params.enginePrecision ?? "auto",
