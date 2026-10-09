@@ -45,6 +45,7 @@ PROVIDER_TYPE = "lemonade"
 DEFAULT_CONTEXT_LENGTH = 8192
 # Names the lemond install whose NPU passed `flm validate`, so a restart needs no new Enable.
 _VALIDATED_MARKER = "npu_validated.json"
+_ENABLING_STATES = frozenset({"installing", "starting", "installing_flm", "validating"})
 
 # Model modes Unsloth's chat cannot serve: embeddings and transcription have no chat endpoint,
 # and a single-turn ("flash") model answers only the first message of a conversation.
@@ -238,6 +239,7 @@ class LemonadeNpuBackend:
         self._validation: Optional[dict[str, Any]] = None
         self._state = "idle"
         self._error: Optional[str] = None
+        self._flm_version_cache: Optional[tuple[tuple[str, int, int], Optional[str]]] = None
 
     @property
     def root(self) -> Path:
@@ -312,8 +314,8 @@ class LemonadeNpuBackend:
         validated = self._validated_install()
         return binary is None and isinstance(validated, str) and bool(validated)
 
-    def _flm_version(self) -> Optional[str]:
-        binary = self._flm_binary()
+    def _flm_version(self, binary: Optional[Path] = None) -> Optional[str]:
+        binary = binary or self._flm_binary()
         if binary is None:
             return None
         env = child_env_without_native_path_secret()
@@ -336,16 +338,51 @@ class LemonadeNpuBackend:
             return None
         return str(version).lstrip("v") if version else None
 
+    def _installed_flm_version(self) -> Optional[str]:
+        """``flm version`` of the installed binary, rerun only when that binary changes."""
+        binary = self._flm_binary()
+        if binary is None:
+            return None
+        try:
+            stat = binary.stat()
+        except OSError:
+            return None
+        key = (str(binary), stat.st_mtime_ns, stat.st_size)
+        cached = self._flm_version_cache
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        # A failure is kept too: a binary that cannot answer is not rerun on every status read.
+        version = self._flm_version(binary)
+        self._flm_version_cache = (key, version)
+        return version
+
+    def _versions(
+        self, binary: Optional[Path], validated: Optional[str]
+    ) -> dict[str, Optional[str]]:
+        """Installed runtime versions. A pending upgrade reports the ones it will replace."""
+        # Running flm while Enable replaces it could block the update on Windows.
+        if self._state in _ENABLING_STATES:
+            return {"lemonade": None, "fastflowlm": None}
+        lemond = binary or (Path(validated) if isinstance(validated, str) and validated else None)
+        lemonade = None
+        if lemond is not None:
+            try:
+                lemonade = _installer_module().installed_version(lemond)
+            except Exception as exc:  # noqa: BLE001 -- a missing version never hides the status
+                logger.warning("Could not read the Lemonade version: %s", exc)
+        return {"lemonade": lemonade, "fastflowlm": self._installed_flm_version()}
+
     def status(self) -> dict[str, Any]:
         hardware = self.hardware()
         binary = self._installed_lemond()
+        validated = self._validated_install()
         # An enabled NPU stays enabled across a pin change: its first use upgrades the runtime.
         upgrade_pending = self._state == "idle" and self._upgrade_pending(binary)
         installed = binary is not None or upgrade_pending
         ready = (
             self._state == "ready"
             or upgrade_pending
-            or (self._state == "idle" and installed and self._validated_install() == str(binary))
+            or (self._state == "idle" and installed and validated == str(binary))
         )
         running = self._server is not None and self._server.is_alive()
         resident = self.resident()
@@ -363,6 +400,7 @@ class LemonadeNpuBackend:
             "loaded_model": resident.model.model_path if resident else None,
             "context_length": resident.context_length if resident else None,
             "loading_model": self._loading,
+            "versions": self._versions(binary, validated),
         }
 
     def _server_for(self, binary: Path) -> LemonadeServer:

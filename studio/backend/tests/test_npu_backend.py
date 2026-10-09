@@ -507,6 +507,33 @@ def test_an_enabled_npu_upgrades_on_first_use_after_the_pins_move(npu, monkeypat
     assert again.status()["ready"] is True
 
 
+def test_the_status_names_the_installed_runtime_versions(npu, monkeypatch):
+    monkeypatch.setenv("FAKE_FLM_VERSION", "v1.0.7")
+    npu.installer.installed_version = lambda lemond: "2026.41.1"
+    real, runs = npu._flm_version, []
+    monkeypatch.setattr(npu, "_flm_version", lambda *args: runs.append(1) or real(*args))
+    npu.enable()
+    assert npu.status()["versions"] == {"lemonade": "2026.41.1", "fastflowlm": "1.0.7"}
+    npu.status()
+    # The post-install check, then one status read: an unchanged flm binary is not rerun.
+    assert len(runs) == 2
+
+
+def test_a_pending_upgrade_reports_the_versions_it_replaces_until_first_use(npu, monkeypatch):
+    monkeypatch.setenv("FAKE_FLM_VERSION", "1.0.3")
+    restarted = _move_the_pins(npu, monkeypatch)
+    restarted.installer.installed_version = lambda lemond: (
+        "2026.41.1" if restarted.installer.current else "11.9.0"
+    )
+    try:
+        assert restarted.status()["versions"] == {"lemonade": "11.9.0", "fastflowlm": "1.0.3"}
+        monkeypatch.setenv("FAKE_FLM_VERSION", "1.0.7")
+        restarted.catalog()
+        assert restarted.status()["versions"] == {"lemonade": "2026.41.1", "fastflowlm": "1.0.7"}
+    finally:
+        restarted.shutdown()
+
+
 def test_an_upgrade_that_fails_validation_asks_to_try_again(npu, monkeypatch):
     restarted = _move_the_pins(npu, monkeypatch)
     try:

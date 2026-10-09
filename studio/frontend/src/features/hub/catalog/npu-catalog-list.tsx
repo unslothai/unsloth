@@ -6,6 +6,7 @@ import { Spinner } from "@/components/ui/spinner";
 import {
   type NpuModel,
   type NpuPickerSource,
+  NpuPoweredBy,
   NpuSetupNotice,
   npuDownloadLabel,
   npuResumeLabel,
@@ -71,6 +72,9 @@ export function NpuCatalogList({
       className="mx-auto flex min-h-0 w-full max-w-[var(--hub-measure)] flex-1 flex-col gap-0.5 overflow-y-auto px-3 py-3"
     >
       {body()}
+      {catalog.ready ? (
+        <NpuPoweredBy status={catalog.status} className="px-3 pt-3" />
+      ) : null}
     </div>
   );
 }
