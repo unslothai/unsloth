@@ -42,6 +42,18 @@ class _NoToolsTokenizer(_ToolsTokenizer):
         return super().apply_chat_template(conversation, **kwargs)
 
 
+class _SystemWithToolsRejectedTokenizer(_ToolsTokenizer):
+    def apply_chat_template(
+        self,
+        conversation,
+        tools = None,
+        **kwargs,
+    ):
+        if tools is not None and conversation[0]["role"] == "system":
+            raise ValueError("system turns with tools are not supported")
+        return super().apply_chat_template(conversation, tools = tools, **kwargs)
+
+
 _WEATHER = {
     "type": "function",
     "function": {
@@ -125,6 +137,15 @@ def test_tools_and_system_column_are_both_trained():
     assert texts == [
         _catalog(_WEATHER) + "<system>Be brief.<user>Weather in Paris?<assistant>It is 21C."
     ]
+
+
+def test_system_retry_keeps_the_tools_column_for_training():
+    texts = _format(
+        [{"system": "Be brief.", "messages": _MESSAGES, "tools": [_WEATHER]}],
+        _SystemWithToolsRejectedTokenizer(),
+    )
+
+    assert texts == [_catalog(_WEATHER) + "<user>Weather in Paris?<assistant>It is 21C."]
 
 
 def test_user_mapping_keeps_the_tools_column_for_training():
