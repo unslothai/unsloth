@@ -1062,7 +1062,8 @@ function listNumber(n: number, format: string | undefined): string {
   }
   const lower = format?.startsWith("lower");
   // Out-of-range counters read as decimals, like CSS (roman stops at 3999); this also bounds the loops below.
-  if (n < 1 || n > (format?.endsWith("Roman") ? 3999 : 26 * 256) || !Number.isInteger(n) || !(lower || format?.startsWith("upper"))) {
+  const limit = format?.endsWith("Roman") ? 3999 : format?.endsWith("Alpha") ? Number.MAX_SAFE_INTEGER : 26 * 256;
+  if (n < 1 || n > limit || !Number.isInteger(n) || !(lower || format?.startsWith("upper"))) {
     return format === "decimalZero" && n >= 0 && n < 10 ? `0${n}` : String(n);
   }
   let text = "";
@@ -1193,6 +1194,8 @@ function injectDocxListNumbers(archive: Uint8Array): Uint8Array {
   const { doc, w } = body;
   const tag = (local: string) => (body.root.prefix ? `${body.root.prefix}:${local}` : local);
   let found = false;
+  // Labels a crafted part repeats past this total are not worth the rewrite.
+  let budget = 1 << 20;
   const label = (p: Element, pPr: Element | undefined) => {
     // A tracked-deleted paragraph mark removes the item; Mammoth folds its text into the next paragraph.
     const mark = pPr && childElements(pPr, w, "rPr")[0];
@@ -1203,9 +1206,13 @@ function injectDocxListNumbers(archive: Uint8Array): Uint8Array {
     const list = numId === undefined ? undefined : instance(numId);
     if (!list) return;
     const { abstractId, levels, restarts, byStyle } = list;
-    const style = wordValue(pPr, "pStyle");
-    // A heading style's numPr often names only the list; the level linked to the style supplies ilvl.
-    const linked = style === undefined ? undefined : byStyle.get(style);
+    // A heading style's numPr often names only the list; the level linked to the style, or to a
+    // style it is based on, supplies ilvl.
+    let linked: number | undefined;
+    for (let style = wordValue(pPr, "pStyle"), depth = 0; style !== undefined && linked === undefined && depth <= 20; depth++) {
+      linked = byStyle.get(style);
+      style = wordValue(styleById.get(style), "basedOn");
+    }
     const ilvl = Math.min(8, Math.max(0, Math.trunc(Number(wordValue(direct, "ilvl") ?? wordValue(styled, "ilvl") ?? linked ?? 0) || 0)));
     const { lvl, format, legal, text } = levels[ilvl];
     if (!lvl) return;
@@ -1237,6 +1244,7 @@ function injectDocxListNumbers(archive: Uint8Array): Uint8Array {
       if (value.length > 256) return;
     }
     if (!value.trim()) return;
+    budget -= value.length;
     const run = doc.createElementNS(w, tag("r"));
     const t = doc.createElementNS(w, tag("t"));
     t.setAttributeNS("http://www.w3.org/XML/1998/namespace", "xml:space", "preserve");
@@ -1262,7 +1270,7 @@ function injectDocxListNumbers(archive: Uint8Array): Uint8Array {
     // A section break restarts the lists that opt in (Word's "restart numbering after break").
     if (pPr && childElements(pPr, w, "sectPr").length) for (const id of restartsAfterBreak) counters.delete(id);
   }
-  if (!found) return archive;
+  if (!found || budget < 0) return archive;
   return zipSync({ ...unzipSync(archive), [main]: strToU8(new XMLSerializer().serializeToString(doc)) }, { level: 0 });
 }
 

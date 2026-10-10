@@ -1749,7 +1749,7 @@ test("Word heading styles linked to list levels number by their level", async ()
     "_rels/.rels": relationships([["officeDocument", "word/document.xml"]]),
     "word/_rels/document.xml.rels": relationships([["numbering", "numbering.xml"], ["styles", "styles.xml"]]),
     "word/document.xml": strToU8(
-      `<w:document ${w}><w:body>${heading("Scope", "Heading1")}${heading("Terms", "Heading2")}${heading("Notice", "Heading2")}${heading("Fees", "Heading1")}` +
+      `<w:document ${w}><w:body>${heading("Scope", "Heading1")}${heading("Terms", "Heading2")}${heading("Notice", "Heading2")}${heading("Fees", "Heading1")}${heading("Detail", "CustomHeading2")}` +
         '<w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="2"/></w:numPr></w:pPr><w:r><w:t>Styled</w:t></w:r></w:p></w:body></w:document>',
     ),
     "word/numbering.xml": strToU8(
@@ -1759,7 +1759,10 @@ test("Word heading styles linked to list levels number by their level", async ()
         '</w:abstractNum><w:abstractNum w:abstractNumId="2"><w:numStyleLink w:val="ClauseList"/></w:abstractNum>' +
         '<w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num><w:num w:numId="2"><w:abstractNumId w:val="2"/></w:num></w:numbering>',
     ),
-    "word/styles.xml": strToU8(`<w:styles ${w}>${styleXml("Heading1")}${styleXml("Heading2")}${linkStyle}</w:styles>`),
+    "word/styles.xml": strToU8(
+      `<w:styles ${w}>${styleXml("Heading1")}${styleXml("Heading2")}${linkStyle}` +
+        '<w:style w:type="paragraph" w:styleId="CustomHeading2"><w:basedOn w:val="Heading2"/></w:style></w:styles>',
+    ),
   });
   const globals = globalThis as { DOMParser?: unknown; XMLSerializer?: unknown };
   const original = { DOMParser: globals.DOMParser, XMLSerializer: globals.XMLSerializer };
@@ -1768,7 +1771,7 @@ test("Word heading styles linked to list levels number by their level", async ()
   try {
     const { default: mammoth } = await import("mammoth");
     const { value } = await mammoth.extractRawText({ buffer: Buffer.from(writeDocxListNumbers(bytes)) });
-    assert.equal(value, "1. Scope\n\n1.1 Terms\n\n1.2 Notice\n\n2. Fees\n\n3. Styled\n\n");
+    assert.equal(value, "1. Scope\n\n1.1 Terms\n\n1.2 Notice\n\n2. Fees\n\n2.1 Detail\n\n3. Styled\n\n");
   } finally {
     Object.assign(globals, original);
   }
@@ -1952,6 +1955,10 @@ test("list counters past the alphabet or out of range stay bounded", async () =>
   const letters300 = Array.from({ length: 300 }, (_, i): [string, number, number] => [`r${i + 1}`, 1, 0]);
   assert.ok((await docxListText(repeated, '<w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num>', letters300)).endsWith("| r300"));
   assert.equal(await docxListText(long, '<w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num>', [["plain", 1, 0]]), "plain");
+  // Past a total label budget the archive is left as it was.
+  const wide = wordLevel(0, "decimal", `%1${"x".repeat(250)}`);
+  const crowd = Array.from({ length: 4200 }, (_, i): [string, number, number] => [`c${i}`, 1, 0]);
+  assert.ok((await docxListText(wide, '<w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num>', crowd)).startsWith("c0 | c1 |"));
   const huge = '<w:lvl w:ilvl="999999999"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl>';
   assert.equal(await docxListText(huge, '<w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num>', [["deep", 1, 999999999]]), "deep");
 
@@ -1965,11 +1972,12 @@ test("list counters past the alphabet or out of range stay bounded", async () =>
         withAttributes(element("ol", item("p"), item("q")), { start: "27", type: "a" }),
         withAttributes(element("ol", item("r")), { start: "9".repeat(400), type: "i" }),
         withAttributes(element("ol", item("s")), { start: "4000", type: "I" }),
+        withAttributes(element("ol", item("w")), { start: "6657", type: "a" }),
         withAttributes(element("ol", item("t"), withAttributes(element("li", textNode("u")), { type: "A" }), item("v")), { type: "1" }),
       ),
     () => extractHtmlAttachmentText("<html/>"),
   );
-  assert.equal(extracted, "aa. p\n\nab. q\n\nInfinity. r\n\n4000. s\n\n1. t\n\nB. u\n\n3. v");
+  assert.equal(extracted, "aa. p\n\nab. q\n\nInfinity. r\n\n4000. s\n\niva. w\n\n1. t\n\nB. u\n\n3. v");
 });
 
 test("an html ordered list keeps its numbers", async () => {
