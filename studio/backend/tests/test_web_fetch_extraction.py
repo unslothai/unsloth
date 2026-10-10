@@ -780,6 +780,10 @@ def test_page_that_fits_keeps_its_links(monkeypatch):
         ),
         ("$2<sup>n</sup> and USD 10<sup>6</sup>, $19<sup>99</sup>", "$2^n and USD 10^6, $1999"),
         (
+            'XCG 19<sup>99</sup>, claim<sup role="doc-noteref presentation">2</sup>',
+            "XCG 1999, claim2",
+        ),
+        (
             "M<sup>me</sup> Dupont, D<sup>r</sup> Martin, n<sup>o</sup> 5, Om<sup>e</sup>",
             "Mme Dupont, Dr Martin, no 5, Om^e",
         ),
