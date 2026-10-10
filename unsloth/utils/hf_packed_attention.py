@@ -31,7 +31,7 @@ _FLAG = "_unsloth_hf_packed_varlen"
 _ENV = "UNSLOTH_HF_PACKED_VARLEN"
 _ORIG_SDPA = [None]
 # fast = varlen calls, fallback = packed rows handed back to the wrapped sdpa.
-HF_PACKED_ATTENTION_STATS = {"fast": 0, "fallback": 0}
+HF_PACKED_ATTENTION_STATS = {"fast": 0, "fallback": 0, "mask_checks": 0}
 # Every layer of one forward (and its checkpoint recompute) gets the same mask object.
 _MASK_CHECK = [None, None, None]  # weakref to mask, cu_seqlens it was checked against, verdict
 
@@ -44,19 +44,25 @@ def _mask_is_block_causal(attention_mask, cu_seqlens, total) -> bool:
     """Is the dense mask transformers built exactly causal within each packed segment and closed
     across them? Checked once per mask object, so a window, a bidirectional span or a pad tail
     transformers segments differently all keep the masked path."""
-    ref, checked_cu, verdict = _MASK_CHECK
-    if ref is not None and ref() is attention_mask and checked_cu is cu_seqlens:
-        return verdict
-    verdict = False
-    if (
+    # None is transformers' is_causal skip (one document): the wrapped sdpa already runs it fast.
+    if not (
         isinstance(attention_mask, torch.Tensor)
         and attention_mask.dtype == torch.bool
         and attention_mask.dim() == 4
         and attention_mask.shape[0] == 1
         and attention_mask.shape[1] == 1
         and attention_mask.shape[-2:] == (total, total)
-        and int(cu_seqlens[-1].item()) == total
     ):
+        return False
+    # Versions catch an in-place edit of a reused buffer; inference tensors carry none, so are rechecked.
+    cacheable = not (torch.is_inference(attention_mask) or torch.is_inference(cu_seqlens))
+    key = (attention_mask._version, cu_seqlens._version, total) if cacheable else None
+    ref, checked, verdict = _MASK_CHECK
+    if cacheable and ref is not None and ref() is attention_mask and checked == (cu_seqlens, key):
+        return verdict
+    HF_PACKED_ATTENTION_STATS["mask_checks"] += 1
+    verdict = False
+    if int(cu_seqlens[-1].item()) == total:
         lengths = (cu_seqlens[1:] - cu_seqlens[:-1]).to(torch.int64)
         segment = torch.repeat_interleave(
             torch.arange(lengths.numel(), device = attention_mask.device),
@@ -64,8 +70,20 @@ def _mask_is_block_causal(attention_mask, cu_seqlens, total) -> bool:
         )
         expected = (segment[:, None] == segment[None, :]).tril_()
         verdict = bool(torch.equal(attention_mask[0, 0], expected))
-    _MASK_CHECK[:] = [weakref.ref(attention_mask), cu_seqlens, verdict]
+    if cacheable:
+        _MASK_CHECK[:] = [weakref.ref(attention_mask), (cu_seqlens, key), verdict]
     return verdict
+
+
+def _autocast_dtype_differs(query) -> bool:
+    """SDPA under autocast runs in the autocast dtype; the varlen kernels would keep the input's."""
+    try:
+        enabled = torch.is_autocast_enabled(query.device.type)
+        dtype = torch.get_autocast_dtype(query.device.type) if enabled else None
+    except (AttributeError, TypeError):
+        enabled = torch.is_autocast_enabled()
+        dtype = torch.get_autocast_gpu_dtype() if enabled else None
+    return enabled and dtype != query.dtype
 
 
 def _sliding_or_softcapped(module, kwargs) -> bool:
@@ -116,12 +134,25 @@ def _sdpa_packed_varlen(
     seq_info = None
     if (
         backend in (FLASH_VARLEN, XFORMERS)
+        and not torch.compiler.is_compiling()
         and bsz == 1
+        and q_len > 0
+        and query.is_cuda
+        and query.device == key.device == value.device
         and key.shape[2] == q_len
+        # Flash and xformers cover equal Q/K/V widths up to 256 (not MLA's 192 / 128, nor Gemma-4's 512).
+        and key.shape[-1] == value.shape[-1] == head_dim
+        and head_dim <= 256
+        and head_dim % 8 == 0
         and query.dtype in (torch.float16, torch.bfloat16)
+        and query.dtype == key.dtype == value.dtype
+        and not _autocast_dtype_differs(query)
         and not dropout
         and getattr(module, "is_causal", True)
         and kwargs.get("position_bias") is None
+        # A paged / static cache must still be written by the wrapped sdpa.
+        and kwargs.get("cache") is None
+        and kwargs.get("past_key_values") is None
         and n_heads % key.shape[1] == 0
         and not _sliding_or_softcapped(module, kwargs)
     ):
@@ -156,8 +187,9 @@ def _sdpa_packed_varlen(
         kv_seq_len = q_len,
         n_heads = n_heads,
         head_dim = head_dim,
-        requires_grad = torch.is_grad_enabled()
-        and (query.requires_grad or key.requires_grad or value.requires_grad),
+        # xformers picks a backward-capable op off the tensors alone, even under no_grad, and that op
+        # rejects the grouped 5D layout run_attention uses when nothing needs grad.
+        requires_grad = query.requires_grad or key.requires_grad or value.requires_grad,
         seq_info = seq_info,
         attention_mask = None,
         causal_mask = None,

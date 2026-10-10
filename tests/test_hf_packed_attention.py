@@ -96,18 +96,42 @@ def test_unpacked_calls_go_straight_through(monkeypatch):
     assert out == ("orig", None) and seen == [{"foo": 1}]
 
 
-@pytest.mark.parametrize("why", ["sliding", "softcap", "sinks", "fp32", "dropout", "batched"])
+_CUDA = pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA device")
+
+
+@_CUDA
+@pytest.mark.parametrize(
+    "why",
+    [
+        "none",
+        "sliding",
+        "softcap",
+        "sinks",
+        "fp32",
+        "dropout",
+        "batched",
+        "cpu",
+        "head_dim_512",
+        "mla_value_width",
+        "autocast_dtype",
+        "paged_cache",
+        "no_mask",
+    ],
+)
 def test_packed_calls_that_varlen_cannot_express_fall_back(monkeypatch, why):
+    """Each reason alone sends the call to the wrapped sdpa; "none" is the control that takes varlen."""
+    from unsloth.utils.attention_dispatch import HAS_FLASH_ATTENTION, HAS_XFORMERS
+
+    if not (HAS_FLASH_ATTENTION or HAS_XFORMERS):
+        pytest.skip("needs xformers or flash-attn")
     seen, orig = _calls()
     hpa._ORIG_SDPA[0] = orig
-    import unsloth.utils.attention_dispatch as ad
-
-    monkeypatch.setattr(ad, "select_attention_backend", lambda use_varlen = False: ad.XFORMERS)
-    lengths = [3, 3]
+    monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
+    lengths, D = [3, 3], 64
     module = types.SimpleNamespace(is_causal = True)
-    q = torch.zeros(1, 4, 6, 8, dtype = torch.bfloat16)
+    device, dtype, B = "cuda", torch.bfloat16, 1
     kwargs = {"packed_seq_lengths": torch.tensor(lengths, dtype = torch.int32)}
-    dropout = 0.0
+    dropout, mask, v_width = 0.0, _block_causal(lengths, "cuda"), D
     if why == "sliding":
         module.sliding_window = 4
     elif why == "softcap":
@@ -115,17 +139,92 @@ def test_packed_calls_that_varlen_cannot_express_fall_back(monkeypatch, why):
     elif why == "sinks":
         module.sinks = torch.zeros(4)
     elif why == "fp32":
-        q = q.float()
+        dtype = torch.float32
     elif why == "dropout":
         dropout = 0.1
     elif why == "batched":
-        q = torch.zeros(2, 4, 6, 8, dtype = torch.bfloat16)
-    before = hpa.HF_PACKED_ATTENTION_STATS["fallback"]
-    out = hpa._sdpa_packed_varlen(
-        module, q, q, q, _block_causal(lengths), dropout = dropout, **kwargs
+        B = 2
+    elif why == "cpu":
+        device, mask = "cpu", _block_causal(lengths)
+    elif why == "head_dim_512":
+        D = v_width = 512
+    elif why == "mla_value_width":
+        D, v_width = 192, 128
+    elif why == "paged_cache":
+        kwargs["cache"] = object()
+    elif why == "no_mask":
+        mask = None
+    q = torch.randn(B, 4, 6, D, device = device, dtype = dtype)
+    v = torch.randn(B, 4, 6, v_width, device = device, dtype = dtype)
+    before = dict(hpa.HF_PACKED_ATTENTION_STATS)
+    if why == "autocast_dtype":
+        with torch.autocast("cuda", dtype = torch.float16):
+            out = hpa._sdpa_packed_varlen(module, q, q, v, mask, dropout = dropout, **kwargs)
+    else:
+        out = hpa._sdpa_packed_varlen(module, q, q, v, mask, dropout = dropout, **kwargs)
+    if why == "none":
+        assert out[0].shape == (1, 6, 4, D) and seen == []
+        assert hpa.HF_PACKED_ATTENTION_STATS["fast"] == before["fast"] + 1
+    else:
+        assert out == ("orig", None)
+        assert hpa.HF_PACKED_ATTENTION_STATS["fallback"] == before["fallback"] + 1
+
+
+def test_an_edited_mask_is_checked_again():
+    lengths = [3, 3]
+    mask, cu = _block_causal(lengths).clone(), _cu(lengths)
+    assert hpa._mask_is_block_causal(mask, cu, 6)
+    mask[0, 0, 3, 0] = True
+    assert not hpa._mask_is_block_causal(mask, cu, 6)
+    with torch.inference_mode():
+        frozen, frozen_cu = _block_causal(lengths), _cu(lengths)
+    assert hpa._mask_is_block_causal(frozen, frozen_cu, 6)
+
+
+def test_a_missing_mask_is_not_block_causal():
+    assert not hpa._mask_is_block_causal(None, _cu([6]), 6)
+
+
+@_CUDA
+def test_fullgraph_compile_keeps_the_wrapped_sdpa(monkeypatch):
+    from transformers.integrations.sdpa_attention import sdpa_attention_forward
+
+    hpa._ORIG_SDPA[0] = sdpa_attention_forward
+    monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
+    lengths = [3, 3]
+    module = types.SimpleNamespace(is_causal = True, num_key_value_groups = 1, training = False)
+    q = torch.randn(1, 4, 6, 64, device = "cuda", dtype = torch.bfloat16)
+    mask, psl = _block_causal(lengths, "cuda"), torch.tensor(lengths, dtype = torch.int32)
+    fn = torch.compile(
+        lambda q: hpa._sdpa_packed_varlen(module, q, q, q, mask, packed_seq_lengths = psl)[0],
+        backend = "eager",
+        fullgraph = True,
     )
-    assert out == ("orig", None)
-    assert hpa.HF_PACKED_ATTENTION_STATS["fallback"] == before + 1
+    torch.testing.assert_close(fn(q), sdpa_attention_forward(module, q, q, q, mask)[0])
+
+
+@_CUDA
+def test_reentrant_checkpoint_of_grouped_heads(monkeypatch):
+    from unsloth.utils.attention_dispatch import HAS_FLASH_ATTENTION, HAS_XFORMERS
+
+    if not (HAS_FLASH_ATTENTION or HAS_XFORMERS):
+        pytest.skip("needs xformers or flash-attn")
+    from torch.utils.checkpoint import checkpoint
+    from transformers.integrations.sdpa_attention import sdpa_attention_forward
+
+    hpa._ORIG_SDPA[0] = sdpa_attention_forward
+    monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
+    lengths = [40, 24]
+    module = types.SimpleNamespace(is_causal = True, num_key_value_groups = 4, training = True)
+    q = torch.randn(1, 8, 64, 64, device = "cuda", dtype = torch.bfloat16, requires_grad = True)
+    k = torch.randn(1, 2, 64, 64, device = "cuda", dtype = torch.bfloat16, requires_grad = True)
+    v = torch.randn(1, 2, 64, 64, device = "cuda", dtype = torch.bfloat16, requires_grad = True)
+    mask, psl = _block_causal(lengths, "cuda"), torch.tensor(lengths, dtype = torch.int32)
+    fn = lambda q, k, v: hpa._sdpa_packed_varlen(module, q, k, v, mask, packed_seq_lengths = psl)[0]
+    out = checkpoint(fn, q, k, v, use_reentrant = True)
+    out.float().sum().backward()
+    ref = sdpa_attention_forward(module, q, k, v, mask)[0]
+    torch.testing.assert_close(out.float(), ref.float(), atol = 2e-2, rtol = 2e-2)
 
 
 def test_kill_switch(monkeypatch):
