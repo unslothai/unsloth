@@ -21,15 +21,21 @@ RUNTIME_MIRROR = REPO / "studio" / "backend" / "requirements" / "no-torch-runtim
 RL_REPLACEMENTS = REPO / "unsloth" / "models" / "rl_replacements.py"
 
 # Newest TRL the matrix was run against; moving it means re-running the sweep first.
-TESTED_CEILING = Version("1.13.0")
+TESTED_CEILING = Version("1.15.0")
 
 REJECTED = ("0.19.0",)
 
-NEWLY_ADMITTED = ("0.29.1", "1.0.0", "1.6.0", "1.7.0", "1.13.0")
+NEWLY_ADMITTED = ("0.29.1", "1.0.0", "1.6.0", "1.7.0", "1.13.0", "1.14.2", "1.15.0")
 
 ZOO_TRL_CEILING_BEFORE_THE_LIFT = Version("0.24.0")
 
 ZOO_FLOOR_WITH_LIFTED_TRL_CAP = Version("2026.9.5")
+
+# unsloth_zoo 2026.9.5 onward caps trl here; a wider TESTED_CEILING needs the zoo release that moves it.
+ZOO_TRL_CEILING_OF_LIFTED_FLOOR = Version("1.13.0")
+
+# First published unsloth_zoo admitting TESTED_CEILING; None defers the gate until it ships.
+ZOO_FLOOR_ADMITTING_TESTED_TRL_CEILING = None
 
 # Every unsloth_zoo up to 2026.9.7 caps datasets here; pip intersects, so users stay under it.
 ZOO_DATASETS_CEILING_BEFORE_THE_LIFT = SpecifierSet("<4.4.0")
@@ -806,6 +812,15 @@ def test_the_recorded_trl_datasets_floors_still_match_pypi() -> None:
 
 def _newest_published_zoo_datasets_windows(timeout: float = 10.0):
     """(zoo version, datasets windows) for the newest unsloth_zoo on PyPI, else None; never raises."""
+    return _newest_published_zoo_windows("datasets", timeout)
+
+
+def _newest_published_zoo_trl_windows(timeout: float = 10.0):
+    """(zoo version, trl windows) for the newest unsloth_zoo on PyPI, else None; never raises."""
+    return _newest_published_zoo_windows("trl", timeout)
+
+
+def _newest_published_zoo_windows(name: str, timeout: float = 10.0):
     import json
     import urllib.error
     import urllib.request
@@ -829,7 +844,7 @@ def _newest_published_zoo_datasets_windows(timeout: float = 10.0):
             req = Requirement(raw)
         except InvalidRequirement:
             continue
-        if req.name.lower() != "datasets" or not req.specifier:
+        if req.name.lower() != name or not req.specifier:
             continue
         windows.append(req.specifier)
     if not windows:
@@ -908,3 +923,78 @@ def test_the_zoo_datasets_expiry_can_fail(monkeypatch) -> None:
     monkeypatch.setattr(module, "_newest_published_zoo_datasets_windows", lambda timeout = 10.0: None)
     with pytest.raises(pytest.skip.Exception):
         test_the_zoo_datasets_deferral_expires_when_the_zoo_release_ships()
+
+
+def test_the_declared_zoo_floor_admits_the_tested_trl_ceiling() -> None:
+    """pip gives the user the LOWER of our and the zoo's trl ceilings; deferred while the zoo lift is unreleased."""
+    if TESTED_CEILING <= ZOO_TRL_CEILING_OF_LIFTED_FLOOR:
+        pytest.skip("the zoo floor already admits the tested ceiling")
+    if ZOO_FLOOR_ADMITTING_TESTED_TRL_CEILING is None:
+        pytest.skip(
+            f"deferred: no published unsloth_zoo admits trl {TESTED_CEILING} yet, so pip keeps "
+            f"users at {ZOO_TRL_CEILING_OF_LIFTED_FLOOR}. Re-enable by setting "
+            f"ZOO_FLOOR_ADMITTING_TESTED_TRL_CEILING to the release that carries it."
+        )
+    reqs = _pyproject_zoo()
+    assert reqs, "pyproject.toml names no versioned unsloth_zoo requirement at all"
+    stale = {}
+    for req in reqs:
+        lower = [
+            Version(str(spec.version))
+            for spec in req.specifier
+            if spec.operator in (">=", "==", "~=")
+        ]
+        if not lower or max(lower) < ZOO_FLOOR_ADMITTING_TESTED_TRL_CEILING:
+            stale[str(req)] = str(max(lower)) if lower else "none"
+    assert not stale, (
+        f"pyproject.toml admits trl up to {TESTED_CEILING} while still accepting unsloth_zoo "
+        f"{stale}, whose own cap is {ZOO_TRL_CEILING_OF_LIFTED_FLOOR}. Raise the floor to "
+        f"{ZOO_FLOOR_ADMITTING_TESTED_TRL_CEILING} in the same commit."
+    )
+
+
+def test_the_zoo_trl_deferral_expires_when_the_zoo_release_ships() -> None:
+    """Self-expiring deferral: fails only on positive PyPI evidence the zoo now admits TESTED_CEILING."""
+    if TESTED_CEILING <= ZOO_TRL_CEILING_OF_LIFTED_FLOOR:
+        pytest.skip("nothing deferred")
+    if ZOO_FLOOR_ADMITTING_TESTED_TRL_CEILING is not None:
+        pytest.skip(
+            "the floor already names a zoo admitting the ceiling, so the gate above is live"
+        )
+    published = _newest_published_zoo_trl_windows()
+    if published is None:
+        pytest.skip("PyPI could not be asked for unsloth_zoo, so the deferral stands")
+    zoo_version, zoo_windows = published
+    covering = [str(w) for w in zoo_windows if w.contains(str(TESTED_CEILING))]
+    assert not covering, (
+        f"unsloth_zoo {zoo_version} is published and admits trl {TESTED_CEILING} "
+        f"({', '.join(covering)}), so the deferral is over. Set "
+        f"ZOO_FLOOR_ADMITTING_TESTED_TRL_CEILING to {zoo_version} and raise the unsloth_zoo floor "
+        f"in pyproject.toml to it in the same commit."
+    )
+
+
+def test_the_zoo_trl_expiry_can_fail(monkeypatch) -> None:
+    """NEGATIVE CONTROL: expiry fires on a covering zoo and stays silent on a capped one or no PyPI."""
+    module = sys.modules[__name__]
+    monkeypatch.setattr(module, "ZOO_FLOOR_ADMITTING_TESTED_TRL_CEILING", None)
+    monkeypatch.setattr(module, "TESTED_CEILING", Version("1.15.0"))
+    monkeypatch.setattr(
+        module,
+        "_newest_published_zoo_trl_windows",
+        lambda timeout = 10.0: (Version("2026.10.9"), [SpecifierSet(">=0.18.2,!=0.19.0,<=1.15.0")]),
+    )
+    with pytest.raises(AssertionError) as raised:
+        test_the_zoo_trl_deferral_expires_when_the_zoo_release_ships()
+    assert "2026.10.9" in str(raised.value)
+
+    monkeypatch.setattr(
+        module,
+        "_newest_published_zoo_trl_windows",
+        lambda timeout = 10.0: (Version("2026.10.3"), [SpecifierSet(">=0.18.2,!=0.19.0,<=1.13.0")]),
+    )
+    test_the_zoo_trl_deferral_expires_when_the_zoo_release_ships()
+
+    monkeypatch.setattr(module, "_newest_published_zoo_trl_windows", lambda timeout = 10.0: None)
+    with pytest.raises(pytest.skip.Exception):
+        test_the_zoo_trl_deferral_expires_when_the_zoo_release_ships()

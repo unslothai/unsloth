@@ -961,6 +961,13 @@ def orpo_trainer_row_cap(function_name, function):
     # Before TRL's own response cut: its negative slice end can empty the shorter answer.
     match = re.search(r"(?m)^([ \t]*)longer_response_length = max\(", function)
     if match is None:
+        # TRL 1.15+ cuts each answer to `max_length - prompt` but still never cuts the prompt, so a prompt past max_length keeps the row over it with an empty answer.
+        match = re.search(
+            r"(?m)^([ \t]*)for answer_tokens in \[chosen_tokens, rejected_tokens\]:\n"
+            r"\1[ \t]+if len\(answer_tokens\[\"prompt_input_ids\"\]\) \+ len\(answer_tokens\[\"input_ids\"\]\) > self\.max_length:",
+            function,
+        )
+    if match is None:
         return function
     indent = match.group(1)
     block = "".join(indent + line + "\n" for line in _ORPO_ROW_CAP.splitlines())
@@ -3159,6 +3166,23 @@ def grpo_update_SamplingParams(
     return generation_kwargs
 
 
+def _unsloth_grpo_is_metric_values(delta, flat_is_ratio, mask, sequence_level):
+    # The loss returns delta / flat_is_ratio zero-filled outside the loss mask to keep chunk shapes; TRL reduces over masked tokens (one ratio per sequence at sequence level), so filter here or the min ratio reads 0 and the means shrink with padding.
+    if mask is None or delta.shape != mask.shape or flat_is_ratio.shape != mask.shape:
+        return delta.reshape(-1), flat_is_ratio.reshape(-1)
+    keep = mask.to(torch.bool)
+    if not sequence_level:
+        return delta[keep], flat_is_ratio[keep]
+    # Every kept token of a row carries the same sequence ratio; a row with none is exp(0) = 1, as in TRL.
+    counts = keep.sum(dim = -1)
+    per_row = torch.where(
+        counts > 0,
+        (flat_is_ratio * keep).sum(dim = -1) / counts.clamp(min = 1),
+        torch.ones_like(counts, dtype = flat_is_ratio.dtype),
+    )
+    return delta[keep], per_row
+
+
 grpo_compute_loss = RL_REPLACEMENTS["grpo_compute_loss"]
 grpo_compute_loss_slow = RL_REPLACEMENTS["grpo_compute_loss_slow"]
 UnslothEfficientGRPO = RL_REPLACEMENTS["UnslothEfficientGRPO"]
@@ -3174,6 +3198,7 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_hidden_state
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_mm_token_id))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_fix_mm_token_type_ids))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_accumulation_steps))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_is_metric_values))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_vision_inputs))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_split_vision_by_sample))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_unsplit_vision))
@@ -3541,6 +3566,13 @@ def grpo_trainer_compute_loss(function_name, function):
             and delta is not None
             and getattr(self, "vllm_importance_sampling_correction", False)
         ):
+            delta, flat_is_ratio = _unsloth_grpo_is_metric_values(
+                delta,
+                flat_is_ratio,
+                completion_mask,
+                (getattr(self.args, "vllm_importance_sampling_mode", None) or "token_truncate")
+                in ("sequence_mask", "sequence_truncate"),
+            )
             mean_delta = (
                 torch.mean(delta)
                 if delta.numel() > 0
@@ -3765,6 +3797,12 @@ def openenv_vllm_reload_weights():
     if importlib.util.find_spec("trl") is None:
         return
     if Version(importlib_version("trl")) < Version("0.26.0"):
+        return
+    # Newer TRL removed trl.experimental.openenv with generate_rollout_completions (huggingface/trl#5870): nothing to rewrite.
+    try:
+        if importlib.util.find_spec("trl.experimental.openenv") is None:
+            return
+    except (ImportError, ValueError):
         return
 
     try:
