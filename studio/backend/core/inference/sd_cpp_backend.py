@@ -280,8 +280,7 @@ def _cgroup_cpu_limit(
 
 
 def _default_threads() -> int:
-    """``UNSLOTH_CPU_THREADS``, else ``os.cpu_count() // 2`` capped by the cgroup quota (``os.cpu_count()``
-    ignores container quotas: 96 threads on a 4-CPU quota ran about 4x slower)."""
+    """``UNSLOTH_CPU_THREADS``, else ``os.cpu_count() // 2`` capped by the cgroup quota ``os.cpu_count()`` ignores."""
     try:
         configured = int(os.environ.get("UNSLOTH_CPU_THREADS") or 0)
     except ValueError:
