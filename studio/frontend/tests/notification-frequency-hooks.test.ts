@@ -120,3 +120,30 @@ test("turning a channel off releases an open notification's hold", () => {
     mock.timers.reset();
   }
 });
+
+test("a hidden tab does not use up the quiet period", () => {
+  store.clear();
+  const doc = {
+    visibilityState: "hidden",
+    addEventListener() {},
+    removeEventListener() {},
+  };
+  Object.assign(globalThis, { document: doc });
+  mock.timers.enable({
+    apis: ["setTimeout", "Date"],
+    now: Date.UTC(2026, 0, 1),
+  });
+  try {
+    const { mod, render } = load();
+    mod.setNotificationFrequency("unsloth", "weekly");
+    const gate = () => mod.useNotificationGate("unsloth", true);
+    render(gate);
+    assert.equal(store.has("unsloth_unsloth_notification_last_shown"), false);
+    doc.visibilityState = "visible";
+    assert.equal(render(gate), true);
+    assert.equal(store.has("unsloth_unsloth_notification_last_shown"), true);
+  } finally {
+    mock.timers.reset();
+    Reflect.deleteProperty(globalThis, "document");
+  }
+});

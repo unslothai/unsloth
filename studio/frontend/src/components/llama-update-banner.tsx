@@ -11,6 +11,7 @@ import {
 import {
   type NotificationChannel,
   markNotificationShown,
+  useDocumentVisible,
   useNotificationDue,
   useNotificationFrequency,
 } from "@/hooks/use-notification-frequency";
@@ -226,14 +227,15 @@ export function LlamaUpdateBanner({
       : component === "audio.cpp"
         ? "audio"
         : "llama";
+  const tabVisible = useDocumentVisible();
   useEffect(() => {
-    if (show && shownChannel !== channel) {
+    if (show && tabVisible && shownChannel !== channel) {
       markNotificationShown(channel);
       setShownChannel(channel);
     } else if (!show && shownChannel !== null) {
       setShownChannel(null);
     }
-  }, [show, channel, shownChannel]);
+  }, [show, tabVisible, channel, shownChannel]);
   // A migration re-applies the install's own automatic choice, so it can be offered at a
   // release the machine already has, where the backend pair replaces the version line.
   const backendChange =

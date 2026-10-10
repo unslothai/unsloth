@@ -174,9 +174,24 @@ export function useNotificationDue(channel: NotificationChannel): boolean {
   return due;
 }
 
+function subscribeVisibility(listener: () => void): () => void {
+  document.addEventListener("visibilitychange", listener);
+  return () => document.removeEventListener("visibilitychange", listener);
+}
+
+/** Whether the user can see this tab; a hidden tab must not use up the quiet period. */
+export function useDocumentVisible(): boolean {
+  return useSyncExternalStore(
+    subscribeVisibility,
+    () =>
+      typeof document === "undefined" || document.visibilityState !== "hidden",
+  );
+}
+
 /**
- * Whether a notification that `wanted` to show may show. Opening it records the time,
- * and it stays open until `wanted` drops (dismiss, snooze, update) or the channel is off.
+ * Whether a notification that `wanted` to show may show. Opening it in a visible tab
+ * records the time, and it stays open until `wanted` drops (dismiss, snooze, update) or
+ * the channel is off.
  */
 export function useNotificationGate(
   channel: NotificationChannel,
@@ -184,17 +199,18 @@ export function useNotificationGate(
 ): boolean {
   const due = useNotificationDue(channel);
   const frequency = useNotificationFrequency(channel);
+  const visible = useDocumentVisible();
   const [heldFor, setHeldFor] = useState<NotificationChannel | null>(null);
   const held = heldFor === channel;
   const open = wanted && frequency !== "off" && (held || due);
   useEffect(() => {
-    if (open && !held) {
+    if (open && !held && visible) {
       markNotificationShown(channel);
       setHeldFor(channel);
     } else if ((!wanted || frequency === "off") && heldFor !== null) {
       // Off releases the hold, so a later quiet period applies from the last showing.
       setHeldFor(null);
     }
-  }, [open, held, wanted, heldFor, channel, frequency]);
+  }, [open, held, visible, wanted, heldFor, channel, frequency]);
   return open;
 }
