@@ -281,9 +281,8 @@ def test_autocast_matches_the_per_record_head(monkeypatch):
 
 @pytest.mark.skipif(not has_real_cuda(), reason = "Inductor pads saved strides on CUDA")
 def test_checkpointed_head_trains_under_a_compiled_layer_norm(monkeypatch):
-    # #13160: Unsloth's F.layer_norm compiles itself. A memory over 1024 tokens gets a padded
-    # mean / rstd stride in its first (static) graph; the shorter queries recompile it dynamically,
-    # the checkpoint recompute picked that newer graph and the first graph's backward crashed.
+    # #13160: over 1024 tokens the first (static) graph pads mean / rstd strides; the queries'
+    # dynamic recompile then served the checkpoint recompute and that backward crashed.
     original = getattr(clef.functional, "_uncompiled_layer_norm", clef.functional.layer_norm)
     monkeypatch.setattr(clef.functional, "_uncompiled_layer_norm", original, raising = False)
     monkeypatch.setattr(clef.functional, "layer_norm", torch.compile(original))

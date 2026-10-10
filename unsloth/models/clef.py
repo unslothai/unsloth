@@ -341,9 +341,8 @@ def build_layout(records, device) -> dict:
 
 
 def _layer_norm(norm, x):
-    # Not Unsloth's compiled F.layer_norm: memory and queries differ in length, so the forward
-    # recompiles it (static, then dynamic graph) and the checkpoint recompute picks the newer graph,
-    # handing the first graph's backward a mean / rstd with unpadded strides (#13160).
+    # Not Unsloth's compiled F.layer_norm: memory and queries recompile it mid-checkpoint, and the
+    # recompute's newer graph hands the first graph's backward unpadded mean / rstd strides (#13160).
     layer_norm = getattr(functional, "_uncompiled_layer_norm", functional.layer_norm)
     return layer_norm(x, norm.normalized_shape, norm.weight, norm.bias, norm.eps)
 
