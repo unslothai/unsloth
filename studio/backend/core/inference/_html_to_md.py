@@ -17,8 +17,10 @@ error placeholders, session banners, cookie prompts) from the result.
 from __future__ import annotations
 
 import html
+import itertools
 import re
 import secrets
+import unicodedata
 from html.parser import HTMLParser
 from urllib.parse import urlsplit
 
@@ -207,6 +209,110 @@ _MAX_REPEATED_CELL_CHARS = 200
 # floor per scope candidate once the page-wide total is spent, so an earlier decoy cannot starve a later article
 _MIN_SCOPE_SPAN_CHARS = 256
 _INLINE_EMPHASIS = {"strong": "**", "b": "**", "em": "*", "i": "*"}
+
+_PLAIN_SUFFIXES = frozenset(
+    {"st", "nd", "rd", "th", "tm", "sm", "mc", "md", "(tm)", "(sm)", "(r)", "(c)", "mr", "m.r."}
+)
+# French / Romance ordinals after a digit (1er, 2e, 1º, 2ª); after a letter "e" can be Euler's number
+# XVe siècle, François Ier: a Roman numeral takes ordinals like a digit
+_ROMAN_NUMERAL_TAIL = re.compile(r"(?<![^\W\d_])[IVXLCDM]+$")
+# French superior abbreviations: Mme, Mlle, Mgr, Dr, Pr, no, St, Cie; keyed on the whole base word
+_SUPERIOR_ABBREVIATIONS = {
+    "M": frozenset({"me", "mes", "lle", "lles", "gr", "e", "r", "rs"}),
+    "D": frozenset({"r", "rs", "re", "res"}),
+    "P": frozenset({"r", "rs", "re", "res"}),
+    "n": frozenset({"o", "os"}),
+    "N": frozenset({"o", "os"}),
+    "S": frozenset({"t", "te", "ts", "tes", "r"}),
+    "J": frozenset({"r"}),
+    "C": frozenset({"ie", "ies"}),
+}
+_LAST_WORD = re.compile(r"(?<![^\W\d_])[^\W\d_]+$")
+
+
+def _last_word(text: str) -> str:
+    match = _LAST_WORD.search(text)
+    return match.group() if match else ""
+
+
+_DIGIT_ORDINAL_SUFFIXES = frozenset(
+    {
+        "e",
+        "es",
+        "er",
+        "ers",
+        "re",
+        "res",
+        "ère",
+        "ères",
+        "ème",
+        "èmes",
+        "eme",
+        "emes",
+        "nd",
+        "nde",
+        "d",
+        "de",
+        "ds",
+        "des",
+        "bis",
+        "ter",
+        "quater",
+        "quinquies",
+        "ndes",
+        "º",
+        "ª",
+        "o",
+        "a",
+    }
+)
+_MD_DELIMITERS = "*_`"
+_STRIP_MD_DELIMITERS = str.maketrans("", "", _MD_DELIMITERS)
+# SiteLinks wraps same-site links in invisible \x00 markers; the base is the text before them
+_SITE_LINK_MARKER_TAIL = re.compile(r"\x00[0-9a-f]+:\d+:[se]\x00$")
+# parts a base lookup reads back: enough for delimiters and link markers, bounded on hostile pages
+_SUP_BASE_SCAN_PARTS = 8
+_SUP_BASE_SCAN_CHARS = 128
+# a caret binds one token: a signed number or one letter goes bare, anything longer in parentheses
+_BARE_EXPONENT = re.compile(r"[-+−]?(?:\d+(?:[.,]\d+)?|[^\W\d_])")
+# split cents: $19<sup>99</sup> is a price, not an exponent
+_PRICE_TAIL = re.compile(r"(\S)\s?\d(?:[\d,.'’]|[ \u00a0\u202f]\d)*$")
+# ISO 4217 codes: CHF 19<sup>95</sup> is a price like $19<sup>99</sup>
+_CURRENCY_CODES = frozenset(
+    (
+        "AED AFN ALL AMD ANG AOA ARS AUD AWG AZN BAM BBD BDT BGN BHD BIF BMD BND BOB BRL BSD BTN "
+        "BWP BYN BZD CAD CDF CHF CLP CNY COP CRC CUP CVE CZK DJF DKK DOP DZD EGP ERN ETB EUR FJD "
+        "FKP GBP GEL GHS GIP GMD GNF GTQ GYD HKD HNL HTG HUF IDR ILS INR IQD IRR ISK JMD JOD JPY "
+        "KES KGS KHR KMF KPW KRW KWD KYD KZT LAK LBP LKR LRD LSL LYD MAD MDL MGA MKD MMK MNT MOP "
+        "MRU MUR MVR MWK MXN MYR MZN NAD NGN NIO NOK NPR NZD OMR PAB PEN PGK PHP PKR PLN PYG QAR "
+        "RON RSD RUB RWF SAR SBD SCR SDG SEK SGD SHP SLE SOS SRD SSP STN SYP SZL THB TJS TMT TND "
+        "TOP TRY TTD TWD TZS UAH UGX USD UYU UZS VED VES VND VUV WST XAF XCD XCG XOF XPF YER ZAR ZMW "
+        "ZWG ZWL"
+    ).split()
+)
+_THREE_DECIMAL_CURRENCIES = frozenset({"BHD", "IQD", "JOD", "KWD", "LYD", "OMR", "TND"})
+# no minor unit: JPY 10<sup>12</sup> is a power, never cents
+_ZERO_DECIMAL_CURRENCIES = frozenset(
+    "BIF CLP DJF GNF ISK JPY KMF KRW PYG RWF UGX VND VUV XAF XOF XPF".split()
+)
+_CODE_PRICE_TAIL = re.compile(r"\b([A-Z]{3})[ \u00a0\u202f]?\d(?:[\d,.'’]|[ \u00a0\u202f]\d)*$")
+# note markers that keep their plain-text form, like Wikipedia's class="reference"
+_FOOTNOTE_CLASSES = frozenset({"reference", "footnote", "footnote-ref", "noteref", "fn", "cite"})
+# class token parts (split on - and _) starting with these mark a note too: footnote-reference, citation
+_FOOTNOTE_CLASS_PREFIXES = ("footnote", "noteref", "cite", "citation", "endnote", "fnref")
+_CLASS_PART_SPLIT = re.compile(r"[-_]")
+# deeper <sup> nests render as plain text: each tracked level rescans its whole suffix on close
+_MAX_SUP_DEPTH = 8
+
+
+def _visible_tail(text: str) -> str:
+    """*text* without the emphasis/code delimiters and link markers the renderer appended."""
+    while True:
+        trimmed = _SITE_LINK_MARKER_TAIL.sub("", text.rstrip(_MD_DELIMITERS))
+        if trimmed == text:
+            return text
+        text = trimmed
+
 
 # measured density: 0.94-1.00 for link lists, 0.13-0.90 for content headers
 _HEADER_LINK_DENSITY = 0.93
@@ -599,6 +705,12 @@ class _MarkdownRenderer(HTMLParser):
         # Blockquote state: stack of buffers so nested blockquotes get the right ">" depth.
         self._bq_stack: list[list[str]] = []
 
+        # per open <sup>: its _open_tags index, then (output list, start), the (copy, start) pairs that tee the
+        # same text, the base text and whether a currency amount precedes it
+        self._sup_starts: list[
+            tuple[int, tuple[list[str], int, list[tuple[list[str], int]], str, int] | None]
+        ] = []
+
     def _nested_buffer_open(self, frame: _HeaderFrame) -> bool:
         """True when a side buffer opened *inside* *frame* still holds content.
 
@@ -641,22 +753,99 @@ class _MarkdownRenderer(HTMLParser):
         # Tally once, on the emit reaching the frame; counting again on flush doubled it.
         if frame is not None and not nested_open:
             frame.rendered_chars += len(measured.strip())
-            frame.parts.append(text)
-            return
+        elif self._in_link and self._heading_marks:
+            self._link_heading_parts.append(text)
+        self._emit_target().append(text)
+
+    def _emit_target(self) -> list[str]:
+        frame = self._header_stack[-1] if self._header_stack else None
+        if frame is not None and not self._nested_buffer_open(frame):
+            return frame.parts
         if self._in_link:
-            self._link_text_parts.append(text)
-            if self._heading_marks:
-                self._link_heading_parts.append(text)
-        elif self._in_cell:
-            self._cell_parts.append(text)
-        elif self._in_pre:
-            self._pre_parts.append(text)
-        elif self._table_stack and len(self._bq_stack) <= self._table_stack[-1].outer_bq_depth:
-            self._table_stack[-1].parts.append(text)
-        elif self._bq_stack:
-            self._bq_stack[-1].append(text)
-        else:
-            self._out.append(text)
+            return self._link_text_parts
+        if self._in_cell:
+            return self._cell_parts
+        if self._in_pre:
+            return self._pre_parts
+        if self._table_stack and len(self._bq_stack) <= self._table_stack[-1].outer_bq_depth:
+            return self._table_stack[-1].parts
+        if self._bq_stack:
+            return self._bq_stack[-1]
+        return self._out
+
+    def _sup_base(self, target: list[str]) -> str:
+        """The visible text a <sup> raises (base = its last character), or "" when none: after whitespace or
+        sentence punctuation it is a footnote marker (``fact.<sup>1</sup>``,
+        ``<a href="#fn1"><sup>1</sup></a>``) or a fraction numerator (``<sup>1</sup>&frasl;``)."""
+        for part in itertools.islice(reversed(target), _SUP_BASE_SCAN_PARTS):
+            part = part[-_SUP_BASE_SCAN_CHARS:]
+            part = _visible_tail(part)
+            if part:
+                base = part[-1]
+                return part if base.isalnum() or base in ")]}|" else ""
+        return ""
+
+    @staticmethod
+    def _after_price(target: list[str]) -> int:
+        """Digits of the minor unit when *target* ends in a currency amount ($19 -> 2, KWD 19 -> 3), else 0."""
+        context = _visible_tail("".join(p[-40:] for p in target[-8:])[-40:])
+        context = context.translate(_STRIP_MD_DELIMITERS)
+        price = _PRICE_TAIL.search(context)
+        # any Unicode currency sign (Sc): $, €, ₺, ₱, ...; or an ISO code: CHF 19
+        if price and unicodedata.category(price.group(1)) == "Sc":
+            return 2
+        code = _CODE_PRICE_TAIL.search(context)
+        if (
+            not code
+            or code.group(1) not in _CURRENCY_CODES
+            or code.group(1) in _ZERO_DECIMAL_CURRENCIES
+        ):
+            return 0
+        return 3 if code.group(1) in _THREE_DECIMAL_CURRENCIES else 2
+
+    def _sup_copies(self) -> list[tuple[list[str], int]]:
+        copies = [self._link_heading_parts, self._seg_heading_texts]
+        if self._header_stack:
+            copies.append(self._header_stack[-1].heading_parts)
+        return [(copy, len(copy)) for copy in copies]
+
+    def _finish_sup(self, opened) -> None:
+        if opened is None or opened[0] is not self._emit_target():
+            return
+        target, start, copies, base, after_price = opened
+        joined = "".join(target[start:])
+        raw = joined.strip()
+        shown = self._site_links.clean(raw) if self._site_links is not None else raw
+        visible = shown.strip(_MD_DELIMITERS)
+        if (
+            not visible
+            or "\n" in visible
+            or visible[0] == "["
+            # $19<sup>.99</sup> is split cents; 10<sup>.5</sup> with no currency is a power
+            or (visible[0] == "." and after_price)
+            or not any(c.isalnum() for c in visible)
+            or visible.lower() in _PLAIN_SUFFIXES
+            or (
+                (base[-1].isdigit() or _ROMAN_NUMERAL_TAIL.search(base))
+                and visible.lower() in _DIGIT_ORDINAL_SUFFIXES
+            )
+            or visible in _SUPERIOR_ABBREVIATIONS.get(_last_word(base), ())
+            # split cents are two digits; $2<sup>n</sup> or USD 10<sup>6</sup> stays an exponent
+            or (len(visible) == after_price and visible.isdigit())
+        ):
+            return
+        # only the emphasis wrapping a whole exponent is renderer syntax; an inner * is an operator
+        token = shown.strip(_MD_DELIMITERS)
+        bare = _BARE_EXPONENT.fullmatch(token) or (
+            token.startswith("(") and token.endswith(")") and token.count("(") == 1
+        )
+        exponent = f"^{raw}" if bare else f"^({raw})"
+        exponent += joined[len(joined.rstrip()) :]
+        target[start:] = [exponent]
+        # headings are teed into these copies; a stale one renders "E=mc2" or skews the prose gate
+        for copy, copy_start in copies:
+            if "".join(copy[copy_start:]) == joined:
+                copy[copy_start:] = [exponent]
 
     def _seg_heading_prose(self) -> int:
         """Heading characters in this segment that the gate would otherwise read as
@@ -879,6 +1068,9 @@ class _MarkdownRenderer(HTMLParser):
             if name in _IMPLICIT_CLOSERS:
                 self._closable_open -= 1
         del self._open_tags[index:]
+        # a <sup> an ancestor closed (<p>x<sup>2</p>) is gone; a kept frame would fill the depth cap
+        while self._sup_starts and self._sup_starts[-1][0] >= index:
+            self._sup_starts.pop()
 
     def _close_implicit(self, tag: str) -> None:
         """HTML5 optional-end-tag recovery for a start tag about to open.
@@ -1116,6 +1308,36 @@ class _MarkdownRenderer(HTMLParser):
         elif tag == "br":
             self._emit("\n")
 
+        elif tag == "sup":
+            target = self._emit_target()
+            reference = (
+                any(
+                    token in _FOOTNOTE_CLASSES
+                    or any(
+                        part == "fn" or part.startswith(_FOOTNOTE_CLASS_PREFIXES)
+                        for part in _CLASS_PART_SPLIT.split(token)
+                    )
+                    for token in (attr_dict.get("class") or "").lower().split()
+                )
+                or "doc-noteref" in (attr_dict.get("role") or "").lower().split()
+            )
+            # past the cap nothing is tracked, so the stack stays bounded on hostile pages
+            if len(self._sup_starts) < _MAX_SUP_DEPTH:
+                self._sup_starts.append(
+                    (
+                        len(self._open_tags) - 1,
+                        None
+                        if reference or not (base := self._sup_base(target))
+                        else (
+                            target,
+                            len(target),
+                            self._sup_copies(),
+                            base,
+                            self._after_price(target) if base[-1].isdigit() else 0,
+                        ),
+                    )
+                )
+
         elif tag in _BLOCK_TAGS:
             if not self._li_marker_pending:
                 self._emit("\n\n")
@@ -1201,6 +1423,17 @@ class _MarkdownRenderer(HTMLParser):
         if self._skip_depth:
             return
 
+        closing_sup = None
+        # O(1): only a <sup> that is still the innermost open tag converts; malformed nesting drops on unwind
+        if (
+            tag == "sup"
+            and self._sup_starts
+            and self._open_tags
+            and self._open_tags[-1] == "sup"
+            and self._sup_starts[-1][0] == len(self._open_tags) - 1
+        ):
+            closing_sup = self._sup_starts.pop()[1]
+
         if not self._exit_tag(tag):
             return
 
@@ -1217,6 +1450,9 @@ class _MarkdownRenderer(HTMLParser):
 
         elif tag in _INLINE_EMPHASIS:
             self._emit(_INLINE_EMPHASIS[tag])
+
+        elif tag == "sup":
+            self._finish_sup(closing_sup)
 
         elif tag in _BLOCK_TAGS:
             self._emit("\n\n")

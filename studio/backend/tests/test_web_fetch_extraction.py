@@ -869,6 +869,213 @@ def test_page_that_fits_keeps_its_links(monkeypatch):
     assert "[[1]](#cite_note-1)" in out
 
 
+@pytest.mark.parametrize(
+    "markup, expected",
+    [
+        ("(2<sup>53</sup> &ndash; 1)", "(2^53 – 1)"),
+        ("2<sup>&minus;52</sup>", "2^−52"),
+        ("1.898&times;10<sup>27</sup> kg", "1.898×10^27 kg"),
+        ("6.02214076&times;10<sup>23</sup> mol<sup>&minus;1</sup>", "6.02214076×10^23 mol^−1"),
+        ("2<sup><i>n</i>+1</sup> nodes", "2^(*n*+1) nodes"),
+        ("2<sup>n + 1</sup>", "2^(n + 1)"),
+        ("the 1<sup>st</sup> and 2<sup>nd</sup>", "the 1st and 2nd"),
+        ("Intel<sup>&reg;</sup> Core<sup>&trade;</sup> i7", "Intel® Core™ i7"),
+        ("now $19<sup>.99</sup> only", "now $19.99 only"),
+        ("price<sup>*</sup> and terms<sup>&dagger;</sup>", "price* and terms†"),
+        ("10<sup>6 </sup>years", "10^6 years"),
+        ("Add <sup>1</sup>&frasl;<sub>2</sub> cup", "Add 1⁄2 cup"),
+        ("Add 1 <sup>1</sup>/<sub>2</sub> cups", "Add 1 1/2 cups"),
+        ("<sup>1</sup> Footnote text", "1 Footnote text"),
+        ("Add <em><sup>1</sup></em>&frasl; cup", "Add *1*⁄ cup"),
+        ("the 1<sup><em>st</em></sup> one", "the 1*st* one"),
+        ("a<b><sup>2</sup></b>", "a**^2**"),
+        ("x<sup>n&times;2</sup>", "x^(n×2)"),
+        ("x<sup>2n</sup> and y<sup>n2</sup>", "x^(2n) and y^(n2)"),
+        ("x<sup>2<em>n</em></sup>", "x^(2*n*)"),
+        ("x<sup>2*3</sup> and x<sup><em>n</em></sup>", "x^(2*3) and x^*n*"),
+        ("e<sup>i&pi;</sup> + 1 = 0", "e^(iπ) + 1 = 0"),
+        ("now $19<sup>99</sup> or &euro; 1,299<sup>95</sup>", "now $1999 or € 1,29995"),
+        ("<b>$19</b><sup>99</sup>", "**$19**99"),
+        ("$<b>19</b><sup>99</sup>", "$**19**99"),
+        ("Brand<sup>TM</sup> and Service<sup>SM</sup>", "BrandTM and ServiceSM"),
+        ("el 1<sup>º</sup> y la 2<sup>ª</sup>, x<sup>a</sup>", "el 1º y la 2ª, x^a"),
+        (
+            "le XV<sup>e</sup> siècle, François I<sup>er</sup>, MAX<sup>e</sup>",
+            "le XVe siècle, François Ier, MAX^e",
+        ),
+        ("<span>$</span> <b>19</b><sup>99</sup>", "$ **19**99"),
+        (
+            "&#8378;19<sup>99</sup> or &#8369;19<sup>99</sup>, a19<sup>2</sup>",
+            "₺1999 or ₱1999, a19^2",
+        ),
+        (
+            "CHF 19<sup>95</sup> or USD 19<sup>99</sup>, ABC 10<sup>3</sup>",
+            "CHF 1995 or USD 1999, ABC 10^3",
+        ),
+        (
+            "AED 19<sup>99</sup>, TWD 19<sup>99</sup>, ILS 19<sup>99</sup>",
+            "AED 1999, TWD 1999, ILS 1999",
+        ),
+        (
+            "ZWG 19<sup>99</sup>, les 1<sup>ers</sup> et 1<sup>res</sup>",
+            "ZWG 1999, les 1ers et 1res",
+        ),
+        ("$2<sup>n</sup> and USD 10<sup>6</sup>, $19<sup>99</sup>", "$2^n and USD 10^6, $1999"),
+        (
+            'XCG 19<sup>99</sup>, claim<sup role="doc-noteref presentation">2</sup>',
+            "XCG 1999, claim2",
+        ),
+        ("le P<sup>r</sup> Martin et les P<sup>rs</sup>", "le Pr Martin et les Prs"),
+        ("CHF 1’299<sup>95</sup> or CHF 1'299<sup>95</sup>", "CHF 1’29995 or CHF 1'29995"),
+        ("Marque<sup>MC</sup> et Produit<sup>MD</sup>", "MarqueMC et ProduitMD"),
+        ("Brand<sup>(TM)</sup> and Other<sup>(R)</sup>", "Brand(TM) and Other(R)"),
+        (
+            "KWD 19<sup>950</sup>, BHD 1<sup>234</sup>, USD 10<sup>100</sup>",
+            "KWD 19950, BHD 1234, USD 10^100",
+        ),
+        ("M<sup>r</sup> and M<sup>rs</sup> Smith", "Mr and Mrs Smith"),
+        ("JPY 10<sup>12</sup> and KRW 10<sup>12</sup>", "JPY 10^12 and KRW 10^12"),
+        ("les 1<sup>ères</sup> places", "les 1ères places"),
+        ("John J<sup>r</sup> and John S<sup>r</sup>", "John Jr and John Sr"),
+        ("VED 19<sup>99</sup> and S<sup>T</sup>", "VED 1999 and S^T"),
+        (
+            'claim<sup class="footnote-reference">2</sup>, la 2<sup>de</sup>, le 2<sup>d</sup>',
+            "claim2, la 2de, le 2d",
+        ),
+        (
+            "la P<sup>re</sup> Durand, 12<sup>bis</sup> rue, article 3<sup>ter</sup>",
+            "la Pre Durand, 12bis rue, article 3ter",
+        ),
+        (
+            'claim<sup class="citation">2</sup> and fact<sup class="endnote-ref">3</sup>',
+            "claim2 and fact3",
+        ),
+        ("la D<sup>re</sup> Roy et les D<sup>res</sup>", "la Dre Roy et les Dres"),
+        (
+            'x<sup class="excited">2</sup> and 10<sup>.5</sup>, $19<sup>.99</sup>',
+            "x^2 and 10^(.5), $19.99",
+        ),
+        (
+            'claim<sup class="fnref">2</sup>, fact<sup class="fn-ref">3</sup>, Marca<sup>MR</sup>',
+            "claim2, fact3, MarcaMR",
+        ),
+        (
+            "les S<sup>ts</sup>, les S<sup>tes</sup> et les C<sup>ies</sup>",
+            "les Sts, les Stes et les Cies",
+        ),
+        (
+            "M<sup>me</sup> Dupont, D<sup>r</sup> Martin, n<sup>o</sup> 5, Om<sup>e</sup>",
+            "Mme Dupont, Dr Martin, no 5, Om^e",
+        ),
+        ("&euro;1.299<sup>95</sup> or &euro;1 299<sup>95</sup>", "€1.29995 or €1 29995"),
+        (
+            'claim<sup role="doc-noteref">1</sup> and fact<sup class="footnote">2</sup>',
+            "claim1 and fact2",
+        ),
+        ("x<sup>-n</sup> and 10<sup>2.5</sup>", "x^-n and 10^2.5"),
+        ("now $19<sup><em>.99</em></sup>", "now $19*.99*"),
+        ("A fact.<sup>1</sup> Next, a list,<sup>2</sup>", "A fact.1 Next, a list,2"),
+        ("(a+b)<sup>2</sup> and km<sup>2</sup>.", "(a+b)^2 and km^2."),
+        ("le 1<sup>er</sup> mai, 2<sup>e</sup> et x<sup>e</sup>", "le 1er mai, 2e et x^e"),
+    ],
+)
+def test_superscripts_keep_their_exponent(markup, expected):
+    assert html_to_markdown(f"<p>{markup}</p>") == expected
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "<h1><a href='/p'>E=mc<sup>2</sup></a></h1>",
+        "<a href='/p'><h1>E=mc<sup>2</sup></h1></a>",
+    ],
+)
+def test_linked_header_title_keeps_one_exponent(title):
+    nav = "".join(f"<a href='/s{i}'>Section number {i}</a> " for i in range(12))
+    html = f"<header>{title}{nav}</header><p>{'Body text here. ' * 40}</p>"
+    out = html_to_markdown(html, main_content = True)
+    assert out.count("E=mc") == 1
+    assert "E=mc^2](/p)" in out
+
+
+def test_stripped_header_keeps_the_exponent_in_its_heading():
+    nav = "".join(f"<a href='/s{i}'>Section number {i}</a> " for i in range(12))
+    html = f"<header><h1>E=mc<sup>2</sup></h1>{nav}</header><p>{'Body text here. ' * 40}</p>"
+    out = html_to_markdown(html, main_content = True)
+    assert "# E=mc^2" in out
+    assert "E=mc2" not in out
+
+
+def test_deeply_nested_superscripts_track_a_bounded_depth():
+    out = html_to_markdown("<p>x" + "<sup>a" * 50 + "</sup>" * 50 + "</p>")
+    assert out.translate(str.maketrans("", "", "^()")) == "x" + "a" * 50
+    assert out.count("^") == 8
+
+
+def test_linked_footnote_wrapping_its_superscript_renders_unchanged():
+    html = '<p>text<a role="doc-noteref" href="#fn1"><sup>1</sup></a> more</p>'
+    assert html_to_markdown(html) == "text[1](#fn1) more"
+
+
+def test_exponent_headings_do_not_read_as_body_prose():
+    heads = "".join(f"<h2>x<sup>n+{i}</sup></h2>" for i in range(67))
+    body = "<p>" + "Real document body sentence. " * 12 + "</p>"
+    html = f"<html><body><article>{heads}</article><div>{body}</div></body></html>"
+    assert "Real document body" in html_to_markdown(html, main_content = True)
+
+
+def test_same_site_linked_base_keeps_its_exponent():
+    site_links = SiteLinks("https://e.com/page")
+    html = '<p>5 <a href="/metre">m</a><sup>2</sup> and <a href="https://x.org/m">m</a><sup>3</sup></p>'
+    out = site_links.clean(html_to_markdown(html, site_links = site_links))
+    assert out == "5 [m](/metre)^2 and [m](https://x.org/m)^3"
+
+
+def test_empty_superscripts_do_not_rescan_the_page():
+    start = time.perf_counter()
+    html_to_markdown("<p>" + "<i></i><sup></sup>" * 8000 + "</p>")
+    assert time.perf_counter() - start < 2
+    start = time.perf_counter()
+    html_to_markdown("<p>" + "*" * 250000 + "<sup></sup>" * 23000 + "</p>")
+    assert time.perf_counter() - start < 3
+    start = time.perf_counter()
+    html_to_markdown(
+        "<p>" + "<b>" + "word 1 " * 40000 + "</b>" * 1 + "9" + "<sup></sup>" * 20000 + "</p>"
+    )
+    assert time.perf_counter() - start < 3
+
+
+def test_unclosed_superscripts_do_not_exhaust_the_depth_cap():
+    html = "<p>x<sup>2</p>" * 10 + "<p>1.898&times;10<sup>27</sup> kg</p>"
+    assert html_to_markdown(html).endswith("1.898×10^27 kg")
+
+
+def test_untracked_superscripts_keep_the_stack_bounded():
+    from core.inference._html_to_md import _MarkdownRenderer
+
+    renderer = _MarkdownRenderer()
+    renderer.feed("<p>" + "<sup>" * 5000 + "x")
+    assert len(renderer._sup_starts) <= 8
+
+
+def test_footnote_superscripts_render_unchanged():
+    html = (
+        '<p>mass<sup class="reference"><a href="#cite_note-12">[12]</a></sup> and '
+        "volume<sup>[13]</sup></p>"
+    )
+    assert html_to_markdown(html) == "mass[[12]](#cite_note-12) and volume[13]"
+
+
+def test_fetched_page_keeps_exponents_beside_footnotes(monkeypatch):
+    body = (
+        "<html><body><main><article><p>Jupiter has a mass of 1.898&times;10<sup>27</sup> kg"
+        '<sup class="reference"><a href="#cite_note-12">[12]</a></sup> and a surface area of '
+        "6.1419&times;10<sup>10</sup> km<sup>2</sup>.</p></article></main></body></html>"
+    )
+    out = _page_text(monkeypatch, "https://en.wikipedia.org/wiki/Jupiter", body, "text/html")
+    assert "1.898×10^27 kg[[12]](#cite_note-12) and a surface area of 6.1419×10^10 km^2." in out
+
+
 def test_page_cut_by_the_room_left_drops_its_site_link_urls(monkeypatch):
     from core.inference import tools
 
