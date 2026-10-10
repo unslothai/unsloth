@@ -1397,6 +1397,9 @@ _BODY_PROTECTED_PREFIXES = (
     # Unauthenticated (login, refresh): every route takes a few hundred bytes of JSON.
     "/api/auth",
     "/mcp",
+    # Everything else under /api. FastAPI reads a body before the route's auth dependency runs, so an unlisted
+    # prefix let an unauthenticated client stream an unbounded body into memory.
+    "/api/",
 )
 _DATASET_UPLOAD_PASSTHROUGH_PREFIXES = (
     "/api/datasets/upload",
@@ -1419,6 +1422,11 @@ _VIDEO_MULTIPART_UPLOAD_PATHS = (
     "/api/inference/videos",
 )
 _LIBRARY_UPLOAD_PATH = "/api/library/uploads"
+# RAG document uploads (knowledge base, thread, project): multipart, capped by RAG_MAX_UPLOAD_BYTES in the route and
+# spooled by FastAPI, so they pass through on Content-Length instead of being held in memory here.
+_RAG_DOCUMENT_UPLOAD_RE = _re.compile(
+    r"^/api/rag/(?:knowledge-bases|threads|projects)/[^/]+/documents/?$"
+)
 # Streamed to disk and capped by the route itself; buffering here would hold 200 MiB in memory.
 _AUDIO_INPUT_UPLOAD_PATHS = ("/api/inference/audio/inputs", "/v1/audio/inputs")
 _BODY_UPLOAD_PASSTHROUGH_PREFIXES = (
@@ -1454,6 +1462,9 @@ def _get_upload_passthrough_request_max_bytes(path: str) -> int:
         return upload_request_limit_bytes(LIBRARY_UPLOAD_MAX_BYTES)
     if path.rstrip("/") in _AUDIO_INPUT_UPLOAD_PATHS:
         return AUDIO_INPUT_MAX_BYTES
+    if _RAG_DOCUMENT_UPLOAD_RE.match(path):
+        from core.rag import config as _rag_config
+        return upload_request_limit_bytes(_rag_config.MAX_UPLOAD_BYTES)
     # The trailing-slash variant reaches this middleware BEFORE the router's redirect_slashes
     # 307, so it must resolve to the same cap. JSON sub-routes keep extra path components.
     if (
@@ -1527,6 +1538,7 @@ class MaxBodyMiddleware:
         upload_passthrough_max_bytes_getter = None,
         upload_passthrough_exact_paths: tuple = (),
         chunked_upload_exact_paths: tuple = (),
+        upload_passthrough_pattern = None,
     ):
         self.app = app
         self.max_bytes_getter = max_bytes_getter
@@ -1538,11 +1550,18 @@ class MaxBodyMiddleware:
         self.upload_passthrough_exact_paths = upload_passthrough_exact_paths
         # The subset of those allowed to omit Content-Length; the rest still get a 411.
         self.chunked_upload_exact_paths = chunked_upload_exact_paths
+        # Uploads whose path carries an id (RAG documents), matched by a compiled pattern.
+        self.upload_passthrough_pattern = upload_passthrough_pattern
 
     def _is_upload_passthrough(self, path: str) -> bool:
         # Exact paths also match their trailing-slash variant (this runs before redirect_slashes).
-        return path.rstrip("/") in self.upload_passthrough_exact_paths or any(
-            path.startswith(p) for p in self.upload_passthrough_prefixes
+        return (
+            path.rstrip("/") in self.upload_passthrough_exact_paths
+            or any(path.startswith(p) for p in self.upload_passthrough_prefixes)
+            or (
+                self.upload_passthrough_pattern is not None
+                and self.upload_passthrough_pattern.match(path) is not None
+            )
         )
 
     def _upload_passthrough_max_bytes(self, path: str) -> int:
@@ -1650,6 +1669,7 @@ app.add_middleware(
     upload_passthrough_max_bytes_getter = _get_upload_passthrough_request_max_bytes,
     upload_passthrough_exact_paths = _BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS,
     chunked_upload_exact_paths = _CHUNKED_UPLOAD_EXACT_PATHS,
+    upload_passthrough_pattern = _RAG_DOCUMENT_UPLOAD_RE,
 )
 
 # Tracks in-flight inference requests for idle auto-unload; off -> passthrough.

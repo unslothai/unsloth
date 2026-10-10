@@ -1614,3 +1614,77 @@ def test_health_reports_the_default_for_a_settings_saved_endpoint(main_module, m
         "hf_endpoint": "https://huggingface.co",
         "hf_datasets_server": "https://datasets-server.huggingface.co",
     }
+
+
+def test_every_api_write_route_is_body_capped(main_module):
+    # FastAPI reads a body before the route's auth dependency, so an uncapped /api write route let an
+    # unauthenticated client stream an unbounded body into memory.
+    writes = [
+        route.path
+        for route in main_module.app.routes
+        if getattr(route, "methods", None)
+        and route.methods & {"POST", "PUT", "PATCH"}
+        and route.path.startswith("/api/")
+    ]
+    assert writes
+    for path in writes:
+        assert any(path.startswith(p) for p in main_module._BODY_PROTECTED_PREFIXES), path
+
+
+def test_rag_document_uploads_pass_through_on_their_own_cap(main_module):
+    from core.rag import config as rag_config
+    from utils.upload_limits import upload_request_limit_bytes
+
+    pattern = main_module._RAG_DOCUMENT_UPLOAD_RE
+    for path in (
+        "/api/rag/knowledge-bases/kb1/documents",
+        "/api/rag/threads/t1/documents",
+        "/api/rag/projects/p1/documents/",
+    ):
+        assert pattern.match(path), path
+        assert main_module._get_upload_passthrough_request_max_bytes(
+            path
+        ) == upload_request_limit_bytes(rag_config.MAX_UPLOAD_BYTES)
+    # JSON routes keep the default buffered cap.
+    for path in (
+        "/api/rag/search",
+        "/api/rag/knowledge-bases",
+        "/api/rag/knowledge-bases/kb1/linked-folders",
+    ):
+        assert not pattern.match(path), path
+
+
+def test_pattern_passthrough_streams_and_refuses_oversized_declared_bodies(main_module):
+    app = FastAPI()
+    app.add_middleware(
+        main_module.MaxBodyMiddleware,
+        max_bytes_getter = lambda: 128,
+        protected_prefixes = ("/api/",),
+        upload_passthrough_max_bytes_getter = lambda path: 4096,
+        upload_passthrough_pattern = re.compile(r"^/api/rag/threads/[^/]+/documents$"),
+    )
+
+    @app.post("/api/rag/threads/{tid}/documents")
+    async def upload(request: Request):
+        return {"total": len(await request.body())}
+
+    @app.post("/api/skills")
+    async def skills(payload: dict):
+        return {"ok": True}
+
+    c = TestClient(app)
+    # Over the buffered default but under the upload cap: passes through.
+    assert c.post("/api/rag/threads/t/documents", content = b"x" * 1024).json() == {"total": 1024}
+    assert c.post("/api/rag/threads/t/documents", content = b"x" * 8192).status_code == 413
+
+    def gen():
+        for _ in range(4):
+            yield b"y" * 64
+
+    # A newly covered prefix: a chunked body past the cap is refused before the route runs.
+    assert (
+        c.post(
+            "/api/skills", content = gen(), headers = {"content-type": "application/json"}
+        ).status_code
+        == 413
+    )
