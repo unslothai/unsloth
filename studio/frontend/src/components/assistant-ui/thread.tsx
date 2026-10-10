@@ -2688,8 +2688,6 @@ const Composer: FC<{
 
   const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
   const codeToolsEnabled = useChatRuntimeStore((s) => s.codeToolsEnabled);
-  // Effective Code (Full Access implies it), the same gate the request uses to offer read_skill.
-  const codeToolsEffective = useChatRuntimeStore(codeToolsOn);
   const imageToolsEnabled = useChatRuntimeStore((s) => s.imageToolsEnabled);
   const supportsBuiltinImageGeneration = useChatRuntimeStore(
     (s) => s.supportsBuiltinImageGeneration,
@@ -5600,15 +5598,15 @@ const Composer: FC<{
     <PromptQueueContext.Provider value={queueContextValue}>
     <ComposerPrimitive.Unstable_TriggerPopoverRoot>
       <SkillMentionPopover
-        enabled={supportsTools && codeToolsEffective}
+        // mentions remain available without Code because each one offers read_skill.
+        enabled={supportsTools}
+        composerRef={editorRef}
         onConsumesEnterChange={setMentionConsumesEnter}
         onOpenChange={setMentionOpen}
       />
     <ComposerPrimitive.Root
       ref={attachComposer}
-      // Out of find-in-page's reach: the draft itself lives in a textarea the index cannot read, so
-      // all this leaves to find are the pill labels, and a search for "code" or "images" would land
-      // on the toolbar instead of on the conversation.
+      // skip find-in-page because it cannot index the textarea and would match toolbar pills.
       {...{ [FIND_SKIP_ATTRIBUTE]: "" }}
       className="aui-composer-root relative flex w-full flex-col"
       data-writing-expanded={
