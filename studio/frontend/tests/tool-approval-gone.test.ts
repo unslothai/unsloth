@@ -50,6 +50,8 @@ function harness(response: ReturnType<typeof jsonResponse>) {
       },
       "../types": {},
       "../types/api": {},
+      "../utils/continuation": { isPreemptGaveUp: () => false },
+      "../utils/admission-status": { readAdmissionComment: () => null },
       "../utils/chat-history-revision": {
         notifyChatHistoryUpdated: () => {},
         isCoalescedHistoryEvent: () => false,

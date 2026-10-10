@@ -119,6 +119,8 @@ function realLoadModel(auth: AuthApi): ChatApi {
     },
     "../types": {},
     "../types/api": {},
+    "../utils/continuation": { isPreemptGaveUp: () => false },
+    "../utils/admission-status": { readAdmissionComment: () => null },
     "../utils/chat-history-revision": {
       notifyChatHistoryUpdated: () => {},
       isCoalescedHistoryEvent: () => false,

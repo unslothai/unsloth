@@ -49,6 +49,8 @@ function chatApi(body: Record<string, unknown>) {
       "../utils/load-warning-toast": {
         showLoadWarning: (warning: string | null | undefined) => shown.push(warning),
       },
+      "../utils/continuation": { isPreemptGaveUp: () => false },
+      "../utils/admission-status": { readAdmissionComment: () => null },
       "./generation-length.ts": {},
       "./gguf-variants-request": {},
       "./padded-response": { assertCompletedPaddedBody: () => {} },

@@ -20,6 +20,9 @@ const parser = await import(
 const { createGenerationToolRecovery } = await import(
   "../src/features/chat/utils/generation-tool-recovery.ts"
 );
+const { completedAfterGivingUp, isPreemptGaveUp } = await import(
+  "../src/features/chat/utils/continuation.ts"
+);
 const { RUN_CHECKPOINT_INTERVAL_MS } = await import(
   "../src/features/chat/utils/run-checkpoint-scheduler.ts"
 );
@@ -489,6 +492,8 @@ async function recoverRun(
     ...parser,
     createGenerationToolRecovery,
     providerCompactionConnectionKey,
+    isPreemptGaveUp,
+    completedAfterGivingUp,
     RUN_CHECKPOINT_INTERVAL_MS,
     generationRecoveries,
     useChatRuntimeStore: { getState: () => runtime },

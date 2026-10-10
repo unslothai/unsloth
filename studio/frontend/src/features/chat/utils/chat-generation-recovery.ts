@@ -59,6 +59,8 @@ export function generationChunkCountsTowardTiming(payload: unknown): boolean {
   if ("_reasoningDurationMs" in chunk || chunk.context_truncated || chunk.quote_cut) {
     return false;
   }
+  // A pause or resume notice relayed by the durable run: a status line, not output.
+  if ("_admissionStatus" in chunk) return false;
   return !(chunk.usage && Array.isArray(chunk.choices) && chunk.choices.length === 0);
 }
 
@@ -642,6 +644,9 @@ export function generationRecoveryMetadata(options: {
   cursor: number;
   lastEventSeq: number;
   lengthLimited: boolean;
+  /** The run gave up waiting for cache room and did not finish afterwards: `paused`, never
+   *  `length`, so a reload does not turn it into a Max Tokens stop that auto-continues. */
+  preemptGaveUp?: boolean;
   quoteCut?: boolean;
   firstChunkAt?: number;
   totalChunks?: number;
@@ -655,6 +660,7 @@ export function generationRecoveryMetadata(options: {
     cursor,
     lastEventSeq,
     lengthLimited,
+    preemptGaveUp = false,
     quoteCut = false,
     firstChunkAt,
     totalChunks,
@@ -677,7 +683,9 @@ export function generationRecoveryMetadata(options: {
     serverManaged: true,
   };
   if (status === "completed") {
-    if (lengthLimited) {
+    if (preemptGaveUp) {
+      next.incomplete = { reason: "paused" };
+    } else if (lengthLimited) {
       next.incomplete = { reason: "length" };
     } else if (quoteCut) {
       // Must match the producer's stamp, or the server refuses the settle.

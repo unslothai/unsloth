@@ -7,6 +7,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import * as admissionStatus from "../src/features/chat/utils/admission-status.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 import { skillLoadCardEvent } from "../src/features/chat/api/skill-load-event.ts";
 
@@ -61,10 +62,16 @@ function harness(response: ReturnType<typeof jsonResponse>) {
       },
       "../types": {},
       "../types/api": {},
+      "../utils/continuation": {
+        isPreemptGaveUp: (truncation: { reason?: string } | null | undefined) =>
+          truncation?.reason === "preempt_gave_up",
+      },
       "../utils/chat-history-revision": {
         notifyChatHistoryUpdated: () => {},
         isCoalescedHistoryEvent: () => false,
       },
+      // The real module, not a double: it is pure and cannot drift the way a stub would.
+      "../utils/admission-status": admissionStatus,
       "../utils/load-warning-toast": { showLoadWarning: () => {} },
       "./generation-length.ts": {},
       "./gguf-variants-request": {},

@@ -835,6 +835,9 @@ export interface OpenAIChatChunk {
     latest_turn_role?: string;
     // prompt share of context_length after the reply reserve, calculated by the fit
     prompt_target?: number;
+    // Why this event was sent, when it was not sent by a fit. Only "preempt_gave_up" so
+    // far, which is not a truncation and carries `fits: true` with `dropped_messages: 0`.
+    reason?: string;
   };
 }
 

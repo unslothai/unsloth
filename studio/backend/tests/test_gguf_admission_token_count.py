@@ -9,7 +9,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from core.inference.llama_admission import LlamaAdmissionQueue
+from core.inference.llama_admission import LlamaAdmissionCancelled, LlamaAdmissionQueue
 import routes.inference as inference
 
 
@@ -479,15 +479,17 @@ def test_cancelled_tool_round_does_not_count_or_recost(cancel_during_count):
         backend.count_chat_tokens.side_effect = count
     else:
         cancel.set()
-    inference._openai_llama_admission_recost(
-        reservation,
-        payload.messages,
-        request = None,
-        llama_backend = backend,
-        payload = payload,
-        cancel_event = cancel,
-        count_prepared_prompt = True,
-    )
+    # A Stop is a cancel, so the round is not dispatched on the allowance it already had.
+    with pytest.raises(LlamaAdmissionCancelled):
+        inference._openai_llama_admission_recost(
+            reservation,
+            payload.messages,
+            request = None,
+            llama_backend = backend,
+            payload = payload,
+            cancel_event = cancel,
+            count_prepared_prompt = True,
+        )
     assert backend.count_chat_tokens.call_count == int(cancel_during_count)
     lease.recost_waiting.assert_not_called()
 
@@ -519,15 +521,16 @@ def test_stop_after_native_count_failure_skips_fallback(monkeypatch):
     backend.count_chat_tokens = MethodType(LlamaCppBackend.count_chat_tokens, backend)
     payload = _payload()
     lease = Mock()
-    inference._openai_llama_admission_recost(
-        SimpleNamespace(lease_nowait = lambda: lease),
-        payload.messages,
-        request = None,
-        llama_backend = backend,
-        payload = payload,
-        cancel_event = cancel,
-        count_prepared_prompt = True,
-    )
+    with pytest.raises(LlamaAdmissionCancelled):
+        inference._openai_llama_admission_recost(
+            SimpleNamespace(lease_nowait = lambda: lease),
+            payload.messages,
+            request = None,
+            llama_backend = backend,
+            payload = payload,
+            cancel_event = cancel,
+            count_prepared_prompt = True,
+        )
     assert calls == ["/v1/chat/completions/input_tokens"]
     lease.recost_waiting.assert_not_called()
 

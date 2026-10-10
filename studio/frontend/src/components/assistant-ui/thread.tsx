@@ -196,6 +196,7 @@ import {
   readContinuationSource,
   readIncompleteInfo,
   readTextThoughtSignature,
+  resumesWithoutText,
   claimAutoContinue,
   forgetAutoContinue,
   recordAutoContinue,
@@ -7545,6 +7546,17 @@ function useContinuation() {
       }),
     [messageContent, thoughtResumable, geminiReplayTurns],
   );
+  // The same question with the "there must be text" half dropped, for a turn the backend
+  // gave up on before its first token. Selected unconditionally: a hook cannot be conditional.
+  const continuableIfEmpty = useMemo(
+    () =>
+      isContinuableContent(messageContent, {
+        thought: thoughtResumable,
+        replay: geminiReplayTurns.length > 0,
+        allowEmpty: true,
+      }),
+    [messageContent, thoughtResumable, geminiReplayTurns],
+  );
   // Audio input re-listens to the recording and answers afresh rather than resuming,
   // so continuing there would append a second answer.
   const fromAudioInput = useAuiState(({ thread }) =>
@@ -7565,6 +7577,9 @@ function useContinuation() {
     cancelled && !isProviderReportedReason(stamped?.reason)
       ? ("cancelled" as const)
       : stamped?.reason;
+  // A turn the backend gave up on can be empty, and both content gates below assume text,
+  // so together they hid the bar on exactly the turn that most needed it.
+  const noTextIsExpected = resumesWithoutText(reason);
   const carriedReasoning = thoughtResumable ? reasoning : "";
 
   const canResume =
@@ -7572,16 +7587,17 @@ function useContinuation() {
     !isRunning &&
     !researchRunId &&
     !researchActive &&
-    continuable &&
+    (noTextIsExpected ? continuableIfEmpty : continuable) &&
     modeAllowsContinuation({
       fromAudioInput,
       audioOutputModel,
     }) &&
-    Boolean(
-      partial.trim() ||
-        carriedReasoning.trim() ||
-        geminiReplayTurns.length > 0,
-    );
+    (noTextIsExpected ||
+      Boolean(
+        partial.trim() ||
+          carriedReasoning.trim() ||
+          geminiReplayTurns.length > 0,
+      ));
 
   const reasoningDuration = readThoughtDuration(metadata);
   // Hands the started run back, untyped: the only handle identified with THIS run.
