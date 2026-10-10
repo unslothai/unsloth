@@ -1058,7 +1058,7 @@ function listNumber(n: number, format: string | undefined): string {
   if (format === "none") return "";
   const lower = format?.startsWith("lower");
   // Out-of-range counters read as decimals, like CSS (roman stops at 3999); this also bounds the loops below.
-  if (n < 1 || n > (format?.endsWith("Roman") ? 3999 : 32767) || !Number.isInteger(n) || !(lower || format?.startsWith("upper"))) {
+  if (n < 1 || n > (format?.endsWith("Roman") ? 3999 : 26 * 256) || !Number.isInteger(n) || !(lower || format?.startsWith("upper"))) {
     return format === "decimalZero" && n >= 0 && n < 10 ? `0${n}` : String(n);
   }
   let text = "";
@@ -1208,11 +1208,16 @@ function injectDocxListNumbers(archive: Uint8Array): Uint8Array {
     }
     // Word caps a number format far below this; a longer one is not a label.
     if (format === "bullet" || text.length > 256) return;
-    const value = text.replace(/%([1-9])/g, (_, digit: string) => {
-      const { start, format } = levels[Number(digit) - 1];
-      return listNumber(counts[Number(digit) - 1] ?? start, legal && format !== "none" && !format?.startsWith("decimal") ? "decimal" : format);
-    });
-    if (!value.trim() || value.length > 256) return;
+    let value = "";
+    for (const [index, piece] of text.split(/%([1-9])/).entries()) {
+      if (index % 2 === 0) value += piece;
+      else {
+        const { start, format } = levels[Number(piece) - 1];
+        value += listNumber(counts[Number(piece) - 1] ?? start, legal && format !== "none" && !format?.startsWith("decimal") ? "decimal" : format);
+      }
+      if (value.length > 256) return;
+    }
+    if (!value.trim()) return;
     const run = doc.createElementNS(w, tag("r"));
     const t = doc.createElementNS(w, tag("t"));
     t.setAttributeNS("http://www.w3.org/XML/1998/namespace", "xml:space", "preserve");
@@ -1981,7 +1986,7 @@ function collectHtmlBlockText(
       if (!isItem(child)) return inner;
       const value = Number.parseInt((child as Element).getAttribute("value") ?? "", 10);
       if (!Number.isNaN(value)) number = value;
-      const label = listNumber(number, format);
+      const label = listNumber(number, lookUp(HTML_LIST_FORMATS, (child as Element).getAttribute("type") ?? "") ?? format);
       number += reversed ? -1 : 1;
       return `\n${label}. ${inner.trimStart()}`;
     })
@@ -1991,6 +1996,7 @@ function collectHtmlBlockText(
 
 const HTML_ROW_GROUP_TAGS = new Set(["table", "thead", "tbody", "tfoot"]);
 const HTML_LIST_FORMATS: Record<string, string> = {
+  "1": "decimal",
   a: "lowerAlpha",
   A: "upperAlpha",
   i: "lowerRoman",

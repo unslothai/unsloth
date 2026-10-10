@@ -1921,10 +1921,11 @@ test("list counters past the alphabet or out of range stay bounded", async () =>
         withAttributes(element("ol", item("p"), item("q")), { start: "27", type: "a" }),
         withAttributes(element("ol", item("r")), { start: "9".repeat(400), type: "i" }),
         withAttributes(element("ol", item("s")), { start: "4000", type: "I" }),
+        withAttributes(element("ol", item("t"), withAttributes(element("li", textNode("u")), { type: "A" }), item("v")), { type: "1" }),
       ),
     () => extractHtmlAttachmentText("<html/>"),
   );
-  assert.equal(extracted, "aa. p\n\nab. q\n\nInfinity. r\n\n4000. s");
+  assert.equal(extracted, "aa. p\n\nab. q\n\nInfinity. r\n\n4000. s\n\n1. t\n\nB. u\n\n3. v");
 });
 
 test("an html ordered list keeps its numbers", async () => {
