@@ -350,13 +350,13 @@ def test_ppo_training_keeps_padding_masks_then_restores():
 
 def test_llama_training_forward_mask_is_opt_in():
     # Every other trainer keeps today's behaviour: training mode drops the mask unless the flag is
-    # set or a label-less batch has a pad before a real token (test_llama_left_padding_training_mask.py).
+    # set or a label-less batch is left padded (test_llama_left_padding_training_mask.py).
     source = (RL_PY.parent / "llama.py").read_text(encoding = "utf-8")
     assert (
         "    elif (\n"
         "        self.training\n"
         '        and not getattr(self, "_unsloth_keep_padding_mask", False)\n'
-        '        and not (getattr(self, "_has_no_labels", False) and _has_pad_before_token(attention_mask))\n'
+        '        and not (getattr(self, "_has_no_labels", False) and _is_left_padded(attention_mask))\n'
         "    ):\n"
         "        attention_mask = None\n"
     ) in source

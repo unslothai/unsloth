@@ -23,19 +23,20 @@ def _lift(name):
 
 
 @pytest.mark.parametrize("dtype", [torch.long, torch.int32, torch.bool, torch.float32])
-def test_has_pad_before_token(dtype):
-    has_pad_before_token = _lift("_has_pad_before_token")
+def test_is_left_padded(dtype):
+    is_left_padded = _lift("_is_left_padded")
 
     def check(rows):
-        return has_pad_before_token(torch.tensor(rows).to(dtype))
+        return is_left_padded(torch.tensor(rows).to(dtype))
 
     assert check([[1, 1, 1], [1, 1, 1]]) is False
     assert check([[1, 1, 0], [1, 0, 0]]) is False
     assert check([[0, 1, 1], [1, 1, 1]]) is True
     assert check([[1, 1, 1], [0, 0, 1]]) is True
-    assert check([[1, 0, 1]]) is True
+    # Zeros only inside a row are not left padding; no collator builds them.
+    assert check([[1, 0, 1]]) is False
     assert check([[1]]) is False
-    assert has_pad_before_token(torch.ones(2, 1, 3, 3)) is False
+    assert is_left_padded(torch.ones(2, 1, 3, 3)) is False
 
 
 TINY = "trl-internal-testing/tiny-Qwen3ForCausalLM"
