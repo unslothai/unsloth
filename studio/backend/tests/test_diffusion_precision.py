@@ -134,7 +134,7 @@ def test_nvfp4_supported_requires_cuda_bf16_and_fp8_dtype(monkeypatch):
 
 
 def test_nvfp4_unsupported_when_torchao_lacks_the_weight_only_config(monkeypatch):
-    # studio pins torchao 0.14 for torch 2.9 and older, which has no NVFP4WeightOnlyConfig
+    # studio pins torchao 0.14 for torch 2.8 and older, which has no NVFP4WeightOnlyConfig
     _stub_torch(monkeypatch, cc = (8, 6), nvfp4_config = False)
     assert te_quant_supported(_target(cc = (8, 6)), TE_QUANT_NVFP4) is False
     assert te_quant_supported(_target(cc = (8, 6)), TE_QUANT_INT8) is True

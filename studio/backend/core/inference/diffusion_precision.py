@@ -184,7 +184,7 @@ def te_quant_unsupported_reason(mode: str) -> str:
 
 @lru_cache(maxsize = 1)
 def nvfp4_weight_only_importable() -> bool:
-    """Whether torchao ships a usable ``NVFP4WeightOnlyConfig`` (0.15+; Studio pins 0.14 on torch <= 2.9)."""
+    """Whether torchao ships a usable ``NVFP4WeightOnlyConfig`` (0.15+; Studio pins 0.14 on torch <= 2.8)."""
     try:
         from torchao.prototype.mx_formats import NVFP4WeightOnlyConfig
         from .diffusion_transformer_quant import _quiet_config
