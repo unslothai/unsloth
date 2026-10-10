@@ -210,6 +210,8 @@ _INLINE_EMPHASIS = {"strong": "**", "b": "**", "em": "*", "i": "*"}
 
 _ORDINAL_SUFFIXES = frozenset({"st", "nd", "rd", "th"})
 _GROUPED_EXPONENT = re.compile(r"\s|\S[-+−/=]")
+# deeper <sup> nests render as plain text: each tracked level rescans its whole suffix on close
+_MAX_SUP_DEPTH = 8
 
 # measured density: 0.94-1.00 for link lists, 0.13-0.90 for content headers
 _HEADER_LINK_DENSITY = 0.93
@@ -499,7 +501,7 @@ class _MarkdownRenderer(HTMLParser):
         # Blockquote state: stack of buffers so nested blockquotes get the right ">" depth.
         self._bq_stack: list[list[str]] = []
 
-        self._sup_starts: list[tuple[list[str], int, int] | None] = []
+        self._sup_starts: list[tuple[list[str], int, int, _HeaderFrame | None, int] | None] = []
 
     def _nested_buffer_open(self, frame: _HeaderFrame) -> bool:
         """True when a side buffer opened *inside* *frame* still holds content.
@@ -567,7 +569,7 @@ class _MarkdownRenderer(HTMLParser):
         opened = self._sup_starts.pop()
         if opened is None or opened[0] is not self._emit_target():
             return
-        target, start, heading_start = opened
+        target, start, heading_start, frame, frame_heading_start = opened
         joined = "".join(target[start:])
         raw = joined.strip()
         shown = self._site_links.clean(raw) if self._site_links is not None else raw
@@ -584,6 +586,9 @@ class _MarkdownRenderer(HTMLParser):
         target[start:] = [exponent]
         if target is self._link_text_parts and len(self._link_heading_parts) > heading_start:
             self._link_heading_parts[heading_start:] = [exponent]
+        # a stripped header keeps its headings from this copy
+        if frame is not None and "".join(frame.heading_parts[frame_heading_start:]) == joined:
+            frame.heading_parts[frame_heading_start:] = [exponent]
 
     def _seg_heading_prose(self) -> int:
         """Heading characters in this segment that the gate would otherwise read as
@@ -1041,8 +1046,17 @@ class _MarkdownRenderer(HTMLParser):
         elif tag == "sup":
             target = self._emit_target()
             reference = "reference" in (attr_dict.get("class") or "").split()
+            frame = self._header_stack[-1] if self._header_stack else None
             self._sup_starts.append(
-                None if reference else (target, len(target), len(self._link_heading_parts))
+                None
+                if reference or len(self._sup_starts) >= _MAX_SUP_DEPTH
+                else (
+                    target,
+                    len(target),
+                    len(self._link_heading_parts),
+                    frame,
+                    len(frame.heading_parts) if frame is not None else 0,
+                )
             )
 
         elif tag in _BLOCK_TAGS:

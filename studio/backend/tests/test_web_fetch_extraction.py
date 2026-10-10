@@ -762,6 +762,20 @@ def test_linked_header_title_keeps_one_exponent(title):
     assert "E=mc^2](/p)" in out
 
 
+def test_stripped_header_keeps_the_exponent_in_its_heading():
+    nav = "".join(f"<a href='/s{i}'>Section number {i}</a> " for i in range(12))
+    html = f"<header><h1>E=mc<sup>2</sup></h1>{nav}</header><p>{'Body text here. ' * 40}</p>"
+    out = html_to_markdown(html, main_content = True)
+    assert "# E=mc^2" in out
+    assert "E=mc2" not in out
+
+
+def test_deeply_nested_superscripts_track_a_bounded_depth():
+    out = html_to_markdown("<p>x" + "<sup>a" * 50 + "</sup>" * 50 + "</p>")
+    assert out.replace("^", "") == "x" + "a" * 50
+    assert out.count("^") == 8
+
+
 def test_footnote_superscripts_render_unchanged():
     html = (
         '<p>mass<sup class="reference"><a href="#cite_note-12">[12]</a></sup> and '
