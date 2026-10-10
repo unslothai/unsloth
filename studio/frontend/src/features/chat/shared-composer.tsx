@@ -1113,8 +1113,7 @@ export function SharedComposer({
     advanceQueue();
   }, [running, comparing]);
 
-  // Grow up to 12 rows, then scroll, inside an editor frame that animates its height: the single
-  // composer's editor, measured here because this textarea is not the autosize one.
+  // The single composer's editor frame (12 rows, animated height), measured by hand: no autosize here.
   const inputId = useId();
   const oneRowHeight = Math.round(40 * useUiSpaceScale());
   const [editorHeight, setEditorHeight] = useState(40);
@@ -1143,8 +1142,7 @@ export function SharedComposer({
     setEditorRows(Math.round((next - paddingY) / lineHeight));
   }, []);
   useEffect(measureEditor, [text]);
-  // Wrapping follows the width (window, sidebar, UI scale), so remeasure when it changes; not on
-  // height, which the frame animates itself.
+  // Width only: wrapping follows it, while the height is the frame's own animation.
   useEffect(() => {
     const editor = editorRef.current;
     if (!editor) return;
@@ -1157,8 +1155,7 @@ export function SharedComposer({
     observer.observe(editor);
     return () => observer.disconnect();
   }, [measureEditor]);
-  // Escape collapses, as in the single composer; not while the @-mention list or an IME owns it.
-  // Window capture runs before the mention popover's own Escape handling closes it.
+  // Window capture: runs before the mention popover's own Escape closes it.
   useEffect(() => {
     const collapseOnEscape = (event: globalThis.KeyboardEvent) => {
       if (
@@ -2656,7 +2653,6 @@ export function SharedComposer({
   const overflowPlusItems = PLUS_MENU_ORDER.filter((id) => !plusPins[id]);
 
   return (
-    // The single chat's composer, same surface and row (thread.tsx Composer); only its wiring differs.
     <div
       className="relative flex w-full flex-col"
       // Compare mode's composer, same as the thread's: find searches the conversation, not the
@@ -2749,8 +2745,7 @@ export function SharedComposer({
 
         <div
           className="unsloth-composer-line"
-          // Two rows, input over controls, as the single composer whenever it isn't dictating;
-          // this one dictates into the textarea, so it always is.
+          // Always two rows: dictation types into the textarea, it never swaps in a bar.
           data-expanded="true"
         >
           <div
