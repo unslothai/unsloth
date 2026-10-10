@@ -396,6 +396,16 @@ const auiFixture: any = {
     switchToNewThread: async () => {
       world.switchedToNewThread += 1;
     },
+    // The runtime's main thread follows the store unless a test pins another one.
+    getState: () => ({ mainThreadId: world.mainThreadId ?? state.activeThreadId }),
+  }),
+  // The mounted main thread's visible branch: a test's live messages, else its stored records.
+  thread: () => ({
+    getState: () => ({
+      messages:
+        world.liveMessages?.[state.activeThreadId] ??
+        (world.storedMessages[state.activeThreadId] ?? []).map(storedMessageToRunMessage),
+    }),
   }),
   // The switch clears a staged attachment before moving on, so the composer has to
   // exist here: a missing one throws inside the effect and the recount below it
@@ -434,6 +444,7 @@ const recountDeps: any[] = [];
 
 export function renderThreadContextUsageRecount(props: any = {}): void {
   const enabled = props.enabled ?? true;
+  const aui = auiFixture;
   // Read through the store the way the component's selectors do.
   const activeThreadId = state.activeThreadId;
   const checkpoint = state.params.checkpoint;
@@ -442,6 +453,7 @@ export function renderThreadContextUsageRecount(props: any = {}): void {
   const runActive = Object.values(state.runningByThreadId ?? {}).some(Boolean);
   const scope: any = {
     activeThreadId,
+    aui,
     checkpoint,
     enabled,
     loadedContextLength,
@@ -2205,31 +2217,61 @@ def test_a_cloud_estimate_is_repriced_after_a_run_but_exact_usage_stays(run_usag
     assert after.get("estimated") == expected["estimated"]
 
 
-def test_a_cloud_refill_never_reads_a_thread_the_server_does_not_have_yet():
-    """A just-sent chat still carries its runtime-local id; reading it 404s (Studio UI CI, IME smoke)."""
+@pytest.mark.parametrize("thread_id", ["thread-a", "__LOCALID_saved"])
+def test_the_cloud_refill_prices_the_mounted_branch_without_reading_storage(thread_id):
+    """The refill runs only for a mounted chat, whose runtime already holds the visible branch. A
+    storage read would 404 for a just-sent chat (Studio UI CI, IME smoke), and saved chats can carry
+    a runtime-minted __LOCALID_ id, so the id shape must not decide anything."""
+    out = _run(
+        textwrap.dedent(
+            f"""
+            // @ts-nocheck
+            import {{ renderThreadContextUsageRecount, seed, snapshot, useChatRuntimeStore, world }} from "./harness.ts";
+            let reads = 0;
+            const records = [
+              {{ id: "m1", role: "user", createdAt: 1, content: [{{ type: "text", text: "hello there" }}], metadata: {{}} }},
+              {{ id: "m2", role: "assistant", createdAt: 2, content: [{{ type: "text", text: "general kenobi" }}], metadata: {{}} }},
+            ];
+            world.liveMessages = {{ "{thread_id}": records.map((r) => ({{ ...r, createdAt: new Date(r.createdAt), metadata: {{ custom: {{}} }} }})) }};
+            world.storedMessages = new Proxy({{}}, {{ get() {{ reads += 1; return []; }} }});
+            seed({{ activeThreadId: "{thread_id}" }});
+            useChatRuntimeStore.getState().setCheckpoint("external::openai::gpt-x");
+            renderThreadContextUsageRecount();
+            console.log(JSON.stringify({{ reads, contextUsage: snapshot().contextUsage }}));
+            """
+        )
+    )
+    assert out["reads"] == 0, "the mounted branch is in memory; nothing should hit storage"
+    assert (out["contextUsage"] or {}).get("totalTokens") == 6
+
+
+def test_the_cloud_refill_never_prices_another_mounted_thread():
+    """New Chat leaves the outgoing conversation mounted until the switch settles, so the runtime's
+    main thread can lag the store; pricing it then would put another chat's count on the bar."""
     out = _run(
         textwrap.dedent(
             """
             // @ts-nocheck
             import { renderThreadContextUsageRecount, seed, snapshot, useChatRuntimeStore, world } from "./harness.ts";
-            let reads = 0;
-            world.storedMessages = new Proxy({}, { get(_t, key) { if (typeof key === "string" && key.startsWith("__LOCALID_")) reads += 1; return []; } });
-            seed({ activeThreadId: "__LOCALID_fresh" });
+            world.storedMessages["thread-a"] = [
+              { id: "m1", role: "user", createdAt: 1, content: [{ type: "text", text: "hello there" }], metadata: {} },
+            ];
+            world.mainThreadId = "thread-b";
+            seed({ activeThreadId: "thread-a" });
+            useChatRuntimeStore.getState().setCheckpoint("external::openai::gpt-x");
             renderThreadContextUsageRecount();
-            await new Promise((resolve) => setTimeout(resolve, 30));
-            console.log(JSON.stringify({ reads, contextUsage: snapshot().contextUsage }));
+            console.log(JSON.stringify({ contextUsage: snapshot().contextUsage }));
             """
         )
     )
-    assert out["reads"] == 0, "a runtime-local thread id has no server row to read"
     assert out["contextUsage"] is None
 
 
-@pytest.mark.parametrize("interruption", ["run_starts_mid_read", "load_still_cancelling"])
+@pytest.mark.parametrize("interruption", ["run_active", "load_still_cancelling"])
 def test_a_cloud_refill_waits_for_a_run_or_load_to_settle(interruption):
-    """A turn sent while the refill reads storage must not get the pre-send estimate, and a cancelled
-    local load clears usage again after the external pick, so both have to re-fire the refill."""
-    if interruption == "run_starts_mid_read":
+    """Nothing is published while a run or a model load is in flight (a cancelled local load clears
+    usage again after the external pick); both settling must re-fire the refill on the new branch."""
+    if interruption == "run_active":
         interrupt = 'seed({ runningByThreadId: { "thread-a": true } });'
         settle = """
             world.storedMessages["thread-a"].push(
@@ -2252,25 +2294,21 @@ def test_a_cloud_refill_waits_for_a_run_or_load_to_settle(interruption):
             ];
             seed({{ activeThreadId: "thread-a" }});
             useChatRuntimeStore.getState().setCheckpoint("external::openai::gpt-x");
-            renderThreadContextUsageRecount();
-            // Lands while the refill is still awaiting storage; the store selectors re-render.
             {interrupt}
             renderThreadContextUsageRecount();
-            await new Promise((resolve) => setTimeout(resolve, 30));
             const during = snapshot().contextUsage;
 
             {settle}
             renderThreadContextUsageRecount();
-            await new Promise((resolve) => setTimeout(resolve, 30));
             console.log(JSON.stringify({{ during, after: snapshot().contextUsage }}));
             """
         )
     )
     assert out["during"] is None, "nothing may be published while a run or load is in flight"
-    expected = 13 if interruption == "run_starts_mid_read" else 6
+    expected = 13 if interruption == "run_active" else 6
     assert (
         (out["after"] or {}).get("totalTokens") == expected
-    ), "the refill must run again once the run or load settles, against the current records"
+    ), "the refill must run again once the run or load settles, against the current branch"
 
 
 @pytest.mark.parametrize(

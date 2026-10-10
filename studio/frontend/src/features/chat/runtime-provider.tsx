@@ -190,7 +190,6 @@ import { chatHistoryClearBoundary } from "./utils/chat-history-clear-boundary";
 import { useBranchHeadRecorder } from "./hooks/use-branch-head-recorder";
 import { savedBranchHead } from "./utils/branch-head";
 import {
-  compareStoredMessages,
   createParentResolver,
   orderBySelectedBranch,
   orderParentsFirst,
@@ -3629,6 +3628,7 @@ function BranchHeadRecorder(): ReactElement | null {
 function ThreadContextUsageRecount({
   enabled,
 }: { enabled: boolean }): ReactElement | null {
+  const aui = useAui();
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const loadedContextLength = useChatRuntimeStore((s) => s.loadedContextLength);
@@ -3662,53 +3662,36 @@ function ThreadContextUsageRecount({
     modelLoading,
   ]);
 
-  // Cloud model or none: no exact count follows, and a mounted chat never reruns the history loader.
+  // Cloud model or none: no exact count follows, and a mounted chat never reruns the history loader,
+  // so estimate from the branch it shows. No storage read: a just-sent chat has no server row yet.
   useEffect(() => {
-    // modelLoading: an external pick that cancels a local load clears usage again once the cancel lands.
     if (!enabled || !activeThreadId || runActive || modelLoading) return;
-    // A runtime-local id has no server row yet: reading it 404s.
-    if (isAssistantLocalThreadId(activeThreadId)) return;
-    const exactCountFollows = (): boolean => {
-      const store = useChatRuntimeStore.getState();
-      return (
-        Boolean(store.params.checkpoint) &&
-        !isExternalModelId(store.params.checkpoint) &&
-        store.loadedContextLength != null
-      );
-    };
+    if (checkpoint && !isExternalModelId(checkpoint) && loadedContextLength != null) return;
     // An estimate is replaced, so a run that ends without usage still re-prices the new turn.
-    const shownIsExact = (): boolean => {
-      const shown = useChatRuntimeStore.getState().contextUsage;
-      return shown != null && !shown.estimated;
-    };
-    if (exactCountFollows() || shownIsExact()) return;
-    const threadId = activeThreadId;
-    void listStoredChatMessages(threadId)
-      .then((records) => {
-        const store = useChatRuntimeStore.getState();
-        if (store.activeThreadId !== threadId || shownIsExact()) return;
-        // A turn sent during the read would get a pre-send estimate; the run ending re-fires this.
-        if (store.modelLoading || Object.values(store.runningByThreadId).some(Boolean)) return;
-        if (exactCountFollows()) return;
-        const sorted = records.slice().sort(compareStoredMessages);
-        const branch = orderBySelectedBranch(
-          sorted,
-          resolveSavedBranchHead(sorted, savedBranchHead(threadId, sorted) ?? sorted.at(-1)?.id),
-        );
-        const saved = [...branch].reverse().find((m) => m.role === "assistant")?.metadata
-          ?.contextUsage as
-          | (Parameters<typeof store.setContextUsage>[0] & { modelId?: string })
-          | undefined;
-        const usage =
-          saved?.modelId && saved.modelId === store.params.checkpoint
-            ? saved
-            : estimateContextUsage(branch);
-        if (!usage) return;
-        store.setThreadContextUsage(threadId, usage);
-        store.setContextUsage(usage);
-      })
-      .catch(() => undefined);
-  }, [activeThreadId, checkpoint, enabled, loadedContextLength, modelLoading, runActive]);
+    const shown = useChatRuntimeStore.getState().contextUsage;
+    if (shown != null && !shown.estimated) return;
+    let messages: readonly ThreadMessage[];
+    try {
+      if (aui.threads().getState().mainThreadId !== activeThreadId) return;
+      messages = aui.thread().getState().messages;
+    } catch {
+      return;
+    }
+    const saved = [...messages].reverse().find((m) => m.role === "assistant")?.metadata
+      ?.custom?.contextUsage as
+      | (NonNullable<typeof shown> & { modelId?: string })
+      | undefined;
+    const usage =
+      saved?.modelId && saved.modelId === checkpoint
+        ? saved
+        : estimateContextUsage(
+            messages.map((m, index) => ({ ...m, createdAt: index })) as unknown as MessageRecord[],
+          );
+    if (!usage) return;
+    const store = useChatRuntimeStore.getState();
+    store.setThreadContextUsage(activeThreadId, usage);
+    store.setContextUsage(usage);
+  }, [activeThreadId, aui, checkpoint, enabled, loadedContextLength, modelLoading, runActive]);
 
   return null;
 }
