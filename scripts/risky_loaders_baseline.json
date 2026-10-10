@@ -587,6 +587,14 @@
       "reason": "Loads the sibling decision_gguf.py by a fixed name beside this file for GGUF export on MLX, without importing unsloth.models; nothing caller-supplied picks the file."
     },
     {
+      "file": "unsloth/models/diffusion_masked.py",
+      "rule": "dynamic-import",
+      "sink": "get_class_from_dynamic_module",
+      "digest": "1900c2baf63f723f",
+      "count": 1,
+      "reason": "Falls back to the auto class unless the caller passed trust_remote_code; revision pinned to the config commit hash."
+    },
+    {
       "file": "unsloth/models/loader.py",
       "rule": "dynamic-import",
       "sink": "import_module",
