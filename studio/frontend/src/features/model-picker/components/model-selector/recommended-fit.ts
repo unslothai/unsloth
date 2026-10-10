@@ -388,8 +388,7 @@ export function orderRecommendedRows<
     if (!firstSeen.has(key)) firstSeen.set(key, i);
   });
   const pinIndex = new Map(pinnedFamilies.map((key, i) => [key, i]));
-  // A row's position within its family, so pinned families show their lead rows (Qwen-Image 2.1 and
-  // its Turbo, both "Fast FP8") together before their GGUF rows.
+  // Row position within its family: pinned families' lead rows ("Fast FP8") come before their GGUFs.
   const slotOf = new Map<number, number>();
   const seenPerFamily = new Map<string, number>();
   ordered.forEach((r, i) => {
