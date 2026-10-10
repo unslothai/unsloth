@@ -221,9 +221,9 @@ def enable_sample_packing(
     collator = getattr(trainer, "data_collator", None)
     if collator is None or not hasattr(collator, "torch_call"):
         return
+    _enable_hf_packed_attention()
     if getattr(collator, "_unsloth_packing_wrapped", False):
         return
-    _enable_hf_packed_attention()
 
     if hasattr(collator, "padding_free"):
         collator.padding_free = True

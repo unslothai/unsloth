@@ -13,6 +13,7 @@
 """Packed rows on the transformers modeling path run xformers / flash varlen instead of SDPA over a
 dense block-causal mask; anything else falls through to the wrapped "sdpa" unchanged."""
 
+import inspect
 import os
 import weakref
 
@@ -80,8 +81,39 @@ def _sliding_or_softcapped(module, kwargs) -> bool:
         return True
     if kwargs.get("softcap") or getattr(module, "sinks", None) is not None:
         return True
+    if getattr(module, "attn_logit_softcapping", None):
+        return True
     config = getattr(module, "config", None)
     return bool(getattr(config, "attn_logit_softcapping", None))
+
+
+_TORCH_VARLEN = []
+_TORCH_VARLEN_DEVICES = {}
+
+
+def _torch_varlen(device):
+    """torch's own flash varlen (native GQA, a third of xformers' host cost per call), else None."""
+    if not _TORCH_VARLEN:
+        fn = None
+        try:
+            from torch.nn.attention.varlen import varlen_attn
+
+            # Older releases spell causality differently; only the window_size / enable_gqa API is used.
+            if {"scale", "window_size", "enable_gqa"} <= inspect.signature(
+                varlen_attn
+            ).parameters.keys():
+                fn = varlen_attn
+        except Exception:
+            fn = None
+        _TORCH_VARLEN.append(fn)
+    fn = _TORCH_VARLEN[0]
+    if fn is None or torch.version.hip is not None:
+        return None
+    ok = _TORCH_VARLEN_DEVICES.get(device.index)
+    if ok is None:
+        ok = torch.cuda.get_device_capability(device)[0] >= 8
+        _TORCH_VARLEN_DEVICES[device.index] = ok
+    return fn if ok else None
 
 
 def _sdpa_packed_varlen(
@@ -90,12 +122,21 @@ def _sdpa_packed_varlen(
     key,
     value,
     attention_mask,
+    *args,
     dropout = 0.0,
     scaling = None,
     is_causal = None,
     **kwargs,
 ):
     orig = _ORIG_SDPA[0]
+    if args:
+        # Positional dropout / scaling / is_causal (and later parameters) go back exactly as given.
+        named = {"dropout": dropout, "scaling": scaling, "is_causal": is_causal}
+        for name in list(named)[: len(args)]:
+            named.pop(name)
+        if kwargs.get("packed_seq_lengths") is not None:
+            HF_PACKED_ATTENTION_STATS["fallback"] += 1
+        return orig(module, query, key, value, attention_mask, *args, **named, **kwargs)
     if kwargs.get("packed_seq_lengths") is None or _disabled():
         return orig(
             module,
@@ -108,22 +149,13 @@ def _sdpa_packed_varlen(
             is_causal = is_causal,
             **kwargs,
         )
-    from .attention_dispatch import (
-        FLASH_VARLEN,
-        XFORMERS,
-        AttentionConfig,
-        AttentionContext,
-        run_attention,
-        select_attention_backend,
-    )
+    from .attention_dispatch import FLASH_VARLEN, XFORMERS, select_attention_backend
     from .packing import get_packed_info_from_kwargs
 
-    backend = select_attention_backend(use_varlen = True)
     bsz, n_heads, q_len, head_dim = query.shape
-    seq_info = None
+    seq_info = torch_varlen = backend = None
     if (
-        backend in (FLASH_VARLEN, XFORMERS)
-        and not torch.compiler.is_compiling()
+        not torch.compiler.is_compiling()
         and bsz == 1
         and q_len > 0
         and query.is_cuda
@@ -137,6 +169,7 @@ def _sdpa_packed_varlen(
         and query.dtype == key.dtype == value.dtype
         and not _autocast_dtype_differs(query)
         and not dropout
+        and is_causal is not False
         and getattr(module, "is_causal", True)
         and kwargs.get("position_bias") is None
         and kwargs.get("cache") is None
@@ -144,7 +177,18 @@ def _sdpa_packed_varlen(
         and n_heads % key.shape[1] == 0
         and not _sliding_or_softcapped(module, kwargs)
     ):
-        seq_info = get_packed_info_from_kwargs(kwargs, query.device)
+        torch_varlen = _torch_varlen(query.device)
+        if torch_varlen is not None and (
+            query.requires_grad or key.requires_grad or value.requires_grad
+        ):
+            # Same flash-2 varlen backward as run_attention guards: past int32 indexing it faults.
+            from .attention_dispatch import _varlen_backward_overflows_int32
+            n_seqs = kwargs["packed_seq_lengths"].numel()
+            if _varlen_backward_overflows_int32(n_seqs, q_len, n_heads, head_dim):
+                torch_varlen = None
+        backend = select_attention_backend(use_varlen = True)
+        if torch_varlen is not None or backend in (FLASH_VARLEN, XFORMERS):
+            seq_info = get_packed_info_from_kwargs(kwargs, query.device)
     if seq_info is None or not _mask_is_block_causal(attention_mask, seq_info[1], q_len):
         HF_PACKED_ATTENTION_STATS["fallback"] += 1
         return orig(
@@ -161,6 +205,23 @@ def _sdpa_packed_varlen(
     HF_PACKED_ATTENTION_STATS["fast"] += 1
     scale = head_dim**-0.5 if scaling is None else scaling
     n_kv_heads = key.shape[1]
+    _, cu_seqlens, max_seqlen = seq_info
+    if torch_varlen is not None:
+        out = torch_varlen(
+            query[0].transpose(0, 1),
+            key[0].transpose(0, 1),
+            value[0].transpose(0, 1),
+            cu_seqlens,
+            cu_seqlens,
+            max_seqlen,
+            max_seqlen,
+            scale = scale,
+            window_size = (-1, 0),
+            enable_gqa = n_kv_heads != n_heads,
+        )
+        return out.unsqueeze(0), None
+    from .attention_dispatch import AttentionConfig, AttentionContext, run_attention
+
     config = AttentionConfig(
         backend = backend,
         n_kv_heads = n_kv_heads,
@@ -182,7 +243,8 @@ def _sdpa_packed_varlen(
         attention_mask = None,
         causal_mask = None,
     )
-    return run_attention(config = config, context = context, Q = query, K = key, V = value), None
+    out = run_attention(config = config, context = context, Q = query, K = key, V = value)
+    return out.contiguous(), None
 
 
 def enable_hf_packed_attention() -> bool:
@@ -204,7 +266,7 @@ def enable_hf_packed_attention() -> bool:
     # Zoo sdpa routers re-run per load and check their sentinel on the installed entry: forward them.
     try:
         for name, value in vars(current).items():
-            if name.startswith("_unsloth_"):
+            if name.startswith(("_unsloth_", "__unsloth_")):
                 setattr(_sdpa_packed_varlen, name, value)
     except Exception:
         pass

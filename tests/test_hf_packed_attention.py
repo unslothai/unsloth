@@ -116,14 +116,17 @@ _CUDA = pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA
         "autocast_dtype",
         "paged_cache",
         "no_mask",
+        "module_softcap",
+        "not_causal",
+        "positional",
     ],
 )
 def test_packed_calls_that_varlen_cannot_express_fall_back(monkeypatch, why):
     """Each reason alone sends the call to the wrapped sdpa; "none" is the control that takes varlen."""
     from unsloth.utils.attention_dispatch import HAS_FLASH_ATTENTION, HAS_XFORMERS
 
-    if not (HAS_FLASH_ATTENTION or HAS_XFORMERS):
-        pytest.skip("needs xformers or flash-attn")
+    if not (HAS_FLASH_ATTENTION or HAS_XFORMERS or hpa._torch_varlen(torch.device("cuda", 0))):
+        pytest.skip("needs a varlen kernel")
     seen, orig = _calls()
     hpa._ORIG_SDPA[0] = orig
     monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
@@ -136,6 +139,8 @@ def test_packed_calls_that_varlen_cannot_express_fall_back(monkeypatch, why):
         module.sliding_window = 4
     elif why == "softcap":
         module.config = types.SimpleNamespace(attn_logit_softcapping = 50.0)
+    elif why == "module_softcap":
+        module.attn_logit_softcapping = 30.0
     elif why == "sinks":
         module.sinks = torch.zeros(4)
     elif why == "fp32":
@@ -160,6 +165,10 @@ def test_packed_calls_that_varlen_cannot_express_fall_back(monkeypatch, why):
     if why == "autocast_dtype":
         with torch.autocast("cuda", dtype = torch.float16):
             out = hpa._sdpa_packed_varlen(module, q, q, v, mask, dropout = dropout, **kwargs)
+    elif why == "not_causal":
+        out = hpa._sdpa_packed_varlen(module, q, q, v, mask, is_causal = False, **kwargs)
+    elif why == "positional":
+        out = hpa._sdpa_packed_varlen(module, q, q, v, mask, 0.0, **kwargs)
     else:
         out = hpa._sdpa_packed_varlen(module, q, q, v, mask, dropout = dropout, **kwargs)
     if why == "none":
@@ -204,11 +213,16 @@ def test_fullgraph_compile_keeps_the_wrapped_sdpa(monkeypatch):
 
 
 @_CUDA
-def test_reentrant_checkpoint_of_grouped_heads(monkeypatch):
+@pytest.mark.parametrize("route", ["torch", "dispatch"])
+def test_reentrant_checkpoint_of_grouped_heads(monkeypatch, route):
     from unsloth.utils.attention_dispatch import HAS_FLASH_ATTENTION, HAS_XFORMERS
 
-    if not (HAS_FLASH_ATTENTION or HAS_XFORMERS):
-        pytest.skip("needs xformers or flash-attn")
+    if route == "torch" and hpa._torch_varlen(torch.device("cuda", 0)) is None:
+        pytest.skip("this torch has no window_size / enable_gqa varlen_attn")
+    if route == "dispatch":
+        if not (HAS_FLASH_ATTENTION or HAS_XFORMERS):
+            pytest.skip("needs xformers or flash-attn")
+        monkeypatch.setattr(hpa, "_torch_varlen", lambda device: None)
     from torch.utils.checkpoint import checkpoint
     from transformers.integrations.sdpa_attention import sdpa_attention_forward
 
@@ -263,12 +277,17 @@ def test_install_forwards_router_sentinels_and_runs_once(monkeypatch):
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA device")
+@pytest.mark.parametrize("route", ["torch", "dispatch"])
 @pytest.mark.parametrize("n_kv", [8, 2])
-def test_varlen_matches_sdpa_over_the_dense_mask(monkeypatch, n_kv):
+def test_varlen_matches_sdpa_over_the_dense_mask(monkeypatch, n_kv, route):
     from unsloth.utils.attention_dispatch import HAS_FLASH_ATTENTION, HAS_XFORMERS
 
-    if not (HAS_FLASH_ATTENTION or HAS_XFORMERS):
-        pytest.skip("needs xformers or flash-attn")
+    if route == "torch" and hpa._torch_varlen(torch.device("cuda", 0)) is None:
+        pytest.skip("this torch has no window_size / enable_gqa varlen_attn")
+    if route == "dispatch":
+        if not (HAS_FLASH_ATTENTION or HAS_XFORMERS):
+            pytest.skip("needs xformers or flash-attn")
+        monkeypatch.setattr(hpa, "_torch_varlen", lambda device: None)
     from transformers.integrations.sdpa_attention import sdpa_attention_forward
 
     hpa._ORIG_SDPA[0] = sdpa_attention_forward
