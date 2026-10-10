@@ -12,16 +12,12 @@ from typing import Any, Optional
 QUERY_CHUNK_SIZE = 512
 # MiB one score tensor may take before MPS attention is split; unset = 1/8 of the GPU working set.
 SCORE_BUDGET_ENV = "UNSLOTH_DIFFUSION_ATTN_SCORE_BUDGET_MB"
-# Score elements per MPS call. macOS 15 / torch 2.11 SDPA returned wrong values (max error 0.19 vs an fp32 CPU
-# reference) for one 32 x 4096 x 4352 call (1024x1024) and from 0.9 * 2**29 elements in bf16 and fp32, while
-# 0.45 * 2**29 was exact on macOS 15 and 26.
+# Score elements per MPS call: macOS 15 / torch 2.11 SDPA returns wrong values from about 0.9 * 2**29 elements.
 MPS_SCORE_ELEMENTS = 2**28
 
 
 def mps_score_budget() -> int:
-    """Bytes one ``batch x heads x queries x keys`` score tensor may take on MPS before attention is split.
-
-    Sizes whose scores fit (768x768 is 0.35 GB in bf16) keep one call, exactly as before."""
+    """Bytes one ``batch x heads x queries x keys`` score tensor may take on MPS before attention is split."""
     raw = (os.environ.get(SCORE_BUDGET_ENV) or "").strip()
     if raw:
         try:
@@ -37,8 +33,6 @@ def mps_score_budget() -> int:
 
 
 def _query_rows(query, key, budget: Optional[int]) -> int:
-    """Query rows per call: ``QUERY_CHUNK_SIZE`` without a budget, else as many as the budget and
-    ``MPS_SCORE_ELEMENTS`` hold (at least that)."""
     if budget is None:
         return QUERY_CHUNK_SIZE
     per_row = max(query.shape[0] * query.shape[2] * key.shape[1], 1)
@@ -191,11 +185,8 @@ def _processor_class():
 
 
 def needs_bounded_attention(target: Any) -> bool:
-    """ROCm with only SDPA math, or MPS.
-
-    MPS SDPA ignores ``sdpa_kernel`` (so the probe reads every backend as available) and, in the torch Studio installs
-    on macOS, builds the full score matrix plus its softmax copy for any query over 8 tokens: about 34 GB per call at
-    2048x2048 in bf16, which the uncapped MPS allocator serves from swap."""
+    """ROCm with only SDPA math, or MPS: MPS SDPA ignores ``sdpa_kernel`` and builds the full score matrix (about
+    34 GB per call at 2048x2048 bf16), served from swap."""
     if getattr(target, "device", None) == "mps":
         return True
     if getattr(target, "backend", None) != "rocm":
