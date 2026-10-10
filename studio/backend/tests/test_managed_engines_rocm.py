@@ -86,6 +86,17 @@ def test_rocm_engine_never_shares_studios_torch(rocm, monkeypatch):
     assert install.download_bytes("vllm") == sum(install._compat_file("vllm")["sizes"].values())
 
 
+def test_rocm_engine_stays_isolated_even_when_studio_matches_its_lock(rocm, monkeypatch):
+    # The ROCm torch loads /opt/rocm instead of bundled libraries, so Studio's packages never stand in
+    # for it, even on a Studio that happens to run the same Python with the very same builds.
+    pins = {name: version for name, (version, _) in install._pins("vllm").items()}
+    monkeypatch.setattr(install, "_studio_packages", lambda: dict(pins))
+    monkeypatch.setattr(install, "_torch_runtime", lambda: {"torch"})
+    monkeypatch.setattr(install, "_python", lambda engine: sys.version_info[:2])
+    plan = install.install_plan("vllm")
+    assert not plan["shared"] and not plan["provided"]
+
+
 def test_rocm_smoke_imports_the_hip_torch(rocm):
     smoke = install._smoke_source("vllm")
     assert "assert torch.version.hip" in smoke and "import torchao" in smoke

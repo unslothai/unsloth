@@ -453,8 +453,10 @@ def install_plan(engine: str) -> dict:
             and all(SpecifierSet(spec).contains(studio[name], prereleases = True) for spec in specs)
         )
 
+    # The ROCm build's torch loads /opt/rocm rather than bundled libraries: never Studio's.
     shared = (
-        sys.implementation.name == "cpython"
+        profile(engine)["platform"] == "cuda"
+        and sys.implementation.name == "cpython"
         and sys.version_info[:2] == _python(engine)
         and "torch" in studio
         and all(fits(name) for name in runtime - _TOOLCHAIN)
