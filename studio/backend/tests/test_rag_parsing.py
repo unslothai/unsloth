@@ -811,6 +811,14 @@ def test_html_table_spans_keep_columns_aligned(tmp_path):
     assert text == "Plan | Price | \nPro | Monthly | $20\n | Annual | $200"
 
 
+def test_html_trailing_rowspan_keeps_columns_aligned(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        "<table><tr><td>Item</td><td rowspan=2>Notes</td></tr><tr><td>Next</td></tr></table>",
+    )
+    assert text == "Item | Notes\nNext | "
+
+
 def test_html_layout_and_nested_tables_keep_their_lines(tmp_path):
     text = _parse_html(
         tmp_path,

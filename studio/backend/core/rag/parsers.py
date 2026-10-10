@@ -111,11 +111,14 @@ class _Stripper(HTMLParser):
         row, table.row = table.row, None
         if row is None:
             return
+        missing = max(len(table.spans) - len(row), 0)
         for col in range(len(row), len(table.spans)):
             table.spans[col] = max(table.spans[col] - 1, 0)
-        self._span_budget -= max(len(table.spans) - len(row), 0)
+        self._span_budget -= missing
         if self._span_budget < 0:
             table.spans.clear()
+        else:
+            row.extend([None] * missing)
         while table.spans and not table.spans[-1]:
             table.spans.pop()
         if len(row) == 1:
