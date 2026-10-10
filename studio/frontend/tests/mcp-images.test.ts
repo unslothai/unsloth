@@ -15,6 +15,7 @@ import {
   MCP_IMAGES_MARKER,
   boundMcpImageEnvelopes,
   mcpImagesEnvelope,
+  isImageToolName,
   splitMcpImages,
   stripMcpImageEnvelopes,
 } from "../src/features/chat/api/mcp-images.ts";
@@ -56,7 +57,7 @@ test("replaying a tool result re-attaches its images for the backend", () => {
   assert.match(adapter, /content \+= mcpImagesEnvelope\(result\.images\);/);
 });
 
-test("only an MCP tool call carries the privileged envelope", () => {
+test("only an image tool call carries the privileged envelope", () => {
   // A client tool is free to answer {text, images:[{data, mimeType}]}, which is
   // the shape isMcpImageToolResult accepts. Without the provenance gate its bytes
   // would be promoted into model image input on the next request.
@@ -66,7 +67,7 @@ test("only an MCP tool call carries the privileged envelope", () => {
   // The envelope is gated...
   assert.match(
     adapter,
-    /if \(isMcpImageToolResult\(result\) && isMcpToolName\(tc\.toolName\)\) \{\n\s*content \+= mcpImagesEnvelope\(result\.images\);/,
+    /if \(isMcpImageToolResult\(result\) && isImageToolName\(tc\.toolName\)\) \{\n\s*content \+= mcpImagesEnvelope\(result\.images\);/,
   );
   // ...but the wrapper branch is NOT: excluding a non-MCP wrapper there dropped it
   // into JSON.stringify, which replays the whole base64 array as prompt text.
@@ -424,7 +425,7 @@ test("the send path bounds the run's own results before serializing them", () =>
   );
   assert.match(
     adapter,
-    /const messages = boundMcpImageResults\(rawMessages, \{\n\s*readsImages: targetReadsImages,\n\s*localMarkers: mcpImagesLocalMarkers,\n\s*\}\);\n\s*const survivingMessages = pruneOutboundHistory\(\n\s*messages,/,
+    /const messages = boundMcpImageResults\(rawMessages, \{\n\s*readsImages: targetReadsImages,\n\s*localMarkers: mcpImagesLocalMarkers,\n\s*\}\);\n\s*const replayReasoning = [\s\S]*?;\n\s*const survivingMessages = pruneOutboundHistory\(messages, replayReasoning\);/,
   );
   assert.doesNotMatch(adapter, /boundMcpImageEnvelopes\(outboundMessages/);
   assert.doesNotMatch(adapter, /stripMcpImageEnvelopes\(outboundMessages/);
@@ -580,10 +581,24 @@ test("a client tool's structured result is not unwrapped as the MCP wrapper", ()
   // is still unwrapped, since JSON of it would replay base64 as prompt text.
   assert.match(
     adapter,
-    /\(isMcpImageToolResult\(result\) &&\n\s*\(isMcpToolName\(tc\.toolName\) \|\| isBareMcpImageWrapper\(result\)\)\) \|\|/,
+    /\(isMcpImageToolResult\(result\) &&\n\s*\(isImageToolName\(tc\.toolName\) \|\| isBareMcpImageWrapper\(result\)\)\) \|\|/,
   );
   assert.match(
     adapter,
     /export function isBareMcpImageWrapper\(val: unknown\): boolean \{\n\s*if \(!isMcpImageToolResult\(val\)\) return false;\n\s*const keys = Object\.keys\(val as object\)\.filter\(\(key\) => key !== "text" && key !== "images"\);\n\s*return keys\.length === 0;/,
   );
+});
+
+
+test("sandbox image viewer replays bounded images without trusting arbitrary tools", () => {
+  assert.equal(isImageToolName("view_image"), true);
+  assert.equal(isImageToolName("python"), false);
+  assert.equal(isImageToolName("mcp__files__image"), true);
+  const messages = [
+    { role: "tool", name: "view_image", content: RESULT },
+    { role: "tool", name: "python", content: RESULT },
+  ];
+  const bounded = boundMcpImageEnvelopes(messages);
+  assert.equal(splitMcpImages(bounded[0].content).images.length, 1);
+  assert.equal(splitMcpImages(bounded[1].content).images.length, 0);
 });

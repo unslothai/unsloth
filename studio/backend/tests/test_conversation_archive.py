@@ -1393,6 +1393,42 @@ def test_an_edit_past_the_probe_cutoff_still_retires_the_turn(conn):
     assert found is None or "OLDSTEP-7777" not in found[0]
 
 
+def test_an_embedder_download_still_pending_is_logged_once_without_a_traceback(
+    conn, monkeypatch, caplog
+):
+    """Each fit must not log the same traceback again, and recall still answers lexically."""
+    import logging
+
+    from core.rag import embeddings
+
+    _archive(_turn("how do I bake sourdough", "start a starter"))
+
+    def pending(*_args, **_kwargs):
+        raise embeddings.EmbeddingModelDownloadRequiredError(
+            "Embedding model 'unsloth/Qwen3-Embedding-0.6B' is not downloaded yet."
+        )
+
+    monkeypatch.setattr(embeddings, "token_counter", pending)
+    monkeypatch.setattr(embeddings, "encode_with_identity", pending)
+    monkeypatch.setattr(conversation_archive, "_EMBEDDER_PENDING_LOGGED", set(), raising = False)
+    monkeypatch.setattr(conversation_archive, "_INGEST_FAILED", False)
+    turn = _turn("what is the deploy code", "the deploy code is 5150")
+    caplog.set_level(logging.INFO, logger = conversation_archive.logger.name)
+
+    for _ in range(3):
+        assert _archive([dict(m) for m in turn]) == 0
+        assert conversation_archive.degraded() is True
+        found = conversation_archive.recall(THREAD, "sourdough")
+        assert found is not None and "sourdough" in found[0]
+
+    records = [r for r in caplog.records if r.name == conversation_archive.logger.name]
+    assert not [r for r in records if r.levelno >= logging.WARNING or r.exc_info]
+    assert [r.getMessage() for r in records if "embedder_pending" in r.getMessage()] == [
+        "conversation_archive.embedder_pending: "
+        "Embedding model 'unsloth/Qwen3-Embedding-0.6B' is not downloaded yet."
+    ]
+
+
 def test_a_failed_archive_marks_the_feature_degraded(conn, monkeypatch):
     """And a later success clears it, so one bad moment is not permanent."""
     from core.rag import embeddings

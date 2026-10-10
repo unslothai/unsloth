@@ -3,6 +3,7 @@
 
 """CPU reproduction: an authorized image unload cancels a later foreign generation."""
 
+import json
 import sys
 import secrets
 import threading
@@ -17,7 +18,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from auth import policy
-from auth.authentication import get_current_subject
+from auth.authentication import authenticated_via_api_key, get_current_subject
 from core.inference import diffusion_engine_router, gpu_arbiter
 from core.inference.diffusion import DiffusionBackend
 from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
@@ -46,9 +47,18 @@ def client_for(account):
             reset_account(token)
 
     app.dependency_overrides[get_current_subject] = subject
+    app.dependency_overrides[authenticated_via_api_key] = lambda: False
     app.include_router(inference.studio_router, prefix = "/api/inference")
     app.include_router(video.router, prefix = "/api/inference")
     return TestClient(app)
+
+
+def _write_local_pipeline(root: Path) -> None:
+    scheduler = ["diffusers", "FlowMatchEulerDiscreteScheduler"]
+    manifest = {"_class_name": "ZImagePipeline", "scheduler": scheduler}
+    (root / "model_index.json").write_text(json.dumps(manifest))
+    (root / "scheduler").mkdir()
+    (root / "scheduler" / "scheduler_config.json").write_text("{}")
 
 
 @pytest.mark.parametrize("unloader", ["alice", "bob", "unsloth"])
@@ -70,7 +80,7 @@ def test_cpu_load_cancellation_requires_its_owner(
     backend = DiffusionBackend()
     entered, release, response_ready = (threading.Event() for _ in range(3))
     threads, errors, responses = [], [], []
-    (tmp_path / "model_index.json").write_text("{}", encoding = "utf-8")
+    _write_local_pipeline(tmp_path)
     monkeypatch.setattr(gpu_arbiter, "_owner", None)
     monkeypatch.setattr(gpu_arbiter, "_owner_account", None)
     for name in ("_resident_accounts", "_prior_resident_accounts", "_resident_sharers"):
@@ -165,7 +175,7 @@ def test_pending_caller_cannot_block_load_owner_eject(
     backend = DiffusionBackend()
     entered, pending, release, response_ready = (threading.Event() for _ in range(4))
     threads, errors, responses = [], [], {}
-    (tmp_path / "model_index.json").write_text("{}", encoding = "utf-8")
+    _write_local_pipeline(tmp_path)
     monkeypatch.setattr(gpu_arbiter, "_owner", None)
     monkeypatch.setattr(gpu_arbiter, "_owner_account", None)
     for name in ("_resident_accounts", "_prior_resident_accounts", "_resident_sharers"):

@@ -38,7 +38,14 @@ class _RespQueue:
         self.sent.append(item)
 
 
-def _run_mlx_loop(monkeypatch, cmds):
+def _run_mlx_loop(
+    monkeypatch,
+    cmds,
+    *,
+    backend = None,
+    command_queue = None,
+    **kwargs,
+):
     """Drive the real MLX command loop with the init short-circuited."""
     from utils.hardware import hardware as _hw
 
@@ -54,7 +61,11 @@ def _run_mlx_loop(monkeypatch, cmds):
 
     import core.inference.mlx_inference as mlx_mod
 
-    monkeypatch.setattr(mlx_mod, "MLXInferenceBackend", lambda *a, **k: SimpleNamespace())
+    monkeypatch.setattr(
+        mlx_mod,
+        "MLXInferenceBackend",
+        lambda *a, **k: backend if backend is not None else SimpleNamespace(),
+    )
 
     from loggers.config import LogConfig
 
@@ -62,10 +73,11 @@ def _run_mlx_loop(monkeypatch, cmds):
 
     resp = _RespQueue()
     worker.run_inference_process(
-        cmd_queue = _CmdQueue([*cmds, {"type": "shutdown"}]),
+        cmd_queue = command_queue or _CmdQueue([*cmds, {"type": "shutdown"}]),
         resp_queue = resp,
         cancel_event = SimpleNamespace(is_set = lambda: False, clear = lambda: None, set = lambda: None),
         config = {"model_name": "unsloth/orpheus-3b-0.1-ft"},
+        **kwargs,
     )
     return resp.sent
 
@@ -118,3 +130,110 @@ def test_every_mlx_command_gets_exactly_one_reply(monkeypatch, cmd_type):
 
     addressed = [m for m in sent if m.get("request_id") == "r4"]
     assert len(addressed) == 1, addressed
+
+
+@pytest.mark.parametrize(
+    "setting, enabled",
+    [(None, True), ("0", False), ("false", False), ("1", True), ("TRUE", True), ("yes", True)],
+)
+def test_mlx_idle_warmth_is_default_on_bounded_and_failure_safe(monkeypatch, setting, enabled):
+    import sys
+    from types import ModuleType
+
+    now, ticks = [100.0], []
+    monkeypatch.setattr(worker.time, "monotonic", lambda: now[0])
+    if setting is None:
+        monkeypatch.delenv("UNSLOTH_MLX_GPU_KEEP_WARM", raising = False)
+    else:
+        monkeypatch.setenv("UNSLOTH_MLX_GPU_KEEP_WARM", setting)
+    core = ModuleType("mlx.core")
+    core.float32 = object()
+    core.zeros = lambda *a, **k: 0
+    core.eval = lambda x: ticks.append(x)
+    mlx = ModuleType("mlx")
+    mlx.core = core
+    monkeypatch.setitem(sys.modules, "mlx", mlx)
+    monkeypatch.setitem(sys.modules, "mlx.core", core)
+    warmth = worker._MLXIdleWarmth()
+    warmth.tick(True)
+    assert ticks == []
+    warmth.active()
+    assert warmth.timeout(True) == (0.5 if enabled else 1.0)
+    warmth.tick(False)
+    assert ticks == []
+    warmth.tick(True)
+    assert ticks == ([1] if enabled else [])
+    ticks.clear()
+    now[0] += 60
+    warmth.tick(True)
+    assert ticks == []
+    warmth.active()
+    warmth.clear()
+    warmth.tick(True)
+    assert ticks == []
+    warmth.active()
+    core.eval = lambda x: (_ for _ in ()).throw(RuntimeError("tick failure"))
+    warmth.tick(True)
+    assert not warmth.enabled
+    assert warmth.timeout(True) == 1.0
+
+
+@pytest.mark.parametrize("ending", ["unload", "reset", "cancel"])
+@pytest.mark.parametrize("blocked", [None, "drain", "teardown", "busy"])
+def test_mlx_loop_ticks_only_when_loaded_recent_and_idle(monkeypatch, blocked, ending):
+    now, ticks = [100.0], []
+    monkeypatch.setattr(worker.time, "monotonic", lambda: now[0])
+    monkeypatch.setenv("UNSLOTH_MLX_GPU_KEEP_WARM", "1")
+    monkeypatch.setattr(
+        worker._MLXIdleWarmth,
+        "tick",
+        lambda self, loaded: ticks.append(loaded) if self.timeout(loaded) == 0.5 else None,
+    )
+    backend = SimpleNamespace(active_model_name = "model", reset_generation_state = lambda: None)
+    monkeypatch.setattr(worker, "_dispatch_generate", lambda *a, **k: None)
+    monkeypatch.setattr(
+        worker, "_handle_unload", lambda *a, **k: setattr(backend, "active_model_name", None)
+    )
+    blocked_now = [False]
+    busy = [False]
+    original_batch = worker._ResidentBatch
+
+    class Batch(original_batch):
+        @property
+        def rows_in_flight(self):
+            return int(busy[0])
+
+        def step(self, waiting = None):
+            pass
+
+    monkeypatch.setattr(worker, "_ResidentBatch", Batch)
+
+    class Commands:
+        step = 0
+
+        def get(self, timeout = None):
+            self.step += 1
+            if self.step == 1:
+                return {"type": "generate", "request_id": "warm"}
+            if self.step in (2, 3):
+                now[0] += 0.5
+                blocked_now[0] = self.step == 2 and blocked in ("drain", "teardown")
+                busy[0] = self.step == 2 and blocked == "busy"
+                raise _queue.Empty
+            if self.step == 4:
+                return {"type": ending}
+            if self.step == 5:
+                raise _queue.Empty
+            return {"type": "shutdown"}
+
+    _run_mlx_loop(
+        monkeypatch,
+        [],
+        backend = backend,
+        command_queue = Commands(),
+        drain_event = SimpleNamespace(is_set = lambda: blocked == "drain" and blocked_now[0]),
+        pending_teardowns = SimpleNamespace(
+            any_in_flight = lambda: blocked == "teardown" and blocked_now[0], taken = lambda: None
+        ),
+    )
+    assert ticks == (["model", "model"] if blocked is None else ["model"])

@@ -14,13 +14,16 @@ export const SETTINGS_TABS = [
   "appearance",
   "resources",
   "chat",
+  "sandbox",
   "voice",
   "connections",
+  "library",
   "data",
   "api-keys",
   "remote-lan",
   "agents",
   "keyboard-shortcuts",
+  "browser",
   "debugging",
   "about",
 ] as const;
@@ -29,9 +32,17 @@ export type SettingsTab = (typeof SETTINGS_TABS)[number];
 
 export type SettingsScrollTarget =
   | "about-updates"
+  | "api-keys-decision-api"
   | "appearance-sidebar-nav"
   | "chat-composer"
-  | "chat-canvas-network";
+  | "browser-html-network"
+  | "general-hub"
+  | "general-rag-embedding"
+  /** Old name of sandbox-permissions, from when Permissions lived in General. */
+  | "general-permissions"
+  | "library-storage"
+  | "resources-caches"
+  | "sandbox-permissions";
 
 /** Which archive the Data tab should open straight into. */
 export type ArchivedShelf = "chats" | "images" | "videos" | "audio";
@@ -39,6 +50,7 @@ export type ArchivedShelf = "chats" | "images" | "videos" | "audio";
 interface OpenDialogOptions {
   scrollTarget?: SettingsScrollTarget;
   focusFallback?: HTMLElement | null;
+  opener?: HTMLElement | null;
 }
 
 interface SettingsDialogState {
@@ -54,16 +66,25 @@ interface SettingsDialogState {
   // toast). DataTab uses it as its initial subpage, then clears it. See requestsFor
   // for how long it lives unconsumed.
   archivedRequested: ArchivedShelf | null;
+  logFamilyRequested: string | null;
+  logSourcePathRequested: string | null;
+  /** Bumped per View logs click, so a repeated identical request still reads as new. */
+  logRequestSeq: number;
   // Set when something asks for one connection's settings (the picker's Connected group gear).
   // ConnectionsTab hands it to the form, then clears it. Same lifetime as archivedRequested.
   connectionRequested: string | null;
+  decisionTryRequested: string | null;
   openDialog: (tab?: SettingsTab, options?: OpenDialogOptions) => void;
   openArchivedChats: () => void;
   openArchivedMedia: (shelf: Exclude<ArchivedShelf, "chats">) => void;
   /** Open Connections with `providerId`'s edit form already up. */
   openConnectionSettings: (providerId: string) => void;
   consumeArchivedChatsRequest: () => void;
+  openLogs: (family?: string, sourcePath?: string | null) => void;
+  consumeLogFamilyRequest: () => void;
   consumeConnectionRequest: () => void;
+  openDecisionTry: (model: string) => void;
+  consumeDecisionTryRequest: () => void;
   consumeScrollTarget: (target: SettingsScrollTarget) => void;
   closeDialog: () => void;
   setActiveTab: (tab: SettingsTab) => void;
@@ -80,12 +101,17 @@ function captureOpener(): HTMLElement | null {
 function focusForOpen(
   state: SettingsDialogState,
   requestedFallback: HTMLElement | null = null,
+  requestedOpener?: HTMLElement | null,
 ) {
   if (state.open) {
     return {
       opener: state.opener,
       openerFallback: state.openerFallback,
     };
+  }
+  // Handoff from a dialog that closed first (the command palette).
+  if (requestedOpener !== undefined) {
+    return { opener: requestedOpener, openerFallback: requestedFallback };
   }
   const opener = captureOpener();
   if (opener?.closest("[data-slot=dialog-content]")) {
@@ -116,9 +142,27 @@ function loadInitialTab(): SettingsTab {
 const SCROLL_TARGET_TAB: Record<SettingsScrollTarget, SettingsTab> = {
   "chat-composer": "chat",
   "about-updates": "about",
+  "api-keys-decision-api": "api-keys",
   "appearance-sidebar-nav": "appearance",
-  "chat-canvas-network": "chat",
+  "browser-html-network": "browser",
+  "general-hub": "general",
+  "general-rag-embedding": "general",
+  "general-permissions": "sandbox",
+  "library-storage": "library",
+  "resources-caches": "resources",
+  "sandbox-permissions": "sandbox",
 };
+
+/** Permissions moved from General to the top of Sandbox; an old link still lands there. */
+export function resolveScrollRequest(
+  tab: SettingsTab | undefined,
+  target: SettingsScrollTarget | undefined,
+): { tab: SettingsTab | undefined; target: SettingsScrollTarget | undefined } {
+  if (target === "general-permissions" || target === "sandbox-permissions") {
+    return { tab: "sandbox", target: "sandbox-permissions" };
+  }
+  return { tab, target };
+}
 
 /**
  * The unconsumed deep-link requests that outlive a navigation landing on `tab`.
@@ -136,10 +180,26 @@ function requestsFor(state: SettingsDialogState, tab: SettingsTab) {
         ? state.scrollTarget
         : null,
     archivedRequested: tab === "data" ? state.archivedRequested : null,
+    logFamilyRequested: tab === "debugging" ? state.logFamilyRequested : null,
+    logSourcePathRequested:
+      tab === "debugging" ? state.logSourcePathRequested : null,
     connectionRequested:
       tab === "connections" ? state.connectionRequested : null,
   };
 }
+
+export const NO_PENDING_LOG_REQUEST = "|";
+
+export function pendingLogRequestKey(state: {
+  logFamilyRequested: string | null;
+  logSourcePathRequested: string | null;
+  logRequestSeq?: number;
+}): string {
+  if (state.logFamilyRequested == null && state.logSourcePathRequested == null)
+    return NO_PENDING_LOG_REQUEST;
+  return `${state.logFamilyRequested ?? ""}|${state.logSourcePathRequested ?? ""}|${state.logRequestSeq ?? 0}`;
+}
+
 
 export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
   open: false,
@@ -148,19 +208,26 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
   opener: null,
   openerFallback: null,
   archivedRequested: null,
+  logFamilyRequested: null,
+  logSourcePathRequested: null,
+  logRequestSeq: 0,
   connectionRequested: null,
-  openDialog: (tab, options) =>
+  decisionTryRequested: null,
+  openDialog: (requestedTab, options) =>
     set((state) => {
+      const { tab, target } = resolveScrollRequest(requestedTab, options?.scrollTarget);
       const next = tab ?? state.activeTab;
       const pending = requestsFor(state, next);
       return {
         open: true,
         activeTab: next,
         // A caller that names a target replaces whatever was still pending.
-        scrollTarget: options?.scrollTarget ?? pending.scrollTarget,
+        scrollTarget: target ?? pending.scrollTarget,
         archivedRequested: pending.archivedRequested,
+        logFamilyRequested: pending.logFamilyRequested,
+        logSourcePathRequested: pending.logSourcePathRequested,
         connectionRequested: pending.connectionRequested,
-        ...focusForOpen(state, options?.focusFallback),
+        ...focusForOpen(state, options?.focusFallback, options?.opener),
       };
     }),
   openArchivedChats: () =>
@@ -169,6 +236,8 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
       activeTab: "data",
       scrollTarget: null,
       archivedRequested: "chats",
+      logFamilyRequested: null,
+      logSourcePathRequested: null,
       connectionRequested: null,
       ...focusForOpen(state),
     })),
@@ -178,6 +247,8 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
       activeTab: "data",
       scrollTarget: null,
       archivedRequested: shelf,
+      logFamilyRequested: null,
+      logSourcePathRequested: null,
       connectionRequested: null,
       ...focusForOpen(state),
     })),
@@ -187,11 +258,40 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
       activeTab: "connections",
       scrollTarget: null,
       archivedRequested: null,
+      logFamilyRequested: null,
+      logSourcePathRequested: null,
       connectionRequested: providerId,
       ...focusForOpen(state),
     })),
   consumeArchivedChatsRequest: () => set({ archivedRequested: null }),
+  openLogs: (family, sourcePath) =>
+    set((state) => ({
+      open: true,
+      activeTab: "debugging",
+      scrollTarget: null,
+      archivedRequested: null,
+      logFamilyRequested: family ?? null,
+      logSourcePathRequested: sourcePath ?? null,
+      logRequestSeq: state.logRequestSeq + 1,
+      connectionRequested: null,
+      ...focusForOpen(state),
+    })),
+  consumeLogFamilyRequest: () =>
+    set({ logFamilyRequested: null, logSourcePathRequested: null }),
   consumeConnectionRequest: () => set({ connectionRequested: null }),
+  openDecisionTry: (model) =>
+    set((state) => ({
+      open: true,
+      activeTab: "api-keys",
+      scrollTarget: "api-keys-decision-api",
+      archivedRequested: null,
+      logFamilyRequested: null,
+      logSourcePathRequested: null,
+      connectionRequested: null,
+      decisionTryRequested: model,
+      ...focusForOpen(state),
+    })),
+  consumeDecisionTryRequest: () => set({ decisionTryRequested: null }),
   consumeScrollTarget: (target) =>
     set((state) => ({
       scrollTarget: state.scrollTarget === target ? null : state.scrollTarget,
@@ -204,7 +304,10 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
       open: false,
       scrollTarget: null,
       archivedRequested: null,
+      logFamilyRequested: null,
+      logSourcePathRequested: null,
       connectionRequested: null,
+      decisionTryRequested: null,
     }),
   setActiveTab: (tab) => {
     try {

@@ -7,6 +7,7 @@ import { useOnlineStatus } from "@/features/hub/hooks/use-online-status";
 import { LruMap } from "@/features/hub/lib/lru-map";
 import { isHuggingFaceOffline } from "@/features/hub/lib/network";
 import { fingerprintToken } from "@/features/hub/lib/token-fingerprint";
+import { withLiteralUnknownTags } from "@/lib/markdown-data-images";
 import {
   type MarkdownPluginNeeds,
   markdownPluginNeeds,
@@ -15,7 +16,7 @@ import { scheduleIdleTask } from "@/lib/schedule-idle-task";
 import { cn } from "@/lib/utils";
 import { confirmExternalLink } from "../stores/external-link-confirm";
 import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
-import { code as streamdownCode } from "@streamdown/code";
+import { codePlugin } from "@/components/assistant-ui/shared-code-plugin";
 import { math as streamdownMath } from "@streamdown/math";
 import { mermaid as streamdownMermaid } from "@streamdown/mermaid";
 import {
@@ -68,6 +69,7 @@ const README_ALLOWED_TAGS: NonNullable<
   source: ["src", "type", "media"],
   track: ["src", "kind", "srclang", "label", "default"],
 };
+const README_REHYPE_PLUGINS = withLiteralUnknownTags(README_ALLOWED_TAGS);
 
 const README_RENDER_CHAR_LIMIT = 120_000;
 const README_CACHE_TTL_MS = 60_000;
@@ -267,7 +269,7 @@ function ReadmePlaceholder({
 }) {
   return (
     <div
-      className="min-h-[108px] space-y-3 py-0.5"
+      className="min-h-[calc(108px*var(--ui-space-scale,1))] space-y-3 py-0.5"
       aria-busy="true"
       aria-live="polite"
     >
@@ -338,7 +340,7 @@ async function loadReadmeFromCache({
 }
 
 function loadPlugins(needs: MarkdownPluginNeeds): ReadmePlugins {
-  const plugins: ReadmePlugins = { code: streamdownCode };
+  const plugins: ReadmePlugins = { code: codePlugin };
   if (needs.math) plugins.math = streamdownMath;
   if (needs.mermaid) plugins.mermaid = streamdownMermaid;
   return plugins;
@@ -504,7 +506,7 @@ export function ModelReadme({
         ? current.error
         : readmeUnavailableMessage(subject);
     return (
-      <p className="min-h-[44px] text-ui-12p5 text-muted-foreground">
+      <p className="min-h-[calc(44px*var(--ui-space-scale,1))] text-ui-12p5 text-muted-foreground">
         {errorMessage}
       </p>
     );
@@ -512,7 +514,7 @@ export function ModelReadme({
 
   if (!current.body) {
     return (
-      <p className="min-h-[44px] text-ui-12p5 text-muted-foreground">
+      <p className="min-h-[calc(44px*var(--ui-space-scale,1))] text-ui-12p5 text-muted-foreground">
         {readmeMissingMessage(subject)}
       </p>
     );
@@ -536,6 +538,7 @@ export function ModelReadme({
           controls={false}
           components={README_COMPONENTS}
           allowedTags={README_ALLOWED_TAGS}
+          rehypePlugins={README_REHYPE_PLUGINS}
           urlTransform={urlTransform}
         >
           {current.body}

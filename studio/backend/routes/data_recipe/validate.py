@@ -23,6 +23,8 @@ from loggers import get_logger
 from models.data_recipe import RecipePayload, ValidateError, ValidateResponse
 from utils.utils import safe_error_detail, safe_curated_detail, log_and_http_error
 
+from .jobs import _resolve_seed_endpoint
+
 logger = get_logger(__name__)
 router = APIRouter()
 
@@ -78,6 +80,20 @@ def _validate_github_seed_static(source: dict[str, Any]) -> list[ValidateError]:
     return errors
 
 
+def _all_blocks_dropped_message(columns: list[Any]) -> str:
+    # Reword only: Data Designer's profiler also fails when no generated column is kept (#10836).
+    names = [
+        column.name
+        for column in columns
+        if getattr(column, "drop", False) and column.name != "_internal_row_id"
+    ]
+    listed = f" ({', '.join(names)})" if names else ""
+    return (
+        f'Every block is set to "Keep out of final dataset"{listed}. Turn that off on at least '
+        "one block: source data fields cannot be the only columns in the output."
+    )
+
+
 def _collect_validation_errors(recipe: dict[str, Any]) -> list[ValidateError]:
     try:
         from data_designer.engine.compiler import (
@@ -116,7 +132,10 @@ def _collect_validation_errors(recipe: dict[str, Any]) -> list[ValidateError]:
             continue
         code = getattr(violation.type, "value", None)
         path = violation.column if violation.column else None
-        message = str(violation.message).strip() or "Validation failed."
+        if code == "all_columns_dropped":
+            message = _all_blocks_dropped_message(config.columns)
+        else:
+            message = str(violation.message).strip() or "Validation failed."
         errors.append(
             ValidateError(
                 message = message,
@@ -149,6 +168,7 @@ def validate(payload: RecipePayload, via_api_key: ViaApiKey = False) -> Validate
         require_ui_session_for_local_commands(via_api_key)
 
     _patch_local_providers(recipe)
+    _resolve_seed_endpoint(recipe)
 
     github_source = _github_seed_source(recipe)
     if github_source is not None:
@@ -197,7 +217,12 @@ def validate(payload: RecipePayload, via_api_key: ViaApiKey = False) -> Validate
             exc_info = True,
         )
         detail = safe_curated_detail(exc, fallback = "Validation failed.")
-        parsed_errors = _collect_validation_errors(recipe)
+        try:
+            parsed_errors = _collect_validation_errors(recipe)
+        except Exception:
+            # It re-reads the seed, so an unreadable one raises here too; escaping turns an
+            # answerable "this recipe is wrong" into a 500.
+            parsed_errors = []
         return ValidateResponse(
             valid = False,
             errors = parsed_errors or [ValidateError(message = detail)],

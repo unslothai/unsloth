@@ -10,12 +10,22 @@ Route-level tests stub ``generate_chat_response`` entirely, so these call
 import importlib
 import importlib.machinery
 import json
+import re
 import sys
 import threading
 import types
 from unittest.mock import MagicMock
 
 import pytest
+
+
+# #12382: with the date setting on and no system prompt, the chat's first message opens with
+# this note. It is the only rewrite of the user's text these assertions allow.
+_DATE_NOTE = re.compile(r"\A\[Current date: \d{4}-\d{2}-\d{2}\]\n\n")
+
+
+def _without_date_note(text):
+    return _DATE_NOTE.sub("", text, count = 1) if isinstance(text, str) else text
 
 
 def _shared_setup_1(__file__):
@@ -464,6 +474,95 @@ def test_the_named_template_list_form_survives_the_mirror():
     assert mlx_backend.models["m"]["chat_template_info"]["processor_template"] == listed
 
 
+_MARKS_EACH_IMAGE = (
+    "{% for m in messages %}<|im_start|>{{ m['role'] }}\n"
+    "{% if m['content'] is string %}{{ m['content'] }}{% else %}{% for c in m['content'] %}"
+    "{% if c['type'] == 'image' %}<|vision_start|><|image_pad|><|vision_end|>"
+    "{% elif c['type'] == 'text' %}{{ c['text'] }}{% endif %}{% endfor %}{% endif %}"
+    "<|im_end|>\n{% endfor %}{% if add_generation_prompt %}<|im_start|>assistant\n{% endif %}"
+)
+
+_MARKS_ONE_IMAGE = (
+    "{% for m in messages %}<|user|>\n"
+    "{% if m['content'] is string %}{{ m['content'] }}{% else %}"
+    "{% if m['content'] | selectattr('type', 'equalto', 'image') | list %}<image>\n{% endif %}"
+    "{% for c in m['content'] %}{% if c['type'] == 'text' %}{{ c['text'] }}{% endif %}{% endfor %}"
+    "{% endif %}<|end|>\n{% endfor %}{% if add_generation_prompt %}<|assistant|>\n{% endif %}"
+)
+
+
+class _TemplateProcessor:
+    image_processor = object()
+    all_special_tokens: list = []
+
+    def __init__(self, chat_template, image_token):
+        self.chat_template = chat_template
+        self.image_token = image_token
+
+    def apply_chat_template(
+        self,
+        messages,
+        add_generation_prompt = False,
+        **_kwargs,
+    ):
+        import jinja2
+        return (
+            jinja2.Environment()
+            .from_string(self.chat_template)
+            .render(messages = messages, add_generation_prompt = add_generation_prompt)
+        )
+
+
+@pytest.mark.parametrize(
+    "chat_template, image_token, model_type, served",
+    [
+        (_MARKS_EACH_IMAGE, "<|image_pad|>", "qwen2_5_vl", [2, 4]),
+        (_MARKS_ONE_IMAGE, "<image>", "llava", [4]),
+        (_MARKS_EACH_IMAGE, "<|image_pad|>", "mllama", [2, 4]),
+    ],
+    ids = ["marks each image", "marks one image", "mlx-vlm single-image model"],
+)
+def test_a_transformers_vision_model_is_served_every_image_its_template_can_mark(
+    chat_template, image_token, model_type, served
+):
+    import base64
+    import io
+    import types
+
+    from PIL import Image
+
+    from models.inference import ChatMessage
+
+    def picture(size):
+        buffer = io.BytesIO()
+        Image.new("RGB", (size, size), "white").save(buffer, format = "PNG")
+        encoded = base64.b64encode(buffer.getvalue()).decode()
+        return {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{encoded}"}}
+
+    inf = _inference_module()
+    loader = inf.InferenceBackend.__new__(inf.InferenceBackend)
+    processor = _TemplateProcessor(chat_template, image_token)
+    model = types.SimpleNamespace(config = types.SimpleNamespace(model_type = model_type))
+    loader.models = {"vl": {"tokenizer": processor, "processor": processor, "model": model}}
+    loader._load_chat_template_info("vl")
+
+    _pytest = _shared_setup_1(__file__)
+    backend, passthrough = _shared_setup_3()
+    backend.models["sf-model"]["chat_template_info"] = loader.models["vl"]["chat_template_info"]
+    payload = passthrough._request(
+        messages = [
+            ChatMessage(role = "user", content = [picture(2), {"type": "text", "text": "first"}]),
+            ChatMessage(role = "assistant", content = "a white square"),
+            ChatMessage(role = "user", content = [picture(4), {"type": "text", "text": "brighter?"}]),
+        ],
+        stream = False,
+    )
+    _shared_setup_2(_pytest, backend, passthrough, payload)
+
+    call = backend.calls[0]
+    assert [image.width for image in call["images"] or [call["image"]]] == served
+
+
 def test_a_processor_body_that_cannot_advertise_empties_the_healing_catalog():
     """The route profiles the mirrored processor body for image turns, so a body with no
     tool handling at all must leave nothing authorized to heal."""
@@ -491,7 +590,12 @@ def test_the_worker_forwards_the_processor_template_to_the_parent():
     import ast
     import pathlib
 
-    source = pathlib.Path("core/inference/worker.py").read_text()
+    # Anchored on this file, like the same read in test_native_context_length and
+    # test_audio_unsupported_backend_error. A bare relative path resolves against the
+    # working directory, so this only found the worker when pytest happened to be
+    # invoked from studio/backend and raised FileNotFoundError from anywhere else.
+    worker = pathlib.Path(__file__).resolve().parents[1] / "core/inference/worker.py"
+    source = worker.read_text("utf-8")
     tree = ast.parse(source)
     keys: set = set()
     for node in ast.walk(tree):
@@ -855,6 +959,8 @@ def test_a_named_processor_template_is_classified_without_tool_use():
     it advertised a catalog the prompt never shows (#10092)."""
     import asyncio
 
+    from fastapi import HTTPException
+
     _pytest = _shared_setup_1(__file__)
     import routes.inference as inf
 
@@ -896,12 +1002,14 @@ def test_a_named_processor_template_is_classified_without_tool_use():
                 payload, request = passthrough._Request(), current_subject = "u"
             )
 
-        asyncio.run(_run())
+        with _pytest.raises(HTTPException) as exc:
+            asyncio.run(_run())
     finally:
         monkeypatch.undo()
 
-    assert backend.calls, "generation never ran"
-    assert not backend.calls[0]["tools"]
+    assert exc.value.status_code == 400
+    assert exc.value.detail["error"]["param"] == "tools"
+    assert backend.calls == []
 
 
 def test_a_historical_image_stays_on_the_turn_that_sent_it():
@@ -1002,7 +1110,7 @@ def test_a_historical_image_stays_on_the_turn_that_sent_it_without_tools():
     earlier, owning, later = [m for m in sent if m.get("role") == "user"]
     assert [p.get("type") for p in owning["content"]] == ["image", "text"]
     assert owning["content"][1]["text"] == "IMAGE_QUESTION about the picture"
-    assert earlier["content"] == "EARLIER_QUESTION with no picture"
+    assert _without_date_note(earlier["content"]) == "EARLIER_QUESTION with no picture"
     assert later["content"] == "LATER_QUESTION unrelated to it"
 
 

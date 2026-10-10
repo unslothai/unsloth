@@ -20,11 +20,16 @@ on:
       - 'studio/install_python_stack.py'
       - 'studio/install_llama_prebuilt.py'
       - 'studio/install_whisper_prebuilt.py'
+      - 'studio/install_audio_cpp_prebuilt.py'
+      # install_audio_cpp_prebuilt.py imports its archive helpers from here.
+      - 'studio/install_sd_cpp_prebuilt.py'
       - 'studio/install_node_prebuilt.py'
       - 'studio/install_manifest.py'
       - 'studio/prebuilt_core.py'
       # install_node_prebuilt.py reads the default version and archive digests from here.
       - 'studio/node_prebuilt_pins.json'
+      # install_audio_cpp_prebuilt.py checks every runtime archive against these digests.
+      - 'studio/audio_cpp_prebuilt_pins.json'
       - 'studio/setup.ps1'
       - 'install.ps1'
       - 'studio/backend/requirements/**'
@@ -35,6 +40,7 @@ on:
       - 'studio/frontend/package-lock.json'
       - 'studio/backend/core/data_recipe/oxc-validator/package.json'
       - 'studio/backend/core/data_recipe/oxc-validator/package-lock.json'
+      - 'studio/backend/core/data_recipe/oxc-validator/.npmrc'
       # The harness below and the proxy it measures with.
       - 'tests/studio/install/test_update_idempotency.py'
       - 'tests/studio/install/idempotency_proxy.py'
@@ -43,6 +49,30 @@ on:
       - 'unsloth_cli/_system_dir_guard.py'
       - 'pyproject.toml'
       - '.github/workflows/studio-update-smoke.yml'
+      # The second update must report the llama.cpp prebuilt as up to date and
+      # validated. That outcome is computed by backend.utils.prebuilt.llama_backend
+      # (imported by install_llama_prebuilt.py), backend.utils.auth_safe and the
+      # vendored truststore (imported by prebuilt_core.py), wheel_utils.py and
+      # uv_path_safety.py (imported by install_python_stack.py), and mlx_repair.py
+      # (its MLX health probe). setup.sh runs nvidia_probe.py. The job drives this checkout's CLI, whose
+      # __init__.py imports every command module, and its pytest runs load the root and
+      # tests/studio/install conftests.
+      - 'studio/backend/__init__.py'
+      - 'studio/backend/utils/__init__.py'
+      - 'studio/backend/utils/auth_safe.py'
+      - 'studio/backend/utils/prebuilt/__init__.py'
+      - 'studio/backend/utils/prebuilt/llama_backend.py'
+      - 'studio/backend/vendor/truststore/**'
+      - 'studio/backend/utils/wheel_utils.py'
+      - 'studio/backend/utils/uv_path_safety.py'
+      - 'studio/backend/utils/mlx_repair.py'
+      - 'studio/nvidia_probe.py'
+      - 'unsloth_cli/*.py'
+      - 'unsloth_cli/commands/*.py'
+      - 'tests/conftest.py'
+      - 'tests/__init__.py'
+      - 'tests/_shared/**'
+      - 'tests/studio/install/conftest.py'
       - '.github/scripts/retry-with-apt-lock.sh'
       # The install step in this workflow is `uses:` on that composite action,
       # so an edit to the action changes what this workflow actually runs.
@@ -64,11 +94,16 @@ on:
       - 'studio/install_python_stack.py'
       - 'studio/install_llama_prebuilt.py'
       - 'studio/install_whisper_prebuilt.py'
+      - 'studio/install_audio_cpp_prebuilt.py'
+      # install_audio_cpp_prebuilt.py imports its archive helpers from here.
+      - 'studio/install_sd_cpp_prebuilt.py'
       - 'studio/install_node_prebuilt.py'
       - 'studio/install_manifest.py'
       - 'studio/prebuilt_core.py'
       # install_node_prebuilt.py reads the default version and archive digests from here.
       - 'studio/node_prebuilt_pins.json'
+      # install_audio_cpp_prebuilt.py checks every runtime archive against these digests.
+      - 'studio/audio_cpp_prebuilt_pins.json'
       - 'studio/setup.ps1'
       - 'install.ps1'
       - 'studio/backend/requirements/**'
@@ -79,6 +114,7 @@ on:
       - 'studio/frontend/package-lock.json'
       - 'studio/backend/core/data_recipe/oxc-validator/package.json'
       - 'studio/backend/core/data_recipe/oxc-validator/package-lock.json'
+      - 'studio/backend/core/data_recipe/oxc-validator/.npmrc'
       # The harness below and the proxy it measures with.
       - 'tests/studio/install/test_update_idempotency.py'
       - 'tests/studio/install/idempotency_proxy.py'
@@ -87,6 +123,30 @@ on:
       - 'unsloth_cli/_system_dir_guard.py'
       - 'pyproject.toml'
       - '.github/workflows/studio-update-smoke.yml'
+      # The second update must report the llama.cpp prebuilt as up to date and
+      # validated. That outcome is computed by backend.utils.prebuilt.llama_backend
+      # (imported by install_llama_prebuilt.py), backend.utils.auth_safe and the
+      # vendored truststore (imported by prebuilt_core.py), wheel_utils.py and
+      # uv_path_safety.py (imported by install_python_stack.py), and mlx_repair.py
+      # (its MLX health probe). setup.sh runs nvidia_probe.py. The job drives this checkout's CLI, whose
+      # __init__.py imports every command module, and its pytest runs load the root and
+      # tests/studio/install conftests.
+      - 'studio/backend/__init__.py'
+      - 'studio/backend/utils/__init__.py'
+      - 'studio/backend/utils/auth_safe.py'
+      - 'studio/backend/utils/prebuilt/__init__.py'
+      - 'studio/backend/utils/prebuilt/llama_backend.py'
+      - 'studio/backend/vendor/truststore/**'
+      - 'studio/backend/utils/wheel_utils.py'
+      - 'studio/backend/utils/uv_path_safety.py'
+      - 'studio/backend/utils/mlx_repair.py'
+      - 'studio/nvidia_probe.py'
+      - 'unsloth_cli/*.py'
+      - 'unsloth_cli/commands/*.py'
+      - 'tests/conftest.py'
+      - 'tests/__init__.py'
+      - 'tests/_shared/**'
+      - 'tests/studio/install/conftest.py'
       - '.github/scripts/retry-with-apt-lock.sh'
       # The install step in this workflow is `uses:` on that composite action,
       # so an edit to the action changes what this workflow actually runs.
@@ -108,7 +168,7 @@ concurrency:
   # a RUNNING main job being killed, but GitHub cancels any PENDING run in the group
   # the moment a newer one is queued, so a merge burst still leaves only the tip.
   # See studio-backend-ci.yml, which is grouped per commit on main for that reason.
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -328,9 +388,11 @@ jobs:
           for p in \
             "$HOME/.unsloth/studio" \
             "$HOME/.unsloth/whisper.cpp" \
+            "$HOME/.unsloth/audio.cpp" \
             "$HOME/.unsloth/.llama.cpp.install.lock" \
             "$HOME/.unsloth/.node.install.lock" \
             "$HOME/.unsloth/.whisper.cpp.install.lock" \
+            "$HOME/.unsloth/.audio.cpp.install.lock" \
             "$HOME/.local/share/unsloth" \
             "$HOME/Desktop/Unsloth Studio.desktop" \
             "$HOME/.local/bin/unsloth"; do

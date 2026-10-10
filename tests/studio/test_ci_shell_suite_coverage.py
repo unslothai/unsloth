@@ -1,28 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Guards that the installer test suites actually run on a PR.
+"""guard installer shell-suite discovery, path triggers, and parallel result reporting."""
 
-Two ways coverage went missing without anyone noticing:
-
-1. Backend CI ran a hardcoded list of tests/sh/*.sh files. New tests were added
-   to the directory and never to the list, so by the time this was written the
-   list was seven files behind -- including test_strixhalo_wsl_reroute.sh, the
-   only shell coverage of the ROCm WSL reroute, which had never run on a PR.
-   tests/run_all.sh, the local entrypoint, had drifted the other way.
-
-2. Backend CI's path filter did not include install.sh / install.ps1, while a
-   large share of the suites it runs (tests/sh/*, tests/studio/install/*) assert
-   against exactly those two files. An install-only change -- the shape most
-   AMD/ROCm routing fixes take, e.g. #7277 / #7293 / #7300 -- skipped the
-   workflow that tests it.
-
-Both are now discovery-based. These tests fail if either reverts to a list, if a
-shell test lands somewhere the discovery cannot see it, or if a skip is added
-without a reason next to it.
-"""
-
+import os
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -37,7 +21,6 @@ _PARITY_CI = _WORKFLOWS / "cross-platform-parity-ci.yml"
 _RUN_ALL = REPO_ROOT / "tests" / "run_all.sh"
 _SH_DIR = REPO_ROOT / "tests" / "sh"
 
-# Files deliberately not run by the auto-discovered Backend CI step.
 _EXPECTED_CI_SKIPS = {
     "test_install_rollback_lifecycle.sh": "runs on both platforms in cross-platform-parity-ci.yml",
 }
@@ -316,3 +299,126 @@ class TestPowerShellTestsRunOnAPr:
             if not (REPO_ROOT / test).is_file()
         ]
         assert not missing, f"workflows invoke PowerShell tests that do not exist: {missing}"
+
+
+class TestWindowsPowerShellStepsAreGated:
+    """A step that runs powershell.exe on a multi-OS job must say so.
+
+    Windows PowerShell 5.1 is the host the Desktop app launches the installer in, so the .ps1
+    suites here have a second leg that runs it. `powershell` does not exist on a hosted Linux or
+    macOS runner, and a step without the guard fails the whole job for a reason that has nothing
+    to do with the change under test. Observed exactly that way: a merge dropped the `if:` line
+    from one such step because an identical line already appeared above it.
+
+    A job pinned to windows-latest needs no guard, so the rule is about jobs whose runner is not
+    provably Windows: a matrix expression, or anything else that is not a windows-* literal.
+    """
+
+    @staticmethod
+    def _multi_os_jobs(doc):
+        for name, job in (doc.get("jobs") or {}).items():
+            runs_on = job.get("runs-on")
+            labels = runs_on if isinstance(runs_on, list) else [runs_on]
+            if all(
+                isinstance(l, str) and l.startswith("windows-") for l in labels if l is not None
+            ):
+                continue
+            yield name, job
+
+    @staticmethod
+    def _windows_powershell_steps(job):
+        for step in job.get("steps") or []:
+            if not isinstance(step, dict):
+                continue
+            run = str(step.get("run") or "")
+            if "powershell -NoProfile" not in run:
+                continue
+            if "pwsh -NoProfile" in run:
+                continue
+            yield step
+
+    def test_every_windows_powershell_step_is_gated_on_windows(self):
+        for workflow in sorted(_WORKFLOWS.glob("*.yml")):
+            doc = yaml.safe_load(workflow.read_text(encoding = "utf-8"))
+            if not isinstance(doc, dict):
+                continue
+            for job_name, job in self._multi_os_jobs(doc):
+                for step in self._windows_powershell_steps(job):
+                    condition = str(step.get("if") or "")
+                    assert "runner.os == 'Windows'" in condition, (
+                        f"{workflow.name}: job {job_name}, step {step.get('name')!r} runs "
+                        f"powershell.exe on a job that is not pinned to a Windows runner, with no "
+                        f"`if: runner.os == 'Windows'`. That executable does not exist on the "
+                        f"Linux and macOS legs."
+                    )
+
+    def test_the_rule_finds_the_steps_it_is_about(self):
+        """prevent a vacuous pass when workflow traversal finds no matching steps."""
+        found = 0
+        for workflow in sorted(_WORKFLOWS.glob("*.yml")):
+            doc = yaml.safe_load(workflow.read_text(encoding = "utf-8"))
+            if not isinstance(doc, dict):
+                continue
+            for _, job in self._multi_os_jobs(doc):
+                found += len(list(self._windows_powershell_steps(job)))
+        assert found >= 5, (
+            f"only {found} Windows PowerShell steps found on multi-OS jobs; the walk above is "
+            f"looking in the wrong place"
+        )
+
+
+@pytest.mark.skipif(
+    os.name != "posix" or not all(shutil.which(x) for x in ("bash", "xargs", "timeout")),
+    reason = "the Linux shell-suite runner needs bash, xargs and timeout",
+)
+class TestParallelShellResults:
+    def run_step(self, tmp_path, suites):
+        directory = tmp_path / "tests" / "sh"
+        directory.mkdir(parents = True)
+        for name, body in suites.items():
+            (directory / name).write_text(body)
+        return subprocess.run(
+            ["bash", "-c", _shell_step_script()],
+            cwd = tmp_path,
+            env = {**os.environ, "RUNNER_TEMP": str(tmp_path)},
+            capture_output = True,
+            text = True,
+            timeout = 15,
+        )
+
+    def test_a_failure_does_not_hide_other_suite_results(self, tmp_path):
+        result = self.run_step(
+            tmp_path,
+            {
+                "test_a.sh": "echo first-failure; exit 7",
+                "test_b.sh": "echo second-success",
+                "test_c with spaces.sh": "echo third-success",
+                "test_install_rollback_lifecycle.sh": "echo should-not-run; exit 99",
+            },
+        )
+        assert result.returncode == 1
+        assert "first-failure" in result.stdout
+        assert "second-success" in result.stdout
+        assert "third-success" in result.stdout
+        assert "test_a.sh exited 7" in result.stdout
+        assert "should-not-run" not in result.stdout
+        assert "ran 3 shell installer test files" in result.stdout
+
+    def test_empty_discovery_fails(self, tmp_path):
+        result = self.run_step(tmp_path, {})
+        assert result.returncode != 0
+        assert "no shell tests discovered under tests/sh" in result.stdout
+
+    def test_four_suites_can_reach_a_barrier_together(self, tmp_path):
+        body = """touch "${0##*/}.ready"
+for attempt in $(seq 1 100); do
+    count=$(find . -maxdepth 1 -name '*.ready' | wc -l)
+    [ "$count" -eq 4 ] && exit 0
+    sleep 0.02
+done
+echo "the other suites never reached the barrier"
+exit 1
+"""
+        result = self.run_step(tmp_path, {f"test_{i}.sh": body for i in range(4)})
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "ran 4 shell installer test files" in result.stdout

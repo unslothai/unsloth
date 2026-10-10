@@ -15,6 +15,7 @@ export function DownloadProgressBar({
   bytesPerSec,
   cancelling = false,
   etaSeconds = 0,
+  activity,
 }: {
   progress: DownloadProgress;
   bytesPerSec: number;
@@ -25,6 +26,7 @@ export function DownloadProgressBar({
    * shared estimator's ``etaSeconds`` unused on this path.
    */
   etaSeconds?: number;
+  activity?: string;
 }) {
   const exactPercent = Math.min(Math.max(progress.fraction, 0), 1) * 100;
   const indeterminate = isIndeterminateProgress(progress, cancelling);
@@ -34,7 +36,7 @@ export function DownloadProgressBar({
   const etaLabel = etaSeconds > 0 ? formatEta(etaSeconds) : "";
   return (
     <div className="flex flex-col gap-1.5 pb-1">
-      <div className="relative h-[3px] overflow-hidden rounded-full bg-foreground/[0.06] dark:bg-white/[0.06]">
+      <div className="relative h-[3px] overflow-hidden rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]">
         {indeterminate ? (
           <div className="loading-bar-slide h-full w-1/3 rounded-full bg-status-warning/80" />
         ) : (
@@ -54,7 +56,7 @@ export function DownloadProgressBar({
       <div className="flex items-center justify-between gap-2 text-ui-10p5 text-muted-foreground tabular-nums">
         <span>
           {indeterminate
-            ? "Transferring…"
+            ? (activity ?? "Transferring…")
             : formatBytes(progress.downloadedBytes)}
           {totalLabel && ` / ${totalLabel}`}
         </span>

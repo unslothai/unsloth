@@ -3,6 +3,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import { fromMarkdown } from "mdast-util-from-markdown";
 
 import type {
   MessageRecord,
@@ -10,6 +11,9 @@ import type {
   ThreadRecord,
 } from "../src/features/chat/types.ts";
 import { filterArchivedChatExport } from "../src/features/chat/utils/archived-chat-export.ts";
+import type { ImportOptions } from "../src/features/chat/utils/chat-import.ts";
+import { buildNamedConversationsMarkdown } from "../src/features/chat/utils/conversation-markdown-export.ts";
+import { buildConversationMarkdown } from "../src/features/chat/utils/conversation-markdown.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
 type ImportSource = {
@@ -33,18 +37,25 @@ type Module = {
   importConversationsFromSource: (
     source: ImportSource,
     projectId?: string | null,
+    options?: ImportOptions,
   ) => Promise<{ imported: number; failed: number }>;
 };
 
-function harness(existingProjects: ProjectRecord[] = []) {
+function harness(
+  existingProjects: ProjectRecord[] = [],
+  rejectAt?: "thread" | "messages",
+) {
   const threads: ThreadRecord[] = [];
   const messages = new Map<string, MessageRecord[]>();
   const projects = [...existingProjects];
+  const events = { historyUpdated: 0 };
+  const deleted: string[] = [];
   const module = loadWithStubs<Module>(
     new URL("../src/features/chat/utils/chat-import.ts", import.meta.url),
     {
+      "mdast-util-from-markdown": { fromMarkdown },
       "../api/chat-api": {
-        notifyChatHistoryUpdated: () => {},
+        notifyChatHistoryUpdated: () => { events.historyUpdated++; },
         listChatProjects: async () => projects,
         saveChatProject: async (project: ProjectRecord) => {
           projects.push(project);
@@ -54,6 +65,9 @@ function harness(existingProjects: ProjectRecord[] = []) {
       },
       "./chat-history-storage": {
         saveStoredChatThread: async (thread: ThreadRecord) => {
+          if (rejectAt === "thread" && thread.title === "Rejected") {
+            throw new ChatThreadWriteError("Request failed (500)", 500);
+          }
           threads.push(thread);
           return thread;
         },
@@ -61,19 +75,36 @@ function harness(existingProjects: ProjectRecord[] = []) {
           threadId: string,
           records: MessageRecord[],
         ) => {
+          if (
+            rejectAt === "messages" &&
+            threads.find(({ id }) => id === threadId)?.title === "Rejected"
+          ) {
+            throw new Error("Message sync failed");
+          }
           messages.set(threadId, records);
           return records;
         },
-        deleteStoredChatThreads: async () => [],
+        deleteStoredChatThreads: async (ids: string[]) => {
+          deleted.push(...ids);
+          for (const id of ids) {
+            const index = threads.findIndex((thread) => thread.id === id);
+            if (index !== -1) threads.splice(index, 1);
+            messages.delete(id);
+          }
+          return ids;
+        },
       },
     },
     { relativePassthrough: true },
   );
-  return { module, threads, messages, projects };
+  return { module, threads, messages, projects, events, deleted };
 }
 
 function sourceOf(name: string, data: unknown): ImportSource {
-  const text = JSON.stringify(data, null, 2);
+  return sourceText(name, JSON.stringify(data, null, 2));
+}
+
+function sourceText(name: string, text: string): ImportSource {
   const half = Math.floor(text.length / 2);
   return {
     name,
@@ -83,6 +114,44 @@ function sourceOf(name: string, data: unknown): ImportSource {
       yield { text: text.slice(half), bytes: text.length - half };
     },
   };
+}
+
+for (const rejectAt of ["thread", "messages"] as const) {
+  test(`combined markdown continues after a ${rejectAt} save failure`, async () => {
+    const { module, threads, messages, events, deleted } = harness([], rejectAt);
+    const conversations = ["First", "Rejected", "Last"].map((title) => ({
+      id: title,
+      title,
+    }));
+    const text = await buildNamedConversationsMarkdown(
+      conversations,
+      async (id) => buildConversationMarkdown([{ role: "user", content: id }]),
+    );
+    const saved: string[] = [];
+    const progress: Array<{ imported: number; failed: number }> = [];
+    const result = await module.importConversationsFromSource(
+      sourceText("combined.md", text),
+      null,
+      {
+        onSaved: (id) => saved.push(id),
+        onProgress: ({ imported, failed }) => progress.push({ imported, failed }),
+      },
+    );
+
+    assert.deepEqual(result, { imported: 2, failed: 1 });
+    assert.deepEqual(threads.map(({ title }) => title), ["First", "Last"]);
+    assert.deepEqual(saved, threads.map(({ id }) => id));
+    assert.deepEqual(
+      threads.map(({ id }) => messages.get(id)?.[0]?.content),
+      [
+        [{ type: "text", text: "First" }],
+        [{ type: "text", text: "Last" }],
+      ],
+    );
+    assert.equal(events.historyUpdated, 1);
+    assert.deepEqual(progress.at(-1), { imported: 2, failed: 1 });
+    assert.equal(deleted.length, rejectAt === "messages" ? 1 : 0);
+  });
 }
 
 function message(
@@ -138,6 +207,8 @@ function backup() {
       updatedAt: 2100,
       forkedFromThreadId: "t1",
       forkedFromMessageId: "m2",
+      forkBoundaryMessageId: "m5",
+      forkTitleBase: "Recipe",
     },
   ];
   const messages: MessageRecord[] = [
@@ -202,6 +273,12 @@ test("a Studio backup restores one chat per thread, with titles, branches, archi
   assert.equal(recipeMessages[1].parentId, recipeMessages[0].id);
   assert.equal(recipe.forkedFromThreadId, trip.id);
   assert.equal(recipe.forkedFromMessageId, tripMessages[1].id);
+  // The divider's anchor is one of this thread's own messages, so it remaps to the new id.
+  assert.equal(recipe.forkBoundaryMessageId, recipeMessages[1].id);
+  assert.notEqual(recipe.forkBoundaryMessageId, "m5");
+  // A name rather than an id, so it restores as it stands and the next fork of this one
+  // is numbered rather than suffixed again.
+  assert.equal(recipe.forkTitleBase, "Recipe");
 });
 
 test("importing the same backup twice reuses the project and never reuses a thread or message id", async () => {
@@ -264,7 +341,7 @@ test("a compare pair stays paired under a new pair id, and legacy rows without p
     ],
     messages: [
       { id: "a1", threadId: "a", role: "user", content: [{ type: "text", text: "hi" }], createdAt: 5 },
-      { id: "a2", threadId: "a", role: "assistant", content: [{ type: "text", text: "yo" }], createdAt: 5 },
+      { id: "a2", threadId: "a", role: "assistant", content: [{ type: "text", text: "yo" }], createdAt: 5, metadata: { note: "kept", createdAtEstimated: false } },
       { id: "b1", threadId: "b", role: "user", content: [{ type: "text", text: "hi" }], createdAt: 5 },
       { id: "orphan", threadId: "gone", role: "user", content: [{ type: "text", text: "lost" }], createdAt: 5 },
     ],
@@ -278,6 +355,8 @@ test("a compare pair stays paired under a new pair id, and legacy rows without p
   const left = messages.get(threads.find(({ title }) => title === "Left")?.id ?? "") as MessageRecord[];
   assert.deepEqual(left.map(({ role }) => role), ["user", "assistant"]);
   assert.deepEqual(left.map(({ createdAt }) => createdAt), [5, 6]);
+  assert.notEqual(left[0].metadata?.createdAtEstimated, true);
+  assert.deepEqual(left[1].metadata, { note: "kept", createdAtEstimated: true });
   assert.ok(left.every((record) => !("parentId" in record)));
 });
 
@@ -402,6 +481,7 @@ test("a settings snapshot this build rejects costs the settings, not the chat", 
   const module = loadWithStubs<Module>(
     new URL("../src/features/chat/utils/chat-import.ts", import.meta.url),
     {
+      "mdast-util-from-markdown": { fromMarkdown },
       "../api/chat-api": {
         notifyChatHistoryUpdated: () => {},
         listChatProjects: async () => [],
@@ -525,6 +605,7 @@ test("a backend that is merely down keeps the settings instead of quietly droppi
   const module = loadWithStubs<Module>(
     new URL("../src/features/chat/utils/chat-import.ts", import.meta.url),
     {
+      "mdast-util-from-markdown": { fromMarkdown },
       "../api/chat-api": {
         notifyChatHistoryUpdated: () => {},
         listChatProjects: async () => [],
@@ -660,4 +741,17 @@ test("a message whose content was stored as a plain string keeps its text", asyn
     // becoming a blank bubble.
     [],
   ]);
+});
+
+test("backup import preserves estimated-time provenance and marks missing dates", async () => {
+  const data = backup();
+  delete (data.messages[0] as Partial<MessageRecord>).createdAt;
+  data.messages[1].metadata = { createdAtEstimated: true };
+  const { module, messages } = harness();
+  await module.importConversationsFromSource(sourceOf("backup.json", data));
+  const restored = [...messages.values()].flat();
+  const byText = (text: string) => restored.find(({ content }) => (content[0] as { text: string }).text === text);
+  assert.equal(byText("Where to?")?.metadata?.createdAtEstimated, true);
+  assert.equal(byText("Lisbon")?.metadata?.createdAtEstimated, true);
+  assert.notEqual(byText("Porto")?.metadata?.createdAtEstimated, true);
 });

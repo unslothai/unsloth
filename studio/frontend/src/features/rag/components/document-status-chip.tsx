@@ -4,7 +4,7 @@
 import { Badge } from "@/components/assistant-ui/badge";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
-import { File02Icon, Folder02Icon } from "@hugeicons/core-free-icons";
+import { FileEmpty02Icon, Folder02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { XIcon } from "lucide-react";
 import type { DocumentStatus } from "../types/rag";
@@ -51,13 +51,13 @@ export function DocumentStatusChip({
             : filename)
       }
       className={cn(
-        "rounded-full inline-flex items-center gap-1.5 max-w-[16rem]",
+        "rounded-full inline-flex items-center gap-1.5 max-w-[calc(16rem*var(--ui-space-scale,1))]",
         status === "failed" && "border-destructive/40 text-destructive",
       )}
     >
       {/* file, or folder when the doc is a project-wide source */}
       <HugeiconsIcon
-        icon={shared ? Folder02Icon : File02Icon}
+        icon={shared ? Folder02Icon : FileEmpty02Icon}
         strokeWidth={2}
         className="size-3 shrink-0"
       />

@@ -9,6 +9,7 @@ import {
   useLlamaUpdateCheck,
 } from "@/hooks/use-llama-update-check";
 import {
+  useShowAudioCppUpdateBanner,
   useShowLlamaUpdateBanner,
   useShowWhisperUpdateBanner,
 } from "@/hooks/use-llama-update-pref";
@@ -115,6 +116,7 @@ export function LlamaUpdateBanner({
 }: LlamaUpdateBannerProps): ReactElement | null {
   const showLlamaBannerPref = useShowLlamaUpdateBanner();
   const showWhisperBannerPref = useShowWhisperUpdateBanner();
+  const showAudioCppBannerPref = useShowAudioCppUpdateBanner();
   const [changelogVersion, setChangelogVersion] = useState<string | null>(null);
   // Not gated on showBannerPref: this hook instance is the app-wide listener
   // for a cross-tab reload_required resync (the settings-sheet's own instance
@@ -134,20 +136,30 @@ export function LlamaUpdateBanner({
     {
       llama: Boolean(status?.llama.update_available) || migrationPending,
       whisper: Boolean(status?.whisper?.update_available),
+      audio: Boolean(status?.audio?.update_available),
     },
-    { llama: showLlamaBannerPref, whisper: showWhisperBannerPref },
+    {
+      llama: showLlamaBannerPref,
+      whisper: showWhisperBannerPref,
+      audio: showAudioCppBannerPref,
+    },
   );
   // Its own release pair and download size, not the ones the backend put at the
   // top level: those are llama's whatever the card shows.
   const offer =
-    component === "whisper.cpp" ? status?.whisper : status?.llama;
+    component === "whisper.cpp"
+      ? status?.whisper
+      : component === "audio.cpp"
+        ? status?.audio
+        : status?.llama;
   const sizeBytes = offer?.update_size_bytes ?? null;
   const latestTag = offer?.latest_tag ?? null;
   const installedTag = offer?.installed_tag ?? null;
 
   async function handleUpdate() {
-    // Read before applying: the status refreshes as the job runs.
-    const migrating = migrationPending;
+    // Read before applying (the status refreshes mid-job). An audio.cpp update may keep
+    // the old runtime, so only the job's message says what happened, as for a migration.
+    const migrating = migrationPending || component === "audio.cpp";
     const result = await apply();
     if (result?.ok) {
       const updatedTag =
@@ -162,15 +174,18 @@ export function LlamaUpdateBanner({
         }),
       );
     } else if (result) {
-      toast.error(
-        `${component} update failed: ${result.error ?? "unknown error"}`,
-      );
+      // The failing phase need not be the component the card names.
+      toast.error(`Update failed: ${result.error ?? "unknown error"}`);
     }
   }
 
   // Muted by the component the card shows.
   const livePref =
-    component === "whisper.cpp" ? showWhisperBannerPref : showLlamaBannerPref;
+    component === "whisper.cpp"
+      ? showWhisperBannerPref
+      : component === "audio.cpp"
+        ? showAudioCppBannerPref
+        : showLlamaBannerPref;
   // Held across a chained apply, which renames the card mid-job. An error counts
   // as in flight so a failed phase keeps its retry on screen.
   const jobState = status?.job.state;
@@ -239,9 +254,9 @@ export function LlamaUpdateBanner({
     <div
       className={cn(
         positioned
-          ? "fixed bottom-4 right-4 z-[9998] w-[calc(100vw-2rem)] max-w-[448px]"
+          ? "fixed bottom-4 right-4 z-[9998] w-[calc(100vw-2rem)] max-w-[calc(448px*var(--ui-space-scale,1))]"
           : cn(
-              "pointer-events-auto flex w-[calc(100vw-2rem)] max-w-[448px] flex-col",
+              "pointer-events-auto flex w-[calc(100vw-2rem)] max-w-[calc(448px*var(--ui-space-scale,1))] flex-col",
               // Only an open changelog needs a shrinkable height floor.
               changelogPanelOpen
                 ? "min-h-[calc(117px+93px*var(--ui-font-scale,1))] max-[383px]:min-h-[calc(24px+224px*var(--ui-font-scale,1))]"
@@ -251,7 +266,7 @@ export function LlamaUpdateBanner({
       data-testid="llama-update-banner"
     >
       {/* Paint the full floor even when the changelog content is short. */}
-      <div className="relative flex max-h-[calc(100dvh_-_2rem)] min-h-0 grow flex-col overflow-hidden rounded-[24px] bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_rgba(0,0,0,0.28)]">
+      <div className="relative flex max-h-[calc(100dvh_-_2rem_-_var(--studio-window-chrome-top,0px))] min-h-0 grow flex-col overflow-hidden rounded-[24px] bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_var(--background)]">
         {applying ? null : (
           <button
             type="button"

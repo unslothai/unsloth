@@ -2387,6 +2387,195 @@ def test_a_return_reopens_the_directory_it_lands_in(studio_home):
         assert tools._references_studio_credential_here(ordinary, workdir) is False, ordinary
 
 
+def test_two_self_referential_assignments_in_one_quoted_string_do_not_hang(studio_home):
+    workdir = str(studio_home / "sandbox" / _SESSION)
+    for ordinary in (
+        'echo "hb=$hb fl=$fl"',
+        "echo 'A=$A B=$B'",
+        'echo "x=$x y=$y"',
+        'echo "A=${A:-x} B=${B:-y}"',
+        'echo "A=${A^^} B=${B^^}"',
+        'echo "A=${A/x/y} B=${B/x/y}"',
+    ):
+        assert tools._references_studio_credential_here(ordinary, workdir) is False, ordinary
+
+
+@pytest.mark.parametrize(
+    "value", ["../..$x", "${x}../..", "../${x}/..", "${x:-../..}", "../..${x,,}"]
+)
+def test_self_referential_assignments_preserve_concrete_paths(studio_home, value):
+    workdir = str(studio_home / "sandbox" / _SESSION)
+    command = f'unset x; x={value}; cat "$x/auth/auth.db"'
+    assert tools._references_studio_credential_here(command, workdir)
+    harmless = command.replace("../..", "./project").replace("../${x}/..", "./${x}/project")
+    assert not tools._references_studio_credential_here(harmless, workdir)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "$UNSLOTH_STUDIO_HOME",
+        '"$UNSLOTH_STUDIO_HOME"',
+        "${UNSLOTH_STUDIO_HOME}/",
+        "${UNSLOTH_STUDIO_HOME:-/tmp}",
+    ],
+)
+def test_self_referential_studio_home_still_names_the_install(studio_home, value):
+    workdir = str(studio_home / "sandbox" / _SESSION)
+    command = f'UNSLOTH_STUDIO_HOME={value}; cat "$UNSLOTH_STUDIO_HOME/auth/auth.db"'
+    assert tools._references_studio_credential_here(command, workdir)
+
+
+@pytest.mark.parametrize("quote", ['"', "'"])
+@pytest.mark.parametrize("value", ["$x/safe", "./safe"])
+def test_quoted_log_text_does_not_rebind_path_variables(studio_home, quote, value):
+    workdir = str(studio_home / "sandbox" / _SESSION)
+    command = f'x=../..; echo {quote}log x={value}{quote}; cat "$x/auth/auth.db"'
+    assert tools._references_studio_credential_here(command, workdir)
+    assert not tools._references_studio_credential_here(
+        command.replace("../..", "./project"), workdir
+    )
+
+
+@pytest.mark.parametrize("prefix", ["", "p=./project; "])
+@pytest.mark.parametrize("reader", ["cat $p/auth/auth.db", "q=$p; cat $q/auth/auth.db"])
+def test_quoted_inline_shell_assignments_still_refuse_auth(studio_home, prefix, reader):
+    workdir = str(studio_home / "sandbox" / _SESSION)
+    command = prefix + f"bash -c ' p=../..; {reader}'"
+    assert tools._references_studio_credential_here(command, workdir)
+    assert not tools._references_studio_credential_here(
+        command.replace("../..", "./project"), workdir
+    )
+
+
+@pytest.mark.parametrize("state", ["unset", "empty", "set"])
+@pytest.mark.parametrize("op", [":-", "-", ":=", "=", ":+", "+"])
+def test_self_reference_parameter_operators_follow_prior_binding(studio_home, state, op):
+    workdir = str(studio_home / "sandbox" / _SESSION)
+    prefix = {"unset": "unset x", "empty": "x=", "set": "x=../.."}[state]
+    if op.endswith("+"):
+        value = "../..${x" + op + "/safe}"
+        expected = state == "unset" or (state == "empty" and op.startswith(":"))
+    else:
+        value = "${x" + op + "../..}"
+        expected = state != "empty" or op.startswith(":")
+    command = prefix + f'; x={value}; cat "$x/auth/auth.db"'
+    assert tools._references_studio_credential_here(command, workdir) is expected
+    assert not tools._references_studio_credential_here(
+        command.replace("../..", "./project"), workdir
+    )
+
+
+@pytest.mark.parametrize("hops", [14, 15, 16, 32, 128])
+@pytest.mark.parametrize("read", ["cat $v{hops}/auth/auth.db", "cd $v{hops}; cat auth/auth.db"])
+def test_long_alias_chains_still_refuse_the_auth_directory(studio_home, hops, read):
+    workdir = str(studio_home / "sandbox" / _SESSION)
+    aliases = "; ".join(f"v{i}=$v{i - 1}" for i in range(1, hops + 1))
+    tail = aliases + "; " + read.format(hops = hops)
+    assert tools._references_studio_credential_here("v0=../..; " + tail, workdir)
+    assert not tools._references_studio_credential_here("v0=./project; " + tail, workdir)
+
+
+def test_an_unfinished_alias_scan_fails_closed(studio_home, monkeypatch):
+    workdir = str(studio_home / "sandbox" / _SESSION)
+    monkeypatch.setattr(tools, "_MAX_SHELL_ASSIGN_EXPAND_PASSES", 1)
+    command = "v0=../..; v1=$v0; v2=$v1; v3=$v2; cat $v3/auth/auth.db"
+    assert tools._references_studio_credential_here(command, workdir)
+    assert not tools._references_studio_credential_here('echo "A=$A B=$B"', workdir)
+
+
+@pytest.mark.parametrize("rebind", ["x=$x/safe", "x=/tmp", "x=./project"])
+@pytest.mark.parametrize("reader", ['sqlite3 "$x/auth/auth.db" .dump', 'cat "$x/auth/auth.db"'])
+def test_a_later_rebinding_does_not_hide_an_earlier_read(studio_home, rebind, reader):
+    workdir = str(studio_home / "sandbox" / _SESSION)
+    command = f"x=../..; {reader}; {rebind}"
+    assert tools._references_studio_credential_here(command, workdir)
+    assert not tools._references_studio_credential_here(
+        command.replace("../..", "./project"), workdir
+    )
+
+
+@pytest.mark.parametrize("scope", ["(x=)", "$(x=)", "echo $(x=)", "{ (x=); }"])
+def test_a_scoped_empty_assignment_keeps_the_outer_binding(studio_home, scope):
+    workdir = str(studio_home / "sandbox" / _SESSION)
+    command = f'x=../..; {scope}; cat "$x/auth/auth.db"'
+    assert tools._references_studio_credential_here(command, workdir)
+    assert not tools._references_studio_credential_here(
+        command.replace("../..", "./project"), workdir
+    )
+
+
+def test_a_top_level_empty_assignment_clears_the_binding(studio_home):
+    workdir = str(studio_home / "sandbox" / _SESSION)
+    command = 'x=./project/; x=; cat "$x../../auth/auth.db"'
+    assert tools._references_studio_credential_here(command, workdir)
+    assert not tools._references_studio_credential_here(command.replace("../../", "./"), workdir)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'x=../..; x= cat "$x/auth/auth.db"',
+        'x=../..; x= sqlite3 "$x/auth/auth.db" "select jwt_secret from auth_user"',
+        'x=../..; x=/tmp cat "$x/auth/auth.db"',
+        "x=../.. bash -c 'cat \"$x/auth/auth.db\"'",
+    ],
+)
+def test_a_command_prefix_assignment_binds_only_the_child(studio_home, command):
+    workdir = str(studio_home / "sandbox" / _SESSION)
+    assert tools._references_studio_credential_here(command, workdir)
+    assert not tools._references_studio_credential_here(
+        command.replace("../..", "./project"), workdir
+    )
+
+
+@pytest.mark.parametrize(
+    "argument", ["echo x=", "echo x=/tmp", "env x=./project true", "grep -r x= ."]
+)
+def test_an_assignment_shaped_argument_binds_nothing(studio_home, argument):
+    workdir = str(studio_home / "sandbox" / _SESSION)
+    command = f'x=../..; {argument}; cat "$x/auth/auth.db"'
+    assert tools._references_studio_credential_here(command, workdir)
+    assert not tools._references_studio_credential_here(
+        command.replace("../..", "./project"), workdir
+    )
+
+
+@pytest.mark.parametrize(
+    "rebind", ["x=./project", "export x=./project", "{ x=./project; }", "A=1 x=./project"]
+)
+def test_a_real_rebinding_still_moves_the_path(studio_home, rebind):
+    workdir = str(studio_home / "sandbox" / _SESSION)
+    assert not tools._references_studio_credential_here(
+        f'x=../..; {rebind}; cat "$x/auth/auth.db"', workdir
+    )
+
+
+def test_many_empty_self_references_scan_in_linear_time(studio_home):
+    import time
+
+    workdir = str(studio_home / "sandbox" / _SESSION)
+    command = 'echo "' + " ".join(f"A{i}=$A{i}" for i in range(20000)) + '"'
+    started = time.perf_counter()
+    assert not tools._references_studio_credential_here(command, workdir)
+    assert time.perf_counter() - started < 10
+
+
+def test_self_doubling_assignments_stay_bounded(studio_home):
+    workdir = str(studio_home / "sandbox" / _SESSION)
+    doubling = "a=X; " + "a=$a$a; " * 40
+    assert not tools._references_studio_credential_here(doubling + "echo $a", workdir)
+    assert tools._references_studio_credential_here(
+        "p=../..; " + doubling + "cat $p/auth/auth.db", workdir
+    )
+
+
+def test_growing_unresolved_assignments_fail_closed(studio_home):
+    workdir = str(studio_home / "sandbox" / _SESSION)
+    command = "a=" + "$b" * 64 + "; b=" + "$a" * 64 + "; echo $a"
+    assert tools._references_studio_credential_here(command, workdir)
+
+
 def test_every_home_variable_is_checked_before_the_expansion(studio_home):
     home = studio_home
     # The expansion rewrites all of the studio-home names from their last assignment, so one name

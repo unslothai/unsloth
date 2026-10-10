@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { isTauri } from "@/lib/api-base";
+import { reportDownloadsActive } from "@/lib/downloads-activity";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 import { INVENTORY_HINT_KIND } from "../inventory/constants";
@@ -144,6 +144,9 @@ function sanitizePersistedJob(
     ...(Number.isSafeInteger(value.serverGeneration)
       ? { serverGeneration: Number(value.serverGeneration) }
       : {}),
+    ...(Number.isSafeInteger(value.serverAttempt)
+      ? { serverAttempt: Number(value.serverAttempt) }
+      : {}),
     ...(Array.isArray(value.scopedFiles) &&
     value.scopedFiles.every((f) => typeof f === "string")
       ? { scopedFiles: value.scopedFiles as string[] }
@@ -206,6 +209,9 @@ function toPersistedJob(
     startedAt: job.startedAt,
     ...(job.serverGeneration !== undefined
       ? { serverGeneration: job.serverGeneration }
+      : {}),
+    ...(job.serverAttempt !== undefined
+      ? { serverAttempt: job.serverAttempt }
       : {}),
     ...(job.scopedFiles !== undefined ? { scopedFiles: job.scopedFiles } : {}),
     ...(job.checkpoint !== undefined ? { checkpoint: job.checkpoint } : {}),
@@ -344,8 +350,6 @@ export const useDownloadManagerStore = create<DownloadManagerState>()(
 export const setState = useDownloadManagerStore.setState;
 export const getState = useDownloadManagerStore.getState;
 
-/**
- * A Tauri quit never fires beforeunload, and only this store knows a backend download is in flight. */
 export function hasActiveDownloadJob(
   jobs: Record<string, ManagedDownload>,
 ): boolean {
@@ -353,22 +357,8 @@ export function hasActiveDownloadJob(
   return Object.values(jobs).some((job) => ACTIVE_STATES.has(job.state));
 }
 
-function publishDownloadsActive(active: boolean): void {
-  if (!isTauri) return;
-  void import("@tauri-apps/api/core")
-    .then(({ invoke }) =>
-      invoke("set_renderer_activity", { kind: "downloads", active }),
-    )
-    .catch(() => {});
-}
-
-let lastPublishedDownloadsActive: boolean | null = null;
-
 function syncDownloadsActivity(state: DownloadManagerState): void {
-  const active = hasActiveDownloadJob(state.jobs);
-  if (active === lastPublishedDownloadsActive) return;
-  lastPublishedDownloadsActive = active;
-  publishDownloadsActive(active);
+  reportDownloadsActive("hub", hasActiveDownloadJob(state.jobs));
 }
 
 syncDownloadsActivity(getState());
@@ -405,6 +395,32 @@ export function findActiveJobForRepo(
   const repoIdentity = normalizeRepoIdentity(repoId);
   for (const job of Object.values(jobs)) {
     if (job.kind !== kind || normalizeRepoIdentity(job.repoId) !== repoIdentity)
+      continue;
+    if (!ACTIVE_STATES.has(job.state)) continue;
+    if (isPreferredRepoActiveJob(job, selected)) {
+      selected = job;
+    }
+  }
+  return selected;
+}
+
+export function findActiveScopedJobForRepo(
+  jobs: Record<string, ManagedDownload>,
+  kind: DownloadKind,
+  repoId: string,
+  inventoryKind?: "model" | "gguf",
+): ManagedDownload | null {
+  let selected: ManagedDownload | null = null;
+  const repoIdentity = normalizeRepoIdentity(repoId);
+  for (const job of Object.values(jobs)) {
+    if (job.kind !== kind || normalizeRepoIdentity(job.repoId) !== repoIdentity)
+      continue;
+    if (!job.variant?.startsWith("@")) continue;
+    if (
+      inventoryKind &&
+      downloadInventoryHintKind(job.kind, job.variant, job.inventoryKind) !==
+        inventoryKind
+    )
       continue;
     if (!ACTIVE_STATES.has(job.state)) continue;
     if (isPreferredRepoActiveJob(job, selected)) {

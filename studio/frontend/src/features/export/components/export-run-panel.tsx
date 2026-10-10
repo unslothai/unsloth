@@ -9,13 +9,6 @@ import {
   InputGroupInput,
 } from "@/components/ui/input-group";
 import { Progress } from "@/components/ui/progress";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -24,7 +17,6 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { FolderBrowser } from "@/features/model-picker";
-import { cn } from "@/lib/utils";
 import {
   AlertCircleIcon,
   CancelCircleIcon,
@@ -44,11 +36,6 @@ import {
   type ExportMethod,
   findMergedFormat,
 } from "../constants";
-import {
-  GGUF_SHARD_SIZE_PRESETS,
-  type GgufShardMode,
-  isValidGgufShardSize,
-} from "../lib/gguf-shard-size";
 import { getExportLogLineClass } from "../lib/log-style";
 import {
   type ExportDestination,
@@ -128,15 +115,12 @@ export interface ExportRunPanelProps {
   onHfTokenChange: (v: string) => void;
   privateRepo: boolean;
   onPrivateRepoChange: (v: boolean) => void;
-  supportsGgufSharding: boolean;
-  ggufShardMode: GgufShardMode;
-  onGgufShardModeChange: (v: GgufShardMode) => void;
-  ggufShardSize: string;
-  onGgufShardSizeChange: (v: string) => void;
   /** Kick off the export (the page assembles params and calls the store). */
   onStart: () => void;
   /** Collapse the panel; only offered before a run or after a terminal one. */
   onClose: () => void;
+  /** Decision model: output goes to the run folder's gguf/ only; this note replaces the destination picker. */
+  decisionNote?: string;
 }
 
 export function ExportRunPanel(props: ExportRunPanelProps) {
@@ -152,6 +136,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
     defaultSaveDirectory,
     saveDirectoryOverridden,
     onSaveDirectoryChange,
+    decisionNote,
     hfUsername,
     onHfUsernameChange,
     modelName,
@@ -160,11 +145,6 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
     onHfTokenChange,
     privateRepo,
     onPrivateRepoChange,
-    supportsGgufSharding,
-    ggufShardMode,
-    onGgufShardModeChange,
-    ggufShardSize,
-    onGgufShardSizeChange,
     onStart,
     onClose,
   } = props;
@@ -237,13 +217,6 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
     (v) => findMergedFormat(v)?.label ?? v,
   );
   const showProgress = isExporting || isTerminal;
-  const shardSizeValid =
-    !supportsGgufSharding ||
-    ggufShardMode === "single" ||
-    isValidGgufShardSize(ggufShardSize);
-  const customShardSize = !GGUF_SHARD_SIZE_PRESETS.some(
-    (preset) => preset === ggufShardSize,
-  );
 
   return (
     <div className="flex flex-col gap-4 rounded-2xl border border-border/50 bg-muted/20 p-4">
@@ -272,7 +245,12 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
       </div>
 
       {/* Destination configuration (only before a run starts) */}
-      {showConfig && (
+      {showConfig && decisionNote && (
+        <p className="break-all rounded-lg border p-3 text-xs text-muted-foreground">
+          {decisionNote}
+        </p>
+      )}
+      {showConfig && !decisionNote && (
         <>
           <div className="flex gap-2">
             <Button
@@ -346,91 +324,6 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
                 )}
               </p>
             </div>
-          )}
-
-          {supportsGgufSharding && (
-            <fieldset className="flex flex-col gap-1.5">
-              <legend className="text-xs font-medium text-muted-foreground">
-                Full-precision GGUF files
-              </legend>
-              <div className="flex gap-2">
-                <Button
-                  type="button"
-                  variant={ggufShardMode === "single" ? "dark" : "outline"}
-                  onClick={() => onGgufShardModeChange("single")}
-                  aria-pressed={ggufShardMode === "single"}
-                  className="flex-1"
-                >
-                  Single file
-                </Button>
-                <Button
-                  type="button"
-                  variant={ggufShardMode === "split" ? "dark" : "outline"}
-                  onClick={() => onGgufShardModeChange("split")}
-                  aria-pressed={ggufShardMode === "split"}
-                  className="flex-1"
-                >
-                  Split into shards
-                </Button>
-              </div>
-              {ggufShardMode === "split" ? (
-                <>
-                  <Select
-                    value={customShardSize ? "custom" : ggufShardSize}
-                    onValueChange={(value) =>
-                      onGgufShardSizeChange(value === "custom" ? "" : value)
-                    }
-                  >
-                    <SelectTrigger className="w-full">
-                      <SelectValue placeholder="Choose a shard size" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {GGUF_SHARD_SIZE_PRESETS.map((preset) => (
-                        <SelectItem key={preset} value={preset}>
-                          {preset.replace("GB", " GB").replace("MB", " MB")}
-                        </SelectItem>
-                      ))}
-                      <SelectItem value="custom">Custom</SelectItem>
-                    </SelectContent>
-                  </Select>
-                  {customShardSize && (
-                    <Input
-                      className={cn(
-                        "font-mono text-ui-12",
-                        !shardSizeValid &&
-                          "border-destructive focus-visible:ring-destructive",
-                      )}
-                      value={ggufShardSize}
-                      onChange={(event) =>
-                        onGgufShardSizeChange(event.target.value)
-                      }
-                      spellCheck={false}
-                      aria-invalid={!shardSizeValid}
-                      aria-describedby="gguf-shard-size-help"
-                      maxLength={24}
-                      placeholder="e.g. 512MB or 6GB"
-                    />
-                  )}
-                  <p
-                    id="gguf-shard-size-help"
-                    className={cn(
-                      "text-ui-11",
-                      shardSizeValid
-                        ? "text-muted-foreground/70"
-                        : "text-destructive",
-                    )}
-                  >
-                    {shardSizeValid
-                      ? "F16 and BF16 outputs use this limit. Quantized outputs and companion files stay single-file."
-                      : "Enter a positive whole number in MB or GB, such as 512MB or 4GB."}
-                  </p>
-                </>
-              ) : (
-                <p className="text-ui-11 text-muted-foreground/70">
-                  F16 and BF16 outputs stay in one file regardless of size.
-                </p>
-              )}
-            </fieldset>
           )}
 
           {destination === "hub" && (
@@ -532,7 +425,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
                   : run.result?.outputPath
                     ? [{ label: "", path: run.result.outputPath }]
                     : [];
-              const showLabels = items.length > 1;
+              const showLabels = items.length > 1 || !!decisionNote;
               return items.map((o, i) => (
                 <div
                   key={`${o.path}-${i}`}
@@ -614,23 +507,13 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
             </span>
           </div>
         )}
-        {summaryMethod === "gguf" && summary?.ggufShardSize && (
-          <div className="flex justify-between">
-            <span>Full-precision files</span>
-            <span className="font-medium text-foreground">
-              {summary.ggufShardSize === "0"
-                ? "Single file"
-                : `Shards up to ${summary.ggufShardSize}`}
-            </span>
-          </div>
-        )}
       </div>
 
       {/* Progress */}
       {showProgress && (
         <div className="flex flex-col gap-2">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="rounded-full bg-foreground/10 px-2.5 py-1 text-ui-10 font-semibold">
+            <span className="rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] px-2.5 py-1 text-ui-10 font-semibold">
               {PHASE_LABELS[run.phase] ?? run.phase}
             </span>
             {summaryMethod === "gguf" && run.quantTotal > 1 && (
@@ -652,7 +535,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
           </div>
           <Progress
             value={progress}
-            className="h-2 bg-foreground/[0.05]"
+            className="h-2 bg-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)]"
             indicatorClassName={
               run.phase === "error"
                 ? "bg-destructive"
@@ -703,7 +586,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
               <div
                 ref={logScrollRef}
                 onScroll={handleLogScroll}
-                className="h-56 w-full overflow-auto rounded-lg border border-border/40 bg-black/85 p-3 font-mono text-ui-11 leading-[1.45] text-emerald-200/90"
+                className="h-56 w-full overflow-auto scroll-rounded rounded-lg border border-border/40 bg-black/85 p-3 font-mono text-ui-11 leading-[1.45] text-emerald-200/90"
               >
                 {run.logLines.length === 0 ? (
                   <div className="flex h-full items-center justify-center text-muted-foreground/70">
@@ -732,9 +615,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
             <Button variant="outline" onClick={onClose}>
               Cancel
             </Button>
-            <Button onClick={onStart} disabled={!shardSizeValid}>
-              Start Export
-            </Button>
+            <Button onClick={onStart}>Start Export</Button>
           </>
         )}
         {isExporting && (

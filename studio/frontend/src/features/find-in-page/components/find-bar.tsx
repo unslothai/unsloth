@@ -2,16 +2,25 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
-import { isImeComposing, isSurfaceBackgrounded } from "@/features/settings";
+import { isImeComposing } from "@/features/settings";
 import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
-import { Cancel01Icon } from "@hugeicons/core-free-icons";
+import { MessageCircleIcon } from "@/lib/hugeicons-derived";
+import { Cancel01Icon, InternetIcon, Search01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 // lucide supplies the directional arrows used throughout the app.
 import { ArrowDownIcon, ArrowUpIcon } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useFindInPage } from "../hooks/use-find-in-page.ts";
-import { FIND_SCOPE_ATTRIBUTE } from "../lib/find-attributes.ts";
+import {
+  EMPTY_FIND_RESULT,
+  type FindTarget,
+  availableFindTargets,
+  findTarget,
+  findTargetsVersion,
+  subscribeFindTargets,
+} from "../lib/find-targets.ts";
+import { isFindScopeBackgrounded } from "../lib/find-backgrounded.ts";
 import {
   resolveDismissiblePortalSurfaces,
   resolveFindScope,
@@ -19,6 +28,9 @@ import {
 export type FindBarProps = {
   query: string;
   setQuery: (query: string) => void;
+  /** What it searches: the chat (null), or a find target's id. */
+  scope: string | null;
+  setScope: (scope: string | null) => void;
   close: () => void;
   focusToken: number;
   restoreSelection: (input: HTMLInputElement) => boolean;
@@ -39,7 +51,7 @@ function rewindToStart(event: { currentTarget: HTMLInputElement }): void {
 }
 
 /** The wash reads on both the light and dark find-bar surfaces. */
-const FIND_BUTTON_CLASS = "size-8 hover:bg-black/[0.06] dark:hover:bg-white/10";
+const FIND_BUTTON_CLASS = "size-8 hover:bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]";
 
 /** Coalesce a typing burst before the DOM search/highlight work runs. */
 export const FIND_QUERY_SETTLE_MS = 100;
@@ -57,11 +69,32 @@ function useSettledQuery(query: string): [string, () => void] {
   return [settled, () => setSettled(query)];
 }
 
+/** Searches a find target (the browser's page) as `useFindInPage` searches the chat; the target does the matching. */
+function useTargetFind(target: FindTarget | undefined, query: string) {
+  useEffect(() => {
+    if (!target) return;
+    target.search(query);
+  }, [target, query]);
+  useEffect(() => {
+    if (!target) return;
+    return () => target.search("");
+  }, [target]);
+  const result = useSyncExternalStore(subscribeFindTargets, () => target?.result() ?? EMPTY_FIND_RESULT);
+  return {
+    count: result.count,
+    active: result.active,
+    next: () => target?.step(1),
+    previous: () => target?.step(-1),
+  };
+}
+
 /** The on-demand UI and engine for an open find session. */
 // biome-ignore lint/style/noDefaultExport: React.lazy requires the component as a default export.
 export default function FindBar({
   query,
   setQuery,
+  scope,
+  setScope,
   close,
   focusToken,
   restoreSelection,
@@ -73,10 +106,21 @@ export default function FindBar({
 
   const [completedQuery, setCompletedQuery] = useState<string | null>(null);
   const queryPending = query !== settledQuery;
-  const { count, active, capped, truncated, next, previous } = useFindInPage(
-    settledQuery,
-    queryPending,
-  );
+  // The targets with something to search; a target that loses its page hands the bar back to chat.
+  useSyncExternalStore(subscribeFindTargets, findTargetsVersion);
+  const targets = availableFindTargets();
+  const target = scope === null ? undefined : targets.find((candidate) => candidate.id === scope);
+  useEffect(() => {
+    if (scope !== null && !findTarget(scope)?.available()) setScope(null);
+  });
+  const chat = useFindInPage(target ? "" : settledQuery, queryPending);
+  const page = useTargetFind(target, settledQuery);
+  // A target that can only step (a native page) reports no count; its walk stays open.
+  const pageCount = page.count ?? (settledQuery ? 1 : 0);
+  const { count, active, capped, truncated, next, previous } = target
+    ? { ...page, count: pageCount, capped: false, truncated: false }
+    : chat;
+  const uncounted = target !== undefined && page.count === null;
 
   useEffect(() => {
     if (!queryPending) {
@@ -166,7 +210,7 @@ export default function FindBar({
   useEffect(() => {
     const onEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || isImeComposing(event)) return;
-      if (isSurfaceBackgrounded(`[${FIND_SCOPE_ATTRIBUTE}]`)) return;
+      if (isFindScopeBackgrounded()) return;
       if (resolveDismissiblePortalSurfaces(resolveFindScope()).length > 0)
         return;
       event.preventDefault();
@@ -191,7 +235,7 @@ export default function FindBar({
   // walk: `stepWhenSettled` queues the press and runs it once the count arrives.
   const canStep = searching && (count > 0 || queryPending);
   const counter =
-    searching && !queryPending
+    searching && !queryPending && !uncounted
       ? `${count === 0 ? 0 : active + 1}/${count}${capped ? "+" : ""}`
       : "";
 
@@ -203,8 +247,16 @@ export default function FindBar({
       // biome-ignore lint/a11y/useSemanticElements: this landmark contains the field and its navigation controls.
       role="search"
       aria-label={t("shell.find.label")}
-      className="find-bar-surface fixed top-[calc(var(--studio-content-top-inset,0px)+3.5rem)] right-4 z-50 flex h-13 w-[22.25rem] max-w-[calc(100vw-2rem)] items-center gap-1 rounded-full pr-4 pl-5 sm:w-[28.25rem]"
+      // Scoped: 5.5rem more for the scope buttons and divider, so the field keeps its width.
+      data-scoped={targets.length > 0 ? "" : undefined}
+      className="find-bar-surface fixed top-[calc(var(--studio-content-top-inset,0px)+3.5rem)] right-4 z-50 flex h-13 w-[calc(22.25rem*var(--ui-space-scale,1))] max-w-[calc(100vw-2rem)] items-center gap-1 rounded-full pr-4 pl-4.5 data-scoped:w-[calc(27.75rem*var(--ui-space-scale,1))] sm:w-[calc(28.25rem*var(--ui-space-scale,1))] sm:data-scoped:w-[calc(33.75rem*var(--ui-space-scale,1))]"
     >
+      <HugeiconsIcon
+        icon={Search01Icon}
+        strokeWidth={1.75}
+        aria-hidden={true}
+        className="mr-1.5 size-[calc(18px*var(--ui-space-scale,1))] shrink-0 text-muted-foreground"
+      />
       <input
         ref={inputRef}
         type="text"
@@ -249,7 +301,7 @@ export default function FindBar({
         aria-label={t("shell.find.previous")}
         title={t("shell.find.previous")}
       >
-        <ArrowUpIcon strokeWidth={1.75} className="size-[18px]" />
+        <ArrowUpIcon strokeWidth={1.75} className="size-[calc(18px*var(--ui-space-scale,1))]" />
       </Button>
       <Button
         variant="ghost"
@@ -261,8 +313,38 @@ export default function FindBar({
         aria-label={t("shell.find.next")}
         title={t("shell.find.next")}
       >
-        <ArrowDownIcon strokeWidth={1.75} className="size-[18px]" />
+        <ArrowDownIcon strokeWidth={1.75} className="size-[calc(18px*var(--ui-space-scale,1))]" />
       </Button>
+      {targets.length > 0
+        ? [null, ...targets.map((candidate) => candidate.id)].map((id) => {
+            const label = t(id === null ? "shell.find.searchChat" : "shell.find.searchBrowser");
+            const selected = scope === id;
+            return (
+              <Button
+                key={id ?? "chat"}
+                variant="ghost"
+                size="icon"
+                className={cn(
+                  FIND_BUTTON_CLASS,
+                  "shrink-0",
+                  selected ? "text-foreground" : "text-muted-foreground/70 hover:text-foreground",
+                )}
+                aria-pressed={selected}
+                onMouseDown={keepFocusInField}
+                onClick={() => setScope(id)}
+                aria-label={label}
+                title={label}
+              >
+                <HugeiconsIcon
+                  icon={id === null ? MessageCircleIcon : InternetIcon}
+                  strokeWidth={1.75}
+                  className="size-[calc(18px*var(--ui-space-scale,1))]"
+                />
+              </Button>
+            );
+          })
+        : null}
+      {targets.length > 0 ? <span aria-hidden={true} className="mx-1 h-5 w-px shrink-0 bg-border" /> : null}
       <Button
         variant="ghost"
         size="icon"
@@ -271,7 +353,7 @@ export default function FindBar({
         aria-label={t("shell.find.close")}
         title={t("shell.find.close")}
       >
-        <HugeiconsIcon icon={Cancel01Icon} className="size-[18px]" />
+        <HugeiconsIcon icon={Cancel01Icon} className="size-[calc(18px*var(--ui-space-scale,1))]" />
       </Button>
     </div>
   );

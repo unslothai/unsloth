@@ -69,7 +69,7 @@ def slow_hub(monkeypatch, tmp_path):
 
     probes: list[str] = []
 
-    def answer(repo_id, repo_type):
+    def answer(repo_id, repo_type, **_k):
         probes.append(repo_id)
         time.sleep(PROBE_SECONDS)
         return True

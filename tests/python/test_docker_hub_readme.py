@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -22,6 +23,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "docker-publish.yml"
 HUB_README = REPO_ROOT / "docker" / "DOCKERHUB.md"
 REPO_README = REPO_ROOT / "README.md"
+
+# The stand-in for DOCKER_API_KEY, named so an assertion can look for it.
+DEFAULT_SECRET = "not-a-secret"
 
 
 def test_the_hub_readme_describes_the_shipped_images():
@@ -38,8 +42,7 @@ def test_the_hub_readme_describes_the_shipped_images():
         "UNSLOTH_STUDIO_PASSWORD",
     ):
         assert needle in text, f"the Hub README no longer mentions {needle!r}"
-    # the previous image's conventions, none of which exist in this one
-    # Studio writes the generated password to a file and does not print it itself
+    # old-image conventions are invalid; Studio writes generated passwords to a file
     for stale in (
         "USER_PASSWORD",
         "/workspace/work",
@@ -50,11 +53,17 @@ def test_the_hub_readme_describes_the_shipped_images():
         assert stale not in text, f"the Hub README still carries {stale!r} from the old image"
 
 
+def test_the_hub_readme_runs_a_script_in_the_mounted_dir():
+    text = HUB_README.read_text(encoding = "utf-8")
+    section = text[text.index("### Scripts") :]
+    start = section.index("```")
+    command = section[start : section.index("```", start + 3)]
+    assert "python /workspace/host/train.py" in command
+    assert "-w /workspace/host" in command
+
+
 def test_the_hub_readme_explains_the_studio_volume():
-    """The volume keeps Studio's data and never pins its code; a volume from an image
-    before the code/data split is migrated with its old code kept aside. Both facts,
-    the way back to an older image, and what `docker rm` still discards have to be on
-    the page, since the quick start above them mounts the volume by default."""
+    """the Studio volume keeps data, not code, with migration, rollback, and `docker rm` limits."""
     text = HUB_README.read_text(encoding = "utf-8")
     for needle in (
         "-v unsloth-studio:/opt/unsloth-studio",
@@ -68,9 +77,19 @@ def test_the_hub_readme_explains_the_studio_volume():
     # the helper is described as setting the flags of the quick start, which now
     # includes the volume: run.sh must mount it (test_docker_cpu_fallback.py checks)
     assert "including the `unsloth-studio` volume" in text
-    repo = REPO_README.read_text(encoding = "utf-8")
-    assert "-v unsloth-studio:/opt/unsloth-studio" in repo
-    assert ".unsloth-studio-legacy/" in repo
+    # The repository README keeps the quick start and hands the details to the Hub page and the
+    # Docker docs, which is where the migration story above lives. It must still mount the volume
+    # and still point at both, or a reader of the short version has no way to the long one.
+    # Read from the section that runs the image: the one-line Docker teaser higher up carries the
+    # same two links, so a check over the whole file would pass with them gone from here.
+    running = [
+        s for s in _docker_sections(REPO_README.read_text(encoding = "utf-8")) if "docker run" in s
+    ]
+    assert len(running) == 1, "expected exactly one README Docker section with a docker run"
+    quick_start = running[0]
+    assert "-v unsloth-studio:/opt/unsloth-studio" in quick_start
+    assert "https://hub.docker.com/r/unsloth/unsloth)" in quick_start
+    assert "https://unsloth.ai/docs/get-started/install/docker" in quick_start
 
 
 def _docker_sections(text: str) -> list[str]:
@@ -139,12 +158,12 @@ def test_the_sync_runs_only_when_latest_moved(sync_job: dict):
 
 
 def _run_sync(
-    step: str,
+    step: dict,
     tmp_path: Path,
     *,
     live_after_patch: str,
     token: str = "tok",
-    secret: str = "not-a-secret",
+    secret: str = DEFAULT_SECRET,
 ):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -156,6 +175,13 @@ def _run_sync(
     (bin_dir / "curl").write_text(
         "#!/usr/bin/env bash\n"
         f"printf '%s\\n' \"$*\" >> {log}\n"
+        # The request body does not always travel in argv. #11511 moved the token
+        # request onto stdin (`--data-binary @-`) so the org secret stops showing up
+        # in the process list, and a stub that logs only "$*" then records a call
+        # whose payload is simply absent: every assertion about what was SENT passes
+        # vacuously or fails for the wrong reason. Read it where it actually is, and
+        # only when the arguments say there is one, since `cat` with no stdin hangs.
+        f"case \"$*\" in *'--data-binary @-'*) cat >> {log} ;; esac\n"
         'case "$*" in\n'
         f'  *auth/token*) printf \'{{"access_token": "{token}"}}\' ;;\n'
         "  *-X\\ PATCH*) out=''; while [ $# -gt 0 ]; do [ \"$1\" = -o ] && out=$2; shift; done; : > \"$out\"; printf '200' ;;\n"
@@ -166,14 +192,33 @@ def _run_sync(
     (bin_dir / "curl").chmod(0o755)
     (tmp_path / "docker").mkdir()
     shutil.copy(HUB_README, tmp_path / "docker" / "DOCKERHUB.md")
-    script = step.replace("${{ secrets.DOCKER_API_KEY }}", secret).replace(
-        "${{ env.REGISTRY_USERNAME }}", "unsloth"
+    script = (
+        step["run"]
+        .replace("${{ secrets.DOCKER_API_KEY }}", secret)
+        .replace("${{ env.REGISTRY_USERNAME }}", "unsloth")
     )
     assert "${{" not in script, "unexpanded expression in the sync step"
     env = dict(os.environ)
     env["PATH"] = f"{bin_dir}{os.pathsep}" + env["PATH"]
     env["REGISTRY_USERNAME"] = "unsloth"
     env["IMAGE_NAME"] = "unsloth/unsloth"
+    # Whatever the step declares in its own `env:`, bound here too. The secret used to
+    # be written inline in the run body, where substituting the expression was enough;
+    # #11511 moved it to `env: DOCKER_API_KEY` and read it with `os.environ`, so a
+    # harness that only rewrites the body hands the script an environment it cannot
+    # run in. That does not fail loudly: the body builder raises, the pipeline keeps
+    # the exit status of its last command, and the request goes out empty.
+    # Only the secret this step is supposed to read is expanded. Standing in for any
+    # `secrets.*` would make the harness agree with a workflow that names the wrong
+    # one: `${{ secrets.TYPO }}` would still produce a valid payload here, while
+    # Actions would hand the real step an empty value. Anything else is left for the
+    # assertion below to reject by name.
+    for name, value in (step.get("env") or {}).items():
+        env[name] = re.sub(r"\$\{\{\s*secrets\.DOCKER_API_KEY\s*\}\}", secret, str(value))
+        assert "${{" not in env[name], (
+            f"the step's env {name} reads {value!r}, which is not the secret this "
+            f"harness knows how to supply"
+        )
     res = subprocess.run(
         ["bash", "-e", "-c", script],
         capture_output = True,
@@ -186,11 +231,17 @@ def _run_sync(
 
 
 def test_the_sync_patches_the_readme_and_confirms_it(sync_job: dict, tmp_path: Path):
-    step = sync_job["steps"][-1]["run"]
+    step = sync_job["steps"][-1]
     res, log = _run_sync(step, tmp_path, live_after_patch = HUB_README.read_text(encoding = "utf-8"))
     assert res.returncode == 0, res.stdout + res.stderr
     assert "-X PATCH https://hub.docker.com/v2/namespaces/unsloth/repositories/unsloth" in log
     assert "Authorization: Bearer tok" in log
+    # The body, wherever curl was handed it. Asserted as a non-empty payload first:
+    # an empty request logs no identifier either, so the bare `in log` check below
+    # cannot tell "authenticated as someone else" from "sent nothing at all".
+    assert (
+        f'"secret": "{DEFAULT_SECRET}"' in log
+    ), "the token request carried no body, so this proves nothing about who it authenticates as"
     assert '"identifier": "unsloth"' in log, "the organization token authenticates as the org"
 
 
@@ -199,7 +250,7 @@ def test_the_sync_never_touches_the_legacy_repository_route(sync_job: dict, tmp_
     /v2/repositories/{owner}/{repo}/ with 403 "token issued from organization access
     token is not allowed", whatever its scopes; only the namespace-scoped route
     accepts it. That 403 failed the sync on every publish before this test existed."""
-    step = sync_job["steps"][-1]["run"]
+    step = sync_job["steps"][-1]
     _, log = _run_sync(step, tmp_path, live_after_patch = HUB_README.read_text(encoding = "utf-8"))
     assert "/v2/repositories/" not in log
     assert "/v2/namespaces/unsloth/repositories/unsloth" in log
@@ -208,14 +259,14 @@ def test_the_sync_never_touches_the_legacy_repository_route(sync_job: dict, tmp_
 def test_the_sync_fails_when_the_page_did_not_change(sync_job: dict, tmp_path: Path):
     """A 200 from PATCH is not proof. The page is read back and compared, so a token
     without description rights cannot leave the job green and the page stale."""
-    step = sync_job["steps"][-1]["run"]
+    step = sync_job["steps"][-1]
     res, _ = _run_sync(step, tmp_path, live_after_patch = "# the old page")
     assert res.returncode != 0, "the sync reported success while the page stayed stale"
     assert "does not match" in res.stdout + res.stderr
 
 
 def test_the_sync_fails_without_a_token(sync_job: dict, tmp_path: Path):
-    step = sync_job["steps"][-1]["run"]
+    step = sync_job["steps"][-1]
     res, log = _run_sync(step, tmp_path, live_after_patch = "", token = "")
     assert res.returncode != 0
     assert "PATCH" not in log, "a PATCH was attempted with an empty token"
@@ -225,6 +276,11 @@ def test_the_hub_readme_matches_what_each_image_ships():
     text = HUB_README.read_text(encoding = "utf-8")
     # whisper.cpp comes from Studio's setup, so only that image has it
     assert "The `latest` image adds whisper.cpp" in text
+    # audio.cpp too, and the CUDA bundle only where Dockerfile.studio names it (no GPU at build time)
+    assert "audio.cpp (CUDA build on `linux/amd64`)" in text
+    studio_df = (HUB_README.parent / "Dockerfile.studio").read_text(encoding = "utf-8")
+    assert 'amd64) TORCH_FAMILY="cu128"; AUDIO_CPP_ACCELERATOR="cuda"' in studio_df
+    assert 'UNSLOTH_AUDIO_CPP_ACCELERATOR="${AUDIO_CPP_ACCELERATOR}"' in studio_df
     # SYNC disables the notebooks entirely; REFRESH only skips the GitHub fetch
     assert "`UNSLOTH_SKIP_NOTEBOOK_REFRESH=1` | Do not refresh the notebooks from GitHub" in text
     assert "`UNSLOTH_SKIP_NOTEBOOK_SYNC=1` | Do not set up the notebooks at all" in text

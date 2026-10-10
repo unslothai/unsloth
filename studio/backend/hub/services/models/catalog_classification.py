@@ -16,7 +16,11 @@ from hub.services.models.common import (
     _iter_gguf_paths,
     _local_path_can_chat,
 )
-from utils.gguf_archs import SPEECH_GGUF_ARCHS, is_speech_gguf_architecture
+from utils.gguf_archs import (
+    SPEECH_GGUF_ARCHS,
+    is_audio_cpp_gguf_architecture,
+    is_speech_gguf_architecture,
+)
 from utils.paths.path_utils import file_contents_available_locally
 
 
@@ -34,6 +38,8 @@ _VIDEO_GEN_TASK = "text-to-video"
 # and the media preflight all have to agree.
 _SPEECH_GGUF_ARCHS = SPEECH_GGUF_ARCHS
 _SPEECH_TASK = "text-to-speech"
+# An audio.cpp GGUF of a kind Studio has no page for (separation, diarization, ...): not chat either.
+_AUDIO_CPP_UNSUPPORTED_TASK = "audio-to-audio"
 _UNSUPPORTED_DIFFUSION_TASK = "image-diffusion-unsupported"
 _H3_DENOISER_GGUF_PREFIXES = ("minimax_h3_fl2va", "minimax_h3_ref2va")
 _LOADABLE_MEDIA_GGUF_TASKS = frozenset({"text-to-image", _VIDEO_GEN_TASK})
@@ -132,11 +138,12 @@ def _name_hint_media_task(
     an unrecognised name means, hence *unmatched*.
     """
     from core.inference.video_families import detect_video_family
+    from core.inference.video_moe_pair import moe_pick_pairs
 
     for hint in name_hints:
         family = detect_video_family(hint) if hint else None
         if family is not None:
-            if not getattr(family, "is_moe", False) and _video_family_buildable(family):
+            if moe_pick_pairs(family, *name_hints) and _video_family_buildable(family):
                 return _VIDEO_GEN_TASK
             return _UNSUPPORTED_DIFFUSION_TASK
     from core.inference.diffusion_families import detect_family_for_pick
@@ -164,17 +171,121 @@ def _unhydrated_gguf_task(name_hints: tuple[Optional[str], ...]) -> Optional[str
     """
     if any(_is_h3_bundle_gguf_hint(hint) for hint in name_hints):
         return _VIDEO_GEN_TASK
+    from core.inference.video_families import detect_video_family
+
     # Leaves only: family detection matches a keyword in ANY path segment, so a chat GGUF under
     # .../FLUX.1-dev-GGUF/extra/ read as text-to-image.
-    return _name_hint_media_task(tuple(_hint_leaf(hint) for hint in name_hints if hint), None)
+    leaves = tuple(_hint_leaf(hint) for hint in name_hints if hint)
+    # H3 denoisers matched by prefix above; any other H3 name (qwen3vl_32b_minimax_h3-*) is the conditioner.
+    if any(getattr(detect_video_family(leaf), "name", None) == "minimax-h3" for leaf in leaves):
+        return None
+    return _name_hint_media_task(leaves, None)
+
+
+def _audio_cpp_classification(
+    path: Optional[str | Path], name_hints: tuple[Optional[str], ...]
+) -> tuple[str, Optional[str]]:
+    """``(task, audio_type)`` of an audio.cpp GGUF: its family from the header when a path is given,
+    else from the names, mapped to the page that runs it."""
+    try:
+        from core.inference import audio_cpp_models as acm
+    except Exception:
+        return _SPEECH_TASK, None
+    header = acm.read_local_header(path) if path is not None else None
+    names = tuple(str(hint) for hint in name_hints if hint)
+    family = (header.family if header is not None else None) or acm.family_from_names(names)
+    if not family:
+        return _AUDIO_CPP_UNSUPPORTED_TASK, None
+    policy = acm.family_policy(family, header.spec if header is not None else None, names)
+    task = acm.HUB_TASKS.get(policy.task)
+    if task is None or policy.unsupported:
+        return _AUDIO_CPP_UNSUPPORTED_TASK, None
+    audio_type = {
+        "tts": acm.AUDIO_CPP_TTS_AUDIO_TYPE,
+        "music": acm.AUDIO_CPP_MUSIC_AUDIO_TYPE,
+        "sep": acm.AUDIO_CPP_SEP_AUDIO_TYPE,
+    }.get(policy.task)
+    return task, audio_type
+
+
+def _audio_cpp_workflows(
+    path: Optional[str | Path], name_hints: tuple[Optional[str], ...]
+) -> Optional[list[str]]:
+    """The Audio page workflows an audio.cpp GGUF serves (a clone-only family lists ``clone``
+    alone), from the same family policy the loader uses; None when it is not a runnable one."""
+    try:
+        from core.inference import audio_cpp_models as acm
+    except Exception:
+        return None
+    header = acm.read_local_header(path) if path is not None else None
+    names = tuple(str(hint) for hint in name_hints if hint)
+    family = (header.family if header is not None else None) or acm.family_from_names(names)
+    if not family:
+        return None
+    policy = acm.family_policy(family, header.spec if header is not None else None, names)
+    if policy.unsupported or not policy.task:
+        return None
+    return list(policy.workflows) or None
+
+
+def _gguf_path_audio_workflows(
+    path: str | Path, id_hints: tuple[Optional[str], ...] = ()
+) -> Optional[list[str]]:
+    """The union of ``_audio_cpp_workflows`` over the audio.cpp GGUFs at ``path`` (a file or a
+    folder): the umbrella repo is one row holding every downloaded family."""
+    from core.inference.audio_workflows import AUDIO_WORKFLOW_IDS
+
+    model_path = Path(path)
+    found: set[str] = set()
+    try:
+        paths = [model_path] if model_path.is_file() else _iter_gguf_paths(model_path)
+        for gguf_path in paths:
+            if is_audio_cpp_gguf_architecture(_gguf_architecture(str(gguf_path))):
+                found.update(_audio_cpp_workflows(gguf_path, id_hints + (gguf_path.name,)) or ())
+    except Exception:
+        return None
+    return [w for w in AUDIO_WORKFLOW_IDS if w in found] or None
+
+
+def _gguf_file_task(path: str | Path, name_hints: tuple[Optional[str], ...]) -> Optional[str]:
+    """``_arch_to_task`` for a file on disk, which can also read an audio.cpp family."""
+    arch = _gguf_architecture(str(path))
+    if is_audio_cpp_gguf_architecture(arch):
+        return _audio_cpp_classification(path, name_hints)[0]
+    if arch is None or arch.lower() == "sdxl":
+        whole = _whole_pipeline_gguf_task(path)
+        if whole is not None:
+            return whole
+    return _arch_to_task(arch, name_hints = name_hints)
+
+
+def _whole_pipeline_gguf_task(path: str | Path) -> Optional[str]:
+    """Images task for a whole-pipeline SDXL GGUF: sd.cpp ``convert`` writes no architecture, so the name fallback
+    would call it a chat model."""
+    try:
+        from core.inference.diffusion_content import whole_pipeline_gguf_family
+
+        family = whole_pipeline_gguf_family(str(path))
+        if family is None:
+            return None
+        from core.inference.diffusion_engine_router import family_buildable_here
+        from core.inference.diffusion_families import detect_family
+
+        buildable = family_buildable_here(detect_family("", override = family), model_kind = "gguf")
+    except Exception:
+        return None
+    return "text-to-image" if buildable else _UNSUPPORTED_DIFFUSION_TASK
 
 
 def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = ()) -> Optional[str]:
     if any(_is_h3_bundle_gguf_hint(hint) for hint in name_hints):
         return _VIDEO_GEN_TASK
     if arch is None:
-        return None
+        # Qwen-Image-2.1 GGUFs have kv_count 0, so the name is the only evidence, as for a cloud placeholder.
+        return _unhydrated_gguf_task(name_hints)
     normalized = arch.lower()
+    if is_audio_cpp_gguf_architecture(normalized):
+        return _audio_cpp_classification(None, name_hints)[0]
     if normalized == "qwen3" and any(
         _QWEN3_ASR_HINT.search(str(hint)) for hint in name_hints if hint
     ):
@@ -193,6 +304,7 @@ def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = (
         )
     if normalized in _VIDEO_GGUF_ARCHS:
         from core.inference.video_families import detect_video_family
+        from core.inference.video_moe_pair import moe_pick_pairs
 
         family = detect_video_family("", override = normalized)
         if family is None:
@@ -203,7 +315,7 @@ def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = (
                         break
         if (
             family is not None
-            and not getattr(family, "is_moe", False)
+            and moe_pick_pairs(family, *name_hints)
             and _video_family_buildable(family)
         ):
             return _VIDEO_GEN_TASK
@@ -234,6 +346,8 @@ def _arch_to_audio_type(
     if arch is None:
         return None
     normalized = arch.strip().lower()
+    if is_audio_cpp_gguf_architecture(normalized):
+        return _audio_cpp_classification(None, name_hints)[1]
     if normalized == "llama" and any(
         _ORPHEUS_GGUF_HINT.search(str(hint)) for hint in name_hints if hint
     ):
@@ -302,7 +416,7 @@ def _gguf_folder_task(
         hints = id_hints + (path.name,)
         try:
             if file_contents_available_locally(path):
-                task = _arch_to_task(_gguf_architecture(str(path)), name_hints = hints)
+                task = _gguf_file_task(path, hints)
             else:
                 # Its header stays unread, so a name that says nothing leaves the candidate unclassified rather than
                 # voting text-generation for the whole folder.
@@ -312,7 +426,7 @@ def _gguf_folder_task(
             complete = False
             continue
         if task is None:
-            # A truncated header gives no architecture, and _arch_to_task answers None.
+            # No architecture and a name that says nothing: unclassified.
             complete = False
             continue
         if task in _LOADABLE_MEDIA_GGUF_TASKS:
@@ -346,10 +460,12 @@ def _gguf_path_audio_type(
         # No extension check: an Ollama model is a blob named by its digest.
         paths = [model_path] if model_path.is_file() else _iter_gguf_paths(model_path)
         for gguf_path in paths:
-            audio_type = _arch_to_audio_type(
-                _gguf_architecture(str(gguf_path)),
-                name_hints = id_hints + (gguf_path.name,),
-            )
+            hints = id_hints + (gguf_path.name,)
+            arch = _gguf_architecture(str(gguf_path))
+            if is_audio_cpp_gguf_architecture(arch):
+                audio_type = _audio_cpp_classification(gguf_path, hints)[1]
+            else:
+                audio_type = _arch_to_audio_type(arch, name_hints = hints)
             if audio_type is not None:
                 return audio_type
     except Exception:
@@ -372,10 +488,7 @@ def _gguf_path_task(path: str | Path, id_hints: tuple[Optional[str], ...] = ()) 
             hints = id_hints + (model_path.name,)
             if not file_contents_available_locally(model_path):
                 return _unhydrated_gguf_task(hints)
-            return _arch_to_task(
-                _gguf_architecture(str(model_path)),
-                name_hints = hints,
-            )
+            return _gguf_file_task(model_path, hints)
         return _gguf_folder_task(model_path, id_hints)
     except Exception:
         return None
@@ -404,6 +517,14 @@ def _local_family_needles(model) -> tuple[str, ...]:
         single = resolve_local_single_file(model.path)
         if single:
             needles.append(single)
+    except Exception:
+        pass
+    try:
+        # A renamed loose checkpoint: its header still names the family.
+        path = Path(model.path)
+        if path.suffix.lower() == ".safetensors" and path.is_file():
+            from core.inference.diffusion_content import inspect_checkpoint
+            needles.append(inspect_checkpoint(str(path)).family)
     except Exception:
         pass
     return tuple(needle for needle in needles if needle)
@@ -439,8 +560,14 @@ def _local_model_task(model) -> Optional[str]:
         pass
     try:
         from core.inference.diffusion_engine_router import family_buildable_here
-        from core.inference.diffusion_families import detect_family, detect_family_by_pipeline_index
+        from core.inference.diffusion_families import (
+            detect_family,
+            detect_family_by_pipeline_index,
+            pipeline_index_contradicts_name,
+        )
 
+        if pipeline_index_contradicts_name(path):
+            return None
         families = (
             detect_family_by_pipeline_index(path),
             *(detect_family(needle) for needle in _local_family_needles(model)),
@@ -480,12 +607,25 @@ def _local_model_classification_for_task(
     model, task: Optional[str]
 ) -> tuple[Optional[str], Optional[str]]:
     """Add decoder provenance to an already classified local-row task."""
-    audio_type = _local_model_audio_type(model) if task is None or task == _SPEECH_TASK else None
+    probe = task is None or task in (_SPEECH_TASK, "audio-to-audio")
+    audio_type = _local_model_audio_type(model) if probe else None
+    # As for cached rows: only a separation GGUF is an audio-to-audio row Studio has a page for.
+    if task == "audio-to-audio" and audio_type != "audiocpp_sep":
+        audio_type = None
     if task is None and audio_type is not None:
         from utils.audio_tokens import is_output_audio_type
         if is_output_audio_type(audio_type):
             task = _SPEECH_TASK
     return task, audio_type
+
+
+def local_audio_workflows(model, audio_type: Optional[str]) -> Optional[list[str]]:
+    """The audio.cpp family's own workflows for a local speech row (a clone-only one is not
+    Speak); None keeps the task-derived default."""
+    if audio_type != "audiocpp_tts":
+        return None
+    model = _local_probe_model(model)
+    return _gguf_path_audio_workflows(model.path, (model.model_id, model.display_name, model.id))
 
 
 def _local_model_classification(model) -> tuple[Optional[str], Optional[str]]:
@@ -551,6 +691,22 @@ def _is_sd_cpp_companion_repo(repo_id: str) -> bool:
         return False
 
 
+def _untrusted_repo_single_files_loadable(repo_info, selected: Optional[Path] = None) -> bool:
+    """An untrusted cached repo of single ``.safetensors`` files (no pipeline index) still loads per
+    file; mirrors ``single_file_load_allowed``."""
+    try:
+        if _repo_has_pipeline_index(repo_info, selected):
+            return False
+        from core.inference.diffusion_single_file_trust import SAFETENSORS_SUFFIX
+        for revision in getattr(repo_info, "revisions", None) or ():
+            for cached in getattr(revision, "files", None) or ():
+                if str(getattr(cached, "file_name", "")).endswith(SAFETENSORS_SUFFIX):
+                    return True
+    except Exception:  # noqa: BLE001 -- a classification failure keeps the row untrusted
+        return False
+    return False
+
+
 def _cached_repo_task(repo_info, selected: Optional[Path] = None) -> Optional[str]:
     repo_id = getattr(repo_info, "repo_id", "") or ""
     try:
@@ -559,7 +715,10 @@ def _cached_repo_task(repo_info, selected: Optional[Path] = None) -> Optional[st
 
         family = detect_video_family(repo_id)
         if family is not None:
-            if not _is_trusted_video_repo(repo_id) or not _video_family_buildable(family):
+            trusted = _is_trusted_video_repo(repo_id) or _untrusted_repo_single_files_loadable(
+                repo_info, selected
+            )
+            if not trusted or not _video_family_buildable(family):
                 return None
             return _VIDEO_GEN_TASK
     except Exception:
@@ -573,7 +732,10 @@ def _cached_repo_task(repo_info, selected: Optional[Path] = None) -> Optional[st
         if _is_sd_cpp_companion_repo(repo_id):
             return None
         family = detect_family(repo_id)
-        if not _is_trusted_diffusion_repo(repo_id) or family is None:
+        trusted = _is_trusted_diffusion_repo(repo_id) or _untrusted_repo_single_files_loadable(
+            repo_info, selected
+        )
+        if not trusted or family is None:
             return None
         if not family_pipeline_available(family):
             return None

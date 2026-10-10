@@ -5,12 +5,16 @@ import { authFetch } from "@/features/auth";
 import type { ChatPresetSource } from "../presets/preset-policy";
 import type {
   PermissionMode,
+  SandboxLevel,
   RagAutoInject,
   RagMode,
   RagSource,
   ReasoningEffort,
 } from "../stores/chat-runtime-store";
-import type { ResearchWebsitePolicy } from "../types/research";
+import type {
+  ResearchMcpSource,
+  ResearchWebsitePolicy,
+} from "../types/research";
 import type {
   InferenceParams,
   PersistedInferenceParams,
@@ -54,13 +58,13 @@ export interface PersistedChatSettings {
   webFetchToolsEnabled?: boolean;
   deepResearchEnabled?: boolean;
   researchWebsitePolicy?: ResearchWebsitePolicy;
+  researchMcpSources?: ResearchMcpSource[];
   researchModelTimeoutSeconds?: number;
-  artifactsEnabled?: boolean;
-  showCanvasMenuItem?: boolean;
   mcpEnabledForChat?: boolean;
   confirmToolCalls?: boolean;
   /** "full" (Full access) is session-only and never leaves the browser. */
   permissionMode?: Exclude<PermissionMode, "full">;
+  sandboxLevel?: SandboxLevel;
   ragSource?: RagSource;
   ragMode?: RagMode;
   ragTopK?: number;
@@ -75,8 +79,6 @@ export interface PersistedChatSettings {
   fitOnDeviceOnly?: boolean;
   /** Local GGUF chats: drop oldest turns instead of erroring at the window. */
   autoCompactEnabled?: boolean;
-  contextPolicy?: "inherit" | "checkpoint" | "rolling";
-  compactionHeadroomRatio?: number;
 }
 
 interface ChatSettingsResponse {

@@ -102,6 +102,7 @@ def _hub_doubles(calls, seen):
         ):
             calls.append("upload_folder")
             seen["folder"] = folder_path
+            seen["upload_repo"] = repo_id
             root = Path(folder_path)
             paths = [p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()]
             if allow_patterns is not None:
@@ -790,7 +791,6 @@ def test_push_only_gguf_export_still_delegates_to_push_to_hub_gguf(tmp_path, mon
             quantization_method,
             imatrix_file = None,
             token = None,
-            gguf_shard_size = None,
         ):
             calls.append("save_pretrained_gguf")
 
@@ -802,7 +802,6 @@ def test_push_only_gguf_export_still_delegates_to_push_to_hub_gguf(tmp_path, mon
             token = None,
             private = None,
             imatrix_file = None,
-            gguf_shard_size = None,
         ):
             calls.append("push_to_hub_gguf")
             seen["push"] = {
@@ -811,7 +810,6 @@ def test_push_only_gguf_export_still_delegates_to_push_to_hub_gguf(tmp_path, mon
                 "token": token,
                 "private": private,
                 "imatrix_file": imatrix_file,
-                "gguf_shard_size": gguf_shard_size,
             }
 
     hf_api, model_card = _hub_doubles(calls, seen)
@@ -828,7 +826,6 @@ def test_push_only_gguf_export_still_delegates_to_push_to_hub_gguf(tmp_path, mon
         hf_token = "token",
         private = True,
         imatrix_file = True,
-        gguf_shard_size = "512MB",
     )
 
     assert success is True, message
@@ -842,7 +839,6 @@ def test_push_only_gguf_export_still_delegates_to_push_to_hub_gguf(tmp_path, mon
         "token": "token",
         "private": True,
         "imatrix_file": True,
-        "gguf_shard_size": "512MB",
     }
 
 

@@ -68,6 +68,9 @@ def test_desktop_package_transitions_preserve_legacy_installs() -> None:
     deb = config["bundle"]["linux"]["deb"]
     for field in ("provides", "conflicts", "replaces"):
         assert deb[field] == ["unsloth-studio-desktop"]
+    # Recommends, not Depends: Ubuntu ships it in universe, so a Depends blocks install where that is off.
+    assert deb["recommends"] == ["gstreamer1.0-plugins-bad"]
+    assert "depends" not in deb
 
     installer = read(TAURI / "windows/installer.nsi")
     assert '!define INSTALLIDENTITY "Unsloth Studio (Desktop)"' in installer
@@ -183,6 +186,9 @@ def test_desktop_release_asset_names_are_human_readable() -> None:
         "Linux.AppImage",
         "Linux.AppImage.sig",
         "Ubuntu.deb",
+        "Ubuntu.deb.sig",
+        "Ubuntu-ARM64.deb",
+        "Ubuntu-ARM64.deb.sig",
         "Windows.exe",
         "Windows.exe.sig",
         "Windows-ARM64.exe",
@@ -195,6 +201,7 @@ def test_desktop_release_asset_names_are_human_readable() -> None:
         "Unsloth-Desktop-MacOS.dmg",
         "Unsloth-Desktop-Linux.AppImage",
         "Unsloth-Desktop-Ubuntu.deb",
+        "Unsloth-Desktop-Ubuntu-ARM64.deb",
         "Unsloth-Desktop-Windows.exe",
         "Unsloth-Desktop-Windows-ARM64.exe",
     ):

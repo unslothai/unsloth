@@ -33,8 +33,8 @@ import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import {
   Copy01Icon,
-  Globe02Icon,
   QrCodeIcon,
+  HomeWifiIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -365,13 +365,13 @@ export function RemoteAccessSection() {
         <div className="flex min-w-0 items-start gap-3">
           <div className="flex size-8 shrink-0 items-center justify-center rounded-md border border-border/70 bg-muted/40">
             <HugeiconsIcon
-              icon={Globe02Icon}
+              icon={HomeWifiIcon}
               className="size-4 text-foreground"
             />
           </div>
           <div className="flex min-w-0 flex-col gap-0.5">
             <div className="flex flex-wrap items-center gap-2">
-              <h2 className="text-base font-semibold font-heading text-foreground">
+              <h2 className="settings-heading text-base font-semibold font-heading">
                 Remote access
               </h2>
               <AccessStatus status={status} />

@@ -709,9 +709,20 @@ OWN_TURN_TEXT = "one more"
 
 #: Remove the throwaway turn: assistant first, then the user turn, because deleting the user
 #: message can take the reply with it and leave the count ambiguous. Reports rather than asserts.
+#: The cleanup reaches Delete through the reply's More menu (#12735), so it first waits for that
+#: menu to mount. A paint or two in practice; the bound matters only when the menu is slow or never
+#: comes. `stop_generation` passes what is left of its slot after the settle, clamped to these, so a
+#: slow menu cannot carry the turn into the next action's window. The floor is a few paints, so a
+#: slot already spent still tries once rather than leaving the turn in the thread.
+CLEANUP_MENU_MAX_MS = 1000
+CLEANUP_MENU_MIN_MS = 100
+#: What the slot still owes after the menu opens: the 200 ms settle and the delete itself.
+CLEANUP_AFTER_MENU_MS = 300
+
 STOP_CLEANUP_JS = """
-async (timeoutMs) => {
+async (opts) => {
   const D = window.__sb.dom;
+  const timeoutMs = opts.timeoutMs;
   // threadTotal, not messageCount. Identical on the shipped build; under a windowed mount the
   // window refills as the message leaves it, so a cleanup that worked reports after == before.
   const before = D.threadTotal();
@@ -719,8 +730,15 @@ async (timeoutMs) => {
     const target = D.lastAssistantMessage();
     if (!target) return false;
     target.dispatchEvent(new PointerEvent("pointerover", { bubbles: true, pointerType: "mouse" }));
-    const button = D.actionButton("Delete message");
-    if (!button) return false;
+    // Delete is the More menu's last item since #12735; see DELETE_JS.
+    const trigger = D.actionButton("More");
+    if (!trigger) return false;
+    const button = (await D.openMenuAndFind(trigger, "Delete", opts.menuWaitMs)).item;
+    if (!button) {
+      document.dispatchEvent(new KeyboardEvent("keydown",
+        { key: "Escape", bubbles: true, cancelable: true }));
+      return false;
+    }
     const started = performance.now();
     button.click();
     while (performance.now() - started < timeoutMs) {
@@ -814,7 +832,15 @@ def _reclaim_pending_turn(
         and isinstance(messages_after, int)
         and messages_after > messages_before
     )
-    removed = _ev(ctx, STOP_CLEANUP_JS, SETTLE_TIMEOUT_MS) if grew else None
+    removed = (
+        _ev(
+            ctx,
+            STOP_CLEANUP_JS,
+            {"timeoutMs": SETTLE_TIMEOUT_MS, "menuWaitMs": CLEANUP_MENU_MAX_MS},
+        )
+        if grew
+        else None
+    )
     if removed is not None:
         ctx.page.wait_for_timeout(200)
 
@@ -957,7 +983,15 @@ def stop_generation(ctx: ActionContext) -> ActionResult:
     # comparison all measure.
     removed = None
     if own_generation:
-        removed = _ev(ctx, STOP_CLEANUP_JS, SETTLE_TIMEOUT_MS)
+        menu_wait_ms = min(
+            CLEANUP_MENU_MAX_MS,
+            max(CLEANUP_MENU_MIN_MS, remaining_ms() - CLEANUP_AFTER_MENU_MS),
+        )
+        removed = _ev(
+            ctx,
+            STOP_CLEANUP_JS,
+            {"timeoutMs": SETTLE_TIMEOUT_MS, "menuWaitMs": menu_wait_ms},
+        )
         ctx.page.wait_for_timeout(200)
     return ActionResult(
         ran = True,
@@ -1639,6 +1673,46 @@ _COUNT_COMPOSER_ATTACHMENT_CONTAINERS_JS = (
 )
 
 
+#: The composer's "Tools and attachments" menu is a MODAL Radix dropdown, and a modal one sets
+#: `pointer-events: none` on everything outside itself for as long as it is open. Menus are told apart
+#: by identity, not presence: the chat UI also has non-modal menus, whose outside pointerdown is let
+#: through, so the attachments click can dismiss one of those and open its own in the same moment.
+_MARK_MENUS_BEFORE_JS = """() => {
+  window.__sbMenusBefore = new WeakSet(document.querySelectorAll('[role="menu"]'));
+}"""
+_NEW_MENU_OPEN_JS = """() => {
+  const before = window.__sbMenusBefore || new WeakSet();
+  return Array.from(document.querySelectorAll('[role="menu"]')).some(m => !before.has(m));
+}"""
+
+
+def _close_open_menu(ctx: ActionContext) -> Optional[bool]:
+    """Escape until no menu opened by this attempt is left, bounded. True when one was open and is
+    now closed, False when none was, None when one is still open after the attempts.
+
+    An action that gives up must leave the page as it found it. A menu this action opened and then
+    abandoned is not this action's failure alone: the next action's click hit-tests to nothing, it
+    reports the control as unclickable, and a run that allows this action not to run still fails on
+    the one after it. A menu that was already open is not this action's to close: it can be the very
+    thing that made the click time out, and it belongs to whatever opened it. Escape dismisses the top
+    layer first, which is the one this attempt opened, so the loop stops before reaching an older one.
+    """
+    if _ev(ctx, _NEW_MENU_OPEN_JS) is not True:
+        return False
+    for _ in range(3):
+        ctx.page.keyboard.press("Escape")
+        ctx.page.wait_for_timeout(100)
+        if _ev(ctx, _NEW_MENU_OPEN_JS) is not True:
+            return True
+    return None
+
+
+def _left_menu_note(closed: Optional[bool]) -> str:
+    if closed is None:
+        return " (a menu it opened is still open after Escape)"
+    return " (closed the menu it opened)" if closed else ""
+
+
 @register_action(name = "image_upload", default_budget_ms = 12000)
 def image_upload(ctx: ActionContext) -> ActionResult:
     """Attach an image through the composer's file chooser.
@@ -1675,12 +1749,20 @@ def image_upload(ctx: ActionContext) -> ActionResult:
             + json.dumps(_ev(ctx, IMAGE_BUTTON_DIAGNOSTIC) or {})
         )
     before = _ev(ctx, _COUNT_COMPOSER_ATTACHMENTS_JS)
+    _ev(ctx, _MARK_MENUS_BEFORE_JS)
     started = time.monotonic()
     # Bounded by what is left of the slot, never by Playwright's 30s default.
     try:
         plus.click(timeout = max(500, min(ctx.budget_ms // 3, 5000)))
     except Exception as exc:  # noqa: BLE001
-        return not_run(f"the attachments button could not be clicked: {type(exc).__name__}")
+        # A click can open the menu and still time out: Radix opens it on pointerdown. Left open, it
+        # blocked the next action's New chat button (thread_reopen NOT RUN, "no point on the control
+        # hit-tests to it") on a run that allowed only this action not to run.
+        closed = _close_open_menu(ctx)
+        return not_run(
+            f"the attachments button could not be clicked: {type(exc).__name__}"
+            + _left_menu_note(closed)
+        )
     ctx.page.wait_for_timeout(200)
     try:
         with ctx.page.expect_file_chooser(timeout = 6000) as fc:
@@ -1690,8 +1772,10 @@ def image_upload(ctx: ActionContext) -> ActionResult:
             }""")
         fc.value.set_files(png)
     except Exception as exc:  # noqa: BLE001
-        ctx.page.keyboard.press("Escape")
-        return not_run(f"the file chooser never opened: {type(exc).__name__}: {exc}")
+        closed = _close_open_menu(ctx)
+        return not_run(
+            f"the file chooser never opened: {type(exc).__name__}: {exc}" + _left_menu_note(closed)
+        )
     ctx.page.wait_for_timeout(800)
     after = _ev(ctx, _COUNT_COMPOSER_ATTACHMENTS_JS)
     elapsed = (time.monotonic() - started) * 1000
@@ -2289,23 +2373,40 @@ async (opts) => {
   // "a running message hides it" was already the diagnosis in the line this replaced, and the
   // action still reported NOT RUN on the first sample rather than waiting for the running message
   // to stop running. Same wait, same bound and same reporting as `message_menu`.
-  const found = await D.waitForActionButton("Delete message", opts.waitForButtonMs);
-  const button = found.el;
+  //
+  // Delete is the last item of the reply's More menu since #12735, not a button on the bar, so
+  // the wait is for the More trigger and the menu is opened BEFORE the clock starts: what this
+  // action times is the delete, and `message_menu` already times the menu.
+  const found = await D.waitForActionButton("More", opts.waitForButtonMs);
   const waitedMs = found.waitedMs;
-  if (!button) {
+  if (!found.el) {
     return {
       ran: false,
       waitedMs,
       running: found.running,
       reason:
-        "no Delete button after waiting " + waitedMs + "ms" +
+        "no More button after waiting " + waitedMs + "ms" +
         (found.running ? ": the thread was still generating, which unmounts the action bar" : ""),
+    };
+  }
+  const menu = await D.openMenuAndFind(found.el, "Delete", opts.waitForButtonMs);
+  const button = menu.item;
+  if (!button) {
+    document.dispatchEvent(new KeyboardEvent("keydown",
+      { key: "Escape", bubbles: true, cancelable: true }));
+    return {
+      ran: false,
+      waitedMs,
+      reason:
+        "no Delete item in the More menu (opened=" + menu.opened + ", items=" + menu.items +
+        ", after " + menu.openMs + "ms)",
     };
   }
   const target = D.lastAssistantMessage();
   const before = D.threadTotal();
   const mountedBefore = D.messageCount();
   const started = performance.now();
+  // A Radix menu item selects on click, unlike its trigger.
   button.click();
   let ms = null;
   // isConnected on the captured node is O(1). Re-counting [data-role] every frame would put an
@@ -2325,7 +2426,8 @@ async (opts) => {
   // alongside rather than replacing it: on a windowed mount `messageCount()` is the size of the
   // window and a recycled node would read as a delete. `waitedMs` is how long the bar was waited
   // for, which the row reports so a slot that opened too early is visible.
-  return { ran: true, waitedMs, ms: ms === null ? null : Math.round(ms * 10) / 10,
+  return { ran: true, waitedMs, menuOpenMs: menu.openMs,
+           ms: ms === null ? null : Math.round(ms * 10) / 10,
            before, after: D.threadTotal(),
            mountedBefore, mountedAfter: D.messageCount() };
 }
@@ -2357,6 +2459,7 @@ def delete_message(ctx: ActionContext) -> ActionResult:
             "mounted_before": raw.get("mountedBefore"),
             "mounted_after": raw.get("mountedAfter"),
             "action_bar_wait_ms": raw.get("waitedMs"),
+            "menu_open_ms": raw.get("menuOpenMs"),
         },
         timings = {"delete_ms": raw["ms"]},
         reason = None if ok else f"the message count went {raw['before']} -> {raw['after']}",

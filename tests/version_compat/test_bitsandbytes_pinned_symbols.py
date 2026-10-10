@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.version_compat._fetch import fetch_text, first_match, has_def
+from tests.version_compat._fetch import fetch_text, first_match, function_params, has_def, is_bound
 
 
 def _super_init_call(source: str, class_name: str) -> ast.Call | None:
@@ -74,7 +74,7 @@ def test_bnb_functional_4bit(tag: str):
     assert hit is not None, f"{tag}: bitsandbytes/functional[.py|/__init__.py] both missing"
     _, src = hit
     needed = ("dequantize_4bit", "quantize_4bit")
-    missing = [n for n in needed if not has_def(src, n, "func") and n not in src]
+    missing = [n for n in needed if not is_bound(src, n)]
     assert not missing, (
         f"{tag}: bnb.functional missing {missing}; " f"unsloth-zoo dequant kernels rely on these"
     )
@@ -92,9 +92,9 @@ def test_bnb_nn_linear4bit_classes(tag: str):
         src = fetch_text("bitsandbytes-foundation/bitsandbytes", tag, p)
         if src is None:
             continue
-        if has_def(src, "Linear4bit", "class") or "Linear4bit" in src:
+        if is_bound(src, "Linear4bit"):
             found_linear = True
-        if has_def(src, "Params4bit", "class") or "Params4bit" in src:
+        if is_bound(src, "Params4bit"):
             found_params = True
         if found_linear and found_params:
             return
@@ -110,7 +110,7 @@ def test_bnb_matmul_4bit_top_level(tag: str):
     src = fetch_text("bitsandbytes-foundation/bitsandbytes", tag, "bitsandbytes/__init__.py")
     if src is None:
         pytest.skip(f"{tag}: bitsandbytes/__init__.py missing")
-    assert "matmul_4bit" in src, (
+    assert is_bound(src, "matmul_4bit"), (
         f"{tag}: bitsandbytes.matmul_4bit not exported at package root; "
         f"unsloth/kernels/utils.py + zoo/temporary_patches/moe call paths break"
     )
@@ -149,7 +149,7 @@ def test_bnb_functional_get_ptr(tag: str):
     if hit is None:
         pytest.skip(f"{tag}: functional missing")
     _, src = hit
-    assert has_def(src, "get_ptr", "func") or "get_ptr" in src, (
+    assert is_bound(src, "get_ptr"), (
         f"{tag}: bnb.functional.get_ptr missing; "
         f"unsloth/kernels/utils.py module-top ImportError"
     )
@@ -166,7 +166,7 @@ def test_bnb_quantstate_from_dict(tag: str):
         pytest.skip(f"{tag}: functional missing")
     _, src = hit
     assert has_def(src, "QuantState", "class"), f"{tag}: bnb.functional.QuantState missing"
-    assert "from_dict" in src, (
+    assert function_params(src, "from_dict", cls = "QuantState") is not None, (
         f"{tag}: QuantState.from_dict missing; " f"unsloth-zoo monkey-patch silently no-ops"
     )
 
@@ -188,7 +188,7 @@ def test_bnb_nn_linear8bitlt(tag: str):
     ]
     for p in candidates:
         src = fetch_text("bitsandbytes-foundation/bitsandbytes", tag, p)
-        if src and (has_def(src, "Linear8bitLt", "class") or "Linear8bitLt" in src):
+        if src and is_bound(src, "Linear8bitLt"):
             return
     pytest.fail(
         f"{tag}: bnb.nn.Linear8bitLt missing in {candidates}; " f"legacy load_in_8bit path breaks"
@@ -215,7 +215,7 @@ def test_bnb_utils_pack_unpack(tag: str):
     if src is None:
         pytest.skip(f"{tag}: bitsandbytes/utils.py missing")
     for name in ("pack_dict_to_tensor", "unpack_tensor_to_dict"):
-        assert has_def(src, name, "func") or name in src, f"{tag}: bnb.utils.{name} missing"
+        assert is_bound(src, name), f"{tag}: bnb.utils.{name} missing"
 
 
 def test_bnb_cextension_rocm_warp_size_optional(tag: str):
@@ -236,7 +236,7 @@ def test_bnb_autograd_functions_matmul_4bit(tag: str):
     )
     if src is None:
         pytest.skip(f"{tag}: bitsandbytes/autograd/_functions.py missing")
-    assert "matmul_4bit" in src, f"{tag}: bnb.autograd._functions.matmul_4bit missing"
+    assert is_bound(src, "matmul_4bit"), f"{tag}: bnb.autograd._functions.matmul_4bit missing"
 
 
 def test_bnb_version_parseable(tag: str):

@@ -13,6 +13,7 @@
 #   bash docker/run.sh                                  # start Studio + JupyterLab
 #   bash docker/run.sh bash                             # shell in the container
 #   bash docker/run.sh python /workspace/host/train.py  # run your training script
+#   bash docker/run.sh unsloth-run <notebook URL>       # notebook and saves stay in $PWD
 #   UNSLOTH_PORTS="-p 8000:8000 -p 8888:8888" bash docker/run.sh   # publish the ports
 #
 # JupyterLab on the lean core image (unsloth/unsloth:core):
@@ -67,6 +68,41 @@ fi
 # regression tests can stage a fake device tree; leave it unset in normal use.
 DEV_ROOT="${UNSLOTH_DEV_ROOT:-}"
 
+# WSL2 has no /dev/kfd: the amdgpu kernel driver is not loaded there and the card
+# is reached over the DXG bridge instead. /dev/dxg plus librocdxg is the same GPU
+# evidence install.sh gates on for a WSL host. The bridge is userspace, so this
+# needs a device and an env var, not group ids: WSL exposes /dev/dxg to everyone
+# and has no render group.
+wsl_dxg_host() {
+    [[ ! -e "$DEV_ROOT/dev/kfd" && -e "$DEV_ROOT/dev/dxg" ]]
+}
+amd_dxg_flags() {
+    printf '%s\n' --device /dev/dxg
+    # librocdxg is NOT in the image and cannot be: its cmake build needs the Windows
+    # 11 SDK 'shared' headers off the host (see scripts/install_rocm_wsl_strixhalo.sh),
+    # which no Linux build runner has. Mount the host's, which that helper installs.
+    local _so=""
+    for _c in "$DEV_ROOT"/opt/rocm/lib/librocdxg.so.1* "$DEV_ROOT"/opt/rocm-*/lib/librocdxg.so.1* \
+              "$DEV_ROOT"/opt/rocm/lib64/librocdxg.so.1* ; do
+        [[ -e "$_c" ]] && { _so="$_c"; break; }
+    done
+    if [[ -z "$_so" ]]; then
+        printf "\033[1;33mWARN:\033[0m /dev/dxg is present but no librocdxg was found under /opt/rocm.\n" >&2
+        printf "      Install ROCm for WSL first:  bash scripts/install_rocm_wsl_strixhalo.sh\n" >&2
+        return 0
+    fi
+    printf '%s\n' -v "${_so}:/usr/lib/x86_64-linux-gnu/librocdxg.so:ro"
+    # librocdxg dlopens libdxcore from WSL's own lib directory, which the image
+    # does not have on its search path.
+    if [[ -d "$DEV_ROOT/usr/lib/wsl/lib" ]]; then
+        printf '%s\n' -v /usr/lib/wsl/lib:/usr/lib/wsl/lib:ro -e LD_LIBRARY_PATH=/usr/lib/wsl/lib
+    else
+        printf "\033[1;33mWARN:\033[0m /usr/lib/wsl/lib is missing, so librocdxg cannot load libdxcore.\n" >&2
+    fi
+    # The standard HSA runtime only looks for the bridge when this is set.
+    printf '%s\n' -e HSA_ENABLE_DXG_DETECTION=1
+    return 0
+}
 # Named once: the NVIDIA toolkit installer, both as the fallback download below
 # and in the message that tells you to run it yourself.
 TOOLKIT_URL="${UNSLOTH_TOOLKIT_URL:-https://raw.githubusercontent.com/unslothai/unsloth/main/docker/install_nvidia_toolkit.sh}"
@@ -100,18 +136,28 @@ collect_amd_device_flags() {
         GPU_FLAG+=("$_flag")
     done < <(amd_device_flags)
 }
+collect_amd_dxg_flags() {
+    local _flag
+    GPU_FLAG=()
+    while IFS= read -r _flag; do
+        GPU_FLAG+=("$_flag")
+    done < <(amd_dxg_flags)
+}
 
 if [[ $ROCM -eq 1 ]]; then
     IMAGE="${UNSLOTH_IMAGE:-unsloth/unsloth-rocm:latest}"
     GPUS=none
     if [[ -e "$DEV_ROOT/dev/kfd" ]]; then
         collect_amd_device_flags
+    elif wsl_dxg_host; then
+        collect_amd_dxg_flags
+        printf "\033[1;33mNOTE:\033[0m no /dev/kfd; passing /dev/dxg, the WSL2 bridge to the card.\n" >&2
     else
         GPU_FLAG=()
         printf "\033[1;33mWARN:\033[0m /dev/kfd is not present, so no AMD GPU can be passed through.\n" >&2
         printf "      On Linux install the amdgpu driver and add yourself to the video/render\n" >&2
-        printf "      groups. Docker Desktop on Windows and macOS has no /dev/kfd at all: the\n" >&2
-        printf "      ROCm image cannot reach a GPU there, whatever the host card is.\n\n" >&2
+        printf "      groups. On Windows the card is reached over WSL2's /dev/dxg, which only a\n" >&2
+        printf "      docker engine running INSIDE your WSL distribution can pass through.\n\n" >&2
     fi
 else
 IMAGE="${UNSLOTH_IMAGE:-unsloth/unsloth:latest}"
@@ -308,11 +354,13 @@ declare -a ENV_FORWARD=(-e HF_HUB_ENABLE_HF_TRANSFER=1)
 [[ -n "${WANDB_API_KEY:-}"     ]] && ENV_FORWARD+=(-e WANDB_API_KEY)
 [[ -n "${UNSLOTH_LICENSE:-}"   ]] && ENV_FORWARD+=(-e UNSLOTH_LICENSE)
 [[ -n "${UNSLOTH_ALLOW_CPU:-}" ]] && ENV_FORWARD+=(-e UNSLOTH_ALLOW_CPU)
+[[ -n "${UNSLOTH_SKIP_GPU_CHECK:-}" ]] && ENV_FORWARD+=(-e UNSLOTH_SKIP_GPU_CHECK)
 # gfx overrides for cards the installed ROCm build has no kernels for
 [[ -n "${HSA_OVERRIDE_GFX_VERSION:-}" ]] && ENV_FORWARD+=(-e HSA_OVERRIDE_GFX_VERSION)
 [[ -n "${UNSLOTH_ROCM_GFX_ARCH:-}"    ]] && ENV_FORWARD+=(-e UNSLOTH_ROCM_GFX_ARCH)
 # read by studio_launch.sh; without these it uses a random password and no sshd
 [[ -n "${JUPYTER_PASSWORD:-}"           ]] && ENV_FORWARD+=(-e JUPYTER_PASSWORD)
+[[ -n "${JUPYTER_PORT:-}"               ]] && ENV_FORWARD+=(-e JUPYTER_PORT)
 [[ -n "${UNSLOTH_STUDIO_PASSWORD:-}"    ]] && ENV_FORWARD+=(-e UNSLOTH_STUDIO_PASSWORD)
 [[ -n "${UNSLOTH_STUDIO_PORT:-}"        ]] && ENV_FORWARD+=(-e UNSLOTH_STUDIO_PORT)
 [[ -n "${UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT:-}" ]] && ENV_FORWARD+=(-e UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT)
@@ -322,6 +370,8 @@ declare -a ENV_FORWARD=(-e HF_HUB_ENABLE_HF_TRANSFER=1)
 [[ -n "${PUBLIC_KEY:-}"                 ]] && ENV_FORWARD+=(-e PUBLIC_KEY)
 [[ -n "${SSH_KEY:-}"                    ]] && ENV_FORWARD+=(-e SSH_KEY)
 [[ -n "${UNSLOTH_JUPYTER_CLOUDFLARE:-}" ]] && ENV_FORWARD+=(-e UNSLOTH_JUPYTER_CLOUDFLARE)
+[[ -n "${UNSLOTH_SKIP_NOTEBOOK_SYNC:-}"    ]] && ENV_FORWARD+=(-e UNSLOTH_SKIP_NOTEBOOK_SYNC)
+[[ -n "${UNSLOTH_SKIP_NOTEBOOK_REFRESH:-}" ]] && ENV_FORWARD+=(-e UNSLOTH_SKIP_NOTEBOOK_REFRESH)
 # Studio's two exposure modes, read by studio_run.sh inside the container. The
 # allowlist is explicit, so leaving them out made both silently inert through the
 # helper the documentation recommends.
@@ -333,7 +383,7 @@ if ! [[ "$STOP_BUDGET" =~ ^[0-9]+$ ]]; then
     printf "\033[1;31mERROR:\033[0m UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S=%s is not a number of seconds.\n" "$STOP_BUDGET" >&2
     exit 1
 fi
-# 10# as in studio_launch.sh: a leading zero must not read as octal
+# matching studio_launch.sh, 10# prevents leading zeros from selecting octal
 STOP_TIMEOUT=$(( 10#$STOP_BUDGET + 30 ))
 
 declare -a PORT_FLAGS=()
@@ -342,14 +392,149 @@ if [[ -n "${UNSLOTH_PORTS:-}" ]]; then
     PORT_FLAGS=(${UNSLOTH_PORTS})
 fi
 
-# CI / piped invocations otherwise hit "the input device is not a TTY"
+# CI and piped invocations otherwise hit "the input device is not a TTY"
 TTY_FLAG=()
 if [ -t 0 ] && [ -t 1 ]; then
     TTY_FLAG=(-it)
 fi
 
-# No `set -x`: it would echo HF_TOKEN / WANDB_API_KEY to CI logs. The
-# ${arr[@]+"${arr[@]}"} form keeps empty arrays nounset-safe on bash 3.2 (macOS).
+# a mounted script starts in its directory so relative saves survive --rm
+WORKDIR_FLAG=()
+RUN_USER_ENV=()
+if [[ $# -gt 0 ]]; then
+    case "$1" in
+        /workspace/host | /workspace/host/*)
+            WORKDIR_FLAG=(-w /workspace/host)
+            ;;
+        *)
+            _args=("$@")
+            _runner="${1##*/}"
+            _scan_from=1
+            case "$_runner" in
+                accelerate)
+                    _runner=""
+                    if [[ "${_args[1]:-}" == launch ]]; then
+                        _runner=launcher
+                        _scan_from=2
+                    fi
+                    ;;
+                accelerate-launch | torchrun | deepspeed) _runner=launcher ;;
+                python | python[0-9]* | pypy | pypy[0-9]*)
+                    _runner=""
+                    _script=""
+                    for (( _i=1; _i < ${#_args[@]}; _i++ )); do
+                        _arg="${_args[$_i]}"
+                        if [[ "$_arg" =~ ^-([bBdEhiIOPqRsSuvVx]*)([cmWX])(.*)$ ]]; then
+                            _kind="${BASH_REMATCH[2]}"
+                            _value="${BASH_REMATCH[3]}"
+                            case "$_kind" in
+                                c) break ;;
+                                m)
+                                    if [[ -z "$_value" ]]; then
+                                        _value="${_args[$((_i + 1))]:-}"
+                                        _scan_from=$((_i + 2))
+                                    else
+                                        _scan_from=$((_i + 1))
+                                    fi
+                                    case "$_value" in
+                                        accelerate.commands.launch | deepspeed.launcher.runner | torch.distributed.launch | torch.distributed.run)
+                                            _runner=launcher
+                                            ;;
+                                    esac
+                                    break
+                                    ;;
+                                W | X)
+                                    [[ -z "$_value" ]] && _i=$((_i + 1))
+                                    continue
+                                    ;;
+                            esac
+                        fi
+                        case "$_arg" in
+                            -) break ;;
+                            --check-hash-based-pycs) _i=$((_i + 1)) ;;
+                            --)
+                                _script="${_args[$((_i + 1))]:-}"
+                                break
+                                ;;
+                            -*) ;;
+                            *) _script="${_args[$_i]}"; break ;;
+                        esac
+                    done
+                    case "$_script" in
+                        /workspace/host | /workspace/host/*) WORKDIR_FLAG=(-w /workspace/host) ;;
+                    esac
+                    ;;
+                bash | sh | zsh)
+                    _runner=""
+                    _script=""
+                    for (( _i=1; _i < ${#_args[@]}; _i++ )); do
+                        case "${_args[$_i]}" in
+                            -c | -s) break ;;
+                            -O | +O | -o | +o | --init-file | --rcfile) _i=$((_i + 1)) ;;
+                            --)
+                                _script="${_args[$((_i + 1))]:-}"
+                                break
+                                ;;
+                            -* | +*) ;;
+                            *) _script="${_args[$_i]}"; break ;;
+                        esac
+                    done
+                    case "$_script" in
+                        /workspace/host | /workspace/host/*) WORKDIR_FLAG=(-w /workspace/host) ;;
+                    esac
+                    ;;
+                *) _runner="" ;;
+            esac
+            if [[ "$_runner" == launcher ]]; then
+                _prev=""
+                for (( _i=_scan_from; _i < ${#_args[@]}; _i++ )); do
+                    _arg="${_args[$_i]}"
+                    _arg_case="$_arg"
+                    if [[ "$_arg_case" == --* ]]; then
+                        _arg_case="${_arg_case#--}"
+                        _arg_case="--${_arg_case//-/_}"
+                    fi
+                    if [[ "$_prev" == -* ]]; then
+                        _prev=""
+                        continue
+                    fi
+                    case "$_arg_case" in
+                        -m | -q | --bind_cores_to_rank | --cpu | --debug | --downcast_bf16 | --dynamo_use_dynamic | --dynamo_use_fullgraph | --dynamo_use_regional_compilation | --enable_cpu_affinity | --elastic_training | --force_multi | --fp8_use_autocast_during_eval | --module | --multi_gpu | --no_local_rank | --no_python | --no_ssh | --no_ssh_check | --no_tpu_cluster | --quiet | --run_path | --same_network | --save_pid | --standalone | --tpu | --tpu_cluster | --tpu_use_sudo | --use_cpu | --use_deepspeed | --use_env | --use_fsdp | --use_megatron_lm | --use_mps_device | --use_parallelism_config | --use_tp | --use_xpu | --virtual_local_rank)
+                            _prev=""
+                            continue
+                            ;;
+                        -- | -H?* | -e?* | -i?* | -r?* | -t?* | -*=*)
+                            _prev=""
+                            continue
+                            ;;
+                        -*)
+                            _prev="$_arg"
+                            continue
+                            ;;
+                        /workspace/host | /workspace/host/*)
+                            WORKDIR_FLAG=(-w /workspace/host)
+                            break
+                            ;;
+                        *) break ;;
+                    esac
+                done
+            fi
+            ;;
+    esac
+fi
+if [[ $# -gt 0 && "$1" == "unsloth-run" ]]; then
+    for _arg in "${@:2}"; do
+        case "$_arg" in
+            http://* | https://*)
+                WORKDIR_FLAG=(-w /workspace/host)
+                RUN_USER_ENV=(-e "UNSLOTH_RUN_UID=$(id -u)" -e "UNSLOTH_RUN_GID=$(id -g)")
+                break
+                ;;
+        esac
+    done
+fi
+
+# set -x leaks HF_TOKEN/WANDB_API_KEY; this array form is nounset-safe on macOS Bash 3.2
 exec docker run --rm ${TTY_FLAG[@]+"${TTY_FLAG[@]}"} \
     ${GPU_FLAG[@]+"${GPU_FLAG[@]}"} \
     --ipc=host \
@@ -359,6 +544,8 @@ exec docker run --rm ${TTY_FLAG[@]+"${TTY_FLAG[@]}"} \
     -v "$HF_CACHE":/workspace/.cache/huggingface \
     -v "$TRITON_CACHE":/workspace/.cache/triton \
     -v "$WORK_DIR":/workspace/host \
+    ${WORKDIR_FLAG[@]+"${WORKDIR_FLAG[@]}"} \
+    ${RUN_USER_ENV[@]+"${RUN_USER_ENV[@]}"} \
     ${STUDIO_MOUNT[@]+"${STUDIO_MOUNT[@]}"} \
     ${MODEL_MOUNTS[@]+"${MODEL_MOUNTS[@]}"} \
     "${ENV_FORWARD[@]}" \

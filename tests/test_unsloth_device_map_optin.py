@@ -28,6 +28,23 @@ _SRC = open(LOADER_UTILS, encoding = "utf-8").read()
 _SKIP_MODULES = ["lm_head", "vision_tower", "audio_tower"]
 
 
+# _load plants stand-ins for these, and the rest of the suite shares the interpreter: a later
+# `import unsloth_zoo.compiler` in the same xdist worker would pick up a peft_utils with no
+# get_lora_layer_modules and fail with "cannot import name ... (unknown location)".
+_STUBBED_ZOO_MODULES = ("unsloth_zoo.peft_utils", "unsloth_zoo.device_map_planner")
+
+
+@pytest.fixture(autouse = True)
+def _restore_stubbed_zoo_modules():
+    saved = {name: sys.modules.get(name) for name in _STUBBED_ZOO_MODULES}
+    yield
+    for name, module in saved.items():
+        if module is None:
+            sys.modules.pop(name, None)
+        else:
+            sys.modules[name] = module
+
+
 class _FakeCuda:
     def __init__(
         self,
@@ -197,7 +214,7 @@ def test_a_caller_that_vetoes_planning_is_obeyed():
 
 def test_a_text_only_decoder_is_never_planned_against_the_full_vlm():
     """`text_only = True` loads a VLM's standalone decoder, so Gemma 3 builds
-    Gemma3ForCausalLM (`model.layers.0`). The planner only gets `model_name`, rebuilds the
+    Gemma3ForCausalLM (`model.layers.0`). Given only `model_name`, the planner rebuilds the
     repo's multimodal config and plans Gemma3ForConditionalGeneration
     (`model.language_model.layers.0`, plus a vision tower this load never creates). Not one
     decoder weight matches a key of that map, and transformers raises
@@ -231,9 +248,11 @@ def test_a_text_only_decoder_is_never_planned_against_the_full_vlm():
                 assignments[target.id] = assignments.get(target.id, "") + ast.unparse(node.value)
     for call in _resolve_calls(vision):
         passed = {kw.arg: ast.unparse(kw.value) for kw in call.keywords}
-        assert "skip_reason" in passed, f"vision.py:{call.lineno} plans a text-only decoder"
+        assert "planner_config" in passed, f"vision.py:{call.lineno} plans the full VLM"
+        planned = passed["planner_config"] + assignments.get(passed["planner_config"], "")
+        assert "text_only_decoder" in planned, f"vision.py:{call.lineno}"
+        assert "skip_reason" in passed, f"vision.py:{call.lineno}"
         source = passed["skip_reason"] + assignments.get(passed["skip_reason"], "")
-        assert "text_only_decoder" in source, f"vision.py:{call.lineno}"
         # The other way the load can diverge from the plan; see the task-head test.
         assert "planner_class_mismatch_reason" in source, f"vision.py:{call.lineno}"
 
@@ -850,13 +869,15 @@ def test_a_caller_supplied_config_declines_planning():
     raise AssertionError("vision.py plans without vetoing a caller-supplied config")
 
 
-def test_the_optimized_path_says_so_when_it_drops_an_offload_request():
-    """`FastLanguageModel` accepts `offload_embedding`, but the optimized architectures
-    take a path that has never had the parameter, so the request went nowhere in silence.
-    The `"auto"` default stays quiet, since off is a decision it is entitled to make."""
-    source = open(os.path.join(MODELS, "loader.py"), encoding = "utf-8").read()
-    assert "does not support it" in source
-    assert "offload_embedding != OFFLOAD_EMBEDDING_AUTO" in source
+def test_the_optimized_path_honours_offload_embedding():
+    """`FastLanguageModel` accepts `offload_embedding`, and the optimized architectures used to
+    drop it in silence. Now the loader forwards it and FastLlamaModel applies the same offload as
+    FastModel, through the shared helper."""
+    loader = open(os.path.join(MODELS, "loader.py"), encoding = "utf-8").read()
+    assert "does not support it" not in loader
+    llama = open(os.path.join(MODELS, "llama.py"), encoding = "utf-8").read()
+    assert 'kwargs.pop("offload_embedding", False)' in llama
+    assert "offload_input_embedding(model)" in llama
 
 
 def test_the_auto_mode_is_recognised_by_value_everywhere():
@@ -1294,3 +1315,101 @@ def test_the_loader_pins_on_the_placement_being_unchosen_not_on_it_being_a_strin
                 f"loader.py:{lineno}: an explicit device_map='cpu' is a str too, so this guard "
                 f"moves the load onto the rank's GPU"
             )
+
+
+# ------------------------------------------------- a model one card holds stays on one card
+
+
+class _SizedPlan(_Plan):
+    def __init__(
+        self,
+        total_gib,
+        budget_gib = 14.4,
+        headroom_gib = 0.5,
+        devices = (0, 1),
+        transient_gib = 0.0,
+        reserve_gib = 0.0,
+    ):
+        super().__init__({"model.layers.0": devices[0], "lm_head": devices[-1]})
+        self.raw_budgets = {d: int(budget_gib * 2**30) for d in devices}
+        self.total_weight_bytes = int(total_gib * 2**30)
+        self.headroom_bytes = int(headroom_gib * 2**30)
+        self.load_transient_by_device = {devices[-1]: int(transient_gib * 2**30)}
+        self.activation_reserve_by_device = {d: int(reserve_gib * 2**30) for d in devices}
+
+
+@pytest.mark.parametrize("total_gib", [1.2, 6.2, 9.7])  # Qwen3-0.6B, DeepSeek-OCR, Gemma 3n fp32
+def test_a_model_that_fits_one_card_is_not_split(total_gib, capsys):
+    ns = _load(planner = lambda name, **kw: _SizedPlan(total_gib))
+    assert ns["resolve_unsloth_device_map"]("unsloth", "m") == {"": 0}
+    assert "fits on cuda:0" in capsys.readouterr().out
+
+
+def test_the_single_card_is_one_the_caller_allowed():
+    """max_memory {2, 3} withholds cuda:0 and cuda:1."""
+    seen = {}
+
+    def planner(name, max_memory, **kw):
+        seen["devices"] = sorted(max_memory)
+        return _SizedPlan(1.2, devices = sorted(max_memory))
+
+    ns = _load(devices = 4, planner = planner)
+    device_map = ns["resolve_unsloth_device_map"](
+        "unsloth", "m", planner_kwargs = {"max_memory": {3: "14GiB", 2: "14GiB"}}
+    )
+    assert seen["devices"] == [2, 3]
+    assert device_map == {"": 2}
+
+
+@pytest.mark.parametrize(
+    "total_gib, transient_gib, single",
+    [
+        (11.0, 0.0, True),  # 11.5 of 14.4 GiB: just under the 80% line
+        (11.2, 0.0, False),
+        (10.0, 1.5, False),  # the load transient counts too
+    ],
+)
+def test_the_single_card_line_is_a_fifth_of_the_card_free(total_gib, transient_gib, single):
+    plan = _SizedPlan(total_gib, transient_gib = transient_gib)
+    ns = _load(planner = lambda name, **kw: plan)
+    expected = {"": 0} if single else plan.device_map
+    assert ns["resolve_unsloth_device_map"]("unsloth", "m") == expected
+
+
+def test_a_plan_without_sizes_is_used_as_before():
+    """An older unsloth_zoo whose plan carries no sizes keeps its split."""
+    plan = _Plan({"model.layers.0": 0, "lm_head": 1})
+    ns = _load(planner = lambda name, **kw: plan)
+    assert ns["resolve_unsloth_device_map"]("unsloth", "m") == plan.device_map
+
+
+def test_a_model_too_big_for_one_card_is_still_planned():
+    plan = _SizedPlan(13.0)
+    ns = _load(planner = lambda name, **kw: plan)
+    assert ns["resolve_unsloth_device_map"]("unsloth", "m") == plan.device_map
+
+
+def test_balanced_still_splits_a_small_model():
+    plan = _SizedPlan(1.2)
+    ns = _load(planner = lambda name, **kw: plan)
+    assert ns["resolve_unsloth_device_map"]("unsloth_balanced", "m") == plan.device_map
+
+
+@pytest.mark.parametrize(
+    "planner_kwargs, single",
+    [
+        (None, True),  # an auto-derived reserve stays the planner's business
+        ({"activation_reserve_bytes": 4 * 2**30}, True),
+        ({"activation_reserve_bytes": 6 * 2**30}, False),
+    ],
+)
+def test_a_reserve_the_caller_passed_is_kept_on_the_single_card(planner_kwargs, single):
+    plan = _SizedPlan(
+        9.7,
+        reserve_gib = 6.0
+        if planner_kwargs is None
+        else planner_kwargs["activation_reserve_bytes"] / 2**30,
+    )
+    ns = _load(planner = lambda name, **kw: plan)
+    got = ns["resolve_unsloth_device_map"]("unsloth", "m", planner_kwargs = planner_kwargs)
+    assert got == ({"": 0} if single else plan.device_map)

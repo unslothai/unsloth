@@ -2,41 +2,141 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Switch } from "@/components/ui/switch";
+import { useChatRuntimeStore } from "@/features/chat";
 import { formatBytes } from "@/features/hub/lib/format";
 import { useT } from "@/i18n";
-import { useEffect, useState } from "react";
+import { subscribeModelLifecycle } from "@/lib/model-lifecycle-events";
+import { useEffect, useRef, useState } from "react";
 import {
   type ModelMemorySettings,
   loadModelMemorySettings,
   updateModelMemorySettings,
 } from "../api/model-memory";
+import {
+  loadMultiModelEnabled,
+  updateMultiModelEnabled,
+} from "../api/multi-model";
 import { SettingsRow } from "./settings-row";
 import { SettingsSection } from "./settings-section";
+
+// Residency asked for, but the loaded model has no copy in system RAM to lock.
+function MlockNotApplicableNote({
+  settings,
+}: { settings: ModelMemorySettings | null }) {
+  const t = useT();
+  if (
+    !settings?.keepResident ||
+    settings.noRamReserve ||
+    settings.mlockActive ||
+    settings.mlockApplicable
+  ) {
+    return null;
+  }
+  return (
+    <p className="pb-1 text-xs text-muted-foreground">
+      {t("settings.resources.modelMemory.mlockNotApplicable")}
+    </p>
+  );
+}
+
+// Forced: the response describes the running model, which may have changed since the last read.
+async function refreshModelMemory(
+  isCancelled: () => boolean,
+  setSettings: (settings: ModelMemorySettings) => void,
+  setError: (error: string | null) => void,
+  fallbackError: string,
+): Promise<void> {
+  try {
+    const loaded = await loadModelMemorySettings({ force: true });
+    if (!isCancelled()) {
+      setSettings(loaded);
+      setError(null);
+    }
+  } catch (loadError) {
+    if (!isCancelled()) {
+      setError(loadError instanceof Error ? loadError.message : fallbackError);
+    }
+  }
+}
 
 export function ModelMemorySection() {
   const t = useT();
   const [settings, setSettings] = useState<ModelMemorySettings | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  // Bumped by every refresh and save: a read that resolves after either no longer describes the panel.
+  const latestRef = useRef(0);
+  const multiModel = useChatRuntimeStore((s) => s.keepModelsLoaded);
+  const [multiModelRead, setMultiModelRead] = useState(false);
+  const [isSavingMultiModel, setIsSavingMultiModel] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
-    void loadModelMemorySettings()
-      .then((loaded) => {
-        if (cancelled) return;
-        setSettings(loaded);
-        setError(null);
-      })
-      .catch((loadError) => {
-        if (cancelled) return;
-        setError(
-          loadError instanceof Error
-            ? loadError.message
-            : t("settings.resources.modelMemory.loadError"),
-        );
-      });
+    loadMultiModelEnabled(t("settings.resources.modelMemory.loadError")).then(
+      (enabled) => {
+        if (!cancelled) {
+          useChatRuntimeStore.getState().setKeepModelsLoaded(enabled);
+          setMultiModelRead(true);
+        }
+      },
+      (loadError) => {
+        if (!cancelled) {
+          setError(
+            loadError instanceof Error
+              ? loadError.message
+              : t("settings.resources.modelMemory.loadError"),
+          );
+        }
+      },
+    );
     return () => {
       cancelled = true;
+    };
+  }, [t]);
+
+  const persistMultiModel = async (enabled: boolean) => {
+    setIsSavingMultiModel(true);
+    setError(null);
+    try {
+      useChatRuntimeStore
+        .getState()
+        .setKeepModelsLoaded(
+          await updateMultiModelEnabled(
+            enabled,
+            t("settings.resources.modelMemory.saveError"),
+          ),
+        );
+    } catch (saveError) {
+      setError(
+        saveError instanceof Error
+          ? saveError.message
+          : t("settings.resources.modelMemory.saveError"),
+      );
+    } finally {
+      setIsSavingMultiModel(false);
+    }
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = () => {
+      const id = ++latestRef.current;
+      refreshModelMemory(
+        () => cancelled || id !== latestRef.current,
+        setSettings,
+        setError,
+        t("settings.resources.modelMemory.loadError"),
+      );
+    };
+    refresh();
+    const unsubscribe = subscribeModelLifecycle(({ loading }) => {
+      if (!loading) {
+        refresh();
+      }
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe();
     };
   }, [t]);
 
@@ -45,6 +145,7 @@ export function ModelMemorySection() {
   ) => {
     setIsSaving(true);
     setError(null);
+    latestRef.current += 1;
     try {
       setSettings(await updateModelMemorySettings(patch));
     } catch (saveError) {
@@ -100,6 +201,18 @@ export function ModelMemorySection() {
           onCheckedChange={(noRamReserve) => void persist({ noRamReserve })}
         />
       </SettingsRow>
+      <SettingsRow
+        label={t("settings.resources.modelMemory.multiModel")}
+        description={t("settings.resources.modelMemory.multiModelDescription")}
+        hint={t("settings.resources.modelMemory.multiModelHint")}
+      >
+        <Switch
+          aria-label={t("settings.resources.modelMemory.multiModel")}
+          checked={multiModel}
+          disabled={!multiModelRead || isSavingMultiModel}
+          onCheckedChange={(enabled) => void persistMultiModel(enabled)}
+        />
+      </SettingsRow>
       {error ? (
         <p className="pb-3 text-xs text-destructive">{error}</p>
       ) : (
@@ -109,6 +222,7 @@ export function ModelMemorySection() {
               {t("settings.resources.modelMemory.mlockVetoed")}
             </p>
           ) : null}
+          <MlockNotApplicableNote settings={settings} />
           {memlockCap !== null ? (
             <p className="pb-1 text-xs text-amber-600 dark:text-amber-400">
               {t("settings.resources.modelMemory.memlockCapped", {

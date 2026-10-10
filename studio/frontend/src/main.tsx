@@ -11,13 +11,18 @@ import {
   watchMathBlockContainmentOverride,
 } from "./components/assistant-ui/math-block-containment";
 import { fetchDeviceType } from "./config/env";
+import { refreshSession } from "./features/auth/api";
 import {
   applyInterfaceScaleBeforeFirstPaint,
   useInterfaceScaleStore,
 } from "./features/settings/stores/interface-scale-store";
 import { initializeLocale } from "./i18n";
 import { isTauri } from "./lib/api-base";
+import { setHubSessionRefresh } from "./lib/hf-endpoint";
+import { watchInputModality } from "./lib/input-modality";
 import { watchOverlayScrollbarGutter } from "./lib/overlay-scrollbar";
+
+setHubSessionRefresh(refreshSession);
 
 const rootElement = document.getElementById("root");
 if (!rootElement) {
@@ -53,6 +58,7 @@ watchMathBlockContainmentOverride();
 
 // Keep right-edge controls clear of overlay scrollbars.
 watchOverlayScrollbarGutter(window);
+watchInputModality(window);
 
 function renderApp(): void {
   root.render(

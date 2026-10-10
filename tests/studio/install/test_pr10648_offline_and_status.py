@@ -688,8 +688,9 @@ def test_the_keep_arm_sits_beside_the_status_arms_it_did_not_replace():
     # own test rather than, say, both scripts growing the sh spelling.
     sh_keeps = [line for line in setup_sh.splitlines() if KEEP_TOKEN in line]
     ps1_keeps = [line for line in setup_ps1.splitlines() if KEEP_TOKEN in line]
-    assert len(sh_keeps) == 2, sh_keeps
-    assert len(ps1_keeps) == 2, ps1_keeps
+    # llama.cpp, whisper.cpp and audio.cpp.
+    assert len(sh_keeps) == 3, sh_keeps
+    assert len(ps1_keeps) == 3, ps1_keeps
     assert all("grep -Fq" in line for line in sh_keeps), sh_keeps
     assert all("-match" in line for line in ps1_keeps), ps1_keeps
 
@@ -699,8 +700,8 @@ def test_the_keep_arm_sits_beside_the_status_arms_it_did_not_replace():
     assert f'$prebuiltOutput -match "{MATCH_TOKEN}"' in setup_ps1
     for script in (setup_sh, setup_ps1):
         assert (
-            script.count("update unavailable, existing prebuilt kept") == 2
-        ), "llama and whisper each have exactly one keep arm"
+            script.count("update unavailable, existing prebuilt kept") == 3
+        ), "llama, whisper and audio.cpp each have exactly one keep arm"
 
 
 # ══ Part 2: the status contract, executed in both shells ═════════════════════════════
@@ -720,6 +721,9 @@ _LLAMA_CPP_NO_SPACE=false
 _LLAMA_CPP_DEGRADED=false
 _explicit_llama_backend=""
 _STUDIO_HOME_IS_CUSTOM=false
+# The flag the runtime children switched to when UNSLOTH_HOME arrived: the guards inside the
+# extracted block read it, and setup.sh derives it in the section this harness stands in for.
+_RUNTIME_ROOT_IS_CUSTOM=false
 _STUDIO_OWNED_MARKER=".unsloth-owned"
 _WHISPER_RECOVERED=false
 step() { echo "step|$1|$2"; }
@@ -737,6 +741,8 @@ $ErrorActionPreference = "Stop"
 $NeedLlamaSourceBuild = $false
 $script:LlamaCppDegraded = $false
 $StudioHomeIsCustom = $false
+# Same reason as _RUNTIME_ROOT_IS_CUSTOM in the shell harness above.
+$RuntimeRootIsCustom = $false
 function step { param($a, $b, $c) Write-Output "step|$a|$b" }
 function substep { param($a, $b) Write-Output "substep|$a" }
 function Write-LlamaFailureLog { param($Output) }
