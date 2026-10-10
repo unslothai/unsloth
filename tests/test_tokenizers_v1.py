@@ -373,6 +373,54 @@ def test_fork_while_another_thread_holds_a_lock(rc_on, monkeypatch):
     assert os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0
 
 
+CHAT_TEMPLATE = (
+    "{% for m in messages %}{{ bos_token }}[{{ m['role'] }}] {{ m['content'] }}{{ eos_token }}{% endfor %}"
+    "{% if add_generation_prompt %}[assistant] {% endif %}"
+)
+CONVERSATION = [
+    {"role": "user", "content": "Hello, y'all! 😁 What is 12*7?"},
+    {"role": "assistant", "content": "It is 84."},
+]
+
+
+@needs_rc
+def test_tokenizer_api_surface_unchanged(rc_on):
+    plain, fast = _pair(_byte_level)
+    for tok in (plain, fast):
+        tok.chat_template = CHAT_TEMPLATE
+    assert type(fast) is type(plain)
+    assert set(dir(fast._tokenizer)) == set(dir(plain._tokenizer))
+    for name in (a for a in dir(plain) if not a.startswith("_")):
+        value = getattr(plain, name)
+        if not callable(value) and name != "backend_tokenizer":
+            other = getattr(fast, name)
+            assert other == value or repr(other) == repr(value), name
+    cases = [
+        {"tokenize": False},
+        {"tokenize": True},
+        {"tokenize": True, "return_dict": True},
+        {"tokenize": True, "return_dict": True, "return_tensors": "pt"},
+        {"tokenize": True, "add_generation_prompt": True},
+        {"tokenize": True, "truncation": True, "max_length": 6},
+    ]
+    for kwargs in cases:
+        want, got = (
+            plain.apply_chat_template(CONVERSATION, **kwargs),
+            fast.apply_chat_template(CONVERSATION, **kwargs),
+        )
+        norm = (
+            lambda x: {k: v.tolist() if hasattr(v, "tolist") else v for k, v in x.items()}
+            if hasattr(x, "keys")
+            else x
+        )
+        assert norm(got) == norm(want), kwargs
+    batch = [CONVERSATION, CONVERSATION[:1]]
+    want = plain.apply_chat_template(batch, tokenize = True, padding = True, return_dict = True)
+    got = fast.apply_chat_template(batch, tokenize = True, padding = True, return_dict = True)
+    assert dict(got) == dict(want)
+    assert all(isinstance(e, tv1._CompatEncoding) for e in got.encodings)
+
+
 def _map(
     ds,
     tok,
