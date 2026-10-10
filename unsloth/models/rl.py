@@ -4190,7 +4190,7 @@ def _packed_seq_lengths_from_position_ids(position_ids):
         return None
     pos = position_ids[0]
     starts = torch.nonzero(pos == 0, as_tuple = False).flatten()
-    if starts.numel() < 2 or int(starts[0]) != 0:
+    if starts.numel() == 0 or int(starts[0]) != 0:
         return None
     ends = torch.cat([starts[1:], starts.new_tensor([pos.numel()])])
     return (ends - starts).to(torch.int32)

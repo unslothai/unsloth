@@ -139,7 +139,8 @@ def test_packed_seq_lengths_from_position_ids():
     pos = torch.tensor([[0, 1, 2, 0, 1, 0, 1, 2, 3]])
     assert f(pos).tolist() == [3, 2, 4]
     assert f(pos).dtype == torch.int32
-    assert f(torch.tensor([[0, 1, 2, 3]])) is None  # a single sequence needs no boundaries
+    # A lone sequence still gets its length: it also lifts Unsloth's max_seq_length truncation for the row.
+    assert f(torch.tensor([[0, 1, 2, 3]])).tolist() == [4]
     assert f(torch.tensor([[1, 2, 0, 1]])) is None  # does not start at a sequence start
     assert f(torch.tensor([[0, 1], [0, 1]])) is None  # padded batch, not one packed row
     assert f(None) is None
