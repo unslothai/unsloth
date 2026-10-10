@@ -2166,6 +2166,8 @@ def _write_lora_sidecar(
         "trigger_prompt": cfg.instance_prompt,
         "created_at": time.time(),
         "source": "studio-trained",
+        # diffusion_lora.LORA_SIDECAR_KIND: marks the adapter as an image LoRA wherever it is copied.
+        "kind": "diffusion-lora",
     }
     sidecar_path.write_text(json.dumps(meta, indent = 2), encoding = "utf-8")
 

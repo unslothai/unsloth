@@ -292,6 +292,20 @@ class ConvertQ4NXRequest(BaseModel):
     hf_token: Optional[str] = Field(None, description = "Hugging Face token for gated repos")
 
 
+class ExportDiffusionLoRARequest(BaseModel):
+    """Copy an image-generation LoRA from the Images catalog into an export folder."""
+
+    lora_id: str = Field(
+        ..., description = "Local adapter id as listed by /api/models/diffusion-loras"
+    )
+    save_directory: str = Field(..., description = "Directory the adapter is copied into")
+
+    @field_validator("save_directory", mode = "before")
+    @classmethod
+    def _check_save_directory(cls, v):
+        return _validate_save_directory(v)
+
+
 class ExportLoRAAdapterRequest(ExportCommonOptions):
     """Request for exporting only the LoRA adapter (not merged)."""
 

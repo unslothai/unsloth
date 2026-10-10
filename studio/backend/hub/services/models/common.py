@@ -742,10 +742,13 @@ def _sum_file_sizes(paths) -> int:
 
 
 def _main_gguf_files(path: Path, *, include_symlinks: bool = False) -> list[Path]:
+    from core.inference.diffusion_lora import is_image_lora_file
     return [
         entry
         for entry in _iter_immediate_files(path, include_symlinks = include_symlinks)
-        if _is_main_gguf_filename(entry.name) and not is_appledouble_metadata(entry)
+        if _is_main_gguf_filename(entry.name)
+        and not is_appledouble_metadata(entry)
+        and not is_image_lora_file(entry)
     ]
 
 
@@ -922,6 +925,13 @@ def _classify_local_path(
             )
         )
 
+    if source != "hf_cache":
+        from core.inference.diffusion_lora import is_image_lora_file
+
+        # An image LoRA beside a config is an Images-page add-on, not this folder's weights.
+        files = [
+            f for f in files if f.suffix.lower() != ".safetensors" or not is_image_lora_file(f)
+        ]
     has_config = (scan_path / "config.json").is_file() if scan_path.is_dir() else False
     has_adapter_config = (
         (scan_path / "adapter_config.json").is_file() if scan_path.is_dir() else False

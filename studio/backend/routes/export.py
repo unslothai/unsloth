@@ -51,6 +51,7 @@ from models import (
     ExportGGUFRequest,
     ExportLoRAAdapterRequest,
     ConvertQ4NXRequest,
+    ExportDiffusionLoRARequest,
     LlmCompressorExportProbeResponse,
     ExportDecisionInfoResponse,
 )
@@ -616,6 +617,51 @@ async def convert_q4nx(
         success = True,
         message = "Converted to Q4NX for the AMD NPU",
         details = await asyncio.to_thread(_export_details, output_path, refresh_index = True),
+    )
+
+
+@router.post("/export/diffusion-lora", response_model = ExportOperationResponse)
+async def export_diffusion_lora(
+    request: ExportDiffusionLoRARequest, current_subject: str = Depends(get_current_subject)
+):
+    """Save a copy of an image-generation LoRA (weights plus metadata sidecar) to a folder.
+
+    A plain file copy out of the Images LoRA catalog: no loaded model, GPU or export worker.
+    """
+    validate_job_paths(request.model_dump())
+
+    def run() -> str:
+        from core.inference.diffusion_lora import export_local_lora
+        from utils.paths import resolve_export_write_dir
+
+        out = export_local_lora(
+            request.lora_id, Path(resolve_export_write_dir(request.save_directory))
+        )
+        return str(out.resolve())
+
+    try:
+        output_path = await asyncio.to_thread(run)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code = 404, detail = str(e))
+    except ValueError as e:
+        raise HTTPException(status_code = 400, detail = str(e))
+    except OSError as e:
+        logger.error(f"Image LoRA export failed: {e}", exc_info = True)
+        raise HTTPException(status_code = 500, detail = "Failed to export image LoRA")
+
+    # Not routed through _export_details: a LoRA folder is not a chat model scan folder.
+    from utils.paths.storage_roots import exports_root
+
+    try:
+        shown = os.path.relpath(output_path, exports_root().resolve())
+        if shown.startswith(".."):
+            shown = output_path
+    except ValueError:
+        shown = output_path
+    return ExportOperationResponse(
+        success = True,
+        message = "Image LoRA exported",
+        details = {"output_path": shown},
     )
 
 

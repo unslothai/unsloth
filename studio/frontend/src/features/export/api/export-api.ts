@@ -237,6 +237,19 @@ export async function convertGgufToQ4nx(params: {
   return parseJson<ExportOperationResponse>(response);
 }
 
+/** Copy an image-generation LoRA from the Images catalog (weights plus its .json sidecar) to a folder. */
+export async function exportDiffusionLora(params: {
+  lora_id: string;
+  save_directory: string;
+}): Promise<ExportOperationResponse> {
+  const response = await authFetch("/api/export/export/diffusion-lora", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
+  return parseJson<ExportOperationResponse>(response);
+}
+
 export async function exportLoRA(params: {
   save_directory: string;
   push_to_hub?: boolean;

@@ -3949,6 +3949,8 @@ def scan_exported_models(
     if exports_dir is None:
         exports_dir = str(exports_root())
 
+    from core.inference.diffusion_lora import is_image_lora_file
+
     results = []
     exports_path = resolve_export_dir(exports_dir)
 
@@ -3965,7 +3967,9 @@ def scan_exported_models(
             gguf_files = [
                 f
                 for f in _iter_gguf_files(run_dir)
-                if not _is_mmproj(f.name) and not _is_imatrix_path(f.name)
+                if not _is_mmproj(f.name)
+                and not _is_imatrix_path(f.name)
+                and not is_image_lora_file(f)
             ]
             if gguf_files:
                 base_model = None
@@ -3998,7 +4002,9 @@ def scan_exported_models(
                 gguf_list = [
                     f
                     for f in _iter_gguf_files(checkpoint_dir)
-                    if not _is_mmproj(f.name) and not _is_imatrix_path(f.name)
+                    if not _is_mmproj(f.name)
+                    and not _is_imatrix_path(f.name)
+                    and not is_image_lora_file(f)
                 ]
                 has_gguf = bool(gguf_list)
 
