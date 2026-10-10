@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -45,6 +46,8 @@ const composing = (value: string) => ({
   isComposition: true,
   composerIsEmpty: true,
 });
+const ARMS_WITH_IME_SESSION =
+  /armSentTextGuard\(\s*texts,\s*draftKeyRef\.current,\s*imeSessionOpenRef\.current,?\s*\)/;
 const armed = (texts: string[] = [PROMPT], key: string | null = KEY) =>
   armSentTextGuard(texts, key);
 
@@ -288,6 +291,35 @@ test("a composition begun after the send is applied", () => {
     accept: true,
     guard: null,
   });
+});
+
+// WebKitGTK on Wayland commits each keystroke as a composition with no compositionstart and a
+// keyCode 229 keydown, so nothing records user input; with no composition open at the send,
+// that write is typing, not a stale finalise (#10012).
+test("a composition write with none open at the send is applied", () => {
+  const guard = armSentTextGuard([PROMPT], KEY, false);
+  for (const value of ["h", "\u65e5\u672c\u8a9e"]) {
+    assert.deepEqual(applySentTextGuard(guard, composing(value)), {
+      accept: true,
+      guard: null,
+    });
+  }
+});
+
+test("the sent text is still refused with no composition open at the send", () => {
+  const guard = armSentTextGuard([PROMPT], KEY, false);
+  assert.deepEqual(applySentTextGuard(guard, composing(PROMPT)), {
+    accept: false,
+    guard,
+  });
+});
+
+test("the composer arms the guard with whether an IME session was open", () => {
+  const thread = readFileSync(
+    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(thread, ARMS_WITH_IME_SESSION);
 });
 
 // AltGr is how a lot of layouts reach @, so a one-character prompt typed with
