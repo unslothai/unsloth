@@ -897,8 +897,9 @@ class _MarkdownRenderer(HTMLParser):
             if _is_hidden_element(attr_dict):
                 self._hidden_marks.append(len(self._open_tags) - 1)
             if tag in _HEADING_TAGS or tag == "hgroup" or _is_aria_heading(attr_dict):
+                if not self._heading_marks:
+                    self._heading_has_text = False
                 self._heading_marks.append(len(self._open_tags) - 1)
-                self._heading_has_text = False
                 if self._in_link:
                     self._link_had_heading = True
             if (
@@ -1190,6 +1191,8 @@ class _MarkdownRenderer(HTMLParser):
         if self._text_suppressed():
             return
         text = html.unescape(f"&{name};")
+        if self._heading_marks and text.strip():
+            self._heading_has_text = True
         self._count_header_text(text)
         self._emit(text)
 
@@ -1197,6 +1200,8 @@ class _MarkdownRenderer(HTMLParser):
         if self._text_suppressed():
             return
         text = html.unescape(f"&#{name};")
+        if self._heading_marks and text.strip():
+            self._heading_has_text = True
         self._count_header_text(text)
         self._emit(text)
 

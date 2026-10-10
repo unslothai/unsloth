@@ -383,6 +383,20 @@ def test_buttons_that_are_not_a_heading_title_are_still_dropped():
     assert "Subscribe" not in out
 
 
+@pytest.mark.parametrize(
+    "html",
+    [
+        "<h4>&#67;&#114;&#101;&#97;&#116;&#101;<button>More information</button></h4><p>Body text.</p>",
+        "<h4>&eacute;<button>More information</button></h4><p>Body text.</p>",
+        "<hgroup><h1>Create</h1><h2></h2><button>More information</button></hgroup><p>Body text.</p>",
+    ],
+)
+def test_a_button_after_entity_or_nested_heading_text_is_dropped(html):
+    out = html_to_markdown(html)
+    assert "Body text." in out
+    assert "More information" not in out
+
+
 def test_visible_void_hr_still_renders():
     # Guard: the suppression must not affect non-hidden void elements.
     html = "<body><p>a</p><hr><p>b</p></body>"
