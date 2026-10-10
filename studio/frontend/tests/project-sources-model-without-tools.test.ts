@@ -90,7 +90,7 @@ const { ThreadDocumentsBar } = loadWithStubs<typeof BarModule>(
     "../api/rag-availability": {
       useRagAvailabilityStore: selectorStore({ isUnavailable: () => false }),
     },
-    "../types/rag": { RAG_UPLOAD_ACCEPT: "", isLinkedFolderManaged: () => false },
+    "../types/rag": { CHAT_FILES_ACCEPT: "", isLinkedFolderManaged: () => false },
     "@/components/ui/alert-dialog": new Proxy({}, { get: () => Passthrough }),
     "./document-status-chip": { STAGE_LABELS: {} },
     "./knowledge-base-dialog": { KnowledgeBaseDialog: Nothing },

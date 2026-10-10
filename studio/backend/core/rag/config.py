@@ -68,7 +68,14 @@ SOURCE_TEXT_EXTS = frozenset(
     .mmd .mermaid .puml .plantuml .dot .gv .feature .robot .http .rest .diff .patch
     """.split()
 )
-_PARSEABLE_EXTS = SUPPORTED_UPLOAD_EXTS | SOURCE_TEXT_EXTS
+# Office, OpenDocument, e-book, email, RTF and web page files.
+DOCUMENT_UPLOAD_EXTS = frozenset(
+    """
+    .doc .docm .dotx .dotm .xls .xlsx .xlsm .xltx .xltm .ppt .pptx .pptm .potx .potm .ppsx .ppsm
+    .odt .ods .odp .ott .ots .otp .msg .eml .mht .mhtml .rtf .epub .xhtml .xht
+    """.split()
+)
+_PARSEABLE_EXTS = SUPPORTED_UPLOAD_EXTS | SOURCE_TEXT_EXTS | DOCUMENT_UPLOAD_EXTS
 # RAG_UPLOAD_EXTS (e.g. ".md,.markdown") can only narrow: a type without a parser would fail every ingest.
 _requested_exts = {
     "." + ext.strip().lstrip(".").lower()

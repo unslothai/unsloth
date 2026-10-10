@@ -72,7 +72,7 @@ import {
 } from "../api/rag-api";
 import { useRagAvailabilityStore } from "../api/rag-availability";
 import {
-  RAG_UPLOAD_ACCEPT,
+  CHAT_FILES_ACCEPT,
   type RagDocument,
   isLinkedFolderManaged,
 } from "../types/rag";
@@ -214,16 +214,15 @@ function useThreadProjectId(
     : undefined;
 }
 
-/** Extensions the RAG index takes, from the picker accept string. */
-const RAG_UPLOAD_EXTENSIONS = new Set(
-  RAG_UPLOAD_ACCEPT.split(",").map((ext) => ext.trim().toLowerCase()),
+const CHAT_FILES_EXTENSIONS = new Set(
+  CHAT_FILES_ACCEPT.split(",").map((ext) => ext.trim().toLowerCase()),
 );
 
 function isRagIndexable(file: File): boolean {
   // Pasted text and annotations are not documents.
   if (isPastedTextFile(file) || annotationsOfFile(file)) return false;
   const dot = file.name.lastIndexOf(".");
-  return dot >= 0 && RAG_UPLOAD_EXTENSIONS.has(file.name.slice(dot).toLowerCase());
+  return dot >= 0 && CHAT_FILES_EXTENSIONS.has(file.name.slice(dot).toLowerCase());
 }
 
 /** An indexed document, drawn as a composer attachment card. */
@@ -809,7 +808,10 @@ export function ThreadDocumentsBar({
           skipped === 1
             ? `"${files.find((file) => !isRagIndexable(file))?.name}" can't be searched`
             : `${skipped} files can't be searched`,
-          { description: "Chat with files reads PDF, Word, text, Markdown and HTML." },
+          {
+            description:
+              "Chat with files reads documents, spreadsheets, slides, email, e-books and text files.",
+          },
         );
       }
       if (indexable.length > 0) attach(indexable);
@@ -823,7 +825,7 @@ export function ThreadDocumentsBar({
     });
   }, []);
   const pickFiles = useCallback(() => {
-    openFilePicker(RAG_UPLOAD_ACCEPT, attachIndexable);
+    openFilePicker(CHAT_FILES_ACCEPT, attachIndexable);
   }, [attachIndexable]);
 
   // Desktop drops land in the native-intent store because the drop listener lives on

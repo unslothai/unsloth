@@ -192,7 +192,7 @@ function harness(
           select: (s: { isUnavailable: () => boolean }) => unknown,
         ) => select({ isUnavailable: () => false }),
       },
-      "../types/rag": { RAG_UPLOAD_ACCEPT: ".docx" },
+      "../types/rag": { CHAT_FILES_ACCEPT: ".docx" },
       "./document-status-chip": {},
       "./knowledge-base-dialog": { KnowledgeBaseDialog: "KnowledgeBaseDialog" },
       "./staged-source": { EXPIRY_GRACE_MS: 30_000 },

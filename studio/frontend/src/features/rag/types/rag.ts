@@ -181,3 +181,13 @@ export interface PreviewTarget {
 }
 
 export const RAG_UPLOAD_ACCEPT = ".pdf,.txt,.md,.markdown,.docx,.html,.htm";
+
+/** Mirrors backend `DOCUMENT_UPLOAD_EXTS`. */
+export const RAG_DOCUMENT_UPLOAD_ACCEPT =
+  ".doc,.docm,.dotx,.dotm,.xls,.xlsx,.xlsm,.xltx,.xltm,.ppt,.pptx,.pptm,.potx,.potm,.ppsx,.ppsm,.odt,.ods,.odp,.ott,.ots,.otp,.msg,.eml,.mht,.mhtml,.rtf,.epub,.xhtml,.xht";
+
+export const CHAT_FILES_ACCEPT = [
+  RAG_UPLOAD_ACCEPT,
+  RAG_DOCUMENT_UPLOAD_ACCEPT,
+  ".csv,.tsv,.json,.xml",
+].join(",");
