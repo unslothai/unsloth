@@ -27,6 +27,8 @@ store.set(
       apiExampleLang: "pythonTools",
       apiExampleOs: "windows",
       apiExampleAgent: "codex",
+      mcpAgent: "hermes",
+      mcpOs: "windows",
       resourcesLiveUpdates: false,
       fineTuneAction: "recipes",
     },
@@ -46,6 +48,8 @@ test("a version 0 record hydrates every field", () => {
   assert.equal(s.agentsOs, null);
   assert.equal(s.agentsVariant, "UD-Q4_K_XL");
   assert.equal(s.apiExampleOs, "windows");
+  assert.equal(s.mcpAgent, "hermes");
+  assert.equal(s.mcpOs, "windows");
   assert.equal(s.resourcesLiveUpdates, false);
   assert.equal(s.fineTuneAction, "recipes");
 });
@@ -218,6 +222,21 @@ test("an unreadable record leaves the defaults", () => {
   assert.equal(out.fineTuneAction, "train");
 });
 
+test("a dismissed driver notice round-trips, and a non-string record is dropped", () => {
+  useSettingsPanelPrefsStore.getState().dismissDriverWarning("32.0.31041.1004");
+  assert.equal(
+    JSON.parse(store.get(KEY) as string).state.dismissedDriverWarning,
+    "32.0.31041.1004",
+  );
+  const merged = useSettingsPanelPrefsStore.persist.getOptions().merge;
+  assert.ok(merged);
+  const state = useSettingsPanelPrefsStore.getState();
+  assert.equal(
+    merged({ dismissedDriverWarning: 42 }, state).dismissedDriverWarning,
+    null,
+  );
+});
+
 // Last: it rehydrates the store. Corrupt JSON must not take settings down.
 test("corrupt JSON does not break the store", async () => {
   store.set(KEY, "{not json");
@@ -228,4 +247,24 @@ test("corrupt JSON does not break the store", async () => {
     typeof useSettingsPanelPrefsStore.getState().setAgentsModel,
     "function",
   );
+});
+
+test("the agent access (MCP) picks persist and reject unknown values", () => {
+  const s = useSettingsPanelPrefsStore.getState();
+  s.setMcpAgent("dsh");
+  s.setMcpOs("unix");
+  const raw = store.get(KEY);
+  assert.ok(raw);
+  const state = JSON.parse(raw as string).state;
+  assert.equal(state.mcpAgent, "dsh");
+  assert.equal(state.mcpOs, "unix");
+
+  const merged = useSettingsPanelPrefsStore.persist.getOptions().merge;
+  assert.ok(merged);
+  const out = merged(
+    { mcpAgent: 7, mcpOs: "fish" },
+    useSettingsPanelPrefsStore.getState(),
+  ) as { mcpAgent: unknown; mcpOs: unknown };
+  assert.equal(out.mcpAgent, null);
+  assert.equal(out.mcpOs, null);
 });

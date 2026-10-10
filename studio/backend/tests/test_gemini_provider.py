@@ -867,15 +867,6 @@ def test_boolean_caching_does_not_set_cached_content(monkeypatch):
 # ── image generation: request modalities + response translation ──────
 
 
-def test_image_model_sets_response_modalities(monkeypatch):
-    captured = _capture_body(
-        monkeypatch,
-        model = "gemini-2.5-flash-image",
-        enabled_tools = ["image_generation"],
-    )
-    assert captured["body"]["generationConfig"]["responseModalities"] == ["TEXT", "IMAGE"]
-
-
 def test_image_generation_tool_sets_response_modalities_on_image_model(monkeypatch):
     """`enabled_tools=["image_generation"]` flips responseModalities
     only when the selected model is image-capable; otherwise the

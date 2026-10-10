@@ -2629,6 +2629,8 @@ _setup_http_get_timed() {
 # Only the four mainstream targets are pinned; the rest fall through to the existing path
 # rather than risk a binary for the wrong triple.
 _SETUP_UV_PINNED_VERSION="0.12.1"
+# sha256 of astral's versioned install.sh for that release; the fallback below runs only those exact bytes.
+_SETUP_UV_INSTALLER_SH_SHA256="d3f5412d38c99f9d024901843bf98206f0d2c6dbe64df40d0b740e2751ca62c1"
 
 # Mirrors _uv_glibc_minor in install.sh: "not musl" is not the same as "a glibc new enough to
 # run the GNU build", and astral drops to its musl-static archive below its floor.
@@ -2841,6 +2843,30 @@ https://github.com/astral-sh/uv/releases/download/$_SETUP_UV_PINNED_VERSION"
         _setup_persist_uv_path "$_siup_dest"
     fi
     return "$_siup_rc"
+}
+
+# Unpinned hosts: astral's versioned installer, run only if it is the exact pinned script (a host with no sha256 tool
+# runs it as before). Non-zero when it is not run or fails.
+_setup_uv_fallback_run() {
+    _suf_tmp=$(mktemp) || return 1
+    if ! _setup_http_get "https://astral.sh/uv/$_SETUP_UV_PINNED_VERSION/install.sh" > "$_suf_tmp"; then
+        rm -f "$_suf_tmp"
+        return 1
+    fi
+    _suf_sum=$(_setup_uv_sha256 "$_suf_tmp" 2>/dev/null) || _suf_sum=""
+    if [ -n "$_suf_sum" ] && [ "$_suf_sum" != "$_SETUP_UV_INSTALLER_SH_SHA256" ]; then
+        echo "uv installer script failed its sha256 check; not running it" >&2
+        rm -f "$_suf_tmp"
+        return 1
+    fi
+    if _is_verbose; then
+        sh "$_suf_tmp" </dev/null
+    else
+        sh "$_suf_tmp" </dev/null > /dev/null 2>&1
+    fi
+    _suf_rc=$?
+    rm -f "$_suf_tmp"
+    return "$_suf_rc"
 }
 
 # astral's installer wrote a profile line for whichever destination it chose. This replaces that
@@ -3173,10 +3199,8 @@ elif {
     _SETUP_UV_PINNED_OK=false
     if _setup_install_uv_pinned || { [ "$_SIUP_UNFETCHED" = true ] && _mirror_switch uvbin && _setup_install_uv_pinned; }; then
         _SETUP_UV_PINNED_OK=true
-    elif _is_verbose; then
-        _setup_http_get "https://astral.sh/uv/$_SETUP_UV_PINNED_VERSION/install.sh" | sh
     else
-        _setup_http_get "https://astral.sh/uv/$_SETUP_UV_PINNED_VERSION/install.sh" | sh > /dev/null 2>&1
+        _setup_uv_fallback_run
     fi
 }; then
     # Only for astral's installer, which writes to ~/.local/bin. The pinned path already put its
@@ -3577,6 +3601,28 @@ if [ "$_SKIP_PYTHON_DEPS" = true ] && [ -x "$VENV_DIR/bin/python" ]; then
         else
             substep "installed PyTorch cannot use this NVIDIA GPU -- forcing dependency pass to repair..."
             substep "   (set UNSLOTH_TORCH_BACKEND=cpu to keep a deliberate CPU install)"
+            _SKIP_PYTHON_DEPS=false
+        fi
+    fi
+fi
+
+# Same for an install that chose XPU torch for its Intel GPU (install.sh's auto route, recorded
+# in the manifest) but now holds another wheel: _ensure_xpu_torch runs only inside the pass.
+if [ "$_SKIP_PYTHON_DEPS" = true ] && [ -x "$VENV_DIR/bin/python" ]; then
+    _setup_xpu_torch_stale=false
+    if command -v timeout >/dev/null 2>&1; then
+        timeout -k 5 180 "$VENV_DIR/bin/python" \
+            "$SCRIPT_DIR/install_python_stack.py" --xpu-torch-needs-dependency-pass \
+            >/dev/null 2>&1 && _setup_xpu_torch_stale=true
+    elif "$VENV_DIR/bin/python" "$SCRIPT_DIR/install_python_stack.py" \
+            --xpu-torch-needs-dependency-pass >/dev/null 2>&1; then
+        _setup_xpu_torch_stale=true
+    fi
+    if [ "$_setup_xpu_torch_stale" = true ]; then
+        if [ "${_OFFLINE_FAST_PATH:-false}" = true ] || _uv_offline_requested; then
+            substep "installed PyTorch is not the XPU build this install chose but UV_OFFLINE is set -- left for the next online update"
+        else
+            substep "installed PyTorch is not the XPU build this install chose -- forcing dependency pass to repair..."
             _SKIP_PYTHON_DEPS=false
         fi
     fi

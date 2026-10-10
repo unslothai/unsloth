@@ -804,6 +804,13 @@ async def lifespan(app: FastAPI):
     except Exception:  # noqa: BLE001 -- the first tool call probes instead
         _lifespan_log.warning("could not start the sandbox warm-up", exc_info = True)
 
+    # Windows AMD driver with the ROCm/TheRock#7221 idle-eviction bug: one log line, plus gpu.driver_warning.
+    try:
+        from utils.hardware.hardware import start_amd_driver_check
+        start_amd_driver_check()
+    except Exception:  # noqa: BLE001 -- a warning, never a startup failure
+        _lifespan_log.debug("could not start the AMD driver check", exc_info = True)
+
     try:
         from hub.services.models.account_access import adopt_unnamed_public_proofs
         from utils.hub_settings import operator_hf_endpoint
@@ -1397,6 +1404,9 @@ _BODY_PROTECTED_PREFIXES = (
     # Unauthenticated (login, refresh): every route takes a few hundred bytes of JSON.
     "/api/auth",
     "/mcp",
+    # Everything else under /api. FastAPI reads a body before the route's auth dependency runs, so an unlisted
+    # prefix let an unauthenticated client stream an unbounded body into memory.
+    "/api/",
 )
 _DATASET_UPLOAD_PASSTHROUGH_PREFIXES = (
     "/api/datasets/upload",
@@ -1419,6 +1429,11 @@ _VIDEO_MULTIPART_UPLOAD_PATHS = (
     "/api/inference/videos",
 )
 _LIBRARY_UPLOAD_PATH = "/api/library/uploads"
+# RAG document uploads (knowledge base, thread, project): multipart, capped by RAG_MAX_UPLOAD_BYTES in the route and
+# spooled by FastAPI, so they pass through on Content-Length instead of being held in memory here.
+_RAG_DOCUMENT_UPLOAD_RE = _re.compile(
+    r"^/api/rag/(?:knowledge-bases|threads|projects)/[^/]+/documents/?$"
+)
 # Streamed to disk and capped by the route itself; buffering here would hold 200 MiB in memory.
 _AUDIO_INPUT_UPLOAD_PATHS = ("/api/inference/audio/inputs", "/v1/audio/inputs")
 _BODY_UPLOAD_PASSTHROUGH_PREFIXES = (
@@ -1454,6 +1469,13 @@ def _get_upload_passthrough_request_max_bytes(path: str) -> int:
         return upload_request_limit_bytes(LIBRARY_UPLOAD_MAX_BYTES)
     if path.rstrip("/") in _AUDIO_INPUT_UPLOAD_PATHS:
         return AUDIO_INPUT_MAX_BYTES
+    if _RAG_DOCUMENT_UPLOAD_RE.match(path):
+        from core.rag import config as _rag_config
+
+        # RAG_MAX_UPLOAD_BYTES=0 means no cap, as the route treats it.
+        if _rag_config.MAX_UPLOAD_BYTES <= 0:
+            return sys.maxsize
+        return upload_request_limit_bytes(_rag_config.MAX_UPLOAD_BYTES)
     # The trailing-slash variant reaches this middleware BEFORE the router's redirect_slashes
     # 307, so it must resolve to the same cap. JSON sub-routes keep extra path components.
     if (
@@ -1527,6 +1549,7 @@ class MaxBodyMiddleware:
         upload_passthrough_max_bytes_getter = None,
         upload_passthrough_exact_paths: tuple = (),
         chunked_upload_exact_paths: tuple = (),
+        upload_passthrough_pattern = None,
     ):
         self.app = app
         self.max_bytes_getter = max_bytes_getter
@@ -1538,11 +1561,18 @@ class MaxBodyMiddleware:
         self.upload_passthrough_exact_paths = upload_passthrough_exact_paths
         # The subset of those allowed to omit Content-Length; the rest still get a 411.
         self.chunked_upload_exact_paths = chunked_upload_exact_paths
+        # Uploads whose path carries an id (RAG documents), matched by a compiled pattern.
+        self.upload_passthrough_pattern = upload_passthrough_pattern
 
     def _is_upload_passthrough(self, path: str) -> bool:
         # Exact paths also match their trailing-slash variant (this runs before redirect_slashes).
-        return path.rstrip("/") in self.upload_passthrough_exact_paths or any(
-            path.startswith(p) for p in self.upload_passthrough_prefixes
+        return (
+            path.rstrip("/") in self.upload_passthrough_exact_paths
+            or any(path.startswith(p) for p in self.upload_passthrough_prefixes)
+            or (
+                self.upload_passthrough_pattern is not None
+                and self.upload_passthrough_pattern.match(path) is not None
+            )
         )
 
     def _upload_passthrough_max_bytes(self, path: str) -> int:
@@ -1572,7 +1602,12 @@ class MaxBodyMiddleware:
             return
         method = scope.get("method", "").upper()
         path = scope.get("path", "")
-        if method not in ("POST", "PUT", "PATCH") or not any(
+        # Under `--root-path /x`, uvicorn keeps the prefix in `path`; match on the route path the router sees.
+        root_path = scope.get("root_path") or ""
+        if root_path and path.startswith(root_path):
+            path = path[len(root_path) :] or "/"
+        # DELETE too: several routes take a JSON body on DELETE (delete-cached, bulk thread delete).
+        if method not in ("POST", "PUT", "PATCH", "DELETE") or not any(
             path.startswith(p) for p in self.protected_prefixes
         ):
             await self.app(scope, receive, send)
@@ -1588,7 +1623,7 @@ class MaxBodyMiddleware:
                     declared = None
                 break
 
-        if self._is_upload_passthrough(path):
+        if method != "DELETE" and self._is_upload_passthrough(path):
             upload_max_bytes = self._upload_passthrough_max_bytes(path)
             if declared is not None:
                 if declared > upload_max_bytes:
@@ -1650,6 +1685,7 @@ app.add_middleware(
     upload_passthrough_max_bytes_getter = _get_upload_passthrough_request_max_bytes,
     upload_passthrough_exact_paths = _BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS,
     chunked_upload_exact_paths = _CHUNKED_UPLOAD_EXACT_PATHS,
+    upload_passthrough_pattern = _RAG_DOCUMENT_UPLOAD_RE,
 )
 
 # Tracks in-flight inference requests for idle auto-unload; off -> passthrough.
@@ -2264,6 +2300,7 @@ def _get_cached_system_gpu_info(
     """Return training and inference GPU info with bounded live-probe churn."""
     import time
     from utils.hardware import (
+        amd_driver_warning_report,
         get_backend_visible_gpu_info,
         get_cross_vendor_inference_gpu_info,
         get_visible_gpu_utilization,
@@ -2378,6 +2415,7 @@ def _get_cached_system_gpu_info(
             "vram_used_gb_aggregate": utilization_info.get("vram_used_gb_aggregate")
             if aggregate_basis_matches
             else None,
+            **amd_driver_warning_report(),
         }
 
         # Keep inference placement separate on train-capable hosts where a forced Vulkan llama.cpp bundle can

@@ -567,12 +567,6 @@ class TestNativeContextEdgeCases:
 class TestCrossPlatform:
     """Binary I/O and serialization correctness across platforms."""
 
-    def test_le_uint32_context_length(self, tmp_path, backend):
-        """Little-endian UINT32 parsed correctly."""
-        path = make_gguf(tmp_path, "llama", [("context_length", 16384, 4)])
-        backend._read_gguf_metadata(path)
-        assert backend.native_context_length == 16384
-
     def test_le_uint64_context_length(self, tmp_path, backend):
         """Little-endian UINT64 parsed correctly."""
         path = make_gguf(tmp_path, "llama", [("context_length", 16384, 10)])

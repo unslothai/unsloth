@@ -238,6 +238,8 @@ class LemonadeNpuBackend:
         self._validation: Optional[dict[str, Any]] = None
         self._state = "idle"
         self._error: Optional[str] = None
+        self._flm_version_cache: Optional[tuple[tuple[str, int, int], Optional[str]]] = None
+        self._last_versions: dict[str, Optional[str]] = {"lemonade": None, "fastflowlm": None}
 
     @property
     def root(self) -> Path:
@@ -312,8 +314,8 @@ class LemonadeNpuBackend:
         validated = self._validated_install()
         return binary is None and isinstance(validated, str) and bool(validated)
 
-    def _flm_version(self) -> Optional[str]:
-        binary = self._flm_binary()
+    def _flm_version(self, binary: Optional[Path] = None) -> Optional[str]:
+        binary = binary or self._flm_binary()
         if binary is None:
             return None
         env = child_env_without_native_path_secret()
@@ -336,16 +338,61 @@ class LemonadeNpuBackend:
             return None
         return str(version).lstrip("v") if version else None
 
+    def _installed_flm_version(self) -> Optional[str]:
+        binary = self._flm_binary()
+        if binary is None:
+            return None
+        try:
+            stat = binary.stat()
+        except OSError:
+            return None
+        key = (str(binary), stat.st_mtime_ns, stat.st_size)
+        cached = self._flm_version_cache
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        # Failures are cached too, so a mute binary is not rerun per status read.
+        version = self._flm_version(binary)
+        self._flm_version_cache = (key, version)
+        return version
+
+    def _installed_lemonade_version(self, lemond: Optional[Path]) -> Optional[str]:
+        if lemond is None:
+            return None
+        try:
+            return _installer_module().installed_version(lemond)
+        except Exception as exc:  # noqa: BLE001 -- a missing version never hides the status
+            logger.warning("Could not read the Lemonade version: %s", exc)
+            return None
+
+    def _versions(
+        self, binary: Optional[Path], validated: Optional[str]
+    ) -> dict[str, Optional[str]]:
+        # Non-blocking: Enable replaces flm under this lock (a running flm blocks that on Windows).
+        if not self._lock.acquire(blocking = False):
+            return dict(self._last_versions)
+        try:
+            lemond = binary or (
+                Path(validated) if isinstance(validated, str) and validated else None
+            )
+            self._last_versions = {
+                "lemonade": self._installed_lemonade_version(lemond),
+                "fastflowlm": self._installed_flm_version(),
+            }
+            return dict(self._last_versions)
+        finally:
+            self._lock.release()
+
     def status(self) -> dict[str, Any]:
         hardware = self.hardware()
         binary = self._installed_lemond()
+        validated = self._validated_install()
         # An enabled NPU stays enabled across a pin change: its first use upgrades the runtime.
         upgrade_pending = self._state == "idle" and self._upgrade_pending(binary)
         installed = binary is not None or upgrade_pending
         ready = (
             self._state == "ready"
             or upgrade_pending
-            or (self._state == "idle" and installed and self._validated_install() == str(binary))
+            or (self._state == "idle" and installed and validated == str(binary))
         )
         running = self._server is not None and self._server.is_alive()
         resident = self.resident()
@@ -363,6 +410,7 @@ class LemonadeNpuBackend:
             "loaded_model": resident.model.model_path if resident else None,
             "context_length": resident.context_length if resident else None,
             "loading_model": self._loading,
+            "versions": self._versions(binary, validated),
         }
 
     def _server_for(self, binary: Path) -> LemonadeServer:

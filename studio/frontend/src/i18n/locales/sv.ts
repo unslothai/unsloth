@@ -277,6 +277,43 @@ export const sv = {
       tablet: "Surfplatta",
       close: "Dölj enhetsverktygsfält",
     },
+    downloads: {
+      title: "Hämtade filer",
+      inProgressLabel: "Hämtar",
+      inProgress: "Hämtar…",
+      complete: "Hämtningen är klar",
+      failed: "Hämtningen misslyckades",
+      downloaded: "Hämtad",
+      missing: "Filen har flyttats eller tagits bort",
+      open: "Öppna",
+      openFailed: "Det gick inte att öppna {name}.",
+      copyLink: "Kopiera hämtningslänk",
+      showAll: "Visa alla",
+      savePage: "Spara sidan som…",
+    },
+    video: {
+      play: "Spela upp",
+      pause: "Pausa",
+      seek: "Spola",
+      volume: "Volym",
+      mute: "Stäng av ljud",
+      unmute: "Slå på ljud",
+      more: "Fler uppspelningsalternativ",
+      speed: "Uppspelningshastighet",
+      normalSpeed: "Normal",
+      loop: "Upprepa",
+      pictureInPicture: "Bild-i-bild",
+      fullscreen: "Helskärm",
+      copyFrame: "Kopiera bildruta",
+      frameCopied: "Bildrutan har kopierats",
+      copyFrameFailed: "Det gick inte att kopiera bildrutan.",
+      copyName: "Kopiera filnamn",
+      nameCopied: "Filnamnet har kopierats",
+      copyOptions: "Kopieringsalternativ",
+      open: "Öppna",
+      openOptions: "Alternativ för att öppna",
+      saveAs: "Spara som…",
+    },
     file: {
       openIn: "Öppna i",
       newChat: "Ny chatt",
@@ -436,17 +473,14 @@ export const sv = {
     rollback: "Återställ föregående installation",
     installTitle: "Installera {engine}",
     installAndLoad: "Installera och läs in",
-    confirm:
-      "Installera {engine} {version}? Denna valfria hämtning kan använda flera gigabyte. Exakt hur mycket mer som hämtas och hur mycket diskutrymme som används är inte känt. Kompatibla cachade paket och modellfiler återanvänds.",
-    confirmSized:
-      "Installera {engine} {version}? Denna valfria hämtning är ungefär {size}. Paket som Studio redan har, inklusive PyTorch när versionerna matchar, återanvänds i stället för att hämtas igen.",
+    confirm: "Installera {engine} {version}? Detta kan hämta flera GB.",
+    confirmSized: "Installera {engine} {version}? Cirka {size} att hämta.",
     wslSetup:
-      "I Windows körs {engine} inuti WSL2 (Windows Subsystem for Linux). Studio aktiverar WSL2 och konfigurerar en egen privat Ubuntu-miljö för motorer; dina befintliga Linux-distributioner påverkas inte. Windows visar en administratörsfråga (UAC) och kan be dig starta om innan installationen kan slutföras. Ingenting ändras förrän du klickar på Installera.",
+      "I Windows körs {engine} i en privat WSL2-miljö som Studio konfigurerar. Räkna med en administratörsfråga och eventuellt en omstart.",
     wslReady: "I Windows körs {engine} inuti Studios privata WSL2-miljö.",
     wslRestart:
       "Starta om Windows för att slutföra aktiveringen av WSL2 och klicka sedan på Installera igen.",
-    background:
-      "Installationen körs i bakgrunden. Om du tar bort motorn behålls dina hämtade modeller.",
+    background: "Installeras i bakgrunden.",
     failed:
       "Installationen av motorn misslyckades. Försök igen eller använd standardmotorn.",
     details: "Tekniska detaljer",
@@ -1309,6 +1343,10 @@ export const sv = {
       grantsDescription:
         "Behåller läsåtkomst till Unsloths egna körmiljömappar mellan anrop. När det är av startar varje anrop några sekunder långsammare.",
       lockedGrants: "Inställt av UNSLOTH_MXC_PERSISTENT_READ_GRANTS",
+      memoryLabel: "Minnesgräns",
+      memoryDescription: "Mest minne som ett Python- eller Terminal-anrop i sandlådan kan reservera. Gäller från nästa anrop. Standard är {defaultSize} GB.",
+      memoryLocked: "Inställt av UNSLOTH_STUDIO_SANDBOX_AS_GB",
+      memoryInvalid: "Ange ett heltal från {min} till {max}.",
       restored: "Tog bort åtkomst från {count} mappar.",
       hostPrepLabel: "Administratörskonfiguration",
       prepPrepared: "Klar",
@@ -1781,6 +1819,17 @@ export const sv = {
         showAudioCppUpdates: "Aviseringar om audio.cpp-uppdateringar",
         showAudioCppUpdatesDescription:
           "Avisera när audio.cpp-körmiljön behöver uppdateras för ljudsidorna. Stäng av om du aldrig använder ljud.",
+        showUnslothUpdates: "Uppdateringsaviseringar för Unsloth",
+        showUnslothUpdatesDescription:
+          "Meddela när en nyare version av Unsloth finns att installera.",
+        frequency: {
+          always: "Alltid",
+          daily: "En gång om dagen",
+          weekly: "En gång i veckan",
+          biweekly: "Varannan vecka",
+          monthly: "En gång i månaden",
+          off: "Av",
+        },
       },
       startup: {
         sectionTitle: "Start",
@@ -2149,6 +2198,8 @@ export const sv = {
         label: "Visningsspråk",
         description: "Språket som används av Unsloth.",
         autoDetect: "Identifiera automatiskt",
+        spellCheck: "Stavningskontroll",
+        spellCheckDescription: "Stryk under felstavade ord medan du skriver.",
       },
       layout: {
         title: "Layout",
@@ -2215,6 +2266,10 @@ export const sv = {
           "PyTorch är en version endast för CPU ({version}), så GPU:erna nedan kan inte användas. Reparera installationen för att återställa GPU-stödet.",
         mismatchUnavailable:
           "PyTorch ({version}) kan inte initiera GPU:erna nedan, så de kan inte användas. Kontrollera GPU-drivrutinen eller reparera installationen.",
+        driverIdleEvict:
+          "AMD-drivrutinen {version} har en känd bugg som kan frysa Windows när ett AMD-grafikkort står inaktivt, oftast med fler än ett grafikkort. Uppdatera till Adrenalin 26.9.2 eller senare.",
+        driverIdleEvictDetails: "Detaljer",
+        dismissNotice: "Stäng",
         unusableDevice: "oanvändbar",
         unknownDevice: "Okänd GPU",
         deviceWithIndex: "GPU {index}",
@@ -3058,6 +3113,19 @@ export const sv = {
         addConnection:
           "Lägg till TypeSafe, Liquid AI eller OpenRouter under Anslutningar för att använda en värdbaserad beslutsmodell.",
         openConnections: "Öppna Anslutningar",
+      },
+      mcp: {
+        title: "Agentåtkomst (MCP)",
+        description: "Låt kodagenter som Claude Code och Codex använda Unsloth via MCP. Agenter loggar in med en åtkomsttoken från den här sidan.",
+        enable: "Tillåt agentanslutningar",
+        enableDescription: "Betjänar /mcp/ för förfrågningar som har en åtkomsttoken för Unsloth.",
+        lockedByEnv: "Angiven av {name}.",
+        loadError: "Det gick inte att läsa in inställningarna för agentåtkomst.",
+        saveError: "Det gick inte att spara inställningen för agentåtkomst.",
+        agent: "Agent",
+        exportKeyHint: "Sätt {name} till en åtkomsttoken från den här sidan innan du startar agenten.",
+        configFileHint: "Lägg till det här i {path}.",
+        keywords: "mcp model context protocol agents claude codex tools agenter agent verktyg modellkontextprotokoll",
       },
     },
     about: {
@@ -3993,6 +4061,13 @@ export const sv = {
     discard: "Ignorera",
     mentions: "Färdigheter",
     manage: "Hantera färdigheter",
+    bulkActions: "Färdighetsåtgärder",
+    enableAll: "Aktivera alla",
+    disableAll: "Inaktivera alla",
+    resetAll: "Återställ standard",
+    resetTitle: "Återställa alla färdigheter?",
+    resetDescription: "Varje färdighet återgår till hur en ny installation har den: dina färdigheter och Claude-färdigheter på, medföljande färdigheter av. Dina val av på och av rensas.",
+    reset: "Återställ",
   },
   library: {
     tabs: {
@@ -4180,6 +4255,7 @@ export const sv = {
       chatAboutThis: "Chatta om detta",
       chatWithModel: "Chatta med den här modellen",
       addToFavorites: "Lägg till i Favoriter",
+      regenerateTitle: "Generera om titel",
       removeFromFavorites: "Ta bort från Favoriter",
       download: "Hämta",
       addToFolder: "Lägg till i mapp",

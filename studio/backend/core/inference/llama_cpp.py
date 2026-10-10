@@ -4556,6 +4556,32 @@ _CPU_PLACEMENT_PRESENCE_FLAGS = (_MOE_OFFLOAD_FLAGS - _CPU_MOE_COUNT_FLAGS) | fr
     {"-ot", "--override-tensor"}
 )
 _CPU_PLACEMENT_FLAGS = _MOE_OFFLOAD_FLAGS | frozenset({"-ot", "--override-tensor"})
+# Pass-through that re-places what a fit priced: the fitter, split, remote (RPC) devices,
+# draft tensors moved onto a card of their own, or an unpriced vocoder GGUF.
+_VRAM_FIT_VOIDING_FLAGS = (
+    frozenset(
+        {
+            "-fit",
+            "--fit",
+            "--rpc",
+            "-otd",
+            "--override-tensor-draft",
+            "--spec-draft-override-tensor",
+            "-mv",
+            "--model-vocoder",
+        }
+    )
+    | _FIT_CONTROL_FLAGS
+    | _TENSOR_SPLIT_FLAGS
+    | _SPLIT_MODE_FLAGS
+)
+_VRAM_FIT_VOIDING_ENV_VARS = (
+    "LLAMA_ARG_FIT",
+    "LLAMA_ARG_RPC",
+    *_FIT_CONTROL_ENV_VARS,
+    "LLAMA_ARG_TENSOR_SPLIT",
+    "LLAMA_ARG_SPLIT_MODE",
+)
 _THREAD_OVERRIDE_FLAGS = frozenset({"-t", "--threads"})
 _GENERATION_CPU_AFFINITY_FLAGS = frozenset({"-C", "--cpu-mask", "-Cr", "--cpu-range"})
 _TENSOR_SPLIT_FLAGS = frozenset({"--tensor-split", "-ts"})
@@ -6435,6 +6461,65 @@ def _subsequence_index(tokens: List[str], run: List[str], hint: int) -> int:
 _CPU_DEVICE_VALUES = frozenset({"cpu", "none"})
 
 
+def _pass_through_overrides_placement(
+    extra_args: Optional[Iterable[str]],
+    source_env: Mapping[str, str],
+    credited: int,
+    *,
+    is_vulkan_backend: bool = False,
+    gpu_indices: Optional[Iterable[int]] = None,
+) -> bool:
+    """Whether pass-through args or env run a placement other than the one a fit priced.
+
+    ``extra_args`` / ``source_env`` are what the child really gets (a ``gpu_ids`` pin
+    strips its device flags and env twins first); ``credited`` is how many devices the
+    fit charged. See ``LlamaCppBackend._fit_derived_load_mode`` for each term.
+    """
+    # A --device naming FEWER devices than this fit charges leaves the credit
+    # paying for cards the child never opens. llama.cpp REPLACES the list on every
+    # occurrence (parse_device_list) and reads LLAMA_ARG_DEVICE before argv, so the
+    # last of the two wins. Counted, not name-matched: CUDA/ROCm ordinals are
+    # assigned after a visibility mask this launch has not written yet.
+    _dev_value = _extra_args_main_device(extra_args)
+    if _dev_value is None:
+        _dev_value = source_env.get("LLAMA_ARG_DEVICE")
+    _dev_names = [d.strip() for d in str(_dev_value or "").split(",") if d.strip()]
+    _credited = credited
+    gpu_indices = list(gpu_indices) if gpu_indices is not None else None
+    # DISTINCT names: llama.cpp appends every entry without deduplicating and
+    # keeps the list verbatim, so "CUDA0,CUDA0" is ONE physical pool listed twice,
+    # and counting it as two leaves the credit paying for a card that is not there.
+    _device_narrows = bool(_dev_names) and len(set(_dev_names)) < _credited
+    # Vulkan is the one backend where names ARE comparable (_vulkan_device_pin ->
+    # "Vulkan<i>"), so hold a surviving --device to an exact match. That catches
+    # what a count cannot: a same-sized list naming DIFFERENT cards, and a longer
+    # one adding devices this footprint never charged for.
+    _vulkan_pin_replaced = bool(
+        is_vulkan_backend
+        and gpu_indices is not None
+        and _dev_names
+        and {name.strip().lower() for name in _dev_names} != {f"vulkan{idx}" for idx in gpu_indices}
+    )
+    return bool(
+        _extra_args_set_any_flag(extra_args, _GPU_LAYER_FLAGS)
+        # And its env twin, the ONLY layer count the fitting path leaves: it
+        # emits no -ngl, only Manual mode clears LLAMA_ARG_N_GPU_LAYERS, and the
+        # fitter will not lower a count it did not set, so an inherited one stands
+        # and loads a prefix out of host RAM.
+        or _env_fixes_gpu_layers(source_env)
+        # With the env twin: only an explicit gpu_ids pin clears LLAMA_ARG_DEVICE,
+        # so an inherited "none" puts the whole load in host RAM.
+        or _device_selection_is_cpu(extra_args, source_env)
+        or _device_narrows
+        or _vulkan_pin_replaced
+        # Pass-through and last-wins: --split-mode none, or a --tensor-split that
+        # zeroes a device, leaves the pooled credit paying for cards held empty.
+        or split_policy_starves_devices(extra_args, _credited, source_env)
+        or _args_place_tensors_on_cpu(extra_args)
+        or _env_places_tensors_on_cpu(source_env)
+    )
+
+
 def _device_selection_is_cpu(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> bool:
@@ -7869,6 +7954,8 @@ class LlamaCppBackend:
         self._context_length: Optional[int] = None
         self._effective_context_length: Optional[int] = None
         self._max_context_length: Optional[int] = None
+        # Ceiling a fit priced inside the GPU / Metal budget; None for an anchor or floor.
+        self._vram_fit_context_length: Optional[int] = None
         self._effective_parallel_slots: int = 1
         # --parallel the last load asked for, before any fit-time reduction.
         self._requested_n_parallel: int = 1
@@ -8428,6 +8515,19 @@ class LlamaCppBackend:
         ``native_context_length``; dragging above this triggers the warning.
         """
         return self._max_context_length or self._context_length
+
+    @property
+    def vram_fit_context_length(self) -> Optional[int]:
+        """Largest context the load-time fit priced inside GPU / Metal memory, else None."""
+        # A child wholly on CPU (--device none, Vulkan crash fallback, zero layers) holds no VRAM.
+        if (
+            self._gpu_offload_active is False
+            or self._cpu_fallback_reason
+            or self._arch_gate_forced_cpu
+            or (self._gpu_memory_mode == "manual" and self._gpu_layers == 0)
+        ):
+            return None
+        return self._vram_fit_context_length
 
     @property
     def native_context_length(self) -> Optional[int]:
@@ -15573,48 +15673,13 @@ class LlamaCppBackend:
             return None
         rows = list(gpus or ())
         source_env = os.environ if env is None else env
-        # A --device naming FEWER devices than this fit charges leaves the credit
-        # paying for cards the child never opens. llama.cpp REPLACES the list on every
-        # occurrence (parse_device_list) and reads LLAMA_ARG_DEVICE before argv, so the
-        # last of the two wins. Counted, not name-matched: CUDA/ROCm ordinals are
-        # assigned after a visibility mask this launch has not written yet.
-        _dev_value = _extra_args_main_device(extra_args)
-        if _dev_value is None:
-            _dev_value = source_env.get("LLAMA_ARG_DEVICE")
-        _dev_names = [d.strip() for d in str(_dev_value or "").split(",") if d.strip()]
         _credited = len(list(gpu_indices)) if gpu_indices is not None else len(rows)
-        # DISTINCT names: llama.cpp appends every entry without deduplicating and
-        # keeps the list verbatim, so "CUDA0,CUDA0" is ONE physical pool listed twice,
-        # and counting it as two leaves the credit paying for a card that is not there.
-        _device_narrows = bool(_dev_names) and len(set(_dev_names)) < _credited
-        # Vulkan is the one backend where names ARE comparable (_vulkan_device_pin ->
-        # "Vulkan<i>"), so hold a surviving --device to an exact match. That catches
-        # what a count cannot: a same-sized list naming DIFFERENT cards, and a longer
-        # one adding devices this footprint never charged for.
-        _vulkan_pin_replaced = bool(
-            is_vulkan_backend
-            and gpu_indices is not None
-            and _dev_names
-            and {name.strip().lower() for name in _dev_names}
-            != {f"vulkan{idx}" for idx in gpu_indices}
-        )
-        if (
-            _extra_args_set_any_flag(extra_args, _GPU_LAYER_FLAGS)
-            # And its env twin, the ONLY layer count the fitting path leaves: it
-            # emits no -ngl, only Manual mode clears LLAMA_ARG_N_GPU_LAYERS, and the
-            # fitter will not lower a count it did not set, so an inherited one stands
-            # and loads a prefix out of host RAM.
-            or _env_fixes_gpu_layers(source_env)
-            # With the env twin: only an explicit gpu_ids pin clears LLAMA_ARG_DEVICE,
-            # so an inherited "none" puts the whole load in host RAM.
-            or _device_selection_is_cpu(extra_args, source_env)
-            or _device_narrows
-            or _vulkan_pin_replaced
-            # Pass-through and last-wins: --split-mode none, or a --tensor-split that
-            # zeroes a device, leaves the pooled credit paying for cards held empty.
-            or split_policy_starves_devices(extra_args, _credited, source_env)
-            or _args_place_tensors_on_cpu(extra_args)
-            or _env_places_tensors_on_cpu(source_env)
+        if _pass_through_overrides_placement(
+            extra_args,
+            source_env,
+            _credited,
+            is_vulkan_backend = is_vulkan_backend,
+            gpu_indices = gpu_indices,
         ):
             logger.info(
                 "Load mode: pass-through arguments override the placement this fit "
@@ -16289,13 +16354,15 @@ class LlamaCppBackend:
 
             # glob.escape: a prefix with [brackets] is otherwise read as a pattern.
             _site = os.path.join(_glob.escape(sys.prefix), "lib", "python*", "site-packages")
+            _pip_dirs = []
             for _nv_pattern in [
                 os.path.join(_site, "nvidia", _sub, "lib") for _sub in ("cu*", "cudnn", "nvjitlink")
             ] + [os.path.join(_site, "torch", "lib")]:
                 for _nv_dir in _glob.glob(_nv_pattern):
                     if os.path.isdir(_nv_dir):
-                        lib_dirs.append(_nv_dir)
+                        _pip_dirs.append(_nv_dir)
 
+            _system_dirs = []
             for cuda_lib in [
                 "/usr/local/cuda/lib64",
                 f"/usr/local/cuda/targets/{_arch}-linux/lib",
@@ -16307,7 +16374,15 @@ class LlamaCppBackend:
                 f"/usr/local/cuda-12.8/targets/{_arch}-linux/lib",
             ]:
                 if os.path.isdir(cuda_lib):
-                    lib_dirs.append(cuda_lib)
+                    _system_dirs.append(cuda_lib)
+            from utils.tegra import TEGRA_LIB_DIR, is_tegra
+
+            if is_tegra():
+                # Jetson: JetPack's CUDA first; the generic pip builds load but crash on unified memory (#4862).
+                _tegra = [TEGRA_LIB_DIR] if os.path.isdir(TEGRA_LIB_DIR) else []
+                lib_dirs.extend(_tegra + _system_dirs + _pip_dirs)
+            else:
+                lib_dirs.extend(_pip_dirs + _system_dirs)
 
             # Vendored dirs go last: rescue only, never displace a runtime already found.
             from utils.llama_cpp_freshness import read_install_marker
@@ -19191,6 +19266,7 @@ class LlamaCppBackend:
         # Provisional until the server reports the budget it resolved (auto-size picks it from VRAM).
         self._effective_context_length = maxtok or self._context_length
         self._max_context_length = self._context_length or maxtok or None
+        self._vram_fit_context_length = None
 
         healthy = self._wait_for_health(timeout = self._HEALTH_STALL_TIMEOUT_S, cancelled = cancelled)
         if healthy:
@@ -25008,6 +25084,8 @@ class LlamaCppBackend:
                 _unmeasured_ctx_notice: Optional[str] = None
                 _cuda_ctx_notice: Optional[str] = None
                 _ctx_cap_fits = False
+                _vram_fit_ctx: Optional[int] = None
+                _flat_mtp_engages = False
                 total_by_idx: dict[int, int] = {}
                 _gpu_mem: list[tuple[int, int, int]] = []
                 model_size = None  # set in the fit try; used by the APU RAM guard
@@ -26537,6 +26615,8 @@ class LlamaCppBackend:
                             if best_cap > 0:
                                 max_available_ctx = best_cap
                                 _ctx_cap_fits = True
+                                # A forced GPU floor plans subsets this sweep did not hold to it.
+                                _vram_fit_ctx = best_cap if _layer_min_gpus <= 1 else None
                             else:
                                 # Weights exceed 90% of every GPU subset, so no
                                 # context fits. Anchor the UI "safe zone" at the
@@ -27074,6 +27154,44 @@ class LlamaCppBackend:
                                     _metal_ctx_warning = self._metal_context_pressure_message(
                                         effective_ctx, _requested_mib, _apple_fit_budget_mib
                                     )
+                        # The paravirtual pin loads on CPU, so no Metal budget held anything.
+                        _vram_fit_ctx = None if _paravirtual_cpu_forced else _apple_measured_ceiling
+                        # The measured ceiling was priced without SWA checkpoints; re-fit with them.
+                        if _vram_fit_ctx and (
+                            _apple_footprint_mib(_vram_fit_ctx, _fit_ctx_checkpoints)
+                            > _apple_fit_budget_mib
+                        ):
+                            _ckpt_cap = _apple_ctx_fit(_vram_fit_ctx, _FIT_FLOOR_MIN_CTX)
+                            _vram_fit_ctx = (
+                                _ckpt_cap
+                                if _apple_footprint_mib(_ckpt_cap, _fit_ctx_checkpoints)
+                                <= _apple_fit_budget_mib
+                                else None
+                            )
+                        # Past the wired limit Metal refuses, so it is the harder ceiling when readable.
+                        _fit_wired_mib = (
+                            int(
+                                self._apple_metal_wired_ceiling_bytes()
+                                // (1024 * 1024)
+                                * max(0.0, 1.0 - _flat_mtp_reserve)
+                            )
+                            if _vram_fit_ctx
+                            else 0
+                        )
+                        if (
+                            _fit_wired_mib > 0
+                            and _apple_footprint_mib(_vram_fit_ctx, _fit_ctx_checkpoints)
+                            > _fit_wired_mib
+                        ):
+                            _wired_cap = _apple_ctx_fit(
+                                _vram_fit_ctx, _FIT_FLOOR_MIN_CTX, _fit_wired_mib
+                            )
+                            _vram_fit_ctx = (
+                                _wired_cap
+                                if _apple_footprint_mib(_wired_cap, _fit_ctx_checkpoints)
+                                <= _fit_wired_mib
+                                else None
+                            )
                         # Unmeasured floors still rely on llama.cpp's fitter.
                         _metal_full_offload_pinned = bool(
                             _apple_host_embd and _apple_measured_ceiling is not None
@@ -27250,6 +27368,7 @@ class LlamaCppBackend:
                                 # the launched plan cannot serve, which is the same ceiling /
                                 # selection inversion #9492 removed, pointing the other way.
                                 max_available_ctx = _ceiling[0]
+                                _vram_fit_ctx = _ceiling[0]
 
                     # MoE experts in host RAM: a larger micro-batch amortises the expert
                     # copies of prompt processing (see _MOE_SPILL_N_UBATCH). The placement
@@ -27678,6 +27797,8 @@ class LlamaCppBackend:
                     # land after the dict exists but before the later terms are added
                     # to it, which would plan against a footprint missing them.
                     _spill_inputs = None
+                    # Nor is a ceiling the fallback's own fitter may spill past.
+                    _vram_fit_ctx = None
                     tp_tensor_split = None
                     effective_ctx = requested_ctx  # fall back to original
 
@@ -30563,6 +30684,7 @@ class LlamaCppBackend:
                                 run_cmd = _reverted
                                 self._record_memory_state(run_cmd, env)
                                 _did_fit_retry = True
+                                self._vram_fit_context_length = None
                                 continue
                         if (
                             not _did_fit_retry
@@ -30638,6 +30760,8 @@ class LlamaCppBackend:
                             run_cmd = _run
                             self._record_memory_state(_run, env)
                             _did_fit_retry = True
+                            # The fit that vouched for the ceiling is what just failed.
+                            self._vram_fit_context_length = None
                             continue
                         if (
                             not _did_fit_retry
@@ -30938,6 +31062,52 @@ class LlamaCppBackend:
                 self._max_context_length = (
                     max_available_ctx if max_available_ctx > 0 else self._effective_context_length
                 )
+                # The fit priced Unsloth's own placement and the base weights alone: a
+                # pass-through placement override, adapter or inherited projector is not.
+                if _vram_fit_ctx is not None:
+                    _child_extras = (
+                        self._strip_device_extra_args(extra_args)
+                        if _gpu_ids_own_device_flags
+                        else extra_args
+                    )
+                    _child_env = dict(os.environ)
+                    if gpu_memory_mode == "manual":
+                        self._clear_manual_placement_env(_child_env)
+                    if _gpu_ids_own_device_flags:
+                        self._clear_device_placement_env(_child_env)
+                    if (
+                        _pass_through_overrides_placement(
+                            _child_extras,
+                            _child_env,
+                            len(gpu_indices) if gpu_indices is not None else len(gpus),
+                            is_vulkan_backend = is_vulkan_backend,
+                            gpu_indices = gpu_indices,
+                        )
+                        or _sidecar_adapter_bytes(extra_args) != 0
+                        # A drafter the planner could only cover with a flat cushion.
+                        or _flat_mtp_engages
+                        or _child_env.get("LLAMA_ARG_MMPROJ")
+                        or _child_env.get("LLAMA_ARG_MMPROJ_URL")
+                        or (
+                            not launch_mmproj_path
+                            and extra_args_mmproj_auto(_child_extras, _child_env)
+                        )
+                        # A hand-set fitter or split ratio re-places what the fit priced.
+                        or _extra_args_set_any_flag(_child_extras, _VRAM_FIT_VOIDING_FLAGS)
+                        or any(_child_env.get(name) for name in _VRAM_FIT_VOIDING_ENV_VARS)
+                        # Any surviving --device: the cap sweep may have pooled cards it leaves out.
+                        or _extra_args_main_device(_child_extras) is not None
+                        # And any companion (projector, drafter) pinned to a card of its own.
+                        or any(
+                            _extra_args_device(_child_extras, flags) is not None
+                            for flags in _COMPANION_DEVICE_FLAG_GROUPS
+                        )
+                        or _child_env.get("LLAMA_ARG_DEVICE")
+                        # --no-kv-offload keeps the whole cache in host RAM at any context.
+                        or not _kv_offload_from_args(_child_extras, _child_env)
+                    ):
+                        _vram_fit_ctx = None
+                self._vram_fit_context_length = _vram_fit_ctx
 
                 # Past the host-RAM and offload advisories, so it can say the ceiling is
                 # the request without costing the user a memory warning it does not
@@ -31042,6 +31212,9 @@ class LlamaCppBackend:
                 healthy = False
                 try:
                     healthy = _spawn_and_wait(cmd)
+                    if not healthy:
+                        # Every recovery below relaunches a plan the fit never priced.
+                        self._vram_fit_context_length = None
                 finally:
                     # Only once a child is up, where is_active takes over. An
                     # unconditional clear undid the re-arm and left the outer rungs (arch
@@ -33233,6 +33406,7 @@ class LlamaCppBackend:
             self._context_length = None
             self._effective_context_length = None
             self._max_context_length = None
+            self._vram_fit_context_length = None
             self._reset_effective_parallel_slots()
             self._slot_save_dir = None
             self._slot_save_binary = None
@@ -36724,6 +36898,7 @@ class LlamaCppBackend:
         on_decode_slot: Optional[Callable[[str, int], None]] = None,
         thinking_budget_tokens: Optional[int] = None,
         mcp_image = None,
+        deduplicate_tool_calls: bool = True,
         instruction_anchor_ids = None,
         sandbox_level: Optional[str] = None,
     ) -> Generator[dict, None, None]:
@@ -36752,8 +36927,10 @@ class LlamaCppBackend:
             has_text_only_provisional_card,
             is_high_risk_tool_call,
             mcp_image_share,
+            mcp_image_targets,
             never_needs_approval,
         )
+        from core.inference.mcp_image import note_attached_image
 
         # "full" and bypass_permissions are the same switch, whichever arrives
         # first wins. "off" keeps the sandbox but never prompts. Unset defaults to
@@ -36779,6 +36956,10 @@ class LlamaCppBackend:
         if not self.is_loaded:
             raise RuntimeError("llama-server is not loaded")
 
+        if mcp_image is not None:
+            messages = note_attached_image(
+                messages, mcp_image_targets(_gguf_active_tool_names(tools))
+            )
         conversation = list(messages)
         # Seeded with tool results an explicit skill load relies on, so fitting keeps them.
         _rolling_anchor_ids: set[int] = set(instruction_anchor_ids or ())
@@ -37045,6 +37226,7 @@ class LlamaCppBackend:
         tool_controller = ToolLoopController(
             tools = controller_tools,
             auto_heal_tool_calls = auto_heal_tool_calls,
+            deduplicate_tool_calls = deduplicate_tool_calls,
             session_id = session_id,
             thread_id = thread_id,
         )
@@ -38901,7 +39083,10 @@ class LlamaCppBackend:
                     _novel_kept = 0
                     _novel_at_last_keep: dict = {}
                     _deduped: list = []
-                    for _tc in tool_calls:
+                    if not deduplicate_tool_calls:
+                        _deduped = tool_calls[:_MAX_TOOL_CALLS_PER_TURN]
+                        _over_cap = tool_calls[_MAX_TOOL_CALLS_PER_TURN:]
+                    for _tc in tool_calls if deduplicate_tool_calls else ():
                         _fn = _tc.get("function", {}) or {}
                         _key = (_fn.get("name", ""), str(_fn.get("arguments", "")))
                         if _fn.get("name") in _WORKSPACE_TOOLS:
@@ -38983,6 +39168,18 @@ class LlamaCppBackend:
                         provisional = provisional_match,
                         allowed_tool_names = {forced_name} if forced_name else None,
                     )
+                    image_share = None
+                    if decision.should_execute and mcp_image is not None:
+                        image_share = mcp_image_share(
+                            decision.tool_name, decision.arguments, mcp_image
+                        )
+                        if image_share is not None:
+                            decision = tool_controller.reprepare_call(
+                                decision,
+                                forced = _forced_tool_call_pending,
+                                provisional = provisional_match,
+                                allowed_tool_names = {forced_name} if forced_name else None,
+                            )
 
                     if not decision.should_execute:
                         if provisional_match:
@@ -39038,7 +39235,6 @@ class LlamaCppBackend:
                         sandbox_level = sandbox_level,
                     )
                     # Sending the user's image always asks, whatever the permission mode.
-                    image_share = mcp_image_share(decision.tool_name, decision.arguments, mcp_image)
                     needs_confirm = needs_confirm or image_share is not None
                     strict_isolation = requires_os_isolation(
                         confirm_tool_calls = bool(confirm_tool_calls),
@@ -41292,6 +41488,10 @@ class LlamaCppBackend:
             from utils.utils import hf_env_offline
             model_repo_path = resolve_bicodec_repo_path(local_files_only = hf_env_offline())
 
+        # The codec holds memory the load-time fit never priced: VRAM on CUDA, and on a
+        # unified-memory host the very pool the fit sized even when it lands on the CPU.
+        # Cleared first, as the model is already listed while the codec allocates.
+        self._vram_fit_context_length = None
         LlamaCppBackend._codec_mgr.load_codec(audio_type, device, model_repo_path = model_repo_path)
         logger.info(f"Loaded audio codec for GGUF TTS: {audio_type}")
 
