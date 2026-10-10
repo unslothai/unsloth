@@ -135,7 +135,7 @@ INDEXES = {
 def test_community_gguf_finds_the_grid_through_its_card_base(monkeypatch):
     _patch_hub(monkeypatch, card_base = "Qwen/Qwen-Image-2.1-Turbo", indexes = INDEXES)
     grid = bk._base_sample_sigmas(
-        REPO, FAM.base_repo, None, explicit_base = False, local_files_only = False
+        REPO, FAM.base_repo, None, family = FAM.name, explicit_base = False, local_files_only = False
     )
     assert grid == TURBO_GRID
 
@@ -144,7 +144,7 @@ def test_base_without_a_grid_and_untrusted_tags_give_none(monkeypatch):
     _patch_hub(monkeypatch, card_base = "Qwen/Qwen-Image-2.1", indexes = INDEXES)
     assert (
         bk._base_sample_sigmas(
-            REPO, FAM.base_repo, None, explicit_base = False, local_files_only = False
+            REPO, FAM.base_repo, None, family = FAM.name, explicit_base = False, local_files_only = False
         )
         is None
     )
@@ -156,7 +156,7 @@ def test_base_without_a_grid_and_untrusted_tags_give_none(monkeypatch):
     )
     assert (
         bk._base_sample_sigmas(
-            REPO, FAM.base_repo, None, explicit_base = False, local_files_only = False
+            REPO, FAM.base_repo, None, family = FAM.name, explicit_base = False, local_files_only = False
         )
         is None
     )
@@ -167,13 +167,13 @@ def test_explicit_base_and_cache_only_loads_skip_the_card(monkeypatch):
     calls = _patch_hub(monkeypatch, card_base = "Qwen/Qwen-Image-2.1-Turbo", indexes = INDEXES)
     assert (
         bk._base_sample_sigmas(
-            REPO, "Qwen/Qwen-Image-2.1-Turbo", None, explicit_base = True, local_files_only = False
+            REPO, "Qwen/Qwen-Image-2.1-Turbo", None, family = FAM.name, explicit_base = True, local_files_only = False
         )
         == TURBO_GRID
     )
     assert (
         bk._base_sample_sigmas(
-            REPO, FAM.base_repo, None, explicit_base = False, local_files_only = True
+            REPO, FAM.base_repo, None, family = FAM.name, explicit_base = False, local_files_only = True
         )
         is None
     )
@@ -186,14 +186,25 @@ def test_invalid_or_unreadable_grids_give_none(monkeypatch, raw):
     _patch_hub(monkeypatch, card_base = None, indexes = {"Qwen/Qwen-Image-2.1": {"sample_sigmas": raw}})
     assert (
         bk._base_sample_sigmas(
-            REPO, FAM.base_repo, None, explicit_base = False, local_files_only = False
+            REPO, FAM.base_repo, None, family = FAM.name, explicit_base = False, local_files_only = False
         )
         is None
     )
     _patch_hub(monkeypatch, card_base = None, indexes = {})
     assert (
         bk._base_sample_sigmas(
-            REPO, FAM.base_repo, None, explicit_base = False, local_files_only = False
+            REPO, FAM.base_repo, None, family = FAM.name, explicit_base = False, local_files_only = False
         )
         is None
     )
+
+
+def test_other_families_never_read_the_card_or_index(monkeypatch):
+    calls = _patch_hub(monkeypatch, card_base = "Qwen/Qwen-Image-2.1-Turbo", indexes = INDEXES)
+    assert (
+        bk._base_sample_sigmas(
+            REPO, FAM.base_repo, None, family = "flux", explicit_base = False, local_files_only = False
+        )
+        is None
+    )
+    assert calls["card"] == 0 and calls["index"] == []
