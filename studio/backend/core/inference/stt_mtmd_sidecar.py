@@ -17,12 +17,14 @@ from __future__ import annotations
 import base64
 import http.client
 import json
+import secrets
 import socket
 import subprocess
 import threading
 import time
 import urllib.request
-from contextlib import contextmanager
+import uuid
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator, Optional
@@ -57,6 +59,7 @@ from core.inference.stt_sidecar import (
     _HF_COMMIT_SHA,
     _prepare_stt_cache_for_http,
     _read_revision_record,
+    _remember_completed_download,
     _TARGET_SAMPLE_RATE,
     _training_active,
     _write_revision_record,
@@ -318,6 +321,8 @@ class _MtmdDownloadState:
         self._thread: Optional[threading.Thread] = None
         self._process: Optional[subprocess.Popen] = None
         self._model_id: Optional[str] = None
+        self._download_id: Optional[str] = None
+        self._completed_download_ids: list[str] = []
         self._error: Optional[str] = None
         self._total_bytes: Optional[int] = None
         self._selected_files: tuple[_SelectedHubFile, ...] = ()
@@ -332,6 +337,8 @@ class _MtmdDownloadState:
             snapshot = {
                 "downloading": downloading,
                 "model": model_id if downloading else None,
+                "download_id": self._download_id,
+                "completed_download_ids": list(self._completed_download_ids),
                 "error": self._error,
                 "cancelled": self._cancelled,
                 # Which model the cancel applies to. "model" goes None once the worker thread stops, so a settled
@@ -351,10 +358,21 @@ class _MtmdDownloadState:
         snapshot["bytes_done"] = self._downloaded_bytes(*captured) if downloading else None
         return snapshot
 
-    def cancel(self) -> bool:
+    def cancel(
+        self,
+        model_id: Optional[str] = None,
+        download_id: Optional[str] = None,
+    ) -> bool:
         """Stop an in-flight download. False when none was running."""
         with self._lock:
             if self._thread is None or not self._thread.is_alive():
+                return False
+            if self._download_id in self._completed_download_ids:
+                return False
+            if download_id is not None:
+                if self._download_id != download_id:
+                    return False
+            elif model_id is not None and self._model_id != model_id:
                 return False
             self._cancelled = True
             process = self._process
@@ -405,14 +423,14 @@ class _MtmdDownloadState:
         self,
         model_id: str,
         hf_token: Optional[str] = None,
-    ) -> None:
+    ) -> str:
         model_id = resolve_mtmd_model_id(model_id)
         hub_cache = _capture_stt_hub_cache()
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
                 if self._model_id == model_id:
                     if not self._cancelled:
-                        return
+                        return str(self._download_id)
                     raise SttModelIdError(
                         f"'{model_id}' is still cancelling; try again in a moment."
                     )
@@ -421,6 +439,7 @@ class _MtmdDownloadState:
                     "downloading; wait for it to finish."
                 )
             self._model_id = model_id
+            self._download_id = uuid.uuid4().hex
             self._error = None
             self._total_bytes = None
             self._selected_files = ()
@@ -435,6 +454,7 @@ class _MtmdDownloadState:
             )
             self._thread = thread
             thread.start()
+            return str(self._download_id)
 
     def _run(
         self,
@@ -516,6 +536,12 @@ class _MtmdDownloadState:
                 ):
                     raise RuntimeError("downloaded mtmd files are missing from the captured cache")
                 _write_revision_record(spec.repo, revision)
+                with self._lock:
+                    _remember_completed_download(
+                        self._completed_download_ids,
+                        self._download_id,
+                        cancelled = self._cancelled,
+                    )
                 return
             with self._lock:
                 if cancelled or process.returncode < 0:
@@ -541,16 +567,20 @@ class _MtmdDownloadState:
 _download_state = _MtmdDownloadState()
 
 
-def start_model_download(model: Optional[str], hf_token: Optional[str] = None) -> None:
-    _download_state.start(resolve_mtmd_model_id(model), hf_token)
+def start_model_download(model: Optional[str], hf_token: Optional[str] = None) -> str:
+    return _download_state.start(resolve_mtmd_model_id(model), hf_token)
 
 
 def download_status() -> dict:
     return _download_state.status()
 
 
-def cancel_model_download() -> bool:
-    return _download_state.cancel()
+def cancel_model_download(model: Optional[str] = None, download_id: Optional[str] = None) -> bool:
+    try:
+        model_id = resolve_mtmd_model_id(model) if model is not None else None
+    except SttModelIdError:
+        return False
+    return _download_state.cancel(model_id, download_id)
 
 
 class MtmdSttSidecar:
@@ -562,6 +592,7 @@ class MtmdSttSidecar:
         self._start_lock = threading.Lock()
         self._process: Optional[subprocess.Popen] = None
         self._port: Optional[int] = None
+        self._api_key: Optional[str] = None
         self._model_id: Optional[str] = None
         self._binary_path_revision: Optional[int] = None
         self._loading = False
@@ -638,6 +669,7 @@ class MtmdSttSidecar:
         finally:
             self._process = None
             self._port = None
+            self._api_key = None
             self._model_id = None
             self._binary_path_revision = None
 
@@ -941,6 +973,23 @@ class MtmdSttSidecar:
                 raise SttLoadCancelledError(
                     "Unsloth is shutting down; not starting the MTMD server."
                 )
+            from core.inference.llama_cpp import (
+                LlamaCppBackend,
+                _llama_server_api_key_enabled,
+                _llama_server_key_launch,
+            )
+
+            api_key = key_file = None
+            key_env: dict = {}
+            # A custom build without --api-key-file would exit on the flag; it runs keyless as before.
+            if _llama_server_api_key_enabled() and LlamaCppBackend.probe_server_capabilities(
+                binary
+            ).get("supports_api_key_file", True):
+                # Per-launch key against permissive CORS; read once at startup, so deleted once ready.
+                api_key = secrets.token_urlsafe(32)
+                key_argv, key_env, key_file = _llama_server_key_launch(api_key)
+                # Right after the binary: --no-mmproj-offload has to stay last.
+                cmd[1:1] = key_argv
             process = subprocess.Popen(
                 cmd,
                 # nothing reads these, and an undrained pipe blocks llama-server mid-startup once its logs fill the
@@ -950,7 +999,7 @@ class MtmdSttSidecar:
                 stdin = subprocess.DEVNULL,
                 # bundled libs and pip CUDA runtimes on the loader path, secrets scrubbed, as the chat backend spawns
                 # the same binary
-                env = _llama_server_child_env(binary),
+                env = {**_llama_server_child_env(binary), **key_env},
                 # Die with Unsloth, so a crash never orphans a server on the GPU.
                 **child_popen_kwargs(),
             )
@@ -966,7 +1015,13 @@ class MtmdSttSidecar:
                 raise SttLoadCancelledError(
                     "Unsloth is shutting down; not starting the MTMD server."
                 )
-            if not self._wait_for_server(process, port, cancel_event):
+            try:
+                ready = self._wait_for_server(process, port, cancel_event)
+            finally:
+                if key_file is not None:
+                    with suppress(OSError):
+                        key_file.unlink()
+            if not ready:
                 # Reap it here: _process was never assigned, so unload() cannot reach a child that ignores SIGTERM and
                 # keeps port and VRAM.
                 _reap(process)
@@ -980,6 +1035,7 @@ class MtmdSttSidecar:
             with self._lock:
                 self._process = process
                 self._port = port
+                self._api_key = api_key
                 self._model_id = model_id
                 self._binary_path_revision = path_revision
                 self._gpu_disabled = training
@@ -1047,6 +1103,7 @@ class MtmdSttSidecar:
         self.load(model_id, request_cancel_event = cancel_event)
         with self._lock:
             port = self._port
+            api_key = self._api_key
             if port is None or not self._process_alive():
                 raise SttUnavailableError("The dictation server is not running.")
             # Another client can switch models in the gap between that load returning and this lock, and the port read
@@ -1069,6 +1126,7 @@ class MtmdSttSidecar:
                 wav_bytes,
                 audio_seconds,
                 cancel_event = cancel_event,
+                **({"api_key": api_key} if api_key else {}),
                 **({"on_progress": on_progress} if on_progress is not None else {}),
             )
             if cancel_event is not None and cancel_event.is_set():
@@ -1102,6 +1160,7 @@ class MtmdSttSidecar:
         *,
         cancel_event: Optional[threading.Event] = None,
         on_progress = None,
+        api_key: Optional[str] = None,
     ) -> str:
         spec = MTMD_STT_MODELS[model_id]
         payload = {
@@ -1143,7 +1202,10 @@ class MtmdSttSidecar:
                 "POST",
                 "/v1/chat/completions",
                 body = json.dumps(payload).encode("utf-8"),
-                headers = {"Content-Type": "application/json"},
+                headers = {
+                    "Content-Type": "application/json",
+                    **({"Authorization": f"Bearer {api_key}"} if api_key else {}),
+                },
             )
             with connection.getresponse() as response:
                 if on_progress is not None and 200 <= response.status < 300:

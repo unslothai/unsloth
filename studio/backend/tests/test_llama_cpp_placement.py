@@ -3943,7 +3943,6 @@ def test_the_loader_prices_the_output_rows_of_its_build(tmp_path, monkeypatch, b
     assert set(calls["flat"]) == {expected}
 
 
-# ---------------------------------------------------------------------------
 # MoE experts in host RAM: the larger prompt micro-batch.
 
 _GIB = 1024**3
@@ -4041,6 +4040,57 @@ def test_an_inherited_expert_offload_raises_the_micro_batch(
     cmd = _launch(backend, gguf)["cmd"]
 
     assert _ubatch_values(cmd) == ["2048"], cmd
+
+
+@pytest.mark.parametrize(
+    "extra_args, env, expect_ub",
+    [
+        (["-ot", r"blk\.\d+\.ffn_.*_exps\.=CUDA0"], {}, []),
+        ([r"--override-tensor=token_embd\.weight=CUDA0"], {}, []),
+        ([], {"LLAMA_ARG_OVERRIDE_TENSOR": r"blk\.\d+\.ffn_.*_exps\.=CUDA0"}, []),
+        (["-ot", r"blk\.1\.ffn_.*_exps\.=CUDA0,blk\.2\.ffn_.*_exps\.=CPU"], {}, ["2048"]),
+        ([], {"LLAMA_ARG_OVERRIDE_TENSOR": r"blk\.\d+\.ffn_.*_exps\.=CPU"}, ["2048"]),
+    ],
+    ids = ["ot_gpu", "ot_gpu_inline", "env_ot_gpu", "ot_mixed", "env_ot_cpu"],
+)
+def test_an_override_raises_the_micro_batch_only_when_it_targets_the_host(
+    tmp_path, _discrete_linux_host, monkeypatch, extra_args, env, expect_ub
+):
+    # A resident model, so --fit stays off and only the override can move experts.
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    backend, gguf = _moe_backend(tmp_path, **_RESIDENT)
+    cmd = _launch(backend, gguf, extra_args = extra_args)["cmd"]
+
+    assert cmd[cmd.index("--fit") + 1] == "off", cmd
+    assert _ubatch_values(cmd) == expect_ub, cmd
+
+
+@pytest.mark.parametrize(
+    "extra_args, env, expect_ub",
+    [
+        (["--device", "none"], {}, []),
+        (["-dev", "none"], {}, []),
+        (["--device", "cpu"], {}, []),
+        (["--device=none"], {}, []),
+        ([], {"LLAMA_ARG_DEVICE": "none"}, []),
+        ([], {"LLAMA_ARG_DEVICE": "cpu"}, []),
+        # argv beats the env twin, so this one still runs on the GPU.
+        (["--device", "CUDA0"], {"LLAMA_ARG_DEVICE": "none"}, ["2048"]),
+    ],
+    ids = ["dev_none", "dev_short", "dev_cpu", "dev_inline", "env_none", "env_cpu", "argv_wins"],
+)
+def test_a_user_cpu_device_keeps_the_default_micro_batch(
+    tmp_path, _discrete_linux_host, monkeypatch, extra_args, env, expect_ub
+):
+    # Spilled, so the raise would otherwise fire: on the CPU there is nothing to stream.
+    monkeypatch.delenv("LLAMA_ARG_DEVICE", raising = False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    backend, gguf = _moe_backend(tmp_path, **_SPILLED)
+    cmd = _launch(backend, gguf, extra_args = extra_args)["cmd"]
+
+    assert _ubatch_values(cmd) == expect_ub, cmd
 
 
 @pytest.mark.parametrize(
@@ -4155,6 +4205,44 @@ def test_the_spill_planner_is_priced_at_the_raised_micro_batch(
     cmd, pinned = run(n_ubatch = 512)
     assert _ubatch_values(cmd) == ["512"], cmd
     assert pinned["compute_buffer_flat"] == 512 * 400 * 1024
+
+
+def test_the_load_mode_fit_prices_the_drafter_at_the_raised_micro_batch(
+    tmp_path, _discrete_linux_host
+):
+    """The drafter reserve grows with the micro-batch, so the load-mode RAM fit
+    charges it at the raised value, as the placement does."""
+    backend, gguf = _moe_backend(tmp_path, **_SPILLED)
+    backend.probe_server_capabilities = lambda _binary = None: {
+        "mtp_token": "draft-mtp",
+        "spec_draft_n_max_flag": "--spec-draft-n-max",
+    }
+    backend._resolve_launch_mtp_path = lambda **_k: "/fake/mtp.gguf"
+    priced = []
+    estimate = LlamaCppBackend._estimate_mtp_overhead_bytes
+
+    def price(self, ctx, **kwargs):
+        value = estimate(self, ctx, **kwargs)
+        priced.append((kwargs.get("n_ubatch"), value))
+        return value
+
+    charged = []
+    fit = LlamaCppBackend._fit_derived_load_mode
+
+    def load_mode(self, **kwargs):
+        charged.append((kwargs.get("mtp_bytes"), priced[-1]))
+        return fit(self, **kwargs)
+
+    backend._estimate_mtp_overhead_bytes = price.__get__(backend)
+    backend._fit_derived_load_mode = load_mode.__get__(backend)
+    cmd = _launch(
+        backend, gguf, mtp_draft_path = "/fake/mtp.gguf", speculative_type = "mtp", n_ctx = 131072
+    )["cmd"]
+
+    assert _ubatch_values(cmd) == ["2048"], cmd
+    mtp_bytes, (n_ubatch, value) = charged[-1]
+    assert mtp_bytes > 0 and mtp_bytes == value
+    assert n_ubatch == 2048
 
 
 def test_the_cpu_replay_hands_back_the_default_micro_batch():

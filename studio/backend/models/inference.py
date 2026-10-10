@@ -19,6 +19,7 @@ from pydantic import (
     PrivateAttr,
     Tag,
     field_validator,
+    model_serializer,
     model_validator,
 )
 
@@ -214,7 +215,11 @@ class LoadRequest(BaseModel):
             "Legacy values 'default' (-> auto), 'draft-mtp' (-> mtp), "
             "'draft-dspark' (-> dspark), 'draft-dflash' (-> dflash), "
             "'ngram-mod' (-> ngram), and 'ngram-simple' (kept as-is) are "
-            "still accepted. Ignored for non-GGUF models."
+            "still accepted. MLX models read 'auto', 'mtp', 'dflash', 'dspark', 'eagle3', "
+            "'ngram' and 'off'; every drafter kind also copies repeated text (n-gram), "
+            "so 'mtp+ngram' reads as 'mtp'. On MLX, 'auto' attaches the first "
+            "cached drafter (an MTP head or assistant, then DFlash2, DFlash, DSpark, EAGLE-3) that "
+            "costs no context, on loads served through mlx-vlm. Ignored for other non-GGUF models."
         ),
     )
     spec_draft_n_max: Optional[int] = Field(
@@ -227,7 +232,21 @@ class LoadRequest(BaseModel):
             "CPU/Mac when unset (upstream-bench sweet spot for dense Qwen3.6 "
             "MTP quants, and the measured sweet spot for DFlash too). Only "
             "applied when speculative_type resolves to 'mtp', 'mtp+ngram', "
-            "'dspark' or 'dflash'."
+            "'dspark' or 'dflash'. On MLX, up to the drafter's trained depth (3 for "
+            "MTP heads and assistants) every step drafts exactly this many (or takes an "
+            "n-gram copy expected to yield more), even when "
+            "plain decoding would be faster; above it, or for n-gram copies alone, it "
+            "is a ceiling and the controller decides when to draft."
+        ),
+    )
+    spec_draft_model: Optional[str] = Field(
+        None,
+        max_length = 1024,
+        description = (
+            "MLX only: a companion drafter (DFlash, DFlash2, DSpark, EAGLE-3 or Gemma "
+            "assistant) to speculate with, as a local directory or an already-cached "
+            "repo id; never downloaded. Tried before the model's own MTP head and the "
+            "cached companions discovery would pick."
         ),
     )
     n_parallel: Optional[int] = Field(
@@ -548,6 +567,10 @@ class SttLoadRequest(BaseModel):
             "sub-variant such as 'tiny'. Omitted picks the model's default."
         ),
     )
+    download_id: Optional[str] = Field(
+        None,
+        description = "Opaque identity of the download attempt being cancelled",
+    )
 
     @model_validator(mode = "after")
     def _fold_audio_gguf_variant(self):
@@ -735,6 +758,15 @@ class ValidateModelRequest(BaseModel):
     )
 
 
+class ManagedEngineOffer(BaseModel):
+    """Optional engines that can run a checkpoint the Default engine cannot."""
+
+    quantization: str = Field(..., description = "quant_method from the checkpoint's config.json")
+    engines: List[Literal["vllm", "sglang"]] = Field(
+        ..., description = "Engines this host can run, in the order to offer them"
+    )
+
+
 class TransformersUpgradeInfo(BaseModel):
     """A model architecture no installed transformers ships, but a newer release does."""
 
@@ -751,9 +783,20 @@ class TransformersUpgradeInfo(BaseModel):
     )
     supported_in_main: bool = Field(
         False,
-        description = "True if transformers GitHub main ships this model_type (dev-only; "
-        "not installable through Unsloth yet).",
+        description = "True if transformers GitHub main ships this model_type; with main_version "
+        "set, Unsloth can install main into the persistent sidecar after user consent.",
     )
+    main_version: Optional[str] = Field(
+        None, description = "transformers main __version__ (a .devN string) at check time"
+    )
+
+    @property
+    def installable(self) -> bool:
+        """The consent dialog can install it: the PyPI release, else transformers main."""
+        return bool(
+            (self.supported_in_pypi and self.pypi_version)
+            or (self.supported_in_main and self.main_version)
+        )
 
 
 class TransformersUpgradeCheckRequest(BaseModel):
@@ -914,7 +957,7 @@ class ValidateModelResponse(BaseModel):
         False,
         description = "True when the model's architecture is unknown to every installed "
         "transformers but a newer transformers ships it; the UI should offer the "
-        "install-latest-transformers consent dialog (or the dev-only notice).",
+        "install-transformers consent dialog (a PyPI release, else transformers main).",
     )
     transformers_upgrade: Optional[TransformersUpgradeInfo] = Field(
         None,
@@ -926,6 +969,11 @@ class ValidateModelResponse(BaseModel):
         description = "On an MLX host, the full-precision repo that will be downloaded and "
         "loaded in place of the requested unsloth bnb-4bit repo (or of a LoRA's bnb base), "
         "because MLX cannot read bitsandbytes weights. None when the pick loads as asked.",
+    )
+    managed_engine_offer: Optional[ManagedEngineOffer] = Field(
+        None,
+        description = "Set when the Default engine cannot run this checkpoint's quantization "
+        "but an optional engine can on this host; the UI offers to load it there.",
     )
 
 
@@ -977,6 +1025,11 @@ class EstimateMemoryRequest(BaseModel):
     ctx_checkpoints: Optional[int] = Field(None, ge = 0, le = CTX_CHECKPOINTS_MAX)
     speculative_type: Optional[str] = Field(
         None, description = "Speculative mode; decides which drafter's weights are charged."
+    )
+    spec_draft_model: Optional[str] = Field(
+        None,
+        max_length = 1024,
+        description = "MLX companion drafter intended for the follow-up load, as on /load.",
     )
     spec_draft_n_max: Optional[int] = Field(
         None,
@@ -1066,6 +1119,28 @@ class Int8PrefillAvailabilityResponse(BaseModel):
         "'unsupported_zoo', or unsloth_zoo's own reason ('nax_unavailable', "
         "'no_eligible_projections', 'probe_failed').",
     )
+
+
+class MlxDraftersRequest(BaseModel):
+    model_path: str = Field(..., description = "Model identifier or local path of the target")
+
+    _resolve_the_handle = field_validator("model_path")(resolve_inventory_handle)
+
+
+class MlxDrafter(BaseModel):
+    repo_id: str = Field(..., description = "Cached Hugging Face repo, usable as spec_draft_model")
+    kind: str = Field(..., description = "'mtp', 'dflash', 'dspark' or 'eagle3'")
+    named: bool = Field(
+        True,
+        description = "Whether the repo is named for this model. False: it fits the model's "
+        "architecture only (another generation or a fine-tune), so Auto does not use it.",
+    )
+
+
+class MlxDraftersResponse(BaseModel):
+    """Cached drafters an MLX load of the target could name: those named for it first, in Auto's order."""
+
+    drafters: list[MlxDrafter] = Field(default_factory = list)
 
 
 class EstimateMemoryResponse(BaseModel):
@@ -1337,6 +1412,9 @@ class InstallLatestTransformersResponse(BaseModel):
         None,
         description = "On a version-mismatch failure: the release that superseded "
         "the requested one, so the client can retry with it",
+    )
+    latest_main_version: Optional[str] = Field(
+        None, description = "On a version-mismatch failure: transformers main's current version"
     )
 
 
@@ -1644,6 +1722,55 @@ class _InferenceRuntimeFields(BaseModel):
         description = (
             "Active --spec-draft-n-max for MTP or DSpark speculative decoding, or "
             "None when the platform default is in effect."
+        ),
+    )
+    spec_draft_model: Optional[str] = Field(
+        None,
+        description = "The companion drafter an MLX load was asked for; None elsewhere.",
+    )
+    spec_drafter_kind: Optional[str] = Field(
+        None,
+        description = (
+            "Which drafter the resolution was about: 'mtp', 'dspark' or "
+            "'dflash' ('eagle3' or 'ngram' too on MLX, where 'mtp' also names a Gemma "
+            "assistant). Needed "
+            "because Auto resolves the kind itself, so speculative_type still "
+            "reads 'auto', and a fallback leaves the engaged type at 'default': "
+            "neither still says which file the UI should tell the user to fix."
+        ),
+    )
+    spec_fallback_reason: Optional[str] = Field(
+        None,
+        description = (
+            "Why a speculative drafter was disabled despite being requested. "
+            "'binary_no_mtp' / 'binary_outdated' -> a newer prebuilt would "
+            "re-enable it (show the update affordance); 'runtime_error' -> the "
+            "current build could not run it; 'drafter_not_found' -> the model's "
+            "separate MTP or DSpark drafter could not be resolved; "
+            "'drafter_no_vram' -> an Auto-mode fit downgrade: the model pins on "
+            "GPU but the drafter's reserve does not, and Auto keeps the context "
+            "rather than shrink it; select the drafter in Settings to force it. "
+            "'mla_mtp_disabled' -> "
+            "an Auto-mode policy downgrade: the model is MLA (GLM-5.2 et al.) "
+            "whose llama.cpp MTP path runs slower than no speculation, so Auto "
+            "used ngram-mod or spec-off instead -- updating won't help; choose "
+            "MTP in Settings (or set UNSLOTH_MLA_MTP_ENABLED=1) to force it. "
+            "'mtp_partial_offload' -> an Auto-mode policy downgrade: the model "
+            "has an embedded Hybrid Mamba MTP head and the placement offloads "
+            "only part of it, where the recurrent rollback copies cost more "
+            "layers than the drafting wins back -- updating won't help; choose "
+            "MTP in Settings to force it. "
+            "MLX loads report 'drafter_not_found' (no drafter of the requested kind "
+            "is cached), 'drafter_incompatible' (the named or found drafter does not "
+            "fit this model), 'drafter_no_memory' (its weights and cache leave no "
+            "context that fits), 'kv_quant' (KV cache quantization is on) or "
+            "'runtime_error' (the installed MLX packages cannot speculate, or cannot "
+            "load this model the way speculation needs), also when a later drafter "
+            "or n-gram copies stood in for the one asked for. Under auto an MLX load "
+            "reports no refusal; it reports 'auto_context_cost' (a found drafter would "
+            "shrink the fitted context) or the drafter codes above for a named or "
+            "unbuildable drafter. "
+            "None when the requested strategy engaged or was not requested."
         ),
     )
     tensor_parallel: bool = Field(
@@ -2024,40 +2151,6 @@ class InferenceStatusResponse(_InferenceRuntimeFields):
         description = (
             "Whether llama.cpp supports MTP (--spec-type mtp/draft-mtp). "
             "False -> recommend `unsloth studio update`."
-        ),
-    )
-    spec_drafter_kind: Optional[str] = Field(
-        None,
-        description = (
-            "Which drafter the resolution was about: 'mtp', 'dspark' or "
-            "'dflash'. Needed "
-            "because Auto resolves the kind itself, so speculative_type still "
-            "reads 'auto', and a fallback leaves the engaged type at 'default': "
-            "neither still says which file the UI should tell the user to fix."
-        ),
-    )
-    spec_fallback_reason: Optional[str] = Field(
-        None,
-        description = (
-            "Why a speculative drafter was disabled despite being requested. "
-            "'binary_no_mtp' / 'binary_outdated' -> a newer prebuilt would "
-            "re-enable it (show the update affordance); 'runtime_error' -> the "
-            "current build could not run it; 'drafter_not_found' -> the model's "
-            "separate MTP or DSpark drafter could not be resolved; "
-            "'drafter_no_vram' -> an Auto-mode fit downgrade: the model pins on "
-            "GPU but the drafter's reserve does not, and Auto keeps the context "
-            "rather than shrink it; select the drafter in Settings to force it. "
-            "'mla_mtp_disabled' -> "
-            "an Auto-mode policy downgrade: the model is MLA (GLM-5.2 et al.) "
-            "whose llama.cpp MTP path runs slower than no speculation, so Auto "
-            "used ngram-mod or spec-off instead -- updating won't help; choose "
-            "MTP in Settings (or set UNSLOTH_MLA_MTP_ENABLED=1) to force it. "
-            "'mtp_partial_offload' -> an Auto-mode policy downgrade: the model "
-            "has an embedded Hybrid Mamba MTP head and the placement offloads "
-            "only part of it, where the recurrent rollback copies cost more "
-            "layers than the drafting wins back -- updating won't help; choose "
-            "MTP in Settings to force it. "
-            "None when the requested strategy engaged or was not requested."
         ),
     )
     spec_fallback_binary_changed: Optional[bool] = Field(
@@ -2765,6 +2858,14 @@ class ChatCompletionRequest(BaseModel):
             "UNSLOTH_TOOL_CALL_NUDGE=1 flips the process default."
         ),
     )
+    deduplicate_tool_calls: Optional[bool] = Field(
+        True,
+        description = (
+            "[x-unsloth] When false, a tool call identical to one that already "
+            "succeeded in this response runs again instead of being answered "
+            "with a duplicate notice. Default on."
+        ),
+    )
     context_overflow: Optional[Literal["error", "truncate_middle", "truncate_oldest"]] = Field(
         None,
         description = (
@@ -2960,7 +3061,11 @@ class ChatCompletionRequest(BaseModel):
             "[x-unsloth] The external model's context window, in tokens. When "
             "Unsloth drops the oldest turns for a compaction_threshold, the prompt "
             "also leaves room for max_tokens within it, and max_tokens is lowered "
-            "if it would leave the prompt less than half of the window."
+            "if it would leave the prompt less than half of the window. With "
+            "context_overflow=truncate_oldest and no compaction_threshold, three "
+            "quarters of this window is used as the threshold; when this field is "
+            "also omitted, a vLLM, llama.cpp or Custom connection uses the window "
+            "its server reports on /models."
         ),
     )
     openai_code_exec_container_id: Optional[str] = Field(
@@ -3438,6 +3543,8 @@ class CompletionUsage(BaseModel):
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+    # Studio tool loops: final pass's prompt + completion (total_tokens sums every pass's completion).
+    context_tokens: Optional[int] = None
     prompt_tokens_details: Optional[dict] = Field(
         default_factory = lambda: {"cached_tokens": 0, "audio_tokens": 0}
     )
@@ -3449,6 +3556,14 @@ class CompletionUsage(BaseModel):
             "rejected_prediction_tokens": 0,
         }
     )
+
+    @model_serializer(mode = "wrap")
+    def _omit_unset_context_tokens(self, handler):
+        # Only tool loops set it; elsewhere the OpenAI usage object stays byte-identical.
+        data = handler(self)
+        if isinstance(data, dict) and data.get("context_tokens") is None:
+            data.pop("context_tokens", None)
+        return data
 
 
 class ChatCompletion(BaseModel):
@@ -4251,14 +4366,31 @@ class DiffusionLoadRequest(BaseModel):
         description = "How to load the model (null = auto-detect from gguf_filename): gguf "
         "(single-file GGUF transformer, dequantised on-device), single_file (single-file "
         "safetensors transformer, e.g. fp8), or pipeline (a full diffusers repo via "
-        "from_pretrained, embedded quant auto-applied). Non-GGUF kinds are restricted to "
-        "unsloth/* repos (or a local path).",
+        "from_pretrained, embedded quant auto-applied). A single_file .safetensors loads from "
+        "any repo; pipeline loads are restricted to unsloth/* repos, the official base repos, "
+        "or a local path.",
     )
     base_repo: Optional[str] = Field(
         None, description = "Companion diffusers repo for VAE/text-encoders (default: family base)"
     )
     # Referenced out, so resolved back in, or a caller handed a `ref:` base cannot load it.
     _resolve_the_base_handle = field_validator("base_repo")(resolve_inventory_handle)
+    text_encoder_file: Optional[Union[str, List[str]]] = Field(
+        None,
+        description = "Separate text-encoder file(s) to use instead of the base repo's, e.g. a ComfyUI "
+        "models/text_encoders file. One path or a list (FLUX.1: clip_l + t5xxl); each is matched to the "
+        "pipeline slot whose encoder class it fits. A local .safetensors path (relative paths resolve against "
+        "model_path, so ../text_encoders/x.safetensors works from a ComfyUI diffusion_models folder) or "
+        "owner/repo/path.safetensors under the same repo rule as model_path. Unquantized, scaled fp8 and "
+        "int8 (ConvRot) files load; other ComfyUI formats are refused. Only with a gguf / single_file load; "
+        "the base repo then supplies only configs and tokenizers for these encoders.",
+    )
+    vae_file: Optional[str] = Field(
+        None,
+        description = "Separate VAE file to use instead of the base repo's, e.g. a ComfyUI models/vae file "
+        "(ae.safetensors, qwen_image_vae.safetensors, wan_2.1_vae.safetensors). Same path rules as "
+        "text_encoder_file. Only with a gguf / single_file load.",
+    )
     family_override: Optional[str] = Field(
         None, description = "Force a family when it can't be inferred from the repo id"
     )
@@ -4401,6 +4533,30 @@ class DiffusionLoadRequest(BaseModel):
     def _normalize_attention_backend(cls, value):
         # The dispatcher accepts case/whitespace variants, but the Literal above is validated before any normaliser runs, so fold it here.
         return value.strip().lower() if isinstance(value, str) else value
+
+    @field_validator("text_encoder_file")
+    @classmethod
+    def _normalize_text_encoder_file(cls, value):
+        if value is None:
+            return None
+        items = [value] if isinstance(value, str) else list(value)
+        items = [item.strip() for item in items if isinstance(item, str) and item.strip()]
+        if len(set(items)) != len(items):
+            raise ValueError("text_encoder_file lists the same file twice")
+        if len(items) > 4:
+            raise ValueError("at most 4 text_encoder_file entries (one per encoder slot)")
+        return items or None
+
+    @field_validator("vae_file")
+    @classmethod
+    def _blank_vae_file(cls, value):
+        return (value or "").strip() or None
+
+    def supplied_text_encoder_files(self) -> Optional[list[str]]:
+        value = self.text_encoder_file
+        if value is None:
+            return None
+        return [value] if isinstance(value, str) else list(value)
 
     @field_validator("loras")
     @classmethod
@@ -5021,6 +5177,11 @@ class DiffusionStatusResponse(BaseModel):
     gguf_variant: Optional[str] = Field(
         None, description = "Selected GGUF quantisation variant (for example Q8_0)"
     )
+    component_files: Optional[Dict[str, str]] = Field(
+        None,
+        description = "Supplied text-encoder / VAE files by pipeline component (e.g. text_encoder_2: "
+        "t5xxl_fp8_e4m3fn_scaled.safetensors); null when every companion came from the base repo",
+    )
     cpu_offload: bool = Field(False, description = "Whether CPU offload is engaged")
     offload_policy: Optional[str] = Field(
         None, description = "Resolved offload policy: none | group | model | streaming | sequential"
@@ -5101,20 +5262,27 @@ class DiffusionStatusResponse(BaseModel):
         "picker's enabled state). Diffusers only, for families with a ControlNet pipeline; False "
         "for the native engine, GGUF-via-diffusers, and torchao fp8/int8 dense.",
     )
-    # Additive per-control provenance {control: {value, source, reason}}; null when nothing is loaded. Declared explicitly so pydantic extra='ignore' keeps it.
+    supports_negative_prompt: bool = Field(
+        True,
+        description = "Whether the loaded model applies a negative prompt on this engine "
+        "(drives the Negative prompt field). False for FLUX and Ideogram 4 on diffusers, and "
+        "for FLUX.1 / Kontext / FLUX.2-dev on the native engine.",
+    )
+    # declare provenance explicitly because Pydantic extra="ignore" would otherwise discard it.
     resolved: Optional[Dict[str, DiffusionResolvedControl]] = Field(
         None,
         description = "Per-control resolved value + provenance (source auto|explicit + reason), "
         "keyed by Advanced control name; null when unloaded or unavailable.",
     )
+    generation_defaults: Optional[Dict[str, float]] = Field(
+        None,
+        description = "Default steps and guidance for the loaded model (file header before base repo); "
+        "null when unloaded or on an engine that does not report it.",
+    )
 
 
 class DiffusionInferenceInfo(BaseModel):
-    """One family's bf16 component sizes + estimated resident footprint per quant scheme.
-
-    Mirrors the dicts ``family_inference_infos()`` returns: the bf16-resident transformer /
-    text-encoder / VAE sizes, and the estimated resident GB under bf16 and each dense
-    transformer-quant scheme (transformer * factor + companions), rounded to 1 decimal."""
+    """bf16 component sizes and 0.1 GB resident estimates by transformer quantization scheme."""
 
     family: str = Field(..., description = "Diffusion family name (auto-policy table key).")
     transformer_bf16_gb: float = Field(..., description = "bf16-resident transformer size in GB.")
@@ -5752,8 +5920,8 @@ class VideoLoadRequest(BaseModel):
         description = "How to load the model (null = auto-detect from gguf_filename): gguf "
         "(single-file GGUF transformer, dequantised on-device), single_file (single-file "
         "safetensors transformer, e.g. fp8), or pipeline (a full diffusers repo via "
-        "from_pretrained). Non-GGUF kinds are restricted to unsloth/* repos, the official "
-        "family base repos, or a local path.",
+        "from_pretrained). A single_file .safetensors loads from any repo; pipeline loads are "
+        "restricted to unsloth/* repos, the official family base repos, or a local path.",
     )
     base_repo: Optional[str] = Field(
         None,

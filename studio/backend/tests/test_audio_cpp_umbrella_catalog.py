@@ -159,3 +159,29 @@ def test_the_pickers_offer_every_runnable_folder_on_its_pages():
     seeded, unoffered = _catalog()
     assert seeded == {folder: pages for folder, (_, pages) in UMBRELLA.items() if pages}
     assert unoffered == {folder for folder, (_, pages) in UMBRELLA.items() if not pages}
+
+
+@pytest.mark.parametrize(
+    "folder", sorted(f for f, (_, pages) in UMBRELLA.items() if "transcribe" in pages)
+)
+def test_dictation_routes_every_transcribe_folder_to_audiocpp(folder):
+    """every Transcribe folder in Settings > Voice must route dictation to the audio runtime."""
+    from core.inference.stt_audiocpp_sidecar import resolve_audio_cpp_stt_model_id
+    from routes.inference import _stt_engine_for_model
+
+    row = f"{acm.AUDIO_CPP_REPO}/{folder}"
+    assert _stt_engine_for_model(row) == "audiocpp"
+    assert resolve_audio_cpp_stt_model_id(row) == row
+
+
+def test_the_settings_dictation_keys_are_the_backend_asr_keys():
+    keys = dict(
+        re.findall(r'dictation\(\s*"([^"]+)",\s*"([^"]+)"', CATALOG.read_text(encoding = "utf-8"))
+    )
+    asr = {
+        key: folder
+        for key, (folder, _) in acm._LEGACY_KEYS.items()
+        if "transcribe" in UMBRELLA[folder][1]
+    }
+    assert keys == asr
+    assert acm.parse_identifier("audiocpp-moonshine-medium").variant_hint == "medium/Q8_0"

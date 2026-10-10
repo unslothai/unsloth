@@ -351,19 +351,34 @@ class TestTheWindowsRepairSiteRunsForRdna1:
 
     def test_the_device_pack_check_needs_torch_and_torchvision_packs(self, monkeypatch):
         from importlib import metadata
+        from types import SimpleNamespace
 
-        def dists(*names):
-            return lambda: [type("D", (), {"metadata": {"Name": n}})() for n in names]
+        def installed(*names):
+            dists = {
+                package: SimpleNamespace(
+                    metadata = {"Name": package},
+                    version = "2.11.0",
+                    requires = [f'amd-{package}-device-gfx1010==2.11.0; extra == "device-gfx1010"'],
+                )
+                for package in ("torch", "torchvision")
+            }
+            dists.update(
+                (n, SimpleNamespace(metadata = {"Name": n}, version = "2.11.0", requires = None))
+                for n in names
+            )
 
-        monkeypatch.setattr(metadata, "distributions", dists("torch"))
+            def distribution(name):
+                if name not in dists:
+                    raise metadata.PackageNotFoundError(name)
+                return dists[name]
+
+            monkeypatch.setattr(metadata, "distribution", distribution)
+
+        installed()
         assert stack_mod._multiarch_device_pack_installed("GFX1010:xnack-") is False
-        monkeypatch.setattr(metadata, "distributions", dists("amd_torch_device_gfx1010"))
+        installed("amd-torch-device-gfx1010")
         assert stack_mod._multiarch_device_pack_installed("GFX1010:xnack-") is False
-        monkeypatch.setattr(
-            metadata,
-            "distributions",
-            dists("amd-torch-device-gfx1010", "amd-torchvision-device-gfx1010"),
-        )
+        installed("amd-torch-device-gfx1010", "amd-torchvision-device-gfx1010")
         assert stack_mod._multiarch_device_pack_installed("GFX1010:xnack-") is True
 
 

@@ -22,6 +22,12 @@ from typing import Any, NamedTuple, Optional, Sequence
 from utils.paths.path_utils import is_appledouble_metadata
 
 from .diffusion_flow_shift import flux_mu_shift
+from .family_name_match import (
+    name_key_in,
+    normalize_family_name,
+    token_in_name,
+    token_length,
+)
 from .diffusion_nvfp4_flag import nvfp4_blocked
 
 
@@ -79,6 +85,8 @@ class DiffusionFamily:
     base_repo: str
     # Pipeline kwarg carrying guidance. Most use "guidance_scale"; Qwen-Image real CFG is "true_cfg_scale".
     cfg_kwarg: str = "guidance_scale"
+    # False when the diffusers pipeline ignores a negative prompt; the native engine decides on its own.
+    uses_negative_prompt: bool = True
     # The pipe attribute holding the denoiser: ``pipe.transformer`` for DiT families, ``pipe.unet`` for SDXL.
     denoiser_attr: str = "transformer"
     # True when a single-file ``.safetensors`` is the WHOLE pipeline (SDXL), so the loader calls ``from_single_file``.
@@ -128,6 +136,8 @@ class DiffusionFamily:
     transformer_config_variants: tuple[tuple[str, tuple[tuple[str, Any], ...]], ...] = field(
         default_factory = tuple
     )
+    # Same config, different weights: a GGUF of one must never get the base's transformer of another.
+    checkpoint_variants: tuple[str, ...] = field(default_factory = tuple)
     # Activation-guard cost of one condition pixel relative to one output pixel.
     condition_pixel_weight: float = 1.0
     # Extra lowercased substrings (besides ``name``) that map a repo id here.
@@ -150,10 +160,10 @@ class DiffusionFamily:
     # covers variants whose weights differ. Resolution prefers an exact variant match, then falls back to
     # ``prequant_repos``.
     prequant_variant_repos: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
-    # Bases (lowercased) with NO hosted checkpoint, which must not inherit ``prequant_repos``: the family fallback
-    # names an artifact baked from different weights, and planning acts on it before the load's base_model_id check
-    # can refuse it. Only for a base whose weights genuinely differ from the default.
+    # Lowercased bases with different weights: never inherit ``prequant_repos``; their variant rows still win.
     prequant_excluded_bases: tuple[str, ...] = field(default_factory = tuple)
+    # Variant bases a repo id or GGUF name can select when no card ``base_model`` tag resolves one.
+    named_variant_bases: tuple[str, ...] = field(default_factory = tuple)
     # Preferred checkpoint FILENAME for a scheme, as (scheme, filename), overriding the ``<Model>-<SCHEME>.pt`` name
     # ``prequant_repo_filename`` derives. The derived name stays on as the fallback, so a repo hosting BOTH an old and
     # a new artifact serves the new one to a build that asks for it by name and the old one to every build that does
@@ -227,9 +237,11 @@ _REDUCTION_RACE_ARCHS: tuple[tuple[int, int], ...] = ((8, 0), (8, 9), (12, 0))
 _FAMILIES: tuple[DiffusionFamily, ...] = (
     DiffusionFamily(
         name = "flux.1",
+        checkpoint_variants = ("flux1-schnell", "flux1-krea-dev", "flux1-dev"),
         filter_reduction_configs_archs = _REDUCTION_RACE_ARCHS,
         cudnn_benchmark = False,
         pipeline_class = "FluxPipeline",
+        uses_negative_prompt = False,
         transformer_class = "FluxTransformer2DModel",
         base_repo = "black-forest-labs/FLUX.1-schnell",
         # ComfyUI fixed mu 1.15 for dev / Krea; schnell first (a dev GGUF may resolve to its base). Keys name the model: paths match too.
@@ -279,6 +291,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
     DiffusionFamily(
         name = "flux.2-klein",
         pipeline_class = "Flux2KleinPipeline",
+        uses_negative_prompt = False,
         transformer_class = "Flux2Transformer2DModel",
         base_repo = "black-forest-labs/FLUX.2-klein-4B",
         prequant_repos = (
@@ -325,6 +338,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
     DiffusionFamily(
         name = "flux.2-dev",
         pipeline_class = "Flux2Pipeline",
+        uses_negative_prompt = False,
         transformer_class = "Flux2Transformer2DModel",
         base_repo = "black-forest-labs/FLUX.2-dev",
         prequant_repos = (
@@ -355,6 +369,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             1.15
         ),  # ComfyUI ModelSamplingFlux fixed mu 1.15 (Kontext template)
         pipeline_class = "FluxKontextPipeline",
+        uses_negative_prompt = False,
         transformer_class = "FluxTransformer2DModel",
         base_repo = "black-forest-labs/FLUX.1-Kontext-dev",
         aliases = ("flux.1-kontext-dev", "flux1-kontext", "flux-kontext", "kontext"),
@@ -511,6 +526,14 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ("fp8", "unsloth/Qwen-Image-2.1-FP8"),
             ("nvfp4", "unsloth/Qwen-Image-2.1-NVFP4"),
         ),
+        # Turbo's own checkpoints (a different distill); derived names (2.1's plus -Turbo) resolve them.
+        prequant_variant_repos = (
+            ("qwen/qwen-image-2.1-turbo", "int8", "unsloth/Qwen-Image-2.1-Turbo-FP8"),
+            ("qwen/qwen-image-2.1-turbo", "fp8", "unsloth/Qwen-Image-2.1-Turbo-FP8"),
+        ),
+        # 2.1's artifacts are baked from 2.1's denoiser: for nvfp4 Turbo quantizes its own weights.
+        prequant_excluded_bases = ("qwen/qwen-image-2.1-turbo",),
+        named_variant_bases = ("Qwen/Qwen-Image-2.1-Turbo",),
         # The artifacts are safetensors, not the historical torch.save pickle, so the family has to
         # NAME them: every derived fallback ends in .pt, and without these rows the loader would ask
         # the Hub for a file that is not there and silently fall back to the dense bf16 download.
@@ -701,6 +724,12 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         cfg_kwarg = "distilled_guidance_scale",
         aliases = ("hunyuanimage-2.1-diffusers", "hunyuanimage2.1"),
         fp16_incompatible = True,
+        # Distilled MeanFlow files: two extra embedders, shift 4. The catch-all row marks the base as another variant.
+        transformer_config_variants = (
+            ("distilled", (("guidance_embeds", True), ("use_meanflow", True))),
+            ("hunyuanimage", ()),
+        ),
+        comfy_flow_shift_variants = (("distilled", 4.0),),
     ),
     DiffusionFamily(
         name = "hidream-i1",
@@ -728,6 +757,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
     DiffusionFamily(
         name = "ideogram-4",
         pipeline_class = "Ideogram4Pipeline",
+        uses_negative_prompt = False,
         transformer_class = "Ideogram4Transformer2DModel",
         base_repo = "ideogram-ai/ideogram-4-fp8",
         aliases = ("ideogram4", "ideogram-v4", "ideogram"),
@@ -800,8 +830,8 @@ _EDIT_KEYWORDS = ("edit", "kontext", "inpaint", "layered")
 def _token_in_needle(token: str, needle: str) -> bool:
     """True when ``token`` appears in ``needle`` as a whole segment (delimited by ``- _ . / \\`` or
     a boundary), not a raw substring, so 'qwen-image-edit' matches '...-2511' but 'kontext'
-    doesn't match 'kontextual'."""
-    return re.search(r"(?:^|[-_./\\])" + re.escape(token) + r"(?:$|[-_./\\])", needle) is not None
+    doesn't match 'kontextual'. Separator-insensitive."""
+    return token_in_name(token, needle)
 
 
 def _best_family_match(needle: str) -> Optional[DiffusionFamily]:
@@ -810,8 +840,8 @@ def _best_family_match(needle: str) -> Optional[DiffusionFamily]:
     best: Optional[tuple[DiffusionFamily, int]] = None
     for fam in _FAMILIES:
         for token in (fam.name, *fam.aliases):
-            if _token_in_needle(token, needle) and (best is None or len(token) > best[1]):
-                best = (fam, len(token))
+            if _token_in_needle(token, needle) and (best is None or token_length(token) > best[1]):
+                best = (fam, token_length(token))
     return best[0] if best else None
 
 
@@ -824,6 +854,10 @@ def detect_family(repo_id: str, override: Optional[str] = None) -> Optional[Diff
         key = override.strip().lower()
         for fam in _FAMILIES:
             if key == fam.name or key in fam.aliases:
+                return fam
+        norm = normalize_family_name(key)
+        for fam in _FAMILIES:
+            if any(normalize_family_name(t) == norm for t in (fam.name, *fam.aliases)):
                 return fam
         return None
     needle = repo_id.lower()
@@ -961,7 +995,29 @@ def detect_family_for_pick(
         fam = detect_family(repo_id, override)
     if fam is None and gguf_filename and not override:
         fam = detect_family(f"{repo_id}/{gguf_filename}", override)
+    if not override:
+        fam = _family_from_content(fam, repo_id, gguf_filename)
     return fam
+
+
+def _family_from_content(
+    fam: Optional[DiffusionFamily], repo_id: str, gguf_filename: Optional[str]
+) -> Optional[DiffusionFamily]:
+    """Reconcile the name verdict with a LOCAL file's header: non-DiT / video DiT -> None, renamed DiT
+    -> its header family; the name still picks same-architecture variants. Remote picks untouched."""
+    from .diffusion_content import local_pick_file, resolve_family_with_content
+
+    path = local_pick_file(repo_id, gguf_filename)
+    if not path:
+        return fam
+    needles = [repo_id] + ([f"{repo_id}/{gguf_filename}"] if gguf_filename else [])
+    vetoed = fam is None and any(_best_family_match(n.lower()) is not None for n in needles)
+    name, _ = resolve_family_with_content(fam.name if fam else None, path, "image", vetoed)
+    if name is None:
+        return None
+    if fam is not None and fam.name == name:
+        return fam
+    return detect_family("", override = name)
 
 
 def resolve_base_repo(fam: DiffusionFamily, base_repo: Optional[str]) -> str:
@@ -1030,6 +1086,27 @@ def upstream_is_gated(repo_id: Optional[str]) -> bool:
     "has a mirror": most of the mirror table is ungated and exists only to keep the fetch inside
     ``unsloth/*``. Only the gated half justifies overriding a user's cache."""
     return (repo_id or "").strip().lower() in _GATED_UPSTREAMS
+
+
+def named_variant_base(fam: "DiffusionFamily", *names: Optional[str]) -> Optional[str]:
+    """The longest ``fam.named_variant_bases`` entry ``names`` spell (separators folded), or None. The last, most
+    specific name decides first; one spelling the plain base stops the search (a 2.1 file in a Turbo repo stays 2.1)."""
+
+    def fold(text: Optional[str]) -> str:
+        return "".join(c for c in (text or "").lower() if c.isalnum())
+
+    variants = [
+        (b, fold(b.rsplit("/", 1)[-1])) for b in getattr(fam, "named_variant_bases", ()) or ()
+    ]
+    plain = fold((getattr(fam, "base_repo", "") or "").rsplit("/", 1)[-1])
+    for name in reversed([n for n in names if n]):
+        identity = fold(name)
+        hits = [b for b, key in variants if key and key in identity]
+        if hits:
+            return max(hits, key = len)
+        if plain and plain in identity:
+            return None
+    return None
 
 
 def canonical_base(repo_id: Optional[str]) -> str:
@@ -1271,15 +1348,22 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     # Krea 2 Raw (undistilled): 52 steps / guidance 3.5. Must precede the generic "krea" key.
     ("krea-2-raw", 52, 3.5),
     # Krea 2 Turbo (distilled): 8 steps, no CFG. "krea" then covers Turbo and other krea ids but Raw.
+    ("flux1-krea", 20, 3.5),  # before Krea-2's generic row
     ("krea", 8, 0.0),
     ("flux.1-schnell", 4, 0.0),
+    ("flux1-schnell", 4, 0.0),
     ("kontext", 20, 2.5),  # editing: before the generic flux.1
     ("flux.1", 20, 3.5),
+    ("flux1", 20, 3.5),
     # Undistilled base runs real CFG; keep before the generic distilled key.
     ("flux.2-klein-base", 20, 5.0),
     ("flux.2-klein", 4, 1.0),
     ("flux.2-dev", 20, 4.0),  # full (non-distilled)
-    # Before the generic qwen-image key (also the two below).
+    # Before the generic qwen-image key, Turbo before 2.1; qwenimage21 has no separator to fold, hence its own row.
+    ("qwen-image-2.1-turbo", 8, 1.0),
+    ("qwen-image-21-turbo", 8, 1.0),
+    ("qwenimage21-turbo", 8, 1.0),
+    ("qwenimage21turbo", 8, 1.0),
     ("qwen-image-2.1", 25, 1.0),
     ("qwen-image-21", 25, 1.0),
     ("qwen_image_21", 25, 1.0),
@@ -1335,24 +1419,58 @@ def transformer_config_overrides_for(fam: Any, *identifiers: Optional[str]) -> d
     return dict(row[1]) if row else {}
 
 
+def _first_checkpoint_variant(
+    keys: tuple[str, ...], identifiers: tuple[Optional[str], ...]
+) -> Optional[str]:
+    # flux.1-dev / flux1_dev / FLUX-1-dev all read flux1-dev
+    for identifier in identifiers:
+        needle = re.sub(r"(?<=[a-z])-(?=\d)", "", normalize_family_name(identifier or ""))
+        for key in keys:
+            if key in needle:
+                return key
+    return None
+
+
 def transformer_variant_differs_from_base(
     fam: Any, base: Optional[str], *identifiers: Optional[str]
 ) -> bool:
     """Checkpoint and ``base`` name different variants; a base naming none (a local dir) is unknown."""
+    keys = getattr(fam, "checkpoint_variants", ())
+    if keys:
+        base_key = _first_checkpoint_variant(keys, (base,))
+        return base_key is not None and _first_checkpoint_variant(keys, identifiers) not in (
+            None,
+            base_key,
+        )
     rows = getattr(fam, "transformer_config_variants", ())
     base_row = _first_variant(rows, (base,))
     return base_row is not None and _first_variant(rows, identifiers) not in (None, base_row)
 
 
-def default_generation_params(*identifiers: Optional[str]) -> tuple[int, float]:
-    """Default ``(steps, guidance)`` for a loaded model. The first identifier naming a known model
-    wins (repo id, then resolved base repo), so a local-path load still resolves via its base
-    repo. Keys matched as substrings, most specific first."""
+def named_generation_params(*identifiers: Optional[str]) -> Optional[tuple[int, float]]:
+    """``(steps, guidance)`` of the first identifier naming a known model (a local path resolves via its base), or None."""
     for identifier in identifiers:
         needle = (identifier or "").lower()
         for key, steps, guidance in _GENERATION_DEFAULTS:
-            if key in needle:
+            if name_key_in(key, needle):
                 return steps, guidance
+    return None
+
+
+def default_generation_params(*identifiers: Optional[str]) -> tuple[int, float]:
+    """:func:`named_generation_params`, else the generic fallback."""
+    return named_generation_params(*identifiers) or _GENERATION_DEFAULT_FALLBACK
+
+
+def generation_params_with_grid(
+    grid: Optional[tuple[float, ...]], *identifiers: Optional[str]
+) -> tuple[int, float]:
+    """:func:`default_generation_params`, but an unnamed load with a shipped grid runs the grid's own step count."""
+    named = named_generation_params(*identifiers)
+    if named is not None:
+        return named
+    if grid:
+        return len(grid), _GENERATION_DEFAULT_FALLBACK[1]
     return _GENERATION_DEFAULT_FALLBACK
 
 
@@ -1372,16 +1490,26 @@ def family_prequant_repo(
         return None
     # Both tables are keyed on lowercased upstream ids.
     base = canonical_base(base_repo).lower()
+    named = named_variant_base(fam, base_repo) if base else None
+    if named and named.lower() != base:
+        # A local copy naming a variant: its row if the loader's tail compare accepts it, else none (never 2.1's).
+        if (
+            base.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+            != named.lower().rsplit("/", 1)[-1]
+        ):
+            return None
+        base = named.lower()
     if base:
         # getattr, because the video loader calls this with a VideoFamily, which has no such field. A plain attribute
         # read raises AttributeError, resolve_prequant_source swallows it in its bare except and hands back None, and
         # every video family silently loses its hosted prequant checkpoint to the dense path whenever a base_repo is
         # passed.
-        if base in (getattr(fam, "prequant_excluded_bases", ()) or ()):
-            return None
+        # A variant row beats the exclusion: an excluded base may host its own checkpoints for some schemes.
         for entry_base, entry_scheme, repo_id in fam.prequant_variant_repos:
             if entry_base == base and entry_scheme == scheme:
                 return repo_id
+        if base in (getattr(fam, "prequant_excluded_bases", ()) or ()):
+            return None
     for entry_scheme, repo_id in fam.prequant_repos:
         if entry_scheme == scheme:
             return repo_id
@@ -1677,7 +1805,7 @@ def local_pipeline_components_are_complete(
 # Studio installs the pinned main build for exactly these classes (studio/backend/requirements/
 # diffusers-main.txt), so the remedy is to put that back, not to chase a release. Delete an entry
 # here the moment its version ships, which is the same moment diffusers-pin.txt moves to it.
-_UNRELEASED_MIN_DIFFUSERS = frozenset({"0.41.0"})
+_UNRELEASED_MIN_DIFFUSERS: frozenset = frozenset()
 
 
 _DIFFUSERS_MAIN_PIN = Path(__file__).resolve().parents[2] / "requirements" / "diffusers-main.txt"
