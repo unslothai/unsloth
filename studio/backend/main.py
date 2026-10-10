@@ -1062,20 +1062,15 @@ _decisions_mcp_app = decisions_mcp.http_app(path = "/", stateless_http = True, j
 app.router.lifespan_context = combine_lifespans(lifespan, _decisions_mcp_app.lifespan)
 app.mount(DECISIONS_MCP_PATH, RequireStudioAuth(_decisions_mcp_app))
 
-# The MCP surface is opt-in: it can start GPU jobs and write model artifacts.
-if os.environ.get("UNSLOTH_STUDIO_ENABLE_MCP") == "1":
-    from mcp_server import BearerTokenMiddleware, create_studio_mcp
+# Always mounted; the gate answers 404 until the owner turns agent access on.
+from mcp_server import create_studio_mcp  # noqa: E402
+from studio_mcp.gate import StudioMcpGate  # noqa: E402
 
-    _studio_mcp_app = create_studio_mcp().http_app(path = "/")
-    _studio_mcp_lifespan = _studio_mcp_app.lifespan
-    _mcp_token = os.environ.get("UNSLOTH_STUDIO_MCP_TOKEN")
-    if not _mcp_token:
-        raise RuntimeError("UNSLOTH_STUDIO_MCP_TOKEN is required when MCP is enabled")
-    _studio_mcp_app = BearerTokenMiddleware(_studio_mcp_app, _mcp_token)
-    app.router.lifespan_context = combine_lifespans(
-        app.router.lifespan_context, _studio_mcp_lifespan
-    )
-    app.mount("/mcp", _studio_mcp_app)
+_studio_mcp_app = create_studio_mcp().http_app(path = "/", stateless_http = True)
+app.router.lifespan_context = combine_lifespans(
+    app.router.lifespan_context, _studio_mcp_app.lifespan
+)
+app.mount("/mcp", StudioMcpGate(_studio_mcp_app))
 
 from loggers.config import LogConfig
 from loggers.handlers import LoggingMiddleware
@@ -1086,6 +1081,12 @@ logger = LogConfig.setup_logging(
 )
 
 app.add_middleware(LoggingMiddleware)
+
+if os.environ.get("UNSLOTH_STUDIO_MCP_TOKEN", "").strip():
+    logger.warning(
+        "UNSLOTH_STUDIO_MCP_TOKEN is no longer used and /mcp refuses it. "
+        "Agents connect with an Unsloth Studio API key (sk-unsloth-…) from Settings > API."
+    )
 
 
 class ResearchPortMiddleware:
@@ -2985,57 +2986,11 @@ def _inject_bootstrap(html_bytes: bytes, app: FastAPI):
     return html.encode("utf-8"), nonce
 
 
-_DEFAULT_PORTS = {"http": 80, "https": 443, "ws": 80, "wss": 443}
-
-
-def _canonical_origin(scheme: str, netloc: str) -> Optional[tuple[str, str, int]]:
-    """Canonicalise an Origin to ``(scheme, host, port)`` for equality. Browsers strip default ports (RFC 6454
-    sec 6.1) and scheme/host are case-insensitive (RFC 3986), so a bare string compare misclassifies
-    same-origin requests as cross-origin. Returns ``None`` on unparseable input so callers fall to the safer
-    cross-origin default."""
-    scheme = (scheme or "").strip().lower()
-    if not scheme or not netloc:
-        return None
-    # Strip userinfo (RFC 3986); Origin never carries credentials.
-    if "@" in netloc:
-        netloc = netloc.rsplit("@", 1)[1]
-    # IPv6 hosts use brackets (RFC 3986 3.2.2): bare partition(":") breaks `-H ::1`.
-    if netloc.startswith("["):
-        close = netloc.find("]")
-        if close == -1:
-            return None
-        host = netloc[1:close]
-        rest = netloc[close + 1 :]
-        if rest.startswith(":"):
-            port_str = rest[1:]
-        elif rest == "":
-            port_str = ""
-        else:
-            return None
-    else:
-        host, _, port_str = netloc.partition(":")
-    host = host.strip().lower()
-    if not host:
-        return None
-    if port_str:
-        try:
-            port = int(port_str)
-        except ValueError:
-            return None
-    else:
-        port = _DEFAULT_PORTS.get(scheme, 0)
-    return (scheme, host, port)
-
-
-def _origin_of(url: Optional[str]) -> Optional[tuple[str, str, int]]:
-    """Canonical origin of a URL or of an Origin header value, or ``None`` when it is neither."""
-    if not url:
-        return None
-    try:
-        parsed = urlparse(url)
-    except ValueError:
-        return None
-    return _canonical_origin(parsed.scheme, parsed.netloc)
+# Also used by the /mcp gate, which cannot import main.
+from utils.origin_policy import (  # noqa: E402
+    canonical_origin as _canonical_origin,
+    origin_of as _origin_of,
+)
 
 
 # Shared with the routes that must only answer the person at this computer (Settings > Sandbox).
@@ -3249,6 +3204,10 @@ def setup_frontend(
         # for /v1/* ({"detail": ...} for /api/*). The request path is "/" + full_path.
         if full_path in {"api", "v1"} or full_path.startswith(("api/", "v1/")):
             raise HTTPException(status_code = 404, detail = "API endpoint not found")
+        # MCP clients probe these before connecting; the app shell with a 200 reads as an OAuth server, and
+        # they would start a login Unsloth Studio does not offer instead of sending the API key.
+        if full_path.startswith(".well-known/oauth-"):
+            raise HTTPException(status_code = 404, detail = "Not Found")
         if not _frontend_request_allowed(request):
             return Response(status_code = 404)
 

@@ -15,6 +15,7 @@ from core.training.account_jobs import (
     validate_job_paths,
 )
 import atexit
+import os
 import structlog
 from collections import deque
 from loggers import get_logger
@@ -37,6 +38,9 @@ _LOG_BUFFER_MAXLEN = 4000
 # How long an export op may go without a single log or status line before the worker is treated as
 # dead. Not how long an export may run: a reporting worker resets it on every line.
 _EXPORT_INACTIVITY_TIMEOUT = 3600.0
+CHECKPOINT_CHANGED = (
+    "The loaded checkpoint changed since this export was requested; nothing was exported."
+)
 
 # Teardown is a bounded amount of work, so it is capped outright rather than by silence: the log
 # gate an export opens is never closed, and teardown chatter would otherwise renew this forever.
@@ -607,6 +611,7 @@ class ExportOrchestrator:
         private: bool = False,
         compressed_method: Optional[str] = None,
         install_missing_dependencies: bool = False,
+        expected_checkpoint: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[str]]:
         return self._run_export(
             "merged",
@@ -619,6 +624,7 @@ class ExportOrchestrator:
                 "private": private,
                 "compressed_method": compressed_method,
                 "install_missing_dependencies": install_missing_dependencies,
+                "expected_checkpoint": expected_checkpoint,
             },
         )
 
@@ -630,6 +636,7 @@ class ExportOrchestrator:
         hf_token: HfTokenArg = None,
         private: bool = False,
         base_model_id: Optional[str] = None,
+        expected_checkpoint: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[str]]:
         return self._run_export(
             "base",
@@ -640,6 +647,7 @@ class ExportOrchestrator:
                 "hf_token": hf_token,
                 "private": private,
                 "base_model_id": base_model_id,
+                "expected_checkpoint": expected_checkpoint,
             },
         )
 
@@ -653,6 +661,7 @@ class ExportOrchestrator:
         imatrix_file = None,
         private: bool = False,
         npu_q4nx: bool = False,
+        expected_checkpoint: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[str]]:
         """Export model in GGUF format. `quantization_method` may be a single method or a list."""
         return self._run_export(
@@ -666,6 +675,7 @@ class ExportOrchestrator:
                 "imatrix_file": imatrix_file,
                 "private": private,
                 "npu_q4nx": npu_q4nx,
+                "expected_checkpoint": expected_checkpoint,
             },
         )
 
@@ -679,6 +689,7 @@ class ExportOrchestrator:
         gguf: bool = False,
         gguf_outtype: str = "q8_0",
         adapter_format: Optional[str] = None,
+        expected_checkpoint: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[str]]:
         """Export LoRA adapter only (optionally also as a GGUF LoRA file)."""
         return self._run_export(
@@ -692,6 +703,7 @@ class ExportOrchestrator:
                 "gguf": gguf,
                 "gguf_outtype": gguf_outtype,
                 "adapter_format": adapter_format,
+                "expected_checkpoint": expected_checkpoint,
             },
         )
 
@@ -702,6 +714,7 @@ class ExportOrchestrator:
         Returns ``(success, message, output_path)``. ``output_path`` is the on-disk
         dir the worker wrote to (None if it only pushed to Hub or failed pre-write).
         """
+        expected = params.pop("expected_checkpoint", None)
         validate_job_paths(params)
         with self._lock:
             if not self._ensure_subprocess_alive():
@@ -710,6 +723,12 @@ class ExportOrchestrator:
                     "No export subprocess running. Load a checkpoint first.",
                     None,
                 )
+            # Checked under the lock the export holds, so no load can slip in before it starts.
+            loaded = self.current_checkpoint
+            if expected is not None and (
+                not loaded or os.path.realpath(loaded) != os.path.realpath(expected)
+            ):
+                return False, CHECKPOINT_CHANGED, None
 
             self.clear_logs()
             self._cancel_requested = False

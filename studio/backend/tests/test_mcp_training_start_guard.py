@@ -331,9 +331,11 @@ def test_an_unknown_start_request_id_is_still_refused_without_a_record(monkeypat
 
 
 def test_the_mcp_tool_surfaces_the_409_as_a_tool_error_not_a_dict(monkeypatch):
-    """stop_training/get_training_status return dicts; a refused start raises."""
-    import mcp_server
+    """The MCP tool forwards to the real training route under the agent's API key, so the
+    route's own guard refuses it, and the agent sees the 409 detail as a tool error."""
     import routes.training as training_routes
+
+    from .mcp_harness import route_studio, run_tool
 
     monkeypatch.setattr(
         training_routes,
@@ -347,38 +349,14 @@ def test_the_mcp_tool_surfaces_the_409_as_a_tool_error_not_a_dict(monkeypatch):
     )
     monkeypatch.setattr(training_routes, "_background_video_generation_active", lambda: False)
 
-    server = mcp_server.create_studio_mcp()
+    studio = route_studio(training_routes.router, "/api/train")
+    result, _studio = run_tool(monkeypatch, studio, "start_training", {"config": _config()})
 
-    # The tool body raises rather than returning the {"status": ...} dict that
-    # stop_training / get_training_status return.
-    # Public fastmcp API only. The private equivalents (_get_tool/_call_tool_mcp)
-    # work too, but _call_tool_mcp was dropped in fastmcp 4.0.0 while the pin is an
-    # open ">=3.0.2", so a private call here breaks the suite on an upstream major
-    # that the product itself is unaffected by. get_tool/call_tool are present with
-    # these same signatures on both 3.0.2 (the floor) and 4.x.
-    async def run_tool_body():
-        tool = await server.get_tool("start_training")
-        assert tool is not None, "start_training must be registered on the studio MCP server"
-        return await tool.fn(config = _config())
-
-    with pytest.raises(HTTPException) as excinfo:
-        asyncio.run(run_tool_body())
-    assert excinfo.value.status_code == 409
-
-    from fastmcp.exceptions import ToolError
-
-    # call_tool, not the private _call_tool_mcp fastmcp 4 dropped: requirements
-    # floor it at 3.0.2 and never cap it, so a test may only use the public API.
-    with pytest.raises(ToolError) as tool_error:
-        asyncio.run(server.call_tool("start_training", {"config": _config()}))
-
-    # mask_error_details defaults False, so the 409 detail survives to the client
-    # (as the text of an isError CallToolResult, not a JSON-RPC protocol error).
-    # Asserted through the surfaced message rather than the server's private
-    # _mask_error_details flag: the detail reaching the caller is the property that
-    # matters, and it stays true however that flag is spelled upstream.
-    assert "inference request is in progress" in str(tool_error.value)
-    assert "Error calling tool 'start_training'" in str(tool_error.value)
+    # An isError CallToolResult carrying the route's detail, not a raised HTTPException or
+    # a {"status": ...} dict.
+    assert result["isError"] is True
+    assert "inference request is in progress" in result["content"][0]["text"]
+    assert "(HTTP 409)" in result["content"][0]["text"]
 
 
 # --------------------------------------------------------------------------------------

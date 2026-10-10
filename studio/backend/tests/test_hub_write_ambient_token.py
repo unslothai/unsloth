@@ -659,19 +659,64 @@ def test_every_hub_write_route_names_the_ambient_policy():
     assert not missing, "these reach a Hub write without the ambient policy: " + ", ".join(missing)
 
 
-def test_every_mcp_tool_that_calls_a_gated_route_names_the_policy():
-    """A direct call never resolves a ``Depends`` default, so each tool passes it or goes
-    ambient in silence."""
-    import inspect
-    import re
+def test_the_mcp_export_tool_never_goes_ambient(monkeypatch):
+    """The MCP export tool reaches the export routes as the agent's API key, so the routes'
+    own policy holds: allow_ambient is False for that caller. The tool sends the agent's token
+    in the body of both calls, and a push without one meets the route's refusal instead of
+    the server's own Hugging Face token."""
+    import json
 
-    import mcp_server
+    from studio_mcp import export_jobs
 
-    src = inspect.getsource(mcp_server.create_studio_mcp)
-    calls = re.findall(r"await (?:load|export)\(request[^)]*\)", src)
-    assert calls, "the MCP tools no longer call the export routes the way this test reads"
-    for call in calls:
-        assert "allow_ambient = False" in call, f"MCP call goes ambient: {call}"
+    from .mcp_harness import bodies, fake_studio, run_export_job
+
+    export_jobs._reset()
+    backend = _backend(monkeypatch, "export_gguf")
+
+    def status(request, body):
+        # Like the real route: it names the checkpoint the last load put in the worker.
+        loaded = bodies(studio, "/api/export/load-checkpoint")
+        return {
+            "last_op_seq": 0,
+            "current_checkpoint": loaded[-1]["checkpoint_path"] if loaded else None,
+        }
+
+    studio = fake_studio(
+        {
+            ("GET", "/api/models/checkpoints"): {
+                "outputs_dir": "/o",
+                "models": [
+                    {"name": "run", "checkpoints": [{"display_name": "run", "path": "/o/run"}]}
+                ],
+            },
+            ("POST", "/api/export/load-checkpoint"): {"success": True, "message": "Loaded"},
+            ("GET", "/api/export/status"): status,
+        }
+    )
+    studio.state.bind_host = "127.0.0.1"
+    studio.include_router(export_routes.router, prefix = "/api/export")
+    studio.dependency_overrides[get_current_subject] = lambda: "unsloth"
+
+    def export(**args):
+        # The job runs in the background; a fixed number of back-to-back polls can beat it on a slow host.
+        sent = {"checkpoint": "run", "format": "gguf", "save_directory": "out", **args}
+        return run_export_job(monkeypatch, studio, sent)[1]["structuredContent"]
+
+    with_token = export(push_to_hub = True, repo_id = "me/m", hf_token = "hf_agent")
+    without = export(push_to_hub = True, repo_id = "me/m")
+    export_jobs._reset()
+
+    loads = bodies(studio, "/api/export/load-checkpoint")
+    assert with_token["status"] == "completed"
+    assert loads[0] == {"checkpoint_path": "/o/run", "max_seq_length": 2048, "hf_token": "hf_agent"}
+    assert backend.export_gguf.call_args.kwargs["hf_token"] == "hf_agent"
+    assert without["status"] == "failed"
+    assert without["error"].startswith(
+        "Hugging Face token is required to push to Hub when authenticated via API key."
+    )
+    assert backend.export_gguf.call_count == 1
+    assert "hf_token" not in loads[1]
+    assert json.dumps(loads).count("hf_agent") == 1
 
 
 def test_the_worker_can_still_disable_implicit_tokens_when_it_starts():

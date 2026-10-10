@@ -2,379 +2,105 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import asyncio
-import sys
-import types
 
 import pytest
 
-from mcp_server import BearerTokenMiddleware, _clamp, _dump, create_studio_mcp
+from mcp_server import INSTRUCTIONS, create_studio_mcp
+
+READ_ONLY = {"studio_status", "list_models", "embed", "system_one", "get_job", "list_training_runs"}
+DESTRUCTIVE = {"unload_model", "cancel"}
+OTHERS = {
+    "load_model",
+    "chat",
+    "generate_image",
+    "generate_audio",
+    "transcribe",
+    "generate_video",
+    "run_recipe",
+    "datasets",
+    "start_training",
+    "export_model",
+}
 
 
-def _get_tool(name):
-    tools = asyncio.run(create_studio_mcp().list_tools())
-    return {tool.name: tool for tool in tools}[name]
+def _tools():
+    return {tool.name: tool for tool in asyncio.run(create_studio_mcp().list_tools())}
 
 
 def test_studio_mcp_registers_control_plane_tools():
-    tools = asyncio.run(create_studio_mcp().list_tools())
+    tools = _tools()
+    assert READ_ONLY | DESTRUCTIVE | OTHERS == set(tools)
+    assert len(tools) == 18
+    for name, tool in tools.items():
+        hints = tool.annotations
+        assert hints is not None, name
+        assert hints.openWorldHint is False, name
+        assert hints.readOnlyHint is (name in READ_ONLY), name
+        if name in DESTRUCTIVE:
+            assert hints.destructiveHint is True, name
+        if name in OTHERS:
+            # MCP reads an unset hint as destructive, so tools that only add work say so.
+            assert hints.destructiveHint is False, name
+        assert tool.output_schema is not None, name
+        assert tool.output_schema.get("type") == "object", name
+        assert tool.description, name
 
-    assert {tool.name for tool in tools} == {
+
+# Schema facts beyond the annotations: (tool, path into the listed tool, the value or a check on it).
+SCHEMA_FACTS = [
+    ("embed", "parameters/properties/texts/minItems", 1),
+    ("embed", "parameters/properties/texts/maxItems", 2048),
+    ("system_one", "parameters/properties/model/default", "default"),
+    ("system_one", "parameters/properties/images/anyOf/0/maxItems", 4),
+    ("generate_image", "output_schema/properties/images/type", "array"),
+    ("generate_image", "output_schema/additionalProperties", False),
+    ("generate_audio", "output_schema/additionalProperties", False),
+    ("generate_audio", "parameters/properties", lambda props: "text" in props),
+    ("studio_status", "output_schema/additionalProperties", False),
+    ("studio_status", "parameters", lambda params: params.get("properties", {}) == {}),
+    (
+        "list_models",
+        "parameters/properties",
+        lambda props: set(props) == {"kind", "loaded_only", "model"},
+    ),
+    (
+        "load_model",
+        "parameters/properties",
+        lambda props: set(props)
+        == {"model", "kind", "variant", "max_seq_length", "load_in_4bit", "hf_token"},
+    ),
+    ("load_model", "parameters/properties/kind/default", "llm"),
+    (
+        "cancel",
+        "parameters/properties/kind/enum",
+        lambda kinds: "audio" not in kinds and len(kinds) == 9,
+    ),
+    ("get_job", "parameters/properties/kind/enum", lambda kinds: {"video", "recipe"} <= set(kinds)),
+]
+
+
+@pytest.mark.parametrize("name,path,expected", SCHEMA_FACTS)
+def test_tool_schemas_keep_their_limits_and_defaults(name, path, expected):
+    attribute, *keys = path.split("/")
+    value = getattr(_tools()[name], attribute)
+    for key in keys:
+        value = value[int(key)] if isinstance(value, list) else value[key]
+    if callable(expected):
+        assert expected(value), (name, path, value)
+    else:
+        assert value == expected and type(value) is type(expected), (name, path, value)
+
+
+def test_instructions_point_agents_at_the_workflow():
+    server = create_studio_mcp()
+    assert server.instructions == INSTRUCTIONS
+    for phrase in (
         "studio_status",
-        "list_local_models",
-        "get_training_status",
-        "start_training",
-        "stop_training",
-        "list_training_runs",
-        "validate_recipe",
-        "get_recipe_job_status",
-        "get_recipe_job_dataset",
-        "load_checkpoint",
-        "export_gguf",
-    }
-
-
-def test_dump_serializes_pydantic_values():
-    class Response:
-        def model_dump(self, *, mode):
-            assert mode == "json"
-            return {"ok": True}
-
-    assert _dump(Response()) == {"ok": True}
-    assert _dump({"already": "json"}) == {"already": "json"}
-
-
-def test_bearer_token_middleware_rejects_wrong_token():
-    events = []
-
-    async def app(scope, receive, send):
-        events.append("app")
-
-    async def send(message):
-        events.append(message)
-
-    middleware = BearerTokenMiddleware(app, "secret")
-    asyncio.run(
-        middleware(
-            {"type": "http", "headers": [(b"authorization", b"Bearer wrong")]},
-            None,
-            send,
-        )
-    )
-
-    assert events[0]["status"] == 401
-    assert "app" not in events
-
-
-def test_bearer_token_middleware_closes_unauthorized_websocket():
-    events = []
-
-    async def app(scope, receive, send):
-        events.append("app")
-
-    async def send(message):
-        events.append(message)
-
-    middleware = BearerTokenMiddleware(app, "secret")
-    asyncio.run(
-        middleware(
-            {"type": "websocket", "headers": []},
-            None,
-            send,
-        )
-    )
-
-    assert events == [{"type": "websocket.close", "code": 4401}]
-
-
-def test_bearer_token_middleware_rejects_non_ascii_authorization():
-    # A non-ASCII bearer value must produce a clean 401, not a 500. Comparing on
-    # bytes avoids the str hmac.compare_digest TypeError on non-ASCII input.
-    events = []
-
-    async def app(scope, receive, send):
-        events.append("app")
-
-    async def send(message):
-        events.append(message)
-
-    middleware = BearerTokenMiddleware(app, "secret")
-    asyncio.run(
-        middleware(
-            {"type": "http", "headers": [(b"authorization", b"Bearer \xff\xff")]},
-            None,
-            send,
-        )
-    )
-
-    assert events[0]["status"] == 401
-    assert "app" not in events
-
-
-def test_bearer_token_middleware_accepts_correct_token():
-    events = []
-
-    async def app(scope, receive, send):
-        events.append("app")
-
-    async def send(message):
-        events.append(message)
-
-    middleware = BearerTokenMiddleware(app, "secret")
-    asyncio.run(
-        middleware(
-            {"type": "http", "headers": [(b"authorization", b"Bearer secret")]},
-            None,
-            send,
-        )
-    )
-
-    assert events == ["app"]
-
-
-def test_bearer_token_middleware_requires_non_empty_token():
-    async def app(scope, receive, send):
-        pass
-
-    for bad in ("", "   "):
-        with pytest.raises(ValueError):
-            BearerTokenMiddleware(app, bad)
-
-
-def test_bearer_token_middleware_rejects_non_ascii_token():
-    async def app(scope, receive, send):
-        pass
-
-    # non-ASCII tokens cannot be transmitted in an HTTP header by a standard
-    # client, so they are rejected at construction instead of locking out.
-    for bad in ("töken", "\U0001f600"):
-        with pytest.raises(ValueError):
-            BearerTokenMiddleware(app, bad)
-
-
-def test_bearer_token_middleware_passes_through_non_http_scopes():
-    events = []
-
-    async def app(scope, receive, send):
-        events.append("app")
-
-    async def send(message):
-        events.append(message)
-
-    middleware = BearerTokenMiddleware(app, "secret")
-    asyncio.run(middleware({"type": "lifespan"}, None, send))
-
-    assert events == ["app"]
-
-
-def test_clamp_restricts_to_inclusive_bounds():
-    assert _clamp(5, 1, 200) == 5
-    assert _clamp(-10, 1, 200) == 1
-    assert _clamp(10_000, 1, 200) == 200
-    assert _clamp(0, 1, 500) == 1
-    assert _clamp(1_000, 1, 500) == 500
-
-
-def test_export_and_checkpoint_tools_expose_forwarded_fields():
-    export_props = set(_get_tool("export_gguf").parameters["properties"])
-    assert {"hf_token", "imatrix", "imatrix_path", "private"} <= export_props
-
-    checkpoint_props = set(_get_tool("load_checkpoint").parameters["properties"])
-    assert {"hf_token", "approved_remote_code_fingerprint"} <= checkpoint_props
-
-    stop_schema = _get_tool("stop_training").parameters
-    assert "expected_job_id" in stop_schema["required"]
-
-
-def _stub_module(monkeypatch, name, **attrs):
-    module = types.ModuleType(name)
-    for key, value in attrs.items():
-        setattr(module, key, value)
-    if "." in name:
-        module.__path__ = []  # mark package-like so submodule imports resolve
-    monkeypatch.setitem(sys.modules, name, module)
-    return module
-
-
-def test_export_gguf_forwards_hf_token_and_imatrix(monkeypatch):
-    captured = {}
-
-    class FakeExportGGUFRequest:
-        def __init__(self, **kwargs):
-            captured.update(kwargs)
-
-    async def fake_export(request, current_subject, allow_ambient):
-        return {"current_subject": current_subject, "allow_ambient": allow_ambient}
-
-    _stub_module(monkeypatch, "models", ExportGGUFRequest = FakeExportGGUFRequest)
-    _stub_module(monkeypatch, "routes")
-    _stub_module(monkeypatch, "routes.export", export_gguf = fake_export)
-
-    tool = _get_tool("export_gguf")
-    result = asyncio.run(
-        tool.fn(
-            save_directory = "/tmp/out",
-            quantization_method = ["Q4_K_M", "Q8_0"],
-            push_to_hub = True,
-            repo_id = "me/model",
-            hf_token = "hf_secret",
-            imatrix = True,
-            imatrix_path = "/tmp/imatrix.dat",
-            private = True,
-        )
-    )
-
-    assert captured["hf_token"] == "hf_secret"
-    assert captured["imatrix"] is True
-    assert captured["imatrix_path"] == "/tmp/imatrix.dat"
-    assert captured["quantization_method"] == ["Q4_K_M", "Q8_0"]
-    assert captured["private"] is True
-    assert result["current_subject"] == "mcp"
-    # A direct call skips FastAPI, so the route's Depends default never resolves; MCP has to
-    # name the policy itself or allow_ambient arrives as a truthy Depends object.
-    assert result["allow_ambient"] is False
-
-
-def test_load_checkpoint_forwards_token_and_fingerprint(monkeypatch):
-    captured = {}
-
-    class FakeLoadCheckpointRequest:
-        def __init__(self, **kwargs):
-            captured.update(kwargs)
-
-    async def fake_load(request, current_subject, allow_ambient):
-        return {"current_subject": current_subject, "allow_ambient": allow_ambient}
-
-    _stub_module(monkeypatch, "models", LoadCheckpointRequest = FakeLoadCheckpointRequest)
-    _stub_module(monkeypatch, "routes")
-    _stub_module(monkeypatch, "routes.export", load_checkpoint = fake_load)
-
-    tool = _get_tool("load_checkpoint")
-    result = asyncio.run(
-        tool.fn(
-            checkpoint_path = "/tmp/ckpt",
-            approved_remote_code_fingerprint = "sha256:abc",
-            hf_token = "hf_secret",
-        )
-    )
-
-    assert captured["hf_token"] == "hf_secret"
-    assert captured["approved_remote_code_fingerprint"] == "sha256:abc"
-    assert result["allow_ambient"] is False
-
-
-@pytest.mark.parametrize("load_in_4bit", [None, True, False])
-def test_load_checkpoint_leaves_unset_load_in_4bit_to_the_route(monkeypatch, load_in_4bit):
-    from models.export import LoadCheckpointRequest
-
-    captured = {}
-
-    async def fake_load(request, current_subject, allow_ambient):
-        captured["fields_set"] = request.model_fields_set
-        captured["load_in_4bit"] = request.load_in_4bit
-        return {}
-
-    _stub_module(monkeypatch, "models", LoadCheckpointRequest = LoadCheckpointRequest)
-    _stub_module(monkeypatch, "routes")
-    _stub_module(monkeypatch, "routes.export", load_checkpoint = fake_load)
-
-    extra = {} if load_in_4bit is None else {"load_in_4bit": load_in_4bit}
-    asyncio.run(_get_tool("load_checkpoint").fn(checkpoint_path = "/tmp/ckpt", **extra))
-
-    # The route only picks 16-bit for a full fine-tune when load_in_4bit was not sent.
-    assert ("load_in_4bit" in captured["fields_set"]) is (load_in_4bit is not None)
-    if load_in_4bit is not None:
-        assert captured["load_in_4bit"] is load_in_4bit
-
-
-def test_stop_training_forwards_job_scope(monkeypatch):
-    captured = {}
-
-    class FakeTrainingStopRequest:
-        def __init__(self, **kwargs):
-            captured.update(kwargs)
-
-    async def fake_stop(request, current_subject):
-        assert isinstance(request, FakeTrainingStopRequest)
-        captured["current_subject"] = current_subject
-        return {"status": "stopped"}
-
-    _stub_module(monkeypatch, "routes")
-    _stub_module(
-        monkeypatch,
-        "routes.training",
-        TrainingStopRequest = FakeTrainingStopRequest,
-        stop_training = fake_stop,
-    )
-
-    tool = _get_tool("stop_training")
-    result = asyncio.run(tool.fn(expected_job_id = "job-A", save = False))
-
-    assert captured["expected_job_id"] == "job-A"
-    assert captured["save"] is False
-    assert captured["current_subject"] == "mcp"
-    assert result == {"status": "stopped"}
-
-
-def test_start_training_forwards_as_api_key_caller(monkeypatch):
-    captured = {}
-
-    class FakeTrainingStartRequest:
-        @classmethod
-        def model_validate(cls, config):
-            captured["config"] = config
-            return cls()
-
-    async def fake_start(request, current_subject, via_api_key):
-        assert isinstance(request, FakeTrainingStartRequest)
-        captured["current_subject"] = current_subject
-        captured["via_api_key"] = via_api_key
-        return {"status": "queued"}
-
-    _stub_module(monkeypatch, "models", TrainingStartRequest = FakeTrainingStartRequest)
-    _stub_module(monkeypatch, "routes")
-    _stub_module(monkeypatch, "routes.training", start_training = fake_start)
-
-    tool = _get_tool("start_training")
-    result = asyncio.run(tool.fn(config = {"model_name": "unsloth/test"}))
-
-    assert captured["config"] == {"model_name": "unsloth/test"}
-    assert captured["current_subject"] == "mcp"
-    assert captured["via_api_key"] is True
-    assert result == {"status": "queued"}
-
-
-def test_list_training_runs_clamps_pagination(monkeypatch):
-    captured = {}
-
-    async def fake_list_runs(limit, offset, current_subject):
-        captured["limit"] = limit
-        captured["offset"] = offset
-        return {"ok": True}
-
-    _stub_module(monkeypatch, "routes")
-    _stub_module(monkeypatch, "routes.training_history", list_training_runs = fake_list_runs)
-
-    tool = _get_tool("list_training_runs")
-    asyncio.run(tool.fn(limit = 10_000, offset = -5))
-
-    assert captured["limit"] == 200
-    assert captured["offset"] == 0
-
-
-def test_get_recipe_job_dataset_clamps_pagination(monkeypatch):
-    captured = {}
-
-    def fake_job_dataset(job_id, limit, offset):
-        captured["limit"] = limit
-        captured["offset"] = offset
-        return {"ok": True}
-
-    _stub_module(monkeypatch, "routes")
-    _stub_module(monkeypatch, "routes.data_recipe")
-    _stub_module(monkeypatch, "routes.data_recipe.jobs", job_dataset = fake_job_dataset)
-
-    tool = _get_tool("get_recipe_job_dataset")  # this tool is synchronous
-    tool.fn(job_id = "job-1", limit = -1, offset = -9)
-
-    assert captured["limit"] == 1
-    assert captured["offset"] == 0
+        "list_models",
+        "load_model",
+        "get_job",
+        "cancel",
+        "Studio computer",
+        "galleries",
+    ):
+        assert phrase in INSTRUCTIONS

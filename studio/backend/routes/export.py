@@ -423,6 +423,7 @@ async def export_merged_model(
             private = request.private,
             compressed_method = request.compressed_method,
             install_missing_dependencies = request.install_missing_dependencies,
+            expected_checkpoint = request.expected_checkpoint,
         )
 
         if not success:
@@ -482,6 +483,7 @@ async def export_base_model(
             ),
             private = request.private,
             base_model_id = request.base_model_id,
+            expected_checkpoint = request.expected_checkpoint,
         )
 
         if not success:
@@ -536,6 +538,7 @@ async def export_gguf(
             imatrix_file = imatrix_file,
             private = request.private,
             npu_q4nx = request.npu_q4nx,
+            expected_checkpoint = request.expected_checkpoint,
         )
 
         if not success:
@@ -647,6 +650,7 @@ async def export_lora_adapter(
             gguf = request.gguf,
             gguf_outtype = request.gguf_outtype,
             adapter_format = request.adapter_format,
+            expected_checkpoint = request.expected_checkpoint,
         )
 
         if not success:
