@@ -258,6 +258,12 @@ def _sharegpt_tool_turns(conversation, content = "", probe = False):
                     results += 1
                 # Results pair with calls by position only when there is one per call.
                 result_ids = [call["id"] for call in tool_calls] if results == len(calls) else []
+            else:
+                result_ids = []
+                if probe:
+                    # Kept as written: a template skipping unknown roles must not pass on its result.
+                    markers.append(f"unslothraw{len(markers)}end")
+                    message = {**message, "content": markers[-1]}
         turns.append(message)
     return turns, markers
 

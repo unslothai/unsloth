@@ -514,3 +514,16 @@ def test_sharegpt_split_calls_keep_null_content_for_templates_gating_on_it():
 
     assert '<call>get_weather{"city": "Paris"}' in text
     assert '<call>get_time{"city": "Rome"}' in text
+
+
+def test_sharegpt_non_json_call_is_not_dropped_by_a_template_skipping_unknown_roles():
+    known_roles_only = (
+        "{%- for message in messages %}"
+        "{%- if message.role in ('user', 'assistant', 'tool') %}"
+        "{{- '<' + message.role + '>' + message.content }}{%- endif %}"
+        "{%- endfor %}"
+    )
+
+    result = _format_sharegpt([_sharegpt_tool_row("get_weather(Paris)")], known_roles_only)
+
+    assert "<tool>" not in result["dataset"][0]["text"]
