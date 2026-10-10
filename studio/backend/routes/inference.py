@@ -8418,9 +8418,22 @@ def _without_model_ini(llama_backend, args: Optional[list[str]]) -> Optional[lis
     """``args`` (a stored extras list) minus the resident unsloth.ini prefix: the INI is
     re-read per load, so it must never be inherited as if the user had typed it."""
     prefix = _model_ini_prefix(llama_backend)
-    if not prefix or args is None or tuple(args[: len(prefix)]) != prefix:
+    if not prefix or args is None:
         return args
-    return list(args[len(prefix) :])
+    # Placement can drop INI flags from the stored list (device, split-mode, tensor-split strips),
+    # so match the prefix one flag group at a time and skip groups that are gone.
+    groups: list[tuple[str, ...]] = []
+    for token in prefix:
+        if token.startswith("--") or not groups:
+            groups.append((token,))
+        else:
+            groups[-1] = (*groups[-1], token)
+    args = list(args)
+    i = 0
+    for group in groups:
+        if tuple(args[i : i + len(group)]) == group:
+            i += len(group)
+    return args[i:]
 
 
 def _model_ini_tokens(request) -> list[str]:

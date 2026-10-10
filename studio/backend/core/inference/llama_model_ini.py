@@ -608,6 +608,16 @@ def _locate_hf(
         chosen = next((v for v in variants if (v.quant or "").lower() == want), None) or next(
             (v for v in variants if (_gguf_stem(v.filename) or "").lower().endswith(want)), None
         )
+    elif variants:
+        # No quant named: the one the loader auto-selects (root rows first, then the whole set).
+        from utils.models.model_config import _pick_best_gguf
+
+        # A qualified key (``distilled/Q6_K``) is not a root row; a quant-named folder is.
+        names = [v.filename for v in variants if "/" not in (v.quant or "")] or [
+            v.filename for v in variants
+        ]
+        best = _pick_best_gguf(names)
+        chosen = next((v for v in variants if v.filename == best), None)
     folder = os.path.dirname(chosen.filename).strip("/") if chosen is not None else ""
     candidates = ([(f"{folder}/{MODEL_INI_FILENAME}", "variant_folder")] if folder else []) + [
         (MODEL_INI_FILENAME, "repo_root")

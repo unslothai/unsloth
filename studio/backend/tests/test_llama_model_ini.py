@@ -805,3 +805,31 @@ def test_managed_offline_lookup_authorizes_offline(monkeypatch):
         )
     )
     assert body.found and seen == {"offline": True}
+
+
+def test_hf_without_a_variant_uses_the_loaders_auto_pick(tmp_path):
+    folder_ini = tmp_path / "a.ini"
+    folder_ini.write_text("temp = 0.9\n")
+    # No root GGUF: the loader auto-selects a subfolder quant, so its folder INI applies.
+    variants = [
+        _variant("UD-Q4_K_XL/M-UD-Q4_K_XL.gguf", "UD-Q4_K_XL"),
+        _variant("Q8_0/M-Q8_0.gguf", "Q8_0"),
+    ]
+    from utils.models.model_config import _pick_best_gguf
+
+    best = _pick_best_gguf([v.filename for v in variants])
+    folder = best.split("/")[0]
+    lv, dl, seen = _hf({f"{folder}/unsloth.ini": str(folder_ini)}, variants)
+    got = mi._locate_hf("u/M-GGUF", None, None, False, lv, dl)
+    assert got.location == "variant_folder" and got.gguf_filename == best
+
+
+def test_ini_prefix_is_stripped_after_placement_drops_one_of_its_flags():
+    from routes.inference import _without_model_ini
+
+    prefix = ["--ctx-size", "4096", "--split-mode", "row", "--temp", "0.6"]
+    # load_model stripped --split-mode row before persisting; the typed extras follow.
+    stored = ["--ctx-size", "4096", "--temp", "0.6", "--top-k", "3"]
+    backend = _Backend(stored, prefix)
+    assert _without_model_ini(backend, stored) == ["--top-k", "3"]
+    assert _without_model_ini(backend, prefix + ["--seed", "1"]) == ["--seed", "1"]
