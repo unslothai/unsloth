@@ -397,7 +397,8 @@ export function DownloadsButton({
         sideOffset={8}
         onOpenAutoFocus={(event) => mode === "finished" && event.preventDefault()}
         // The button is only the anchor: a press on it would dismiss here, then its click reopen.
-        onInteractOutside={(event) => {
+        // Pointer only: focus arriving by keyboard still closes, so Enter reopens with autofocus.
+        onPointerDownOutside={(event) => {
           if (anchorRef.current?.contains(event.target as Node)) event.preventDefault();
         }}
         onMouseEnter={() => setHovered(true)}
