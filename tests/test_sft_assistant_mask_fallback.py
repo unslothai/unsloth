@@ -122,21 +122,11 @@ def test_older_zoo_keeps_trl_error():
         _run(_load(zoo_reads_flag = False)("__init__", TRL_SHAPED_INIT), _unsupported)
 
 
-def test_vision_processor_keeps_trl_error():
-    class ProcessorMixin:
-        pass
-
-    class Processor(ProcessorMixin):
-        chat_template = "{{ messages }}"
-
+def test_vision_dataset_keeps_trl_error():
     namespace = {"has_generation_markers": lambda template: False}
     exec(_load()("__init__", TRL_SHAPED_INIT), namespace)
+    trainer = type("T", (), {"_is_vision_dataset": True})()
     with pytest.raises(ValueError):
         namespace["__init__"](
-            type("T", (), {})(),
-            Processor(),
-            _Args(),
-            _unsupported,
-            lambda *a, **k: False,
-            lambda: None,
+            trainer, _Tok(), _Args(), _unsupported, lambda *a, **k: False, lambda: None
         )
