@@ -1492,10 +1492,7 @@ def run_safetensors_tool_loop(
             image_share = None
             if decision.should_execute and mcp_image is not None:
                 from core.inference.tools import mcp_image_share
-
-                image_share = mcp_image_share(
-                    decision.tool_name, decision.arguments, mcp_image
-                )
+                image_share = mcp_image_share(decision.tool_name, decision.arguments, mcp_image)
                 if image_share is not None:
                     decision = tool_controller.reprepare_call(
                         decision, provisional = provisional_match
