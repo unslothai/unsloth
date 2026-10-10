@@ -162,7 +162,8 @@ async function titleFromModel(checkpoint: string, excerpt: string): Promise<stri
 async function titleModelServing(checkpoint: string): Promise<boolean> {
   if (parseExternalModelId(checkpoint) !== null) return true;
   try {
-    const status = await getInferenceStatus();
+    // Scoped to the slot serving it, which need not be the primary one.
+    const status = await getInferenceStatus(undefined, checkpoint);
     if (!status.active_model || status.is_audio || status.is_diffusion) return false;
     const want = normalizeModelIdentity(checkpoint);
     return [status.model_identifier, status.active_model, ...(status.serving_checkpoints ?? [])].some(

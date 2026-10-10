@@ -31,6 +31,7 @@ import type {
   OpenAIChatCompletionsRequest,
 } from "../types/api";
 import { extractDeltaText } from "./parse-assistant-content";
+import { attachmentsSample } from "./pasted-text";
 
 /** Store the whole first line and let the sidebar clip it with CSS, so a wider one shows more.
  *  Matches the rename input's maxLength: UTF-16 units, ellipsis included. */
@@ -390,12 +391,18 @@ const REFRESH_MESSAGE_CHARS = 300;
 const REFRESH_EXCERPT_CHARS = 900;
 const REFRESH_MIN_CHARS = 40;
 
-function textPartsOf(content: MessageRecord["content"]): string {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content
-    .map((part) => (part?.type === "text" ? part.text : ""))
-    .join("");
+function textPartsOf(message: MessageRecord): string {
+  const { content } = message;
+  const text =
+    typeof content === "string"
+      ? content
+      : Array.isArray(content)
+        ? content.map((part) => (part?.type === "text" ? part.text : "")).join("")
+        : "";
+  if (message.role !== "user") return text;
+  // A long paste is stored as an attachment, so a paste-only turn has no inline text.
+  const pasted = attachmentsSample(message.attachments);
+  return pasted ? `${text}\n\n${pasted}` : text;
 }
 
 /** The newest user and assistant turns that fit the budget, oldest first; text parts only. */
@@ -405,7 +412,7 @@ export function titleRefreshExcerpt(messages: readonly MessageRecord[]): string 
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i];
     if (message.role !== "user" && message.role !== "assistant") continue;
-    const text = dropLoneSurrogates(textPartsOf(message.content))
+    const text = dropLoneSurrogates(textPartsOf(message))
       .replace(/\s+/g, " ")
       .trim();
     if (!text) continue;
@@ -446,7 +453,7 @@ function isTitleWord(word: string): boolean {
 export function heuristicChatTitle(messages: readonly MessageRecord[]): string | null {
   const turns = messages
     .filter((m) => m.role === "user" || m.role === "assistant")
-    .map((m) => ({ role: m.role, text: dropLoneSurrogates(textPartsOf(m.content)) }))
+    .map((m) => ({ role: m.role, text: dropLoneSurrogates(textPartsOf(m)) }))
     .filter((m) => m.text.trim());
   const weight = new Map<string, number>();
   const count = (text: string, value: number) => {

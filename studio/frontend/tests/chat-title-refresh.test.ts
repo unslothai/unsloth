@@ -125,7 +125,7 @@ test("a refresh asks the selected model only while it is serving, and writes the
     source.indexOf("export async function regenerateChatTitle"),
   );
   // An idle-unloaded local model is reloaded by any completion naming it, so residency is read first.
-  assert.match(serving, /const status = await getInferenceStatus\(\);/);
+  assert.match(serving, /const status = await getInferenceStatus\(undefined, checkpoint\);/);
   assert.match(serving, /if \(!status\.active_model \|\| status\.is_audio \|\| status\.is_diffusion\) return false;/);
   const body = source.slice(
     source.indexOf("export async function regenerateChatTitle"),
@@ -176,6 +176,20 @@ test("without a model text with no spaced words keeps its first line", () => {
   assert.equal(heuristicChatTitle([message(0, "user", text("如何用Python读取CSV文件？"))]), "如何用Python读取CSV文件");
   assert.equal(heuristicChatTitle([]), null);
   assert.equal(heuristicChatTitle([message(0, "assistant", text("Hello there"))]), null);
+});
+
+test("a paste-only turn titles from its pasted text", () => {
+  const paste = {
+    ...message(2, "user", text("")),
+    attachments: [{ type: "document", name: "notes.txt", content: [{ type: "text", text: "Quarterly revenue forecast for the Berlin retail stores" }] }],
+  } as unknown as MessageRecord;
+  const turns = [
+    message(0, "user", text("Help me write a short follow-up email to a client")),
+    message(1, "assistant", text("Sure, here is a draft.")),
+    paste,
+  ];
+  assert.match(titleRefreshExcerpt(turns), /^User: .*Quarterly revenue forecast/m);
+  assert.match(heuristicChatTitle(turns) ?? "", /revenue forecast/i);
 });
 
 test("without a model words with combining marks stay whole", () => {
