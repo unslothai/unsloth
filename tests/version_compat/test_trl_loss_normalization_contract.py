@@ -175,7 +175,9 @@ def _trl_resolves(wanted):
         warnings.simplefilter("always")
         got = pristine(output_dir = "unused", loss_type = wanted).loss_type
     aliased = any(
-        issubclass(w.category, FutureWarning) and repr(wanted) in str(w.message) and "deprecated" in str(w.message)
+        issubclass(w.category, FutureWarning)
+        and repr(wanted) in str(w.message)
+        and "deprecated" in str(w.message)
         for w in caught
     )
     return got if aliased else wanted
@@ -250,7 +252,9 @@ def test_pristine_trl_sft_config_keeps_an_explicit_loss_type():
 
     for wanted in ("chunked_nll", "dft"):
         got = pristine(output_dir = "unused", loss_type = wanted).loss_type
-        assert got == _trl_resolves(wanted), f"explicit loss_type {wanted!r} was clobbered to {got!r}"
+        assert got == _trl_resolves(
+            wanted
+        ), f"explicit loss_type {wanted!r} was clobbered to {got!r}"
     # "dft" is not an alias on any TRL, so it must always come back unchanged.
     assert _trl_resolves("dft") == "dft"
 
