@@ -131,8 +131,16 @@ def _weight_files(root: Path) -> list[Path]:
     return [
         p
         for p in children
-        if p.is_file() and p.suffix.lower() in _ALL_EXTS and not is_appledouble_metadata(p)
+        if p.suffix.lower() in _ALL_EXTS and not is_appledouble_metadata(p) and _is_file(p)
     ]
+
+
+def _is_file(p: Path) -> bool:
+    # Path.is_file() re-raises EACCES before Python 3.14; one unreadable entry must not fail the catalog.
+    try:
+        return p.is_file()
+    except OSError:
+        return False
 
 
 def _scan_folder_roots() -> list[Path]:

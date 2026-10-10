@@ -256,3 +256,21 @@ def test_a_config_with_only_a_marked_safetensors_is_not_a_model(tmp_path):
     _safetensors(folder / "style.safetensors", sidecar = _MARK)
     rows = _scan_models_dir(tmp_path)
     assert all(getattr(r, "model_format", None) != "safetensors" for r in rows)
+
+
+def test_an_unreadable_entry_does_not_fail_the_catalog(catalog, tmp_path, monkeypatch):
+    from pathlib import Path
+
+    folder = tmp_path / "my-models"
+    _safetensors(folder / "good.safetensors", sidecar = _MARK)
+    _safetensors(folder / "locked.safetensors", sidecar = _MARK)
+    register(folder)
+    real_is_file = Path.is_file
+
+    def is_file(self):
+        if self.name == "locked.safetensors":
+            raise PermissionError(13, "Permission denied")
+        return real_is_file(self)
+
+    monkeypatch.setattr(Path, "is_file", is_file)
+    assert [e.display_name for e in _local().values()] == ["good"]
