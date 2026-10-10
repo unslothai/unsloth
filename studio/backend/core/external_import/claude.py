@@ -88,18 +88,11 @@ def _parts(record: dict, message_id: str) -> tuple[list[dict], dict[str, str]]:
 def read_transcript(path: Path, thread_id: str, session_id: str) -> Transcript:
     file_created, file_updated = file_times_ms(path)
     # file order preserves the append-only import ledger
-    lines = list(read_jsonl(path))
-    records = [
-        r
-        for r in lines
-        if r.get("type") in ("user", "assistant")
-        and not r.get("isSidechain")
-        and not r.get("isMeta")
-    ]
     # attachments and system lines link ancestry; compact_boundary inherits prior if logicalParentUuid is absent or forward.
+    records = []
     links: dict[str, Any] = {}
     previous = None
-    for line in lines:
+    for line in read_jsonl(path):
         if line.get("uuid"):
             compacted = line.get("subtype") == "compact_boundary" and not line.get("parentUuid")
             parent = line.get("parentUuid")
@@ -108,6 +101,12 @@ def read_transcript(path: Path, thread_id: str, session_id: str) -> Transcript:
                 parent = logical if logical in links else previous
             links[str(line["uuid"])] = parent
             previous = str(line["uuid"])
+        if (
+            line.get("type") in ("user", "assistant")
+            and not line.get("isSidechain")
+            and not line.get("isMeta")
+        ):
+            records.append(line)
     imported: dict[str, str] = {}
     # parallel tool results hang off their own call; continue from the reply's last block, not a fork.
     reply_of: dict[str, str] = {}

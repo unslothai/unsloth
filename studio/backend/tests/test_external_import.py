@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import gc
 import json
+import weakref
 from pathlib import Path
 
 import pytest
@@ -337,6 +339,35 @@ def test_claude_rewind_compaction_uses_its_logical_parent(claude_home):
     messages = claude.read_transcript(path, "t", "s1").messages
     ids = [m["id"] for m in messages]
     assert [m["parentId"] for m in messages] == [None, ids[0], ids[1], ids[2], ids[1], ids[4], ids[5]]
+
+
+def test_claude_releases_filtered_records_while_streaming(tmp_path, monkeypatch):
+    class Record(dict):
+        pass
+
+    released = False
+
+    def records(_path):
+        nonlocal released
+        attachment = Record(type = "attachment", uuid = "at1", parentUuid = None, payload = "x" * 1_000_000)
+        reference = weakref.ref(attachment, lambda _ref: mark_released())
+        yield attachment
+        attachment = None
+        yield {"type": "progress", "uuid": "p1", "parentUuid": "at1"}
+        gc.collect()
+        assert reference() is None
+        yield c_user("u1", "one", parent = "p1")
+
+    def mark_released():
+        nonlocal released
+        released = True
+
+    path = tmp_path / "session.jsonl"
+    path.touch()
+    monkeypatch.setattr(claude, "read_jsonl", records)
+    messages = claude.read_transcript(path, "t", "s1").messages
+    assert released
+    assert len(messages) == 1
 
 
 @pytest.mark.parametrize("logical", ["never-written", "at2"])
