@@ -2071,9 +2071,14 @@ function FloatingFileToolbar({
   );
 }
 
-const SPLIT_PILL = cn(PILL, "flex h-9 shrink-0 items-center rounded-full");
+// The pill shades as one on hover and while its menu is open; its halves add no shade of their own.
+const SPLIT_PILL = cn(
+  PILL,
+  "flex h-9 shrink-0 items-center rounded-full",
+  "has-[[data-state=open]]:bg-[color-mix(in_oklab,var(--pill-bg),var(--foreground)_var(--pill-hover))]",
+);
 const SPLIT_PART =
-  "flex h-full cursor-pointer items-center rounded-full text-ui-13p5 text-foreground outline-none transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_6%,transparent)] focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 data-[state=open]:bg-[color-mix(in_oklab,var(--foreground)_8%,transparent)]";
+  "flex h-full cursor-pointer items-center rounded-full text-ui-13p5 text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50";
 
 function SplitChevron() {
   return (
