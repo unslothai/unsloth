@@ -2907,8 +2907,7 @@ def _load_grid_pipeline(backend, tmp_path, monkeypatch, **manifest):
 
 
 def test_checkpoint_sample_sigmas_drive_the_schedule(fake_runtime, tmp_path, monkeypatch):
-    # Qwen-Image-2.1-Turbo ships its 8-step grid in model_index.json; the pinned diffusers drops it at load, so the
-    # backend must carry it, keep the scheduler it was tuned on, and pass it to every render.
+    # The pinned diffusers drops Turbo's model_index.json grid; the backend carries it and passes it to every render.
     backend = DiffusionBackend()
     pipe = _load_grid_pipeline(backend, tmp_path, monkeypatch, sample_sigmas = _TURBO_GRID)
     assert "sample_sigmas" not in pipe.config

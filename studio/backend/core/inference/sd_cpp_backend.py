@@ -210,9 +210,8 @@ def _base_sample_sigmas(
     local_files_only: bool,
     named_base: Optional[str] = None,
 ) -> tuple[Optional[tuple[float, ...]], str]:
-    """(the base's model_index.json grid or None for sd.cpp's own schedule, the base it came from). Without an
-    explicit base the card's ``base_model`` names it, as on the diffusers route; else a community Turbo GGUF would
-    read 2.1's index and report 2.1's 25-step defaults."""
+    """(the base's model_index.json grid or None, that base). Without an explicit base the card's ``base_model``
+    names it, as on the diffusers route, so a community Turbo GGUF does not read 2.1's index."""
     if family not in _SAMPLE_SIGMAS_FAMILIES:
         return None, base
     try:
@@ -3374,13 +3373,11 @@ class SdCppDiffusionBackend:
             into = merged.setdefault(fetch_repo[repo], [])
             into.extend(n for n in names if n not in into)
         by_repo = merged
-        # A cache-only load of a named variant, by its name or an explicit base, reads that variant's model_index.json
-        # for its grid (_base_sample_sigmas); planned with the assets so locality never approves a pick that would
-        # silently fall back to sd.cpp's own schedule.
+        # A named variant's load reads its model_index.json for the grid; planned so locality cannot skip it.
         if base_repo:
             explicit = resolve_base_repo(fam, base_repo)
             variants = {b.lower() for b in getattr(fam, "named_variant_bases", ()) or ()}
-            # The id as given: that is the cache entry the load reads.
+            # As given: that is the cache entry the load reads.
             grid_base = explicit if explicit.lower() in variants else None
         else:
             grid_base = named_variant_base(fam, repo_id, gguf_filename)

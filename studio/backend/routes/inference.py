@@ -47977,7 +47977,7 @@ async def _generate_openai_images(
         # Same order as the load (FLUX.1's base is schnell).
         from core.inference.diffusion_content import content_variant_hint
 
-        # The diffusers status already resolved them (including a shipped grid's own step count); same lookup.
+        # Resolved by the diffusers status (a shipped grid's step count included).
         defaults = status.get("generation_defaults")
         if isinstance(defaults, dict) and defaults.get("steps"):
             steps, guidance = int(defaults["steps"]), float(defaults["guidance"])

@@ -160,11 +160,9 @@ class DiffusionFamily:
     # covers variants whose weights differ. Resolution prefers an exact variant match, then falls back to
     # ``prequant_repos``.
     prequant_variant_repos: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
-    # Lowercased bases whose weights differ from the default's, so they must not inherit ``prequant_repos`` (planning
-    # acts before the base_model_id check refuses); their own ``prequant_variant_repos`` rows still win.
+    # Lowercased bases with different weights: never inherit ``prequant_repos``; their variant rows still win.
     prequant_excluded_bases: tuple[str, ...] = field(default_factory = tuple)
-    # Variant bases a pick's repo id or GGUF file name can name when no card ``base_model`` tag resolves one (a local
-    # file, a card without the tag), e.g. a local ``qwen_image_2.1_turbo-Q4_K_M.gguf``.
+    # Variant bases a repo id or GGUF name can select when no card ``base_model`` tag resolves one.
     named_variant_bases: tuple[str, ...] = field(default_factory = tuple)
     # Preferred checkpoint FILENAME for a scheme, as (scheme, filename), overriding the ``<Model>-<SCHEME>.pt`` name
     # ``prequant_repo_filename`` derives. The derived name stays on as the fallback, so a repo hosting BOTH an old and
@@ -1091,9 +1089,8 @@ def upstream_is_gated(repo_id: Optional[str]) -> bool:
 
 
 def named_variant_base(fam: "DiffusionFamily", *names: Optional[str]) -> Optional[str]:
-    """The longest of ``fam.named_variant_bases`` named by ``names`` (separators folded), or None. The most specific
-    name (the last: the GGUF file after its repo) decides first, and one that spells the family's own base without a
-    variant ends the search, so a plain 2.1 file in a Turbo-named repo keeps 2.1."""
+    """The longest ``fam.named_variant_bases`` entry ``names`` spell (separators folded), or None. The last, most
+    specific name decides first; one spelling the plain base stops the search (a 2.1 file in a Turbo repo stays 2.1)."""
 
     def fold(text: Optional[str]) -> str:
         return "".join(c for c in (text or "").lower() if c.isalnum())
@@ -1451,8 +1448,7 @@ def transformer_variant_differs_from_base(
 
 
 def named_generation_params(*identifiers: Optional[str]) -> Optional[tuple[int, float]]:
-    """Default ``(steps, guidance)`` of the first identifier naming a known model (repo id, then resolved base repo,
-    so a local-path load still resolves via its base repo), or None. Keys matched as substrings, most specific first."""
+    """``(steps, guidance)`` of the first identifier naming a known model (a local path resolves via its base), or None."""
     for identifier in identifiers:
         needle = (identifier or "").lower()
         for key, steps, guidance in _GENERATION_DEFAULTS:
@@ -1469,8 +1465,7 @@ def default_generation_params(*identifiers: Optional[str]) -> tuple[int, float]:
 def generation_params_with_grid(
     grid: Optional[tuple[float, ...]], *identifiers: Optional[str]
 ) -> tuple[int, float]:
-    """:func:`default_generation_params`, except that a load no name recognises but whose checkpoint ships a sampling
-    grid (an opaque local Turbo copy) runs that grid's own step count instead of resampling it to the fallback's."""
+    """:func:`default_generation_params`, but an unnamed load with a shipped grid runs the grid's own step count."""
     named = named_generation_params(*identifiers)
     if named is not None:
         return named
@@ -1497,8 +1492,7 @@ def family_prequant_repo(
     base = canonical_base(base_repo).lower()
     named = named_variant_base(fam, base_repo) if base else None
     if named and named.lower() != base:
-        # A local copy (or other id) naming a variant: that variant's row when the loader's tail compare will accept
-        # its checkpoint, else nothing, never the family default, which is baked from another base's weights.
+        # A local copy naming a variant: its row if the loader's tail compare accepts it, else none (never 2.1's).
         if (
             base.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
             != named.lower().rsplit("/", 1)[-1]

@@ -844,7 +844,6 @@ _TRUSTED_NON_GGUF_REPOS = frozenset(
         # build is in, and then validate_load_request refuses it as a non-unsloth repo before the
         # pipeline is ever built.
         "qwen/qwen-image-2.1",
-        # Also the community Turbo GGUFs' base_model.
         "qwen/qwen-image-2.1-turbo",
         # Krea 2: assembled per-component. Turbo = inference; Raw = the LoRA training base.
         "krea/krea-2-turbo",
@@ -11541,7 +11540,7 @@ def _resolve_base_repo(
             # the vendor id. An EXPLICIT base_repo is verbatim.
             base = canonical_base(tag)
         elif tag is None:
-            # No card tag (a local file): a curated variant the name spells out, never a guess beyond the table.
+            # No card tag: only a curated variant the name spells out.
             base = named_variant_base(fam, repo_id, gguf_filename) or ""
     # Returns the UPSTREAM id; the swap happens at the fetch sites only.
     resolved = resolve_base_repo(fam, base)

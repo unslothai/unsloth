@@ -711,8 +711,7 @@ def test_qwen_image_21_turbo_loads_as_its_own_checkpoint_of_the_family():
         assert default_generation_params(identifier) == (8, 1.0), identifier
     for identifier in ("Qwen/Qwen-Image-2.1", "/models/qwen_image_21", "/models/qwenimage21"):
         assert default_generation_params(identifier) == (25, 1.0), identifier
-    # Turbo has its own hosted int8 / fp8 denoisers; 2.1's (baked from 2.1's weights) are never planned for it, and
-    # nvfp4, which Turbo does not host, quantizes its own weights rather than inheriting 2.1's.
+    # Turbo's own int8 / fp8 denoisers, never 2.1's; nvfp4 (not hosted for Turbo) quantizes at load.
     for scheme in ("int8", "fp8"):
         assert (
             family_prequant_repo(fam, scheme, base_repo = turbo) == "unsloth/Qwen-Image-2.1-Turbo-FP8"
