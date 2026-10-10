@@ -114,9 +114,8 @@ export function changedImageMappings(
   saved: readonly McpImageInputMapping[],
   current: McpImageInputMapping[],
 ): McpImageInputMapping[] | undefined {
-  // Resending an unchanged list would fail an unrelated edit of a server saved with two fields on one tool.
+  // A legacy server can hold two rows per tool, which the backend now rejects: skip unchanged lists, else keep each tool's first row.
   if (JSON.stringify(saved) === JSON.stringify(current)) return undefined;
-  // Any real edit must pass the one-field-per-tool check, so keep the first row per tool, as image_mapping does.
   const tools = new Set<string>();
   return current.filter((m) => !tools.has(m.tool) && tools.add(m.tool));
 }
