@@ -2180,9 +2180,7 @@ def test_the_embedding_resolver_does_not_probe_before_a_cache_lookup(monkeypatch
 
 
 def test_the_backend_probe_is_asked_with_the_callers_token(monkeypatch):
-    """Whether llama-server or sentence-transformers serves a repo depends on reading its
-    modules.json and config.json, which a private repo only shows to a token that reaches it, so
-    the resolver has to ask the backend probe with the caller's own token (#13005)."""
+    """Which backend serves a private repo depends on files only the caller's token can read (#13005)."""
     seen = []
 
     def _probe(model, token = None):
