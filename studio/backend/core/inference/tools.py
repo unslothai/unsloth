@@ -65,6 +65,8 @@ from core.inference.mcp_image import (
     image_input_mappings,
     image_mapping,
     public_tool,
+    settle_image_call,
+    strip_attached_image_note,
 )
 from core.inference.mcp_client import (
     MCP_TOOL_PREFIX,
@@ -13545,12 +13547,26 @@ def _mcp_image_destination(url: str) -> str:
 
 
 def mcp_image_share(name, arguments, mcp_image) -> dict | None:
-    """Approval-card details plus the image bound to this server when the call would send it, else None."""
+    """Approval-card details plus the image bound to this server when the call would send it, else None.
+
+    A call that would send it has ``arguments`` rewritten in place to what goes out (settle_image_call).
+    """
     if mcp_image is None or not isinstance(arguments, dict):
         return None
+    from .tool_loop_controller import UNPARSED_ARGUMENTS_KEY  # noqa: PLC0415
+
     server, tool, tool_name = _mcp_resolve_tool(name)
     mapping = image_mapping(server, tool) if server else None
-    if mapping is None or arguments.get(mapping["field"]) != ATTACHED_IMAGE:
+    if mapping is None:
+        return None
+    # Arguments that could not be read are not a call to rewrite: they keep their ordinary path.
+    schema = _mcp_input_schema(tool)
+    properties = schema.get("properties") or {}
+    if UNPARSED_ARGUMENTS_KEY in arguments or (
+        set(arguments) == {"raw"} and "raw" not in properties
+    ):
+        return None
+    if not settle_image_call(arguments, mapping["field"], schema.get("required") or ()):
         return None
     # The fingerprint covers the server's headers, so it stays on the server: only "disclosure" is streamed.
     return {
@@ -13571,6 +13587,17 @@ def _mcp_resolve_tool(name) -> "tuple[dict | None, dict | None, str]":
     tool_name = _mcp_raw_tool_name(name)
     server = mcp_servers_db.get_server_for_tool(server_key)
     return server, _mcp_cached_tool(server, tool_name) if server else None, tool_name
+
+
+def mcp_image_targets(names) -> list[tuple[str, str]]:
+    """(catalog name, field) for each of these tools with a field mapped to the attached image."""
+    targets = []
+    for name in names:
+        server, tool, _ = _mcp_resolve_tool(name)
+        mapping = image_mapping(server, tool) if server else None
+        if mapping:
+            targets.append((name, mapping["field"]))
+    return targets
 
 
 def mcp_catalog_takes_image(names) -> bool:
@@ -14698,10 +14725,10 @@ def _last_user_text(conversation: list[dict]) -> str:
             continue
         content = msg.get("content")
         if isinstance(content, str):
-            return strip_current_date_update_note(content).strip()
+            return strip_current_date_update_note(strip_attached_image_note(content)).strip()
         if isinstance(content, list):
             parts = [
-                p.get("text", "")
+                strip_attached_image_note(p.get("text", ""))
                 for p in content
                 if isinstance(p, dict) and p.get("type") in ("text", "input_text")
             ]

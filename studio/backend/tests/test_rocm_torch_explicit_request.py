@@ -153,6 +153,16 @@ def _shell_function(name: str) -> str:
     raise AssertionError(f"unterminated function {name}")
 
 
+def _shell_constant(name: str) -> str:
+    """One top-level `NAME=value` assignment from install.sh."""
+    install_sh = Path(__file__).resolve().parents[3] / "install.sh"
+    return next(
+        line
+        for line in install_sh.read_text(encoding = "utf-8").splitlines()
+        if line.startswith(f"{name}=")
+    )
+
+
 def _clean_env(extra: "dict | None" = None) -> dict:
     """The runner's environment minus the two things that decide these cases by themselves."""
     env = {
@@ -237,6 +247,10 @@ def _index_url(env: str, stubs: str) -> str:
             stubs,
             # The stubs above name this host's arch family, so it is not lifted here.
             *_wheel_route_defs(arch_family = False),
+            # The generic route floors its leaf through this helper; left undefined, the
+            # substitution is empty and every generic pick reads as a bare ".../whl/".
+            _shell_constant("_ROCM_BNB_GENERIC_FLOOR_TAG"),
+            _shell_function("_rocm_bnb_compatible_generic_tag"),
             _shell_function("get_torch_index_url"),
             f"{env} get_torch_index_url",
         ]

@@ -466,16 +466,14 @@ export const he = {
     rollback: "שחזר את ההתקנה הקודמת",
     installTitle: "התקנת {engine}",
     installAndLoad: "התקן וטען",
-    confirm:
-      "להתקין את {engine} {version}? הורדה אופציונלית זו עשויה לתפוס כמה גיגה-בייט. נפח ההורדה והדיסק הנוסף המדויק אינו זמין. חבילות וקובצי מודל תואמים מהמטמון ינוצלו מחדש.",
-    confirmSized:
-      "להתקין את {engine} {version}? הורדה אופציונלית זו היא בגודל של כ-{size}. חבילות שכבר קיימות ב-Studio, כולל PyTorch כאשר הגרסאות תואמות, ינוצלו מחדש ולא יורדו שוב.",
+    confirm: "להתקין את {engine} {version}? ההורדה עשויה להגיע לכמה גיגה-בייט.",
+    confirmSized: "להתקין את {engine} {version}? הורדה של כ-{size}.",
     wslSetup:
-      "ב-Windows, {engine} פועל בתוך WSL2 (Windows Subsystem for Linux). Studio יפעיל את WSL2 ויגדיר סביבת Ubuntu פרטית משלו עבור המנועים; הפצות Linux הקיימות שלך לא ייפגעו. Windows יציג בקשת מנהל (UAC) אחת, וייתכן שיבקש ממך להפעיל מחדש לפני שההתקנה תסתיים. דבר לא ישתנה עד שתלחץ על התקנה.",
+      "ב-Windows, {engine} פועל בסביבת WSL2 פרטית ש-Studio מגדיר. תופיע בקשת מנהל אחת, וייתכן שיידרש אתחול.",
     wslReady: "ב-Windows, {engine} פועל בתוך סביבת WSL2 הפרטית של Studio.",
     wslRestart:
       "הפעל מחדש את Windows כדי לסיים את הפעלת WSL2, ולאחר מכן לחץ שוב על התקנה.",
-    background: "ההתקנה פועלת ברקע. הסרת המנוע שומרת את המודלים שהורדת.",
+    background: "ההתקנה פועלת ברקע.",
     failed: "התקנת המנוע נכשלה. נסה שוב או השתמש במנוע ברירת המחדל.",
     details: "פרטים טכניים",
     cancelled: "ההתקנה בוטלה. אפשר לנסות שוב.",
@@ -1759,6 +1757,17 @@ export const he = {
         showAudioCppUpdates: "התראות עדכון של audio.cpp",
         showAudioCppUpdatesDescription:
           "הודע כאשר סביבת הריצה של audio.cpp צריכה עדכון עבור דפי האודיו. כבה אם אינך משתמש באודיו אף פעם.",
+        showUnslothUpdates: "התראות עדכון של Unsloth",
+        showUnslothUpdatesDescription:
+          "הודעה כשגרסה חדשה יותר של Unsloth זמינה להתקנה.",
+        frequency: {
+          always: "תמיד",
+          daily: "פעם ביום",
+          weekly: "פעם בשבוע",
+          biweekly: "כל שבועיים",
+          monthly: "פעם בחודש",
+          off: "כבוי",
+        },
       },
       startup: {
         sectionTitle: "הפעלה",
@@ -3001,6 +3010,19 @@ export const he = {
           "כדי להשתמש במודל החלטות מתארח, הוסף את TypeSafe,‏ Liquid AI או OpenRouter ב'חיבורים'.",
         openConnections: "פתח את 'חיבורים'",
       },
+      mcp: {
+        title: "גישת סוכנים (MCP)",
+        description: "אפשר לסוכני קוד כמו Claude Code ו-Codex להשתמש ב-Unsloth דרך MCP. סוכנים מתחברים עם טוקן גישה מהדף הזה.",
+        enable: "אפשר חיבורי סוכנים",
+        enableDescription: "מגיש את /mcp/ לבקשות שנושאות טוקן גישה של Unsloth.",
+        lockedByEnv: "נקבע על ידי {name}.",
+        loadError: "לא ניתן לטעון את הגדרות גישת הסוכנים.",
+        saveError: "לא ניתן לשמור את הגדרת גישת הסוכנים.",
+        agent: "סוכן",
+        exportKeyHint: "הגדר את {name} לטוקן גישה מהדף הזה לפני שתפעיל את הסוכן.",
+        configFileHint: "הוסף את זה ל-{path}.",
+        keywords: "mcp model context protocol agents claude codex tools סוכנים סוכן כלים פרוטוקול הקשר מודל",
+      },
     },
     about: {
       title: "אודות",
@@ -3902,6 +3924,13 @@ export const he = {
     discard: "ביטול שינויים",
     mentions: "מיומנויות",
     manage: "ניהול מיומנויות",
+    bulkActions: "פעולות מיומנויות",
+    enableAll: "הפעל הכול",
+    disableAll: "השבת הכול",
+    resetAll: "איפוס לברירת המחדל",
+    resetTitle: "לאפס את כל המיומנויות?",
+    resetDescription: "כל מיומנות חוזרת למצב של התקנה חדשה: המיומנויות שלך ומיומנויות Claude מופעלות, מיומנויות מובנות מושבתות. בחירות ההפעלה וההשבתה שלך יימחקו.",
+    reset: "איפוס",
   },
   library: {
     tabs: {
@@ -4082,6 +4111,7 @@ export const he = {
       chatAboutThis: "שוחח על זה",
       chatWithModel: "שוחח עם מודל זה",
       addToFavorites: "הוסף למועדפים",
+      regenerateTitle: "יצירת כותרת מחדש",
       removeFromFavorites: "הסר מהמועדפים",
       download: "הורדה",
       addToFolder: "הוסף לתיקייה",

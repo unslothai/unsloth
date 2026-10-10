@@ -1663,6 +1663,17 @@ export const ru = {
         showAudioCppUpdates: "Уведомления об обновлениях audio.cpp",
         showAudioCppUpdatesDescription:
           "Уведомлять, когда среде выполнения audio.cpp нужно обновление для страниц «Аудио». Отключите, если вы не пользуетесь аудио.",
+        showUnslothUpdates: "Уведомления об обновлениях Unsloth",
+        showUnslothUpdatesDescription:
+          "Сообщать, когда доступна новая версия Unsloth для установки.",
+        frequency: {
+          always: "Всегда",
+          daily: "Раз в день",
+          weekly: "Раз в неделю",
+          biweekly: "Раз в две недели",
+          monthly: "Раз в месяц",
+          off: "Выкл.",
+        },
       },
       startup: {
         sectionTitle: "Автозапуск",
@@ -2899,6 +2910,19 @@ export const ru = {
         addConnection: "Чтобы использовать облачную модель решений, добавьте TypeSafe, Liquid AI или OpenRouter в разделе «Подключения».",
         openConnections: "Открыть подключения",
       },
+      mcp: {
+        title: "Доступ агентов (MCP)",
+        description: "Разрешите агентам для программирования, таким как Claude Code и Codex, работать с Unsloth через MCP. Агенты входят с токеном доступа с этой страницы.",
+        enable: "Разрешить подключения агентов",
+        enableDescription: "Обслуживает /mcp/ для запросов с токеном доступа Unsloth.",
+        lockedByEnv: "Задано через {name}.",
+        loadError: "Не удалось загрузить настройки доступа агентов.",
+        saveError: "Не удалось сохранить настройку доступа агентов.",
+        agent: "Агент",
+        exportKeyHint: "Перед запуском агента задайте в {name} токен доступа с этой страницы.",
+        configFileHint: "Добавьте это в {path}.",
+        keywords: "mcp model context protocol agents claude codex tools агенты агент инструменты протокол контекста модели",
+      },
       usageNoModel:
         "Загрузите или скачайте модель, чтобы увидеть готовые к запуску примеры. На этом сервере пока нет модели, которую можно подставить в примеры.",
     },
@@ -3823,6 +3847,13 @@ export const ru = {
     discard: "Отменить",
     mentions: "Навыки",
     manage: "Управлять навыками",
+    bulkActions: "Действия с навыками",
+    enableAll: "Включить все",
+    disableAll: "Отключить все",
+    resetAll: "Сбросить по умолчанию",
+    resetTitle: "Сбросить все навыки?",
+    resetDescription: "Каждый навык вернётся в состояние новой установки: ваши навыки и навыки Claude включены, встроенные отключены. Ваш выбор включения и отключения будет удалён.",
+    reset: "Сбросить",
   },
   library: {
     tabs: {
@@ -3994,6 +4025,7 @@ export const ru = {
       chatAboutThis: "Обсудить в чате",
       chatWithModel: "Чат с этой моделью",
       addToFavorites: "Добавить в избранное",
+      regenerateTitle: "Создать название заново",
       removeFromFavorites: "Удалить из избранного",
       download: "Скачать",
       addToFolder: "Добавить в папку",

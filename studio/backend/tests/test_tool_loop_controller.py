@@ -190,6 +190,27 @@ def test_successful_duplicate_is_internal_noop_and_keeps_remaining_tools():
     _shared_setup_1(controller)
 
 
+def test_reprepare_uses_normalized_arguments_for_replay_and_dedup():
+    tool_name = "mcp__srv1__lookup"
+    controller = ToolLoopController(tools = [_tool(tool_name)])
+    call = _call(tool_name, {}, "call_a")
+    call["card_id"] = "painted_a"
+    first = controller.prepare_call(call)
+    first.arguments["image"] = "attached_image"
+    first = controller.reprepare_call(first)
+
+    assert first.card_id == "painted_a"
+    assert first.as_assistant_tool_call()["function"]["arguments"] == ('{"image":"attached_image"}')
+    assert first.key == canonical_tool_call_key(tool_name, {"image": "attached_image"})
+    controller.record_result(first, "ok")
+
+    repeated = controller.prepare_call(_call(tool_name, {}, "call_b"))
+    repeated.arguments["image"] = "attached_image"
+    repeated = controller.reprepare_call(repeated)
+    assert repeated.action == "duplicate"
+    assert repeated.key == first.key
+
+
 def test_web_search_alias_args_share_the_duplicate_key():
     controller = ToolLoopController(tools = [_tool("web_search")])
     first = controller.prepare_call(_call("web_search", {"q": "unsloth"}, "call_a"))

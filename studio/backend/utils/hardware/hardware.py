@@ -457,10 +457,15 @@ def _adapter_name_is_live(name: Optional[str], live_names: list[str]) -> bool:
     )
 
 
-# XPU-capable Intel PCI IDs (pciids.h: DG2/ATS-M, PVC, BMG); an allowlist since DG1 Iris Xe MAX is discrete but unsupported.
-_INTEL_XPU_PCI_ID_RANGES = ((0x5690, 0x56C2), (0x0B69, 0x0BE5), (0xE200, 0xE2FF))
-# Core Ultra iGPUs with Arc Graphics, which PyTorch XPU lists: the ids Intel compute-runtime (devices_base.inl) names Arc (MTL-H, ARL-H, LNL, PTL).
-_INTEL_XPU_PCI_IDS = frozenset((0x7D55, 0x7D51, 0x64A0, 0xB080, 0xB081, 0xB082, 0xB083))
+# XPU-capable Intel PCI IDs (pciids.h: DG2/ATS-M, BMG); an allowlist since DG1 Iris Xe MAX is discrete but unsupported.
+_INTEL_XPU_PCI_ID_RANGES = ((0x5690, 0x56C2), (0xE200, 0xE2FF))
+# Core Ultra iGPUs with Arc Graphics, which PyTorch XPU lists: the ids Intel compute-runtime (devices_base.inl) names Arc (MTL-H, ARL-H, LNL, PTL), plus the PTL Arc Pro ids it lists unnamed.
+# Then PVC (Data Center GPU Max), by exact id: a 0x0B69-0x0BE5 range would also take Cedar Trail (0x0BE0-0x0BE5, gma500).
+_INTEL_XPU_PCI_IDS = frozenset((
+    0x7D55, 0x7D51, 0x64A0, 0xB080, 0xB081, 0xB082, 0xB083,  # Core Ultra Arc iGPUs
+    0xB084, 0xB085, 0xB086, 0xB087,  # PTL Arc Pro (Mesa iris_pci_ids.h)
+    0x0BD0, 0x0BD4, 0x0BD5, 0x0BD6, 0x0BD7, 0x0BD8, 0x0BD9, 0x0BDA, 0x0BDB, 0x0B69, 0x0B6E,  # PVC
+))  # fmt: skip
 
 
 def _intel_pci_device_is_xpu_class(device_dir: str) -> Optional[bool]:
@@ -5811,6 +5816,21 @@ def auto_select_gpu_ids(
 
     # Per-GPU check: activations do not shard, so each GPU needs its weight shard plus the full activation cost.
     vram_breakdown = estimate_metadata.get("vram_breakdown", {})
+
+    # A ROCm APU's free reading is the shared host pool: a discrete card that fits alone goes first.
+    if IS_ROCM and len(ranked) > 1:
+        unified = {
+            td["index"]
+            for td in _torch_get_device_inventory(get_parent_visible_gpu_ids())
+            if td.get("_rocm_known_unified")
+        }
+        if unified and ranked[0]["index"] in unified:
+            discrete = next(
+                (c for c in ranked if c["index"] not in unified and c["free_gb"] >= required_gb),
+                None,
+            )
+            if discrete is not None:
+                ranked = [discrete] + [c for c in ranked if c is not discrete]
 
     for candidate in ranked:
         selected.append(candidate["index"])

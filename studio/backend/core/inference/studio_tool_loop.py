@@ -56,6 +56,7 @@ from core.inference.tool_call_parser import (
     strip_tool_markup,
 )
 from core.inference.mcp_images import append_image_turn as append_mcp_image_turn
+from core.inference.mcp_image import note_attached_image
 
 
 def _append_mcp_images_owned(
@@ -64,13 +65,7 @@ def _append_mcp_images_owned(
     owned,
     lead = None,
 ):
-    """append_image_turn with the loop's own part list, for asyncio.to_thread.
-
-    Reserving here and not on the GGUF loop: this one talks to a remote provider that
-    applies its own per-request image cap in document order, so an attachment beside a
-    full allowance of tool results silently loses the newest result -- the one the
-    model just asked for. llama-server is local and answers to the context window.
-    """
+    """reserve caller images because remote providers apply the image cap in document order."""
     append_mcp_image_turn(
         conversation,
         results,
@@ -102,6 +97,7 @@ from core.inference.tools import (
     execute_tool,
     is_high_risk_tool_call,
     mcp_image_share,
+    mcp_image_targets,
     never_needs_approval,
 )
 from state.tool_approvals import (
@@ -304,6 +300,25 @@ def _normalized_call(call: dict[str, Any], fallback_id: str = "") -> dict[str, A
     if isinstance(extra, dict) and extra:
         normalized["extra_content"] = extra
     return normalized
+
+
+def _signed_provider_call_for_replay(call: dict[str, Any]) -> dict[str, Any] | None:
+    extra = call.get("extra_content")
+    google = extra.get("google") if isinstance(extra, dict) else None
+    if not isinstance(google, dict) or not google.get("thought_signature"):
+        return None
+    function = call.get("function")
+    if not isinstance(function, dict):
+        return None
+    return {
+        "id": call["id"],
+        "type": "function",
+        "function": {
+            "name": function["name"],
+            "arguments": function.get("arguments", ""),
+        },
+        "extra_content": extra,
+    }
 
 
 def _argument_fragment(value: Any) -> Any:
@@ -1390,15 +1405,15 @@ async def stream_with_studio_tools(
     cancel_event: threading.Event,
     mcp_image = None,
 ) -> AsyncIterator[str]:
-    """Stream a provider, execute requested Unsloth tools, continue to a final answer."""
     conversation = [dict(message) for message in run.messages]
+    if mcp_image is not None:
+        targets = await asyncio.to_thread(mcp_image_targets, sorted(_tool_names(policy.tools)))
+        conversation = note_attached_image(conversation, targets)
     openai_compaction: tuple[list[dict[str, Any]], str] | None = None
     resumes_partial = run.continue_final_message
-    # The image parts this run appends, so its cap never counts a caller's own
-    # attachments. Run-scoped, not turn-scoped: the cap is across the whole loop,
-    # and seeded with what promotion already put in the conversation.
+    # cap run-owned image parts across the full loop without counting caller attachments.
     loop_mcp_image_parts: list = list(run.promoted_image_parts)
-    # Kept before the loop appends anything: this is the branch the request is on.
+    # preserve the request branch for tools that search conversation history.
     request_branch = list(run.messages)
     remaining = policy.max_calls
     unlimited = remaining >= 9999
@@ -1840,6 +1855,7 @@ async def stream_with_studio_tools(
                 break
             # Before the gate: an exhausted call is replayed too, and only the decision's replay is guaranteed to parse.
             decision = controller.prepare_call(call)
+            signed_provider_call = _signed_provider_call_for_replay(call)
             if not unlimited and remaining <= 0:
                 # Budget spent.
                 for card_line in _unrun_call_card(
@@ -1853,9 +1869,13 @@ async def stream_with_studio_tools(
                 # The result below has to be replayed with its call: only the call that spent the last slot reaches
                 # assistant_tool_calls further down, so this one would arrive as an orphan role="tool" message and
                 # OpenAI, Anthropic and Gemini all reject that history instead of answering.
-                exhausted_call = decision.as_assistant_tool_call()
+                exhausted_call = signed_provider_call or decision.as_assistant_tool_call()
                 exhausted_extra = call.get("extra_content")
-                if isinstance(exhausted_extra, dict) and exhausted_extra:
+                if (
+                    signed_provider_call is None
+                    and isinstance(exhausted_extra, dict)
+                    and exhausted_extra
+                ):
                     exhausted_call["extra_content"] = exhausted_extra
                 assistant_tool_calls.append(exhausted_call)
                 tool_messages.append(
@@ -1870,10 +1890,19 @@ async def stream_with_studio_tools(
             # The frontend groups a round's reasoning by this id (codexLocalToolRoundId), so every tool card the loop
             # emits has to carry it, including the budget-exhausted card above.
             decision.provenance["round_id"] = round_id
+            image_share = None
+            if decision.should_execute and mcp_image is not None:
+                image_share = await asyncio.to_thread(
+                    mcp_image_share, decision.tool_name, decision.arguments, mcp_image
+                )
+                if image_share is not None:
+                    decision = controller.reprepare_call(decision)
             if not decision.should_execute:
                 completion = controller.record_noop(decision)
                 if getattr(transport, "tool_result_only_continuation", False):
-                    assistant_tool_calls.append(decision.as_assistant_tool_call())
+                    assistant_tool_calls.append(
+                        signed_provider_call or decision.as_assistant_tool_call()
+                    )
                     tool_messages.append(
                         {
                             "role": "tool",
@@ -1903,10 +1932,9 @@ async def stream_with_studio_tools(
                 ):
                     yield card_line
                 continue
-            assistant_call = decision.as_assistant_tool_call()
+            assistant_call = signed_provider_call or decision.as_assistant_tool_call()
             call_extra = call.get("extra_content")
-            if isinstance(call_extra, dict) and call_extra:
-                # Replayed verbatim: Gemini 3 validates the signature that came back with this exact call
+            if signed_provider_call is None and isinstance(call_extra, dict) and call_extra:
                 assistant_call["extra_content"] = call_extra
             assistant_tool_calls.append(assistant_call)
 
@@ -1926,11 +1954,6 @@ async def stream_with_studio_tools(
                 sandbox_level = sandbox_level,
             )
             # Sending the user's image always asks, whatever the permission mode.
-            image_share = (
-                await asyncio.to_thread(mcp_image_share, name, arguments, mcp_image)
-                if mcp_image is not None
-                else None
-            )
             needs_confirmation = needs_confirmation or image_share is not None
             strict_isolation = requires_os_isolation(
                 confirm_tool_calls = confirm_tool_calls,

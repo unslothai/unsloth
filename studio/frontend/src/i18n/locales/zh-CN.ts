@@ -1639,6 +1639,17 @@ export const zhCN = {
         showAudioCppUpdates: "audio.cpp 更新通知",
         showAudioCppUpdatesDescription:
           "当音频页面所需的 audio.cpp 运行时需要更新时通知你。如果从不使用音频功能，可以关闭此项。",
+        showUnslothUpdates: "Unsloth 更新通知",
+        showUnslothUpdatesDescription:
+          "有新版本的 Unsloth 可供安装时通知。",
+        frequency: {
+          always: "总是",
+          daily: "每天一次",
+          weekly: "每周一次",
+          biweekly: "每两周一次",
+          monthly: "每月一次",
+          off: "关闭",
+        },
       },
       startup: {
         sectionTitle: "启动",
@@ -2837,6 +2848,19 @@ export const zhCN = {
         addConnection: "要使用托管的决策模型，请在连接中添加 TypeSafe、Liquid AI 或 OpenRouter。",
         openConnections: "打开连接",
       },
+      mcp: {
+        title: "智能体访问 (MCP)",
+        description: "允许 Claude Code、Codex 等编程智能体通过 MCP 使用 Unsloth。智能体使用本页的访问 token 登录。",
+        enable: "允许智能体连接",
+        enableDescription: "为携带 Unsloth 访问 token 的请求提供 /mcp/。",
+        lockedByEnv: "由 {name} 设置。",
+        loadError: "无法加载智能体访问设置。",
+        saveError: "无法保存智能体访问设置。",
+        agent: "智能体",
+        exportKeyHint: "启动智能体前，请将 {name} 设置为本页的访问 token。",
+        configFileHint: "将此内容添加到 {path}。",
+        keywords: "mcp model context protocol agents claude codex tools 智能体 代理 工具 模型上下文协议",
+      },
       usageNoModel:
         "加载或下载一个模型后即可看到可运行的示例。此服务器目前还没有可指定的模型。",
     },
@@ -3701,6 +3725,13 @@ export const zhCN = {
     discard: "放弃",
     mentions: "技能",
     manage: "管理技能",
+    bulkActions: "技能操作",
+    enableAll: "全部启用",
+    disableAll: "全部停用",
+    resetAll: "恢复默认",
+    resetTitle: "重置所有技能？",
+    resetDescription: "每个技能都会恢复为全新安装时的状态：你的技能和 Claude 技能开启，内置技能关闭。你的开关选择将被清除。",
+    reset: "重置",
   },
   library: {
     tabs: {
@@ -3872,6 +3903,7 @@ export const zhCN = {
       chatAboutThis: "就此聊天",
       chatWithModel: "与此模型聊天",
       addToFavorites: "加入收藏",
+      regenerateTitle: "重新生成标题",
       removeFromFavorites: "取消收藏",
       download: "下载",
       addToFolder: "添加到文件夹",

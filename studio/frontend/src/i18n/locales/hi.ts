@@ -1662,6 +1662,17 @@ export const hi = {
         showAudioCppUpdates: "audio.cpp अपडेट सूचनाएं",
         showAudioCppUpdatesDescription:
           "जब ऑडियो पेजों के लिए audio.cpp रनटाइम को अपडेट की ज़रूरत हो तो सूचित करें। यदि आप कभी ऑडियो का उपयोग नहीं करते हैं तो बंद कर दें।",
+        showUnslothUpdates: "Unsloth अपडेट सूचनाएँ",
+        showUnslothUpdatesDescription:
+          "जब Unsloth का नया संस्करण इंस्टॉल करने के लिए उपलब्ध हो, तब सूचित करें।",
+        frequency: {
+          always: "हमेशा",
+          daily: "दिन में एक बार",
+          weekly: "सप्ताह में एक बार",
+          biweekly: "हर दो सप्ताह में",
+          monthly: "महीने में एक बार",
+          off: "बंद",
+        },
       },
       startup: {
         sectionTitle: "स्टार्टअप",
@@ -2894,6 +2905,19 @@ export const hi = {
         addConnection: "होस्ट किया गया निर्णय मॉडल इस्तेमाल करने के लिए कनेक्शन में TypeSafe, Liquid AI या OpenRouter जोड़ें।",
         openConnections: "कनेक्शन खोलें",
       },
+      mcp: {
+        title: "एजेंट एक्सेस (MCP)",
+        description: "Claude Code और Codex जैसे कोडिंग एजेंट को MCP के ज़रिए Unsloth इस्तेमाल करने दें। एजेंट इस पेज के एक्सेस टोकन से साइन इन करते हैं।",
+        enable: "एजेंट कनेक्शन की अनुमति दें",
+        enableDescription: "Unsloth एक्सेस टोकन वाले अनुरोधों के लिए /mcp/ उपलब्ध कराता है।",
+        lockedByEnv: "{name} द्वारा सेट।",
+        loadError: "एजेंट एक्सेस सेटिंग्स लोड नहीं हो सकीं।",
+        saveError: "एजेंट एक्सेस सेटिंग सहेजी नहीं जा सकी।",
+        agent: "एजेंट",
+        exportKeyHint: "एजेंट शुरू करने से पहले {name} को इस पेज के किसी एक्सेस टोकन पर सेट करें।",
+        configFileHint: "इसे {path} में जोड़ें।",
+        keywords: "mcp model context protocol agents claude codex tools एजेंट टूल्स मॉडल कॉन्टेक्स्ट प्रोटोकॉल",
+      },
       usageNoModel:
         "चलाने योग्य उदाहरण देखने के लिए कोई मॉडल लोड या डाउनलोड करें। इस सर्वर के पास अभी बताने को कोई मॉडल नहीं है।",
     },
@@ -3804,6 +3828,13 @@ export const hi = {
     discard: "छोड़ें",
     mentions: "कौशल",
     manage: "कौशल प्रबंधित करें",
+    bulkActions: "कौशल क्रियाएँ",
+    enableAll: "सभी चालू करें",
+    disableAll: "सभी बंद करें",
+    resetAll: "डिफ़ॉल्ट पर रीसेट करें",
+    resetTitle: "सभी कौशल रीसेट करें?",
+    resetDescription: "हर कौशल नए इंस्टॉल वाली स्थिति में लौट आता है: आपके कौशल और Claude कौशल चालू, बंडल किए गए कौशल बंद। आपकी चालू/बंद पसंद हटा दी जाती है।",
+    reset: "रीसेट करें",
   },
   library: {
     tabs: {
@@ -3975,6 +4006,7 @@ export const hi = {
       chatAboutThis: "इसके बारे में चैट करें",
       chatWithModel: "इस मॉडल से चैट करें",
       addToFavorites: "पसंदीदा में जोड़ें",
+      regenerateTitle: "शीर्षक फिर से बनाएं",
       removeFromFavorites: "पसंदीदा से हटाएँ",
       download: "डाउनलोड करें",
       addToFolder: "फ़ोल्डर में जोड़ें",

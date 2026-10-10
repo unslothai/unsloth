@@ -538,6 +538,60 @@ def test_pairing_score(weight, mmproj, expected):
     assert pairing_score(weight, mmproj) == expected
 
 
+@pytest.mark.parametrize(
+    "left,right",
+    [
+        (
+            "https://huggingface.co/google/gemma-4-12B-it",
+            "https://huggingface.co/google/gemma-4-12b-it",
+        ),
+        (
+            "HTTPS://HUGGINGFACE.CO/Google/Gemma-4-12B-it.git/",
+            "http://huggingface.co/google/gemma-4-12b-it",
+        ),
+        ("https://huggingface.co/Google/Gemma-4-12B-it", "google/gemma-4-12b-it"),
+        ("Google/Gemma-4-12B-it", "https://huggingface.co/google/gemma-4-12b-it"),
+    ],
+)
+def test_pairing_score_hf_repo_case_insensitive(left, right):
+    key = "general.base_model.0.repo_url"
+    assert pairing_score({key: left}, {key: right}) == 100
+
+
+@pytest.mark.parametrize("host", ["huggingface.co", "huggingface.co.example.com"])
+def test_pairing_score_rejects_distinct_hf_repositories(host):
+    key = "general.base_model.0.repo_url"
+    assert (
+        pairing_score(
+            {key: f"https://{host}/google/gemma-4-12B-it"},
+            {key: f"https://{host}/google/gemma-4-27b-it"},
+        )
+        == -1
+    )
+
+
+def test_pairing_score_preserves_case_on_hf_lookalike_host():
+    key = "general.base_model.0.repo_url"
+    assert (
+        pairing_score(
+            {key: "https://huggingface.co.example.com/Google/Model"},
+            {key: "https://huggingface.co.example.com/google/model"},
+        )
+        == -1
+    )
+
+
+def test_pairing_score_preserves_case_in_hf_file_paths():
+    key = "general.base_model.0.repo_url"
+    assert (
+        pairing_score(
+            {key: "https://huggingface.co/google/model/blob/main/Config.json"},
+            {key: "https://huggingface.co/google/model/blob/main/config.json"},
+        )
+        == -1
+    )
+
+
 def test_pairing_score_basename_only_fallback():
     assert (
         pairing_score(

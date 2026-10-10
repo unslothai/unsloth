@@ -64,10 +64,7 @@ export function ManagedEngineOfferDialog() {
             {displayName} needs {names.join(" or ")}
           </AlertDialogTitle>
           <AlertDialogDescription>
-            This model is quantized with {quantization}, which Unsloth's default
-            engine cannot run. {names.join(" and ")}{" "}
-            {names.length > 1 ? "can each" : "can"} run it on this computer
-            {ready.length > 0 ? "." : " once installed."}
+            The default engine cannot run {quantization} models.
           </AlertDialogDescription>
         </AlertDialogHeader>
         {offered.length === 0 ? (

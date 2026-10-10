@@ -1656,6 +1656,17 @@ export const ko = {
         showAudioCppUpdates: "audio.cpp 업데이트 알림",
         showAudioCppUpdatesDescription:
           "오디오 페이지에 필요한 audio.cpp 런타임 업데이트가 있으면 알립니다. 오디오를 사용하지 않는다면 끄세요.",
+        showUnslothUpdates: "Unsloth 업데이트 알림",
+        showUnslothUpdatesDescription:
+          "설치할 수 있는 새 Unsloth 버전이 있으면 알립니다.",
+        frequency: {
+          always: "항상",
+          daily: "하루에 한 번",
+          weekly: "일주일에 한 번",
+          biweekly: "2주에 한 번",
+          monthly: "한 달에 한 번",
+          off: "끄기",
+        },
       },
       startup: {
         sectionTitle: "시작",
@@ -2878,6 +2889,19 @@ export const ko = {
         addConnection: "호스팅된 판단 모델을 사용하려면 연결에서 TypeSafe, Liquid AI 또는 OpenRouter를 추가하세요.",
         openConnections: "연결 열기",
       },
+      mcp: {
+        title: "에이전트 액세스 (MCP)",
+        description: "Claude Code, Codex 같은 코딩 에이전트가 MCP로 Unsloth를 사용하게 합니다. 에이전트는 이 페이지의 액세스 토큰으로 로그인합니다.",
+        enable: "에이전트 연결 허용",
+        enableDescription: "Unsloth 액세스 토큰이 있는 요청에 /mcp/를 제공합니다.",
+        lockedByEnv: "{name}(으)로 설정됨.",
+        loadError: "에이전트 액세스 설정을 불러오지 못했습니다.",
+        saveError: "에이전트 액세스 설정을 저장하지 못했습니다.",
+        agent: "에이전트",
+        exportKeyHint: "에이전트를 시작하기 전에 {name}에 이 페이지의 액세스 토큰을 설정하세요.",
+        configFileHint: "이 내용을 {path}에 추가하세요.",
+        keywords: "mcp model context protocol agents claude codex tools 에이전트 도구 모델 컨텍스트 프로토콜",
+      },
       usageNoModel:
         "모델을 로드하거나 다운로드하면 실행 가능한 예제가 표시됩니다. 이 서버에는 아직 지정할 모델이 없습니다.",
     },
@@ -3787,6 +3811,13 @@ export const ko = {
     discard: "버리기",
     mentions: "스킬",
     manage: "스킬 관리",
+    bulkActions: "스킬 작업",
+    enableAll: "모두 사용",
+    disableAll: "모두 사용 안 함",
+    resetAll: "기본값으로 재설정",
+    resetTitle: "모든 스킬을 재설정할까요?",
+    resetDescription: "모든 스킬이 새로 설치한 상태로 돌아갑니다. 내 스킬과 Claude 스킬은 켜지고 번들 스킬은 꺼지며, 켜기/끄기 선택은 지워집니다.",
+    reset: "재설정",
   },
   library: {
     tabs: {
@@ -3958,6 +3989,7 @@ export const ko = {
       chatAboutThis: "이 파일로 채팅",
       chatWithModel: "이 모델과 채팅",
       addToFavorites: "즐겨찾기에 추가",
+      regenerateTitle: "제목 다시 생성",
       removeFromFavorites: "즐겨찾기에서 제거",
       download: "다운로드",
       addToFolder: "폴더에 추가",

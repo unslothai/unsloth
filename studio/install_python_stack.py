@@ -182,6 +182,24 @@ def _generic_pytorch_rocm_tag(ver: tuple[int, int]) -> str | None:
     )
 
 
+# The generic bitsandbytes ROCm wheel is currently built for the rocm6.4 ABI. Keep
+# the published host-to-index mapping above literal (callers may still explicitly
+# select an older leaf), but floor automatic generic installs so torch and bnb agree.
+_GENERIC_ROCM_BNB_COMPAT_FLOOR = (6, 4)
+_GENERIC_ROCM_BNB_COMPAT_TAG = "rocm6.4"
+
+
+def _automatic_generic_pytorch_rocm_tag(ver: tuple[int, int]) -> str | None:
+    """Generic tag for an automatic install, floored to the BNB-compatible ABI."""
+    tag = _generic_pytorch_rocm_tag(ver)
+    if tag is None:
+        return None
+    key = next((k for k, candidate in _ROCM_TORCH_INDEX.items() if candidate == tag), None)
+    if key is not None and key < _GENERIC_ROCM_BNB_COMPAT_FLOOR:
+        return _GENERIC_ROCM_BNB_COMPAT_TAG
+    return tag
+
+
 _ROCM_ARCH_INDEX_FLOOR = (7, 13)  # AMD per-arch index ships torch 2.11+rocm7.13
 
 
@@ -4375,7 +4393,7 @@ _XPU_TORCH_PKG_SPEC: tuple[str, str, str] = (
 def _explicit_xpu_torch_index_url() -> "str | None":
     """The pinned wheel index URL when it names the XPU family (leaf == xpu), else None.
 
-    Intel support is a pin, never autodetection, so the pin is the only signal there is.
+    Only the pin; install.sh's Intel GPU route reaches _ensure_xpu_torch through _TORCH_BACKEND.
     """
     url = _explicit_torch_index_url()
     if url is None:
@@ -4619,8 +4637,60 @@ def _ensure_cuda_torch(*, probe_only: bool = False) -> "bool | None":
     )
 
 
-def _ensure_xpu_torch() -> "bool | None":
-    """Install XPU torch when an explicit XPU pin is set but the venv has another build.
+# Same allowlist as studio/backend/utils/hardware/hardware.py and install.sh's _intel_xpu_gpu_id.
+_INTEL_XPU_PCI_ID_RANGES = ((0x5690, 0x56C2), (0xE200, 0xE2FF))
+_INTEL_XPU_PCI_IDS = frozenset((
+    0x7D55, 0x7D51, 0x64A0, 0xB080, 0xB081, 0xB082, 0xB083,  # Core Ultra Arc iGPUs
+    0xB084, 0xB085, 0xB086, 0xB087,  # PTL Arc Pro (Mesa iris_pci_ids.h)
+    0x0BD0, 0x0BD4, 0x0BD5, 0x0BD6, 0x0BD7, 0x0BD8, 0x0BD9, 0x0BDA, 0x0BDB, 0x0B69, 0x0B6E,  # PVC
+))  # fmt: skip
+_PCI_DEVICES_ROOT = "/sys/bus/pci/devices"
+_INTEL_DEVICE_FILTER_VARS = (
+    "ONEAPI_DEVICE_SELECTOR",
+    "SYCL_DEVICE_FILTER",
+    "SYCL_DEVICE_ALLOWLIST",
+)
+
+
+def _intel_xpu_auto_route_holds() -> bool:
+    """install.sh's Intel XPU auto route, re-asked now: opt-out, ZE_AFFINITY_MASK, AMD silicon, and
+    an allowlisted Intel display device on the PCI bus."""
+    if os.environ.get("UNSLOTH_DISABLE_XPU_AUTO", "0") == "1":
+        return False
+    # Level Zero reads an empty or "default" ZE_AFFINITY_MASK as unset (compute-runtime isAffinityMaskSet).
+    ze_mask_set = os.environ.get("ZE_AFFINITY_MASK", "default") not in ("", "default")
+    if (
+        ze_mask_set
+        or any(v in os.environ for v in _INTEL_DEVICE_FILTER_VARS)
+        or os.environ.get("UNSLOTH_ROCM_GFX_ARCH")
+    ):
+        return False
+    intel = False
+    try:
+        devices = sorted(Path(_PCI_DEVICES_ROOT).iterdir())
+    except OSError:
+        return False
+    for dev in devices:
+        try:
+            vendor = (dev / "vendor").read_text(encoding = "utf-8").strip().lower()
+            if not (dev / "class").read_text(encoding = "utf-8").strip().lower().startswith("0x03"):
+                continue
+            if vendor == "0x1002":
+                return False
+            if vendor != "0x8086":
+                continue
+            device_id = int((dev / "device").read_text(encoding = "utf-8").strip(), 16)
+        except (OSError, ValueError):
+            continue
+        if device_id in _INTEL_XPU_PCI_IDS or any(
+            lo <= device_id <= hi for lo, hi in _INTEL_XPU_PCI_ID_RANGES
+        ):
+            intel = True
+    return intel
+
+
+def _ensure_xpu_torch(probe_only: bool = False) -> "bool | None":
+    """Install XPU torch when an XPU pin, or install.sh's Intel GPU route, is not what the venv has.
 
     Counterpart to _ensure_cpu_torch for Intel. `unsloth studio update` runs setup.sh, never
     install.sh, so its XPU install path is unreachable there; and an xpu leaf names no family
@@ -4628,13 +4698,32 @@ def _ensure_xpu_torch() -> "bool | None":
 
     Windows is excluded on purpose: setup.ps1 owns torch there and already installs the XPU
     trio itself, so acting here would fight it. macOS has no XPU at all. False: a repair is
-    required but the mirror cannot express the XPU index; the caller aborts.
+    required but the mirror cannot express the XPU index; the caller aborts. ``probe_only``
+    answers True where a repair (or that False) would happen, and installs nothing.
     """
     if NO_TORCH or IS_MACOS or IS_WINDOWS:
         return
     pin = _explicit_xpu_torch_index_url()
+    _source = "an explicit XPU index is pinned"
     if pin is None and _explicit_torch_index_family() != "xpu":
-        return
+        # Unpinned: install.sh's route or the recorded flavor; any other stated backend or pin wins.
+        if (
+            _explicit_torch_index_family() is not None
+            or (_TORCH_BACKEND or _RECORDED_TORCH_TAG) != "xpu"
+        ):
+            return
+        # A stated backend is a preference; only install.sh's resolved answer or a record is re-asked.
+        stated = (
+            _TORCH_BACKEND == "xpu"
+            and os.environ.get("UNSLOTH_TORCH_BACKEND_SOURCE", "").strip().lower() != "resolved"
+        )
+        # A recorded XPU flavor yields to an NVIDIA or AMD GPU added since.
+        if not _TORCH_BACKEND and (_has_usable_nvidia_gpu() or _has_rocm_gpu()):
+            return
+        if not stated and not _intel_xpu_auto_route_holds():
+            return
+        pin = _pytorch_whl_leaf_url("xpu")  # None: the mirror cannot express it; False below
+        _source = "this install selected XPU torch for its Intel GPU"
 
     # Un-importable either way installs from the pin below. One shared probe bounds it.
     _ran, _importable, _version, _hip, _cuda = _probe_torch_runtime()
@@ -4645,6 +4734,8 @@ def _ensure_xpu_torch() -> "bool | None":
         # reinstalling never fixes a driver -- it would just re-download the trio twice per
         # update, since this helper runs at two repair points.
         if _xpu_wheel_supported_on_disk():
+            if probe_only:
+                return
             _safe_print(
                 _red(
                     "   torch did not respond in time; the installed XPU build is supported, "
@@ -4667,10 +4758,12 @@ def _ensure_xpu_torch() -> "bool | None":
     else:
         _why = "torch cannot import"
 
+    if probe_only:
+        return True
     if pin is None:
         return False
     _safe_print(
-        f"   {_why} but an explicit XPU index is pinned -- reinstalling XPU torch from "
+        f"   {_why} but {_source} -- reinstalling XPU torch from "
         f"{_strip_index_url_credentials(pin)}"
     )
     _torch_pkg, _vision_pkg, _audio_pkg = _XPU_TORCH_PKG_SPEC
@@ -5830,6 +5923,18 @@ def _cuda_torch_needs_dependency_pass() -> bool:
         return False
 
 
+def _xpu_torch_needs_dependency_pass() -> bool:
+    """True when only the dependency pass can put back the XPU torch this install chose.
+
+    Answered by _ensure_xpu_torch in probe mode, as _cuda_torch_needs_dependency_pass is.
+    Never installs, and fails closed.
+    """
+    try:
+        return bool(_ensure_xpu_torch(probe_only = True))
+    except Exception:  # noqa: BLE001 - a probe that cannot answer keeps the fast path
+        return False
+
+
 def _amd_torch_needs_dependency_pass() -> bool:
     """Return True when setup must run the dependency pass to repair non-ROCm torch.
 
@@ -5935,6 +6040,12 @@ def _amd_torch_needs_dependency_pass() -> bool:
     # floor still needs the 7.13 fixes, and a sole gfx906 above rocm6.3 has no BLAS kernels.
     if _rocm_compat_reroute_pending(_tail_gfx, _tail_ver, _version.lower()):
         return True
+    # The generic bitsandbytes wheel is built for the rocm6.4 ABI. An automatic host therefore
+    # needs a torch reinstall when its existing generic wheel still names an older ABI;
+    # explicit pins, per-arch wheels, and gfx906 are excluded by the helper so their
+    # established routing remains authoritative.
+    if _generic_rocm_bnb_floor_pending(_tail_gfx, _detect_rocm_version(), _version.lower()):
+        return True
     return _rocm_torch_family_needs_repair(_tail_gfx, _detect_rocm_version(), _tail_host)
 
 
@@ -5987,6 +6098,34 @@ def _installed_generic_rocm_tag() -> "tuple[int, int] | None":
         return None
     _m = re.search(r"\+rocm(\d+)\.(\d+)", (_ver or "").lower())
     return (int(_m.group(1)), int(_m.group(2))) if _m else None
+
+
+def _generic_rocm_bnb_floor_pending(
+    runtime_gfx: "str | None", host_ver: "tuple[int, int] | None", installed_ver: str
+) -> bool:
+    """Whether an automatic generic torch install predates the generic BNB ABI floor.
+
+    This is deliberately separate from ``_generic_pytorch_rocm_tag``: the latter is the
+    literal host-to-published-index resolver and remains authoritative for explicit pins.
+    Per-architecture AMD wheels own their ROCm runtime, and gfx906 keeps its legacy
+    rocm6.3-or-older path, so neither is subject to the generic BNB floor.
+    """
+    if (
+        not runtime_gfx
+        or runtime_gfx.lower() == "gfx906"
+        or host_ver is None
+        or _explicit_torch_index_url() is not None
+    ):
+        return False
+    if _torch_requires_rocm_sdk():
+        return False
+    if _generic_pytorch_rocm_tag(host_ver) is None:
+        return False
+    _installed_match = re.search(r"\+rocm(\d+)\.(\d+)", (installed_ver or "").lower())
+    if _installed_match is None:
+        return False
+    _installed_ver = (int(_installed_match.group(1)), int(_installed_match.group(2)))
+    return _installed_ver < _GENERIC_ROCM_BNB_COMPAT_FLOOR
 
 
 def _rocm_torch_family_needs_repair(
@@ -6386,6 +6525,7 @@ def _ensure_rocm_torch() -> "bool | None":
     # for an arch the generic wheel carries no kernels for at all.
     _arch_index_url: "str | None" = None
     _arch_index_pkgs: "tuple[str, str, str] | None" = None
+    _runtime_gfx: "str | None" = None
     # An explicit ROCm pin wins; otherwise both reroutes share one hardware probe. Skipped
     # once the inferred-arch install above has run: it resolves the same index, so re-deriving
     # it here only force-reinstalls what was just downloaded.
@@ -6649,6 +6789,23 @@ def _ensure_rocm_torch() -> "bool | None":
     # normalization, so asking it alone loses nothing, and ORing the override back in would
     # walk the no-GPU mask guard it applies above that read.
     _runtime_is_gfx906 = _runtime_target_is_gfx906()
+    # The generic bitsandbytes ROCm wheel targets the rocm6.4 ABI. Re-run the automatic
+    # generic torch selection when an existing generic wheel below that ABI would otherwise
+    # be paired with it. This is intentionally after the per-arch/missing-kernel routing and
+    # excludes explicit pins and gfx906's legacy path.
+    if (
+        rocm_torch_ready
+        and _rocm_pin is None
+        and not _inferred_arch_installed
+        and _arch_index_url is None
+        and not _runtime_is_gfx906
+        and _generic_rocm_bnb_floor_pending(_runtime_gfx, ver, _installed_torch_ver)
+    ):
+        _safe_print(
+            "   installed generic ROCm torch is below the rocm6.4 bitsandbytes ABI floor "
+            "-- reinstalling from the compatible generic index."
+        )
+        rocm_torch_ready = False
     # Reroute torch to the last gfx906-capable wheel family (rocm6.3) only when the
     # host ROCm version would otherwise pick a newer, kernel-less index -- and never
     # over an explicit pin or an active Strix reroute (the pin/Strix path installs
@@ -6730,7 +6887,20 @@ def _ensure_rocm_torch() -> "bool | None":
         elif _rocm_pin_unusable:
             tag = _pin_family
         else:
-            tag = _generic_pytorch_rocm_tag(ver)
+            # Automatic generic installs must use the ABI floor required by the
+            # generic bitsandbytes wheel, but only for a target known NOT to be gfx906:
+            # gfx906 keeps its legacy rocm6.0-6.3 path (rocm6.4 has no gfx906 BLAS
+            # kernels), and an unreadable arch might be one, so it keeps the literal
+            # resolver as before. _runtime_gfx also carries a KFD-only reading that
+            # _runtime_is_gfx906 does not see. Same gfx906 exclusion as the repair above.
+            _bnb_floor_target = (
+                bool(_runtime_gfx) and _runtime_gfx.lower() != "gfx906" and not _runtime_is_gfx906
+            )
+            tag = (
+                _automatic_generic_pytorch_rocm_tag(ver)
+                if _bnb_floor_target
+                else _generic_pytorch_rocm_tag(ver)
+            )
         if tag is None:
             _safe_print(
                 f"   No PyTorch wheel for ROCm {ver[0]}.{ver[1]} -- skipping torch reinstall"
@@ -12890,6 +13060,9 @@ if __name__ == "__main__":
     if sys.argv[1:] == ["--cuda-torch-needs-dependency-pass"]:
         # Exit 0 forces the dependency pass; exit 1 keeps the fast path.
         sys.exit(0 if _cuda_torch_needs_dependency_pass() else 1)
+    if sys.argv[1:] == ["--xpu-torch-needs-dependency-pass"]:
+        # Exit 0 forces the dependency pass; exit 1 keeps the fast path.
+        sys.exit(0 if _xpu_torch_needs_dependency_pass() else 1)
     if sys.argv[1:] == ["--missing-torch-needs-dependency-pass"]:
         # Exit 0 forces the dependency pass; exit 1 keeps the fast path.
         sys.exit(0 if _missing_torch_needs_dependency_pass() else 1)

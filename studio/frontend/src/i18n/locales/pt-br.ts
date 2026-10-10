@@ -1667,6 +1667,17 @@ export const ptBR = {
         showAudioCppUpdates: "Notificações de atualização do audio.cpp",
         showAudioCppUpdatesDescription:
           "Notifica quando o runtime do audio.cpp precisa de uma atualização para as páginas de Áudio. Desative se você nunca usa Áudio.",
+        showUnslothUpdates: "Notificações de atualização do Unsloth",
+        showUnslothUpdatesDescription:
+          "Avisar quando houver uma versão mais recente do Unsloth para instalar.",
+        frequency: {
+          always: "Sempre",
+          daily: "Uma vez por dia",
+          weekly: "Uma vez por semana",
+          biweekly: "A cada duas semanas",
+          monthly: "Uma vez por mês",
+          off: "Desativado",
+        },
       },
       startup: {
         sectionTitle: "Inicialização",
@@ -2904,6 +2915,19 @@ export const ptBR = {
         addConnection: "Para usar um modelo de decisões hospedado, adicione TypeSafe, Liquid AI ou OpenRouter em Conexões.",
         openConnections: "Abrir Conexões",
       },
+      mcp: {
+        title: "Acesso de agentes (MCP)",
+        description: "Permita que agentes de código como Claude Code e Codex usem o Unsloth via MCP. Os agentes entram com um token de acesso desta página.",
+        enable: "Permitir conexões de agentes",
+        enableDescription: "Atende /mcp/ para solicitações que trazem um token de acesso do Unsloth.",
+        lockedByEnv: "Definido por {name}.",
+        loadError: "Não foi possível carregar as configurações de acesso de agentes.",
+        saveError: "Não foi possível salvar a configuração de acesso de agentes.",
+        agent: "Agente",
+        exportKeyHint: "Defina {name} com um token de acesso desta página antes de iniciar o agente.",
+        configFileHint: "Adicione isto a {path}.",
+        keywords: "mcp model context protocol agents claude codex tools agentes agente ferramentas protocolo de contexto de modelo",
+      },
       usageNoModel:
         "Carregue ou baixe um modelo para ver exemplos executáveis. Este servidor ainda não tem nenhum modelo para indicar.",
     },
@@ -3827,6 +3851,13 @@ export const ptBR = {
     discard: "Descartar",
     mentions: "Habilidades",
     manage: "Gerenciar habilidades",
+    bulkActions: "Ações de habilidades",
+    enableAll: "Ativar todas",
+    disableAll: "Desativar todas",
+    resetAll: "Restaurar padrões",
+    resetTitle: "Redefinir todas as habilidades?",
+    resetDescription: "Cada habilidade volta ao estado de uma instalação nova: suas habilidades e as do Claude ativadas, as incluídas desativadas. Suas escolhas de ativar e desativar são apagadas.",
+    reset: "Redefinir",
   },
   library: {
     tabs: {
@@ -3998,6 +4029,7 @@ export const ptBR = {
       chatAboutThis: "Conversar sobre isto",
       chatWithModel: "Conversar com este modelo",
       addToFavorites: "Adicionar aos Favoritos",
+      regenerateTitle: "Regenerar título",
       removeFromFavorites: "Remover dos Favoritos",
       download: "Baixar",
       addToFolder: "Adicionar à pasta",
