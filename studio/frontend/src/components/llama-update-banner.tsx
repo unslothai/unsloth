@@ -229,13 +229,14 @@ export function LlamaUpdateBanner({
         : "llama";
   const tabVisible = useDocumentVisible();
   useEffect(() => {
-    if (show && tabVisible && shownChannel !== channel) {
+    // livePref: a chained apply can rename the held card to a muted component.
+    if (show && tabVisible && livePref && shownChannel !== channel) {
       markNotificationShown(channel);
       setShownChannel(channel);
     } else if (!show && shownChannel !== null) {
       setShownChannel(null);
     }
-  }, [show, tabVisible, channel, shownChannel]);
+  }, [show, tabVisible, livePref, channel, shownChannel]);
   // A migration re-applies the install's own automatic choice, so it can be offered at a
   // release the machine already has, where the backend pair replaces the version line.
   const backendChange =
