@@ -50,7 +50,7 @@ _scope_locks: weakref.WeakValueDictionary[str, threading.RLock] = weakref.WeakVa
 _named_locks_lock = threading.Lock()
 # Folders being unlinked, read by the worker without rag.db: an ingest can hold the writer past the
 # default 5 s busy_timeout, so the retire write alone could not stop it (#13095).
-_folder_cancels: set[str] = set()
+_folder_cancels: set = set()
 _folder_cancels_lock = threading.Lock()
 _UNLINK_BUSY_TIMEOUT_MS = 30_000
 _retirement_schema_lock = threading.Lock()
@@ -132,17 +132,19 @@ class _PendingIngestion:
 
 def request_cancel(folder_id: str) -> None:
     with _folder_cancels_lock:
-        _folder_cancels.add(folder_id)
+        _folder_cancels.add(account_key(folder_id))
 
 
 def clear_cancel(folder_id: str) -> None:
     with _folder_cancels_lock:
-        _folder_cancels.discard(folder_id)
+        _folder_cancels.discard(account_key(folder_id))
 
 
 def is_cancel_requested(folder_id: str | None) -> bool:
+    if folder_id is None:
+        return False
     with _folder_cancels_lock:
-        return folder_id in _folder_cancels
+        return account_key(folder_id) in _folder_cancels
 
 
 def _folder_lock(folder_id: str) -> threading.RLock:

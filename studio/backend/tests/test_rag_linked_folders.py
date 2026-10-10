@@ -3324,3 +3324,15 @@ def test_periodic_sync_does_not_retry_an_unchanged_failed_file(
     periodic()
     assert attempts.count("bad.txt") == 4
     assert attempts.count("good.txt") == 1
+
+
+def test_an_unlink_cancel_only_reaches_its_own_account():
+    from utils.account_context import AccountContext, run_as
+
+    other = AccountContext("account-b", "b")
+    folder_sync.request_cancel("shared-id")
+    try:
+        assert folder_sync.is_cancel_requested("shared-id")
+        assert not run_as(other, folder_sync.is_cancel_requested, "shared-id")
+    finally:
+        folder_sync.clear_cancel("shared-id")
