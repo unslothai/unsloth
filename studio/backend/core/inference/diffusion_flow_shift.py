@@ -75,7 +75,7 @@ def apply_comfy_flow_shift(
 SAMPLE_SIGMAS_KEY = "sample_sigmas"
 
 
-def _valid_sample_sigmas(raw: Any) -> Optional[tuple[float, ...]]:
+def valid_sample_sigmas(raw: Any) -> Optional[tuple[float, ...]]:
     """``raw`` as a grid the scheduler can take: finite, in (0, 1], strictly decreasing. None otherwise."""
     if not isinstance(raw, (list, tuple)) or not raw:
         return None
@@ -102,7 +102,7 @@ def pipe_sample_sigmas(pipe: Any) -> Optional[tuple[float, ...]]:
         raw = config.get(SAMPLE_SIGMAS_KEY) if config is not None else None
     except Exception:  # noqa: BLE001 - an exotic config carries no grid
         raw = None
-    return _valid_sample_sigmas(raw if raw is not None else getattr(pipe, SAMPLE_SIGMAS_ATTR, None))
+    return valid_sample_sigmas(raw if raw is not None else getattr(pipe, SAMPLE_SIGMAS_ATTR, None))
 
 
 def install_sample_sigmas(
@@ -115,7 +115,7 @@ def install_sample_sigmas(
     grid = pipe_sample_sigmas(pipe)
     if grid is not None or raw is None:
         return grid
-    grid = _valid_sample_sigmas(raw)
+    grid = valid_sample_sigmas(raw)
     if grid is None:
         if logger is not None:
             logger.warning("sample_sigmas ignored: not a decreasing grid in (0, 1]: %r", raw)
@@ -126,11 +126,6 @@ def install_sample_sigmas(
             "checkpoint sampling grid installed: %d steps, shipped scheduler kept", len(grid)
         )
     return grid
-
-
-def valid_sample_sigmas(raw: Any) -> Optional[tuple[float, ...]]:
-    """``raw`` (a model_index.json ``sample_sigmas``) as a usable grid, or None."""
-    return _valid_sample_sigmas(raw)
 
 
 def sd_cpp_sample_sigmas(grid: tuple[float, ...], steps: int) -> list[float]:
