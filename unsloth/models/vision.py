@@ -1118,9 +1118,8 @@ def _zoo_supports_idefics3_fast_inference():
 
 # Need an unsloth_zoo that rebuilds MoE blocks from vLLM.
 VLLM_ZOO_MOE_VLM = ("qwen3_5_moe", "gemma4", "gemma4_text")
-# Dense Gemma-4 shares the model type but aborts in vLLM's audio-encoder profiling, and in
-# 4-bit hits a bnb loader vLLM >= 0.28 moved out of tree. Only MoE checkpoints pass.
-VLLM_MOE_ONLY_VLM = ("gemma4", "gemma4_text")
+# Dense Gemma-4 needs a zoo that disables vLLM audio profiling (older zoo aborts there).
+VLLM_DENSE_NEEDS_ZOO_VLM = ("gemma4", "gemma4_text")
 
 
 def _is_sparse_moe_config(config):
@@ -1128,6 +1127,17 @@ def _is_sparse_moe_config(config):
     return bool(
         getattr(text_config, "num_experts", None) or getattr(text_config, "enable_moe_block", False)
     )
+
+
+def _zoo_supports_dense_gemma4_fast_inference():
+    try:
+        from unsloth_zoo.vllm_utils import (  # noqa: F401
+            _get_multimodal_engine_args,
+            _load_gemma4_audio_from_checkpoint,
+        )
+        return True
+    except Exception:
+        return False
 
 
 def _zoo_supports_moe_fast_inference():
@@ -2959,13 +2969,14 @@ class FastBaseModel:
         # Outside the VLM block: text_only = True has is_vlm_config False.
         if (
             fast_inference
-            and any(arch in VLLM_MOE_ONLY_VLM for arch in model_types)
+            and any(arch in VLLM_DENSE_NEEDS_ZOO_VLM for arch in model_types)
             and not _is_sparse_moe_config(auto_config)
+            and not _zoo_supports_dense_gemma4_fast_inference()
         ):
             raise RuntimeError(
-                f"Unsloth: fast_inference = True is only supported for the MoE {model_type_arch} "
-                "checkpoints (such as gemma-4-26B-A4B), not the dense ones yet. "
-                "Please set fast_inference = False."
+                f"Unsloth: fast_inference = True for dense {model_type_arch} checkpoints "
+                "(such as gemma-4-E2B) needs a newer unsloth_zoo. "
+                "Please run `pip install --upgrade unsloth_zoo`, or set fast_inference = False."
             )
         if (
             fast_inference
@@ -3711,13 +3722,25 @@ class FastBaseModel:
                 from unsloth_zoo.utils import get_quant_type
 
                 # Mirrors load_vllm's bnb loader test, so prequantized bnb-4bit is refused too.
+                is_bnb_load = (
+                    load_in_4bit
+                    or load_in_8bit
+                    or str(model_name).lower().endswith("-bnb-4bit")
+                    or get_quant_type(model_config) == "bitsandbytes"
+                )
                 if (
-                    (
-                        load_in_4bit
-                        or load_in_8bit
-                        or str(model_name).lower().endswith("-bnb-4bit")
-                        or get_quant_type(model_config) == "bitsandbytes"
+                    is_bnb_load
+                    and any(arch in VLLM_DENSE_NEEDS_ZOO_VLM for arch in model_types)
+                    and not _is_sparse_moe_config(model_config)
+                ):
+                    raise NotImplementedError(
+                        f"Unsloth: fast_inference = True for dense {model_type_arch} is only verified in 16-bit, "
+                        "not with bitsandbytes weights (load_in_4bit / load_in_8bit = True or a prequantized "
+                        "bnb-4bit checkpoint) yet.\n"
+                        "Load in 16-bit (load_in_4bit = False, load_in_8bit = False), or set fast_inference = False."
                     )
+                if (
+                    is_bnb_load
                     and any(arch in VLLM_ZOO_MOE_VLM for arch in model_types)
                     and _is_sparse_moe_config(model_config)
                 ):
