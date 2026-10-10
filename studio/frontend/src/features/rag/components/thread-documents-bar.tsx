@@ -485,7 +485,7 @@ function DocumentCard({
     const textual =
       documentKind(file.name, file.type) === null && !isMarkdown(file.name, file.type);
     // Served as octet-stream: the viewer reads text only when the type says so.
-    return textual ? new Blob([file], { type: "text/plain" }) : file;
+    return textual ? new File([file], file.name, { type: "text/plain" }) : file;
     // The id names the stored file; the rest of the row changes with progress frames.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [doc.id, thumbnailFile]);
@@ -715,8 +715,9 @@ function ChatFilesPanel({
           className="size-4 shrink-0 text-muted-foreground"
         />
         {info ? (
-          // The whole title is the trigger, so hovering the heading explains it too.
-          <Tooltip>
+          // The whole title is the trigger, so hovering the heading explains it too. Only resting on
+          // it opens the tooltip, and it shuts on leaving: it must not linger over the cards.
+          <Tooltip delayDuration={300} disableHoverableContent={true}>
             <TooltipTrigger asChild={true}>
               <div
                 // biome-ignore lint/a11y/noNoninteractiveTabindex: focus opens the tooltip for keyboard users.
