@@ -1388,7 +1388,7 @@ def _select_main_scope_render(
     span_char_limit: int | None = None,
 ) -> tuple[int, str, int]:
     """Length and boilerplate-stripped render of the largest single ``<tag>``
-    subtree, and how many such subtrees the page holds. Sizing candidates
+    subtree, and how many such subtrees render any text. Sizing candidates
     one at a time stops many tiny sibling cards from clearing the threshold
     together, and returning that one subtree keeps unrelated siblings (related
     cards, comment threads) out of the output.
@@ -1434,7 +1434,7 @@ def _select_main_scope_render(
         if size > best_len:
             best_len = size
             best_render = rendered
-    return best_len, best_render, len(renderer.scope_segments)
+    return best_len, best_render, sum(1 for seg in renderer.scope_segments if seg.strip())
 
 
 def _visible_chars(text: str) -> int:
