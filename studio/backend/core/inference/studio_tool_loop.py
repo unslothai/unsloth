@@ -302,6 +302,25 @@ def _normalized_call(call: dict[str, Any], fallback_id: str = "") -> dict[str, A
     return normalized
 
 
+def _signed_provider_call_for_replay(call: dict[str, Any]) -> dict[str, Any] | None:
+    extra = call.get("extra_content")
+    google = extra.get("google") if isinstance(extra, dict) else None
+    if not isinstance(google, dict) or not google.get("thought_signature"):
+        return None
+    function = call.get("function")
+    if not isinstance(function, dict):
+        return None
+    return {
+        "id": call["id"],
+        "type": "function",
+        "function": {
+            "name": function["name"],
+            "arguments": function.get("arguments", ""),
+        },
+        "extra_content": extra,
+    }
+
+
 def _argument_fragment(value: Any) -> Any:
     """A decoded-object ``arguments`` delta as the text it would have streamed as. llama-server has
     shipped a decoded object where a string fragment belongs (ggml-org/llama.cpp#20198).
@@ -1833,6 +1852,7 @@ async def stream_with_studio_tools(
                 break
             # Before the gate: an exhausted call is replayed too, and only the decision's replay is guaranteed to parse.
             decision = controller.prepare_call(call)
+            signed_provider_call = _signed_provider_call_for_replay(call)
             if not unlimited and remaining <= 0:
                 # Budget spent.
                 for card_line in _unrun_call_card(
@@ -1846,9 +1866,9 @@ async def stream_with_studio_tools(
                 # The result below has to be replayed with its call: only the call that spent the last slot reaches
                 # assistant_tool_calls further down, so this one would arrive as an orphan role="tool" message and
                 # OpenAI, Anthropic and Gemini all reject that history instead of answering.
-                exhausted_call = decision.as_assistant_tool_call()
+                exhausted_call = signed_provider_call or decision.as_assistant_tool_call()
                 exhausted_extra = call.get("extra_content")
-                if isinstance(exhausted_extra, dict) and exhausted_extra:
+                if signed_provider_call is None and isinstance(exhausted_extra, dict) and exhausted_extra:
                     exhausted_call["extra_content"] = exhausted_extra
                 assistant_tool_calls.append(exhausted_call)
                 tool_messages.append(
@@ -1873,7 +1893,9 @@ async def stream_with_studio_tools(
             if not decision.should_execute:
                 completion = controller.record_noop(decision)
                 if getattr(transport, "tool_result_only_continuation", False):
-                    assistant_tool_calls.append(decision.as_assistant_tool_call())
+                    assistant_tool_calls.append(
+                        signed_provider_call or decision.as_assistant_tool_call()
+                    )
                     tool_messages.append(
                         {
                             "role": "tool",
@@ -1903,10 +1925,9 @@ async def stream_with_studio_tools(
                 ):
                     yield card_line
                 continue
-            assistant_call = decision.as_assistant_tool_call()
+            assistant_call = signed_provider_call or decision.as_assistant_tool_call()
             call_extra = call.get("extra_content")
-            if isinstance(call_extra, dict) and call_extra:
-                # Replayed verbatim: Gemini 3 validates the signature that came back with this exact call
+            if signed_provider_call is None and isinstance(call_extra, dict) and call_extra:
                 assistant_call["extra_content"] = call_extra
             assistant_tool_calls.append(assistant_call)
 

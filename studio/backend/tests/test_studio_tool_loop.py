@@ -768,6 +768,51 @@ def test_settled_image_call_is_replayed_and_deduped_with_sent_arguments(
     }
 
 
+def test_settled_image_call_keeps_signed_provider_replay_exact(executed, monkeypatch):
+    from core.inference.mcp_image import ATTACHED_IMAGE, McpImage
+
+    image = McpImage(mime = "image/png", data = b"IMG")
+
+    def settle(_name, arguments, _image):
+        arguments["image"] = ATTACHED_IMAGE
+        return {
+            "disclosure": {"server": "Trace", "tool": "lookup", "size_bytes": 3},
+            "image": image.approved_for("r1"),
+        }
+
+    monkeypatch.setattr(loop_mod, "mcp_image_share", settle)
+    monkeypatch.setattr(loop_mod, "begin_tool_decision", lambda *_args: object())
+    monkeypatch.setattr(
+        loop_mod, "wait_tool_decision", lambda *_args, **_kwargs: "allow"
+    )
+    monkeypatch.setattr(loop_mod, "abort_tool_decision", lambda *_args: None)
+    call = {
+        "index": 0,
+        "id": "c1",
+        "function": {"name": "python", "arguments": "{ }"},
+        "extra_content": {"google": {"thought_signature": "SIG-A"}},
+    }
+    transport = FakeTransport(
+        [
+            [_sse({"tool_calls": [call]}), _sse(finish = "tool_calls"), _DONE],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+    _run(transport, tools = [PY], mcp_image = image, bypass_permissions = True)
+
+    assert executed[0]["arguments"] == {"image": ATTACHED_IMAGE}
+    replayed = next(
+        message
+        for message in reversed(transport.requests[1]["messages"])
+        if message.get("role") == "assistant" and message.get("tool_calls")
+    )["tool_calls"][0]
+    assert replayed["function"]["arguments"] == "{ }"
+    assert replayed["extra_content"] == {
+        "google": {"thought_signature": "SIG-A"}
+    }
+
+
 def test_the_model_is_told_about_the_attached_image(executed, monkeypatch):
     from core.inference.mcp_image import McpImage
 
