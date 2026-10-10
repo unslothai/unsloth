@@ -719,7 +719,6 @@ def test_sharing_the_attached_image_asks_even_with_bypass(executed, monkeypatch)
     start = _events(lines, "tool_start")[0]
     assert start["awaiting_confirmation"] is True and start["image_disclosure"] == disclosure
     assert len(asked) == 1 and executed[0]["mcp_image"] == image.approved_for("r1")
-    # Without an image the same call keeps the ordinary path: no card, no image.
     executed.clear()
     lines = _run(FakeTransport(turns), bypass_permissions = True)
     assert _events(lines, "tool_start")[0]["awaiting_confirmation"] is False
@@ -757,7 +756,7 @@ def test_sandbox_stays_on_by_default(executed):
     _run(transport, tools = [PY])
 
     assert executed[0]["disable_sandbox"] is False
-    # Nobody approved it, so the executor keeps the jail even for a host path.
+    # without approval, the executor keeps the jail even for a host path.
     assert "host_access_approved" not in executed[0]
 
 

@@ -65,13 +65,7 @@ def _append_mcp_images_owned(
     owned,
     lead = None,
 ):
-    """append_image_turn with the loop's own part list, for asyncio.to_thread.
-
-    Reserving here and not on the GGUF loop: this one talks to a remote provider that
-    applies its own per-request image cap in document order, so an attachment beside a
-    full allowance of tool results silently loses the newest result -- the one the
-    model just asked for. llama-server is local and answers to the context window.
-    """
+    """reserve caller images because remote providers apply the image cap in document order."""
     append_mcp_image_turn(
         conversation,
         results,
@@ -1390,18 +1384,15 @@ async def stream_with_studio_tools(
     cancel_event: threading.Event,
     mcp_image = None,
 ) -> AsyncIterator[str]:
-    """Stream a provider, execute requested Unsloth tools, continue to a final answer."""
     conversation = [dict(message) for message in run.messages]
     if mcp_image is not None:
         targets = await asyncio.to_thread(mcp_image_targets, sorted(_tool_names(policy.tools)))
         conversation = note_attached_image(conversation, targets)
     openai_compaction: tuple[list[dict[str, Any]], str] | None = None
     resumes_partial = run.continue_final_message
-    # The image parts this run appends, so its cap never counts a caller's own
-    # attachments. Run-scoped, not turn-scoped: the cap is across the whole loop,
-    # and seeded with what promotion already put in the conversation.
+    # cap run-owned image parts across the full loop without counting caller attachments.
     loop_mcp_image_parts: list = list(run.promoted_image_parts)
-    # Kept before the loop appends anything: this is the branch the request is on.
+    # preserve the request branch for tools that search conversation history.
     request_branch = list(run.messages)
     remaining = policy.max_calls
     unlimited = remaining >= 9999

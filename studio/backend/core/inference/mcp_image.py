@@ -180,7 +180,7 @@ def _input_schema(tool: dict) -> dict:
 
 
 def image_mapping(server: dict, tool: Optional[dict]) -> Optional[dict]:
-    """The server's mapping for ``tool`` while its field is still a top-level string."""
+    """return the server mapping only while its field remains a top-level string."""
     if not tool:
         return None
     for mapping in image_input_mappings(server):
@@ -198,7 +198,7 @@ def _loose(value: str) -> str:
 
 
 def _names_the_image(value) -> bool:
-    """The placeholder itself, or a path or URL ending in it; not text that merely mentions it."""
+    """match only the placeholder or a path or URL ending in it, never a mention."""
     return (
         isinstance(value, str)
         and _loose(re.split(r"[/\\]", value.strip().rstrip("/\\"))[-1]) == ATTACHED_IMAGE
@@ -210,13 +210,7 @@ def settle_image_call(
     field: str,
     required = (),
 ) -> bool:
-    """Rewrite a mapped call made while an image is attached to what will be sent, in place.
-
-    Small models leave an optional field out, spell the placeholder loosely, or point a sibling such
-    as a path at the attachment too. Such a call gets the placeholder in ``field`` and loses the
-    optional siblings that name it, so the approval card shows exactly what goes out. A sibling in
-    ``required`` is kept. Returns False and changes nothing when ``field`` holds anything else.
-    """
+    """normalize small-model image arguments in place so approval shows the exact outgoing call."""
     value = arguments.get(field)
     if not (
         value is None or value == "" or isinstance(value, str) and _loose(value) == ATTACHED_IMAGE
@@ -241,7 +235,7 @@ def _is_attached_image_note(text: str) -> bool:
 
 
 def strip_attached_image_note(text: str) -> str:
-    """``text`` without the note from ``note_attached_image``, for readers of what the user typed."""
+    """remove the synthetic image note before exposing user-authored text."""
     if _is_attached_image_note(text):
         return ""
     head, separator, tail = text.rpartition(f"\n\n{IMAGE_NOTE_PREFIX}")
@@ -250,10 +244,7 @@ def strip_attached_image_note(text: str) -> str:
 
 
 def note_attached_image(messages: list, targets: list[tuple[str, str]]) -> list:
-    """``messages`` with the latest user turn saying its image is attached and which fields take it.
-
-    The model never sees the image itself, so without this note it asks the user to attach one.
-    """
+    """tell the model which fields accept the attached image without exposing its bytes."""
     if not targets:
         return messages
     calls = " or ".join(
@@ -274,7 +265,7 @@ def note_attached_image(messages: list, targets: list[tuple[str, str]]) -> list:
 
 
 def public_tool(server: dict, tool: dict) -> dict:
-    """``tool`` as the model sees it: a mapped field accepts only the placeholder."""
+    """expose a mapped field to the model as a placeholder-only string."""
     mapping = image_mapping(server, tool)
     if mapping is None:
         return tool
