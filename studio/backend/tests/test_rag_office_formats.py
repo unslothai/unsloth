@@ -731,6 +731,20 @@ def test_epub_follows_the_spine_and_skips_navigation(tmp_path):
     assert text.index("Revenue increased") < text.index("Zebramarker ends the book")
 
 
+def test_epub_package_path_is_a_url(tmp_path):
+    with zipfile.ZipFile(build_epub(tmp_path / "plain.epub")) as z:
+        members = {name: z.read(name) for name in z.namelist()}
+    members["OEBPS/My Book.opf"] = members.pop("OEBPS/content.opf")
+    members["META-INF/container.xml"] = members["META-INF/container.xml"].replace(
+        b"OEBPS/content.opf", b"OEBPS/My%20Book.opf"
+    )
+    book = tmp_path / "book.epub"
+    with zipfile.ZipFile(book, "w") as z:
+        for name, data in members.items():
+            z.writestr(name, data)
+    assert "Zebramarker ends the book" in _text(book)
+
+
 @pytest.mark.parametrize(
     "uri, protected", [("OEBPS/text/Chapter%201.xhtml", True), ("OEBPS/fonts/a.otf", False)]
 )

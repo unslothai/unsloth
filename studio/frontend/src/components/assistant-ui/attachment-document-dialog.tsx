@@ -281,21 +281,26 @@ const SentOriginalDialog: FC<
   );
 };
 
-/** A file in hand outside any message, such as a chat with files source: pages, markdown or text. */
-export const LocalFileDialog: FC<PropsWithChildren<{ file: File }>> = ({ children, file }) => (
+/** A file outside any message, such as a chat with files source, read on open: pages, markdown or
+ *  text (a text/* blob). */
+export const LocalFileDialog: FC<PropsWithChildren<{ name: string; load: () => Promise<Blob> }>> = ({
+  children,
+  name,
+  load,
+}) => (
   <DocumentDialog
     source={{
       kind: "document",
-      name: file.name,
-      contentType: file.type || undefined,
-      file,
+      name,
+      contentType: undefined,
+      file: undefined,
       src: undefined,
       audio: undefined,
       video: undefined,
       text: undefined,
       hasOriginal: true,
     }}
-    load={() => Promise.resolve(file)}
+    load={load}
     redactFromReload={false}
     textFallback={true}
   >
