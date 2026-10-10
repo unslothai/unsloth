@@ -207,3 +207,33 @@ def test_mps_installs_bounded_attention_without_trusting_the_probe(monkeypatch):
 def test_bounded_attention_targets(monkeypatch, target, math_only, expected):
     monkeypatch.setattr(attention, "sdpa_math_only", lambda t: math_only)
     assert bounded.needs_bounded_attention(target) is expected
+
+
+def test_mps_budget_keeps_one_call_per_segment_when_the_scores_fit():
+    torch.manual_seed(3)
+    attn = qmod.QwenImage21Attention(dim = 16, heads = 2, dim_head = 8)
+    stock, patched = qmod.QwenImage21AttnProcessor(), bounded._processor_class()()
+    patched._unsloth_score_budget = 2**30
+    states = torch.randn(1, 1800, 16)
+    segments = [(0, 600, True), (600, 1130, False)]
+    with torch.inference_mode():
+        expected = stock(attn, states, segments = segments)
+        actual = patched(attn, states, segments = segments)
+    assert torch.equal(actual, expected)
+
+
+@pytest.mark.parametrize(
+    "budget, rows",
+    [(None, 512), (0, 512), (2 * 2 * 4096 * 4 * 700, 700), (2**40, 2**40 // (2 * 2 * 4096 * 4))],
+)
+def test_query_rows_follow_the_score_budget(budget, rows):
+    q, k = torch.empty(2, 4096, 2, 8), torch.empty(2, 4096, 2, 8)
+    assert bounded._query_rows(q, k, budget) == rows
+
+
+def test_mps_score_budget_reads_the_override(monkeypatch):
+    monkeypatch.setenv(bounded.SCORE_BUDGET_ENV, "256")
+    assert bounded.mps_score_budget() == 256 * 2**20
+    monkeypatch.setenv(bounded.SCORE_BUDGET_ENV, "")
+    monkeypatch.setattr(torch.mps, "recommended_max_memory", lambda: 16 * 2**30, raising = False)
+    assert bounded.mps_score_budget() == 2 * 2**30

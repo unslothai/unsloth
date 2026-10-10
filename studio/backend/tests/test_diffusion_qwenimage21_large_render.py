@@ -88,6 +88,8 @@ def _render(pipe, size):
 @pytest.mark.allow_network
 def test_large_render_is_bounded_finite_and_matches_stock(tiny_pipe, monkeypatch):
     pipe, device = tiny_pipe
+    # Below any real budget, so the large render splits at the 512-row floor on every device.
+    monkeypatch.setenv(bounded.SCORE_BUDGET_ENV, "0")
     reference = _render(pipe, 256).cpu()
     # The target Studio resolves on Apple Silicon; install never touches the device itself.
     assert bounded.install(pipe, SimpleNamespace(device = "mps", backend = "mps"))

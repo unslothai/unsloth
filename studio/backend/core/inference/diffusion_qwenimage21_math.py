@@ -6,9 +6,40 @@
 from __future__ import annotations
 
 import functools
-from typing import Any
+import os
+from typing import Any, Optional
 
 QUERY_CHUNK_SIZE = 512
+# MiB one score tensor may take before MPS attention is split; unset = 1/8 of the GPU working set.
+SCORE_BUDGET_ENV = "UNSLOTH_DIFFUSION_ATTN_SCORE_BUDGET_MB"
+
+
+def mps_score_budget() -> int:
+    """Bytes one ``batch x heads x queries x keys`` score tensor may take on MPS before attention is split.
+
+    Sized so 1024x1024 in bf16 on a 16 GB Mac (about 1.1 GB of scores) stays one call, exactly as before; only sizes
+    that would otherwise swap (2048x2048 is about 17 GB per tensor) are split."""
+    raw = (os.environ.get(SCORE_BUDGET_ENV) or "").strip()
+    if raw:
+        try:
+            return max(0, int(float(raw) * 2**20))
+        except ValueError:
+            pass
+    try:
+        import torch
+
+        total = int(torch.mps.recommended_max_memory())
+    except Exception:  # noqa: BLE001 - no MPS runtime: the fixed floor below
+        total = 0
+    return total // 8 if total > 0 else 2**30
+
+
+def _query_rows(query, key, budget: Optional[int]) -> int:
+    """Query rows per call: ``QUERY_CHUNK_SIZE`` without a budget, else as many as the budget holds (at least that)."""
+    if budget is None:
+        return QUERY_CHUNK_SIZE
+    per_row = query.shape[0] * query.shape[2] * key.shape[1] * query.element_size()
+    return max(QUERY_CHUNK_SIZE, budget // max(per_row, 1))
 
 
 def _bounded_attention(
@@ -19,16 +50,18 @@ def _bounded_attention(
     *,
     mask = None,
     causal_offset = None,
+    budget = None,
     **kwargs,
 ):
     import torch
 
+    rows = _query_rows(query, key, budget)
     outputs = []
-    for start in range(0, query.shape[1], QUERY_CHUNK_SIZE):
-        part = query[:, start : start + QUERY_CHUNK_SIZE]
+    for start in range(0, query.shape[1], rows):
+        part = query[:, start : start + rows]
         part_mask = mask
         if mask is not None and mask.shape[-2] != 1:
-            part_mask = mask[..., start : start + QUERY_CHUNK_SIZE, :]
+            part_mask = mask[..., start : start + rows, :]
         if causal_offset is not None:
             # The segment can see all preceding segments, then a triangle over its own keys.
             causal = torch.arange(key.shape[1], device = query.device)[None, :] <= (
@@ -74,6 +107,9 @@ def _processor_class():
     )
 
     class BoundedMathQwenImage21AttnProcessor(QwenImage21AttnProcessor):
+        # None: fixed QUERY_CHUNK_SIZE rows (math-only ROCm). Bytes: split only past that score size (MPS).
+        _unsloth_score_budget = None
+
         def __call__(
             self,
             attn,
@@ -108,6 +144,7 @@ def _processor_class():
                     value,
                     dispatch_attention_fn,
                     mask = attention_mask,
+                    budget = self._unsloth_score_budget,
                     backend = self._attention_backend,
                     parallel_config = self._parallel_config,
                 )
@@ -122,6 +159,7 @@ def _processor_class():
                             dispatch_attention_fn,
                             mask = None if key_valid is None else key_valid[:, None, None, :end],
                             causal_offset = start if is_text else None,
+                            budget = self._unsloth_score_budget,
                             backend = None,
                             parallel_config = self._parallel_config,
                         )
@@ -134,6 +172,7 @@ def _processor_class():
                         value,
                         dispatch_attention_fn,
                         mask = None if key_valid is None else key_valid[:, None, None, :],
+                        budget = self._unsloth_score_budget,
                         backend = None,
                         parallel_config = self._parallel_config,
                     )
@@ -175,17 +214,20 @@ def install(
     if type(transformer).__name__ != "QwenImage21Transformer2DModel":
         return False
     cls = _processor_class()
+    budget = mps_score_budget() if getattr(target, "device", None) == "mps" else None
     changed = False
     for module in transformer.modules():
         processor = getattr(module, "processor", None)
         if type(processor) in (QwenImage21AttnProcessor, speed_processor_class()):
             replacement = cls()
             replacement.__dict__.update(processor.__dict__)
+            replacement._unsloth_score_budget = budget
             module.set_processor(replacement)
             changed = True
     if changed and logger is not None:
         logger.info(
-            "diffusion.qwenimage21: bounding math attention to 512 query rows, including prefill"
+            "diffusion.qwenimage21: bounding math attention to %s, including prefill",
+            "512 query rows" if budget is None else f"{budget / 2**30:.2f} GiB of scores per call",
         )
     return bounded_math_attention(pipe)
 
