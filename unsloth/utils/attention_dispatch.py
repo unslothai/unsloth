@@ -139,6 +139,53 @@ def _torch_varlen_takes(
     return not torch.are_deterministic_algorithms_enabled()
 
 
+# Above this mean segment length cuDNN's per-segment SDPA beats torch's varlen flash kernel (B200 sweep).
+_VARLEN_CUDNN_MAX_MEAN_LEN = 1024
+
+
+def _sdpa_backend_state(device, dtype, head_dim, n_heads, n_kv_heads, is_causal, enable_gqa):
+    """(flash SDPA enabled, SDPA would pick cuDNN) for these shapes. Both reads break a dynamo graph."""
+    flash = torch.backends.cuda.flash_sdp_enabled()
+    try:
+        from torch.nn.attention import SDPBackend
+
+        q = torch.empty(1, n_heads, 128, head_dim, device = device, dtype = dtype)
+        k = torch.empty(1, n_kv_heads, 128, head_dim, device = device, dtype = dtype)
+        choice = torch._fused_sdp_choice(q, k, k, is_causal = is_causal, enable_gqa = enable_gqa)
+        cudnn = choice == int(SDPBackend.CUDNN_ATTENTION)
+    except Exception:
+        cudnn = True
+    return flash, cudnn
+
+
+if hasattr(torch.compiler, "assume_constant_result"):
+    _sdpa_backend_state = torch.compiler.assume_constant_result(_sdpa_backend_state)
+
+
+def _torch_varlen_beats_segments(
+    Q: Tensor, K: Tensor, lengths: Tuple[int, ...], n_groups: int, is_causal: bool
+) -> bool:
+    """Varlen saves one SDPA launch per run of equal lengths, but its flash kernel is slower per token
+    than cuDNN on long segments; with flash already chosen, the kernel is the same and only launches drop."""
+    lengths = [length for length in lengths if length > 0]
+    runs = sum(1 for i, length in enumerate(lengths) if i == 0 or lengths[i - 1] != length)
+    if runs <= 1:
+        return False
+    flash, cudnn = _sdpa_backend_state(
+        str(Q.device),
+        Q.dtype,
+        Q.shape[-1],
+        Q.shape[1],
+        K.shape[1],
+        is_causal,
+        n_groups != 1 and _sdpa_flash_takes_gqa(Q),
+    )
+    # varlen_attn calls the flash op directly, so honour sdpa_kernel / enable_flash_sdp(False).
+    if not flash:
+        return False
+    return not cudnn or sum(lengths) / len(lengths) <= _VARLEN_CUDNN_MAX_MEAN_LEN
+
+
 def _torch_varlen_packed(
     Q: Tensor,
     K: Tensor,
@@ -680,8 +727,10 @@ def run_attention(
             and Q.shape[0] == 1
             and Q.shape[-2] == K.shape[-2]
         ):
-            if _torch_varlen_takes(
-                Q, K, V, sdpa_kwargs, context.is_causal, sliding_window
+            lengths = packed_segment_lengths(context.seq_info, K.shape[-2])
+            if (
+                _torch_varlen_takes(Q, K, V, sdpa_kwargs, context.is_causal, sliding_window)
+                and _torch_varlen_beats_segments(Q, K, lengths, config.n_groups, context.is_causal)
             ) and not (
                 # Varlen backward may share flash-attn 2's int32 dq_accum limit.
                 requires_grad
@@ -707,7 +756,7 @@ def run_attention(
                 Q,
                 K,
                 V,
-                packed_segment_lengths(context.seq_info, K.shape[-2]),
+                lengths,
                 n_groups = config.n_groups,
                 is_causal = context.is_causal,
                 sliding_window = sliding_window,

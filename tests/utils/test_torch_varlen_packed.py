@@ -5,6 +5,7 @@ import types
 
 import pytest
 import torch
+from torch.nn.attention import SDPBackend, sdpa_kernel
 from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
 
 import unsloth  # noqa: F401
@@ -13,8 +14,10 @@ from unsloth.utils import packing
 
 _REAL_VARLEN = ad._TORCH_VARLEN_ATTN
 needs_varlen = pytest.mark.skipif(
-    not has_real_cuda() or ad._TORCH_VARLEN_ATTN is None,
-    reason = "needs CUDA and torch.nn.attention.varlen with window_size + enable_gqa (torch 2.12+)",
+    not has_real_cuda()
+    or ad._TORCH_VARLEN_ATTN is None
+    or torch.cuda.get_device_capability()[0] < 8,
+    reason = "needs sm80+ CUDA and torch.nn.attention.varlen with window_size + enable_gqa (2.12+)",
 )
 
 
@@ -76,7 +79,7 @@ CASES = [
     # lengths, total (> sum = pad tail), heads, kv heads, causal, window, expected window_size
     ((5, 3, 4), 12, 4, 4, True, None, (-1, 0)),
     ((5, 3, 4), 12, 4, 2, True, None, (-1, 0)),
-    ((4, 4, 4), 12, 4, 1, True, None, (-1, 0)),
+    ((4, 4, 4), 12, 4, 1, True, None, None),  # one run of equal lengths: one batched SDPA call
     ((7,), 10, 4, 2, True, None, (-1, 0)),
     ((6, 2, 5), 13, 4, 2, True, 3, (2, 0)),
     ((6, 2, 5), 13, 4, 2, False, None, (-1, -1)),
@@ -99,7 +102,7 @@ def test_varlen_matches_segments(
     args = (lengths, total, n_heads, n_kv, qkv, is_causal, window)
     segs, seg_calls = _run(monkeypatch, False, *args)
     varlen, calls = _run(monkeypatch, True, *args)
-    assert seg_calls == [] and calls == [window_size]
+    assert seg_calls == [] and calls == ([] if window_size is None else [window_size])
     for name, a, b in zip(("out", "dQ", "dK", "dV"), segs, varlen):
         assert torch.isfinite(b).all(), name
         torch.testing.assert_close(b.float(), a.float(), atol = 2e-2, rtol = 2e-2, msg = name)
@@ -111,6 +114,25 @@ def test_bidirectional_mha_head_dim_256_runs(monkeypatch):
     qkv = [torch.randn(1, 8, 1024, 256, generator = g).cuda().bfloat16() for _ in range(3)]
     out, calls = _run(monkeypatch, True, (300, 500, 224), 1024, 8, 8, qkv, is_causal = False)
     assert calls == [] and all(torch.isfinite(x).all() for x in out)
+
+
+@needs_varlen
+@pytest.mark.parametrize(
+    "backend, lengths, total, expect_varlen",
+    [
+        ("CUDNN_ATTENTION", (300, 700, 24), 1100, True),  # mean 275: launches dominate
+        ("CUDNN_ATTENTION", (1500, 2000, 1800), 5300, False),  # mean 1767: cuDNN per segment wins
+        ("FLASH_ATTENTION", (1500, 2000, 1800), 5300, True),  # same kernel, fewer launches
+        ("FLASH_ATTENTION", (2048, 2048), 4096, False),  # one run: one batched call already
+    ],
+)
+def test_varlen_only_where_it_beats_segments(monkeypatch, backend, lengths, total, expect_varlen):
+    from torch.nn.attention import SDPBackend as B
+
+    monkeypatch.setattr(torch, "_fused_sdp_choice", lambda *a, **k: int(getattr(B, backend)))
+    qkv = [torch.zeros(1, 4, total, 64, device = "cuda", dtype = torch.bfloat16) for _ in range(3)]
+    _, calls = _run(monkeypatch, True, lengths, total, 4, 4, qkv)
+    assert calls == ([(-1, 0)] if expect_varlen else [])
 
 
 @needs_varlen
@@ -135,6 +157,7 @@ def test_scale_is_forwarded(monkeypatch):
         "bidirectional_mha",
         "deterministic",
         "int32_overflow",
+        "flash_sdp_disabled",
     ],
 )
 def test_ineligible_calls_keep_the_segment_path(monkeypatch, case):
@@ -155,7 +178,11 @@ def test_ineligible_calls_keep_the_segment_path(monkeypatch, case):
         monkeypatch.setattr(torch, "are_deterministic_algorithms_enabled", lambda: True)
     elif case == "int32_overflow":
         monkeypatch.setattr(ad, "_varlen_backward_overflows_int32", lambda *a: True)
-    _, calls = _run(monkeypatch, True, (10, 14), 24, 4, 4, qkv, **kwargs)
+    if case == "flash_sdp_disabled":
+        with sdpa_kernel([SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH]):
+            _, calls = _run(monkeypatch, True, (10, 14), 24, 4, 4, qkv, **kwargs)
+    else:
+        _, calls = _run(monkeypatch, True, (10, 14), 24, 4, 4, qkv, **kwargs)
     assert calls == []
 
 
