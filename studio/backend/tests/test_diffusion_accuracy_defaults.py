@@ -96,7 +96,8 @@ def test_resuming_an_old_zimage_run_keeps_its_recorded_targets(run_dir):
     # The UI replays the stored request: targets unset.
     cfg = _zimage_cfg(resume_from_checkpoint = str(run_dir))
     assert cfg.lora_target_modules == _OLD_ZIMAGE_TARGETS
-    assert cfg.flow_shift == 1.0
+    # The model's own schedule: 1.0 before the numeric flow_shift became the effective shift, None after.
+    assert cfg.flow_shift in (None, 1.0)
     assert _select_lora_targets(cfg.lora_target_modules, _SPECS["z-image"].lora_targets) == (
         _OLD_ZIMAGE_TARGETS
     )
@@ -105,6 +106,21 @@ def test_resuming_an_old_zimage_run_keeps_its_recorded_targets(run_dir):
     assert incoming.flow_shift == saved.flow_shift
     # An explicit checkpoint-<N> path resolves the same way.
     cfg = _zimage_cfg(resume_from_checkpoint = str(run_dir / "checkpoint-11"))
+    assert cfg.lora_target_modules == _OLD_ZIMAGE_TARGETS
+
+
+def test_a_save_killed_mid_promotion_still_resumes_on_its_targets(run_dir):
+    # A crash between moving the occupied slot aside and installing its replacement leaves only the aged staging bundle;
+    # the resume preflight restores it, so the targets must be read from it too, not fall back to the new default.
+    import os
+    import time
+
+    _write_bundle(run_dir, _old_zimage_identity())
+    aside = run_dir / f"{dc._STAGING_PREFIX}replaced-11-cafebabe"
+    os.replace(run_dir / "checkpoint-11", aside)
+    old = time.time() - (dc._LIVE_REPLACEMENT_GRACE_SECONDS + 60)
+    os.utime(aside, (old, old))
+    cfg = _zimage_cfg(resume_from_checkpoint = str(run_dir))
     assert cfg.lora_target_modules == _OLD_ZIMAGE_TARGETS
 
 
@@ -131,7 +147,7 @@ def test_zimage_default_keeps_the_checkpoints_built_in_shift():
     from core.training.diffusion_dit_trainer import _training_sigma_table
     for shift, base_model in ((3.0, "Tongyi-MAI/Z-Image-Turbo"), (6.0, "Tongyi-MAI/Z-Image")):
         cfg = DiffusionLoraConfig(base_model = base_model, data_dir = "d", output_dir = "o").normalized()
-        assert cfg.resolved_family == "z-image" and cfg.flow_shift == 1.0
+        assert cfg.resolved_family == "z-image" and cfg.flow_shift in (None, 1.0)
         sched = diffusers.FlowMatchEulerDiscreteScheduler(num_train_timesteps = 1000, shift = shift)
         table = _training_sigma_table(sched, cfg.flow_shift)
         assert table is sched.sigmas
