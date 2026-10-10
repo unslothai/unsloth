@@ -797,6 +797,10 @@ def test_page_that_fits_keeps_its_links(monkeypatch):
         ("John J<sup>r</sup> and John S<sup>r</sup>", "John Jr and John Sr"),
         ("VED 19<sup>99</sup> and S<sup>T</sup>", "VED 1999 and S^T"),
         (
+            'claim<sup class="footnote-reference">2</sup>, la 2<sup>de</sup>, le 2<sup>d</sup>',
+            "claim2, la 2de, le 2d",
+        ),
+        (
             "M<sup>me</sup> Dupont, D<sup>r</sup> Martin, n<sup>o</sup> 5, Om<sup>e</sup>",
             "Mme Dupont, Dr Martin, no 5, Om^e",
         ),

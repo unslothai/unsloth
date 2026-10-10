@@ -251,6 +251,10 @@ _DIGIT_ORDINAL_SUFFIXES = frozenset(
         "emes",
         "nd",
         "nde",
+        "d",
+        "de",
+        "ds",
+        "des",
         "ndes",
         "º",
         "ª",
@@ -1190,7 +1194,10 @@ class _MarkdownRenderer(HTMLParser):
         elif tag == "sup":
             target = self._emit_target()
             reference = (
-                not _FOOTNOTE_CLASSES.isdisjoint((attr_dict.get("class") or "").lower().split())
+                any(
+                    token in _FOOTNOTE_CLASSES or "footnote" in token or "noteref" in token
+                    for token in (attr_dict.get("class") or "").lower().split()
+                )
                 or "doc-noteref" in (attr_dict.get("role") or "").lower().split()
             )
             # past the cap nothing is tracked, so the stack stays bounded on hostile pages
