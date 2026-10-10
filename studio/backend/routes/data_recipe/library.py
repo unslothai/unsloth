@@ -5,14 +5,19 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
+from auth.authentication import (
+    authenticated_via_api_key,
+    require_ui_session_for_local_commands,
+)
 from storage import data_recipes_db as db
 
 router = APIRouter(prefix = "/recipes")
+ViaApiKey = Annotated[bool, Depends(authenticated_via_api_key)]
 
 _ID = Field(min_length = 1, max_length = 128)
 _TIME = Field(ge = 0, le = 2**53)
@@ -45,13 +50,29 @@ class LegacyImportRequest(BaseModel):
     executions: list[ExecutionRecord] = Field(default_factory = list, max_length = 50_000)
 
 
+def _payload_has_stdio_mcp(payload: Any) -> bool:
+    """True when the recipe holds a stdio MCP provider anywhere; running it later starts that command."""
+    stack = [payload]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            if node.get("provider_type") == "stdio":
+                return True
+            stack.extend(node.values())
+        elif isinstance(node, list):
+            stack.extend(node)
+    return False
+
+
 @router.get("")
 def get_recipes():
     return {"recipes": db.list_recipes()}
 
 
 @router.post("/import")
-def import_legacy_recipes(req: LegacyImportRequest):
+def import_legacy_recipes(req: LegacyImportRequest, via_api_key: ViaApiKey = False):
+    if any(_payload_has_stdio_mcp(r.payload) for r in req.recipes):
+        require_ui_session_for_local_commands(via_api_key)
     return db.import_legacy(
         [r.model_dump(exclude_none = True) for r in req.recipes],
         [e.model_dump() for e in req.executions],
@@ -67,9 +88,15 @@ def get_recipe(recipe_id: str):
 
 
 @router.put("/{recipe_id}")
-def put_recipe(recipe_id: str, recipe: SaveRecipeRequest):
+def put_recipe(
+    recipe_id: str,
+    recipe: SaveRecipeRequest,
+    via_api_key: ViaApiKey = False,
+):
     if recipe.id != recipe_id:
         raise HTTPException(status_code = 400, detail = "ID mismatch")
+    if _payload_has_stdio_mcp(recipe.payload):
+        require_ui_session_for_local_commands(via_api_key)
     try:
         return db.upsert_recipe(
             recipe.model_dump(exclude_none = True, exclude = {"baseUpdatedAt"}),

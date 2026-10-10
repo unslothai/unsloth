@@ -266,6 +266,16 @@ def _build_index(task: str) -> dict[str, MediaModelPick]:
             load_dir = _resolve_load_dir(on_disk)
             if _add_gguf_picks(index, info, keys, on_disk, load_dir):
                 continue
+            if load_dir.is_file():
+                if load_dir.suffix.lower() == ".safetensors" and _loader_can_open(
+                    str(load_dir.parent), load_dir.name
+                ):
+                    _register(
+                        index,
+                        keys,
+                        MediaModelPick(keys[0], str(load_dir.parent), load_dir.name, "single_file"),
+                    )
+                continue
             if not _loadable_directory(load_dir):
                 continue
             _register(index, keys, MediaModelPick(keys[0], str(load_dir)))
@@ -416,6 +426,11 @@ def resident_is_pick(status: dict[str, Any], name: str, pick: MediaModelPick) ->
         return False
     if not partition_matches(status, pick):
         return False
+    if pick.model_kind == "single_file" and not resident_is_gguf(status):
+        # loose checkpoints in one folder share it as model_path: only the file tells them apart
+        return os.path.normcase(str(status.get("gguf_filename") or "")) == os.path.normcase(
+            pick.gguf_filename or ""
+        )
     if pick.model_kind != "gguf" and not resident_is_gguf(status):
         return True
     loaded_quant = str(status.get("gguf_variant") or "").strip().lower()

@@ -150,7 +150,17 @@ def main() -> None:
                 flm.parent.mkdir(parents = True, exist_ok = True)
                 report = os.environ.get("FAKE_FLM_VALIDATE", '{"ready": true}')
                 pause = os.environ.get("FAKE_FLM_VALIDATE_SECONDS", "0")
-                flm.write_text(f"#!/bin/sh\nsleep {pause}\necho '{report}'\n", encoding = "utf-8")
+                version = os.environ.get("FAKE_FLM_VERSION", "")
+                answer_version = (
+                    f'[ "$1" = version ] && {{ echo \'{{"version": "{version}"}}\'; exit 0; }}\n'
+                    if version
+                    else ""
+                )
+                flm.write_text(
+                    f'#!/bin/sh\n{answer_version}[ "$1" = validate ] && sleep {pause}\n'
+                    f"echo '{report}'\n",
+                    encoding = "utf-8",
+                )
                 flm.chmod(0o755)
                 self._send(200, {"status": "success", "recipe": "flm", "backend": "npu"})
             elif self.path == "/v1/pull":

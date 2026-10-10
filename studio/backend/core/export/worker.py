@@ -364,6 +364,7 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
                 "checkpoint": checkpoint_path if success else None,
                 "is_vision": backend.is_vision if success else False,
                 "is_peft": backend.is_peft if success else False,
+                "decision": getattr(backend, "decision", None) if success else None,
                 "ts": time.time(),
             },
         )

@@ -334,6 +334,15 @@ def test_only_mps_lacks_float64(monkeypatch):
     assert dd.diffusion_device_target_from_torch_device("mps", FP32).supports_float64 is False
 
 
+def test_float64_is_built_on_the_device_unless_it_lacks_it():
+    for device in ("cuda", "cuda:1", "xpu", "cpu", "meta"):
+        assert dd.float64_device(device) is device
+    # Callers pass torch.device objects, which only stringify to the device name.
+    mps = type("Device", (), {"__str__": lambda self: "mps:0"})()
+    for device in ("mps", "mps:0", mps):
+        assert dd.float64_device(device) == "cpu"
+
+
 class _RopeModule:
     def __init__(self, double_precision = True):
         self.double_precision = double_precision
@@ -425,6 +434,61 @@ def test_the_video_loader_demotes_rope():
         "either gone or behind a guard -- and a guard here can only be wrong, since the helper "
         "already no-ops wherever float64 works"
     )
+
+
+# ── Frame padding by concatenation on Metal ───────────────────────────
+
+
+def _frame_pad_pipe(factor_t: int, name: str = "AvgDown3D"):
+    torch = pytest.importorskip("torch")
+
+    class Shortcut(torch.nn.Module):
+        """The diffusers shortcut's padding, recording how much of it ``F.pad`` was left to do."""
+
+        def __init__(self):
+            super().__init__()
+            self.factor_t = factor_t
+            self.padded = []
+
+        def forward(self, x):
+            pad_t = (self.factor_t - x.shape[2] % self.factor_t) % self.factor_t
+            self.padded.append(pad_t)
+            return torch.nn.functional.pad(x, (0, 0, 0, 0, pad_t, 0))
+
+    Shortcut.__name__ = name
+    shortcut = Shortcut()
+    return torch, shortcut, _Pipe(vae = torch.nn.Sequential(shortcut), scheduler = object())
+
+
+@pytest.mark.parametrize("name", ["AvgDown3D", "QwenImage21AvgDown3D"])
+@pytest.mark.parametrize("factor_t, frames", [(2, 1), (2, 3), (4, 5), (2, 4)])
+def test_frame_pad_fix_pads_by_concatenation_on_mps(factor_t, frames, name):
+    torch, shortcut, pipe = _frame_pad_pipe(factor_t, name)
+    x = torch.arange(2 * 3 * frames * 2 * 2, dtype = torch.float32).reshape(2, 3, frames, 2, 2)
+    expected = shortcut(x)
+    assert dd.install_frame_pad_fix(pipe, _mps_target()) == 1
+    assert dd.install_frame_pad_fix(pipe, _mps_target()) == 0  # one hook, however often a load runs
+    shortcut.padded.clear()
+    assert torch.equal(shortcut(x), expected)
+    assert shortcut.padded == [0]  # nothing left for the pad Metal gets wrong
+
+
+def test_frame_pad_fix_is_metal_only():
+    torch, shortcut, pipe = _frame_pad_pipe(2)
+    assert dd.install_frame_pad_fix(pipe, _cuda_target()) == 0
+    shortcut(torch.zeros(1, 1, 1, 2, 2))
+    assert shortcut.padded == [1]
+
+
+def test_the_image_loader_installs_the_frame_pad_fix():
+    from pathlib import Path
+    src = (Path(__file__).resolve().parent.parent / "core/inference/diffusion.py").read_text(
+        encoding = "utf-8"
+    )
+    assert "install_frame_pad_fix(pipe, target, logger = logger)" in src
+
+
+# ── Pressure-gated decoder sync ───────────────────────────────────────
 
 
 def _target(device: str) -> dd.DiffusionDeviceTarget:

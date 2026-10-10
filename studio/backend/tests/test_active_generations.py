@@ -18,7 +18,7 @@ import pytest
 _backend = os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, _backend)
 
-from core.inference.worker import _SLOTS, StopLedger
+from core.inference.worker import _SLOTS, StopLedger, _Stops
 from state import active_generations
 
 
@@ -2450,6 +2450,8 @@ def test_a_request_reads_as_stopped_once_it_is():
 
     assert _stopped(ledger) == set()
     assert ledger.stop(mine)
+    stops = _Stops(ledger, None, None, [])
+    assert stops.unread() and stops._refresh() is None and mine in stops and not stops.unread()
     assert _stopped(ledger) == {mine}, "a stop names one request and no other"
     assert theirs not in _stopped(ledger)
 

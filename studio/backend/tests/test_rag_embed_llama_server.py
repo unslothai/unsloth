@@ -646,7 +646,12 @@ def test_post_restarts_once_on_connect_error(monkeypatch):
     attempts = {"n": 0}
 
     class _Client:
-        def post(self, url, json):
+        def post(
+            self,
+            url,
+            json,
+            headers = None,
+        ):
             attempts["n"] += 1
             if attempts["n"] == 1:
                 raise httpx.ConnectError("boom")
@@ -680,7 +685,12 @@ def test_post_restarts_once_on_read_timeout(monkeypatch):
     attempts = {"n": 0}
 
     class _Client:
-        def post(self, url, json):
+        def post(
+            self,
+            url,
+            json,
+            headers = None,
+        ):
             attempts["n"] += 1
             if attempts["n"] == 1:
                 raise httpx.ReadTimeout("timed out")
@@ -1541,7 +1551,11 @@ def test_a_swap_cannot_land_between_readiness_and_the_request(monkeypatch):
     def fake_ensure_ready(model_name = None):
         order.append(f"ready:{model_name}")
 
-    def fake_post(url, json = None):  # noqa: A002 - httpx's parameter name
+    def fake_post(
+        url,
+        json = None,
+        headers = None,
+    ):  # noqa: A002 - httpx's parameter name
         order.append("post")
         swapper = threading.Thread(target = _swap)
         swapper.start()
@@ -2060,3 +2074,27 @@ def test_llama_identity_only_predicts_a_stand_in_quant_while_its_download_is_pen
     legacy = config.embedding_identity("llama-server", model, gguf_repo = repo)
 
     assert embeddings._identity(True, model) == legacy + suffix
+
+
+def test_spawn_uses_a_per_spawn_key_that_requests_send(monkeypatch, tmp_path):
+    import utils.paths.storage_roots as roots
+
+    monkeypatch.setattr(roots, "auth_root", lambda: tmp_path)
+    monkeypatch.delenv("UNSLOTH_LLAMA_SERVER_API_KEY", raising = False)
+    monkeypatch.setattr(config, "EMBED_PORT", 0)
+    b = LlamaServerBackend()
+    proc = _FakeProc(alive = True)
+    captured, keys = {}, []
+    _patch_spawn_deps(monkeypatch, proc)
+    _intercept_server_popen(monkeypatch, proc, captured)
+
+    def healthy(*_a, **_k):
+        cmd = captured["cmd"]
+        keys.append(Path(cmd[cmd.index("--api-key-file") + 1]).read_text())
+        return True
+
+    monkeypatch.setattr(b, "_wait_for_health", healthy)
+    b._spawn()
+    assert keys == [b._api_key] and b._auth_headers() == {"Authorization": f"Bearer {b._api_key}"}
+    # llama-server read it at startup; nothing is left on disk.
+    assert not list(tmp_path.glob("llama_api_key_*"))

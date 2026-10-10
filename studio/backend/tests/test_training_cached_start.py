@@ -1324,7 +1324,6 @@ def test_streaming_rejects_cached_dataset_hints(cache_overrides):
         ({"is_embedding": True}, "Embedding model training"),
         ({"is_dataset_audio": True}, "Audio dataset training"),
         ({"use_loftq": True}, "LoftQ"),
-        ({"is_decision": True, "training_type": "Full Finetuning"}, "Decision model training"),
     ],
 )
 def test_mlx_start_rejects_unsupported_training_config(request_overrides, expected):
@@ -1352,6 +1351,7 @@ def test_mlx_start_accepts_dora():
 
     with patch.object(hardware, "DEVICE", hardware.DeviceType.MLX):
         route._validate_training_platform(_request(use_dora = True))
+        route._validate_training_platform(_request(is_decision = True))
         with pytest.raises(HTTPException) as exc_info:
             route._validate_training_platform(_request(use_loftq = True))
 

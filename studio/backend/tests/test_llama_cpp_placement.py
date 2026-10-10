@@ -3812,3 +3812,343 @@ def test_the_loader_prices_the_output_rows_of_its_build(tmp_path, monkeypatch, b
 
     assert calls["flat"], "the fit never priced the flat compute buffer"
     assert set(calls["flat"]) == {expected}
+
+
+# MoE experts in host RAM: the larger prompt micro-batch.
+
+_GIB = 1024**3
+
+
+def _moe_backend(
+    tmp_path,
+    *,
+    size_gib,
+    memory,
+    moe = True,
+):
+    """A placement fixture whose GGUF reads as MoE (or dense) at ``size_gib``."""
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = memory)
+    backend._get_gguf_size_bytes = lambda _path: int(size_gib * _GIB)
+    backend._n_layers = 40
+    backend._n_experts = 256 if moe else None
+    backend._leading_dense_block_count = 0
+    return backend, gguf
+
+
+def _ubatch_values(cmd):
+    return [cmd[i + 1] for i, tok in enumerate(cmd) if tok in ("--ubatch-size", "-ub")]
+
+
+def _batch_values(cmd):
+    return [cmd[i + 1] for i, tok in enumerate(cmd) if tok in ("--batch-size", "-b")]
+
+
+@pytest.fixture
+def _discrete_linux_host(monkeypatch):
+    monkeypatch.setattr(llama_cpp_module, "_metal_capable_host", lambda: False)
+    for name in ("LLAMA_ARG_BATCH", "LLAMA_ARG_UBATCH", "LLAMA_ARG_N_CPU_MOE", "LLAMA_ARG_CPU_MOE"):
+        monkeypatch.delenv(name, raising = False)
+
+
+_SPILLED = dict(size_gib = 20, memory = [(0, 8_000, 16_000)])
+_RESIDENT = dict(size_gib = 1, memory = [(0, 40_000, 48_000)])
+
+
+def test_spilled_moe_experts_raise_the_micro_batch(tmp_path, _discrete_linux_host):
+    backend, gguf = _moe_backend(tmp_path, **_SPILLED)
+    cmd = _launch(backend, gguf)["cmd"]
+
+    assert "--fit" in cmd and cmd[cmd.index("--fit") + 1] == "on", cmd
+    assert _ubatch_values(cmd) == ["2048"], cmd
+    # No -b: llama.cpp's default batch (2048) already holds the micro-batch.
+    assert all(int(b) >= 2048 for b in _batch_values(cmd)), cmd
+    assert backend._n_ubatch == 2048
+    # The dedupe still compares against what the user asked for: nothing.
+    assert backend.requested_n_ubatch is None
+
+
+def test_a_fully_resident_moe_keeps_the_default_micro_batch(tmp_path, _discrete_linux_host):
+    backend, gguf = _moe_backend(tmp_path, **_RESIDENT)
+    cmd = _launch(backend, gguf)["cmd"]
+
+    assert cmd[cmd.index("--fit") + 1] == "off", cmd
+    assert _ubatch_values(cmd) == [] and _batch_values(cmd) == [], cmd
+    assert backend._n_ubatch == backend._DEFAULT_N_UBATCH
+
+
+def test_a_spilled_dense_model_keeps_the_default_micro_batch(tmp_path, _discrete_linux_host):
+    backend, gguf = _moe_backend(tmp_path, moe = False, **_SPILLED)
+    cmd = _launch(backend, gguf)["cmd"]
+
+    assert cmd[cmd.index("--fit") + 1] == "on", cmd
+    assert _ubatch_values(cmd) == [] and _batch_values(cmd) == [], cmd
+
+
+@pytest.mark.parametrize(
+    "extra_args",
+    [
+        ["--cpu-moe"],
+        ["-ncmoe", "12"],
+        ["-ot", r"blk\.\d+\.ffn_.*_exps\.=CPU"],
+    ],
+    ids = ["cmoe", "ncmoe", "ot_exps"],
+)
+def test_pass_through_expert_offload_raises_the_micro_batch(
+    tmp_path, _discrete_linux_host, extra_args
+):
+    # Fits on the card, so only the pass-through puts experts in host RAM.
+    backend, gguf = _moe_backend(tmp_path, **_RESIDENT)
+    cmd = _launch(backend, gguf, extra_args = extra_args)["cmd"]
+
+    assert _ubatch_values(cmd) == ["2048"], cmd
+
+
+def test_an_inherited_expert_offload_raises_the_micro_batch(
+    tmp_path, _discrete_linux_host, monkeypatch
+):
+    monkeypatch.setenv("LLAMA_ARG_N_CPU_MOE", "20")
+    backend, gguf = _moe_backend(tmp_path, **_RESIDENT)
+    cmd = _launch(backend, gguf)["cmd"]
+
+    assert _ubatch_values(cmd) == ["2048"], cmd
+
+
+@pytest.mark.parametrize(
+    "extra_args, env, expect_ub",
+    [
+        (["-ot", r"blk\.\d+\.ffn_.*_exps\.=CUDA0"], {}, []),
+        ([r"--override-tensor=token_embd\.weight=CUDA0"], {}, []),
+        ([], {"LLAMA_ARG_OVERRIDE_TENSOR": r"blk\.\d+\.ffn_.*_exps\.=CUDA0"}, []),
+        (["-ot", r"blk\.1\.ffn_.*_exps\.=CUDA0,blk\.2\.ffn_.*_exps\.=CPU"], {}, ["2048"]),
+        ([], {"LLAMA_ARG_OVERRIDE_TENSOR": r"blk\.\d+\.ffn_.*_exps\.=CPU"}, ["2048"]),
+    ],
+    ids = ["ot_gpu", "ot_gpu_inline", "env_ot_gpu", "ot_mixed", "env_ot_cpu"],
+)
+def test_an_override_raises_the_micro_batch_only_when_it_targets_the_host(
+    tmp_path, _discrete_linux_host, monkeypatch, extra_args, env, expect_ub
+):
+    # A resident model, so --fit stays off and only the override can move experts.
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    backend, gguf = _moe_backend(tmp_path, **_RESIDENT)
+    cmd = _launch(backend, gguf, extra_args = extra_args)["cmd"]
+
+    assert cmd[cmd.index("--fit") + 1] == "off", cmd
+    assert _ubatch_values(cmd) == expect_ub, cmd
+
+
+@pytest.mark.parametrize(
+    "extra_args, env, expect_ub",
+    [
+        (["--device", "none"], {}, []),
+        (["-dev", "none"], {}, []),
+        (["--device", "cpu"], {}, []),
+        (["--device=none"], {}, []),
+        ([], {"LLAMA_ARG_DEVICE": "none"}, []),
+        ([], {"LLAMA_ARG_DEVICE": "cpu"}, []),
+        # argv beats the env twin, so this one still runs on the GPU.
+        (["--device", "CUDA0"], {"LLAMA_ARG_DEVICE": "none"}, ["2048"]),
+    ],
+    ids = ["dev_none", "dev_short", "dev_cpu", "dev_inline", "env_none", "env_cpu", "argv_wins"],
+)
+def test_a_user_cpu_device_keeps_the_default_micro_batch(
+    tmp_path, _discrete_linux_host, monkeypatch, extra_args, env, expect_ub
+):
+    # Spilled, so the raise would otherwise fire: on the CPU there is nothing to stream.
+    monkeypatch.delenv("LLAMA_ARG_DEVICE", raising = False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    backend, gguf = _moe_backend(tmp_path, **_SPILLED)
+    cmd = _launch(backend, gguf, extra_args = extra_args)["cmd"]
+
+    assert _ubatch_values(cmd) == expect_ub, cmd
+
+
+@pytest.mark.parametrize(
+    "load_kwargs, env, expect_ub, expect_b",
+    [
+        (dict(extra_args = ["-ub", "1024"]), {}, ["1024"], []),
+        (dict(extra_args = ["--ubatch-size=256"]), {}, ["--ubatch-size=256"], []),
+        (dict(extra_args = ["-b", "1024"]), {}, [], ["1024"]),
+        (dict(n_ubatch = 1024), {}, ["1024"], []),
+        (dict(n_batch = 4096), {}, [], ["4096"]),
+        ({}, {"LLAMA_ARG_UBATCH": "256"}, [], []),
+        ({}, {"LLAMA_ARG_BATCH": "1024"}, [], []),
+    ],
+    ids = ["argv_ub", "argv_ub_inline", "argv_b", "field_ub", "field_b", "env_ub", "env_b"],
+)
+def test_a_user_batch_pair_wins_over_the_expert_spill_raise(
+    tmp_path, _discrete_linux_host, monkeypatch, load_kwargs, env, expect_ub, expect_b
+):
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    backend, gguf = _moe_backend(tmp_path, **_SPILLED)
+    cmd = _launch(backend, gguf, **load_kwargs)["cmd"]
+
+    if expect_ub == ["--ubatch-size=256"]:
+        assert "--ubatch-size=256" in cmd and _ubatch_values(cmd) == [], cmd
+    else:
+        assert _ubatch_values(cmd) == expect_ub, cmd
+    assert _batch_values(cmd) == expect_b, cmd
+    assert "2048" not in _ubatch_values(cmd)
+
+
+@pytest.mark.parametrize(
+    "required, n_batch, expect_ub, expect_b",
+    [
+        # A small projector floor: the spill raise is the larger, so it wins.
+        (1024, None, ["2048"], []),
+        # A floor at the default batch: one flag, no duplicate.
+        (4096, None, ["2048"], []),
+        # The user's batch lets the projector floor exceed 2048: it is kept, not lowered.
+        (4096, 8192, ["4096"], ["8192"]),
+    ],
+    ids = ["spill_beats_small_floor", "floor_capped_at_batch", "floor_above_2048_kept"],
+)
+def test_a_projector_micro_batch_floor_is_respected(
+    tmp_path, _discrete_linux_host, monkeypatch, required, n_batch, expect_ub, expect_b
+):
+    monkeypatch.setattr(llama_cpp_module, "_launch_required_ubatch", lambda *a, **k: required)
+    backend, gguf = _moe_backend(tmp_path, **_SPILLED)
+    cmd = _launch(backend, gguf, n_batch = n_batch)["cmd"]
+
+    assert _ubatch_values(cmd) == expect_ub, cmd
+    assert _batch_values(cmd) == expect_b, cmd
+
+
+def test_a_cpu_only_host_keeps_the_default_micro_batch(tmp_path, _discrete_linux_host):
+    backend, gguf = _moe_backend(tmp_path, size_gib = 20, memory = [])
+    cmd = _launch(backend, gguf)["cmd"]
+
+    assert _ubatch_values(cmd) == [] and _batch_values(cmd) == [], cmd
+
+
+def test_unified_memory_keeps_the_default_micro_batch(tmp_path, _discrete_linux_host):
+    backend, gguf = _moe_backend(tmp_path, **_SPILLED)
+    backend._amd_apu_wants_unified_memory = lambda *args, **kwargs: True
+    cmd = _launch(backend, gguf)["cmd"]
+
+    assert _ubatch_values(cmd) == [], cmd
+
+
+def test_apple_silicon_keeps_the_default_micro_batch(tmp_path, _discrete_linux_host, monkeypatch):
+    monkeypatch.setattr(llama_cpp_module, "_metal_capable_host", lambda: True)
+    backend, gguf = _moe_backend(tmp_path, **_SPILLED)
+    assert backend._discrete_gpu_for_expert_spill(None, [(0, 8_000)], set()) is False
+
+
+def test_manual_pinned_layers_keep_the_default_micro_batch(tmp_path, _discrete_linux_host):
+    backend, gguf = _moe_backend(tmp_path, **_SPILLED)
+    cmd = _launch(backend, gguf, gpu_memory_mode = "manual", gpu_layers = 40, n_cpu_moe = 20)["cmd"]
+
+    assert "--n-cpu-moe" in cmd, cmd
+    assert _ubatch_values(cmd) == [], cmd
+
+
+def test_the_spill_planner_is_priced_at_the_raised_micro_batch(
+    tmp_path, _discrete_linux_host, monkeypatch
+):
+    """The compute buffer the plan reserves grows with the micro-batch, so the
+    planner keeps fewer experts on the GPU instead of the launch OOMing."""
+    seen = {}
+
+    def capture(self, inputs, **_kwargs):
+        seen["inputs"] = dict(inputs or {})
+        return None
+
+    monkeypatch.setattr(LlamaCppBackend, "_planned_tensor_spill", capture)
+
+    def run(**load_kwargs):
+        backend, gguf = _moe_backend(tmp_path, **_SPILLED)
+        backend._can_estimate_kv = lambda: True
+        backend._estimate_kv_cache_bytes = lambda *a, **k: _GIB
+        backend._estimate_compute_buffer_bytes = (
+            lambda *, n_ubatch = None, **_k: (n_ubatch or 512) * 400 * 1024
+        )
+        backend._compute_buffer_ctx_bytes = lambda *a, **k: 0
+        cmd = _launch(backend, gguf, **load_kwargs)["cmd"]
+        return cmd, seen.pop("inputs")
+
+    cmd, raised = run()
+    assert _ubatch_values(cmd) == ["2048"], cmd
+    assert raised["compute_buffer_flat"] == 2048 * 400 * 1024
+
+    cmd, pinned = run(n_ubatch = 512)
+    assert _ubatch_values(cmd) == ["512"], cmd
+    assert pinned["compute_buffer_flat"] == 512 * 400 * 1024
+
+
+def test_the_load_mode_fit_prices_the_drafter_at_the_raised_micro_batch(
+    tmp_path, _discrete_linux_host
+):
+    """The drafter reserve grows with the micro-batch, so the load-mode RAM fit
+    charges it at the raised value, as the placement does."""
+    backend, gguf = _moe_backend(tmp_path, **_SPILLED)
+    backend.probe_server_capabilities = lambda _binary = None: {
+        "mtp_token": "draft-mtp",
+        "spec_draft_n_max_flag": "--spec-draft-n-max",
+    }
+    backend._resolve_launch_mtp_path = lambda **_k: "/fake/mtp.gguf"
+    priced = []
+    estimate = LlamaCppBackend._estimate_mtp_overhead_bytes
+
+    def price(self, ctx, **kwargs):
+        value = estimate(self, ctx, **kwargs)
+        priced.append((kwargs.get("n_ubatch"), value))
+        return value
+
+    charged = []
+    fit = LlamaCppBackend._fit_derived_load_mode
+
+    def load_mode(self, **kwargs):
+        charged.append((kwargs.get("mtp_bytes"), priced[-1]))
+        return fit(self, **kwargs)
+
+    backend._estimate_mtp_overhead_bytes = price.__get__(backend)
+    backend._fit_derived_load_mode = load_mode.__get__(backend)
+    cmd = _launch(
+        backend, gguf, mtp_draft_path = "/fake/mtp.gguf", speculative_type = "mtp", n_ctx = 131072
+    )["cmd"]
+
+    assert _ubatch_values(cmd) == ["2048"], cmd
+    mtp_bytes, (n_ubatch, value) = charged[-1]
+    assert mtp_bytes > 0 and mtp_bytes == value
+    assert n_ubatch == 2048
+
+
+def test_the_cpu_replay_hands_back_the_default_micro_batch():
+    backend = LlamaCppBackend()
+    argv = ["llama-server", "-m", "x.gguf", "--ubatch-size", "2048", "--jinja"]
+    assert backend._undo_moe_spill_batch(argv) == argv
+
+    backend._moe_spill_batch_tokens = (["--ubatch-size", "2048"], [])
+    assert backend._undo_moe_spill_batch(argv) == ["llama-server", "-m", "x.gguf", "--jinja"]
+
+    # A projector floor that was raised further goes back to the floor, not to nothing.
+    backend._moe_spill_batch_tokens = (["--ubatch-size", "2048"], ["--ubatch-size", "1024"])
+    assert _ubatch_values(backend._undo_moe_spill_batch(argv)) == ["1024"]
+
+
+def test_the_fit_on_retry_keeps_one_micro_batch_flag():
+    backend = LlamaCppBackend()
+    backend._spill_plan_flags = ["-ngl", "-1", "--fit", "off", "-ot", "exps=CPU"]
+    argv = ["llama-server", "--ubatch-size", "2048", *backend._spill_plan_flags]
+    retry = backend._drop_tensor_spill(argv, "test")
+
+    assert retry[-2:] == ["--fit", "on"]
+    assert _ubatch_values(retry) == ["2048"]
+
+
+def test_the_spill_raise_helper_only_raises():
+    from core.inference.llama_cpp import _moe_spill_batch_ubatch
+
+    on = dict(n_moe_layers = 40, experts_on_host = True, discrete_gpu = True, user_named_batch = False)
+    assert _moe_spill_batch_ubatch(None, None, **on) == (None, 2048)
+    assert _moe_spill_batch_ubatch(None, 1024, **on) == (None, 2048)
+    assert _moe_spill_batch_ubatch(None, 4096, **on) == (None, 4096)
+    # An unnamed batch below the target grows with it (llama.cpp caps ubatch at batch).
+    assert _moe_spill_batch_ubatch(1024, None, **on) == (2048, 2048)
+    for off in ("experts_on_host", "discrete_gpu"):
+        assert _moe_spill_batch_ubatch(None, None, **{**on, off: False}) == (None, None)
+    assert _moe_spill_batch_ubatch(None, None, **{**on, "user_named_batch": True}) == (None, None)
+    assert _moe_spill_batch_ubatch(None, None, **{**on, "n_moe_layers": 0}) == (None, None)

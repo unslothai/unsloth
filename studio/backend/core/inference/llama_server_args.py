@@ -150,6 +150,8 @@ OWNER_ONLY_PATH_FLAGS: frozenset[str] = frozenset(
         "--lookup-cache-dynamic",
         "--log-prompts-dir",
         "--video-ffmpeg-dir",
+        # Not a path: llama-server sends the model's tensors to these hosts.
+        "--rpc",
     }
 )
 

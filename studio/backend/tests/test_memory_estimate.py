@@ -860,6 +860,89 @@ class TestEstimateMemoryRoute:
         monkeypatch.setattr(mlx_memory, "mlx_memory_breakdown", _breakdown)
         return seen
 
+    def test_an_explicit_drafter_is_priced_as_the_load_would_attach_it(self, monkeypatch):
+        import core.inference.mlx_inference as mlx_inference
+        import core.inference.mlx_memory as mlx_memory
+        from core.inference import mlx_speculative as spec
+
+        self._mlx_target(monkeypatch, "/models/thing")
+        sources = (spec.DrafterSource("mtp", "/big", True), spec.DrafterSource("mtp", "/ok", False))
+        monkeypatch.setattr(
+            spec,
+            "resolve_speculation",
+            lambda mode, *a, **k: spec.SpecResolution(mode, sources if mode == "mtp" else ()),
+        )
+        monkeypatch.setattr(
+            spec, "speculation_refusal", lambda kv_quant, **_: spec.KV_QUANT if kv_quant else None
+        )
+        monkeypatch.setattr(
+            mlx_inference,
+            "mlx_drafter_fit",
+            lambda d, ceiling, pinned, source, **_: (
+                source.path == "/ok" and (pinned or 0) <= 8192,
+                None if pinned else 12288,
+            ),
+        )
+        monkeypatch.setattr(ri, "_mlx_estimate_ceiling", lambda model_dir: 32768)
+        monkeypatch.setattr(
+            ri, "_mlx_estimate_fitted_context", lambda *a, **kw: 24576 if kw else 20480
+        )
+        priced = []
+        monkeypatch.setattr(
+            mlx_memory,
+            "mlx_memory_breakdown",
+            lambda d, *, n_ctx, **kw: priced.append((n_ctx, kw.get("drafter"), kw.get("vision")))
+            or mlx_memory.MlxMemoryBreakdown(1, 0, 0, 1, 1, n_ctx = n_ctx),
+        )
+        assert _estimate(model_path = "org/model", speculative_type = "mtp").context_fitted == 12288
+        for pinned in (4096, 65536):
+            _estimate(model_path = "org/model", speculative_type = "mtp", max_seq_length = pinned)
+        _estimate(model_path = "org/model", speculative_type = "mtp", mlx_kv_quant = "8")
+        _estimate(model_path = "org/model")
+        _estimate(model_path = "o/m", speculative_type = "ngram", mlx_kv_quant = "auto", mlx_kv_bits = 8)
+        _estimate(model_path = "org/model", spec_draft_model = "org/d")  # named under Auto
+        assert [route for *_, route in priced] == [True, True, True, None, None, True, True]
+        assert [row[:2] for row in priced[:6]] == [
+            (12288, ("/ok", False)),
+            (4096, ("/ok", False)),
+            (65536, None),
+            (20480, None),
+            (20480, None),
+            (24576, None),
+        ]
+
+    def test_a_drafter_attaches_where_its_priced_fit_holds_and_a_pin_fits_whole(self, monkeypatch):
+        import core.inference.mlx_inference as mlx_inference
+        import core.inference.mlx_memory as mlx_memory
+        from core.inference.mlx_speculative import DrafterSource
+
+        monkeypatch.setattr(mlx_inference, "mlx_memory_budget", lambda **_: 8 << 30)
+        priced = []
+
+        def fit(pinned, outcome, *bare):
+            monkeypatch.setattr(
+                mlx_memory,
+                "mlx_fit_outcome",
+                lambda d, *, max_ctx, vision, drafter = None, **_: priced.append(
+                    (max_ctx, drafter, vision)
+                )
+                or ((outcome, 4096) if drafter else ("fits", bare[0])),
+            )
+            source = DrafterSource("dflash", "/drafter", False)
+            return mlx_inference.mlx_drafter_fit(
+                "/m", 32768, pinned, source, load_in_4bit = False, costless = bool(bare)
+            )
+
+        attaches = [fit(None, o)[0] for o in ("fits", "fitted", "unsizable", "no_fit")]
+        assert attaches == [True, True, None, False]
+        assert (fit(8192, "fits"), fit(8192, "fitted")) == ((True, 4096), (False, 4096))
+        assert (
+            priced
+            == [(32768, ("/drafter", False), True)] * 4 + [(8192, ("/drafter", False), True)] * 2
+        )
+        costless = [fit(None, *c) for c in (("fits", 4096), ("fits", 8192), ("unsizable", 4096))]
+        assert costless == [(True, 4096), (False, 4096), (None, 4096)]
+
     def test_mlx_model_not_on_disk_is_not_downloaded(self, monkeypatch):
         self._mlx_target(monkeypatch, None)
         resp = _estimate(model_path = "org/model")
@@ -3641,6 +3724,11 @@ def test_a_load_is_sized_once_until_its_files_change(monkeypatch, tmp_path):
     assert mm._size_load(str(tmp_path), None, None, True) != first and len(built) == 2
     shard.write_bytes(b"xy")
     assert mm._size_load(str(tmp_path), 4, None, True) != first and len(built) == 3
+    (drafter := tmp_path / "drafter").mkdir()
+    sized = lambda: mm._size_load(str(tmp_path), 4, None, True, True, (str(drafter), False))
+    first = sized()
+    (drafter / "config.json").write_text("{}")
+    assert sized() != first  # a changed local drafter is re-sized too
 
 
 try:
@@ -4634,6 +4722,17 @@ class TestTheContextSearch:
         monkeypatch.setattr(mm, "_size_load", lambda *a, **kw: None)
         assert mm.mlx_fit_context("x", budget_bytes = 7000, max_ctx = 8192) is None
 
+    def test_the_outcome_says_why_no_context_came_back(self, monkeypatch):
+        self._linear(monkeypatch)
+        assert mm.mlx_fit_outcome("x", budget_bytes = 9000, max_ctx = 8192) == ("fits", None)
+        assert mm.mlx_fit_outcome("x", budget_bytes = 7000, max_ctx = 8192) == ("fitted", 6912)
+        assert mm.mlx_fit_outcome("x", budget_bytes = 4200, max_ctx = 8192, min_ctx = 4100) == (
+            "no_fit",
+            None,
+        )
+        monkeypatch.setattr(mm, "_size_load", lambda *a, **kw: None)
+        assert mm.mlx_fit_outcome("x", budget_bytes = 7000, max_ctx = 8192) == ("unsizable", None)
+
 
 @_NEEDS_MLX
 @pytest.mark.parametrize("budget_gib, fitted", [(6, 18_432), (12, 61_952), (24, 149_504)])
@@ -4649,6 +4748,23 @@ def test_a_real_checkpoint_is_fitted_to_the_byte(budget_gib, fitted):
     over = mm.mlx_memory_breakdown(snapshot, n_ctx = fitted + mm.MLX_KV_BLOCK, load_in_4bit = True)
     assert priced.total_bytes <= budget < over.total_bytes
     assert mm.mlx_memory_breakdown(snapshot, n_ctx = float("nan"), load_in_4bit = True) is None
+
+
+@_NEEDS_MLX
+def test_a_companion_drafter_adds_its_stored_weights_and_a_cache_to_the_load():
+    _on_bfloat16_chip()
+    target = _local_snapshot("mlx-community/Qwen3.5-4B-4bit")
+    drafter = _local_snapshot("z-lab/Qwen3.5-4B-DFlash")
+    stored = 0
+    for shard in glob.glob(os.path.join(drafter, "*.safetensors")):
+        with open(shard, "rb") as handle:
+            header = json.loads(handle.read(int.from_bytes(handle.read(8), "little")))
+        header.pop("__metadata__", None)
+        stored += sum(end - start for start, end in (t["data_offsets"] for t in header.values()))
+    alone = mm.mlx_memory_breakdown(target, n_ctx = 8192, vision = True)
+    paired = mm.mlx_memory_breakdown(target, n_ctx = 8192, vision = True, drafter = (drafter, False))
+    assert paired.weights_bytes - alone.weights_bytes == stored
+    assert paired.kv_bytes > alone.kv_bytes and paired.compute_bytes > alone.compute_bytes
 
 
 @_NEEDS_MLX
@@ -4670,3 +4786,28 @@ def test_the_total_never_falls_as_the_context_grows(repo, kv_bits, whole_prompt)
     steps = range(mm.MLX_KV_BLOCK, 262_145, mm.MLX_KV_BLOCK)
     totals = [mm._priced_at(sizing, n).total_bytes for n in steps]
     assert totals == sorted(totals)
+
+
+def test_the_drafter_picker_lists_cached_drafters_of_a_cached_target(tmp_path, monkeypatch):
+    from core.inference import mlx_speculative
+
+    (tmp_path / "config.json").write_text('{"vocab_size": 7}')
+    found = [
+        ("o/T-DFlash", SimpleNamespace(kind = "dflash"), True),
+        ("o/T-MTP", SimpleNamespace(kind = "mtp"), False),
+    ]
+    monkeypatch.setattr(
+        mlx_speculative,
+        "cached_drafters",
+        lambda name, config: found if (name, config) == ("o/T", {"vocab_size": 7}) else [],
+    )
+    monkeypatch.setattr(
+        "utils.utils.hf_cache_snapshot_dir", lambda name: tmp_path if name == "o/T" else None
+    )
+    assert ri._mlx_cached_drafters("o/T") == [
+        {"repo_id": "o/T-DFlash", "kind": "dflash", "named": True},
+        {"repo_id": "o/T-MTP", "kind": "mtp", "named": False},
+    ]
+    assert ri._mlx_cached_drafters("o/absent") == []
+    monkeypatch.setattr(ri.account_access, "filter_model_rows", lambda rows: rows[1:])
+    assert [row["repo_id"] for row in ri._mlx_cached_drafters("o/T")] == ["o/T-MTP"]

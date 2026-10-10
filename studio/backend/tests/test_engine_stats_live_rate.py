@@ -259,7 +259,7 @@ def test_a_non_finite_metric_value_never_reaches_the_line(monkeypatch):
         "llamacpp:prompt_tokens_total 10\n"
         "llamacpp:prompt_seconds_total 1\n"
     ).encode()
-    monkeypatch.setattr(ls.urllib.request, "urlopen", lambda *a, **k: _Resp(body))
+    monkeypatch.setattr(ls.urllib.request.OpenerDirector, "open", lambda *a, **k: _Resp(body))
 
     m = LlamaServerStatsLogger("http://127.0.0.1:0", _Capture())._scrape()
 

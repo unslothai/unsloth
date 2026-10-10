@@ -161,7 +161,7 @@ async def video_download_plan(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}
         )
     await _refuse_disabled_nvfp4_checkpoint(request)
-    from core.inference.diffusion import resolve_local_single_file
+    from core.inference.diffusion import resolve_local_single_file, split_local_checkpoint_path
     from core.inference.video import (
         assert_video_precision_available,
         get_video_backend,
@@ -173,7 +173,15 @@ async def video_download_plan(
     try:
         kind = resolve_video_model_kind(request.gguf_filename, request.model_kind)
         if kind == "pipeline" and not request.gguf_filename:
-            sole = await asyncio.to_thread(resolve_local_single_file, request.model_path)
+            split = await asyncio.to_thread(split_local_checkpoint_path, request.model_path)
+            if split is not None:
+                request.model_path, request.gguf_filename = split
+                kind = resolve_video_model_kind(split[1], None)
+            sole = (
+                None
+                if split is not None
+                else await asyncio.to_thread(resolve_local_single_file, request.model_path)
+            )
             if sole is not None:
                 request.gguf_filename = sole
                 kind = resolve_video_model_kind(sole, None)
@@ -303,7 +311,7 @@ async def load_video_model_gated(
         for ref in (request.model_path, request.base_repo)
         if ref and _repo_is_in_the_hub_cache(ref) is not True
     ]
-    from core.inference.diffusion import resolve_local_single_file
+    from core.inference.diffusion import resolve_local_single_file, split_local_checkpoint_path
     from core.inference.diffusion_device import (
         resolve_diffusion_device_target,
         resolve_selected_cuda_ordinal,
@@ -328,7 +336,15 @@ async def load_video_model_gated(
         kind = resolve_video_model_kind(request.gguf_filename, request.model_kind)
         # A bare single-file .safetensors dir holding one checkpoint loads as single_file.
         if kind == "pipeline" and not request.gguf_filename:
-            sole = await asyncio.to_thread(resolve_local_single_file, request.model_path)
+            split = await asyncio.to_thread(split_local_checkpoint_path, request.model_path)
+            if split is not None:
+                request.model_path, request.gguf_filename = split
+                kind = resolve_video_model_kind(split[1], None)
+            sole = (
+                None
+                if split is not None
+                else await asyncio.to_thread(resolve_local_single_file, request.model_path)
+            )
             if sole is not None:
                 request.gguf_filename = sole
                 kind = resolve_video_model_kind(sole, None)

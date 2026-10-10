@@ -108,7 +108,10 @@ class _FakeBackend:
         workflows = None,
         # (repo_id, base_repo) per generate() call: models a replacement between status() and the lock.
         replaced_by = None,
+        # What a diffusers status() reports as its resolved recipe, when set.
+        generation_defaults = None,
     ) -> None:
+        self._generation_defaults = generation_defaults
         self._loaded = loaded
         self._repo_id = repo_id
         self._base_repo = base_repo
@@ -133,6 +136,8 @@ class _FakeBackend:
             "dtype": "float32",
             "cpu_offload": False,
         }
+        if self._generation_defaults is not None:
+            out["generation_defaults"] = self._generation_defaults
         if isinstance(self._workflows, dict):
             out["workflows"] = self._workflows.get(self._repo_id, [])
         elif self._workflows is not None:
@@ -288,6 +293,19 @@ def test_local_load_uses_base_repo_for_defaults(monkeypatch):
     resp = cli.post("/v1/images/generations", json = {"prompt": "p", "size": "256x256"})
     assert resp.status_code == 200
     assert backend.calls[0]["steps"] == 20 and backend.calls[0]["guidance"] == 3.5
+
+
+def test_the_status_recipe_wins_over_the_name_lookup(monkeypatch):
+    # An opaque local Turbo pipeline: no name matches, but the status resolved the shipped grid's 8 steps.
+    backend = _FakeBackend(
+        repo_id = "/models/opaque", generation_defaults = {"steps": 8, "guidance": 0.0}
+    )
+    monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
+    cli, store, _save = _make_client(backend)
+    monkeypatch.setattr(gallery_module, "save", _save)
+    resp = cli.post("/v1/images/generations", json = {"prompt": "p", "size": "256x256"})
+    assert resp.status_code == 200
+    assert backend.calls[0]["steps"] == 8 and backend.calls[0]["guidance"] == 0.0
 
 
 def test_pipeline_runtime_error_is_sanitized_500(monkeypatch):

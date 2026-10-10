@@ -7,7 +7,7 @@ import math
 import re
 from pathlib import Path, PureWindowsPath
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from typing import Any, Optional, List, Dict, Literal, Union
+from typing import Annotated, Any, Optional, List, Dict, Literal, Union
 
 from hub.schemas.inventory import ModelFormat
 from utils.hf_dataset_options import (
@@ -106,6 +106,10 @@ def _resolve_inventory_handle(value: str) -> str:
     except Exception:  # noqa: BLE001 -- a resolver that cannot import must not fail a run
         return value
     return resolve_inventory_handle(value)
+
+
+# The strings trainer.normalize_gradient_checkpointing turns into False.
+_CHECKPOINTING_OFF = ("false", "0", "no", "none", "off")
 
 
 class TrainingStartRequest(BaseModel):
@@ -556,6 +560,29 @@ class TrainingStartRequest(BaseModel):
     lora_dropout: float = Field(0.0, description = "LoRA dropout")
     target_modules: List[str] = Field(default_factory = list, description = "Target modules for LoRA")
     gradient_checkpointing: str = Field("", description = "Gradient checkpointing setting")
+    offload_layers: Union[Literal["auto"], Annotated[int, Field(ge = 0, le = 1024)]] = Field(
+        0,
+        description = "Decoder layers kept in host RAM and streamed to the GPU during training "
+        "(0 = off, 'auto' = as few as fit)",
+    )
+    offload_vram_gb: Optional[float] = Field(
+        None,
+        gt = 0,
+        le = 4096,
+        description = "VRAM this run may use, in GiB; offload_layers = 'auto' sizes to it",
+    )
+    offload_vram_gb_per_device: Optional[List[Optional[Annotated[float, Field(gt = 0, le = 4096)]]]] = (
+        Field(
+            None,
+            max_length = 64,
+            description = "Per-GPU VRAM budget in GiB, entry i for the GPU /api/system lists as index i "
+            "(null = no cap); replaces offload_vram_gb when given",
+        )
+    )
+    prefetch_depth: Union[Literal["auto"], Annotated[int, Field(ge = 1, le = 8)]] = Field(
+        2,
+        description = "Offloaded layers fetched ahead of the one running ('auto' = measured)",
+    )
     use_rslora: bool = Field(False, description = "Use RSLoRA")
     use_loftq: bool = Field(False, description = "Use LoftQ")
     use_dora: bool = Field(False, description = "Use DoRA")
@@ -570,11 +597,14 @@ class TrainingStartRequest(BaseModel):
     is_embedding: bool = Field(
         False, description = "Whether model is an embedding/sentence-transformer model"
     )
-    is_decision: bool = Field(False, description = "Whether model is a decision model (Laya or Clef)")
+    is_decision: bool = Field(
+        False,
+        description = "Train a decision model: a Laya or Clef checkpoint, or an LLM with a new Clef head",
+    )
     model_subfolder: Optional[str] = Field(
         None, description = "Checkpoint subfolder of a decision model repo"
     )
-    decision_layout: Optional[Literal["laya", "clef"]] = Field(
+    decision_layout: Optional[Literal["laya", "clef", "llm"]] = Field(
         None,
         description = "Set by the server from the checkpoint files; a caller's value is replaced",
     )
@@ -633,6 +663,20 @@ class TrainingStartRequest(BaseModel):
     def _check_steps_or_epochs(self) -> "TrainingStartRequest":
         if (self.max_steps is None or self.max_steps == 0) and self.num_epochs == 0:
             raise ValueError("Either num_epochs or max_steps must be > 0; both cannot be 0.")
+        return self
+
+    @model_validator(mode = "after")
+    def _check_offload_has_checkpointing(self) -> "TrainingStartRequest":
+        # install_block_swap refuses swapped layers without checkpointing; say so before loading.
+        if (
+            self.offload_layers
+            and self.training_type != "Full Finetuning"
+            and self.gradient_checkpointing.strip().lower() in _CHECKPOINTING_OFF
+        ):
+            raise ValueError(
+                "offload_layers needs gradient checkpointing: set gradient_checkpointing to "
+                "'unsloth' or 'true', or offload_layers to 0."
+            )
         return self
 
     @model_validator(mode = "after")
@@ -1121,23 +1165,27 @@ class DiffusionTrainableFamily(BaseModel):
     max_train_batch_size: Optional[int] = None
     # LoRA previews on this repo, not the training base (Krea trains on Raw, runs on Turbo).
     deploy_base: Optional[str] = None
+    # maps each training base, including public mirrors, to its inference base.
     deploy_bases: Dict[str, str] = Field(default_factory = dict)
+    # overlays checkpoint-specific parameter and VRAM guidance on family defaults.
     base_specs: Dict[str, dict] = Field(default_factory = dict)
 
 
 class DiffusionTrainingInfoResponse(BaseModel):
-    """Where diffusion training reads/writes on this Unsloth, plus usable datasets and the
-    trainable model families (so the UI can offer a base picker with realistic guidance)."""
+    """lists paths, usable datasets, and UI-facing trainable families for this Unsloth instance."""
 
     datasets_root: str
     outputs_root: str
     datasets: List[DiffusionDatasetSummary]
+    # includes every occupied folder name, even captions-only folders.
+    dataset_names: List[str] = Field(default_factory = list)
+    # occupied, unlisted folders that this upload form may safely continue.
+    continuation_dataset_names: List[str] = Field(default_factory = list)
     families: List[DiffusionTrainableFamily] = Field(default_factory = list)
 
 
 class DiffusionDatasetUploadResponse(BaseModel):
-    """Result of uploading images/clips/captions into a named dataset folder. Counts are
-    for the whole folder after the upload, so repeat uploads show the running total."""
+    """counts cover the whole folder after the upload, including earlier uploads."""
 
     name: str
     path: str

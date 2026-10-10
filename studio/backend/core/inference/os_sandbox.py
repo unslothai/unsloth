@@ -7,6 +7,7 @@ from __future__ import annotations
 import errno
 import functools
 import hashlib
+import ntpath
 import os
 import platform
 import re
@@ -237,10 +238,29 @@ class _ScanBudgetExceeded(Exception):
     """The walk ran out of budget: not a hazard, so it must not refuse an `auto` launch."""
 
 
+def _extended_path(path: str) -> str:
+    """The \\\\?\\ spelling of a Windows path, which reaches a file named nul, con or com1 instead of the device."""
+    if path.startswith(("\\\\?\\", "\\\\.\\")):
+        return path
+    # Callers pass an absolute workdir. normpath is string-only; abspath would hand back \\.\nul for C:\work\nul.
+    absolute = ntpath.normpath(path)
+    if absolute.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + absolute[2:]
+    return "\\\\?\\" + absolute
+
+
+# The real filesystem API, not sys.platform: tests stand in a Windows platform over a POSIX tmp_path.
+_NT_PATHS = os.name == "nt"
+
+
+def _entry_path(path: str) -> str:
+    return _extended_path(path) if _NT_PATHS else path
+
+
 def directory_signature(path: str) -> tuple:
     """Identity plus mtime for one directory, the unit a cached verdict is re-checked in."""
     try:
-        info = os.stat(path)
+        info = os.stat(_entry_path(path))
     except OSError:
         return (path, None)
     return (path, info.st_dev, info.st_ino, info.st_mtime_ns)
@@ -258,6 +278,15 @@ def _host_channel_hazard(
     witness: "list[tuple] | None" = None,
 ) -> str | None:
     """Return a host-access hazard under *root*, or None."""
+    # One namespace for listing and stat, so a directory named nul is walked as the one stat judged.
+    top = _entry_path(root)
+    hazard = _walk_for_host_channels(top, max_entries, seconds, witness)
+    return hazard if hazard is None or top == root else hazard.replace(top, root)
+
+
+def _walk_for_host_channels(
+    root: str, max_entries: int, seconds: float, witness: "list[tuple] | None"
+) -> str | None:
     deadline = time.monotonic() + seconds
     entries = 0
     # Only an unaccounted hard link leads outside; cp -al, git clone --local and pip make nlink > 1.
@@ -289,8 +318,9 @@ def _host_channel_hazard(
             if stat.S_ISLNK(info.st_mode):
                 continue
             if stat.S_ISDIR(info.st_mode):
-                # Misses a same-filesystem bind mount; Linux also asks the mount table.
-                if os.path.ismount(path):
+                # Misses a same-filesystem bind mount; Linux also asks the mount table. A Windows mounted folder is a
+                # reparse point, refused above, and ntpath.ismount calls a directory named nul the \\.\nul device root.
+                if not _NT_PATHS and os.path.ismount(path):
                     return f"contains a nested host mount: {path}"
                 continue
             if not stat.S_ISREG(info.st_mode):

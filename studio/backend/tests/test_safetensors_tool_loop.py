@@ -2544,6 +2544,31 @@ class TestLoopBehaviour:
         )
         assert "previous tool request" not in after[1]["content"].lower()
 
+    @pytest.mark.parametrize("deduplicate", [True, False])
+    def test_identical_calls_in_one_turn_run_when_deduplication_is_off(self, deduplicate):
+        call = '<tool_call>{"name":"python","arguments":{"code":"print(1)"}}</tool_call>'
+        turns = iter([[call * 2], ["final"]])
+
+        def fake_single_turn(messages, active_tools = None):
+            acc = ""
+            for chunk in next(turns):
+                acc += chunk
+                yield acc
+
+        exec_fn = FakeExecuteTool(["1", "1"])
+        _collect_events(
+            run_safetensors_tool_loop(
+                single_turn = fake_single_turn,
+                messages = [{"role": "user", "content": "run it twice"}],
+                tools = [{"type": "function", "function": {"name": "python"}}],
+                execute_tool = exec_fn,
+                max_tool_iterations = 4,
+                deduplicate_tool_calls = deduplicate,
+            )
+        )
+
+        assert exec_fn.calls == [("python", {"code": "print(1)"})] * (1 if deduplicate else 2)
+
     def test_duplicate_tool_call_internal_noop_allows_distinct_followup_tool(self):
         captured_messages: list[list[dict]] = []
         captured_tool_names: list[list[str]] = []

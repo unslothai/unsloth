@@ -594,6 +594,7 @@ def build_img_gen_request(
     lora: Optional[list[dict]] = None,
     ref_images: Optional[list[str]] = None,
     qwen_image_layers: Optional[int] = None,
+    custom_sigmas: Optional[list[float]] = None,
 ) -> dict:
     """Build the ``POST /sdcpp/v1/img_gen`` JSON body for one text-to-image request.
 
@@ -617,6 +618,9 @@ def build_img_gen_request(
         sample_params["sample_method"] = str(sample_method)
     if flow_shift is not None:
         sample_params["flow_shift"] = float(flow_shift)
+    if custom_sigmas:
+        # Same key the server's sample_params parser reads for sd-cli's --sigmas.
+        sample_params["custom_sigmas"] = [float(s) for s in custom_sigmas]
     if guidance:
         sample_params["guidance"] = guidance
 

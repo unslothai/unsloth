@@ -607,7 +607,10 @@ def test_the_recorded_micro_batch_is_derived_from_the_slots_that_launched():
         and isinstance(node.func, ast.Name)
         and node.func.id == "_ubatch_for_slots"
     ]
-    assert len(calls) == 5, f"expected five re-derivations, found {len(calls)}"
+    # sizing pass, embedding slot clamp, candidate split pricing, fit-time reduction, the
+    # MoE expert-spill raise, then the post-launch record
+    assert len(calls) == 6, f"expected six re-derivations, found {len(calls)}"
+    # the record must not reuse the sizing pass's value
     compact = "".join(src.split())
     assert "self._n_ubatch=max(0,int(self._DEFAULT_N_UBATCHif_launched_ubatchisNone" in compact
     assert "_launched_ubatch=_ubatch_for_slots(n_parallel)" in compact

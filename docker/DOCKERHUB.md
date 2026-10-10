@@ -82,7 +82,7 @@ The login token is printed in `docker logs`. With no command the image runs `pyt
 ### Scripts
 
 ```bash
-docker run --rm --gpus all --ipc=host -v "$PWD":/workspace/host \
+docker run --rm --gpus all --ipc=host -v "$PWD":/workspace/host -w /workspace/host \
   unsloth/unsloth:core python /workspace/host/train.py
 ```
 

@@ -257,6 +257,8 @@ def test_export_owner_single_mode_preserves_operation_and_status_bytes(export, m
         "last_op_status": "success",
         "last_op_output_path": None,
         "last_op_error": None,
+        # Not a decision model checkpoint, so the decision export details stay null.
+        "decision": None,
     }
     assert result.model_dump_json() == json.dumps(expected, separators = (",", ":"))
     exported = backend.export_lora_adapter("/arbitrary/export")
@@ -1610,6 +1612,7 @@ def test_retirement_reaps_stt_downloads_and_fences_a_parked_start(tmp_path, monk
     monkeypatch.setattr(dataset_downloads, "retire_account_downloads", lambda: None)
     monkeypatch.setattr(model_downloads, "retire_account_downloads", lambda: None)
     monkeypatch.setattr(inference, "_stt_download_accounts", {})
+    monkeypatch.setattr(inference, "_stt_download_id_accounts", {})
     monkeypatch.setattr(inference, "_stt_grant_pending", {})
     monkeypatch.setattr(inference, "_stt_repo_reference", lambda model, engine: model)
     monkeypatch.setattr(access, "authorize_download", lambda *a: None)

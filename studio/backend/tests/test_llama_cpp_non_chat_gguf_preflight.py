@@ -254,11 +254,16 @@ def test_a_placeholder_architecture_matches_the_picker_verdict(tmp_path):
 
 
 def test_an_unassemblable_video_arch_promises_no_page(tmp_path):
-    # Header says 'wan' for unsupported variants; consult family resolution, not arch.
+    # Wan 2.2 A14B is a two-expert MoE the Video backend assembles only from a file naming one
+    # expert of a high/low noise pair, and Wan 2.1's repo ids resolve to no family, so
+    # _arch_to_task tags an unpaired A14B file and Wan 2.1 image-diffusion-unsupported and the
+    # Video picker never lists them. The header says "wan" for all of them, so the refusal has
+    # to consult the same family resolution rather than trusting the arch.
     from routes.models import _arch_to_task
     for identifier, name, page_named in (
         ("QuantStack/Wan2.2-TI2V-5B-GGUF", "Wan2.2-TI2V-5B-Q4_K_M.gguf", True),
-        ("QuantStack/Wan2.2-T2V-A14B-GGUF", "Wan2.2-T2V-A14B-HighNoise-Q4_K_M.gguf", False),
+        ("QuantStack/Wan2.2-T2V-A14B-GGUF", "Wan2.2-T2V-A14B-HighNoise-Q4_K_M.gguf", True),
+        ("QuantStack/Wan2.2-T2V-A14B-GGUF", "Wan2.2-T2V-A14B-Q4_K_M.gguf", False),
         ("QuantStack/Wan2.1-T2V-14B-GGUF", "Wan2.1-T2V-14B-Q4_K_M.gguf", False),
     ):
         _, message = _refusal(tmp_path, arch = "wan", name = name, identifier = identifier)
@@ -339,10 +344,14 @@ def test_a_split_placeholder_media_gguf_is_still_refused(tmp_path):
 
 
 def test_the_metadata_less_branch_asks_what_the_pickers_ask(tmp_path):
+    # A family that resolves is not enough for the arch branches, nor here: routes.models
+    # drops an MoE the loader cannot assemble, so the Video page lists a Wan 2.2 A14B GGUF only
+    # when its name pairs the other expert.
     from routes.models import _arch_to_task
     for identifier, name, page_named in (
         ("QuantStack/Wan2.2-TI2V-5B-GGUF", "Wan2.2-TI2V-5B-Q4_K_M.gguf", True),
-        ("QuantStack/Wan2.2-T2V-A14B-GGUF", "Wan2.2-T2V-A14B-HighNoise-Q4_K_M.gguf", False),
+        ("QuantStack/Wan2.2-T2V-A14B-GGUF", "Wan2.2-T2V-A14B-HighNoise-Q4_K_M.gguf", True),
+        ("QuantStack/Wan2.2-T2V-A14B-GGUF", "Wan2.2-T2V-A14B-Q4_K_M.gguf", False),
     ):
         _, message = _refusal(tmp_path, arch = None, name = name, identifier = identifier)
         assert message is not None

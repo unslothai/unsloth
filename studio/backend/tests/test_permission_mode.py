@@ -1974,6 +1974,74 @@ def test_python_classifier(code, unsafe):
     assert is_potentially_unsafe_tool_call("python", {"code": code}) is unsafe
 
 
+@pytest.mark.parametrize(
+    "code, unsafe",
+    [
+        ("import numpy as np\nnp.load('a.npy')", False),
+        ("import numpy as np\nnp.load('a.npy', allow_pickle=False)", False),
+        ("import numpy as np\nnp.load('a.npy', allow_pickle=True)", True),
+        ("import numpy as np\nflag = True\nnp.load('a.npy', allow_pickle=flag)", True),
+        ("from numpy import load\nload('a.npz', allow_pickle=1)['x']", True),
+        ("import numpy as np\nnp.load('a.npy', None, True)", True),
+        ("import numpy as np\nnp.load('a.npy', None, False)", False),
+        ("import numpy as np\nnp.load('a.npy', **{'allow_pickle': True})", True),
+        ("import numpy as np\nargs = ('a.npy', None, True)\nnp.load(*args)", True),
+        ("import json\njson.load(open('a.json'))", False),
+        ("from numpy import load as read\nread('a.npy', None, True)", True),
+        ("import numpy as np\nloader = np.load\nloader('a.npy', None, True)", True),
+        ("import numpy as np\nloader = np.load\nloader(*('a.npy', None, True))", True),
+        ("import numpy as np\nloader = np.load\nloader('a.npy')", False),
+        ("import numpy as np\nbox.reader = np.load\nbox.reader('a.npy', None, True)", True),
+        ("from numpy import *\nload('a.npy', None, True)", True),
+        ("import json\nargs = (open('a.json'),)\njson.load(*args)", False),
+        ("obj.load(*args)", False),
+        ("import numpy\nnp = numpy\nnp.load('a.npy', None, True)", True),
+        (
+            "import numpy as np\ndef read(loader=np.load):\n return loader('a.npy', None, True)\nread()",
+            True,
+        ),
+        ("import numpy as np\ndef read(f):\n return f('a.npy', None, True)\nread(np.load)", True),
+        ("import numpy as np\nloader, _ = (np.load, None)\nloader('a.npy', None, True)", True),
+        ("from numpy.lib._npyio_impl import load\nload('a.npy', None, True)", True),
+        ("import numpy.lib.npyio as io\nio.load('a.npy', None, True)", True),
+        ("from numpy.lib import _npyio_impl as io\nio.load('a.npy', None, True)", True),
+        ("from numpy.lib.format import read_array\nread_array(open('a.npy', 'rb'), True)", True),
+        ("import numpy as np\nnp.lib.format.read_array(open('a.npy', 'rb'))", False),
+        ("import numpy.lib.npyio\nnumpy.lib.npyio.load('a.npy', None, True)", True),
+        ("import numpy as np\nnp.lib.format.read_array(open('a.npy', 'rb'), True)", True),
+        ("def read_array(path, dtype):\n return []\nread_array('x', 'float32')", False),
+        (
+            "from numpy.lib.format import read_array\nreader = read_array\nreader(open('a.npy', 'rb'), True)",
+            True,
+        ),
+        ("import numpy as np\nnp.lib.npyio.NpzFile('a.npz', False, True)['x']", True),
+        ("from numpy.lib.npyio import NpzFile\nNpzFile('a.npz')['x']", False),
+        (
+            "import numpy as np\nfmt = np.lib.format\nfmt.read_array(open('a.npy', 'rb'), True)",
+            True,
+        ),
+        ("import numpy as np, json\n(np.load if x else json.load)('a.npy', None, True)", True),
+        ("import numpy as np\n(loader or np.load)('a.npy', None, True)", True),
+        ("import json\n(json.load if x else json.loads)(f)", False),
+        ("import numpy as np\nnp.read_array = np.load\nnp.lib.format.read_array(f, True)", True),
+        ("import numpy as np\n(np.load if c else np.lib.format.read_array)(f, True)", True),
+        ("import numpy as np\n(loader := np.load)('a.npy', None, True)", True),
+        (
+            "import numpy as np\nbox.reader, _ = (np.load, None)\nbox.reader('a.npy', None, True)",
+            True,
+        ),
+        ("import numpy as np\nnp.load('a.npy', 'r')", False),
+        ("import numpy as np\nnp.load('a.npy', None, 'yes')", True),
+        ("import numpy as np\nnp.lib.format.read_array(f, 'yes')", True),
+        ("import numpy as np\nz = np.load('a.npz')\nz.allow_pickle = True\nz['x']", True),
+        ("import numpy as np\nz = np.load('a.npz')\nz['x']", False),
+        ("import numpy as np\nnp.load('a.npy', None, False)", False),
+    ],
+)
+def test_python_classifier_numpy_allow_pickle(code, unsafe):
+    assert is_potentially_unsafe_tool_call("python", {"code": code}) is unsafe
+
+
 def test_builtin_readonly_tools_are_safe():
     assert is_potentially_unsafe_tool_call("web_search", {"query": "hi"}) is False
     assert is_potentially_unsafe_tool_call("search_knowledge_base", {}) is False

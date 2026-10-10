@@ -21,12 +21,26 @@ class Checkpoint:
     subfolder: str | None
     description: str
     download_bytes: int = 0
-    # "laya" (rl_agent_config.json + encoder) or "clef" (Qwen3.5 backbone + joint schema head).
+    # "laya" (rl_agent_config.json + encoder), "clef" (Qwen3.5 backbone + joint schema head), or
+    # "gguf" (a GGUF_COMPANIONS entry llama.cpp serves, with no PyTorch form).
     layout: str = "laya"
+    # "pytorch", "llama.cpp" for the GGUF a Clef entry is served from (see laya_runtime._native_target), or
+    # "mlx" for the form unsloth-zoo's MLX engine serves on Apple Silicon (see laya_runtime._mlx_target).
+    backend: str = "pytorch"
+    # The served GGUF files of a local export, so a re-export is a different checkpoint to a resident server.
+    revision: str | None = None
+    # Display name where the frontend has none of its own.
+    label: str | None = None
 
     @property
     def is_local(self) -> bool:
         return Path(self.source).expanduser().is_dir()
+
+
+def _gguf(name: str, label: str, repo: str, description: str, download_bytes: int) -> Checkpoint:
+    return Checkpoint(
+        name, repo, None, description, download_bytes, "gguf", "llama.cpp", label = label
+    )
 
 
 CHECKPOINTS = {
@@ -69,10 +83,299 @@ CHECKPOINTS = {
             54_976_000_000,
             "clef",
         ),
+        _gguf(
+            "kev-0.8b",
+            "Kev 0.8B",
+            "ggml-org/Kev-0.8B-GGUF",
+            "Kev 0.8B (Q8_0 GGUF, llama.cpp only): small and fast, text only, runs on CPU.",
+            812_406_304,
+        ),
+        _gguf(
+            "kev-4b",
+            "Kev 4B",
+            "ggml-org/Kev-4B-GGUF",
+            "Kev 4B (Q8_0 GGUF, llama.cpp only): text only, a GPU is recommended.",
+            4_483_801_504,
+        ),
+        _gguf(
+            "kev-9b",
+            "Kev 9B",
+            "ggml-org/Kev-9B-GGUF",
+            "Kev 9B (Q8_0 GGUF, llama.cpp only): text only, needs a GPU.",
+            9_529_735_648,
+        ),
+        _gguf(
+            "lev",
+            "lev",
+            "ggml-org/lev-GGUF",
+            "Interfaze lev on Qwen3.5 4B (Q8_0 GGUF, llama.cpp only): text only, a GPU is recommended.",
+            4_482_405_280,
+        ),
+        _gguf(
+            "bespoke-nimble-9b-v3",
+            "Bespoke Nimble 9B v3",
+            "ggml-org/Bespoke-Nimble-9B-v3-GGUF",
+            "Bespoke Nimble 9B v3 (Q8_0 GGUF, llama.cpp only): text only, needs a GPU. "
+            "Non-commercial license (CC BY-NC 4.0).",
+            9_527_503_392,
+        ),
+        _gguf(
+            "openjev",
+            "OpenJev",
+            "ggml-org/OpenJev-GGUF",
+            "OpenJev 27B (Q8_0 GGUF, llama.cpp only): text and images, needs a large GPU. "
+            "Non-commercial license (CC BY-NC 4.0).",
+            28_595_765_408 + 629_247_232,
+        ),
+        _gguf(
+            "laya-gguf",
+            "Laya GGUF",
+            "ggml-org/Laya-GGUF",
+            "Laya (Q8_0 GGUF, llama.cpp only): small, text only, runs on CPU.",
+            449_397_600,
+        ),
+        _gguf(
+            "julia-1",
+            "Julia-1",
+            "ggml-org/Julia-1-GGUF",
+            "Supersonic Julia-1 (Q8_0 GGUF, llama.cpp only): the smallest, text only, runs on CPU.",
+            168_166_496,
+        ),
     )
 }
 
-# Default model names TypeSafe's and OpenJev's SDKs send.
+
+@dataclass(frozen = True)
+class GgufCompanion:
+    repo: str
+    revision: str
+    model: str
+    mmproj: str | None
+    download_bytes: int
+    # LFS sha256 of model, mmproj: the Hub cache names blobs by it, so a copy fetched at another revision is found.
+    sha256: tuple[str, ...] = ()
+
+
+# ggml-org GGUFs served by llama.cpp's /v1/systemone (b11443 and newer).
+GGUF_COMPANIONS = {
+    "clef-flash": GgufCompanion(
+        "ggml-org/Clef-Flash-GGUF",
+        "4a192915ef971886004b5b13294f2b4c7a7fc39d",
+        "Clef-Flash-Q8_0.gguf",
+        "mmproj-Clef-Flash-Q8_0.gguf",
+        9_657_260_192 + 624_229_728,
+        (
+            "d7c352faf1bdd9ea24d0b9347e8eb1eb4bbadeff6c02383bf750215a74f2f1f1",
+            "3fbc646617c56c35ba48e06f0fbe8693a83bde49eb31e2a3bf59ba0a308c9e25",
+        ),
+    ),
+    "clef": GgufCompanion(
+        "ggml-org/Clef-GGUF",
+        "63840a1a68cb7084c88610cffc328509356b04cb",
+        "Clef-Q8_0.gguf",
+        "mmproj-Clef-Q8_0.gguf",
+        28_732_215_360 + 629_247_424,
+        (
+            "07c6410af7011e0e56873a3b0b3f4ad9e31fb176f0ca80d6fd1525fe6f036548",
+            "0d901ea999ae122ba0afeb4a3f4c4ac9a90baa07f1d120df9c350082db1190a8",
+        ),
+    ),
+    **{
+        name: GgufCompanion(repo, revision, model, mmproj, CHECKPOINTS[name].download_bytes, sha256)
+        for name, repo, revision, model, mmproj, sha256 in (
+            (
+                "kev-0.8b",
+                "ggml-org/Kev-0.8B-GGUF",
+                "e551e319d483ff57e1ff208924b349d397cffc1c",
+                "Kev-0.8B-Q8_0.gguf",
+                None,
+                ("27278f34eb3273bceea4c053dc50dd61a5161da21a718c4aacdf8fd5830771d0",),
+            ),
+            (
+                "kev-4b",
+                "ggml-org/Kev-4B-GGUF",
+                "d924f2e2c3872da8b8aaf3eb4453b4126deceb79",
+                "Kev-4B-Q8_0.gguf",
+                None,
+                ("7c2ebed90560522c2801389db482ac1dc4c36d828f201f6074c1d60e433948da",),
+            ),
+            (
+                "kev-9b",
+                "ggml-org/Kev-9B-GGUF",
+                "ec2bbfe6620218aee2e01cc93bb78dee2a96ed58",
+                "Kev-9B-Q8_0.gguf",
+                None,
+                ("d30b225bfdc985d1856bb04a990be76008d0cf40dccbf78938e3069744bc614c",),
+            ),
+            (
+                "lev",
+                "ggml-org/lev-GGUF",
+                "3e9286a79ae857b4e1de051c92fab6dc574581ce",
+                "lev-Q8_0.gguf",
+                None,
+                ("c6b70833a9ec59c67bda2940f4047c2e1bdc066b4a6f8aec3c36d62b6ea34eef",),
+            ),
+            (
+                "bespoke-nimble-9b-v3",
+                "ggml-org/Bespoke-Nimble-9B-v3-GGUF",
+                "a72bdbadb355ca3014f7f9d2585380917cc59971",
+                "Bespoke-Nimble-9B-v3-Q8_0.gguf",
+                None,
+                ("ad484077ad28c1ba0644509b81e80268f8fd39e9d218415638a988caf3c6e66c",),
+            ),
+            (
+                "openjev",
+                "ggml-org/OpenJev-GGUF",
+                "10840f375658dea7afc5ff4711127bca8218b560",
+                "OpenJev-Q8_0.gguf",
+                "mmproj-OpenJev-Q8_0.gguf",
+                (
+                    "5e5574cfeb9145809d3ebe3e854761d62a947033d3f76af4c4b1dd8562409412",
+                    "e372cdbf59fdd6bd2504cb64c988b31c7a42ac406a8f711df4b7a7acd9216f1e",
+                ),
+            ),
+            (
+                "laya-gguf",
+                "ggml-org/Laya-GGUF",
+                "22265007700297ba9e128297e82540cf28c5d7d4",
+                "Laya-Q8_0.gguf",
+                None,
+                ("c06528c5746d3bb8baa72a27938be95abbfd0b226f8471e8a9e365ed0bb066d2",),
+            ),
+            (
+                "julia-1",
+                "ggml-org/Julia-1-GGUF",
+                "16fee17949206fbf58da9347daea44d792a81211",
+                "Julia-1-Q8_0.gguf",
+                None,
+                ("1ea6a7e87156eeeda88cb7a36a61265b37ba7b993897b7289b99aea5b5e47069",),
+            ),
+        )
+    },
+}
+
+
+@dataclass(frozen = True)
+class MlxCompanion:
+    """The source repo unsloth-zoo's MLX decision engine reads on Apple Silicon in place of an entry's GGUF."""
+
+    family: str
+    repo: str
+    revision: str
+    files: tuple[str, ...]
+    download_bytes: int
+    # The language model an adapter is merged into at load, in its own repo.
+    base: MlxCompanion | None = None
+
+
+def _qwen_base(repo: str, revision: str, shards: int, size: int, *extra: str) -> MlxCompanion:
+    files = (
+        "config.json",
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "vocab.json",
+        "merges.txt",
+        "preprocessor_config.json",
+        "video_preprocessor_config.json",
+        "model.safetensors.index.json",
+        *extra,
+        *(f"model.safetensors-{i:05d}-of-{shards:05d}.safetensors" for i in range(1, shards + 1)),
+    )
+    return MlxCompanion("", repo, revision, files, size)
+
+
+_ADAPTER_FILES = ("adapter_config.json", "adapter_model.safetensors")
+
+MLX_COMPANIONS = {
+    "julia-1": MlxCompanion(
+        "laya",
+        "SupersonicLabs/Julia-1",
+        "a85b127321d580d65176c89ced8273f305745d85",
+        (
+            "julia_config.json",
+            "model.safetensors",
+            "encoder/config.json",
+            "tokenizer/tokenizer.json",
+            "tokenizer/tokenizer_config.json",
+        ),
+        611_554_979,
+    ),
+    "lev": MlxCompanion(
+        "lev",
+        "interfaze-ai/lev",
+        "7bdc748dffebd85b57ee0dbea8f994c6354fed31",
+        (*_ADAPTER_FILES, "lev_release.json", "calibration.json"),
+        169_905_572,
+        base = _qwen_base(
+            "Qwen/Qwen3.5-4B",
+            "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a",
+            2,
+            9_342_816_694,
+            "chat_template.jinja",
+        ),
+    ),
+    "kev-0.8b": MlxCompanion(
+        "kev",
+        "jaredpalmer/kev-0.8b",
+        "bf75a6a8848ea6960ff2ed108d9ed44c2941174f",
+        (*_ADAPTER_FILES, "head.pt", "training_config.json"),
+        45_445_663,
+        base = _qwen_base(
+            "Qwen/Qwen3.5-0.8B-Base", "dc7cdfe2ee4154fa7e30f5b51ca41bfa40174e68", 1, 1_769_897_109
+        ),
+    ),
+    "kev-4b": MlxCompanion(
+        "kev",
+        "jaredpalmer/kev-4b",
+        "6cfce5c2fa4b4bd64026336ab649c5ca78857d52",
+        (*_ADAPTER_FILES, "head.pt", "training_config.json"),
+        135_176_939,
+        base = _qwen_base(
+            "Qwen/Qwen3.5-4B-Base", "1001bb4d826a52d1f399e183466143f4da7b741b", 2, 9_342_808_116
+        ),
+    ),
+    "kev-9b": MlxCompanion(
+        "kev",
+        "jaredpalmer/kev-9b",
+        "db029f08b290afd9fee4aa4bbcd9ae48602d1eb0",
+        (*_ADAPTER_FILES, "head.pt", "training_config.json"),
+        181_576_197,
+        base = _qwen_base(
+            "Qwen/Qwen3.5-9B-Base", "68c46c4b3498877f3ef123c856ecfde50c39f404", 4, 19_329_294_358
+        ),
+    ),
+    "bespoke-nimble-9b-v3": MlxCompanion(
+        "nimble",
+        "bespokelabs/Bespoke-Nimble-9B-v3",
+        "8e927b9b4afdbb14479fac10a7364d1a695be208",
+        (*_ADAPTER_FILES, "schema_config.json"),
+        692_535_920,
+        base = _qwen_base(
+            "Qwen/Qwen3.5-9B",
+            "c202236235762e1c871ad0ccb60c8ee5ba337b9a",
+            4,
+            19_329_302_904,
+            "chat_template.jinja",
+        ),
+    ),
+    # The 8-bit MLX conversion, the closest in size and answers to the Q8_0 GGUF; text only.
+    "openjev": MlxCompanion(
+        "openjev",
+        "openjev/openjev-MLX",
+        "a9dcc20aa827a6c7eae478f6ebb3b255bb135451",
+        (
+            "config.json",
+            "tokenizer.json",
+            "tokenizer_config.json",
+            "chat_template.jinja",
+            "model.safetensors.index.json",
+            *(f"model-{i:05d}-of-00006.safetensors" for i in range(1, 7)),
+        ),
+        28_599_913_943,
+    ),
+}
+
+# Names TypeSafe's and OpenJev's SDKs send by default, so an unmodified client reaches the configured model.
 DEFAULT_ALIASES = frozenset({"default", "laya", "jev-latest", "jev-preview", "openjev-latest"})
 LOCAL_NAME = "laya-local"
 CONNECTION_PREFIX = "connection:"
@@ -111,7 +414,7 @@ def _owner_outputs() -> Path:
 
 
 def _fine_tune_in(root: Path, folder_name: str) -> Checkpoint | None:
-    from utils.models.model_config import CLEF_MARKERS
+    from utils.models.model_config import clef_folder_kind
 
     from .laya_runtime import is_cached
 
@@ -125,7 +428,7 @@ def _fine_tune_in(root: Path, folder_name: str) -> Checkpoint | None:
     except (OSError, RuntimeError, ValueError):
         # A NUL byte or a symlink loop in a caller's name.
         return None
-    if all((folder / name).is_file() for name in CLEF_MARKERS):
+    if clef_folder_kind(folder) is not None:
         checkpoint = Checkpoint(
             CLEF_FINE_TUNE_PREFIX + folder_name,
             str(folder),

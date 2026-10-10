@@ -24,7 +24,8 @@ from core.inference.web_access_policy import normalize_website_policy
 from storage import research_runs_db as db
 from core.inference.providers import answers_decisions_only, provider_runs_local_tools
 from models.providers import MAX_JSON_SAFE_INTEGER
-from storage import providers_db
+from state.tool_policy import get_tool_policy
+from storage import mcp_servers_db, providers_db
 from storage.studio_db import get_chat_message, get_chat_thread, upsert_chat_message
 from utils.current_date_prompt_settings import current_date_prompt_line
 
@@ -50,7 +51,7 @@ _SENSITIVE_KEY_SUFFIXES = (
     "sessiontoken",
 )
 _MAX_PLAN_STEPS = 30
-# Zero means unlimited; a year is plenty and reads back sanely in a 400.
+# 0 means unlimited; a one-year finite ceiling keeps 400 errors readable.
 _MIN_FINITE_MODEL_TIMEOUT_SECONDS = 10
 _MAX_FINITE_MODEL_TIMEOUT_SECONDS = 365 * 24 * 3600
 _DELTA_ONLY_EVENTS = {
@@ -60,7 +61,14 @@ _DELTA_ONLY_EVENTS = {
     "phase.started",
     "phase.ended",
 }
+# blocking event waits use a dedicated executor so open streams cannot exhaust the default.
 _EVENT_WAIT_EXECUTOR = ThreadPoolExecutor(max_workers = 32, thread_name_prefix = "research-events")
+
+
+class ResearchMcpSource(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+    serverId: str = Field(min_length = 1, max_length = 200)
+    tool: str = Field(min_length = 1, max_length = 500)
 
 
 class CreateResearchRun(BaseModel):
@@ -73,6 +81,7 @@ class CreateResearchRun(BaseModel):
     )
     inferenceRequest: dict[str, Any] = Field(default_factory = dict)
     ragScope: dict[str, Any] | None = None
+    mcpSources: list[ResearchMcpSource] = Field(default_factory = list, max_length = 20)
     budgets: dict[str, int] | None = None
     websitePolicy: dict[str, list[str]] | None = None
     instructions: str | None = Field(default = None, max_length = 32_000)
@@ -81,7 +90,7 @@ class CreateResearchRun(BaseModel):
     @field_validator("budgets", mode = "before")
     @classmethod
     def _reject_boolean_budgets(cls, value: Any) -> Any:
-        # bool is an int subclass: False would coerce to the 0 unlimited sentinel.
+        # reject bool before int coercion turns False into 0 and silently disables the deadline.
         if isinstance(value, dict):
             for key, item in value.items():
                 if isinstance(item, bool):
@@ -331,10 +340,15 @@ def _sanitize_config(
             "whole_doc",
         }
         unknown_rag = set(rag_scope) - allowed_rag
-        # Nested containers evade the sensitive-key scan, so reject non-scalars.
+        # retrieval requires scalar ragScope fields; containers can evade the sensitive-key scan.
         non_scalar = any(isinstance(value, (dict, list, tuple)) for value in rag_scope.values())
         if unknown_rag or non_scalar or _contains_sensitive_key(rag_scope):
             raise HTTPException(status_code = 400, detail = "Unsupported or sensitive ragScope field")
+    mcp_sources = []
+    for source in payload.mcpSources:
+        server = mcp_servers_db.get_server(source.serverId)
+        if server and server.get("is_enabled") and source.model_dump() not in mcp_sources:
+            mcp_sources.append(source.model_dump())
     budgets = {
         "maxSteps": 12,
         "maxSources": 40,
@@ -349,6 +363,7 @@ def _sanitize_config(
     limits = {
         "maxSteps": (1, _MAX_PLAN_STEPS),
         "maxSources": (1, 100),
+        # 0 disables the total wall-clock deadline; per-output stall deadlines still apply.
         "modelTimeoutSeconds": (
             _MIN_FINITE_MODEL_TIMEOUT_SECONDS,
             _MAX_FINITE_MODEL_TIMEOUT_SECONDS,
@@ -364,7 +379,7 @@ def _sanitize_config(
             if key == "modelTimeoutSeconds":
                 allowed = f"0 (unlimited) or {allowed}"
             raise HTTPException(status_code = 400, detail = f"{key} must be {allowed}")
-    # Off unless UNSLOTH_RESEARCH_AUTO_SCRAPE=1 so default budgets stay byte-identical.
+    # server-only UNSLOTH_RESEARCH_AUTO_SCRAPE=1 adds maxAutoScrape; defaults match legacy.
     from core.research_runs import _auto_scrape_default
 
     _auto_scrape = _auto_scrape_default()
@@ -378,6 +393,7 @@ def _sanitize_config(
         "model": model,
         "inferenceRequest": request,
         "ragScope": rag_scope,
+        **({"mcpSources": mcp_sources} if mcp_sources and get_tool_policy() is not False else {}),
         "budgets": budgets,
         "websitePolicy": website_policy,
         "instructions": (payload.instructions or "").strip(),

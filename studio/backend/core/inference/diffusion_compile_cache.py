@@ -10,9 +10,10 @@ Mega-cache (``save_cache_artifacts`` / ``load_cache_artifacts``, torch >= 2.7).
 
 PORTABILITY IS NOT UNIVERSAL: an artifact is only valid for the SAME torch/Triton/CUDA
 build, GPU arch, and model graph (family, dtype, quant, attention backend, compile
-kwargs, shape bucket). torch validates these on load; a mismatch yields no hit, not an
-error. Hence an EXACT-MATCH fingerprint with SILENT FALLBACK to local compile (a miss is
-normal), and per-arch bundles keyed by the full fingerprint. See
+kwargs, shape bucket, quant variant, graph kill switches). torch validates these on load;
+a mismatch yields no hit, not an error. Hence
+an EXACT-MATCH fingerprint with SILENT FALLBACK to local compile (a miss is normal), and
+per-arch bundles keyed by the full fingerprint. See
 ``outputs/compile_cache/DISTRIBUTION.md``.
 
 GGUF loads participate too (fingerprinted ``quant="gguf"``, a different compiled graph
@@ -60,6 +61,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import shutil
 import tempfile
 import threading
@@ -265,6 +267,174 @@ def environment_fingerprint() -> dict[str, Any]:
     return fp
 
 
+# Switches that change the traced graph after begin() (swaps in apply_speed_optims / first forward), so the tree can't
+# show them. name -> default ("raw" = value-carrying). Keyed only off default; runtime-only knobs are excluded.
+_GRAPH_SWITCHES = {
+    "UNSLOTH_DIFFUSION_INT8_GEMM": "auto",
+    "UNSLOTH_DIFFUSION_INT8_GEMM_CONVROT": "on",
+    "UNSLOTH_DIFFUSION_INT8_GEMM_STREAMED": "on",
+    "UNSLOTH_DIFFUSION_INT8_ROTQUANT": "auto",
+    "UNSLOTH_DIFFUSION_INT8_FUSED": "on",
+    "UNSLOTH_DIFFUSION_ZIMAGE_FUSED": "on",
+    "UNSLOTH_DIFFUSION_Q21_REAL_ROPE": "on",
+    "UNSLOTH_DIFFUSION_QWEN_REAL_ROPE": "on",
+    "UNSLOTH_DIFFUSION_EAGER_PATCHES": "on",
+    "UNSLOTH_DIFFUSION_ARCH_PATCHES": "on",
+    "UNSLOTH_DIFFUSION_FLUX2_FUSED_ROPE": "on",
+    "UNSLOTH_DIFFUSION_BLOCK_RESTRIDE": "on",
+    "UNSLOTH_DIFFUSION_INDUCTOR_BACKPORTS": "on",
+    "UNSLOTH_STATIC_STREAM_MERGE_DETECT": "off",
+    "UNSLOTH_TORCHAO_INDUCTOR_CONFIG": "off",
+    "UNSLOTH_NVFP4_BACKEND": "raw:auto",
+    # Unset is off; "auto" protects the head + last step, so "auto" is NOT the default here.
+    "UNSLOTH_NVFP4_PROTECT_STEPS": "raw",
+}
+_OFF_WORDS = ("0", "off", "false", "no", "none")
+_ON_WORDS = ("1", "on", "true", "yes", "force")
+_ADDRESS_RE = re.compile(r" at 0x[0-9a-fA-F]+")
+
+
+def _switch_value(name: str, default: str) -> Optional[str]:
+    raw = (os.environ.get(name) or "").strip().lower()
+    if not raw:
+        return None
+    if default.startswith("raw"):
+        return None if raw in _OFF_WORDS or raw == default.partition(":")[2] else raw
+    value = "off" if raw in _OFF_WORDS else "on" if raw in _ON_WORDS else None
+    if value is None:
+        return None
+    return None if value == default else value
+
+
+def graph_switches() -> dict[str, str]:
+    out: dict[str, str] = {}
+    for name, default in sorted(_GRAPH_SWITCHES.items()):
+        value = _switch_value(name, default)
+        if value is not None:
+            out[name] = value
+    return out
+
+
+def _tensor_signature(tensor: Any, depth: int = 0) -> str:
+    """``Cls/dtype(inner...)``: what a traced op dispatches on, never shapes or values."""
+    head = f"{type(tensor).__name__}/{getattr(tensor, 'dtype', None)}"
+    if depth > 2:
+        return head
+    inner: list[str] = []
+    cls = type(tensor)
+    data_names = [
+        *(getattr(cls, "tensor_data_names", None) or ()),
+        *(getattr(cls, "optional_tensor_data_names", None) or ()),
+    ]
+    if data_names:
+        for name in data_names:
+            value = getattr(tensor, name, None)
+            inner.append(
+                f"{name}={_tensor_signature(value, depth + 1) if value is not None else None}"
+            )
+        for attr in ("tensor_attribute_names", "optional_tensor_attribute_names"):
+            for name in getattr(cls, attr, None) or ():
+                if name == "shape":
+                    continue
+                if name == "block_size":
+                    # Relative to the shape: per-row [1, k] vs per-tensor [n, k] trace different scale broadcasts.
+                    shape = tuple(getattr(tensor, "shape", ()) or ())
+                    block = tuple(getattr(tensor, name, None) or ())
+                    rel = ",".join(
+                        "full" if i < len(shape) and b == shape[i] else str(b)
+                        for i, b in enumerate(block)
+                    )
+                    inner.append(f"block_size={rel}")
+                    continue
+                inner.append(f"{name}={_ADDRESS_RE.sub('', repr(getattr(tensor, name, None)))}")
+    elif cls.__name__ not in ("Tensor", "Parameter") and hasattr(tensor, "__tensor_flatten__"):
+        # Older wrappers (AffineQuantizedTensor): inner tensors only, the flatten context carries the shape.
+        try:
+            names, _ctx = tensor.__tensor_flatten__()
+            for name in names:
+                inner.append(f"{name}={_tensor_signature(getattr(tensor, name, None), depth + 1)}")
+        except Exception:  # noqa: BLE001
+            inner.append("flatten=unavailable")
+    return head + (f"({'; '.join(inner)})" if inner else "")
+
+
+def _weight_signature(module: Any, weight: Any) -> str:
+    """Scale dtype (fp32 hosted vs bf16 runtime) and W8A8 vs weight-only both land here."""
+    parts = [type(module).__name__, _tensor_signature(weight)]
+    group = getattr(module, "convrot_groupsize", None)
+    if group is not None:
+        parts.append(f"convrot{group}")
+    rot = getattr(module, "rot_group", None)
+    if rot:
+        parts.append(f"rot{rot}")
+    if getattr(module, "act_int8", False):
+        parts.append("act_int8")
+    fwd = module.__dict__.get("forward") if hasattr(module, "__dict__") else None
+    if fwd is not None:
+        func = getattr(fwd, "__func__", fwd)
+        parts.append(
+            f"fwd={getattr(func, '__module__', '')}.{getattr(func, '__qualname__', type(func).__name__)}"
+        )
+    return "/".join(parts)
+
+
+def _stored_weight(module: Any) -> tuple[Any, bool]:
+    """The stored weight, never a ``weight`` property: native layers dequantize the whole matrix on each read."""
+    d = getattr(module, "__dict__", None) or {}
+    for store in ("_parameters", "_buffers"):
+        weight = (d.get(store) or {}).get("weight")
+        if weight is not None:
+            return weight, False
+    if d.get("weight") is not None:
+        return d["weight"], False
+    packed = (d.get("_buffers") or {}).get("weight_q")
+    return packed, packed is not None
+
+
+def graph_variant(transformer: Any) -> dict[str, Any]:
+    """Structural descriptor of the loaded quant artifact (no weight hashing): stable across processes, distinct for
+    plain vs ConvRot, hosted vs ComfyUI vs runtime quantise, torchao vs native. Never raises."""
+    variant: dict[str, Any] = {}
+    try:
+        import torch  # noqa: PLC0415
+
+        counts: dict[str, int] = {}
+        for module in transformer.modules():
+            weight, packed = _stored_weight(module)
+            if not isinstance(weight, torch.Tensor):
+                continue
+            sig = _weight_signature(module, weight) + ("/packed" if packed else "")
+            counts[sig] = counts.get(sig, 0) + 1
+        variant["weights"] = dict(sorted(counts.items()))
+    except Exception as exc:  # noqa: BLE001 - an unreadable tree keys apart rather than sharing a bundle
+        variant["weights"] = f"unavailable: {type(exc).__name__}"
+    try:
+        from .diffusion_convrot import CONVROT_ATTR  # noqa: PLC0415
+        rotation = getattr(transformer, CONVROT_ATTR, None)
+        if isinstance(rotation, dict):
+            variant["rotation"] = {k: rotation[k] for k in sorted(rotation)}
+    except Exception:  # noqa: BLE001
+        pass
+    return variant
+
+
+def _has_quantized_layout(variant: dict[str, Any]) -> bool:
+    """A ComfyUI single file keys quant as none, so the tree decides."""
+    if variant.get("rotation"):
+        return True
+    weights = variant.get("weights")
+    if not isinstance(weights, dict):
+        return False
+    for sig in weights:
+        parts = sig.split("/")
+        if len(parts) < 2 or parts[1] not in ("Parameter", "Tensor") or "(" in sig:
+            return True
+        # An instance forward alone is not quantized: offload hooks install one on dense loads too.
+        if any(p.startswith(("convrot", "rot", "act_int8", "packed")) for p in parts[3:]):
+            return True
+    return False
+
+
 def model_fingerprint(
     *,
     family: Any,
@@ -303,6 +473,15 @@ def model_fingerprint(
         },
         "shape_bucket": shape_bucket,
     }
+    # INT8 and INT8-ConvRot share "int8" but compile different graphs. Quantized layouts only: dense / GGUF keys hold.
+    if str(quant) != "gguf" and transformer is not None:
+        variant = graph_variant(transformer)
+        if quant is not None or _has_quantized_layout(variant):
+            fp["variant"] = variant
+    switches = graph_switches()
+    if switches:
+        fp["switches"] = switches
+    # Added only when armed, so other bundles keep their key.
     try:
         from .diffusion_dynamic_text import fingerprint as _dynamic_text_fp
         dynamic_text = _dynamic_text_fp(transformer, compile_kwargs.get("dynamic", True))

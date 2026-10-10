@@ -86,6 +86,34 @@ def test_axis_weights_partition_unity_and_skip_shared_edges(length):
     torch.testing.assert_close(total, torch.ones_like(total))
 
 
+def test_axis_weights_keep_float64_off_a_device_without_it(monkeypatch):
+    # MPS has no float64: the tiled encode on Apple Silicon raised before the first step (#12935).
+    from torch.utils._python_dispatch import TorchDispatchMode
+
+    asked, made = [], []
+
+    class Record(TorchDispatchMode):
+        def __torch_dispatch__(
+            self,
+            func,
+            types,
+            args = (),
+            kwargs = None,
+        ):
+            out = func(*args, **(kwargs or {}))
+            if torch.is_tensor(out):
+                made.append((out.dtype, out.device.type))
+            return out
+
+    monkeypatch.setattr(vt, "float64_device", lambda device: asked.append(device) or "cpu")
+    target = torch.device("meta")
+    with Record():
+        w = vt.axis_weights(vt.tile_starts(47), vt.TILE_LATENTS, 47, 16, torch, target)
+    assert asked == [target]
+    assert all(x.device.type == "meta" and x.dtype == torch.float32 for x in w)
+    assert (torch.float64, "cpu") in made and (torch.float64, "meta") not in made
+
+
 @pytest.mark.parametrize("width, height", UI_SIZES)
 def test_every_ui_size_tiles_without_slivers(width, height):
     for side in (width, height):

@@ -2934,7 +2934,21 @@ class _StopAfterDownloads(Exception):
     """Ends the load once Phase 2 is done, which is all these tests observe."""
 
 
-def _dflash_fetch_during_auto_load(monkeypatch, *, supports_dspark, supports_dflash, dspark_cached):
+def _dflash_fetch_during_auto_load(
+    monkeypatch,
+    *,
+    supports_dspark,
+    supports_dflash,
+    dspark_cached,
+    speculative_type = "auto",
+    tensor_parallel = False,
+    extra_args = None,
+    gguf_path = None,
+    dflash_draft_path = None,
+    mtp_draft_path = None,
+    mtp_loads = True,
+    mtp_token = "draft-mtp",
+):
     """Whether an Auto load fetches the DFlash sidecar, and what it resolves to.
 
     Drives the real load path: the suppression lives inline in load_model's
@@ -2953,6 +2967,7 @@ def _dflash_fetch_during_auto_load(monkeypatch, *, supports_dspark, supports_dfl
                 "found": True,
                 "supports_dspark": supports_dspark,
                 "supports_dflash": supports_dflash,
+                "mtp_token": mtp_token,
             }
         ),
     )
@@ -2973,7 +2988,10 @@ def _dflash_fetch_during_auto_load(monkeypatch, *, supports_dspark, supports_dfl
     monkeypatch.setattr(
         backend, "_download_gguf", lambda **_kwargs: "/cache/snap/model-Q4_K_M.gguf"
     )
-    monkeypatch.setattr(backend, "_download_mtp", lambda **_kwargs: None)
+    monkeypatch.setattr(backend, "_download_mtp", lambda **_kwargs: mtp_draft_path)
+    monkeypatch.setattr(llama_cpp_module, "_mtp_drafter_loads_standalone", lambda _path: mtp_loads)
+    # Exactly what _download_dspark does for a cached sidecar on a binary that
+    # cannot run it: the path comes back regardless of the capability.
     monkeypatch.setattr(backend, "_download_dspark", lambda **_kwargs: dspark_cached)
 
     def _fetch_dflash(**_kwargs):
@@ -2981,21 +2999,37 @@ def _dflash_fetch_during_auto_load(monkeypatch, *, supports_dspark, supports_dfl
         return "/cache/snap/dflash-kquant.gguf"
 
     monkeypatch.setattr(backend, "_download_dflash", _fetch_dflash)
+    seen["log"] = []
+    _real_info = llama_cpp_module.logger.info
+
+    def _info(msg, *args, **kwargs):
+        seen["log"].append(str(msg))
+        return _real_info(msg, *args, **kwargs)
+
+    monkeypatch.setattr(llama_cpp_module.logger, "info", _info)
 
     def _stop(*_args, **_kwargs):
         raise _StopAfterDownloads
 
     monkeypatch.setattr(backend, "_read_gguf_metadata", _stop)
 
+    source = (
+        {"gguf_path": gguf_path, "model_identifier": gguf_path}
+        if gguf_path
+        else {"hf_repo": "org/repo", "hf_variant": "Q4_K_M", "model_identifier": "org/repo"}
+    )
     with pytest.raises(_StopAfterDownloads):
         backend.load_model(
             GgufLoadIntent(
-                hf_repo = "org/repo",
-                hf_variant = "Q4_K_M",
-                model_identifier = "org/repo",
-                speculative_type = "auto",
+                **source,
+                speculative_type = speculative_type,
+                tensor_parallel = tensor_parallel,
+                extra_args = tuple(extra_args) if extra_args is not None else None,
+                dflash_draft_path = dflash_draft_path,
+                mtp_draft_path = mtp_draft_path if gguf_path else None,
             )
         )
+    seen["dflash_promoted"] = any("using draft-dflash" in m for m in seen["log"])
     return seen
 
 
@@ -3035,7 +3069,167 @@ def test_auto_fetches_dflash_when_the_repo_ships_no_dspark_sidecar(monkeypatch):
     assert seen["dflash_fetched"] is True
 
 
-# A dflash-*.gguf can symlink outside the lease, so the boundary must reach the header scan.
+# #11308: DFlash2 + --split-mode tensor aborts at startup, so Auto keeps tensor split with MTP.
+
+_MTP = "/cache/snap/MTP/mtp-model-Q4_0.gguf"
+
+
+@pytest.mark.parametrize(
+    "tensor_parallel, extra_args",
+    [(True, None), (False, ["-sm", "tensor"]), (False, ["--split-mode", "tensor"])],
+)
+def test_auto_skips_dflash_under_tensor_split_when_mtp_is_available(
+    monkeypatch, tensor_parallel, extra_args
+):
+    seen = _dflash_fetch_during_auto_load(
+        monkeypatch,
+        supports_dspark = False,
+        supports_dflash = True,
+        dspark_cached = None,
+        tensor_parallel = tensor_parallel,
+        extra_args = extra_args,
+        mtp_draft_path = _MTP,
+    )
+    assert seen["dflash_fetched"] is False
+    assert seen["dflash_promoted"] is False
+
+
+def test_auto_skips_dflash_under_tensor_split_from_env(monkeypatch):
+    monkeypatch.setenv("LLAMA_ARG_SPLIT_MODE", "tensor")
+    seen = _dflash_fetch_during_auto_load(
+        monkeypatch,
+        supports_dspark = False,
+        supports_dflash = True,
+        dspark_cached = None,
+        mtp_draft_path = _MTP,
+    )
+    assert seen["dflash_fetched"] is False
+
+
+def test_auto_keeps_dflash_under_tensor_split_when_the_mtp_sidecar_cannot_load(monkeypatch):
+    seen = _dflash_fetch_during_auto_load(
+        monkeypatch,
+        supports_dspark = False,
+        supports_dflash = True,
+        dspark_cached = None,
+        tensor_parallel = True,
+        mtp_draft_path = _MTP,
+        mtp_loads = False,
+    )
+    assert seen["dflash_fetched"] is True
+    assert seen["dflash_promoted"] is True
+
+
+def test_auto_keeps_dflash_under_tensor_split_when_the_binary_cannot_run_mtp(monkeypatch):
+    seen = _dflash_fetch_during_auto_load(
+        monkeypatch,
+        supports_dspark = False,
+        supports_dflash = True,
+        dspark_cached = None,
+        tensor_parallel = True,
+        mtp_draft_path = _MTP,
+        mtp_token = None,
+    )
+    assert seen["dflash_promoted"] is True
+
+
+def test_auto_keeps_dflash_under_tensor_split_for_an_extras_drafter(monkeypatch):
+    seen = _dflash_fetch_during_auto_load(
+        monkeypatch,
+        supports_dspark = False,
+        supports_dflash = True,
+        dspark_cached = None,
+        extra_args = ["-sm", "tensor", "--model-draft", "/models/dflash-model.gguf"],
+        mtp_draft_path = _MTP,
+    )
+    assert seen["dflash_promoted"] is True
+
+
+def test_auto_keeps_dflash_under_tensor_split_for_a_target_with_an_embedded_head(monkeypatch):
+    import utils.models.gguf_metadata as gguf_metadata
+
+    monkeypatch.setattr(gguf_metadata, "read_gguf_nextn_predict_layers", lambda _path: 1)
+    seen = _dflash_fetch_during_auto_load(
+        monkeypatch,
+        supports_dspark = False,
+        supports_dflash = True,
+        dspark_cached = None,
+        tensor_parallel = True,
+        mtp_draft_path = _MTP,
+    )
+    assert seen["dflash_promoted"] is True
+
+
+def test_auto_keeps_dflash_under_tensor_split_without_an_mtp_drafter(monkeypatch):
+    seen = _dflash_fetch_during_auto_load(
+        monkeypatch,
+        supports_dspark = False,
+        supports_dflash = True,
+        dspark_cached = None,
+        tensor_parallel = True,
+    )
+    assert seen["dflash_fetched"] is True
+    assert seen["dflash_promoted"] is True
+
+
+def test_auto_does_not_promote_a_local_dflash_sidecar_under_tensor_split(monkeypatch, tmp_path):
+    model = tmp_path / "Qwen3.8-27B-UD-Q6_K_XL.gguf"
+    model.write_bytes(b"GGUF")
+    sidecar = tmp_path / "dflash-Qwen3.8-27B-Q8_0.gguf"
+    sidecar.write_bytes(b"GGUF")
+    mtp = tmp_path / "MTP" / "mtp-Qwen3.8-27B-Q4_0.gguf"
+    mtp.parent.mkdir()
+    mtp.write_bytes(b"GGUF")
+    kwargs = dict(
+        supports_dspark = False,
+        supports_dflash = True,
+        dspark_cached = None,
+        gguf_path = str(model),
+        dflash_draft_path = str(sidecar),
+        mtp_draft_path = str(mtp),
+    )
+    tensor = _dflash_fetch_during_auto_load(monkeypatch, extra_args = ["-sm", "tensor"], **kwargs)
+    assert tensor["dflash_promoted"] is False
+    assert any("keeping tensor split" in m for m in tensor["log"])
+    layer = _dflash_fetch_during_auto_load(monkeypatch, **kwargs)
+    assert layer["dflash_promoted"] is True
+
+
+@pytest.mark.parametrize("extra_args", [None, ["-sm", "layer"]])
+def test_auto_still_uses_dflash_without_tensor_split(monkeypatch, extra_args):
+    seen = _dflash_fetch_during_auto_load(
+        monkeypatch,
+        supports_dspark = False,
+        supports_dflash = True,
+        dspark_cached = None,
+        tensor_parallel = extra_args is not None,
+        extra_args = extra_args,
+        mtp_draft_path = _MTP,
+    )
+    assert seen["dflash_fetched"] is True
+    assert seen["dflash_promoted"] is True
+
+
+def test_explicit_dflash_still_fetches_under_tensor_split(monkeypatch):
+    seen = _dflash_fetch_during_auto_load(
+        monkeypatch,
+        supports_dspark = False,
+        supports_dflash = True,
+        dspark_cached = None,
+        speculative_type = "dflash",
+        tensor_parallel = True,
+        mtp_draft_path = _MTP,
+    )
+    assert seen["dflash_fetched"] is True
+
+
+# ── The caller's boundary reaches discovery, not just the rescan ──────
+#
+# ModelConfig.from_identifier runs the local companion scan, and the DFlash scan
+# opens a candidate's header to confirm the architecture. A native grant covers
+# one directory, so a dflash-*.gguf inside it can be a symlink whose target sits
+# outside the lease. The load route rejects that afterwards, which cannot undo a
+# read, so the boundary has to travel INTO the scan.
 
 
 def test_from_identifier_hands_the_boundary_to_every_drafter_kind(tmp_path, monkeypatch):

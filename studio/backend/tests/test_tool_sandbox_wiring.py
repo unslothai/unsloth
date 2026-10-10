@@ -880,3 +880,34 @@ def test_a_stop_during_the_sandbox_probe_reads_as_a_cancel(monkeypatch, executor
 def test_an_approved_ansi_c_quoted_host_path_is_recognised(command):
     """The approval classifier decodes $'...' and prompts; the reach check must agree, or the approved call stays jailed."""
     assert tools._reaches_host_paths("terminal", command)
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason = "the cap only applies on Linux")
+@pytest.mark.parametrize(
+    "env, saved, expected",
+    [
+        (None, None, 8),
+        (None, 24, 24),
+        ("12", 24, 12),
+    ],
+    ids = ["default", "saved", "env-wins"],
+)
+def test_a_sandboxed_run_gets_the_configured_memory_limit(monkeypatch, env, saved, expected):
+    from utils import sandbox_memory_limit
+
+    if env is None:
+        monkeypatch.delenv(sandbox_memory_limit.MEMORY_LIMIT_ENV, raising = False)
+    else:
+        monkeypatch.setenv(sandbox_memory_limit.MEMORY_LIMIT_ENV, env)
+    monkeypatch.setattr(
+        sandbox_memory_limit,
+        "saved_memory_limit_gb",
+        lambda: saved or sandbox_memory_limit.DEFAULT_MEMORY_LIMIT_GB,
+    )
+    code = "import resource\nprint('AS', resource.getrlimit(resource.RLIMIT_AS)[0])"
+    for out in (
+        tools._python_exec(code, None, 60, _SESSION),
+        tools._bash_exec(f"python3 -c \"{code.replace(chr(10), ';')}\"", None, 60, _SESSION),
+    ):
+        lines = dict(line.split(" ", 1) for line in out.splitlines() if line.startswith("AS "))
+        assert int(lines["AS"]) == expected * 1024**3, out

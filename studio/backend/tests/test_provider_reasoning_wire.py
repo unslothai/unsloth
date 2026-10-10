@@ -198,7 +198,10 @@ def test_gemini_families_past_three_use_thinking_level():
         top_p = 0.95,
         max_tokens = 64,
     )
-    assert body["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "medium"}
+    assert body["generationConfig"]["thinkingConfig"] == {
+        "thinkingLevel": "medium",
+        "includeThoughts": True,
+    }
     body = _body(
         "gemini",
         "gemini-4-pro",
@@ -207,7 +210,10 @@ def test_gemini_families_past_three_use_thinking_level():
         top_p = 0.95,
         max_tokens = 64,
     )
-    assert body["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "low"}
+    assert body["generationConfig"]["thinkingConfig"] == {
+        "thinkingLevel": "low",
+        "includeThoughts": True,
+    }
     body = _body(
         "gemini",
         "gemini-2.5-flash",
@@ -244,14 +250,17 @@ def test_anthropic_models_outside_the_spec_take_the_adaptive_shape():
 def test_gemma_on_gemini_toggles_with_thinking_level_not_budget():
     sampling = {"temperature": 0.7, "top_p": 0.95, "max_tokens": 64}
     body = _body("gemini", "gemma-4-31b-it", enable_thinking = True, **sampling)
-    assert body["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "high"}
+    assert body["generationConfig"]["thinkingConfig"] == {
+        "thinkingLevel": "high",
+        "includeThoughts": True,
+    }
     body = _body("gemini", "gemma-4-26b-a4b-it", enable_thinking = False, **sampling)
     assert body["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "minimal"}
     body = _body("gemini", "gemma-4-31b-it", **sampling)
     assert "thinkingConfig" not in body.get("generationConfig", {})
 
 
-# Adaptive thinking 400s on Claude 4.5 and earlier; budget_tokens is the only mode there.
+# Claude 4.5 and earlier reject adaptive thinking and require budget_tokens.
 # https://platform.claude.com/docs/en/build-with-claude/extended-thinking
 @pytest.mark.parametrize(
     "model,effort,budget",

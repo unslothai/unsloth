@@ -384,6 +384,7 @@ def _require_document_owner(conn: sqlite3.Connection, document: dict) -> None:
 
 
 def _create_linked_folder(scope_type: str, scope_id: str, payload: LinkFolderRequest) -> dict:
+    from utils.native_path_leases import redact_native_paths
     path, signed_identity = _resolve_linked_folder_path(payload.native_path_lease)
     try:
         with folder_sync.scope_lock(_scope_for_owner(scope_type, scope_id)):
@@ -396,10 +397,20 @@ def _create_linked_folder(scope_type: str, scope_id: str, payload: LinkFolderReq
                 name = payload.name,
                 auto_sync = payload.auto_sync,
             )
+        job = folder_sync.get_job(job_id)
+        return {"linkedFolder": _folder_view(folder), "job": _folder_job_view(job)}
+    except HTTPException:
+        raise
     except ValueError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
-    job = folder_sync.get_job(job_id)
-    return {"linkedFolder": _folder_view(folder), "job": _folder_job_view(job)}
+    except Exception as exc:
+        # Not left to escape: an unhandled 500 has no CORS headers, so the desktop resent the POST and
+        # its spent grant answered "already used" instead of this error (#13093).
+        logger.exception("linked folder creation failed")
+        raise HTTPException(
+            status_code = 500,
+            detail = f"Could not link the folder: {redact_native_paths(str(exc) or type(exc).__name__)}",
+        ) from exc
 
 
 @router.get("/knowledge-bases")

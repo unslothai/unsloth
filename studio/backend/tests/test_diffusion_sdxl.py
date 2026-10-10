@@ -167,9 +167,10 @@ def test_sdxl_refiner_not_trusted():
 
 
 def test_sdxl_gguf_load_rejected_up_front():
-    # SDXL single files are the whole pipeline, so a GGUF request fails cheap validation
+    # SDXL's single file is the whole pipeline, so only an on-disk GGUF carrying all of it loads (#11391); a Hub
+    # GGUF request still fails cheap validation before the GPU handoff.
     backend = DiffusionBackend()
-    with pytest.raises(ValueError, match = "no GGUF"):
+    with pytest.raises(ValueError, match = "also carries the text encoders and VAE"):
         backend.validate_load_request(
             "some-org/my-sdxl.gguf", gguf_filename = "my-sdxl.gguf", family_override = "sdxl"
         )

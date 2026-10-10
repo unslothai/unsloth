@@ -9,7 +9,7 @@ Unsloth cannot load it today. This module answers, without authentication, code 
 or trust_remote_code:
 
   1. Does the LATEST transformers release on PyPI ship this ``model_type``?
-  2. Does transformers ``main`` on GitHub ship it (dev-only, not yet installable)?
+  2. Does transformers ``main`` on GitHub ship it (installable from main after consent)?
 
 Sources (all unauthenticated; raw.githubusercontent.com is not API rate-limited and
 api.github.com is deliberately never used):
@@ -34,8 +34,10 @@ persistent ``.venv_t5_latest`` sidecar via
 :func:`utils.transformers_version.ensure_latest_transformers_venv`.
 """
 
+import contextlib
 import json
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -78,9 +80,12 @@ _CACHE_TTL_SECONDS = 24 * 60 * 60
 _FAILURE_BACKOFF_SECONDS = 300
 
 _CACHE_FILE_NAME = "transformers_latest_check.json"
-_SNAPSHOT_SCHEMA = 1
+# 2 adds main_version: a schema-1 file would hide the main install until its TTL.
+_SNAPSHOT_SCHEMA = 2
 
-# Install-in-progress state lives in utils.transformers_version (sidecar swap reservation).
+# Snapshot: {"schema", "fetched_at", "pypi_version", "pypi_model_types", "main_model_types",
+# "main_checked", "main_version"}.
+# Install-in-progress state lives in utils.transformers_version (the sidecar swap reservation).
 _lock = threading.Lock()
 _memory_snapshot: dict | None = None
 _last_failure_at: float = 0.0
@@ -242,10 +247,15 @@ def _save_snapshot_file(snapshot: dict) -> None:
 
 
 def _snapshot_is_fresh(snapshot: dict | None) -> bool:
-    return (
-        snapshot is not None
-        and (time.time() - float(snapshot.get("fetched_at", 0))) < _CACHE_TTL_SECONDS
+    if snapshot is None:
+        return False
+    # A failed main lookup (mappings or version) would otherwise hide the main install all day.
+    ttl = (
+        _CACHE_TTL_SECONDS
+        if snapshot.get("main_checked") and snapshot.get("main_version")
+        else _FAILURE_BACKOFF_SECONDS
     )
+    return (time.time() - float(snapshot.get("fetched_at", 0))) < ttl
 
 
 def _refresh_snapshot() -> dict | None:
@@ -262,6 +272,7 @@ def _refresh_snapshot() -> dict | None:
     if pypi_types is None:
         return None
     main_types = _fetch_remote_model_types("main")
+    main_version = _fetch_main_version() if main_types is not None else None
     return {
         "schema": _SNAPSHOT_SCHEMA,
         "fetched_at": time.time(),
@@ -269,6 +280,7 @@ def _refresh_snapshot() -> dict | None:
         "pypi_model_types": sorted(pypi_types),
         "main_model_types": sorted(main_types) if main_types is not None else [],
         "main_checked": main_types is not None,
+        "main_version": main_version,
     }
 
 
@@ -413,6 +425,7 @@ def latest_transformers_supports(model_type: str) -> dict | None:
         "pypi_version": snapshot["pypi_version"],
         "supported_in_pypi": model_type in set(snapshot["pypi_model_types"]),
         "supported_in_main": model_type in set(snapshot["main_model_types"]),
+        "main_version": snapshot.get("main_version"),
     }
 
 
@@ -486,6 +499,7 @@ def check_upgrade_for_model(model_name: str, hf_token: str | None = None) -> dic
             "pypi_version": supports[0]["pypi_version"],
             "supported_in_pypi": supported_in_pypi,
             "supported_in_main": supported_in_main,
+            "main_version": supports[0].get("main_version"),
         }
     except Exception as exc:
         logger.debug("Latest-transformers check failed for '%s': %s", model_name, exc)
@@ -500,6 +514,59 @@ _IGNORED_DEPS = frozenset({"typer"})
 
 def _canonical_dep_name(name: str) -> str:
     return name.lower().replace("_", "-")
+
+
+_MAIN_RAW = "https://raw.githubusercontent.com/huggingface/transformers/main"
+
+
+def _fetch_main_version(ref: str = "main") -> str | None:
+    """``__version__`` on transformers *ref* (a ``.devN`` string), or None."""
+    from utils.transformers_version import _is_valid_version_string
+
+    body = _fetch_text(f"{_MAIN_RAW.rsplit('/', 1)[0]}/{ref}/src/transformers/__init__.py")
+    if body is None or body == _FETCH_MISSING:
+        return None
+    match = re.search(r'^__version__\s*=\s*"([^"]+)"', body, re.MULTILINE)
+    if (
+        match is None
+        or ".dev" not in match.group(1)
+        or not _is_valid_version_string(match.group(1))
+    ):
+        return None
+    return match.group(1)
+
+
+_MAIN_REFS = "https://github.com/huggingface/transformers.git/info/refs?service=git-upload-pack"
+
+
+def _resolve_main_commit() -> str | None:
+    """The commit main points at, from git's ref advertisement (not the rate-limited API)."""
+    body = _fetch_text(_MAIN_REFS)
+    if body is None or body == _FETCH_MISSING:
+        return None
+    match = re.search(r"([0-9a-f]{40}) refs/heads/main(?:\x00|\n)", body)
+    return match.group(1) if match else None
+
+
+def _fetch_main_requires() -> list[str] | None:
+    """Core install_requires of transformers main (at the commit being installed), from setup.py."""
+    from utils import transformers_version as tv
+
+    ref = tv._main_archive_commit or "main"
+    body = _fetch_text(f"{_MAIN_RAW.rsplit('/', 1)[0]}/{ref}/setup.py")
+    if body is None or body == _FETCH_MISSING:
+        return None
+    deps_block = re.search(r"^_deps = \[(.*?)^\]", body, re.MULTILINE | re.DOTALL)
+    install_block = re.search(r"^install_requires = \[(.*?)^\]", body, re.MULTILINE | re.DOTALL)
+    if deps_block is None or install_block is None:
+        return None
+    deps = {}
+    for spec in re.findall(r'"([^"]+)"', deps_block.group(1)):
+        deps[re.split(r"[<>=!~ \[;]", spec, maxsplit = 1)[0]] = spec
+    names = re.findall(r'deps\["([^"]+)"\]', install_block.group(1))
+    if not names or any(name not in deps for name in names):
+        return None
+    return [deps[name] for name in names]
 
 
 def _fetch_requires_dist(version: str) -> list[str] | None:
@@ -551,7 +618,7 @@ def compat_plan(version: str) -> tuple[tuple[str, ...], list[str]]:
     install: proceeding unverified could pin a sidecar whose imports then crash the
     workers, and the caller just reached PyPI for the version check so a retry is cheap.
     """
-    reqs = _fetch_requires_dist(version)
+    reqs = _fetch_main_requires() if ".dev" in version else _fetch_requires_dist(version)
     if reqs is None:
         return (), ["dependency metadata for this release (could not be fetched from PyPI; retry)"]
     try:
@@ -574,7 +641,15 @@ def compat_plan(version: str) -> tuple[tuple[str, ...], list[str]]:
             continue
         if name in _SIDECAR_PROVIDED:
             if not req.specifier.contains(_SIDECAR_PROVIDED[name], prereleases = True):
-                blockers.append(raw)
+                # studio.txt already ships a newer hub: pin the base env's hub + hf-xet pair instead.
+                base_pins = _base_env_sidecar_pins()
+                base_name_pin = next((p for p in base_pins if p.startswith(f"{name}==")), None)
+                if base_name_pin and req.specifier.contains(
+                    base_name_pin.split("==", 1)[1], prereleases = True
+                ):
+                    extras.extend(p for p in base_pins if p not in extras)
+                else:
+                    blockers.append(raw)
             continue
         try:
             installed = _installed_version(req.name)
@@ -591,6 +666,20 @@ def compat_plan(version: str) -> tuple[tuple[str, ...], list[str]]:
         else:
             blockers.append(raw)
     return tuple(extras), blockers
+
+
+def _base_env_sidecar_pins() -> list[str]:
+    """Exact pins of the base env's own huggingface-hub and hf-xet (empty if either is missing)."""
+    from importlib.metadata import PackageNotFoundError
+    from importlib.metadata import version as _installed_version
+
+    pins = []
+    for name in _SIDECAR_PROVIDED:
+        try:
+            pins.append(f"{name}=={_installed_version(name)}")
+        except PackageNotFoundError:
+            return []
+    return pins
 
 
 def is_install_in_progress() -> bool:
@@ -662,25 +751,53 @@ def _install_latest_transformers_locked(version: str, before_swap = None) -> dic
             "version": version,
             "message": "Could not verify the latest transformers release on PyPI.",
         }
-    if version != snapshot["pypi_version"]:
+    from_main = (
+        version != snapshot["pypi_version"]
+        and snapshot.get("main_checked")
+        and version == snapshot.get("main_version")
+    )
+    if version != snapshot["pypi_version"] and not from_main:
         return {
             "success": False,
             "version": version,
             "message": f"Requested version {version!r} is not the latest transformers "
             f"release ({snapshot['pypi_version']}).",
-            # Lets the consent dialog retry with the newer release instead of a stale one forever.
+            # Retry uses these instead of re-sending the stale version forever.
             "latest_version": snapshot["pypi_version"],
+            "latest_main_version": snapshot.get("main_version"),
         }
-    extra_packages, blockers = compat_plan(version)
-    if blockers:
+    main_commit = current_main = None
+    if from_main:
+        # Check the version at one commit and install that commit, so main cannot move between.
+        main_commit = _resolve_main_commit()
+        current_main = _fetch_main_version(main_commit) if main_commit else None
+    if from_main and current_main != version:
         return {
             "success": False,
             "version": version,
-            "message": "Cannot install transformers "
-            f"{version}: this environment does not satisfy {', '.join(blockers)}. "
-            "An Unsloth update is required first.",
+            "message": f"transformers main is no longer {version}; retry to install the current main."
+            if current_main
+            else "Could not check transformers main; retry.",
+            "latest_version": snapshot["pypi_version"],
+            "latest_main_version": current_main,
         }
-    if not ensure_latest_transformers_venv(version, extra_packages, before_swap = before_swap):
+    from utils.transformers_version import transformers_main_at
+
+    # Requirements and archive both come from the pinned commit.
+    with transformers_main_at(main_commit) if main_commit else contextlib.nullcontext():
+        extra_packages, blockers = compat_plan(version)
+        if blockers:
+            return {
+                "success": False,
+                "version": version,
+                "message": "Cannot install transformers "
+                f"{version}: this environment does not satisfy {', '.join(blockers)}. "
+                "An Unsloth update is required first.",
+            }
+        installed = ensure_latest_transformers_venv(
+            version, extra_packages, before_swap = before_swap
+        )
+    if not installed:
         return {
             "success": False,
             "version": version,
@@ -690,7 +807,7 @@ def _install_latest_transformers_locked(version: str, before_swap = None) -> dic
     return {
         "success": True,
         "version": version,
-        "message": f"Installed transformers {version} into the latest sidecar "
+        "message": f"Installed transformers {version}{' (main)' if from_main else ''} into the latest sidecar "
         f"(pinned: {latest_venv_pinned_version()}).",
     }
 

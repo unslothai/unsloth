@@ -40,6 +40,18 @@ try:
 except Exception:
     pass
 
+# normalize allocator booleans before torch parses them; spawned workers inherit the environment.
+from utils.allocator_conf import normalize_allocator_conf as _normalize_allocator_conf
+
+for _name, _old, _new in _normalize_allocator_conf():
+    print(
+        f"Unsloth: {_name}={_old!r} has noncanonical boolean casing, which PyTorch rejects; "
+        f"using {_new!r}.",
+        file = sys.stderr,
+    )
+
+# Windows terminals default to the active system code page. Reconfigure stdout/stderr
+# before the startup banner so non-ASCII output cannot crash the backend process.
 if sys.platform == "win32":
     for _win_stream in (sys.stdout, sys.stderr):
         if _win_stream is not None and hasattr(_win_stream, "reconfigure"):
@@ -932,6 +944,10 @@ async def lifespan(app: FastAPI):
 
     await _close_llama_http()
 
+    from core.systemone.laya_runtime import shutdown as shutdown_decisions
+
+    await asyncio.to_thread(shutdown_decisions)
+
     await run_lifespan_shutdown(
         terminate_hub_downloads,
         lambda: clear_compiled_cache_unless_shared(app),
@@ -1270,7 +1286,12 @@ _BODY_PROTECTED_PREFIXES = (
     "/api/export",
     "/api/library",
     "/api/browser",
+    # Unauthenticated (login, refresh): every route takes a few hundred bytes of JSON.
+    "/api/auth",
     "/mcp",
+    # Everything else under /api. FastAPI reads a body before the route's auth dependency runs, so an unlisted
+    # prefix let an unauthenticated client stream an unbounded body into memory.
+    "/api/",
 )
 _DATASET_UPLOAD_PASSTHROUGH_PREFIXES = (
     "/api/datasets/upload",
@@ -1291,6 +1312,11 @@ _VIDEO_MULTIPART_UPLOAD_PATHS = (
     "/api/inference/videos",
 )
 _LIBRARY_UPLOAD_PATH = "/api/library/uploads"
+# RAG document uploads (knowledge base, thread, project): multipart, capped by RAG_MAX_UPLOAD_BYTES in the route and
+# spooled by FastAPI, so they pass through on Content-Length instead of being held in memory here.
+_RAG_DOCUMENT_UPLOAD_RE = _re.compile(
+    r"^/api/rag/(?:knowledge-bases|threads|projects)/[^/]+/documents/?$"
+)
 # Streamed to disk and capped by the route itself; buffering here would hold 200 MiB in memory.
 _AUDIO_INPUT_UPLOAD_PATHS = ("/api/inference/audio/inputs", "/v1/audio/inputs")
 _BODY_UPLOAD_PASSTHROUGH_PREFIXES = (
@@ -1322,7 +1348,15 @@ def _get_upload_passthrough_request_max_bytes(path: str) -> int:
         return upload_request_limit_bytes(LIBRARY_UPLOAD_MAX_BYTES)
     if path.rstrip("/") in _AUDIO_INPUT_UPLOAD_PATHS:
         return AUDIO_INPUT_MAX_BYTES
-    # Trailing-slash variant arrives before redirect_slashes, so it needs the same cap.
+    if _RAG_DOCUMENT_UPLOAD_RE.match(path):
+        from core.rag import config as _rag_config
+
+        # RAG_MAX_UPLOAD_BYTES=0 means no cap, as the route treats it.
+        if _rag_config.MAX_UPLOAD_BYTES <= 0:
+            return sys.maxsize
+        return upload_request_limit_bytes(_rag_config.MAX_UPLOAD_BYTES)
+    # The trailing-slash variant reaches this middleware BEFORE the router's redirect_slashes
+    # 307, so it must resolve to the same cap. JSON sub-routes keep extra path components.
     if (
         path.startswith(_DATASET_UPLOAD_PASSTHROUGH_PREFIXES)
         or path.rstrip("/") == _DIFFUSION_DATASET_UPLOAD_PATH
@@ -1394,6 +1428,7 @@ class MaxBodyMiddleware:
         upload_passthrough_max_bytes_getter = None,
         upload_passthrough_exact_paths: tuple = (),
         chunked_upload_exact_paths: tuple = (),
+        upload_passthrough_pattern = None,
     ):
         self.app = app
         self.max_bytes_getter = max_bytes_getter
@@ -1403,10 +1438,18 @@ class MaxBodyMiddleware:
         self.upload_passthrough_max_bytes_getter = upload_passthrough_max_bytes_getter
         self.upload_passthrough_exact_paths = upload_passthrough_exact_paths
         self.chunked_upload_exact_paths = chunked_upload_exact_paths
+        # Uploads whose path carries an id (RAG documents), matched by a compiled pattern.
+        self.upload_passthrough_pattern = upload_passthrough_pattern
 
     def _is_upload_passthrough(self, path: str) -> bool:
-        return path.rstrip("/") in self.upload_passthrough_exact_paths or any(
-            path.startswith(p) for p in self.upload_passthrough_prefixes
+        # Exact paths also match their trailing-slash variant (this runs before redirect_slashes).
+        return (
+            path.rstrip("/") in self.upload_passthrough_exact_paths
+            or any(path.startswith(p) for p in self.upload_passthrough_prefixes)
+            or (
+                self.upload_passthrough_pattern is not None
+                and self.upload_passthrough_pattern.match(path) is not None
+            )
         )
 
     def _upload_passthrough_max_bytes(self, path: str) -> int:
@@ -1436,7 +1479,12 @@ class MaxBodyMiddleware:
             return
         method = scope.get("method", "").upper()
         path = scope.get("path", "")
-        if method not in ("POST", "PUT", "PATCH") or not any(
+        # Under `--root-path /x`, uvicorn keeps the prefix in `path`; match on the route path the router sees.
+        root_path = scope.get("root_path") or ""
+        if root_path and path.startswith(root_path):
+            path = path[len(root_path) :] or "/"
+        # DELETE too: several routes take a JSON body on DELETE (delete-cached, bulk thread delete).
+        if method not in ("POST", "PUT", "PATCH", "DELETE") or not any(
             path.startswith(p) for p in self.protected_prefixes
         ):
             await self.app(scope, receive, send)
@@ -1452,7 +1500,7 @@ class MaxBodyMiddleware:
                     declared = None
                 break
 
-        if self._is_upload_passthrough(path):
+        if method != "DELETE" and self._is_upload_passthrough(path):
             upload_max_bytes = self._upload_passthrough_max_bytes(path)
             if declared is not None:
                 if declared > upload_max_bytes:
@@ -1512,6 +1560,7 @@ app.add_middleware(
     upload_passthrough_max_bytes_getter = _get_upload_passthrough_request_max_bytes,
     upload_passthrough_exact_paths = _BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS,
     chunked_upload_exact_paths = _CHUNKED_UPLOAD_EXACT_PATHS,
+    upload_passthrough_pattern = _RAG_DOCUMENT_UPLOAD_RE,
 )
 
 from core.inference.llama_keepwarm import LlamaKeepWarmMiddleware  # noqa: E402

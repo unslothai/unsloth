@@ -716,14 +716,15 @@ def test_other_providers_do_not_get_the_continuation_flags(monkeypatch, provider
         ("openrouter", True),
         ("kimi", True),
         ("llama_cpp", True),
-        # a user-supplied base_url may be strict and 400 on an unknown field
+        ("ollama", True),
+        ("qwen", True),
+        # user-supplied base_url endpoints may reject the unknown field with a 400.
         ("custom", False),
-        ("ollama", False),
-        # "openai" is absent: /v1/responses reports usage itself
+        # "openai" is absent because /v1/responses reports usage.
     ],
 )
 def test_streamed_usage_is_requested_only_where_documented(monkeypatch, provider_type, expected):
-    # without include_usage these providers report no token count, so Speed shows blank
+    # include_usage supplies token counts when compatible providers expose no llama.cpp timings.
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:

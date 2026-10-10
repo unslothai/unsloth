@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import errno
 import os
 import sys
 import time
@@ -30,6 +31,17 @@ def _normalize_standard_streams():
 _normalize_standard_streams()
 
 
+def _is_tegra():
+    """utils.tegra.is_tegra, inlined: this runs before the backend is on sys.path."""
+    try:
+        if os.path.exists("/etc/nv_tegra_release"):
+            return True
+        with open("/proc/device-tree/compatible", "rb") as fh:
+            return b"nvidia,tegra" in fh.read()
+    except OSError:
+        return False
+
+
 def _fix_torch_cuda_ld_path():
     """Prepend torch's bundled CUDA libs to LD_LIBRARY_PATH, returning True if it was changed. PyTorch wheels
     ship their own CUDA runtime in ``site-packages/nvidia/*/lib``; on Linux the dynamic linker reads
@@ -55,7 +67,8 @@ def _fix_torch_cuda_ld_path():
         torch_lib = os.path.join(torch_dir, "lib")
         if os.path.isdir(torch_lib):
             lib_dirs.append(torch_lib)
-        if os.path.isdir(nvidia_dir):
+        # Jetson: JetPack's CUDA stays first (#4862).
+        if os.path.isdir(nvidia_dir) and not _is_tegra():
             for sub in sorted(os.listdir(nvidia_dir)):
                 lib = os.path.join(nvidia_dir, sub, "lib")
                 if os.path.isdir(lib):
@@ -802,10 +815,12 @@ def _addresses_collide(recorded: "str | None", host: str, port: int) -> bool:
 def _is_port_free(host: str, port: int) -> bool:
     """Check if a port is available for binding. For a ``0.0.0.0`` wildcard host, also check whether anything
     is listening on ``127.0.0.1`` (and ``::1`` when IPv6 exists): an SSH tunnel may hold loopback while the
-    wildcard bind succeeds, making Unsloth unreachable via ``localhost``."""
+    wildcard bind succeeds, making Unsloth unreachable via ``localhost``. A specific host is checked too:
+    Windows and macOS let a ``127.0.0.1`` bind sit beside another process's ``0.0.0.0`` listener."""
     import socket
 
     sockets = []
+    bound = []
     try:
         addr_info = socket.getaddrinfo(host, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
         seen = set()
@@ -814,6 +829,7 @@ def _is_port_free(host: str, port: int) -> bool:
             if key in seen:
                 continue
             seen.add(key)
+            bound.append((family, sockaddr))
             probe = socket.socket(family, socktype, proto)
             sockets.append(probe)
             # Windows SO_REUSEADDR lets a second socket bind a listening port, so the probe would lie.
@@ -831,21 +847,53 @@ def _is_port_free(host: str, port: int) -> bool:
         for probe in sockets:
             probe.close()
 
-    # Wildcard bind: localhost may already be claimed (e.g. an SSH -L tunnel).
+    # A successful bind can still sit beside a live listener, so a connect that lands means taken. Short
+    # timeout: Windows only refuses a free port after ~2 s of SYN retries.
     if is_wildcard_host(host):
-        for loopback, family in [
-            ("127.0.0.1", socket.AF_INET),
-            ("::1", socket.AF_INET6),
-        ]:
-            try:
-                with socket.socket(family, socket.SOCK_STREAM) as s:
-                    s.settimeout(1)
-                    if s.connect_ex((loopback, port)) == 0:
-                        return False
-            except OSError:
-                continue
+        targets = [
+            (socket.AF_INET, ("127.0.0.1", port)),
+            (socket.AF_INET6, ("::1", port)),
+        ]
+    else:
+        targets = bound
+    for family, sockaddr in targets:
+        try:
+            with socket.socket(family, socket.SOCK_STREAM) as s:
+                s.settimeout(0.25)
+                result = s.connect_ex(sockaddr)
+                if result == 0:
+                    return False
+                # Windows times out on a full-backlog listener exactly as on a free port.
+                if result not in _CONNECT_REFUSED and _listener_collides(sockaddr[0], port):
+                    return False
+        except OSError:
+            continue
 
     return True
+
+
+_CONNECT_REFUSED = {errno.ECONNREFUSED, 10061}  # WSAECONNREFUSED
+
+
+def _listener_collides(address: str, port: int) -> bool:
+    """A same-family listener on *port* at *address* or its wildcard; a v6-only ``::`` shares the port
+    with IPv4. Best effort: no psutil means no."""
+    import socket
+
+    family = socket.AF_INET6 if ":" in address else socket.AF_INET
+    try:
+        import psutil
+        listeners = [
+            c.laddr[0]
+            for c in psutil.net_connections(kind = "tcp")
+            if c.status == psutil.CONN_LISTEN
+            and c.family == family
+            and c.laddr
+            and c.laddr[1] == port
+        ]
+    except Exception:
+        return False
+    return any(_addresses_collide(listener, address, port) for listener in listeners)
 
 
 def _find_free_port(

@@ -15,6 +15,7 @@ from core.inference.skills import (
     delete_skill,
     list_skills,
     read_skill_manifest,
+    set_all_skills_enabled,
     set_skill_enabled,
     update_skill,
 )
@@ -52,6 +53,13 @@ class SkillEnabledRequest(BaseModel):
     enabled: StrictBool
 
 
+class AllSkillsEnabledRequest(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    # null restores the defaults a fresh install has.
+    enabled: Optional[StrictBool]
+
+
 class SkillDraft(BaseModel):
     model_config = ConfigDict(extra = "forbid")
 
@@ -82,6 +90,18 @@ def get_skills(current_subject: str = Depends(get_current_subject)) -> list[dict
         records = list_skills()
     except SkillError as exc:
         raise HTTPException(status_code = 500, detail = "Could not read Agent Skills.") from exc
+    _invalidate_catalog()
+    return records
+
+
+@router.put("", response_model = list[SkillRecord])
+def update_all_skills_enabled(
+    payload: AllSkillsEnabledRequest, current_subject: str = Depends(get_current_subject)
+) -> list[dict[str, Any]]:
+    try:
+        records = set_all_skills_enabled(payload.enabled)
+    except SkillError as exc:
+        raise _http_error(exc) from exc
     _invalidate_catalog()
     return records
 

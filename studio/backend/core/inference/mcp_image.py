@@ -176,7 +176,7 @@ def _input_schema(tool: dict) -> dict:
 
 
 def image_mapping(server: dict, tool: Optional[dict]) -> Optional[dict]:
-    """The server's mapping for ``tool`` while its field is still a top-level string."""
+    """return the server mapping only while its field remains a top-level string."""
     if not tool:
         return None
     for mapping in image_input_mappings(server):
@@ -189,8 +189,79 @@ def image_mapping(server: dict, tool: Optional[dict]) -> Optional[dict]:
     return None
 
 
+def _loose(value: str) -> str:
+    return re.sub(r"[\s-]+", "_", value.strip(" \"'`<>[]{}").lower())
+
+
+def _names_the_image(value) -> bool:
+    """match only the placeholder or a path or URL ending in it, never a mention."""
+    return (
+        isinstance(value, str)
+        and _loose(re.split(r"[/\\]", value.strip().rstrip("/\\"))[-1]) == ATTACHED_IMAGE
+    )
+
+
+def settle_image_call(
+    arguments: dict,
+    field: str,
+    required = (),
+) -> bool:
+    """normalize small-model image arguments in place so approval shows the exact outgoing call."""
+    value = arguments.get(field)
+    if not (
+        value is None or value == "" or isinstance(value, str) and _loose(value) == ATTACHED_IMAGE
+    ):
+        return False
+    for key in [
+        key
+        for key, other in arguments.items()
+        if key != field and key not in required and _names_the_image(other)
+    ]:
+        del arguments[key]
+    arguments[field] = ATTACHED_IMAGE
+    return True
+
+
+IMAGE_NOTE_PREFIX = "[The user attached an image to this message."
+_IMAGE_NOTE_INSTRUCTION = " You cannot see it. To use it, call "
+
+
+def _is_attached_image_note(text: str) -> bool:
+    return text.startswith(IMAGE_NOTE_PREFIX + _IMAGE_NOTE_INSTRUCTION) and text.endswith(".]")
+
+
+def strip_attached_image_note(text: str) -> str:
+    """remove the synthetic image note before exposing user-authored text."""
+    if _is_attached_image_note(text):
+        return ""
+    head, separator, tail = text.rpartition(f"\n\n{IMAGE_NOTE_PREFIX}")
+    note = IMAGE_NOTE_PREFIX + tail
+    return head if separator and _is_attached_image_note(note) else text
+
+
+def note_attached_image(messages: list, targets: list[tuple[str, str]]) -> list:
+    """tell the model which fields accept the attached image without exposing its bytes."""
+    if not targets:
+        return messages
+    calls = " or ".join(
+        f"{name} with {json.dumps({field: ATTACHED_IMAGE})}" for name, field in targets
+    )
+    note = f"{IMAGE_NOTE_PREFIX}{_IMAGE_NOTE_INSTRUCTION}{calls}.]"
+    for index in range(len(messages) - 1, -1, -1):
+        message = messages[index]
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, list):
+            content = [*content, {"type": "text", "text": note}]
+        else:
+            content = f"{content}\n\n{note}" if content else note
+        return [*messages[:index], {**message, "content": content}, *messages[index + 1 :]]
+    return messages
+
+
 def public_tool(server: dict, tool: dict) -> dict:
-    """``tool`` as the model sees it: a mapped field accepts only the placeholder."""
+    """expose a mapped field to the model as a placeholder-only string."""
     mapping = image_mapping(server, tool)
     if mapping is None:
         return tool
@@ -200,7 +271,8 @@ def public_tool(server: dict, tool: dict) -> dict:
         "enum": [ATTACHED_IMAGE],
         "description": (
             f'Pass "{ATTACHED_IMAGE}" to send the image the user attached to their latest '
-            "message. Studio inserts it after the user approves; never pass image data or a URL."
+            "message. Unsloth Studio inserts it after the user approves; never pass image data, a "
+            "path or a URL."
         ),
     }
     public = {k: v for k, v in tool.items() if k not in ("inputSchema", "input_schema")}

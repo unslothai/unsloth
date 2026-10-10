@@ -162,6 +162,24 @@ def test_an_auto_applied_chat_template_is_not_reported_as_the_users(status_route
     assert status_route(backend).chat_template_override is None
 
 
+def test_a_bundled_template_on_a_snapshot_path_load_is_not_reported_as_the_users(
+    status_route, monkeypatch
+):
+    from core.inference.chat_templates import resolve_effective_chat_template_override
+
+    monkeypatch.setattr(
+        inference_route,
+        "resolve_effective_chat_template_override",
+        resolve_effective_chat_template_override,
+    )
+    bundled = resolve_effective_chat_template_override(
+        model_identifier = "unsloth/gemma-4-12b-it-GGUF", user_override = None
+    )
+    backend = _StatusBackend("/scan/models--unsloth--gemma-4-12b-it-GGUF/snapshots/abc")
+    backend.chat_template_override = bundled
+    assert status_route(backend).chat_template_override is None
+
+
 def test_status_publishes_the_running_pass_through_arguments(status_route):
     # A tab opened mid-run never saw the load; it learns the server's args only here,
     # which a rollback after a failed switch needs.

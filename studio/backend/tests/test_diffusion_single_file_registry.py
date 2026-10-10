@@ -117,7 +117,8 @@ def test_registration_fills_the_gap_and_the_real_call_stops_refusing(monkeypatch
     monkeypatch.setattr(sfm, "SINGLE_FILE_LOADABLE_CLASSES", dict(sfm.SINGLE_FILE_LOADABLE_CLASSES))
     sfm.SINGLE_FILE_LOADABLE_CLASSES.pop(CLASS, None)
 
-    assert studio._register_unregistered_single_file_classes() == (CLASS,)
+    # Other classes of the table (Krea 2, HunyuanImage 2.1) may register alongside it.
+    assert CLASS in studio._register_unregistered_single_file_classes()
     entry = sfm.SINGLE_FILE_LOADABLE_CLASSES[CLASS]
     assert entry["checkpoint_mapping_fn"] is studio._qwen_image_21_checkpoint_to_diffusers
     assert entry["default_subfolder"] == "transformer"
@@ -133,7 +134,7 @@ def test_registration_never_overwrites_diffusers_own_entry(monkeypatch):
     )
     monkeypatch.setattr(diffusers, CLASS, type(CLASS, (), {}), raising = False)
 
-    assert studio._register_unregistered_single_file_classes() == ()
+    assert CLASS not in studio._register_unregistered_single_file_classes()
     assert sfm.SINGLE_FILE_LOADABLE_CLASSES[CLASS] is upstream
 
 

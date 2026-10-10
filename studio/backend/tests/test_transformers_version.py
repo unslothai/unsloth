@@ -3117,8 +3117,8 @@ class TestLatestTierForces16Bit:
             "_guard_chat_load_against_training"
         ), "the upgrade check must run before the training guard"
         assert (
-            "supported_in_pypi" in body.split("_guard_chat_load_against_training")[0]
-        ), "an installable upgrade must force 16-bit sizing for the guard"
+            ".installable" in body.split("_guard_chat_load_against_training")[0]
+        ), "an installable upgrade (PyPI or main) must force 16-bit sizing for the guard"
 
     def test_validate_offered_upgrade_preserves_custom_code_4bit(self):
         # An offered (not installed) upgrade must not force 16-bit sizing when an auto_map
@@ -4018,3 +4018,59 @@ class TestDamagedLatestSidecarRepairHandoff:
             tv._probe_tier("some/model", None, "test", include_default = True, floor = "default")
             != "latest"
         )
+
+
+class TestTransformersMainSource:
+    def test_dev_pin_installs_from_main_archive(self):
+        import utils.transformers_version as tv
+
+        assert tv._install_source("transformers==5.19.0.dev0").endswith(
+            "/transformers/archive/refs/heads/main.zip"
+        )
+        with tv.transformers_main_at("c" * 40):
+            assert tv._install_source("transformers==5.19.0.dev0").endswith(f"/{'c' * 40}.zip")
+        assert tv._install_source("transformers==5.19.0.dev0").endswith("refs/heads/main.zip")
+        assert tv._install_source("transformers==5.18.0") == "transformers==5.18.0"
+        assert tv._install_source("tokenizers==0.23.0") == "tokenizers==0.23.0"
+
+    def test_extra_pins_replace_base_sidecar_pins(self):
+        import utils.transformers_version as tv
+
+        pkgs = tv._venv_t5_latest_packages(
+            "5.19.0.dev0", ("huggingface-hub==1.32.0", "hf-xet==1.5.2")
+        )
+        assert "huggingface_hub==1.8.0" not in pkgs and "hf_xet==1.4.2" not in pkgs
+        assert pkgs.count("huggingface-hub==1.32.0") == 1 and "hf-xet==1.5.2" in pkgs
+        assert pkgs[0] == "transformers==5.19.0.dev0"
+
+    def test_main_sidecar_is_never_repaired_without_consent(self, monkeypatch):
+        import utils.transformers_version as tv
+
+        monkeypatch.setattr(
+            tv,
+            "_latest_pin_data",
+            lambda: {"version": "5.19.0.dev0", "packages": ["transformers==5.19.0.dev0"]},
+        )
+        monkeypatch.setattr(tv, "_venv_dir_health", lambda d, p: (False, True))
+        monkeypatch.setattr(tv, "_request_latest_repair", lambda: None)
+        monkeypatch.setattr(
+            tv,
+            "_stage_and_swap_latest_venv",
+            lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not reinstall main")),
+        )
+        assert tv._ensure_venv_t5_latest_exists() is False
+
+    def test_consented_main_install_rebuilds_a_healthy_sidecar(self, monkeypatch):
+        import utils.transformers_version as tv
+
+        packages = tv._venv_t5_latest_packages("5.19.0.dev0")
+        monkeypatch.setattr(
+            tv, "_latest_pin_data", lambda: {"version": "5.19.0.dev0", "packages": list(packages)}
+        )
+        monkeypatch.setattr(tv, "_venv_dir_is_valid_and_undamaged", lambda d, p: True)
+        monkeypatch.setattr(tv, "_top_up_optional_packages", lambda d, p: "reused")
+        monkeypatch.setattr(tv, "_stage_and_swap_latest_venv", lambda *a, **k: "rebuilt")
+        assert tv.ensure_latest_transformers_venv("5.19.0.dev0") == "reused"
+        # Same .devN, newer main commit: the sidecar may lack the newly requested architecture.
+        with tv.transformers_main_at("d" * 40):
+            assert tv.ensure_latest_transformers_venv("5.19.0.dev0") == "rebuilt"

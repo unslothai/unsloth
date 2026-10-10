@@ -56,6 +56,7 @@ from core.inference.tool_call_parser import (
     strip_tool_markup,
 )
 from core.inference.mcp_images import append_image_turn as append_mcp_image_turn
+from core.inference.mcp_image import note_attached_image
 
 
 def _append_mcp_images_owned(
@@ -64,13 +65,7 @@ def _append_mcp_images_owned(
     owned,
     lead = None,
 ):
-    """append_image_turn with the loop's own part list, for asyncio.to_thread.
-
-    Reserving here and not on the GGUF loop: this one talks to a remote provider that
-    applies its own per-request image cap in document order, so an attachment beside a
-    full allowance of tool results silently loses the newest result -- the one the
-    model just asked for. llama-server is local and answers to the context window.
-    """
+    """reserve caller images because remote providers apply the image cap in document order."""
     append_mcp_image_turn(
         conversation,
         results,
@@ -102,6 +97,7 @@ from core.inference.tools import (
     execute_tool,
     is_high_risk_tool_call,
     mcp_image_share,
+    mcp_image_targets,
     never_needs_approval,
 )
 from state.tool_approvals import (
@@ -133,7 +129,13 @@ _TOOL_TRUNCATED = (
     "output limit."
 )
 
-# The client already painted a card from the provider's delta, so a short result suffices.
+_TOOL_CHOICE_NONE = (
+    "Unsloth did not execute this tool call because tool calls are turned off for this request "
+    '(tool_choice is "none").'
+)
+
+# Card text for a call the controller skipped. The client already painted a card from the provider's own tool_calls
+# delta, so it needs a short result; the long model-facing nudge stays in the conversation.
 _TOOL_SKIPPED = {
     "duplicate": "Unsloth did not run this call because an identical one had already completed.",
     "disabled": _TOOL_DISABLED,
@@ -289,6 +291,25 @@ def _normalized_call(call: dict[str, Any], fallback_id: str = "") -> dict[str, A
     return normalized
 
 
+def _signed_provider_call_for_replay(call: dict[str, Any]) -> dict[str, Any] | None:
+    extra = call.get("extra_content")
+    google = extra.get("google") if isinstance(extra, dict) else None
+    if not isinstance(google, dict) or not google.get("thought_signature"):
+        return None
+    function = call.get("function")
+    if not isinstance(function, dict):
+        return None
+    return {
+        "id": call["id"],
+        "type": "function",
+        "function": {
+            "name": function["name"],
+            "arguments": function.get("arguments", ""),
+        },
+        "extra_content": extra,
+    }
+
+
 def _argument_fragment(value: Any) -> Any:
     """A decoded-object ``arguments`` delta as the text it would have streamed as. llama-server has
     shipped a decoded object where a string fragment belongs (ggml-org/llama.cpp#20198).
@@ -378,6 +399,8 @@ class ToolLoopPolicy:
     on_withheld_tool_call: Callable[[], None] | None = None
     # Headerless only: a turn may end on [DONE] alone, so the wire cannot always clear the flag.
     on_provider_turn_end: Callable[[], None] | None = None
+    # None keeps the request default (on); explicit booleans win.
+    deduplicate_tool_calls: bool | None = None
     sandbox_level: str = "high"
 
 
@@ -526,6 +549,58 @@ class _Turn:
     finish_reason: str | None = None
     hosted_results: dict[str, dict[str, Any]] = field(default_factory = dict)
     provider_compaction: dict[str, Any] | None = None
+
+    def note_reasoning_extra(self, extra: Any) -> None:
+        """Accumulate Gemini's per-part replay envelopes across one provider turn."""
+        if not isinstance(extra, dict):
+            return
+        previous = self.reasoning_extra if isinstance(self.reasoning_extra, dict) else {}
+        merged = {**previous, **extra}
+        previous_google = previous.get("google")
+        incoming_google = extra.get("google")
+        if isinstance(previous_google, dict) or isinstance(incoming_google, dict):
+            old_google = previous_google if isinstance(previous_google, dict) else {}
+            new_google = incoming_google if isinstance(incoming_google, dict) else {}
+            google = {**old_google, **new_google}
+            for singular, plural in (
+                ("thought_part", "thought_parts"),
+                ("answer_part", "answer_parts"),
+            ):
+                accumulated: list[dict[str, Any]] = []
+                for source in (old_google, new_google):
+                    many = source.get(plural)
+                    if isinstance(many, list):
+                        accumulated.extend(dict(part) for part in many if isinstance(part, dict))
+                    one = source.get(singular)
+                    if isinstance(one, dict):
+                        accumulated.append(dict(one))
+                if accumulated:
+                    compacted: list[dict[str, Any]] = []
+                    for part in accumulated:
+                        signature = part.get("thought_signature") or part.get("thoughtSignature")
+                        if (
+                            compacted
+                            and not signature
+                            and not (
+                                compacted[-1].get("thought_signature")
+                                or compacted[-1].get("thoughtSignature")
+                            )
+                            and isinstance(part.get("text"), str)
+                            and isinstance(compacted[-1].get("text"), str)
+                        ):
+                            compacted[-1]["text"] += part["text"]
+                        else:
+                            compacted.append(part)
+                    google[plural] = compacted
+                google.pop(singular, None)
+            if google.get("thought_parts") or google.get("answer_parts"):
+                # Native ledgers already pin every signature to its original part. Retaining the legacy scalar
+                # would let the translator move an earlier thought signature onto later unsigned text.
+                google.pop("thought_signature", None)
+                google.pop("thoughtSignature", None)
+                google.pop("thought", None)
+            merged["google"] = google
+        self.reasoning_extra = merged
 
     def compaction_replay_message(self) -> dict[str, Any] | None:
         """Build one replay turn and remove Anthropic's native block from later metadata."""
@@ -1223,14 +1298,15 @@ async def stream_with_studio_tools(
     cancel_event: threading.Event,
     mcp_image = None,
 ) -> AsyncIterator[str]:
-    """Stream a provider, execute requested Unsloth tools, continue to a final answer."""
     conversation = [dict(message) for message in run.messages]
+    if mcp_image is not None:
+        targets = await asyncio.to_thread(mcp_image_targets, sorted(_tool_names(policy.tools)))
+        conversation = note_attached_image(conversation, targets)
     openai_compaction: tuple[list[dict[str, Any]], str] | None = None
     resumes_partial = run.continue_final_message
-    # The image parts this run appends, so its cap never counts a caller's own
-    # attachments. Run-scoped, not turn-scoped: the cap is across the whole loop,
-    # and seeded with what promotion already put in the conversation.
+    # cap run-owned image parts across the full loop without counting caller attachments.
     loop_mcp_image_parts: list = list(run.promoted_image_parts)
+    # preserve the request branch for tools that search conversation history.
     request_branch = list(run.messages)
     remaining = policy.max_calls
     unlimited = remaining >= 9999
@@ -1315,6 +1391,7 @@ async def stream_with_studio_tools(
     controller = ToolLoopController(
         tools = tools,
         auto_heal_tool_calls = policy.auto_heal is not False,
+        deduplicate_tool_calls = policy.deduplicate_tool_calls is not False,
         session_id = session_id,
         thread_id = thread_id,
     )
@@ -1401,8 +1478,7 @@ async def stream_with_studio_tools(
                 content = delta.get("content")
                 raw_calls = delta.get("tool_calls")
                 extra = delta.get("extra_content")
-                if isinstance(extra, dict):
-                    turn.reasoning_extra = extra
+                turn.note_reasoning_extra(extra)
                 turn.note_hosted_tool_event(payload.get("_toolEvent"))
                 compaction = _openai_compaction_item(payload.get("_toolEvent"))
                 if compaction:
@@ -1534,28 +1610,31 @@ async def stream_with_studio_tools(
                     continue
                 turn.text.append(span)
                 yield _sse({"choices": [{"index": 0, "delta": {"content": span}}]})
+        # Truncation wins: half-written arguments are never shown.
+        unrun_reason = None
         if truncated:
-            # Close cards the provider streamed for calls we refuse to run; through calls() so id-less
-            # calls get the same minted card id the client used.
+            unrun_reason = _TOOL_TRUNCATED
+        elif tool_choice == "none":
+            unrun_reason = _TOOL_CHOICE_NONE
+        if unrun_reason is not None:
+            # The relayed delta already drew a card: close it like any unrun call, via `calls` (executes nothing), which
+            # mints the id the client drew for an id-less call.
             for raw_call in turn.calls(used_call_ids, painted_card_ids):
-                truncated_id = (
-                    raw_call.get("card_id") or raw_call.get("stream_id") or raw_call["id"]
-                )
+                unrun_id = raw_call.get("card_id") or raw_call.get("stream_id") or raw_call["id"]
                 name = raw_call["function"]["name"]
                 for card_line in _unrun_call_card(
                     tool_name = name,
-                    tool_call_id = truncated_id,
-                    arguments = {},
-                    result = _TOOL_TRUNCATED,
+                    tool_call_id = unrun_id,
+                    arguments = {} if truncated else raw_call.get("arguments"),
+                    result = unrun_reason,
                     provenance = _unrun_provenance(name, round_id + 1),
                 ):
                     yield card_line
-        # tool_choice "none" is a security boundary (Deep Research): never run a call emitted anyway.
-        calls = (
-            []
-            if (truncated or tool_choice == "none")
-            else turn.calls(used_call_ids, painted_card_ids)
-        )
+        # tool_choice "none" is an instruction, and a provider that emits a call anyway has not been authorized to run
+        # one. Withdrawing the catalog on the way out is not enough on its own: Deep Research sets "none" exactly so
+        # the scraped web text in its prompts cannot reach python or terminal, so a naive or compromised endpoint
+        # echoing a call back must not be able to execute it here.
+        calls = [] if unrun_reason is not None else turn.calls(used_call_ids, painted_card_ids)
         if not calls:
             # Clear the badge so the client closes a refused call's card; [DONE]-only streams have no other
             # boundary.
@@ -1610,6 +1689,7 @@ async def stream_with_studio_tools(
                 break
             # Before the gate: exhausted calls are replayed too, and only the decision's replay parses.
             decision = controller.prepare_call(call)
+            signed_provider_call = _signed_provider_call_for_replay(call)
             if not unlimited and remaining <= 0:
                 for card_line in _unrun_call_card(
                     tool_name = call["function"]["name"],
@@ -1619,10 +1699,16 @@ async def stream_with_studio_tools(
                     provenance = _unrun_provenance(call["function"]["name"], round_id),
                 ):
                     yield card_line
-                # Replay the call with its result: providers reject an orphan role="tool" message.
-                exhausted_call = decision.as_assistant_tool_call()
+                # The result below has to be replayed with its call: only the call that spent the last slot reaches
+                # assistant_tool_calls further down, so this one would arrive as an orphan role="tool" message and
+                # OpenAI, Anthropic and Gemini all reject that history instead of answering.
+                exhausted_call = signed_provider_call or decision.as_assistant_tool_call()
                 exhausted_extra = call.get("extra_content")
-                if isinstance(exhausted_extra, dict) and exhausted_extra:
+                if (
+                    signed_provider_call is None
+                    and isinstance(exhausted_extra, dict)
+                    and exhausted_extra
+                ):
                     exhausted_call["extra_content"] = exhausted_extra
                 assistant_tool_calls.append(exhausted_call)
                 tool_messages.append(
@@ -1636,10 +1722,19 @@ async def stream_with_studio_tools(
                 continue
             # The frontend groups a round by this id (codexLocalToolRoundId).
             decision.provenance["round_id"] = round_id
+            image_share = None
+            if decision.should_execute and mcp_image is not None:
+                image_share = await asyncio.to_thread(
+                    mcp_image_share, decision.tool_name, decision.arguments, mcp_image
+                )
+                if image_share is not None:
+                    decision = controller.reprepare_call(decision)
             if not decision.should_execute:
                 completion = controller.record_noop(decision)
                 if getattr(transport, "tool_result_only_continuation", False):
-                    assistant_tool_calls.append(decision.as_assistant_tool_call())
+                    assistant_tool_calls.append(
+                        signed_provider_call or decision.as_assistant_tool_call()
+                    )
                     tool_messages.append(
                         {
                             "role": "tool",
@@ -1663,10 +1758,9 @@ async def stream_with_studio_tools(
                 ):
                     yield card_line
                 continue
-            assistant_call = decision.as_assistant_tool_call()
+            assistant_call = signed_provider_call or decision.as_assistant_tool_call()
             call_extra = call.get("extra_content")
-            if isinstance(call_extra, dict) and call_extra:
-                # Replayed verbatim: Gemini 3 validates the signature.
+            if signed_provider_call is None and isinstance(call_extra, dict) and call_extra:
                 assistant_call["extra_content"] = call_extra
             assistant_tool_calls.append(assistant_call)
 
@@ -1685,11 +1779,6 @@ async def stream_with_studio_tools(
                 sandbox_level = sandbox_level,
             )
             # Sending the user's image always asks, whatever the permission mode.
-            image_share = (
-                await asyncio.to_thread(mcp_image_share, name, arguments, mcp_image)
-                if mcp_image is not None
-                else None
-            )
             needs_confirmation = needs_confirmation or image_share is not None
             strict_isolation = requires_os_isolation(
                 confirm_tool_calls = confirm_tool_calls,

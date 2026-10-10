@@ -679,6 +679,21 @@ def test_generate_native_process_death_names_the_engine_not_its_output(client, m
         assert leak not in detail
 
 
+def test_generate_nan_image_names_the_overflow(client, monkeypatch):
+    from core.inference.diffusion_postprocess import NAN_IMAGE_MESSAGE
+
+    backend = diffusion_module.get_diffusion_backend()
+    backend.loaded = True
+
+    def _nan(**kwargs):
+        raise RuntimeError(NAN_IMAGE_MESSAGE)
+
+    monkeypatch.setattr(backend, "generate", _nan)
+    resp = client.post("/api/inference/images/generate", json = {"prompt": "p"})
+    assert resp.status_code == 500
+    assert "overflowed at this resolution" in resp.json()["detail"]
+
+
 def test_generate_execution_error_with_cancelled_substring_is_sanitized_500(client, monkeypatch):
     # a raw tail merely containing "cancelled" must not misroute to 409
     backend = diffusion_module.get_diffusion_backend()

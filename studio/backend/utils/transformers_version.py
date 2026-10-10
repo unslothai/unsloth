@@ -32,6 +32,7 @@ import ast
 import importlib
 import importlib.util
 import json
+import hashlib
 import structlog
 from loggers import get_logger
 import errno
@@ -43,6 +44,9 @@ import stat
 import subprocess
 import sys
 import sysconfig
+import tarfile
+import tempfile
+import urllib.request
 import threading
 import time
 from pathlib import Path
@@ -2272,7 +2276,8 @@ def _venv_t5_is_valid() -> bool:
 
 def _install_to_dir(pkg: str, target_dir: str) -> bool:
     """Install a single package into *target_dir*, preferring uv then pip."""
-    # Do NOT install uv at runtime.
+    pkg = _install_source(pkg)
+    # Try uv first (faster) if on PATH -- do NOT install uv at runtime.
     if shutil.which("uv"):
         result = subprocess.run(
             [
@@ -3155,12 +3160,44 @@ def _venv_t5_latest_packages(version: str, extra_packages: tuple[str, ...] = ())
     """Package set for the latest sidecar; mirrors the fixed .venv_t5_* sidecars.
     *extra_packages* carries dep-compat shadows (e.g. a newer tokenizers) computed by
     utils.transformers_latest before install."""
-    return (
+    base = (
         f"transformers=={version}",
         "huggingface_hub==1.8.0",
         "hf_xet==1.4.2",
         "tiktoken",
-    ) + tuple(extra_packages)
+    )
+    overridden = {_pin_spec_name(p) for p in extra_packages}
+    return tuple(p for p in base if _pin_spec_name(p) not in overridden) + tuple(extra_packages)
+
+
+def _pin_spec_name(spec: str) -> str:
+    # PEP 503 name normalization, so huggingface_hub and huggingface-hub collide.
+    return re.sub(r"[-_.]+", "-", re.split(r"[<>=!~ @;\[]", spec, maxsplit = 1)[0]).lower()
+
+
+# PyPI never hosts a transformers .devN build, so a dev pin means main (the zip needs no git).
+_TRANSFORMERS_MAIN_ARCHIVE = (
+    "transformers @ https://github.com/huggingface/transformers/archive/{ref}.zip"
+)
+# The main commit the consented install checked; installs are serialized by the swap reservation.
+_main_archive_commit: str | None = None
+
+
+@contextlib.contextmanager
+def transformers_main_at(commit: str):
+    """Install transformers main from *commit* (not the moving branch) inside this block."""
+    global _main_archive_commit
+    previous, _main_archive_commit = _main_archive_commit, commit
+    try:
+        yield
+    finally:
+        _main_archive_commit = previous
+
+
+def _install_source(pkg: str) -> str:
+    if re.fullmatch(r"transformers==[0-9.]+\.dev[0-9]+", pkg):
+        return _TRANSFORMERS_MAIN_ARCHIVE.format(ref = _main_archive_commit or "refs/heads/main")
+    return pkg
 
 
 # One reservation for any .venv_t5_latest swap; a lock FILE so worker repairs are visible.
@@ -3433,6 +3470,14 @@ def _ensure_venv_t5_latest_exists() -> bool:
         return _top_up_optional_packages(_VENV_T5_LATEST_DIR, packages)
     # Flag before any bailout so routing withholds the damaged sidecar; a repair clears it.
     _request_latest_repair()
+    if ".dev" in version:
+        # A rebuild would install main code nobody consented to; broken -> the dialog offers it again.
+        logger.warning(
+            ".venv_t5_latest (transformers %s from main) is incomplete; load the model again "
+            "to reinstall it.",
+            version,
+        )
+        return False
     if _env_offline():
         logger.warning(
             ".venv_t5_latest (transformers %s) is incomplete and offline mode is set; "
@@ -3495,6 +3540,8 @@ def ensure_latest_transformers_venv(
     pin = _latest_pin_data()
     if (
         pin is not None
+        # A consented main install always rebuilds: main gains architectures without a .devN bump.
+        and _main_archive_commit is None
         and pin["version"] == version
         and tuple(pin["packages"]) == packages
         and _venv_dir_is_valid_and_undamaged(_VENV_T5_LATEST_DIR, packages)
@@ -3507,10 +3554,14 @@ def ensure_latest_transformers_venv(
 _LLMC_MAIN_TRANSFORMERS = "5.10.2"
 _LLMC_MAIN_SHA = "973c9c539a84dd9efaf74e115ede5ca419704c18"
 _LLMC_MAIN_COMPRESSED_TENSORS = "0.17.2a20260702"
-# Installed --no-deps (torch untouched).
+# Content digest of GitHub's source archive of _LLMC_MAIN_SHA (_archive_content_digest), and
+# `git describe` of that commit. GitHub keeps an archive's contents stable, not its bytes.
+_LLMC_MAIN_ARCHIVE_DIGEST = "63ccb4f99833e3b24602f18a1e386e6c1127c1a84f7fc4e8ff56336c929138f8"
+_LLMC_MAIN_DESCRIBE = "0.12.0-40"
+# Installed --no-deps (torch untouched) beside llmcompressor's source tree; the full runtime set
+# llm-compressor main needs, pinned.
 _VENV_LLMCOMPRESSOR_SPECS = (
     f"transformers=={_LLMC_MAIN_TRANSFORMERS}",
-    f"llmcompressor @ git+https://github.com/vllm-project/llm-compressor@{_LLMC_MAIN_SHA}",
     f"compressed-tensors=={_LLMC_MAIN_COMPRESSED_TENSORS}",
     "huggingface-hub==1.21.0",
     "hf-xet==1.5.1",
@@ -3583,13 +3634,92 @@ def _ensure_venv_llmcompressor_exists() -> bool:
     )
     shutil.rmtree(_VENV_LLMCOMPRESSOR_DIR, ignore_errors = True)
     os.makedirs(_VENV_LLMCOMPRESSOR_DIR, exist_ok = True)
+    with tempfile.TemporaryDirectory(
+        dir = os.path.dirname(_VENV_LLMCOMPRESSOR_DIR), prefix = ".llmc-src-"
+    ) as tmp:
+        try:
+            source = _download_llmcompressor_source(Path(tmp))
+        except Exception as exc:  # network, checksum, bad archive
+            logger.error("Cannot provision llm-compressor-main shadow: %s", exc)
+            return False
+        return _install_llmcompressor_shadow(source)
 
-    # Prereleases allowed for compressed-tensors.
+
+def _download_llmcompressor_source(parent: Path) -> Path:
+    """The pinned commit from GitHub's source archive, sha256-checked: no git needed.
+
+    setuptools_scm lists package files and the version from git. Without an expanded
+    .git_archival.txt an archive build silently drops modeling/moe and modeling/patch
+    (no __init__.py) and has no version, so one is written for the pinned commit.
+    """
+    from utils.llama_cpp_source import safe_extract_tar
+
+    url = f"https://github.com/vllm-project/llm-compressor/archive/{_LLMC_MAIN_SHA}.tar.gz"
+    archive = parent / "llm-compressor.tar.gz"
+    headers = {"User-Agent": "unsloth-studio"}
+    opener = _hf_proxy_opener(url)  # honours ALL_PROXY, which plain urlopen ignores for https
+    from utils.utils import hf_proxy_for_endpoint, hf_proxy_usable_by_urllib
+
+    proxy = hf_proxy_for_endpoint(url)
+    if opener is None and not hf_proxy_usable_by_urllib(proxy):
+        # A socks proxy urllib cannot speak: go through it as the Hub client does, never direct.
+        import httpx
+        try:
+            with httpx.stream("GET", url, headers = headers, follow_redirects = True, timeout = 300) as r:
+                r.raise_for_status()
+                with open(archive, "wb") as out:
+                    for chunk in r.iter_bytes(1 << 20):
+                        out.write(chunk)
+        except ImportError as exc:  # httpx needs socksio for socks
+            raise RuntimeError(
+                f"the configured proxy {proxy} needs SOCKS support: install socksio "
+                "(pip install socksio) or set HTTPS_PROXY to an http(s) proxy"
+            ) from exc
+    else:
+        request = urllib.request.Request(url, headers = headers)
+        with (opener.open if opener else urllib.request.urlopen)(request, timeout = 300) as response:
+            with open(archive, "wb") as out:
+                shutil.copyfileobj(response, out, 1 << 20)
+    if _archive_content_digest(archive) != _LLMC_MAIN_ARCHIVE_DIGEST:
+        raise RuntimeError(f"{url} failed its content checksum")
+    safe_extract_tar(archive, parent)
+    source = parent / f"llm-compressor-{_LLMC_MAIN_SHA}"
+    (source / ".git_archival.txt").write_text(
+        f"node: {_LLMC_MAIN_SHA}\ndescribe-name: {_LLMC_MAIN_DESCRIBE}-g{_LLMC_MAIN_SHA[:8]}\n",
+        encoding = "utf-8",
+    )
+    return source
+
+
+def _archive_content_digest(archive: Path) -> str:
+    """sha256 over each file's path and contents, independent of compression, member order and
+    the root directory name."""
+    entries = []
+    with tarfile.open(archive, "r:gz") as tar:
+        for member in tar:
+            rel = member.name.split("/", 1)[1] if "/" in member.name else ""
+            if member.isfile():
+                file_digest = hashlib.sha256()
+                handle = tar.extractfile(member)
+                while chunk := handle.read(1 << 20):
+                    file_digest.update(chunk)
+                entries.append(f"f {rel} {file_digest.hexdigest()}")
+            elif member.issym() or member.islnk():
+                entries.append(f"l {rel} {member.linkname}")
+    digest = hashlib.sha256()
+    for entry in sorted(entries):
+        digest.update(entry.encode("utf-8") + b"\n")
+    return digest.hexdigest()
+
+
+def _install_llmcompressor_shadow(source: Path) -> bool:
+    # Prefer uv then pip; every spec at once, --no-deps, prereleases allowed (compressed-tensors).
     base = [
         "--target",
         _VENV_LLMCOMPRESSOR_DIR,
         "--no-deps",
         "--prerelease=allow",
+        str(source),
         *_VENV_LLMCOMPRESSOR_SPECS,
     ]
     cmds = []

@@ -771,6 +771,39 @@ def test_load_exclude_tokens_match_ok(monkeypatch, tmp_path):
     assert _load(monkeypatch, tmp_path, ckpt, scheme = "int8") is not None
 
 
+def test_load_exclude_tokens_superset_ok(monkeypatch, tmp_path):
+    # Excluding MORE than the runtime keeps extra Linears bf16, which load as stored (assign=True) and run at any M. The
+    # hosted Wan2.2 fp8 artifacts record ['condition_embedder'] against the runtime's empty fp8 set.
+    from core.inference.diffusion_transformer_quant import exclude_tokens_for_scheme
+
+    fp8 = _good_ckpt(scheme = "fp8")
+    fp8["metadata"]["exclude_name_tokens"] = ["condition_embedder"]
+    assert _load(monkeypatch, tmp_path, fp8, scheme = "fp8") is not None
+
+    int8 = _good_ckpt(scheme = "int8")
+    int8["metadata"]["exclude_name_tokens"] = list(exclude_tokens_for_scheme("int8")) + [
+        "extra_bf16"
+    ]
+    assert _load(monkeypatch, tmp_path, int8, scheme = "int8") is not None
+
+
+def test_load_exclude_tokens_subset_is_none(monkeypatch, tmp_path):
+    # Missing one runtime token means the artifact quantised a layer the runtime keeps bf16 (the int8 crash case).
+    from core.inference.diffusion_transformer_quant import exclude_tokens_for_scheme
+
+    ckpt = _good_ckpt(scheme = "int8")
+    ckpt["metadata"]["exclude_name_tokens"] = list(exclude_tokens_for_scheme("int8"))[1:]
+    assert _load(monkeypatch, tmp_path, ckpt, scheme = "int8") is None
+
+
+@pytest.mark.parametrize("recorded", ["norm", {"norm": 1}, 7])
+def test_load_exclude_tokens_not_a_list_is_none(monkeypatch, tmp_path, recorded):
+    # A bare string would pass a naive subset test character by character.
+    ckpt = _good_ckpt(scheme = "int8")
+    ckpt["metadata"]["exclude_name_tokens"] = recorded
+    assert _load(monkeypatch, tmp_path, ckpt, scheme = "int8") is None
+
+
 def test_load_exclude_tokens_need_the_recorded_family(monkeypatch, tmp_path):
     # int8 exclusions are per-family: Qwen's text stream runs at M = prompt tokens, under _int_mm's 16
     from core.inference.diffusion_transformer_quant import exclude_tokens_for_scheme
@@ -2838,7 +2871,20 @@ def _own_names(names):
             {"UNSLOTH_DIFFUSION_INT8_CONVROT": "1"},
             "Qwen-Image-2.1-INT8-ConvRot.safetensors",
         ),
-        ("Qwen/Qwen-Image-2.1", "qwen-image-2.1", "int8", {}, "Qwen-Image-2.1-INT8.safetensors"),
+        (
+            "Qwen/Qwen-Image-2.1",
+            "qwen-image-2.1",
+            "int8",
+            {},
+            "Qwen-Image-2.1-INT8-ConvRot.safetensors",
+        ),
+        (
+            "Qwen/Qwen-Image-2.1",
+            "qwen-image-2.1",
+            "int8",
+            {"UNSLOTH_DIFFUSION_INT8_CONVROT": "0"},
+            "Qwen-Image-2.1-INT8.safetensors",
+        ),
         ("Qwen/Qwen-Image-2.1", "qwen-image-2.1", "fp8", {}, "Qwen-Image-2.1-FP8.safetensors"),
         ("black-forest-labs/FLUX.2-klein-4B", None, "fp8", {}, "FLUX.2-klein-4B-FP8.safetensors"),
     ],

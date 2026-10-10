@@ -28,6 +28,9 @@ MSYS_NAMESPACE_REASON = (
     "Git Bash (MSYS2) cannot start in the MXC container, which denies the global named-object "
     "directory it creates (microsoft/mxc#1061)."
 )
+NO_BUILTIN_CONTAINER_REASON = (
+    "This Windows has no built-in container (BaseContainer), and the fallback sandbox is off."
+)
 
 
 _host_prep_cache: dict[str, tuple[float, str | None]] = {}
@@ -304,6 +307,8 @@ def _probe(
                 selected_executable, execution_kind, output
             ):
                 return False, MSYS_NAMESPACE_REASON
+            if "BaseContainer is unavailable" in (output or ""):
+                return False, NO_BUILTIN_CONTAINER_REASON
             return False, "the live MXC probe did not complete cleanly"
         if execution_kind == "terminal":
             captured = workdir / "outside-read.txt"

@@ -211,7 +211,21 @@ def _has_own_model(path: Path) -> bool:
         return False
 
 
-def _checkpoint_dirs(run_dir: Path) -> List[Path]:
+# unsloth.models.decision.is_decision_checkpoint's Laya rule; Clef folders carry config.json or adapter_config.json.
+_LAYA_FILES = ("rl_agent_config.json", "model.safetensors")
+_LAYA_DIRS = ("encoder", "tokenizer")
+
+
+def _is_own_laya_run(path: Path) -> bool:
+    try:
+        return all(
+            own_entry(path / name) and (path / name).is_file() for name in _LAYA_FILES
+        ) and all((path / name).is_dir() for name in _LAYA_DIRS)
+    except OSError:
+        return False
+
+
+def _checkpoint_dirs(run_dir: Path, include_decision: bool = False) -> List[Path]:
     try:
         return sorted(
             (
@@ -220,7 +234,7 @@ def _checkpoint_dirs(run_dir: Path) -> List[Path]:
                 if sub.is_dir()
                 and sub.name.startswith("checkpoint-")
                 and within_account(sub)
-                and _has_own_model(sub)
+                and (_has_own_model(sub) or (include_decision and _is_own_laya_run(sub)))
             ),
             key = _checkpoint_sort_key,
         )
@@ -229,9 +243,11 @@ def _checkpoint_dirs(run_dir: Path) -> List[Path]:
 
 
 def scan_checkpoints(
-    outputs_dir: str | None = None,
+    outputs_dir: str | None = None, include_decision: bool = False
 ) -> List[Tuple[str, List[Tuple[str, str, Optional[float]]], dict]]:
     """Scan outputs folder for training runs and their checkpoints.
+
+    ``include_decision`` also lists Laya decision runs (GGUF export only; chat cannot load them).
 
     Returns:
         [(model_name, [(display_name, checkpoint_path, loss), ...], metadata), ...]
@@ -257,15 +273,16 @@ def scan_checkpoints(
             if not within_account(item):
                 continue
 
-            has_root_model = _has_own_model(item)
-            valid_checkpoints = _checkpoint_dirs(item)
-            # A cancelled or crashed run can still have checkpoints.
+            has_root_model = _has_own_model(item) or (include_decision and _is_own_laya_run(item))
+            valid_checkpoints = _checkpoint_dirs(item, include_decision)
+            # A cancelled or crashed run has no final save but can still have checkpoints.
             if not has_root_model and not valid_checkpoints:
                 continue
 
             meta_dir = item if has_root_model else valid_checkpoints[0]
             config_file = meta_dir / "config.json"
             adapter_config = meta_dir / "adapter_config.json"
+            laya_config = meta_dir / "rl_agent_config.json"
 
             metadata: dict = {}
             try:
@@ -280,6 +297,12 @@ def scan_checkpoints(
                 elif own_entry(config_file):
                     cfg = json.loads(config_file.read_text(encoding = "utf-8-sig"))
                     metadata["base_model"] = cfg.get("_name_or_path")
+                elif include_decision and own_entry(laya_config):
+                    laya = json.loads(laya_config.read_text(encoding = "utf-8-sig"))
+                    training = (
+                        laya.get("training") if isinstance(laya.get("training"), dict) else {}
+                    )
+                    metadata["base_model"] = training.get("base") or laya.get("encoder")
 
                 if own_entry(config_file):
                     if "cfg" not in dir():

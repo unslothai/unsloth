@@ -63,7 +63,9 @@ from .diffusion_comfy_quant import (
     load_comfy_quant_transformer,
     refuse_comfy_quant,
 )
+from .diffusion_single_file_trust import assert_safetensors_file, single_file_load_allowed
 from .diffusion_prequant import scoped_local_files_only
+from .video_moe_pair import moe_expert_of, moe_partner_filename, moe_pick_pairs
 from .diffusion_cache import (
     FBCACHE_MIN_STEPS,
     TC_AUTO,
@@ -163,6 +165,7 @@ from .diffusion_transformer_quant import (
     TQ_AUTO,
     TQ_FP8,
     TQ_INT8,
+    TQ_NVFP4,
     dense_transformer_supported,
     dense_transformer_unsupported_reason,
     explain_unusable_scheme,
@@ -697,6 +700,27 @@ def _is_trusted_video_repo(repo_id: str) -> bool:
     return rid.startswith("unsloth/") or rid in _TRUSTED_NON_GGUF_VIDEO_REPOS
 
 
+def _cached_checkpoint_file(repo_id: str, filename: str) -> Optional[Path]:
+    """``filename`` in a local ``repo_id`` dir, else its cached hub blob (no network; active, legacy and default cache
+    roots), else None."""
+    path = Path(repo_id).expanduser() / filename
+    if path.is_file():
+        return path
+    from huggingface_hub import try_to_load_from_cache
+
+    cached = try_to_load_from_cache(repo_id, filename)
+    if not isinstance(cached, str):
+        from hub.utils.paths import hf_default_cache_dir, legacy_hf_cache_dir
+        for root_fn in (legacy_hf_cache_dir, hf_default_cache_dir):
+            try:
+                cached = try_to_load_from_cache(repo_id, filename, cache_dir = str(root_fn()))
+            except Exception:  # noqa: BLE001 -- a bad/absent root just falls through
+                cached = None
+            if isinstance(cached, str):
+                break
+    return Path(cached) if isinstance(cached, str) else None
+
+
 def _picked_gguf_arch(repo_id: str, gguf_filename: str) -> Optional[str]:
     """``general.architecture`` of a picked GGUF, or None. The Video picker admits a GGUF by its
     arch (not its name) -- for a LOCAL dir (``repo_id`` is a directory) AND for a cached HUB repo
@@ -705,28 +729,9 @@ def _picked_gguf_arch(repo_id: str, gguf_filename: str) -> Optional[str]:
     family the picker offered. Reads the local file when present, else the cached hub blob
     (network-free via try_to_load_from_cache). Header-only, bounds-checked."""
     try:
-        from pathlib import Path
-
-        path = Path(repo_id).expanduser() / gguf_filename
-        if not path.is_file():
-            # Probe active, legacy and default cache roots, or a non-active-root GGUF 400s.
-            from huggingface_hub import try_to_load_from_cache
-
-            cached = try_to_load_from_cache(repo_id, gguf_filename)
-            if not isinstance(cached, str):
-                from hub.utils.paths import hf_default_cache_dir, legacy_hf_cache_dir
-                for root_fn in (legacy_hf_cache_dir, hf_default_cache_dir):
-                    try:
-                        cached = try_to_load_from_cache(
-                            repo_id, gguf_filename, cache_dir = str(root_fn())
-                        )
-                    except Exception:  # noqa: BLE001 -- a bad/absent root just falls through
-                        cached = None
-                    if isinstance(cached, str):
-                        break
-            if not isinstance(cached, str):
-                return None
-            path = Path(cached)
+        path = _cached_checkpoint_file(repo_id, gguf_filename)
+        if path is None:
+            return None
         from utils.models.gguf_metadata import read_gguf_architecture
 
         return read_gguf_architecture(str(path))
@@ -1014,6 +1019,11 @@ def _assert_pick_is_not_speech(
     assert_pick_is_not_speech(repo_id, gguf_filename, hf_token, allow_network)
 
 
+def _refuse_non_dit_pick(repo_id: str, gguf_filename: Optional[str], page: str) -> None:
+    from .diffusion_content import assert_local_pick_is_dit
+    assert_local_pick_is_dit(repo_id, gguf_filename, page)
+
+
 def _detect_load_family(
     repo_id: str,
     gguf_filename: Optional[str],
@@ -1037,6 +1047,16 @@ def _detect_load_family(
         arch = _picked_gguf_arch(repo_id, gguf_filename)
         if arch:
             fam = detect_video_family(repo_id, override = arch)
+    # A local file's header outranks its name (the name still picks 480p vs 720p).
+    from .diffusion_content import local_pick_file, resolve_family_with_content
+
+    path = local_pick_file(repo_id, gguf_filename)
+    if path:
+        name, _ = resolve_family_with_content(fam.name if fam else None, path, "video")
+        if name is None:
+            return None
+        if fam is None or fam.name != name:
+            fam = detect_video_family("", override = name)
     return fam
 
 
@@ -1087,6 +1107,9 @@ class _VideoLoadState:
     # Actual card, automatic loads included; only for re-pinning a worker thread.
     placed_ordinal: Optional[int] = None
     gguf_filename: Optional[str] = None
+    # Content-detected checkpoint variant identifier (LTX-2.3 "ltx-2.3-22b-distilled" / "-dev"), read before the names.
+    variant_id: Optional[str] = None
+    # Resident MiniMax-H3 denoiser partition, if any.
     h3_task: Optional[str] = None
     offload_policy: str = "none"
     vae_tiling: bool = True
@@ -1578,6 +1601,15 @@ def _h3_auto_denoiser_scheme(
     return H3_AUTO_FALLBACK_SCHEME
 
 
+def _checkpoint_files(gguf_filename: Optional[str], kind: str) -> tuple[str, ...]:
+    """The checkpoint file(s) a gguf / single_file pick reads: the pick, plus its partner expert when the name
+    pairs one (only a dual-expert family gets past validation with such a name, and a single-DiT one never asks)."""
+    if not gguf_filename:
+        return ()
+    partner = moe_partner_filename(gguf_filename) if kind != "pipeline" else None
+    return (gguf_filename, partner) if partner else (gguf_filename,)
+
+
 def _planned_denoiser_components(fam: Any, kind: str) -> tuple[str, ...]:
     """The denoiser component(s) a CONVENTIONAL seeded load covers, or ``()``."""
     try:
@@ -1698,33 +1730,65 @@ def _pipeline_device_mib(pipe: Any, ordinal: Optional[int] = None) -> int:
     return total // (1024 * 1024)
 
 
+def _auto_seed_yields_to_resident_bf16(scheme: Optional[str], requested: Optional[str]) -> bool:
+    """Whether an AUTO seed of ``scheme`` is bound by "auto keeps a resident bf16 DiT".
+
+    nvfp4 is exempt: it reaches auto only through a gated family preference (``_FAMILY_AUTO_PREFER``) that is
+    measured to be worth taking on a card that holds bf16. An explicit scheme is a request, honored as asked."""
+    if scheme is None or scheme == DENOISER_SEED_DECLINED or scheme == TQ_NVFP4:
+        return False
+    return requested is None or normalize_transformer_quant(requested) == TQ_AUTO
+
+
+def _auto_keeps_resident_bf16(plan: Any, target: Any) -> bool:
+    """The bf16 plan keeps the DiT resident on a measured budget, so auto runs bf16 (int8 fails the LPIPS bar there)."""
+    if plan is None or not plan_keeps_transformer_resident(plan):
+        return False
+    estimates = getattr(plan, "estimates", None) or {}
+    # An unmeasured budget also plans "none" without proving a fit.
+    return (
+        estimates.get("safe_device_budget_mib") is not None
+        and estimates.get("resident_required_mib") is not None
+        and bool(dense_transformer_supported(target))
+    )
+
+
 def _video_seed_stays_resident(
     fam: Any,
     *,
     target: Any,
-    scheme: str,
+    scheme: Optional[str],
     memory_mode: Optional[str],
     text_encoder_quant: Optional[str],
     base_repo: Optional[str],
     reclaimable_mib: int = 0,
 ) -> bool:
-    """True when an artifact-sized plan keeps the denoiser resident (text encoders may stream)."""
+    """True when an artifact-sized plan keeps the denoiser resident (text encoders may stream).
+
+    ``scheme=None`` sizes the released bf16 DiT instead, and then also requires a measured budget (see
+    ``_auto_keeps_resident_bf16``)."""
     components = getattr(fam, "bf16_components_gb", None)
     if not components:
-        return True
-    measured = video_family_prequant_resident_gb(fam, scheme)
-    factor = _QUANT_STEADY_FACTOR.get(scheme)
-    if measured:
-        denoiser_gb = float(measured)
-    elif factor is not None:
-        denoiser_gb = components[0] * factor
-    else:
-        return True
+        return scheme is not None
     import torch
+
+    dtype = getattr(target, "dtype", None)
+    if scheme is None:
+        denoiser_gb = components[0] * (
+            2.0 if getattr(target, "device", None) != "cpu" and dtype is torch.float32 else 1.0
+        )
+    else:
+        measured = video_family_prequant_resident_gb(fam, scheme)
+        factor = _QUANT_STEADY_FACTOR.get(scheme)
+        if measured:
+            denoiser_gb = float(measured)
+        elif factor is not None:
+            denoiser_gb = components[0] * factor
+        else:
+            return True
 
     from .diffusion_te_prequant import te_prequant_budget_scale
 
-    dtype = getattr(target, "dtype", None)
     dtype_scale = (
         2.0 if getattr(target, "device", None) != "cpu" and dtype is torch.float32 else 1.0
     )
@@ -1758,6 +1822,8 @@ def _video_seed_stays_resident(
         text_encoder_dense_mib = int(text_encoder_gb * mib_per_gb),
         requested_mode = normalize_memory_mode(memory_mode),
     )
+    if scheme is None:
+        return _auto_keeps_resident_bf16(planned, target)
     return plan_keeps_transformer_resident(planned)
 
 
@@ -2516,6 +2582,7 @@ class VideoBackend:
                 f"'{repo_id}' is a GGUF repo: pick one of its .gguf files "
                 "(gguf_filename) instead of loading it as a diffusers pipeline."
             )
+        _refuse_non_dit_pick(repo_id, gguf_filename, "video")
         fam = _detect_load_family(repo_id, gguf_filename, family_override, display_repo_id)
         if fam is None:
             raise ValueError(
@@ -2629,10 +2696,14 @@ class VideoBackend:
                         "MiniMax-H3 needs the Diffusers revision bundled with this Unsloth "
                         "version. Reinstall Unsloth dependencies and retry."
                     )
-        if kind != "gguf" and not _is_trusted_video_repo(repo_id):
+        # A lone .safetensors file is trusted per file, from any repo (diffusion_single_file_trust).
+        if kind != "gguf" and not single_file_load_allowed(
+            _is_trusted_video_repo(repo_id), kind, gguf_filename
+        ):
             raise ValueError(
-                f"Non-GGUF video loads are limited to unsloth/* repos, the official "
-                f"family base repos, and local paths; '{repo_id}' is neither."
+                f"Non-GGUF video loads from '{repo_id}' are limited to a single .safetensors "
+                f"checkpoint; full pipelines and other weight formats load only from unsloth/* "
+                f"repos, the official family base repos, and local paths."
             )
         # Base repo loads via from_pretrained, so hold it to the non-GGUF trust bar.
         if base_repo and (base_repo or "").strip() and not _is_trusted_video_repo(base_repo):
@@ -2642,15 +2713,25 @@ class VideoBackend:
             )
         from core.inference.diffusion import _assert_local_base_is_pipeline
 
-        excluded = (fam.denoiser_attr,) if kind in ("gguf", "single_file") else ()
+        excluded = (
+            ((fam.denoiser_attr, "transformer_2") if fam.is_moe else (fam.denoiser_attr,))
+            if kind in ("gguf", "single_file")
+            else ()
+        )
         _assert_local_base_is_pipeline(base_repo, excluded_components = excluded)
         if kind in ("gguf", "single_file") and not gguf_filename:
             raise ValueError("A gguf/single_file load needs the checkpoint filename.")
-        if kind in ("gguf", "single_file") and fam.is_moe:
+        local_file = Path(repo_id).expanduser().is_file()
+        if (
+            kind in ("gguf", "single_file")
+            and fam.is_moe
+            and not moe_pick_pairs(fam, repo_id if local_file else gguf_filename)
+        ):
             raise ValueError(
                 f"'{fam.name}' is a dual-expert model: a single {kind} file covers only "
-                f"one of its two transformers. Load the diffusers pipeline repo "
-                f"('{fam.base_repo}') instead."
+                f"one of its two transformers. Pick one expert of a high_noise / low_noise pair "
+                f"(Studio loads its partner from the same folder), or load the diffusers "
+                f"pipeline repo ('{fam.base_repo}')."
             )
         # A missing local checkpoint must fail HERE, before the route evicts a resident model.
         if kind in ("gguf", "single_file"):
@@ -2673,10 +2754,20 @@ class VideoBackend:
                 from .diffusion_families import resolve_local_gguf_child
                 try:
                     resolve_local_gguf_child(root, gguf_filename or "")
+                    if fam.is_moe:
+                        resolve_local_gguf_child(root, moe_partner_filename(gguf_filename) or "")
                 except Exception as exc:  # noqa: BLE001 -- surface as client input error
                     raise ValueError(str(exc)) from exc
             elif root.is_file():
-                # The loader passes a local file through ignoring gguf_filename, so its suffix must match.
+                if fam.is_moe:
+                    partner = root.with_name(moe_partner_filename(root.name) or root.name)
+                    if not partner.is_file():
+                        raise ValueError(
+                            f"'{root.name}' is one expert of a dual-expert pair, but its partner "
+                            f"'{partner.name}' is not in the same folder."
+                        )
+                # The loader hands a local FILE straight through (ignoring gguf_filename), so the file's own suffix must
+                # match the kind.
                 suffix = root.suffix.lower()
                 if kind == "gguf" and suffix != ".gguf":
                     raise ValueError(
@@ -2982,6 +3073,7 @@ class VideoBackend:
             checkpoint_local: Optional[Path] = None
             if kwargs.get("gguf_filename") and not Path(kwargs["repo_id"]).expanduser().exists():
                 from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
+
                 checkpoint_local = Path(
                     hf_hub_download_with_xet_fallback(
                         kwargs["repo_id"],
@@ -2991,8 +3083,21 @@ class VideoBackend:
                         # The plan counts files cached under either root.
                         reuse_other_cache_root = True,
                         local_files_only = local_files_only,
+                        gguf_header_delta = True,
                     )
                 )
+                partner = moe_partner_filename(kwargs["gguf_filename"])
+                if getattr(fam, "is_moe", False) and kind != "pipeline" and partner:
+                    hf_hub_download_with_xet_fallback(
+                        kwargs["repo_id"],
+                        partner,
+                        kwargs.get("hf_token"),
+                        cancel_event = cancel_event,
+                        reuse_other_cache_root = True,
+                        local_files_only = local_files_only,
+                    )
+            # An LTX-2.3 checkpoint supplies the VAEs/vocoder/connectors, so the base pull shrinks to scheduler + TE +
+            # tokenizer; recompute the estimate.
             ltx23 = False
             if fam is not None and fam.name == "ltx-2" and kind != "pipeline":
                 from .video_ltx2 import is_ltx23_checkpoint
@@ -3350,6 +3455,7 @@ class VideoBackend:
                             cancel_event = cancel_event,
                             reuse_other_cache_root = True,
                             local_files_only = local_files_only,
+                            gguf_header_delta = True,
                         )
                     )
                 except Exception as exc:  # noqa: BLE001 -- re-raised below, narrowed by name
@@ -3954,6 +4060,23 @@ class VideoBackend:
                 if scheme is None:
                     return None
                 resident = self._state
+                reclaimable = _pipeline_device_mib(
+                    getattr(resident, "pipe", None),
+                    ordinal = _target_ordinal(target),
+                )
+                if _auto_seed_yields_to_resident_bf16(
+                    scheme, transformer_quant
+                ) and _video_seed_stays_resident(
+                    fam,
+                    target = target,
+                    scheme = None,
+                    memory_mode = memory_mode,
+                    text_encoder_quant = text_encoder_quant,
+                    base_repo = base,
+                    reclaimable_mib = reclaimable,
+                ):
+                    # auto keeps a resident bf16 DiT, so the dense shards are what this load runs.
+                    return None
                 if not _video_seed_stays_resident(
                     fam,
                     target = target,
@@ -4473,7 +4596,7 @@ class VideoBackend:
             if (
                 kind != "pipeline"
                 # An H3 single file (a ComfyUI denoiser) replaces the partition it serves, transformer_ref/ included.
-                and name.startswith(("transformer/", h3_denoiser_prefix))
+                and name.startswith(("transformer/", "transformer_2/", h3_denoiser_prefix))
                 # transformer/config.json is the exception: from_single_file(config = <repo id>, subfolder =
                 # "transformer") reads it off the Hub, so a load that promised to download nothing needs it staged.
                 # Without it the locality gate cleared the pick and the fetch happened after eviction.
@@ -4534,8 +4657,9 @@ class VideoBackend:
                 skip_te_components = skip_te_components + ("text_encoder",)
             if gguf_filename and not Path(repo_id).expanduser().exists():
                 info = api.model_info(repo_id, files_metadata = True)
+                wanted = _checkpoint_files(gguf_filename, kind)
                 for sibling in info.siblings or []:
-                    if sibling.rfilename == gguf_filename and sibling.size:
+                    if sibling.rfilename in wanted and sibling.size:
                         total += int(sibling.size)
             if base and not Path(base).expanduser().exists():
                 info = api.model_info(base, files_metadata = True)
@@ -4694,10 +4818,13 @@ class VideoBackend:
             api = HfApi(token = hf_token or None)
             if gguf_filename and not Path(repo_id).expanduser().exists():
                 info = api.model_info(repo_id, files_metadata = True)
+                wanted_checkpoints = (
+                    _checkpoint_files(gguf_filename, kind) if fam.is_moe else (gguf_filename,)
+                )
                 sizes = [
                     (s.rfilename, int(s.size or 0))
                     for s in (info.siblings or [])
-                    if s.rfilename == gguf_filename
+                    if s.rfilename in wanted_checkpoints
                 ]
                 checkpoint_bytes = sum(size for _name, size in sizes)
                 total += add(
@@ -4710,7 +4837,12 @@ class VideoBackend:
                 if ltx23:
                     from .video_ltx2 import ltx23_extras_files, LTX23_EXTRAS_REPO
 
-                    wanted = set(ltx23_extras_files(gguf_filename))
+                    # A cached checkpoint's weights name its variant, as at load; else its name decides.
+                    try:
+                        variant_source = _cached_checkpoint_file(repo_id, gguf_filename)
+                    except Exception:  # noqa: BLE001 -- the name decides
+                        variant_source = None
+                    wanted = set(ltx23_extras_files(variant_source or gguf_filename))
                     extras_info = (
                         info
                         if LTX23_EXTRAS_REPO == repo_id
@@ -5387,6 +5519,8 @@ class VideoBackend:
                         repo_id, gguf_filename, hf_token, local_files_only = local_files_only
                     )
                 )
+                if not _is_trusted_video_repo(repo_id):
+                    assert_safetensors_file(comfy_checkpoint)
             return self._load_h3_modular_pipeline(
                 diffusers = diffusers,
                 torch = torch,
@@ -5445,46 +5579,94 @@ class VideoBackend:
         comfy_keep = (
             transformer_quant is None or normalize_transformer_quant(transformer_quant) is not None
         )
+        partner_path: Optional[Path] = None
+        partner_scan = None
+        # LTX-2.3 variant read from the weights; outranks the file name in recipe lookups (None: the name decides).
+        variant_id: Optional[str] = None
+        ltx_keys = None
         if kind != "pipeline":
             checkpoint_path = self._resolve_checkpoint_path(
                 repo_id, gguf_filename, hf_token, local_files_only = local_files_only
             )
-            size_mib = file_size_mib(str(checkpoint_path))
-            if kind == "single_file":
-                comfy_scan = refuse_comfy_quant(str(checkpoint_path))
-                if comfy_scan is None and _video_comfy_key_map(fam) is not None:
-                    # No diffusers converter: an unquantized original-layout file goes through the key map too.
-                    from .diffusion_comfy_quant import ComfyQuantScan
-                    comfy_scan = ComfyQuantScan()
-            if kind == "gguf":
-                transformer_mib = estimate_gguf_resident_mib(size_mib)
-            elif comfy_scan is not None:
-                ltx_keys = None
-                if fam.name == "ltx-2":
-                    # The file also bundles VAE / audio VAE / vocoder, priced as companions; connectors stay in.
-                    from .video_ltx2 import ltx23_is_dit_or_connector_key as ltx_keys
-                transformer_mib = _video_comfy_resident_mib(
-                    fam,
-                    base,
-                    target,
-                    checkpoint_path,
-                    comfy_scan,
-                    keep = comfy_keep,
-                    keep_key = ltx_keys,
+            # Admitted per file from an untrusted repo: prove each file is a safetensors container before any probe.
+            untrusted_single_file = kind == "single_file" and not _is_trusted_video_repo(repo_id)
+            if untrusted_single_file:
+                assert_safetensors_file(checkpoint_path)
+            if fam.name == "ltx-2":
+                from .video_ltx2 import ltx23_variant_identifier
+                variant_id = ltx23_variant_identifier(checkpoint_path)
+                if variant_id is not None:
+                    logger.info(
+                        "video.ltx23_variant: %s (from the checkpoint's weights)", variant_id
+                    )
+
+            if fam.name == "ltx-2":
+                # The file also bundles VAE / audio VAE / vocoder, priced as companions; connectors stay in.
+                from .video_ltx2 import ltx23_is_dit_or_connector_key as ltx_keys
+
+            def _price_checkpoint(path: Any) -> tuple[Optional[int], Any]:
+                """Resident MiB of one checkpoint file's DiT and its ComfyUI quant scan (None: a plain file)."""
+                scan = None
+                mib: Optional[int] = None
+                if untrusted_single_file:
+                    assert_safetensors_file(path)
+                size_mib = file_size_mib(str(path))
+                if kind == "single_file":
+                    scan = refuse_comfy_quant(str(path))
+                    if scan is None and _video_comfy_key_map(fam) is not None:
+                        # No diffusers converter: an unquantized original-layout file goes through the key map too.
+                        from .diffusion_comfy_quant import ComfyQuantScan
+                        scan = ComfyQuantScan()
+                if kind == "gguf":
+                    mib = estimate_gguf_resident_mib(size_mib)
+                elif scan is not None:
+                    mib = _video_comfy_resident_mib(
+                        fam,
+                        base,
+                        target,
+                        path,
+                        scan,
+                        keep = comfy_keep,
+                        keep_key = ltx_keys,
+                    )
+                    if mib is None:
+                        mib = estimate_safetensors_dense_mib(size_mib, fp8_upcast = True)
+                    if mib is not None:
+                        mib = int(mib * dtype_scale)
+                else:
+                    mib = estimate_safetensors_dense_mib(size_mib)
+                    if fam.name == "ltx-2" and mib is not None:
+                        # The file also bundles VAE / audio VAE / vocoder, already priced as companions. The connectors
+                        # under this prefix stay in: the table undercounts them (~2.9 of 6 GB), and dropping them plans
+                        # below the peak.
+                        dit_mib = safetensors_prefix_mib(str(path), "model.diffusion_model.")
+                        if dit_mib is not None:
+                            mib = min(mib, dit_mib)
+                    if mib is not None:
+                        mib = int(mib * dtype_scale)
+                return mib, scan
+
+            transformer_mib, comfy_scan = _price_checkpoint(checkpoint_path)
+            if getattr(fam, "is_moe", False):
+                # Both experts stay loaded, so price the pair; the planner splits the total per expert.
+                partner_path = self._resolve_moe_partner_path(
+                    repo_id, gguf_filename, hf_token, local_files_only = local_files_only
                 )
-                if transformer_mib is None:
-                    transformer_mib = estimate_safetensors_dense_mib(size_mib, fp8_upcast = True)
-                if transformer_mib is not None:
-                    transformer_mib = int(transformer_mib * dtype_scale)
-            else:
-                transformer_mib = estimate_safetensors_dense_mib(size_mib)
-                if fam.name == "ltx-2" and transformer_mib is not None:
-                    # Connectors stay in: the table undercounts them (~2.9 of 6 GB).
-                    dit_mib = safetensors_prefix_mib(str(checkpoint_path), "model.diffusion_model.")
-                    if dit_mib is not None:
-                        transformer_mib = min(transformer_mib, dit_mib)
-                if transformer_mib is not None:
-                    transformer_mib = int(transformer_mib * dtype_scale)
+                partner_mib, partner_scan = _price_checkpoint(partner_path)
+                if (comfy_scan is None) != (partner_scan is None):
+                    raise ValueError(
+                        f"'{Path(str(checkpoint_path)).name}' and '{partner_path.name}' are not the same kind "
+                        f"of checkpoint (one ComfyUI-quantized, one not); pick a matching pair."
+                    )
+                transformer_mib = (
+                    transformer_mib + partner_mib
+                    if transformer_mib is not None and partner_mib is not None
+                    else None
+                )
+                if moe_expert_of(Path(str(checkpoint_path)).name) == "low":
+                    # The high-noise expert is transformer (the early steps), whichever of the two was picked.
+                    checkpoint_path, partner_path = partner_path, checkpoint_path
+                    comfy_scan, partner_scan = partner_scan, comfy_scan
         # Price the plan at the hosted fp8 DiT: the bf16 file size would plan an offload and skip the seed.
         ltx23_prequant_pick = (
             transformer_mib is not None and comfy_scan is None
@@ -5681,6 +5863,18 @@ class VideoBackend:
             denoiser_seed_scheme = None
             denoiser_seed_gb = None
             plan, bf16_plan, quant_replanned = _plan_for_te_scale(te_scale, log = False)
+        if _auto_seed_yields_to_resident_bf16(
+            denoiser_seed_scheme, transformer_quant
+        ) and _auto_keeps_resident_bf16(_plan_for_te_scale(te_scale, log = False)[1], target):
+            # Auto keeps a resident bf16 DiT; seeding would change auto's precision wherever bf16 fits.
+            logger.info(
+                "video.denoiser_prequant: auto keeps the bf16 DiT (it fits resident), so the hosted "
+                "%s checkpoint is not seeded",
+                denoiser_seed_scheme,
+            )
+            denoiser_seed_scheme = None
+            denoiser_seed_gb = None
+            plan, bf16_plan, quant_replanned = _plan_for_te_scale(te_scale, log = False)
         if comfy_scan is not None and not _video_comfy_resident(plan, bf16_plan):
             # Offloaded, fp8 layers dequantize on NVIDIA: price the DiT the load will actually build.
             offload_mib = _video_comfy_resident_mib(
@@ -5693,6 +5887,21 @@ class VideoBackend:
                 keep_key = ltx_keys,
                 offload = True,
             )
+            if offload_mib is not None and partner_path is not None and partner_scan is not None:
+                # transformer_mib prices the pair: reprice both experts.
+                partner_offload_mib = _video_comfy_resident_mib(
+                    fam,
+                    base,
+                    target,
+                    partner_path,
+                    partner_scan,
+                    keep = comfy_keep,
+                    keep_key = ltx_keys,
+                    offload = True,
+                )
+                offload_mib = (
+                    offload_mib + partner_offload_mib if partner_offload_mib is not None else None
+                )
             if offload_mib is not None and transformer_mib is not None:
                 offload_mib = int(offload_mib * dtype_scale)
                 if offload_mib > transformer_mib:
@@ -5919,26 +6128,40 @@ class VideoBackend:
                     text_encoder_device = ltx23_te_device,
                 )
             else:
-                if comfy_scan is not None:
-                    transformer = load_comfy_quant_transformer(
-                        transformer_cls,
-                        str(checkpoint_path),
-                        comfy_scan,
-                        sf_kwargs,
-                        **_video_comfy_backends(
-                            fam, base, target, plan, bf16_plan, keep = comfy_keep
-                        ),
-                        family = fam.name,
-                        target = target,
-                        logger = logger,
-                        key_map = _video_comfy_key_map(fam),
+
+                def _load_expert(path: Any, scan: Any, subfolder: str) -> Any:
+                    kwargs = dict(sf_kwargs, subfolder = subfolder)
+                    if scan is not None:
+                        # int8 codes go to Studio's int8 runtime (torchao resident, the torchao-free twin under
+                        # offload) and fp8 codes to its fp8 GEMM when resident, by the rules Studio's own quant follows.
+                        return load_comfy_quant_transformer(
+                            transformer_cls,
+                            str(path),
+                            scan,
+                            kwargs,
+                            **_video_comfy_backends(
+                                fam, base, target, plan, bf16_plan, keep = comfy_keep
+                            ),
+                            family = fam.name,
+                            target = target,
+                            logger = logger,
+                            key_map = _video_comfy_key_map(fam),
+                        )
+                    return transformer_cls.from_single_file(str(path), **kwargs)
+
+                transformer = _load_expert(checkpoint_path, comfy_scan, "transformer")
+                experts: dict[str, Any] = {"transformer": transformer}
+                if partner_path is not None:
+                    experts["transformer_2"] = _load_expert(
+                        partner_path, partner_scan, "transformer_2"
                     )
-                else:
-                    transformer = transformer_cls.from_single_file(
-                        str(checkpoint_path), **sf_kwargs
+                    logger.info(
+                        "video.moe_pair: transformer=%s transformer_2=%s",
+                        Path(str(checkpoint_path)).name,
+                        Path(str(partner_path)).name,
                     )
                 pipe = pipeline_cls.from_pretrained(
-                    _base_local_dir or base, transformer = transformer, **pipe_kwargs
+                    _base_local_dir or base, **{**pipe_kwargs, **experts}
                 )
 
         if getattr(fam, "vae_force_fp32", False):
@@ -5974,6 +6197,15 @@ class VideoBackend:
             if comfy_scan is not None
             else None
         ) or {}
+        partner_info = (
+            getattr(getattr(pipe, "transformer_2", None), "_unsloth_comfy_quant", None)
+            if partner_scan is not None
+            else None
+        )
+        if partner_info:
+            comfy_info = dict(comfy_info)
+            for key in ("int8", "fp8", "dequantized"):
+                comfy_info[key] = int(comfy_info.get(key) or 0) + int(partner_info.get(key) or 0)
         comfy_scheme = (
             TQ_INT8 if comfy_info.get("int8") else TQ_FP8 if comfy_info.get("fp8") else None
         )
@@ -6006,11 +6238,7 @@ class VideoBackend:
             and normalize_transformer_quant(transformer_quant) == TQ_AUTO
             and not quant_replanned
             and not denoiser_injected
-            and plan_keeps_transformer_resident(plan)
-            # An unmeasured budget also plans "none" without proving a fit.
-            and plan.estimates.get("safe_device_budget_mib") is not None
-            and plan.estimates.get("resident_required_mib") is not None
-            and dense_transformer_supported(target)
+            and _auto_keeps_resident_bf16(plan, target)
         ):
             logger.info("video.transformer_quant: auto keeps the bf16 DiT (it fits resident)")
             transformer_quant = "off"
@@ -6039,7 +6267,8 @@ class VideoBackend:
         if comfy_scheme is not None:
             transformer_quant_engaged = comfy_scheme
             transformer_quant_source = (
-                f"ComfyUI-quantized checkpoint ({Path(str(checkpoint_path)).name}): "
+                f"ComfyUI-quantized checkpoint ({Path(str(checkpoint_path)).name}"
+                f"{' + ' + Path(str(partner_path)).name if partner_path is not None else ''}): "
                 f"{comfy_info.get('int8', 0)} int8 / {comfy_info.get('fp8', 0)} fp8 layers kept "
                 f"({comfy_info.get('backend') or comfy_info.get('fp8_backend')} runtime), "
                 f"{comfy_info.get('dequantized', 0)} dequantized"
@@ -6233,7 +6462,11 @@ class VideoBackend:
         static_plan: Optional[dict] = None
         if cache_auto:
             default_cache_steps, _ = default_video_generation_params(
-                gguf_filename, repo_id, base, fallback = (fam.default_steps, fam.default_guidance)
+                variant_id,
+                gguf_filename,
+                repo_id,
+                base,
+                fallback = (fam.default_steps, fam.default_guidance),
             )
             static_plan = auto_static_skip_plan(
                 (repo_id, base), skip_tier(speed_mode, effective_speed), default_cache_steps
@@ -6606,6 +6839,7 @@ class VideoBackend:
                     dtype = str(dtype).replace("torch.", ""),
                     kind = kind,
                     gguf_filename = gguf_filename,
+                    variant_id = variant_id,
                     offload_policy = offload_policy,
                     vae_tiling = vae_tiling,
                     memory_mode = plan.requested_mode,
@@ -7683,8 +7917,35 @@ class VideoBackend:
                 hf_token,
                 reuse_other_cache_root = True,
                 local_files_only = local_files_only,
+                gguf_header_delta = True,
             )
         )
+
+    @staticmethod
+    def _resolve_moe_partner_path(
+        repo_id: str,
+        gguf_filename: Optional[str],
+        hf_token: Optional[str],
+        local_files_only: bool = False,
+    ) -> Path:
+        """The OTHER expert's file of a dual-expert pick (same folder / repo, paired by name; downloads if hub)."""
+        root = Path(repo_id).expanduser()
+        if root.is_file():
+            partner = moe_partner_filename(root.name)
+            if partner is None:
+                raise ValueError(f"'{root.name}' does not name a high_noise / low_noise expert.")
+            path = root.with_name(partner)
+            if not path.is_file():
+                raise FileNotFoundError(f"The partner expert '{path}' does not exist.")
+            return path
+        partner = moe_partner_filename(gguf_filename)
+        if partner is None:
+            raise ValueError(f"'{gguf_filename}' does not name a high_noise / low_noise expert.")
+        return VideoBackend._resolve_checkpoint_path(
+            repo_id, partner, hf_token, local_files_only = local_files_only
+        )
+
+    # ── generation ───────────────────────────────────────────────────────────
 
     def loaded_family(self) -> Optional[VideoFamily]:
         """The resident pipeline's family, or None when nothing is loaded.
@@ -8214,6 +8475,7 @@ class VideoBackend:
                     fam.default_fps if fam.name == "minimax-h3" else int(fps or fam.default_fps)
                 )
                 default_steps, default_guidance = default_video_generation_params(
+                    state.variant_id,
                     state.gguf_filename,
                     state.repo_id,
                     state.base_repo,
@@ -8432,7 +8694,7 @@ class VideoBackend:
                         ltx23_verbatim_sigmas,
                     )
                     if steps == len(LTX23_DISTILLED_SIGMAS) and ltx2_distilled_ids(
-                        state.gguf_filename, state.repo_id, state.base_repo
+                        state.variant_id, state.gguf_filename, state.repo_id, state.base_repo
                     ):
                         kwargs["sigmas"] = list(LTX23_DISTILLED_SIGMAS)
                         sigma_ctx = ltx23_verbatim_sigmas(pipe)
@@ -8444,7 +8706,9 @@ class VideoBackend:
                     )
 
                     # Distilled DiT is sampled unguided; newer diffusers defaults would add STG + modality passes.
-                    if ltx2_distilled_ids(state.gguf_filename, state.repo_id, state.base_repo):
+                    if ltx2_distilled_ids(
+                        state.variant_id, state.gguf_filename, state.repo_id, state.base_repo
+                    ):
                         kwargs.update(ltx2_distilled_guidance_kwargs(call_params, guidance))
                     # The render thread copies this thread's context, so raise the recompile limit here.
                     ensure_recompile_limit()
@@ -9531,6 +9795,7 @@ class VideoBackend:
         )
         fam = state.family
         default_steps, default_guidance = default_video_generation_params(
+            state.variant_id,
             state.gguf_filename,
             state.display_repo_id,
             state.repo_id,

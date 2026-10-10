@@ -40,6 +40,8 @@ _INHERIT_ONLY = 0x8
 _INHERITED = 0x10
 _lock = threading.Lock()
 _scanned: dict[str, dict[str, int] | None] = {}
+# Root -> folder identity whose grant Windows refused in this process; skipped until restart.
+_refused: dict[str, dict[str, int] | None] = {}
 
 
 class ReadGrantError(RuntimeError):
@@ -349,6 +351,14 @@ def _revoke(root: str) -> tuple[bool, str]:
     return _icacls(root, "/remove:g", f"*{ALL_APPLICATION_PACKAGES}")
 
 
+def _root_untouched(root: str) -> bool:
+    """icacls writes the root before propagating, so a refusal there changed nothing (#12941)."""
+    try:
+        return not _package_aces(root)[1]
+    except OSError:
+        return False
+
+
 def _save_quietly(record: dict) -> None:
     """Persist a record change after the ACL already matches it; a failed write only costs a retry."""
     try:
@@ -401,11 +411,16 @@ def _revoke_recorded_root(record: dict, key: str) -> str:
         # Only inherited Windows permissions remain; none belong to Studio.
         record.pop(key)
         return "dropped"
+    # Read before revoking: a failed /remove:g may clear the root and still leave descendants.
+    never_landed = record[key].get("state") == "pending" and _root_untouched(key)
     ok, output = _revoke(key)
     if ok:
         record.pop(key)
         _scanned.pop(key, None)
         return "revoked"
+    if never_landed:
+        record.pop(key)
+        return "dropped"
     logger.warning("Could not remove the persistent MXC read grant from %s: %s", key, output)
     return "failed"
 
@@ -458,6 +473,8 @@ def _ensure_root(record: dict, root: str) -> bool:
         return True
     if covers and not pending:
         return True
+    if entry is None and _refused.get(key) == current:
+        return False
     if explicit and entry is None:
         # Someone else set an entry for that group here; /remove:g on opt-out would take theirs too.
         logger.info(
@@ -497,6 +514,15 @@ def _ensure_root(record: dict, root: str) -> bool:
         raise ReadGrantError(
             f"the MXC read grant on {root} failed ({output}) and the folder changed"
         )
+    if _root_untouched(root):
+        # e.g. Store Python under WindowsApps (TrustedInstaller): the rollback is refused too.
+        record.pop(key, None)
+        _save_quietly(record)
+        _refused[key] = identity
+        logger.info(
+            "Keeping the per-launch MXC grant for %s: Windows refused it (%s)", root, output
+        )
+        return False
     restored, restore_output = _revoke(root)
     if not restored:
         raise ReadGrantError(

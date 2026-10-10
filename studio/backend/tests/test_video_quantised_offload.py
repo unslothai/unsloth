@@ -208,12 +208,41 @@ def test_auto_keeps_bf16_where_the_dit_stays_resident_at_80(fake_runtime, monkey
 
 
 def test_explicit_fp8_resident_dit_beside_streamed_text_encoder(fake_runtime, monkeypatch):
-    """A torchao fp8 DiT on 24 GiB engages once the text encoder streams."""
+    """A torchao fp8 DiT on 24 GiB engages once the text encoder streams. Wan hosts its fp8 artifact, so the explicit
+    request seeds it rather than quantising the released shards at load."""
     spy = _spoof(monkeypatch, tier_gib = 24)
     status = VideoBackend().load_pipeline(FAMILIES["wan2.2-ti2v-5b"], transformer_quant = "fp8")
     assert _tier_code(spy.plans[-1]) == "dit"
     assert status["transformer_quant"] == "fp8"
+    assert spy.seeded == ["fp8"]
+    assert not spy.quant
+
+
+def test_explicit_fp8_runtime_quant_without_a_hosted_artifact(fake_runtime, monkeypatch):
+    """Where no fp8 artifact is hosted (HunyuanVideo-1.5) the same request quantises at load, DiT resident."""
+    spy = _spoof(monkeypatch, tier_gib = 24)
+    status = VideoBackend().load_pipeline(FAMILIES["hv15-480p"], transformer_quant = "fp8")
+    assert _tier_code(spy.plans[-1]) == "dit"
+    assert status["transformer_quant"] == "fp8"
+    assert not spy.seeded
     assert spy.quant and not spy.quant[0].get("offload")
+
+
+@pytest.mark.parametrize("family", ["wan2.2-ti2v-5b", "wan2.2-t2v-a14b"])
+@pytest.mark.parametrize("tier_gib", [24, 48])
+def test_auto_seeds_the_hosted_artifact_only_where_it_would_quantise(
+    fake_runtime, monkeypatch, family, tier_gib
+):
+    """Auto quantises a Wan DiT only where bf16 does not stay resident; there the hosted int8 is seeded instead of a
+    runtime quantise, and where bf16 fits (the planner table) nothing is seeded."""
+    spy = _spoof(monkeypatch, tier_gib = tier_gib)
+    status = VideoBackend().load_pipeline(FAMILIES[family])
+    tier, precision = EXPECTED[family][tier_gib]
+    if precision == _BF:
+        assert not spy.seeded and status["transformer_quant"] in (None, "off")
+    elif precision == _AO:
+        assert spy.seeded == ["int8"] and not spy.quant
+        assert status["transformer_quant"] == "int8"
 
 
 def test_explicit_fp8_refused_with_reason_when_the_dit_must_move(fake_runtime, monkeypatch):

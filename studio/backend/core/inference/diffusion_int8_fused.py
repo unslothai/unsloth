@@ -1206,7 +1206,11 @@ def _is_zimage_ff(module: Any) -> bool:
 
 
 def _swiglu_layout_allowed(module: Any) -> bool:
-    return _SWIGLU_ALL_LAYOUTS or _is_zimage_ff(module)
+    if _SWIGLU_ALL_LAYOUTS or _is_zimage_ff(module):
+        return True
+    # rotated down projection: the SwiGLU kernel never runs
+    from .diffusion_qwenimage21_fused import rotated_ff
+    return rotated_ff(module)
 
 
 def _get(module: Any, dotted: str) -> Any:
@@ -1236,19 +1240,31 @@ def int8_linear(module: Any, x: Any) -> Any:
     on B200). 0.18 skips it for symmetric activations, as this does; the values are the same (``y - 0 == y``).
     Anything else (LoRA wrappers, legacy tensors, small M, CPU, a Linear running diffusion_int8_gemm's fused GEMM) is
     ``module(x)``."""
-    import torch
     from torch import nn
 
     from .diffusion_convrot import is_rotated_linear
 
-    rotated = is_rotated_linear(module)
+    # an instance-level forward is an offload hook (accelerate / diffusers) or another wrapper: only it may run
     if (
         _LINEAR_OFF
-        or not (type(module) is nn.Linear or rotated)
+        or not (type(module) is nn.Linear or is_rotated_linear(module))
         or _I8_GEMM_MARK in module.__dict__
         or "forward" in module.__dict__
     ):
         return module(x)
+    return int8_linear_core(module, x)
+
+
+def int8_linear_core(module: Any, x: Any) -> Any:
+    """``int8_linear`` minus its wrapper checks, for a forward installed on ``module``: fallbacks run the class
+    forward, never ``module(x)`` (would recurse)."""
+    import torch
+
+    from .diffusion_convrot import is_rotated_linear
+
+    rotated = is_rotated_linear(module)
+    if _LINEAR_OFF:
+        return _stock_call(module, x)
     weight = module.weight
     lead = x.shape[:-1]
     x2d = x.reshape(-1, x.shape[-1])
@@ -1260,7 +1276,7 @@ def int8_linear(module: Any, x: Any) -> Any:
         or getattr(weight, "act_pre_scale", None) is not None
         or weight.device != x.device
     ):
-        return module(x)
+        return _stock_call(module, x)
     if rotated:
         x2d = _rotate(x2d, module.convrot_groupsize)
     xq, xs = _fast_act_quant(x2d, weight)
@@ -1268,6 +1284,12 @@ def int8_linear(module: Any, x: Any) -> Any:
         _int_mm(xq.reshape(-1, xq.shape[-1]), weight), xs, weight.scale, module.bias, x.dtype
     )
     return y.reshape(*lead, y.shape[-1])
+
+
+def _stock_call(module: Any, x: Any) -> Any:
+    if "forward" in module.__dict__:
+        return type(module).forward(module, x)
+    return module(x)
 
 
 def _rotate(x2d: Any, group: int) -> Any:

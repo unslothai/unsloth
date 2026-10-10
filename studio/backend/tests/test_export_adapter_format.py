@@ -163,7 +163,7 @@ def _converter_harness(monkeypatch, tmp_path, with_converter):
     zoo = types.ModuleType("unsloth_zoo")
     zoo.llama_cpp = types.SimpleNamespace(
         LLAMA_CPP_DEFAULT_DIR = str(llama),
-        _resolve_converter_revision = lambda d: ("ggml-org/llama.cpp", "b9000-mix-abc"),
+        _resolve_converter_revision = lambda d: ("unslothai/llama.cpp", "b9000-mix-abc"),
     )
     monkeypatch.setitem(sys.modules, "unsloth_zoo", zoo)
     monkeypatch.setitem(sys.modules, "unsloth_zoo.llama_cpp", zoo.llama_cpp)
@@ -175,9 +175,6 @@ def _converter_harness(monkeypatch, tmp_path, with_converter):
         **kwargs,
     ):
         calls.append((cmd, env))
-        if cmd[:2] == ["git", "clone"]:
-            os.makedirs(os.path.join(cmd[-1], "gguf-py"))
-            open(os.path.join(cmd[-1], "convert_lora_to_gguf.py"), "w").close()
         return types.SimpleNamespace(returncode = 0, stdout = "", stderr = "")
 
     monkeypatch.setattr(subprocess, "run", _run)
@@ -205,16 +202,138 @@ def test_gguf_converter_token_env(monkeypatch, tmp_path, token, expect):
     assert env.get("HF_HUB_DISABLE_IMPLICIT_TOKEN") == ("1" if token is False else "0")
 
 
-def test_gguf_converter_cloned_without_package_manager(monkeypatch, tmp_path):
+def _fork_source_tarball(tag, members = None):
+    import io
+    import tarfile
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj = buf, mode = "w:gz") as tar:
+        for name, data in members or [
+            (f"llama.cpp-{tag}/convert_lora_to_gguf.py", b"import sys\n"),
+            (f"llama.cpp-{tag}/gguf-py/gguf/__init__.py", b""),
+        ]:
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
+
+
+def _serve_fork_release(
+    monkeypatch,
+    tag,
+    tarball,
+    sha = None,
+    releases = (),
+):
+    """Fake GitHub: the fork release's sha256 json + source asset, and the release listing."""
+    import hashlib
+    import io
+
+    from utils import llama_cpp_source
+
+    sha = sha or hashlib.sha256(tarball).hexdigest()
+    checksums = {
+        "release_tag": tag,
+        "upstream_tag": tag.split("-mix-")[0],
+        "artifacts": {
+            f"llama.cpp-source-{tag}.tar.gz": {"sha256": sha, "repo": "unslothai/llama.cpp"}
+        },
+    }
+    urls = []
+
+    def _open(url, timeout = 60):
+        urls.append(url)
+        assert "ggml-org" not in url
+        if url.endswith("/llama-prebuilt-sha256.json"):
+            return io.BytesIO(json.dumps(checksums).encode())
+        if url.endswith(f"/llama.cpp-source-{tag}.tar.gz"):
+            return io.BytesIO(tarball)
+        if "/releases?" in url:
+            return io.BytesIO(json.dumps(list(releases)).encode())
+        raise AssertionError(url)
+
+    monkeypatch.setattr(llama_cpp_source, "_open", _open)
+    return urls
+
+
+def test_gguf_converter_downloaded_from_fork_release_without_git(monkeypatch, tmp_path):
     backend, adapter, calls = _converter_harness(monkeypatch, tmp_path, False)
+    tag = "b9000-mix-abc"
+    urls = _serve_fork_release(monkeypatch, tag, _fork_source_tarball(tag))
     backend._convert_peft_dir_to_gguf(adapter, "q8_0", None)
-    assert calls[0][0][:6] == ["git", "clone", "--depth", "1", "--branch", "b9000"]
-    source = tmp_path / "home" / "llama.cpp-source-b9000"
-    assert calls[-1][0][1] == str(source / "convert_lora_to_gguf.py")
+    assert not any(c[0][0] == "git" for c in calls)
+    assert urls == [
+        f"https://github.com/unslothai/llama.cpp/releases/download/{tag}/llama-prebuilt-sha256.json",
+        f"https://github.com/unslothai/llama.cpp/releases/download/{tag}/llama.cpp-source-{tag}.tar.gz",
+    ]
+    source = tmp_path / "home" / f"llama.cpp-source-{tag}"
+    assert [c[0][1] for c in calls] == [str(source / "convert_lora_to_gguf.py")]
     assert sorted(p.name for p in (tmp_path / "home").iterdir()) == [
         "llama.cpp",
-        "llama.cpp-source-b9000",
+        f"llama.cpp-source-{tag}",
     ]
+    # Cached: a second export makes no request.
+    backend._convert_peft_dir_to_gguf(adapter, "q8_0", None)
+    assert len(urls) == 2
+
+
+def test_gguf_converter_maps_upstream_tag_to_fork_release(monkeypatch, tmp_path):
+    import sys
+
+    backend, adapter, calls = _converter_harness(monkeypatch, tmp_path, False)
+    sys.modules["unsloth_zoo.llama_cpp"]._resolve_converter_revision = lambda d: (
+        "ggml-org/llama.cpp",
+        "b9000",
+    )
+    tag = "b9000-mix-def"
+    urls = _serve_fork_release(
+        monkeypatch,
+        tag,
+        _fork_source_tarball(tag),
+        releases = [
+            {"tag_name": "b9001-mix-aaa", "draft": False},
+            {"tag_name": "b9000-mix-zzz", "draft": True},
+            {"tag_name": tag, "draft": False},
+        ],
+    )
+    backend._convert_peft_dir_to_gguf(adapter, "q8_0", None)
+    assert calls[-1][0][1] == str(
+        tmp_path / "home" / f"llama.cpp-source-{tag}" / "convert_lora_to_gguf.py"
+    )
+    assert any("/releases?" in u for u in urls)
+    # Offline later: the fork tree fetched for that upstream tag is reused.
+    sys.modules["unsloth_zoo.llama_cpp"]._converter_network_allowed = lambda: False
+    backend._convert_peft_dir_to_gguf(adapter, "q8_0", None)
+    assert calls[-1][0][1] == str(
+        tmp_path / "home" / f"llama.cpp-source-{tag}" / "convert_lora_to_gguf.py"
+    )
+
+
+def test_gguf_converter_rejects_checksum_mismatch(monkeypatch, tmp_path):
+    backend, adapter, calls = _converter_harness(monkeypatch, tmp_path, False)
+    tag = "b9000-mix-abc"
+    _serve_fork_release(monkeypatch, tag, _fork_source_tarball(tag), sha = "0" * 64)
+    with pytest.raises(RuntimeError, match = "sha256 mismatch"):
+        backend._convert_peft_dir_to_gguf(adapter, "q8_0", None)
+    assert calls == []
+    assert sorted(p.name for p in (tmp_path / "home").iterdir()) == ["llama.cpp"]
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["../evil.py", "/abs/evil.py", "llama.cpp-x/../../evil.py"],
+)
+def test_gguf_converter_refuses_path_traversal(monkeypatch, tmp_path, name):
+    backend, adapter, calls = _converter_harness(monkeypatch, tmp_path, False)
+    tag = "b9000-mix-abc"
+    tarball = _fork_source_tarball(
+        tag, [(f"llama.cpp-{tag}/convert_lora_to_gguf.py", b"x"), (name, b"x")]
+    )
+    _serve_fork_release(monkeypatch, tag, tarball)
+    with pytest.raises(RuntimeError, match = "unsafe path"):
+        backend._convert_peft_dir_to_gguf(adapter, "q8_0", None)
+    assert calls == []
+    assert not (tmp_path / "evil.py").exists() and not (tmp_path / "home" / "evil.py").exists()
 
 
 def test_parse_adapter_features(tmp_path):
@@ -289,7 +408,7 @@ def test_local_dir_never_format_mixed(monkeypatch, tmp_path):
     assert not ok and "mix" in message
 
 
-def test_gguf_converter_offline_refuses_clone(monkeypatch, tmp_path):
+def test_gguf_converter_offline_refuses_download(monkeypatch, tmp_path):
     import sys
 
     backend, adapter, calls = _converter_harness(monkeypatch, tmp_path, False)
@@ -325,3 +444,254 @@ def test_gguf_converter_uses_loaded_snapshot(monkeypatch, tmp_path):
     backend._convert_peft_dir_to_gguf(adapter, "q8_0", None)
     cmd = calls[-1][0]
     assert cmd[cmd.index("--base") + 1] == str(snap) and "--base-model-id" not in cmd
+
+
+def _fake_github(monkeypatch, routes):
+    """routes: url suffix or substring -> bytes/obj (served) or Exception (raised)."""
+    import io
+    import urllib.error
+
+    from utils import llama_cpp_source
+
+    urls = []
+
+    def _open(url, timeout = 60):
+        urls.append(url)
+        assert "ggml-org" not in url
+        for key, value in routes.items():
+            if url.endswith(key) or key in url:
+                if value is None:
+                    raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+                data = value if isinstance(value, bytes) else json.dumps(value).encode()
+                return io.BytesIO(data)
+        raise AssertionError(url)
+
+    monkeypatch.setattr(llama_cpp_source, "_open", _open)
+    return urls
+
+
+def test_gguf_converter_reads_exact_commit_source_archive(monkeypatch, tmp_path):
+    import hashlib
+
+    backend, adapter, calls = _converter_harness(monkeypatch, tmp_path, False)
+    tag, commit = "b9000-mix-abc", "a" * 40
+    tarball = _fork_source_tarball(tag)
+    asset = f"llama.cpp-source-commit-{commit}.tar.gz"
+    _fake_github(
+        monkeypatch,
+        {
+            "/llama-prebuilt-sha256.json": {
+                "release_tag": tag,
+                "source_commit": commit,
+                "artifacts": {asset: {"sha256": hashlib.sha256(tarball).hexdigest()}},
+            },
+            f"/{asset}": tarball,
+        },
+    )
+    backend._convert_peft_dir_to_gguf(adapter, "q8_0", None)
+    assert calls[-1][0][1] == str(
+        tmp_path / "home" / f"llama.cpp-source-{tag}" / "convert_lora_to_gguf.py"
+    )
+
+
+def test_gguf_converter_bare_fork_tag_maps_to_mix_release_across_pages(monkeypatch, tmp_path):
+    import hashlib
+    import sys
+
+    backend, adapter, calls = _converter_harness(monkeypatch, tmp_path, False)
+    sys.modules["unsloth_zoo.llama_cpp"]._resolve_converter_revision = lambda d: (
+        "unslothai/llama.cpp",
+        "b9000",
+    )
+    tag = "b9000-mix-def"
+    tarball = _fork_source_tarball(tag)
+    urls = _fake_github(
+        monkeypatch,
+        {
+            "/download/b9000/llama-prebuilt-sha256.json": None,
+            f"/download/{tag}/llama-prebuilt-sha256.json": {
+                "release_tag": tag,
+                "artifacts": {
+                    f"llama.cpp-source-{tag}.tar.gz": {
+                        "sha256": hashlib.sha256(tarball).hexdigest()
+                    }
+                },
+            },
+            f"/llama.cpp-source-{tag}.tar.gz": tarball,
+            "&page=1": [{"tag_name": f"b{9100 + i}-mix-x", "draft": False} for i in range(100)],
+            "&page=2": [{"tag_name": tag, "draft": False}],
+        },
+    )
+    backend._convert_peft_dir_to_gguf(adapter, "q8_0", None)
+    assert calls[-1][0][1] == str(
+        tmp_path / "home" / f"llama.cpp-source-{tag}" / "convert_lora_to_gguf.py"
+    )
+    assert any("&page=2" in u for u in urls)
+
+
+@pytest.mark.parametrize(
+    "revision,legacy",
+    [
+        (("unslothai/llama.cpp", "b9000-mix-abc"), "llama.cpp-source-b9000"),
+        ((None, None), "llama.cpp-source"),
+    ],
+)
+def test_gguf_converter_reuses_tree_from_previous_exporter_offline(
+    monkeypatch, tmp_path, revision, legacy
+):
+    import sys
+
+    backend, adapter, calls = _converter_harness(monkeypatch, tmp_path, False)
+    zoo = sys.modules["unsloth_zoo.llama_cpp"]
+    zoo._resolve_converter_revision = lambda d: revision
+    zoo._converter_network_allowed = lambda: False
+    old = tmp_path / "home" / legacy
+    (old / "gguf-py").mkdir(parents = True)
+    (old / "convert_lora_to_gguf.py").write_text("")
+    _fake_github(monkeypatch, {})
+    backend._convert_peft_dir_to_gguf(adapter, "q8_0", None)
+    assert calls[-1][0][1] == str(old / "convert_lora_to_gguf.py")
+
+
+def test_gguf_converter_lookup_failure_keeps_the_revision(monkeypatch, tmp_path):
+    import sys
+
+    backend, adapter, calls = _converter_harness(monkeypatch, tmp_path, False)
+    sys.modules["unsloth_zoo.llama_cpp"]._resolve_converter_revision = lambda d: (
+        "ggml-org/llama.cpp",
+        "b9000",
+    )
+    urls = _fake_github(monkeypatch, {"/releases?": None})
+    with pytest.raises(RuntimeError, match = "converter sources"):
+        backend._convert_peft_dir_to_gguf(adapter, "q8_0", None)
+    assert not any("/latest/" in u for u in urls)
+    assert calls == []
+
+
+def test_gguf_converter_skips_prerelease_when_mapping_upstream_tag(monkeypatch):
+    from utils import llama_cpp_source
+    _fake_github(
+        monkeypatch,
+        {
+            "&page=1": [
+                {"tag_name": "b9000-mix-pre", "draft": False, "prerelease": True},
+                {"tag_name": "b9000-mix-rel", "draft": False, "prerelease": False},
+            ]
+        },
+    )
+    assert llama_cpp_source._matching_fork_tag("b9000") == "b9000-mix-rel"
+
+
+def test_gguf_converter_offline_without_revision_reuses_newest_fork_tree(monkeypatch, tmp_path):
+    import os
+    import sys
+
+    backend, adapter, calls = _converter_harness(monkeypatch, tmp_path, False)
+    zoo = sys.modules["unsloth_zoo.llama_cpp"]
+    zoo._resolve_converter_revision = lambda d: (None, None)
+    zoo._converter_network_allowed = lambda: False
+    trees = []
+    for i, tag in enumerate(["b8000-mix-old", "b9000-mix-new"]):
+        tree = tmp_path / "home" / f"llama.cpp-source-{tag}"
+        (tree / "gguf-py").mkdir(parents = True)
+        (tree / "convert_lora_to_gguf.py").write_text("")
+        os.utime(tree, (1000 + i, 1000 + i))
+        trees.append(tree)
+    _fake_github(monkeypatch, {})
+    backend._convert_peft_dir_to_gguf(adapter, "q8_0", None)
+    assert calls[-1][0][1] == str(trees[-1] / "convert_lora_to_gguf.py")
+
+
+def test_gguf_converter_reads_legacy_upstream_named_source_archive(monkeypatch, tmp_path):
+    import hashlib
+
+    backend, adapter, calls = _converter_harness(monkeypatch, tmp_path, False)
+    tag = "b9000-mix-abc"
+    tarball = _fork_source_tarball(tag)
+    asset = "llama.cpp-source-b9000.tar.gz"
+    _fake_github(
+        monkeypatch,
+        {
+            "/llama-prebuilt-sha256.json": {
+                "release_tag": tag,
+                "upstream_tag": "b9000",
+                "artifacts": {asset: {"sha256": hashlib.sha256(tarball).hexdigest()}},
+            },
+            f"/{asset}": tarball,
+        },
+    )
+    backend._convert_peft_dir_to_gguf(adapter, "q8_0", None)
+    assert calls[-1][0][1] == str(
+        tmp_path / "home" / f"llama.cpp-source-{tag}" / "convert_lora_to_gguf.py"
+    )
+
+
+def test_gguf_converter_online_bare_tag_ignores_an_unrelated_mix_cache(monkeypatch, tmp_path):
+    import hashlib
+    import sys
+
+    backend, adapter, calls = _converter_harness(monkeypatch, tmp_path, False)
+    sys.modules["unsloth_zoo.llama_cpp"]._resolve_converter_revision = lambda d: (
+        "ggml-org/llama.cpp",
+        "b9000",
+    )
+    stale = tmp_path / "home" / "llama.cpp-source-b9000-mix-pre"
+    (stale / "gguf-py").mkdir(parents = True)
+    (stale / "convert_lora_to_gguf.py").write_text("")
+    tag = "b9000-mix-rel"
+    tarball = _fork_source_tarball(tag)
+    _fake_github(
+        monkeypatch,
+        {
+            "&page=1": [{"tag_name": tag, "draft": False}],
+            f"/download/{tag}/llama-prebuilt-sha256.json": {
+                "release_tag": tag,
+                "artifacts": {
+                    f"llama.cpp-source-{tag}.tar.gz": {
+                        "sha256": hashlib.sha256(tarball).hexdigest()
+                    }
+                },
+            },
+            f"/llama.cpp-source-{tag}.tar.gz": tarball,
+        },
+    )
+    backend._convert_peft_dir_to_gguf(adapter, "q8_0", None)
+    assert calls[-1][0][1] == str(
+        tmp_path / "home" / f"llama.cpp-source-{tag}" / "convert_lora_to_gguf.py"
+    )
+
+
+def test_source_artifact_accepts_abbreviated_commit():
+    from utils import llama_cpp_source
+    name, digest = llama_cpp_source.source_artifact(
+        {
+            "source_commit": "abc1234",
+            "artifacts": {"llama.cpp-source-commit-abc1234.tar.gz": {"sha256": "a" * 64}},
+        },
+        "b9000-mix-abc",
+    )
+    assert name == "llama.cpp-source-commit-abc1234.tar.gz"
+
+
+def test_safe_extract_without_data_filter_drops_links(monkeypatch, tmp_path):
+    import io
+    import tarfile
+
+    from utils import llama_cpp_source
+
+    archive = tmp_path / "a.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        link = tarfile.TarInfo("root/a")
+        link.type = tarfile.SYMTYPE
+        link.linkname = "."
+        tar.addfile(link)
+        data = b"x"
+        info = tarfile.TarInfo("root/convert_lora_to_gguf.py")
+        info.size = len(data)
+        tar.addfile(info, io.BytesIO(data))
+    monkeypatch.delattr(tarfile, "data_filter", raising = False)
+    out = tmp_path / "out"
+    out.mkdir()
+    llama_cpp_source.safe_extract_tar(archive, out)
+    assert (out / "root" / "convert_lora_to_gguf.py").is_file()
+    assert not (out / "root" / "a").exists() and not (out / "root" / "a").is_symlink()

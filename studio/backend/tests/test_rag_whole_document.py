@@ -1,18 +1,18 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Whole-document context mode: a thread-attached file small enough to fit is
-injected in full (every chunk, in order) instead of top-K retrieval. Covers the
-new store query, the tool-level renderer, and the auto-inject wiring + fallback.
-No embedder is needed - the whole-doc path does no query embedding."""
+"""whole-document mode injects fitting thread files in full and in order without query embedding."""
 
 import json
+import re
+import sqlite3
 
 import pytest
 
-from core.rag import store, tool
+from core.rag import chunking, parsers, store, tool
 from core.rag.chunking import Chunk
 from core.inference import tools as inf_tools
+from storage import rag_db
 
 
 def _shared_setup_1(fake_search, monkeypatch):
@@ -48,16 +48,21 @@ def _chunk(
     text,
     index = 0,
     page = None,
+    source_page = 0,
     tokens = None,
+    start = 0,
+    end = None,
+    whole_tokens = None,
 ):
     return Chunk(
         text = text,
         token_count = tokens if tokens is not None else len(text.split()),
         page_number = page,
-        source_page_index = 0,
+        source_page_index = source_page,
         chunk_index = index,
-        page_char_start = 0,
-        page_char_end = len(text),
+        page_char_start = start,
+        page_char_end = len(text) if end is None else end,
+        whole_document_token_count = whole_tokens,
     )
 
 
@@ -73,15 +78,26 @@ def _add_doc(
     tokens = None,
     pages = None,
 ):
-    chunks = [
-        _chunk(
-            t,
-            i,
-            page = (pages[i] if pages else None),
-            tokens = (tokens[i] if tokens else None),
+    page_indices = {}
+    cursors = {}
+    chunks = []
+    for i, text in enumerate(texts):
+        page = pages[i] if pages else None
+        source_page = page_indices.setdefault(page, len(page_indices))
+        start = cursors.get(source_page, 0)
+        end = start + len(text)
+        chunks.append(
+            _chunk(
+                text,
+                i,
+                page = page,
+                source_page = source_page,
+                tokens = (tokens[i] if tokens else None),
+                start = start,
+                end = end,
+            )
         )
-        for i, t in enumerate(texts)
-    ]
+        cursors[source_page] = end + 1
     vectors = [list(_VEC) for _ in texts]
     store.create_document(conn, scope = scope, filename = filename, sha256 = sha, document_id = doc_id)
     store.add_chunks(conn, scope, doc_id, chunks, vectors)
@@ -94,6 +110,22 @@ def _injected_text(result) -> str:
     return tool_msg["content"]
 
 
+# ── store.all_chunks_for_scope ───────────────────────────────────────
+
+
+def test_schema_upgrade_adds_chunk_offsets():
+    conn = sqlite3.connect(":memory:")
+    conn.execute(
+        "CREATE TABLE chunks(id TEXT PRIMARY KEY, document_id TEXT, scope TEXT, "
+        "chunk_index INTEGER, text TEXT, page_number INTEGER, source_page_index INTEGER, "
+        "token_count INTEGER, kind TEXT, pdf_regions_json TEXT)"
+    )
+    rag_db._ensure_schema(conn)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(chunks)")}
+    conn.close()
+    assert {"page_char_start", "page_char_end", "whole_document_token_count"} <= columns
+
+
 def test_all_chunks_for_scope_orders_by_document_then_index(rag_conn):
     scope = store.thread_scope("t1")
     _add_doc(rag_conn, scope, "d1", "first.pdf", "h1", ["a", "b", "c"])
@@ -103,6 +135,34 @@ def test_all_chunks_for_scope_orders_by_document_then_index(rag_conn):
     assert rows[0]["filename"] == "first.pdf"
     assert rows[-1]["filename"] == "second.pdf"
     assert rows[0]["text"] == "a"
+    assert (rows[0]["page_char_start"], rows[0]["page_char_end"]) == (0, 1)
+
+
+def test_copy_document_index_preserves_chunk_offsets(rag_conn):
+    scope = store.thread_scope("t1")
+    store.create_document(
+        rag_conn, scope = scope, filename = "source.txt", sha256 = "h1", document_id = "src"
+    )
+    store.add_chunks(
+        rag_conn,
+        scope,
+        "src",
+        [_chunk("overlap", start = 4, end = 11, whole_tokens = 5)],
+        [_VEC],
+    )
+    store.create_document(
+        rag_conn, scope = scope, filename = "copy.txt", sha256 = "h2", document_id = "dst"
+    )
+    store.copy_document_index(rag_conn, store.get_document(rag_conn, "src"), "dst", scope)
+    row = rag_conn.execute(
+        "SELECT page_char_start, page_char_end, whole_document_token_count "
+        "FROM chunks WHERE document_id='dst'"
+    ).fetchone()
+    assert (row["page_char_start"], row["page_char_end"], row["whole_document_token_count"]) == (
+        4,
+        11,
+        5,
+    )
 
 
 def test_all_chunks_for_scope_excludes_non_completed(rag_conn):
@@ -207,6 +267,132 @@ def test_whole_document_context_spans_multiple_docs(rag_conn):
     text, sources = tool.whole_document_context(scope_thread_id = "t1", max_tokens = 6000)
     assert "alpha text" in text and "bravo text" in text
     assert {s["filename"] for s in sources} == {"a.pdf", "b.pdf"}
+
+
+def test_whole_document_context_reads_each_overlapping_line_once(rag_conn):
+    lines = [f"R{i:03d} | Travel | Vendor number {i} | ${i}.00" for i in range(1, 71)]
+    pages = parsers.parse_text("\n".join(lines))
+    chunks = chunking.chunk_pages(pages, max_tokens = 200, overlap = 32, count = lambda t: len(t.split()))
+    assert len(chunks) > 1
+    store.create_document(
+        rag_conn, scope = store.thread_scope("t1"), filename = "exp.docx", sha256 = "h1", document_id = "d1"
+    )
+    store.add_chunks(rag_conn, store.thread_scope("t1"), "d1", chunks, [list(_VEC) for _ in chunks])
+    store.set_document_status(rag_conn, "d1", "completed", num_chunks = len(chunks))
+    text, sources = tool.whole_document_context(scope_thread_id = "t1", max_tokens = 6000)
+    assert re.findall(r"R\d{3}", text) == [f"R{i:03d}" for i in range(1, 71)]
+    assert [s["chunkId"] for s in sources] == [f"d1:{i}" for i in range(len(chunks))]
+
+
+def test_whole_document_context_keeps_text_repeated_on_the_next_page(rag_conn):
+    _add_doc(
+        rag_conn,
+        store.thread_scope("t1"),
+        "d1",
+        "report.pdf",
+        "h1",
+        ["page one body\nACME Confidential", "ACME Confidential\npage two body"],
+        pages = [1, 2],
+    )
+    text, _sources = tool.whole_document_context(scope_thread_id = "t1", max_tokens = 6000)
+    assert text.count("ACME Confidential") == 2
+
+
+def test_whole_document_context_keeps_indentation_after_overlap(rag_conn):
+    page = "paragraph\nshared line\n    indented code"
+    overlap = page.index("shared line")
+    chunks = [
+        _chunk(page[: page.index("\n    indented code")], end = page.index("\n    indented code")),
+        _chunk(page[overlap:], 1, start = overlap, end = len(page)),
+    ]
+    store.create_document(
+        rag_conn,
+        scope = store.thread_scope("t1"),
+        filename = "code.md",
+        sha256 = "h1",
+        document_id = "d1",
+    )
+    store.add_chunks(rag_conn, store.thread_scope("t1"), "d1", chunks, [list(_VEC) for _ in chunks])
+    store.set_document_status(rag_conn, "d1", "completed", num_chunks = len(chunks))
+    _text, sources = tool.whole_document_context(scope_thread_id = "t1", max_tokens = 6000)
+    assert sources[1]["text"] == "    indented code"
+
+
+def test_whole_document_context_keeps_matching_text_without_actual_overlap(rag_conn):
+    page = "section\nTOTAL\nTOTAL\nnext"
+    second_start = page.index("TOTAL", page.index("TOTAL") + 1)
+    chunks = [
+        _chunk(page[: second_start - 1], end = second_start - 1),
+        _chunk(page[second_start:], 1, start = second_start, end = len(page)),
+    ]
+    store.create_document(
+        rag_conn,
+        scope = store.thread_scope("t1"),
+        filename = "totals.txt",
+        sha256 = "h1",
+        document_id = "d1",
+    )
+    store.add_chunks(rag_conn, store.thread_scope("t1"), "d1", chunks, [list(_VEC) for _ in chunks])
+    store.set_document_status(rag_conn, "d1", "completed", num_chunks = len(chunks))
+    text, _sources = tool.whole_document_context(scope_thread_id = "t1", max_tokens = 6000)
+    assert text.count("TOTAL") == 2
+
+
+def test_whole_document_context_removes_overlap_inside_unbroken_text(rag_conn):
+    page = "0123456789" * 8
+    chunks = chunking.chunk_pages(parsers.parse_text(page), max_tokens = 20, overlap = 5, count = len)
+    assert len(chunks) > 1
+    store.create_document(
+        rag_conn,
+        scope = store.thread_scope("t1"),
+        filename = "data.txt",
+        sha256 = "h1",
+        document_id = "d1",
+    )
+    store.add_chunks(rag_conn, store.thread_scope("t1"), "d1", chunks, [list(_VEC) for _ in chunks])
+    store.set_document_status(rag_conn, "d1", "completed", num_chunks = len(chunks))
+    _text, sources = tool.whole_document_context(scope_thread_id = "t1", max_tokens = 6000)
+    assert "".join(source["text"] for source in sources) == page
+
+
+def test_whole_document_context_budgets_deoverlapped_content(rag_conn):
+    page = " ".join(f"word{i}" for i in range(30))
+    chunks = chunking.chunk_pages(parsers.parse_text(page), max_tokens = 30, overlap = 10, count = len)
+    previous_end = 0
+    unique_tokens = 0
+    for chunk in chunks:
+        unique_start = max(previous_end, chunk.page_char_start)
+        unique_tokens += len(chunk.text[unique_start - chunk.page_char_start :])
+        previous_end = max(previous_end, chunk.page_char_end)
+    assert sum(chunk.token_count for chunk in chunks) > unique_tokens
+    assert sum(chunk.whole_document_token_count for chunk in chunks) == unique_tokens
+    store.create_document(
+        rag_conn,
+        scope = store.thread_scope("t1"),
+        filename = "near-limit.txt",
+        sha256 = "h1",
+        document_id = "d1",
+    )
+    store.add_chunks(rag_conn, store.thread_scope("t1"), "d1", chunks, [list(_VEC) for _ in chunks])
+    store.set_document_status(rag_conn, "d1", "completed", num_chunks = len(chunks))
+    assert tool.whole_document_context(scope_thread_id = "t1", max_tokens = unique_tokens)
+
+
+def test_whole_document_context_keeps_legacy_chunks_without_offsets(rag_conn):
+    _add_doc(
+        rag_conn,
+        store.thread_scope("t1"),
+        "d1",
+        "legacy.txt",
+        "h1",
+        ["section\nTOTAL", "TOTAL\nnext"],
+    )
+    rag_conn.execute(
+        "UPDATE chunks SET page_char_start=NULL, page_char_end=NULL WHERE document_id='d1'"
+    )
+    rag_conn.commit()
+    text, _sources = tool.whole_document_context(scope_thread_id = "t1", max_tokens = 6000)
+    assert text.count("TOTAL") == 2
 
 
 def _convo(text = "summarize the whole document"):

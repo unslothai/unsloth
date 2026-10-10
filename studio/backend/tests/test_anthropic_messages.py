@@ -578,6 +578,29 @@ class TestToolActionNudge:
 
         assert "- guided: Guide this task." in nudge
         assert "create_skill" not in nudge
+        # without python or terminal, a skill's bundled scripts cannot run here.
+        assert "bundled scripts cannot run" in nudge
+        assert "Unsloth Studio's local Code tool" in nudge
+
+    @pytest.mark.parametrize("code_tool", ["python", "terminal"])
+    def test_skill_nudge_with_a_code_tool_does_not_warn_about_scripts(self, monkeypatch, code_tool):
+        import routes.inference as inference_routes
+
+        monkeypatch.setattr(
+            inference_routes,
+            "_enabled_agent_skills",
+            lambda: [{"name": "guided", "description": "Guide this task."}],
+        )
+        nudge = _build_tool_action_nudge(
+            tools = [
+                {"type": "function", "function": {"name": "read_skill"}},
+                {"type": "function", "function": {"name": code_tool}},
+            ],
+            model_name = "test",
+        )
+
+        assert "- guided: Guide this task." in nudge
+        assert "bundled scripts cannot run" not in nudge
 
 
 class TestAnthropicModels:

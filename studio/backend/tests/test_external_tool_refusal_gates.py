@@ -146,6 +146,23 @@ def _run(transport, *, tool_choice = None):
     return asyncio.run(asyncio.wait_for(_collect(), timeout = 30))
 
 
+def _events(lines, kind):
+    events = []
+    for line in lines:
+        if not line.startswith("data: "):
+            continue
+        try:
+            payload = json.loads(line[6:])
+        except ValueError:
+            continue
+        if isinstance(payload, dict) and payload.get("type") == kind:
+            events.append(payload)
+    return events
+
+
+# ── tool_choice: "none" is enforced, not just advertised ─────────────
+
+
 def test_tool_choice_none_refuses_a_call_the_provider_sent_anyway(executed):
     """The Deep Research containment case.
 
@@ -153,8 +170,59 @@ def test_tool_choice_none_refuses_a_call_the_provider_sent_anyway(executed):
     endpoint into emitting a python call must not get one executed.
     """
     transport = FakeTransport([[_call_line(), _finish("tool_calls")], [_DONE]])
-    _run(transport, tool_choice = "none")
+    lines = _run(transport, tool_choice = "none")
+
     assert executed == []
+
+    starts = _events(lines, "tool_start")
+    ends = _events(lines, "tool_end")
+
+    assert [event["tool_call_id"] for event in starts] == ["c1"]
+    assert [event["tool_call_id"] for event in ends] == ["c1"]
+    assert starts[0]["arguments"] == {"query": "x"}
+    assert ends[0]["tool_name"] == "web_search"
+    assert ends[0]["result"] == loop_mod._TOOL_CHOICE_NONE
+
+
+def test_a_truncated_call_under_tool_choice_none_closes_once_as_truncated(executed):
+    """A turn that is both keeps the truncation reason and closes its call a single time."""
+    transport = FakeTransport([[_call_line(), _finish("length")], [_DONE]])
+    lines = _run(transport, tool_choice = "none")
+
+    assert executed == []
+
+    starts = _events(lines, "tool_start")
+    ends = _events(lines, "tool_end")
+    assert [event["tool_call_id"] for event in starts] == ["c1"]
+    assert [event["tool_call_id"] for event in ends] == ["c1"]
+    assert starts[0]["arguments"] == {}
+    assert ends[0]["result"] == loop_mod._TOOL_TRUNCATED
+
+
+def test_tool_choice_none_closes_every_refused_card_by_the_id_the_client_drew(executed):
+    """Each refused call closes its own card, an id-less one under the minted ``tool_call_<index>``."""
+    named = json.loads(_call_line()[6:])
+    idless = json.loads(_call_line()[6:])
+    idless["choices"][0]["delta"]["tool_calls"][0].update(index = 1)
+    del idless["choices"][0]["delta"]["tool_calls"][0]["id"]
+    transport = FakeTransport(
+        [["data: " + json.dumps(named), "data: " + json.dumps(idless), _DONE], [_DONE]]
+    )
+    lines = _run(transport, tool_choice = "none")
+
+    assert executed == []
+    assert len(transport.requests) == 1
+
+    starts = _events(lines, "tool_start")
+    ends = _events(lines, "tool_end")
+    assert [event["tool_call_id"] for event in starts] == ["c1", "tool_call_1"]
+    assert [event["tool_call_id"] for event in ends] == ["c1", "tool_call_1"]
+    assert all(event["arguments"] == {"query": "x"} for event in starts)
+
+    # Closed before the empty badge the client ends the provider turn on.
+    frames = [json.loads(line[6:]) for line in lines if line.startswith("data: {")]
+    last_end = max(at for at, frame in enumerate(frames) if frame.get("type") == "tool_end")
+    assert {"type": "tool_status", "content": ""} in frames[last_end:]
 
 
 def test_tool_choice_none_still_withdraws_the_catalog(executed):

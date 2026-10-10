@@ -1394,9 +1394,10 @@ def test_the_a14b_auto_plan_seeds_nvfp4_where_flashinfer_serves_the_device(monke
 
 
 def test_the_a14b_auto_plan_stays_on_the_ladder_on_the_torchao_backend(monkeypatch):
+    # The ladder's int8 is hosted, so the plan seeds the scheme auto would otherwise quantise at load.
     seeded, chosen = _a14b_auto(monkeypatch, backend = "torchao")
     assert chosen == "int8"
-    assert seeded is None
+    assert seeded == "int8"
 
 
 def test_the_a14b_auto_plan_stays_on_the_ladder_with_only_one_expert_hosted(monkeypatch):
@@ -1417,7 +1418,7 @@ def test_the_a14b_auto_plan_stays_on_the_ladder_with_only_one_expert_hosted(monk
 
 def test_the_a14b_auto_plan_falls_through_when_the_fp4_kernel_is_missing(monkeypatch):
     seeded, chosen = _a14b_auto(monkeypatch, backend = "flashinfer", allowed = {"fp8", "mxfp8", "int8"})
-    assert seeded is None
+    assert seeded == "int8"
     assert chosen == "int8"
 
 
@@ -1545,7 +1546,9 @@ def test_both_experts_of_an_moe_resolve_to_one_claimed_repo():
     assert VideoBackend._denoiser_prequant_repo_ids(a14b, "nvfp4", a14b.base_repo) == (
         "unsloth/Wan2.2-T2V-A14B-NVFP4",
     )
-    assert VideoBackend._denoiser_prequant_repo_ids(a14b, "int8", a14b.base_repo) == ()
+    assert VideoBackend._denoiser_prequant_repo_ids(a14b, "int8", a14b.base_repo) == (
+        "unsloth/Wan2.2-T2V-A14B-FP8",
+    )
     assert VideoBackend._denoiser_prequant_repo_ids(a14b, "auto", a14b.base_repo) == ()
 
 
@@ -1644,8 +1647,11 @@ def test_the_planner_hands_the_resident_pipelines_bytes_to_the_seed_plan(monkeyp
         )[1],
     )
     captured: dict = {}
+    # The artifact-sized plan stays resident; the bf16 one (scheme=None) does not, so auto would quantise.
     monkeypatch.setattr(
-        vid, "_video_seed_stays_resident", lambda fam, **kw: captured.update(kw) or True
+        vid,
+        "_video_seed_stays_resident",
+        lambda fam, **kw: captured.update(kw) or kw["scheme"] is not None,
     )
     monkeypatch.setattr(
         vid,
@@ -1659,6 +1665,32 @@ def test_the_planner_hands_the_resident_pipelines_bytes_to_the_seed_plan(monkeyp
         == "fp8"
     )
     assert captured["reclaimable_mib"] == 12_345
+
+
+@pytest.mark.parametrize("requested, expected", [("auto", None), ("fp8", "fp8")])
+def test_the_planner_keeps_the_dense_shards_where_auto_keeps_bf16(monkeypatch, requested, expected):
+    """bf16 fits resident: auto runs the released bf16 DiT, so neither the artifact nor a shard skip is planned. An
+    explicit scheme is a request and still seeds."""
+    import core.inference.video as vid
+    from core.inference.video_families import detect_video_family
+
+    fam = detect_video_family("Wan-AI/Wan2.2-TI2V-5B-Diffusers")
+    backend = vid.VideoBackend()
+    backend._state = types.SimpleNamespace(pipe = None)
+    monkeypatch.setattr(vid, "_video_auto_denoiser_scheme", lambda fam, **kw: "fp8")
+    monkeypatch.setattr(vid, "_pipeline_device_mib", lambda pipe, ordinal = None: 0)
+    monkeypatch.setattr(vid, "_video_seed_stays_resident", lambda fam, **kw: True)
+    monkeypatch.setattr(
+        vid,
+        "resolve_diffusion_device_target",
+        lambda **_k: types.SimpleNamespace(device = "cuda", dtype = None, ordinal = None),
+    )
+    assert (
+        backend._video_planned_auto_denoiser_scheme(
+            fam, base = None, kind = "pipeline", transformer_quant = requested, speed_mode = None
+        )
+        == expected
+    )
 
 
 def test_only_the_resident_bytes_on_the_target_card_are_credited():

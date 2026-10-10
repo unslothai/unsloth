@@ -286,6 +286,8 @@ def _curated_base_ids() -> set[str]:
     try:
         from core.inference.diffusion_families import _FAMILIES
         ids |= {fam.base_repo for fam in _FAMILIES if getattr(fam, "base_repo", None)}
+        # Named variants (Qwen-Image-2.1-Turbo) are bases too: a Turbo pick's grid comes from that repo's index.
+        ids |= {b for fam in _FAMILIES for b in (getattr(fam, "named_variant_bases", ()) or ())}
     except Exception as exc:  # noqa: BLE001 -- no table means no extra candidates, as before
         logger.debug("Companion base table unavailable: %s", exc)
     ids |= _mirror_pair_ids()

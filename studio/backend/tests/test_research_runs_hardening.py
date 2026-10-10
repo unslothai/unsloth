@@ -18,6 +18,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 from fastapi import HTTPException
+from markdown_it import MarkdownIt
 
 from core import research_runs
 from core.research.citations import (
@@ -242,7 +243,7 @@ def test_document_citation_regex_does_not_backtrack_catastrophically():
 
 
 def test_citation_title_strips_brackets_for_catalog_and_citation():
-    # Titles often carry '[PDF] ...'; catalog and citation writer share this helper so they agree.
+    # brackets make verbatim link labels unmatchable; catalog and citation paths share this helper.
     assert (
         _citation_title({"title": "[PDF] Annual Report 2024"}, "https://x/a")
         == "PDF Annual Report 2024"
@@ -251,7 +252,28 @@ def test_citation_title_strips_brackets_for_catalog_and_citation():
     assert _citation_title({}, "https://x/a") == "https://x/a"
 
 
+def test_citation_title_with_a_pipe_keeps_its_table_row_intact():
+    report = "| Model | Context |\n|---|---|\n| Qwen3 [blog](https://q.example/) | 128K |"
+    sources = [{"url": "https://q.example/", "title": "Qwen3: Think Deeper | Qwen"}]
+    tokens = MarkdownIt("commonmark").enable("table").parse(_validate_report(report, sources, []))
+    body = tokens[[token.type for token in tokens].index("tbody_open") :]
+    row = [token.children for token in body if token.type == "inline"]
+    assert len(row) == 2
+    assert [child.type for child in row[0]] == ["text", "link_open", "text", "link_close"]
+    assert row[0][1].attrGet("href") == "https://q.example/"
+    assert row[0][2].content == "Qwen3: Think Deeper | Qwen"
+    assert row[1][0].content == "128K"
+
+
+def test_citation_title_with_an_escaped_pipe_keeps_its_backslash_and_its_row():
+    report = "| Tool | Note |\n|---|---|\n| grep [doc](https://g.example/) | alternation |"
+    sources = [{"url": "https://g.example/", "title": r"grep a\|b | Docs"}]
+    validated = _validate_report(report, sources, [])
+    assert r"[grep a\\\|b \| Docs](https://g.example/)" in validated
+
+
 def test_prompt_budget_counts_the_whole_prompt(monkeypatch):
+    # fixed scaffolding can exceed a small context before any trimmable evidence is added.
     monkeypatch.setattr(research_runs, "_loaded_context_length", lambda _inf = None: None)
     assert research_runs._prompt_char_budget(4096) is None
     assert research_runs._trimmable_budget(None, 99_999, 500) == 500

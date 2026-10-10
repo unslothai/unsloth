@@ -183,8 +183,14 @@ def binary_has_espeak(binary: Optional[str]) -> bool:
     return any((bin_dir / name).exists() for name in _ESPEAK_DATA_NAMES)
 
 
+# Set by utils.audio_cpp_update while it replaces the managed tree.
+UPDATE_IN_PROGRESS = threading.Event()
+
+
 def model_runtime_problem(model: AudioCppModel, binary: Optional[str] = None) -> Optional[str]:
     """Why ``model`` cannot run on the installed runtime, or None when it can."""
+    if UPDATE_IN_PROGRESS.is_set():
+        return "The audio runtime is being updated. Try again in a moment."
     if model.unsupported:
         return model.unsupported
     binary = binary if binary is not None else find_audio_cpp_server_binary()

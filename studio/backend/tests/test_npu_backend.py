@@ -454,6 +454,197 @@ def test_readiness_survives_a_restart_only_after_validation(npu, monkeypatch):
     assert nb.LemonadeNpuBackend(root = npu.root).status()["ready"] is False
 
 
+class _PinsMoved(_Installer):
+    def __init__(self, binary: Path) -> None:
+        super().__init__(binary)
+        self.current = False
+
+    def installed_lemond(self, root):
+        return self.binary if self.current else None
+
+    def install(
+        self,
+        root,
+        cancel = None,
+    ):
+        self.current = True
+        return super().install(root, cancel = cancel)
+
+
+def _move_the_pins(npu, monkeypatch) -> nb.LemonadeNpuBackend:
+    """Enable, then restart as a Studio update would, with the runtime's pins moved."""
+    npu.enable()
+    npu.shutdown()
+    moved = _PinsMoved(npu.installer.binary)
+    monkeypatch.setattr(nb, "_installer_module", lambda: moved)
+    restarted = nb.LemonadeNpuBackend(root = npu.root)
+    restarted.installer = moved
+    return restarted
+
+
+def test_an_enabled_npu_upgrades_on_first_use_after_the_pins_move(npu, monkeypatch):
+    restarted = _move_the_pins(npu, monkeypatch)
+    try:
+        status = restarted.status()
+        assert status["ready"] is True and status["runtime_installed"] is True
+        installs_before = len([r for r in _requests(restarted) if r["path"] == "/v1/install"])
+        assert [model.id for model in restarted.catalog()]
+        assert restarted.installer.installs == 1
+        installs = [r for r in _requests(restarted) if r["path"] == "/v1/install"]
+        assert len(installs) == installs_before + 1
+        assert restarted.status()["ready"] is True
+        restarted.catalog()
+        assert restarted.installer.installs == 1
+    finally:
+        restarted.shutdown()
+    again = nb.LemonadeNpuBackend(root = npu.root)
+    assert again.status()["ready"] is True
+
+
+def test_the_status_names_the_installed_runtime_versions(npu, monkeypatch):
+    monkeypatch.setenv("FAKE_FLM_VERSION", "v1.0.7")
+    npu.installer.installed_version = lambda lemond: "2026.41.1"
+    real, runs = npu._flm_version, []
+    monkeypatch.setattr(npu, "_flm_version", lambda *args: runs.append(1) or real(*args))
+    npu.enable()
+    assert npu.status()["versions"] == {"lemonade": "2026.41.1", "fastflowlm": "1.0.7"}
+    npu.status()
+    # The post-install check, then one status read: an unchanged flm binary is not rerun.
+    assert len(runs) == 2
+
+
+def test_a_pending_upgrade_reports_the_versions_it_replaces_until_first_use(npu, monkeypatch):
+    monkeypatch.setenv("FAKE_FLM_VERSION", "1.0.3")
+    restarted = _move_the_pins(npu, monkeypatch)
+    restarted.installer.installed_version = lambda lemond: (
+        "2026.41.1" if restarted.installer.current else "11.9.0"
+    )
+    try:
+        assert restarted.status()["versions"] == {"lemonade": "11.9.0", "fastflowlm": "1.0.3"}
+        monkeypatch.setenv("FAKE_FLM_VERSION", "1.0.7")
+        restarted.catalog()
+        assert restarted.status()["versions"] == {"lemonade": "2026.41.1", "fastflowlm": "1.0.7"}
+    finally:
+        restarted.shutdown()
+
+
+def _enable_in_background(npu):
+    import threading
+
+    thread = threading.Thread(target = npu.enable, daemon = True)
+    thread.start()
+    return thread
+
+
+def test_enable_waits_for_a_version_probe_already_running(npu, monkeypatch):
+    import threading
+
+    monkeypatch.setenv("FAKE_LEMOND_INSTALL_SECONDS", "3")
+    npu.enable()
+    npu._flm_version_cache = None
+    probing, release, state_at_probe_end = threading.Event(), threading.Event(), []
+    real = npu._flm_version
+
+    def slow_probe(*args):
+        if threading.current_thread().name == "status-reader":
+            probing.set()
+            release.wait(30)
+            state_at_probe_end.append(npu._state)
+        return real(*args)
+
+    monkeypatch.setattr(npu, "_flm_version", slow_probe)
+    reader = threading.Thread(target = npu.status, name = "status-reader", daemon = True)
+    reader.start()
+    assert probing.wait(30)
+    enabling = _enable_in_background(npu)
+    # Without the lock, Enable reaches the FastFlowLM install within these polls.
+    for _ in range(40):
+        if npu._state != "ready":
+            break
+        time.sleep(0.05)
+    release.set()
+    reader.join(30)
+    enabling.join(60)
+    assert state_at_probe_end == ["ready"]
+    assert npu.status()["state"] == "ready"
+
+
+def test_a_status_read_during_enable_runs_no_probe_and_keeps_the_last_versions(npu, monkeypatch):
+    import threading
+
+    monkeypatch.setenv("FAKE_FLM_VERSION", "1.0.7")
+    monkeypatch.setenv("FAKE_LEMOND_INSTALL_SECONDS", "3")
+    npu.installer.installed_version = lambda lemond: "11.9.0"
+    npu.enable()
+    assert npu.status()["versions"] == {"lemonade": "11.9.0", "fastflowlm": "1.0.7"}
+    npu._flm_version_cache = None
+    real, probes = npu._flm_version, []
+
+    def counted(*args):
+        probes.append(threading.current_thread().name)
+        return real(*args)
+
+    monkeypatch.setattr(npu, "_flm_version", counted)
+    enabling = _enable_in_background(npu)
+    _wait_until(lambda: npu._state == "installing_flm")
+    status = npu.status()
+    assert status["state"] == "installing_flm"
+    assert status["versions"] == {"lemonade": "11.9.0", "fastflowlm": "1.0.7"}
+    assert threading.current_thread().name not in probes
+    enabling.join(60)
+    assert npu.status()["state"] == "ready"
+
+
+def test_an_upgrade_that_fails_validation_asks_to_try_again(npu, monkeypatch):
+    restarted = _move_the_pins(npu, monkeypatch)
+    try:
+        monkeypatch.setenv("FAKE_FLM_VALIDATE", '{"ready": false, "all_fw_ok": false}')
+        with pytest.raises(nb.NpuError, match = "firmware"):
+            restarted.catalog()
+        status = restarted.status()
+        assert status["state"] == "failed" and status["ready"] is False
+    finally:
+        restarted.shutdown()
+
+
+def test_a_runtime_never_enabled_is_not_installed_behind_the_owners_back(tmp_path, monkeypatch):
+    installer = _PinsMoved(_binary(tmp_path))
+    monkeypatch.setattr(nb, "_installer_module", lambda: installer)
+    monkeypatch.setattr(
+        nb, "detect_amd_npu", lambda: {"present": True, "supported": True, "family": "XDNA2"}
+    )
+    backend = nb.LemonadeNpuBackend(root = tmp_path / "lemonade")
+    assert backend.status()["ready"] is False
+    assert backend.status()["runtime_installed"] is False
+    with pytest.raises(nb.NpuError, match = "Enable it first"):
+        backend.catalog()
+    assert installer.installs == 0
+
+
+@pytest.mark.parametrize("installed, ok", [("1.0.7", True), ("1.0.3", False)])
+def test_an_update_lemond_could_not_download_is_not_recorded_as_done(
+    npu, monkeypatch, installed, ok
+):
+    npu.installer.load_pins = lambda: {"fastflowlm": {"version": "v1.0.7"}}
+    monkeypatch.setenv("FAKE_FLM_VERSION", installed)
+    if ok:
+        assert npu.enable()["ready"] is True
+        return
+    with pytest.raises(nb.NpuError, match = r"v1\.0\.7 failed; v1\.0\.3 is still installed"):
+        npu.enable()
+    assert npu.status()["state"] == "failed"
+    assert nb.LemonadeNpuBackend(root = npu.root).status()["ready"] is False
+
+
+def test_a_marker_without_an_install_path_does_not_start_an_upgrade(tmp_path, monkeypatch):
+    installer = _PinsMoved(_binary(tmp_path))
+    monkeypatch.setattr(nb, "_installer_module", lambda: installer)
+    backend = nb.LemonadeNpuBackend(root = tmp_path / "lemonade")
+    backend.root.mkdir(parents = True)
+    (backend.root / "npu_validated.json").write_text('{"lemond": false}', encoding = "utf-8")
+    assert backend._upgrade_pending(None) is False
+
+
 def test_a_failed_replacement_leaves_nothing_on_the_npu(npu, monkeypatch):
     monkeypatch.setenv("FAKE_LEMOND_DOWNLOADED", '["qwen3-0.6b-FLM", "gemma3-4b-FLM"]')
     monkeypatch.setenv("FAKE_LEMOND_LOAD_FAILS_FOR", "gemma3-4b-FLM")

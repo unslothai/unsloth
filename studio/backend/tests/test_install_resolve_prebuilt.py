@@ -671,8 +671,9 @@ def _linux_arm64_vulkan_host():
     )
 
 
-def test_route_to_vulkan_prebuilt_linux_arm64_falls_back_to_upstream():
-    # Fork has no ARM64 Vulkan bundle: use upstream, drop the fork pin (different tag namespaces).
+def test_route_to_vulkan_prebuilt_linux_arm64_stays_on_the_fork():
+    # The fork publishes a linux-vulkan-arm64 bundle, so a forced-Vulkan Linux ARM64
+    # host keeps planning against the fork and its pin; nothing comes from upstream.
     routed, repo, tag, persist = ilp._route_to_vulkan_prebuilt(
         _linux_arm64_vulkan_host(),
         FORK,
@@ -681,13 +682,14 @@ def test_route_to_vulkan_prebuilt_linux_arm64_falls_back_to_upstream():
         llama_backend = "vulkan",
     )
 
-    assert repo == UPSTREAM
-    assert tag == ""
+    assert repo == FORK
+    assert tag == "b9596-mix-abc"
     assert persist == "vulkan"
     assert routed.has_intel_gpu is True
 
 
 def test_forced_vulkan_linux_arm64_still_resolves_a_vulkan_bundle():
+    # End to end: the fork's ARM64 Vulkan bundle survives the strict-Vulkan filter.
     routed, repo, _tag, _persist = ilp._route_to_vulkan_prebuilt(
         _linux_arm64_vulkan_host(),
         FORK,
@@ -695,22 +697,25 @@ def test_forced_vulkan_linux_arm64_still_resolves_a_vulkan_bundle():
         force_cpu = False,
         llama_backend = "vulkan",
     )
-    fork_attempts = ilp._linux_published_attempts(
-        routed, _published_vulkan_bundle("linux-vulkan", "linux-arm64")
+    assert repo == FORK
+    bundle = _published_vulkan_bundle("linux-arm64")
+    bundle.artifacts.insert(
+        0,
+        ilp.PublishedLlamaArtifact(
+            asset_name = "app-release-linux-arm64-vulkan",
+            install_kind = "linux-vulkan",
+            runtime_line = None,
+            coverage_class = None,
+            supported_sms = [],
+            min_sm = None,
+            max_sm = None,
+            bundle_profile = "linux-vulkan-arm64",
+            rank = 60,
+        ),
     )
-    assert [attempt.install_kind for attempt in fork_attempts] == ["linux-arm64"]
-
-    release = _upstream_release(
-        "b9925",
-        ["llama-b9925-bin-ubuntu-vulkan-arm64.tar.gz", "llama-b9925-bin-ubuntu-arm64.tar.gz"],
-    )
-    plan = ilp.direct_upstream_release_plan(release, routed, repo, "latest")
-    filtered = ilp._backend_only_release_plans([plan], "vulkan")
-
-    assert [attempt.name for attempt in filtered[0].attempts] == [
-        "llama-b9925-bin-ubuntu-vulkan-arm64.tar.gz"
-    ]
-    assert filtered[0].attempts[0].repo == UPSTREAM
+    bundle.assets["app-release-linux-arm64-vulkan"] = "https://example.invalid/arm64-vulkan.tar.gz"
+    attempts = ilp._linux_published_attempts(routed, bundle)
+    assert [attempt.name for attempt in attempts][:1] == ["app-release-linux-arm64-vulkan"]
 
 
 def test_route_to_vulkan_prebuilt_linux_arm64_keeps_an_explicit_repo_override():
