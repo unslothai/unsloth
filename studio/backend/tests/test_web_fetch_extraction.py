@@ -795,6 +795,7 @@ def test_page_that_fits_keeps_its_links(monkeypatch):
         ("JPY 10<sup>12</sup> and KRW 10<sup>12</sup>", "JPY 10^12 and KRW 10^12"),
         ("les 1<sup>ères</sup> places", "les 1ères places"),
         ("John J<sup>r</sup> and John S<sup>r</sup>", "John Jr and John Sr"),
+        ("VED 19<sup>99</sup> and S<sup>T</sup>", "VED 1999 and S^T"),
         (
             "M<sup>me</sup> Dupont, D<sup>r</sup> Martin, n<sup>o</sup> 5, Om<sup>e</sup>",
             "Mme Dupont, Dr Martin, no 5, Om^e",
