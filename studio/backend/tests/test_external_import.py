@@ -421,6 +421,23 @@ def test_claude_duplicate_reply_ids_do_not_merge_sibling_responses(claude_home):
     assert [m["parentId"] for m in messages] == [None, ids[0], ids[0], ids[1]]
 
 
+def test_claude_duplicate_hook_uuids_keep_per_occurrence_ancestry(claude_home):
+    path = _session(
+        claude_home,
+        records = [
+            c_user("u1", "one"),
+            {"type": "saved_hook_context", "uuid": "hook", "parentUuid": "u1"},
+            c_asst("a1", [{"type": "text", "text": "A"}], parent = "hook"),
+            c_user("u2", "two", parent = "a1"),
+            {"type": "saved_hook_context", "uuid": "hook", "parentUuid": "u2"},
+            c_asst("a2", [{"type": "text", "text": "B"}], parent = "hook"),
+        ],
+    )
+    messages = claude.read_transcript(path, "t", "s1").messages
+    ids = [m["id"] for m in messages]
+    assert [m["parentId"] for m in messages] == [None, ids[0], ids[1], ids[2]]
+
+
 @pytest.mark.parametrize("logical", ["never-written", "at2"])
 def test_claude_parallel_tool_calls_and_compaction_keep_one_conversation(claude_home, logical):
     def block(uuid, reply, content, parent):
