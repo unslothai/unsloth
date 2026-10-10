@@ -376,7 +376,7 @@ export function MediaViewer({
         }}
         overlayClassName={
           lightbox
-            ? "bg-[color-mix(in_oklab,var(--background)_55%,transparent)] supports-backdrop-filter:backdrop-blur-[1px] duration-150"
+            ? "media-lightbox-overlay bg-transparent supports-backdrop-filter:backdrop-blur-[1px] duration-150"
             : undefined
         }
         className={

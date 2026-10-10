@@ -16,13 +16,15 @@ import { useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
-  Maximize2Icon,
+  ArrowExpand01Icon,
+  ArrowShrink01Icon,
   MoreHorizontalIcon,
   PauseIcon,
   PlayIcon,
-  Volume2Icon,
-  VolumeXIcon,
-} from "lucide-react";
+  VolumeHighIcon,
+  VolumeMute02Icon,
+} from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { type KeyboardEvent, useEffect, useRef, useState } from "react";
 import { canCopyVideoFrame, copyVideoFrame, registerTabVideo } from "./video-registry";
 
@@ -63,12 +65,20 @@ export function VideoFile({
   const [volume, setVolume] = useState(1);
   const [rate, setRate] = useState(1);
   const [loop, setLoop] = useState(false);
+  const [fullscreened, setFullscreened] = useState(false);
 
   useEffect(() => {
     const video = videoRef.current;
     if (!video || !tabId) return;
     return registerTabVideo(tabId, video);
   }, [tabId]);
+
+  // Esc and the browser's own controls leave fullscreen too, so follow the document, not the button.
+  useEffect(() => {
+    const sync = () => setFullscreened(document.fullscreenElement === rootRef.current);
+    document.addEventListener("fullscreenchange", sync);
+    return () => document.removeEventListener("fullscreenchange", sync);
+  }, []);
 
   const video = () => videoRef.current;
   const togglePlay = () => {
@@ -193,9 +203,9 @@ export function VideoFile({
           className={CONTROL}
         >
           {playing ? (
-            <PauseIcon className="size-4.5" strokeWidth={1.75} />
+            <HugeiconsIcon icon={PauseIcon} strokeWidth={1.75} className="size-4.5" />
           ) : (
-            <PlayIcon className="size-4.5" strokeWidth={1.75} />
+            <HugeiconsIcon icon={PlayIcon} strokeWidth={1.75} className="size-4.5" />
           )}
         </button>
         <input
@@ -240,16 +250,16 @@ export function VideoFile({
             className={CONTROL}
           >
             {muted || volume === 0 ? (
-              <VolumeXIcon className="size-4.5" strokeWidth={1.75} />
+              <HugeiconsIcon icon={VolumeMute02Icon} strokeWidth={1.75} className="size-4.5" />
             ) : (
-              <Volume2Icon className="size-4.5" strokeWidth={1.75} />
+              <HugeiconsIcon icon={VolumeHighIcon} strokeWidth={1.75} className="size-4.5" />
             )}
           </button>
         </div>
         <DropdownMenu>
           <DropdownMenuTrigger asChild={true}>
             <button type="button" aria-label={t("browser.video.more")} className={cn(CONTROL, "aria-expanded:bg-[color-mix(in_oklab,var(--foreground)_8%,transparent)]")}>
-              <MoreHorizontalIcon className="size-4.5" strokeWidth={1.75} />
+              <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={1.75} className="size-4.5" />
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent
@@ -286,8 +296,17 @@ export function VideoFile({
             ) : null}
           </DropdownMenuContent>
         </DropdownMenu>
-        <button type="button" aria-label={t("browser.video.fullscreen")} onClick={fullscreen} className={CONTROL}>
-          <Maximize2Icon className="size-4" strokeWidth={1.75} />
+        <button
+          type="button"
+          aria-label={fullscreened ? t("browser.video.exitFullscreen") : t("browser.video.fullscreen")}
+          onClick={fullscreen}
+          className={CONTROL}
+        >
+          <HugeiconsIcon
+            icon={fullscreened ? ArrowShrink01Icon : ArrowExpand01Icon}
+            strokeWidth={1.75}
+            className="size-4.5"
+          />
         </button>
       </div>
     </div>

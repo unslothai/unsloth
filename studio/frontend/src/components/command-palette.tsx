@@ -30,7 +30,6 @@ import { useT, type TranslationKey } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { useCommandPaletteStore } from "@/stores/command-palette";
 import {
-  AudioWave01Icon,
   Cancel01Icon,
   ChefHatIcon,
   DashboardCircleIcon,
@@ -47,6 +46,7 @@ import {
   TestTube01Icon,
   ApiIcon,
 } from "@hugeicons/core-free-icons";
+import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { Command as CommandPrimitive } from "cmdk";
@@ -128,7 +128,7 @@ const WORKSPACES: {
   },
   {
     id: "switchToAudio",
-    icon: AudioWave01Icon,
+    icon: AiSpeechIcon,
     labelKey: "shell.navigation.audio",
     aliases: ["speech", "tts", "voice", "music", "transcribe"],
   },

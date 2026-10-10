@@ -75,3 +75,44 @@ export const StarPointedIcon: IconSvgElement = [
     },
   ],
 ];
+
+// Hugeicons "ai-speech" and "text-to-speach" (MIT), only in core-free-icons 4.3+, newer than the
+// pinned 4.1.1. Audio anywhere is ai-speech; Text to Speech is text-to-speach.
+const speechStroke = {
+  stroke: "currentColor",
+  strokeLinecap: "round",
+  strokeLinejoin: "round",
+  strokeWidth: "1.5",
+} as const;
+
+export const AiSpeechIcon: IconSvgElement = [
+  ["path", { d: "M12 7V17", ...speechStroke, key: "0" }],
+  ["path", { d: "M16 11L16 19", ...speechStroke, key: "1" }],
+  ["path", { d: "M20 11L20 14", ...speechStroke, key: "2" }],
+  ["path", { d: "M8 3V21", ...speechStroke, key: "3" }],
+  ["path", { d: "M4 9V15", ...speechStroke, key: "4" }],
+  [
+    "path",
+    {
+      d: "M18.5 3.9375V5.5M18.5 5.5V7.0625M18.5 5.5H17.25M18.5 5.5H19.75M21 5.5L19.9156 5.13852C19.4179 4.97263 19.0274 4.58211 18.8615 4.08443L18.5 3L18.1385 4.08443C17.9726 4.58211 17.5821 4.97263 17.0844 5.13852L16 5.5L17.0844 5.86148C17.5821 6.02737 17.9726 6.41789 18.1385 6.91557L18.5 8L18.8615 6.91557C19.0274 6.41789 19.4179 6.02737 19.9156 5.86148L21 5.5Z",
+      ...speechStroke,
+      key: "5",
+    },
+  ],
+];
+
+export const TextToSpeechIcon: IconSvgElement = [
+  ["path", { d: "M13 9L13 17", ...speechStroke, key: "0" }],
+  ["path", { d: "M17 7L17 19", ...speechStroke, key: "1" }],
+  ["path", { d: "M21 11L21 15", ...speechStroke, key: "2" }],
+  ["path", { d: "M9 15V21", ...speechStroke, key: "3" }],
+  ["path", { d: "M5 15V17", ...speechStroke, key: "4" }],
+  [
+    "path",
+    {
+      d: "M7.5 3.5V11M7.5 11H6M7.5 11H9M12 4.5C12 3.67157 11.3284 3 10.5 3H4.5C3.67157 3 3 3.67157 3 4.5",
+      ...speechStroke,
+      key: "5",
+    },
+  ],
+];

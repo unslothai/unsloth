@@ -5068,6 +5068,15 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	display: none;
 }
 
+/* Image lightbox backdrop: a faint grey over the page in light mode, near black in dark. */
+.media-lightbox-overlay {
+	background: color-mix(in oklab, color-mix(in oklab, var(--background), black 7%) 64%, transparent);
+}
+
+.dark .media-lightbox-overlay {
+	background: color-mix(in oklab, color-mix(in oklab, var(--background), black 45%) 86%, transparent);
+}
+
 /* Video tabs: the clip sits on a soft brand-tinted band. */
 .browser-video-band {
 	background:
@@ -6028,6 +6037,11 @@ html:has([data-blocking-screen]) .interface-zoom-position {
 }
 
 .browser-file-page:has(.overflow-auto > table) {
+	padding-top: var(--browser-file-toolbar-inset);
+}
+
+/* A video's band starts below the floating bar, so the bar never sits on the clip. */
+.browser-file-page .browser-video {
 	padding-top: var(--browser-file-toolbar-inset);
 }
 
