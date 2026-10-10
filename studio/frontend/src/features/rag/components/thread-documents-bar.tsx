@@ -33,7 +33,11 @@ import {
   attachmentPreview,
 } from "@/components/assistant-ui/attachment-card-preview";
 import { LocalFileDialog } from "@/components/assistant-ui/attachment-document-dialog";
-import { documentKind, isMarkdown } from "@/components/file-viewer";
+import {
+  MAX_DOCUMENT_PREVIEW_BYTES,
+  documentKind,
+  isMarkdown,
+} from "@/components/file-viewer";
 import { Spinner } from "@/components/ui/spinner";
 import {
   Tooltip,
@@ -457,9 +461,11 @@ function DocumentCard({
   const viewable = !isPdf && isViewableSource(doc.filename);
   const thumbnailFile = thumbnail?.kind === "file" ? thumbnail.file : null;
   const loadSource = useCallback(async (): Promise<Blob> => {
-    // The thumbnail's copy when there is one; a file past its cap is fetched whole.
-    const file = thumbnailFile ?? (await fetchSourceFile(doc, 0));
-    if (!file) throw new Error(`Couldn't read ${doc.filename}`);
+    // The thumbnail's copy when there is one; past its cap, up to the viewer's own limit, the
+    // same one the Library holds to. Past that the viewer says it can't preview.
+    const file =
+      thumbnailFile ?? (await fetchSourceFile(doc, MAX_DOCUMENT_PREVIEW_BYTES));
+    if (!file) throw new Error(`Couldn't preview ${doc.filename}`);
     const textual =
       documentKind(file.name, file.type) === null && !isMarkdown(file.name, file.type);
     // Served as octet-stream: the viewer reads text only when the type says so.
@@ -604,14 +610,17 @@ function ChatFilesPanel({
   onDropItems,
   dropDisabledReason,
   info,
+  count,
   children,
 }: {
   icon: typeof Folder02Icon;
   title: string;
   /** Muted text after the title. */
   titleSuffix?: string;
-  /** Shown in a tooltip on an info icon after the title. */
+  /** Shown in a tooltip on the title and the info icon beside it. */
   info?: string;
+  /** "4 files", drawn as a pill apart from the title. */
+  count?: string;
   note?: ReactNode;
   headerControls?: ReactNode;
   onClose?: () => void;
@@ -661,6 +670,14 @@ function ChatFilesPanel({
     disabledReason: dropDisabledReason,
   });
   const acceptsDrop = Boolean(onDropItems);
+  const heading = (
+    <h2 className="min-w-0 truncate text-ui-14 font-medium text-foreground">
+      {title}
+      {titleSuffix ? (
+        <span className="font-normal text-muted-foreground"> {titleSuffix}</span>
+      ) : null}
+    </h2>
+  );
   return (
     <section
       ref={acceptsDrop ? nativeDropTarget : undefined}
@@ -681,32 +698,33 @@ function ChatFilesPanel({
           strokeWidth={1.75}
           className="size-4 shrink-0 text-muted-foreground"
         />
-        <h2 className="min-w-0 truncate text-ui-14 font-medium text-foreground">
-          {title}
-          {titleSuffix ? (
-            <span className="font-normal text-muted-foreground"> {titleSuffix}</span>
-          ) : null}
-        </h2>
         {info ? (
+          // The whole title is the trigger, so hovering the heading explains it too.
           <Tooltip>
             <TooltipTrigger asChild={true}>
-              <button
-                type="button"
-                aria-label={info}
-                className="-ml-1 flex size-6 shrink-0 cursor-help items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              <div
+                // biome-ignore lint/a11y/noNoninteractiveTabindex: focus opens the tooltip for keyboard users.
+                tabIndex={0}
+                aria-label={`${title}. ${info}`}
+                className="group/files-title flex min-w-0 cursor-default items-center gap-1 rounded-md focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               >
+                {heading}
                 <HugeiconsIcon
                   icon={InformationCircleIcon}
                   strokeWidth={1.75}
-                  className="size-[var(--ui-icon-size-hint)]"
+                  aria-hidden={true}
+                  className="size-[var(--ui-icon-size-hint)] shrink-0 text-muted-foreground transition-colors group-hover/files-title:text-foreground"
                 />
-              </button>
+              </div>
             </TooltipTrigger>
             <TooltipContent className="max-w-[calc(300px*var(--ui-space-scale,1))] text-ui-11 leading-snug">
               {info}
             </TooltipContent>
           </Tooltip>
-        ) : null}
+        ) : (
+          heading
+        )}
+        {count ? <span className="unsloth-files-panel-count">{count}</span> : null}
         {note}
         <div className="ml-auto flex shrink-0 items-center gap-1">
           {headerControls}
@@ -1256,7 +1274,7 @@ export function ThreadDocumentsBar({
             key="project"
             icon={FolderAttachmentIcon}
             title={ragToolDisabled ? "Project sources not used" : "Project sources"}
-            titleSuffix={countSuffix}
+            count={countSuffix}
             note={
               <span
                 className="hidden truncate text-ui-12 text-muted-foreground @[32rem]/files-panel:inline"
@@ -1303,7 +1321,8 @@ export function ThreadDocumentsBar({
         key="files"
         icon={FileDatabaseIcon}
         title="Chat with files"
-        titleSuffix={fileCount > 0 ? `(RAG) · ${countSuffix}` : "(RAG)"}
+        titleSuffix="(RAG)"
+        count={fileCount > 0 ? countSuffix : undefined}
         info="Add or drop documents, spreadsheets, slides, e-books, email or code. The model searches them as you chat and cites what it uses."
         onDropItems={queueAttach}
         dropDisabledReason={busyReason}

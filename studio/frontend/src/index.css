@@ -6042,6 +6042,14 @@ html:has([data-blocking-screen]) .interface-zoom-position {
 		0 0 0 1.5px var(--primary),
 		var(--composer-shadow);
 }
+/* "4 files": its own pill, apart from the title. */
+.unsloth-files-panel-count {
+	@apply inline-flex h-6 shrink-0 items-center rounded-full px-2.5 text-ui-12 font-medium tabular-nums text-foreground/75;
+	background-color: color-mix(in oklab, var(--foreground) 6%, transparent);
+}
+.dark .unsloth-files-panel-count {
+	background-color: color-mix(in oklab, var(--foreground) 10%, transparent);
+}
 .unsloth-files-panel-drop-overlay {
 	@apply pointer-events-none absolute inset-0 z-20 flex items-center justify-center gap-2 rounded-[inherit] bg-background/90 text-sm font-medium text-primary opacity-0 backdrop-blur-sm transition-opacity duration-150 dark:bg-card/90;
 }

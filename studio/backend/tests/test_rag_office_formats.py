@@ -851,6 +851,20 @@ def test_xls_reads_continued_strings_numbers_formulas_and_dates(tmp_path):
     )
 
 
+def test_xls_refuses_a_workbook_past_the_cell_ceiling(tmp_path, monkeypatch):
+    monkeypatch.setattr(office_formats, "_MAX_XML_ELEMENTS", 3)
+    with pytest.raises(ValueError, match = "too many cells"):
+        parsers.parse(str(build_xls(tmp_path / "book.xls")))
+
+
+# A .msg looks up properties per attachment; rebuilding the root map each time was quadratic.
+def test_compound_file_walks_each_storage_once(tmp_path):
+    reader = cfb.CompoundFile(build_msg(tmp_path / "mail.msg").read_bytes())
+    first = reader._children(0)
+    assert reader._children(0) is first
+    assert reader.exists(*next(iter(first)).split("/"))
+
+
 def test_xls_reads_excel_95_byte_strings(tmp_path):
     def text(value, size):
         raw = value.encode("cp1251")

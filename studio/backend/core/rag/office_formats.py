@@ -1372,6 +1372,9 @@ def xls(path: str) -> list[Section]:
         return _cell_number(value, fmt, formats.get(fmt, ""), date1904)
 
     sections: list[Section] = []
+    # BIFF cell records are a few bytes each, so 200 MB of them would hold tens of millions of
+    # Python strings; the same ceiling the XML formats get from _MAX_XML_ELEMENTS.
+    cell_count = 0
     for name, offset in sheets:
         cells: dict[int, dict[int, str]] = {}
         last_formula: tuple[int, int] | None = None
@@ -1379,7 +1382,11 @@ def xls(path: str) -> list[Section]:
         string: tuple[tuple[int, int], list[bytes]] | None = None
 
         def put(r, c, value):
+            nonlocal cell_count
             if c < _MAX_COLUMNS:
+                cell_count += 1
+                if cell_count > _MAX_XML_ELEMENTS:
+                    raise ValueError("spreadsheet has too many cells")
                 cells.setdefault(r, {})[c] = value
 
         def put_string():
