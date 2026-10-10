@@ -252,6 +252,7 @@ def test_a_two_card_fit_is_published(tmp_path, monkeypatch):
         ["--rpc", "192.168.1.2:50052"],
         ["--spec-draft-device", "CUDA1"],
         ["--mmproj-device", "CUDA1"],
+        ["-otd", "blk=CUDA1"],
     ],
     ids = [
         "narrower-device",
@@ -261,6 +262,7 @@ def test_a_two_card_fit_is_published(tmp_path, monkeypatch):
         "rpc",
         "draft-device",
         "mmproj-device",
+        "draft-tensor-override",
     ],
 )
 def test_a_placement_narrower_than_the_fit_claims_no_fit(tmp_path, monkeypatch, extra_args):
