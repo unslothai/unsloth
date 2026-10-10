@@ -1140,11 +1140,8 @@ function injectDocxListNumbers(archive: Uint8Array): Uint8Array {
   const instances = new Map<string, Instance | undefined>();
   // A list defined through a numbering style (numStyleLink) takes its levels from that style's list.
   const linkedAbstract = (id: string, depth = 0): string => {
-    const link = wordValue(abstracts.get(id), "numStyleLink");
-    const style = link === undefined ? undefined : styleById.get(link);
-    if (!style || depth > 5) return id;
-    const pPr = childElements(style, style.namespaceURI ?? "", "pPr")[0];
-    const numPr = pPr && childElements(pPr, style.namespaceURI ?? "", "numPr")[0];
+    const numPr = styleNumPr(wordValue(abstracts.get(id), "numStyleLink"));
+    if (!numPr || depth > 5) return id;
     const target = wordValue(nums.get(wordValue(numPr, "numId") ?? ""), "abstractNumId");
     return target === undefined || target === id ? id : linkedAbstract(target, depth + 1);
   };

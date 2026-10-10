@@ -1738,8 +1738,10 @@ test("a Word numbered list keeps its numbers", async () => {
 test("Word heading styles linked to list levels number by their level", async () => {
   const w = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
   const heading = (text: string, style: string) => `<w:p><w:pPr><w:pStyle w:val="${style}"/></w:pPr><w:r><w:t>${text}</w:t></w:r></w:p>`;
-  // A numbering style points at the list (numId 1) whose abstract definition holds the levels.
-  const linkStyle = '<w:style w:type="numbering" w:styleId="ClauseList"><w:pPr><w:numPr><w:numId w:val="1"/></w:numPr></w:pPr></w:style>';
+  // A numbering style (here through basedOn) points at the list whose abstract definition holds the levels.
+  const linkStyle =
+    '<w:style w:type="numbering" w:styleId="BaseList"><w:pPr><w:numPr><w:numId w:val="1"/></w:numPr></w:pPr></w:style>' +
+    '<w:style w:type="numbering" w:styleId="ClauseList"><w:basedOn w:val="BaseList"/></w:style>';
   const styleXml = (id: string) =>
     `<w:style w:type="paragraph" w:styleId="${id}"><w:pPr><w:numPr><w:numId w:val="1"/></w:numPr></w:pPr></w:style>`;
   const bytes = zipSync({
