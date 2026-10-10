@@ -737,10 +737,29 @@ def test_page_that_fits_keeps_its_links(monkeypatch):
         ("2<sup><i>n</i>+1</sup> nodes", "2^(*n*+1) nodes"),
         ("2<sup>n + 1</sup>", "2^(n + 1)"),
         ("the 1<sup>st</sup> and 2<sup>nd</sup>", "the 1st and 2nd"),
+        ("Intel<sup>&reg;</sup> Core<sup>&trade;</sup> i7", "Intel® Core™ i7"),
+        ("now $19<sup>.99</sup> only", "now $19.99 only"),
+        ("price<sup>*</sup> and terms<sup>&dagger;</sup>", "price* and terms†"),
+        ("10<sup>6 </sup>years", "10^6 years"),
     ],
 )
 def test_superscripts_keep_their_exponent(markup, expected):
     assert html_to_markdown(f"<p>{markup}</p>") == expected
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "<h1><a href='/p'>E=mc<sup>2</sup></a></h1>",
+        "<a href='/p'><h1>E=mc<sup>2</sup></h1></a>",
+    ],
+)
+def test_linked_header_title_keeps_one_exponent(title):
+    nav = "".join(f"<a href='/s{i}'>Section number {i}</a> " for i in range(12))
+    html = f"<header>{title}{nav}</header><p>{'Body text here. ' * 40}</p>"
+    out = html_to_markdown(html, main_content = True)
+    assert out.count("E=mc") == 1
+    assert "E=mc^2](/p)" in out
 
 
 def test_footnote_superscripts_render_unchanged():

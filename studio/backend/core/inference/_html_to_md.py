@@ -499,7 +499,7 @@ class _MarkdownRenderer(HTMLParser):
         # Blockquote state: stack of buffers so nested blockquotes get the right ">" depth.
         self._bq_stack: list[list[str]] = []
 
-        self._sup_starts: list[tuple[list[str], int] | None] = []
+        self._sup_starts: list[tuple[list[str], int, int] | None] = []
 
     def _nested_buffer_open(self, frame: _HeaderFrame) -> bool:
         """True when a side buffer opened *inside* *frame* still holds content.
@@ -567,17 +567,23 @@ class _MarkdownRenderer(HTMLParser):
         opened = self._sup_starts.pop()
         if opened is None or opened[0] is not self._emit_target():
             return
-        target, start = opened
-        raw = "".join(target[start:]).strip()
+        target, start, heading_start = opened
+        joined = "".join(target[start:])
+        raw = joined.strip()
         shown = self._site_links.clean(raw) if self._site_links is not None else raw
         if (
             not shown
             or "\n" in shown
-            or shown.startswith("[")
+            or shown[0] in "[."
+            or not any(c.isalnum() for c in shown)
             or shown.lower() in _ORDINAL_SUFFIXES
         ):
             return
-        target[start:] = [f"^({raw})" if _GROUPED_EXPONENT.search(shown) else f"^{raw}"]
+        exponent = f"^({raw})" if _GROUPED_EXPONENT.search(shown) else f"^{raw}"
+        exponent += joined[len(joined.rstrip()):]
+        target[start:] = [exponent]
+        if target is self._link_text_parts and len(self._link_heading_parts) > heading_start:
+            self._link_heading_parts[heading_start:] = [exponent]
 
     def _seg_heading_prose(self) -> int:
         """Heading characters in this segment that the gate would otherwise read as
@@ -1035,7 +1041,9 @@ class _MarkdownRenderer(HTMLParser):
         elif tag == "sup":
             target = self._emit_target()
             reference = "reference" in (attr_dict.get("class") or "").split()
-            self._sup_starts.append(None if reference else (target, len(target)))
+            self._sup_starts.append(
+                None if reference else (target, len(target), len(self._link_heading_parts))
+            )
 
         elif tag in _BLOCK_TAGS:
             if not self._li_marker_pending:
