@@ -842,7 +842,7 @@ _TRUSTED_NON_GGUF_REPOS = frozenset(
         # build is in, and then validate_load_request refuses it as a non-unsloth repo before the
         # pipeline is ever built.
         "qwen/qwen-image-2.1",
-        # Also the base_model of the community Turbo GGUFs, which otherwise fall back to the 2.1 companions.
+        # Also the community Turbo GGUFs' base_model.
         "qwen/qwen-image-2.1-turbo",
         # Krea 2: assembled per-component. Turbo = inference; Raw = the LoRA training base.
         "krea/krea-2-turbo",
@@ -7854,7 +7854,7 @@ class DiffusionBackend:
                         )
 
                     self._raise_if_load_cancelled(_load_token)
-                    # A shipped grid was tuned on the shipped scheduler, so it skips the ComfyUI shift.
+                    # A shipped grid was tuned on the shipped scheduler: no ComfyUI shift.
                     raw_grid = _model_index_sample_sigmas(fetch_base, _base_local_dir)
                     if install_sample_sigmas(pipe, raw_grid, logger) is None:
                         # Before from_pipe copies the scheduler.

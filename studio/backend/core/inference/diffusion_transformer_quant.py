@@ -249,8 +249,7 @@ _INT8_FAMILY_CONVROT_REPO: dict[str, str] = {
     "z-image": "unsloth/Z-Image-Turbo-FP8",
 }
 
-# Per-base variant repos (``prequant_variant_repos``) that ALSO host a rotated build, named like the variant's own
-# derived chain (``<Model>-INT8-ConvRot.safetensors``). Listed explicitly for the same reason as above.
+# Variant repos that also host a rotated build (``<Model>-INT8-ConvRot.safetensors``), listed for the same reason.
 _INT8_FAMILY_CONVROT_VARIANT_REPOS: dict[str, tuple[str, ...]] = {
     "qwen-image-2.1": ("unsloth/Qwen-Image-2.1-Turbo-FP8",),
 }

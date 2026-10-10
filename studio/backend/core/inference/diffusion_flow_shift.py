@@ -90,8 +90,7 @@ def valid_sample_sigmas(raw: Any) -> Optional[tuple[float, ...]]:
     return grid
 
 
-# Where install_sample_sigmas keeps a grid the pipeline config cannot hold: on the pinned diffusers an extra config key
-# fails DiffusionPipeline.components ("Expected [...] to be defined"), which group offload and from_pipe both read.
+# Not pipe.config: on the pinned diffusers an extra key fails DiffusionPipeline.components (group offload, from_pipe).
 SAMPLE_SIGMAS_ATTR = "_unsloth_sample_sigmas"
 
 
@@ -110,8 +109,7 @@ def install_sample_sigmas(
     raw: Any,
     logger: Any = None,
 ) -> Optional[tuple[float, ...]]:
-    """``raw`` (model_index.json ``sample_sigmas``, which the pinned diffusers drops at load) validated and carried on
-    ``pipe``. None when the checkpoint ships no grid."""
+    """Carry model_index.json ``sample_sigmas`` (dropped by the pinned diffusers) on ``pipe``; None without a grid."""
     grid = pipe_sample_sigmas(pipe)
     if grid is not None or raw is None:
         return grid
@@ -129,14 +127,12 @@ def install_sample_sigmas(
 
 
 def sd_cpp_sample_sigmas(grid: tuple[float, ...], steps: int) -> list[float]:
-    """The grid at ``steps`` steps for sd.cpp, which samples custom sigmas verbatim (no flow shift, step count
-    taken from their length) and needs the terminal 0 diffusers appends itself."""
+    """sd.cpp samples custom sigmas verbatim (no shift, steps = len - 1), so it needs the terminal 0 itself."""
     return [*sample_sigmas_for_steps(grid, steps), 0.0]
 
 
 def sample_sigmas_for_steps(grid: tuple[float, ...], steps: int) -> list[float]:
-    """The grid at ``steps`` steps: itself at its own length, else resampled along it (linear in step index). Studio's
-    own, experimental: the Turbo card evaluates only the saved 8-step grid."""
+    """The grid at its own length, else resampled along it (Studio's own: the card evaluates only the 8-step grid)."""
     steps = max(1, int(steps))
     if steps == len(grid):
         return list(grid)

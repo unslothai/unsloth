@@ -208,10 +208,8 @@ def _base_sample_sigmas(
     explicit_base: bool,
     local_files_only: bool,
 ) -> Optional[tuple[float, ...]]:
-    """The sampling grid the base ships in model_index.json (Qwen-Image-2.1-Turbo), or None. Without an explicit
-    base the pick's card ``base_model`` names it, as on the diffusers route: the native route otherwise holds only
-    the family default, so a community Turbo GGUF would read 2.1's grid-less index. Best-effort: any miss keeps
-    sd.cpp's own schedule."""
+    """The base's model_index.json grid, or None (sd.cpp's own schedule). Without an explicit base the card's
+    ``base_model`` names it, as on the diffusers route; else a community Turbo GGUF would read 2.1's index."""
     if family not in _SAMPLE_SIGMAS_FAMILIES:
         return None
     try:
@@ -2202,8 +2200,7 @@ class _SdState:
     threads: Optional[int] = None
     sampling_method: Optional[str] = None
     flow_shift: Optional[float] = None
-    # The base's shipped sampling grid (Qwen-Image-2.1-Turbo's model_index.json ``sample_sigmas``), passed as custom
-    # sigmas so a distill samples the schedule it was tuned on; None keeps sd.cpp's own schedule.
+    # The base's shipped ``sample_sigmas`` grid, sent as custom sigmas; None keeps sd.cpp's own schedule.
     sample_sigmas: Optional[tuple[float, ...]] = None
     server: Optional[SdCppServer] = None
     mode: str = "server"

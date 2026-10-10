@@ -1010,9 +1010,7 @@ def resolve_prequant_source(
         # Family-declared name first when there is one, then the derived chain, which puts the
         # safetensors spelling ahead of the pickle. Order-preserving dedup so a family that declares
         # exactly what the chain would derive does not make the downloader ask twice for it.
-        # The declared names are the DEFAULT repo's files. A variant repo (another base's own checkpoints,
-        # published under the same naming) declares its own spelling of the same artifact instead, so it is
-        # never asked for, or planned as hosting, a file only the default repo holds.
+        # Declared names are the default repo's files; a variant repo gets its own spelling of each.
         variant_repo = _is_variant_prequant_repo(fam, repo_id)
         if variant_repo and preferred:
             declared = (prequant_repo_filename(repo_id, scheme, ".safetensors"),)

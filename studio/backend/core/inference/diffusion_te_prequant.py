@@ -193,8 +193,7 @@ _TE_EQUIVALENT_BASES: tuple[frozenset[str], ...] = (
             "hunyuanvideo-community/hunyuanimage-2.1-diffusers",
         }
     ),
-    # Qwen3-VL-8B: Turbo ships one file where 2.1 ships four shards, so the LFS hashes differ, but all 750
-    # tensors are byte-identical (compared 2026-10-09).
+    # Qwen3-VL-8B: one file vs four shards, but all 750 tensors byte-identical (compared 2026-10-09).
     frozenset(
         {
             "qwen/qwen-image-2.1",

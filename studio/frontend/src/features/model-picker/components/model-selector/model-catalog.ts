@@ -254,8 +254,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     ],
   },
   {
-    // Own row, not a 2.1 artifact: a different denoiser with its own FP8/INT8 checkpoints. No unsloth
-    // diffusers mirror, so the vendor pipeline is the row; the backend seeds the prequant through it.
+    // A different denoiser with its own FP8/INT8 checkpoints; no unsloth mirror, so the vendor pipeline is the row.
     canonicalId: "Qwen/Qwen-Image-2.1-Turbo",
     displayName: "Qwen-Image 2.1 Turbo",
     description: "Text-to-image and image editing in 8 steps",

@@ -160,10 +160,8 @@ class DiffusionFamily:
     # covers variants whose weights differ. Resolution prefers an exact variant match, then falls back to
     # ``prequant_repos``.
     prequant_variant_repos: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
-    # Bases (lowercased) that must not inherit ``prequant_repos``: the family fallback names an artifact baked from
-    # different weights, and planning acts on it before the load's base_model_id check can refuse it. Only for a base
-    # whose weights genuinely differ from the default. A ``prequant_variant_repos`` row for the base still wins for its
-    # scheme, so a base can host some schemes and stay excluded from the default for the rest.
+    # Lowercased bases whose weights differ from the default's, so they must not inherit ``prequant_repos`` (planning
+    # acts before the base_model_id check refuses); their own ``prequant_variant_repos`` rows still win.
     prequant_excluded_bases: tuple[str, ...] = field(default_factory = tuple)
     # Preferred checkpoint FILENAME for a scheme, as (scheme, filename), overriding the ``<Model>-<SCHEME>.pt`` name
     # ``prequant_repo_filename`` derives. The derived name stays on as the fallback, so a repo hosting BOTH an old and
@@ -527,14 +525,12 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ("fp8", "unsloth/Qwen-Image-2.1-FP8"),
             ("nvfp4", "unsloth/Qwen-Image-2.1-NVFP4"),
         ),
-        # Baked from Turbo's own weights (a different distill of the same architecture). Same file names as 2.1's with
-        # -Turbo, so the derived names resolve them; the rotated INT8 is derived the same way.
+        # Turbo's own checkpoints (a different distill); derived names (2.1's plus -Turbo) resolve them.
         prequant_variant_repos = (
             ("qwen/qwen-image-2.1-turbo", "int8", "unsloth/Qwen-Image-2.1-Turbo-FP8"),
             ("qwen/qwen-image-2.1-turbo", "fp8", "unsloth/Qwen-Image-2.1-Turbo-FP8"),
         ),
-        # The 2.1 artifacts are baked from the 2.1 denoiser, so Turbo must not inherit them for a scheme it has no row
-        # for (nvfp4): it quantizes its own weights there.
+        # 2.1's artifacts are baked from 2.1's denoiser: for nvfp4 Turbo quantizes its own weights.
         prequant_excluded_bases = ("qwen/qwen-image-2.1-turbo",),
         # The artifacts are safetensors, not the historical torch.save pickle, so the family has to
         # NAME them: every derived fallback ends in .pt, and without these rows the loader would ask
@@ -1340,8 +1336,7 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("flux.2-klein-base", 20, 5.0),
     ("flux.2-klein", 4, 1.0),
     ("flux.2-dev", 20, 4.0),  # full (non-distilled)
-    # Before the generic qwen-image key (also the rows below), Turbo before 2.1. Folding separators covers
-    # qwen_image_21_turbo; qwenimage21 has none to fold, so it needs its own row.
+    # Before the generic qwen-image key, Turbo before 2.1; qwenimage21 has no separator to fold, hence its own row.
     ("qwen-image-2.1-turbo", 8, 1.0),
     ("qwen-image-21-turbo", 8, 1.0),
     ("qwenimage21-turbo", 8, 1.0),
@@ -1461,8 +1456,7 @@ def family_prequant_repo(
         # read raises AttributeError, resolve_prequant_source swallows it in its bare except and hands back None, and
         # every video family silently loses its hosted prequant checkpoint to the dense path whenever a base_repo is
         # passed.
-        # A variant row wins over the exclusion: an excluded base may host its OWN checkpoints for some schemes and
-        # still must not inherit the family default for the rest.
+        # A variant row beats the exclusion: an excluded base may host its own checkpoints for some schemes.
         for entry_base, entry_scheme, repo_id in fam.prequant_variant_repos:
             if entry_base == base and entry_scheme == scheme:
                 return repo_id
