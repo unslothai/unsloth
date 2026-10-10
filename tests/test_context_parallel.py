@@ -16,7 +16,6 @@ from unsloth.utils import attention_dispatch as ad
 def _manager(size = 2):
     manager = object.__new__(cp.ContextParallelManager)
     manager.size = size
-    manager._hooked = False
     return manager
 
 
@@ -129,6 +128,13 @@ def test_training_step_divides_the_pre_shard_token_count_by_cp_size(monkeypatch)
             num_items_in_batch = None,
         ):
             seen.append(("eval", num_items_in_batch))
+            return (None, None, None)
+
+        def train(self):
+            pass
+
+        def evaluate(self):
+            pass
 
     import trl
 
@@ -234,7 +240,13 @@ def _patched_trainer(monkeypatch, **init_attrs):
             prediction_loss_only,
             ignore_keys = None,
         ):
-            return "ran"
+            return (torch.tensor(1.0), None, None)
+
+        def train(self, *a, **k):
+            return "trained"
+
+        def evaluate(self, *a, **k):
+            return "evaluated"
 
     monkeypatch.setattr(trl, "SFTTrainer", Trainer)
     cp.patch_sft_trainer()
@@ -242,6 +254,8 @@ def _patched_trainer(monkeypatch, **init_attrs):
 
 
 def test_predictions_are_refused_but_loss_only_eval_runs(monkeypatch):
+    import types
+
     monkeypatch.setattr(cp, "context_parallel", _fake_context_parallel([]))
     Trainer = _patched_trainer(monkeypatch)
     trainer = object.__new__(Trainer)
@@ -249,7 +263,14 @@ def test_predictions_are_refused_but_loss_only_eval_runs(monkeypatch):
     manager.mesh = None
     trainer._context_parallel_manager = manager
     batch = lambda: {"input_ids": torch.ones(1, 4, dtype = torch.long)}
-    assert trainer.prediction_step(None, batch(), True) == "ran"
+    reduced = []
+    monkeypatch.setattr(
+        cp.dist, "all_reduce", lambda t, group = None: (reduced.append(t), t.mul_(2))
+    )
+    manager.mesh = types.SimpleNamespace(get_group = lambda: None)
+    loss, *_ = trainer.prediction_step(None, batch(), True)
+    # Every CP rank reports the group's mean loss (here 2 ranks of 1.0 each).
+    assert reduced and loss.item() == 1.0
     with pytest.raises(NotImplementedError, match = "loss-only"):
         trainer.prediction_step(None, batch(), False)
 
@@ -483,3 +504,58 @@ def test_active_manager_is_visible_from_the_autograd_device_thread(monkeypatch):
         thread.join()
     assert seen == [manager]
     assert cp.get_cp_manager() is None
+
+
+def test_transformers_cp_size_is_refused(monkeypatch):
+    import types
+
+    args = types.SimpleNamespace(
+        context_parallel_size = 1, parallelism_config = types.SimpleNamespace(cp_size = 2)
+    )
+    Trainer = _patched_trainer(monkeypatch, args = args)
+    with pytest.raises(NotImplementedError, match = "context_parallel_size"):
+        Trainer()
+
+
+def test_cp_state_is_reinstalled_at_train_after_another_trainer(monkeypatch):
+    import types
+
+    mesh = object()
+    state = types.SimpleNamespace(device_mesh = None)
+    Trainer = _patched_trainer(monkeypatch, args = types.SimpleNamespace(context_parallel_size = 1))
+    trainer = object.__new__(Trainer)
+    trainer.accelerator = types.SimpleNamespace(state = state)
+    trainer.args = types.SimpleNamespace(ddp_find_unused_parameters = None)
+    trainer._context_parallel_manager = types.SimpleNamespace(size = 2, device_mesh = mesh)
+    # A later non-CP trainer cleared the shared state; train() must put the CP mesh back.
+    assert trainer.train() == "trained"
+    assert state.device_mesh is mesh
+    assert trainer.args.ddp_find_unused_parameters is False
+
+
+def test_attention_hooks_are_not_stacked_by_a_second_manager():
+    model = torch.nn.Module()
+    model.self_attn = torch.nn.Linear(2, 2)
+    for _ in range(2):
+        _manager().attach_attention_hooks(model)
+    assert len(model.self_attn._forward_pre_hooks) == 1
+
+
+def test_sdpa_is_restored_when_the_cp_step_raises(monkeypatch):
+    import torch.nn.functional as F
+
+    original = F.scaled_dot_product_attention
+
+    @contextlib.contextmanager
+    def leaky(mesh, buffers, buffer_seq_dims, no_restore_buffers):
+        F.scaled_dot_product_attention = lambda *a, **k: None  # torch < 2.13 has no finally here
+        yield
+        F.scaled_dot_product_attention = original
+
+    monkeypatch.setattr(cp, "context_parallel", leaky)
+    manager = _manager()
+    manager.mesh = None
+    with pytest.raises(RuntimeError):
+        with manager.apply({"input_ids": torch.ones(1, 4, dtype = torch.long)}):
+            raise RuntimeError("OOM")
+    assert F.scaled_dot_product_attention is original

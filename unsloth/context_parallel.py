@@ -68,17 +68,15 @@ class ContextParallelManager:
             mesh_dim_names = ("dp_replicate", "cp"),
         )
         self.mesh = self.device_mesh["cp"]
-        self._hooked = False
 
     def attach_attention_hooks(self, model: torch.nn.Module) -> None:
-        if self._hooked:
-            return
+        # Marked on the module: a second CP trainer on the same model must not stack another hook.
         for name, module in model.named_modules():
-            if name.endswith("self_attn"):
+            if name.endswith("self_attn") and not getattr(module, "_unsloth_cp_hooked", False):
                 module.register_forward_pre_hook(
                     _self_attn_pre_forward_hook, with_kwargs = True, prepend = True
                 )
-        self._hooked = True
+                module._unsloth_cp_hooked = True
 
     def _prepare_inputs(self, inputs: dict) -> None:
         input_ids = inputs.get("input_ids")
@@ -125,6 +123,8 @@ class ContextParallelManager:
         ]
         global _ACTIVE_MANAGER
         previous, _ACTIVE_MANAGER = _ACTIVE_MANAGER, self
+        # torch < 2.13 does not restore SDPA when the step raises (OOM, KeyboardInterrupt).
+        sdpa = F.scaled_dot_product_attention
         try:
             with context_parallel(
                 self.mesh,
@@ -135,28 +135,61 @@ class ContextParallelManager:
                 yield
         finally:
             _ACTIVE_MANAGER = previous
+            F.scaled_dot_product_attention = sdpa
 
 
 def patch_sft_trainer() -> None:
     import trl
 
     trainer_cls = trl.SFTTrainer
-    if hasattr(trainer_cls, "__unsloth_context_parallel__"):
+    if trainer_cls.__dict__.get("__unsloth_context_parallel__"):
         return
 
     original_init = trainer_cls.__init__
     original_prediction_step = trainer_cls.prediction_step
     original_training_step = trainer_cls.training_step
+    original_train = trainer_cls.train
+    original_evaluate = trainer_cls.evaluate
+
+    def _install_accelerator_state(self):
+        manager = getattr(self, "_context_parallel_manager", None)
+        accelerator = getattr(self, "accelerator", None)
+        state = getattr(accelerator, "state", None)
+        if manager is None:
+            # AcceleratorState is process-wide: a non-CP trainer must not inherit a CP mesh.
+            if _INSTALLED_MESH and getattr(state, "device_mesh", None) is _INSTALLED_MESH[0]:
+                state.device_mesh = None
+            return
+        if accelerator is None:
+            return
+        accelerator.state.device_mesh = manager.device_mesh
+        _INSTALLED_MESH[:] = [manager.device_mesh]
+        # Ring attention's backward collectives must not straddle DDP's no_sync accumulation.
+        if hasattr(accelerator, "gradient_state"):
+            accelerator.gradient_state.plugin_kwargs["sync_each_batch"] = True
+        # A PEFT model is not a PreTrainedModel, so the Trainer asks DDP for find_unused_parameters,
+        # which fails with reentrant checkpointing ("mark a variable ready only once"). transformers
+        # 5.x builds the DDP handler at init, 4.x rebuilds it from the argument when it wraps the model.
+        if getattr(self.args, "ddp_find_unused_parameters", None) in (None, False):
+            self.args.ddp_find_unused_parameters = False
+            handler = getattr(accelerator, "ddp_handler", None)
+            if handler is not None:
+                handler.find_unused_parameters = False
 
     @functools.wraps(original_init)
     def patched_init(self, *args, **kwargs):
         original_init(self, *args, **kwargs)
         self._context_parallel_manager = None
-        state = getattr(getattr(self, "accelerator", None), "state", None)
-        if _INSTALLED_MESH and getattr(state, "device_mesh", None) is _INSTALLED_MESH[0]:
-            state.device_mesh = None
+        # Unsloth's attention ignores transformers' own CP: it would stay local to each shard.
+        parallelism_config = getattr(getattr(self, "args", None), "parallelism_config", None)
+        if (getattr(parallelism_config, "cp_size", 1) or 1) > 1:
+            raise NotImplementedError(
+                "Unsloth: use SFTConfig(context_parallel_size = N) instead of "
+                "parallelism_config with cp_size > 1."
+            )
         size = int(getattr(getattr(self, "args", None), "context_parallel_size", 1) or 1)
         if size <= 1:
+            _install_accelerator_state(self)
             return
         if context_parallel is None:
             raise RuntimeError("Unsloth: context_parallel_size > 1 needs PyTorch >= 2.7.")
@@ -224,20 +257,7 @@ def patch_sft_trainer() -> None:
         manager = ContextParallelManager(size)
         self._context_parallel_manager = manager
         manager.attach_attention_hooks(self.model)
-        if accelerator is not None:
-            accelerator.state.device_mesh = manager.device_mesh
-            _INSTALLED_MESH[:] = [manager.device_mesh]
-            # Ring attention's backward collectives must not straddle DDP's no_sync accumulation.
-            if hasattr(accelerator, "gradient_state"):
-                accelerator.gradient_state.plugin_kwargs["sync_each_batch"] = True
-            # A PEFT model is not a PreTrainedModel, so the Trainer asks DDP for find_unused_parameters,
-            # which fails with reentrant checkpointing ("mark a variable ready only once"). transformers
-            # 5.x builds the DDP handler here, 4.x rebuilds it from the argument when it wraps the model.
-            if getattr(self.args, "ddp_find_unused_parameters", None) is None:
-                self.args.ddp_find_unused_parameters = False
-                handler = getattr(accelerator, "ddp_handler", None)
-                if handler is not None:
-                    handler.find_unused_parameters = False
+        _install_accelerator_state(self)
         print(f"Unsloth: Context parallelism enabled with size = {size}.")
 
     @functools.wraps(original_prediction_step)
@@ -249,8 +269,26 @@ def patch_sft_trainer() -> None:
                 "Unsloth: context parallelism supports loss-only evaluation; "
                 "compute_metrics / predict() need context_parallel_size = 1."
             )
-        with manager.apply(inputs) if manager else contextlib.nullcontext():
+        if manager is None:
             return original_prediction_step(self, model, inputs, *args, **kwargs)
+        with manager.apply(inputs):
+            loss, *rest = original_prediction_step(self, model, inputs, *args, **kwargs)
+        # Each rank holds one shard's loss; gather_for_metrics drops ranks of a partial last batch.
+        if isinstance(loss, torch.Tensor):
+            loss = loss.detach().clone()
+            dist.all_reduce(loss, group = manager.mesh.get_group())
+            loss = loss / manager.size
+        return (loss, *rest)
+
+    @functools.wraps(original_train)
+    def patched_train(self, *args, **kwargs):
+        _install_accelerator_state(self)
+        return original_train(self, *args, **kwargs)
+
+    @functools.wraps(original_evaluate)
+    def patched_evaluate(self, *args, **kwargs):
+        _install_accelerator_state(self)
+        return original_evaluate(self, *args, **kwargs)
 
     @functools.wraps(original_training_step)
     def patched_training_step(self, model, inputs, *args, **kwargs):
@@ -267,5 +305,7 @@ def patch_sft_trainer() -> None:
 
     trainer_cls.__init__ = patched_init
     trainer_cls.prediction_step = patched_prediction_step
+    trainer_cls.train = patched_train
+    trainer_cls.evaluate = patched_evaluate
     trainer_cls.training_step = patched_training_step
     trainer_cls.__unsloth_context_parallel__ = True
