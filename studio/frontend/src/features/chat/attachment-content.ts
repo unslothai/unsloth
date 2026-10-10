@@ -1055,6 +1055,7 @@ export function writeDocxTableRows(archive: Uint8Array): Uint8Array {
 }
 
 function listNumber(n: number, format: string | undefined): string {
+  if (format === "none") return "";
   if (n < 1) return String(n);
   const lower = format?.startsWith("lower");
   if (lower || format?.startsWith("upper")) {
@@ -1135,9 +1136,12 @@ export function writeDocxListNumbers(archive: Uint8Array): Uint8Array {
     counts[ilvl] = counts[ilvl] === undefined ? level(ilvl).start : counts[ilvl] + 1;
     counts.length = ilvl + 1;
     counters.set(key, counts);
+    // isLgl (legal numbering) shows every level's number in Arabic digits: "Section 1.01" under "Article I".
+    const legal = childElements(lvl, n, "isLgl").some((node) => !/^(?:0|false|off)$/.test(node.getAttributeNS(n, "val") ?? ""));
     const label = (wordValue(lvl, "lvlText") ?? "").replace(/%([1-9])/g, (_, digit: string) => {
       const index = Number(digit) - 1;
-      return listNumber(counts[index] ?? level(index).start, level(index).format);
+      const format = level(index).format;
+      return listNumber(counts[index] ?? level(index).start, legal && format !== "none" && !format?.startsWith("decimal") ? "decimal" : format);
     });
     if (!label.trim()) continue;
     const run = doc.createElementNS(w, tag("r"));

@@ -1735,6 +1735,36 @@ test("a Word numbered list keeps its numbers", async () => {
   }
 });
 
+test("a Word legal list reads every level as a decimal and skips unnumbered levels", async () => {
+  const w = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
+  const p = (text: string, ilvl: number) =>
+    `<w:p><w:pPr><w:numPr><w:ilvl w:val="${ilvl}"/><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>${text}</w:t></w:r></w:p>`;
+  const bytes = zipSync({
+    "[Content_Types].xml": strToU8("<Types/>"),
+    "_rels/.rels": relationships([["officeDocument", "word/document.xml"]]),
+    "word/_rels/document.xml.rels": relationships([["numbering", "numbering.xml"]]),
+    "word/document.xml": strToU8(`<w:document ${w}><w:body>${p("Term", 0)}${p("Renewal", 1)}${p("Notice", 2)}</w:body></w:document>`),
+    "word/numbering.xml": strToU8(
+      `<w:numbering ${w}><w:abstractNum w:abstractNumId="1">` +
+        '<w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="upperRoman"/><w:lvlText w:val="Article %1"/></w:lvl>' +
+        '<w:lvl w:ilvl="1"><w:start w:val="1"/><w:numFmt w:val="decimalZero"/><w:isLgl/><w:lvlText w:val="Section %1.%2"/></w:lvl>' +
+        '<w:lvl w:ilvl="2"><w:start w:val="1"/><w:numFmt w:val="none"/><w:lvlText w:val="%3"/></w:lvl>' +
+        '</w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num></w:numbering>',
+    ),
+  });
+  const globals = globalThis as { DOMParser?: unknown; XMLSerializer?: unknown };
+  const original = { DOMParser: globals.DOMParser, XMLSerializer: globals.XMLSerializer };
+  globals.DOMParser = XmlDomParser;
+  globals.XMLSerializer = XmlSerializer;
+  try {
+    const { default: mammoth } = await import("mammoth");
+    const { value } = await mammoth.extractRawText({ buffer: Buffer.from(writeDocxListNumbers(bytes)) });
+    assert.equal(value, "Article I Term\n\nSection 1.01 Renewal\n\nNotice\n\n");
+  } finally {
+    Object.assign(globals, original);
+  }
+});
+
 test("an html ordered list keeps its numbers", async () => {
   const withAttributes = (node: StubNode, attributes: Record<string, string> = {}) =>
     Object.assign(node, { getAttribute: (name: string) => attributes[name] ?? null });
