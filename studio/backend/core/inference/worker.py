@@ -147,7 +147,6 @@ def narrow_load_reason(cmd: dict) -> Optional[str]:
 
 activate_native_tls()
 activate_happy_eyeballs()
-# The env cap is inherited, but Windows ROCm's OpenBLAS ignores it (#12942); a Desktop launch never re-runs run.py here.
 install_openblas_runtime_cap()
 
 _SHARE_OBJECT_MAX_BYTES = 1 << 20

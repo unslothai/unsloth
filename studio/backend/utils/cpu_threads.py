@@ -17,21 +17,15 @@ _THREAD_POOL_ENV_VARS = (
     "OPENBLAS_NUM_THREADS",
     "NUMEXPR_NUM_THREADS",
 )
-# OpenBLAS starts every worker at import with its own buffer, which Windows commits (about 32 MB each for numpy's),
-# and a fault allocating it kills the process (#12374). 8 threads match numpy's default speed on a 32-thread CPU for
-# about a third of the memory; past that SMT siblings mostly add memory.
+# Every OpenBLAS worker gets its own buffer and a failed allocation kills the process (#12374); past 8 threads
+# numpy gains little on SMT siblings, so the defaults are capped and fitted to the free memory.
 _OPENBLAS_DEFAULT_MAX = 8
-# What one more numpy OpenBLAS worker costs at import (Windows: 18 MB committed at 1 thread, 243 MB at 8), and the
-# share of the memory those buffers draw on that the default may spend, so a host short of it starts on fewer.
-_OPENBLAS_THREAD_COST = 32 << 20
+_OPENBLAS_THREAD_COST = 32 << 20  # numpy's buffer
 _OPENBLAS_MEMORY_SHARE = 0.1
-# rocm-openblas.dll is built with the stock 128 MB buffer: each of its threads commits that once CPU BLAS runs
-# (measured on gfx1151: 1978 / 3905 / 5959 MB committed at 1 / 16 / 32 threads).
-_ROCM_OPENBLAS_THREAD_COST = 128 << 20
+_ROCM_OPENBLAS_THREAD_COST = 128 << 20  # rocm-openblas.dll keeps the stock 128 MB buffer
 
 
 def _threads_that_fit(threads: int, cost: int) -> int:
-    """``threads``, or fewer when a tenth of the memory OpenBLAS's buffers draw on cannot hold one per thread."""
     headroom = _openblas_memory_headroom()
     if headroom is None:
         return threads
@@ -39,17 +33,13 @@ def _threads_that_fit(threads: int, cost: int) -> int:
 
 
 def default_openblas_threads() -> int:
-    """Studio's OPENBLAS_NUM_THREADS when nothing is configured: about one per physical core, at most 8, and
-    fewer when the memory OpenBLAS's per-thread buffers draw on is short."""
+    """About one thread per physical core, at most 8, fewer when memory is short."""
     threads = max(1, min(_OPENBLAS_DEFAULT_MAX, (os.cpu_count() or 2) // 2))
     return _threads_that_fit(threads, _OPENBLAS_THREAD_COST)
 
 
 def _openblas_memory_headroom() -> Optional[int]:
-    """Bytes OpenBLAS's buffers can still claim, None when unbounded or unknown. Stdlib only: runs before any import.
-
-    Windows commits the buffers, so the free system commit, and a job object's memory limit (containers, sandboxes)
-    when one is set. Linux only reserves them, so only an address-space rlimit can refuse them."""
+    """Bytes OpenBLAS's buffers can still claim, None if unbounded. Windows commits them; Linux only reserves them."""
     try:
         if sys.platform == "win32":
             return _windows_commit_headroom()
@@ -135,7 +125,7 @@ def _windows_commit_headroom() -> Optional[int]:
         return None
     headroom = int(status.ullAvailPageFile)
     limits = ExtendedLimits()
-    # 9 = JobObjectExtendedLimitInformation; a NULL job is this process's own, and the call fails outside any job.
+    # 9 = JobObjectExtendedLimitInformation of this process's job; fails outside any job.
     if kernel32.QueryInformationJobObject(
         None, 9, ctypes.byref(limits), ctypes.sizeof(limits), None
     ):
@@ -177,7 +167,7 @@ def configure_cpu_threads(env: Optional[MutableMapping[str, str]] = None) -> Non
             value = str(default_openblas_threads())
             environ["OPENBLAS_NUM_THREADS"] = value
             if env is None:
-                # Inherited by spawned workers, so they can tell this default from a user's own value.
+                # Lets spawned workers tell this default from a user's own value.
                 environ[_OPENBLAS_DEFAULT_MARKER] = value
         if env is None:
             install_openblas_runtime_cap()
@@ -197,9 +187,7 @@ def configure_cpu_threads(env: Optional[MutableMapping[str, str]] = None) -> Non
         install_openblas_runtime_cap()
 
 
-# AMD's Windows ROCm torch wheels load this OpenBLAS, which ignores OPENBLAS_NUM_THREADS and
-# OMP_NUM_THREADS and starts one worker per logical CPU (measured on gfx1151: 32 with
-# OPENBLAS_NUM_THREADS=1), so the env vars never reach it; its runtime setter does (#12942).
+# AMD's Windows ROCm torch wheels ship this OpenBLAS, which ignores OPENBLAS_NUM_THREADS; its runtime setter works (#12942).
 _RUNTIME_CAPPED_OPENBLAS = ("rocm-openblas.dll",)
 _OPENBLAS_CAP_SENTINEL = "_unsloth_openblas_cap_finder"
 _OPENBLAS_DEFAULT_MARKER = "UNSLOTH_OPENBLAS_DEFAULTED"
@@ -218,9 +206,7 @@ def _openblas_thread_target(environ: Optional[MutableMapping[str, str]] = None) 
     raw = environ.get("OPENBLAS_NUM_THREADS", "").strip()
     target = None
     if raw and raw == environ.get(_OPENBLAS_DEFAULT_MARKER):
-        # Studio's default is sized for numpy's OpenBLAS. This DLL is torch's own CPU BLAS, so it gets the
-        # thread count torch uses everywhere else (one per physical core, or OMP_NUM_THREADS), fewer when its
-        # 128 MB per-thread buffers would not fit.
+        # Studio's default is sized for numpy; this DLL is torch's CPU BLAS, so it gets torch's thread count.
         target = _torch_thread_count()
         if target is not None:
             target = _threads_that_fit(target, _ROCM_OPENBLAS_THREAD_COST)
@@ -236,9 +222,7 @@ def _openblas_thread_target(environ: Optional[MutableMapping[str, str]] = None) 
 
 
 def apply_openblas_runtime_cap() -> list:
-    """Hand OPENBLAS_NUM_THREADS to an already loaded OpenBLAS that ignores it. Windows only; never loads a DLL.
-
-    Returns the DLL names capped, empty when there was nothing to do."""
+    """Hand the thread target to an already loaded OpenBLAS that ignores the env; returns the DLLs capped."""
     if sys.platform != "win32":
         return []
     target = _openblas_thread_target()
@@ -248,7 +232,7 @@ def apply_openblas_runtime_cap() -> list:
     try:
         import ctypes
 
-        # A private handle: argtypes / restype on ctypes.windll's shared one would change it for every caller.
+        # Private handle: argtypes on ctypes.windll's shared one would leak to every caller.
         get_module = ctypes.WinDLL("kernel32", use_last_error = True).GetModuleHandleW
         get_module.argtypes = [ctypes.c_wchar_p]
         get_module.restype = ctypes.c_void_p
@@ -269,8 +253,6 @@ def apply_openblas_runtime_cap() -> list:
 
 
 class _TorchLoader(importlib.abc.Loader):
-    """torch's real loader, then the cap once the module body (and so its DLLs) has loaded."""
-
     __slots__ = ("_loader",)
 
     def __init__(self, loader):
@@ -284,8 +266,7 @@ class _TorchLoader(importlib.abc.Loader):
         try:
             self._loader.exec_module(module)
         finally:
-            # Hand torch its own loader back: pkg_resources and others dispatch on its type, and a reload
-            # would otherwise wrap this wrapper again.
+            # pkg_resources dispatches on the loader's type, and a reload would wrap this wrapper again.
             spec = getattr(module, "__spec__", None)
             if spec is not None and spec.loader is self:
                 spec.loader = self._loader
@@ -300,14 +281,11 @@ class _TorchLoader(importlib.abc.Loader):
 
 
 class _TorchImportFinder(importlib.abc.MetaPathFinder):
-    """At the FRONT of sys.meta_path, wrapping only the top-level ``torch`` import's loader."""
-
     __slots__ = (_OPENBLAS_CAP_SENTINEL, "_finding")
 
     def __init__(self):
         setattr(self, _OPENBLAS_CAP_SENTINEL, True)
-        # Per thread: find_spec below walks sys.meta_path again, and a bare find_spec("torch") on another
-        # thread (Studio has several, outside any import) must not hide the warm thread's real import.
+        # Per thread: a bare find_spec("torch") on another thread must not hide the warm thread's import.
         self._finding = threading.local()
 
     def find_spec(
@@ -320,7 +298,7 @@ class _TorchImportFinder(importlib.abc.MetaPathFinder):
             return None
         self._finding.active = True
         try:
-            # Not caught: a finder further down that raises must fail the import exactly as without this one.
+            # Not caught: a later finder's error must fail the import exactly as without this one.
             spec = importlib.util.find_spec(fullname)
         finally:
             self._finding.active = False
@@ -334,7 +312,7 @@ class _TorchImportFinder(importlib.abc.MetaPathFinder):
 
 
 def install_openblas_runtime_cap() -> bool:
-    """Apply the cap now if torch is already imported, else right after it is. Windows only; idempotent."""
+    """Cap now if torch is imported, else right after it is. Windows only; idempotent."""
     if sys.platform != "win32":
         return False
     if "torch" in sys.modules:

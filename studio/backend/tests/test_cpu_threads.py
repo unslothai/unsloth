@@ -67,7 +67,6 @@ def test_cpu_thread_cap_unset_limits_only_openblas(raw, monkeypatch):
     assert env == {**snapshot, "OPENBLAS_NUM_THREADS": "8"}
 
 
-# About one thread per physical core, at most 8: numpy stays fast and OpenBLAS's per-thread buffers stay bounded.
 @pytest.mark.parametrize(
     "cpus, expected", [(None, 1), (1, 1), (2, 1), (4, 2), (12, 6), (16, 8), (24, 8), (192, 8)]
 )
@@ -78,7 +77,6 @@ def test_openblas_default_scales_with_cores_and_is_capped(cpus, expected, monkey
     assert default_openblas_threads() == expected
 
 
-# A tenth of the memory OpenBLAS's buffers draw on, about 32 MB per thread: a host short of it starts on fewer threads.
 @pytest.mark.parametrize(
     "headroom_mb, expected",
     [(None, 8), (64 << 10, 8), (2600, 8), (1280, 4), (640, 2), (320, 1), (100, 1), (0, 1)],

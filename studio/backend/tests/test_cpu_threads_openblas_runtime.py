@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The runtime OpenBLAS cap for Windows ROCm, whose rocm-openblas.dll ignores OPENBLAS_NUM_THREADS (#12942).
-
-Runs anywhere: sys.platform and ctypes' Windows entry points are faked."""
+"""Runtime OpenBLAS cap for Windows ROCm (#12942); sys.platform and ctypes' Windows entry points are faked."""
 
 import ctypes
 import os
@@ -42,7 +40,6 @@ class _Calls(list):
 
 @pytest.fixture
 def fake_windows(monkeypatch):
-    """win32 with rocm-openblas.dll loaded (handle 0x1234); returns the list of setter calls."""
     calls = _Calls()
     loaded = {"rocm-openblas.dll": 0x1234}
 
@@ -65,13 +62,12 @@ def fake_windows(monkeypatch):
         return _FakeLib(calls)
 
     monkeypatch.setattr(sys, "platform", "win32")
-    # Pinned: the cap is clamped to the core count, and CI runners can have as few as 3.
+    # Pinned: the cap clamps to the core count and the default fits free memory.
     monkeypatch.setattr(os, "cpu_count", lambda: 32)
-    # Pinned too: the default also shrinks on a host short of memory.
     monkeypatch.setattr(cpu_threads, "_openblas_memory_headroom", lambda: None)
     monkeypatch.setattr(ctypes, "WinDLL", fake_windll, raising = False)
     monkeypatch.setattr(ctypes, "CDLL", fake_cdll)
-    # On a real Windows host importing a worker module has already installed the hook; start from none.
+    # A worker import on real Windows has already installed the hook.
     monkeypatch.setattr(
         sys,
         "meta_path",
@@ -87,7 +83,7 @@ def fake_windows(monkeypatch):
 
 @pytest.fixture
 def clean_thread_env():
-    """configure_cpu_threads() writes the real os.environ; monkeypatch.delenv only restores names that existed."""
+    """monkeypatch.delenv only restores names that existed."""
     saved = dict(os.environ)
     for name in (
         "UNSLOTH_CPU_THREADS",
@@ -107,7 +103,7 @@ def _fake_torch(threads):
     return types.SimpleNamespace(get_num_threads = lambda: threads)
 
 
-# The defect: on Windows ROCm a user's OPENBLAS_NUM_THREADS never reaches the loaded DLL. Fails before the fix.
+# The defect: a user's OPENBLAS_NUM_THREADS never reached the loaded DLL.
 def test_user_openblas_one_reaches_the_dll(fake_windows, clean_thread_env, monkeypatch):
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(12))
     monkeypatch.setenv("OPENBLAS_NUM_THREADS", "1")
@@ -117,7 +113,6 @@ def test_user_openblas_one_reaches_the_dll(fake_windows, clean_thread_env, monke
     assert fake_windows == [1]
 
 
-# Studio's own default of 1 is meant for numpy; the DLL is torch's CPU BLAS and gets torch's thread count.
 def test_studio_default_gives_the_dll_torchs_thread_count(
     fake_windows, clean_thread_env, monkeypatch
 ):
@@ -125,12 +120,10 @@ def test_studio_default_gives_the_dll_torchs_thread_count(
 
     configure_cpu_threads()
 
-    assert os.environ["OPENBLAS_NUM_THREADS"] == "8"  # numpy's default; the DLL is torch's
+    assert os.environ["OPENBLAS_NUM_THREADS"] == "8"
     assert fake_windows == [12]
 
 
-# The DLL's buffers are 128 MB a thread: Studio's default shrinks torch's count when a tenth of the headroom
-# cannot hold them, but a user's own value is never second-guessed.
 @pytest.mark.parametrize("headroom_mb, expected", [(None, 12), (64 << 10, 12), (2560, 2), (500, 1)])
 def test_studio_default_fits_the_dll_to_the_memory_left(
     fake_windows, clean_thread_env, monkeypatch, headroom_mb, expected
@@ -161,7 +154,6 @@ def test_a_user_value_reaches_the_dll_however_short_memory_is(
     assert fake_windows == [6]
 
 
-# A spawned worker only sees the inherited env, so the marker must tell it the 1 is Studio's default.
 def test_a_worker_inheriting_the_default_gives_the_dll_torchs_thread_count(
     fake_windows, clean_thread_env, monkeypatch
 ):
@@ -212,7 +204,7 @@ def test_cap_waits_for_torch_and_fires_after_its_module_body(
     monkeypatch.setattr(cpu_threads, "apply_openblas_runtime_cap", spy)
 
     configure_cpu_threads()
-    assert fake_windows == [] and seen == []  # nothing loaded yet, so nothing to cap
+    assert fake_windows == [] and seen == []
 
     import torch  # noqa: F401 -- the fake package above
 
@@ -233,13 +225,12 @@ def test_torch_keeps_its_own_loader_and_reload_does_not_stack(
     monkeypatch.syspath_prepend(str(tmp_path))
     monkeypatch.delitem(sys.modules, "torch", raising = False)
 
-    # Whatever loader the path finders give torch, e.g. beartype.claw's SourceFileLoader subclass.
+    # e.g. beartype.claw's SourceFileLoader subclass.
     native = type(importlib.util.find_spec("torch").loader)
     assert native is not cpu_threads._TorchLoader
     configure_cpu_threads()
     import torch
 
-    # pkg_resources picks its provider by type(module.__loader__), so the wrapper must not stay visible.
     assert type(torch.__loader__) is native
     assert torch.__spec__.loader is torch.__loader__
     importlib.reload(torch)
@@ -284,7 +275,7 @@ def test_a_failing_setter_never_breaks_startup(fake_windows, clean_thread_env, m
     monkeypatch.setattr(ctypes, "CDLL", boom)
     monkeypatch.setitem(sys.modules, "torch", sys.modules.get("torch") or object())
 
-    configure_cpu_threads()  # must not raise
+    configure_cpu_threads()
 
     assert raised == ["rocm-openblas.dll"]
 
@@ -319,8 +310,7 @@ def test_a_mapping_env_stays_pure(fake_windows, monkeypatch):
     assert sys.meta_path == before
 
 
-# Spawned workers inherit OPENBLAS_NUM_THREADS but never re-run run.py when Desktop starts the backend through
-# the CLI, so each long-lived worker module installs the cap itself, at import, before its first torch import.
+# Desktop-spawned workers never run run.py, so each worker module installs the cap at import.
 @pytest.mark.parametrize("worker", ["core/training/worker.py", "core/inference/worker.py"])
 def test_long_lived_workers_install_the_cap_at_import(worker):
     import ast
