@@ -1527,6 +1527,7 @@ def html_to_markdown(
     if max_span_chars is not None:
         span_limit = min(span_limit, max_span_chars)
     rendered = ""
+    full_rendered = ""
     if main_content:
         length, rendered, articles = _select_main_scope_render(
             source_html, "article", site_links, span_limit
@@ -1536,13 +1537,26 @@ def html_to_markdown(
                 source_html, "main", site_links, span_limit
             )
             clean = site_links.clean if site_links is not None else str
+            if articles > 2 and main_length < _MIN_MAIN_CONTENT_CHARS:
+                full_rendered = _strip_boilerplate_lines(
+                    _render(
+                        source_html,
+                        None,
+                        strip_header = True,
+                        site_links = site_links,
+                        span_char_limit = span_limit,
+                    ),
+                    site_links,
+                )
+                main_length = _visible_chars(clean(full_rendered))
+                main_rendered = full_rendered
             if main_length >= _MIN_MAIN_CONTENT_CHARS and (
                 length < _MIN_MAIN_CONTENT_CHARS
                 or _visible_chars(clean(main_rendered)) > 2 * _visible_chars(clean(rendered))
             ):
                 length, rendered = main_length, main_rendered
         if length < _MIN_MAIN_CONTENT_CHARS:
-            rendered = _strip_boilerplate_lines(
+            rendered = full_rendered or _strip_boilerplate_lines(
                 _render(
                     source_html,
                     None,

@@ -1571,6 +1571,16 @@ def test_one_card_does_not_stand_in_for_a_listing_main():
         assert f"Plan {i} feature and price detail." in out
 
 
+def test_article_listing_without_main_uses_the_document():
+    cards = "".join(
+        f"<article><h2>Plan {i}</h2><p>{f'Plan {i} feature and price detail. ' * 8}</p></article>"
+        for i in range(6)
+    )
+    out = html_to_markdown(f"<body><h1>Pricing</h1>{cards}</body>", main_content = True)
+    for i in range(6):
+        assert f"Plan {i} feature and price detail." in out
+
+
 def test_post_body_outside_article_beats_author_bio_card():
     post = "Main post body paragraph with the actual story. " * 30
     bio = "Author bio describing the writer and their work. " * 6
