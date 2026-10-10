@@ -3798,13 +3798,6 @@ def openenv_vllm_reload_weights():
         return
     if Version(importlib_version("trl")) < Version("0.26.0"):
         return
-    # Newer TRL removed trl.experimental.openenv with generate_rollout_completions (huggingface/trl#5870): nothing to rewrite.
-    try:
-        if importlib.util.find_spec("trl.experimental.openenv") is None:
-            return
-    except (ImportError, ValueError):
-        return
-
     try:
         import trl.experimental.openenv.utils as openenv_utils
         import trl.experimental.openenv as openenv
