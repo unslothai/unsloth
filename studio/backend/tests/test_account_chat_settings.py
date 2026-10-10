@@ -360,6 +360,7 @@ OWNER_PATHS = [
         "/hugging-face-cache": ("GET", "PUT"),
         "/llama-cpp-path": ("GET", "PUT"),
         "/upload-limit": ("PUT",),
+        "/tool-result-limit": ("PUT",),
         "/helper-precache": ("PUT",),
         "/download-transport": ("PUT",),
         "/xet-notice/reserve": ("POST",),

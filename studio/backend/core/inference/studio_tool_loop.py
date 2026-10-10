@@ -177,10 +177,10 @@ def _truncate_for_model(
     joiner: str = "\n",
 ) -> str:
     """Hold a hosted result to the same cap a local result gets. Read off ``tools`` rather than
-    copied, so an install that lowers ``UNSLOTH_TOOL_RESULT_MAX_CHARS`` gets the lower cap here
-    too."""
+    copied, so an install that lowers ``UNSLOTH_TOOL_RESULT_MAX_CHARS`` (or the Settings > Chat
+    limit) gets the lower cap here too."""
     if limit is None:
-        limit = tools_module._MAX_OUTPUT_CHARS
+        limit = tools_module._tool_result_max_chars()
     if len(text) <= limit:
         return text
     return text[:limit] + f"{joiner}... [truncated, {len(text) - limit} more characters]"

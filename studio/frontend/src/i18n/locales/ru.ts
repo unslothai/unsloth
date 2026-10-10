@@ -2486,6 +2486,15 @@ export const ru = {
         "Старые ходы уходят в доступный для поиска архив, когда чат заполняет контекст.",
       autoCompactKeywords:
         "сжатие автоматически контекст окно обрезка скользящее контрольная точка запас архив поиск извлечение compaction rolling checkpoint headroom archive retrieval rag",
+      toolResultLimit: "Длина вывода инструментов",
+      toolResultLimitDescription: "Сколько символов одного результата Python, Терминала или инструмента читает модель. По умолчанию {count}.",
+      toolResultLimitHint: "Более длинный вывод сохраняется в файл, который модель может читать по частям. Модели с маленьким окном контекста по-прежнему получают меньше, чтобы один результат не заполнил чат.",
+      toolResultLimitDefault: "{count} (по умолчанию)",
+      toolResultLimitLocked: "Задано через UNSLOTH_TOOL_RESULT_MAX_CHARS",
+      toolResultLimitLoadError: "Не удалось загрузить длину вывода инструментов.",
+      toolResultLimitSaveError: "Не удалось сохранить длину вывода инструментов.",
+      toolResultLimitKeywords:
+        "вывод результат обрезка обрезан лимит символы длина tool output result truncate truncated truncation limit cap characters chars length terminal python mcp",
       visibility: {
         collapsed: "Свёрнуто",
         auto: "Разворачивать во время работы",

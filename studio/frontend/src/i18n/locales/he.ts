@@ -2580,6 +2580,15 @@ export const he = {
         "סבבים ישנים יותר עוברים לארכיון הניתן לחיפוש כאשר צ'אט ממלא את ההקשר שלו.",
       autoCompactKeywords:
         "compaction compact auto-compact context window truncate rolling checkpoint headroom archive retrieval recall rag search כיווץ קיצוץ הקשר חלון ארכיון אחזור חיפוש",
+      toolResultLimit: "אורך פלט הכלים",
+      toolResultLimitDescription: "מספר התווים מתוצאה אחת של Python, Terminal או כלי שהמודל קורא. ברירת המחדל היא {count}.",
+      toolResultLimitHint: "פלט ארוך יותר נשמר בקובץ שהמודל יכול לקרוא בחלקים. מודלים עם חלון הקשר קטן עדיין מקבלים פחות, כדי שתוצאה אחת לא תמלא את הצ'אט.",
+      toolResultLimitDefault: "{count} (ברירת מחדל)",
+      toolResultLimitLocked: "מוגדר על ידי UNSLOTH_TOOL_RESULT_MAX_CHARS",
+      toolResultLimitLoadError: "טעינת אורך פלט הכלים נכשלה.",
+      toolResultLimitSaveError: "שמירת אורך פלט הכלים נכשלה.",
+      toolResultLimitKeywords:
+        "פלט תוצאה קיצוץ מגבלה תווים אורך tool output result truncate truncated truncation limit cap characters chars length terminal python mcp",
       visibility: {
         collapsed: "מכווץ",
         auto: "מורחב בזמן ריצה",

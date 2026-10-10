@@ -2480,6 +2480,15 @@ export const hi = {
         "चैट का कॉन्टेक्स्ट भरने पर पुराने टर्न खोजे जा सकने वाले आर्काइव में चले जाते हैं।",
       autoCompactKeywords:
         "कॉम्पैक्शन कॉम्पैक्ट कॉन्टेक्स्ट विंडो ट्रंकेट स्लाइडिंग चेकपॉइंट हेडरूम आर्काइव पुनर्प्राप्ति खोज compaction rolling checkpoint headroom archive retrieval rag",
+      toolResultLimit: "टूल आउटपुट की लंबाई",
+      toolResultLimitDescription: "Python, Terminal या टूल के एक परिणाम के कितने अक्षर मॉडल पढ़ता है। डिफ़ॉल्ट {count} है।",
+      toolResultLimitHint: "लंबा आउटपुट एक फ़ाइल में सहेजा जाता है जिसे मॉडल हिस्सों में पढ़ सकता है। छोटी कॉन्टेक्स्ट विंडो वाले मॉडल को अब भी कम मिलता है, ताकि एक परिणाम पूरी चैट न भर दे।",
+      toolResultLimitDefault: "{count} (डिफ़ॉल्ट)",
+      toolResultLimitLocked: "UNSLOTH_TOOL_RESULT_MAX_CHARS द्वारा सेट",
+      toolResultLimitLoadError: "टूल आउटपुट की लंबाई लोड नहीं हो सकी।",
+      toolResultLimitSaveError: "टूल आउटपुट की लंबाई सहेजी नहीं जा सकी।",
+      toolResultLimitKeywords:
+        "आउटपुट परिणाम काटना सीमा अक्षर लंबाई tool output result truncate truncated truncation limit cap characters chars length terminal python mcp",
       visibility: {
         collapsed: "संक्षिप्त",
         auto: "चलने के दौरान विस्तृत करें",

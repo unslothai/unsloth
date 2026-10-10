@@ -2474,6 +2474,15 @@ export const ar = {
         "تنتقل الأدوار الأقدم إلى أرشيف قابل للبحث عندما تمتلئ نافذة سياق المحادثة.",
       autoCompactKeywords:
         "ضغط تلقائي سياق نافذة اقتطاع منزلقة نقطة تحقق هامش أرشيف استرجاع بحث compaction rolling checkpoint headroom archive retrieval rag",
+      toolResultLimit: "طول مخرجات الأدوات",
+      toolResultLimitDescription: "عدد أحرف نتيجة Python أو Terminal أو الأداة الواحدة التي يقرأها النموذج. القيمة الافتراضية {count}.",
+      toolResultLimitHint: "تُحفظ المخرجات الأطول في ملف يمكن للنموذج قراءته على أجزاء. تظل النماذج ذات نافذة السياق الصغيرة تحصل على أقل، حتى لا تملأ نتيجة واحدة المحادثة.",
+      toolResultLimitDefault: "{count} (افتراضي)",
+      toolResultLimitLocked: "مضبوط بواسطة UNSLOTH_TOOL_RESULT_MAX_CHARS",
+      toolResultLimitLoadError: "تعذر تحميل طول مخرجات الأدوات.",
+      toolResultLimitSaveError: "تعذر حفظ طول مخرجات الأدوات.",
+      toolResultLimitKeywords:
+        "مخرجات نتيجة اقتطاع حد أحرف طول tool output result truncate truncated truncation limit cap characters chars length terminal python mcp",
       visibility: {
         collapsed: "مطوي",
         auto: "التوسيع أثناء التشغيل",

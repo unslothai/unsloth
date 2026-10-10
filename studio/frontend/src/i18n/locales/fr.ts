@@ -2509,6 +2509,15 @@ export const fr = {
         "Les anciens échanges vont dans une archive consultable quand un chat sature son contexte.",
       autoCompactKeywords:
         "compaction automatique contexte fenêtre tronquer glissante point de contrôle marge archive récupération recherche rolling checkpoint headroom retrieval rag",
+      toolResultLimit: "Longueur de la sortie des outils",
+      toolResultLimitDescription: "Caractères d'un résultat Python, Terminal ou d'outil que le modèle lit. Par défaut : {count}.",
+      toolResultLimitHint: "Une sortie plus longue est enregistrée dans un fichier que le modèle peut lire par parties. Les modèles avec une petite fenêtre de contexte reçoivent toujours moins, pour qu'un résultat ne remplisse pas la discussion.",
+      toolResultLimitDefault: "{count} (par défaut)",
+      toolResultLimitLocked: "Défini par UNSLOTH_TOOL_RESULT_MAX_CHARS",
+      toolResultLimitLoadError: "Impossible de charger la longueur de la sortie des outils.",
+      toolResultLimitSaveError: "Impossible d'enregistrer la longueur de la sortie des outils.",
+      toolResultLimitKeywords:
+        "sortie résultat tronquer tronqué limite caractères longueur tool output result truncate truncated truncation limit cap characters chars length terminal python mcp",
       visibility: {
         collapsed: "Replié",
         auto: "Déplier pendant l’exécution",

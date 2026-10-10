@@ -2510,6 +2510,15 @@ export const en = {
         "Older turns move to a searchable archive when a chat fills its context.",
       autoCompactKeywords:
         "compaction compact auto-compact context window truncate rolling checkpoint headroom archive retrieval recall rag search",
+      toolResultLimit: "Tool output length",
+      toolResultLimitDescription: "Characters of one Python, Terminal or tool result the model reads. Default is {count}.",
+      toolResultLimitHint: "Longer output is saved to a file the model can read in parts. Models with a small context window still get less, so one result cannot fill the chat.",
+      toolResultLimitDefault: "{count} (default)",
+      toolResultLimitLocked: "Set by UNSLOTH_TOOL_RESULT_MAX_CHARS",
+      toolResultLimitLoadError: "Failed to load the tool output length.",
+      toolResultLimitSaveError: "Failed to save the tool output length.",
+      toolResultLimitKeywords:
+        "tool output result truncate truncated truncation limit cap characters chars length terminal python mcp",
       visibility: {
         collapsed: "Collapsed",
         auto: "Expand while running",

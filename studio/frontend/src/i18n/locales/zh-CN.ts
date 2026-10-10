@@ -2434,6 +2434,15 @@ export const zhCN = {
         "聊天填满上下文时，较早的轮次会转入可检索的归档。",
       autoCompactKeywords:
         "压缩 自动压缩 上下文 窗口 截断 滑动 检查点 余量 归档 检索 搜索 compaction rolling checkpoint headroom archive retrieval rag",
+      toolResultLimit: "工具输出长度",
+      toolResultLimitDescription: "模型读取的单个 Python、终端或工具结果的字符数。默认值为 {count}。",
+      toolResultLimitHint: "更长的输出会保存到文件中，模型可以分段读取。上下文窗口较小的模型仍会获得更少的内容，避免单个结果占满对话。",
+      toolResultLimitDefault: "{count}（默认）",
+      toolResultLimitLocked: "由 UNSLOTH_TOOL_RESULT_MAX_CHARS 设置",
+      toolResultLimitLoadError: "无法加载工具输出长度。",
+      toolResultLimitSaveError: "无法保存工具输出长度。",
+      toolResultLimitKeywords:
+        "输出 结果 截断 限制 字符 长度 tool output result truncate truncated truncation limit cap characters chars length terminal python mcp",
       visibility: {
         collapsed: "折叠",
         auto: "运行时展开",

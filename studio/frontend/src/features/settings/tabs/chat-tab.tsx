@@ -24,6 +24,7 @@ import {
 import { PASTED_TEXT_THRESHOLD_CHOICES } from "@/features/chat/utils/pasted-text";
 import { refreshContextUsage } from "@/features/chat/utils/refresh-context-usage";
 import { formatBindingLabel, isMacPlatform } from "../lib/keyboard-shortcuts";
+import { useIsAccountOwner } from "@/features/auth";
 import { useUserProfileStore } from "@/features/profile";
 import { type TranslationKey, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
@@ -47,6 +48,12 @@ import {
   loadCurrentDatePrompt,
   updateCurrentDatePrompt,
 } from "../api/current-date-prompt";
+import {
+  type ToolResultLimitSettings,
+  loadToolResultLimit,
+  toolResultLimitChoices,
+  updateToolResultLimit,
+} from "../api/tool-result-limit";
 import { SettingsRow } from "../components/settings-row";
 import { ComposerSettings } from "../components/composer-settings";
 import { SettingsSection } from "../components/settings-section";
@@ -133,7 +140,119 @@ const PLUS_MENU_SETTINGS: {
   },
 ];
 
+// Install-wide, so owner-only: how much of one tool result the model reads.
+function ToolResultLimitRow() {
+  const t = useT();
+  const [settings, setSettings] = useState<ToolResultLimitSettings | null>(
+    null,
+  );
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void loadToolResultLimit(t("settings.chat.toolResultLimitLoadError"))
+      .then((loaded) => {
+        if (cancelled) return;
+        setSettings(loaded);
+        setError(null);
+      })
+      .catch((loadError) => {
+        if (cancelled) return;
+        setError(
+          loadError instanceof Error
+            ? loadError.message
+            : t("settings.chat.toolResultLimitLoadError"),
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [t]);
+
+  const save = async (maxChars: number) => {
+    setSaving(true);
+    setError(null);
+    try {
+      setSettings(
+        await updateToolResultLimit(
+          maxChars,
+          t("settings.chat.toolResultLimitSaveError"),
+        ),
+      );
+    } catch (saveError) {
+      setError(
+        saveError instanceof Error
+          ? saveError.message
+          : t("settings.chat.toolResultLimitSaveError"),
+      );
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const note = settings?.lockedByEnvironment
+    ? t("settings.chat.toolResultLimitLocked")
+    : error;
+  return (
+    <SettingsRow
+      label={t("settings.chat.toolResultLimit")}
+      description={t("settings.chat.toolResultLimitDescription", {
+        count: (
+          settings?.defaultChars ?? 16000
+        ).toLocaleString(),
+      })}
+      hint={t("settings.chat.toolResultLimitHint")}
+      below={
+        note ? (
+          <span
+            role={settings?.lockedByEnvironment ? undefined : "alert"}
+            className={cn(
+              "max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs",
+              settings?.lockedByEnvironment
+                ? "text-muted-foreground"
+                : "text-destructive",
+            )}
+          >
+            {note}
+          </span>
+        ) : null
+      }
+    >
+      <Select
+        value={settings ? String(settings.maxChars) : undefined}
+        disabled={!settings || saving || settings.lockedByEnvironment}
+        onValueChange={(value) => {
+          const next = Number(value);
+          if (settings && next !== settings.maxChars) void save(next);
+        }}
+      >
+        <SelectTrigger
+          className="w-36"
+          aria-label={t("settings.chat.toolResultLimit")}
+        >
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {settings
+            ? toolResultLimitChoices(settings).map((choice) => (
+                <SelectItem key={choice} value={String(choice)}>
+                  {choice === settings.defaultChars
+                    ? t("settings.chat.toolResultLimitDefault", {
+                        count: choice.toLocaleString(),
+                      })
+                    : choice.toLocaleString()}
+                </SelectItem>
+              ))
+            : null}
+        </SelectContent>
+      </Select>
+    </SettingsRow>
+  );
+}
+
 export function ChatTab() {
+  const isOwner = useIsAccountOwner();
   const t = useT();
   const navigate = useNavigate();
   const plusPins = usePlusMenuPrefsStore((state) => state.pins);
@@ -373,6 +492,7 @@ export function ChatTab() {
             onCheckedChange={setAutoCompactEnabled}
           />
         </SettingsRow>
+        {isOwner ? <ToolResultLimitRow /> : null}
         <SettingsRow
           label={t("settings.chat.autoScroll")}
           description={t("settings.chat.autoScrollDescription")}

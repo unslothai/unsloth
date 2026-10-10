@@ -2503,6 +2503,15 @@ export const es = {
         "Los turnos antiguos pasan a un archivo consultable al llenarse el contexto de un chat.",
       autoCompactKeywords:
         "compactación compactar automáticamente contexto ventana truncar deslizante checkpoint margen archivo recuperación búsqueda compaction rolling headroom archive retrieval rag",
+      toolResultLimit: "Longitud de la salida de herramientas",
+      toolResultLimitDescription: "Caracteres de un resultado de Python, Terminal o herramienta que lee el modelo. El valor predeterminado es {count}.",
+      toolResultLimitHint: "La salida más larga se guarda en un archivo que el modelo puede leer por partes. Los modelos con una ventana de contexto pequeña siguen recibiendo menos, para que un resultado no llene el chat.",
+      toolResultLimitDefault: "{count} (predeterminado)",
+      toolResultLimitLocked: "Definido por UNSLOTH_TOOL_RESULT_MAX_CHARS",
+      toolResultLimitLoadError: "No se pudo cargar la longitud de la salida de herramientas.",
+      toolResultLimitSaveError: "No se pudo guardar la longitud de la salida de herramientas.",
+      toolResultLimitKeywords:
+        "salida resultado truncar recortar límite caracteres longitud tool output result truncate truncated truncation limit cap characters chars length terminal python mcp",
       visibility: {
         collapsed: "Contraído",
         auto: "Expandir mientras se ejecuta",

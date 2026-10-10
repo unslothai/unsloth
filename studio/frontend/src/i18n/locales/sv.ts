@@ -2662,6 +2662,15 @@ export const sv = {
         "Äldre turer flyttas till ett sökbart arkiv när en chatt fyller sin kontext.",
       autoCompactKeywords:
         "komprimering komprimera autokomprimering kontextfönster trunkera rullande kontrollpunkt marginal arkiv hämtning återkallning rag sök compaction compact auto-compact context window truncate rolling checkpoint headroom archive retrieval recall search",
+      toolResultLimit: "Längd på verktygsutdata",
+      toolResultLimitDescription: "Tecken i ett Python-, Terminal- eller verktygsresultat som modellen läser. Standard är {count}.",
+      toolResultLimitHint: "Längre utdata sparas i en fil som modellen kan läsa i delar. Modeller med ett litet kontextfönster får fortfarande mindre, så att ett resultat inte fyller chatten.",
+      toolResultLimitDefault: "{count} (standard)",
+      toolResultLimitLocked: "Anges av UNSLOTH_TOOL_RESULT_MAX_CHARS",
+      toolResultLimitLoadError: "Det gick inte att läsa in längden på verktygsutdata.",
+      toolResultLimitSaveError: "Det gick inte att spara längden på verktygsutdata.",
+      toolResultLimitKeywords:
+        "utdata resultat trunkera avkortad gräns tecken längd tool output result truncate truncated truncation limit cap characters chars length terminal python mcp",
       visibility: {
         collapsed: "Hopfälld",
         auto: "Fäll ut medan den körs",
