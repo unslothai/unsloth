@@ -4184,6 +4184,108 @@ def patch_trl_vllm_generation():
     return
 
 
+def _packed_seq_lengths_from_position_ids(position_ids):
+    # One padding-free row whose position_ids restart at 0 per sequence -> int32 lengths, else None.
+    if position_ids is None or position_ids.dim() != 2 or position_ids.shape[0] != 1:
+        return None
+    pos = position_ids[0]
+    starts = torch.nonzero(pos == 0, as_tuple = False).flatten()
+    if starts.numel() < 2 or int(starts[0]) != 0:
+        return None
+    ends = torch.cat([starts[1:], starts.new_tensor([pos.numel()])])
+    return (ends - starts).to(torch.int32)
+
+
+def _is_unsloth_fast_backbone(backbone):
+    from .llama import LlamaModel_fast_forward
+    return getattr(type(backbone), "forward", None) is LlamaModel_fast_forward
+
+
+def _unsloth_async_grpo_add_fused_lm_head(original):
+    def add_fused_lm_head(model, *args, **kwargs):
+        # The fused head replaces the CausalLM forward and calls its backbone, so it must sit under any PEFT wrapper.
+        target = model.get_base_model() if hasattr(model, "get_base_model") else model
+        original(target, *args, **kwargs)
+        if not _is_unsloth_fast_backbone(getattr(target, "base_model", None)):
+            attn = getattr(target.config, "_attn_implementation", None) or ""
+            if "flash" not in str(attn):
+                raise ValueError(
+                    "Unsloth: AsyncGRPOTrainer packs several sequences into one row and separates them only by "
+                    f"position_ids resets, which `{attn}` attention ignores, so sequences would attend to each other. "
+                    "Load the model with FastLanguageModel, or with a flash attention implementation."
+                )
+            return
+        fused_forward = target.forward
+
+        @functools.wraps(fused_forward)
+        def forward(
+            *f_args,
+            fused_lm_head = False,
+            **f_kwargs,
+        ):
+            # Unsloth's attention reads sequence boundaries from packed_seq_lengths, not position_ids resets.
+            if fused_lm_head and f_kwargs.get("packed_seq_lengths") is None:
+                lengths = _packed_seq_lengths_from_position_ids(f_kwargs.get("position_ids"))
+                if lengths is not None:
+                    f_kwargs["packed_seq_lengths"] = lengths
+            return fused_forward(*f_args, fused_lm_head = fused_lm_head, **f_kwargs)
+
+        target.forward = forward
+
+    add_fused_lm_head._unsloth_async_grpo_patched = True
+    return add_fused_lm_head
+
+
+def patch_trl_async_grpo():
+    # TRL's AsyncGRPOTrainer only takes a model id (loaded with flash-attn3); let it take an already loaded
+    # Unsloth model instead, and keep its padding-free packed rows from attending across sequences.
+    if importlib.util.find_spec("trl.experimental") is None:
+        return
+    try:
+        if importlib.util.find_spec("trl.experimental.async_grpo") is None:
+            return
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            import trl.experimental.async_grpo.async_grpo_trainer as async_module
+    except Exception as e:
+        logger.info(f"Unsloth: Could not import trl.experimental.async_grpo: {e}")
+        return
+    if not all(
+        hasattr(async_module, x)
+        for x in ("create_model_from_path", "add_fused_lm_head", "AsyncGRPOTrainer")
+    ):
+        return
+    if getattr(async_module.add_fused_lm_head, "_unsloth_async_grpo_patched", False):
+        return
+
+    original_create = async_module.create_model_from_path
+
+    @functools.wraps(original_create)
+    def create_model_from_path(model_id, *args, **kwargs):
+        if isinstance(model_id, torch.nn.Module):
+            return model_id
+        return original_create(model_id, *args, **kwargs)
+
+    async_module.create_model_from_path = create_model_from_path
+    async_module.add_fused_lm_head = _unsloth_async_grpo_add_fused_lm_head(
+        async_module.add_fused_lm_head
+    )
+
+    trainer_class = async_module.AsyncGRPOTrainer
+    original_init = trainer_class.__init__
+
+    @functools.wraps(original_init)
+    def __init__(self, model, *args, **kwargs):
+        if not isinstance(model, str) and len(args) < 2 and kwargs.get("args") is None:
+            # Upstream names the default output_dir from the model id string.
+            name = getattr(getattr(model, "config", None), "_name_or_path", "") or "model"
+            kwargs["args"] = async_module.AsyncGRPOConfig(f"{name.split('/')[-1]}-AsyncGRPO")
+        original_init(self, model, *args, **kwargs)
+
+    trainer_class.__init__ = __init__
+    return
+
+
 def PatchFastRL(algorithm = None, FastLanguageModel = None):
     if FastLanguageModel is not None:
         PatchRL(FastLanguageModel)
@@ -4195,5 +4297,9 @@ def PatchFastRL(algorithm = None, FastLanguageModel = None):
     patch_trl_rl_trainers()
     patch_trl_openenv()
     patch_trl_vllm_generation()
+    try:
+        patch_trl_async_grpo()
+    except Exception as e:
+        logger.info(f"Unsloth: Could not patch trl.experimental.async_grpo: {e}")
     if type(algorithm) is str and algorithm.islower():
         PatchRLStatistics(algorithm)
