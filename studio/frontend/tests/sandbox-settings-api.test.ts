@@ -12,7 +12,7 @@ type Api = {
     fallback: string,
   ) => Promise<Record<string, unknown>>;
   updateSandboxSettings: (
-    update: Record<string, boolean>,
+    update: Record<string, boolean | number>,
     fallback: string,
   ) => Promise<Record<string, unknown>>;
   startHostPreparation: (fallback: string) => Promise<Record<string, unknown>>;
@@ -126,6 +126,7 @@ test("the status maps to camelCase and keeps the saved and effective values apar
       // An older server does not say which MXC tier runs.
       builtinContainer: null,
     },
+    memory: null,
     setup: null,
     checkedAt: 12,
   });
@@ -221,6 +222,60 @@ test("a non-Windows status has no Windows block and a plain load skips refresh",
   assert.equal(calls[0].url, "/api/settings/sandbox");
   assert.equal(status.windows, null);
   assert.equal(status.terminalShell, null);
+});
+
+test("the memory limit maps to camelCase, and an older backend without it maps to null", async () => {
+  const linux = {
+    platform: "linux",
+    python: {
+      backend: "bubblewrap",
+      available: true,
+      reason: "",
+      limitations: [],
+    },
+    terminal: {
+      backend: "bubblewrap",
+      available: true,
+      reason: "",
+      limitations: [],
+    },
+    windows: null,
+    checked_at: 1,
+  };
+  const { api } = loadApi(() =>
+    json({
+      ...linux,
+      memory: {
+        limit_gb: 16,
+        saved_gb: 32,
+        default_gb: 8,
+        min_gb: 1,
+        max_gb: 4096,
+        locked_by_environment: true,
+      },
+    }),
+  );
+  assert.deepEqual((await api.loadSandboxStatus(false, "fallback")).memory, {
+    limitGb: 16,
+    savedGb: 32,
+    defaultGb: 8,
+    minGb: 1,
+    maxGb: 4096,
+    lockedByEnvironment: true,
+  });
+  const older = loadApi(() => json(linux));
+  assert.equal(
+    (await older.api.loadSandboxStatus(false, "fallback")).memory,
+    null,
+  );
+});
+
+test("a memory limit save sends only memory_limit_gb", async () => {
+  const { api, calls } = loadApi(() => json(WINDOWS_STATUS));
+  await api.updateSandboxSettings({ memoryLimitGb: 24 }, "fallback");
+  assert.deepEqual(JSON.parse(String(calls[0].init?.body)), {
+    memory_limit_gb: 24,
+  });
 });
 
 test("an unknown host preparation stays null rather than reading as prepared", async () => {

@@ -1280,6 +1280,10 @@ export const he = {
       grantsDescription:
         "שומר גישת קריאה בלבד לתיקיות זמן הריצה של Unsloth בין קריאות. כשהאפשרות כבויה, כל קריאה מתחילה כמה שניות לאט יותר.",
       lockedGrants: "הוגדר על ידי UNSLOTH_MXC_PERSISTENT_READ_GRANTS",
+      memoryLabel: "מגבלת זיכרון",
+      memoryDescription: "הזיכרון המרבי שקריאת Python או Terminal אחת בארגז החול יכולה לשריין. חל מהקריאה הבאה. ברירת המחדל היא {defaultSize} GB.",
+      memoryLocked: "הוגדר על ידי UNSLOTH_STUDIO_SANDBOX_AS_GB",
+      memoryInvalid: "יש להזין מספר שלם מ-{min} עד {max}.",
       restored: "הגישה הוסרה מ-{count} תיקיות.",
       hostPrepLabel: "הגדרת מנהל מערכת",
       prepPrepared: "בוצע",

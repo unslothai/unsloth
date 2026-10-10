@@ -1309,6 +1309,10 @@ export const sv = {
       grantsDescription:
         "Behåller läsåtkomst till Unsloths egna körmiljömappar mellan anrop. När det är av startar varje anrop några sekunder långsammare.",
       lockedGrants: "Inställt av UNSLOTH_MXC_PERSISTENT_READ_GRANTS",
+      memoryLabel: "Minnesgräns",
+      memoryDescription: "Mest minne som ett Python- eller Terminal-anrop i sandlådan kan reservera. Gäller från nästa anrop. Standard är {defaultSize} GB.",
+      memoryLocked: "Inställt av UNSLOTH_STUDIO_SANDBOX_AS_GB",
+      memoryInvalid: "Ange ett heltal från {min} till {max}.",
       restored: "Tog bort åtkomst från {count} mappar.",
       hostPrepLabel: "Administratörskonfiguration",
       prepPrepared: "Klar",
