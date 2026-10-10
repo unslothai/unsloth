@@ -220,21 +220,33 @@ def _render_conversation(tokenizer, conversation, tools = None):
     raise first_error
 
 
-def _count_renderable(tokenizer, conversations):
+def _template_render_stats(tokenizer, rows):
     rendered = 0
-    for conversation in conversations:
+    advertised = 0
+    tool_rows = 0
+    for conversation, tools in rows:
         try:
-            _render_conversation(tokenizer, conversation)
+            if tools:
+                tool_rows += 1
+                with_tools = _render_conversation(tokenizer, conversation, tools)
+                try:
+                    without_tools = _render_conversation(tokenizer, conversation)
+                except Exception:
+                    advertised += 1
+                else:
+                    advertised += with_tools != without_tools
+            else:
+                _render_conversation(tokenizer, conversation)
             rendered += 1
         except Exception:
             pass
-    return rendered
+    return rendered, advertised, tool_rows
 
 
-def _sample_conversations(dataset, chat_column, limit = _TEMPLATE_PROBE_ROWS):
-    """Sample across the dataset, or from the start for streaming datasets."""
+def _sample_template_rows(dataset, chat_column, limit = _TEMPLATE_PROBE_ROWS):
+    """sample across the dataset, or from the start for streaming datasets."""
     n_rows = len(dataset) if hasattr(dataset, "__len__") else 0
-    conversations = []
+    sampled = []
     try:
         if n_rows > limit:
             step = (n_rows - 1) / (limit - 1)
@@ -244,37 +256,45 @@ def _sample_conversations(dataset, chat_column, limit = _TEMPLATE_PROBE_ROWS):
         for row in rows:
             conversation = row.get(chat_column)
             if conversation:
-                conversations.append(conversation)
-            if len(conversations) >= limit:
+                sampled.append((conversation, _row_tools(row.get("tools"))))
+            if len(sampled) >= limit:
                 break
     except Exception:
         return []
-    return conversations
+    return sampled
 
 
 def keep_renderable_chat_template(tokenizer, dataset, chat_column, own_template):
-    """Restore the checkpoint template if it renders more sampled rows; return a log note."""
+    """restore the checkpoint template when it renders more rows or preserves tool catalogs."""
     override = getattr(tokenizer, "chat_template", None)
     if not own_template or override == own_template:
         return None
 
-    conversations = _sample_conversations(dataset, chat_column)
-    if not conversations:
+    sampled = _sample_template_rows(dataset, chat_column)
+    if not sampled:
         return None
 
-    rendered_by_override = _count_renderable(tokenizer, conversations)
-    if rendered_by_override == len(conversations):
+    override_rendered, override_advertised, tool_rows = _template_render_stats(
+        tokenizer, sampled
+    )
+    if override_rendered == len(sampled) and override_advertised == tool_rows:
         return None
 
     _set_chat_template(tokenizer, own_template)
-    if _count_renderable(tokenizer, conversations) <= rendered_by_override:
+    own_rendered, own_advertised, _ = _template_render_stats(tokenizer, sampled)
+    restores_tools = (
+        tool_rows
+        and override_advertised < tool_rows
+        and own_advertised == tool_rows
+        and own_rendered == len(sampled)
+    )
+    if own_rendered <= override_rendered and not restores_tools:
         _set_chat_template(tokenizer, override)
         return None
 
     return (
-        "📝 The Unsloth chat template cannot render this dataset's conversations "
-        "(tool calls or consecutive same-role turns); using the model's own chat "
-        "template instead"
+        "📝 The Unsloth chat template cannot render every conversation or tool catalog; "
+        "using the model's own chat template instead"
     )
 
 

@@ -11,6 +11,14 @@ from utils.datasets import chat_templates
 OWN = "own-template"
 OVERRIDE = "unsloth-override"
 
+_WEATHER = {
+    "type": "function",
+    "function": {
+        "name": "get_weather",
+        "parameters": {"type": "object", "properties": {}},
+    },
+}
+
 
 class _TemplatedTokenizer:
     eos_token = "</s>"
@@ -25,6 +33,19 @@ class _TemplatedTokenizer:
             raise ValueError("Conversation roles must alternate user/assistant/user/assistant/...")
         turns = "\n".join(f"{turn['role']}: {turn['content']}" for turn in conversation)
         return f"[{self.chat_template}] {turns}"
+
+
+class _OwnToolTemplateTokenizer(_TemplatedTokenizer):
+    def apply_chat_template(
+        self,
+        conversation,
+        tools = None,
+        **kwargs,
+    ):
+        rendered = super().apply_chat_template(conversation, **kwargs)
+        if self.chat_template == OWN and tools:
+            return f"[tools] {rendered}"
+        return rendered
 
 
 def _plain_convo(index):
@@ -89,6 +110,20 @@ def test_override_is_kept_when_it_renders_the_dataset(monkeypatch):
     assert result["success"] is True
     assert len(result["dataset"]) == 8
     assert tokenizer.chat_template == OVERRIDE
+
+
+def test_own_template_replaces_an_override_that_silently_drops_tools(monkeypatch):
+    tokenizer = _OwnToolTemplateTokenizer()
+    dataset_info = _dataset_info(_plain_convo)
+    dataset_info["dataset"] = dataset_info["dataset"].add_column(
+        "tools", [[_WEATHER] for _ in range(8)]
+    )
+
+    result = _format(dataset_info, tokenizer, monkeypatch)
+
+    assert result["success"] is True
+    assert all(text.startswith("[tools]") for text in result["dataset"]["text"])
+    assert tokenizer.chat_template == OWN
 
 
 def test_override_is_kept_when_neither_template_renders(monkeypatch):
