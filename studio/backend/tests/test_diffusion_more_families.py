@@ -1006,3 +1006,19 @@ def test_a_local_turbo_pipeline_never_plans_the_2_1_artifact(base, expected):
     fam = detect_family("Qwen/Qwen-Image-2.1")
     for scheme in ("int8", "fp8"):
         assert family_prequant_repo(fam, scheme, base_repo = base) == expected, (base, scheme)
+
+
+def test_an_opaque_local_load_with_a_shipped_grid_runs_its_step_count():
+    from core.inference.diffusion import _generation_defaults_for
+    from core.inference.diffusion_families import generation_params_with_grid
+
+    grid = (1.0, 0.978453, 0.95418, 0.926626, 0.89508, 0.845148, 0.704534, 0.414568)
+    # No name matches: the grid's own count, not the fallback's 9 (which would resample it).
+    assert generation_params_with_grid(grid, "/models/opaque", "/models/opaque") == (8, 0.0)
+    assert _generation_defaults_for("/models/opaque", None, "/models/opaque", grid) == {
+        "steps": 8,
+        "guidance": 0.0,
+    }
+    # A name still decides first, and no grid keeps the fallback.
+    assert generation_params_with_grid(grid, "Qwen/Qwen-Image-2.1-Turbo") == (8, 1.0)
+    assert generation_params_with_grid(None, "/models/opaque") == (9, 0.0)

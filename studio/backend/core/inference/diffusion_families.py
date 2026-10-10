@@ -1450,15 +1450,32 @@ def transformer_variant_differs_from_base(
     return base_row is not None and _first_variant(rows, identifiers) not in (None, base_row)
 
 
-def default_generation_params(*identifiers: Optional[str]) -> tuple[int, float]:
-    """Default ``(steps, guidance)`` for a loaded model. The first identifier naming a known model
-    wins (repo id, then resolved base repo), so a local-path load still resolves via its base
-    repo. Keys matched as substrings, most specific first."""
+def named_generation_params(*identifiers: Optional[str]) -> Optional[tuple[int, float]]:
+    """Default ``(steps, guidance)`` of the first identifier naming a known model (repo id, then resolved base repo,
+    so a local-path load still resolves via its base repo), or None. Keys matched as substrings, most specific first."""
     for identifier in identifiers:
         needle = (identifier or "").lower()
         for key, steps, guidance in _GENERATION_DEFAULTS:
             if name_key_in(key, needle):
                 return steps, guidance
+    return None
+
+
+def default_generation_params(*identifiers: Optional[str]) -> tuple[int, float]:
+    """:func:`named_generation_params`, else the generic fallback."""
+    return named_generation_params(*identifiers) or _GENERATION_DEFAULT_FALLBACK
+
+
+def generation_params_with_grid(
+    grid: Optional[tuple[float, ...]], *identifiers: Optional[str]
+) -> tuple[int, float]:
+    """:func:`default_generation_params`, except that a load no name recognises but whose checkpoint ships a sampling
+    grid (an opaque local Turbo copy) runs that grid's own step count instead of resampling it to the fallback's."""
+    named = named_generation_params(*identifiers)
+    if named is not None:
+        return named
+    if grid:
+        return len(grid), _GENERATION_DEFAULT_FALLBACK[1]
     return _GENERATION_DEFAULT_FALLBACK
 
 

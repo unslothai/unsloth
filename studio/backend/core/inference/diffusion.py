@@ -71,6 +71,7 @@ from .diffusion_families import (
     cache_holds_files,
     comfy_flow_shift_for,
     default_generation_params,
+    generation_params_with_grid,
     detect_family_for_pick,
     excluded_model_reason,
     prefer_ungated_mirror,
@@ -1593,13 +1594,16 @@ def _model_index_sample_sigmas(base: str, base_local_dir: Optional[str]) -> Any:
 
 
 def _generation_defaults_for(
-    repo_id: Optional[str], gguf_filename: Optional[str], base_repo: Optional[str]
+    repo_id: Optional[str],
+    gguf_filename: Optional[str],
+    base_repo: Optional[str],
+    grid: Optional[tuple[float, ...]] = None,
 ) -> Optional[dict[str, float]]:
     """The (steps, guidance) the OpenAI route renders this load with, header variant before base (FLUX.1's base is
     schnell), so the Images form can match it."""
     try:
-        steps, guidance = default_generation_params(
-            gguf_filename, content_variant_hint(repo_id, gguf_filename), repo_id, base_repo
+        steps, guidance = generation_params_with_grid(
+            grid, gguf_filename, content_variant_hint(repo_id, gguf_filename), repo_id, base_repo
         )
     except Exception:  # noqa: BLE001 - status must not fail on a recipe lookup
         return None
@@ -11431,7 +11435,7 @@ class DiffusionBackend:
             "transformer_cache_stats": static_skip_stats(state.pipe),
             "resolved": resolved,
             "generation_defaults": _generation_defaults_for(
-                state.repo_id, state.gguf_filename, state.base_repo
+                state.repo_id, state.gguf_filename, state.base_repo, pipe_sample_sigmas(state.pipe)
             ),
             # Workflows the loaded family supports, so the UI can gate its tabs.
             "workflows": _family_workflows(state.family),
