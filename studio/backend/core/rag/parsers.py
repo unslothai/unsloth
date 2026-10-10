@@ -108,6 +108,9 @@ class _Stripper(HTMLParser):
             return
         for col in range(len(row), len(table.spans)):
             table.spans[col] = max(table.spans[col] - 1, 0)
+        self._span_budget -= max(len(table.spans) - len(row), 0)
+        if self._span_budget < 0:
+            table.spans.clear()
         while table.spans and not table.spans[-1]:
             table.spans.pop()
         if len(row) == 1:

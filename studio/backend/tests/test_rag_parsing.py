@@ -827,6 +827,11 @@ def test_html_table_spans_are_capped_by_the_file_size(tmp_path):
     assert text.count("a") == 2000 and len(text) < 4 * len(html)
 
 
+def test_html_empty_rows_spend_the_span_budget(tmp_path):
+    text = _parse_html(tmp_path, "<table><tr><td colspan=50 rowspan=65534>x" + "<tr>" * 100 + "<tr><td>a<td>b</table>")
+    assert text.splitlines()[-1] == "a | b"
+
+
 def test_html_rowspan_stops_at_its_row_group(tmp_path):
     text = _parse_html(
         tmp_path,
