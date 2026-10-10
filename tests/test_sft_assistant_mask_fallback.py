@@ -19,10 +19,15 @@ from pathlib import Path
 import pytest
 
 SOURCE_PATH = Path(__file__).resolve().parents[1] / "unsloth" / "models" / "rl_replacements.py"
-NAMES = ("_SFT_TRAINING_TEMPLATE", "_SFT_STOP_TOKEN_CHECK", "sft_trainer_assistant_mask_fallback")
+NAMES = (
+    "_SFT_TRAINING_TEMPLATE",
+    "_SFT_STOP_TOKEN_CHECK",
+    "_zoo_reads_assistant_mask_fallback",
+    "sft_trainer_assistant_mask_fallback",
+)
 
 
-def _load():
+def _load(zoo_reads_flag = True):
     tree = ast.parse(SOURCE_PATH.read_text(encoding = "utf-8"))
     nodes = []
     for node in tree.body:
@@ -34,6 +39,7 @@ def _load():
             nodes.append(node)
     namespace = {"re": re}
     exec(compile(ast.Module(body = nodes, type_ignores = []), str(SOURCE_PATH), "exec"), namespace)
+    namespace["_zoo_reads_assistant_mask_fallback"] = lambda: zoo_reads_flag
     return namespace["sft_trainer_assistant_mask_fallback"]
 
 
@@ -108,3 +114,9 @@ def test_applies_to_installed_trl():
     assert "_unsloth_assistant_mask_fallback = True" in patched
     assert "not getattr(self, '_unsloth_assistant_mask_fallback', False)" in patched
     compile(patched, "<patched SFTTrainer.__init__>", "exec")
+
+
+def test_older_zoo_keeps_trl_error():
+    # Without a Zoo that masks from the flag, TRL's error must stand rather than train on every token.
+    with pytest.raises(ValueError):
+        _run(_load(zoo_reads_flag = False)("__init__", TRL_SHAPED_INIT), _unsupported)

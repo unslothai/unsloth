@@ -1023,10 +1023,19 @@ _SFT_STOP_TOKEN_CHECK = re.compile(
 )
 
 
+def _zoo_reads_assistant_mask_fallback():
+    # An older unsloth_zoo never reads the flag, so suppressing TRL's error there would train on every token.
+    try:
+        from unsloth_zoo.dataset_utils import sft_prepare_dataset
+        return "_unsloth_assistant_mask_fallback" in inspect.getsource(sft_prepare_dataset)
+    except Exception:
+        return False
+
+
 def sft_trainer_assistant_mask_fallback(function_name, function):
     if function_name != "__init__" or "_unsloth_assistant_mask_fallback" in function:
         return function
-    if _SFT_TRAINING_TEMPLATE.search(function) is None:
+    if _SFT_TRAINING_TEMPLATE.search(function) is None or not _zoo_reads_assistant_mask_fallback():
         return function
 
     def _replace(match):
