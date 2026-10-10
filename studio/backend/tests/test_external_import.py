@@ -338,7 +338,15 @@ def test_claude_rewind_compaction_uses_its_logical_parent(claude_home):
     )
     messages = claude.read_transcript(path, "t", "s1").messages
     ids = [m["id"] for m in messages]
-    assert [m["parentId"] for m in messages] == [None, ids[0], ids[1], ids[2], ids[1], ids[4], ids[5]]
+    assert [m["parentId"] for m in messages] == [
+        None,
+        ids[0],
+        ids[1],
+        ids[2],
+        ids[1],
+        ids[4],
+        ids[5],
+    ]
 
 
 def test_claude_releases_filtered_records_while_streaming(tmp_path, monkeypatch):
