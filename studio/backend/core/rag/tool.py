@@ -316,13 +316,10 @@ def search_for_autoinject(
     return (text, sources) if sources else None
 
 
-def _drop_chunk_overlap(prev: str, text: str) -> str:
-    for i in range(len(prev)):
-        if (i == 0 or prev[i - 1].isspace()) and text.startswith(prev[i:]):
-            rest = text[len(prev) - i :]
-            if not rest or rest[0].isspace():
-                return rest.lstrip("\r\n")
-    return text
+def _drop_chunk_overlap(text: str, start: int | None, prev_end: int | None) -> str:
+    if not isinstance(start, int) or not isinstance(prev_end, int) or start >= prev_end:
+        return text
+    return text[min(prev_end - start, len(text)) :].lstrip("\r\n")
 
 
 def whole_document_context(
@@ -350,10 +347,13 @@ def whole_document_context(
         return None
 
     sources: list[dict] = []
-    prev_page, prev_text = None, ""
+    prev_page, prev_end = None, None
     for i, r in enumerate(rows, 1):
-        page, text = (r["document_id"], r["page_number"]), r["text"] or ""
-        trimmed = _drop_chunk_overlap(prev_text, text) if page == prev_page else text
+        page = (r["document_id"], r["source_page_index"])
+        text = r["text"] or ""
+        trimmed = (
+            _drop_chunk_overlap(text, r["page_char_start"], prev_end) if page == prev_page else text
+        )
         sources.append(
             {
                 "citationId": i,
@@ -365,7 +365,7 @@ def whole_document_context(
                 "score": None,
             }
         )
-        prev_page, prev_text = page, text
+        prev_page, prev_end = page, r["page_char_end"]
     rendered = render_sources(sources)
     if max(1, len(rendered) // 4) > max_tokens:
         return None

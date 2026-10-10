@@ -128,6 +128,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             text TEXT NOT NULL,
             page_number INTEGER,
             source_page_index INTEGER,
+            page_char_start INTEGER,
+            page_char_end INTEGER,
             token_count INTEGER,
             kind TEXT NOT NULL DEFAULT 'text',
             pdf_regions_json TEXT
@@ -251,6 +253,11 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     # recover the order within a compaction epoch.
     if "archive_ordinal" not in cols:
         conn.execute("ALTER TABLE documents ADD COLUMN archive_ordinal INTEGER")
+    chunk_cols = {r[1] for r in conn.execute("PRAGMA table_info(chunks)").fetchall()}
+    if "page_char_start" not in chunk_cols:
+        conn.execute("ALTER TABLE chunks ADD COLUMN page_char_start INTEGER")
+    if "page_char_end" not in chunk_cols:
+        conn.execute("ALTER TABLE chunks ADD COLUMN page_char_end INTEGER")
     # Partial, so it is empty until a chat is compacted and the MAX() that allocates the next ordinal is
     # an index probe rather than a scan.
     conn.execute(
