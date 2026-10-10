@@ -290,8 +290,9 @@ def set_lan_connector_active(active: bool) -> None:
 
 
 def tunnel_connector_active() -> bool:
-    """True while a tunnel is publishing this server past the local network."""
-    return _remote_connector_active
+    """True for a managed tunnel or an operator-configured local HTTPS proxy."""
+    from utils.local_proxy import local_proxy_configured
+    return _remote_connector_active or local_proxy_configured()
 
 
 def lan_connector_active() -> bool:
@@ -301,7 +302,7 @@ def lan_connector_active() -> bool:
 
 def remote_connector_active() -> bool:
     """True while any connector can carry a request from beyond loopback."""
-    return _remote_connector_active or _lan_connector_active
+    return tunnel_connector_active() or _lan_connector_active
 
 
 def _reset_loopback_default_state() -> None:

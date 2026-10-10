@@ -3111,6 +3111,12 @@ def _is_colab_notebook_request(request: Request) -> bool:
 
 def _should_inject_bootstrap(request: Request) -> bool:
     """Whether to embed the seeded bootstrap password in index.html."""
+    from utils.local_proxy import local_proxy_configured
+
+    # An operator-managed proxy can strip headers or rewrite Host. With this
+    # opt-in, no served HTML may carry bootstrap credentials, on any listener.
+    if local_proxy_configured():
+        return False
     if not _is_same_origin_request(request):
         return False
     if _IS_COLAB and _is_colab_notebook_request(request):
@@ -3168,14 +3174,16 @@ def _is_direct_loopback_frontend_request(scope) -> bool:
 
 
 def _is_remote_frontend_request(scope, app_state) -> bool:
-    """True for a request the desktop backend may answer with its packaged web UI: Cloudflare's own edge, one
-    of the sockets the runtime LAN listener bound (both keyed on the connection, not a client header), or a
-    direct unproxied browser on the loopback listener."""
+    """Serve the packaged UI through Cloudflare, a runtime LAN listener, a direct
+    loopback browser, or an operator-configured local HTTPS proxy."""
     from lan_access import request_on_lan_listener
+    from utils.local_proxy import local_proxy_frontend_request
+
     return (
         _is_live_cloudflare_frontend_request(scope, app_state)
         or request_on_lan_listener(scope)
         or _is_direct_loopback_frontend_request(scope)
+        or local_proxy_frontend_request(scope)
     )
 
 
@@ -3199,6 +3207,9 @@ def setup_frontend(
 ):
     """Mount frontend static files (optional). ``tunnel_only`` restricts the mount to the callers
     `_is_remote_frontend_request` admits."""
+    from utils.local_proxy import validate_local_proxy_origin
+
+    validate_local_proxy_origin()
     if not build_path.exists():
         return False
 

@@ -121,3 +121,13 @@ def test_full_scope_ignores_the_lan_listener_whatever_the_tunnel_state():
         )
         is False
     )
+
+
+@pytest.mark.parametrize("scope", ["inference", "full"])
+def test_configured_local_proxy_closes_keyless_loopback_access(monkeypatch, scope):
+    set_keyless_api_access(scope)
+    request = request_for(LOOPBACK)
+    request.app.state.bind_host = "127.0.0.1"
+    assert keyless_request_allowed(request) is True
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROXY_ORIGIN", "https://studio.example.ts.net")
+    assert keyless_request_allowed(request) is False
