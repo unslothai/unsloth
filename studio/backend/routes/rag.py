@@ -904,6 +904,7 @@ def _folder_job_view(row: dict) -> dict:
         "processedFiles": processed,
         "indexedFiles": (row.get("added") or 0) + (row.get("changed") or 0),
         "removedFiles": row.get("deleted") or 0,
+        "renamedFiles": row.get("renamed") or 0,
         "failedFiles": row.get("failed") or 0,
         "error": row.get("error"),
         "createdAt": row.get("created_at"),

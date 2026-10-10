@@ -20,7 +20,12 @@ requires_sqlite_vec = pytest.mark.skipif(
 )
 
 
-def _ignored(rules_text: str, rel: str, is_dir: bool = False, base: str = "") -> bool:
+def _ignored(
+    rules_text: str,
+    rel: str,
+    is_dir: bool = False,
+    base: str = "",
+) -> bool:
     return gitignore.is_ignored(rel, is_dir, tuple(gitignore.parse(rules_text, base)))
 
 
@@ -67,7 +72,11 @@ def source(linkable_temp_base, tmp_path) -> Path:
     return root
 
 
-def _write(root: Path, rel: str, text: str = "words") -> None:
+def _write(
+    root: Path,
+    rel: str,
+    text: str = "words",
+) -> None:
     path = root / rel
     path.parent.mkdir(parents = True, exist_ok = True)
     path.write_text(text, encoding = "utf-8")
@@ -113,6 +122,13 @@ def test_scan_skips_oversized_plain_text_but_not_documents(source, monkeypatch):
     assert report["too_large"] == 1
 
 
+def test_scan_skips_empty_files(source):
+    _write(source, "pkg/__init__.py", "")
+    _write(source, "pkg/core.py", "def core(): pass")
+    found, _ = folder_sync._scan(str(source))
+    assert set(found) == {"pkg/core.py"}
+
+
 def test_scan_keeps_the_first_files_in_sorted_order_past_the_cap(source, monkeypatch):
     monkeypatch.setattr(config, "FOLDER_MAX_FILES", 3)
     for name in ("e.md", "a.md", "d.md", "b.md", "c.md"):
@@ -133,7 +149,9 @@ def test_scan_still_refuses_a_folder_far_past_the_cap(source, monkeypatch):
 
 def _folder_row(folder_id: str) -> dict:
     with closing(rag_db.get_connection()) as conn:
-        return dict(conn.execute("SELECT * FROM linked_folders WHERE id=?", (folder_id,)).fetchone())
+        return dict(
+            conn.execute("SELECT * FROM linked_folders WHERE id=?", (folder_id,)).fetchone()
+        )
 
 
 def _run(folder_id: str) -> dict:

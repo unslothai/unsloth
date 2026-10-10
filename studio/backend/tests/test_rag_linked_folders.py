@@ -1013,7 +1013,11 @@ def test_large_windows_file_identity_round_trips_through_sqlite(
     identity = (1 << 63, 1 << 127)
     real_scan, real_snapshot = folder_sync._scan, folder_sync._snapshot
 
-    def scan(root, expected_identity = None, report = None):
+    def scan(
+        root,
+        expected_identity = None,
+        report = None,
+    ):
         found, root_identity = real_scan(root, expected_identity, report)
         for metadata in found.values():
             metadata["scanned"], (metadata["device"], metadata["inode"]) = (

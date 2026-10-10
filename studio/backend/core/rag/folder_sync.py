@@ -1199,6 +1199,9 @@ def _scan(
                         # authoritative for
                         # deletion.
                         pass
+                # Nothing to index, and ingest fails every pass on it (an empty __init__.py).
+                if st.st_size == 0:
+                    continue
                 if (
                     config.FOLDER_MAX_TEXT_BYTES
                     and _is_plain_text_ext(ext)
