@@ -399,6 +399,106 @@ class _TableFrame:
         self.parts: list[str] = []
 
 
+class _TitleButtonScan:
+    """Find buttons that hold their heading's whole title (``<h3><button>Question</button></h3>``, an accordion
+    trigger): the heading's first visible button with text, with no visible heading text outside it. Fed the
+    renderer's own tokens, so it parses exactly as the renderer does; the kept buttons render on a second pass."""
+
+    def __init__(self) -> None:
+        self.keep: set[tuple[int, int]] = set()  # HTMLParser.getpos() of each kept <button>
+        self._open: list[str] = []
+        self._closable_open = (
+            0  # open tags with an optional end tag, as _MarkdownRenderer counts them
+        )
+        self._muted: list[int] = []  # open-tag indices of hidden / skipped subtrees
+        self._button_at: int | None = None
+        self._button_frame: list | None = None  # heading whose candidate is the open button
+        # visible text outside any button, counted so a heading reads "text since I opened" in O(1)
+        self._text_seq = 0
+        # per open heading: [open-tag index, candidate position or None, candidate has text, _text_seq at open]
+        self._headings: list[list] = []
+
+    def starttag(self, tag: str, attrs: list[tuple[str, str | None]], pos: tuple[int, int]) -> None:
+        self._close_implicit(tag)
+        if tag in _VOID_TAGS:
+            return
+        attr_dict = dict(attrs)
+        self._open.append(tag)
+        if tag in _IMPLICIT_CLOSERS:
+            self._closable_open += 1
+        index = len(self._open) - 1
+        if _is_hidden_element(attr_dict) or (tag in _SKIP_TAGS and tag != "button"):
+            self._muted.append(index)
+        if tag in _HEADING_TAGS or _is_aria_heading(attr_dict):
+            self._headings.append([index, None, False, self._text_seq])
+        elif tag == "button" and self._button_at is None:
+            self._button_at = index
+            frame = self._headings[-1] if self._headings else None
+            if frame is not None and frame[1] is None and not self._muted:
+                frame[1] = pos
+                self._button_frame = frame
+
+    def endtag(self, tag: str) -> None:
+        for i in range(len(self._open) - 1, -1, -1):
+            if self._open[i] == tag:
+                self._pop_to(i)
+                return
+
+    def data(self, data: str) -> None:
+        if self._muted or not data.strip():
+            return
+        if self._button_at is None:
+            self._text_seq += 1
+        elif self._button_frame is not None:
+            self._button_frame[2] = True
+
+    def finish(self) -> None:
+        # a page cut inside a heading (the fetch cap) still keeps its title
+        self._close_headings(0)
+
+    def _close_implicit(self, tag: str) -> None:
+        """The renderer's optional-end-tag recovery (``_MarkdownRenderer._close_implicit``), so both see one tree."""
+        if not self._closable_open:
+            return
+        barriers = _CLOSE_BARRIERS.get(tag, ())
+        while True:
+            close_at = None
+            for i in range(len(self._open) - 1, -1, -1):
+                name = self._open[i]
+                if tag in _IMPLICIT_CLOSERS.get(name, ()):
+                    close_at = i
+                    break
+                if name in barriers:
+                    break
+            if close_at is None:
+                return
+            self._pop_to(close_at)
+
+    def _pop_to(self, i: int) -> None:
+        if self._button_at is not None and self._button_at >= i:
+            self._button_at = None
+            # an icon-only control releases the slot for the trigger after it
+            if self._button_frame is not None and not self._button_frame[2]:
+                self._button_frame[1] = None
+            self._button_frame = None
+        while self._muted and self._muted[-1] >= i:
+            self._muted.pop()
+        self._close_headings(i)
+        self._closable_open -= sum(1 for name in self._open[i:] if name in _IMPLICIT_CLOSERS)
+        del self._open[i:]
+
+    def _close_headings(self, i: int) -> None:
+        while self._headings and self._headings[-1][0] >= i:
+            _, button, has_text, seq = self._headings.pop()
+            if button is not None and has_text and self._text_seq == seq:
+                self.keep.add(button)
+
+
+# (len, hash) of recent pages -> their title buttons, so main-content passes over one page scan it once
+_TITLE_BUTTON_CACHE: dict[tuple[int, int], frozenset[tuple[int, int]]] = {}
+_TITLE_BUTTON_CACHE_SIZE = 4
+
+
 class _MarkdownRenderer(HTMLParser):
     """HTMLParser subclass that emits Markdown tokens into a list.
 
@@ -417,6 +517,9 @@ class _MarkdownRenderer(HTMLParser):
         page_span_limit: int | None = None,
     ):
         super().__init__(convert_charrefs = False)
+        # getpos() of buttons that carry their heading's title, found by _TitleButtonScan
+        self.title_buttons: frozenset[tuple[int, int]] = frozenset()
+        self._title_scan: _TitleButtonScan | None = None
         self._site_links = site_links
         self._out: list[str] = []
         self._skip_depth: int = 0
@@ -972,6 +1075,11 @@ class _MarkdownRenderer(HTMLParser):
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag = tag.lower()
+        if self._title_scan is not None:
+            self._title_scan.starttag(tag, attrs, self.getpos())
+        title_button = (
+            tag == "button" and bool(self.title_buttons) and self.getpos() in self.title_buttons
+        )
 
         if self._skip_depth:
             if tag in _SKIP_TAGS:
@@ -982,7 +1090,7 @@ class _MarkdownRenderer(HTMLParser):
         # <p>, releasing its hidden mark so following siblings render.
         self._close_implicit(tag)
 
-        if tag in _SKIP_TAGS:
+        if tag in _SKIP_TAGS and not (title_button and self._heading_marks):
             self._skip_depth += 1
             return
 
@@ -1083,8 +1191,11 @@ class _MarkdownRenderer(HTMLParser):
 
     def handle_endtag(self, tag: str) -> None:
         tag = tag.lower()
+        if self._title_scan is not None:
+            self._title_scan.endtag(tag)
 
-        if tag in _SKIP_TAGS:
+        # a kept title button closes through _exit_tag; skipped ones always raised _skip_depth
+        if tag in _SKIP_TAGS and (self._skip_depth or tag != "button"):
             self._skip_depth = max(0, self._skip_depth - 1)
             return
         if self._skip_depth:
@@ -1155,6 +1266,8 @@ class _MarkdownRenderer(HTMLParser):
         return self._scope_tags is not None and self._scope_depth == 0
 
     def handle_data(self, data: str) -> None:
+        if self._title_scan is not None:
+            self._title_scan.data(data)
         if self._text_suppressed():
             return
         if self._in_pre:
@@ -1180,16 +1293,20 @@ class _MarkdownRenderer(HTMLParser):
         self._emit(text)
 
     def handle_entityref(self, name: str) -> None:
+        text = html.unescape(f"&{name};")
+        if self._title_scan is not None:
+            self._title_scan.data(text)
         if self._text_suppressed():
             return
-        text = html.unescape(f"&{name};")
         self._count_header_text(text)
         self._emit(text)
 
     def handle_charref(self, name: str) -> None:
+        text = html.unescape(f"&#{name};")
+        if self._title_scan is not None:
+            self._title_scan.data(text)
         if self._text_suppressed():
             return
-        text = html.unescape(f"&#{name};")
         self._count_header_text(text)
         self._emit(text)
 
@@ -1356,18 +1473,37 @@ def _new_renderer(
     span_char_limit: int | None = None,
     header_decisions: list[bool] | None = None,
 ) -> _MarkdownRenderer:
-    renderer = _MarkdownRenderer(
-        scope_tags = scope_tags,
-        strip_header = strip_header,
-        site_links = site_links,
-        span_char_limit = 2 * len(source_html) if span_char_limit is None else span_char_limit,
-        header_decisions = header_decisions,
-        page_span_limit = 2 * len(source_html),
-    )
-    renderer.feed(source_html)
-    renderer.close()
-    renderer.flush_pending()
-    return renderer
+    def build(
+        title_buttons: frozenset[tuple[int, int]], scan: _TitleButtonScan | None
+    ) -> _MarkdownRenderer:
+        renderer = _MarkdownRenderer(
+            scope_tags = scope_tags,
+            strip_header = strip_header,
+            site_links = site_links,
+            span_char_limit = 2 * len(source_html) if span_char_limit is None else span_char_limit,
+            header_decisions = header_decisions,
+            page_span_limit = 2 * len(source_html),
+        )
+        renderer.title_buttons = title_buttons
+        renderer._title_scan = scan
+        renderer.feed(source_html)
+        renderer.close()
+        renderer.flush_pending()
+        return renderer
+
+    key = (len(source_html), hash(source_html))
+    known = _TITLE_BUTTON_CACHE.get(key)
+    if known is not None:
+        return build(known, None)
+    scan = _TitleButtonScan()
+    renderer = build(frozenset(), scan)
+    scan.finish()
+    keep = frozenset(scan.keep)
+    if len(_TITLE_BUTTON_CACHE) >= _TITLE_BUTTON_CACHE_SIZE:
+        _TITLE_BUTTON_CACHE.clear()  # safe under concurrent fetches, unlike evicting one by one
+    _TITLE_BUTTON_CACHE[key] = keep
+    # only a page that has accordion titles pays a second pass
+    return build(keep, None) if keep else renderer
 
 
 def _render(

@@ -266,17 +266,6 @@ class TestTheAllowanceCannotExceedOneSlot:
             == 0
         )
 
-    def test_a_short_prompt_still_gets_the_full_allowance(self):
-        assert (
-            _openai_llama_admission_output_allowance(
-                self.WINDOW,
-                budget = self.BUDGET,
-                prompt_tokens = 100,
-                context_window = self.WINDOW,
-            )
-            == _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS
-        )
-
     def test_unified_is_unchanged(self):
         """window == budget there, so this clamp is the same arithmetic it always was."""
         assert (

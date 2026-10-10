@@ -961,6 +961,13 @@ def orpo_trainer_row_cap(function_name, function):
     # Before TRL's own response cut: its negative slice end can empty the shorter answer.
     match = re.search(r"(?m)^([ \t]*)longer_response_length = max\(", function)
     if match is None:
+        # TRL 1.15+ cuts answers but never the prompt, so a long prompt still overflows max_length.
+        match = re.search(
+            r"(?m)^([ \t]*)for answer_tokens in \[chosen_tokens, rejected_tokens\]:\n"
+            r"\1[ \t]+if len\(answer_tokens\[\"prompt_input_ids\"\]\) \+ len\(answer_tokens\[\"input_ids\"\]\) > self\.max_length:",
+            function,
+        )
+    if match is None:
         return function
     indent = match.group(1)
     block = "".join(indent + line + "\n" for line in _ORPO_ROW_CAP.splitlines())
@@ -1011,6 +1018,56 @@ def sft_trainer_push_to_hub_token(function_name, function):
 
 
 RL_FUNCTIONS["sft_trainer"].append(sft_trainer_push_to_hub_token)
+
+
+# assistant_only_loss: TRL raises for chat templates it does not know (all Unsloth ones); fall back to Zoo's train_on_responses_only masks.
+_SFT_TRAINING_TEMPLATE = re.compile(
+    r"^(?P<indent>[ \t]*)self\.chat_template = get_training_chat_template\(processing_class\)[ \t]*$",
+    flags = re.MULTILINE,
+)
+_SFT_STOP_TOKEN_CHECK = re.compile(
+    r"if args\.assistant_only_loss and not is_chat_template_stop_token_trained\("
+)
+
+
+def _zoo_reads_assistant_mask_fallback():
+    # An older unsloth_zoo never reads the flag, so suppressing TRL's error there would train on every token.
+    try:
+        from unsloth_zoo.dataset_utils import sft_prepare_dataset
+        return "_unsloth_assistant_mask_fallback" in inspect.getsource(sft_prepare_dataset)
+    except Exception:
+        return False
+
+
+def sft_trainer_assistant_mask_fallback(function_name, function):
+    if function_name != "__init__" or "_unsloth_assistant_mask_fallback" in function:
+        return function
+    if _SFT_TRAINING_TEMPLATE.search(function) is None or not _zoo_reads_assistant_mask_fallback():
+        return function
+
+    def _replace(match):
+        i = match.group("indent")
+        return (
+            f"{i}try:\n"
+            f"{i}    self.chat_template = get_training_chat_template(processing_class)\n"
+            f"{i}except ValueError:\n"
+            # Zoo's text preparation reads the flag; vision datasets and skip_prepare_dataset never reach it.
+            f"{i}    if getattr(self, '_is_vision_dataset', False) or (getattr(args, 'dataset_kwargs', None) or {{}}).get('skip_prepare_dataset'): raise\n"
+            f"{i}    self.chat_template = None\n"
+            f"{i}    self._unsloth_assistant_mask_fallback = True\n"
+            f"{i}    print('Unsloth: TRL has no training chat template for this tokenizer, so assistant_only_loss masks non-assistant tokens with train_on_responses_only markers.')"
+        )
+
+    function = _SFT_TRAINING_TEMPLATE.sub(_replace, function, count = 1)
+    function = _SFT_STOP_TOKEN_CHECK.sub(
+        "if args.assistant_only_loss and not getattr(self, '_unsloth_assistant_mask_fallback', False) and not is_chat_template_stop_token_trained(",
+        function,
+        count = 1,
+    )
+    return function
+
+
+RL_FUNCTIONS["sft_trainer"].append(sft_trainer_assistant_mask_fallback)
 
 
 def _unsloth_grpo_autocast(self):
@@ -1940,8 +1997,13 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
 
     if trl_version >= Version("0.24.0"):
         string_to_find = "        rewards_per_func = self._calculate_rewards(inputs, prompts, completions, completion_ids_list)"
+        # TRL's VLM tool branch has no prompts_text; TRL 1.15 dropped completions_text, rebuilt as in 1.13.
         replacement_string = (
-            "        if images is not None:\n"
+            "        _unsloth_reward_locals = locals()\n"
+            "        if images is not None and 'prompts_text' in _unsloth_reward_locals:\n"
+            "            completions_text = _unsloth_reward_locals.get('completions_text')\n"
+            "            if completions_text is None:\n"
+            "                completions_text = self.processing_class.batch_decode(completion_ids, skip_special_tokens=True)\n"
             "            rewards_per_func = self._calculate_rewards(inputs, prompts_text, completions_text, completion_ids_list)\n"
             "        else:\n"
             "            rewards_per_func = self._calculate_rewards(inputs, prompts, completions, completion_ids_list)"
@@ -3159,6 +3221,23 @@ def grpo_update_SamplingParams(
     return generation_kwargs
 
 
+def _unsloth_grpo_is_metric_values(delta, flat_is_ratio, mask, sequence_level):
+    # Inputs are zero-filled outside the mask; TRL reduces over masked tokens only, else min ratio reads 0.
+    if mask is None or delta.shape != mask.shape or flat_is_ratio.shape != mask.shape:
+        return delta.reshape(-1), flat_is_ratio.reshape(-1)
+    keep = mask.to(torch.bool)
+    if not sequence_level:
+        return delta[keep], flat_is_ratio[keep]
+    # A row with no kept tokens is exp(0) = 1, as in TRL.
+    counts = keep.sum(dim = -1)
+    per_row = torch.where(
+        counts > 0,
+        (flat_is_ratio * keep).sum(dim = -1) / counts.clamp(min = 1),
+        torch.ones_like(counts, dtype = flat_is_ratio.dtype),
+    )
+    return delta[keep], per_row
+
+
 grpo_compute_loss = RL_REPLACEMENTS["grpo_compute_loss"]
 grpo_compute_loss_slow = RL_REPLACEMENTS["grpo_compute_loss_slow"]
 UnslothEfficientGRPO = RL_REPLACEMENTS["UnslothEfficientGRPO"]
@@ -3174,6 +3253,7 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_hidden_state
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_mm_token_id))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_fix_mm_token_type_ids))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_accumulation_steps))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_is_metric_values))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_vision_inputs))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_split_vision_by_sample))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_unsplit_vision))
@@ -3541,6 +3621,13 @@ def grpo_trainer_compute_loss(function_name, function):
             and delta is not None
             and getattr(self, "vllm_importance_sampling_correction", False)
         ):
+            delta, flat_is_ratio = _unsloth_grpo_is_metric_values(
+                delta,
+                flat_is_ratio,
+                completion_mask,
+                (getattr(self.args, "vllm_importance_sampling_mode", None) or "token_truncate")
+                in ("sequence_mask", "sequence_truncate"),
+            )
             mean_delta = (
                 torch.mean(delta)
                 if delta.numel() > 0
@@ -3766,7 +3853,6 @@ def openenv_vllm_reload_weights():
         return
     if Version(importlib_version("trl")) < Version("0.26.0"):
         return
-
     try:
         import trl.experimental.openenv.utils as openenv_utils
         import trl.experimental.openenv as openenv
