@@ -4620,9 +4620,14 @@ def _ensure_cuda_torch(*, probe_only: bool = False) -> "bool | None":
 
 
 # Same allowlist as studio/backend/utils/hardware/hardware.py and install.sh's _intel_xpu_gpu_id.
-_INTEL_XPU_PCI_ID_RANGES = ((0x5690, 0x56C2), (0x0B69, 0x0BE5), (0xE200, 0xE2FF))
-_INTEL_XPU_PCI_IDS = frozenset((0x7D55, 0x7D51, 0x64A0, 0xB080, 0xB081, 0xB082, 0xB083))
+_INTEL_XPU_PCI_ID_RANGES = ((0x5690, 0x56C2), (0xE200, 0xE2FF))
+_INTEL_XPU_PCI_IDS = frozenset((
+    0x7D55, 0x7D51, 0x64A0, 0xB080, 0xB081, 0xB082, 0xB083,  # Core Ultra Arc iGPUs
+    0x0BD0, 0x0BD4, 0x0BD5, 0x0BD6, 0x0BD7, 0x0BD8, 0x0BD9, 0x0BDA, 0x0BDB, 0x0B69, 0x0B6E,  # PVC
+))  # fmt: skip
 _PCI_DEVICES_ROOT = "/sys/bus/pci/devices"
+# Level Zero / SYCL device filters: their indices need not follow PCI order, so any of them leaves the choice to a pin.
+_INTEL_DEVICE_FILTER_VARS = ("ZE_AFFINITY_MASK", "ONEAPI_DEVICE_SELECTOR", "SYCL_DEVICE_FILTER")
 
 
 def _intel_xpu_auto_route_holds() -> bool:
@@ -4630,7 +4635,7 @@ def _intel_xpu_auto_route_holds() -> bool:
     an allowlisted Intel display device on the PCI bus."""
     if os.environ.get("UNSLOTH_DISABLE_XPU_AUTO", "0") == "1":
         return False
-    if "ZE_AFFINITY_MASK" in os.environ or os.environ.get("UNSLOTH_ROCM_GFX_ARCH"):
+    if any(v in os.environ for v in _INTEL_DEVICE_FILTER_VARS) or os.environ.get("UNSLOTH_ROCM_GFX_ARCH"):
         return False
     intel = False
     try:

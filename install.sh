@@ -4829,10 +4829,11 @@ _intel_xpu_gpu_id() {
         _ix_d=$(printf '%s' "$_ix_d" | tr '[:upper:]' '[:lower:]')
         case "$_ix_d" in
             0x7d55|0x7d51|0x64a0|0xb080|0xb081|0xb082|0xb083) printf '%s' "$_ix_d"; return 0 ;;
+            # PVC (Data Center GPU Max) by exact id: 0x0BE0-0x0BE5 nearby is Cedar Trail (gma500).
+            0x0bd0|0x0bd4|0x0bd5|0x0bd6|0x0bd7|0x0bd8|0x0bd9|0x0bda|0x0bdb|0x0b69|0x0b6e) printf '%s' "$_ix_d"; return 0 ;;
         esac
         _ix_n=$(printf '%d' "$_ix_d" 2>/dev/null) || continue
         if { [ "$_ix_n" -ge 22160 ] && [ "$_ix_n" -le 22210 ]; } ||  # 0x5690-0x56C2
-           { [ "$_ix_n" -ge 2921 ] && [ "$_ix_n" -le 3045 ]; } ||    # 0x0B69-0x0BE5
            { [ "$_ix_n" -ge 57856 ] && [ "$_ix_n" -le 58111 ]; }; then # 0xE200-0xE2FF
             printf '%s' "$_ix_d"; return 0
         fi
@@ -4845,9 +4846,13 @@ _intel_xpu_gpu_id() {
 _intel_xpu_auto_gpu_id() {
     [ "${UNSLOTH_DISABLE_XPU_AUTO:-0}" = 1 ] && return 1
     [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ] && return 1
-    # Level Zero mask indices need not follow PCI order, so any mask leaves the choice to a pin.
-    if [ -n "${ZE_AFFINITY_MASK+x}" ]; then
-        echo "[INFO] ZE_AFFINITY_MASK is set -- skipping the Intel XPU auto route; set UNSLOTH_TORCH_INDEX_FAMILY=xpu to install XPU PyTorch." >&2
+    # Level Zero / SYCL device-filter indices need not follow PCI order, so any filter leaves the choice to a pin.
+    _ix_var=""
+    [ -n "${SYCL_DEVICE_FILTER+x}" ] && _ix_var=SYCL_DEVICE_FILTER
+    [ -n "${ONEAPI_DEVICE_SELECTOR+x}" ] && _ix_var=ONEAPI_DEVICE_SELECTOR
+    [ -n "${ZE_AFFINITY_MASK+x}" ] && _ix_var=ZE_AFFINITY_MASK
+    if [ -n "$_ix_var" ]; then
+        echo "[INFO] $_ix_var is set -- skipping the Intel XPU auto route; set UNSLOTH_TORCH_INDEX_FAMILY=xpu to install XPU PyTorch." >&2
         return 1
     fi
     _amd_hardware_corroborated && return 1

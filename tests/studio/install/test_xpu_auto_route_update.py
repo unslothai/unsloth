@@ -29,7 +29,7 @@ def _pci(monkeypatch, tmp_path, *devices):
             f.unlink()
         old.rmdir()
     for i, (vendor, device, cls) in enumerate(devices):
-        d = root / f"0000:{i:02x}:00.0"
+        d = root / f"0000_{i:02x}_00.0"  # ":" is not legal in Windows paths
         d.mkdir()
         (d / "vendor").write_text(vendor + "\n")
         (d / "device").write_text(device + "\n")
@@ -46,7 +46,13 @@ def _linux(monkeypatch, tmp_path):
         monkeypatch.delenv(var, raising = False)
     monkeypatch.setattr(stack, "_has_usable_nvidia_gpu", lambda: False)
     monkeypatch.setattr(stack, "_has_rocm_gpu", lambda: False)
-    for var in ("ZE_AFFINITY_MASK", "UNSLOTH_DISABLE_XPU_AUTO", "UNSLOTH_ROCM_GFX_ARCH"):
+    for var in (
+        "ZE_AFFINITY_MASK",
+        "ONEAPI_DEVICE_SELECTOR",
+        "SYCL_DEVICE_FILTER",
+        "UNSLOTH_DISABLE_XPU_AUTO",
+        "UNSLOTH_ROCM_GFX_ARCH",
+    ):
         monkeypatch.delenv(var, raising = False)
     _pci(monkeypatch, tmp_path, ("0x8086", "0x56a0", "0x030000"))
     stack._invalidate_torch_runtime_probe()
@@ -141,13 +147,30 @@ def test_setup_sh_forces_the_pass_on_a_stale_xpu_wheel():
 @pytest.mark.parametrize("backend, recorded", [("xpu", None), ("", "xpu")])
 @pytest.mark.parametrize(
     "case",
-    ["intel gone", "non-Arc iGPU only", "AMD beside Arc", "mask set", "emptied mask", "opt-out"],
+    [
+        "intel gone",
+        "non-Arc iGPU only",
+        "Cedar Trail 0x0be0",
+        "Cedar Trail 0x0be5",
+        "AMD beside Arc",
+        "mask set",
+        "emptied mask",
+        "oneAPI selector",
+        "SYCL filter",
+        "opt-out",
+    ],
 )
 def test_the_unpinned_route_is_revalidated(monkeypatch, tmp_path, backend, recorded, case):
     if case == "intel gone":
         _pci(monkeypatch, tmp_path)
     elif case == "non-Arc iGPU only":
         _pci(monkeypatch, tmp_path, ("0x8086", "0x46a6", "0x030000"))
+    elif case.startswith("Cedar Trail"):
+        _pci(monkeypatch, tmp_path, ("0x8086", case.split()[-1], "0x030000"))
+    elif case == "oneAPI selector":
+        monkeypatch.setenv("ONEAPI_DEVICE_SELECTOR", "level_zero:0")
+    elif case == "SYCL filter":
+        monkeypatch.setenv("SYCL_DEVICE_FILTER", "level_zero:gpu:0")
     elif case == "AMD beside Arc":
         _pci(monkeypatch, tmp_path, ("0x8086", "0x56a0", "0x030000"), ("0x1002", "0x744c", "0x030000"))
     elif case == "mask set":
@@ -182,3 +205,15 @@ def test_the_allowlist_matches_hardware_py():
     hardware = tables(ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py")
     assert tables(ROOT / "studio" / "install_python_stack.py") == hardware
     assert len(hardware) == 2
+
+
+@pytest.mark.parametrize("device", ["0x0bd0", "0x0bd5", "0x0b69", "0x0b6e"])
+def test_pvc_ids_still_route(monkeypatch, tmp_path, device):
+    _pci(monkeypatch, tmp_path, ("0x8086", device, "0x030000"))
+    assert stack._intel_xpu_auto_route_holds()
+
+
+def test_an_explicit_pin_wins_over_a_sycl_selector(monkeypatch, tmp_path):
+    monkeypatch.setenv("ONEAPI_DEVICE_SELECTOR", "level_zero:0")
+    monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", "xpu")
+    assert _run("", None).called

@@ -97,13 +97,19 @@ make_uname x86_64
 rm -rf "$_PCI"; mkdir -p "$_PCI"
 cell "no GPU -> cpu" cpu ""
 
-for _id in 0x56a0 0xe20b 0x64a0 0x7d51 0x0bd5; do
+for _id in 0x56a0 0xe20b 0x64a0 0x7d51 0x0bd5 0x0bd0 0x0b69 0x0b6e; do
     rm -rf "$_PCI"; add_pci 0000:03:00.0 0x8086 "$_id" 0x030000
     cell "Intel $_id -> xpu" xpu ""
 done
 
 rm -rf "$_PCI"; add_pci 0000:00:02.0 0x8086 0x46a6 0x030000
 cell "non-Arc Intel iGPU 0x46a6 -> cpu" cpu ""
+
+# Cedar Trail (gma500) sits next to PVC; the old 0x0B69-0x0BE5 range took it.
+for _id in 0x0be0 0x0be5; do
+    rm -rf "$_PCI"; add_pci 0000:00:02.0 0x8086 "$_id" 0x030000
+    cell "Cedar Trail $_id -> cpu" cpu ""
+done
 
 rm -rf "$_PCI"; add_pci 0000:00:1f.3 0x8086 0x56a0 0x040300
 cell "Intel id on a non-display function -> cpu" cpu ""
@@ -123,6 +129,11 @@ cell "Arc + ZE_AFFINITY_MASK=0 + xpu pin -> xpu" xpu "" ZE_AFFINITY_MASK=0 UNSLO
 _mask_info=$(env -i HOME="$_TMP" PATH="$_TOOLS" ZE_AFFINITY_MASK=0 bash -c ". '$_FUNC_FILE'; _ARCH=x86_64; get_torch_index_url" 2>&1 >/dev/null)
 assert_contains "a set mask names the pin to use" "$_mask_info" "UNSLOTH_TORCH_INDEX_FAMILY=xpu"
 cell "Arc + emptied mask + xpu pin -> xpu" xpu "" ZE_AFFINITY_MASK= UNSLOTH_TORCH_INDEX_FAMILY=xpu
+cell "Arc + ONEAPI_DEVICE_SELECTOR -> cpu" cpu "" ONEAPI_DEVICE_SELECTOR=level_zero:0
+cell "Arc + SYCL_DEVICE_FILTER -> cpu" cpu "" SYCL_DEVICE_FILTER=level_zero:gpu:0
+cell "Arc + ONEAPI_DEVICE_SELECTOR + xpu pin -> xpu" xpu "" ONEAPI_DEVICE_SELECTOR=level_zero:0 UNSLOTH_TORCH_INDEX_FAMILY=xpu
+_sel_info=$(env -i HOME="$_TMP" PATH="$_TOOLS" ONEAPI_DEVICE_SELECTOR=level_zero:0 bash -c ". '$_FUNC_FILE'; _ARCH=x86_64; get_torch_index_url" 2>&1 >/dev/null)
+assert_contains "a SYCL selector is named with the pin to use" "$_sel_info" "ONEAPI_DEVICE_SELECTOR is set -- skipping the Intel XPU auto route; set UNSLOTH_TORCH_INDEX_FAMILY=xpu"
 _info=$(env -i HOME="$_TMP" PATH="$_TOOLS" bash -c ". '$_FUNC_FILE'; _ARCH=x86_64; get_torch_index_url" 2>&1 >/dev/null)
 assert_contains "route prints the device and the opt-out" "$_info" "Intel GPU (0x56a0) detected"
 assert_contains "route names UNSLOTH_DISABLE_XPU_AUTO" "$_info" "UNSLOTH_DISABLE_XPU_AUTO=1"
