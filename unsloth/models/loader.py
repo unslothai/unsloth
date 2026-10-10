@@ -196,6 +196,36 @@ def _revision_for_resolved_repo(
     return None
 
 
+def _record_modelscope_repo_id(model, repo_id, local_dir):
+    """A ModelScope load hands transformers the local snapshot, which becomes the model's name: PEFT copies it into adapter_config.json and the merge reads it as the base, so a 4bit snapshot refuses merged_16bit / GGUF and the adapter names a path on this machine only (#3726). Record the repo id, as a Hub load does."""
+    if repo_id is None or local_dir is None:
+        return
+    from transformers import PreTrainedModel
+
+    resolved = os.path.realpath(str(local_dir))
+    for module in model.modules():
+        if not isinstance(module, PreTrainedModel):
+            continue
+        for owner, attr in ((module, "name_or_path"), (module.config, "_name_or_path")):
+            value = getattr(owner, attr, None)
+            if isinstance(value, str) and value and os.path.realpath(value) == resolved:
+                setattr(owner, attr, repo_id)
+                # A non-PEFT GGUF export still converts the snapshot in place.
+                module._unsloth_modelscope_snapshot = str(local_dir)
+
+
+def _modelscope_snapshot_or_none(repo_id):
+    """ModelScope snapshot of an adapter's base, or None to load it by repo id from the Hugging Face Hub as before: the base need not be mirrored on ModelScope."""
+    from modelscope import snapshot_download
+    try:
+        return snapshot_download(repo_id)
+    except Exception as e:
+        logger.warning_once(
+            f"Unsloth: Could not download `{repo_id}` from ModelScope ({e}), loading it from Hugging Face."
+        )
+        return None
+
+
 def _revision_for_tokenizer_repo(
     tokenizer_name,
     model_name,
@@ -1176,8 +1206,11 @@ class FastLanguageModel(FastLlamaModel):
         # Only check the flags when no non-bitsandbytes quantization_config sets the precision.
         check_precision_flags = quantization_config is None or q_load_in_4bit or q_load_in_8bit
         modelscope_pending_download = None
+        modelscope_repo_id = modelscope_dir = None
         if USE_MODELSCOPE and not os.path.exists(model_name):
             from modelscope import snapshot_download
+
+            modelscope_repo_id = model_name
             if check_precision_flags and _precision_flags_conflict(
                 load_in_4bit, load_in_8bit, load_in_16bit, load_in_fp8
             ):
@@ -1186,6 +1219,7 @@ class FastLanguageModel(FastLlamaModel):
                 model_name = snapshot_download(model_name, allow_file_pattern = ["*.json", "*.py"])
             else:
                 model_name = snapshot_download(model_name)
+            modelscope_dir = model_name
 
         # Gate before the probe below, or a pinned 4bit load fails against the mirror.
         base_revision = _revision_for_resolved_repo(
@@ -1384,6 +1418,21 @@ class FastLanguageModel(FastLlamaModel):
                 load_in_8bit = False
                 load_in_fp8 = False
                 load_in_16bit = True
+            # The adapter names its base by repo id, so fetch that from ModelScope too; a precision conflict raises below before any weights are needed.
+            if (
+                USE_MODELSCOPE
+                and not os.path.exists(model_name)
+                and not (
+                    check_precision_flags
+                    and _precision_flags_conflict(
+                        load_in_4bit, load_in_8bit, load_in_16bit, load_in_fp8
+                    )
+                )
+            ):
+                _snapshot = _modelscope_snapshot_or_none(model_name)
+                if _snapshot is not None:
+                    modelscope_repo_id, model_name = model_name, _snapshot
+                    modelscope_dir = _snapshot
             # After the -bf16 rule: the view path no longer carries the source's suffix.
             # No revision: the caller's ref names the adapter repo, and the base loads unpinned below.
             _cache_dir = kwargs.get("cache_dir", None)
@@ -1590,6 +1639,7 @@ class FastLanguageModel(FastLlamaModel):
             *args,
             **kwargs,
         )
+        _record_modelscope_repo_id(model, modelscope_repo_id, modelscope_dir)
 
         if resize_model_vocab is not None:
             _resize_vocab(model, resize_model_vocab)
@@ -2028,9 +2078,11 @@ class FastModel(FastBaseModel):
             load_in_fp8 = False
             load_in_16bit = True
 
+        modelscope_repo_id = modelscope_dir = None
         if USE_MODELSCOPE and not os.path.exists(model_name):
             from modelscope import snapshot_download
-            model_name = snapshot_download(model_name)
+            modelscope_repo_id = model_name
+            model_name = modelscope_dir = snapshot_download(model_name)
 
         # Gate before the probe below, or a pinned 4bit load fails against the mirror.
         base_revision = _revision_for_resolved_repo(
@@ -2406,6 +2458,12 @@ class FastModel(FastBaseModel):
                 load_in_8bit = False
                 load_in_fp8 = False
                 load_in_16bit = True
+            # The adapter names its base by repo id, so fetch that from ModelScope too.
+            if USE_MODELSCOPE and not os.path.exists(model_name):
+                _snapshot = _modelscope_snapshot_or_none(model_name)
+                if _snapshot is not None:
+                    modelscope_repo_id, model_name = model_name, _snapshot
+                    modelscope_dir = _snapshot
             # After the -bf16 rule: the view path no longer carries the source's suffix.
             # No revision: the caller's ref names the adapter repo, and the base loads unpinned below.
             _cache_dir = kwargs.get("cache_dir", None)
@@ -2808,6 +2866,7 @@ class FastModel(FastBaseModel):
             **kwargs,
         )
         _drop_text_only_key_mapping(model, _text_key_mapping)
+        _record_modelscope_repo_id(model, modelscope_repo_id, modelscope_dir)
 
         if resize_model_vocab is not None:
             _resize_vocab(model, resize_model_vocab)
