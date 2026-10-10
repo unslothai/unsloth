@@ -224,7 +224,9 @@ def _hash_candidates(digest: str) -> tuple[str, str]:
     return digest, _FENCE_PREFIX + digest
 
 
-def _legacy_dummies() -> tuple[str, str, str]:
+def passwordless_account_credentials() -> tuple[str, str, str]:
+    """Return inert legacy fields for an account that cannot use password login."""
+
     return secrets.token_hex(16), _LEGACY_PASSWORD_HASH_SENTINEL, secrets.token_urlsafe(64)
 
 
@@ -339,6 +341,27 @@ def get_connection() -> sqlite3.Connection:
             value TEXT NOT NULL
         );
         """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS external_identities (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_id    TEXT NOT NULL,
+            provider_type TEXT NOT NULL DEFAULT 'oidc',
+            issuer        TEXT NOT NULL,
+            subject       TEXT NOT NULL,
+            email         TEXT,
+            username      TEXT,
+            display_name  TEXT,
+            created_at    TEXT NOT NULL,
+            last_login_at TEXT,
+            UNIQUE(issuer, subject)
+        );
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS external_identities_account_id "
+        "ON external_identities(account_id)"
     )
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(auth_user)")}
     if "must_change_password" not in columns:
@@ -523,7 +546,7 @@ def _fence_managed_credentials(conn: sqlite3.Connection) -> None:
         "WHERE role = 'user' AND account_jwt_secret IS NULL"
     ).fetchall()
     for row_id, real_salt, real_hash, real_secret in rows:
-        salt, pwd_hash, secret = _legacy_dummies()
+        salt, pwd_hash, secret = passwordless_account_credentials()
         conn.execute(
             """UPDATE auth_user
                SET account_password_salt = ?, account_password_hash = ?, account_jwt_secret = ?,
@@ -679,7 +702,7 @@ def issue_account_setup_code(
                 conn.execute("BEGIN IMMEDIATE")
                 if username is not None:
                     account_id = uuid.uuid4().hex
-                    legacy_salt, legacy_hash, legacy_secret = _legacy_dummies()
+                    legacy_salt, legacy_hash, legacy_secret = passwordless_account_credentials()
                     conn.execute(
                         """INSERT INTO auth_user
                         (username, account_id, role, is_active, created_at, password_salt,
@@ -835,6 +858,7 @@ def delete_account(account_id: str, retire) -> None:
                 restore_roots = retire(
                     AccountContext(row["account_id"], row["username"], row["role"])
                 )
+                conn.execute("DELETE FROM external_identities WHERE account_id = ?", (account_id,))
                 conn.execute("DELETE FROM auth_user WHERE account_id = ?", (account_id,))
         except Exception:
             # The identity survives the rollback, so the roots must come back too; a failed
@@ -1123,7 +1147,7 @@ def create_initial_user(
         fenced = (None, None, None)
     else:
         account_id, role = uuid.uuid4().hex, ROLE_USER
-        legacy = _legacy_dummies()
+        legacy = passwordless_account_credentials()
         fenced = (salt, pwd_hash, jwt_secret)
     conn = get_connection()
     try:
