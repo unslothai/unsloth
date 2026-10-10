@@ -1821,6 +1821,14 @@ export function SharedComposer({
             : {}),
         }, { signal: compareSignal });
         throwIfCompareCancelled(compareSignal);
+        // Refused like the primary picker's cancelled offer: the default engine cannot run it (#8861).
+        const engineOffer =
+          paneEngine === "auto" ? validation.managed_engine_offer : null;
+        if (engineOffer) {
+          throw new Error(
+            `${compareModelDisplayName(sel.id)} is quantized with ${engineOffer.quantization}, which the default engine cannot run. Set Inference engine to ${engineOffer.engines[0] === "sglang" ? "SGLang" : "vLLM"} in its run settings to load it.`,
+          );
+        }
         // Upgrade dialog first (mirrors the primary load path).
         if (validation.requires_transformers_upgrade) {
           const upgraded = await confirmTransformersUpgradeIfNeeded({

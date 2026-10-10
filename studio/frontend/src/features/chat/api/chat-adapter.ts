@@ -3520,6 +3520,12 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       validateFailures += 1;
       return false;
     }
+    // Engine choice is the picker dialog's; the default engine would decompress and crawl (#8861).
+    if (validation.managed_engine_offer) {
+      hadNonTrustFailure = true;
+      validateFailures += 1;
+      return false;
+    }
     return true;
   }
 
