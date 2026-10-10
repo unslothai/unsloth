@@ -47,7 +47,7 @@ export type SandboxSetupPlan = {
   canRun: boolean;
 };
 
-// null on Windows and on backends without the setting.
+// null off Linux and on backends without the setting.
 export type SandboxMemoryStatus = {
   // null: no cap.
   limitGb: number | null;

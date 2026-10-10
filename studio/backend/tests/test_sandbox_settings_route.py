@@ -475,8 +475,17 @@ def test_the_memory_limit_is_owner_and_ui_session_only(host, posix, memory):
     assert memory == {}
 
 
-def test_windows_has_no_memory_limit(host, windows, memory):
+@pytest.mark.parametrize("platform", ["win32", "darwin"])
+def test_only_linux_has_the_memory_limit(host, memory, monkeypatch, platform):
+    monkeypatch.setattr(sys, "platform", platform)
     with _client(OWNER) as client:
         assert client.get("/sandbox").json()["memory"] is None
         assert client.put("/sandbox", json = {"memory_limit_gb": 32}).status_code == 409
     assert memory == {}
+
+
+def test_an_empty_windows_save_still_resets_every_cache(host, windows, memory):
+    calls, _saved = host
+    with _client(OWNER) as client:
+        assert client.put("/sandbox", json = {}).status_code == 200
+    assert calls["invalidate"] == 1 and calls["profile_reset"] == 1

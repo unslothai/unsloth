@@ -4819,7 +4819,7 @@ class SandboxStatusResponse(BaseModel):
     terminal: SandboxToolStatus
     terminal_shell: Optional[str] = None
     windows: Optional[SandboxWindowsStatus] = None
-    # None on Windows: the cap is a POSIX rlimit.
+    # None off Linux, where the rlimit never applied.
     memory: Optional[SandboxMemoryStatus] = None
     setup: Optional[SandboxSetupStatus] = None
     checked_at: float
@@ -5023,7 +5023,10 @@ def _sandbox_setup_status(available: bool) -> Optional[SandboxSetupStatus]:
 
 def _sandbox_memory_status() -> Optional[SandboxMemoryStatus]:
     import sys
-    if sys.platform == "win32":
+
+    # Linux only: Windows never set this rlimit, and on macOS setrlimit(RLIMIT_AS) fails once the forked child
+    # already maps more than the cap, so tool runs there were never capped.
+    if sys.platform != "linux":
         return None
     return SandboxMemoryStatus(
         limit_gb = sandbox_memory_limit.effective_memory_limit_gb(),
@@ -5083,7 +5086,7 @@ def _sandbox_apply(payload: SandboxSettingsPayload) -> Optional[int]:
 
     if payload.memory_limit_gb is not None:
         sandbox_memory_limit.set_memory_limit_gb(payload.memory_limit_gb)
-    if payload.allow_dacl_fallback is None and payload.persistent_read_grants is None:
+        # The route refuses it beside the Windows switches, so the MXC state below is untouched.
         return None
     if payload.allow_dacl_fallback is not None:
         saved.set_dacl_fallback_setting(payload.allow_dacl_fallback)
@@ -5130,7 +5133,7 @@ async def update_sandbox_settings(
     # Host policy: changed at the console, never by an API key the owner happens to hold.
     _ui_session: None = Depends(_require_ui_session),
 ) -> SandboxStatusResponse:
-    """Save the Windows MXC opt-in, the persistent read grant choice, or the POSIX memory limit. Applies to the next
+    """Save the Windows MXC opt-in, the persistent read grant choice, or the Linux memory limit. Applies to the next
     launch."""
     import sys
 
@@ -5141,9 +5144,9 @@ async def update_sandbox_settings(
         payload.allow_dacl_fallback is not None or payload.persistent_read_grants is not None
     )
     if payload.memory_limit_gb is not None:
-        if sys.platform == "win32":
+        if sys.platform != "linux":
             raise HTTPException(
-                status_code = 409, detail = "The sandbox memory limit does not apply on Windows."
+                status_code = 409, detail = "The sandbox memory limit only applies on Linux."
             )
         if sandbox_memory_limit.locked_by_environment():
             raise HTTPException(

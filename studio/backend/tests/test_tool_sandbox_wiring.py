@@ -883,7 +883,7 @@ def test_an_approved_ansi_c_quoted_host_path_is_recognised(command):
     assert tools._reaches_host_paths("terminal", command)
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason = "RLIMIT_AS is POSIX")
+@pytest.mark.skipif(sys.platform != "linux", reason = "the cap only applies on Linux")
 @pytest.mark.parametrize(
     "env, saved, expected",
     [
