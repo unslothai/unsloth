@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Chat template utilities for dataset processing: apply chat templates to datasets and generate dataset info summaries."""
-
 import json
 import warnings as python_warnings
 
@@ -165,8 +163,7 @@ def _set_chat_template(tokenizer, chat_template):
 
 
 def _drop_none_values(value):
-    # A loaded dict cannot tell an explicit null from a key another row added, so dict-typed
-    # arguments lose their nulls; JSON-string arguments keep them.
+    # loaded dicts cannot distinguish nulls from keys added by another row, unlike JSON strings.
     if isinstance(value, dict):
         return {key: _drop_none_values(item) for key, item in value.items() if item is not None}
     if isinstance(value, list):
@@ -215,8 +212,7 @@ def _render_conversation(tokenizer, conversation, tools = None):
                 attempt, tokenize = False, add_generation_prompt = False, **tools_kwargs
             )
         except Exception as error:
-            # The row as loaded is kept for templates that need a None content (DeepSeek V3), but its
-            # error is usually a key the loader filled with None, so report the cleaned row's.
+            # keep loaded rows for DeepSeek V3 None content, but prefer cleaned-row errors from loader-added None keys.
             if first_error is None:
                 first_error = error
     if tools:
@@ -544,10 +540,7 @@ def apply_chat_template_to_dataset(
 
         streamed_failures = []
 
-        # Never clobber a real column: a dataset is allowed to already carry one named
-        # like our marker, and remove_columns would then delete the user's own data.
-        # A generator-backed IterableDataset reports column_names AND features as None,
-        # so resolve_column_names' first-row probe is what sees the column there.
+        # protect real marker columns; generator-backed IterableDataset needs a first-row probe.
         from .raw_text import resolve_column_names
 
         existing_columns = set(resolve_column_names(dataset))
@@ -569,7 +562,7 @@ def apply_chat_template_to_dataset(
                     try:
                         text = _render_conversation(tokenizer, with_system, tools)
                     except Exception:
-                        # A template without a system role still trains the conversation.
+                        # unsupported system turns are omitted so the original conversation renders.
                         if with_system is convo:
                             raise
                         text = _render_conversation(tokenizer, convo, tools)
