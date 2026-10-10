@@ -127,7 +127,9 @@ def test_large_render_is_bounded_finite_and_matches_stock(tiny_pipe, monkeypatch
     full_scores = 2 * TOKENS * TOKENS * 4
     if base is not None:
         grown = peaks[0] - base
-        print(f"{device}: denoise peak {grown / 2**20:.0f} MiB over the loaded pipeline at {LARGE}x{LARGE}")
+        print(
+            f"{device}: denoise peak {grown / 2**20:.0f} MiB over the loaded pipeline at {LARGE}x{LARGE}"
+        )
         assert grown < full_scores / 4
 
 
@@ -144,7 +146,9 @@ def test_mps_sdpa_ignores_kernel_selection_and_materialises_scores():
     torch.nn.functional.scaled_dot_product_attention(q, q, q)
     grown = _peak("mps") - base
     scores = 2 * 4096 * 4096 * 4
-    print(f"torch {torch.__version__}: FLASH-only SDPA ran; {grown / 2**20:.0f} MiB for {scores / 2**20:.0f} MiB of scores")
+    print(
+        f"torch {torch.__version__}: FLASH-only SDPA ran; {grown / 2**20:.0f} MiB for {scores / 2**20:.0f} MiB of scores"
+    )
     assert flash.shape == q.shape
     version = tuple(int(p) for p in torch.__version__.split("+")[0].split(".")[:2])
     if version < (2, 13):  # 2.13 adds a fused MPS prefill kernel

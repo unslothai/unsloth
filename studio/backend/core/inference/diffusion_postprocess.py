@@ -73,7 +73,6 @@ def to_pil_on_device(
 
 def has_nan(image: Any) -> bool:
     import torch
-
     return (
         isinstance(image, torch.Tensor)
         and image.is_floating_point()

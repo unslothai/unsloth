@@ -27,7 +27,6 @@ def mps_score_budget() -> int:
             pass
     try:
         import torch
-
         total = int(torch.mps.recommended_max_memory())
     except Exception:  # noqa: BLE001 - no MPS runtime: the fixed floor below
         total = 0
