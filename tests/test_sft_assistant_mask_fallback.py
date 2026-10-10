@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""assistant_only_loss with chat templates TRL has no training template for.
-
-TRL's SFTTrainer swaps in a training template only for templates it knows by exact
-text and raises ValueError for the rest, which includes every Unsloth template.
-``sft_trainer_assistant_mask_fallback`` turns that raise into a flag that
-unsloth_zoo's ``sft_prepare_dataset`` answers with train_on_responses_only masks.
-Loaded with ``ast`` from the source so the test stays CPU-only and import-free.
-"""
+"""assistant_only_loss fallback for chat templates TRL cannot train; ast-loaded, CPU-only."""
 
 from __future__ import annotations
 

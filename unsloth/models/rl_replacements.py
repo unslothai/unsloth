@@ -1013,7 +1013,7 @@ def sft_trainer_push_to_hub_token(function_name, function):
 RL_FUNCTIONS["sft_trainer"].append(sft_trainer_push_to_hub_token)
 
 
-# assistant_only_loss: TRL swaps in a training template only for chat templates it knows by exact text, and raises for the rest, which includes every Unsloth template. Fall back to train_on_responses_only markers (sft_prepare_dataset in unsloth_zoo) instead of failing.
+# assistant_only_loss: TRL raises for chat templates it does not know (all Unsloth ones); fall back to Zoo's train_on_responses_only masks.
 _SFT_TRAINING_TEMPLATE = re.compile(
     r"^(?P<indent>[ \t]*)self\.chat_template = get_training_chat_template\(processing_class\)[ \t]*$",
     flags = re.MULTILINE,
