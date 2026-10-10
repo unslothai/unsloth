@@ -1,12 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-# TRL picks the tool-call parser (add_response_schema) and the multi-turn training template
-# (get_training_chat_template) by exact string match on the chat template, so the fixed templates
-# shipped in unsloth/* repos (Qwen3, Qwen3.5+, gpt-oss, GLM-4.5, Nemotron 3, Gemma 4) are rejected
-# for GRPO tools= / environment_factory=. Only when TRL rejects a template, we look for the
-# TRL-known template that renders the same text and reuse its parser / training template.
-# The user's chat_template is never modified.
+# TRL matches chat templates by exact string (add_response_schema, get_training_chat_template), rejecting
+# unsloth/* fixed templates for GRPO tools=. On rejection, reuse the TRL-known template rendering the same
+# text. The user's chat_template is never modified.
 
 __all__ = [
     "patch_trl_tool_chat_templates",
@@ -48,8 +45,7 @@ def _call(a, b):
 
 
 _USER = {"role": "user", "content": "What is 3 times 4?"}
-# Families differ in how they write non-integer arguments (JSON true / null vs Python True / None) in
-# the history a training template re-renders.
+# Families differ on non-integer args (JSON true / null vs Python True / None).
 _TYPED_CALL = {
     "type": "function",
     "function": {
@@ -69,8 +65,7 @@ _COMPLETION_PROBES = (
     ([_USER, _TOOL_TURN, _TOOL_RESULT], {"role": "assistant", "content": "The answer is 12."}),
 )
 
-# A training template replaces the user's template for every prompt, so it must render whole
-# conversations identically, with and without tools.
+# A training template replaces the user's for every prompt, so whole conversations must match.
 _CONVERSATION_PROBES = (
     ([_USER], True, True),
     ([_USER, _TOOL_TURN], False, True),
@@ -93,8 +88,7 @@ _CONVERSATION_PROBES = (
     ),
 )
 
-# Text and vision families of one model line render text alike but not images. Only compared when the
-# user's template renders it: text-only templates may raise on list content.
+# Text and vision families differ only on images; skipped if the user's template raises on list content.
 _IMAGE_PROBE = (
     [{"role": "user", "content": [{"type": "image"}, {"type": "text", "text": "What is shown?"}]}],
     True,
@@ -119,8 +113,7 @@ def _template_of(processing_class):
     return template if isinstance(template, str) else None
 
 
-# Users pass these through chat_template_kwargs; a match must hold for each, or a template that
-# ignores enable_thinking=False would borrow one that writes an empty <think> into every prompt.
+# Else a template ignoring enable_thinking=False could borrow one writing an empty <think> into every prompt.
 _TEMPLATE_KWARGS = ({}, {"enable_thinking": False})
 
 
@@ -288,8 +281,7 @@ def _wrap_get_training_chat_template(original, trl_module):
                     training = original(clone)
                 except Exception:
                     continue
-                # None means the known template already qualifies; the user's copy may still lack
-                # its {% generation %} markers, so hand back the known template itself.
+                # None: known template qualifies, but the user's copy may lack {% generation %} markers.
                 training = known if training is None else training
                 rendered = _conversation_signature(tokenizer, training)
                 if rendered is not None:

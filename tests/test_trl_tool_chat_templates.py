@@ -162,8 +162,7 @@ def test_template_refusing_parallel_tool_calls_still_matches(patched):
 
 
 def test_template_ignoring_enable_thinking_does_not_borrow_qwen3(patched):
-    # unsloth/Qwen3-4B-Instruct-2507 renders like qwen3 by default but never writes the empty
-    # <think> block qwen3 adds for enable_thinking=False; borrowing qwen3 would add it to prompts.
+    # Qwen3-4B-Instruct-2507 lacks qwen3's empty <think> for enable_thinking=False.
     branch = "{%- if enable_thinking is defined and enable_thinking is false %}"
     assert branch in UNSLOTH_QWEN3
     ignores = UNSLOTH_QWEN3.replace(branch, "{%- if false %}", 1)
@@ -174,7 +173,6 @@ def test_template_ignoring_enable_thinking_does_not_borrow_qwen3(patched):
 
 
 def test_vision_template_keeps_its_own_training_family(patched):
-    # Qwen3-VL and Qwen3-Instruct-2507 render text alike; only image content tells them apart.
     if not hasattr(trl_utils, "qwen3_vl_chat_template"):
         pytest.skip("this TRL has no Qwen3-VL template")
     _, originals = patched
@@ -199,8 +197,7 @@ def test_named_template_sets_are_left_to_trl(patched):
 
 
 def test_typed_tool_arguments_pick_the_right_training_family(patched):
-    # Qwen3.6 writes JSON true / null where Qwen3.5 writes Python True / None; integer-only probes
-    # cannot tell their training templates apart.
+    # Qwen3.6 writes JSON true / null, Qwen3.5 Python True / None; integer-only probes miss it.
     if not (hasattr(trl_utils, "qwen3_6_chat_template") and hasattr(trl_utils, "qwen3_5_think_chat_template")):
         pytest.skip("this TRL lacks the Qwen3.5 / 3.6 templates")
     module, _ = patched
