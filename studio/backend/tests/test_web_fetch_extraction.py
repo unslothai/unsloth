@@ -1599,8 +1599,7 @@ def test_many_tiny_articles_do_not_displace_substantial_main():
 
 
 def test_single_substantial_article_still_preferred_over_main():
-    # GitHub-README case: one substantial <article> inside <main> must still win
-    # over sibling <main> furniture.
+    # GitHub README pages mix a substantial <article> with repository furniture.
     article_body = "Real README documentation body text. " * 20
     html = (
         "<body><main>"
@@ -1613,16 +1612,115 @@ def test_single_substantial_article_still_preferred_over_main():
     assert "JavaScript 89.3%" not in out
 
 
-# ── truncated (unclosed) main-content scopes must still be scored ──
+def test_one_card_does_not_stand_in_for_a_listing_main():
+    cards = "".join(
+        f"<article><h2>Plan {i}</h2><p>{f'Plan {i} feature and price detail. ' * 8}</p></article>"
+        for i in range(6)
+    )
+    html = f"<body><main><h1>Pricing</h1>{cards}</main></body>"
+    out = html_to_markdown(html, main_content = True)
+    for i in range(6):
+        assert f"Plan {i} feature and price detail." in out
+
+
+def test_article_listing_without_main_uses_the_document():
+    cards = "".join(
+        f"<article><h2>Plan {i}</h2><p>{f'Plan {i} feature and price detail. ' * 8}</p></article>"
+        for i in range(6)
+    )
+    out = html_to_markdown(f"<body><h1>Pricing</h1>{cards}</body>", main_content = True)
+    for i in range(6):
+        assert f"Plan {i} feature and price detail." in out
+
+
+def test_post_body_outside_article_beats_author_bio_card():
+    post = "Main post body paragraph with the actual story. " * 30
+    bio = "Author bio describing the writer and their work. " * 6
+    related = "".join(
+        f"<article class='related'><h3>Related {i}</h3><p>{'Teaser for another post. ' * 9}</p></article>"
+        for i in range(3)
+    )
+    html = (
+        "<body><main><h1>Post title</h1>"
+        f"<div class='post-content'><p>{post}</p></div>"
+        f"<article class='author-card'><p>{bio}</p></article>{related}"
+        "</main></body>"
+    )
+    out = html_to_markdown(html, main_content = True)
+    assert "Main post body paragraph" in out
+
+
+def test_lone_readme_article_is_kept_over_repo_page_chrome():
+    readme = "Short README describing the library. " * 8
+    rows = "".join(
+        f"<tr><td><a href='/o/r/tree/main/dir{i}'>dir{i}</a></td>"
+        f"<td><a href='/o/r/commit/{i}'>Update the dir{i} module and its tests</a></td><td>2 days ago</td></tr>"
+        for i in range(25)
+    )
+    html = (
+        "<body><main><h2>Repository files navigation</h2>"
+        f"<table><tr><th>Name</th><th>Last commit message</th><th>Last commit date</th></tr>{rows}</table>"
+        f"<article class='markdown-body'><h1>Lib</h1><p>{readme}</p></article>"
+        "<div><h2>About</h2><p>A small library for doing one thing well.</p></div>"
+        "</main></body>"
+    )
+    out = html_to_markdown(html, main_content = True)
+    assert "Short README describing the library." in out
+    assert "Last commit message" not in out
+
+
+def test_link_heavy_comments_do_not_pull_main_over_the_post():
+    post = "The post explains the topic in full detail here. " * 50
+    comments = "".join(
+        f"<article class='comment'><p><a href='https://example.com/author/{i}?{'utm_source=comments&' * 20}'>Reader {i}</a> "
+        f"says: {'Thanks for writing this up. ' * 9}</p></article>"
+        for i in range(6)
+    )
+    html = (
+        f"<body><main><article class='post'><h1>Post</h1><p>{post}</p></article>"
+        f"<section id='comments'>{comments}</section></main></body>"
+    )
+    out = html_to_markdown(html, main_content = True)
+    assert "The post explains the topic" in out
+    assert "Thanks for writing this up." not in out
+
+
+def test_generated_table_spans_do_not_pull_main_over_the_post():
+    post = "Primary article prose with real details. " * 30
+    related = "Related card teaser. " * 12
+    rows = "".join(f"<tr><td>row {i}</td></tr>" for i in range(1, 80))
+    table = f"<table><tr><td rowspan='80'>repeated marker</td><td>row 0</td></tr>{rows}</table>"
+    html = (
+        "<body><main>"
+        f"<article><h1>Primary</h1><p>{post}</p></article>"
+        f"<article><p>{related}</p></article>{table}"
+        "</main></body>"
+    )
+    out = html_to_markdown(html, main_content = True)
+    assert "Primary article prose" in out
+    assert "Related card teaser." not in out
+
+
+@pytest.mark.parametrize("hide", ["hidden", "aria-hidden='true'", "style='display:none'"])
+def test_hidden_duplicate_article_is_not_a_second_card(hide):
+    post = "The post explains the topic in full detail here. " * 20
+    comments = "".join(
+        f"<div class='comment'><p>Reader {i} says: {'Thanks for writing this up, it helped. ' * 6}</p></div>"
+        for i in range(8)
+    )
+    html = (
+        f"<body><main><article><h1>Post</h1><p>{post}</p></article>"
+        f"<article {hide}><p>Duplicate</p></article><section>{comments}</section></main></body>"
+    )
+    out = html_to_markdown(html, main_content = True)
+    assert "The post explains the topic" in out
+    assert "Thanks for writing this up" not in out
 
 
 def test_truncated_open_article_scope_is_scored_and_preferred():
-    # _fetch_url_raw caps large pages, so the download can end before the closing
-    # </article>. The scope is still the main content and must be preferred over the
-    # whole document (which re-leaks the page chrome).
+    # _fetch_url_raw may truncate before </article>, so the open scope must exclude page chrome.
     chrome = "<nav>Skip to content</nav><div>Repository file tree and page chrome.</div>"
     article_body = "Real README documentation body text. " * 20
-    # No closing </article> / </body> -- the fetch cap truncated the page.
     html = f"<body>{chrome}<article><h1>Guide</h1><p>{article_body}</p>"
     out = html_to_markdown(html, main_content = True)
     assert "Real README documentation body text." in out

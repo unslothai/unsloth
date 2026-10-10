@@ -2439,6 +2439,23 @@
       "evidence": "Obfusc: L337:             exec(compile(cached_bytes, cache_file, \"exec\"), module.__dict__)\nExec: L337:             exec(compile(cached_bytes, cache_file, \"exec\"), module.__dict__)",
       "evidence_hash": "ef22a4fe0d8ec7e2b0e4afc6e6a3d997cd94c981bf59790562217d4f9dd70732",
       "file_sha256": "45b32e1dc416ef6a3a60134f3845054264a94a43a946fa9ac5555c9613685da5"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "unsloth_zoo/vllm_utils.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L4356:             lora_types.append(getattr(__import__(module_path, fromlist = [class_name]), class_name))\nExec: L1332:             cross_attn_layer = eval(f'vllm_internals.{name}') | L1372:                 layernorm = eval(vllm_name).state_dict()[\"weight\"] | L1876:                 parent = eval(f\"new_model.{parent_path}\") if parent_path else new_model | L1882:                     exec(f\"new_model.{layer_name_br} = layer\") | L1953:                 exec(f\"new_model.{layer_name_br}.weight = None\") | L1954:                 exec(f\"new_model.{layer_name_br}.weight = weight_param\") | L1956:                     exec(f\"new_model.{layer_name_br}.bias = None\") | L1957:                     exec(f\"new_model.{layer_name_br}.bias = bias\") | L1963:             exec(f\"new_model.{layer_name} = layer\") | L1995:     new_model.eval() | L4163:                 exec(f\"module.to({dtype})\") | L4186:                 exec(f\"module.to({dtype})\") | L5156:     model.eval() | L5196:     new_model.eval()",
+      "evidence_hash": "4928e730b84a3fa71dcc50cfe185c77c2028be09ad908706710ab864786b4659",
+      "file_sha256": "54d81fd97d5b7efe21650db9c97d648f61c55932fc5679a9d07bbe0e33b33d2b"
+    },
+    {
+      "package": "dnspython",
+      "file": "dns/query.py",
+      "check": "DNS exfiltration / tunneling patterns",
+      "severity": "HIGH",
+      "evidence": "DNS: L144:                 import dns.resolver | L146:                 resolver = dns.resolver.Resolver() | L402:     resolver: \"dns.resolver.Resolver | None\", | L403: ) -> \"dns.resolver.Resolver\": | L409:         import dns.resolver | L411:         resolver = dns.resolver.Resolver() | L445:     resolver: \"dns.resolver.Resolver | None\" = None,\nNetwork: L177: ) -> socket.socket: | L178:     return socket.socket(af, kind, proto) | L184:     [socket.AddressFamily | int, socket.SocketKind, int], socket.socket | L330: ) -> socket.socket: | L551:     if session and not isinstance(session, httpx2.Client): | L552:         raise ValueError(\"session parameter must be an httpx2.Client\") | L583:         cm = httpx2.Client(\nL584:             http1=h1, http2=h2, verify=verify, transport=transport\nL585:         ) | L1498:     s: socket.socket | ssl.SSLSocket, | L1510:     is_udp = isinstance(s, socket.socket) and s.type == socket.SOCK_DGRAM",
+      "evidence_hash": "06a7ae5b55d6f5f13ca756f54773b910f597d82d9f02b10f7f6e701bf5110abc"
     }
   ]
 }

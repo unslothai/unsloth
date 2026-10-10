@@ -95,7 +95,7 @@ import {
 } from "../utils/confirm-stop-running-chats";
 import {
   requestLocalPromptQueueStop,
-  requestPromptQueueStop,
+  requestScopedLocalPromptQueueStop,
   notifyLocalPromptQueueLoadFailed,
 } from "../utils/prompt-queue-boundary";
 import { cancelPreStreamRunReservations } from "../utils/pre-stream-run-reservation";
@@ -642,7 +642,7 @@ function publishLoadedModels(
 
 function stopQueuedRuns(decision: StopRunningChatsDecision, scoped: boolean): void {
   if (scoped) {
-    requestPromptQueueStop(decision.promptQueueThreadIds);
+    requestScopedLocalPromptQueueStop(decision.promptQueueThreadIds);
     return;
   }
   cancelPreStreamRunReservations(decision.preStreamRunTokens);

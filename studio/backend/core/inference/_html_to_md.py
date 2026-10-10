@@ -1426,20 +1426,8 @@ def _select_main_scope_render(
     tag: str,
     site_links: SiteLinks | None,
     span_char_limit: int | None = None,
-) -> tuple[int, str]:
-    """Length and boilerplate-stripped render of the largest single ``<tag>``
-    subtree. Sizing candidates one at a time stops many tiny sibling cards from
-    clearing the threshold together, and returning that one subtree keeps
-    unrelated siblings (related cards, comment threads) out of the output.
-
-    A candidate earns its place on the prose it RETAINED, then gets its dropped
-    header furniture added back to rank against siblings. Furniture must not buy
-    eligibility: a card whose header was the only bulk would otherwise clear the
-    gate on deleted bytes and suppress the ``<main>`` holding the real page.
-
-    Nor may it dominate: the credit is capped at the retained render, so removed
-    furniture can never be the majority of a score. Uncapped, a teaser with a
-    1000 link header outranked a sibling holding five times its real text."""
+) -> tuple[int, str, int, int]:
+    """return the best eligible score, subtree, count, and visible length; cap header credit at retained prose."""
     renderer = _new_renderer(
         source_html,
         frozenset({tag}),
@@ -1461,28 +1449,53 @@ def _select_main_scope_render(
     )
     best_len = 0
     best_render = ""
+    best_visible = 0
     for i, seg in enumerate(renderer.scope_segments):
         rendered = _strip_boilerplate_lines(_cleanup(seg), site_links)
         scored = _strip_boilerplate_lines(_cleanup(scoring.scope_segments[i]), site_links)
         if site_links is not None:
             scored = site_links.clean(scored)
-        prose = _visible_chars(scored) - scoring.scope_heading_prose[i]
+        visible = _visible_chars(scored)
+        prose = visible - scoring.scope_heading_prose[i]
         if prose < _MIN_MAIN_CONTENT_CHARS:
             continue
         size = len(scored) + min(scoring.scope_dropped[i], len(scored))
         if size > best_len:
             best_len = size
             best_render = rendered
-    return best_len, best_render
+            best_visible = visible
+    return (
+        best_len,
+        best_render,
+        sum(1 for seg in renderer.scope_segments if seg.strip()),
+        best_visible,
+    )
+
+
+def _render_main_document(
+    source_html: str, site_links: SiteLinks | None, span_char_limit: int
+) -> tuple[int, str]:
+    renderer = _new_renderer(source_html, None, True, site_links, span_char_limit)
+    rendered = _strip_boilerplate_lines(_cleanup("".join(renderer._out)), site_links)
+    scoring = (
+        _new_renderer(
+            source_html,
+            None,
+            True,
+            span_char_limit = 0,
+            header_decisions = renderer.header_decisions,
+        )
+        if renderer._has_generated_spans
+        else renderer
+    )
+    scored = _strip_boilerplate_lines(_cleanup("".join(scoring._out)), site_links)
+    if site_links is not None:
+        scored = site_links.clean(scored)
+    return _visible_chars(scored), rendered
 
 
 def _visible_chars(text: str) -> int:
-    """Visible characters in *text*, ignoring blank lines and link destinations.
-
-    Headings are NOT discounted here. The renderer already tallies what it marked
-    as a heading (``_seg_heading_prose``), which sees ``role="heading"``, hgroup
-    and a linked ``h1``; re-deriving that from ATX syntax could not, and running
-    both meant two answers to one question."""
+    """count visible nonblank characters without link targets; callers subtract tracked heading prose."""
     return sum(_visible_len(line) for line in text.split("\n") if line.strip())
 
 
@@ -1544,46 +1557,35 @@ def html_to_markdown(
     site_links: SiteLinks | None = None,
     max_span_chars: int | None = None,
 ) -> str:
-    """Convert HTML to Markdown (headings, links, emphasis, lists, tables, blockquotes, code, entities).
-
-    ``<script>``, ``<style>``, and ``<head>`` are stripped entirely, as are
-    subtrees hidden from rendering (``hidden`` / ``aria-hidden="true"``).
-
-    ``main_content=True`` applies a readability-style heuristic for page
-    fetches: prefer the ``<article>`` subtree (GitHub renders READMEs there),
-    then ``<main>``, falling back to the whole document, reduce a link-only
-    ``<header>`` to the heading it carries, and strip known boilerplate
-    fragments from the result.
-
-    ``site_links`` records the links back into the page's own site; the output is unchanged.
-
-    ``max_span_chars`` caps the cells generated for ``rowspan``/``colspan``, so a caller with a
-    smaller result budget keeps room for the text after a table.
-    """
+    """convert HTML to Markdown; main_content prefers a dominant article or main subtree, site_links records same-site links without changing output, and max_span_chars limits generated table cells."""
     source_html = source_html.replace("\r\n", "\n").replace("\r", "\n")
     span_limit = 2 * len(source_html)
     if max_span_chars is not None:
         span_limit = min(span_limit, max_span_chars)
     rendered = ""
+    full_rendered = ""
     if main_content:
-        for scope_tag in ("article", "main"):
-            # Render only the chosen subtree so sibling <article>/<main> elements do not leak in.
-            length, rendered = _select_main_scope_render(
-                source_html, scope_tag, site_links, span_limit
+        length, rendered, articles, article_visible = _select_main_scope_render(
+            source_html, "article", site_links, span_limit
+        )
+        if length < _MIN_MAIN_CONTENT_CHARS or articles > 1:
+            main_length, main_rendered, _, main_visible = _select_main_scope_render(
+                source_html, "main", site_links, span_limit
             )
-            if length >= _MIN_MAIN_CONTENT_CHARS:
-                break
-        else:
-            rendered = _strip_boilerplate_lines(
-                _render(
-                    source_html,
-                    None,
-                    strip_header = True,
-                    site_links = site_links,
-                    span_char_limit = span_limit,
-                ),
-                site_links,
-            )
+            if articles > 2 and main_length < _MIN_MAIN_CONTENT_CHARS:
+                main_length, full_rendered = _render_main_document(
+                    source_html, site_links, span_limit
+                )
+                main_rendered = full_rendered
+                main_visible = main_length
+            if main_length >= _MIN_MAIN_CONTENT_CHARS and (
+                length < _MIN_MAIN_CONTENT_CHARS or main_visible > 2 * article_visible
+            ):
+                length, rendered = main_length, main_rendered
+        if length < _MIN_MAIN_CONTENT_CHARS:
+            if not full_rendered:
+                _, full_rendered = _render_main_document(source_html, site_links, span_limit)
+            rendered = full_rendered
     else:
         rendered = _render(source_html, None, site_links = site_links, span_char_limit = span_limit)
     return site_links.finish(rendered) if site_links is not None else rendered

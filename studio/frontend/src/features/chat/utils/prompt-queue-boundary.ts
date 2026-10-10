@@ -64,6 +64,19 @@ export function requestLocalPromptQueueStop(
   );
 }
 
+/** The same local stop for the chats on one model of several: holds their unsent prompts without
+ *  advancing the boundary, which would also void queue starts on the models left loaded. */
+export function requestScopedLocalPromptQueueStop(threadIds: string[]) {
+  if (typeof window === "undefined" || threadIds.length === 0) {
+    return;
+  }
+  window.dispatchEvent(
+    new CustomEvent<PromptQueueStopEventDetail>(PROMPT_QUEUE_STOP_EVENT, {
+      detail: { threadIds, localOnly: true },
+    }),
+  );
+}
+
 export function requestTemporaryPromptQueueStop() {
   const threadIds = [
     ...new Set(
