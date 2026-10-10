@@ -59,6 +59,7 @@ from .loader_utils import (
     _restore_load_scoped_env,
     _resolve_checkpoint_tokenizer_name,
     _is_offline_related_error,
+    raise_if_fast_inference_under_fsdp2,
 )
 import os, contextlib, sys
 
@@ -1099,6 +1100,7 @@ class FastLanguageModel(FastLlamaModel):
                         )
                         fast_inference = False
                         break
+        raise_if_fast_inference_under_fsdp2(fast_inference)
 
         # bitsandbytes unusable (absent, or unstable on some AMD stacks). A capability check, so not gated on use_exact_model_name, which only suppresses repo-name remapping.
         if not ALLOW_BITSANDBYTES:
@@ -2008,6 +2010,7 @@ class FastModel(FastBaseModel):
                         )
                         fast_inference = False
                         break
+        raise_if_fast_inference_under_fsdp2(fast_inference)
 
         old_model_name = model_name
         fp8_mode = None

@@ -7212,8 +7212,22 @@ def _get_inference_mode_context_manager(model: torch.nn.Module):
     torchao_config = getattr(model, "torchao_config", None)
     if torchao_config is not None and torchao_config.qat_scheme is None:
         return torch.no_grad()
-    else:
-        return torch.inference_mode()
+    # FSDP keeps the parameters it all-gathers for one forward and reuses them in the next, so a
+    # gather under inference mode poisons the training step: "Inference tensors cannot be saved
+    # for backward" (unsloth#3551). TRL generates under no_grad for the same reason.
+    import os, sys
+
+    if os.environ.get("ACCELERATE_USE_FSDP", "").strip().lower() in ("1", "true", "yes", "on"):
+        return torch.no_grad()
+    if os.environ.get("FSDP_VERSION", "").strip() not in ("", "0"):
+        return torch.no_grad()
+    accelerate_state = sys.modules.get("accelerate.state", None)
+    shared_state = getattr(
+        getattr(accelerate_state, "AcceleratorState", None), "_shared_state", None
+    )
+    if isinstance(shared_state, dict) and "FSDP" in str(shared_state.get("distributed_type", "")):
+        return torch.no_grad()
+    return torch.inference_mode()
 
 
 def hf_login(token: Optional[str] = None) -> Optional[str]:
