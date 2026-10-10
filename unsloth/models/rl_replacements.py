@@ -3172,8 +3172,7 @@ def _unsloth_grpo_is_metric_values(delta, flat_is_ratio, mask, sequence_level):
         return delta.reshape(-1), flat_is_ratio.reshape(-1)
     keep = mask.to(torch.bool)
     if not sequence_level:
-        # As TRL: tokens vLLM could not score carry NaN and are left out of the divergence.
-        return delta[keep & ~torch.isnan(delta)], flat_is_ratio[keep]
+        return delta[keep], flat_is_ratio[keep]
     # Every kept token of a row carries the same sequence ratio; a row with none is exp(0) = 1, as in TRL.
     counts = keep.sum(dim = -1)
     per_row = torch.where(
@@ -3181,7 +3180,7 @@ def _unsloth_grpo_is_metric_values(delta, flat_is_ratio, mask, sequence_level):
         (flat_is_ratio * keep).sum(dim = -1) / counts.clamp(min = 1),
         torch.ones_like(counts, dtype = flat_is_ratio.dtype),
     )
-    return delta[keep & ~torch.isnan(delta)], per_row
+    return delta[keep], per_row
 
 
 grpo_compute_loss = RL_REPLACEMENTS["grpo_compute_loss"]

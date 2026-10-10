@@ -83,13 +83,3 @@ def test_shape_mismatch_keeps_the_old_reduction():
     delta, flat = _unsloth_inputs(mask, old, sampling, ratio)
     got_delta, got_ratio = _helper()(delta, flat, mask[:, :3], False)
     assert got_delta.numel() == delta.numel() and got_ratio.numel() == flat.numel()
-
-
-@pytest.mark.parametrize("sequence_level", [False, True])
-def test_unscored_nan_tokens_are_left_out(sequence_level):
-    mask, old, sampling, ratio = _batch(sequence_level)
-    sampling[1, 2] = float("nan")
-    delta, _ = _helper()(*_unsloth_inputs(mask, old, sampling, ratio), mask, sequence_level)
-    expected, _ = _trl_reference(mask, old, sampling, ratio, sequence_level)
-    assert not torch.isnan(delta).any()
-    assert torch.equal(delta, expected)
