@@ -2066,6 +2066,9 @@ def _reapply_lr_schedule(optimizer: Any, lr_scheduler: Any) -> None:
         pass
 
 
+_OPTIMIZER_KERNEL_KEYS = ("fused", "foreach")
+
+
 def restore_resume_state(
     cfg: DiffusionLoraConfig,
     *,
@@ -2131,8 +2134,14 @@ def restore_resume_state(
                 "tensors. Start a new run, or resume on the version that wrote it."
             )
         # load_state_dict replaces the param groups too, so the checkpoint's learning rate wins over a changed cfg,
-        # the same semantics as HF Trainer's resume.
+        # the same semantics as HF Trainer's resume. The kernel choice is this host's, not the bundle's: a fused bundle
+        # resumed under UNSLOTH_DIFFUSION_FP32_OPTIM must still run the reference (non-fused) AdamW.
+        kernels = [
+            {k: g[k] for k in _OPTIMIZER_KERNEL_KEYS if k in g} for g in optimizer.param_groups
+        ]
         optimizer.load_state_dict(optimizer_state)
+        for group, kept in zip(optimizer.param_groups, kernels):
+            group.update(kept)
     elif optimizer is not None:
         # Every bundle this writer produces has an optimizer, so continuing without one restarts Adam's moments from
         # zero at step N while reporting a clean resume.

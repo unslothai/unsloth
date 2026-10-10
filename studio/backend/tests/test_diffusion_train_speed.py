@@ -171,6 +171,30 @@ def test_recorded_optimizer_class_reads_the_bundle_being_resumed(run_dir):
     assert recorded_optimizer_class(bogus, _identity()) is None
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "fused AdamW needs CUDA")
+def test_a_fused_bundle_resumed_under_the_fp32_override_stays_non_fused(run_dir, monkeypatch):
+    # load_state_dict restores the saved param groups, fused flag included, so without care the reference-optimizer
+    # override is silently dropped on resume.
+    model = torch.nn.Linear(4, 4, bias = False).cuda()
+    fused = torch.optim.AdamW(model.parameters(), lr = 1e-3, fused = True)
+    model.weight.grad = torch.ones_like(model.weight)
+    fused.step()
+    _write(run_dir, model, fused)
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_FP32_OPTIM", "1")
+    live = torch.nn.Linear(4, 4, bias = False).cuda()
+    opt = make_lora_optimizer(list(live.parameters()), 1e-3)
+    assert not opt.param_groups[0].get("fused")
+    restore_resume_state(
+        _cfg(run_dir, resume_from_checkpoint = str(run_dir / "checkpoint-3")),
+        model = live,
+        optimizer = opt,
+        lr_scheduler = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: 1.0),
+        identity = _identity(),
+    )
+    assert not opt.param_groups[0].get("fused")
+    assert opt.state[live.weight]["exp_avg"].abs().sum() > 0
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "bitsandbytes AdamW8bit needs CUDA")
 def test_old_8bit_bundle_resumes_and_continues_identically(run_dir, monkeypatch):
     tmp_path = run_dir
