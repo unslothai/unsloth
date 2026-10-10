@@ -96,9 +96,19 @@ def read_transcript(path: Path, thread_id: str, session_id: str) -> Transcript:
         and not r.get("isSidechain")
         and not r.get("isMeta")
     ]
-    # Attachment and system lines are links in the chain too.
-    by_uuid = {str(r["uuid"]): r for r in lines if r.get("uuid")}
+    # Attachment and system lines are links in the chain too. A compaction's logicalParentUuid can be
+    # unwritten or later in the file, so it continues from the line before it.
+    links: dict[str, Any] = {}
+    previous = None
+    for line in lines:
+        if line.get("uuid"):
+            compacted = line.get("subtype") == "compact_boundary" and not line.get("parentUuid")
+            links[str(line["uuid"])] = previous if compacted else line.get("parentUuid")
+            previous = str(line["uuid"])
     imported: dict[str, str] = {}
+    # Parallel tool results hang off their own call; continue from the reply's last block, not a fork.
+    reply_of: dict[str, str] = {}
+    last_block: dict[str, str] = {}
     open_calls: dict[str, dict] = {}
     messages: list[dict] = []
     for index, record in enumerate(records):
@@ -115,8 +125,8 @@ def read_transcript(path: Path, thread_id: str, session_id: str) -> Transcript:
         parent, seen = record.get("parentUuid"), set()
         while parent and parent not in imported and parent not in seen:
             seen.add(parent)
-            ancestor = by_uuid.get(parent, {})
-            parent = ancestor.get("parentUuid") or ancestor.get("logicalParentUuid")
+            parent = links.get(parent)
+        parent = last_block.get(reply_of.get(parent), parent)
         timestamp = iso_ms(record.get("timestamp"))
         messages.append(
             {
@@ -131,6 +141,10 @@ def read_transcript(path: Path, thread_id: str, session_id: str) -> Transcript:
         )
         if uuid:
             imported[uuid] = message_id
+            reply = record.get("message", {}).get("id") if record["type"] == "assistant" else None
+            if reply:
+                reply_of[uuid] = reply
+                last_block[reply] = uuid
     return Transcript(
         session_id = session_id,
         thread_id = thread_id,

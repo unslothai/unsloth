@@ -314,6 +314,48 @@ def test_claude_harness_records_and_compaction_keep_one_conversation(claude_home
     assert [m["parentId"] for m in messages] == [None, *ids[:-1]]
 
 
+@pytest.mark.parametrize("logical", ["never-written", "at2"])
+def test_claude_parallel_tool_calls_and_compaction_keep_one_conversation(claude_home, logical):
+    def block(uuid, reply, content, parent):
+        record = c_asst(uuid, content, parent = parent)
+        record["message"]["id"] = reply
+        return record
+
+    def call(tool_id):
+        return [{"type": "tool_use", "id": tool_id, "name": "Bash", "input": {"cmd": "ls"}}]
+
+    def result(uuid, tool_id, parent):
+        return c_user(uuid, [{"type": "tool_result", "tool_use_id": tool_id, "content": "ok"}], parent = parent)
+
+    path = _session(
+        claude_home,
+        records = [
+            c_user("u1", "one"),
+            block("a1", "m1", call("t1"), "u1"),
+            block("a1b", "m1", call("t2"), "a1"),
+            result("r2", "t2", "a1b"),
+            result("r1", "t1", "a1"),
+            block("a2", "m2", [{"type": "text", "text": "A"}], "r1"),
+            c_user("u2", "/compact", parent = "a2"),
+            {
+                "type": "system",
+                "subtype": "compact_boundary",
+                "uuid": "cb",
+                "parentUuid": None,
+                "logicalParentUuid": logical,
+            },
+            c_user("sum", "summary", parent = "cb", isCompactSummary = True),
+            {"type": "attachment", "uuid": "at2", "parentUuid": "sum", "attachment": {}},
+            c_user("u3", "three", parent = "at2"),
+            c_asst("a3", [{"type": "text", "text": "C"}], parent = "u3"),
+        ],
+    )
+    messages = claude.read_transcript(path, "t", "s1").messages
+    ids = [m["id"] for m in messages]
+    assert len(messages) == 8
+    assert [m["parentId"] for m in messages] == [None, *ids[:-1]]
+
+
 def test_cursor_reads_the_query_and_strips_injected_context(cursor_home):
     path = _write(
         cursor_home / "projects" / "p" / "agent-transcripts" / "s1" / "s1.jsonl",
