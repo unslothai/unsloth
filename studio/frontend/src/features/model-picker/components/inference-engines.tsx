@@ -297,6 +297,13 @@ export function InferenceEnginePicker({
   useEffect(() => {
     onReadyChange(ready);
   }, [ready, onReadyChange]);
+  // A precision kept from another GPU (INT4 saved on NVIDIA, opened on AMD) resets once the
+  // engine's status says it is unsupported, not only on an engine switch.
+  useEffect(() => {
+    if (!selected) return;
+    const kept = precisionAfterEngineSwitch(precision, selected);
+    if (kept !== precision) onPrecisionChange(kept);
+  }, [selected, precision, onPrecisionChange]);
   if (
     value === "auto" &&
     engines.length > 0 &&
