@@ -16,6 +16,7 @@ error placeholders, session banners, cookie prompts) from the result.
 
 from __future__ import annotations
 
+import bisect
 import functools
 import html
 import re
@@ -414,8 +415,10 @@ class _TitleButtonScan(HTMLParser):
         self._open: list[str] = []
         self._muted: list[int] = []  # open-tag indices of hidden / skipped subtrees
         self._button_at: int | None = None
-        self._button_id = -1
-        # per open heading: [open-tag index, candidate button id or None, candidate has text, other text seen]
+        self._button_frame: list | None = None  # heading whose candidate is the open button
+        # visible text outside any button, counted so a heading reads "text since I opened" in O(1)
+        self._text_seq = 0
+        # per open heading: [open-tag index, candidate button id or None, candidate has text, _text_seq at open]
         self._headings: list[list] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
@@ -431,13 +434,13 @@ class _TitleButtonScan(HTMLParser):
         if _is_hidden_element(attr_dict) or (tag in _SKIP_TAGS and tag != "button"):
             self._muted.append(index)
         if tag in _HEADING_TAGS or _is_aria_heading(attr_dict):
-            self._headings.append([index, None, False, False])
+            self._headings.append([index, None, False, self._text_seq])
         elif tag == "button" and self._button_at is None:
             self._button_at = index
-            self._button_id = self._start + _offset(self._line_starts, self.getpos())
             frame = self._headings[-1] if self._headings else None
             if frame is not None and frame[1] is None and not self._muted:
-                frame[1] = self._button_id
+                frame[1] = self._start + _offset(self._line_starts, self.getpos())
+                self._button_frame = frame
 
     def handle_endtag(self, tag: str) -> None:
         tag = tag.lower()
@@ -449,11 +452,10 @@ class _TitleButtonScan(HTMLParser):
     def handle_data(self, data: str) -> None:
         if self._muted or not data.strip():
             return
-        for frame in self._headings:
-            if self._button_at is not None and frame[1] == self._button_id:
-                frame[2] = True
-            elif self._button_at is None:
-                frame[3] = True
+        if self._button_at is None:
+            self._text_seq += 1
+        elif self._button_frame is not None:
+            self._button_frame[2] = True
 
     def close(self) -> None:
         super().close()
@@ -464,9 +466,9 @@ class _TitleButtonScan(HTMLParser):
         if self._button_at is not None and self._button_at >= i:
             self._button_at = None
             # an icon-only control releases the slot for the trigger after it
-            for frame in self._headings:
-                if frame[1] == self._button_id and not frame[2]:
-                    frame[1] = None
+            if self._button_frame is not None and not self._button_frame[2]:
+                self._button_frame[1] = None
+            self._button_frame = None
         while self._muted and self._muted[-1] >= i:
             self._muted.pop()
         self._close_headings(i)
@@ -478,8 +480,8 @@ class _TitleButtonScan(HTMLParser):
         decided: bool = True,
     ) -> None:
         while self._headings and self._headings[-1][0] >= i:
-            _, button, has_text, other = self._headings.pop()
-            if decided and button is not None and has_text and not other:
+            _, button, has_text, seq = self._headings.pop()
+            if decided and button is not None and has_text and self._text_seq == seq:
                 self.keep.add(button)
 
 
@@ -487,6 +489,11 @@ _HEADING_OPEN_RE = re.compile(r"<h[1-6][\s>/]", re.IGNORECASE)
 _ARIA_HEADING_RE = re.compile(r"role\s*=\s*[\"']?[^\"'>]*heading", re.IGNORECASE)
 _BUTTON_OPEN_RE = re.compile(r"<button", re.IGNORECASE)
 _HEADING_CLOSE_RE = re.compile(r"</h[1-6]\s*>", re.IGNORECASE)
+# raw text and comments, whose markup-looking content is not markup
+_INERT_RE = re.compile(
+    r"<!--.*?(?:-->|\Z)|<(script|style|textarea|title)\b.*?(?:</\1\s*>|\Z)",
+    re.IGNORECASE | re.DOTALL,
+)
 # how far after a heading opens its title button may start; past it the button is dropped as before
 _TITLE_BUTTON_WINDOW = 4_000
 # how far the scan follows a heading to its close; a heading it cannot see end keeps the old behaviour
@@ -509,15 +516,27 @@ def _title_buttons(source_html: str) -> frozenset[int]:
     heading's open tag to its close is scanned, so a page pays per heading, not a second full parse."""
     if not _BUTTON_OPEN_RE.search(source_html):
         return frozenset()
+    inert = [(m.start(), m.end()) for m in _INERT_RE.finditer(source_html)]
+    inert_starts = [start for start, _ in inert]
+
+    def live(pos: int) -> bool:
+        i = bisect.bisect_right(inert_starts, pos) - 1
+        return i < 0 or pos >= inert[i][1]
+
+    # every position collected once, so a page full of heading-like text costs one pass, not one window each
+    buttons = [m.start() for m in _BUTTON_OPEN_RE.finditer(source_html) if live(m.start())]
+    if not buttons:
+        return frozenset()
     opens = sorted(
         [m.start() for m in _HEADING_OPEN_RE.finditer(source_html)]
         + [source_html.rfind("<", 0, m.start()) for m in _ARIA_HEADING_RE.finditer(source_html)]
     )
     spans: list[list[int]] = []
     for start in opens:
-        if start < 0 or (spans and start < spans[-1][1]):
+        if start < 0 or (spans and start < spans[-1][1]) or not live(start):
             continue
-        if not _BUTTON_OPEN_RE.search(source_html, start, start + _TITLE_BUTTON_WINDOW):
+        nxt = bisect.bisect_left(buttons, start)
+        if nxt == len(buttons) or buttons[nxt] >= start + _TITLE_BUTTON_WINDOW:
             continue
         limit = start + _TITLE_HEADING_WINDOW
         # a bound only: the scan parses up to it and keeps a button only if it sees the heading end

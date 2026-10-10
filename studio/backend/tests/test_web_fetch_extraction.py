@@ -433,6 +433,11 @@ def test_a_leading_control_before_the_heading_title_is_dropped(between):
             "### Question",
         ),
         ("<ul><li><h3><button>Question</button><li>Answer text.</ul>", "### Question"),
+        (
+            '<script>const x="<h3><button>"</script><!-- <h2><button> -->'
+            "<h3><button>Question</button></h3><p>Answer text.</p>",
+            "### Question",
+        ),
     ],
 )
 def test_heading_button_title_edge_cases(html, heading):
