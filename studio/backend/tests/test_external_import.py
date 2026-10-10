@@ -325,7 +325,9 @@ def test_claude_parallel_tool_calls_and_compaction_keep_one_conversation(claude_
         return [{"type": "tool_use", "id": tool_id, "name": "Bash", "input": {"cmd": "ls"}}]
 
     def result(uuid, tool_id, parent):
-        return c_user(uuid, [{"type": "tool_result", "tool_use_id": tool_id, "content": "ok"}], parent = parent)
+        return c_user(
+            uuid, [{"type": "tool_result", "tool_use_id": tool_id, "content": "ok"}], parent = parent
+        )
 
     path = _session(
         claude_home,
