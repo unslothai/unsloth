@@ -1056,15 +1056,17 @@ export function writeDocxTableRows(archive: Uint8Array): Uint8Array {
 
 function listNumber(n: number, format: string | undefined): string {
   if (format === "none") return "";
-  if (n < 1) return String(n);
   const lower = format?.startsWith("lower");
-  if (lower || format?.startsWith("upper")) {
-    const text = format!.endsWith("Roman")
-      ? romanNumeral(n)
-      : String.fromCharCode(97 + ((n - 1) % 26)).repeat(Math.ceil(n / 26));
-    return lower ? text : text.toUpperCase();
+  // Out-of-range counters read as decimals, like CSS (roman stops at 3999); this also bounds the loops below.
+  if (n < 1 || n > (format?.endsWith("Roman") ? 3999 : 32767) || !Number.isInteger(n) || !(lower || format?.startsWith("upper"))) {
+    return format === "decimalZero" && n >= 0 && n < 10 ? `0${n}` : String(n);
   }
-  return format === "decimalZero" && n < 10 ? `0${n}` : String(n);
+  let text = "";
+  if (format!.endsWith("Roman")) text = romanNumeral(n);
+  // CSS lower-alpha is bijective (z, aa, ab); Word's lowerLetter repeats the letter (z, aa, bb).
+  else if (format!.endsWith("Alpha")) for (let k = n; k > 0; k = Math.floor((k - 1) / 26)) text = String.fromCharCode(97 + ((k - 1) % 26)) + text;
+  else text = String.fromCharCode(97 + ((n - 1) % 26)).repeat(Math.ceil(n / 26));
+  return lower ? text : text.toUpperCase();
 }
 
 function wordValue(node: Element | undefined, name: string): string | undefined {
@@ -1105,7 +1107,8 @@ export function writeDocxListNumbers(archive: Uint8Array): Uint8Array {
     return (pPr && childElements(pPr, style.namespaceURI ?? "", "numPr")[0]) ?? styleNumPr(wordValue(style, "basedOn"), depth + 1);
   };
 
-  const counters = new Map<string, number[]>();
+  const counters = new Map<string, (number | undefined)[]>();
+  const started = new Set<string>();
   const { doc, w } = body;
   const tag = (local: string) => (body.root.prefix ? `${body.root.prefix}:${local}` : local);
   let found = false;
@@ -1118,7 +1121,7 @@ export function writeDocxListNumbers(archive: Uint8Array): Uint8Array {
     const abstractId = wordValue(num, "abstractNumId") ?? "";
     const abstract = abstracts.get(abstractId);
     if (!num || !abstract) continue;
-    const ilvl = Number(wordValue(direct, "ilvl") ?? wordValue(styled, "ilvl") ?? 0) || 0;
+    const ilvl = Math.min(8, Math.max(0, Math.trunc(Number(wordValue(direct, "ilvl") ?? wordValue(styled, "ilvl") ?? 0) || 0)));
     const overrides = childElements(num, n, "lvlOverride");
     const level = (index: number) => {
       const matches = (node: Element) => node.getAttributeNS(n, "ilvl") === String(index);
@@ -1128,14 +1131,27 @@ export function writeDocxListNumbers(archive: Uint8Array): Uint8Array {
       return { lvl, start, format: wordValue(lvl, "numFmt") };
     };
     const { lvl, format } = level(ilvl);
-    if (!lvl || format === "bullet") continue;
-    // Lists sharing an abstract definition continue one count unless a start override restarts it.
-    const key = overrides.some((node) => childElements(node, n, "startOverride").length) ? `num:${numId}` : `abstract:${abstractId}`;
-    const counts = counters.get(key) ?? [];
+    if (!lvl) continue;
+    // Instances of one abstract definition share its counters, as in Word; a start override
+    // restarts them once, when its instance is first used.
+    const counts = counters.get(abstractId) ?? [];
+    counters.set(abstractId, counts);
+    if (!started.has(numId!)) {
+      started.add(numId!);
+      for (const node of overrides) {
+        const at = Number(node.getAttributeNS(n, "ilvl"));
+        if (childElements(node, n, "startOverride").length && at >= 0 && at < counts.length) counts.length = at;
+      }
+    }
     for (let i = 0; i < ilvl; i++) counts[i] ??= level(i).start;
-    counts[ilvl] = counts[ilvl] === undefined ? level(ilvl).start : counts[ilvl] + 1;
-    counts.length = ilvl + 1;
-    counters.set(key, counts);
+    const current = counts[ilvl];
+    counts[ilvl] = current === undefined ? level(ilvl).start : current + 1;
+    // A deeper level restarts after any shallower one unless lvlRestart (1-based, 0 = never) says otherwise.
+    for (let i = ilvl + 1; i < counts.length; i++) {
+      const restart = wordValue(level(i).lvl, "lvlRestart");
+      if (restart === undefined || ilvl < Number(restart)) counts[i] = undefined;
+    }
+    if (format === "bullet") continue;
     // isLgl (legal numbering) shows every level's number in Arabic digits: "Section 1.01" under "Article I".
     const legal = childElements(lvl, n, "isLgl").some((node) => !/^(?:0|false|off)$/.test(node.getAttributeNS(n, "val") ?? ""));
     const label = (wordValue(lvl, "lvlText") ?? "").replace(/%([1-9])/g, (_, digit: string) => {
@@ -1905,8 +1921,8 @@ function collectHtmlBlockText(
 
 const HTML_ROW_GROUP_TAGS = new Set(["table", "thead", "tbody", "tfoot"]);
 const HTML_LIST_FORMATS: Record<string, string> = {
-  a: "lowerLetter",
-  A: "upperLetter",
+  a: "lowerAlpha",
+  A: "upperAlpha",
   i: "lowerRoman",
   I: "upperRoman",
 };

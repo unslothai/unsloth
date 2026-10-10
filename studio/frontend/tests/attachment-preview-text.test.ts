@@ -1765,6 +1765,83 @@ test("a Word legal list reads every level as a decimal and skips unnumbered leve
   }
 });
 
+async function docxListText(levels: string, nums: string, paragraphs: [string, number, number][]): Promise<string> {
+  const w = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
+  const body = paragraphs
+    .map(([text, numId, ilvl]) =>
+      `<w:p><w:pPr><w:numPr><w:ilvl w:val="${ilvl}"/><w:numId w:val="${numId}"/></w:numPr></w:pPr><w:r><w:t>${text}</w:t></w:r></w:p>`,
+    )
+    .join("");
+  const bytes = zipSync({
+    "[Content_Types].xml": strToU8("<Types/>"),
+    "_rels/.rels": relationships([["officeDocument", "word/document.xml"]]),
+    "word/_rels/document.xml.rels": relationships([["numbering", "numbering.xml"]]),
+    "word/document.xml": strToU8(`<w:document ${w}><w:body>${body}</w:body></w:document>`),
+    "word/numbering.xml": strToU8(`<w:numbering ${w}><w:abstractNum w:abstractNumId="1">${levels}</w:abstractNum>${nums}</w:numbering>`),
+  });
+  const globals = globalThis as { DOMParser?: unknown; XMLSerializer?: unknown };
+  const original = { DOMParser: globals.DOMParser, XMLSerializer: globals.XMLSerializer };
+  globals.DOMParser = XmlDomParser;
+  globals.XMLSerializer = XmlSerializer;
+  try {
+    const { default: mammoth } = await import("mammoth");
+    return (await mammoth.extractRawText({ buffer: Buffer.from(writeDocxListNumbers(bytes)) })).value.trim().split(/\n+/).join(" | ");
+  } finally {
+    Object.assign(globals, original);
+  }
+}
+
+const wordLevel = (ilvl: number, format: string, text: string, extra = "") =>
+  `<w:lvl w:ilvl="${ilvl}"><w:start w:val="1"/><w:numFmt w:val="${format}"/>${extra}<w:lvlText w:val="${text}"/></w:lvl>`;
+
+test("Word list counters follow Word's sharing, restart and bullet rules", async () => {
+  const levels = wordLevel(0, "decimal", "%1.") + wordLevel(1, "decimal", "%1.%2");
+  const nums =
+    '<w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num>' +
+    '<w:num w:numId="2"><w:abstractNumId w:val="1"/><w:lvlOverride w:ilvl="0"><w:startOverride w:val="1"/></w:lvlOverride></w:num>';
+  // A restart applies once; the original instance then continues from the restarted count.
+  assert.equal(
+    await docxListText(levels, nums, [["a", 1, 0], ["b", 1, 0], ["c", 2, 0], ["d", 1, 0]]),
+    "1. a | 2. b | 1. c | 2. d",
+  );
+  // A bullet parent still restarts its numbered children.
+  const mixed = wordLevel(0, "bullet", "\u2022") + wordLevel(1, "decimal", "%2)");
+  assert.equal(
+    await docxListText(mixed, '<w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num>', [["x", 1, 0], ["x1", 1, 1], ["x2", 1, 1], ["y", 1, 0], ["y1", 1, 1]]),
+    "x | 1) x1 | 2) x2 | y | 1) y1",
+  );
+  // lvlRestart 0 keeps a level counting across its parents.
+  const running = wordLevel(0, "decimal", "%1.") + wordLevel(1, "decimal", "(%2)", '<w:lvlRestart w:val="0"/>');
+  assert.equal(
+    await docxListText(running, '<w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num>', [["a", 1, 0], ["a1", 1, 1], ["b", 1, 0], ["b1", 1, 1]]),
+    "1. a | (1) a1 | 2. b | (2) b1",
+  );
+});
+
+test("list counters past the alphabet or out of range stay bounded", async () => {
+  const letters = wordLevel(0, "lowerLetter", "%1)");
+  const many = Array.from({ length: 28 }, (_, i): [string, number, number] => [`i${i + 1}`, 1, 0]);
+  const word = await docxListText(letters, '<w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num>', many);
+  assert.ok(word.endsWith("z) i26 | aa) i27 | bb) i28"), word);
+  const huge = '<w:lvl w:ilvl="999999999"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl>';
+  assert.equal(await docxListText(huge, '<w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num>', [["deep", 1, 999999999]]), "deep");
+
+  const withAttributes = (node: StubNode, attributes: Record<string, string> = {}) =>
+    Object.assign(node, { getAttribute: (name: string) => attributes[name] ?? null });
+  const item = (text: string) => withAttributes(element("li", textNode(text)));
+  const extracted = await withStubDom(
+    () =>
+      element(
+        "body",
+        withAttributes(element("ol", item("p"), item("q")), { start: "27", type: "a" }),
+        withAttributes(element("ol", item("r")), { start: "9".repeat(400), type: "i" }),
+        withAttributes(element("ol", item("s")), { start: "4000", type: "I" }),
+      ),
+    () => extractHtmlAttachmentText("<html/>"),
+  );
+  assert.equal(extracted, "aa. p\n\nab. q\n\nInfinity. r\n\n4000. s");
+});
+
 test("an html ordered list keeps its numbers", async () => {
   const withAttributes = (node: StubNode, attributes: Record<string, string> = {}) =>
     Object.assign(node, { getAttribute: (name: string) => attributes[name] ?? null });
