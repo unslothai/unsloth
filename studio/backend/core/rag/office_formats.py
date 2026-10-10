@@ -559,10 +559,12 @@ def _chart_lines(root: ET.Element) -> list[str]:
         name = series.find(f"{_q('c', 'tx')}//{_q('c', 'v')}")
         names.append(name.text or "" if name is not None else "")
         points = {}
-        for axis, store in ((_q("c", "cat"), categories), (_q("c", "val"), points)):
-            for point in series.iterfind(f"{axis}//{_q('c', 'pt')}"):
-                v = point.find(_q("c", "v"))
-                store[int(point.get("idx", "0") or 0)] = v.text or "" if v is not None else ""
+        # Scatter and bubble charts cache xVal/yVal instead of cat/val.
+        for axes, store in ((("cat", "xVal"), categories), (("val", "yVal"), points)):
+            for axis in axes:
+                for point in series.iterfind(f"{_q('c', axis)}//{_q('c', 'pt')}"):
+                    v = point.find(_q("c", "v"))
+                    store[int(point.get("idx", "0") or 0)] = v.text or "" if v is not None else ""
         values.append(points)
     if any(names) and len(names) > 1:
         lines.append(_row(["", *names]).lstrip(" |"))
@@ -1160,12 +1162,18 @@ def doc(path: str) -> list[Section]:
     if pieces is None:
         raise ValueError("Word document has no piece table")
 
+    # Pieces never overlap in a real file, so all text fits in the stream's bytes.
+    room = [len(word)]
+
     def story(first: int, length: int) -> str:
         chars: list[str] = []
         for start, end, fc in pieces:
             lo, hi = max(start, first), min(end, first + length)
             if hi <= lo:
                 continue
+            room[0] -= hi - lo
+            if room[0] < 0:
+                raise ValueError("document repeats too much content")
             if fc & 0x40000000:
                 offset = (fc & 0x3FFFFFFF) // 2 + (lo - start)
                 chars.append(word[offset : offset + hi - lo].decode("cp1252", "replace"))

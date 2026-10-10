@@ -263,6 +263,26 @@ def build_doc(path, *, encrypted = False):
     return path
 
 
+def test_doc_refuses_pieces_that_repeat_one_range(tmp_path):
+    word = bytearray(0x1800)
+    struct.pack_into("<HH", word, 0, 0xA5EC, 0xC1)
+    struct.pack_into("<H", word, 0x0A, 0x0200)
+    struct.pack_into("<H", word, 32, 14)  # csw
+    struct.pack_into("<H", word, 62, 22)  # cslw
+    word[0x1000:0x1040] = b"z" * 64
+    n = 400  # 400 pieces of 64 chars, all from the same 64 bytes
+    struct.pack_into("<i", word, 64 + 3 * 4, 64 * n)  # ccpText
+    struct.pack_into("<H", word, 152, 93)  # cbRgFcLcb
+    plc = struct.pack(f"<{n + 1}I", *range(0, 64 * (n + 1), 64))
+    plc += struct.pack("<HIH", 0, 0x2000 | 0x40000000, 0) * n
+    clx = b"\x02" + struct.pack("<I", len(plc)) + plc
+    struct.pack_into("<II", word, 154 + 33 * 8, 0, len(clx))  # fcClx, lcbClx
+    path = tmp_path / "pieces.doc"
+    path.write_bytes(compound_file({("WordDocument",): bytes(word), ("1Table",): clx}))
+    with pytest.raises(ValueError, match = "repeats too much content"):
+        parsers.parse(str(path))
+
+
 def _record(kind, body):
     return struct.pack("<HH", kind, len(body)) + body
 
@@ -655,13 +675,14 @@ def test_xlsx_builtin_date_formats_include_locale_ids(tmp_path, format_id):
     assert _text(path) == "Sheet: D\n2026-03-31"
 
 
-def test_pptx_reads_chart_titles_and_cached_data(tmp_path):
+@pytest.mark.parametrize("cat, val", [("cat", "val"), ("xVal", "yVal")])
+def test_pptx_reads_chart_titles_and_cached_data(tmp_path, cat, val):
     C = 'xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"'
     pt = lambda i, v: f'<c:pt idx="{i}"><c:v>{v}</c:v></c:pt>'
     series = lambda name, values: (
         f"<c:ser><c:tx><c:strRef><c:strCache>{pt(0, name)}</c:strCache></c:strRef></c:tx>"
-        f"<c:cat><c:strRef><c:strCache>{pt(0, 'North')}{pt(1, 'South')}</c:strCache></c:strRef></c:cat>"
-        f"<c:val><c:numRef><c:numCache>{pt(0, values[0])}{pt(1, values[1])}</c:numCache></c:numRef></c:val></c:ser>"
+        f"<c:{cat}><c:strRef><c:strCache>{pt(0, 'North')}{pt(1, 'South')}</c:strCache></c:strRef></c:{cat}>"
+        f"<c:{val}><c:numRef><c:numCache>{pt(0, values[0])}{pt(1, values[1])}</c:numCache></c:numRef></c:{val}></c:ser>"
     )
     path = _zip(
         tmp_path / "chart.pptx",
