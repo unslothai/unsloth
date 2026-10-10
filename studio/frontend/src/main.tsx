@@ -59,10 +59,10 @@ watchMathBlockContainmentOverride();
 
 // Keep right-edge controls clear of overlay scrollbars.
 watchOverlayScrollbarGutter(window);
+watchInputModality(window);
 
 // Before the first render, so a disabled spell check never flashes underlines.
 watchSpellCheck(window);
-watchInputModality(window);
 
 function renderApp(): void {
   root.render(
