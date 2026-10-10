@@ -26,6 +26,11 @@ export interface StagedDownloadEntry {
   bytes: number;
   ggufFilename?: string | null;
   checkpoint?: boolean;
+  /** Per-file sizes from the plan; with them the panel colours the bar by part. */
+  fileBytes?: Record<string, number>;
+  cachedCheckpointBytes?: number;
+  earlierBytes?: Record<string, number>;
+  laterBytes?: Record<string, number>;
   /** A GGUF quant fetched as the standard variant download, as Chat does: the backend's variant
    *  plan brings its companion files, and the row reads "<repo> · <quant>". `files` is unused. */
   ggufVariant?: string | null;
@@ -133,6 +138,16 @@ export function useStagedDownload({
               scopeId,
               files: current.files,
               checkpoint: current.checkpoint,
+              ...(current.fileBytes && Object.keys(current.fileBytes).length > 0
+                ? {
+                    breakdown: {
+                      fileBytes: current.fileBytes,
+                      cachedCheckpointBytes: current.cachedCheckpointBytes,
+                      earlierBytes: current.earlierBytes,
+                      laterBytes: current.laterBytes,
+                    },
+                  }
+                : {}),
               skipXetNotice: laterEntry,
             },
       );

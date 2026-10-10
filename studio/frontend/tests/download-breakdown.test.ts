@@ -1,0 +1,160 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import { registerBundlerResolver } from "./helpers/kit.ts";
+
+registerBundlerResolver();
+
+const {
+  breakdownOfPersisted,
+  downloadParts,
+  withPlanBreakdown,
+} = await import("../src/features/hub/download-manager/download-breakdown.ts");
+const { diffusionStagingEntries } = await import(
+  "../src/lib/diffusion-pipeline-load-target.ts"
+);
+
+const GB = 1e9;
+// Qwen-Image-2.1 Q2_K on the diffusers route: the GGUF is cached, Run fetches the rest.
+const qwen = {
+  fileBytes: {
+    "text_encoder/model-00001-of-00004.safetensors": 5 * GB,
+    "text_encoder/model-00002-of-00004.safetensors": 5 * GB,
+    "text_encoder/model-00003-of-00004.safetensors": 5 * GB,
+    "text_encoder/model-00004-of-00004.safetensors": 2.5 * GB,
+    "vae/diffusion_pytorch_model.safetensors": 1.4 * GB,
+  },
+  cachedCheckpointBytes: 2.5 * GB,
+};
+
+test("a companion download splits into the cached model, text encoder and VAE", () => {
+  const parts = downloadParts(qwen, 0);
+  assert.deepEqual(
+    parts?.map((p) => [p.kind, p.bytes, p.doneBytes]),
+    [
+      ["model", 2.5 * GB, 2.5 * GB],
+      ["encoder", 17.5 * GB, 0],
+      ["vae", 1.4 * GB, 0],
+    ],
+  );
+});
+
+test("progress fills the files in the order they download", () => {
+  const parts = downloadParts(qwen, 18 * GB);
+  assert.equal(parts?.find((p) => p.kind === "encoder")?.doneBytes, 17.5 * GB);
+  assert.equal(parts?.find((p) => p.kind === "vae")?.doneBytes, 0.5 * GB);
+  // The cached model is not part of the job's byte count.
+  assert.equal(parts?.find((p) => p.kind === "model")?.doneBytes, 2.5 * GB);
+});
+
+test("a resumed download's files already on disk don't fill the segments early", () => {
+  // The job counts 19 GB; 4.6 GB of it was on disk before this run, so it isn't in fileBytes.
+  const parts = downloadParts(qwen, 4.6 * GB + 10 * GB, 18.9 * GB + 4.6 * GB);
+  assert.equal(parts?.find((p) => p.kind === "encoder")?.doneBytes, 10 * GB);
+  assert.equal(parts?.find((p) => p.kind === "vae")?.doneBytes, 0);
+});
+
+test("one kind of file keeps the single bar", () => {
+  assert.equal(
+    downloadParts({ fileBytes: { "vae/diffusion_pytorch_model.safetensors": GB } }, 0),
+    null,
+  );
+  assert.equal(downloadParts(undefined, 0), null);
+});
+
+test("a malformed persisted breakdown is dropped", () => {
+  assert.deepEqual(breakdownOfPersisted({ fileBytes: { a: "1" } }), {});
+  assert.deepEqual(breakdownOfPersisted({ fileBytes: [1] }), {});
+  assert.deepEqual(breakdownOfPersisted(null), {});
+  assert.deepEqual(breakdownOfPersisted(qwen), { breakdown: qwen });
+});
+
+test("a cached checkpoint lands on the first companion", () => {
+  const companions = [
+    { repoId: "a", checkpoint: false },
+    { repoId: "b", checkpoint: false },
+  ];
+  assert.deepEqual(
+    withPlanBreakdown(companions, 2.5 * GB).map((e) => e.cachedCheckpointBytes),
+    [2.5 * GB, undefined],
+  );
+});
+
+test("every job of a plan shows all three parts from the start", () => {
+  // FLUX.2-klein-9B: the GGUF downloads as its own job before the companions.
+  const [gguf, companion] = withPlanBreakdown(
+    [
+      { checkpoint: true, fileBytes: { "flux-2-klein-9b-Q4_K_M.gguf": 5.9 * GB } },
+      {
+        checkpoint: false,
+        fileBytes: {
+          "text_encoder/model.safetensors": 16 * GB,
+          "vae/diffusion_pytorch_model.safetensors": 168e6,
+        },
+      },
+    ],
+    5.9 * GB,
+  );
+  const halfway = downloadParts(
+    { fileBytes: gguf.fileBytes, laterBytes: gguf.laterBytes },
+    3 * GB,
+  );
+  assert.deepEqual(
+    halfway?.map((p) => [p.kind, p.bytes, p.doneBytes]),
+    [
+      ["model", 5.9 * GB, 3 * GB],
+      ["encoder", 16 * GB, 0],
+      ["vae", 168e6, 0],
+    ],
+  );
+  // The GGUF counts once: as the companion's earlier job, not also as a cached checkpoint.
+  assert.equal(companion.cachedCheckpointBytes, undefined);
+  const next = downloadParts(
+    { fileBytes: companion.fileBytes, earlierBytes: companion.earlierBytes },
+    0,
+  );
+  assert.deepEqual(next?.[0], { kind: "model", bytes: 5.9 * GB, doneBytes: 5.9 * GB });
+});
+
+test("tokenizer and scheduler files count as the text encoder, so the bar has three parts", () => {
+  const parts = downloadParts(
+    {
+      fileBytes: {
+        "model_index.json": 1e3,
+        "scheduler/scheduler_config.json": 1e3,
+        "text_encoder/model-00001-of-00002.safetensors": 16 * GB,
+        "tokenizer/tokenizer.json": 16e6,
+        "vae/diffusion_pytorch_model.safetensors": 168e6,
+      },
+      cachedCheckpointBytes: 5.9 * GB,
+    },
+    0,
+  );
+  assert.deepEqual(
+    parts?.map((p) => p.kind),
+    ["model", "encoder", "vae"],
+  );
+});
+
+test("staging carries the plan's per-file sizes and the cached checkpoint", () => {
+  const entries = diffusionStagingEntries(
+    [
+      {
+        repo_id: "unsloth/Qwen-Image-2.1",
+        files: Object.keys(qwen.fileBytes),
+        bytes: 18.9 * GB,
+        file_bytes: qwen.fileBytes,
+        gguf_filename: null,
+        checkpoint: false,
+      },
+    ],
+    "unsloth/Qwen-Image-2.1-GGUF",
+    { filename: "qwen-image-2.1-Q2_K.gguf", checkpointBytes: 2.5 * GB },
+  );
+  assert.equal(entries.length, 1);
+  assert.deepEqual(entries[0].fileBytes, qwen.fileBytes);
+  assert.equal(entries[0].cachedCheckpointBytes, 2.5 * GB);
+});

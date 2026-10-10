@@ -3345,7 +3345,10 @@ export function ImagesPage({
             };
             stagedQuantRevert.current = ownRevert;
           }
-          const entries = diffusionStagingEntries(plan.entries, repoId, opts);
+          const entries = diffusionStagingEntries(plan.entries, repoId, {
+            ...opts,
+            checkpointBytes: plan.checkpoint_bytes,
+          });
           if (entries.length === 0) {
             pickToast.dismiss(pickToastId);
             if (downloadOnly) return true;

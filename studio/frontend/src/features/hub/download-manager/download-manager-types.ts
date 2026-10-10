@@ -38,6 +38,7 @@ export interface ManagedDownload {
   scopedFiles?: string[];
   /** True for the entry that IS the model the user picked, false for companion repos. Only the stager can tell them apart, since a checkpoint may be a single `.safetensors` and companions carry `.safetensors` too. */
   checkpoint?: boolean;
+  breakdown?: DownloadBreakdown;
   transport?: ResolvedTransport;
   /** A Xet run that fell back to HTTP keeps its original cancel marker, so it, not `transport`, decides the stop control. */
   cancelTransport?: ResolvedTransport;
@@ -56,9 +57,21 @@ export interface DownloadRequest {
   scopeId?: string | null;
   files?: string[];
   checkpoint?: boolean;
+  breakdown?: DownloadBreakdown;
   callerToast?: CallerToast;
   /** Skip repeat Xet notices for later entries in a staged plan. */
   skipXetNotice?: boolean;
+}
+
+/** What a companion download's bytes are for, so the panel can colour its bar by part. */
+export interface DownloadBreakdown {
+  /** Size of each file the job counts, from the download plan. */
+  fileBytes: Record<string, number>;
+  /** The picked checkpoint, already on disk, shown as a full segment. */
+  cachedCheckpointBytes?: number;
+  /** The plan's other jobs: fetched before this one (full) and after it (empty). */
+  earlierBytes?: Record<string, number>;
+  laterBytes?: Record<string, number>;
 }
 
 export interface DownloadPresentation {
