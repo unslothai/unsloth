@@ -21,7 +21,7 @@ the VAE freed: the cache stores the posterior's affine parameters (mean/std fold
 family's latent normalisation), so every step still draws a fresh VAE sample --
 distribution-identical to encoding in the loop, without keeping the VAE resident or paying a
 per-step encode. The transformer trains as a QLoRA (nf4) adapter by default with gradient
-checkpointing and 8-bit AdamW, so only the (small) LoRA params + optimizer state and the frozen
+checkpointing and fused AdamW, so only the (small) LoRA params + optimizer state and the frozen
 4-bit base sit in VRAM during the loop.
 """
 
@@ -46,7 +46,9 @@ from core.training.diffusion_train_common import (
     EventCb,
     LATENT_CACHE_OVER_BUDGET,
     StopCb,
-    bitsandbytes_optimizer_supported,
+    enable_diffusion_gradient_checkpointing,
+    make_lora_optimizer,
+    recorded_optimizer_class,
     _apply_perf_flags,
     _assert_trusted_base_model,
     _emit,
@@ -1771,9 +1773,30 @@ def _should_compile(
         return False
     if mode == "on":
         return True
-    # Regional compile is the whole point of the dense modes (2.6x measured on Z-Image bf16) but is fragile over
-    # bitsandbytes 4-bit modules, so it stays off for QLoRA.
+    if base_precision == "nf4":
+        return _nf4_compile_supported()
     return base_precision in ("bf16", "fp8", "mxfp8")
+
+
+# Lowest stack where bnb 4-bit ops are torch custom ops (0 graph breaks, loss matches eager); ROCm unmeasured, stays eager.
+NF4_COMPILE_MIN_TORCH = "2.10"
+NF4_COMPILE_MIN_BNB = "0.46.1"
+
+
+def _nf4_compile_supported() -> bool:
+    try:
+        import importlib.metadata
+
+        import torch
+        from packaging.version import Version
+
+        if torch_is_rocm():
+            return False
+        if Version(torch.__version__) < Version(NF4_COMPILE_MIN_TORCH):
+            return False
+        return Version(importlib.metadata.version("bitsandbytes")) >= Version(NF4_COMPILE_MIN_BNB)
+    except Exception:  # noqa: BLE001 -- unknown versions keep the historical eager path
+        return False
 
 
 def _maybe_compile_transformer(
@@ -2088,13 +2111,7 @@ def _train_dit(
         )
     )
     if cfg.gradient_checkpointing:
-        # Non-reentrant checkpointing: reentrant recompute of a bnb 4-bit LoRA linear can trip an illegal memory
-        # access on the larger FLUX transformer, and it is the recommended mode anyway.
-        import functools
-        import torch.utils.checkpoint as _ckpt
-        transformer.enable_gradient_checkpointing(
-            gradient_checkpointing_func = functools.partial(_ckpt.checkpoint, use_reentrant = False)
-        )
+        enable_diffusion_gradient_checkpointing(transformer)
     cast_training_params(transformer, dtype = torch.float32)
     lora_params = [p for p in transformer.parameters() if p.requires_grad]
 
@@ -2120,7 +2137,9 @@ def _train_dit(
     if compiled and spec.family == "qwen-image":
         qwen_pad_to = max(e[0].shape[1] for e in caption_embeds.values())
 
-    optimizer = _make_optimizer(lora_params, cfg.learning_rate)
+    optimizer = _make_optimizer(
+        lora_params, cfg.learning_rate, recorded_optimizer_class(cfg, identity)
+    )
     scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
         fetch_cfg.base_model, subfolder = "scheduler", token = cfg.hf_token
     )
@@ -2408,31 +2427,12 @@ def _train_dit(
     return str(out_dir)
 
 
-def _make_optimizer(params, lr):
-    """8-bit AdamW (bitsandbytes) when available -- half the optimizer state, no accuracy regression
-    for LoRA -- else torch AdamW, fused on CUDA (with a fallback when this build/device lacks the
-    fused kernel). UNSLOTH_DIFFUSION_FP32_OPTIM forces plain (non-fused) AdamW, as it does for
-    SDXL: the accuracy guard wants the reference optimizer, and a host where the override means
-    one thing for one trainer and nothing for the other cannot answer "can this checkpoint be
-    resumed here" before the run starts."""
-    import torch
-
-    if os.environ.get("UNSLOTH_DIFFUSION_FP32_OPTIM", "") in ("1", "true"):
-        return torch.optim.AdamW(params, lr = lr)
-    # Checked before construction, not around it: on XPU the 8-bit optimizer builds fine and
-    # only dies at the first step(), which the except below would never see.
-    if bitsandbytes_optimizer_supported():
-        try:
-            import bitsandbytes as bnb
-            return bnb.optim.AdamW8bit(params, lr = lr)
-        except Exception:  # noqa: BLE001 -- bnb missing / no CUDA: fall back to torch AdamW
-            pass
-    if torch.cuda.is_available():
-        try:
-            return torch.optim.AdamW(params, lr = lr, fused = True)
-        except Exception:  # noqa: BLE001 -- fused unsupported on this build/device
-            pass
-    return torch.optim.AdamW(params, lr = lr)
+def _make_optimizer(
+    params,
+    lr,
+    resume_optimizer_class = None,
+):
+    return make_lora_optimizer(params, lr, resume_optimizer_class)
 
 
 def _free_text_encoders(pipe) -> None:

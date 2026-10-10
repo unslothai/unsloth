@@ -2694,10 +2694,13 @@ class TestXpuBitsandbytesOptimizerGate(unittest.TestCase):
             self.assertTrue(self._probe()())
 
     def test_diffusion_factories_skip_bnb_on_xpu_and_keep_it_elsewhere(self):
+        """Fresh runs build torch AdamW everywhere; AdamW8bit is only rebuilt to resume a bundle
+        it wrote, and never on XPU, where it would die at the first step."""
         import torch
 
         import core.training.diffusion_dit_trainer as dit_mod
         import core.training.diffusion_lora_trainer as lora_mod
+        import core.training.diffusion_train_common as common_mod
 
         class _Bnb8bitMarker(torch.optim.AdamW):
             """Stands in for bnb.optim.AdamW8bit: constructs fine, dies at the first step
@@ -2715,32 +2718,32 @@ class TestXpuBitsandbytesOptimizerGate(unittest.TestCase):
             ("sdxl_lora", lora_mod, "_make_lora_optimizer"),
             ("dit", dit_mod, "_make_optimizer"),
         )
+        resume_key = "bitsandbytes.optim.adamw.AdamW8bit"
         for label, module, factory_name in cases:
             factory = getattr(module, factory_name)
             for on_xpu in (True, False):
-                with self.subTest(trainer = label, xpu = on_xpu):
-                    param = torch.nn.Parameter(torch.zeros(2, 2))
-                    param.grad = torch.ones(2, 2)
-                    with (
-                        patch.dict(
-                            sys.modules,
-                            {"bitsandbytes": fake_bnb, "bitsandbytes.optim": fake_optim},
-                        ),
-                        patch.object(
-                            module,
-                            "bitsandbytes_optimizer_supported",
-                            lambda supported = not on_xpu: supported,
-                        ),
-                    ):
-                        optimizer = factory([param], 1e-4)
+                for resume in (None, resume_key):
+                    with self.subTest(trainer = label, xpu = on_xpu, resume = resume):
+                        param = torch.nn.Parameter(torch.zeros(2, 2))
+                        param.grad = torch.ones(2, 2)
+                        with (
+                            patch.dict(
+                                sys.modules,
+                                {"bitsandbytes": fake_bnb, "bitsandbytes.optim": fake_optim},
+                            ),
+                            patch.object(
+                                common_mod,
+                                "bitsandbytes_optimizer_supported",
+                                lambda supported = not on_xpu: supported,
+                            ),
+                        ):
+                            optimizer = factory([param], 1e-4, resume)
 
-                    if on_xpu:
-                        # Must not be the bnb optimizer, and must survive an actual step.
-                        self.assertNotIsInstance(optimizer, _Bnb8bitMarker)
-                        optimizer.step()
-                    else:
-                        # Unchanged off XPU: still the 8-bit optimizer, not a blanket disable.
-                        self.assertIsInstance(optimizer, _Bnb8bitMarker)
+                        if on_xpu or resume is None:
+                            self.assertNotIsInstance(optimizer, _Bnb8bitMarker)
+                            optimizer.step()
+                        else:
+                            self.assertIsInstance(optimizer, _Bnb8bitMarker)
 
 
 class TestCliDefaultOptimizerFollowsTheDevicePolicy(unittest.TestCase):

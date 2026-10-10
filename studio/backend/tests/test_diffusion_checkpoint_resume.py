@@ -2107,22 +2107,21 @@ def test_a_first_periodic_save_does_not_spend_the_previous_runs_bundles(run_dir)
         assert "discard_existing = False," in source, name
 
 
-def test_both_trainers_honour_the_fp32_optimizer_override(run_dir):
+def test_both_trainers_honour_the_fp32_optimizer_override(run_dir, monkeypatch):
     """The preflight refuses 8-bit moments when the override is set, which is only sound if
     every trainer actually obeys it -- otherwise DiT checkpoints written on this host become
-    unresumable on the same host."""
-    trainers = Path(dc.__file__).parent
-    for name in ("diffusion_lora_trainer.py", "diffusion_dit_trainer.py"):
-        source = (trainers / name).read_text(encoding = "utf-8")
-        marker = source.find("def _make_optimizer")
-        if marker < 0:
-            marker = source.find("def _make_lora_optimizer")
-        assert marker > 0, name
-        body = source[marker : marker + 1200]
-        # The env READ, not a mention of it in prose.
-        read = 'os.environ.get("UNSLOTH_DIFFUSION_FP32_OPTIM"'
-        assert read in body, name
-        assert body.index(read) < body.index("AdamW8bit"), name
+    unresumable on the same host. Asked of the factories themselves, including for a resume of
+    an 8-bit bundle, which is the one case that otherwise builds AdamW8bit."""
+    import core.training.diffusion_dit_trainer as dit
+    import core.training.diffusion_lora_trainer as sdxl
+
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_FP32_OPTIM", "1")
+    for factory in (sdxl._make_lora_optimizer, dit._make_optimizer):
+        for resume in (None, "bitsandbytes.optim.adamw.AdamW8bit"):
+            param = torch.nn.Parameter(torch.zeros(2, 2))
+            optimizer = factory([param], 1e-4, resume)
+            assert type(optimizer) is torch.optim.AdamW, factory
+            assert not optimizer.defaults.get("fused"), factory
 
 
 def test_a_completed_run_does_not_leave_its_periodic_bundles_behind(run_dir):
