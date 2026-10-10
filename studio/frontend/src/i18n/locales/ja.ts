@@ -1647,6 +1647,17 @@ export const ja = {
         showAudioCppUpdates: "audio.cpp のアップデート通知",
         showAudioCppUpdatesDescription:
           "音声ページに必要な audio.cpp ランタイムの更新があるときに通知します。音声機能を使わない場合はオフにしてください。",
+        showUnslothUpdates: "Unsloth のアップデート通知",
+        showUnslothUpdatesDescription:
+          "新しいバージョンの Unsloth をインストールできるようになったときに通知します。",
+        frequency: {
+          always: "常に",
+          daily: "1日1回",
+          weekly: "週に1回",
+          biweekly: "2週間に1回",
+          monthly: "月に1回",
+          off: "オフ",
+        },
       },
       startup: {
         sectionTitle: "起動",
@@ -2082,6 +2093,10 @@ export const ja = {
           "PyTorch は CPU 専用ビルド ({version}) のため、下の GPU は利用できません。インストールを修復すると GPU サポートが復元されます。",
         mismatchUnavailable:
           "PyTorch ({version}) は下の GPU を初期化できないため、利用できません。GPU ドライバーを確認するか、インストールを修復してください。",
+        driverIdleEvict:
+          "AMD ドライバー {version} には、AMD GPU がアイドル状態のときに Windows がフリーズすることがある既知の不具合があります。特に GPU が複数ある環境で発生しやすくなります。Adrenalin 26.9.2 以降に更新してください。",
+        driverIdleEvictDetails: "詳細",
+        dismissNotice: "閉じる",
         unusableDevice: "利用不可",
         unknownDevice: "不明な GPU",
         deviceWithIndex: "GPU {index}",
@@ -2860,9 +2875,9 @@ export const ja = {
       },
       mcp: {
         title: "エージェントアクセス (MCP)",
-        description: "Claude Code や Codex などのコーディングエージェントが MCP 経由で Unsloth Studio を使えるようにします。エージェントはこのページのアクセストークンでサインインします。",
+        description: "Claude Code や Codex などのコーディングエージェントが MCP 経由で Unsloth を使えるようにします。エージェントはこのページのアクセストークンでサインインします。",
         enable: "エージェントの接続を許可",
-        enableDescription: "Unsloth Studio のアクセストークンを持つリクエストに /mcp/ を提供します。",
+        enableDescription: "Unsloth のアクセストークンを持つリクエストに /mcp/ を提供します。",
         lockedByEnv: "{name} で設定されています。",
         loadError: "エージェントアクセスの設定を読み込めませんでした。",
         saveError: "エージェントアクセスの設定を保存できませんでした。",

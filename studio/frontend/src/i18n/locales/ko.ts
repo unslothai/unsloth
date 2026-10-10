@@ -1656,6 +1656,17 @@ export const ko = {
         showAudioCppUpdates: "audio.cpp 업데이트 알림",
         showAudioCppUpdatesDescription:
           "오디오 페이지에 필요한 audio.cpp 런타임 업데이트가 있으면 알립니다. 오디오를 사용하지 않는다면 끄세요.",
+        showUnslothUpdates: "Unsloth 업데이트 알림",
+        showUnslothUpdatesDescription:
+          "설치할 수 있는 새 Unsloth 버전이 있으면 알립니다.",
+        frequency: {
+          always: "항상",
+          daily: "하루에 한 번",
+          weekly: "일주일에 한 번",
+          biweekly: "2주에 한 번",
+          monthly: "한 달에 한 번",
+          off: "끄기",
+        },
       },
       startup: {
         sectionTitle: "시작",
@@ -2098,6 +2109,10 @@ export const ko = {
           "PyTorch가 CPU 전용 빌드({version})이므로 아래 GPU를 사용할 수 없습니다. 설치를 복구하면 GPU 지원이 복원됩니다.",
         mismatchUnavailable:
           "PyTorch({version})가 아래 GPU를 초기화하지 못해 사용할 수 없습니다. GPU 드라이버를 확인하거나 설치를 복구하세요.",
+        driverIdleEvict:
+          "AMD 드라이버 {version}에는 AMD GPU가 유휴 상태일 때 Windows가 멈출 수 있는 알려진 버그가 있으며, GPU가 두 개 이상일 때 주로 발생합니다. Adrenalin 26.9.2 이상으로 업데이트하세요.",
+        driverIdleEvictDetails: "자세히",
+        dismissNotice: "닫기",
         unusableDevice: "사용 불가",
         unknownDevice: "알 수 없는 GPU",
         deviceWithIndex: "GPU {index}",
@@ -2880,9 +2895,9 @@ export const ko = {
       },
       mcp: {
         title: "에이전트 액세스 (MCP)",
-        description: "Claude Code, Codex 같은 코딩 에이전트가 MCP로 Unsloth Studio를 사용하게 합니다. 에이전트는 이 페이지의 액세스 토큰으로 로그인합니다.",
+        description: "Claude Code, Codex 같은 코딩 에이전트가 MCP로 Unsloth를 사용하게 합니다. 에이전트는 이 페이지의 액세스 토큰으로 로그인합니다.",
         enable: "에이전트 연결 허용",
-        enableDescription: "Unsloth Studio 액세스 토큰이 있는 요청에 /mcp/를 제공합니다.",
+        enableDescription: "Unsloth 액세스 토큰이 있는 요청에 /mcp/를 제공합니다.",
         lockedByEnv: "{name}(으)로 설정됨.",
         loadError: "에이전트 액세스 설정을 불러오지 못했습니다.",
         saveError: "에이전트 액세스 설정을 저장하지 못했습니다.",

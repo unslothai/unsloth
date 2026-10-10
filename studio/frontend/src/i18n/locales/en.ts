@@ -440,12 +440,12 @@ export const en = {
     rollback: "Restore previous installation",
     installTitle: "Install {engine}",
     installAndLoad: "Install and load",
-    confirm: "Install {engine} {version}? This optional download can use several gigabytes. Exact additional download and disk usage are unavailable. Compatible cached packages and model files are reused.",
-    confirmSized: "Install {engine} {version}? This optional download is about {size}. Packages Studio already has, including PyTorch when the versions match, are reused rather than downloaded again.",
-    wslSetup: "On Windows, {engine} runs inside WSL2 (Windows Subsystem for Linux). Studio will turn on WSL2 and set up its own private Ubuntu environment for engines; your existing Linux distributions are not touched. Windows will show one administrator (UAC) prompt, and may ask you to restart before the installation can finish. Nothing changes until you click Install.",
+    confirm: "Install {engine} {version}? This can download several GB.",
+    confirmSized: "Install {engine} {version}? About {size} to download.",
+    wslSetup: "On Windows, {engine} runs in a private WSL2 environment Studio sets up. Expect one administrator prompt and possibly a restart.",
     wslReady: "On Windows, {engine} runs inside Studio's private WSL2 environment.",
     wslRestart: "Restart Windows to finish turning on WSL2, then click Install again.",
-    background: "Installation runs in the background. Removing the engine keeps your downloaded models.",
+    background: "Installs in the background.",
     failed: "Engine installation failed. Retry or use the default engine.",
     details: "Technical details",
     cancelled: "Installation cancelled. You can retry.",
@@ -1718,6 +1718,17 @@ export const en = {
         showAudioCppUpdates: "audio.cpp update notifications",
         showAudioCppUpdatesDescription:
           "Notify when the audio.cpp runtime needs an update to run the Audio pages. Turn off if you never use Audio.",
+        showUnslothUpdates: "Unsloth update notifications",
+        showUnslothUpdatesDescription:
+          "Notify when a newer version of Unsloth is available to install.",
+        frequency: {
+          always: "Always",
+          daily: "Once a day",
+          weekly: "Once a week",
+          biweekly: "Every two weeks",
+          monthly: "Once a month",
+          off: "Off",
+        },
       },
       startup: {
         sectionTitle: "Startup",
@@ -2142,6 +2153,10 @@ export const en = {
           "PyTorch is a CPU-only build ({version}), so the GPUs below cannot be used. Repair the installation to restore GPU support.",
         mismatchUnavailable:
           "PyTorch ({version}) cannot initialise the GPUs below, so they cannot be used. Check the GPU driver, or repair the installation.",
+        driverIdleEvict:
+          "AMD driver {version} has a known bug that can freeze Windows when an AMD GPU sits idle, most often with more than one GPU. Update to Adrenalin 26.9.2 or later.",
+        driverIdleEvictDetails: "Details",
+        dismissNotice: "Dismiss",
         unusableDevice: "unusable",
         unknownDevice: "Unknown GPU",
         deviceWithIndex: "GPU {index}",
@@ -2925,9 +2940,9 @@ export const en = {
       },
       mcp: {
         title: "Agent access (MCP)",
-        description: "Let coding agents such as Claude Code and Codex use Unsloth Studio over MCP. Agents sign in with an access token from this page.",
+        description: "Let coding agents such as Claude Code and Codex use Unsloth over MCP. Agents sign in with an access token from this page.",
         enable: "Allow agent connections",
-        enableDescription: "Serves /mcp/ to requests that carry an Unsloth Studio access token.",
+        enableDescription: "Serves /mcp/ to requests that carry an Unsloth access token.",
         lockedByEnv: "Set by {name}.",
         loadError: "Couldn't load agent access settings.",
         saveError: "Couldn't save the agent access setting.",

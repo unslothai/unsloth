@@ -1662,6 +1662,17 @@ export const hi = {
         showAudioCppUpdates: "audio.cpp अपडेट सूचनाएं",
         showAudioCppUpdatesDescription:
           "जब ऑडियो पेजों के लिए audio.cpp रनटाइम को अपडेट की ज़रूरत हो तो सूचित करें। यदि आप कभी ऑडियो का उपयोग नहीं करते हैं तो बंद कर दें।",
+        showUnslothUpdates: "Unsloth अपडेट सूचनाएँ",
+        showUnslothUpdatesDescription:
+          "जब Unsloth का नया संस्करण इंस्टॉल करने के लिए उपलब्ध हो, तब सूचित करें।",
+        frequency: {
+          always: "हमेशा",
+          daily: "दिन में एक बार",
+          weekly: "सप्ताह में एक बार",
+          biweekly: "हर दो सप्ताह में",
+          monthly: "महीने में एक बार",
+          off: "बंद",
+        },
       },
       startup: {
         sectionTitle: "स्टार्टअप",
@@ -2105,6 +2116,10 @@ export const hi = {
           "PyTorch केवल-CPU बिल्ड ({version}) है, इसलिए नीचे दिए गए GPU उपयोग नहीं किए जा सकते। GPU समर्थन बहाल करने के लिए इंस्टॉलेशन की मरम्मत करें।",
         mismatchUnavailable:
           "PyTorch ({version}) नीचे दिए गए GPU को आरंभ नहीं कर पा रहा है, इसलिए उनका उपयोग नहीं किया जा सकता। GPU ड्राइवर जाँचें या इंस्टॉलेशन की मरम्मत करें।",
+        driverIdleEvict:
+          "AMD ड्राइवर {version} में एक ज्ञात बग है जिससे AMD GPU के निष्क्रिय रहने पर Windows फ़्रीज़ हो सकता है, ज़्यादातर एक से अधिक GPU होने पर। Adrenalin 26.9.2 या नए संस्करण में अपडेट करें।",
+        driverIdleEvictDetails: "विवरण",
+        dismissNotice: "खारिज करें",
         unusableDevice: "अनुपयोगी",
         unknownDevice: "अज्ञात GPU",
         deviceWithIndex: "GPU {index}",
@@ -2896,9 +2911,9 @@ export const hi = {
       },
       mcp: {
         title: "एजेंट एक्सेस (MCP)",
-        description: "Claude Code और Codex जैसे कोडिंग एजेंट को MCP के ज़रिए Unsloth Studio इस्तेमाल करने दें। एजेंट इस पेज के एक्सेस टोकन से साइन इन करते हैं।",
+        description: "Claude Code और Codex जैसे कोडिंग एजेंट को MCP के ज़रिए Unsloth इस्तेमाल करने दें। एजेंट इस पेज के एक्सेस टोकन से साइन इन करते हैं।",
         enable: "एजेंट कनेक्शन की अनुमति दें",
-        enableDescription: "Unsloth Studio एक्सेस टोकन वाले अनुरोधों के लिए /mcp/ उपलब्ध कराता है।",
+        enableDescription: "Unsloth एक्सेस टोकन वाले अनुरोधों के लिए /mcp/ उपलब्ध कराता है।",
         lockedByEnv: "{name} द्वारा सेट।",
         loadError: "एजेंट एक्सेस सेटिंग्स लोड नहीं हो सकीं।",
         saveError: "एजेंट एक्सेस सेटिंग सहेजी नहीं जा सकी।",

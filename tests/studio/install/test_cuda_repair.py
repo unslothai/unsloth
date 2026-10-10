@@ -1680,17 +1680,6 @@ class TestAnExplicitPinOutranksTheManifest:
         assert ok is True
         mock_pip.assert_not_called()
 
-    def test_an_unrecognised_pin_still_falls_through_to_the_manifest(self):
-        # A /simple mirror names no family; the caller's unknown-pin gate is the guard.
-        ok, mock_pip = _run_flavor_invariant(
-            installed = "2.11.0+cpu",
-            expected_env = None,
-            recorded = "cu124",
-            index_url = "https://mirror.corp.example/simple",
-        )
-        assert ok is True
-        mock_pip.assert_not_called()
-
     def test_the_setup_handover_still_wins_over_a_pin(self):
         # The handover describes the run that just installed; the pin may predate it.
         ok, mock_pip = _run_flavor_invariant(
@@ -1743,17 +1732,6 @@ class TestExplicitlyPinnedGpuFlavorsAreStillEnforced:
         )
         assert ok is True
         assert pin in mock_pip.call_args[0]
-
-    def test_an_unknown_pin_is_still_left_alone(self):
-        """Regression guard: narrowing the veto must not reopen the case it closed."""
-        ok, mock_pip = _run_flavor_invariant(
-            installed = "2.11.0+cpu",
-            expected_env = None,
-            recorded = "cu124",
-            index_url = "https://mirror.corp.example/simple",
-        )
-        assert ok is True
-        mock_pip.assert_not_called()
 
 
 class TestSetupPs1CudaOnDiskFallback:

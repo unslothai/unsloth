@@ -1663,6 +1663,17 @@ export const ru = {
         showAudioCppUpdates: "Уведомления об обновлениях audio.cpp",
         showAudioCppUpdatesDescription:
           "Уведомлять, когда среде выполнения audio.cpp нужно обновление для страниц «Аудио». Отключите, если вы не пользуетесь аудио.",
+        showUnslothUpdates: "Уведомления об обновлениях Unsloth",
+        showUnslothUpdatesDescription:
+          "Сообщать, когда доступна новая версия Unsloth для установки.",
+        frequency: {
+          always: "Всегда",
+          daily: "Раз в день",
+          weekly: "Раз в неделю",
+          biweekly: "Раз в две недели",
+          monthly: "Раз в месяц",
+          off: "Выкл.",
+        },
       },
       startup: {
         sectionTitle: "Автозапуск",
@@ -2109,6 +2120,10 @@ export const ru = {
           "PyTorch собран только для CPU ({version}), поэтому GPU ниже использовать нельзя. Восстановите установку, чтобы вернуть поддержку GPU.",
         mismatchUnavailable:
           "PyTorch ({version}) не может инициализировать GPU ниже, поэтому использовать их нельзя. Проверьте драйвер видеокарты или восстановите установку.",
+        driverIdleEvict:
+          "В драйвере AMD {version} есть известная ошибка, из-за которой Windows может зависнуть, когда GPU AMD простаивает, чаще всего при нескольких GPU. Обновитесь до Adrenalin 26.9.2 или новее.",
+        driverIdleEvictDetails: "Подробнее",
+        dismissNotice: "Скрыть",
         unusableDevice: "недоступен",
         unknownDevice: "Неизвестный GPU",
         deviceWithIndex: "GPU {index}",
@@ -2901,9 +2916,9 @@ export const ru = {
       },
       mcp: {
         title: "Доступ агентов (MCP)",
-        description: "Разрешите агентам для программирования, таким как Claude Code и Codex, работать с Unsloth Studio через MCP. Агенты входят с токеном доступа с этой страницы.",
+        description: "Разрешите агентам для программирования, таким как Claude Code и Codex, работать с Unsloth через MCP. Агенты входят с токеном доступа с этой страницы.",
         enable: "Разрешить подключения агентов",
-        enableDescription: "Обслуживает /mcp/ для запросов с токеном доступа Unsloth Studio.",
+        enableDescription: "Обслуживает /mcp/ для запросов с токеном доступа Unsloth.",
         lockedByEnv: "Задано через {name}.",
         loadError: "Не удалось загрузить настройки доступа агентов.",
         saveError: "Не удалось сохранить настройку доступа агентов.",

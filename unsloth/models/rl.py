@@ -18,6 +18,7 @@ import torch
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
 import copy
 import copyreg
+import types
 import functools
 import importlib
 import importlib.util
@@ -4184,6 +4185,145 @@ def patch_trl_vllm_generation():
     return
 
 
+def _packed_seq_lengths_from_position_ids(position_ids):
+    # One padding-free row whose position_ids restart at 0 per sequence -> int32 lengths, else None.
+    if position_ids is None or position_ids.dim() != 2 or position_ids.shape[0] != 1:
+        return None
+    pos = position_ids[0]
+    starts = torch.nonzero(pos == 0, as_tuple = False).flatten()
+    if starts.numel() == 0 or int(starts[0]) != 0:
+        return None
+    ends = torch.cat([starts[1:], starts.new_tensor([pos.numel()])])
+    return (ends - starts).to(torch.int32)
+
+
+def _without_instance_bound_methods(obj):
+    # Per-instance save_pretrained / push_to_hub wrappers cannot be unpickled in a spawned process.
+    if obj is None or not hasattr(obj, "__dict__"):
+        return obj
+    bound = [
+        k for k, v in vars(obj).items() if isinstance(v, types.MethodType) and v.__self__ is obj
+    ]
+    inner = getattr(obj, "tokenizer", None)
+    clean_inner = (
+        _without_instance_bound_methods(inner) if inner is not None and inner is not obj else inner
+    )
+    if not bound and clean_inner is inner:
+        return obj
+    clone = copy.copy(obj)
+    for k in bound:
+        clone.__dict__.pop(k, None)
+    if clean_inner is not inner:
+        clone.__dict__["tokenizer"] = clean_inner
+    return clone
+
+
+def _is_unsloth_fast_backbone(backbone):
+    from .llama import LlamaModel_fast_forward
+    return getattr(type(backbone), "forward", None) is LlamaModel_fast_forward
+
+
+def _unsloth_async_grpo_lm_head(original, flag):
+    # TRL >= 1.15 `add_fused_lm_head` (active when `flag` is passed), TRL 1.13-1.14 `patch_chunked_lm_head` (always).
+    def patch_lm_head(model, *args, **kwargs):
+        # The head replaces the CausalLM forward and calls its backbone, so it must sit under any PEFT wrapper.
+        target = model.get_base_model() if hasattr(model, "get_base_model") else model
+        original(target, *args, **kwargs)
+        if not _is_unsloth_fast_backbone(getattr(target, "base_model", None)):
+            attn = getattr(target.config, "_attn_implementation", None) or ""
+            if "flash" not in str(attn):
+                raise ValueError(
+                    "Unsloth: AsyncGRPOTrainer packs several sequences into one row and separates them only by "
+                    f"position_ids resets, which `{attn}` attention ignores, so sequences would attend to each other. "
+                    "Load the model with FastLanguageModel, or with a flash attention implementation."
+                )
+            return
+        head_forward = target.forward
+
+        @functools.wraps(head_forward)
+        def forward(*f_args, **f_kwargs):
+            # Unsloth's attention reads sequence boundaries from packed_seq_lengths, not position_ids resets.
+            if (flag is None or f_kwargs.get(flag)) and f_kwargs.get("packed_seq_lengths") is None:
+                lengths = _packed_seq_lengths_from_position_ids(f_kwargs.get("position_ids"))
+                if lengths is not None:
+                    f_kwargs["packed_seq_lengths"] = lengths
+            return head_forward(*f_args, **f_kwargs)
+
+        target.forward = forward
+
+    patch_lm_head._unsloth_async_grpo_patched = True
+    return patch_lm_head
+
+
+def patch_trl_async_grpo():
+    # Let TRL's AsyncGRPOTrainer take a loaded Unsloth model; keep packed rows from attending across sequences.
+    if importlib.util.find_spec("trl.experimental") is None:
+        return
+    try:
+        if importlib.util.find_spec("trl.experimental.async_grpo") is None:
+            return
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            import trl.experimental.async_grpo.async_grpo_trainer as async_module
+    except Exception as e:
+        logger.info(f"Unsloth: Could not import trl.experimental.async_grpo: {e}")
+        return
+    heads = [
+        (name, flag)
+        for name, flag in (("add_fused_lm_head", "fused_lm_head"), ("patch_chunked_lm_head", None))
+        if hasattr(async_module, name)
+    ]
+    if not heads or not all(
+        hasattr(async_module, x) for x in ("create_model_from_path", "AsyncGRPOTrainer")
+    ):
+        return
+    if getattr(getattr(async_module, heads[0][0]), "_unsloth_async_grpo_patched", False):
+        return
+
+    original_create = async_module.create_model_from_path
+
+    @functools.wraps(original_create)
+    def create_model_from_path(model_id, *args, **kwargs):
+        if isinstance(model_id, torch.nn.Module):
+            return model_id
+        return original_create(model_id, *args, **kwargs)
+
+    async_module.create_model_from_path = create_model_from_path
+    for name, flag in heads:
+        setattr(async_module, name, _unsloth_async_grpo_lm_head(getattr(async_module, name), flag))
+
+    trainer_class = async_module.AsyncGRPOTrainer
+    original_init = trainer_class.__init__
+
+    @functools.wraps(original_init)
+    def __init__(self, model, *args, **kwargs):
+        config = args[1] if len(args) >= 2 else kwargs.get("args")
+        if not isinstance(model, str) and config is None:
+            name = getattr(getattr(model, "config", None), "_name_or_path", "") or "model"
+            config = async_module.AsyncGRPOConfig(f"{name.split('/')[-1]}-AsyncGRPO")
+            if len(args) >= 2:
+                args = (args[0], config, *args[2:])
+            else:
+                kwargs["args"] = config
+        original_init(self, model, *args, **kwargs)
+
+    trainer_class.__init__ = __init__
+
+    if hasattr(async_module, "AsyncRolloutWorker"):
+
+        class AsyncRolloutWorker(async_module.AsyncRolloutWorker):
+            # Its arguments are pickled into a spawned process, which only needs the tokenizer to tokenize.
+            def __init__(self, *args, **kwargs):
+                if "processing_class" in kwargs:
+                    kwargs["processing_class"] = _without_instance_bound_methods(
+                        kwargs["processing_class"]
+                    )
+                super().__init__(*args, **kwargs)
+
+        async_module.AsyncRolloutWorker = AsyncRolloutWorker
+    return
+
+
 def PatchFastRL(algorithm = None, FastLanguageModel = None):
     if FastLanguageModel is not None:
         PatchRL(FastLanguageModel)
@@ -4192,8 +4332,18 @@ def PatchFastRL(algorithm = None, FastLanguageModel = None):
         return
     # Install the disable_gradient_checkpointing noop BEFORE patch_trl_rl_trainers, which imports more trl.* submodules: anything imported after the sys.modules walk keeps the old binding.
     patch_trl_disable_gradient_checkpointing()
+    # Also before patch_trl_rl_trainers, so the generated trainers import the wrapped helpers.
+    try:
+        from ._trl_tool_templates import patch_trl_tool_chat_templates
+        patch_trl_tool_chat_templates()
+    except Exception as e:
+        logger.info(f"Unsloth: Could not patch TRL tool-call chat template matching: {e}")
     patch_trl_rl_trainers()
     patch_trl_openenv()
     patch_trl_vllm_generation()
+    try:
+        patch_trl_async_grpo()
+    except Exception as e:
+        logger.info(f"Unsloth: Could not patch trl.experimental.async_grpo: {e}")
     if type(algorithm) is str and algorithm.islower():
         PatchRLStatistics(algorithm)

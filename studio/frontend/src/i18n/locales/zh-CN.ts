@@ -1639,6 +1639,17 @@ export const zhCN = {
         showAudioCppUpdates: "audio.cpp 更新通知",
         showAudioCppUpdatesDescription:
           "当音频页面所需的 audio.cpp 运行时需要更新时通知你。如果从不使用音频功能，可以关闭此项。",
+        showUnslothUpdates: "Unsloth 更新通知",
+        showUnslothUpdatesDescription:
+          "有新版本的 Unsloth 可供安装时通知。",
+        frequency: {
+          always: "总是",
+          daily: "每天一次",
+          weekly: "每周一次",
+          biweekly: "每两周一次",
+          monthly: "每月一次",
+          off: "关闭",
+        },
       },
       startup: {
         sectionTitle: "启动",
@@ -2073,6 +2084,10 @@ export const zhCN = {
         noUsableGpu: "本机没有 PyTorch 可用的 GPU。",
         mismatchCpuBuild: "PyTorch 是仅 CPU 版本（{version}），因此无法使用下方的 GPU。修复安装即可恢复 GPU 支持。",
         mismatchUnavailable: "PyTorch（{version}）无法初始化下方的 GPU，因此无法使用。请检查显卡驱动，或修复安装。",
+        driverIdleEvict:
+          "AMD 驱动 {version} 存在已知缺陷，AMD GPU 空闲时可能导致 Windows 卡死，多 GPU 环境下最常见。请更新到 Adrenalin 26.9.2 或更高版本。",
+        driverIdleEvictDetails: "详情",
+        dismissNotice: "关闭",
         unusableDevice: "不可用",
         unknownDevice: "未知 GPU",
         deviceWithIndex: "GPU {index}",
@@ -2839,9 +2854,9 @@ export const zhCN = {
       },
       mcp: {
         title: "智能体访问 (MCP)",
-        description: "允许 Claude Code、Codex 等编程智能体通过 MCP 使用 Unsloth Studio。智能体使用本页的访问 token 登录。",
+        description: "允许 Claude Code、Codex 等编程智能体通过 MCP 使用 Unsloth。智能体使用本页的访问 token 登录。",
         enable: "允许智能体连接",
-        enableDescription: "为携带 Unsloth Studio 访问 token 的请求提供 /mcp/。",
+        enableDescription: "为携带 Unsloth 访问 token 的请求提供 /mcp/。",
         lockedByEnv: "由 {name} 设置。",
         loadError: "无法加载智能体访问设置。",
         saveError: "无法保存智能体访问设置。",

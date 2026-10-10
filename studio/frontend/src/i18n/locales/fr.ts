@@ -1678,6 +1678,17 @@ export const fr = {
         showAudioCppUpdates: "Notifications de mise à jour d'audio.cpp",
         showAudioCppUpdatesDescription:
           "Notifier lorsque le moteur audio.cpp doit être mis à jour pour les pages Audio. Désactivez si vous n'utilisez jamais Audio.",
+        showUnslothUpdates: "Notifications de mise à jour d'Unsloth",
+        showUnslothUpdatesDescription:
+          "Prévenir lorsqu'une version plus récente d'Unsloth est disponible à l'installation.",
+        frequency: {
+          always: "Toujours",
+          daily: "Une fois par jour",
+          weekly: "Une fois par semaine",
+          biweekly: "Toutes les deux semaines",
+          monthly: "Une fois par mois",
+          off: "Désactivé",
+        },
       },
       startup: {
         sectionTitle: "Démarrage",
@@ -2130,6 +2141,10 @@ export const fr = {
           "PyTorch est une version CPU uniquement ({version}), les GPU ci-dessous ne peuvent donc pas être utilisés. Réparez l'installation pour rétablir la prise en charge du GPU.",
         mismatchUnavailable:
           "PyTorch ({version}) ne parvient pas à initialiser les GPU ci-dessous, ils ne peuvent donc pas être utilisés. Vérifiez le pilote graphique ou réparez l'installation.",
+        driverIdleEvict:
+          "Le pilote AMD {version} présente un bug connu qui peut figer Windows lorsqu'un GPU AMD reste inactif, le plus souvent avec plusieurs GPU. Mettez à jour vers Adrenalin 26.9.2 ou une version ultérieure.",
+        driverIdleEvictDetails: "Détails",
+        dismissNotice: "Ignorer",
         unusableDevice: "inutilisable",
         unknownDevice: "GPU inconnu",
         deviceWithIndex: "GPU {index}",
@@ -2935,9 +2950,9 @@ export const fr = {
       },
       mcp: {
         title: "Accès des agents (MCP)",
-        description: "Permettez aux agents de code comme Claude Code et Codex d’utiliser Unsloth Studio via MCP. Les agents se connectent avec un jeton d’accès de cette page.",
+        description: "Permettez aux agents de code comme Claude Code et Codex d’utiliser Unsloth via MCP. Les agents se connectent avec un jeton d’accès de cette page.",
         enable: "Autoriser les connexions des agents",
-        enableDescription: "Sert /mcp/ aux requêtes qui portent un jeton d’accès Unsloth Studio.",
+        enableDescription: "Sert /mcp/ aux requêtes qui portent un jeton d’accès Unsloth.",
         lockedByEnv: "Défini par {name}.",
         loadError: "Impossible de charger les paramètres d’accès des agents.",
         saveError: "Impossible d’enregistrer le paramètre d’accès des agents.",

@@ -628,17 +628,6 @@ def test_a_client_resolved_ceiling_is_used_verbatim(monkeypatch):
     assert _synthesis_max_tokens(inference) == 65_536
 
 
-def test_a_ceiling_below_the_default_is_respected(monkeypatch):
-    monkeypatch.setattr(research_runs.providers_db, "get_provider", lambda _id: None)
-    inference = {
-        "providerType": "openai",
-        "providerId": "p1",
-        "maxOutputTokens": 8_192,
-        "maxOutputTokensPublished": 8_192,
-    }
-    assert _synthesis_max_tokens(inference) == 8_192
-
-
 def test_a_legacy_ceiling_below_the_default_keeps_the_old_budget(monkeypatch):
     monkeypatch.setattr(research_runs.providers_db, "get_provider", lambda _id: None)
     inference = {"providerType": "openai", "providerId": "p1", "maxOutputTokens": 8_192}

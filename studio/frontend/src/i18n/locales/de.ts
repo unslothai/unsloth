@@ -1680,6 +1680,17 @@ export const de = {
         showAudioCppUpdates: "audio.cpp-Update-Benachrichtigungen",
         showAudioCppUpdatesDescription:
           "Benachrichtigt, wenn die audio.cpp-Laufzeit ein Update für die Audio-Seiten braucht. Deaktivieren Sie dies, wenn Sie Audio nie verwenden.",
+        showUnslothUpdates: "Unsloth-Update-Benachrichtigungen",
+        showUnslothUpdatesDescription:
+          "Benachrichtigen, wenn eine neuere Unsloth-Version zur Installation bereitsteht.",
+        frequency: {
+          always: "Immer",
+          daily: "Einmal täglich",
+          weekly: "Einmal pro Woche",
+          biweekly: "Alle zwei Wochen",
+          monthly: "Einmal im Monat",
+          off: "Aus",
+        },
       },
       startup: {
         sectionTitle: "Autostart",
@@ -2131,6 +2142,10 @@ export const de = {
           "PyTorch ist ein reiner CPU-Build ({version}), daher können die GPUs unten nicht genutzt werden. Reparieren Sie die Installation, um die GPU-Unterstützung wiederherzustellen.",
         mismatchUnavailable:
           "PyTorch ({version}) kann die GPUs unten nicht initialisieren, daher sind sie nicht nutzbar. Prüfen Sie den Grafiktreiber oder reparieren Sie die Installation.",
+        driverIdleEvict:
+          "Der AMD-Treiber {version} hat einen bekannten Fehler, der Windows einfrieren kann, wenn eine AMD-GPU im Leerlauf ist, meist mit mehr als einer GPU. Aktualisieren Sie auf Adrenalin 26.9.2 oder neuer.",
+        driverIdleEvictDetails: "Details",
+        dismissNotice: "Ausblenden",
         unusableDevice: "nicht nutzbar",
         unknownDevice: "Unbekannte GPU",
         deviceWithIndex: "GPU {index}",
@@ -2934,9 +2949,9 @@ export const de = {
       },
       mcp: {
         title: "Agentenzugriff (MCP)",
-        description: "Lass Coding-Agenten wie Claude Code und Codex Unsloth Studio über MCP nutzen. Agenten melden sich mit einem Zugriffstoken von dieser Seite an.",
+        description: "Lass Coding-Agenten wie Claude Code und Codex Unsloth über MCP nutzen. Agenten melden sich mit einem Zugriffstoken von dieser Seite an.",
         enable: "Agentenverbindungen erlauben",
-        enableDescription: "Stellt /mcp/ für Anfragen mit einem Unsloth Studio-Zugriffstoken bereit.",
+        enableDescription: "Stellt /mcp/ für Anfragen mit einem Unsloth-Zugriffstoken bereit.",
         lockedByEnv: "Festgelegt durch {name}.",
         loadError: "Die Einstellungen für den Agentenzugriff konnten nicht geladen werden.",
         saveError: "Die Einstellung für den Agentenzugriff konnte nicht gespeichert werden.",
