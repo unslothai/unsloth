@@ -1387,20 +1387,7 @@ def _select_main_scope_render(
     site_links: SiteLinks | None,
     span_char_limit: int | None = None,
 ) -> tuple[int, str, int]:
-    """Length and boilerplate-stripped render of the largest single ``<tag>``
-    subtree, and how many such subtrees render any text. Sizing candidates
-    one at a time stops many tiny sibling cards from clearing the threshold
-    together, and returning that one subtree keeps unrelated siblings (related
-    cards, comment threads) out of the output.
-
-    A candidate earns its place on the prose it RETAINED, then gets its dropped
-    header furniture added back to rank against siblings. Furniture must not buy
-    eligibility: a card whose header was the only bulk would otherwise clear the
-    gate on deleted bytes and suppress the ``<main>`` holding the real page.
-
-    Nor may it dominate: the credit is capped at the retained render, so removed
-    furniture can never be the majority of a score. Uncapped, a teaser with a
-    1000 link header outranked a sibling holding five times its real text."""
+    """return the best eligible score, subtree, and count; cap header credit at retained prose."""
     renderer = _new_renderer(
         source_html,
         frozenset({tag}),
@@ -1438,12 +1425,7 @@ def _select_main_scope_render(
 
 
 def _visible_chars(text: str) -> int:
-    """Visible characters in *text*, ignoring blank lines and link destinations.
-
-    Headings are NOT discounted here. The renderer already tallies what it marked
-    as a heading (``_seg_heading_prose``), which sees ``role="heading"``, hgroup
-    and a linked ``h1``; re-deriving that from ATX syntax could not, and running
-    both meant two answers to one question."""
+    """count visible nonblank characters without link targets; callers subtract tracked heading prose."""
     return sum(_visible_len(line) for line in text.split("\n") if line.strip())
 
 
@@ -1505,23 +1487,7 @@ def html_to_markdown(
     site_links: SiteLinks | None = None,
     max_span_chars: int | None = None,
 ) -> str:
-    """Convert HTML to Markdown (headings, links, emphasis, lists, tables, blockquotes, code, entities).
-
-    ``<script>``, ``<style>``, and ``<head>`` are stripped entirely, as are
-    subtrees hidden from rendering (``hidden`` / ``aria-hidden="true"``).
-
-    ``main_content=True`` applies a readability-style heuristic for page
-    fetches: prefer the ``<article>`` subtree (GitHub renders READMEs there)
-    unless it is one of several articles holding under half of ``<main>``'s
-    text, then ``<main>``, falling back to the whole document, reduce a
-    link-only ``<header>`` to the heading it carries, and strip known
-    boilerplate fragments from the result.
-
-    ``site_links`` records the links back into the page's own site; the output is unchanged.
-
-    ``max_span_chars`` caps the cells generated for ``rowspan``/``colspan``, so a caller with a
-    smaller result budget keeps room for the text after a table.
-    """
+    """convert HTML to Markdown; main_content prefers a dominant article or main subtree, site_links records same-site links without changing output, and max_span_chars limits generated table cells."""
     source_html = source_html.replace("\r\n", "\n").replace("\r", "\n")
     span_limit = 2 * len(source_html)
     if max_span_chars is not None:
