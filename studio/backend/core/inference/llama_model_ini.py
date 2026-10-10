@@ -224,20 +224,22 @@ _OPTIONS: tuple[_Option, ...] = (
         "LLAMA_ARG_CHAT_TEMPLATE_KWARGS",
         "json_object",
     ),
-    _opt("--temp", ("temp", "temperature"), "LLAMA_ARG_TEMPERATURE", "float", lo = 0, hi = 100),
-    _opt("--top-k", ("top-k",), "LLAMA_ARG_TOP_K", "int", lo = 0, hi = 1 << 20),
+    # Promoted samplers become chat slider values, so they keep the chat request's bounds
+    # (ChatCompletionRequest, utils/inference/inference_config.py _SAMPLING_FIELDS), else every chat 422s.
+    _opt("--temp", ("temp", "temperature"), "LLAMA_ARG_TEMPERATURE", "float", lo = 0, hi = 2),
+    _opt("--top-k", ("top-k",), "LLAMA_ARG_TOP_K", "int", lo = -1, hi = 100),
     _opt("--top-p", ("top-p",), "LLAMA_ARG_TOP_P", "float", lo = 0, hi = 1),
     _opt("--min-p", ("min-p",), "LLAMA_ARG_MIN_P", "float", lo = 0, hi = 1),
     _opt("--typical", ("typical", "typical-p"), None, "float", lo = 0, hi = 1),
     _opt("--top-n-sigma", ("top-n-sigma", "top-nsigma"), None, "float", lo = -1, hi = 100),
     _opt("--repeat-last-n", ("repeat-last-n",), None, "int", lo = -1, hi = 2**31 - 1),
-    _opt("--repeat-penalty", ("repeat-penalty",), "LLAMA_ARG_REPEAT_PENALTY", "float", lo = 0, hi = 10),
+    _opt("--repeat-penalty", ("repeat-penalty",), "LLAMA_ARG_REPEAT_PENALTY", "float", lo = 1, hi = 2),
     _opt(
         "--presence-penalty",
         ("presence-penalty",),
         "LLAMA_ARG_PRESENCE_PENALTY",
         "float",
-        lo = -2,
+        lo = 0,
         hi = 2,
     ),
     _opt(
@@ -527,6 +529,7 @@ def _locate_local(model_path: str, gguf_variant: Optional[str]) -> Optional[Loca
         _find_local_gguf_by_variant,
         _gguf_variant_token,
         _is_gguf_filename,
+        detect_gguf_model,
     )
 
     path = Path(model_path).expanduser()
@@ -540,16 +543,16 @@ def _locate_local(model_path: str, gguf_variant: Optional[str]) -> Optional[Loca
         if gguf_variant:
             found = _find_local_gguf_by_variant(str(path), gguf_variant)
             gguf_file = Path(found) if found else None
-        if gguf_file is None:
-            ggufs = sorted(
-                p
-                for pattern in ("*.gguf", "*/*.gguf")
-                for p in path.glob(pattern)
-                if "mmproj" not in p.name.lower()
-            )
-            if not ggufs:
-                raise NotGgufModel(model_path)
-            gguf_file = ggufs[0] if not gguf_variant else None
+        if gguf_file is None and not gguf_variant:
+            # The file the loader would open (largest complete GGUF), not the first by name.
+            picked = detect_gguf_model(str(path))
+            gguf_file = Path(picked) if picked else None
+        if gguf_file is None and not any(
+            "mmproj" not in p.name.lower()
+            for pattern in ("*.gguf", "*/*.gguf")
+            for p in path.glob(pattern)
+        ):
+            raise NotGgufModel(model_path)
     else:
         raise NotGgufModel(model_path)
     folders = [gguf_file.parent] if gguf_file is not None else []
@@ -621,7 +624,7 @@ def _locate_hf(
 
 def _hf_download(repo_id: str, filename: str, hf_token, offline: bool) -> Optional[str]:
     """Local path of one repo file, or None when the repo has no such file."""
-    from huggingface_hub import hf_hub_download, try_to_load_from_cache
+    import huggingface_hub as hub
 
     from hub.utils.hf_tokens import cached_read_refused, call_with_anonymous_retry
     from utils.hf_cache_settings import active_hf_hub_cache
@@ -634,14 +637,28 @@ def _hf_download(repo_id: str, filename: str, hf_token, offline: bool) -> Option
         hf_token,
         repo_id = repo_id,
         is_cached = lambda: isinstance(
-            try_to_load_from_cache(repo_id, filename, cache_dir = cache_dir), str
+            hub.try_to_load_from_cache(repo_id, filename, cache_dir = cache_dir), str
         ),
         offline = offline,
     ):
         return None
     try:
+        if not offline and not isinstance(
+            hub.try_to_load_from_cache(repo_id, filename, cache_dir = cache_dir), str
+        ):
+            # Sized before fetching: any repo can ship the file, so never pull more than the cap.
+            meta = call_with_anonymous_retry(
+                lambda token: hub.get_hf_file_metadata(
+                    hub.hf_hub_url(repo_id, filename), token = token
+                ),
+                hf_token,
+            )
+            if (meta.size or 0) > MAX_MODEL_INI_BYTES:
+                raise ValueError(
+                    f"{MODEL_INI_FILENAME} is larger than {MAX_MODEL_INI_BYTES // 1024} KiB"
+                )
         return call_with_anonymous_retry(
-            lambda token: hf_hub_download(
+            lambda token: hub.hf_hub_download(
                 repo_id = repo_id,
                 filename = filename,
                 token = token,

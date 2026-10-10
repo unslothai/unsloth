@@ -8525,17 +8525,16 @@ _MODEL_INI_SAMPLING = {
 }
 
 
-def _with_model_ini_sampling(inference: Optional[dict], llama_backend) -> Optional[dict]:
-    """``inference`` with the resident unsloth.ini's sampling values on top: the chat sends its
-    sliders on every request, so a server default alone would never reach the user."""
+def _model_ini_sampling_values(llama_backend) -> dict:
+    """The samplers the resident unsloth.ini supplied, keyed like ``inference``. Values come
+    from the whole launched list, last wins as in llama.cpp, so a typed --temp after the INI's
+    is the one reported."""
     record = _resident_model_ini_record(llama_backend)
-    if not inference or not record or not record[2]:
-        return inference
+    if not record or not record[2]:
+        return {}
     supplied = {_MODEL_INI_SAMPLING[t] for t in record[0] if t in _MODEL_INI_SAMPLING}
-    # Values from the whole launched list, last wins as in llama.cpp, so a typed --temp after
-    # the INI's is the one reported; only samplers the INI supplied are promoted.
     tokens = [str(t) for t in getattr(llama_backend, "extra_args", None) or record[0]]
-    merged = dict(inference)
+    values: dict = {}
     for i, token in enumerate(tokens):
         flag, eq, inline = token.partition("=")
         key = _MODEL_INI_SAMPLING.get(flag)
@@ -8543,10 +8542,25 @@ def _with_model_ini_sampling(inference: Optional[dict], llama_backend) -> Option
             continue
         value = inline if eq else (tokens[i + 1] if i + 1 < len(tokens) else None)
         try:
-            merged[key] = int(value) if key == "top_k" else float(value)
+            values[key] = int(value) if key == "top_k" else float(value)
         except (TypeError, ValueError):
             continue
-    return merged
+    return values
+
+
+def _model_ini_sampling_keys(llama_backend) -> list[str]:
+    if not _model_ini_resident(llama_backend):
+        return []
+    return sorted(_model_ini_sampling_values(llama_backend))
+
+
+def _with_model_ini_sampling(inference: Optional[dict], llama_backend) -> Optional[dict]:
+    """``inference`` with the resident unsloth.ini's sampling values on top: the chat sends its
+    sliders on every request, so a server default alone would never reach the user."""
+    values = _model_ini_sampling_values(llama_backend)
+    if not inference or not values:
+        return inference
+    return {**inference, **values}
 
 
 def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
@@ -8622,9 +8636,8 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
             )
         ),
         model_ini_applied = _model_ini_resident(llama_backend),
-        model_ini_sampling = bool(
-            _model_ini_resident(llama_backend) and _resident_model_ini_record(llama_backend)[2]
-        ),
+        model_ini_sampling_keys = _model_ini_sampling_keys(llama_backend),
+        model_ini_sampling = bool(_model_ini_sampling_keys(llama_backend)),
     )
     unresolved = (
         set(_InferenceRuntimeFields.model_fields) - fields.keys() - {"requires_trust_remote_code"}

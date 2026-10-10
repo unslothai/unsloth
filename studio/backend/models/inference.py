@@ -1982,6 +1982,10 @@ class _InferenceRuntimeFields(BaseModel):
         False,
         description = "Whether that unsloth.ini set any sampling value (temp, top-p, top-k, ...).",
     )
+    model_ini_sampling_keys: List[str] = Field(
+        default_factory = list,
+        description = "The ``inference`` keys that unsloth.ini set, e.g. ['temperature'].",
+    )
 
 
 class LoadResponse(_InferenceRuntimeFields):

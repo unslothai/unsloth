@@ -659,3 +659,96 @@ def test_load_path_resolves_the_ini_offline_when_the_hub_is_unreachable(monkeypa
     )
     routes._apply_model_ini_to_request(_load_request(use_model_ini = True), "u/M-GGUF", "M")
     assert seen["offline"] is True
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "temp = 2.5",
+        "top-k = 101",
+        "top-k = -2",
+        "repeat-penalty = 0.9",
+        "repeat-penalty = 2.5",
+        "presence-penalty = -0.5",
+        "presence-penalty = 2.5",
+    ],
+)
+def test_samplers_outside_the_chat_schema_are_ignored(line):
+    # Promoted into the chat sliders, so bounded like ChatCompletionRequest and
+    # inference_config._SAMPLING_FIELDS; out of range would 422 every chat request.
+    compiled = parse_model_ini(line + "\n", quant = None, gguf_filename = None)
+    assert compiled.args == [] and [i["key"] for i in compiled.ignored] == [line.split(" =")[0]]
+
+
+def test_samplers_at_the_chat_schema_edges_are_kept():
+    compiled = parse_model_ini(
+        "temp = 2\ntop-k = -1\nrepeat-penalty = 1\npresence-penalty = 2\n",
+        quant = None,
+        gguf_filename = None,
+    )
+    assert compiled.ignored == []
+    assert compiled.args == [
+        "--temp",
+        "2",
+        "--top-k",
+        "-1",
+        "--repeat-penalty",
+        "1",
+        "--presence-penalty",
+        "2",
+    ]
+
+
+def test_local_directory_picks_the_gguf_the_loader_picks(tmp_path):
+    (tmp_path / "M-Q2_K.gguf").write_bytes(b"GGUF" + b"\0" * 100)
+    (tmp_path / "M-Q8_0.gguf").write_bytes(b"GGUF" + b"\0" * 5000)
+    (tmp_path / "unsloth.ini").write_text("temp = 0.4\n[Q8_0]\ntop-p = 0.8\n")
+    from utils.models.model_config import detect_gguf_model
+
+    assert Path(detect_gguf_model(str(tmp_path))).name == "M-Q8_0.gguf"
+    found = mi.locate_model_ini(str(tmp_path))
+    assert (found.gguf_filename, found.quant) == ("M-Q8_0.gguf", "Q8_0")
+
+
+def test_oversized_remote_ini_is_refused_before_download(monkeypatch):
+    import huggingface_hub
+
+    monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", lambda *a, **k: None)
+    monkeypatch.setattr(
+        huggingface_hub,
+        "get_hf_file_metadata",
+        lambda url, token = None, **k: SimpleNamespace(size = MAX_MODEL_INI_BYTES + 1),
+    )
+    monkeypatch.setattr(
+        huggingface_hub, "hf_hub_download", lambda **k: pytest.fail("downloaded an oversized INI")
+    )
+    with pytest.raises(ValueError, match = "larger than"):
+        mi._hf_download("u/M-GGUF", "unsloth.ini", None, False)
+
+
+def test_offline_lookup_never_asks_for_remote_metadata(monkeypatch):
+    import huggingface_hub
+
+    monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", lambda *a, **k: None)
+    monkeypatch.setattr(
+        huggingface_hub, "get_hf_file_metadata", lambda *a, **k: pytest.fail("network metadata")
+    )
+
+    def cache_only(**kw):
+        assert kw["local_files_only"] is True
+        raise type("LocalEntryNotFoundError", (Exception,), {})()
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", cache_only)
+    assert mi._hf_download("u/M-GGUF", "unsloth.ini", None, True) is None
+
+
+def test_runtime_fields_list_the_sampling_keys_the_ini_set():
+    import routes.inference as routes
+
+    backend = _Backend(["--temp", "0.6", "--temp", "0.3", "--top-k", "9"], ["--temp", "0.6"])
+    assert routes._model_ini_sampling_keys(backend) == ["temperature"]
+    assert routes._model_ini_sampling_keys(_Backend(["--ctx-size", "8"], ["--ctx-size", "8"])) == []
+    from models.inference import InferenceStatusResponse, LoadResponse
+
+    assert "model_ini_sampling_keys" in LoadResponse.model_fields
+    assert "model_ini_sampling_keys" in InferenceStatusResponse.model_fields
