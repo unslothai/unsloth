@@ -213,10 +213,12 @@ _ORDINAL_SUFFIXES = frozenset({"st", "nd", "rd", "th"})
 # French ordinals after a digit (1er, 2e, 3ème); after a letter "e" can be Euler's number
 _DIGIT_ORDINAL_SUFFIXES = frozenset({"e", "er", "re", "ère", "ème", "eme", "nd", "nde"})
 _MD_DELIMITERS = "*_`"
+_STRIP_MD_DELIMITERS = str.maketrans("", "", _MD_DELIMITERS)
 # SiteLinks wraps same-site links in invisible \x00 markers; the base is the text before them
 _SITE_LINK_MARKER_TAIL = re.compile(r"\x00[0-9a-f]+:\d+:[se]\x00$")
 # parts a base lookup reads back: enough for delimiters and link markers, bounded on hostile pages
 _SUP_BASE_SCAN_PARTS = 8
+_SUP_BASE_SCAN_CHARS = 128
 # spaces, binary operators, or an implicit product (2n, n2) need parentheses after a caret
 _GROUPED_EXPONENT = re.compile(r"\s|\S[-+−/=×·⋅]|\d[^\W\d_]|[^\W\d_]\d")
 # deeper <sup> nests render as plain text: each tracked level rescans its whole suffix on close
@@ -580,6 +582,7 @@ class _MarkdownRenderer(HTMLParser):
         sentence punctuation it is a footnote marker (``fact.<sup>1</sup>``,
         ``<a href="#fn1"><sup>1</sup></a>``) or a fraction numerator (``<sup>1</sup>&frasl;``)."""
         for part in itertools.islice(reversed(target), _SUP_BASE_SCAN_PARTS):
+            part = part[-_SUP_BASE_SCAN_CHARS:]
             # an emphasis or code delimiter the renderer just opened is not visible text
             while True:
                 trimmed = _SITE_LINK_MARKER_TAIL.sub("", part.rstrip(_MD_DELIMITERS))
@@ -615,7 +618,10 @@ class _MarkdownRenderer(HTMLParser):
             or (base.isdigit() and visible.lower() in _DIGIT_ORDINAL_SUFFIXES)
         ):
             return
-        exponent = f"^({raw})" if _GROUPED_EXPONENT.search(shown) else f"^{raw}"
+        grouped = _GROUPED_EXPONENT.search(shown) or _GROUPED_EXPONENT.search(
+            shown.translate(_STRIP_MD_DELIMITERS)
+        )
+        exponent = f"^({raw})" if grouped else f"^{raw}"
         exponent += joined[len(joined.rstrip()) :]
         target[start:] = [exponent]
         # headings are teed into these copies; a stale one renders "E=mc2" or skews the prose gate
