@@ -8,9 +8,9 @@ const MCP_ACCESS_PATH = "/api/settings/mcp-access";
 
 export type McpAccessSettings = {
   enabled: boolean;
-  /** UNSLOTH_STUDIO_ENABLE_MCP=1 turns it on and the switch cannot change it */
+  /** UNSLOTH_STUDIO_ENABLE_MCP=1 forces this on and disables the switch */
   forcedByEnv: boolean;
-  /** what the server saw as its own address; display only, the snippet builds its own */
+  /** backend-reported URL used as the snippet fallback */
   url: string;
 };
 

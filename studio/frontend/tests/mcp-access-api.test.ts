@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The agent access (MCP) switch reads and writes one owner setting. Pinned here: the
-// snake_case schema maps to camelCase, the PUT sends only `enabled`, and the 409 (set by
-// the environment) and 403 (changed from an API key) details reach the caller verbatim.
 
 import assert from "node:assert/strict";
 import test from "node:test";

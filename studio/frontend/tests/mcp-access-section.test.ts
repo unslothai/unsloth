@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Settings > API gets an owner-only switch for agent access (MCP). The section reaches
-// the auth barrel, which cannot be imported here, so this asserts on source.
+// source assertions avoid the auth barrel, which cannot load in this test harness.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -102,7 +101,7 @@ test("the setup snippet shows only while on, targets the usage examples' address
     SECTION,
     /useTunnel && cloudflareUrl\s*\?\s*cloudflareUrl\s*:\s*\(serverUrl \?\? origin\)/,
   );
-  // The API tab's tunnel toggle must reach this section as it changes, not on its next render.
+  // tunnel preference changes must notify this section immediately.
   assert.match(
     SECTION,
     /useSyncExternalStore\(\s*subscribeUseTunnelPref,\s*readUseTunnelPref,/,

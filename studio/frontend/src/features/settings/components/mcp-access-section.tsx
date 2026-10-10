@@ -52,7 +52,7 @@ function errorMessage(error: unknown): string | null {
 export function McpAccessSection({
   apiKey = null,
 }: {
-  /** a key created on this page a moment ago; it goes into the snippet in place of the variable */
+  /** newly created key inserted into snippets instead of the environment variable */
   apiKey?: string | null;
 }): ReactElement | null {
   const t = useT();
@@ -96,7 +96,7 @@ export function McpAccessSection({
     try {
       setSettings(await updateMcpAccess(enabled));
     } catch (err) {
-      // The server may hold a different value than the switch now shows.
+      // resync because a rejected update may leave the server value unknown.
       try {
         setSettings(await loadMcpAccess());
       } catch (refreshError) {
@@ -111,7 +111,7 @@ export function McpAccessSection({
     }
   };
 
-  // Follows the API tab's tunnel toggle as it changes, not only when this section renders.
+  // subscribe to same-tab tunnel changes from the API examples.
   const useTunnel = useSyncExternalStore(
     subscribeUseTunnelPref,
     readUseTunnelPref,
@@ -122,7 +122,7 @@ export function McpAccessSection({
     return null;
   }
 
-  // The same address the API usage examples show, so both point at one server.
+  // match the server address shown by the API examples.
   const origin = typeof window !== "undefined" ? window.location.origin : "";
   const base =
     useTunnel && cloudflareUrl ? cloudflareUrl : (serverUrl ?? origin);
@@ -233,7 +233,7 @@ export function McpAccessSection({
                   </fieldset>
                 ) : null}
 
-                {/* A just-created key sits in the text, so keep it out of reload snapshots. */}
+                {/* exclude commands containing a newly created key from reload snapshots. */}
                 <div
                   className="min-w-0"
                   data-reload-snapshot-sensitive={apiKey ? "" : undefined}

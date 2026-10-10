@@ -1,16 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Setup text that points a coding agent at Studio's MCP endpoint. Pure so node tests
-// can pin every agent's format. Each agent reads the key from UNSLOTH_API_KEY unless
-// the caller passes a key it just created.
+// pure builders keep each agent's MCP setup format testable in Node.
 
 import { type AgentCommandOs, quoteShellArg } from "./agent-command.ts";
 
 export const MCP_SERVER_NAME = "unsloth-studio";
 export const MCP_API_KEY_ENV = "UNSLOTH_API_KEY";
 
-// Only these two are shell commands, so only they need the Unix/PowerShell choice.
+// only command-based agents need Unix and PowerShell variants.
 export const MCP_SHELL_AGENT_IDS: ReadonlySet<string> = new Set([
   "claude",
   "codex",
@@ -102,7 +100,7 @@ function openclawSnippet(url: string, apiKey: string | null): string {
       servers: {
         [MCP_SERVER_NAME]: {
           url,
-          // Without it a url server defaults to SSE.
+          // url servers otherwise default to SSE.
           transport: "streamable-http",
           headers: {
             Authorization: `Bearer ${apiKey ?? `\${${MCP_API_KEY_ENV}}`}`,
@@ -131,7 +129,7 @@ function vibeSnippet(url: string): string {
 }
 
 function dshSnippet(url: string, apiKey: string | null): string {
-  // dsh has no ${VAR} substitution. Its !!js tag evaluates the template instead.
+  // dsh lacks ${VAR} substitution, so !!js evaluates the template.
   const authorization = apiKey
     ? quoted(`Bearer ${apiKey}`)
     : `!!js '\`Bearer \${process.env.${MCP_API_KEY_ENV}}\`'`;
@@ -168,13 +166,10 @@ const CONFIG_PATHS: Record<string, string> = {
   dsh: "~/.dsh/cordis.patch.yml",
 };
 
-// These read the key from UNSLOTH_API_KEY even when the caller passes one.
+// these read the key from UNSLOTH_API_KEY even when the caller passes one.
 const ENV_ONLY_AGENT_IDS: ReadonlySet<string> = new Set(["codex", "vibe"]);
 
-/**
- * Setup for one agent, or null for an unknown agent or a base that is not a URL.
- * A literal key appears only when `apiKey` is passed.
- */
+/** returns setup for a known agent and valid base URL, with a literal key only when provided. */
 export function buildMcpSnippet(
   agentId: string,
   base: string | null | undefined,

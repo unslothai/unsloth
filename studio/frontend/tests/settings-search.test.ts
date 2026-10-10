@@ -133,7 +133,6 @@ test("agent access (MCP) is found by the protocol and the agents' names, by the 
   assert.ok(index["api-keys"].includes(MCP_ENTRY));
   const keywordsKey = SETTINGS_SEARCH_KEYWORDS[MCP_ENTRY];
   assert.equal(keywordsKey, "settings.apiKeys.mcp.keywords");
-  // The dialog matches a lowercase query against the label, then the keywords.
   const haystack =
     `${en.settings.apiKeys.mcp.title} ${en.settings.apiKeys.mcp.keywords}`.toLowerCase();
   for (const term of ["mcp", "claude", "codex", "model context protocol"]) {

@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Settings > API shows how to point each coding agent at Studio's MCP endpoint. Pinned
-// here: every agent's format as its own docs give it, the URL always ends in /mcp/, the
-// PowerShell variant reads the environment, and a key appears only when one is passed.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -114,7 +111,7 @@ test("Codex names the variable and offers a longer tool timeout", () => {
   );
   assert.match(text, /^# tool_timeout_sec = 300$/m);
   assert.equal(snippet("codex", "windows").text, text);
-  // Codex cannot take the key itself.
+  // Codex cannot accept the key directly.
   assert.equal(snippet("codex", "unix", KEY).text, text);
   assert.equal(snippet("codex", "unix", KEY).readsKeyEnv, true);
 });
@@ -200,7 +197,7 @@ test("Mistral Vibe uses the static auth block", () => {
       'api_key_format = "Bearer {token}"',
     ].join("\n"),
   );
-  // Legacy top-level keys mixed with [auth] are an error in Vibe.
+  // Vibe rejects legacy top-level keys mixed with [auth].
   const text = snippet("vibe").text;
   assert.doesNotMatch(text, /^headers/m);
   assert.ok(text.indexOf("api_key_env") > text.indexOf("[mcp_servers.auth]"));

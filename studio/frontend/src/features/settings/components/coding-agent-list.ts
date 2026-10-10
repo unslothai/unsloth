@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The coding agents Studio can set up, shared by Settings > Agents and Settings > API.
-// Pure data so node tests can import it.
+// shared by Settings > Agents and Settings > API; kept data-only for Node.js tests.
 
 export const UNSLOTH_START_DOCS_URL =
   "https://unsloth.ai/docs/integrations/unsloth-start";
@@ -18,7 +17,7 @@ export type AgentDetails = {
   mark?: string;
 };
 
-// Names are untranslated, so `settings.agents.intro` lists them all to keep them searchable.
+// names stay untranslated; `settings.agents.intro` includes them for search.
 export const SUPPORTED_AGENTS: AgentDetails[] = [
   {
     id: "claude",
@@ -36,7 +35,7 @@ export const SUPPORTED_AGENTS: AgentDetails[] = [
     id: "hermes",
     name: "Hermes Agent",
     docsUrl: "https://unsloth.ai/docs/integrations/hermes-agent",
-    // hermes.png is the desktop app icon from NousResearch/hermes-agent (apps/desktop/assets/icon.png)
+    // hermes.png comes from the NousResearch/hermes-agent desktop assets.
     icon: "hermes.png",
   },
   {

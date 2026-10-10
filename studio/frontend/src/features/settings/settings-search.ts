@@ -216,19 +216,17 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.apiKeys.decisionApi.title",
     "settings.apiKeys.mcp.title",
   ],
-  // The two cards label themselves in English in every locale, so keys naming them
-  // would never match their own anchor. The header carries both entries instead.
+  // the English card labels cannot match localized keys, so the header carries both entries.
   "remote-lan": ["settings.remoteLan.title", "settings.remoteLan.description"],
   agents: [
-    // Every key needs a rendered data-settings-label, or a hit has nothing to scroll to.
+    // every key needs a rendered data-settings-label as its scroll target.
     "settings.agents.title",
     "settings.agents.description",
     "settings.agents.intro",
     "settings.agents.agent",
     "settings.agents.model",
     "settings.agents.quantization",
-    // subagent.title is deliberately absent: its label only mounts for the agents
-    // that support subagents, so a hit would have nothing to scroll to otherwise.
+    // subagent.title has no stable scroll target because its label mounts conditionally.
     "settings.agents.options.title",
     "settings.agents.remote.title",
     "settings.agents.passthrough.title",
@@ -378,8 +376,7 @@ const HUGGING_FACE_ONLY_ENTRIES: ReadonlySet<TranslationKey> = new Set([
   "settings.general.hub.datasetsServer",
 ]);
 
-// Rows of a tab every account sees that render only for the owner (the OS sandbox
-// sections, agent access on the API tab).
+// owner-only rows on tabs visible to every account.
 const OWNER_ONLY_ENTRIES: ReadonlySet<TranslationKey> = new Set([
   "settings.sandbox.toolsSection",
   "settings.sandbox.python",
@@ -415,8 +412,7 @@ export const SETTINGS_SEARCH_KEYWORDS: Partial<
   // the feature is named after was unreachable by search.
   "settings.resources.storage.caches.label":
     "settings.resources.storage.caches.keywords",
-  // mlock, vram, ulimit and pin are in none of these labels, so search
-  // missed the rows the feature is named after.
+  // match mlock, vram, ulimit, and pin even though the labels omit them.
   "settings.resources.modelMemory.title":
     "settings.resources.modelMemory.modelMemoryKeywords",
   "settings.resources.modelMemory.keepResident":
@@ -424,12 +420,12 @@ export const SETTINGS_SEARCH_KEYWORDS: Partial<
   "settings.resources.modelMemory.noRamReserve":
     "settings.resources.modelMemory.modelMemoryKeywords",
   "settings.chat.autoCompact": "settings.chat.autoCompactKeywords",
-  // These rows are labelled with what they are, so the verbs people search for live here.
+  // match action verbs omitted from these descriptive labels.
   "settings.chat.thinking.visibility": "settings.chat.visibilityKeywords",
   "settings.chat.tools.visibility": "settings.chat.visibilityKeywords",
   "settings.chat.tools.foldIntoThinking": "settings.chat.visibilityKeywords",
   "settings.chat.autoScroll": "settings.chat.autoScrollKeywords",
   "settings.chat.scrollToBottomButton": "settings.chat.scrollToBottomButtonKeywords",
-  // People search for the protocol or the agent they use, neither of which is in the title.
+  // match protocol and agent names omitted from the title.
   "settings.apiKeys.mcp.title": "settings.apiKeys.mcp.keywords",
 };
