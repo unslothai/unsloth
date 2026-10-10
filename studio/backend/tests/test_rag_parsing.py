@@ -821,6 +821,15 @@ def test_html_layout_and_nested_tables_keep_their_lines(tmp_path):
     assert text == "Title\nIntro\nName | Value\nx | y\nOutro"
 
 
+def test_html_text_after_a_nested_table_stays_in_its_parent_cell(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        "<table><tr><td>Before<table><tr><td>x</td><td>y</td></tr></table>After</td>"
+        "<td>Peer</td></tr></table>",
+    )
+    assert text == "Before After | Peer\nx | y"
+
+
 def test_html_table_spans_are_capped_by_the_file_size(tmp_path):
     html = "<table><tr><td colspan=1000 rowspan=65534>x" + "<tr><td>a" * 2000
     text = _parse_html(tmp_path, html)

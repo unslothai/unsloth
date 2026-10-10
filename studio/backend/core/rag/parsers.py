@@ -64,8 +64,13 @@ _HTML_TABLE_DEPTH = 32
 
 
 class _HtmlTable:
-    def __init__(self, sink: list) -> None:
+    def __init__(
+        self,
+        sink: list,
+        nested: bool = False,
+    ) -> None:
         self.sink = sink
+        self.nested = nested
         self.row: list[list | None] | None = None
         self.spans: list[int] = []
 
@@ -120,9 +125,16 @@ class _Stripper(HTMLParser):
         below: list[str] = []
         for cell in row:
             lines = cell or []
-            split = lines.index(None) if None in lines else len(lines)
-            cells.append(" ".join(" ".join(line.split()) for line in lines[:split]))
-            below.extend(lines[split + 1 :])
+            parent: list[str] = []
+            in_nested = False
+            for line in lines:
+                if line is None:
+                    in_nested = not in_nested
+                elif in_nested:
+                    below.append(line)
+                else:
+                    parent.append(line)
+            cells.append(" ".join(" ".join(line.split()) for line in parent))
         if any(cells):
             table.sink.append(" | ".join(cells))
         table.sink.extend(below)
@@ -185,9 +197,10 @@ class _Stripper(HTMLParser):
             if tag == "table" and (self._deep or len(self._tables) >= _HTML_TABLE_DEPTH):
                 self._deep += 1
             elif tag == "table":
-                if self._tables and self.out is not self._tables[-1].sink and None not in self.out:
+                nested = bool(self._tables and self.out is not self._tables[-1].sink)
+                if nested:
                     self.out.append(None)
-                self._tables.append(_HtmlTable(self.out))
+                self._tables.append(_HtmlTable(self.out, nested))
             if tag in _HTML_PRE_TAGS:
                 self._pre += 1
         elif tag in _HTML_BOX_TAGS and not self._skip and not self._pre:
@@ -211,7 +224,9 @@ class _Stripper(HTMLParser):
         elif tag in ("tr", "table") and self._in_table():
             self._end_row()
             if tag == "table":
-                self._tables.pop()
+                table = self._tables.pop()
+                if table.nested:
+                    self.out.append(None)
             self._flush()
         elif tag in _HTML_BLOCK_TAGS and not self._skip:
             self._flush()
@@ -230,7 +245,9 @@ class _Stripper(HTMLParser):
         super().close()
         while self._tables:
             self._end_row()
-            self._tables.pop()
+            table = self._tables.pop()
+            if table.nested:
+                self.out.append(None)
         self._flush()
 
 
