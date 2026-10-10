@@ -4761,6 +4761,10 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
 _physical_gpu_count: Optional[int] = None
 # Whether the cached count came from the SMI (physical) or the torch fallback (visibility-filtered). Only the former can answer "is this host single-GPU".
 _physical_gpu_count_from_smi: bool = False
+# NVIDIA counts are re-read once a minute so a GPU whose driver loads after Studio starts still appears (#9510); `nvidia-smi -L` is already TTL cached by gpu_query. None = never re-read (ROCm: amd-smi is uncached and slow; XPU, MLX, CPU).
+_PHYSICAL_GPU_COUNT_TTL_SECONDS = 60.0
+_physical_gpu_count_checked_at: Optional[float] = None
+_physical_gpu_count_refresh_lock = threading.Lock()
 _visible_gpu_count: Optional[int] = None
 
 
@@ -5656,7 +5660,8 @@ def estimate_required_model_memory_gb(
         metadata["estimation_mode"] = "detailed"
         metadata["attention_implementation"] = vram_config.attention_implementation
         metadata["vram_breakdown"] = breakdown.to_gb_dict()
-        max_gpus = max(1, get_visible_gpu_count())
+        # The parent-visible ids can outgrow the visible count when a GPU appears after startup; auto-selection ranks every id and reads this table.
+        max_gpus = max(1, get_visible_gpu_count(), len(get_parent_visible_gpu_ids()))
         for n_gpus in range(1, max_gpus + 1):
             metadata["vram_breakdown"][f"min_per_gpu_{n_gpus}"] = round(
                 breakdown.min_gpu_vram(n_gpus) / (1024**3), 3
@@ -6089,27 +6094,63 @@ def prepare_gpu_selection(
     return selected_gpu_ids, metadata
 
 
+def _nvidia_physical_gpu_row_count() -> Optional[int]:
+    # Physical rows only: MIG instances created after startup add indented `nvidia-smi -L` rows, not GPUs.
+    try:
+        from . import nvidia
+        return nvidia.get_physical_gpu_count(gpu_rows_only = True)
+    except Exception:
+        return None
+
+
+def _refresh_physical_gpu_count() -> None:
+    """Re-read a cached NVIDIA count once per TTL and keep it only if it grew: a failed probe or a lower count keeps the old one, so detection never narrows."""
+    global _physical_gpu_count, _physical_gpu_count_from_smi, _physical_gpu_count_checked_at
+    checked_at = _physical_gpu_count_checked_at
+    if checked_at is None or time.monotonic() - checked_at < _PHYSICAL_GPU_COUNT_TTL_SECONDS:
+        return
+    # One prober at a time; everyone else keeps the cached count instead of waiting on the driver.
+    if not _physical_gpu_count_refresh_lock.acquire(blocking = False):
+        return
+    try:
+        count = _nvidia_physical_gpu_row_count()
+        # Stamped after the probe, so the next expiry also outlives gpu_query's own cache entry for it.
+        _physical_gpu_count_checked_at = time.monotonic()
+        previous = _physical_gpu_count
+        if count is None or previous is None or count <= previous:
+            return
+        logger.info("Physical GPU count grew from %d to %d; using the new GPUs", previous, count)
+        _physical_gpu_count = count
+        _physical_gpu_count_from_smi = True
+    finally:
+        _physical_gpu_count_refresh_lock.release()
+
+
 def get_physical_gpu_count() -> int:
-    """Number of physical GPUs on the machine, from `nvidia-smi -L` (unaffected by CUDA_VISIBLE_DEVICES) with a torch fallback for AMD ROCm and Intel XPU. Cached after the first call."""
-    global _physical_gpu_count, _physical_gpu_count_from_smi
+    """Number of physical GPUs on the machine, from `nvidia-smi -L` (unaffected by CUDA_VISIBLE_DEVICES) with a torch fallback for AMD ROCm and Intel XPU. Cached; on NVIDIA re-read once a minute and only ever grows."""
+    global _physical_gpu_count, _physical_gpu_count_from_smi, _physical_gpu_count_checked_at
     if _physical_gpu_count is not None:
+        _refresh_physical_gpu_count()
         return _physical_gpu_count
 
     device = get_device()
 
     if device == DeviceType.CUDA:
+        count = None
         try:
             if IS_ROCM:
                 from . import amd as _smi_mod
             else:
                 from . import nvidia as _smi_mod
             count = _smi_mod.get_physical_gpu_count()
-            if count is not None:
-                _physical_gpu_count = count
-                _physical_gpu_count_from_smi = True
-                return _physical_gpu_count
         except Exception:
             pass
+        if not IS_ROCM:
+            _physical_gpu_count_checked_at = time.monotonic()
+        if count is not None:
+            _physical_gpu_count = count
+            _physical_gpu_count_from_smi = True
+            return _physical_gpu_count
         # SMI unavailable: fall back to torch.
         count = _torch_get_physical_gpu_count()
         _physical_gpu_count = count if count is not None else 1
