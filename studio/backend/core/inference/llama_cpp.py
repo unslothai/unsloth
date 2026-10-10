@@ -28236,8 +28236,10 @@ class LlamaCppBackend:
                             _fit_env,
                             supports_cache_ram = bool(server_caps.get("supports_cache_ram")),
                         )
+                        # An unknown size (unsized inherited projector) admits nothing.
                         _moe_cache_ram_ok = bool(
-                            _moe_expert_bytes > 0
+                            _fit_load_mode_kwargs["model_size"]
+                            and _moe_expert_bytes > 0
                             and _moe_prompt_cache_bytes is not None
                             and self._fit_derived_load_mode(
                                 **{

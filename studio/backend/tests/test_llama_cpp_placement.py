@@ -4560,6 +4560,18 @@ def test_an_inherited_placement_keeps_the_moe_cache_off(
     assert not _has_moe_cache(cmd), cmd
 
 
+def test_an_unsized_inherited_projector_skips_the_cache_not_the_placement(
+    tmp_path, _moe_cache_host, monkeypatch
+):
+    # An unsized LLAMA_ARG_MMPROJ_URL leaves the fit's model size unknown.
+    monkeypatch.setenv("LLAMA_ARG_MMPROJ_URL", "https://example.invalid/mmproj.gguf")
+    warnings = _override_log(monkeypatch)
+    backend, cmd = _cache_launch(tmp_path)
+
+    assert not any("GPU selection failed" in line for line in warnings), warnings
+    assert not _has_moe_cache(cmd) and backend._moe_cache_flags == []
+
+
 def test_the_moe_cache_eligibility_gates(tmp_path, _moe_cache_host):
     backend, _gguf = _moe_backend(tmp_path, **_SPILLED)
     on = dict(
