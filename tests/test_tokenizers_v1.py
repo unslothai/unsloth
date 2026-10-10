@@ -144,33 +144,52 @@ def test_plain_calls_take_rc_and_match(rc_on, build):
 
 
 @needs_rc
-def test_unsupported_calls_fall_back_to_0x(rc_on):
+@pytest.mark.parametrize("side", ["right", "left"])
+def test_padding_and_truncation_take_rc_and_match(rc_on, side):
     plain, fast = _pair(_byte_level)
+    for tok in (plain, fast):
+        tok.padding_side = tok.truncation_side = side
     cases = [
         {"padding": True},
+        {"padding": "max_length", "max_length": 24, "pad_to_multiple_of": 8},
         {"truncation": True, "max_length": 4},
-        {"truncation": True, "max_length": 4, "return_overflowing_tokens": True, "stride": 1},
+        # unsloth_zoo's dataset tokenizer call
+        {"truncation": True, "max_length": 6, "add_special_tokens": False},
+        {"padding": True, "truncation": True, "max_length": 5, "return_tensors": "pt"},
     ]
     for kwargs in cases:
         want, got = plain(TEXTS, **kwargs), fast(TEXTS, **kwargs)
-        assert dict(got) == dict(want)
-        assert not any(isinstance(e, tv1._CompatEncoding) for e in got.encodings)
-    assert dict(fast(TEXTS[:2], TEXTS[2:4])) == dict(plain(TEXTS[:2], TEXTS[2:4]))
-    words = [["Hello", "world"], ["a", "b", "c"]]
-    assert dict(fast(words, is_split_into_words = True)) == dict(
-        plain(words, is_split_into_words = True)
-    )
+        assert {k: v.tolist() if hasattr(v, "tolist") else v for k, v in got.items()} == (
+            {k: v.tolist() if hasattr(v, "tolist") else v for k, v in want.items()}
+        )
+        assert all(isinstance(e, tv1._CompatEncoding) for e in got.encodings)
 
 
 @needs_rc
-def test_fields_the_rc_lacks_come_from_0x(rc_on):
+def test_overflow_and_fields_the_rc_lacks_come_from_0x(rc_on):
     plain, fast = _pair(_byte_level)
-    want = plain(TEXTS, return_offsets_mapping = True, return_special_tokens_mask = True)
-    got = fast(TEXTS, return_offsets_mapping = True, return_special_tokens_mask = True)
-    assert dict(got) == dict(want)
-    for i in range(len(TEXTS)):
-        assert got.word_ids(i) == want.word_ids(i)
-        assert got.tokens(i) == want.tokens(i)
+    for kwargs in (
+        {"return_offsets_mapping": True, "return_special_tokens_mask": True},
+        {"padding": True, "return_offsets_mapping": True, "return_special_tokens_mask": True},
+        {"truncation": True, "max_length": 4, "stride": 1, "return_overflowing_tokens": True},
+    ):
+        want, got = plain(TEXTS, **kwargs), fast(TEXTS, **kwargs)
+        assert dict(got) == dict(want)
+        for i in range(len(want["input_ids"])):
+            assert got.word_ids(i) == want.word_ids(i)
+            assert got.tokens(i) == want.tokens(i)
+
+
+@needs_rc
+def test_pairs_and_presplit_words_fall_back_to_0x(rc_on):
+    plain, fast = _pair(_byte_level)
+    got = fast(TEXTS[:2], TEXTS[2:4])
+    assert dict(got) == dict(plain(TEXTS[:2], TEXTS[2:4]))
+    assert not any(isinstance(e, tv1._CompatEncoding) for e in got.encodings)
+    words = [["Hello", "world"], ["a", "b", "c"]]
+    got = fast(words, is_split_into_words = True)
+    assert dict(got) == dict(plain(words, is_split_into_words = True))
+    assert not any(isinstance(e, tv1._CompatEncoding) for e in got.encodings)
 
 
 @needs_rc
