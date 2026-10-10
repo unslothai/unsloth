@@ -262,6 +262,60 @@ class TestFailsOpen:
         assert rocm_gpu_ids_without_torch_kernels() == set()
 
 
+# torch.cuda.get_arch_list() of AMD's 2.11.0+rocm7.14.0 multi-arch wheel, read from its libtorch_python.
+MULTIARCH = (
+    "gfx1010 gfx1011 gfx1012 gfx1030 gfx1031 gfx1032 gfx1033 gfx1034 gfx1035 gfx1036 "
+    "gfx1100 gfx1101 gfx1102 gfx1103 gfx1200 gfx1201 gfx1150 gfx1151 gfx1152 gfx1153 "
+    "gfx908 gfx90a gfx942 gfx950 gfx1250"
+).split()
+
+
+class TestMultiArchKernelPacks:
+    """#8847: Windows multi-arch torch installed with only the dGPU's device pack."""
+
+    def _torch(self, tmp_path, devices, packs):
+        torch = _fake_torch(devices, arch_list = MULTIARCH)
+        root = tmp_path / "torch"
+        root.mkdir()
+        torch.__file__ = str(root / "__init__.py")
+        if packs is not None:
+            (root / ".kpack").mkdir()
+            for name in packs:
+                (root / ".kpack" / name).write_bytes(b"")
+        return torch
+
+    def test_an_igpu_without_its_pack_is_dropped(self, monkeypatch, no_mask, tmp_path):
+        torch = self._torch(
+            tmp_path, [_props("gfx1036"), _props("gfx1101")], ["torch_gfx1101.kpack"]
+        )
+        _install(monkeypatch, torch)
+        assert rocm_gpu_ids_without_torch_kernels() == {0}
+
+    def test_both_packs_installed_drops_nothing(self, monkeypatch, no_mask, tmp_path):
+        packs = ["torch_gfx1036.kpack", "torch_gfx1101.kpack"]
+        _install(monkeypatch, self._torch(tmp_path, [_props("gfx1036"), _props("gfx1101")], packs))
+        assert rocm_gpu_ids_without_torch_kernels() == set()
+
+    @pytest.mark.parametrize(
+        "packs",
+        [None, [], ["torch_gfx110x.kpack", "torch_gfx1101.kpack"], ["README.txt"]],
+        ids = ["no_pack_dir", "empty_pack_dir", "family_pack", "no_pack_files"],
+    )
+    def test_an_unreadable_pack_layout_keeps_the_arch_list(
+        self, monkeypatch, no_mask, tmp_path, packs
+    ):
+        _install(monkeypatch, self._torch(tmp_path, [_props("gfx1036"), _props("gfx1101")], packs))
+        assert rocm_gpu_ids_without_torch_kernels() == set()
+
+    def test_an_explicit_pick_names_only_the_installed_packs(self, monkeypatch, no_mask, tmp_path):
+        torch = self._torch(
+            tmp_path, [_props("gfx1036"), _props("gfx1101")], ["torch_gfx1101.kpack"]
+        )
+        _install(monkeypatch, torch)
+        with pytest.raises(ValueError, match = r"kernels for gfx1101 only"):
+            _hw_module.reject_gpu_ids_without_torch_kernels([0])
+
+
 class TestIdSpace:
     """Results are consumed as physical ids, so ordinals map through the mask."""
 

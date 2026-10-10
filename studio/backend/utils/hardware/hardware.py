@@ -5532,6 +5532,31 @@ def estimate_required_model_memory_gb(
 
 # Excludes generic code objects and family labels, which no device reports.
 _CONCRETE_GFX_ARCH = re.compile(r"^gfx[0-9][0-9a-f]{2,4}$")
+_KERNEL_PACK_NAME = re.compile(r"^torch_(.+)\.kpack$", re.IGNORECASE)
+
+
+def _torch_kernel_pack_arches(torch) -> Optional[set[str]]:
+    """Arches whose kernel pack is installed, for a torch that ships its kernels as per-arch packs; None when it does not, or when the packs cannot be read.
+
+    AMD's multi-arch wheels (the Windows route) put each arch's kernels in its own `torch[device-gfxNNNN]` package, which drops `torch/.kpack/torch_gfxNNNN.kpack` (libtorch_hip loads `../.kpack/torch_@GFXARCH@.kpack`). get_arch_list() still names every arch the build supports, so a gfx1036 iGPU beside the gfx1101 card the install chose reads as covered and dies at its first kernel launch."""
+    try:
+        pack_dir = Path(torch.__file__).parent / ".kpack"
+        if not pack_dir.is_dir():
+            return None
+        arches: set[str] = set()
+        for entry in pack_dir.iterdir():
+            match = _KERNEL_PACK_NAME.match(entry.name)
+            if not match:
+                continue
+            arch = match.group(1).lower()
+            # A pack naming a family or generic target could cover devices no token names.
+            if not _CONCRETE_GFX_ARCH.match(arch):
+                return None
+            arches.add(arch)
+        return arches or None
+    except Exception as e:
+        logger.debug("torch kernel pack probe failed: %s", e)
+        return None
 
 
 def _props_gfx_arch(props) -> str:
@@ -5592,6 +5617,9 @@ def rocm_gpu_ids_without_torch_kernels() -> set[int]:
         if not tokens:
             return set()
         supported = set(tokens)
+        packs = _torch_kernel_pack_arches(torch)
+        if packs is not None:
+            supported &= packs
 
         # Under ROCR="1,0" + CUDA="1" the spec reports [1,0] but ordinal 0 is physical 0.
         if _rocm_device_ordinal_active() or _rocm_visibility_masks_are_stacked():
@@ -5637,13 +5665,14 @@ def rocm_gpu_ids_without_torch_kernels() -> set[int]:
 def _torch_kernel_arch_tokens() -> list[str]:
     try:
         import torch
-        return sorted(
-            {
-                str(arch).split(":")[0].strip().lower()
-                for arch in (torch.cuda.get_arch_list() or ())
-                if str(arch).strip()
-            }
-        )
+
+        tokens = {
+            str(arch).split(":")[0].strip().lower()
+            for arch in (torch.cuda.get_arch_list() or ())
+            if str(arch).strip()
+        }
+        packs = _torch_kernel_pack_arches(torch)
+        return sorted(tokens & packs if packs is not None else tokens)
     except Exception:
         return []
 
