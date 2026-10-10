@@ -3,7 +3,9 @@
 
 """Llama-4 static-cache generate on transformers 5.17 (`block_sequence_ids` to chunked mask)."""
 
+import functools
 import inspect
+import sys
 
 import pytest
 
@@ -53,21 +55,86 @@ def _generate(model, cache_implementation):
         return model.generate(torch.tensor([[1, 2, 3, 4]]), **kwargs)
 
 
+def _wrapper_chain(live):
+    """Every wrapper conftest's `import unsloth` may have stacked, outermost first, then the stock function.
+
+    Unsloth's fix sets `__wrapped__`. unsloth_zoo's patch_transformers_masks wraps whatever it finds
+    (usually Unsloth's fix) without `__wrapped__`, keeping it on `_unsloth_original_create_chunked_causal_mask`,
+    and since unsloth-zoo#1656 it copies that function's signature. The mask mapping still points at
+    the inner Unsloth wrapper, so unwrapping only the outermost layer leaves the fix live.
+    """
+    chain = [live]
+    stashed = getattr(masking_utils, "_unsloth_original_create_chunked_causal_mask", None)
+    if (
+        stashed is not None
+        and stashed is not live
+        and not getattr(live, _CHUNKED_MASK_PATCH_FLAG, False)
+    ):
+        chain.append(stashed)
+    while getattr(chain[-1], _CHUNKED_MASK_PATCH_FLAG, False):
+        chain.append(chain[-1].__wrapped__)
+        assert len(chain) < 8, "create_chunked_causal_mask wrappers do not bottom out"
+    return chain[:-1], chain[-1]
+
+
+def _point_references_at(monkeypatch, wrappers, original):
+    # The same places _swap_function_references rewrites, through monkeypatch so teardown restores each one.
+    def is_wrapper(value):
+        return any(value is wrapper for wrapper in wrappers)
+
+    mapping = getattr(masking_utils, "LAYER_PATTERN_TO_MASK_FUNCTION_MAPPING", None)
+    if isinstance(mapping, dict):
+        for key, value in list(mapping.items()):
+            if isinstance(value, dict):
+                for inner_key, inner_value in list(value.items()):
+                    if is_wrapper(inner_value):
+                        monkeypatch.setitem(value, inner_key, original)
+            elif isinstance(value, functools.partial) and is_wrapper(value.func):
+                monkeypatch.setitem(
+                    mapping, key, functools.partial(original, *value.args, **value.keywords)
+                )
+            elif is_wrapper(value):
+                monkeypatch.setitem(mapping, key, original)
+    monkeypatch.setattr(masking_utils, "create_chunked_causal_mask", original)
+    for namespace in _mask_importer_namespaces().values():
+        if is_wrapper(namespace.get("create_chunked_causal_mask")):
+            monkeypatch.setitem(namespace, "create_chunked_causal_mask", original)
+
+
+def _mask_importer_namespaces():
+    namespaces = {}
+    for name, module in list(sys.modules.items()):
+        if module is None or module is masking_utils:
+            continue
+        if not (name.startswith("transformers.") or "unsloth_compiled" in name):
+            continue
+        try:
+            namespaces[name] = vars(module)
+        except TypeError:
+            continue
+    return namespaces
+
+
 @pytest.fixture
-def unpatched():
-    # conftest's `import unsloth` may already have installed the fix, so unwrap it first.
+def unpatched(monkeypatch):
     live = masking_utils.create_chunked_causal_mask
-    if getattr(live, _CHUNKED_MASK_PATCH_FLAG, False):
-        original = live.__wrapped__
-        _swap_function_references(masking_utils, live, original)
-    else:
-        original = live
-    try:
-        yield original
-    finally:
-        current = masking_utils.create_chunked_causal_mask
-        if current is not live:
-            _swap_function_references(masking_utils, current, live)
+    wrappers, original = _wrapper_chain(live)
+    already_imported = set(_mask_importer_namespaces())
+    if wrappers:
+        _point_references_at(monkeypatch, wrappers, original)
+    assert masking_utils.create_chunked_causal_mask is original
+    yield original
+    # monkeypatch only restores what existed at setup. A module first imported during the test (the
+    # tiny Llama-4 imports modeling_llama4) bound the stock function, and the fix may have rewritten
+    # it to a wrapper made by this test; give it what a normal import would have bound instead.
+    for name, namespace in _mask_importer_namespaces().items():
+        if name in already_imported:
+            continue
+        value = namespace.get("create_chunked_causal_mask")
+        if value is None or any(value is wrapper for wrapper in wrappers) or value is live:
+            continue
+        if value is original or _wrapper_chain(value)[1] is original:
+            namespace["create_chunked_causal_mask"] = live
 
 
 def test_static_cache_generate_matches_dynamic(unpatched):
