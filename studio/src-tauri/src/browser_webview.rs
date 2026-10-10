@@ -1374,7 +1374,7 @@ pub fn browser_view_layered<R: Runtime>(webview: Webview<R>) -> Result<bool, Str
     #[cfg(target_os = "macos")]
     {
         if crate::browser_layer::set_input(false, &[]) {
-            let _ = webview.run_on_main_thread(|| crate::browser_layer::ignore_page_moves(false));
+            let _ = webview.run_on_main_thread(crate::browser_layer::reroute_moves);
         }
         Ok(browser_view_supported())
     }
@@ -1392,8 +1392,7 @@ pub fn browser_view_input<R: Runtime>(
     require_main(&webview)?;
     #[cfg(target_os = "macos")]
     if crate::browser_layer::set_input(blocked, &exclude) {
-        let _ =
-            webview.run_on_main_thread(move || crate::browser_layer::ignore_page_moves(blocked));
+        let _ = webview.run_on_main_thread(crate::browser_layer::reroute_moves);
     }
     #[cfg(not(target_os = "macos"))]
     let _ = (blocked, exclude);

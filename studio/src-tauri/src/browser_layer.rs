@@ -6,12 +6,14 @@
 //! `_hitTest:dragTypes:` over the page unless panel UI covers that point (`browser_view_input`).
 
 use crate::browser_webview::ViewBounds;
+use block2::RcBlock;
+use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject, Bool, Imp, Sel};
-use objc2::{msg_send, sel};
-use objc2_app_kit::{NSView, NSWindowOrderingMode};
+use objc2::{class, msg_send, sel};
+use objc2_app_kit::{NSEvent, NSView, NSWindowOrderingMode};
 use objc2_foundation::{ns_string, NSNumber, NSObjectNSKeyValueCoding, NSPoint, NSRect, NSSize};
 use std::ptr::null_mut;
-use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, Ordering};
 use std::sync::{Mutex, OnceLock};
 use tauri::{Runtime, Webview};
 
@@ -29,6 +31,14 @@ static MAIN: AtomicPtr<AnyObject> = AtomicPtr::new(null_mut());
 static INSTALLING: AtomicBool = AtomicBool::new(false);
 static HIT_TEST: OnceLock<HitTest> = OnceLock::new();
 static DRAG_HIT_TEST: OnceLock<DragHitTest> = OnceLock::new();
+/// Which webview takes mouse moves (`APP` or `PAGE`, 0 before the first). WebKit's tracking
+/// areas hand every move in the window to both views whatever is on top, so both would set the
+/// cursor and hover in turn, a flicker over links, text and annotate.
+static MOVES_TO: AtomicU8 = AtomicU8::new(0);
+/// The view that just lost moves, cut off on the next one so it sees the pointer leave first.
+static LAGGING: AtomicU8 = AtomicU8::new(0);
+const APP: u8 = 1;
+const PAGE: u8 = 2;
 static INPUT: Mutex<Input> = Mutex::new(Input {
     blocked: false,
     exclude: Vec::new(),
@@ -51,26 +61,62 @@ pub fn set_input(blocked: bool, exclude: &[ViewBounds]) -> bool {
     changed
 }
 
-/// Stops pages hovering and setting the cursor under a menu. WebKit's tracking areas see every
-/// move in the window whatever is on top, so `hitTest:` can't. Main thread.
-pub fn ignore_page_moves(ignore: bool) {
+/// Gives mouse moves to whichever view owns the pointer now, e.g. after a menu opened. Main thread.
+pub fn reroute_moves() {
     let Some(main) = main_view() else {
         return;
     };
-    let selector = sel!(_setIgnoresMouseMoveEvents:);
-    // Safety: the main thread's view tree; the private setter (macOS 13+) is checked first.
-    unsafe {
-        let Some(parent) = main.superview() else {
-            return;
-        };
-        for view in parent.subviews().iter() {
-            if std::ptr::eq(&*view, main) || !std::ptr::eq(view.class(), main.class()) {
-                continue;
-            }
-            let responds: bool = msg_send![&*view, respondsToSelector: selector];
+    let Some(window) = main.window() else {
+        return;
+    };
+    // Safety: AppKit class and window methods, on the main thread.
+    let point: NSPoint = unsafe {
+        let screen: NSPoint = msg_send![class!(NSEvent), mouseLocation];
+        msg_send![&*window, convertPointFromScreen: screen]
+    };
+    route_moves(main, main.convertPoint_fromView(point, None));
+}
+
+fn route_moves(main: &NSView, point: NSPoint) {
+    let to = if over_page(main, point) { PAGE } else { APP };
+    let lagging = LAGGING.swap(0, Ordering::Relaxed);
+    if lagging != 0 && lagging != to {
+        ignore_moves(main, lagging, true);
+    }
+    let from = MOVES_TO.swap(to, Ordering::Relaxed);
+    if from == to {
+        return;
+    }
+    ignore_moves(main, to, false);
+    match from {
+        0 => ignore_moves(main, APP + PAGE - to, true),
+        _ => LAGGING.store(from, Ordering::Relaxed),
+    }
+}
+
+/// `_setIgnoresMouseMoveEvents:` (private, macOS 13+, checked first) on the app or every page.
+fn ignore_moves(main: &NSView, which: u8, ignore: bool) {
+    let set = |view: &NSView| {
+        // Safety: a live view of wry's class, on the main thread.
+        unsafe {
+            let responds: bool =
+                msg_send![view, respondsToSelector: sel!(_setIgnoresMouseMoveEvents:)];
             if responds {
-                let _: () = msg_send![&*view, _setIgnoresMouseMoveEvents: Bool::new(ignore)];
+                let _: () = msg_send![view, _setIgnoresMouseMoveEvents: Bool::new(ignore)];
             }
+        }
+    };
+    if which == APP {
+        set(main);
+        return;
+    }
+    // Safety: the main thread's view tree.
+    let Some(parent) = (unsafe { main.superview() }) else {
+        return;
+    };
+    for view in parent.subviews().iter() {
+        if !std::ptr::eq(&*view, main) && std::ptr::eq(view.class(), main.class()) {
+            set(&view);
         }
     }
 }
@@ -105,6 +151,8 @@ pub fn place<R: Runtime>(page: &Webview<R>) {
                         NSWindowOrderingMode::Below,
                         Some(main),
                     );
+                    MOVES_TO.store(0, Ordering::Relaxed);
+                    reroute_moves();
                 }
             }
         }
@@ -152,6 +200,28 @@ unsafe fn install_on(view: *mut AnyObject) {
         );
     }
     MAIN.store(view, Ordering::Release);
+    // Before dispatch, so the view losing moves is cut off at the move that leaves it.
+    let route = RcBlock::new(|event: *mut AnyObject| -> *mut AnyObject {
+        // Safety: AppKit passes a live NSEvent to the monitor, on the main thread.
+        if let (Some(main), Some(moved)) =
+            (main_view(), unsafe { (event as *const NSEvent).as_ref() })
+        {
+            if main.window().map(|window| window.windowNumber()) == Some(moved.windowNumber()) {
+                route_moves(
+                    main,
+                    main.convertPoint_fromView(moved.locationInWindow(), None),
+                );
+            }
+        }
+        event
+    });
+    // NSEventMaskMouseMoved. Kept for the app's lifetime, like the main webview.
+    let mask: u64 = 1 << 5;
+    // Safety: a class method taking a mask and an `NSEvent *(^)(NSEvent *)` block.
+    let monitor: Option<Retained<AnyObject>> = unsafe {
+        msg_send![class!(NSEvent), addLocalMonitorForEventsMatchingMask: mask, handler: &*route]
+    };
+    std::mem::forget(monitor);
 }
 
 /// Whether `point` (main view coordinates) belongs to the page.
