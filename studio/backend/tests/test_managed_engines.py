@@ -18,6 +18,12 @@ from core.inference.managed_engine import ManagedEngine, launch_arguments
 
 
 @pytest.fixture(autouse = True)
+def nvidia_host(monkeypatch):
+    # These cover the CUDA profiles; on an AMD runner the real gpu_platform() answers "rocm".
+    monkeypatch.setattr(install, "gpu_platform", lambda: "cuda")
+
+
+@pytest.fixture(autouse = True)
 def visible_gpus(monkeypatch):
     # CPU CI has no parent-visible GPUs; the mask itself is tested with the real resolver below.
     from core.inference import managed_engine
