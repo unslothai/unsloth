@@ -1856,12 +1856,7 @@ def _assert_loadable(path: Path, manifest: dict[str, Any]) -> None:
 
 
 def recorded_resume_targets(path_value: Any) -> Optional[tuple[str, ...]]:
-    """The LoRA targets recorded by the bundle a resume would continue, or None. A resume replays
-    the run's stored request, where unset targets mean "the family default", so once a family's
-    default targets change that request resolves differently and the identity gate refuses a run
-    started before the change. ``normalized()`` adopts the recorded tuple instead. Reads bundles
-    the way ``preflight_resume`` does (including a slot orphaned by a save killed mid-promotion), and
-    never raises: the preflight explains an unreadable path."""
+    """LoRA targets recorded by the bundle a resume would continue, else None. Never raises."""
     try:
         root = resolve_resume_dir(str(path_value))
         if checkpoint_step(root) >= 0:

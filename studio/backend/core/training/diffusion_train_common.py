@@ -1239,8 +1239,7 @@ class DiffusionLoraConfig:
             raise ValueError("learning_rate must be > 0")
         alpha = self.lora_alpha if self.lora_alpha is not None else self.lora_rank
         targets = tuple(self.lora_target_modules) or DEFAULT_LORA_TARGETS
-        # A resume keeps the targets the run was started with when its replayed request left them unset, so a later
-        # change of a family's default targets never strands a run trained under the old ones.
+        # Resume with unset targets keeps the recorded ones, so changing a family default never strands old runs.
         if resume_from_checkpoint and resolved_family != "sdxl" and targets == DEFAULT_LORA_TARGETS:
             from core.training.diffusion_checkpoint import recorded_resume_targets
             targets = recorded_resume_targets(resume_from_checkpoint) or targets

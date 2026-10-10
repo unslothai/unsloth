@@ -97,9 +97,7 @@ _FLUX_TARGETS = (
     "to_add_out",
 )
 _QWEN_TARGETS = _FLUX_TARGETS
-# Attention + the SwiGLU feed-forward (w1/w2/w3), as DiffSynth-Studio's Z-Image recipes do. Measured at the default
-# 500 steps on DreamBooth subjects: held-out likeness up on Turbo (DINOv2 +0.05), a tie on the undistilled base. Runs
-# started on the attention-only list keep it on resume (recorded_resume_targets).
+# Attention + SwiGLU (DiffSynth-Studio's Z-Image recipe); old attention-only runs keep theirs on resume.
 _ZIMAGE_TARGETS = ("to_q", "to_k", "to_v", "to_out.0", "w1", "w2", "w3")
 # The Krea 2 authors' recommended defaults (their DreamBooth script): attention + SwiGLU + text-fusion projector +
 # conditioning embedders. For long runs they suggest narrowing to attention.

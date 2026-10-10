@@ -83,7 +83,6 @@ def _write_bundle(run_dir: Path, identity: dc.CheckpointIdentity) -> None:
 
 
 def _old_zimage_identity(**overrides) -> dc.CheckpointIdentity:
-    # What a Z-Image run started before the default change recorded: attention-only targets and the identity table.
     fresh = dc.identity_for_config(_zimage_cfg())
     fields = {**fresh.as_dict(), "lora_target_modules": _OLD_ZIMAGE_TARGETS, "flow_shift": "1.0"}
     fields.update(overrides)
@@ -93,7 +92,6 @@ def _old_zimage_identity(**overrides) -> dc.CheckpointIdentity:
 def test_resuming_an_old_zimage_run_keeps_its_recorded_targets(run_dir):
     saved = _old_zimage_identity()
     _write_bundle(run_dir, saved)
-    # The UI replays the stored request: targets unset.
     cfg = _zimage_cfg(resume_from_checkpoint = str(run_dir))
     assert cfg.lora_target_modules == _OLD_ZIMAGE_TARGETS
     # The model's own schedule: 1.0 before the numeric flow_shift became the effective shift, None after.
@@ -104,14 +102,12 @@ def test_resuming_an_old_zimage_run_keeps_its_recorded_targets(run_dir):
     incoming = dc.identity_for_config(cfg)
     assert incoming.lora_target_modules == saved.lora_target_modules
     assert incoming.flow_shift == saved.flow_shift
-    # An explicit checkpoint-<N> path resolves the same way.
     cfg = _zimage_cfg(resume_from_checkpoint = str(run_dir / "checkpoint-11"))
     assert cfg.lora_target_modules == _OLD_ZIMAGE_TARGETS
 
 
 def test_a_save_killed_mid_promotion_still_resumes_on_its_targets(run_dir):
-    # A crash between moving the occupied slot aside and installing its replacement leaves only the aged staging bundle;
-    # the resume preflight restores it, so the targets must be read from it too, not fall back to the new default.
+    # A crash mid-promotion leaves only the aged staging bundle, which the preflight restores.
     import os
     import time
 
@@ -140,9 +136,7 @@ def test_unreadable_resume_path_falls_back_to_the_family_defaults(tmp_path):
 
 
 def test_zimage_default_keeps_the_checkpoints_built_in_shift():
-    # Measured: lowering Z-Image's effective shift to 2-3 (DiffSynth / musubi) cut held-out subject likeness at the
-    # default 500 steps (DINOv2 -0.07 at shift 2 on the base checkpoint), so the default trains on the scheduler's own
-    # static shift: 3 for Turbo, 6 for the base.
+    # Shift 2-3 (DiffSynth / musubi) hurt likeness, so keep the scheduler's static shift (3 Turbo, 6 base).
     diffusers = pytest.importorskip("diffusers")
     from core.training.diffusion_dit_trainer import _training_sigma_table
     for shift, base_model in ((3.0, "Tongyi-MAI/Z-Image-Turbo"), (6.0, "Tongyi-MAI/Z-Image")):
@@ -153,7 +147,6 @@ def test_zimage_default_keeps_the_checkpoints_built_in_shift():
         assert table is sched.sigmas
         t = torch.linspace(1.0, 1.0 / 1000, 1000)
         assert torch.allclose(table.float(), shift * t / (1 + (shift - 1) * t), atol = 1e-5)
-        # Logit-normal draws indexed into that table keep the high-noise mass the shift implies.
         u = torch.sigmoid(torch.randn(200_000, generator = torch.Generator().manual_seed(0)))
         sig = table[(u * 1000).long().clamp(0, 999)].float()
         expected = float((shift * u / (1 + (shift - 1) * u) > 0.8).float().mean())
