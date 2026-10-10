@@ -473,17 +473,14 @@ export const sv = {
     rollback: "Återställ föregående installation",
     installTitle: "Installera {engine}",
     installAndLoad: "Installera och läs in",
-    confirm:
-      "Installera {engine} {version}? Denna valfria hämtning kan använda flera gigabyte. Exakt hur mycket mer som hämtas och hur mycket diskutrymme som används är inte känt. Kompatibla cachade paket och modellfiler återanvänds.",
-    confirmSized:
-      "Installera {engine} {version}? Denna valfria hämtning är ungefär {size}. Paket som Studio redan har, inklusive PyTorch när versionerna matchar, återanvänds i stället för att hämtas igen.",
+    confirm: "Installera {engine} {version}? Detta kan hämta flera GB.",
+    confirmSized: "Installera {engine} {version}? Cirka {size} att hämta.",
     wslSetup:
-      "I Windows körs {engine} inuti WSL2 (Windows Subsystem for Linux). Studio aktiverar WSL2 och konfigurerar en egen privat Ubuntu-miljö för motorer; dina befintliga Linux-distributioner påverkas inte. Windows visar en administratörsfråga (UAC) och kan be dig starta om innan installationen kan slutföras. Ingenting ändras förrän du klickar på Installera.",
+      "I Windows körs {engine} i en privat WSL2-miljö som Studio konfigurerar. Räkna med en administratörsfråga och eventuellt en omstart.",
     wslReady: "I Windows körs {engine} inuti Studios privata WSL2-miljö.",
     wslRestart:
       "Starta om Windows för att slutföra aktiveringen av WSL2 och klicka sedan på Installera igen.",
-    background:
-      "Installationen körs i bakgrunden. Om du tar bort motorn behålls dina hämtade modeller.",
+    background: "Installeras i bakgrunden.",
     failed:
       "Installationen av motorn misslyckades. Försök igen eller använd standardmotorn.",
     details: "Tekniska detaljer",
