@@ -100,6 +100,9 @@ def _load_torch_varlen_attn():
     params = inspect.signature(varlen_attn).parameters
     if "window_size" not in params or "enable_gqa" not in params:
         return None
+    # Causal varlen always lands on torch's bundled flash kernel, which some source builds omit.
+    if not getattr(torch.backends.cuda, "is_flash_attention_available", lambda: True)():
+        return None
     return varlen_attn
 
 
@@ -129,6 +132,10 @@ def _torch_varlen_takes(
     if set(sdpa_kwargs) - {"scale", "dropout_p"} or sdpa_kwargs.get("dropout_p"):
         return False
     if sliding_window is not None and not is_causal:
+        return False
+    # torch 2.14 sends bidirectional calls without GQA to cuDNN's ragged kernel on sm90 / sm100, which
+    # builds no plan for head_dim 256, and its backward picks cuDNN again regardless of enable_gqa.
+    if not is_causal and Q.shape[1] == K.shape[1]:
         return False
     # Its backward is not deterministic; keep the per-segment path for runs that asked for determinism.
     return not torch.are_deterministic_algorithms_enabled()

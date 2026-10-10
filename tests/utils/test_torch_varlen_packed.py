@@ -107,6 +107,15 @@ def test_varlen_matches_segments(
 
 
 @needs_varlen
+def test_bidirectional_mha_head_dim_256_runs(monkeypatch):
+    # 2.14 + sm90 / sm100 would route this to cuDNN's ragged kernel, which has no head_dim 256 plan.
+    g = torch.Generator().manual_seed(2)
+    qkv = [torch.randn(1, 8, 1024, 256, generator = g).cuda().bfloat16() for _ in range(3)]
+    out, calls = _run(monkeypatch, True, (300, 500, 224), 1024, 8, 8, qkv, is_causal = False)
+    assert calls == [] and all(torch.isfinite(x).all() for x in out)
+
+
+@needs_varlen
 def test_scale_is_forwarded(monkeypatch):
     g = torch.Generator().manual_seed(0)
     qkv = [torch.randn(1, 4, 40, 64, generator = g).cuda().bfloat16() for _ in range(3)]
@@ -120,7 +129,15 @@ def test_scale_is_forwarded(monkeypatch):
 @needs_varlen
 @pytest.mark.parametrize(
     "case",
-    ["fp32", "dropout", "attn_mask", "bidirectional_window", "deterministic", "int32_overflow"],
+    [
+        "fp32",
+        "dropout",
+        "attn_mask",
+        "bidirectional_window",
+        "bidirectional_mha",
+        "deterministic",
+        "int32_overflow",
+    ],
 )
 def test_ineligible_calls_keep_the_segment_path(monkeypatch, case):
     dtype = torch.float32 if case == "fp32" else torch.bfloat16
@@ -134,6 +151,8 @@ def test_ineligible_calls_keep_the_segment_path(monkeypatch, case):
         kwargs["sdpa_kwargs"] = {"attn_mask": None, "scale": None}
     elif case == "bidirectional_window":
         kwargs.update(is_causal = False, window = 4)
+    elif case == "bidirectional_mha":
+        kwargs.update(is_causal = False)
     elif case == "deterministic":
         monkeypatch.setattr(torch, "are_deterministic_algorithms_enabled", lambda: True)
     elif case == "int32_overflow":
