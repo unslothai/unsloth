@@ -1186,7 +1186,7 @@ function injectDocxListNumbers(archive: Uint8Array): Uint8Array {
   const restartsAfterBreak = new Set(
     Array.from(abstracts.entries())
       .filter(([, node]) => /^(?:1|true|on)$/.test(node.getAttributeNS(W15, "restartNumberingAfterBreak") ?? ""))
-      .map(([id]) => id),
+      .map(([id]) => linkedAbstract(id)),
   );
 
   const counters = new Map<string, (number | undefined)[]>();
