@@ -530,6 +530,7 @@ def _delete_retired_folder(folder_id: str) -> bool | None:
     """Finish a durable unlink once no process still owns its sync job."""
     conn = rag_db.get_connection()
     try:
+        conn.execute(f"PRAGMA busy_timeout = {_UNLINK_BUSY_TIMEOUT_MS}")
         conn.execute("BEGIN IMMEDIATE")
         folder = conn.execute(
             "SELECT delete_remove_index FROM linked_folders "
@@ -1750,6 +1751,7 @@ def _reconcile_folder(job_id: str) -> None:
                         raise _SyncCancelled
                     failures.append(rel)
                     ingest_failed[rel] = known_failed[rel]
+                    withheld.update(missing - already_withheld)
                     processed += 1
                     continue
                 if len(in_flight) >= workers:
