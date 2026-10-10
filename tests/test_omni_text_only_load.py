@@ -22,6 +22,28 @@ VOCAB = 64
 DEVICE = "cuda" if has_real_cuda() else "cpu"
 
 
+@pytest.fixture(autouse = True)
+def _stock_causal_lm_loss_on_cpu():
+    """Any Unsloth load repoints LOSS_MAPPING at the Triton loss for the whole process, which a CPU
+    host cannot run ("0 active drivers"): one earlier in this worker, or this file's own
+    `_capture_fast_base_kwargs`. These tests are about where the forward goes, so on CPU they price it
+    with transformers' own loss and put the whole mapping back afterwards, leaking nothing to the next
+    test in the worker. On a GPU host they keep Unsloth's, as before."""
+    if DEVICE != "cpu":
+        yield
+        return
+    loss_utils = pytest.importorskip("transformers.loss.loss_utils")
+    saved = dict(loss_utils.LOSS_MAPPING)
+    for key, fn in saved.items():
+        if getattr(fn, "__name__", "") != "ForCausalLMLoss" and "Unsloth" in repr(fn):
+            loss_utils.LOSS_MAPPING[key] = loss_utils.ForCausalLMLoss
+    try:
+        yield
+    finally:
+        loss_utils.LOSS_MAPPING.clear()
+        loss_utils.LOSS_MAPPING.update(saved)
+
+
 def _tiny_config():
     text = dict(
         vocab_size = VOCAB,

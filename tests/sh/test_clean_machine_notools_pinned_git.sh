@@ -8,9 +8,13 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$SCRIPT_DIR/../.."
 ASSERT_SH="$REPO_ROOT/.github/scripts/clean-machine-assert.sh"
-PIN="$REPO_ROOT/studio/backend/requirements/diffusers-main.txt"
+SHIPPED_PIN="$REPO_ROOT/studio/backend/requirements/diffusers-main.txt"
 ROOT=$(mktemp -d)
 trap 'rm -rf "$ROOT"' EXIT
+# The shipped pin is commented out while a Diffusers release carries every family, so the
+# allowance is exercised on the same file with its requirement line uncommented.
+PIN="$ROOT/diffusers-main.txt"
+sed 's/^# diffusers @ git+/diffusers @ git+/' "$SHIPPED_PIN" > "$PIN"
 PASS=0
 FAIL=0
 
@@ -66,7 +70,9 @@ expect_rc "uv cloning the pinned Diffusers build passes" 0 "$PIN" "$UV_CLONE"
 expect_rc "the same trace fails with no allowance, as before" 1 "" "$UV_CLONE"
 expect_rc "an allowance file that does not exist allows nothing" 1 "$ROOT/missing.txt" "$UV_CLONE"
 expect_rc "the installer's git --version probe alone passes" 0 "$PIN" "git\t--version\n"
-# An overlay-free leg installs the released wheel, which can pin an older commit.
+expect_rc "the shipped, commented-out pin allows no clone" 1 "$SHIPPED_PIN" "$UV_CLONE"
+# An overlay-free leg installs the released wheel, which can pin an older commit than this
+# checkout's file; uv's checkout is named after the commit it installs.
 OLDER=1111111111111111111111111111111111111111
 FETCH="git\tfetch --tags --force --update-head-ok $REMOTE +HEAD:refs/remotes/origin/HEAD\n"
 OLDER_PIN="$ROOT/older-diffusers-main.txt"

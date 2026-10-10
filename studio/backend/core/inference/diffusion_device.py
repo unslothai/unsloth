@@ -88,6 +88,56 @@ def force_float32_rope(
     return changed
 
 
+# Downsample shortcuts that zero-pad only the frame axis in front, to a multiple of ``factor_t``.
+_FRAME_PAD_CLASSES = frozenset({"QwenImage21AvgDown3D", "AvgDown3D"})
+
+
+def _prepend_zero_frames(module: Any, args: tuple) -> Optional[tuple]:
+    x = args[0]
+    pad_t = -x.shape[2] % module.factor_t
+    if not pad_t:
+        return None
+    import torch
+
+    zeros = x.new_zeros((*x.shape[:2], pad_t, *x.shape[3:]))
+    return (torch.cat([zeros, x], dim = 2), *args[1:])
+
+
+def install_frame_pad_fix(
+    pipe: Any,
+    target: DiffusionDeviceTarget,
+    *,
+    logger: Any = None,
+) -> int:
+    """Pad the VAE downsample shortcuts' frame axis by concatenation on Metal; returns the modules patched.
+
+    ``F.pad`` on MPS silently returns wrong data (all zeros for a front pad) for a 5-D tensor padded
+    on the frame axis alone once a frame holds 65536 values, i.e. from a 256x256 feature map up
+    (torch 2.10 through 2.14). The shortcuts pad a single frame exactly that way; prepending the zero
+    frames leaves their own pad empty.
+    """
+    if target.device != "mps":
+        return 0
+    patched = 0
+    for component in getattr(pipe, "components", {}).values() or ():
+        modules = getattr(component, "modules", None)
+        if not callable(modules):
+            continue
+        for module in modules():
+            if type(module).__name__ not in _FRAME_PAD_CLASSES:
+                continue
+            if getattr(module, "_unsloth_frame_pad_fix", False):
+                continue
+            module.register_forward_pre_hook(_prepend_zero_frames)
+            module._unsloth_frame_pad_fix = True
+            patched += 1
+    if patched and logger is not None:
+        logger.info(
+            "diffusion.vae_frame_pad: %d module(s) pad by concatenation (MPS pad defect)", patched
+        )
+    return patched
+
+
 # Fraction of the device's recommended working set above which a decode starts synchronising.
 DECODE_SYNC_FRACTION = 0.85
 
@@ -515,6 +565,12 @@ def diffusion_device_target_from_torch_device(
             supports_float64 = False,
         )
     return _cpu_target(torch = None, dtype = dtype)
+
+
+def float64_device(device: Any) -> Any:
+    """Device to build float64 values on before moving the result to ``device``: itself, or CPU when it has no float64."""
+    target = diffusion_device_target_from_torch_device(str(device), None)
+    return device if target.supports_float64 else "cpu"
 
 
 def _cuda_or_rocm_target(

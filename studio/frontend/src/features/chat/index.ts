@@ -65,7 +65,12 @@ export {
   refreshModelDisclaimerPreference,
   saveModelDisclaimerPreference,
 } from "./sync-model-disclaimer-preference";
-export { useChatActive, useInComparePane } from "./runtime-provider";
+export {
+  pythonToolRunsInStudio,
+  useChatActive,
+  useInComparePane,
+} from "./runtime-provider";
+export { withAttachmentOriginal } from "./attachment-originals";
 export {
   CHAT_RAG_CAPTION_KEY,
   CHAT_RAG_OCR_KEY,
@@ -272,6 +277,7 @@ export {
   discardQueuedChatRunSettings,
   discardQueuedChatRunSettingsForThread,
   registerQueuedChatRunSettings,
+  resolveDeferredQueuedModelSettings,
   snapshotQueuedChatRunSettings,
   type QueuedChatRunSettings,
 } from "./utils/queued-chat-run-settings";
@@ -349,6 +355,7 @@ export {
   forkChatRow,
   getSidebarItemThreadIds,
   recordedSandboxSessionIds,
+  regenerateChatTitle,
   sandboxSessionIdsHolding,
   type ConversationExportFormat,
 } from "./components/chat-row-menu";

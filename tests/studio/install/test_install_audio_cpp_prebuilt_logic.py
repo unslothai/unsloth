@@ -646,6 +646,35 @@ def test_a_download_that_does_not_hash_to_the_pin_is_refused(monkeypatch, tmp_pa
     assert not (tmp_path / "audio.cpp").exists()
 
 
+OLD_TAG = "v0.8.2-audio8-perf-hotfix-unsloth.1"
+
+
+def _installed_at_an_older_release(monkeypatch, tmp_path, pins):
+    """What the in-app update replaces: a Studio-managed tree of a release this Studio no longer pins."""
+    old = _release(tmp_path, f"audio-{OLD_TAG}-bin-windows-x64-cpu-portable.zip", tag = OLD_TAG)
+    _install(monkeypatch, tmp_path, old, pins)
+    return tmp_path / "audio.cpp"
+
+
+def test_an_older_release_is_replaced_by_the_pinned_one(monkeypatch, tmp_path, pins):
+    root = _installed_at_an_older_release(monkeypatch, tmp_path, pins)
+    server = _install(monkeypatch, tmp_path, _release(tmp_path, CPU_ZIP), pins)
+    record = json.loads((root / M.INSTALL_RECORD).read_text())
+    assert (record["release_tag"], record["asset"]) == (FORK_TAG, CPU_ZIP)
+    assert server.read_bytes() == b"binary " + CPU_ZIP.encode()
+
+
+def test_an_update_that_fails_its_pin_leaves_the_older_tree(monkeypatch, tmp_path, pins):
+    root = _installed_at_an_older_release(monkeypatch, tmp_path, pins)
+    before = _tree_digest(root)
+    release = _release(tmp_path, CPU_ZIP)
+    release["assets"][0]["digest"] = None
+    pins[(FORK, FORK_TAG, CPU_ZIP)] = "0" * 64
+    with pytest.raises(RuntimeError, match = "sha256 mismatch"):
+        _install(monkeypatch, tmp_path, release)
+    assert _tree_digest(root) == before
+
+
 def test_the_pins_file_covers_both_default_releases():
     table = M.load_pins()
     for repo, tag in (

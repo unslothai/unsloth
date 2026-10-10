@@ -37,11 +37,12 @@ def loader():
         n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "from_pretrained"
     )
     method.decorator_list = []
-    helper = next(
+    helpers = [
         n
         for n in tree.body
-        if isinstance(n, ast.FunctionDef) and n.name == "_precision_flags_conflict"
-    )
+        if isinstance(n, ast.FunctionDef)
+        and n.name in ("_precision_flags_conflict", "_modelscope_snapshot_or_none")
+    ]
     captured = {"config_calls": 0}
 
     def dispatch(**kwargs):
@@ -70,6 +71,7 @@ def loader():
         ALLOW_BITSANDBYTES = True,
         ALLOW_PREQUANTIZED_MODELS = True,
         USE_MODELSCOPE = False,
+        logger = SimpleNamespace(warning_once = lambda *args, **kwargs: None),
         SUPPORTS_LLAMA32 = True,
         get_model_name = lambda name, **kwargs: name,
         _revision_for_resolved_repo = lambda revision, *args: revision,
@@ -87,7 +89,7 @@ def loader():
     # No fixture is Mistral-format: stub each loader.py helper deciding that, new ones included.
     for name in _mistral_format_names(tree):
         env.setdefault(name, RuntimeError if name[0].isupper() else (lambda *args, **kwargs: False))
-    exec(compile(ast.Module(body = [helper, method], type_ignores = []), str(path), "exec"), env)
+    exec(compile(ast.Module(body = [*helpers, method], type_ignores = []), str(path), "exec"), env)
     return env, captured
 
 
@@ -160,6 +162,10 @@ def modelscope_snapshot(monkeypatch, tmp_path):
 
     def snapshot_download(name, allow_file_pattern = None):
         calls.append((name, allow_file_pattern))
+        if name.startswith("hf-only/"):
+            raise ValueError(f"{name} is not on ModelScope")
+        snapshot = cache / name.replace("/", "--")
+        snapshot.mkdir(exist_ok = True)
         for filename in (
             "config.json",
             "adapter_config.json",
@@ -169,9 +175,9 @@ def modelscope_snapshot(monkeypatch, tmp_path):
             if allow_file_pattern is None or any(
                 fnmatch.fnmatch(filename, pattern) for pattern in allow_file_pattern
             ):
-                (cache / filename).write_text("test fixture")
+                (snapshot / filename).write_text("test fixture")
                 downloaded.append(filename)
-        return str(cache)
+        return str(snapshot)
 
     monkeypatch.setitem(
         sys.modules, "modelscope", SimpleNamespace(snapshot_download = snapshot_download)
@@ -181,7 +187,7 @@ def modelscope_snapshot(monkeypatch, tmp_path):
 
 def use_modelscope_adapter(env, cache, base_name):
     def config(name, **kwargs):
-        if name == str(cache):
+        if name == str(cache / "owner--model"):
             raise ValueError("Adapter has no model config")
         return SimpleNamespace(model_type = "llama", rope_scaling = None)
 
@@ -241,6 +247,23 @@ def test_modelscope_valid_loads_download_weights(
         env["from_pretrained"](model_name = "owner/model", **kwargs)
 
     assert "model.safetensors" in downloaded
-    assert captured["dispatch"]["model_name"] == (adapter_base or str(cache))
+    # An adapter's base is fetched from ModelScope as well (#3726).
+    loaded = adapter_base or "owner/model"
+    assert captured["dispatch"]["model_name"] == str(cache / loaded.replace("/", "--"))
     assert captured["dispatch"]["load_in_4bit"] is expected_4bit
     assert calls[-1] == ("owner/model", None)
+    assert (loaded, None) in calls
+
+
+def test_modelscope_adapter_base_missing_there_loads_from_the_hub(loader, modelscope_snapshot):
+    """#3726: an adapter on ModelScope whose base is only on the Hub still loads that base by repo id."""
+    env, captured = loader
+    cache, downloaded, calls = modelscope_snapshot
+    env["USE_MODELSCOPE"] = True
+    use_modelscope_adapter(env, cache, "hf-only/base")
+
+    with pytest.raises(DispatchReached):
+        env["from_pretrained"](model_name = "owner/model", load_in_4bit = False, load_in_16bit = True)
+
+    assert captured["dispatch"]["model_name"] == "hf-only/base"
+    assert ("hf-only/base", None) in calls

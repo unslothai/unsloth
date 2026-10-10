@@ -496,7 +496,7 @@ class TestADeadDriverIsNotAFlavourMismatch:
     def test_a_timeout_on_a_supported_wheel_reinstalls_nothing(self):
         # _ensure_xpu_torch sits above the slice: the early return must precede the repair reason.
         src = STACK.read_text(encoding = "utf-8")
-        start = src.index('def _ensure_xpu_torch() -> "bool | None":')
+        start = src.index("def _ensure_xpu_torch(")
         body = src[start : src.index("def _installed_torch_version_label", start)]
         guard = body.index("_xpu_wheel_supported_on_disk()")
         armed = body.index('_why = "torch could not be probed"')

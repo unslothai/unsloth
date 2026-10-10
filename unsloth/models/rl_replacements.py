@@ -172,6 +172,19 @@ def gkd_trainer_mask_prompt(function_name, function):
 RL_FUNCTIONS["gkd_trainer"].append(gkd_trainer_mask_prompt)
 
 
+def ppo_trainer_free_rollout_logits(function_name, function):
+    # TRL keeps the float32 (batch, response_length, vocab) generation logits alive through every PPO
+    # epoch, though only the logprobs taken from them are read: 1.2 GB on a T4 for 8 x 256 Qwen3 tokens.
+    if function_name != "train" or "logitss" not in function:
+        return function
+    old = "del (logprob, ref_logprob, full_value, value, score, unwrapped_model)"
+    new = "del (logprob, ref_logprob, full_value, value, score, unwrapped_model, logitss)"
+    return function.replace(old, new, 1)
+
+
+RL_FUNCTIONS["ppo_trainer"].append(ppo_trainer_free_rollout_logits)
+
+
 def dpo_trainer_fix_columns(call_args, extra_args):
     if "model" in call_args and "train_dataset" in call_args:
         fix_dpo = (
@@ -455,8 +468,10 @@ _ONLINE_DPO_MODEL_CALL = re.compile(
     r"(?P<kwargs>attention_mask=prompt_completion_mask|\*\*model_kwargs)\)[ \t]*$",
     flags = re.MULTILINE,
 )
+# TRL 0.18-0.19 slice from `prompt_ids.size(1) - 1`, TRL 0.20+ name it start_idx.
 _ONLINE_DPO_LOGITS_SLICE = re.compile(
-    r"^(?P<indent>[ \t]*)(?P<line>logits = output\.logits\[:, start_idx:(?:end_idx|-1)\])[ \t]*$",
+    r"^(?P<indent>[ \t]*)(?P<line>logits = output\.logits\[:, "
+    r"(?P<start>start_idx|prompt_ids\.size\(1\) - 1) ?: ?(?:end_idx|-1)\])[ \t]*$",
     flags = re.MULTILINE,
 )
 
@@ -493,7 +508,7 @@ def online_dpo_trainer__forward(function_name, function):
     j = logits_slice.group("indent")
     gather = (
         f"{j}if _unsloth_left_pad is not None:\n"
-        f"{j}    _unsloth_index = (start_idx - _unsloth_left_pad).unsqueeze(1) + torch.arange(\n"
+        f"{j}    _unsloth_index = ({logits_slice.group('start')} - _unsloth_left_pad).unsqueeze(1) + torch.arange(\n"
         f"{j}        completion_ids.size(1), device = completion_ids.device\n"
         f"{j}    ).unsqueeze(0)\n"
         f"{j}    _unsloth_index = _unsloth_index.clamp(0, output.logits.size(1) - 1)\n"
@@ -1084,6 +1099,10 @@ def _unsloth_grpo_vision_inputs(source):
             "num_images",
             "token_type_ids",
             "mm_token_type_ids",
+            "pixel_values_videos",
+            "video_grid_thw",
+            "second_per_grid_ts",
+            "num_videos",
         )
     }
 
@@ -1106,6 +1125,7 @@ def _unsloth_grpo_split_vision_by_sample(batch):
         except TypeError:
             return None
 
+    batch = _unsloth_grpo_split_videos_by_sample(batch)
     pixel_values = batch.get("pixel_values", None)
     if pixel_values is None:
         return batch
@@ -1191,6 +1211,188 @@ def _unsloth_grpo_split_vision_by_sample(batch):
     return split
 
 
+def _unsloth_grpo_split_videos_by_sample(batch):
+    """Group the flat video rows, grid and second_per_grid_ts by sample (num_videos) so the
+    _prepare_inputs shuffle keeps them with their sample; _unsloth_grpo_unsplit_vision merges back."""
+    pixel_values_videos = batch.get("pixel_values_videos", None)
+    video_grid_thw = batch.get("video_grid_thw", None)
+    num_videos = batch.get("num_videos", None)
+    if (
+        pixel_values_videos is None
+        or video_grid_thw is None
+        or num_videos is None
+        or isinstance(pixel_values_videos, list)
+    ):
+        return batch
+    num_videos = [int(n) for n in num_videos]
+    if sum(num_videos) != video_grid_thw.shape[0]:
+        return batch
+    rows_per_sample = [
+        int(group.prod(dim = -1).sum()) for group in torch.split(video_grid_thw, num_videos)
+    ]
+    split = dict(batch)
+    split["pixel_values_videos"] = list(torch.split(pixel_values_videos, rows_per_sample))
+    split["video_grid_thw"] = list(torch.split(video_grid_thw, num_videos))
+    second_per_grid_ts = batch.get("second_per_grid_ts", None)
+    if second_per_grid_ts is not None:
+        second_per_grid_ts = torch.as_tensor(second_per_grid_ts)
+        split["second_per_grid_ts"] = list(torch.split(second_per_grid_ts, num_videos))
+    return split
+
+
+def _unsloth_grpo_prompt_videos(prompt, kind = "video"):
+    """Number of `kind` parts in a conversational prompt."""
+    if not isinstance(prompt, list):
+        return 0
+    count = 0
+    for message in prompt:
+        content = message.get("content", None) if isinstance(message, dict) else None
+        if isinstance(content, list):
+            count += sum(
+                1 for part in content if isinstance(part, dict) and part.get("type") == kind
+            )
+    return count
+
+
+def _unsloth_grpo_has_video_key(prompt):
+    if not isinstance(prompt, list):
+        return False
+    for message in prompt:
+        content = message.get("content", None) if isinstance(message, dict) else None
+        if isinstance(content, list) and any(
+            isinstance(part, dict) and "video" in part for part in content
+        ):
+            return True
+    return False
+
+
+def _unsloth_grpo_clean_video_prompts(prompts, trainer = None):
+    """Arrow adds `video: None` to every content part of a column holding videos; Qwen2-VL
+    templates test `'video' in content` and render a placeholder per part (StopIteration)."""
+    if not any(_unsloth_grpo_has_video_key(prompt) for prompt in prompts):
+        return prompts
+    if getattr(trainer, "use_vllm", False) and any(
+        _unsloth_grpo_prompt_videos(prompt) for prompt in prompts
+    ):
+        # Before generation, which vLLM would otherwise run without the videos.
+        raise NotImplementedError(
+            "Unsloth: video GRPO runs on the transformers generation path only. "
+            "Load the model with fast_inference = False (use_vllm = False)."
+        )
+    cleaned = []
+    for prompt in prompts:
+        if not _unsloth_grpo_has_video_key(prompt):
+            cleaned.append(prompt)
+            continue
+        messages = []
+        for message in prompt:
+            content = message.get("content", None)
+            if isinstance(content, list):
+                message = dict(message)
+                message["content"] = [
+                    {k: v for k, v in part.items() if v is not None}
+                    if isinstance(part, dict)
+                    else part
+                    for part in content
+                ]
+            messages.append(message)
+        cleaned.append(messages)
+    return cleaned
+
+
+def _unsloth_grpo_prompt_key(value):
+    """Dedup key: equal for the repeated copies of a prompt, never shared by different media.
+    repr() truncates arrays, so in-memory frames are keyed by identity, not by content."""
+    if isinstance(value, dict):
+        return tuple((k, _unsloth_grpo_prompt_key(v)) for k, v in value.items())
+    if isinstance(value, (list, tuple)):
+        return tuple(_unsloth_grpo_prompt_key(v) for v in value)
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return ("id", id(value))
+
+
+def _unsloth_grpo_video_inputs(
+    trainer,
+    prompts,
+    images = None,
+):
+    """Video tensors for the logprob forwards, which TRL builds from images only. Rendered with
+    the same chat template call generation makes, once per distinct prompt. None without video."""
+    num_videos = [_unsloth_grpo_prompt_videos(prompt) for prompt in prompts]
+    if not any(num_videos):
+        return None
+    if getattr(trainer, "use_vllm", False):
+        raise NotImplementedError(
+            "Unsloth: video GRPO runs on the transformers generation path only. "
+            "Load the model with fast_inference = False (use_vllm = False)."
+        )
+    if (images is not None and any(images)) or any(
+        _unsloth_grpo_prompt_videos(prompt, "image") for prompt in prompts
+    ):
+        raise NotImplementedError(
+            "Unsloth: GRPO does not support image and video inputs in the same batch yet."
+        )
+    try:
+        from unsloth_zoo.rl_replacements import GRPO_VISION_KEYS
+    except Exception:
+        GRPO_VISION_KEYS = ()
+    if "pixel_values_videos" not in GRPO_VISION_KEYS:
+        raise RuntimeError(
+            "Unsloth: video GRPO needs a newer unsloth_zoo that forwards video inputs to "
+            "both GRPO logprob passes. Please upgrade: pip install -U unsloth_zoo"
+        )
+    unique, order = {}, []
+    for prompt in prompts:
+        order.append(unique.setdefault(_unsloth_grpo_prompt_key(prompt), len(unique)))
+    first = {}
+    for i, u in enumerate(order):
+        first.setdefault(u, i)
+    unique_prompts = [prompts[first[u]] for u in range(len(unique))]
+    template_kwargs = dict(getattr(trainer, "chat_template_kwargs", None) or {})
+    if getattr(trainer, "chat_template", None) is not None:
+        # GRPOConfig.chat_template, which generation renders with too
+        template_kwargs["chat_template"] = trainer.chat_template
+    processed = trainer.processing_class.apply_chat_template(
+        conversation = unique_prompts,
+        add_generation_prompt = True,
+        tokenize = True,
+        return_dict = True,
+        padding = True,
+        return_tensors = "pt",
+        **template_kwargs,
+    )
+    pixel_values_videos = processed.get("pixel_values_videos", None)
+    video_grid_thw = processed.get("video_grid_thw", None)
+    if pixel_values_videos is None or video_grid_thw is None:
+        raise NotImplementedError(
+            f"Unsloth: video GRPO supports processors that return pixel_values_videos and "
+            f"video_grid_thw (Qwen2-VL, Qwen2.5-VL, Qwen3-VL, Qwen3.5); "
+            f"{type(trainer.processing_class).__name__} does not."
+        )
+    second_per_grid_ts = processed.get("second_per_grid_ts", None)
+    if second_per_grid_ts is not None:
+        second_per_grid_ts = torch.as_tensor(second_per_grid_ts)
+    unique_counts = [num_videos[first[u]] for u in range(len(unique))]
+    video_index = torch.split(torch.arange(video_grid_thw.shape[0]), unique_counts)
+    row_ends = video_grid_thw.prod(dim = -1).cumsum(0)
+    row_starts = row_ends - video_grid_thw.prod(dim = -1)
+    videos, rows = [], []
+    for u in order:
+        for v in video_index[u].tolist():
+            videos.append(v)
+            rows.append(pixel_values_videos[int(row_starts[v]) : int(row_ends[v])])
+    device = trainer.accelerator.device
+    out = {
+        "pixel_values_videos": torch.cat(rows, dim = 0).to(device),
+        "video_grid_thw": video_grid_thw[videos].to(device),
+        "num_videos": num_videos,
+    }
+    if second_per_grid_ts is not None:
+        out["second_per_grid_ts"] = second_per_grid_ts[videos].to(device)
+    return out
+
+
 def _unsloth_grpo_unsplit_vision(batch):
     """Undo _unsloth_grpo_split_vision_by_sample once this step's slice has been taken, so
     the forward sees the layout the processor produced. TRL's own unsplit merges only
@@ -1204,6 +1406,9 @@ def _unsloth_grpo_unsplit_vision(batch):
         "image_sizes",
         "image_position_ids",
         "pixel_position_ids",
+        "pixel_values_videos",
+        "video_grid_thw",
+        "second_per_grid_ts",
     ):
         value = batch.get(key, None)
         if not isinstance(value, list) or len(value) == 0:
@@ -1411,6 +1616,19 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
                 _unsloth_text_only = images is None
             except NameError:
                 _unsloth_text_only = True
+        try:
+            _unsloth_video_images = images
+        except NameError:
+            _unsloth_video_images = None
+        try:
+            _unsloth_video_prompts = prompts
+        except NameError:
+            _unsloth_video_prompts = []
+        _unsloth_video_kwargs = _unsloth_grpo_video_inputs(
+            self, _unsloth_video_prompts, _unsloth_video_images
+        )
+        if _unsloth_video_kwargs is not None:
+            _unsloth_text_only = False
         if _unsloth_text_only:
             # Left pad prompt before calculation old and ref hidden states
             left_pad_tokens_per_prompt = calculate_pad_tokens_in_prompt(prompt_completion_ids, logits_to_keep, self.processing_class.pad_token_id)
@@ -1622,7 +1840,28 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
     if _target_line in function:
         function = function.replace(
             _target_line,
-            _target_line + _metadata_extraction,
+            _target_line
+            + _metadata_extraction
+            + "        prompts = _unsloth_grpo_clean_video_prompts(prompts, self)\n",
+        )
+
+    # TRL builds the logprob forward kwargs from images only; add the batch's videos.
+    _video_merge_anchor = "\n        else:\n            forward_kwargs = {}\n"
+    if _video_merge_anchor in function:
+        function = function.replace(
+            _video_merge_anchor,
+            _video_merge_anchor
+            + "        if _unsloth_video_kwargs is not None:\n"
+            + "            forward_kwargs = {**forward_kwargs, **_unsloth_video_kwargs}\n",
+            1,
+        )
+    elif "_unsloth_grpo_video_inputs(" in function:
+        function = function.replace(
+            "        if _unsloth_video_kwargs is not None:\n            _unsloth_text_only = False\n",
+            "        if _unsloth_video_kwargs is not None:\n"
+            "            raise NotImplementedError(\n"
+            "                'Unsloth: video GRPO needs TRL 0.24.0 or newer: pip install -U trl'\n"
+            "            )\n",
         )
 
     _output_extras = """
@@ -1711,7 +1950,11 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
         function = patched
 
     _mm_alignment = """
-        if "mm_token_type_ids" in forward_kwargs or "image_grid_thw" in forward_kwargs:
+        if (
+            "mm_token_type_ids" in forward_kwargs
+            or "image_grid_thw" in forward_kwargs
+            or "video_grid_thw" in forward_kwargs
+        ):
             _mm_token_type_ids = _unsloth_fix_mm_token_type_ids(
                 self.processing_class,
                 prompt_completion_ids,
@@ -1985,11 +2228,20 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 )
             pixel_values = vision_inputs.get("pixel_values", None)
             image_grid_thw = vision_inputs.get("image_grid_thw", None)
+            video_grid_thw = vision_inputs.get("video_grid_thw", None)
+            if pixel_values is None:
+                # Only a sentinel below (the chunks carry the tensors): video rows must take the
+                # vision path too, since left and sequence packing move M-RoPE video positions.
+                pixel_values = vision_inputs.get("pixel_values_videos", None)
             num_images = vision_inputs.get("num_images", None)
             # Transformers 5.x needs token_type_ids/mm_token_type_ids for some vision models.
             token_type_ids = vision_inputs.get("token_type_ids", None)
             mm_token_type_ids = vision_inputs.get("mm_token_type_ids", None)
-            if mm_token_type_ids is not None or image_grid_thw is not None:
+            if (
+                mm_token_type_ids is not None
+                or image_grid_thw is not None
+                or video_grid_thw is not None
+            ):
                 mm_token_type_ids = _unsloth_fix_mm_token_type_ids(
                     self.processing_class, input_ids, mm_token_type_ids
                 )
@@ -2848,6 +3100,12 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_accumulation
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_vision_inputs))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_split_vision_by_sample))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_unsplit_vision))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_split_videos_by_sample))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_prompt_videos))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_has_video_key))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_clean_video_prompts))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_prompt_key))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_video_inputs))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_image_cell))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_reject_grpo_image_list))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_clear_stateful_mrope))
@@ -2921,6 +3179,7 @@ def grpo_trainer_compute_loss(function_name, function):
         # Transformers 5.x needs token_type_ids/mm_token_type_ids for some vision models.
         token_type_ids = _vision_inputs.get("token_type_ids", None)
         mm_token_type_ids = _vision_inputs.get("mm_token_type_ids", None)
+        video_grid_thw = _vision_inputs.get("video_grid_thw", None)
         num_items_in_batch = inputs.get("num_items_in_batch", None)
         sampling_per_token_logps = inputs.get("sampling_per_token_logps", None)
         tool_mask = inputs.get("tool_mask", None)
@@ -2930,7 +3189,11 @@ def grpo_trainer_compute_loss(function_name, function):
         input_ids = torch.cat([prompt_ids, completion_ids], dim = 1)
         bsz, qlen = input_ids.shape
         attention_mask = torch.cat([prompt_mask, completion_mask], dim = 1)
-        if mm_token_type_ids is not None or image_grid_thw is not None:
+        if (
+            mm_token_type_ids is not None
+            or image_grid_thw is not None
+            or video_grid_thw is not None
+        ):
             mm_token_type_ids = _unsloth_fix_mm_token_type_ids(
                 self.processing_class,
                 input_ids,

@@ -62,6 +62,7 @@ import psutil
 import re
 from .models.loader_utils import (
     get_model_name,
+    sync_load_when_quantizing,
     _resolve_hub_repo_cached_file,
     _tokenizer_cache_dir,
     _tokenizer_revision,
@@ -3340,7 +3341,10 @@ def _gguf_reuses_loaded_checkpoint(model, state_dict = None):
         return False
     if state_dict is not None or getattr(model, "_unsloth_full_finetuning", False):
         return False
-    name_or_path = getattr(getattr(model, "config", None), "_name_or_path", None)
+    # A ModelScope load keeps its snapshot here, since `_name_or_path` holds the repo id (#3726).
+    name_or_path = getattr(model, "_unsloth_modelscope_snapshot", None) or getattr(
+        getattr(model, "config", None), "_name_or_path", None
+    )
     try:
         return bool(name_or_path and os.path.isdir(str(name_or_path)))
     except Exception:
@@ -3430,7 +3434,9 @@ def _gguf_model_input_directory(
 ):
     """The folder the converter reads, which is not always `save_directory`: a reused loaded checkpoint, which `unsloth_save_pretrained_gguf` assigns to `save_directory` before calling `save_to_gguf`. It matters only in the unwritable-CWD fallback, where the intermediate GGUF lands beside the reused checkpoint rather than the requested output, and the two can be on different filesystems."""
     if _gguf_reuses_loaded_checkpoint(model, state_dict):
-        return str(model.config._name_or_path)
+        return str(
+            getattr(model, "_unsloth_modelscope_snapshot", None) or model.config._name_or_path
+        )
     return save_directory
 
 
@@ -4088,7 +4094,10 @@ def unsloth_save_pretrained_gguf(
                 f"{_offloaded_parameter_hint(self)}"
             ) from e
     else:
-        original_path = getattr(self.config, "_name_or_path", None)
+        # Non-PEFT model: convert the loaded checkpoint in place when it still holds the weights to export.
+        original_path = getattr(self, "_unsloth_modelscope_snapshot", None) or getattr(
+            self.config, "_name_or_path", None
+        )
         if _gguf_reuses_loaded_checkpoint(self, state_dict):
             print(
                 f"Unsloth: Model is not a PEFT model. Using existing checkpoint at {original_path}"
@@ -5153,6 +5162,21 @@ from unsloth_zoo.llama_cpp import (
 )
 
 
+def _modelscope_base_model_name(model_name, load_in_4bit = True):
+    """`get_model_name` for a merge under UNSLOTH_USE_MODELSCOPE=1: the 16bit base comes from ModelScope, like the model it was trained on, not the Hugging Face Hub (#3726)."""
+    name = get_model_name(model_name, load_in_4bit = load_in_4bit)
+    if not name or os.path.exists(name):
+        return name
+    try:
+        from modelscope import snapshot_download
+        return snapshot_download(name)
+    except Exception as e:
+        logger.warning_once(
+            f"Unsloth: Could not download `{name}` from ModelScope ({e}), trying Hugging Face."
+        )
+        return name
+
+
 def _prewarm_base_model_hub_cache(
     model,
     save_method = "merged_16bit",
@@ -5163,6 +5187,9 @@ def _prewarm_base_model_hub_cache(
     if os.environ.get("UNSLOTH_PREWARM_HUB_CACHE", "1").strip().lower() in _false:
         return
     if IS_KAGGLE_ENVIRONMENT or IS_COLAB_ENVIRONMENT:
+        return
+    # The merge fetches the base from ModelScope, so a Hub cache copy would go unused.
+    if os.environ.get("UNSLOTH_USE_MODELSCOPE", "0") == "1":
         return
     _true = ("1", "true", "yes", "on")
     if (
@@ -5677,7 +5704,9 @@ def unsloth_generic_save(
         in_place = save_method in ("merged_4bit", "forced_merged_4bit")
         with nullcontext() if in_place else lora_relative_to_original_base(model):
             merge_and_overwrite_lora(
-                get_model_name,
+                _modelscope_base_model_name
+                if os.environ.get("UNSLOTH_USE_MODELSCOPE", "0") == "1" and not in_place
+                else get_model_name,
                 model = model,
                 tokenizer = tokenizer,
                 save_directory = save_directory,
@@ -6073,12 +6102,13 @@ def _unsloth_save_torchao_with_given_config(
 
     # The original stays offloaded until the quantized copy is saved AND released.
     try:
-        quantized_model = auto_model.from_pretrained(
-            save_directory,
-            device_map = "auto",
-            quantization_config = quantization_config,
-            **kwargs,
-        )
+        with sync_load_when_quantizing(quantization_config, None):
+            quantized_model = auto_model.from_pretrained(
+                save_directory,
+                device_map = "auto",
+                quantization_config = quantization_config,
+                **kwargs,
+            )
 
         torchao_save_directory = save_directory + "-torchao"
 
@@ -6793,13 +6823,15 @@ def _unsloth_save_torchao(
         # bfloat16 is required, and device_map="auto" falls back to CPU.
         print(f"Unsloth: Quantizing the merged model to torchao {kind}...")
         dtype_kw = {"torch_dtype": torch.bfloat16} if HAS_TORCH_DTYPE else {"dtype": torch.bfloat16}
-        quantized_model = auto_model.from_pretrained(
-            staging,
-            device_map = "auto",
-            quantization_config = TorchAoConfig(quant_type = quant_type),
-            trust_remote_code = model_trust,
-            **dtype_kw,
-        )
+        _reload_qconfig = TorchAoConfig(quant_type = quant_type)
+        with sync_load_when_quantizing(_reload_qconfig, None):
+            quantized_model = auto_model.from_pretrained(
+                staging,
+                device_map = "auto",
+                quantization_config = _reload_qconfig,
+                trust_remote_code = model_trust,
+                **dtype_kw,
+            )
         staged_tokenizer = auto_processor.from_pretrained(staging, trust_remote_code = tok_trust)
 
         quantized_model.save_pretrained(out_dir, safe_serialization = safe_serialization)

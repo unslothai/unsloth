@@ -447,7 +447,8 @@ def keep_fp8_scale_names_on_save(model) -> None:
 def _from_pretrained_own_kwargs() -> frozenset:
     from transformers import PreTrainedModel
 
-    fn = PreTrainedModel.from_pretrained
+    # unwrap: loader.py wraps from_pretrained, and the kwargs.pop scan needs transformers' source.
+    fn = inspect.unwrap(PreTrainedModel.from_pretrained)
     names = set(inspect.signature(fn).parameters)
     try:
         names |= set(re.findall(r"kwargs\.pop\(\s*[\"'](\w+)[\"']", inspect.getsource(fn)))

@@ -2405,7 +2405,7 @@ def test_install_prebuilt_falls_back_to_older_release_plan(
     monkeypatch.setattr(
         INSTALL_LLAMA_PREBUILT,
         "ensure_converter_scripts",
-        lambda install_dir, llama_tag: ensured_tags.append(llama_tag),
+        lambda install_dir, llama_tag, **kwargs: ensured_tags.append(llama_tag),
     )
 
     install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
@@ -3648,7 +3648,7 @@ def test_install_prebuilt_same_tag_upstream_failure_uses_older_unsloth_release_p
     monkeypatch.setattr(
         INSTALL_LLAMA_PREBUILT,
         "ensure_converter_scripts",
-        lambda install_dir, llama_tag: None,
+        lambda install_dir, llama_tag, **kwargs: None,
     )
 
     install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
@@ -3988,6 +3988,112 @@ def test_linux_runtime_overlay_copies_llama_tool_impl_libraries(tmp_path: Path) 
     ):
         assert (runtime_dir / name).exists(), f"missing {name}"
     assert not (runtime_dir / "llama-cli").exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "Windows st_mode carries no POSIX mode bits")
+@pytest.mark.parametrize("bundles_fit_params", [True, False])
+def test_macos_install_makes_llama_fit_params_executable(
+    tmp_path: Path, bundles_fit_params: bool
+) -> None:
+    """#12901: the guarded extractor drops archive modes, so the optional Metal
+    probe must be chmod'ed like llama-server, and bundles without it still install."""
+    install_from_archives = INSTALL_LLAMA_PREBUILT.install_from_archives
+
+    work = tmp_path / "work"
+    install = tmp_path / "install"
+    archives = tmp_path / "archives"
+    work.mkdir()
+    install.mkdir()
+    archives.mkdir()
+
+    names = ["llama-server", "llama-quantize", "libllama.dylib", "libggml.dylib"]
+    if bundles_fit_params:
+        names.append("llama-fit-params")
+    bundle = archives / "llama-b9001-bin-macos-arm64.tar.gz"
+    with tarfile.open(bundle, "w:gz") as archive:
+        for name in names:
+            add_bytes_to_tar(archive, name, f"{name}\n".encode(), mode = 0o755)
+
+    import hashlib
+
+    choice = asset_choice(
+        name = bundle.name,
+        source_label = "published",
+        install_kind = "macos-arm64",
+        expected_sha256 = hashlib.sha256(bundle.read_bytes()).hexdigest(),
+    )
+
+    orig_download = INSTALL_LLAMA_PREBUILT.download_file_verified
+
+    def fake_download(url, target_path, **kw):
+        shutil.copy2(bundle, target_path)
+
+    INSTALL_LLAMA_PREBUILT.download_file_verified = fake_download
+    try:
+        install_from_archives(choice, macos_host(), install, work)
+    finally:
+        INSTALL_LLAMA_PREBUILT.download_file_verified = orig_download
+
+    fit_params = install / "build" / "bin" / "llama-fit-params"
+    if bundles_fit_params:
+        assert stat.S_IMODE(fit_params.stat().st_mode) == 0o755
+    else:
+        assert not fit_params.exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "Windows st_mode carries no POSIX mode bits")
+@pytest.mark.parametrize("skip_path", ["no_network_check", "plan_match"])
+def test_a_reused_install_repairs_a_non_executable_llama_fit_params(
+    tmp_path: Path, monkeypatch, skip_path: str
+) -> None:
+    """#12901: installs made before the fix keep a 0644 probe, and an update on the same
+    release returns before any extraction, so the skip paths must restore the bit."""
+    M = INSTALL_LLAMA_PREBUILT
+    install_dir = tmp_path / "llama.cpp"
+    helper = install_dir / "build" / "bin" / "llama-fit-params"
+    helper.parent.mkdir(parents = True)
+    helper.write_bytes(b"probe\n")
+    helper.chmod(0o644)
+
+    host = macos_host()
+    choice = asset_choice(name = "llama-b9001-bin-macos-arm64.tar.gz", install_kind = "macos-arm64")
+    release_plan = M.InstallReleasePlan(
+        requested_tag = "latest",
+        llama_tag = "b9001",
+        release_tag = "release-1",
+        attempts = [choice],
+        approved_checksums = release_checksums((choice.name, choice.expected_sha256, UPSTREAM)),
+    )
+    route = types.SimpleNamespace(
+        host = host, backend = "auto", published_repo = "unslothai/llama.cpp", published_release_tag = ""
+    )
+    monkeypatch.setattr(M, "route_backend_request", lambda **_k: route)
+    monkeypatch.setattr(
+        M,
+        "existing_install_current_without_plan",
+        lambda *_a, **_k: skip_path == "no_network_check",
+    )
+    monkeypatch.setattr(
+        M,
+        "select_backend_install",
+        lambda **_k: M.BackendSelection(
+            backend = "auto",
+            host = host,
+            published_repo = "unslothai/llama.cpp",
+            published_release_tag = "",
+            requested_tag = "latest",
+            release_plans = [release_plan],
+            persist_llama_backend = None,
+            persist_rocm_gfx = None,
+        ),
+    )
+    monkeypatch.setattr(M, "existing_install_matches_plan", lambda *_a, **_k: True)
+    monkeypatch.setattr(M, "diffusion_visual_server_backfill_needed", lambda *_a, **_k: False)
+    monkeypatch.setattr(M, "sync_marker_selection", lambda *_a, **_k: None)
+
+    M.install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
+
+    assert stat.S_IMODE(helper.stat().st_mode) == 0o755
 
 
 def test_python_runtime_dirs_covers_cu13_and_library_bin(monkeypatch, tmp_path: Path) -> None:
@@ -4977,6 +5083,26 @@ def test_release_listing_failure_keeps_a_complete_existing_install(tmp_path, mon
     install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
 
     assert (install_dir / "llama-server").exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "Windows st_mode carries no POSIX mode bits")
+def test_an_offline_keep_repairs_a_non_executable_llama_fit_params(tmp_path, monkeypatch):
+    """#12901: an update that cannot reach the release keeps the tree, so it must repair the probe too."""
+
+    def boom(*args, **kwargs):
+        raise urllib.error.URLError("connection reset")
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_fork_manifest_release_plans", boom)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "detect_host", linux_host)
+
+    install_dir = _complete_existing_llama_install(tmp_path)
+    helper = install_dir / "build" / "bin" / "llama-fit-params"
+    helper.write_bytes(b"probe\n")
+    helper.chmod(0o644)
+
+    install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
+
+    assert stat.S_IMODE(helper.stat().st_mode) == 0o755
 
 
 def test_release_listing_failure_does_not_keep_a_non_executable_install(tmp_path, monkeypatch):

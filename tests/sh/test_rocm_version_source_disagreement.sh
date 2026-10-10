@@ -64,6 +64,9 @@ _FAKE_PROC_NV_DIR=$(mktemp -d)
     echo ""
     sed -n '/^_detect_rocm_version_tag()/,/^}/p' "$INSTALL_SH"
     echo ""
+    sed -n '/^_ROCM_BNB_GENERIC_FLOOR_TAG=/p' "$INSTALL_SH"
+    sed -n '/^_rocm_bnb_compatible_generic_tag()/,/^}/p' "$INSTALL_SH"
+    echo ""
     sed -n '/^get_torch_index_url()/,/^}/p' "$INSTALL_SH"
     echo ""
     sed -n '/^_radeon_host_ver_not_older()/,/^}/p' "$INSTALL_SH"
@@ -77,7 +80,7 @@ _FAKE_PROC_NV_DIR=$(mktemp -d)
 # A renamed helper would otherwise fail every ROCm assertion as a plain "cpu".
 for _fn in _rocm_tag_from_amd_smi _rocm_tag_from_version_file _rocm_tag_from_hipconfig \
            _rocm_tag_from_dpkg _rocm_tag_from_rpm _highest_rocm_tag \
-           _detect_rocm_version_tag get_torch_index_url get_radeon_wheel_url \
+           _detect_rocm_version_tag _rocm_bnb_compatible_generic_tag get_torch_index_url get_radeon_wheel_url \
            _radeon_host_ver_not_older; do
     if ! grep -q "^$_fn()" "$_FUNC_FILE"; then
         echo "  FAIL: install.sh no longer defines $_fn() at column 0"
@@ -337,7 +340,7 @@ echo "=== test_rocm_version_source_disagreement ==="
 reset_sources
 add_hipconfig "5.7.31921-0"
 add_dpkg_hsa_runtime "1:6.1.2-1"
-assert_eq "Debian 13 hipconfig 5.7 + HSA runtime 6.1 -> rocm6.1" "$_BASE/rocm6.1" "$(run_index)"
+assert_eq "Debian 13 hipconfig 5.7 + HSA runtime 6.1 -> automatic rocm6.4 floor" "$_BASE/rocm6.4" "$(run_index)"
 _warn=$(run_warnings)
 case "$_warn" in
     *"require ROCm 6.0+"*) assert_eq "the same host emits no 6.0+ gate warning" "" "$_warn" ;;
@@ -354,8 +357,8 @@ reset_sources
 add_dpkg_packages \
     "libhsa-runtime64-1|installed|6.4.3+dfsg-4" \
     "rocm-core|installed|1:6.1.2-2"
-assert_eq "installed rocm-core outranks a HIGHER distro HSA reading -> rocm6.1" \
-    "$_BASE/rocm6.1" "$(run_index)"
+assert_eq "installed rocm-core outranks a HIGHER distro HSA reading -> automatic rocm6.4 floor" \
+    "$_BASE/rocm6.4" "$(run_index)"
 assert_eq "and the outranked HSA reading is not named as a disagreement" "" "$(run_warnings)"
 
 reset_sources
@@ -368,18 +371,18 @@ assert_eq "Ubuntu + AMD repo warns about nothing" "" "$(run_warnings)"
 reset_sources
 add_hipconfig "5.7.31921-0"
 add_dpkg_hsa_runtime "1:6.1.2-1"
-assert_eq "no rocm-core, so the installed HSA runtime still votes -> rocm6.1" \
-    "$_BASE/rocm6.1" "$(run_index)"
+assert_eq "no rocm-core, so the installed HSA runtime still votes -> automatic rocm6.4 floor" \
+    "$_BASE/rocm6.4" "$(run_index)"
 
 reset_sources
 add_hipconfig "5.7.31921-0"
 add_version_file "6.1.2-98"
-assert_eq "hipconfig 5.7 + version file 6.1 -> rocm6.1" "$_BASE/rocm6.1" "$(run_index)"
+assert_eq "hipconfig 5.7 + version file 6.1 -> automatic rocm6.4 floor" "$_BASE/rocm6.4" "$(run_index)"
 
 reset_sources
 add_hipconfig "5.7.31921-0"
 add_rpm_rocm_core "6.3.0"
-assert_eq "hipconfig 5.7 + rocm-core 6.3 (rpm) -> rocm6.3" "$_BASE/rocm6.3" "$(run_index)"
+assert_eq "hipconfig 5.7 + rocm-core 6.3 (rpm) -> automatic rocm6.4 floor" "$_BASE/rocm6.4" "$(run_index)"
 
 reset_sources
 add_amd_smi "6.1.0"
@@ -398,30 +401,30 @@ assert_eq "agreeing sources emit no disagreement breadcrumb" "" "$(run_warnings)
 reset_sources
 add_hipconfig "6.1.40093-0"
 add_dpkg_rocm_core "1:7.0.0-1" config-files
-assert_eq "config-files rocm-core 7.0 on a 6.1 host -> rocm6.1, not rocm7.0" \
-    "$_BASE/rocm6.1" "$(run_index)"
+assert_eq "config-files rocm-core 7.0 on a 6.1 host -> automatic rocm6.4 floor, not rocm7.0" \
+    "$_BASE/rocm6.4" "$(run_index)"
 assert_eq "the dead dpkg entry is not even named as a disagreement" "" "$(run_warnings)"
 
 reset_sources
 add_hipconfig "6.1.40093-0"
 add_dpkg_hsa_runtime "1:7.0.0-1" config-files
-assert_eq "config-files HSA runtime 7.0 on a 6.1 host -> rocm6.1, not rocm7.0" \
-    "$_BASE/rocm6.1" "$(run_index)"
+assert_eq "config-files HSA runtime 7.0 on a 6.1 host -> automatic rocm6.4 floor, not rocm7.0" \
+    "$_BASE/rocm6.4" "$(run_index)"
 assert_eq "the dead HSA entry is not named as a disagreement" "" "$(run_warnings)"
 
 # Only the dpkg status word differs from the config-files cases above, keeping them non-vacuous.
 reset_sources
 add_hipconfig "5.7.31921-0"
 add_dpkg_rocm_core "1:6.1.2-1" installed
-assert_eq "installed rocm-core 6.1 still beats hipconfig 5.7 -> rocm6.1" \
-    "$_BASE/rocm6.1" "$(run_index)"
+assert_eq "installed rocm-core 6.1 still beats hipconfig 5.7 -> automatic rocm6.4 floor" \
+    "$_BASE/rocm6.4" "$(run_index)"
 
 for _dead in config-files half-installed unpacked half-configured; do
     reset_sources
     add_hipconfig "6.1.40093-0"
     add_dpkg_rocm_core "1:7.2.0-1" "$_dead"
-    assert_eq "dpkg state '$_dead' at 7.2 does not select wheels -> rocm6.1" \
-        "$_BASE/rocm6.1" "$(run_index)"
+    assert_eq "dpkg state '$_dead' at 7.2 does not select wheels -> automatic rocm6.4 floor" \
+        "$_BASE/rocm6.4" "$(run_index)"
 done
 
 # For the other four sources a HIGH reading is taken as truth, capped by tag normalisation.
@@ -495,10 +498,13 @@ assert_contains "unparseable sources are treated as no version at all" \
 reset_sources
 add_hipconfig "0.0.0"
 add_version_file "6.2.0-1"
-assert_eq "major-0 source ignored, 6.2 wins -> rocm6.2" "$_BASE/rocm6.2" "$(run_index)"
+assert_eq "major-0 source ignored, 6.2 wins -> automatic rocm6.4 floor" "$_BASE/rocm6.4" "$(run_index)"
 
-# PyTorch publishes major.minor leaves only; 6.5+ clips to the last 6.x set, 7.3+ to the latest.
-for _case in "6.0.2:rocm6.0" "6.1.3:rocm6.1" "6.2.4:rocm6.2" "6.3.1:rocm6.3" \
+# ── 12. Supported-tag normalisation and the automatic BNB floor ─────────────
+# PyTorch publishes major.minor index leaves only, so patch levels normalise;
+# automatic generic 6.0-6.3 hosts floor to rocm6.4, while 6.5+ clips to the
+# last 6.x wheel set and 7.3+ caps to the latest known.
+for _case in "6.0.2:rocm6.4" "6.1.3:rocm6.4" "6.2.4:rocm6.4" "6.3.1:rocm6.4" \
              "6.4.1:rocm6.4" "7.0.1:rocm7.0" "7.1.0:rocm7.1" "7.2.1:rocm7.2" \
              "6.5.0:rocm6.4" "6.9.0:rocm6.4" "7.3.0:rocm7.2" "8.0.0:rocm7.2"; do
     _ver="${_case%%:*}"
@@ -528,7 +534,7 @@ reset_sources
 add_amd_smi_line "N/A"
 add_version_file "6.1.3-42"
 assert_eq "amd-smi N/A beside amdgpu 6.10 does not outvote a real 6.1" \
-    "$_BASE/rocm6.1" "$(run_index)"
+    "$_BASE/rocm6.4" "$(run_index)"
 
 # rpm -q now always runs and can block forever on the rpmdb, so it is bounded and a
 # timed-out source declines to answer.

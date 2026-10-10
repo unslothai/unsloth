@@ -276,7 +276,9 @@ from .import_fixes import (
     fix_transformers5_legacy_config_types,
     fix_transformers5_image_processing_reexports,
     fix_transformers_composite_prefix_renaming,
+    fix_transformers_bnb_prequantized_save,
     fix_transformers_fully_masked_rows,
+    fix_transformers_flash_attention_mrope_packed_sequence,
     fix_transformers_untrusted_config_fields,
     fix_transformers_chat_template_path_traversal,
     fix_transformers_chunked_mask_block_sequence_ids,
@@ -337,6 +339,7 @@ fix_transformers5_legacy_config_types()
 fix_transformers5_bare_annotation_configs()
 # Probe-gated; before any model import so plain transformers.generate is covered too.
 fix_transformers_fully_masked_rows()
+fix_transformers_flash_attention_mrope_packed_sequence()
 fix_transformers_chunked_mask_block_sequence_ids()
 fix_transformers_flex_mask_graph_breaks()
 # CVE-2026-4372 / 5241 / 9856, no-ops once transformers carries the fix; before any config loads.
@@ -344,8 +347,14 @@ fix_transformers_untrusted_config_fields()
 fix_transformers_chat_template_path_traversal()
 # Probe-gated; before any checkpoint load so plain from_pretrained keeps bnb quant_state too.
 fix_transformers_composite_prefix_renaming()
-# Only call, and only after the repair above: warning earlier would tell users to downgrade from a
-# now-working version. Must follow disable_torchaudio_if_cuda_mismatched: this check imports transformers.
+fix_transformers_bnb_prequantized_save()
+# After the repair above, never before it, and this is the ONLY call: on exactly the releases
+# the repair covers, warning first tells users to downgrade away from a version that now works,
+# and a second call cannot retract a warning already logged. The check reads the live attribute,
+# so a repair that declined to install still warns. Being this late also keeps it below
+# `disable_torchaudio_if_cuda_mismatched`, which matters because this is the only check here
+# that IMPORTS transformers rather than reading its metadata.
+# A run that loads no pre-quantized multimodal checkpoint never fails either way.
 check_transformers_prequantized_vlm_quant_state()
 del check_transformers_prequantized_vlm_quant_state
 # Probe-gated; before any config is built so llama.py's rope delegation retry keeps the RoPE base.
@@ -421,6 +430,7 @@ del fix_transformers5_legacy_config_types
 del fix_transformers_untrusted_config_fields
 del fix_transformers_chat_template_path_traversal
 del fix_transformers_rope_scaling_drops_theta
+del fix_transformers_bnb_prequantized_save
 del fix_transformers_fp8_modulelist_experts
 del fix_transformers_fp8_unscaled_checkpoint_linears
 del fix_transformers_validate_rope_ignore_keys
@@ -643,6 +653,12 @@ elif DEVICE_TYPE == "xpu":
         bnb = None
 
     pass
+
+# After the bitsandbytes import above, never before: it only patches an already-imported bitsandbytes.
+from .import_fixes import patch_bitsandbytes_paged_optimizer_resume
+
+patch_bitsandbytes_paged_optimizer_resume()
+del patch_bitsandbytes_paged_optimizer_resume
 
 from .models import *
 from .models import __version__

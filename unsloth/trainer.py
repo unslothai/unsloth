@@ -33,7 +33,7 @@ from unsloth.utils import (
     enable_padding_free_metadata,
     enable_sample_packing,
 )
-from unsloth.utils.packing import patch_hybrid_linear_attention_varlen
+from unsloth.utils.packing import _stateful_mixer_kind, patch_hybrid_linear_attention_varlen
 from unsloth_zoo.training_utils import (
     unsloth_train as _unsloth_train,
 )
@@ -161,6 +161,18 @@ def _bound_splits(original_init, args, kwargs):
     except Exception:
         return kwargs.get("train_dataset"), kwargs.get("eval_dataset")
     return bound.arguments.get("train_dataset"), bound.arguments.get("eval_dataset")
+
+
+def _wants_eval_logits(original_init, args, kwargs) -> bool:
+    """compute_metrics / preprocess_logits_for_metrics set UNSLOTH_RETURN_LOGITS, but only inside the
+    wrapped __init__, after the padding-free decision: read them here so they block it as the flag does."""
+    try:
+        bound = inspect.signature(original_init).bind_partial(None, *args, **kwargs).arguments
+    except Exception:
+        bound = kwargs
+    return any(
+        bound.get(name) is not None for name in ("compute_metrics", "preprocess_logits_for_metrics")
+    )
 
 
 def _cap_is_enforceable_without_padding_free(config, train, evals) -> bool:
@@ -448,13 +460,16 @@ def _resolve_string_model_class(model_name, model_config, config_arg):
         if isinstance(resolved, type):
             return resolved
 
-    # Remote code LAST: resolving `auto_map` executes repo code. The grant is read by membership, like
-    # `_resolve_string_model_config`, so an explicit None stays falsy.
+    # Remote code LAST: resolving `auto_map` imports and executes a module from the
+    # repo, and a checkpoint can carry a native `architectures` alongside it, so trying
+    # it first would run code nothing else in the stack would have run.
+    #
+    # The grant is read by membership, as `_resolve_string_model_config` reads it, so an
+    # explicit `model_init_kwargs["trust_remote_code"] = None` keeps its falsy meaning.
+    # Disagreeing with that function would execute a module under a grant the config
+    # load itself did not accept.
+    trust_remote_code = _string_model_trust_remote_code(config_arg)
     init_kwargs = getattr(config_arg, "model_init_kwargs", None) or {}
-    if "trust_remote_code" in init_kwargs:
-        trust_remote_code = init_kwargs["trust_remote_code"]
-    else:
-        trust_remote_code = getattr(config_arg, "trust_remote_code", None)
 
     auto_map = getattr(model_config, "auto_map", None) or {}
     if not trust_remote_code or not isinstance(auto_map, dict):
@@ -490,6 +505,13 @@ def _resolve_string_model_class(model_name, model_config, config_arg):
     return None
 
 
+def _string_model_trust_remote_code(config_arg):
+    init_kwargs = getattr(config_arg, "model_init_kwargs", None) or {}
+    if "trust_remote_code" in init_kwargs:
+        return init_kwargs["trust_remote_code"]
+    return getattr(config_arg, "trust_remote_code", None)
+
+
 def _is_hybrid_linear_attention_model(model) -> bool:
     """Detect models mixing linear-attention / state-space mixers (gated-delta,
     Mamba-style) with a causal conv1d, e.g. Qwen3.5 / Qwen3-Next. Packing and
@@ -513,26 +535,34 @@ def _is_hybrid_linear_attention_model(model) -> bool:
         if any(hasattr(config, marker) for marker in _HYBRID_CONFIG_MARKERS):
             return True
 
-    named_modules = getattr(model, "named_modules", None)
-    if named_modules is None:
-        return False
-    seen = set()
-    for _, module in named_modules():
-        if id(module) in seen:
-            continue
-        seen.add(id(module))
-        cls = type(module).__name__
-        if not (
-            cls.endswith("GatedDeltaNet") or "LinearAttention" in cls or cls.endswith("Mamba2Mixer")
-        ):
-            continue
-        has_recurrent = any(
-            hasattr(module, attr)
-            for attr in ("chunk_gated_delta_rule", "recurrent_gated_delta_rule", "A_log")
+    # Module-level: any recurrent / causal-conv mixer, whether or not the varlen shim can serve it.
+    modules = getattr(model, "modules", None)
+    if modules is None:
+        return _config_has_stateful_mixer(
+            getattr(model, "config", None),
+            trust_remote_code = bool(getattr(model, "trust_remote_code", False)),
         )
-        if has_recurrent and hasattr(module, "conv1d"):
-            return True
-    return False
+    return any(_stateful_mixer_kind(module) is not None for module in modules())
+
+
+def _config_has_stateful_mixer(config, trust_remote_code = False) -> bool:
+    # A string model= only has its config here: build it on the meta device and classify its modules.
+    if config is None or not hasattr(config, "model_type"):
+        return False
+    try:
+        import torch
+        from transformers import AutoModel, AutoModelForCausalLM
+        with torch.device("meta"):
+            try:
+                model = AutoModelForCausalLM.from_config(
+                    config, trust_remote_code = trust_remote_code
+                )
+            except Exception:
+                model = AutoModel.from_config(config, trust_remote_code = trust_remote_code)
+    except Exception:
+        # Unclassifiable remote code may hide a recurrent mixer: fail closed.
+        return bool(trust_remote_code and getattr(config, "auto_map", None))
+    return any(_stateful_mixer_kind(module) is not None for module in model.modules())
 
 
 def _resolve_string_model_config(model_name, config_arg):
@@ -640,12 +670,20 @@ class UnslothTrainingArguments(TrainingArguments):
         embedding_learning_rate: float = None,
         q_galore_config: Optional[QGaloreConfig] = None,
         *args,
+        loraplus_lr_ratio: Optional[float] = None,
         **kwargs,
     ):
+        # LoRA+ (arXiv 2402.12354): lora_B trains at learning_rate * loraplus_lr_ratio; 16 is the paper's pick.
+        if loraplus_lr_ratio is not None and not loraplus_lr_ratio > 0:
+            raise ValueError(
+                f"Unsloth: loraplus_lr_ratio must be a positive number, got {loraplus_lr_ratio!r}."
+            )
         self.q_galore_config = q_galore_config
         self.embedding_learning_rate = embedding_learning_rate
+        self.loraplus_lr_ratio = loraplus_lr_ratio
         super().__init__(*args, **kwargs)
         self.embedding_learning_rate = embedding_learning_rate
+        self.loraplus_lr_ratio = loraplus_lr_ratio
         if self.eval_steps is not None and self.eval_strategy != "steps":
             warnings.warn(
                 f"Unsloth: `eval_steps = {self.eval_steps}` is ignored because `eval_strategy` is "
@@ -653,6 +691,25 @@ class UnslothTrainingArguments(TrainingArguments):
                 'Set `eval_strategy = "steps"` to evaluate every `eval_steps` steps.',
                 stacklevel = 2,
             )
+
+
+def _embedding_weight_ids(model):
+    """Full finetuning has no modules_to_save copy, so the trainable embedding and lm_head
+    are found by identity; matching on the PEFT name alone trained them at the base lr."""
+    embedding_ids = set()
+    for owner in (model, getattr(model, "module", None)):
+        for getter in ("get_input_embeddings", "get_output_embeddings"):
+            try:
+                weight = getattr(getattr(owner, getter)(), "weight", None)
+            except Exception:
+                continue
+            if weight is not None:
+                embedding_ids.add(id(weight))
+        # transformers 4.x's default get_output_embeddings returns None even with an lm_head.
+        weight = getattr(getattr(owner, "lm_head", None), "weight", None)
+        if weight is not None:
+            embedding_ids.add(id(weight))
+    return embedding_ids
 
 
 def _create_unsloth_optimizer(
@@ -663,9 +720,13 @@ def _create_unsloth_optimizer(
     require_embedding_match = False,
     weight_decay = 0.0,
     decay_parameter_names = None,
+    loraplus_lr_ratio = None,
 ):
     lr = optimizer_kwargs["lr"]
-    # transformers puts weight_decay in optimizer_kwargs only for schedule-free and stable_adamw.
+    if embedding_lr is None:
+        embedding_lr = lr
+    # transformers puts weight_decay in optimizer_kwargs only for schedule-free and stable_adamw,
+    # so reading it from there alone meant the 0.0 default always won (Trainer.create_optimizer).
     weight_decay = optimizer_kwargs.get("weight_decay", weight_decay)
     # Trainer.get_decay_parameter_names excludes biases and norms; the default here decays all.
     if decay_parameter_names is None:
@@ -677,18 +738,43 @@ def _create_unsloth_optimizer(
         "embeddings": {},
     }
 
+    # A subset of non_embeddings, not its own dict: legacy resume replays the old two-group order.
+    lora_plus_names = set()
+
+    embedding_ids = _embedding_weight_ids(model)
+
+    # Name-only classification of releases before the identity match, kept to resume their checkpoints.
+    previous_groups = {"non_embeddings": {}, "embeddings": {}}
     for name, param in model.named_parameters():
         if not param.requires_grad:
             continue
-        if name.endswith("modules_to_save.default.weight"):
-            partial_name = name[: -len(".modules_to_save.default.weight")]
+        by_name = name.endswith("modules_to_save.default.weight")
+        previous_groups["embeddings" if by_name else "non_embeddings"][name] = param
+        if by_name or id(param) in embedding_ids:
+            partial_name = name.removesuffix(".modules_to_save.default.weight")
+            partial_name = partial_name.removesuffix(".weight")
             partial_name = partial_name[partial_name.rfind(".") + 1 :]
-            print(
-                f"Unsloth: Setting lr = {embedding_lr:.2e} instead of {lr:.2e} for {partial_name}."
-            )
+            if embedding_lr != lr:
+                print(
+                    f"Unsloth: Setting lr = {embedding_lr:.2e} instead of {lr:.2e} for {partial_name}."
+                )
             param_groups["embeddings"][name] = param
         else:
             param_groups["non_embeddings"][name] = param
+            if loraplus_lr_ratio is not None and ".lora_B." in name:
+                lora_plus_names.add(name)
+
+    if loraplus_lr_ratio is not None:
+        if not lora_plus_names:
+            raise ValueError(
+                "Unsloth: loraplus_lr_ratio was set but no trainable LoRA B parameter was found, "
+                "so LoRA+ would do nothing. Add LoRA adapters with get_peft_model, train "
+                "without FSDP1, or drop loraplus_lr_ratio."
+            )
+        print(
+            f"Unsloth: LoRA+ enabled, lora_B lr = {lr * loraplus_lr_ratio:.2e} "
+            f"({loraplus_lr_ratio:g} x {lr:.2e}) for {len(lora_plus_names)} tensors."
+        )
 
     if require_embedding_match and not param_groups["embeddings"]:
         # FSDP1 renames parameters, so modules_to_save matches nothing and the embedding lr would be dropped.
@@ -700,27 +786,47 @@ def _create_unsloth_optimizer(
             "without FSDP, or drop embedding_learning_rate."
         )
 
-    # Drop empty groups: AdafactorSchedule.get_lr reads params[0] unguarded, and a group count change
-    # breaks resume.
-    optimizer_grouped_parameters = []
-    group_roles = []
-    for group, group_lr in (("non_embeddings", lr), ("embeddings", embedding_lr)):
-        for decays in (True, False):
-            params = [
-                param
-                for name, param in param_groups[group].items()
-                if (name in decay_parameter_names) is decays
-            ]
-            if not params:
-                continue
-            optimizer_grouped_parameters.append(
-                {
-                    "params": params,
-                    "weight_decay": weight_decay if decays else 0.0,
-                    "lr": group_lr,
-                }
-            )
-            group_roles.append(group)
+    # Empty groups are dropped (a LoRA run trains no bias and no norm, so both no-decay ones are
+    # empty): AdafactorSchedule.get_lr reads group["params"][0] unguarded, and load_state_dict
+    # rejects a checkpoint whose group count differs, which would break resume.
+    def _layout(groups):
+        grouped_parameters, roles = [], []
+        for group, source, group_lr in (
+            ("non_embeddings", "non_embeddings", lr),
+            ("lora_plus", "non_embeddings", lr * (loraplus_lr_ratio or 1.0)),
+            ("embeddings", "embeddings", embedding_lr),
+        ):
+            for decays in (True, False):
+                params = [
+                    param
+                    for name, param in groups[source].items()
+                    if (name in decay_parameter_names) is decays
+                    and (group == "lora_plus") is (name in lora_plus_names)
+                ]
+                if not params:
+                    continue
+                grouped_parameters.append(
+                    {
+                        "params": params,
+                        "weight_decay": weight_decay if decays else 0.0,
+                        "lr": group_lr,
+                    }
+                )
+                roles.append(group)
+        return grouped_parameters, roles
+
+    optimizer_grouped_parameters, group_roles = _layout(param_groups)
+    previous_layout = None
+    if len(previous_groups["embeddings"]) != len(param_groups["embeddings"]):
+        previous_grouped, _ = _layout(previous_groups)
+        previous_layout = (
+            [param for group in previous_grouped for param in group["params"]],
+            [len(group["params"]) for group in previous_grouped],
+            [group["lr"] for group in previous_grouped],
+        )
+        # Sizes alone cannot tell the layouts apart when only embeddings train: mark this one.
+        for group in optimizer_grouped_parameters:
+            group[_EMBEDDING_SPLIT_MARKER] = True
     optimizer = optimizer_cls(optimizer_grouped_parameters, **optimizer_kwargs)
     # Same as Trainer.create_optimizer: keep embedding optimizer state in 32 bits under 8-bit bnb.
     if "bitsandbytes" in str(optimizer_cls) and optimizer_kwargs.get("optim_bits", None) == 8:
@@ -733,10 +839,11 @@ def _create_unsloth_optimizer(
                 manager.register_module_override(module, "weight", {"optim_bits": 32})
     _install_legacy_resume(
         optimizer,
-        legacy_params = list(param_groups["non_embeddings"].values())
-        + list(param_groups["embeddings"].values()),
-        legacy_sizes = (len(param_groups["non_embeddings"]), len(param_groups["embeddings"])),
+        legacy_params = list(previous_groups["non_embeddings"].values())
+        + list(previous_groups["embeddings"].values()),
+        legacy_sizes = (len(previous_groups["non_embeddings"]), len(previous_groups["embeddings"])),
         group_roles = group_roles,
+        previous_layout = previous_layout,
     )
     return optimizer
 
@@ -757,6 +864,9 @@ def _migrate_legacy_optimizer_state(
     """
     saved_groups = state_dict.get("param_groups") or []
     if len(saved_groups) != len(_LEGACY_ROLE_ORDER):
+        return None
+    # A LoRA+ group has no legacy counterpart to take hyperparameters from.
+    if any(role not in _LEGACY_ROLE_ORDER for role in group_roles):
         return None
     if tuple(len(g["params"]) for g in saved_groups) != tuple(legacy_sizes):
         return None
@@ -795,6 +905,59 @@ def _migrate_legacy_optimizer_state(
     return {"state": remapped_state, "param_groups": migrated_groups}
 
 
+_EMBEDDING_SPLIT_MARKER = "unsloth_embedding_split"
+
+
+def _migrate_previous_layout_state(
+    state_dict, optimizer, previous_params, previous_sizes, previous_lrs
+):
+    """A checkpoint from before full finetuning embeddings got their own groups, or None.
+
+    Progress is read against the old group's built lr, not initial_lr, which ReduceLROnPlateau never sets.
+    """
+    saved_groups = state_dict.get("param_groups") or []
+    if any(g.get(_EMBEDDING_SPLIT_MARKER) for g in saved_groups):
+        return None
+    if [len(g["params"]) for g in saved_groups] != list(previous_sizes):
+        return None
+    saved_ids = [i for g in saved_groups for i in g["params"]]
+    new_index_of_param = {
+        id(param): index
+        for index, param in enumerate(p for g in optimizer.param_groups for p in g["params"])
+    }
+    if not (len(set(saved_ids)) == len(new_index_of_param) == len(previous_params)):
+        return None
+    param_of_saved_id = dict(zip(saved_ids, previous_params))
+    saved_index_of_param = {
+        id(param_of_saved_id[i]): index
+        for index, group in enumerate(saved_groups)
+        for i in group["params"]
+    }
+    try:
+        remapped_state = {
+            new_index_of_param[id(param_of_saved_id[saved_id])]: value
+            for saved_id, value in state_dict["state"].items()
+        }
+    except KeyError:
+        return None
+
+    cursor, migrated_groups = 0, []
+    for group in optimizer.param_groups:
+        index = saved_index_of_param[id(group["params"][0])]
+        saved = saved_groups[index]
+        base_lr = group.get("initial_lr", group["lr"])
+        progress = saved["lr"] / previous_lrs[index] if previous_lrs[index] else 1.0
+        migrated = {key: value for key, value in saved.items() if key != "params"}
+        migrated.update(lr = base_lr * progress, weight_decay = group["weight_decay"])
+        if "initial_lr" in migrated:
+            migrated["initial_lr"] = base_lr
+        migrated[_EMBEDDING_SPLIT_MARKER] = True
+        migrated["params"] = list(range(cursor, cursor + len(group["params"])))
+        migrated_groups.append(migrated)
+        cursor += len(group["params"])
+    return {"state": remapped_state, "param_groups": migrated_groups}
+
+
 def _unsloth_base_optimizer(optimizer):
     """The optimizer we built, through any wrapper, or None.
 
@@ -828,7 +991,16 @@ def _install_legacy_scheduler_resume(scheduler, optimizer):
     # torch.save cannot pickle it.
     def load_state_dict(self, state_dict):
         state_dict = dict(state_dict)
-        # Gated on a just-migrated optimizer: length alone cannot tell legacy groups from current ones.
+        if getattr(built, "_unsloth_loaded_previous", False):
+            # Per-group lists of the old layout: keep the ones built from this optimizer.
+            for key in ("base_lrs", "_last_lr", "min_lrs", "max_lrs", "_init_lrs"):
+                state_dict.pop(key, None)
+            base.load_state_dict(self, state_dict)
+            self._last_lr = [group["lr"] for group in self.optimizer.param_groups]
+            return
+        # Gated on the optimizer having just migrated: length alone cannot tell a legacy
+        # [ordinary, embedding] pair from two current non-embedding groups, and remapping
+        # the latter collapses distinct per-group min_lr floors onto the first.
         if not getattr(built, "_unsloth_loaded_legacy", False):
             return base.load_state_dict(self, state_dict)
         for key in ("base_lrs", "_last_lr", "min_lrs"):
@@ -846,7 +1018,13 @@ def _install_legacy_scheduler_resume(scheduler, optimizer):
     return scheduler
 
 
-def _install_legacy_resume(optimizer, legacy_params, legacy_sizes, group_roles):
+def _install_legacy_resume(
+    optimizer,
+    legacy_params,
+    legacy_sizes,
+    group_roles,
+    previous_layout = None,
+):
     """Let `load_state_dict` accept a checkpoint written before the decay split."""
     optimizer._unsloth_group_roles = list(group_roles)
     original = optimizer.load_state_dict
@@ -854,7 +1032,20 @@ def _install_legacy_resume(optimizer, legacy_params, legacy_sizes, group_roles):
     @wraps(original)
     def load_state_dict(state_dict):
         saved = state_dict.get("param_groups") or []
-        # Every legacy checkpoint: torch takes group hyperparameters from the saved dict.
+        previous = None
+        if previous_layout is not None:
+            previous = _migrate_previous_layout_state(state_dict, optimizer, *previous_layout)
+        optimizer._unsloth_loaded_previous = previous is not None
+        if previous is not None:
+            print(
+                "Unsloth: moving the embeddings of a checkpoint saved before full finetuning "
+                "used embedding_learning_rate into their own optimizer group."
+            )
+            optimizer._unsloth_loaded_legacy = False
+            return original(previous)
+        # Every recognisably legacy checkpoint, not only reshaped ones: torch takes group
+        # hyperparameters from the saved dict, so a LoRA resume, where the layouts coincide,
+        # would otherwise reload the 0.0 this change exists to correct.
         migrated = _migrate_legacy_optimizer_state(
             state_dict, optimizer, legacy_params, legacy_sizes, group_roles
         )
@@ -905,21 +1096,29 @@ class UnslothTrainer(SFTTrainer):
             )
 
         embedding_learning_rate = getattr(self.args, "embedding_learning_rate", None)
-        if embedding_learning_rate is None:
+        loraplus_lr_ratio = getattr(self.args, "loraplus_lr_ratio", None)
+        if embedding_learning_rate is None and loraplus_lr_ratio is None:
             if model is not None and _super_create_optimizer_takes_model():
                 return super().create_optimizer(model)
             return super().create_optimizer()
 
         if self.optimizer is None:
-            optimizer_cls, optimizer_kwargs = SFTTrainer.get_optimizer_cls_and_kwargs(self.args)
+            # Trainer.create_optimizer prefers a user optimizer_cls_and_kwargs over args.optim.
+            custom = getattr(self, "optimizer_cls_and_kwargs", None)
+            if custom is not None:
+                optimizer_cls, optimizer_kwargs = custom[0], dict(custom[1])
+                optimizer_kwargs.setdefault("lr", self.args.learning_rate)
+            else:
+                optimizer_cls, optimizer_kwargs = SFTTrainer.get_optimizer_cls_and_kwargs(self.args)
             self.optimizer = _create_unsloth_optimizer(
                 target_model,
                 optimizer_cls,
                 optimizer_kwargs,
                 embedding_learning_rate,
-                require_embedding_match = model is not None,
+                require_embedding_match = model is not None and embedding_learning_rate is not None,
                 weight_decay = self.args.weight_decay,
                 decay_parameter_names = self.get_decay_parameter_names(target_model),
+                loraplus_lr_ratio = loraplus_lr_ratio,
             )
         return self.optimizer
 
@@ -979,6 +1178,7 @@ class UnslothTrainer(SFTTrainer):
 
         if embedding_lr is not None:
             param_to_name = {id(p): name for name, p in model.named_parameters()}
+            embedding_ids = _embedding_weight_ids(model)
 
             new_groups = []
             for group in param_groups:
@@ -989,8 +1189,11 @@ class UnslothTrainer(SFTTrainer):
                 other_params = []
                 for p in group["params"]:
                     name = param_to_name.get(id(p))
-                    if name and name.endswith("modules_to_save.default.weight"):
-                        partial_name = name[: -len(".modules_to_save.default.weight")]
+                    if name and (
+                        name.endswith("modules_to_save.default.weight") or id(p) in embedding_ids
+                    ):
+                        partial_name = name.removesuffix(".modules_to_save.default.weight")
+                        partial_name = partial_name.removesuffix(".weight")
                         partial_name = partial_name[partial_name.rfind(".") + 1 :]
                         print(
                             f"Unsloth: Setting lr = {embedding_lr:.2e} instead of {lr:.2e} for {partial_name}."
@@ -1306,12 +1509,16 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 is_vlm = _is_vlm_config(model_config, model_types)
                 is_encoder_decoder = bool(getattr(model_config, "is_encoder_decoder", False))
             hybrid_target = (
-                SimpleNamespace(config = model_config)
+                SimpleNamespace(
+                    config = model_config,
+                    trust_remote_code = _string_model_trust_remote_code(config_arg),
+                )
                 if isinstance(model, str) and model_config is not None
                 else model
             )
             is_hybrid = _is_hybrid_linear_attention_model(hybrid_target)
-            # Hybrid models corrupt packed batches unless conv and scan reset at sequence boundaries.
+            # Hybrid models corrupt packed batches unless the gated-delta / Mamba2 conv and scan reset at
+            # sequence boundaries, so enable the experimental varlen shim (flag plus kernels) or keep them blocked.
             if (
                 is_hybrid
                 and not isinstance(model, str)
@@ -1363,6 +1570,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
             or is_encoder_decoder
             or (is_hybrid and not hybrid_varlen_active)
             or (os.environ.get("UNSLOTH_RETURN_LOGITS", "0") == "1")
+            or _wants_eval_logits(original_init, args, kwargs)
             or forward_rejects_packing
         )
         requested_pack = bool(getattr(config_arg, "packing", False))

@@ -749,7 +749,8 @@ def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
     assert (
         '(typeof selection === "string" ? null : selection.loadId) || modelId' in runtime
     ), "loadPath must fall back to the id, so an unpinned pick is unchanged"
-    assert runtime.count("model_path: loadPath,") == 3
+    # Staged metadata, validate, the engine-switch revalidate and load all read the copy that loads.
+    assert runtime.count("model_path: loadPath,") == 4
     assert "model_path: modelId," not in runtime
     # A rollback reads the approval under the snapshot path, so store it under both keys.
     assert "rememberApprovedRemoteCode(loadPath, approvedRemoteCodeFingerprint);" in runtime
@@ -1053,14 +1054,19 @@ def test_blur_cache_cleared_on_every_settled_render():
 
 
 def test_auto_defaults_not_persisted_as_overrides():
-    """Auto GPU memory mode and Auto/default speculative type are follow-global
-    defaults; normalization must not persist them as per-model overrides, else a
-    model stops following later changes to the global preference."""
+    """Auto GPU memory mode and a GGUF model's Auto/default speculative type are
+    follow-global defaults; they must not persist as per-model overrides, else a
+    model stops following later changes to the global preference. An MLX model
+    keeps its explicit Auto, which beats a standing "off"."""
     src = _read("features/model-picker/model-config/per-model-config.ts")
     assert 'if (partial.gpuMemoryMode === "manual") {' in src
     assert 'partial.gpuMemoryMode === "auto" || partial.gpuMemoryMode === "manual"' not in src
     spec = re.search(r'if \(s === "auto" \|\| s === "default"\) \{\s*return ([^;]+);', src)
-    assert spec and spec.group(1).strip() == "null"
+    assert spec and spec.group(1).strip() == '"auto"'
+    fold = " ".join(src.split())
+    assert (
+        '!isMlx && config.speculativeType === "auto" ? { ...config, speculativeType: null }' in fold
+    )
 
 
 def test_compare_pane_context_from_own_config_only():
@@ -2009,7 +2015,8 @@ def test_staged_downloads_use_one_actionable_download_surface():
 
     panel = _read("features/hub/download-manager/download-manager-panel.tsx")
     assert 'job.variant?.startsWith("@")' in panel
-    assert '"Model file" : "Required assets"' in panel
+    assert '"Model file"' in panel
+    assert "assetLabel(" in panel and '"Required assets"' in panel
 
 
 def test_staged_plans_label_the_checkpoint_without_guessing_from_the_extension():
@@ -2048,8 +2055,8 @@ def test_staged_plans_label_the_checkpoint_without_guessing_from_the_extension()
     assert "{ checkpoint: job.checkpoint }" in state
 
     panel = _read("features/hub/download-manager/download-manager-panel.tsx")
-    suffix = re.search(r"function variantSuffix\(.*?\n\}", panel, re.S)
-    assert suffix, "variantSuffix not found"
+    suffix = re.search(r"function isRequiredAssetJob\(.*?\n\}", panel, re.S)
+    assert suffix, "isRequiredAssetJob not found"
     body = suffix.group(0)
     assert "job.checkpoint ??" in body, "the label ignores the flag the plan carried"
     # The .gguf guess survives only for jobs persisted before the flag.
@@ -2280,8 +2287,8 @@ def test_parallel_slots_reach_an_api_load_through_the_server_mirror():
     assert "n_parallel = payload.n_parallel," in route
     store = _read_backend("utils/openai_auto_switch_settings.py")
     assert 'entry["n_parallel"] = n_parallel' in store
-    # Ungated: MLX sizes its batch by the same width.
-    shared, gguf_block = store.split("    if is_gguf:", 1)
+    # Ungated: MLX sizes its batch by the same width llama-server sizes its slots by.
+    shared, gguf_block = store.rsplit("    if is_gguf:", 1)
     assert '("n_parallel", "n_parallel"),' in shared
     assert "n_parallel" not in gguf_block.split("\n\n", 1)[0]
 
@@ -3004,9 +3011,15 @@ def test_backfill_splits_a_quant_suffix_the_way_the_backend_does():
 
 def test_the_settings_page_judges_the_config_storage_actually_keeps():
     """savePerModelConfig normalizes before deciding, and the runtime hands this page
-    Speculative Decoding "auto", which canonicalizes to null."""
+    Speculative Decoding "auto", which a GGUF model stores as null."""
     src = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
-    assert "const normalized = normalizePerModelConfig(next);" in src
+    # Load and Save (#10216) both go through persistConfig.
+    assert (
+        "const normalized = normalizePerModelConfig(storedSpeculativeAuto(next, targetIsMlx));"
+        in src
+    )
+    # Server hydration writes the same record, so a GGUF row's stored "auto" folds there too.
+    assert "storedSpeculativeAuto(rememberedConfig, !target.isGguf)" in src
     assert "defaultConfig: isDefaultConfig(normalized)" in src
     assert "savePerModelConfig(configId, target.ggufVariant, normalized, evicted)" in src
     assert "remember ? normalized : null," in src

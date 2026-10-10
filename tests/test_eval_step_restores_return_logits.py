@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""The eval prediction_step forces UNSLOTH_RETURN_LOGITS=1 and must put the caller's value back.
+"""The eval prediction_step forces UNSLOTH_RETURN_LOGITS=1 only when the logits are kept, and must
+put the caller's value back. A loss-only eval must not force it: that materialized
+[bsz, seq, vocab] logits per batch and spiked eval VRAM far above training (#1801).
 
 UNSLOTH_RETURN_LOGITS=1 also blocks packing and padding-free when the next trainer is built, so
 an evaluate() that raised part way used to leave logits forced on for the rest of the process.
@@ -55,8 +57,9 @@ class _Trainer:
         return None
 
 
+@pytest.mark.parametrize("prediction_loss_only", [True, False])
 @pytest.mark.parametrize("before", [None, "0", "1"])
-def test_a_failed_eval_step_restores_the_callers_setting(monkeypatch, before):
+def test_a_failed_eval_step_restores_the_callers_setting(monkeypatch, before, prediction_loss_only):
     if before is None:
         monkeypatch.delenv("UNSLOTH_RETURN_LOGITS", raising = False)
     else:
@@ -69,9 +72,15 @@ def test_a_failed_eval_step_restores_the_callers_setting(monkeypatch, before):
 
     trainer = _Trainer(compute_loss)
     with pytest.raises(RuntimeError, match = "out of memory"):
-        _prediction_step()(trainer, trainer.model, {"labels": torch.zeros(1)}, True, None)
+        _prediction_step()(
+            trainer, trainer.model, {"labels": torch.zeros(1)}, prediction_loss_only, None
+        )
 
-    assert seen == ["1"], "the step no longer forces logits on while it runs"
+    if prediction_loss_only:
+        assert seen == [before], "a loss-only eval step forced logits on"
+    else:
+        assert seen == ["1"], "the step no longer forces logits on while it runs"
+    # An unset variable comes back as "0", the value the step treats as the default.
     assert os.environ.get("UNSLOTH_RETURN_LOGITS") == (before or "0")
 
 

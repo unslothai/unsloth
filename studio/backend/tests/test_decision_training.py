@@ -158,9 +158,11 @@ def _config(base, dataset, **overrides):
 
 
 # The worker imports unsloth; CI installs unsloth_zoo only for the step that runs this file.
+# Apple Silicon trains with MLX, through unsloth_zoo's decision module.
+_WORKER = "unsloth_zoo.mlx.decision" if sys.platform == "darwin" else "unsloth_zoo"
 needs_worker = pytest.mark.skipif(
-    sys.platform == "darwin" or importlib.util.find_spec("unsloth_zoo") is None,
-    reason = "trains in a worker that imports unsloth (Apple Silicon trains with MLX)",
+    importlib.util.find_spec("unsloth_zoo") is None or importlib.util.find_spec(_WORKER) is None,
+    reason = "trains in a worker that imports unsloth",
 )
 
 
@@ -475,6 +477,26 @@ def _fake_output(
     return folder
 
 
+def test_mlx_runs_report_to_tensorboard_and_wandb(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    from core.training.decision_trainer import _mlx_tracking_callback
+
+    # Built first: importing transformers looks for the real reporting packages.
+    callback, state, seen = _mlx_tracking_callback(["tensorboard", "wandb"]), SimpleNamespace(), []
+    state.global_step = 7
+    writer = SimpleNamespace(add_scalar = lambda *row: seen.append(row), close = lambda: None)
+    boards = SimpleNamespace(SummaryWriter = lambda log_dir: seen.append(log_dir) or writer)
+    monkeypatch.setitem(sys.modules, "tensorboardX", boards)
+    wandb = SimpleNamespace(log = lambda scalars, step: seen.append((scalars, step)))
+    monkeypatch.setitem(sys.modules, "wandb", wandb)
+    monkeypatch.setenv("TENSORBOARD_LOGGING_DIR", str(tmp_path))
+    callback.on_train_begin(None, state, None)
+    callback.on_log(None, state, None, logs = {"loss": 0.5, "eval_loss": 0.25, "note": "skipped"})
+    scalars = {"train/loss": 0.5, "eval/loss": 0.25}
+    assert seen == [str(tmp_path), ("train/loss", 0.5, 7), ("eval/loss", 0.25, 7), (scalars, 7)]
+
+
 def test_settings_accept_only_complete_owner_fine_tunes(studio_home, client, tmp_path):
     from utils.paths import outputs_root
 
@@ -518,6 +540,68 @@ def test_llm_output_scans_skip_decision_outputs(studio_home):
 
     assert [name for name, _, _ in scan_trained_models(str(root))] == ["llama_merged_1"]
     assert [name for name, _, _ in scan_checkpoints(str(root))] == ["llama_merged_1"]
+
+
+def test_export_checkpoint_list_includes_decision_runs(studio_home):
+    from routes import models as models_routes
+    from utils.models.checkpoints import list_preview_targets
+    from utils.paths import outputs_root
+
+    root = outputs_root()
+    laya = _fake_output(root, "laya_done_1")
+    (laya / "rl_agent_config.json").write_text(
+        json.dumps({"encoder": "answerdotai/ModernBERT-base", "training": {"base": "laya-tiny"}}),
+        encoding = "utf-8",
+    )
+    _fake_output(root, "laya_half_2", complete = False)
+    clef = root / "clef_merged_3"
+    clef.mkdir()
+    for name in ("config.json", "joint_head_config.json", "joint_head.safetensors"):
+        (clef / name).write_text("{}", encoding = "utf-8")
+
+    app = FastAPI()
+    app.include_router(models_routes.router, prefix = "/api/models")
+    app.dependency_overrides[get_current_subject] = lambda: "unsloth"
+    response = TestClient(app).get("/api/models/checkpoints", params = {"outputs_dir": str(root)})
+    assert response.status_code == 200, response.text
+    listed = {m["name"]: m for m in response.json()["models"]}
+    assert sorted(listed) == ["clef_merged_3", "laya_done_1"]
+    assert listed["laya_done_1"]["base_model"] == "laya-tiny"
+    assert listed["laya_done_1"]["checkpoints"][0]["path"] == str(laya)
+    # Chat preview still lists only what chat can load.
+    assert [t["run"] for t in list_preview_targets(str(root))] == ["clef_merged_3"]
+
+
+def test_model_config_offers_an_llm_as_a_decision_model(studio_home):
+    import asyncio
+
+    from routes.models import get_model_config
+    from utils.models.model_config import load_llm_decision_defaults
+
+    llm = studio_home / "llm"
+    llm.mkdir()
+    config = {
+        "model_type": "llama",
+        "architectures": ["LlamaForCausalLM"],
+        "hidden_size": 64,
+        "num_hidden_layers": 2,
+        "num_attention_heads": 4,
+        "vocab_size": 64,
+    }
+    (llm / "config.json").write_text(json.dumps(config), encoding = "utf-8")
+    (llm / "model.safetensors").write_bytes(b"x")
+
+    def fetch(**kwargs):
+        return asyncio.run(
+            get_model_config(model_name = str(llm), hf_token = None, current_subject = "tester", **kwargs)
+        )
+
+    plain = fetch()
+    assert plain.model_type == "text" and plain.decision_layout is None
+    decision = fetch(as_decision = True)
+    assert decision.model_type == "decision" and decision.is_decision is True
+    assert decision.decision_layout == "llm" and decision.decision_checkpoints is None
+    assert decision.config == load_llm_decision_defaults()
 
 
 def test_model_config_classifies_a_local_laya_folder(base):

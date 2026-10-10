@@ -103,6 +103,33 @@ class GaLoreProjector:
         self.ortho_matrix_zeros = None
         self.ortho_matrix_shape = None
 
+    def state_dict(self) -> dict:
+        """Plain dict of tensors and primitives, loadable with ``torch.load(weights_only = True)``."""
+        state = {
+            name: getattr(self, name) for name in self.__slots__ if name != "_ortho_float_cache"
+        }
+        state["queue"] = list(self.queue)
+        if self.ortho_matrix_shape is not None:
+            state["ortho_matrix_shape"] = tuple(self.ortho_matrix_shape)
+        return state
+
+    @classmethod
+    def from_state_dict(
+        cls,
+        state: dict,
+        device = None,
+    ) -> "GaLoreProjector":
+        # Checkpoints load on CPU; tensors go back to the parameter's device with their dtype kept.
+        projector = cls.__new__(cls)
+        for name in cls.__slots__:
+            value = state.get(name)
+            if device is not None and isinstance(value, torch.Tensor):
+                value = value.to(device)
+            setattr(projector, name, value)
+        projector.queue = deque(state.get("queue") or (), maxlen = projector.queue_size)
+        projector._ortho_float_cache = None
+        return projector
+
     def project(self, full_rank_grad: torch.Tensor, step: int) -> torch.Tensor:
         """Project a full-rank gradient into the low-rank subspace.
 

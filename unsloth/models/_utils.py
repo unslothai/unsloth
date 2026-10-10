@@ -77,6 +77,7 @@ __all__ = [
     "validate_loftq_config",
     "validate_init_lora_weights",
     "validate_init_target_parameters",
+    "reject_alora",
     "RESIDUAL_INIT_LORA_WEIGHTS",
     "snapshot_residual_lora_init",
     "lora_relative_to_original_base",
@@ -99,6 +100,8 @@ __all__ = [
     "skip_checkpointing",
     "refuse_block_swap_load",
     "legacy_offload_layers",
+    "prefetch_depth_arg",
+    "auto_plan_depth",
     "block_swap_load_device",
     "begin_block_swap_load",
     "finish_block_swap_load",
@@ -246,6 +249,7 @@ def _patch_transformers_trainer_data_parallel():
     except (ImportError, ModuleNotFoundError):
         return False
 
+    _patch_trainer_init_data_parallel(Trainer)
     original_wrap_model = getattr(Trainer, "_wrap_model", None)
     if original_wrap_model is None:
         return False
@@ -295,6 +299,50 @@ def _patch_transformers_trainer_data_parallel():
     _unsloth_wrap_model._unsloth_original_wrap_model = original_wrap_model
     Trainer._wrap_model = _unsloth_wrap_model
     return True
+
+
+def _keep_unsloth_models_off_data_parallel(model, args):
+    """`args._n_gpu = 1` for a marked Unsloth model, as the TRL trainers do; True if changed.
+    Before Trainer.__init__: it sizes the batch from n_gpu, too early for `_wrap_model`."""
+    try:
+        if args is None or model is None or not hasattr(model, "modules"):
+            return False
+        if getattr(args, "n_gpu", 1) <= 1 or getattr(model, "is_loaded_in_8bit", False):
+            return False
+        from transformers.training_args import ParallelMode
+
+        if getattr(args, "parallel_mode", None) != ParallelMode.NOT_DISTRIBUTED:
+            return False
+        if not any(
+            getattr(module, "_unsloth_disable_data_parallel", False) for module in model.modules()
+        ):
+            return False
+        args._n_gpu = 1
+        return True
+    except Exception:
+        return False
+
+
+def _patch_trainer_init_data_parallel(Trainer):
+    # Every marked path, not only the ones that call patch_gradient_accumulation_fix (fast encoders).
+    if getattr(Trainer, "_unsloth_data_parallel_init_patched", False):
+        return
+    original_init = Trainer.__init__
+
+    @functools.wraps(original_init)
+    def _unsloth_data_parallel_init(self, *args, **kwargs):
+        model = kwargs.get("model", args[0] if len(args) > 0 else None)
+        training_args = kwargs.get("args", args[1] if len(args) > 1 else None)
+        _keep_unsloth_models_off_data_parallel(model, training_args)
+        original_init(self, *args, **kwargs)
+        # Args the Trainer built itself; refresh the batch size it cached.
+        if _keep_unsloth_models_off_data_parallel(
+            getattr(self, "model", None), getattr(self, "args", None)
+        ):
+            self._train_batch_size = self.args.train_batch_size
+
+    Trainer.__init__ = _unsloth_data_parallel_init
+    Trainer._unsloth_data_parallel_init_patched = True
 
 
 def _mark_unsloth_disable_data_parallel(model, disable = True):
@@ -4640,8 +4688,18 @@ def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
             inner_model = inner_model.model
         name = inner_model.__class__.__name__
 
+        if getattr(self, "model_accepts_loss_kwargs", True):
+            reason = (
+                f"`num_items_in_batch` could not be counted for {name}'s labels, "
+                "so each micro-batch loss is a mean."
+            )
+        else:
+            reason = (
+                f"{name} does not accept `num_items_in_batch`: its forward does not "
+                "pass it to the loss."
+            )
         logger.warning_once(
-            f"Unsloth: Not an error, but {name} does not accept `num_items_in_batch`.\n"
+            f"Unsloth: Not an error, but {reason}\n"
             "Using gradient accumulation will be very slightly less accurate.\n"
             "Read more on gradient accumulation issues here: https://unsloth.ai/blog/gradient"
         )
@@ -4826,10 +4884,35 @@ def _is_seq2seq_lm_config(config):
         return False
 
 
+def _head_counts_unshifted_labels(model):
+    # unsloth_zoo marks heads that average unshifted labels and counts them; an older zoo has neither.
+    try:
+        from unsloth_zoo.loss_utils import counts_unshifted_labels
+    except Exception:
+        return False
+    if model is None:
+        return False
+    recorded = _num_items_labels(model)
+    if recorded is not None:
+        return recorded == "unshifted"
+    try:
+        head = _loss_head(model)
+    except Exception:
+        head = None
+    if head is None:
+        try:
+            head = model.get_base_model() if hasattr(model, "get_base_model") else model
+        except Exception:
+            head = model
+    return counts_unshifted_labels(head)
+
+
 def _make_seq2seq_aware_get_batch_samples(original):
     def _unsloth_get_batch_samples_dispatch(self, *args, **kwargs):
         # Seq2Seq labels are unshifted, so the causal labels[..., 1:] token count drops one per row and inflates the GA loss.
-        if _is_seq2seq_lm_config(getattr(self.model, "config", None)):
+        if _head_counts_unshifted_labels(getattr(self, "model", None)):
+            return _unsloth_get_batch_samples(self, *args, **kwargs)
+        if _is_seq2seq_lm_config(getattr(getattr(self, "model", None), "config", None)):
             return original(self, *args, **kwargs)
         return _unsloth_get_batch_samples(self, *args, **kwargs)
 
@@ -5007,123 +5090,752 @@ def patch_gradient_accumulation_fix(Trainer):
         Trainer._unsloth_init_wrapped_for_accelerate_gas = True
 
 
-def _unsloth_compile_cache_leaves():
-    leaves = {"unsloth_compiled_cache", "unsloth_cache", "unsloth_compiled"}
-    loc = os.environ.get("UNSLOTH_COMPILE_LOCATION", "") or ""
-    loc = loc.rstrip("/\\")
-    if loc:
-        leaves.add(os.path.basename(loc) or loc)
-    return leaves
+# Real children only: PEFT's LoraModel forwards `base_model` to the backbone, skipping the loss head.
+_LOSS_KWARGS_CHILDREN = ("base_model", "model") + _UNSLOTH_WRAPPED_MODULE_ATTRS
 
 
-def _forward_is_unsloth_compiled(model):
-    # __module__ stays the transformers module, so check co_filename.
-    leaves = _unsloth_compile_cache_leaves()
-
-    def check(m):
-        if m is None:
-            return False
-        fwd = getattr(type(m), "forward", None)
-        if fwd is None:
-            return False
-        code = getattr(fwd, "__code__", None)
-        fn = getattr(code, "co_filename", "") if code is not None else ""
-        fn = fn.replace("\\", "/")
-        parts = set(fn.split("/"))
-        return any(leaf in parts for leaf in leaves)
-
-    if check(model):
-        return True
-    seen = set()
-    m = model
-    for _ in range(4):
-        if m is None or id(m) in seen:
-            break
-        seen.add(id(m))
-        nxt = getattr(m, "base_model", None)
-        if nxt is None or nxt is m:
-            nxt = getattr(m, "model", None)
-        if nxt is None or nxt is m:
-            break
-        if check(nxt):
-            return True
-        m = nxt
-    return False
+def _loss_kwargs_child(m):
+    d = getattr(m, "__dict__", None) or {}
+    modules = d.get("_modules") or {}
+    for name in _LOSS_KWARGS_CHILDREN:
+        if name in _UNSLOTH_WRAPPED_MODULE_ATTRS and not _is_training_wrapper(m):
+            continue
+        nxt = modules.get(name)
+        if nxt is None:
+            nxt = d.get(name)
+        if nxt is not None and nxt is not m:
+            return nxt
+    if isinstance(m, torch.nn.Module) and not any(k in type(m).__name__ for k in _LOSS_HEAD_NAMES):
+        return _pass_through_child(m, modules)
+    return None
 
 
-def _find_concrete_accepts_loss_kwargs(model):
-    seen = set()
-    m = model
-    for _ in range(6):
-        if m is None or id(m) in seen:
-            break
-        seen.add(id(m))
-        for klass in type(m).__mro__:
-            if "accepts_loss_kwargs" in klass.__dict__:
-                return klass.__dict__[
-                    "accepts_loss_kwargs"
-                ], f"{klass.__name__}.accepts_loss_kwargs"
-        nxt = getattr(m, "base_model", None)
-        if nxt is None or nxt is m:
-            nxt = getattr(m, "model", None)
-        if nxt is None or nxt is m:
-            break
-        m = nxt
-    return None, "no explicit accepts_loss_kwargs on any wrapper level"
-
-
-_GUESSED_LOSS_KWARGS = "_unsloth_guessed_accepts_loss_kwargs"
-
-
-def _shadow_accepts_loss_kwargs(
-    model,
-    value,
-    guessed = False,
-):
-    # Set at every wrapper level so HF's hasattr check resolves wherever unwrapping lands.
+def _loss_kwargs_chain(model):
     seen = set()
     m = model
     for _ in range(8):
         if m is None or id(m) in seen:
             break
         seen.add(id(m))
+        yield m
+        m = _loss_kwargs_child(m)
+    try:
+        head = model.get_base_model() if hasattr(model, "get_base_model") else None
+    except Exception:
+        head = None
+    if head is not None and id(head) not in seen:
+        yield head
+
+
+def _find_concrete_accepts_loss_kwargs(model):
+    # First class declaring accepts_loss_kwargs in its own __mro__ dict, avoiding PEFT __getattr__ forwarding and our own shadow.
+    for m in _loss_kwargs_chain(model):
+        for klass in type(m).__mro__:
+            if "accepts_loss_kwargs" in klass.__dict__:
+                return klass.__dict__[
+                    "accepts_loss_kwargs"
+                ], f"{klass.__name__}.accepts_loss_kwargs"
+    return None, "no explicit accepts_loss_kwargs on any wrapper level"
+
+
+# Marks a value Unsloth wrote, so a later call re-decides it instead of reading it as a declaration.
+_GUESSED_LOSS_KWARGS = "_unsloth_guessed_accepts_loss_kwargs"
+
+
+def _loss_kwargs_levels(model):
+    levels = list(_loss_kwargs_chain(model))
+    try:
+        head = _loss_head(model)
+    except Exception:
+        head = None
+    if head is not None and all(head is not m for m in levels):
+        levels.append(head)
+    return levels
+
+
+def _shadow_accepts_loss_kwargs(model, value):
+    for m in _loss_kwargs_levels(model):
+        d = getattr(m, "__dict__", None)
+        if d is None:
+            continue
+        if "accepts_loss_kwargs" in d and not _is_guess(d):
+            continue
+        # Via __dict__: OptimizedModule forwards setattr to _orig_mod, parting the value from its marker.
         try:
-            setattr(m, "accepts_loss_kwargs", value)
-            if guessed:
-                m.__dict__[_GUESSED_LOSS_KWARGS] = value
-            else:
-                m.__dict__.pop(_GUESSED_LOSS_KWARGS, None)
+            d["accepts_loss_kwargs"] = value
+            d[_GUESSED_LOSS_KWARGS] = value
         except Exception:
             pass
-        nxt = getattr(m, "base_model", None)
-        if nxt is None or nxt is m:
-            nxt = getattr(m, "model", None)
-        if nxt is None or nxt is m:
-            break
-        m = nxt
+
+
+_LOSS_HEAD_NAMES = (
+    "CausalLM",
+    "ForConditionalGeneration",
+    "LMHead",
+    "VisionText2Text",
+    "EncoderDecoderModel",
+    "ForSpeechToText",
+)
+
+
+def _training_wrapper_types():
+    types_ = [torch.nn.parallel.DistributedDataParallel, torch.nn.DataParallel]
+    try:
+        from torch._dynamo.eval_frame import OptimizedModule
+        types_.append(OptimizedModule)
+    except Exception:
+        pass
+    try:
+        from torch.distributed.fsdp import FullyShardedDataParallel
+        types_.append(FullyShardedDataParallel)
+    except Exception:
+        pass
+    return tuple(types_)
+
+
+def _is_training_wrapper(m):
+    # Only real training wrappers: a user module with a child named `module` keeps its own loss.
+    return isinstance(m, _training_wrapper_types())
+
+
+def _loss_head(model):
+    m, seen = model, set()
+    while m is not None and id(m) not in seen:
+        seen.add(id(m))
+        if hasattr(m, "get_base_model"):
+            try:
+                m = m.get_base_model()
+            except Exception:
+                return None
+            continue
+        modules = getattr(m, "__dict__", {}).get("_modules") or {}
+        wrapped = (
+            next((modules[a] for a in _UNSLOTH_WRAPPED_MODULE_ATTRS if a in modules), None)
+            if _is_training_wrapper(m)
+            else None
+        )
+        if wrapped is not None:
+            m = wrapped
+            continue
+        if type(m).__module__.startswith("peft."):
+            m = modules.get("model")
+            continue
+        if any(k in type(m).__name__ for k in _LOSS_HEAD_NAMES):
+            return m
+        m = _pass_through_child(m, modules)
+    return None
+
+
+def _pass_through_child(m, modules):
+    try:
+        tree = ast.parse(textwrap.dedent(inspect.getsource(inspect.unwrap(type(m).forward))))
+    except Exception:
+        return None
+    node = next(
+        (n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))), None
+    )
+    if node is None:
+        return None
+    body = [
+        s for s in node.body if not (isinstance(s, ast.Expr) and isinstance(s.value, ast.Constant))
+    ]
+    if (
+        len(body) != 1
+        or not isinstance(body[0], ast.Return)
+        or not isinstance(body[0].value, ast.Call)
+    ):
+        return None
+    call = body[0].value
+    func = call.func
+    if not (
+        isinstance(func, ast.Attribute)
+        and isinstance(func.value, ast.Name)
+        and func.value.id == "self"
+        and func.attr in modules
+    ):
+        return None
+    kwarg = node.args.kwarg.arg if node.args.kwarg is not None else None
+    params = {a.arg for a in node.args.args + node.args.kwonlyargs}
+
+    def carries_count(value):
+        if isinstance(value, ast.Name):
+            return value.id == "num_items_in_batch" and value.id in params
+        return _is_count_get(value)
+
+    forwards_count = any(
+        (
+            kw.arg is None
+            and kwarg is not None
+            and isinstance(kw.value, ast.Name)
+            and kw.value.id == kwarg
+            and "num_items_in_batch" not in params
+        )
+        or (kw.arg == "num_items_in_batch" and carries_count(kw.value))
+        for kw in call.keywords
+    )
+    return modules[func.attr] if forwards_count else None
+
+
+def _call_forwards_count(node, call):
+    """Does `call` hand on the count `node` received: its **kwargs, or its own num_items_in_batch?"""
+    kwarg = node.args.kwarg.arg if node.args.kwarg is not None else None
+    params = {a.arg for a in node.args.posonlyargs + node.args.args + node.args.kwonlyargs}
+    return any(
+        (
+            kw.arg is None
+            and kwarg is not None
+            and isinstance(kw.value, ast.Name)
+            and kw.value.id == kwarg
+            and "num_items_in_batch" not in params
+        )
+        or (
+            kw.arg == "num_items_in_batch"
+            and isinstance(kw.value, ast.Name)
+            and kw.value.id == "num_items_in_batch"
+            and "num_items_in_batch" in params
+        )
+        for kw in call.keywords
+    )
+
+
+def _forward_function_node(forward, depth = 0):
+    try:
+        forward = inspect.unwrap(forward)
+    except ValueError:
+        return None
+    func = getattr(forward, "__func__", forward)
+    try:
+        source = textwrap.dedent(inspect.getsource(func))
+        tree = ast.parse(source)
+    except Exception:
+        return None
+    node = next(
+        (n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))),
+        None,
+    )
+    if node is None:
+        return None
+    namespace = getattr(func, "__globals__", None) or {}
+    body = [
+        s for s in node.body if not (isinstance(s, ast.Expr) and isinstance(s.value, ast.Constant))
+    ]
+    if (
+        depth < 2
+        and len(body) == 1
+        and isinstance(body[0], ast.Return)
+        and isinstance(body[0].value, ast.Call)
+        and isinstance(body[0].value.func, ast.Name)
+        and body[0].value.args
+        and isinstance(body[0].value.args[0], ast.Name)
+        and body[0].value.args[0].id == "self"
+        and _call_forwards_count(node, body[0].value)
+    ):
+        impl = namespace.get(body[0].value.func.id)
+        if callable(impl):
+            resolved = _forward_function_node(impl, depth + 1)
+            if resolved is not None:
+                return resolved
+    return node, source, namespace
+
+
+_N_ITEMS_KEYWORDS = ("num_items_in_batch", "n_items")
+_FUSED_LOSS_CALLEES = (
+    "unsloth_fused_lm_head_loss",
+    "unsloth_fused_ce_loss",
+    "fused_linear_cross_entropy",
+    "fast_cross_entropy_loss",
+    "unsloth_count_aware_cross_entropy",
+)
+
+
+def _nested_scope_ids(node):
+    ids = set()
+    for sub in ast.walk(node):
+        if sub is not node and isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            ids.update(id(x) for x in ast.walk(sub))
+    return ids
+
+
+def _local_assignments(node, nested):
+    plain, out = {}, {}
+    for sub in ast.walk(node):
+        if id(sub) in nested:
+            continue
+        if (
+            isinstance(sub, ast.Assign)
+            and len(sub.targets) == 1
+            and isinstance(sub.targets[0], ast.Name)
+        ):
+            plain[id(sub.targets[0])] = sub.value
+        elif isinstance(sub, ast.AnnAssign) and isinstance(sub.target, ast.Name):
+            plain[id(sub.target)] = sub.value
+    for sub in ast.walk(node):
+        if id(sub) in nested:
+            continue
+        if isinstance(sub, ast.Name) and isinstance(sub.ctx, (ast.Store, ast.Del)):
+            out.setdefault(sub.id, []).append(plain.get(id(sub)))
+    return out
+
+
+def _is_count_get(value):
+    # Any receiver: the compile cache reads the count off `__kwargs`, a locals() alias of **kwargs.
+    if isinstance(value, ast.IfExp):
+        return _is_count_get(value.body) and _is_count_get(value.orelse)
+    return (
+        isinstance(value, ast.Call)
+        and isinstance(value.func, ast.Attribute)
+        and value.func.attr == "get"
+        and bool(value.args)
+        and _is_const(value.args[0], _N_ITEMS_KEYWORDS)
+    )
+
+
+def _kwargs_carriers(node, assigned):
+    kwarg = node.args.kwarg.arg if node.args.kwarg is not None else None
+    candidates = {kwarg} if kwarg else set()
+
+    def carried(value, carriers):
+        if isinstance(value, ast.Name):
+            return value.id in carriers
+        if isinstance(value, ast.Dict):
+            return all(
+                k is None and isinstance(v, ast.Name) and v.id in carriers
+                for k, v in zip(value.keys, value.values)
+            ) and bool(value.keys)
+        if isinstance(value, ast.Call):
+            callee = _dotted_name(value.func) or ""
+            if callee == "dict" and len(value.args) == 1 and not value.keywords:
+                return carried(value.args[0], carriers)
+            if callee.endswith(".copy") and isinstance(value.func, ast.Attribute):
+                return carried(value.func.value, carriers)
+        return False
+
+    candidates |= set(assigned)
+    carriers = set(candidates)
+    changed = True
+    while changed:
+        changed = False
+        for name in list(carriers):
+            values = assigned.get(name, [])
+            if name == kwarg:
+                ok = all(v is not None and carried(v, carriers) for v in values)
+            else:
+                ok = bool(values) and all(v is not None and carried(v, carriers) for v in values)
+            if not ok:
+                carriers.discard(name)
+                changed = True
+    return carriers
+
+
+_CARRIER_MUTATORS = ("clear", "update", "popitem", "__delitem__", "__setitem__", "setdefault")
+
+
+def _known_loss_function(head):
+    # A user-assigned `loss_function` may accept the keyword and still return a mean.
+    try:
+        fn = getattr(head, "loss_function", None)
+    except Exception:
+        return None
+    if fn is None:
+        return True
+    fn = getattr(fn, "__func__", fn)
+    module = getattr(fn, "__module__", "") or ""
+    if module.startswith(("transformers.loss", "unsloth_zoo", "unsloth.")):
+        return True
+    try:
+        from transformers.loss.loss_utils import LOSS_MAPPING
+        if any(fn is f for f in LOSS_MAPPING.values()):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _ce_reductions(node, namespace, subst):
+    """("mean" | "other") per PyTorch cross_entropy / nll_loss call in `node`, resolving a reduction
+    passed as a parameter through `subst` (the caller's keyword or the parameter default)."""
+    kinds = []
+    for call in ast.walk(node):
+        if not isinstance(call, ast.Call):
+            continue
+        name = _resolve_ce_callee(call.func, namespace)
+        params = _CE_PARAMS.get(name)
+        if params is None:
+            continue
+        if len(call.args) > len(params) or any(isinstance(x, ast.Starred) for x in call.args):
+            kinds.append("other")
+            continue
+        if any(kw.arg is None for kw in call.keywords):
+            kinds.append("other")
+            continue
+        bound = dict(zip(params, call.args))
+        bound.update((kw.arg, kw.value) for kw in call.keywords)
+
+        def value_of(v):
+            if isinstance(v, ast.Name) and v.id in subst:
+                return subst[v.id]
+            return v
+
+        kind = "mean"
+        if "reduction" in bound and not _is_const(value_of(bound["reduction"]), ("mean",)):
+            kind = "other"
+        for legacy in ("size_average", "reduce"):
+            if legacy in bound and not _is_const(value_of(bound[legacy]), (None, True)):
+                kind = "other"
+        kinds.append(kind)
+    return kinds
+
+
+def _resolve_callee(obj, call, namespace):
+    func = call.func
+    if (
+        isinstance(func, ast.Attribute)
+        and isinstance(func.value, ast.Name)
+        and func.value.id == "self"
+    ):
+        modules = getattr(obj, "__dict__", {}).get("_modules") or {}
+        child = modules.get(func.attr)
+        if child is not None:
+            return child, getattr(type(child), "forward", None), True
+        method = getattr(type(obj), func.attr, None)
+        if callable(method):
+            return obj, method, True
+        return None
+    if isinstance(func, ast.Name):
+        target = namespace.get(func.id)
+        if inspect.isfunction(target):
+            return obj, target, False
+    return None
+
+
+def _zoo_counts_fallback_branches():
+    try:
+        from unsloth_zoo.fused_losses import cross_entropy_loss as zoo_ce
+    except Exception:
+        return False
+    return hasattr(zoo_ce, "unsloth_loss_count_kwargs")
+
+
+def _old_zoo_fallbacks_only(head, fused_with_count, via_loss_function):
+    # An older unsloth_zoo trains only the fused branch with the count; keep the answer it relied on.
+    return (
+        fused_with_count
+        and not via_loss_function
+        and not _zoo_counts_fallback_branches()
+        and os.environ.get("UNSLOTH_RETURN_LOGITS", "0") != "1"
+        and _known_loss_function(head)
+    )
+
+
+def _forward_consumes_num_items_in_batch(head):
+    """Does the loss head's forward hand num_items_in_batch to its loss?
+
+    True: every loss call gets the count. False: a micro-batch mean. None: cannot tell, mixed, or
+    anything it cannot follow (never True by default).
+    """
+    if head is None:
+        return None
+    forward = getattr(head, "forward", None)
+    resolved = _forward_function_node(forward) if forward is not None else None
+    if resolved is None:
+        return None
+    verdict = _classify_loss_forward(head, *resolved, depth = 0, labels_name = "labels", subst = {})
+    return None if verdict == "no_loss" else verdict
+
+
+def _classify_loss_forward(head, node, source, namespace, depth, labels_name, subst):
+    nested = _nested_scope_ids(node)
+    assigned = _local_assignments(node, nested)
+    carriers = _kwargs_carriers(node, assigned)
+    params = {a.arg for a in node.args.args + node.args.kwonlyargs}
+
+    # A carrier emptied or rewritten in place no longer proves the count reaches the loss.
+    tampered = any(
+        id(sub) not in nested
+        and isinstance(sub, ast.Call)
+        and isinstance(sub.func, ast.Attribute)
+        and isinstance(sub.func.value, ast.Name)
+        and sub.func.value.id in carriers
+        and sub.func.attr in _CARRIER_MUTATORS
+        for sub in ast.walk(node)
+    )
+
+    count_names = set()
+    if "num_items_in_batch" in params and all(
+        v is not None and _is_count_get(v) for v in assigned.get("num_items_in_batch", [])
+    ):
+        count_names.add("num_items_in_batch")
+    for name, values in assigned.items():
+        if name in params:
+            continue
+        if any(v is not None and _is_count_get(v) for v in values) and all(
+            v is not None and (_is_count_get(v) or _is_const(v, (None,))) for v in values
+        ):
+            count_names.add(name)
+    star_carries_count = "num_items_in_batch" not in params
+
+    def is_count(value):
+        return (isinstance(value, ast.Name) and value.id in count_names) or _is_count_get(value)
+
+    # The count may only be read or re-keyed; a pop, del or comparison filters it out.
+    allowed = set()
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.Call) and _is_count_get(sub):
+            allowed.add(id(sub.args[0]))
+        elif isinstance(sub, ast.Dict):
+            for k, v in zip(sub.keys, sub.values):
+                if _is_const(k, ("num_items_in_batch",)) and is_count(v):
+                    allowed.add(id(k))
+    tampered = tampered or any(
+        isinstance(sub, ast.Constant)
+        and sub.value == "num_items_in_batch"
+        and id(sub) not in allowed
+        for sub in ast.walk(node)
+    )
+
+    def counted_dict(value):
+        return any(
+            isinstance(d, ast.Dict)
+            and any(
+                _is_const(k, ("num_items_in_batch",)) and is_count(v)
+                for k, v in zip(d.keys, d.values)
+            )
+            for d in ast.walk(value)
+        )
+
+    def counted_helper(value):
+        if not isinstance(value, ast.Call):
+            return False
+        if (_dotted_name(value.func) or "").rsplit(".", 1)[-1] != "unsloth_loss_count_kwargs":
+            return False
+        count = value.args[1] if len(value.args) >= 2 else None
+        for kw in value.keywords:
+            if kw.arg == "n_items":
+                count = kw.value
+        return count is not None and is_count(count)
+
+    def passes_count(call):
+        starred = star_carries_count and any(
+            kw.arg is None and isinstance(kw.value, ast.Name) and kw.value.id in carriers
+            for kw in call.keywords
+        )
+        counted = any(
+            (kw.arg in _N_ITEMS_KEYWORDS and is_count(kw.value))
+            or (kw.arg is None and (counted_dict(kw.value) or counted_helper(kw.value)))
+            for kw in call.keywords
+        )
+        return starred or counted
+
+    consumes = False
+    via_loss_function = False
+    fused_with_count = False
+    fused_without_count = False
+    uncounted = False
+    loss_calls = set()
+    for call in ast.walk(node):
+        if not isinstance(call, ast.Call):
+            continue
+        leaf = (_dotted_name(call.func) or "").rsplit(".", 1)[-1]
+        if leaf != "loss_function" and leaf not in _FUSED_LOSS_CALLEES:
+            continue
+        loss_calls.add(id(call))
+        if id(call) in nested:
+            return None
+        if passes_count(call):
+            consumes = True
+            via_loss_function = via_loss_function or leaf == "loss_function"
+            fused_with_count = fused_with_count or leaf in _FUSED_LOSS_CALLEES
+        elif leaf in _FUSED_LOSS_CALLEES:
+            fused_without_count = True
+        else:
+            uncounted = True
+
+    ce_kinds = _ce_reductions(node, namespace, subst)
+    named_children = getattr(head, "named_children", None)
+    used = [
+        sub
+        for name, sub in (named_children() if callable(named_children) else ())
+        if isinstance(sub, (torch.nn.CrossEntropyLoss, torch.nn.NLLLoss))
+        and re.search(rf"\bself\.{re.escape(name)}\s*\(", source)
+    ]
+    own_mean = (ce_kinds and all(k == "mean" for k in ce_kinds)) or (
+        used and all(sub.reduction == "mean" for sub in used)
+    )
+    own_other = any(k != "mean" for k in ce_kinds) or any(sub.reduction != "mean" for sub in used)
+
+    if consumes:
+        if tampered:
+            return None
+        if fused_without_count or (
+            uncounted and not _old_zoo_fallbacks_only(head, fused_with_count, via_loss_function)
+        ):
+            return None
+        if ce_kinds or used:
+            return None
+        if via_loss_function and not _known_loss_function(head):
+            return None
+    elif fused_without_count:
+        return False
+    elif uncounted:
+        return False if _known_loss_function(head) else None
+
+    delegates = []
+    for call in ast.walk(node):
+        if not isinstance(call, ast.Call) or id(call) in nested or id(call) in loss_calls:
+            continue
+        if _resolve_ce_callee(call.func, namespace) is not None:
+            continue
+        func = call.func
+        if (
+            isinstance(func, ast.Attribute)
+            and isinstance(func.value, ast.Name)
+            and func.value.id == labels_name
+        ):
+            continue  # labels.view(...), labels.to(...)
+
+        def mentions(value):
+            return any(isinstance(x, ast.Name) and x.id == labels_name for x in ast.walk(value))
+
+        position = next((i for i, a in enumerate(call.args) if mentions(a)), None)
+        keyword = next(
+            (kw.arg for kw in call.keywords if kw.arg is not None and mentions(kw.value)),
+            None,
+        )
+        if position is None and keyword is None:
+            continue
+        delegates.append((call, position, keyword))
+
+    verdicts = []
+    for call, position, keyword in delegates:
+        target = _resolve_callee(head, call, namespace)
+        if target is None:
+            verdicts.append(None)
+            continue
+        callee_obj, fn, bound = target
+        callee = _forward_function_node(fn) if fn is not None else None
+        if callee is None:
+            verdicts.append(None)
+            continue
+        c_node, c_source, c_namespace = callee
+        c_params = [a.arg for a in c_node.args.args]
+        if bound and c_params and c_params[0] == "self":
+            c_params = c_params[1:]
+        c_labels = (
+            keyword
+            if keyword is not None
+            else (c_params[position] if position is not None and position < len(c_params) else None)
+        )
+        if c_labels is None:
+            verdicts.append(None)
+            continue
+        c_subst = {}
+        defaults = c_node.args.defaults
+        for arg, default in zip(
+            c_node.args.args[len(c_node.args.args) - len(defaults) :], defaults
+        ):
+            if isinstance(default, ast.Constant):
+                c_subst[arg.arg] = default
+        for arg, default in zip(c_node.args.kwonlyargs, c_node.args.kw_defaults):
+            if isinstance(default, ast.Constant):
+                c_subst[arg.arg] = default
+        for arg, value in zip(c_params, call.args):
+            c_subst.pop(arg, None)
+            if isinstance(value, ast.Constant):
+                c_subst[arg] = value
+        for kw in call.keywords:
+            if kw.arg is not None:
+                c_subst.pop(kw.arg, None)
+                if isinstance(kw.value, ast.Constant):
+                    c_subst[kw.arg] = kw.value
+        if depth >= 2:
+            verdicts.append(None)
+            continue
+        verdict = _classify_loss_forward(
+            callee_obj, c_node, c_source, c_namespace, depth + 1, c_labels, c_subst
+        )
+        if verdict == "no_loss":
+            continue
+        if verdict is True and not passes_count(call):
+            verdict = False
+        verdicts.append(verdict)
+
+    # A counted direct loss beside a delegated mean (an auxiliary loss computed elsewhere) is mixed.
+    if consumes:
+        return None if any(v is False for v in verdicts) else True
+    # A mean renormalised by a count it read is not provably a mean.
+    mean_verdict = None if count_names else False
+    if (
+        own_mean
+        and not own_other
+        and all(v is not False for v in verdicts)
+        and not any(v is True for v in verdicts)
+    ):
+        return mean_verdict
+    if verdicts:
+        if any(v is True for v in verdicts) and any(v is not True for v in verdicts):
+            return None
+        if any(v is False for v in verdicts):
+            return False
+        if all(v is True for v in verdicts) and not (ce_kinds or used) and not tampered:
+            return True
+        return None
+    if own_mean and not own_other:
+        return mean_verdict
+    if ce_kinds or used:
+        return None
+    return "no_loss"
+
+
+def _head_default_accepts_loss_kwargs(head):
+    # What HF Trainer falls back to when nothing declares the flag: a **kwargs forward signature.
+    try:
+        params = inspect.signature(head.forward).parameters.values()
+    except Exception:
+        return None
+    return any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params)
 
 
 def apply_accepts_loss_kwargs_fix(model):
-    if _forward_is_unsloth_compiled(model):
-        _shadow_accepts_loss_kwargs(model, True)
-        return "True (Unsloth compiled forward)"
+    # Priority: instance value > head hands the count to its loss > fused loss without it > class attr > mean-loss guess > HF default.
+    declared = _instance_accepts_loss_kwargs(model)
+    # Re-decide every value written by an earlier call: the forward or the wrappers may have changed.
+    _clear_guessed_accepts_loss_kwargs(model)
+    if declared is not None:
+        _shadow_accepts_loss_kwargs(model, declared)
+        return f"{declared} (instance accepts_loss_kwargs)"
 
+    head = _loss_head(model)
     value, reason = _find_concrete_accepts_loss_kwargs(model)
-    if value is None:
-        declared = _instance_accepts_loss_kwargs(model)
-        if declared is not None:
-            _shadow_accepts_loss_kwargs(model, declared)
-            return f"{declared} (instance accepts_loss_kwargs)"
-        _clear_guessed_accepts_loss_kwargs(model)
-        causal_lm = _forward_ignores_num_items_in_batch(model)
-        if causal_lm is not None:
-            _shadow_accepts_loss_kwargs(model, False, guessed = True)
-            # transformers 5 reads the flag off get_base_model(), which the walk can skip under PEFT.
-            _shadow_accepts_loss_kwargs(causal_lm, False, guessed = True)
-            return "False (forward takes **kwargs but computes its own mean loss)"
-        return f"default (signature inspection, {reason})"
-    _shadow_accepts_loss_kwargs(model, value)
-    return f"{value} ({reason})"
+    consumes = _forward_consumes_num_items_in_batch(head)
+    if consumes is not None:
+        # Only where Trainer would read another answer off some level (Gemma 4's stale False, ProphetNet's **kwargs mean).
+        def trainer_reads(level):
+            if hasattr(level, "accepts_loss_kwargs"):
+                return getattr(level, "accepts_loss_kwargs")
+            return _head_default_accepts_loss_kwargs(level)
+
+        above_head = []
+        for level in _loss_kwargs_levels(model):
+            above_head.append(level)
+            if level is head:
+                break
+        if head is not None and all(head is not m for m in above_head):
+            above_head.append(head)
+        if any(bool(trainer_reads(level)) != consumes for level in above_head):
+            _shadow_accepts_loss_kwargs(model, consumes)
+        if consumes:
+            _record_num_items_labels(model, head)
+            return f"True ({type(head).__name__}.forward passes num_items_in_batch to its loss)"
+        return f"False ({type(head).__name__}.forward reduces its loss by a micro-batch mean)"
+    if value is not None:
+        _shadow_accepts_loss_kwargs(model, value)
+        return f"{value} ({reason})"
+    causal_lm = _forward_ignores_num_items_in_batch(model)
+    if causal_lm is not None:
+        _shadow_accepts_loss_kwargs(model, False)
+        _shadow_accepts_loss_kwargs(causal_lm, False)
+        return "False (forward takes **kwargs but computes its own mean loss)"
+    return f"default (signature inspection, {reason})"
 
 
 # unsloth/gpt-oss-* generation_config lacks <|call|> in eos, so tool calls run on.
@@ -5279,54 +5991,52 @@ def patch_harmony_tool_call_eos_vllm(model, tokenizer):
     return model
 
 
-def _loss_kwargs_chain(model):
-    seen = set()
-    m = model
-    for _ in range(8):
-        if m is None or id(m) in seen:
-            return
-        seen.add(id(m))
-        yield m
-        nxt = getattr(m, "base_model", None)
-        if nxt is None or nxt is m:
-            nxt = getattr(m, "model", None)
-        m = nxt
-
-
 def _is_guess(d):
+    # Still the value Unsloth wrote; an assignment made since (e.g. by the user) is a declaration.
     return _GUESSED_LOSS_KWARGS in d and d.get("accepts_loss_kwargs") == d[_GUESSED_LOSS_KWARGS]
 
 
 def _clear_guessed_accepts_loss_kwargs(model):
-    chain = list(_loss_kwargs_chain(model))
-    try:
-        head = model.get_base_model() if hasattr(model, "get_base_model") else None
-    except Exception:
-        head = None
-    if head is not None and all(head is not m for m in chain):
-        chain.append(head)
-    for m in chain:
-        d = getattr(m, "__dict__", {})
+    for m in _loss_kwargs_levels(model):
+        d = getattr(m, "__dict__", None)
+        if d is None:
+            continue
         if _is_guess(d):
             d.pop("accepts_loss_kwargs", None)
         d.pop(_GUESSED_LOSS_KWARGS, None)
+        d.pop(_NUM_ITEMS_LABELS, None)
+
+
+_NUM_ITEMS_LABELS = "_unsloth_num_items_labels"
+
+
+def _record_num_items_labels(model, head):
+    if getattr(head, "_unsloth_counts_unshifted_labels", False) is True:
+        value = "unshifted"
+    elif getattr(getattr(head, "config", None), "is_encoder_decoder", False):
+        return
+    else:
+        value = "shifted"
+    for m in _loss_kwargs_levels(model):
+        d = getattr(m, "__dict__", None)
+        if d is not None:
+            d[_NUM_ITEMS_LABELS] = value
+
+
+def _num_items_labels(model):
+    for m in _loss_kwargs_levels(model):
+        value = (getattr(m, "__dict__", None) or {}).get(_NUM_ITEMS_LABELS)
+        if value is not None:
+            return value
+    return None
 
 
 def _instance_accepts_loss_kwargs(model):
-    seen = set()
-    m = model
-    for _ in range(8):
-        if m is None or id(m) in seen:
-            return None
-        seen.add(id(m))
-        d = getattr(m, "__dict__", {})
+    for m in _loss_kwargs_chain(model):
+        d = getattr(m, "__dict__", None) or {}
         value = None if _is_guess(d) else d.get("accepts_loss_kwargs", None)
         if value is not None:
             return value
-        nxt = getattr(m, "base_model", None)
-        if nxt is None or nxt is m:
-            nxt = getattr(m, "model", None)
-        m = nxt
     return None
 
 
@@ -5348,6 +6058,16 @@ _CE_PARAMS = {
         "reduce",
         "reduction",
         "label_smoothing",
+    ),
+    "NLLLoss": ("weight", "size_average", "ignore_index", "reduce", "reduction"),
+    "nll_loss": (
+        "input",
+        "target",
+        "weight",
+        "size_average",
+        "ignore_index",
+        "reduce",
+        "reduction",
     ),
 }
 
@@ -5377,6 +6097,8 @@ def _ce_calls_all_mean(source, namespace = None):
 _TORCH_CE = {
     "CrossEntropyLoss": torch.nn.CrossEntropyLoss,
     "cross_entropy": torch.nn.functional.cross_entropy,
+    "NLLLoss": torch.nn.NLLLoss,
+    "nll_loss": torch.nn.functional.nll_loss,
 }
 
 
@@ -5433,26 +6155,9 @@ def _scan_ce_calls(source, namespace = None):
 
 
 def _forward_ignores_num_items_in_batch(model):
-    # Remote code (NemotronH) keeps **kwargs yet returns a mean loss, so HF would skip 1/GA.
-    m = model
-    try:
-        if hasattr(m, "get_base_model"):
-            m = m.get_base_model()
-    except Exception:
-        m = model
-    seen = set()
-    for _ in range(6):
-        if m is None or id(m) in seen:
-            return None
-        seen.add(id(m))
-        name = type(m).__name__
-        if "CausalLM" in name or "ForConditionalGeneration" in name or "LMHeadModel" in name:
-            break
-        nxt = getattr(m, "base_model", None)
-        if nxt is None or nxt is m:
-            nxt = getattr(m, "model", None)
-        m = nxt
-    else:
+    # HF treats **kwargs as consuming num_items_in_batch and skips 1/GA; remote code (NemotronH) keeps **kwargs for generate yet returns a CrossEntropyLoss mean, so loss + grads come out GA x too large.
+    m = _loss_head(model)
+    if m is None:
         return None
     forward = getattr(m, "forward", None)
     try:
@@ -5461,11 +6166,14 @@ def _forward_ignores_num_items_in_batch(model):
         return None
     try:
         params = inspect.signature(forward).parameters.values()
-        source = inspect.getsource(forward)
     except Exception:
         return None
     if not any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params):
         return None
+    resolved = _forward_function_node(forward)
+    if resolved is None:
+        return None
+    _, source, namespace = resolved
     if "num_items_in_batch" in source or "loss_function" in source:
         return None
     used = [
@@ -5476,7 +6184,6 @@ def _forward_ignores_num_items_in_batch(model):
     ]
     if any(sub.reduction != "mean" for sub in used):
         return None
-    namespace = getattr(getattr(forward, "__func__", forward), "__globals__", None) or {}
     all_mean, found = _scan_ce_calls(source, namespace)
     if not all_mean or not (found or used):
         return None
@@ -5496,6 +6203,29 @@ def patch_fast_lora():
     import peft.tuners.lora.bnb
     from ..kernels.fast_lora import fast_lora_forward
     peft.tuners.lora.bnb.Linear4bit.forward = fast_lora_forward
+
+
+# Model types whose norms the compiler's check upcast to float32. The check runs only on a modeling file's first compile, so a later load of the same family replays it from here.
+_HIGH_PRECISION_LAYERNORM_MODEL_TYPES = set()
+
+
+def _start_layernorm_check():
+    # The compiler ORs its check into the inherited value, so clear it to see this type's own answer.
+    prior = os.environ.get("UNSLOTH_HIGH_PRECISION_LAYERNORM")
+    os.environ["UNSLOTH_HIGH_PRECISION_LAYERNORM"] = "0"
+    return prior
+
+
+def _finish_layernorm_check(model_type, prior):
+    detected = os.environ.get("UNSLOTH_HIGH_PRECISION_LAYERNORM", "0") == "1"
+    if detected:
+        _HIGH_PRECISION_LAYERNORM_MODEL_TYPES.add(model_type)
+    if detected or prior == "1" or model_type in _HIGH_PRECISION_LAYERNORM_MODEL_TYPES:
+        os.environ["UNSLOTH_HIGH_PRECISION_LAYERNORM"] = "1"
+    elif prior is None:
+        os.environ.pop("UNSLOTH_HIGH_PRECISION_LAYERNORM", None)
+    else:
+        os.environ["UNSLOTH_HIGH_PRECISION_LAYERNORM"] = prior
 
 
 def unsloth_compile_transformers(
@@ -5560,6 +6290,7 @@ def unsloth_compile_transformers(
     _run_temporary_patches("pre_compile")
 
     for model_type in model_types:
+        prior_high_precision = _start_layernorm_check()
         _unsloth_compile_transformers(
             model_type,
             sdpa_dynamic_mask = sdpa_dynamic_mask,
@@ -5588,6 +6319,7 @@ def unsloth_compile_transformers(
             return_logits = return_logits,
             supports_sdpa = supports_sdpa,
         )
+        _finish_layernorm_check(model_type, prior_high_precision)
     _run_temporary_patches("post_compile")
     return model_types, supports_sdpa[0]
 
@@ -5722,6 +6454,19 @@ def validate_init_target_parameters(init_lora_weights, target_parameters):
             f"Unsloth: `init_lora_weights = {init_lora_weights!r}` cannot initialize fused MoE expert "
             f"parameters ({target_parameters}).\n"
             "Pass `target_parameters = []` to apply it to the other layers only, or use another init."
+        )
+
+
+def reject_alora(model, requested = None):
+    # Unsloth's LoRA forwards never apply aLoRA's invocation offsets, so the adapter would fire on every token (#2471).
+    configs = (getattr(model, "peft_config", None) or {}).values()
+    if requested is not None or any(
+        getattr(c, "alora_invocation_tokens", None) is not None for c in configs
+    ):
+        raise NotImplementedError(
+            "Unsloth: Activated LoRA (`alora_invocation_tokens`) is not supported yet. "
+            "Unsloth would apply the adapter to every token, not only after the invocation tokens.\n"
+            "Use plain `transformers` + `peft` for aLoRA, or drop `alora_invocation_tokens` for a normal LoRA."
         )
 
 
@@ -6353,6 +7098,9 @@ def _check_block_swap(model_or_config):
 
 
 def _new_block_swap(layers, n, *args, placement, **kwargs):
+    if args and args[0] == "auto" and not hasattr(BlockSwap, "stats"):
+        # unsloth_zoo before prefetch_depth = "auto" takes a count only.
+        args = (2,) + args[1:]
     try:
         return BlockSwap(layers, n, *args, placement = placement, **kwargs)
     except TypeError as e:
@@ -6366,8 +7114,27 @@ def legacy_offload_layers(kwargs, offload_layers = None):
     """`offload_layers`, or its original name `block_swap_layers` from `kwargs` when it was not given (0 = off)."""
     legacy = kwargs.pop("block_swap_layers", None)
     if offload_layers is None:
-        return 0 if legacy is None else legacy
+        offload_layers = 0 if legacy is None else legacy
+    if offload_layers is False:
+        # False always meant off; only True is ambiguous.
+        offload_layers = 0
+    if offload_layers != "auto" and (
+        isinstance(offload_layers, bool)
+        or not isinstance(offload_layers, int)
+        or offload_layers < 0
+    ):
+        raise ValueError(
+            f"Unsloth: offload_layers must be a layer count (0 = off) or 'auto', not {offload_layers!r}."
+        )
     return offload_layers
+
+
+def prefetch_depth_arg(kwargs):
+    """get_peft_model(prefetch_depth = k | "auto"): layers fetched ahead of the one running (default 2)."""
+    depth = kwargs.pop("prefetch_depth", 2)
+    if depth != "auto" and (isinstance(depth, bool) or not isinstance(depth, int) or depth < 1):
+        raise ValueError(f"Unsloth: prefetch_depth must be 1 or more, or 'auto', not {depth!r}.")
+    return depth
 
 
 def refuse_block_swap_load(offload_layers, reason):
@@ -6415,9 +7182,18 @@ def begin_block_swap_load(
     return load_layers_to_host(offload_layers, placement = "spread")
 
 
+def auto_plan_depth(prefetch_depth):
+    """The slot pool a swap built at `prefetch_depth` starts with, which an auto plan must reserve:
+    "auto" begins one slot ahead on a zoo that adapts, at the fixed 2 on one that does not."""
+    if prefetch_depth != "auto":
+        return prefetch_depth
+    return 1 if hasattr(BlockSwap, "stats") else 2
+
+
 def planned_prefetch_depth(device_map_planner_kwargs):
-    # Must match the depth "auto" sized the slot pool with.
-    return int((device_map_planner_kwargs or {}).get("prefetch_depth", 2))
+    # The depth "auto" sized the slot pool with; the swapper must allocate the same pool.
+    depth = (device_map_planner_kwargs or {}).get("prefetch_depth", 2)
+    return depth if depth == "auto" else int(depth)
 
 
 def finish_block_swap_load(
@@ -6647,8 +7423,9 @@ def install_block_swap(
             return None
         if BlockSwap is None:
             _check_block_swap(model)
+        # An adaptive pool starts at one slot ahead and only grows into room it finds free.
         model._unsloth_offload_layers_auto = prefetch_depth
-        offload_layers = _auto_block_swap_indices(model, prefetch_depth)
+        offload_layers = _auto_block_swap_indices(model, auto_plan_depth(prefetch_depth))
         if not offload_layers:
             return None
     _check_block_swap(model)
@@ -6755,14 +7532,20 @@ def replan_auto_offload_for_trainer(trainer):
                 f"get_peft_model(offload_layers = {want}) or lower per_device_train_batch_size."
             )
             return swapper
-    elif not auto_swap_indices(layers, reserve, prefetch_depth)[0]:
+    elif not auto_swap_indices(layers, reserve, auto_plan_depth(prefetch_depth))[0]:
         return swapper
     if swapper is not None:
         swapper.remove()
         layers._unsloth_block_swap = None
         model._unsloth_block_swap = None
     try:
-        indices = _auto_block_swap_indices(model, prefetch_depth, batch_size = rows, seq_len = seq_len)
+        indices = _auto_block_swap_indices(
+            model,
+            auto_plan_depth(prefetch_depth),
+            batch_size = rows,
+            seq_len = seq_len,
+        )
+        # Union: old layers stay swapped (checkpoint_skip_layers chose among the rest), new picks kept.
         indices = sorted(set(old) | set(indices))
         if not indices:
             return None

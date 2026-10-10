@@ -578,7 +578,9 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
         "function stopLocalPromptQueueRun(run: PromptQueueRun)",
         "function stopLocalPromptQueueRunsForThreadIds(threadIds: string[])",
     )
-    assert "if (plan.refreshTargetIdleWait)" in local_queue_stop
+    # #10428: a model change holds unsent local prompts for Resume instead of dropping them.
+    assert "item.blockedByModelFailure = true;" in local_queue_stop
+    assert "item.target.releaseModel();" in local_queue_stop
     assert "refreshPromptQueueTargetIdleWait(run);" in local_queue_stop
     assert "claimPreStreamRunReservation(reservationToken);" in RUNTIME_PROVIDER
     assert "if (!reservation.claimed)" in PRE_STREAM_RESERVATION

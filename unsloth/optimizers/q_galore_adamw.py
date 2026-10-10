@@ -107,6 +107,39 @@ class QGaLoreAdamW8bit(Optimizer2State):
             **legacy_kwargs,
         )
 
+    def state_dict(self):
+        # A raw GaLoreProjector fails transformers' weights_only resume load and keeps its tensors on CPU.
+        state_dict = super().state_dict()
+        for key, param_state in state_dict["state"].items():
+            if isinstance(param_state, dict) and isinstance(
+                param_state.get("projector"), GaLoreProjector
+            ):
+                state_dict["state"][key] = {
+                    **param_state,
+                    "projector": param_state["projector"].state_dict(),
+                }
+        return state_dict
+
+    def load_state_dict(self, state_dict, *args, **kwargs):
+        # Projectors bypass the base cast, which would downcast float32 bases to the param dtype.
+        projectors, state = {}, {}
+        for key, param_state in state_dict["state"].items():
+            projector = param_state.get("projector") if isinstance(param_state, dict) else None
+            if isinstance(projector, GaLoreProjector):
+                projector = projector.state_dict()
+            if isinstance(projector, dict):
+                param_state = {k: v for k, v in param_state.items() if k != "projector"}
+                projectors[key] = projector
+            state[key] = param_state
+        super().load_state_dict({**state_dict, "state": state}, *args, **kwargs)
+        saved_ids = (i for g in state_dict["param_groups"] for i in g["params"])
+        params = (p for g in self.param_groups for p in g["params"])
+        for key, p in zip(saved_ids, params):
+            if key in projectors:
+                self.state[p]["projector"] = GaLoreProjector.from_state_dict(
+                    projectors[key], device = p.device
+                )
+
     @torch.no_grad()
     def step(self, closure = None):
         """Perform a single optimization step.

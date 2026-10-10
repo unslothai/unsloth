@@ -92,6 +92,7 @@ def _run(source: str, inputs: dict):
         "_unsloth_reject_grpo_image_list": lambda *a, **k: None,
         "_unsloth_grpo_image_cell": lambda cell: cell if isinstance(cell, list) else [cell],
         "_unsloth_grpo_vision_inputs": lambda inputs: {},
+        "_unsloth_grpo_video_inputs": lambda *args, **kwargs: None,
         "sanitize_logprob": lambda x: x,
     }
     exec(

@@ -1921,6 +1921,49 @@ def fix_transformers_fully_masked_rows():
         logger.info(f"Unsloth: Failed patching sdpa_mask ({e})")
 
 
+_PACKED_SEQUENCE_PATCH_FLAG = "_unsloth_patched_is_packed_sequence"
+
+
+def _mrope_position_ids_read_as_packed(is_packed_sequence):
+    """Does `_is_packed_sequence` call Qwen3.5's `(3, 1, L)` mRoPE ids packed (transformers#44910)?"""
+    try:
+        import torch
+        positions = torch.arange(4, device = "cpu").view(1, 1, 4).expand(3, 1, 4)
+        return bool(is_packed_sequence(positions, batch_size = 1))
+    except Exception:
+        return False
+
+
+def fix_transformers_flash_attention_mrope_packed_sequence():
+    """Stop transformers 5.3 turning Qwen3.5's `(3, 1, L)` mRoPE ids into out-of-bounds
+    `cu_seqlens = [0, L, 2L, 3L]`: packed ids are flattened 2D `(1, total)`, never more dims.
+    """
+    try:
+        from transformers import modeling_flash_attention_utils as fa_utils
+    except Exception:
+        return
+    current = getattr(fa_utils, "_is_packed_sequence", None)
+    if current is None or getattr(current, _PACKED_SEQUENCE_PATCH_FLAG, False):
+        return
+    original = getattr(current, "__wrapped__", current)
+    if not _mrope_position_ids_read_as_packed(original):
+        return
+
+    @functools.wraps(original)
+    def _is_packed_sequence(position_ids, batch_size):
+        if position_ids is not None and position_ids.dim() > 2:
+            return False
+        return original(position_ids, batch_size)
+
+    _is_packed_sequence.__wrapped__ = original
+    setattr(_is_packed_sequence, _PACKED_SEQUENCE_PATCH_FLAG, True)
+    fa_utils._is_packed_sequence = _is_packed_sequence
+    logger.info(
+        "Unsloth: Patching transformers `_is_packed_sequence` so flash attention never "
+        "reads mRoPE position ids as packed sequences (transformers#44910)"
+    )
+
+
 _CHUNKED_MASK_PATCH_FLAG = "_unsloth_patched_chunked_block_sequence_ids"
 _BLOCK_SEQUENCE_IDS = "block_sequence_ids"
 
@@ -2544,6 +2587,77 @@ def fix_transformers_composite_prefix_renaming():
         )
     except Exception as e:
         logger.info(f"Unsloth: Failed patching get_model_conversion_mapping ({e})")
+
+
+_BNB_PREQUANTIZED_SAVE_FLAG = "_unsloth_skips_bnb_deserialize_on_save"
+
+
+def _bnb_deserialize_ops_without_reverse():
+    """The bitsandbytes deserialize ops on this transformers whose `reverse_op` raises."""
+    try:
+        from transformers.integrations import bitsandbytes as bnb_integration
+    except Exception:
+        return ()
+    broken = []
+    for name in ("Bnb4bitDeserialize", "Bnb8bitDeserialize"):
+        op_class = getattr(bnb_integration, name, None)
+        if not isinstance(op_class, type):
+            continue
+        try:
+            op_class.__new__(op_class).reverse_op
+        except NotImplementedError:
+            broken.append(op_class)
+        except Exception:
+            continue
+    return tuple(broken)
+
+
+def fix_transformers_bnb_prequantized_save():
+    """transformers 5.x: `save_pretrained` reverses the `Bnb{4,8}bitDeserialize` converter a
+    pre-quantized load attaches, and neither op has a `reverse_op` (NotImplementedError, #638;
+    upstream PR #45743 closed unmerged). Quantized modules already emit the checkpoint layout,
+    so skip that converter on save. Probe-gated on `reverse_op` raising."""
+    broken_ops = _bnb_deserialize_ops_without_reverse()
+    if not broken_ops:
+        return
+    try:
+        from transformers import core_model_loading, modeling_utils
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping the bitsandbytes save fix ({e})")
+        return
+    original = getattr(core_model_loading, "revert_weight_conversion", None)
+    if original is None or getattr(original, _BNB_PREQUANTIZED_SAVE_FLAG, False):
+        return
+
+    def _is_bnb_deserialize(conversion):
+        operations = getattr(conversion, "operations", None)
+        return bool(operations) and all(isinstance(op, broken_ops) for op in operations)
+
+    @functools.wraps(original)
+    def revert_weight_conversion(model, *args, **kwargs):
+        conversions = getattr(model, "_weight_conversions", None)
+        if not isinstance(conversions, list) or not any(map(_is_bnb_deserialize, conversions)):
+            return original(model, *args, **kwargs)
+        # An empty list, never None: None makes transformers rebuild the default mapping.
+        model._weight_conversions = [c for c in conversions if not _is_bnb_deserialize(c)]
+        try:
+            return original(model, *args, **kwargs)
+        finally:
+            model._weight_conversions = conversions
+
+    revert_weight_conversion.__wrapped__ = original
+    setattr(revert_weight_conversion, _BNB_PREQUANTIZED_SAVE_FLAG, True)
+    try:
+        core_model_loading.revert_weight_conversion = revert_weight_conversion
+        # modeling_utils binds the function at import (`from .core_model_loading import ...`).
+        if modeling_utils.__dict__.get("revert_weight_conversion") is original:
+            modeling_utils.revert_weight_conversion = revert_weight_conversion
+        logger.info(
+            "Unsloth: Patching transformers `revert_weight_conversion` so a pre-quantized "
+            "bitsandbytes model can be saved"
+        )
+    except Exception as e:
+        logger.info(f"Unsloth: Failed patching revert_weight_conversion ({e})")
 
 
 _ROPE_SCALING_PATCH_FLAG = "_unsloth_patched_rope_scaling_setter"
@@ -4636,7 +4750,39 @@ def patch_enable_input_require_grads():
             return _RequireGrad.apply(output, anchor)
         output.requires_grad_(True)
 
-    # Older transformers hooks a single embedding; wraps keeps inspect.getsource on transformers.
+    def make_inputs_embeds_require_grads(module, args, kwargs):
+        # inputs_embeds skips the embedding hook, so reentrant checkpointing starved the adapters (#2178).
+        inputs_embeds = kwargs.get("inputs_embeds")
+        if (
+            not isinstance(inputs_embeds, torch.Tensor)
+            or inputs_embeds.requires_grad
+            or not torch.is_grad_enabled()
+            or not inputs_embeds.is_floating_point()
+        ):
+            return None
+        if torch.compiler.is_compiling():
+            inputs_embeds = _RequireGrad.apply(inputs_embeds, anchor)
+        else:
+            inputs_embeds = inputs_embeds.detach().requires_grad_(True)
+        return args, {**kwargs, "inputs_embeds": inputs_embeds}
+
+    def register_inputs_embeds_hooks(model):
+        # Replace, not stack: a repeat enable keeps one hook, and disable can remove it.
+        handles = []
+        for module in model.modules():
+            if not isinstance(module, PreTrainedModel):
+                continue
+            for key, hook in list(module._forward_pre_hooks.items()):
+                if getattr(hook, "__name__", None) == make_inputs_embeds_require_grads.__name__:
+                    del module._forward_pre_hooks[key]
+                    module._forward_pre_hooks_with_kwargs.pop(key, None)
+            handles.append(
+                module.register_forward_pre_hook(make_inputs_embeds_require_grads, with_kwargs = True)
+            )
+        return handles
+
+    # Older transformers hooks a single embedding (huggingface/transformers#41993 added the loop).
+    # wraps keeps inspect.getsource on transformers' source for later source checks.
     original = PreTrainedModel.enable_input_require_grads
     if "for module in self.modules()" not in original_source:
 
@@ -4645,8 +4791,22 @@ def patch_enable_input_require_grads():
             self._require_grads_hook = self.get_input_embeddings().register_forward_hook(
                 make_inputs_require_grads
             )
+            self._require_grads_hooks = [self._require_grads_hook] + register_inputs_embeds_hooks(
+                self
+            )
+
+        original_disable = PreTrainedModel.disable_input_require_grads
+
+        # The old disable only removes _require_grads_hook, which would leave the pre-hooks.
+        @functools.wraps(original_disable)
+        def _patched_single_disable_input_require_grads(self):
+            for hook in getattr(self, "_require_grads_hooks", ()):
+                hook.remove()
+            self._require_grads_hooks = []
+            original_disable(self)
 
         PreTrainedModel.enable_input_require_grads = _patched_single_enable_input_require_grads
+        PreTrainedModel.disable_input_require_grads = _patched_single_disable_input_require_grads
         return
 
     @functools.wraps(original)
@@ -4685,7 +4845,7 @@ def patch_enable_input_require_grads():
             seen_modules.add(embedding_id)
             hooks.append(input_embeddings.register_forward_hook(make_inputs_require_grads))
 
-        self._require_grads_hooks = hooks
+        self._require_grads_hooks = hooks + register_inputs_embeds_hooks(self)
         if hooks:
             self._require_grads_hook = hooks[0]
 
@@ -4758,6 +4918,75 @@ def patch_unsafe_trainer_rng_load():
     _unsloth_safe_load_rng_state._unsloth_safe_rng_load = True
     Trainer._load_rng_state = _unsloth_safe_load_rng_state
     logger.info("Unsloth: Hardened Trainer._load_rng_state rng loading (CVE-2026-1839).")
+
+
+def patch_bitsandbytes_paged_optimizer_resume():
+    """Keep paged bitsandbytes optimizer state paged after a checkpoint resume (#2168).
+    Optimizer8bit.load_state_dict moves every state1/state2 into plain CUDA memory, so a resumed
+    paged_* run holds that state in the CUDA allocator (or OOMs loading it), where a fresh run
+    keeps it in paged memory that can spill to CPU. Load it on the host instead and copy each
+    tensor into the buffer a fresh run would allocate (get_state_buffer, or AdEMAMix's doubled
+    state1); everything else still moves to the parameter's device as before."""
+    if "bitsandbytes" not in sys.modules:
+        return
+    try:
+        from bitsandbytes.optim.optimizer import Optimizer8bit
+    except Exception:
+        return
+    load_state_dict = getattr(Optimizer8bit, "load_state_dict", None)
+    if (
+        load_state_dict is None
+        or not hasattr(Optimizer8bit, "get_state_buffer")
+        or getattr(load_state_dict, "_unsloth_repage", False)
+    ):
+        return
+    try:
+        stages_on_host = "move_to_device" in inspect.signature(load_state_dict).parameters
+    except (TypeError, ValueError):
+        stages_on_host = False
+
+    import torch
+
+    def _paged_buffer(self, p, value):
+        if value.shape == p.shape:
+            buffer = self.get_state_buffer(p, dtype = value.dtype)
+        elif value.shape == (2, *p.shape) and hasattr(self, "_get_state_double_buffer"):
+            buffer = self._get_state_double_buffer(p, dtype = value.dtype)
+        else:
+            return None
+        return buffer if getattr(buffer, "is_paged", False) else None
+
+    @functools.wraps(load_state_dict)
+    def _unsloth_load_state_dict(self, state_dict, *args, **kwargs):
+        if not getattr(self, "is_paged", False):
+            return load_state_dict(self, state_dict, *args, **kwargs)
+        move_to_device = kwargs.pop("move_to_device", args[0] if args else True)
+        if stages_on_host:
+            result = load_state_dict(self, state_dict, False, *args[1:], **kwargs)
+        else:
+            result = load_state_dict(self, state_dict, *args, **kwargs)
+        non_castable = getattr(self, "non_castable_tensor_keys", ("state1", "state2"))
+        for group in self.param_groups:
+            for p in group["params"]:
+                state = self.state.get(p)
+                if not state:
+                    continue
+                for key, value in state.items():
+                    # No is_paged check: torch.save keeps that attribute, so a loaded host copy still claims it.
+                    if key not in non_castable or not isinstance(value, torch.Tensor):
+                        continue
+                    buffer = None
+                    if move_to_device and key in ("state1", "state2") and p.device.type != "cpu":
+                        buffer = _paged_buffer(self, p, value)
+                    if buffer is not None:
+                        buffer.copy_(value)
+                        state[key] = buffer
+                    elif move_to_device and stages_on_host:
+                        state[key] = value.to(p.device)
+        return result
+
+    _unsloth_load_state_dict._unsloth_repage = True
+    Optimizer8bit.load_state_dict = _unsloth_load_state_dict
 
 
 _PT2_UNSAFE_LOAD_ENV = "UNSLOTH_ALLOW_UNSAFE_PT2_LOAD"
@@ -7094,27 +7323,32 @@ def disable_torchcodec_if_broken():
     their existing except ImportError handlers cleanly.
     """
     mismatch_hint = _torchcodec_version_mismatch_hint()
-    if mismatch_hint is not None:
+
+    def _warn_mismatch():
+        if mismatch_hint is None:
+            return
         try:
             import warnings
-            warnings.warn(mismatch_hint, stacklevel = 2)
+            warnings.warn(mismatch_hint, stacklevel = 3)
         except Exception:
             # Warnings promoted to errors must not abort the disable fallback below.
             pass
+
     try:
         import importlib.util
         if importlib.util.find_spec("torchcodec") is None:
-            return
+            _warn_mismatch()
+            return  # absent or already disabled
 
         # A broken wheel can raise anything; the package is present, so every shape is broken.
         from torchcodec.decoders import AudioDecoder
     except Exception as load_error:
-        if mismatch_hint is None:
+        remedy_hint = mismatch_hint
+        if remedy_hint is None:
+            # Versions agree, so the load failed for another reason. A mismatched accelerator
+            # build is the one this can still name, and the one pinning the index repairs.
             try:
-                provenance_hint = _torchcodec_provenance_hint()
-                if provenance_hint is not None:
-                    import warnings
-                    warnings.warn(provenance_hint, stacklevel = 2)
+                remedy_hint = _torchcodec_provenance_hint()
             except Exception:
                 pass
         # transformers: flip the flag (<5) and/or rebind the lru_cache'd func (>=5).
@@ -7163,9 +7397,15 @@ def disable_torchcodec_if_broken():
                 if decodes
                 else "audio datasets will not decode until soundfile and PyAV are installed (pip install soundfile av)"
             )
-            warnings.warn(f"Unsloth: torchcodec is installed but {note}; {tail}.", stacklevel = 2)
+            # One warning per broken codec; the version remedy rides along.
+            remedy = f" {remedy_hint}" if remedy_hint is not None else ""
+            warnings.warn(
+                f"Unsloth: torchcodec is installed but {note}; {tail}.{remedy}", stacklevel = 2
+            )
         except Exception:
-            pass
+            pass  # a report must never abort the disable fallback above
+    else:
+        _warn_mismatch()
 
 
 def _audio_av_open(av, source):

@@ -18,6 +18,8 @@ import triton.language as tl
 from torch.nn import functional as F
 import math
 from unsloth_zoo.utils import Version
+
+from .indexing import long_indexing
 from unsloth_zoo.log import logger
 from unsloth_zoo.temporary_patches.common import torch_compile
 
@@ -210,9 +212,18 @@ def weight_dequant(
 
 # Copied from huggingface.co/deepseek-ai/DeepSeek-V3 inference/kernel.py
 @triton.jit
-def act_quant_kernel(x_ptr, y_ptr, s_ptr, BLOCK_SIZE: tl.constexpr):
+def act_quant_kernel(
+    x_ptr,
+    y_ptr,
+    s_ptr,
+    BLOCK_SIZE: tl.constexpr,
+    LONG_INDEXING: tl.constexpr = False,
+):
     pid = tl.program_id(axis = 0)
-    offs = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+    if LONG_INDEXING:
+        offs = pid.to(tl.int64) * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE).to(tl.int64)
+    else:
+        offs = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     x = tl.load(x_ptr + offs).to(tl.float32)
     s = tl.max(tl.abs(x)) / 448.0
     # All-zero row: keep scale at 1 so LoRA's zero dY does not become NaN (a deviation from the original
@@ -242,7 +253,7 @@ def act_quant(x: torch.Tensor, block_size: int = 128) -> tuple[torch.Tensor, tor
         return (triton.cdiv(x.numel(), meta["BLOCK_SIZE"]),)
 
     with _fp8_triton_device_context(x):
-        act_quant_kernel[grid](x, y, s, BLOCK_SIZE = block_size)
+        act_quant_kernel[grid](x, y, s, BLOCK_SIZE = block_size, LONG_INDEXING = long_indexing(x))
     return y, s
 
 
@@ -273,6 +284,7 @@ def _w8a8_block_fp8_matmul(
     BLOCK_SIZE_N: tl.constexpr,
     BLOCK_SIZE_K: tl.constexpr,
     GROUP_SIZE_M: tl.constexpr,
+    LONG_INDEXING: tl.constexpr = False,
 ):
     """Triton-accelerated function used to perform linear operations (dot
     product) on input tensors `A` and `B` with block-wise quantization, and
@@ -292,6 +304,9 @@ def _w8a8_block_fp8_matmul(
     offs_am = (pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)) % M
     offs_bn = (pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)) % N
     offs_k = tl.arange(0, BLOCK_SIZE_K)
+    if LONG_INDEXING:
+        offs_am = offs_am.to(tl.int64)
+        offs_bn = offs_bn.to(tl.int64)
     a_ptrs = A + (offs_am[:, None] * stride_am + offs_k[None, :] * stride_ak)
     b_ptrs = B + (offs_k[:, None] * stride_bk + offs_bn[None, :] * stride_bn)
 
@@ -322,6 +337,9 @@ def _w8a8_block_fp8_matmul(
 
     offs_cm = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
     offs_cn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
+    if LONG_INDEXING:
+        offs_cm = offs_cm.to(tl.int64)
+        offs_cn = offs_cn.to(tl.int64)
     c_ptrs = C + stride_cm * offs_cm[:, None] + stride_cn * offs_cn[None, :]
     c_mask = (offs_cm[:, None] < M) & (offs_cn[None, :] < N)
     tl.store(c_ptrs, c, mask = c_mask)
@@ -394,6 +412,7 @@ def w8a8_block_fp8_matmul_triton(
             BLOCK_SIZE_N = BLOCK_SIZE_N,
             BLOCK_SIZE_K = BLOCK_SIZE_K,
             GROUP_SIZE_M = 8,
+            LONG_INDEXING = long_indexing(A, B, C),
             # Default 4 warps starve 128x128 tiles (8 is 1.3-2.1x faster from M >= 128); smaller decode tiles gain nothing.
             num_warps = 8 if BLOCK_SIZE_M == 128 else 4,
         )
@@ -414,6 +433,13 @@ def torchao_block_matmul(
     block_size: list[int],
     output_dtype: torch.dtype = torch.bfloat16,
 ) -> torch.Tensor:
+    # torchao's kernel indexes in int32 too, so route launches past 2**31 elements to the int64 one.
+    if long_indexing(act_q, weight_q) or (
+        act_q.numel() // act_q.shape[-1] * weight_q.shape[0] >= 2**31
+    ):
+        return w8a8_block_fp8_matmul_triton(
+            act_q, weight_q, act_scale, weight_scale, block_size, output_dtype = output_dtype
+        )
     with _fp8_triton_device_context(act_q):
         out = torchao_blockwise_gemm(
             act_q.contiguous(),

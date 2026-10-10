@@ -206,6 +206,9 @@ _CLOCKS = ("monotonic", "perf_counter", "process_time", "time")
 # deadlines, and sentinels. Keyed on the enclosing function, not a line number.
 BENIGN_TIMING = {
     ("test_media_auto_switch.py", "_until"),
+    # A 600 s poll deadline while llama-server loads the model: descheduling only delays the poll.
+    ("test_decision_native_gpu.py", "_bare_llama_server"),
+    # A 10 s poll deadline: descheduling only delays the poll, it cannot make the condition false.
     ("test_npu_chat_route.py", "_wait_for"),
     ("test_openai_auto_switch.py", "test_any_finished_download_drops_the_resolver_cache"),
     # A 600-second expiry vs the wall clock; late reads cannot make it false.

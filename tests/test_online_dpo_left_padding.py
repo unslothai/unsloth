@@ -33,6 +33,21 @@ TRL_0_22_FORWARD = """
 """
 
 
+# TRL 0.18-0.19 spelling of the slice.
+TRL_0_18_FORWARD = """
+    def _forward(self, model, prompt_ids, prompt_mask, completion_ids, completion_mask):
+        num_tokens_to_truncate = max(prompt_ids.size(1) + completion_ids.size(1) - self.max_length, 0)
+        prompt_ids = prompt_ids[:, num_tokens_to_truncate:]
+        prompt_mask = prompt_mask[:, num_tokens_to_truncate:]
+        prompt_completion_ids = torch.cat((prompt_ids, completion_ids), dim=1)
+        prompt_completion_mask = torch.cat((prompt_mask, completion_mask), dim=1)
+        output = model(prompt_completion_ids, attention_mask=prompt_completion_mask)
+        logits = output.logits[:, prompt_ids.size(1) - 1 : -1]
+        logprobs = torch.take_along_dim(logits.log_softmax(dim=-1), completion_ids.unsqueeze(-1), dim=2).squeeze(-1)
+        return logprobs
+"""
+
+
 def _patcher():
     tree = ast.parse(SOURCE.read_text(encoding = "utf-8"))
     wanted = [
@@ -54,8 +69,8 @@ def _compile(source):
 
 
 def _trl_sources():
-    # Read TRL's file: an imported unsloth has already swapped in its patched trainer.
-    sources = {"trl-0.22.2": TRL_0_22_FORWARD}
+    # Read TRL's file, not the live class: an imported unsloth has already swapped in its patched trainer.
+    sources = {"trl-0.18.2": TRL_0_18_FORWARD, "trl-0.22.2": TRL_0_22_FORWARD}
     spec = importlib.util.find_spec("trl")
     if spec is None or not spec.submodule_search_locations:
         return sources

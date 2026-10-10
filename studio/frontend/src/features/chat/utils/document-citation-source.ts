@@ -8,7 +8,9 @@ export function isSafeNavigableSourceUrl(raw: unknown): string {
   try {
     const parsed = new URL(value);
     if (parsed.protocol === "http:" || parsed.protocol === "https:") {
-      return value;
+      // The parsed form: `https:evil.example` or a tab inside `https:\t//` parse as absolute, but the raw string
+      // has no `://`, so openLink would treat it as relative and let it replace Studio's own page.
+      return parsed.href;
     }
   } catch {}
   return "";

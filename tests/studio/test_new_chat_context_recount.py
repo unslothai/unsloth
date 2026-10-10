@@ -608,9 +608,23 @@ export async function hydrateThreadUsage(props: any): Promise<void> {
   // The loader is created per pane; a compare pane carries a pairId and never owns the bar.
   const modelType: string = props.modelType ?? "base";
   const pairId = props.pairId ?? undefined;
-  // The thread's stored messages, which the loader reads into `msgs` above the sliced block.
-  // The block prices them with `estimateContextUsage` when nothing saved is usable (#9475).
-  const msgs: any[] = props.messages ?? [];
+  // The thread's stored messages, which the loader reads into `msgs` and sorts above the sliced
+  // block (createdAt, then role, then id), so `msgs.at(-1)` below is the newest stored row.
+  const roleOrder: Record<string, number> = { system: 0, user: 1, assistant: 2 };
+  const msgs: any[] = [...(props.messages ?? [])].sort((a: any, b: any) => {
+    if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
+    const aOrder = roleOrder[a.role] ?? 99;
+    const bOrder = roleOrder[b.role] ?? 99;
+    if (aOrder !== bOrder) return aOrder - bOrder;
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  });
+  // The branch the loader selects from `msgs` above the sliced block, which the block prices with
+  // `estimateContextUsage` when nothing saved is usable (#9475, #13109). No head is saved here, so
+  // it follows the newest stored row to its leaf, as the loader does without one.
+  const branch: any[] = orderBySelectedBranch(
+    msgs,
+    resolveSavedBranchHead(msgs, props.savedHeadId ?? msgs.at(-1)?.id),
+  );
   // Read once, as the loader does, just above the sliced block.
   const store = useChatRuntimeStore.getState();
 __RESTORE__
@@ -1570,9 +1584,12 @@ def test_the_harness_binds_every_loader_local_the_history_restore_reads() -> Non
         for name in declared_above - declared_in_slice
         if re.search(rf"(?<![\w$.]){re.escape(name)}\b", code)
     )
-    assert {"msgs", "remoteId"} <= set(
-        read_from_above
-    ), "the guard no longer sees the restore read `msgs` and the destructured `remoteId`"
+    # The block's own inputs change (#13109 moved the estimate from `msgs` to the selected
+    # `branch`), so pin only what proves the scan works: the destructured `remoteId`, and at least
+    # one plain `const` from above the slice.
+    assert "remoteId" in read_from_above and set(read_from_above) - {
+        "remoteId"
+    }, f"the guard no longer sees the restore read loader locals, only {read_from_above}"
     bound = _declared_names(HARNESS_HISTORY)
     missing = [name for name in read_from_above if name not in bound]
     assert not missing, (

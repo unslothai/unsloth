@@ -719,11 +719,109 @@ def test_sharing_the_attached_image_asks_even_with_bypass(executed, monkeypatch)
     start = _events(lines, "tool_start")[0]
     assert start["awaiting_confirmation"] is True and start["image_disclosure"] == disclosure
     assert len(asked) == 1 and executed[0]["mcp_image"] == image.approved_for("r1")
-    # Without an image the same call keeps the ordinary path: no card, no image.
     executed.clear()
     lines = _run(FakeTransport(turns), bypass_permissions = True)
     assert _events(lines, "tool_start")[0]["awaiting_confirmation"] is False
     assert "mcp_image" not in executed[0]
+
+
+def test_settled_image_call_is_replayed_and_deduped_with_sent_arguments(executed, monkeypatch):
+    from core.inference.mcp_image import ATTACHED_IMAGE, McpImage
+
+    image = McpImage(mime = "image/png", data = b"IMG")
+    shared = {
+        "disclosure": {"server": "Trace", "tool": "lookup", "size_bytes": 3},
+        "image": image.approved_for("r1"),
+    }
+
+    def settle(_name, arguments, _image):
+        arguments["image"] = ATTACHED_IMAGE
+        return shared
+
+    monkeypatch.setattr(loop_mod, "mcp_image_share", settle)
+    monkeypatch.setattr(loop_mod, "begin_tool_decision", lambda *_args: object())
+    monkeypatch.setattr(loop_mod, "wait_tool_decision", lambda *_args, **_kwargs: "allow")
+    monkeypatch.setattr(loop_mod, "abort_tool_decision", lambda *_args: None)
+    call = {"index": 0, "function": {"name": "python", "arguments": "{}"}}
+    transport = FakeTransport(
+        [
+            [_sse({"tool_calls": [{**call, "id": "c1"}]}), _sse(finish = "tool_calls"), _DONE],
+            [_sse({"tool_calls": [{**call, "id": "c2"}]}), _sse(finish = "tool_calls"), _DONE],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+    _run(transport, tools = [PY], mcp_image = image, bypass_permissions = True)
+
+    assert len(executed) == 1
+    replayed = next(
+        message
+        for message in reversed(transport.requests[1]["messages"])
+        if message.get("role") == "assistant" and message.get("tool_calls")
+    )
+    assert json.loads(replayed["tool_calls"][0]["function"]["arguments"]) == {
+        "image": ATTACHED_IMAGE
+    }
+
+
+def test_settled_image_call_keeps_signed_provider_replay_exact(executed, monkeypatch):
+    from core.inference.mcp_image import ATTACHED_IMAGE, McpImage
+
+    image = McpImage(mime = "image/png", data = b"IMG")
+
+    def settle(_name, arguments, _image):
+        arguments["image"] = ATTACHED_IMAGE
+        return {
+            "disclosure": {"server": "Trace", "tool": "lookup", "size_bytes": 3},
+            "image": image.approved_for("r1"),
+        }
+
+    monkeypatch.setattr(loop_mod, "mcp_image_share", settle)
+    monkeypatch.setattr(loop_mod, "begin_tool_decision", lambda *_args: object())
+    monkeypatch.setattr(loop_mod, "wait_tool_decision", lambda *_args, **_kwargs: "allow")
+    monkeypatch.setattr(loop_mod, "abort_tool_decision", lambda *_args: None)
+    call = {
+        "index": 0,
+        "id": "c1",
+        "function": {"name": "python", "arguments": "{ }"},
+        "extra_content": {"google": {"thought_signature": "SIG-A"}},
+    }
+    transport = FakeTransport(
+        [
+            [_sse({"tool_calls": [call]}), _sse(finish = "tool_calls"), _DONE],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+    _run(transport, tools = [PY], mcp_image = image, bypass_permissions = True)
+
+    assert executed[0]["arguments"] == {"image": ATTACHED_IMAGE}
+    replayed = next(
+        message
+        for message in reversed(transport.requests[1]["messages"])
+        if message.get("role") == "assistant" and message.get("tool_calls")
+    )["tool_calls"][0]
+    assert replayed["function"]["arguments"] == "{ }"
+    assert replayed["extra_content"] == {"google": {"thought_signature": "SIG-A"}}
+
+
+def test_the_model_is_told_about_the_attached_image(executed, monkeypatch):
+    from core.inference.mcp_image import McpImage
+
+    monkeypatch.setattr(
+        loop_mod, "mcp_image_targets", lambda names: [("mcp__srv1__lookup", "image")]
+    )
+    turns = [[_sse({"content": "ok"}), _sse(finish = "stop"), _DONE]]
+    messages = [{"role": "user", "content": "what anime is this?"}]
+    transport = FakeTransport(turns)
+    _run(transport, messages = messages, mcp_image = McpImage(mime = "image/png", data = b"IMG"))
+    sent = transport.requests[0]["messages"][-1]["content"]
+    assert sent.startswith("what anime is this?\n\n[The user attached an image")
+    assert 'mcp__srv1__lookup with {"image": "attached_image"}' in sent
+    assert messages == [{"role": "user", "content": "what anime is this?"}]
+    transport = FakeTransport(turns)
+    _run(transport, messages = messages)
+    assert transport.requests[0]["messages"][-1]["content"] == "what anime is this?"
 
 
 def test_full_access_disables_the_sandbox_at_execution(executed):
@@ -738,7 +836,7 @@ def test_sandbox_stays_on_by_default(executed):
     _run(transport, tools = [PY])
 
     assert executed[0]["disable_sandbox"] is False
-    # Nobody approved it, so the executor keeps the jail even for a host path.
+    # without approval, the executor keeps the jail even for a host path.
     assert "host_access_approved" not in executed[0]
 
 
@@ -1141,6 +1239,82 @@ def test_gemini_thought_signature_is_replayed_on_the_assistant_turn(executed):
     assert call["extra_content"] == {"google": {"thought_signature": "SIG-A"}}
     assert call["function"]["name"] == "web_search"
     assert json.loads(call["function"]["arguments"]) == {"query": "u"}
+
+
+def test_gemini_part_replay_ledgers_accumulate_across_a_tool_turn(executed):
+    transport = FakeTransport(
+        [
+            [
+                _sse(
+                    {
+                        "reasoning_content": "signed thought",
+                        "extra_content": {
+                            "google": {
+                                "thought": True,
+                                "thought_signature": "SIG-T",
+                                "thought_part": {
+                                    "text": "signed thought",
+                                    "thought_signature": "SIG-T",
+                                },
+                            }
+                        },
+                    }
+                ),
+                _sse(
+                    {
+                        "reasoning_content": " unsigned thought",
+                        "extra_content": {
+                            "google": {"thought_part": {"text": " unsigned thought"}}
+                        },
+                    }
+                ),
+                _sse(
+                    {
+                        "content": "answer ",
+                        "extra_content": {"google": {"answer_part": {"text": "answer "}}},
+                    }
+                ),
+                _sse(
+                    {
+                        "content": "tail",
+                        "extra_content": {"google": {"answer_part": {"text": "tail"}}},
+                    }
+                ),
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_a",
+                                "function": {
+                                    "name": "web_search",
+                                    "arguments": '{"query":"u"}',
+                                },
+                            }
+                        ]
+                    }
+                ),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "ok"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+    transport.preserves_reasoning = True
+    _run(transport)
+
+    assistant = [
+        message
+        for message in transport.requests[1]["messages"]
+        if message.get("role") == "assistant"
+    ][-1]
+    assert assistant["extra_content"]["google"]["thought_parts"] == [
+        {"text": "signed thought", "thought_signature": "SIG-T"},
+        {"text": " unsigned thought"},
+    ]
+    assert assistant["extra_content"]["google"]["answer_parts"] == [{"text": "answer tail"}]
+    assert "thought_signature" not in assistant["extra_content"]["google"]
 
 
 def _call_delta(index, call_id, name, arguments):

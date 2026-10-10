@@ -16,7 +16,7 @@ import triton
 import triton.language as tl
 import torch
 from typing import Tuple
-from .utils import calculate_settings, torch_gpu_device
+from .utils import calculate_settings, long_indexing, torch_gpu_device
 
 
 @triton.jit
@@ -31,6 +31,7 @@ def _rms_layernorm_forward(
     r_row_stride: tl.constexpr,
     n_cols: tl.constexpr,
     eps: tl.constexpr,
+    LONG_INDEXING: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
 ):
     """
@@ -39,6 +40,8 @@ def _rms_layernorm_forward(
     https://triton-lang.org/main/getting-started/tutorials/05-layer-norm.html
     """
     row_idx = tl.program_id(0)
+    if LONG_INDEXING:
+        row_idx = row_idx.to(tl.int64)
     col_offsets = tl.arange(0, BLOCK_SIZE)
     mask = col_offsets < n_cols
 
@@ -74,6 +77,7 @@ def _rms_layernorm_backward(
     n_cols: tl.constexpr,
     eps: tl.constexpr,
     GEMMA: tl.constexpr,
+    LONG_INDEXING: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
 ):
     """
@@ -82,6 +86,8 @@ def _rms_layernorm_backward(
     https://triton-lang.org/main/getting-started/tutorials/05-layer-norm.html
     """
     row_idx = tl.program_id(0)
+    if LONG_INDEXING:
+        row_idx = row_idx.to(tl.int64)
     col_offsets = tl.arange(0, BLOCK_SIZE)
     mask = col_offsets < n_cols
 
@@ -115,6 +121,7 @@ _rms_layernorm_backward = triton.jit(_rms_layernorm_backward)
 _rms_layernorm_backward = triton.heuristics(
     {
         "GEMMA": lambda args: bool(args["GEMMA"]),
+        "LONG_INDEXING": lambda args: bool(args["LONG_INDEXING"]),
     }
 )(_rms_layernorm_backward)
 
@@ -131,11 +138,14 @@ def _gemma_rms_layernorm_forward(
     r_row_stride: tl.constexpr,
     n_cols: tl.constexpr,
     eps: tl.constexpr,
+    LONG_INDEXING: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
 ):
     # Copies google-deepmind/gemma layers.py#L31 and keras-nlp gemma/rms_normalization.py#L33 exactly:
     # essentially all in float32.
     row_idx = tl.program_id(0)
+    if LONG_INDEXING:
+        row_idx = row_idx.to(tl.int64)
     col_offsets = tl.arange(0, BLOCK_SIZE)
     mask = col_offsets < n_cols
 
@@ -196,8 +206,12 @@ def _rms_layernorm_forward_rows(
     BLOCK_SIZE: tl.constexpr,
     ROWS: tl.constexpr,
     WARPS: tl.constexpr,
+    LONG_INDEXING: tl.constexpr,
 ):
-    rows = tl.program_id(0).to(tl.int64) * ROWS + tl.arange(0, ROWS)
+    pid = tl.program_id(0)
+    if LONG_INDEXING:
+        pid = pid.to(tl.int64)
+    rows = pid * ROWS + tl.arange(0, ROWS)
     col_offsets = tl.arange(0, BLOCK_SIZE)
     row_mask = rows < n_rows
     col_mask = col_offsets < n_cols
@@ -241,8 +255,12 @@ def _rms_layernorm_backward_rows(
     BLOCK_SIZE: tl.constexpr,
     ROWS: tl.constexpr,
     WARPS: tl.constexpr,
+    LONG_INDEXING: tl.constexpr,
 ):
-    rows = tl.program_id(0).to(tl.int64) * ROWS + tl.arange(0, ROWS)
+    pid = tl.program_id(0)
+    if LONG_INDEXING:
+        pid = pid.to(tl.int64)
+    rows = pid * ROWS + tl.arange(0, ROWS)
     col_offsets = tl.arange(0, BLOCK_SIZE)
     row_mask = rows < n_rows
     col_mask = col_offsets < n_cols
@@ -370,6 +388,10 @@ def _multirow_checked(X, W, eps, gemma):
     return multirow if verdict and _MULTIROW else None
 
 
+# Covers masked lanes past the last row: a block of columns, or ROWS rows in the multirow kernels.
+_INDEX_MARGIN = 1 << 20
+
+
 def _rms_forward(
     X,
     W,
@@ -384,6 +406,7 @@ def _rms_forward(
     r = torch.empty(n_rows, dtype = torch.float32, device = X.device)
     if multirow is None:
         multirow = _multirow_checked(X, W, eps, gemma)
+    long = long_indexing(X, Y, block = _INDEX_MARGIN)
     if multirow:
         BLOCK_SIZE, ROWS, WARPS, num_warps = multirow
         try:
@@ -401,6 +424,8 @@ def _rms_forward(
                 BLOCK_SIZE = BLOCK_SIZE,
                 ROWS = ROWS,
                 WARPS = WARPS,
+                # int32 rows measured slower only for the Gemma multi-row forward: keep main's int64.
+                LONG_INDEXING = long or gemma,
                 num_warps = num_warps,
             )
             return Y, r
@@ -421,6 +446,7 @@ def _rms_forward(
         r.stride(0),
         n_cols,
         eps,
+        LONG_INDEXING = long,
         BLOCK_SIZE = BLOCK_SIZE,
         num_warps = num_warps,
     )
@@ -442,6 +468,7 @@ def _rms_backward(
     n_rows, n_cols = dY.shape
     if multirow is None:
         multirow = _multirow_checked(X, W, eps, gemma)
+    long = long_indexing(dY, dX, X, block = _INDEX_MARGIN)
     if multirow:
         BLOCK_SIZE, ROWS, WARPS, num_warps = multirow
         try:
@@ -461,6 +488,7 @@ def _rms_backward(
                 BLOCK_SIZE = BLOCK_SIZE,
                 ROWS = ROWS,
                 WARPS = WARPS,
+                LONG_INDEXING = long,
                 num_warps = num_warps,
             )
             return
@@ -483,6 +511,7 @@ def _rms_backward(
         n_cols,
         eps,
         GEMMA = gemma,
+        LONG_INDEXING = long,
         BLOCK_SIZE = BLOCK_SIZE,
         num_warps = num_warps,
     )
