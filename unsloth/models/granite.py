@@ -27,6 +27,8 @@ from ..utils.attention_dispatch import (
 from .llama import (
     LlamaRotaryEmbedding,
     LlamaLinearScalingRotaryEmbedding,
+    _gqa_decode_scores,
+    _gqa_decode_values,
     original_apply_qkv,
     original_apply_o,
 )
@@ -370,9 +372,9 @@ def GraniteAttention_fast_forward_inference(
     Kn = self.paged_attention_K[:kv_seq_len].permute(1, 2, 0, 3)
     Vn = self.paged_attention_V[:kv_seq_len].permute(1, 2, 0, 3)
 
-    # Grouped query attention.
+    # Grouped query attention; bsz == 1 reads the KV heads in place below.
     _, _, cached_len, _ = Kn.shape
-    if bsz == 1 or ((not SDPA_HAS_GQA) and n_groups != 1):
+    if bsz != 1 and (not SDPA_HAS_GQA) and n_groups != 1:
         Kn = Kn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
         Vn = Vn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
         Kn = Kn.reshape(bsz, n_heads, cached_len, head_dim)
@@ -380,9 +382,9 @@ def GraniteAttention_fast_forward_inference(
 
     if bsz == 1:
         Qn *= self.scaling
-        A = torch_matmul(Qn, Kn.transpose(2, 3), out = self.attention[:, :, :, :cached_len])
+        A = _gqa_decode_scores(Qn, Kn, self.attention[:, :, :, :cached_len])
         A[:] = torch_nn_functional_softmax(A, dim = -1, dtype = torch.float32)
-        A = torch_matmul(A, Vn, out = Qn)
+        A = _gqa_decode_values(A, Vn, Qn)
     else:
         if (
             attention_mask is not None
