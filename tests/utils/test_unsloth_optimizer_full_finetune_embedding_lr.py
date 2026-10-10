@@ -129,3 +129,42 @@ def test_a_checkpoint_from_before_resumes_with_its_own_moments():
     lr_of = {named[id(p)]: g["lr"] for g in new.param_groups for p in g["params"]}
     assert lr_of["lm_head.weight"] == pytest.approx(EMBEDDING_LR * 0.25), lr_of
     assert lr_of["model.proj.bias"] == pytest.approx(LR * 0.25), lr_of
+
+
+def test_a_plateau_reduction_survives_the_same_resume():
+    # ReduceLROnPlateau sets no initial_lr, so the saved reduction is read against the
+    # lr the old group was built with.
+    torch = pytest.importorskip("torch")
+    from torch.optim.lr_scheduler import ReduceLROnPlateau
+    from unsloth.trainer import _install_legacy_scheduler_resume
+
+    model = _model(torch.nn, tied = False)
+    named = {id(p): n for n, p in model.named_parameters()}
+    _, decay = _optimizer(model)
+    params = list(model.named_parameters())
+    old = torch.optim.AdamW(
+        [
+            {"params": [p for n, p in params if n in decay], "weight_decay": 0.01},
+            {"params": [p for n, p in params if n not in decay], "weight_decay": 0.0},
+        ],
+        lr = LR,
+    )
+    old_scheduler = ReduceLROnPlateau(old, factor = 0.5, patience = 0)
+    for metric in (1.0, 2.0):
+        old_scheduler.step(metric)
+    assert old.param_groups[0]["lr"] == pytest.approx(LR * 0.5)
+
+    new, _ = _optimizer(model)
+    scheduler = _install_legacy_scheduler_resume(
+        ReduceLROnPlateau(new, factor = 0.5, patience = 0), new
+    )
+    new.load_state_dict(old.state_dict())
+    scheduler.load_state_dict(old_scheduler.state_dict())
+
+    lr_of = {named[id(p)]: g["lr"] for g in new.param_groups for p in g["params"]}
+    assert lr_of["model.embed_tokens.weight"] == pytest.approx(EMBEDDING_LR * 0.5), lr_of
+    assert lr_of["model.proj.bias"] == pytest.approx(LR * 0.5), lr_of
+    assert len(scheduler.min_lrs) == len(new.param_groups)
+    scheduler.step(3.0)
+    lr_of = {named[id(p)]: g["lr"] for g in new.param_groups for p in g["params"]}
+    assert lr_of["lm_head.weight"] == pytest.approx(EMBEDDING_LR * 0.25), lr_of

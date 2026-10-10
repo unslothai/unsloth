@@ -834,6 +834,7 @@ def _create_unsloth_optimizer(
         previous_layout = (
             [param for group in previous_grouped for param in group["params"]],
             [len(group["params"]) for group in previous_grouped],
+            [group["lr"] for group in previous_grouped],
         )
     optimizer = optimizer_cls(optimizer_grouped_parameters, **optimizer_kwargs)
     # Same as Trainer.create_optimizer: keep embedding optimizer state in 32 bits under 8-bit bnb.
@@ -914,12 +915,15 @@ def _migrate_legacy_optimizer_state(
     return {"state": remapped_state, "param_groups": migrated_groups}
 
 
-def _migrate_previous_layout_state(state_dict, optimizer, previous_params, previous_sizes):
+def _migrate_previous_layout_state(
+    state_dict, optimizer, previous_params, previous_sizes, previous_lrs
+):
     """A checkpoint from before full finetuning embeddings got their own groups, or None.
 
     The same exact remap as the legacy one, from the layout the name-only match built. Each
-    group keeps the saved schedule's progress, scaled onto its own base lr, so the moved
-    embeddings resume at their embedding_learning_rate instead of the base one.
+    group keeps the saved progress against the lr its old group was built with (any
+    scheduler, ReduceLROnPlateau sets no initial_lr), scaled onto its own base lr, so the
+    moved embeddings resume at their embedding_learning_rate instead of the base one.
     """
     saved_groups = state_dict.get("param_groups") or []
     if [len(g["params"]) for g in saved_groups] != list(previous_sizes):
@@ -932,8 +936,10 @@ def _migrate_previous_layout_state(state_dict, optimizer, previous_params, previ
     if not (len(set(saved_ids)) == len(new_index_of_param) == len(previous_params)):
         return None
     param_of_saved_id = dict(zip(saved_ids, previous_params))
-    saved_group_of_param = {
-        id(param_of_saved_id[i]): group for group in saved_groups for i in group["params"]
+    saved_index_of_param = {
+        id(param_of_saved_id[i]): index
+        for index, group in enumerate(saved_groups)
+        for i in group["params"]
     }
     try:
         remapped_state = {
@@ -945,9 +951,10 @@ def _migrate_previous_layout_state(state_dict, optimizer, previous_params, previ
 
     cursor, migrated_groups = 0, []
     for group in optimizer.param_groups:
-        saved = saved_group_of_param[id(group["params"][0])]
+        index = saved_index_of_param[id(group["params"][0])]
+        saved = saved_groups[index]
         base_lr = group.get("initial_lr", group["lr"])
-        progress = saved["lr"] / saved["initial_lr"] if saved.get("initial_lr") else 1.0
+        progress = saved["lr"] / previous_lrs[index] if previous_lrs[index] else 1.0
         migrated = {key: value for key, value in saved.items() if key != "params"}
         migrated.update(lr = base_lr * progress, weight_decay = group["weight_decay"])
         if "initial_lr" in migrated:
