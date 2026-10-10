@@ -1056,7 +1056,6 @@ class FastLanguageModel(FastLlamaModel):
         if fast_inference and DEVICE_TYPE == "cuda" and torch.cuda.get_device_capability()[0] < 7:
             print("Unsloth: vLLM does not work on older GPUs - will switch to Unsloth inference!")
             fast_inference = False
-        raise_if_fast_inference_under_fsdp2(fast_inference)
         if fast_inference:
             if importlib.util.find_spec("vllm") is None:
                 raise _vllm_unavailable_error()
@@ -1069,6 +1068,7 @@ class FastLanguageModel(FastLlamaModel):
                         )
                         fast_inference = False
                         break
+        raise_if_fast_inference_under_fsdp2(fast_inference)
 
         # bitsandbytes unusable (absent, or unstable on some AMD stacks). A capability check, so not gated on use_exact_model_name, which only suppresses repo-name remapping.
         if not ALLOW_BITSANDBYTES:
@@ -1946,7 +1946,6 @@ class FastModel(FastBaseModel):
         if fast_inference and DEVICE_TYPE == "cuda" and torch.cuda.get_device_capability()[0] < 7:
             print("Unsloth: vLLM does not work on older GPUs - will switch to Unsloth inference!")
             fast_inference = False
-        raise_if_fast_inference_under_fsdp2(fast_inference)
         if fast_inference:
             if importlib.util.find_spec("vllm") is None:
                 raise _vllm_unavailable_error()
@@ -1959,6 +1958,7 @@ class FastModel(FastBaseModel):
                         )
                         fast_inference = False
                         break
+        raise_if_fast_inference_under_fsdp2(fast_inference)
 
         old_model_name = model_name
         fp8_mode = None

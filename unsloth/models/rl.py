@@ -3815,6 +3815,13 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
                 "\n"
                 + " " * 8
                 + "if hasattr(model, 'vllm_engine') and hasattr(args, 'use_vllm'):\n"
+                # TrainingArguments(fsdp = ..., fsdp_config = {"version": 2}) under torchrun: nothing at load time said FSDP2 (unsloth#3551).
+                + " " * 12
+                + "_unsloth_fsdp_cfg = getattr(args, 'fsdp_config', None)\n"
+                + " " * 12
+                + "if getattr(args, 'fsdp', None) and isinstance(_unsloth_fsdp_cfg, dict) and str(_unsloth_fsdp_cfg.get('version', _unsloth_fsdp_cfg.get('fsdp_version', ''))) == '2':\n"
+                + " " * 16
+                + "raise NotImplementedError('Unsloth: `fast_inference = True` (vLLM) is not supported with FSDP2.\\nLoad the model with `fast_inference = False` to train with FSDP2, or launch without FSDP2 to use vLLM.')\n"
                 + " " * 12
                 + "if (getattr(args, 'use_vllm', False) == False):\n"
                 + " " * 16
