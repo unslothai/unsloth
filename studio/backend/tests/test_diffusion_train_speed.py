@@ -251,6 +251,10 @@ def test_auto_compiles_nf4_only_when_the_versions_are_supported(monkeypatch):
         ("2.13.0", "0.46.0", False, False),
         ("2.13.0+rocm7.0", "0.50.2", True, False),
         ("2.11.0.dev20260101+cu130", "0.49.0.dev0", False, True),
+        # Pre-releases of the floors are below them.
+        ("2.10.0rc1", "0.50.2", False, False),
+        ("2.13.0", "0.46.1rc1", False, False),
+        ("2.10.0.dev20250901+cu128", "0.50.2", False, False),
     ],
 )
 def test_nf4_compile_version_floor(monkeypatch, torch_version, bnb_version, rocm, expected):
