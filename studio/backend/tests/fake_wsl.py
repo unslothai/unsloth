@@ -39,6 +39,7 @@ def main(argv):
         return int(os.environ.get("FAKE_WSL_UNREGISTER", "0"))
     if argv[:1] in (["--import"], ["--terminate"]):
         return 0
+    # Only --exec runs argv as given; after a bare -- the real wsl.exe re-parses it in a shell.
     if "--exec" not in argv:
         return 2
     command = argv[argv.index("--exec") + 1 :]

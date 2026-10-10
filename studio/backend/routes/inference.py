@@ -16919,11 +16919,26 @@ def _managed_engine_offer_for(config, hf_token) -> Optional[dict]:
                 else hf_hub_download(config.identifier, "config.json", token = hf_token)
             )
         metadata = json.loads(path.read_text(encoding = "utf-8"))
-        from core.inference.engine_install import _driver_rows, support_reason
+        from core.inference.engine_install import (
+            _driver_rows,
+            gpu_platform,
+            rocm_loads_quantization,
+            support_reason,
+        )
 
         def supported(name, method):
             if support_reason(name) is not None:
                 return False
+            if gpu_platform() == "rocm":
+                text_config = metadata.get("text_config")
+                return rocm_loads_quantization(
+                    metadata.get("quantization_config")
+                    or (
+                        text_config.get("quantization_config")
+                        if isinstance(text_config, dict)
+                        else None
+                    )
+                )
             if name != "sglang" or method != "compressed-tensors":
                 return True
             # SGLang 0.5.20's compressed-tensors NVFP4 needs SM 10.0; vLLM falls back to Marlin from 7.5.

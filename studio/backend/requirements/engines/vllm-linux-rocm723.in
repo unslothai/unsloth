@@ -1,0 +1,7 @@
+# Optional Linux x86_64, Python 3.12 serving environment for AMD GPUs: vLLM's own ROCm 7.2 build
+# from https://wheels.vllm.ai/rocm/0.30.0/rocm723. Its torch loads the host's ROCm from /opt/rocm.
+vllm==0.30.0+rocm723
+transformers==5.12.1
+
+# Native load-time INT8 and FP8 conversion.
+torchao==0.17.0

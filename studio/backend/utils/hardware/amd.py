@@ -639,6 +639,40 @@ def amd_kfd_gpu_node_count() -> Optional[int]:
     return count
 
 
+def amd_kfd_gpu_gfx_targets(
+    nodes: str = "/sys/class/kfd/kfd/topology/nodes",
+) -> Optional[list[str]]:
+    """The gfx target of each AMD GPU agent KFD enumerates, in HIP device order, or ``None``
+    when the topology cannot be read. HIP numbers GPU agents by KFD node id, so position N is
+    physical device N. ``gfx_target_version`` is written by amdkfd itself, so it is immune to
+    HSA_OVERRIDE_GFX_VERSION; it encodes major * 10000 + minor * 100 + stepping, the stepping
+    in hex (110501 is gfx1151, 90010 is gfx90a), as install_python_stack._kfd_gfx_targets reads
+    it. Unlike that one, an unreadable node fails the whole answer, since it would shift ordinals."""
+    try:
+        entries = sorted((int(e), e) for e in os.listdir(nodes) if e.isdigit())
+    except OSError:
+        return None
+    targets = []
+    for _node, entry in entries:
+        try:
+            with open(os.path.join(nodes, entry, "properties"), encoding = "utf-8") as fh:
+                properties = fh.read()
+        except (OSError, UnicodeDecodeError):
+            return None
+        simd = re.search(r"\bsimd_count\s+(\d+)\b", properties)
+        if not re.search(r"\bvendor_id\s+4098\b", properties) or (
+            simd is not None and int(simd.group(1)) == 0
+        ):
+            continue
+        version = re.search(r"\bgfx_target_version\s+(\d+)\b", properties)
+        raw = int(version.group(1)) if version else 0
+        major, minor, step = raw // 10000, (raw // 100) % 100, raw % 100
+        targets.append(
+            f"gfx{major}{minor}{step:x}" if raw > 0 and minor <= 9 and step <= 15 else ""
+        )
+    return targets
+
+
 def _amd_render_node_exists() -> bool:
     """Whether any AMD render node is present at all.
 
@@ -790,7 +824,12 @@ def _dynamic_loader_search_dirs() -> "list[str]":
         for entry in (os.environ.get("LD_LIBRARY_PATH") or "").split(os.pathsep)
         if entry.strip()
     ]
-    dirs.extend(_ld_so_conf_dirs())
+    return list(dict.fromkeys(dirs + _system_library_dirs()))
+
+
+def _system_library_dirs() -> "list[str]":
+    """The loader's search directories that do not come from LD_LIBRARY_PATH."""
+    dirs = list(_ld_so_conf_dirs())
     dirs.extend(_DEFAULT_LIBRARY_DIRS)
     for pattern in ("/usr/lib/*-linux-gnu*", "/lib/*-linux-gnu*"):
         dirs.extend(sorted(glob.glob(pattern)))
@@ -851,7 +890,12 @@ def _ld_cache_sonames() -> "frozenset[str] | None":
     return _ld_cache_sonames_cached
 
 
-def _a_bare_soname_resolves(soname: str) -> bool:
+def _a_bare_soname_resolves(
+    soname: str,
+    *,
+    with_ld_library_path: bool = True,
+    when_unknown: bool = True,
+) -> bool:
     """Whether a manifest's bare library name still resolves to something on this host.
 
     A manifest may name its library by soname alone and leave the loader to find it, which
@@ -864,8 +908,13 @@ def _a_bare_soname_resolves(soname: str) -> bool:
     question only when the cache could actually be read; a host whose loader configuration
     this cannot enumerate answers True, because calling a live driver stale would demote
     the node hint on a host whose other vendor really does have a path.
+
+    ``with_ld_library_path = False`` asks for a child that does not inherit LD_LIBRARY_PATH;
+    ``when_unknown`` is the answer when the cache cannot be read (False for a hard requirement).
     """
-    for _directory in _dynamic_loader_search_dirs():
+    for _directory in (
+        _dynamic_loader_search_dirs() if with_ld_library_path else _system_library_dirs()
+    ):
         try:
             if os.path.isfile(os.path.join(_directory, soname)):
                 return True
@@ -873,7 +922,7 @@ def _a_bare_soname_resolves(soname: str) -> bool:
             continue
     _cache = _ld_cache_sonames()
     if _cache is None:
-        return True
+        return when_unknown
     return soname in _cache
 
 

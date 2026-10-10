@@ -34,6 +34,8 @@ from collections import deque
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
+PRECISIONS = ("auto", "bf16", "fp16", "int4", "int8", "fp8")
+ENGINE_NAMES = {"vllm": "vLLM", "sglang": "SGLang"}
 PROFILES = {
     "vllm": {
         "module": "vllm",
@@ -47,6 +49,32 @@ PROFILES = {
             {"version": "0.30.0", "torch": "2.13.0", "lock": "vllm-linux-cu130-torch213"},
             {"version": "0.26.0", "torch": "2.11.0", "lock": "vllm-linux-cu130"},
         ),
+        # AMD: vLLM's ROCm build, Python 3.12 only; its torch loads /opt/rocm, so always isolated.
+        "rocm": {
+            "cuda": None,
+            "driver": None,
+            "index": "https://wheels.vllm.ai/rocm/0.30.0/rocm723",
+            "python": (3, 12),
+            "glibc": (2, 39),
+            "rocm": (7, 2),
+            "gfx": (
+                "gfx90a",
+                "gfx942",
+                "gfx950",
+                "gfx1100",
+                "gfx1101",
+                "gfx1150",
+                "gfx1151",
+                "gfx1200",
+                "gfx1201",
+            ),
+            "omit": (),
+            "platform": "rocm",
+            # The ROCm build has no bitsandbytes quantization, and TorchAO's packed INT4 is CUDA-only.
+            "bitsandbytes": False,
+            "precisions": tuple(p for p in PRECISIONS if p != "int4"),
+            "releases": ({"version": "0.30.0", "torch": "2.12.0", "lock": "vllm-linux-rocm723"},),
+        },
     },
     "sglang": {
         "module": "sglang",
@@ -126,18 +154,60 @@ def engine_root() -> Path:
     return studio_root() / "engines"
 
 
+_kfd_has_amd_gpu: bool | None = None
+
+
+def gpu_platform() -> str:
+    """The GPU family the engine runs on: "rocm" for AMD, else "cuda". A host with both, and
+    every Windows host, follows Studio's own PyTorch."""
+    global _kfd_has_amd_gpu
+    from utils.hardware import hardware
+
+    # IS_ROCM reads False until background detection settles; never pick CUDA meanwhile.
+    if not hardware.DETECTION_COMPLETE.is_set():
+        hardware.ensure_hardware_detected()
+    if hardware.IS_ROCM:
+        return "rocm"
+    if platform.system() != "Linux" or os.path.exists("/proc/driver/nvidia/version"):
+        return "cuda"
+    # Asked many times per status poll; the GPUs do not change while Studio runs.
+    if _kfd_has_amd_gpu is None:
+        from utils.hardware.amd import amd_kfd_gpu_node_count
+
+        count = amd_kfd_gpu_node_count()
+        if count is None:
+            return "cuda"
+        _kfd_has_amd_gpu = count > 0
+    return "rocm" if _kfd_has_amd_gpu else "cuda"
+
+
+def _flavor(engine: str) -> dict:
+    """The engine's profile for this host's GPU platform, before a release is picked."""
+    base = {
+        "platform": "cuda",
+        "python": PYTHON,
+        "precisions": PRECISIONS,
+        "bitsandbytes": True,
+        **{key: value for key, value in PROFILES[engine].items() if key != "rocm"},
+    }
+    if gpu_platform() == "rocm" and "rocm" in PROFILES[engine]:
+        return {**base, **PROFILES[engine]["rocm"]}
+    return base
+
+
 def _release(engine: str) -> dict:
     """The release built on Studio's own torch, so the engine can share it; otherwise the newest,
     which then gets an isolated environment of its own."""
     from . import wsl_host
 
-    releases = PROFILES[engine]["releases"]
-    if wsl_host.active():
+    flavor = _flavor(engine)
+    releases = flavor["releases"]
+    if wsl_host.active() or flavor["platform"] == "rocm":
         # The WSL guest has no Studio torch to share, so it always gets the newest.
         return releases[0]
     torch = _studio_packages().get("torch")
     for release in releases:
-        if _same_build(torch, release["torch"], PROFILES[engine]["cuda"]):
+        if _same_build(torch, release["torch"], flavor["cuda"]):
             return release
     return releases[0]
 
@@ -145,7 +215,24 @@ def _release(engine: str) -> dict:
 def profile(engine: str) -> dict:
     if engine not in PROFILES:
         raise ValueError("Unknown inference engine")
-    return {**PROFILES[engine], **_release(engine)}
+    return {**_flavor(engine), **_release(engine)}
+
+
+def _python(engine: str) -> tuple[int, int]:
+    return profile(engine)["python"]
+
+
+def _venv_python_args(engine: str, guest: bool = False) -> list[str]:
+    """uv venv's interpreter. Triton compiles its HIP driver module against the interpreter's
+    Python.h at run time, and Ubuntu's python3.12 has none without python3.12-dev, so the ROCm
+    environment always gets a uv-managed CPython, which ships its headers. Studio's own
+    interpreter serves only a local environment, never the WSL guest's."""
+    version = "{}.{}".format(*_python(engine))
+    if profile(engine)["platform"] == "rocm":
+        return ["--python", version, "--python-preference", "only-managed"]
+    if not guest and sys.version_info[:2] == _python(engine):
+        return ["--python", sys.executable]
+    return ["--python", version]
 
 
 def requirements(engine: str) -> Path:
@@ -268,8 +355,17 @@ def download_bytes(engine: str) -> int | None:
     total = sum(
         size or 0 for name, size in sizes.items() if name not in provided and name not in omit
     )
-    if wsl and not wsl_host.summary().get("distro"):
+    summary = wsl_host.summary() if wsl else {}
+    if wsl and not summary.get("distro"):
         total += wsl_host.ROOTFS["size"] + wsl_host.UV["size"]
+    if (
+        wsl
+        and profile(engine)["platform"] == "rocm"
+        and summary.get("rocm") != wsl_host.ROCM_RELEASE
+    ):
+        total += wsl_host.ROCM_APT_BYTES + sum(
+            spec["size"] for spec in (wsl_host.ROCDXG, wsl_host.ROCDXG_SMI)
+        )
     return total
 
 
@@ -359,9 +455,11 @@ def install_plan(engine: str) -> dict:
             and all(SpecifierSet(spec).contains(studio[name], prereleases = True) for spec in specs)
         )
 
+    # The ROCm build's torch loads /opt/rocm rather than bundled libraries: never Studio's.
     shared = (
-        sys.implementation.name == "cpython"
-        and sys.version_info[:2] == PYTHON
+        profile(engine)["platform"] == "cuda"
+        and sys.implementation.name == "cpython"
+        and sys.version_info[:2] == _python(engine)
         and "torch" in studio
         and all(fits(name) for name in runtime - _TOOLCHAIN)
     )
@@ -383,7 +481,7 @@ def install_plan(engine: str) -> dict:
 
 
 def _cuda_trees(env: Path, shared: bool) -> list[Path]:
-    sites = [env / "lib" / "python{}.{}".format(*PYTHON) / "site-packages"]
+    sites = list(env.glob("lib/python3.*/site-packages"))
     sites += [Path(path) for path in _studio_site()] if shared else []
     return [site / "nvidia" / "cu13" for site in sites if (site / "nvidia" / "cu13").is_dir()]
 
@@ -453,6 +551,12 @@ def stale(info: dict) -> bool:
         studio.get(name) != version or not _adapter_accepts(name, version)
         for name, version in info.get("provided", {}).items()
     )
+
+
+def built_for_this_gpu(engine: str, info: dict) -> bool:
+    """Whether an environment runs on this host's GPU platform; one from before AMD support is CUDA.
+    A restored environment skips the profile check, so this keeps it off the other vendor's GPU."""
+    return info.get("platform", "cuda") == profile(engine)["platform"]
 
 
 # Runs in the engine's interpreter, so it checks both layers as the engine imports them.
@@ -578,7 +682,9 @@ def support_reason(
     else:
         glibc = profile(engine).get("glibc", (2, 34))
         if tuple(int(x) for x in (platform.libc_ver()[1] or "0.0").split(".")[:2]) < glibc:
-            return f"{engine} requires glibc {glibc[0]}.{glibc[1]} or newer."
+            return f"{ENGINE_NAMES[engine]} requires glibc {glibc[0]}.{glibc[1]} or newer."
+    if gpu_platform() == "rocm":
+        return _rocm_reason(engine, gpu_id, wait)
     rows = _driver_rows(gpu_id, wait = wait)
     if rows is _PENDING:
         return "Checking for a supported NVIDIA GPU."
@@ -592,6 +698,194 @@ def support_reason(
     except ValueError:
         pass
     return f"Requires an NVIDIA GPU with compute capability 8.0 or newer and driver {profile(engine)['driver']} or newer."
+
+
+ROCM_HOME = Path("/opt/rocm")
+# What vLLM's ROCm torch and kernels load from the host (their RUNPATH is /opt/rocm/lib).
+ROCM_LIBRARIES = (
+    "libamdhip64.so.7",
+    "libhiprtc.so.7",
+    "libMIOpen.so.1",
+    "librocblas.so.5",
+    "libhipblas.so.3",
+    "libhipblaslt.so.1",
+    "libhipfft.so.0",
+    "libhiprand.so.1",
+    "libhipsparse.so.4",
+    "libhipsparselt.so.0",
+    "libhipsolver.so.1",
+    "librocsolver.so.0",
+    "librccl.so.1",
+    "librocprofiler-sdk.so.1",
+    # rocprofiler-sdk loads it but does not depend on its package (hsa-amd-aqlprofile).
+    "libhsa-amd-aqlprofile64.so.1",
+    "libroctx64.so.4",
+)
+# Linked by that torch from outside ROCm: {soname: Ubuntu 24.04 package}.
+ROCM_SYSTEM_LIBRARIES = {
+    "libmpi.so.40": "libopenmpi3t64",
+    "libmpi_cxx.so.40": "libopenmpi3t64",
+    "libnuma.so.1": "libnuma1",
+}
+
+
+def rocm_version() -> tuple[int, int] | None:
+    """The ROCm release installed in /opt/rocm, where the ROCm engine's torch looks for it."""
+    try:
+        text = (ROCM_HOME / ".info" / "version").read_text(encoding = "utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    match = re.match(r"\s*(\d+)\.(\d+)", text)
+    return (int(match.group(1)), int(match.group(2))) if match else None
+
+
+def rocm_loads_quantization(quant) -> bool:
+    """Whether vLLM's ROCm build loads a checkpoint with this ``quantization_config``. Measured on
+    gfx1151 with vLLM 0.30.0: AWQ and integer compressed-tensors (W8A8, W4A16) load; GPTQ, FP8 and
+    NVFP4 checkpoints fail at engine start."""
+    if not isinstance(quant, dict) or not quant:
+        return True
+    method = str(quant.get("quant_method") or "").strip().lower()
+    if method in ("gptq", "fp8", "modelopt", "modelopt_fp4"):
+        return False
+    if method != "compressed-tensors":
+        return True
+    groups = quant.get("config_groups")
+    if not isinstance(groups, dict) or not groups:
+        return False
+    for group in groups.values():
+        if not isinstance(group, dict) or not isinstance(group.get("weights"), dict):
+            return False
+        for key in ("weights", "input_activations"):
+            spec = group.get(key)
+            if isinstance(spec, dict) and spec.get("type") != "int":
+                return False
+    return True
+
+
+_rocm_arches: dict[int, str] | None = None
+
+
+def _rocm_gpu_arches() -> dict[int, str]:
+    """{physical GPU id: the gfx target it presents} from Studio's own ROCm torch, read once, or {}
+    when the ordinals cannot be mapped to physical ids. The engine inherits Studio's environment,
+    so an HSA_OVERRIDE_GFX_VERSION spoof applies to both."""
+    global _rocm_arches
+    if _rocm_arches is None:
+        _rocm_arches = {}
+        try:
+            import torch
+            from utils.hardware.hardware import (
+                _props_gfx_arch,
+                _rocm_device_ordinal_active,
+                _rocm_visibility_masks_are_stacked,
+                _torch_ordinal_physical_ids,
+            )
+
+            # Stacked or ordinal masks renumber the devices; the KFD topology then answers instead.
+            # AMD's SDK / Radeon wheels leave torch.version.hip unset; their label carries ROCm.
+            if (
+                (getattr(torch.version, "hip", None) or "rocm" in torch.__version__.lower())
+                and torch.cuda.is_available()
+                and not _rocm_device_ordinal_active()
+                and not _rocm_visibility_masks_are_stacked()
+            ):
+                count = torch.cuda.device_count()
+                physical = _torch_ordinal_physical_ids(count) or list(range(count))
+                for ordinal, gpu_id in enumerate(physical[:count]):
+                    arch = _props_gfx_arch(torch.cuda.get_device_properties(ordinal))
+                    if arch:
+                        _rocm_arches[gpu_id] = arch
+        except Exception:
+            _rocm_arches = {}
+    return _rocm_arches
+
+
+def _unsupported_amd_gpu(found: list[str]) -> str:
+    return (
+        "Requires an AMD Instinct MI200, MI300 or MI350, Radeon RX 7700 to 7900, Radeon RX 9000, or Ryzen AI Max or AI 300 GPU"
+        + (f" (found {', '.join(found)})." if found else ".")
+    )
+
+
+def _rocm_reason(
+    engine: str,
+    gpu_id: int | None,
+    wait: bool = True,
+) -> str | None:
+    from . import wsl_host
+
+    if "rocm" not in PROFILES[engine]:
+        return f"{ENGINE_NAMES[engine]} requires an NVIDIA GPU. Use vLLM on AMD GPUs."
+    wanted = profile(engine)
+    if wsl_host.active():
+        # ROCm is checked inside WSL; a target torch or the driver already names (the selected GPU's) refuses first.
+        arches = _rocm_gpu_arches() if gpu_id is not None else {}
+        if gpu_id in arches:
+            known = [arches[gpu_id]]
+        else:
+            from utils.hardware.hardware import get_physical_gpu_inventory
+            known = [
+                device["gfx"]
+                for device in get_physical_gpu_inventory(block = wait).get("devices") or []
+                if device.get("vendor") == "amd" and device.get("gfx")
+            ]
+        if known and not any(target in wanted["gfx"] for target in known):
+            return _unsupported_amd_gpu(known)
+        return None
+    found = rocm_version()
+    # The ROCm 7 libraries the engine links keep one soname for every 7.x release.
+    if found is None or found[0] != wanted["rocm"][0] or found < wanted["rocm"]:
+        return "Requires ROCm {}.{} or a newer {}.x release installed in /opt/rocm".format(
+            *wanted["rocm"], wanted["rocm"][0]
+        ) + (" (found {}.{}).".format(*found) if found else ".")
+    from utils.hardware.amd import _a_bare_soname_resolves, amd_kfd_gpu_gfx_targets
+
+    missing = [soname for soname in ROCM_LIBRARIES if not (ROCM_HOME / "lib" / soname).exists()]
+    if missing:
+        return (
+            f"The ROCm installation in /opt/rocm is missing {', '.join(missing)}. Install the full "
+            "ROCm package (on Ubuntu: sudo apt install rocm), then retry."
+        )
+    missing = {
+        soname: package
+        for soname, package in ROCM_SYSTEM_LIBRARIES.items()
+        # The install and the engine both run without the caller's LD_LIBRARY_PATH.
+        if not (ROCM_HOME / "lib" / soname).exists()
+        and not _a_bare_soname_resolves(soname, with_ld_library_path = False, when_unknown = False)
+    }
+    if missing:
+        return (
+            f"Requires {', '.join(missing)}, which vLLM's AMD build links. "
+            f"On Ubuntu: sudo apt install {' '.join(dict.fromkeys(missing.values()))}"
+        )
+    if not (os.environ.get("CC") or shutil.which("gcc") or shutil.which("clang")):
+        # Triton builds its HIP driver module the first time the engine compiles a kernel.
+        return "Requires a C compiler, which vLLM's AMD build uses at run time (on Ubuntu: sudo apt install gcc)."
+    from utils.hardware.amd import amd_closed_nodes_block_the_runtime, amd_node_permission_hint
+
+    # HIP opens /dev/kfd and an AMD render node; a container mapping only one initialises no GPU.
+    if not os.access("/dev/kfd", os.R_OK | os.W_OK) or amd_closed_nodes_block_the_runtime():
+        return amd_node_permission_hint() or (
+            "Studio cannot open /dev/kfd and an AMD render node (/dev/dri/renderD*). Add your user "
+            "to the render and video groups, then sign in again."
+        )
+
+    # Each GPU's target as the engine sees it (HSA_OVERRIDE_GFX_VERSION included), else the kernel's.
+    arches = _rocm_gpu_arches()
+    if gpu_id is None:
+        selected = list(arches.values()) or amd_kfd_gpu_gfx_targets() or []
+    elif gpu_id in arches:
+        selected = [arches[gpu_id]]
+    else:
+        selected = (amd_kfd_gpu_gfx_targets() or [])[gpu_id : gpu_id + 1]
+    selected = [target for target in selected if target]
+    if gpu_id is not None and not selected:
+        # Nothing names this GPU's target; vLLM refuses one it has no kernels for itself.
+        return None
+    if any(target in wanted["gfx"] for target in selected):
+        return None
+    return _unsupported_amd_gpu(selected)
 
 
 def _atomic_json(path: Path, data: dict) -> None:
@@ -753,21 +1047,29 @@ def status(engine: str) -> dict:
             in_use = True
         except ImportError:
             pass
+    wanted = profile(engine)
     return {
         "engine": engine,
-        "version": profile(engine)["version"],
+        "version": wanted["version"],
         "installed_version": info.get("version") if info else None,
         "installed": info is not None,
         "in_use": in_use,
         "current": bool(
             info and info.get("profile_digest") == profile_digest(engine) and not outdated
         ),
-        "restored": bool(info and info.get("restored") and not outdated),
+        "restored": bool(
+            info and info.get("restored") and not outdated and built_for_this_gpu(engine, info)
+        ),
         "shared": bool(info and info.get("shared")),
         "can_rollback": bool(
-            info and isinstance(info.get("previous"), dict) and not stale(info["previous"])
+            info
+            and isinstance(info.get("previous"), dict)
+            and not stale(info["previous"])
+            and built_for_this_gpu(engine, info["previous"])
         ),
         "unsupported_reason": support_reason(engine, wait = False),
+        "precisions": list(wanted["precisions"]),
+        "platform": gpu_platform(),
         # Only priced while an install or update is on offer: the plan reads Studio's packages.
         "download_bytes": None
         if info and info.get("profile_digest") == profile_digest(engine) and not outdated
@@ -989,6 +1291,38 @@ def _run(
         proc.stdout.close()
 
 
+def _index_arguments(engine: str) -> list[str]:
+    """PyPI, plus the engine's own index first for the builds only it publishes (vLLM's ROCm torch)."""
+    extra = profile(engine).get("index")
+    return [
+        "--index-url",
+        "https://pypi.org/simple",
+        *(["--extra-index-url", extra] if extra else []),
+    ]
+
+
+def _smoke_source(engine: str) -> str:
+    """Imports the engine and the precision libraries its lock carries, on the locked torch build."""
+    wanted = profile(engine)
+    pins = _pins(engine)
+    modules = [
+        wanted["module"],
+        "torch",
+        *(name for name in ("bitsandbytes", "torchao") if name in pins),
+    ]
+    runtime = (
+        "assert torch.version.hip"
+        if wanted["platform"] == "rocm"
+        else "assert torch.version.cuda == '13.0'"
+    )
+    return (
+        "".join(f"import {module}\n" for module in modules)
+        + f"assert torch.__version__.split('+')[0] == {pins['torch'][0].split('+')[0]!r}\n"
+        + runtime
+        + "\n"
+    )
+
+
 def _install(
     engine: str,
     cancel: threading.Event,
@@ -1023,10 +1357,7 @@ def _install(
                 if plan["shared"]
                 else "Preparing an isolated Python environment",
             )
-            interpreter = (
-                sys.executable if sys.version_info[:2] == PYTHON else "{}.{}".format(*PYTHON)
-            )
-            _run(engine, [uv, "venv", "--python", interpreter, str(destination)], cancel)
+            _run(engine, [uv, "venv", *_venv_python_args(engine), str(destination)], cancel)
             python = str(destination / "bin" / "python")
             packages = destination / "engine-requirements.txt"
             packages.write_text(plan["requirements"], encoding = "utf-8")
@@ -1046,20 +1377,22 @@ def _install(
                     "--require-hashes",
                     "--only-binary",
                     ":all:",
-                    "--index-url",
-                    "https://pypi.org/simple",
+                    *_index_arguments(engine),
                     str(packages),
                 ],
                 cancel,
             )
             if plan["shared"]:
                 # Appended after the engine's own site-packages, so its pins win.
-                site = destination / "lib" / "python{}.{}".format(*PYTHON) / "site-packages"
+                site = (
+                    destination / "lib" / "python{}.{}".format(*_python(engine)) / "site-packages"
+                )
                 (site / f"{_BASE_MODULE}.py").write_text(
                     _STUDIO_BASE_SOURCE.format(paths = _studio_site()), encoding = "utf-8"
                 )
                 (site / _BASE_PTH).write_text(f"import {_BASE_MODULE}\n", encoding = "utf-8")
-            link_cuda_home(destination, plan["shared"])
+            if profile(engine)["platform"] == "cuda":
+                link_cuda_home(destination, plan["shared"])
             _update(engine, phase = "checking", message = "Checking the installed engine")
             _run(
                 engine,
@@ -1070,22 +1403,12 @@ def _install(
                     _CHECK,
                     str(requirements(engine)),
                     ",".join(profile(engine).get("omit", ())),
-                    profile(engine)["cuda"],
+                    profile(engine)["cuda"] or "",
                     json.dumps(plan["provided"]),
                 ],
                 cancel,
             )
-            torch_version = _pins(engine)["torch"][0]
-            _run(
-                engine,
-                [
-                    python,
-                    "-I",
-                    "-c",
-                    f"import {profile(engine)['module']}; import torch; import bitsandbytes; import torchao; assert torch.__version__.split('+')[0] == {torch_version!r}; assert torch.version.cuda == '13.0'",
-                ],
-                cancel,
-            )
+            _run(engine, [python, "-I", "-c", _smoke_source(engine)], cancel)
             from .engine_adapters import ADAPTERS
 
             module = ADAPTERS[engine].module
@@ -1106,6 +1429,7 @@ def _install(
                     "version": profile(engine)["version"],
                     "profile_digest": digest,
                     "shared": plan["shared"],
+                    "platform": profile(engine)["platform"],
                     "python": platform.python_version(),
                     "provided": plan["provided"],
                     "studio_prefix": sys.prefix,
@@ -1181,8 +1505,10 @@ def _install_wsl(engine: str, cancel: threading.Event) -> None:
     from . import wsl_host
 
     guest_root = wsl_host.GUEST_ROOT
+    rocm = profile(engine)["platform"] == "rocm"
+    progress = lambda text: _update(engine, activity = text)
     _update(engine, phase = "preparing_wsl", message = "Setting up the Unsloth WSL environment")
-    wsl_host.prepare(lambda text: _update(engine, activity = text), cancel)
+    wsl_host.prepare(progress, cancel, profile(engine)["platform"])
     if cancel.is_set():
         raise RuntimeError("Installation cancelled.")
     root = engine_root() / engine
@@ -1204,6 +1530,7 @@ def _install_wsl(engine: str, cancel: threading.Event) -> None:
         # Cache and environments share the distro's ext4 disk.
         "UV_LINK_MODE": "hardlink",
         "DEBIAN_FRONTEND": "noninteractive",
+        **(wsl_host.rocm_environment() if rocm else {}),
     }
     secrets = {key: os.environ[key] for key in _PROXIES if os.environ.get(key)}
 
@@ -1214,9 +1541,11 @@ def _install_wsl(engine: str, cancel: threading.Event) -> None:
         return _run(engine, command, cancel, env = windows_env, stdin_pipe = True)
 
     try:
-        wsl_host.ensure_build_tools(guest_run, lambda text: _update(engine, activity = text))
+        wsl_host.ensure_build_tools(guest_run, progress)
+        if rocm:
+            _install_wsl_rocm(engine, guest_run, progress, cancel)
         _update(engine, phase = "creating", message = "Preparing an isolated Python environment")
-        guest_run([uv, "venv", "--python", "{}.{}".format(*PYTHON), destination])
+        guest_run([uv, "venv", *_venv_python_args(engine, guest = True), destination])
         _update(engine, phase = "installing", message = "Downloading and installing engine packages")
         lock = wsl_host.to_guest_path(requirements(engine))
         guest_run(
@@ -1229,21 +1558,17 @@ def _install_wsl(engine: str, cancel: threading.Event) -> None:
                 "--require-hashes",
                 "--only-binary",
                 ":all:",
-                "--index-url",
-                "https://pypi.org/simple",
+                *_index_arguments(engine),
                 lock,
             ]
         )
         _update(engine, phase = "checking", message = "Checking the installed engine")
         from .engine_adapters import ADAPTERS
 
-        torch_version = _pins(engine)["torch"][0]
         scripts = {
             "check.py": _CHECK,
             "finalize.py": _GUEST_FINALIZE,
-            "smoke.py": f"import {profile(engine)['module']}; import torch; import bitsandbytes; import torchao\n"
-            f"assert torch.__version__.split('+')[0] == {torch_version!r}\n"
-            "assert torch.version.cuda == '13.0'\n",
+            "smoke.py": _smoke_source(engine),
         }
         for name, source in scripts.items():
             wsl_host.put(f"{destination}/{name}", source)
@@ -1254,7 +1579,7 @@ def _install_wsl(engine: str, cancel: threading.Event) -> None:
                 f"{destination}/check.py",
                 lock,
                 ",".join(profile(engine).get("omit", ())),
-                profile(engine)["cuda"],
+                profile(engine)["cuda"] or "",
                 "{}",
             ]
         )
@@ -1281,7 +1606,8 @@ def _install_wsl(engine: str, cancel: threading.Event) -> None:
                 "version": profile(engine)["version"],
                 "profile_digest": digest,
                 "shared": False,
-                "python": "{}.{}".format(*PYTHON),
+                "platform": profile(engine)["platform"],
+                "python": "{}.{}".format(*_python(engine)),
                 "provided": {},
                 "host": "wsl",
                 "distro": wsl_host.distro_name(),
@@ -1315,6 +1641,40 @@ def _install_wsl(engine: str, cancel: threading.Event) -> None:
                 pass
     _record_manifest(engine)
     _update(engine, state = "success", phase = "ready", message = "Engine installed")
+
+
+def _install_wsl_rocm(engine: str, guest_run, progress, cancel: threading.Event) -> None:
+    """ROCm's userspace and the DXG bridge in the distro, then the GPU check the host cannot make."""
+    from . import wsl_host
+
+    _update(
+        engine, phase = "preparing_rocm", message = "Installing AMD ROCm in the Unsloth WSL environment"
+    )
+    key = wsl_host.ROCM_APT_KEY
+    if wsl_host._sha256(key) != wsl_host.ROCM_APT_KEY_SHA256:
+        raise RuntimeError(
+            "Studio's copy of AMD's ROCm repository key is damaged. Reinstall Studio."
+        )
+    packages = [
+        wsl_host.download(spec, spec["url"].rsplit("/", 1)[1], progress, cancel)
+        for spec in (wsl_host.ROCDXG, wsl_host.ROCDXG_SMI)
+    ]
+    setup = f"{wsl_host.GUEST_ROOT}/bin/setup-rocm"
+    wsl_host.put(setup, wsl_host.ROCM_SETUP, "755")
+    guest_run([setup, *(wsl_host.to_guest_path(path) for path in (key, *packages))])
+    found = sorted(
+        set(
+            re.findall(
+                r"\bgfx[0-9a-f]+\b",
+                wsl_host.guest(
+                    ["/opt/rocm/bin/rocminfo"], env = wsl_host.rocm_environment(), timeout = 300
+                ),
+            )
+        )
+    )
+    if not any(target in profile(engine)["gfx"] for target in found):
+        raise RuntimeError(_unsupported_amd_gpu(found))
+    wsl_host.write_state(rocm = wsl_host.ROCM_RELEASE)
 
 
 def start_install(engine: str) -> dict:
@@ -1442,6 +1802,10 @@ def rollback(engine: str) -> dict:
         if stale(previous):
             raise RuntimeError(
                 "The previous engine installation was built on packages Studio no longer has. Repair the engine instead."
+            )
+        if not built_for_this_gpu(engine, previous):
+            raise RuntimeError(
+                "The previous engine installation was built for another GPU platform. Update the engine instead."
             )
         _atomic_json(
             root / "active.json",

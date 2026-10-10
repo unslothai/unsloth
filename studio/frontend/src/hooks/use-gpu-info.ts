@@ -332,13 +332,16 @@ export function useInferenceGpuInfo(): GpuInfo {
   return useGpuInfoSource("inference_gpu");
 }
 
+/** Optional engines launch on torch's physical CUDA/ROCm ids (`useGpuDevices(true)`), never a Vulkan ordinal. */
 export function isEngineGpuDevice(device: SystemGpuDevice): boolean {
-  return device.indexKind === "physical" && /nvidia/i.test(device.name);
+  return device.diffusionPinnable;
 }
 
 /** Where the backend puts an optional engine given no GPUs: the first one Studio sees. */
 export function defaultEngineGpuIds(): number[] {
-  const first = toGpuDevices(getCachedSystemInfo()).find(isEngineGpuDevice);
+  const first = toGpuDevices(getCachedSystemInfo(), true).find(
+    isEngineGpuDevice,
+  );
   return first ? [first.index] : [0];
 }
 
