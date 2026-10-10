@@ -375,9 +375,11 @@ const OVERLAY_SELECTOR =
 const BLOCKING_SELECTOR =
   '[data-radix-popper-content-wrapper], [role="dialog"], [role="alertdialog"], [data-slot$="-overlay"], [data-native-cover]';
 const MENU_SELECTOR = "[data-radix-popper-content-wrapper]";
-// Layered mode: these take input only within their own rect. `data-native-clickable`: a rail of
-// lasting cards (update, downloads), each its own rect; kept out of snapshot mode, which would freeze the page.
-const CLICKABLE_SELECTOR = "[data-sonner-toast], .find-bar-surface, [data-native-clickable] > *";
+// Layered mode: these take input only within their own rect. `data-native-clickable`: lasting panels
+// (monitors); `data-native-rail`: a rail of lasting cards (update, downloads), each its own rect. Both
+// stay out of snapshot mode, which would freeze the page while they show.
+const CLICKABLE_SELECTOR =
+  "[data-sonner-toast], .find-bar-surface, [data-native-clickable], [data-native-rail] > *";
 
 // Whether pages sit under the app's webview (macOS); null until the backend answers.
 let layered: boolean | null = null;
@@ -662,9 +664,10 @@ function clearSnapshot(): void {
 
 let paintToken = 0;
 
-/** Paints a fresh snapshot; true when the placeholder shows one for `tabId`. Only the newest call paints. */
-async function paintSnapshot(tabId: string): Promise<boolean> {
-  const shows = () => snapshot?.tabId === tabId;
+/** Paints a fresh snapshot; true when the placeholder shows one for `tabId` (a fresh one if `fresh`).
+ *  Only the newest call paints. */
+async function paintSnapshot(tabId: string, fresh = false): Promise<boolean> {
+  const shows = () => !fresh && snapshot?.tabId === tabId;
   const bounds = shownBounds;
   const element = placeholder(tabId);
   if ((shownView !== tabId && parkedView !== tabId) || !bounds || !element) return shows();
@@ -707,26 +710,38 @@ const COVER_TRIES = 3;
 let coverFails = 0;
 let coverRetry = 0;
 
+// A parked page whose snapshot missed a change (a zoom), until a capture lands.
+let staleSnapshot: string | null = null;
+
+function retryCover(): void {
+  if (coverFails >= COVER_TRIES) return;
+  coverFails += 1;
+  coverRetry += 1;
+}
+
 async function coverView(tabId: string, zoom: number): Promise<void> {
   if (parkedView !== tabId) {
     // Parked without a snapshot, the placeholder would show blank.
     if (!(await paintSnapshot(tabId))) {
-      if (coverFails < COVER_TRIES) {
-        coverFails += 1;
-        coverRetry += 1;
-      }
+      retryCover();
       return;
     }
     await call("browser_view_show", { tabId, bounds: shownBounds, parked: true });
     parkedView = tabId;
+    staleSnapshot = null;
     coverFails = 0;
     setShownView(null);
   }
   if ((zooms.get(tabId) ?? 1) !== zoom) {
     zooms.set(tabId, zoom);
     await call("browser_view_zoom", { tabId, zoom });
-    await paintSnapshot(tabId);
+    staleSnapshot = tabId;
   }
+  if (staleSnapshot !== tabId) return;
+  if (await paintSnapshot(tabId, true)) {
+    staleSnapshot = null;
+    coverFails = 0;
+  } else retryCover();
 }
 
 /** Re-snapshots a covered page after it changes, e.g. a find step. */
@@ -764,6 +779,7 @@ async function applyView(desired: Desired): Promise<void> {
     await call("browser_view_show", { tabId, url: resumed?.entry === entry ? resumed.url : url, bounds });
     if (stale()) return;
     parkedView = null;
+    staleSnapshot = null;
     coverFails = 0;
     clearSnapshot();
     // After the move, so hole and page update together.
@@ -890,6 +906,8 @@ export function startNativeViews(): () => void {
     }
   };
   document.addEventListener("pointerover", reachedPage, true);
+  // A dragged or resized panel ends where the pointer lets go.
+  document.addEventListener("pointerup", schedule, true);
   const interval = window.setInterval(schedule, RECHECK_MS);
   void askLayered().then(schedule);
   schedule();
@@ -902,6 +920,7 @@ export function startNativeViews(): () => void {
     window.removeEventListener("resize", schedule);
     for (const type of MOTION_EVENTS) document.removeEventListener(type, moved, true);
     document.removeEventListener("pointerover", reachedPage, true);
+    document.removeEventListener("pointerup", schedule, true);
     window.clearInterval(interval);
     tooltipHold = 0;
     // close pages because hidden native views keep scripts and media running.

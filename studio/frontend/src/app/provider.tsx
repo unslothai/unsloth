@@ -516,7 +516,7 @@ function TauriUpdateLayer({
       // Measured from the outside, per card, by tests/studio/playwright_update_banner_layout.py.
       data-testid="overlay-rail"
       // Its cards stay clickable over a macOS browser page (native-view.ts).
-      data-native-clickable=""
+      data-native-rail=""
       // Gutters in px, never a spacing utility: those are rem, and the cards would drift off the corner.
       style={{
         paddingTop: STACK_SHADOW_GUTTER_TOP,

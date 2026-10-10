@@ -253,6 +253,23 @@ test("a capture that never lands keeps the page on screen instead of parking it 
     captureDone?.(new Uint8Array([137, 80, 78, 71]).buffer);
     await settle();
     assert.equal(parked(), true, "parked once a snapshot shows");
+
+    // a zoom whose capture misses is captured again, though nothing else changes
+    const zoomed = captures();
+    if (tabId) useBrowserStore.getState().setZoom(tabId, 1.5);
+    await frame();
+    assert.equal(captures(), zoomed + 1);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    await frame();
+    const retried = captures();
+    assert.ok(retried >= zoomed + 2, "the stale snapshot is retried");
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    await frame();
+    assert.equal(captures(), retried + 1, "and again while captures keep missing");
+    captureDone?.(new Uint8Array([137, 80, 78, 71]).buffer);
+    await settle();
+    await frame();
+    assert.equal(captures(), retried + 1, "and left alone once it lands");
   } finally {
     stop();
     overlays.length = 0;
