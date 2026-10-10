@@ -84,8 +84,8 @@ from core.training.diffusion_train_extras import (
     save_ema_adapter,
 )
 
-# Per-family LoRA target modules (attention projections). FLUX / Qwen double-stream blocks also carry added-kv
-# projections; Z-Image is single-stream.
+# Per-family LoRA target modules. FLUX / Qwen double-stream blocks also carry added-kv projections; Z-Image is
+# single-stream.
 _FLUX_TARGETS = (
     "to_q",
     "to_k",
@@ -97,7 +97,10 @@ _FLUX_TARGETS = (
     "to_add_out",
 )
 _QWEN_TARGETS = _FLUX_TARGETS
-_ZIMAGE_TARGETS = ("to_q", "to_k", "to_v", "to_out.0")
+# Attention + the SwiGLU feed-forward (w1/w2/w3), as DiffSynth-Studio's Z-Image recipes do. Measured at the default
+# 500 steps on DreamBooth subjects: held-out likeness up on Turbo (DINOv2 +0.05), a tie on the undistilled base. Runs
+# started on the attention-only list keep it on resume (recorded_resume_targets).
+_ZIMAGE_TARGETS = ("to_q", "to_k", "to_v", "to_out.0", "w1", "w2", "w3")
 # The Krea 2 authors' recommended defaults (their DreamBooth script): attention + SwiGLU + text-fusion projector +
 # conditioning embedders. For long runs they suggest narrowing to attention.
 _KREA2_TARGETS = (
