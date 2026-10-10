@@ -407,6 +407,9 @@ class _TitleButtonScan:
     def __init__(self) -> None:
         self.keep: set[tuple[int, int]] = set()  # HTMLParser.getpos() of each kept <button>
         self._open: list[str] = []
+        self._closable_open = (
+            0  # open tags with an optional end tag, as _MarkdownRenderer counts them
+        )
         self._muted: list[int] = []  # open-tag indices of hidden / skipped subtrees
         self._button_at: int | None = None
         self._button_frame: list | None = None  # heading whose candidate is the open button
@@ -416,13 +419,13 @@ class _TitleButtonScan:
         self._headings: list[list] = []
 
     def starttag(self, tag: str, attrs: list[tuple[str, str | None]], pos: tuple[int, int]) -> None:
-        # headings hold phrasing content only: a list item or cell means the heading was left open
-        if tag in ("li", "dt", "dd", "tr", "td", "th"):
-            self._close_headings(0)
+        self._close_implicit(tag)
         if tag in _VOID_TAGS:
             return
         attr_dict = dict(attrs)
         self._open.append(tag)
+        if tag in _IMPLICIT_CLOSERS:
+            self._closable_open += 1
         index = len(self._open) - 1
         if _is_hidden_element(attr_dict) or (tag in _SKIP_TAGS and tag != "button"):
             self._muted.append(index)
@@ -453,6 +456,24 @@ class _TitleButtonScan:
         # a page cut inside a heading (the fetch cap) still keeps its title
         self._close_headings(0)
 
+    def _close_implicit(self, tag: str) -> None:
+        """The renderer's optional-end-tag recovery (``_MarkdownRenderer._close_implicit``), so both see one tree."""
+        if not self._closable_open:
+            return
+        barriers = _CLOSE_BARRIERS.get(tag, ())
+        while True:
+            close_at = None
+            for i in range(len(self._open) - 1, -1, -1):
+                name = self._open[i]
+                if tag in _IMPLICIT_CLOSERS.get(name, ()):
+                    close_at = i
+                    break
+                if name in barriers:
+                    break
+            if close_at is None:
+                return
+            self._pop_to(close_at)
+
     def _pop_to(self, i: int) -> None:
         if self._button_at is not None and self._button_at >= i:
             self._button_at = None
@@ -463,6 +484,7 @@ class _TitleButtonScan:
         while self._muted and self._muted[-1] >= i:
             self._muted.pop()
         self._close_headings(i)
+        self._closable_open -= sum(1 for name in self._open[i:] if name in _IMPLICIT_CLOSERS)
         del self._open[i:]
 
     def _close_headings(self, i: int) -> None:

@@ -434,6 +434,11 @@ def test_a_leading_control_before_the_heading_title_is_dropped(between):
         ),
         ("<ul><li><h3><button>Question</button><li>Answer text.</ul>", "### Question"),
         (
+            "<ul><li hidden>old<li><h3><button>Question</button></h3>Answer text.</ul>",
+            "### Question",
+        ),
+        ("<p hidden>old<h3><button>Question</button></h3><p>Answer text.</p>", "### Question"),
+        (
             '<script>const x="<h3><button>"</script><!-- <h2><button> -->'
             "<h3><button>Question</button></h3><p>Answer text.</p>",
             "### Question",
