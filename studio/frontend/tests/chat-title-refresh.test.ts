@@ -16,8 +16,12 @@ Object.assign((globalThis.window as { location: object }).location, {
   href: "http://localhost/",
 });
 
-const { buildTitleRefreshRequest, buildTitleRequest, titleRefreshExcerpt } =
-  await import("../src/features/chat/utils/chat-title.ts");
+const {
+  buildTitleRefreshRequest,
+  buildTitleRequest,
+  heuristicChatTitle,
+  titleRefreshExcerpt,
+} = await import("../src/features/chat/utils/chat-title.ts");
 type MessageRecord = import("../src/features/chat/types.ts").MessageRecord;
 
 const LOCAL = "unsloth/gemma-4-E2B-it-GGUF";
@@ -48,7 +52,7 @@ test("a refresh reads the latest turns, oldest first, not the opening exchange",
     messages.push(message(i + 1, "assistant", text(`Clause ${i} limits liability. `.repeat(20))));
   }
   const excerpt = titleRefreshExcerpt(messages);
-  assert.ok(excerpt.length <= 1200, String(excerpt.length));
+  assert.ok(excerpt.length <= 900, String(excerpt.length));
   assert.doesNotMatch(excerpt, /follow-up email/);
   const lines = excerpt.split("\n");
   assert.match(lines.at(-1) ?? "", /^Assistant: Clause 10 limits liability/);
@@ -62,16 +66,15 @@ test("a refresh reads the latest turns, oldest first, not the opening exchange",
 });
 
 test("a message that would fit only as a stub is left out", () => {
-  // Newest first: 307 + 312 + 307 + 232 = 1158 used, so the opening prompt has 36 characters of room.
+  // Newest first: 312 + 307 + 239 = 858 used, so the opening prompt has 36 characters of room.
   const excerpt = titleRefreshExcerpt([
     message(0, "user", text("opening question about the email we started with")),
-    message(1, "assistant", text("a".repeat(220))),
-    message(2, "user", text("b".repeat(400))),
+    message(1, "assistant", text("a".repeat(227))),
+    message(2, "user", text("d".repeat(400))),
     message(3, "assistant", text("c".repeat(400))),
-    message(4, "user", text("d".repeat(400))),
   ]);
   assert.doesNotMatch(excerpt, /opening/);
-  assert.match(excerpt, /^Assistant: a{220}$/m);
+  assert.match(excerpt, /^Assistant: a{227}$/m);
 });
 
 test("only visible text is sent: no reasoning, tool calls, images or system turns", () => {
@@ -112,13 +115,70 @@ test("a refresh is as cheap as the automatic title, with its own prompt", async 
   );
 });
 
-test("a refresh asks the selected model, never the one that answered", () => {
+test("a refresh asks the selected model, never the one that answered, and none when none is loaded", () => {
   const source = readFileSync(
     new URL("../src/features/chat/components/chat-row-menu.ts", import.meta.url),
     "utf8",
   ).replace(/\s+/g, " ");
-  const body = source.slice(source.indexOf("export async function regenerateChatTitle"));
+  const body = source.slice(
+    source.indexOf("export async function regenerateChatTitle"),
+    source.indexOf("/** The sandbox"),
+  );
   assert.match(body, /const \{ params, modelLoading \} = useChatRuntimeStore\.getState\(\);/);
-  assert.match(body, /buildTitleRefreshRequest\(params\.checkpoint, excerpt\)/);
-  assert.doesNotMatch(body.slice(0, body.indexOf("/** The sandbox")), /answeringCheckpoint|titleCheckpoint/);
+  assert.match(
+    body,
+    /\(params\.checkpoint && !modelLoading \? await titleFromModel\(params\.checkpoint, excerpt\) : null\) \?\? heuristicChatTitle\(branch\)/,
+  );
+  assert.doesNotMatch(body, /answeringCheckpoint|titleCheckpoint/);
+});
+
+const DRIFTED: MessageRecord[] = [
+  message(0, "user", text("Help me write a short follow-up email to a client after our kickoff meeting.")),
+  message(1, "assistant", text("Sure! **Subject:** Follow-Up on Our Kickoff Meeting. Dear client, thanks for the meeting.")),
+  message(2, "user", text("Actually the client now wants to renegotiate the contract. They want to lower the liability cap. What should I push back on?")),
+  message(3, "assistant", text("## Liability cap negotiation\nIf the client asks to **lower the liability cap**, push back on carve-outs for indemnification.")),
+  message(4, "user", text("How should indemnification and limitation of liability clauses interact in a software license agreement?")),
+  message(5, "assistant", text("## 1. Indemnification vs limitation of liability\nIn a **software license agreement**, indemnification is often carved out of the liability cap.")),
+];
+
+test("without a model the title follows where the chat went, not where it started", () => {
+  assert.equal(heuristicChatTitle(DRIFTED), "Indemnification and limitation of liability clauses");
+});
+
+test("without a model a closing thanks or nudge does not become the title", () => {
+  assert.equal(
+    heuristicChatTitle([
+      message(0, "user", text("How do I fine-tune Llama 3 with LoRA on a single GPU?")),
+      message(1, "assistant", text("## LoRA fine-tuning on one GPU\nUse **QLoRA** with 4-bit quantization.")),
+      message(2, "user", text("thanks!")),
+    ]),
+    "LoRA on a single GPU",
+  );
+  assert.equal(
+    heuristicChatTitle([
+      message(0, "user", text("Write a story about a dragon who loves baking bread")),
+      message(1, "assistant", text("Once upon a time, a dragon named Ember baked bread.")),
+      message(2, "user", text("ok continue")),
+    ]),
+    "Dragon who loves baking bread",
+  );
+});
+
+test("without a model text with no spaced words keeps its first line", () => {
+  assert.equal(heuristicChatTitle([message(0, "user", text("如何用Python读取CSV文件？"))]), "如何用Python读取CSV文件");
+  assert.equal(heuristicChatTitle([]), null);
+  assert.equal(heuristicChatTitle([message(0, "assistant", text("Hello there"))]), null);
+});
+
+test("without a model reasoning and tool output never pick the title", () => {
+  const title = heuristicChatTitle([
+      message(0, "user", text("Plan a three day trip to Kyoto in autumn")),
+      message(1, "assistant", [
+        { type: "reasoning", text: "Database migration database migration database migration" },
+        { type: "tool-call", toolName: "web_search", args: {}, result: "database migration" },
+        { type: "text", text: "Day one: **Kyoto temples** in autumn." },
+      ] as unknown as MessageRecord["content"]),
+    ]);
+  assert.equal(title, "Day trip to Kyoto in autumn");
+  assert.doesNotMatch(title ?? "", /database|migration/i);
 });

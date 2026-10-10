@@ -385,9 +385,10 @@ const TITLE_SYSTEM_PROMPT =
 const TITLE_REFRESH_SYSTEM_PROMPT =
   "Write 1 concise chat title for what this conversation is about now. The excerpt holds its latest messages, oldest first; weight the newest most. Rules: 2-6 words, no quotes, no punctuation, ASCII only, do not echo input. Output title only.";
 
-// The excerpt is all a refresh prefills, so it stays a few hundred tokens however long the chat is.
+// The excerpt is all a refresh prefills (about 250 tokens however long the chat is): the last
+// two or three turns, the window Open WebUI titles from ({{MESSAGES:END:2}}).
 const REFRESH_MESSAGE_CHARS = 300;
-const REFRESH_EXCERPT_CHARS = 1200;
+const REFRESH_EXCERPT_CHARS = 900;
 const REFRESH_MIN_CHARS = 40;
 
 function textPartsOf(content: MessageRecord["content"]): string {
@@ -418,6 +419,80 @@ export function titleRefreshExcerpt(messages: readonly MessageRecord[]): string 
     used += line.length + 1;
   }
   return lines.reverse().join("\n");
+}
+
+// Function words and filler: a title phrase never starts or ends on one. English plus the commonest
+// Spanish, French, German and Portuguese ones; other languages still get a span of their own words.
+const TITLE_STOPWORDS = new Set(
+  (
+    "a an the and or but if then so of in on at to for from by with about into over after before under between through during without within " +
+    "is are was were be been being am do does did done have has had having i me my mine we us our you your yours he him his she her it its they them their " +
+    "this that these those there here what which who whom whose when where why how can could would should will shall may might must not no yes ok okay " +
+    "thanks thank please hi hello hey sure great cool nice just also actually really very quite now still again more most less some any all each every " +
+    "both either neither other another such same own only than too want wants wanted need needs like help tell give show make let get got know think see " +
+    "use using write explain describe work works one two lot lots thing things something anything everything way ways kind sort bit time today " +
+    "de la el los las y en que un una le les des et du der die das und ist zu mit para por com um uma une como cómo puedo puede qué cuál con sin mi tu su " +
+    "es son hay sobre del al lo se te nos est pour avec sur dans comment wie was ich kann ein eine für auf posso não mais os em na"
+  ).split(" "),
+);
+const TITLE_WORD = /[\p{L}\p{N}][\p{L}\p{N}'’_-]*/gu;
+const TITLE_MAX_WORDS = 6;
+
+function isTitleWord(word: string): boolean {
+  return word.length >= 3 && !TITLE_STOPWORDS.has(word.toLowerCase()) && !/^\d+$/.test(word);
+}
+
+/**
+ * A title without a model: the phrase of the newest real user message (not "thanks" or "ok continue")
+ * whose words the latest turns keep coming back to, assistant headings and bold counted twice.
+ * Open WebUI falls back to the first message, which is the topic a drifted chat has left.
+ */
+export function heuristicChatTitle(messages: readonly MessageRecord[]): string | null {
+  const turns = messages
+    .filter((m) => m.role === "user" || m.role === "assistant")
+    .map((m) => ({ role: m.role, text: dropLoneSurrogates(textPartsOf(m.content)) }))
+    .filter((m) => m.text.trim());
+  const weight = new Map<string, number>();
+  const count = (text: string, value: number) => {
+    for (const word of text.match(TITLE_WORD) ?? []) {
+      if (!isTitleWord(word)) continue;
+      // Names (React, TypeError, LoRA) are what a chat is about more often than not.
+      const name = /[A-Z]/.test(word) ? 1.5 : 1;
+      const key = word.toLowerCase();
+      weight.set(key, (weight.get(key) ?? 0) + value * name);
+    }
+  };
+  turns.slice(-6).reverse().forEach((turn, age) => {
+    const recency = 1 / (1 + age * 0.3);
+    count(turn.text, (turn.role === "user" ? 2 : 1) * recency);
+    if (turn.role === "assistant") {
+      for (const emphasis of turn.text.match(/^#{1,6}\s+.*$|\*\*[^*]+\*\*/gm) ?? []) {
+        count(emphasis, recency);
+      }
+    }
+  });
+  const users = turns.filter((t) => t.role === "user").reverse();
+  const anchor =
+    users.find((t) => (t.text.match(TITLE_WORD) ?? []).filter(isTitleWord).length >= 2) ?? users[0];
+  if (!anchor) return null;
+  let best: { score: number; words: string[] } | null = null;
+  for (const clause of anchor.text.split(/[.?!;:,\n()"“”]+/)) {
+    const words = clause.match(TITLE_WORD) ?? [];
+    for (let i = 0; i < words.length; i++) {
+      if (!isTitleWord(words[i])) continue;
+      for (let j = i; j < Math.min(words.length, i + TITLE_MAX_WORDS); j++) {
+        if (!isTitleWord(words[j])) continue;
+        const span = words.slice(i, j + 1);
+        const sum = span.reduce((total, w) => total + (weight.get(w.toLowerCase()) ?? 0), 0);
+        // Longer phrases read better but must earn it; one word is a last resort.
+        const score = (sum / span.length ** 0.35) * (span.length === 1 ? 0.6 : 1);
+        if (!best || score > best.score) best = { score, words: span };
+      }
+    }
+  }
+  if (!best) return fallbackTitleFromUserText(anchor.text);
+  const title = best.words.join(" ");
+  return fallbackTitleFromUserText(title.charAt(0).toUpperCase() + title.slice(1));
 }
 
 export function buildTitleRefreshRequest(

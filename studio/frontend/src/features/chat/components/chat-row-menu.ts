@@ -37,6 +37,7 @@ import { savedBranchHead } from "../utils/branch-head";
 import { orderByParentChain } from "../utils/message-order";
 import {
   buildTitleRefreshRequest,
+  heuristicChatTitle,
   titleFromStream,
   titleRefreshExcerpt,
 } from "../utils/chat-title";
@@ -129,28 +130,40 @@ function forkRefused(): Error {
 export type RegenerateTitleOutcome =
   | "renamed"
   | "unchanged"
-  | "no-model"
   | "empty"
   | "busy"
   | "failed";
 
 const regeneratingTitles = new Set<string>();
-const REGENERATE_TITLE_TIMEOUT_MS = 60_000;
+// A title is not worth a long wait: past this the phrase from the messages stands in.
+const TITLE_MODEL_WAIT_MS = 15_000;
+
+/** Null when the model cannot answer in time or answers with something unusable. */
+async function titleFromModel(checkpoint: string, excerpt: string): Promise<string | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TITLE_MODEL_WAIT_MS);
+  try {
+    const request = await buildTitleRefreshRequest(checkpoint, excerpt);
+    if (!request) return null;
+    return await titleFromStream(streamChatCompletions(request, controller.signal));
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 /**
  * Re-titles a chat from its latest turns with the model the user has selected, never the one that
- * answered: an idle local model would be reloaded for a few words. A comparison's panes share their
- * user turns and title, so one pane is read.
+ * answered: an idle local model would be reloaded for a few words. With none selected, or none that
+ * answers, the title is picked from the messages themselves. A comparison's panes share their user
+ * turns and title, so one pane is read.
  */
 export async function regenerateChatTitle(
   item: SidebarItem,
 ): Promise<RegenerateTitleOutcome> {
-  const { params, modelLoading } = useChatRuntimeStore.getState();
-  if (!params.checkpoint || modelLoading) return "no-model";
   if (regeneratingTitles.has(item.id)) return "busy";
   regeneratingTitles.add(item.id);
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REGENERATE_TITLE_TIMEOUT_MS);
   try {
     const threadId = getSidebarItemThreadIds(item)[0];
     const liveBranch = liveThreadBranch(threadId);
@@ -168,12 +181,12 @@ export async function regenerateChatTitle(
       : raw;
     const excerpt = titleRefreshExcerpt(branch);
     if (!excerpt) return "empty";
-    const request = await buildTitleRefreshRequest(params.checkpoint, excerpt);
-    if (!request) return "no-model";
-    const title = await titleFromStream(
-      streamChatCompletions(request, controller.signal),
-    );
-    if (!title) return "failed";
+    const { params, modelLoading } = useChatRuntimeStore.getState();
+    const title =
+      (params.checkpoint && !modelLoading
+        ? await titleFromModel(params.checkpoint, excerpt)
+        : null) ?? heuristicChatTitle(branch);
+    if (!title) return "empty";
     // A rename made while the model answered wins.
     const current = (await getStoredChatThread(threadId))?.title;
     if (current !== startTitle || title === current) return "unchanged";
@@ -182,7 +195,6 @@ export async function regenerateChatTitle(
   } catch {
     return "failed";
   } finally {
-    clearTimeout(timer);
     regeneratingTitles.delete(item.id);
   }
 }

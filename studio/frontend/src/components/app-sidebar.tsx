@@ -3098,11 +3098,12 @@ export function AppSidebar() {
 
   /** The title follows the model's read of the latest turns; the row itself says when it lands. */
   async function regenerateChatTitleFromMenu(item: SidebarItem) {
-    const toastId = toast.loading("Regenerating title...");
+    // Only a slow refresh says it is working; a fast one would just flash a toast.
+    const toastId = `regenerate-title-${item.id}`;
+    const slow = setTimeout(() => toast.loading("Regenerating title...", { id: toastId }), 400);
     const outcome = await regenerateChatTitle(item);
-    if (outcome === "no-model") {
-      toast.error("Load a model to regenerate the title.", { id: toastId });
-    } else if (outcome === "empty") {
+    clearTimeout(slow);
+    if (outcome === "empty") {
       toast.error("This chat has no messages to title yet.", { id: toastId });
     } else if (outcome === "failed") {
       toast.error("Could not regenerate the title.", { id: toastId });
