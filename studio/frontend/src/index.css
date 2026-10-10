@@ -5074,7 +5074,7 @@ html.force-reduced-motion .sidebar-section-drop-line {
 }
 
 .dark .media-lightbox-overlay {
-	background: color-mix(in oklab, color-mix(in oklab, var(--background), black 45%) 70%, transparent);
+	background: color-mix(in oklab, color-mix(in oklab, var(--background), black 45%) 78%, transparent);
 }
 
 /* Video tabs: the clip sits on a soft brand-tinted band. */

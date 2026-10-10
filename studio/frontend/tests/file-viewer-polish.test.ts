@@ -33,7 +33,7 @@ test("a picture sits where fit puts it before it is measured, so opening it neve
 test("the lightbox backdrop is a faint grey in light mode and near black in dark", () => {
   const css = read("index.css");
   assert.match(css, /\.media-lightbox-overlay \{\s*background: color-mix\(in oklab, color-mix\(in oklab, var\(--background\), black 7%\) 64%, transparent\);/);
-  assert.match(css, /\.dark \.media-lightbox-overlay \{\s*background: color-mix\(in oklab, color-mix\(in oklab, var\(--background\), black 45%\) 70%, transparent\);/);
+  assert.match(css, /\.dark \.media-lightbox-overlay \{\s*background: color-mix\(in oklab, color-mix\(in oklab, var\(--background\), black 45%\) 78%, transparent\);/);
   assert.match(read("components/media-viewer.tsx"), /"media-lightbox-overlay bg-transparent /);
 });
 
