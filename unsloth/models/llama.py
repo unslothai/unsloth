@@ -4647,9 +4647,8 @@ class FastLlamaModel:
             if hasattr(embeddings, "training"):
                 embeddings.training = True
 
-        # Training never uses the KV cache, with or without gradient checkpointing: once one exists transformers
-        # drops its packed-sequence mask, so padding-free rows attend across documents. Trainer __init__ ends in
-        # for_inference, which restores use_cache; disable_use_cache records it so for_inference can again.
+        # Always, not only under gradient checkpointing: with a KV cache transformers drops the packed-sequence
+        # mask, so padding-free rows attend across documents. for_inference restores the recorded value.
         try:
             from unsloth_zoo.training_utils import disable_use_cache
             disable_use_cache(model)

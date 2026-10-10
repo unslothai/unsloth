@@ -43,7 +43,7 @@ def test_for_training_disables_the_cache_with_or_without_checkpointing(
 ):
     cls = _fast_models()[fast_model]
     model = _tiny_llama()
-    # Mirrors an Unsloth trainer: prepare disabled it, Trainer __init__ ended in for_inference (restored it).
+    # As in an Unsloth trainer: prepared, then for_inference at the end of __init__.
     training_utils.disable_use_cache(model)
     training_utils.restore_use_cache(model)
     assert model.config.use_cache is True
@@ -66,7 +66,6 @@ def test_a_model_never_prepared_still_trains_without_a_cache_and_infers_with_one
         if model.config.use_cache is True:
             pytest.skip(f"{cls.__name__}.for_training cannot run here: {error}")
     assert model.config.use_cache is False
-    # Recorded on the way in, so generation gets its cache back.
     training_utils.restore_use_cache(model)
     assert model.config.use_cache is True
 

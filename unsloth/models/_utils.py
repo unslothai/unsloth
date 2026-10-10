@@ -4804,8 +4804,7 @@ def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
         elif "num_items_in_batch" not in inputs:
             inputs["num_items_in_batch"] = num_items_in_batch
 
-    # Training twin of the prediction_step guard (#3470): a KV cache makes transformers drop its packed-sequence
-    # mask, so a padding-free batch must not build one even if something re-enabled config.use_cache.
+    # Training twin of the #3470 prediction_step guard: a KV cache drops the packed-sequence mask.
     if "packed_seq_lengths" in inputs and "use_cache" not in inputs:
         inputs = {**inputs, "use_cache": False}
 
