@@ -1,6 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-"""Packed rows on SDPA run through torch.nn.attention.varlen when it covers the call: same result as
-the per-segment path, which stays the fallback for everything varlen_attn cannot express."""
+"""Packed SDPA rows via torch varlen_attn match the per-segment fallback."""
 
 import types
 
@@ -74,7 +73,7 @@ def _run(
 
 
 CASES = [
-    # lengths, total tokens (> sum = pad tail segment), heads, kv heads, causal, window, expected window_size
+    # lengths, total (> sum = pad tail), heads, kv heads, causal, window, expected window_size
     ((5, 3, 4), 12, 4, 4, True, None, (-1, 0)),
     ((5, 3, 4), 12, 4, 2, True, None, (-1, 0)),
     ((4, 4, 4), 12, 4, 1, True, None, (-1, 0)),
@@ -108,7 +107,6 @@ def test_varlen_matches_segments(
 
 @needs_varlen
 def test_bidirectional_mha_head_dim_256_runs(monkeypatch):
-    # 2.14 + sm90 / sm100 would route this to cuDNN's ragged kernel, which has no head_dim 256 plan.
     g = torch.Generator().manual_seed(2)
     qkv = [torch.randn(1, 8, 1024, 256, generator = g).cuda().bfloat16() for _ in range(3)]
     out, calls = _run(monkeypatch, True, (300, 500, 224), 1024, 8, 8, qkv, is_causal = False)
