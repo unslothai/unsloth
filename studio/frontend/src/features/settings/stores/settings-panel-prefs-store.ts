@@ -42,6 +42,10 @@ export interface SettingsPanelPrefsState {
   resourcesLiveUpdates: boolean;
   setResourcesLiveUpdates: (enabled: boolean) => void;
 
+  // the driver version whose idle-eviction notice was dismissed, so a different bad driver shows again.
+  dismissedDriverWarning: string | null;
+  dismissDriverWarning: (driverVersion: string) => void;
+
   fineTuneAction: FineTuneAction;
   setFineTuneAction: (action: FineTuneAction) => void;
 }
@@ -97,6 +101,7 @@ function sanitize(
       typeof raw.resourcesLiveUpdates === "boolean"
         ? raw.resourcesLiveUpdates
         : true,
+    dismissedDriverWarning: text(raw.dismissedDriverWarning),
     fineTuneAction: oneOf(raw.fineTuneAction, FINE_TUNE_VALUES, "train"),
   };
 }
@@ -132,6 +137,10 @@ export const useSettingsPanelPrefsStore = create<SettingsPanelPrefsState>()(
       resourcesLiveUpdates: true,
       setResourcesLiveUpdates: (resourcesLiveUpdates) =>
         set({ resourcesLiveUpdates }),
+
+      dismissedDriverWarning: null,
+      dismissDriverWarning: (dismissedDriverWarning) =>
+        set({ dismissedDriverWarning }),
 
       fineTuneAction: "train",
       setFineTuneAction: (fineTuneAction) => set({ fineTuneAction }),

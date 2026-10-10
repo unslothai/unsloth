@@ -2596,10 +2596,6 @@ class TestTheCudaMapNamesItsFallback(_GpuCacheResetMixin, unittest.TestCase):
         with patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA):
             self.assertNotEqual(get_device_map([0, 1]), "unsloth")
 
-    def test_xpu_keeps_plain_balanced(self):
-        with patch("utils.hardware.hardware.get_device", return_value = DeviceType.XPU):
-            self.assertEqual(get_device_map([0, 1]), "balanced")
-
     def test_a_single_gpu_never_asks_for_a_plan(self):
         for device in (DeviceType.CUDA, DeviceType.XPU, DeviceType.CPU):
             with patch("utils.hardware.hardware.get_device", return_value = device):

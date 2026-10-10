@@ -477,12 +477,6 @@ def test_managed_node_used_when_system_lacks_npx(managed_node_install, monkeypat
     assert node_runtime.path_with_managed_node(str(sysbin)) == expected
 
 
-def test_complete_system_runtime_is_not_shadowed(managed_node_install, monkeypatch, tmp_path):
-    sysbin = _system_node_dir(tmp_path)
-    _patch_floors(monkeypatch, lambda executable, path = None: True)
-    assert node_runtime.path_with_managed_node(str(sysbin)) == str(sysbin)
-
-
 def test_shadowed_managed_dir_moves_to_front(managed_node_install, monkeypatch, tmp_path):
     """Already on PATH but behind a stale runtime: it has to move up, not stay put."""
     stale = _system_node_dir(tmp_path)

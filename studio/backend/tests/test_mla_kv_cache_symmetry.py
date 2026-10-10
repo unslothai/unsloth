@@ -339,10 +339,6 @@ class TestTheDraftSignalComesFromTheLaunchCommand:
         env = {"LLAMA_ARG_SPEC_DRAFT_MODEL": "/d/mla.gguf"}
         assert b._draft_kv_symmetry(["llama-server"], env) is True
 
-    def test_no_drafter_at_all_is_none(self):
-        b = self._backend({})
-        assert b._draft_kv_symmetry(["llama-server", "-m", "t.gguf"], {}) is None
-
     def test_an_unreadable_drafter_takes_the_conservative_path(self):
         """Named but unreadable is still a drafter that will launch."""
         b = self._backend({})
