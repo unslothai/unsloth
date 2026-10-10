@@ -45,7 +45,9 @@ from core.training.diffusion_train_common import (  # noqa: F401
     StopCb,
     DiffusionLoraConfig,
     LATENT_CACHE_OVER_BUDGET,
-    bitsandbytes_optimizer_supported,
+    enable_diffusion_gradient_checkpointing,
+    make_lora_optimizer,
+    recorded_optimizer_class,
     native_bf16_supported,
     _apply_perf_flags,
     _assert_trusted_base_model,
@@ -398,7 +400,7 @@ def run_diffusion_lora_training(
             )
         )
         if cfg.gradient_checkpointing:
-            unet.enable_gradient_checkpointing()
+            enable_diffusion_gradient_checkpointing(unet)
         # LoRA params must be fp32 for a stable optimizer under mixed precision.
         if weight_dtype != torch.float32:
             cast_training_params(unet, dtype = torch.float32)
@@ -412,7 +414,9 @@ def run_diffusion_lora_training(
         )
 
         lora_params = [p for p in unet.parameters() if p.requires_grad]
-        optimizer = _make_lora_optimizer(lora_params, cfg.learning_rate)
+        optimizer = _make_lora_optimizer(
+            lora_params, cfg.learning_rate, recorded_optimizer_class(cfg, identity)
+        )
         # The scheduler advances once per optimizer update, so count warmup/decay in optimizer steps; the
         # accumulation factor would stretch warmup.
         lr_sched = get_scheduler(
@@ -743,29 +747,12 @@ def run_diffusion_lora_training(
         _restore_perf_flags(snap)
 
 
-def _make_lora_optimizer(params: list, lr: float) -> Any:
-    """8-bit AdamW (bitsandbytes) by default -- half the optimizer state, no meaningful
-    quality cost for LoRA -- falling back to torch AdamW (fused on CUDA) when unavailable.
-    UNSLOTH_DIFFUSION_FP32_OPTIM forces plain (non-fused) AdamW: the accuracy guard wants the
-    reference optimizer, so it must not take the fused path."""
-    import torch
-
-    if os.environ.get("UNSLOTH_DIFFUSION_FP32_OPTIM", "") in ("1", "true"):
-        return torch.optim.AdamW(params, lr = lr)
-    # Checked before construction, not around it: on XPU the 8-bit optimizer builds fine and
-    # only dies at the first step(), which the except below would never see.
-    if bitsandbytes_optimizer_supported():
-        try:
-            import bitsandbytes as bnb
-            return bnb.optim.AdamW8bit(params, lr = lr)
-        except Exception:  # noqa: BLE001 -- bnb missing / no CUDA: fall back to torch AdamW
-            pass
-    if torch.cuda.is_available():
-        try:
-            return torch.optim.AdamW(params, lr = lr, fused = True)
-        except Exception:  # noqa: BLE001 -- fused unsupported on this build/device
-            pass
-    return torch.optim.AdamW(params, lr = lr)
+def _make_lora_optimizer(
+    params: list,
+    lr: float,
+    resume_optimizer_class = None,
+) -> Any:
+    return make_lora_optimizer(params, lr, resume_optimizer_class)
 
 
 def run_diffusion_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> None:

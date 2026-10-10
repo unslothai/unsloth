@@ -801,14 +801,108 @@ def bitsandbytes_optimizer_supported() -> bool:
 
     Keyed on get_device(), NOT torch.xpu.is_available(): a hybrid host with an Intel iGPU beside
     an NVIDIA card reports both and detection prefers CUDA. Answering the presence question there
-    would drop 8-bit on a CUDA run, and worse, change optimizer_key() so restore_resume_state
-    refuses every existing AdamW8bit checkpoint with a ResumeError.
+    would make make_lora_optimizer skip AdamW8bit, so restore_resume_state refuses every existing
+    AdamW8bit checkpoint with a ResumeError.
     """
     try:
         from utils.hardware import DeviceType, get_device
         return get_device() != DeviceType.XPU
     except Exception:  # noqa: BLE001 -- a probe failure must not block a start
         return True
+
+
+def _is_bnb_8bit_optimizer_key(name: Optional[str]) -> bool:
+    return isinstance(name, str) and name.startswith("bitsandbytes.") and "8bit" in name
+
+
+def recorded_optimizer_class(cfg: Any, identity: Any) -> Optional[str]:
+    """The ``optimizer_class`` recorded by the bundle ``cfg`` resumes from (resolved the same way
+    restore_resume_state resolves it), or None: no resume, or a bundle that fails preflight. Never
+    raises: restore_resume_state makes the real decision and reports it."""
+    if not getattr(cfg, "resume_from_checkpoint", None):
+        return None
+    try:
+        from core.training.diffusion_checkpoint import preflight_resume, read_checkpoint
+        path, _step = preflight_resume(
+            cfg.resume_from_checkpoint, identity = identity, target_steps = cfg.train_steps
+        )
+        value = (read_checkpoint(path) or {}).get("optimizer_class")
+    except Exception:  # noqa: BLE001
+        return None
+    return value if isinstance(value, str) else None
+
+
+GC_MODE_ENV = "UNSLOTH_DIFFUSION_GC_MODE"
+GC_SKIP_EVERY_ENV = "UNSLOTH_DIFFUSION_GC_SKIP_EVERY"
+
+
+def enable_diffusion_gradient_checkpointing(model: Any, mode: Optional[str] = None) -> str:
+    """Turn on non-reentrant activation checkpointing for a diffusers model; returns the mode applied.
+
+    "plain" (default) checkpoints every block. "partial" leaves every Nth repeated block
+    (UNSLOTH_DIFFUSION_GC_SKIP_EVERY, default 2) un-checkpointed: fewer recomputes for more VRAM
+    (measured 1.17-1.3x at +2.5-4 GB with N=2). Selective (op-policy) checkpointing and CPU-offloaded
+    checkpointing were measured slower or numerically different under the regional compile, so
+    neither is offered. Non-reentrant because reentrant recompute of a bnb 4-bit LoRA linear can
+    trip an illegal memory access on the larger FLUX transformer."""
+    import functools
+
+    import torch.utils.checkpoint as _ckpt
+
+    plain = functools.partial(_ckpt.checkpoint, use_reentrant = False)
+    mode = (mode or os.environ.get(GC_MODE_ENV, "") or "plain").strip().lower()
+    repeated = set(getattr(model, "_repeated_blocks", None) or ())
+    blocks = [m for m in model.modules() if m.__class__.__name__ in repeated]
+    if mode == "partial" and blocks:
+        try:
+            every = max(2, int(os.environ.get(GC_SKIP_EVERY_ENV, "") or 2))
+        except ValueError:
+            every = 2
+        skip = {id(b) for b in blocks[every - 1 :: every]}
+
+        def _partial(module, *args, **kwargs):
+            if id(module) in skip:
+                return module(*args, **kwargs)
+            return plain(module, *args, **kwargs)
+
+        model.enable_gradient_checkpointing(gradient_checkpointing_func = _partial)
+        return "partial"
+    model.enable_gradient_checkpointing(gradient_checkpointing_func = plain)
+    return "plain"
+
+
+def make_lora_optimizer(
+    params: list,
+    lr: float,
+    resume_optimizer_class: Optional[str] = None,
+) -> Any:
+    """torch AdamW, fused on CUDA, for both diffusion trainers.
+
+    bitsandbytes AdamW8bit used to be the default, but its step() syncs the device once per
+    parameter (Optimizer8bit.step -> sync_gpu), ~1100 syncs per SDXL step: fused AdamW measured
+    1.15-1.3x faster per step for ~0.1 GB more state on LoRA-sized params. AdamW8bit is still
+    built when resuming a bundle whose moments it wrote (state1/state2 do not load into torch
+    AdamW), so runs started on an older build continue unchanged.
+
+    UNSLOTH_DIFFUSION_FP32_OPTIM forces plain (non-fused) AdamW: the accuracy guard wants the
+    reference optimizer. bitsandbytes is checked before construction because on XPU it builds
+    fine and only dies at the first step()."""
+    import torch
+
+    if os.environ.get("UNSLOTH_DIFFUSION_FP32_OPTIM", "") in ("1", "true"):
+        return torch.optim.AdamW(params, lr = lr)
+    if _is_bnb_8bit_optimizer_key(resume_optimizer_class) and bitsandbytes_optimizer_supported():
+        try:
+            import bitsandbytes as bnb
+            return bnb.optim.AdamW8bit(params, lr = lr)
+        except Exception:  # noqa: BLE001 -- restore_resume_state then names the mismatch
+            pass
+    if torch.cuda.is_available():
+        try:
+            return torch.optim.AdamW(params, lr = lr, fused = True)
+        except Exception:  # noqa: BLE001 -- fused unsupported on this build/device
+            pass
+    return torch.optim.AdamW(params, lr = lr)
 
 
 def training_precision_preflight_error(resolved_family: str, base_precision: str) -> Optional[str]:
@@ -2007,7 +2101,7 @@ def restore_resume_state(
     load_trainable_state_dict(model, ckpt.tensors("adapter"))
     optimizer_state = ckpt.torch_state("optimizer")
     if optimizer_state is not None:
-        # The trainers pick their optimizer from the HOST (bnb present, fused kernel available,
+        # The optimizer depends on the host and the build (older builds wrote AdamW8bit, bnb may be absent,
         # UNSLOTH_DIFFUSION_FP32_OPTIM), so foreign moments arrive legitimately (state1/state2 versus
         # exp_avg/exp_avg_sq): shapes match, load_state_dict accepts them, and the first step dies on a bare KeyError.
         saved_optimizer = ckpt.optimizer_class
