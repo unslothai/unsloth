@@ -245,3 +245,14 @@ def test_a_marked_gguf_beside_a_model_is_not_a_variant(tmp_path):
     (tmp_path / "style.gguf").write_bytes(b"GGUF" + b"\0" * 60)
     (tmp_path / "style.json").write_text(json.dumps(_MARK))
     assert [p.name for p in _main_gguf_files(tmp_path)] == ["model-Q4_K_M.gguf"]
+
+
+def test_a_config_with_only_a_marked_safetensors_is_not_a_model(tmp_path):
+    from hub.services.models.local_inventory import _scan_models_dir
+
+    folder = tmp_path / "loras-with-config"
+    folder.mkdir()
+    (folder / "config.json").write_text("{}")
+    _safetensors(folder / "style.safetensors", sidecar = _MARK)
+    rows = _scan_models_dir(tmp_path)
+    assert all(getattr(r, "model_format", None) != "safetensors" for r in rows)

@@ -196,6 +196,12 @@ def test_a_sibling_differing_only_in_case_keeps_its_stem(loras, tmp_path):
     assert dl.export_local_lora("mystyle", out_dir).name == "mystyle-2.safetensors"
 
 
+def test_a_long_stem_still_exports(loras, tmp_path):
+    stem = "a" * 233
+    (loras / f"{stem}.safetensors").write_bytes(b"w")
+    assert dl.export_local_lora(stem, tmp_path / "out").name == f"{stem}.safetensors"
+
+
 def test_export_refuses_ids_outside_the_local_catalog(loras, tmp_path):
     secret = tmp_path / "secret.safetensors"
     secret.write_bytes(b"secret")

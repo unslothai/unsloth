@@ -310,7 +310,9 @@ def _catalog_by_id() -> dict[str, LoraCatalogEntry]:
 def _staging_name(dest_dir: Path, stem: str) -> str:
     # Not mkstemp: its 0600 file would publish an owner-only marker; a fresh open() honours the umask.
     import secrets
-    return str(dest_dir / f".{stem}.{secrets.token_hex(8)}.part")
+
+    # Short and stem-free: a near-255-byte stem plus a token would overflow the name limit.
+    return str(dest_dir / f".lora-export.{secrets.token_hex(8)}.part")
 
 
 def export_local_lora(lora_id: str, dest_dir: Path) -> Path:

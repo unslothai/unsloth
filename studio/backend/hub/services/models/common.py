@@ -925,6 +925,13 @@ def _classify_local_path(
             )
         )
 
+    if source != "hf_cache":
+        from core.inference.diffusion_lora import is_image_lora_file
+
+        # An image LoRA beside a config is an Images-page add-on, not this folder's weights.
+        files = [
+            f for f in files if f.suffix.lower() != ".safetensors" or not is_image_lora_file(f)
+        ]
     has_config = (scan_path / "config.json").is_file() if scan_path.is_dir() else False
     has_adapter_config = (
         (scan_path / "adapter_config.json").is_file() if scan_path.is_dir() else False
