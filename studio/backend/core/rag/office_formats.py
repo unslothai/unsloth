@@ -270,6 +270,7 @@ _BUILTIN_NUMBER_FORMATS = {
     40: "#,##0.00;[Red](#,##0.00)",
     48: "##0.0E+0",
 }
+_MAX_FORMAT_CHARS = 1024
 _FORMAT_LITERALS = frozenset(" $-+/():!^&'~{}<>=\u20ac\u00a3\u00a5")
 
 
@@ -392,6 +393,8 @@ def _format_number(value: float, code: str) -> str | None:
 
 def _cell_number(value: float, format_id: int, code: str, date1904: bool) -> str:
     """A numeric cell as its format displays it, falling back to the stored number."""
+    if len(code) > _MAX_FORMAT_CHARS:  # tokenized per cell, and the output grows with the code
+        code = ""
     kind = _format_kind(format_id, code)
     if kind:
         return _serial_text(value, kind, date1904)
@@ -818,6 +821,12 @@ def epub(path: str, html_text) -> list[Section]:
         opf_path = rootfile.get("full-path")
         opf = zf.xml(opf_path)
         folder = posixpath.dirname(opf_path)
+        # DRM encrypts resources listed here (paths from the container root); obfuscated fonts are never in the spine.
+        encrypted = set()
+        if zf.has("META-INF/encryption.xml"):
+            for node in zf.xml("META-INF/encryption.xml").iter():
+                if node.tag.endswith("}CipherReference") and node.get("URI"):
+                    encrypted.add(posixpath.normpath(unquote(node.get("URI")).lstrip("/")))
         manifest = {item.get("id"): item for item in opf.iter(_q("opf", "item")) if item.get("id")}
         sections: list[Section] = []
         for ref in opf.iter(_q("opf", "itemref")):
@@ -829,6 +838,8 @@ def epub(path: str, html_text) -> list[Section]:
                 continue
             href = unquote(item.get("href", "").split("#", 1)[0])
             member = posixpath.normpath(posixpath.join(folder, href))
+            if member in encrypted:
+                raise ValueError("file is DRM protected")
             if not zf.has(member):
                 continue
             text = html_text(zf.read(member)).strip()

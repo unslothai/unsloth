@@ -588,6 +588,7 @@ def test_ods_reads_typed_values_without_text(tmp_path):
         (1500000, '#,##0,,"M"', "2M"),
         (1234.5, "General", "1234.5"),
         (5, "[>100]0;0.0", "5"),
+        pytest.param(1234.5, "0" * 5000, "1234.5", id = "oversized-format-left-as-stored"),
     ],
 )
 def test_xlsx_shows_numbers_as_formatted(tmp_path, serial, number_format, expected):
@@ -696,6 +697,26 @@ def test_epub_follows_the_spine_and_skips_navigation(tmp_path):
     text = _text(build_epub(tmp_path / "book.epub"))
     assert "navmarker" not in text
     assert text.index("Revenue increased") < text.index("Zebramarker ends the book")
+
+
+@pytest.mark.parametrize(
+    "uri, protected", [("OEBPS/text/Chapter%201.xhtml", True), ("OEBPS/fonts/a.otf", False)]
+)
+def test_epub_with_encrypted_chapters_is_refused(tmp_path, uri, protected):
+    book = build_epub(tmp_path / "book.epub")
+    with zipfile.ZipFile(book, "a") as z:
+        z.writestr(
+            "META-INF/encryption.xml",
+            '<encryption xmlns="urn:oasis:names:tc:opendocument:xmlns:container" '
+            'xmlns:enc="http://www.w3.org/2001/04/xmlenc#"><enc:EncryptedData>'
+            f'<enc:CipherData><enc:CipherReference URI="{uri}"/></enc:CipherData>'
+            "</enc:EncryptedData></encryption>",
+        )
+    if protected:
+        with pytest.raises(ValueError, match = "DRM protected"):
+            parsers.parse(str(book))
+    else:  # obfuscated fonts are listed too, and never block reading
+        assert "Zebramarker" in _text(book)
 
 
 def test_eml_decodes_headers_and_body(tmp_path):
