@@ -41,6 +41,8 @@ export interface RunnerEvents {
   onProgress: (text: string) => void;
   /** Chat's model could not be put back after the sweep; the finished run is still kept. */
   onRestoreError?: (message: string) => void;
+  /** False once another runner holds the lease: its loads own the server, so skip the restore. */
+  ownsServer?: () => boolean;
 }
 
 export class BenchSetupError extends Error {}
@@ -557,7 +559,12 @@ export async function runBenchmark(
   } finally {
     if (run) run.finishedAt = Date.now();
     // Restore whenever chat's model may have changed: a variant ran, or the initial swap did.
-    if (config.restoreAfter && original.active_model && (run || swapped)) {
+    if (
+      config.restoreAfter &&
+      original.active_model &&
+      (run || swapped) &&
+      events.ownsServer?.() !== false
+    ) {
       events.onProgress("Restoring your original settings");
       // Restore the model chat had open, not the one a tuneModel run swapped in.
       // Keep the finished run, but tell the user if chat was left on the benchmark model.
