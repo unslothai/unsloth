@@ -1041,11 +1041,10 @@ def test_amd_wsl_capacity_follows_the_windows_adapter(monkeypatch):
     monkeypatch.setattr(hardware, "_props_gfx_arch", lambda p: p.gcnArchName)
     record = {"name": props.name, "gfx": "gfx1151", "dedicated_memory_bytes": 512 * 2**20}
     monkeypatch.setattr(hardware, "_windows_amd_adapter_records_or_none", lambda: {1: record})
-    import psutil
-
-    monkeypatch.setattr(
-        psutil, "virtual_memory", lambda: types.SimpleNamespace(available = 100 * 2**30)
+    psutil = types.SimpleNamespace(
+        virtual_memory = lambda: types.SimpleNamespace(available = 100 * 2**30)
     )
+    monkeypatch.setitem(sys.modules, "psutil", psutil)
     # An APU adds 80% of the RAM Windows has available to its dedicated memory.
     monkeypatch.setattr(hardware, "_rocm_props_are_positively_unified", lambda p: True)
     assert managed_engine._wsl_amd_usable_mib([0]) == [(512 + 0.8 * 100 * 1024, True)]

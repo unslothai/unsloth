@@ -25,6 +25,8 @@ def rocm(monkeypatch):
 @pytest.fixture
 def amd_host(rocm, monkeypatch, tmp_path):
     """A Linux host with ROCm 7.2.1 in /opt/rocm and one gfx1151."""
+    if sys.platform != "linux":
+        pytest.skip("local engine host is Linux only")
     monkeypatch.setattr(install.platform, "system", lambda: "Linux")
     monkeypatch.setattr(install.platform, "machine", lambda: "x86_64")
     monkeypatch.setattr(install.platform, "libc_ver", lambda: ("glibc", "2.39"))
@@ -78,6 +80,7 @@ def test_nvidia_host_keeps_the_cuda_profile(monkeypatch):
     assert "import bitsandbytes" in smoke and "torch.version.cuda == '13.0'" in smoke
 
 
+@_LINUX
 def test_rocm_engine_never_shares_studios_torch(rocm, monkeypatch):
     # Studio's own ROCm torch comes from AMD's per-arch index, another build than vLLM's.
     monkeypatch.setattr(install, "_studio_packages", lambda: {"torch": "2.11.0+rocm7.13.0"})
@@ -259,16 +262,20 @@ def test_amd_support_needs_a_render_node_as_well_as_kfd(amd_host, monkeypatch):
 
 def test_sdk_rocm_torch_still_maps_each_gpu_to_its_target(monkeypatch):
     # AMD's SDK / Radeon wheels leave torch.version.hip unset and carry "rocm" in the version.
-    import torch
     from utils.hardware import hardware
 
-    monkeypatch.setattr(install, "_rocm_arches", None)
-    monkeypatch.setattr(torch.version, "hip", None, raising = False)
-    monkeypatch.setattr(torch, "__version__", "2.9.0+rocmsdk20251116")
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-    monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
     props = {0: SimpleNamespace(gcnArchName = "gfx1100"), 1: SimpleNamespace(gcnArchName = "gfx1030")}
-    monkeypatch.setattr(torch.cuda, "get_device_properties", lambda i: props[i])
+    torch = SimpleNamespace(
+        __version__ = "2.9.0+rocmsdk20251116",
+        version = SimpleNamespace(hip = None),
+        cuda = SimpleNamespace(
+            is_available = lambda: True,
+            device_count = lambda: 2,
+            get_device_properties = lambda i: props[i],
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    monkeypatch.setattr(install, "_rocm_arches", None)
     monkeypatch.setattr(hardware, "_rocm_device_ordinal_active", lambda: False)
     monkeypatch.setattr(hardware, "_rocm_visibility_masks_are_stacked", lambda: False)
     monkeypatch.setattr(hardware, "_torch_ordinal_physical_ids", lambda count: [0, 1])
@@ -322,6 +329,7 @@ def test_engine_port_stays_below_the_limit_when_the_os_offers_high_ports(monkeyp
         managed_engine._free_port()
 
 
+@_LINUX
 def test_rocm_mask_follows_an_inherited_rocr_mask(monkeypatch):
     # HIP numbers what ROCr left visible: under ROCR_VISIBLE_DEVICES=2,1 physical GPU 1 is HIP 1.
     monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
