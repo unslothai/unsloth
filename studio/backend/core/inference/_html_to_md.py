@@ -219,7 +219,7 @@ _ROMAN_NUMERAL_TAIL = re.compile(r"(?<![^\W\d_])[IVXLCDM]+$")
 # French superior abbreviations: Mme, Mlle, Mgr, Dr, Pr, no, St, Cie; keyed on the whole base word
 _SUPERIOR_ABBREVIATIONS = {
     "M": frozenset({"me", "mes", "lle", "lles", "gr", "e", "r", "rs"}),
-    "D": frozenset({"r", "rs"}),
+    "D": frozenset({"r", "rs", "re", "res"}),
     "P": frozenset({"r", "rs", "re", "res"}),
     "n": frozenset({"o", "os"}),
     "N": frozenset({"o", "os"}),

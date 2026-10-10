@@ -808,6 +808,7 @@ def test_page_that_fits_keeps_its_links(monkeypatch):
             'claim<sup class="citation">2</sup> and fact<sup class="endnote-ref">3</sup>',
             "claim2 and fact3",
         ),
+        ("la D<sup>re</sup> Roy et les D<sup>res</sup>", "la Dre Roy et les Dres"),
         (
             "M<sup>me</sup> Dupont, D<sup>r</sup> Martin, n<sup>o</sup> 5, Om<sup>e</sup>",
             "Mme Dupont, Dr Martin, no 5, Om^e",
