@@ -49,6 +49,7 @@ import { LinkedFoldersManager } from "./linked-folders-manager";
 import { RAG_SOURCE_UPLOAD_ACCEPT } from "./source-drop-policy";
 import { type RagUploadItem, useRagDocuments } from "./use-rag-documents";
 import { useSourceDrop } from "./use-source-drop";
+import { useUploadQueue } from "./use-upload-queue";
 
 type View =
   | { kind: "list" }
@@ -440,19 +441,21 @@ function KnowledgeBaseDocuments({
   onBack: () => void;
 }) {
   const lister = useCallback(() => listKnowledgeBaseDocuments(kb.id), [kb.id]);
-  const { documents, loading, uploading, refresh, upload, remove } =
+  const { documents, loading, uploading, refresh, upload, remove, retry, canRetry } =
     useRagDocuments({ type: "kb", kbId: kb.id }, lister);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const handleLinkedSourcesChanged = useCallback(() => {
     void refresh({ quiet: true });
   }, [refresh]);
+  // upload() tracks one run at a time, so a second batch would clear the in-flight guard the
+  // first one is still relying on: later files wait in a queue instead.
+  const uploadNow = useCallback(
+    (items: RagUploadItem[]) => void upload(items),
+    [upload],
+  );
+  const { enqueue } = useUploadQueue(uploadNow, uploading, kb.id);
   const { dragging, dropProps, nativeDropTarget } = useSourceDrop({
-    onItems: (items) => void upload(items),
-    // upload() tracks one run at a time, so a second batch would clear the
-    // in-flight guard the first one is still relying on.
-    disabledReason: uploading
-      ? "An upload is already running. Add these when it finishes."
-      : undefined,
+    onItems: enqueue,
   });
 
   // Deferred a tick: the hook's unmount cleanup aborts an upload started on StrictMode's
@@ -478,11 +481,7 @@ function KnowledgeBaseDocuments({
           <ChevronLeftIcon className="size-4" />
           All knowledge bases
         </Button>
-        <Button
-          size="sm"
-          onClick={() => fileInputRef.current?.click()}
-          disabled={uploading}
-        >
+        <Button size="sm" onClick={() => fileInputRef.current?.click()}>
           {uploading ? <Spinner /> : <UploadIcon className="size-3.5" />}
           Upload
         </Button>
@@ -493,8 +492,9 @@ function KnowledgeBaseDocuments({
           accept={RAG_SOURCE_UPLOAD_ACCEPT}
           className="hidden"
           onChange={(e) => {
-            if (e.target.files?.length) void upload(e.target.files);
+            const files = Array.from(e.target.files ?? []);
             e.target.value = "";
+            enqueue(files.map((file) => ({ kind: "file" as const, file })));
           }}
         />
       </div>
@@ -528,10 +528,12 @@ function KnowledgeBaseDocuments({
               stage={doc.stage}
               error={doc.error}
               onRemove={
-                doc.id.startsWith("pending_") || isLinkedFolderManaged(doc)
+                isLinkedFolderManaged(doc) ||
+                (doc.id.startsWith("pending_") && doc.status !== "failed")
                   ? undefined
                   : () => void remove(doc.id)
               }
+              onRetry={canRetry(doc.id) ? () => void retry(doc.id) : undefined}
             />
           ))}
         </div>

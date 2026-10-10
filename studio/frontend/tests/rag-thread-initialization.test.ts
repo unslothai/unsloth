@@ -148,7 +148,11 @@ function harness(
       "@/components/ui/spinner": {},
       "./preview-store": { useDocumentPreviewStore: () => undefined },
       "@/lib/chevron-icons": {},
-      "@assistant-ui/react": { useAui: () => ({ threadListItem: () => item }) },
+      "@assistant-ui/react": {
+        useAui: () => ({ threadListItem: () => item }),
+        useAuiState: (select: (s: { threadListItem: { id: string } }) => unknown) =>
+          select({ threadListItem: { id: itemId } }),
+      },
       "@/lib/utils": { cn: () => "" },
       "@/features/chat/stores/chat-runtime-store": {
         useChatRuntimeStore: store,
@@ -203,6 +207,16 @@ function harness(
         isSupportedSourceName: (name: string) => name.endsWith(".docx"),
       },
       "./use-source-drop": {},
+      "./use-upload-queue": {
+        useUploadQueue: (run: (items: unknown[]) => void) => ({
+          enqueue: run,
+          queued: 0,
+        }),
+      },
+      "./linked-folder-groups": {
+        groupByLinkedFolder: (docs: unknown[]) => ({ loose: docs, folders: [] }),
+        useLinkedFolderNames: () => new Map(),
+      },
       "./document-status-chip": {},
       "./knowledge-base-dialog": { KnowledgeBaseDialog: "KnowledgeBaseDialog" },
       "./staged-source": { EXPIRY_GRACE_MS: 30_000 },

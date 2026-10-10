@@ -6,6 +6,7 @@ import {
   registerNativeAttachmentPath,
   useNativeDropTarget,
 } from "@/features/native-intents";
+import { MAX_FOLDER_FILES, filesFromDrop } from "@/lib/dropped-folders";
 import { toast } from "@/lib/toast";
 import {
   type DragEvent as ReactDragEvent,
@@ -15,6 +16,7 @@ import {
 } from "react";
 import {
   SUPPORTED_SOURCES_HINT,
+  isSupportedSourceName,
   partitionSupported,
 } from "./source-drop-policy";
 import { type RagUploadItem, uploadItemFromIntent } from "./use-rag-documents";
@@ -157,14 +159,32 @@ export function useSourceDrop({
         toast.info(reason);
         return;
       }
-      const { supported, unsupported } = partitionSupported(
-        Array.from(event.dataTransfer.files ?? []),
-        (file) => file.name,
+      // Read synchronously: the browser clears the drop's items once this handler returns.
+      void filesFromDrop(event.dataTransfer, isSupportedSourceName).then(
+        ({ files, truncated, hadFolder }) => {
+          const { supported, unsupported } = partitionSupported(
+            files,
+            (file) => file.name,
+          );
+          // Inside a folder, files of other types are expected and not worth a toast each.
+          if (!hadFolder) reportUnsupported(unsupported);
+          if (hadFolder && supported.length === 0) {
+            toast.info("No supported files in that folder", {
+              description: SUPPORTED_SOURCES_HINT,
+            });
+          }
+          if (truncated > 0) {
+            toast.info(`Added the first ${MAX_FOLDER_FILES} files`, {
+              description:
+                "The rest were left out. Drop a smaller folder for them.",
+            });
+          }
+          if (supported.length > 0) {
+            onItems(supported.map((file) => ({ kind: "file" as const, file })));
+          }
+        },
+        () => toast.error("Couldn't read the dropped folder"),
       );
-      reportUnsupported(unsupported);
-      if (supported.length > 0) {
-        onItems(supported.map((file) => ({ kind: "file" as const, file })));
-      }
     },
   };
 

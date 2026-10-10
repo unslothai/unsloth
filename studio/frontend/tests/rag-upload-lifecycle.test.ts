@@ -21,6 +21,8 @@ type Hook = {
   uploading: boolean;
   hasIndexing: boolean;
   upload: (files: File[], scope?: ScopeOverride) => Promise<void>;
+  retry: (documentId: string) => Promise<void>;
+  canRetry: (documentId: string) => boolean;
 };
 
 function deferred<T>() {
@@ -39,8 +41,12 @@ function harness(
     events?: (jobId: string, signal?: AbortSignal) => AsyncGenerator<JobEvent>;
     getJob?: () => Promise<IndexJob>;
     list?: () => Promise<RagDocument[]>;
+    /** This many uploads are refused before one goes through. */
+    failUploads?: number;
+    failDeletes?: boolean;
   } = {},
 ) {
+  let refusals = options.failUploads ?? 0;
   const slots: unknown[] = [];
   const effects: Array<() => void> = [];
   let cursor = 0;
@@ -118,9 +124,17 @@ function harness(
       "./vision-overrides": { resolveVisionOverrides: async () => ({}) },
       "../api/rag-api": {
         uploadThreadDocument: async (threadId: string) => {
+          if (refusals > 0) {
+            refusals -= 1;
+            throw new Error("Server busy");
+          }
           uploads.push(threadId);
           return uploaded;
         },
+        deleteDocument: async () => {
+          if (options.failDeletes) throw new Error("Server busy");
+        },
+        noteProjectWork: () => undefined,
         streamJobEvents:
           options.events ??
           async function* () {
@@ -274,8 +288,70 @@ test("an original job failure is preserved after its event stream ends", async (
     await flush();
     await hook.upload([report()]);
     await flush();
-    assert.deepEqual(app.render().documents, []);
+    // The failed row stays, with its reason, so it can be retried or removed.
+    const after = app.render();
+    assert.deepEqual(
+      after.documents.map(({ id, status, error }) => ({ id, status, error })),
+      [{ id: "doc", status: "failed", error: "Invalid PDF" }],
+    );
+    assert.equal(after.canRetry("doc"), true);
     assert.deepEqual(app.errors, ["Couldn't index report.pdf"]);
+  } finally {
+    app.dispose();
+  }
+});
+
+test("a refused upload stays as a failed chip and Retry sends the same file again", async () => {
+  const app = harness({ failUploads: 1 });
+  try {
+    let hook = app.render();
+    await flush();
+    await hook.upload([report()]);
+    await flush();
+    hook = app.render();
+    const failed = hook.documents[0];
+    assert.equal(failed?.status, "failed");
+    assert.equal(failed?.error, "Server busy");
+    assert.equal(hook.canRetry(failed!.id), true);
+    assert.deepEqual(app.errors, ["Couldn't upload report.pdf"]);
+
+    await hook.retry(failed!.id);
+    await flush();
+    hook = app.render();
+    assert.deepEqual(app.uploads, ["thread"]);
+    assert.deepEqual(
+      hook.documents.map(({ id, status }) => ({ id, status })),
+      [{ id: "doc", status: "completed" }],
+    );
+  } finally {
+    app.dispose();
+  }
+});
+
+test("a retry whose delete fails keeps the failed row retryable and uploads nothing", async () => {
+  let reads = 0;
+  const app = harness({
+    failDeletes: true,
+    events: async function* () {},
+    getJob: async () => ({
+      id: "job",
+      documentId: "doc",
+      status: ++reads === 1 ? "running" : "failed",
+      error: "Invalid PDF",
+    }),
+  });
+  try {
+    let hook = app.render();
+    await flush();
+    await hook.upload([report()]);
+    await flush();
+    hook = app.render();
+    await hook.retry("doc");
+    await flush();
+    hook = app.render();
+    assert.deepEqual(app.uploads, ["thread"], "no second upload beside the undeleted one");
+    assert.equal(hook.documents[0]?.status, "failed");
+    assert.equal(hook.canRetry("doc"), true);
   } finally {
     app.dispose();
   }

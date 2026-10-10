@@ -31,7 +31,7 @@ from pathlib import Path, PurePosixPath
 from core.rag import account_db as rag_db
 from utils.paths import ensure_dir, rag_uploads_root
 
-from . import config, ingestion, job_leases, store
+from . import config, gitignore, ingestion, job_leases, store
 from utils.paths.path_utils import is_appledouble_metadata
 
 logger = logging.getLogger(__name__)
@@ -88,6 +88,55 @@ def _is_ignored_scan_dir(name: str, path: str) -> bool:
         or name.lower() in _IGNORE_SCAN_DIRS
         or os.path.exists(os.path.join(path, "pyvenv.cfg"))
     )
+
+
+# Build output, skipped only beside a manifest of the project that produces it: a bare "build"
+# folder in a document vault is the user's own.
+_BUILD_OUTPUT_DIRS = frozenset({"dist", "build", "out", "target", "coverage", "htmlcov", "vendor"})
+_PROJECT_MANIFESTS = (
+    "package.json",
+    "pyproject.toml",
+    "setup.py",
+    "setup.cfg",
+    "Cargo.toml",
+    "pom.xml",
+    "build.gradle",
+    "build.gradle.kts",
+    "go.mod",
+    "composer.json",
+    "CMakeLists.txt",
+    "Gemfile",
+    "mix.exs",
+)
+_MAX_REPORTED_FAILURES = 500
+
+
+def _is_build_output_dir(name: str, parent: str) -> bool:
+    return name.lower() in _BUILD_OUTPUT_DIRS and any(
+        os.path.isfile(os.path.join(parent, manifest)) for manifest in _PROJECT_MANIFESTS
+    )
+
+
+def _read_gitignore(directory: str, base: str) -> list[gitignore.Rule]:
+    """The rules of `directory`'s .gitignore. One that exists but cannot be read fails the scan:
+    indexing without it would take in files the user excluded, and a failed scan deletes nothing."""
+    path = os.path.join(directory, ".gitignore")
+    if not os.path.isfile(path) or os.path.islink(path):
+        return []
+    shown = f"{base}/.gitignore" if base else ".gitignore"
+    try:
+        with open(path, "rb") as handle:
+            data = handle.read(gitignore.MAX_GITIGNORE_BYTES + 1)
+    except OSError as exc:
+        raise RuntimeError(f"Couldn't read {shown}: {exc.strerror or exc}") from exc
+    if len(data) > gitignore.MAX_GITIGNORE_BYTES:
+        raise RuntimeError(f"{shown} is larger than {gitignore.MAX_GITIGNORE_BYTES // 1024} KB")
+    # utf-8-sig drops a leading BOM, as git does (dir.c add_patterns_from_buffer, skip_utf8_bom).
+    return gitignore.parse(data.decode("utf-8-sig", "replace"), base)
+
+
+def _is_plain_text_ext(ext: str) -> bool:
+    return ext == ".txt" or ext in config.SOURCE_TEXT_EXTS
 
 
 def _is_ignored_scan_file(name: str) -> bool:
@@ -1052,27 +1101,44 @@ def job_events(job_id: str):
 
 
 def _scan(
-    root: str, expected_identity: tuple[int, int] | None = None
+    root: str,
+    expected_identity: tuple[int, int] | None = None,
+    report: dict[str, int] | None = None,
 ) -> tuple[dict[str, dict], tuple[int, int]]:
+    """Map relative path -> metadata. `report` collects counts of what was deliberately left out."""
     from hub.storage.scan_folders import contains_sensitive_path_component, is_denied_system_path
 
     identity = _root_identity(root)
     if expected_identity is not None and identity != expected_identity:
         raise RuntimeError("Linked folder root identity changed")
 
+    skipped = {"gitignored": 0, "build_dirs": 0, "too_large": 0, "over_limit": 0}
     found: dict[str, dict] = {}
     mount_points = _mount_points()
     root_identities = frozenset({identity}) if identity[1] not in (None, 0) else frozenset()
-    pending = [(root, frozenset({_path_key(root)}), root_identities, 0)]
+    pending = [(root, frozenset({_path_key(root)}), root_identities, 0, ())]
+    # Collected past the cap so the kept set is the first FOLDER_MAX_FILES paths in sorted order,
+    # stable from scan to scan; only far past it does the scan give up.
+    hard_cap = config.FOLDER_MAX_FILES * 2 if config.FOLDER_MAX_FILES else 0
     while pending:
-        directory, ancestor_paths, ancestor_identities, depth = pending.pop()
+        directory, ancestor_paths, ancestor_identities, depth, rules = pending.pop()
+        directory_rel = os.path.relpath(directory, root).replace(os.sep, "/")
+        directory_rel = "" if directory_rel == "." else directory_rel
+        rules = (*rules, *_read_gitignore(directory, directory_rel))
         with os.scandir(directory) as entries:
             for entry in entries:
                 full = entry.path
                 if entry.is_symlink():
                     continue
+                rel = os.path.relpath(full, root).replace(os.sep, "/")
                 if entry.is_dir(follow_symlinks = False):
                     if _is_ignored_scan_dir(entry.name, full):
+                        continue
+                    if rules and gitignore.is_ignored(rel, True, rules):
+                        skipped["gitignored"] += 1
+                        continue
+                    if _is_build_output_dir(entry.name, directory):
+                        skipped["build_dirs"] += 1
                         continue
                     resolved = os.path.realpath(full)
                     if (
@@ -1106,6 +1172,7 @@ def _scan(
                             ancestor_paths | {resolved_key},
                             child_identities,
                             depth + 1,
+                            rules,
                         )
                     )
                     continue
@@ -1113,7 +1180,11 @@ def _scan(
                     continue
                 if _is_ignored_scan_file(entry.name):
                     continue
-                if os.path.splitext(entry.name)[1].lower() not in config.UPLOAD_EXTS:
+                ext = os.path.splitext(entry.name)[1].lower()
+                if ext not in config.UPLOAD_EXTS:
+                    continue
+                if rules and gitignore.is_ignored(rel, False, rules):
+                    skipped["gitignored"] += 1
                     continue
                 # Finder metadata carries the document's extension, so a text parser would embed and cite it as a
                 # real chunk.
@@ -1132,7 +1203,16 @@ def _scan(
                         # authoritative for
                         # deletion.
                         pass
-                rel = os.path.relpath(full, root).replace(os.sep, "/")
+                # Nothing to index, and ingest fails every pass on it (an empty __init__.py).
+                if st.st_size == 0:
+                    continue
+                if (
+                    config.FOLDER_MAX_TEXT_BYTES
+                    and _is_plain_text_ext(ext)
+                    and st.st_size > config.FOLDER_MAX_TEXT_BYTES
+                ):
+                    skipped["too_large"] += 1
+                    continue
                 found[rel] = {
                     "path": full,
                     "size_bytes": st.st_size,
@@ -1143,12 +1223,19 @@ def _scan(
                     # WebDAV drivers report different ids per call path.
                     "identity_from_path": from_path,
                 }
-                if config.FOLDER_MAX_FILES and len(found) > config.FOLDER_MAX_FILES:
+                if hard_cap and len(found) > hard_cap:
                     raise RuntimeError(
-                        f"Folder contains more than the {config.FOLDER_MAX_FILES} supported files limit"
+                        f"Folder contains more than twice the {config.FOLDER_MAX_FILES} supported "
+                        "files limit. Link a smaller folder, or add a .gitignore for what to skip."
                     )
     if _root_identity(root) != identity:
         raise RuntimeError("Linked folder root identity changed during scan")
+    if config.FOLDER_MAX_FILES and len(found) > config.FOLDER_MAX_FILES:
+        kept = sorted(found)[: config.FOLDER_MAX_FILES]
+        skipped["over_limit"] = len(found) - len(kept)
+        found = {rel: found[rel] for rel in kept}
+    if report is not None:
+        report.update(skipped)
     return found, identity
 
 
@@ -1566,7 +1653,8 @@ def _reconcile_folder(job_id: str) -> None:
     try:
         _check_running()
         expected_identity = _load_identity(folder["root_device"], folder["root_inode"])
-        current, scanned_identity = _scan(folder["path"], expected_identity)
+        skipped: dict[str, int] = {}
+        current, scanned_identity = _scan(folder["path"], expected_identity, skipped)
         _check_running()
     except (_SyncStopped, _SyncCancelled, _LeaseLost):
         raise
@@ -1621,6 +1709,8 @@ def _reconcile_folder(job_id: str) -> None:
     _set_job(job_id, stage = "ingesting", discovered = len(current), renamed = renamed)
     added = changed_count = 0
     failures: list[str] = []
+    # relative path -> why, for the folder's full failure list (the job error names only a few)
+    failure_errors: dict[str, str] = {}
     withheld: set[str] = set()
     processed = 0
     stop_event = getattr(_worker_state, "stop_event", _stop)
@@ -1666,9 +1756,12 @@ def _reconcile_folder(job_id: str) -> None:
                     _cleanup_pending_ingestion(pending, result)
                     raise result.error
                 failures.append(pending.relative_path)
+                reason = _error_text(result.error, folder["path"])
+                failure_errors[pending.relative_path] = reason
                 ingest_failed[pending.relative_path] = {
                     "sig": _failure_signature(pending.metadata),
                     "at": time.time(),
+                    "error": reason,
                 }
                 # A failed file may be a rename or copy of a vanished path, so grant one pass.
                 withheld.update(missing - already_withheld)
@@ -1694,6 +1787,7 @@ def _reconcile_folder(job_id: str) -> None:
                     raise
                 except Exception as exc:  # noqa: BLE001
                     failures.append(pending.relative_path)
+                    failure_errors[pending.relative_path] = _error_text(exc, folder["path"])
                     withheld.update(missing - already_withheld)
                     logger.warning(
                         "linked-folder ingestion failed for %s",
@@ -1754,6 +1848,7 @@ def _reconcile_folder(job_id: str) -> None:
                         raise _SyncCancelled
                     failures.append(rel)
                     ingest_failed[rel] = known_failed[rel]
+                    failure_errors[rel] = known_failed[rel].get("error") or "Indexing failed"
                     if not cached_grace:
                         # missing only shrinks during the pass, so once covers every later failure
                         withheld.update(missing - already_withheld)
@@ -1821,8 +1916,9 @@ def _reconcile_folder(job_id: str) -> None:
                 except (_SyncStopped, _SyncCancelled, _LeaseLost, _FolderChanged):
                     _remove_snapshot(snapshot)
                     raise
-                except Exception:
+                except Exception as exc:  # noqa: BLE001
                     failures.append(rel)
+                    failure_errors[rel] = _error_text(exc, folder["path"])
                     withheld.update(missing - already_withheld)
                     logger.warning("linked-folder ingestion failed for %s", rel, exc_info = True)
                     _remove_snapshot(snapshot)
@@ -1873,11 +1969,34 @@ def _reconcile_folder(job_id: str) -> None:
         error = error,
         completed_at = _now(),
     )
+    scan_report = {
+        "skipped": {key: count for key, count in skipped.items() if count},
+        "failures": [
+            {"path": rel, "error": failure_errors.get(rel, "Indexing failed")}
+            for rel in sorted(set(failures))[:_MAX_REPORTED_FAILURES]
+        ],
+        "failureCount": len(set(failures)),
+    }
+    # last_scan_at moves on every pass; last_change_at only when the indexed set did, so a periodic
+    # pass that found nothing new does not make every open client refetch the scope's documents.
+    changed_sources = added + changed_count + deleted + renamed > 0
+    now = _now()
     with closing(rag_db.get_connection()) as conn:
         conn.execute(
-            "UPDATE linked_folders SET status=?, last_error=?, last_scan_at=?, updated_at=? "
+            "UPDATE linked_folders SET status=?, last_error=?, last_scan_at=?, updated_at=?, "
+            "scan_report=?, last_change_at=CASE WHEN ? THEN ? ELSE COALESCE(last_change_at, ?) END "
             "WHERE id=? AND delete_remove_index IS NULL",
-            ("ready" if error is None else "error", error, _now(), _now(), folder["id"]),
+            (
+                "ready" if error is None else "error",
+                error,
+                now,
+                now,
+                json.dumps(scan_report),
+                changed_sources,
+                now,
+                now,
+                folder["id"],
+            ),
         )
         conn.commit()
         _prune_terminal_jobs(conn)

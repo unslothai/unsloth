@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { isTauri } from "@/lib/api-base";
+import { MAX_FOLDER_FILES, filesFromDrop } from "@/lib/dropped-folders";
 import { toast } from "@/lib/toast";
 import type React from "react";
 import { useCallback, useRef, useState } from "react";
@@ -39,12 +40,14 @@ function hasAcceptedExt(name: string, exts: string[]): boolean {
 function toastNothingAccepted(
   names: string[],
   accept: string | undefined,
+  folderHint?: string,
 ): void {
   // A folder is one extension-less name, and the native side takes files only.
   const looksLikeFolder = names.some((name) => !name.includes("."));
   if (looksLikeFolder) {
     toast.error("Folders can't be dropped here", {
-      description: "Drop the files inside it, or use the picker button.",
+      description:
+        folderHint ?? "Drop the files inside it, or use the picker button.",
     });
     return;
   }
@@ -125,6 +128,8 @@ export interface NativeFileDropOptions {
   multiple?: boolean;
   /** Register under a policy other than the attachment one (datasets, models). */
   register?: (path: string) => Promise<NativeIntent>;
+  /** Browser drops: walk dropped folders and take the files inside them. */
+  folders?: boolean;
 }
 
 export interface NativeFileDrop {
@@ -154,13 +159,17 @@ export function useNativeFileDrop(
   // dragenter/dragleave fire per child, so a raw boolean flickers on inner moves.
   const dragDepth = useRef(0);
 
-  const deliver = useCallback((files: File[]) => {
-    const current = latest.current;
-    if (files.length === 0) return;
-    void current.onFiles(
-      current.multiple === false ? files.slice(0, 1) : files,
-    );
-  }, []);
+  // Callers pass the options from drop time: reading `latest` after an await would hand the
+  // files to whatever destination the zone shows by then.
+  const deliver = useCallback(
+    (files: File[], current: NativeFileDropOptions) => {
+      if (files.length === 0) return;
+      void current.onFiles(
+        current.multiple === false ? files.slice(0, 1) : files,
+      );
+    },
+    [],
+  );
 
   const handleNativePaths = useCallback(
     async (paths: string[]) => {
@@ -176,7 +185,14 @@ export function useNativeFileDrop(
         hasAcceptedExt(nativeFileName(path), exts),
       );
       if (supported.length === 0) {
-        toastNothingAccepted(paths.map(nativeFileName), current.accept);
+        toastNothingAccepted(
+          paths.map(nativeFileName),
+          current.accept,
+          // The desktop links a folder instead, which also keeps it in sync.
+          current.folders
+            ? "Use Link folder to keep a whole folder indexed and in sync."
+            : undefined,
+        );
         return;
       }
       const takeIntents = current.onNativeIntents;
@@ -189,7 +205,7 @@ export function useNativeFileDrop(
         if (takeIntents) {
           void takeIntents(ready as NativeIntent[]);
         } else {
-          deliver(ready as File[]);
+          deliver(ready as File[], current);
         }
       }
       if (failed > 0) {
@@ -254,19 +270,43 @@ export function useNativeFileDrop(
         return;
       }
       const exts = acceptedExts(current.accept);
-      const dropped = Array.from(event.dataTransfer.files ?? []);
-      const supported = dropped.filter((file) =>
-        hasAcceptedExt(file.name, exts),
-      );
-      if (dropped.length > 0 && supported.length === 0) {
-        toastNothingAccepted(
-          dropped.map((file) => file.name),
-          current.accept,
+      const take = (dropped: File[]) => {
+        const supported = dropped.filter((file) =>
+          hasAcceptedExt(file.name, exts),
         );
+        if (dropped.length > 0 && supported.length === 0) {
+          toastNothingAccepted(
+            dropped.map((file) => file.name),
+            current.accept,
+          );
+          return;
+        }
+        deliver(supported, current);
+        toastPartiallySkipped(dropped.length - supported.length);
+      };
+      if (!current.folders) {
+        take(Array.from(event.dataTransfer.files ?? []));
         return;
       }
-      deliver(supported);
-      toastPartiallySkipped(dropped.length - supported.length);
+      // Read synchronously: the browser clears the drop's items once this handler returns.
+      void filesFromDrop(event.dataTransfer, (name) =>
+        hasAcceptedExt(name, exts),
+      ).then(
+        ({ files, truncated, hadFolder }) => {
+          if (hadFolder && files.length === 0) {
+            toast.error("That folder has no files to add");
+            return;
+          }
+          take(files);
+          if (truncated > 0) {
+            toast.info(`Added the first ${MAX_FOLDER_FILES} files`, {
+              description:
+                "The rest were left out. Drop a smaller folder for them.",
+            });
+          }
+        },
+        (reason) => toastReadFailures(1, reason),
+      );
     },
   };
 

@@ -99,10 +99,23 @@ export interface LinkedFolder {
   status: LinkedFolderStatus;
   documentCount?: number;
   lastSyncedAt?: string | null;
+  /** When the indexed set last changed; a pass that found nothing new leaves it alone. */
+  lastChangedAt?: string | null;
   error?: string | null;
   activeJobId?: string | null;
   createdAt?: string | null;
+  /** Counts the last pass left out on purpose. */
+  skipped?: Partial<Record<LinkedFolderSkipReason, number>>;
+  /** Files the last pass could not index (capped), and how many there were in all. */
+  failures?: { path: string; error: string }[];
+  failureCount?: number;
 }
+
+export type LinkedFolderSkipReason =
+  | "gitignored"
+  | "build_dirs"
+  | "too_large"
+  | "over_limit";
 
 export function linkedFolderSourcesChanged(
   previous: LinkedFolder[] | null,
@@ -121,7 +134,10 @@ export function linkedFolderSourcesChanged(
     return (
       prior !== undefined &&
       (prior.documentCount !== folder.documentCount ||
-        prior.lastSyncedAt !== folder.lastSyncedAt)
+        // lastSyncedAt moves on every periodic pass; comparing it refetched every document list
+        // in the project every 30 s. A backend without lastChangedAt still falls back to it.
+        (prior.lastChangedAt ?? prior.lastSyncedAt) !==
+          (folder.lastChangedAt ?? folder.lastSyncedAt))
     );
   });
 }
@@ -140,8 +156,25 @@ export interface FolderSyncJob {
   processedFiles?: number;
   indexedFiles?: number;
   removedFiles?: number;
+  renamedFiles?: number;
   failedFiles?: number;
   error?: string | null;
+}
+
+/** Whether a finished job added, changed, removed or renamed anything; counts a backend left out
+ *  are taken as a change. */
+export function jobChangedSources(job: FolderSyncJob): boolean {
+  if (
+    job.indexedFiles === undefined &&
+    job.removedFiles === undefined &&
+    job.renamedFiles === undefined
+  ) {
+    return true;
+  }
+  return (
+    (job.indexedFiles ?? 0) + (job.removedFiles ?? 0) + (job.renamedFiles ?? 0) >
+    0
+  );
 }
 
 /** One SSE frame from /linked-folder-jobs/{jobId}/events. */
