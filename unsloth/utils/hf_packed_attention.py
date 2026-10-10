@@ -4,6 +4,7 @@
 flash-attn) instead of SDPA over a dense block-causal mask; anything else reaches the wrapped "sdpa"."""
 
 import inspect
+import logging
 import os
 import weakref
 
@@ -157,6 +158,7 @@ def _sdpa_packed_varlen(
             **kwargs,
         )
     from .attention_dispatch import (
+        _VARLEN_INT32_GUARD_DISABLED,
         FLASH_VARLEN,
         XFORMERS,
         _varlen_backward_overflows_int32,
@@ -190,10 +192,14 @@ def _sdpa_packed_varlen(
     ):
         torch_varlen = _torch_varlen(query.device)
         backend = select_attention_backend(use_varlen = True)
-        # Flash-2 varlen backward faults past int32 indexing. Keyed on shape, not requires_grad, so a
-        # reentrant checkpoint's no_grad forward and its recompute take the same (wrapped) path.
-        if _varlen_backward_overflows_int32(
-            kwargs["packed_seq_lengths"].numel(), q_len, n_heads, head_dim
+        # Flash-2 varlen backward faults past int32 indexing. Keyed on training / grad mode, not
+        # requires_grad, so a reentrant checkpoint's no_grad forward and its recompute agree.
+        if (
+            not _VARLEN_INT32_GUARD_DISABLED
+            and (getattr(module, "training", False) or torch.is_grad_enabled())
+            and _varlen_backward_overflows_int32(
+                kwargs["packed_seq_lengths"].numel(), q_len, n_heads, head_dim
+            )
         ):
             torch_varlen, backend = None, None
         if torch_varlen is not None or backend in (FLASH_VARLEN, XFORMERS):
@@ -216,18 +222,39 @@ def _sdpa_packed_varlen(
     n_kv_heads = key.shape[1]
     _, cu_seqlens, max_seqlen = seq_info
     if torch_varlen is not None:
-        out = torch_varlen(
-            query[0].transpose(0, 1),
-            key[0].transpose(0, 1),
-            value[0].transpose(0, 1),
-            cu_seqlens,
-            cu_seqlens,
-            max_seqlen,
-            max_seqlen,
-            scale = scale,
-            window_size = (-1, 0),
-            enable_gqa = n_kv_heads != n_heads,
-        )
+        try:
+            out = torch_varlen(
+                query[0].transpose(0, 1),
+                key[0].transpose(0, 1),
+                value[0].transpose(0, 1),
+                cu_seqlens,
+                cu_seqlens,
+                max_seqlen,
+                max_seqlen,
+                scale = scale,
+                window_size = (-1, 0),
+                enable_gqa = n_kv_heads != n_heads,
+            )
+        except torch.OutOfMemoryError:
+            raise
+        except RuntimeError as exc:
+            # A build whose varlen picks a backend without causal GQA (cuDNN) refuses at forward: stop
+            # using it and give this call to the wrapped sdpa.
+            _TORCH_VARLEN[:] = [None]
+            logging.getLogger(__name__).info(f"Unsloth: torch varlen_attn unavailable ({exc})")
+            HF_PACKED_ATTENTION_STATS["fast"] -= 1
+            HF_PACKED_ATTENTION_STATS["fallback"] += 1
+            return orig(
+                module,
+                query,
+                key,
+                value,
+                attention_mask,
+                dropout = dropout,
+                scaling = scaling,
+                is_causal = is_causal,
+                **kwargs,
+            )
         return out.unsqueeze(0), None
     from .attention_dispatch import AttentionConfig, AttentionContext, run_attention
 

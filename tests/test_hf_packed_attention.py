@@ -354,8 +354,10 @@ def test_compiling_leaves_the_counters_alone(monkeypatch):
 
 
 @_CUDA
-@pytest.mark.parametrize("grad", [False, True])
-def test_int32_overflow_falls_back_with_and_without_grad(monkeypatch, grad):
+@pytest.mark.parametrize("mode", ["training_no_grad", "eval_grad", "eval_no_grad"])
+def test_int32_guard_follows_training_or_grad_mode(monkeypatch, mode):
+    """A reentrant checkpoint's no_grad forward (training) and its recompute both fall back; a pure
+    no_grad eval forward allocates no backward buffer and keeps varlen."""
     import unsloth.utils.attention_dispatch as ad
 
     seen, orig = _calls()
@@ -363,7 +365,34 @@ def test_int32_overflow_falls_back_with_and_without_grad(monkeypatch, grad):
     monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
     monkeypatch.setattr(ad, "_varlen_backward_overflows_int32", lambda *a: True)
     lengths = [3, 3]
-    q = torch.randn(1, 4, 6, 64, device = "cuda", dtype = torch.bfloat16, requires_grad = grad)
+    module = types.SimpleNamespace(is_causal = True, training = mode == "training_no_grad")
+    q = torch.randn(1, 4, 6, 64, device = "cuda", dtype = torch.bfloat16)
+    psl = torch.tensor(lengths, dtype = torch.int32)
+    with torch.set_grad_enabled(mode == "eval_grad"):
+        out = hpa._sdpa_packed_varlen(
+            module, q, q, q, _block_causal(lengths, "cuda"), packed_seq_lengths = psl
+        )
+    if mode == "eval_no_grad":
+        if hpa._torch_varlen(q.device) is None and not (ad.HAS_FLASH_ATTENTION or ad.HAS_XFORMERS):
+            pytest.skip("needs a varlen kernel")
+        assert out[0].shape == (1, 6, 4, 64)
+    else:
+        assert out == ("orig", None)
+
+
+@_CUDA
+def test_a_refusing_torch_varlen_hands_the_call_back(monkeypatch):
+    seen, orig = _calls()
+    hpa._ORIG_SDPA[0] = orig
+    monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
+
+    def refuse(*args, **kwargs):
+        raise RuntimeError("GQA is not supported with the cuDNN backend.")
+
+    monkeypatch.setattr(hpa, "_TORCH_VARLEN", [refuse])
+    monkeypatch.setattr(hpa, "_TORCH_VARLEN_DEVICES", {})
+    lengths = [3, 3]
+    q = torch.randn(1, 4, 6, 64, device = "cuda", dtype = torch.bfloat16)
     psl = torch.tensor(lengths, dtype = torch.int32)
     out = hpa._sdpa_packed_varlen(
         types.SimpleNamespace(is_causal = True),
@@ -374,3 +403,4 @@ def test_int32_overflow_falls_back_with_and_without_grad(monkeypatch, grad):
         packed_seq_lengths = psl,
     )
     assert out == ("orig", None)
+    assert hpa._TORCH_VARLEN == [None]
