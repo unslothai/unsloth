@@ -610,6 +610,7 @@ export const fr = {
       showLess: "Afficher moins",
       settings: "Paramètres",
       api: "API",
+      benchmarks: "Benchmarks",
       lightMode: "Mode clair",
       darkMode: "Mode sombre",
       guidedTour: "Visite guidée",

@@ -1681,6 +1681,43 @@ def test_custom_projector_is_allowed(flag):
     assert validate_extra_args(args) == args
 
 
+def test_ngram_mod_extras_are_respelled_for_a_legacy_build():
+    from core.inference.llama_server_args import translate_ngram_mod_args
+
+    knobs = [
+        "--spec-ngram-mod-n-match",
+        "16",
+        "--spec-ngram-mod-n-min=8",
+        "--spec-ngram-mod-n-max",
+        "64",
+        "--top-k",
+        "20",
+    ]
+    assert translate_ngram_mod_args(knobs, "new") == knobs
+    assert translate_ngram_mod_args(knobs, None) == knobs
+    assert translate_ngram_mod_args(knobs, "legacy") == [
+        "--spec-ngram-size-n",
+        "16",
+        "--draft-min",
+        "8",
+        "--draft-max",
+        "64",
+        "--top-k",
+        "20",
+    ]
+    # Chained with MTP the draft range is MTP's, as _build_ngram_mod_flags leaves it.
+    assert translate_ngram_mod_args(knobs, "legacy", chain_with_mtp = True) == [
+        "--spec-ngram-size-n",
+        "16",
+        "--top-k",
+        "20",
+    ]
+    # A trailing flag with no value is left for llama-server to reject.
+    assert translate_ngram_mod_args(["--spec-ngram-mod-n-max"], "legacy") == [
+        "--spec-ngram-mod-n-max"
+    ]
+
+
 def test_owner_only_path_flags_names_each_file_option_once():
     args = [
         "--ctx-size",
