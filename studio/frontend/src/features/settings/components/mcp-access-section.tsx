@@ -37,7 +37,10 @@ import {
   buildMcpSnippet,
 } from "./mcp-agent-snippet";
 import { SettingsRow } from "./settings-row";
-import { readUseTunnelPref, subscribeUseTunnelPref } from "./usage-examples";
+import {
+  readUseTunnelPref,
+  subscribeUseTunnelPref,
+} from "./tunnel-preference";
 
 const ENV_FORCE = "UNSLOTH_STUDIO_ENABLE_MCP";
 const OS_OPTIONS = [

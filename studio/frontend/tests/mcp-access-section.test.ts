@@ -24,7 +24,9 @@ import { readSrc } from "./helpers/kit.ts";
 
 const SECTION = readSrc("features/settings/components/mcp-access-section.tsx");
 const API_TAB = readSrc("features/settings/tabs/api-keys-tab.tsx");
-const USAGE = readSrc("features/settings/components/usage-examples.tsx");
+const TUNNEL_PREF = readSrc(
+  "features/settings/components/tunnel-preference.ts",
+);
 
 const LOCALES = { ar, de, en, es, fr, he, hi, it, ja, ko, ptBR, ru, sv, zhCN };
 
@@ -107,8 +109,8 @@ test("the setup snippet shows only while on, targets the usage examples' address
     /useSyncExternalStore\(\s*subscribeUseTunnelPref,\s*readUseTunnelPref,/,
   );
   assert.match(
-    USAGE,
-    /function writeUseTunnelPref[\s\S]*?for \(const listener of useTunnelListeners\) listener\(\);/,
+    TUNNEL_PREF,
+    /function writeUseTunnelPref[\s\S]*?for \(const listener of useTunnelListeners\) \{\s*listener\(\);/,
   );
   assert.match(
     SECTION,

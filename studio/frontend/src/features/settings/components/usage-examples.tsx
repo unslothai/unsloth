@@ -56,6 +56,10 @@ import {
   statusGgufVerdict,
 } from "./agent-command";
 import { keylessBaseEligible } from "./keyless-example-eligibility";
+import {
+  readUseTunnelPref,
+  writeUseTunnelPref,
+} from "./tunnel-preference";
 
 type ExampleType =
   | "curl"
@@ -378,41 +382,10 @@ function buildSnippets(
 const KEY_PLACEHOLDER = "sk-unsloth-YOUR_KEY";
 // OpenAI SDKs require an api_key value even for keyless access.
 const KEYLESS_KEY_PLACEHOLDER = "not-needed";
-const USE_TUNNEL_KEY = "unsloth_api_use_tunnel";
 // retry while /v1 has no model because downloads and loads do not update the store.
 const CATALOG_RETRY_MS = 15000;
 // keep polling after a model appears because idle unloads do not update the store.
 const CATALOG_IDLE_MS = 60000;
-
-/** reads the tunnel preference shared by API examples and MCP setup */
-export function readUseTunnelPref(): boolean {
-  if (typeof window === "undefined") return true;
-  try {
-    return window.localStorage.getItem(USE_TUNNEL_KEY) !== "false";
-  } catch {
-    return true;
-  }
-}
-
-// same-tab preference writes do not emit storage events, so notify subscribers directly.
-const useTunnelListeners = new Set<() => void>();
-
-export function subscribeUseTunnelPref(listener: () => void): () => void {
-  useTunnelListeners.add(listener);
-  return () => {
-    useTunnelListeners.delete(listener);
-  };
-}
-
-function writeUseTunnelPref(value: boolean): void {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(USE_TUNNEL_KEY, value ? "true" : "false");
-  } catch {
-    // storage failure does not block the current session's toggle.
-  }
-  for (const listener of useTunnelListeners) listener();
-}
 
 // match the backend path heuristic because /v1 never advertises on-disk checkpoints.
 function looksLikePath(id: string): boolean {
