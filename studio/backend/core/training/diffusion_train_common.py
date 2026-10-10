@@ -1023,8 +1023,8 @@ class DiffusionLoraConfig:
     # eager), "int8" (torchao weight-only), "fp8" (Ada/Hopper/Blackwell + compile) or "auto". Non-nf4 needs a dense
     # base.
     base_precision: str = "nf4"
-    # None resolves per family in normalized(); a number applies s*u/(1+(s-1)*u), and "auto" without dynamic shifting
-    # falls back to identity.
+    # None keeps the model's own schedule ("auto" for AUTO_FLOW_SHIFT_FAMILIES, resolved in normalized()); a number is
+    # the effective shift s*u/(1+(s-1)*u) on the unshifted u, and "auto" without dynamic shifting falls back to identity.
     flow_shift: Optional[Any] = None
     # Per-sample probability of replacing the caption with the empty prompt (classifier-free-guidance dropout). 0.0
     # disables.
@@ -1194,11 +1194,11 @@ class DiffusionLoraConfig:
                     f"base_precision={base_precision!r} is not validated for training "
                     f"{resolved_family}. Use 'nf4', 'int8', 'bf16', or 'auto'."
                 )
-        # flow_shift: None resolves to the family default ("auto" only for qwen-image, whose scheduler skips its
-        # static shift under use_dynamic_shifting); an explicit value is validated and kept.
+        # flow_shift: None resolves to "auto" for AUTO_FLOW_SHIFT_FAMILIES and otherwise stays None (the model's own
+        # schedule); an explicit value is validated and kept.
         flow_shift = self.flow_shift
-        if flow_shift is None:
-            flow_shift = "auto" if resolved_family in AUTO_FLOW_SHIFT_FAMILIES else 1.0
+        if flow_shift is None and resolved_family in AUTO_FLOW_SHIFT_FAMILIES:
+            flow_shift = "auto"
         if isinstance(flow_shift, str):
             flow_shift = flow_shift.strip().lower()
             if flow_shift != "auto":
@@ -1208,7 +1208,7 @@ class DiffusionLoraConfig:
                     raise ValueError(
                         f"flow_shift must be a positive number or 'auto', got {self.flow_shift!r}"
                     ) from exc
-        if not isinstance(flow_shift, str):
+        if flow_shift is not None and not isinstance(flow_shift, str):
             flow_shift = float(flow_shift)
             # isfinite as well as positive: JSON accepts 1e309, which floats to inf and would poison every sampled
             # sigma while progress looks normal.
@@ -1584,11 +1584,15 @@ def train_recipe_overrides(cfg: Any) -> dict[str, Any]:
     for the same reason ``h3_train_unsupported_reason`` is: the trainer applies these in the
     CHILD, while the run record is written by the PARENT from the config handed to
     ``service.start``. Normalising in the trainer alone therefore fixed what ran and left
-    Previous Runs describing cropping, flipping and min-SNR weighting that never happened. Empty
-    for every other family: their loops honour all three."""
-    if (getattr(cfg, "resolved_family", "") or "").strip().lower() != "minimax-h3":
-        return {}
-    return dict(_H3_FIXED_RECIPE)
+    Previous Runs describing cropping, flipping and min-SNR weighting that never happened. The
+    other flow-matching families drop only min-SNR; SDXL honours all of them."""
+    family = (getattr(cfg, "resolved_family", "") or "").strip().lower()
+    if family == "minimax-h3":
+        return dict(_H3_FIXED_RECIPE)
+    # Min-SNR is an SDXL (epsilon-prediction) weighting; the flow-matching loops never read it.
+    if family and family != "sdxl":
+        return {"snr_gamma": None}
+    return {}
 
 
 # LTX-2 is deliberately not here: it trains a style LoRA FROM still images, so it keeps the image discovery.

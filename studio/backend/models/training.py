@@ -958,7 +958,10 @@ class DiffusionTrainingStartRequest(BaseModel):
     # Finite for the same reason as max_grad_norm: an inf gamma collapses every min-SNR weight to 1.0,
     # silently training on plain unweighted MSE.
     snr_gamma: Optional[float] = Field(
-        5.0, gt = 0, allow_inf_nan = False, description = "Min-SNR loss weighting; null disables"
+        5.0,
+        gt = 0,
+        allow_inf_nan = False,
+        description = "Min-SNR loss weighting (SDXL only; flow-matching families ignore it); null disables",
     )
     gradient_checkpointing: bool = Field(True)
     lr_scheduler: Literal[
@@ -1023,8 +1026,10 @@ class DiffusionTrainingStartRequest(BaseModel):
     flow_shift: Optional[Union[float, Literal["auto"]]] = Field(
         None,
         description = (
-            "Flow-matching timestep shift. null uses the family default "
-            "(auto for qwen-image, 1.0 otherwise)."
+            "Flow-matching timestep shift, as the effective shift on the unshifted schedule "
+            "(musubi / kohya discrete_flow_shift; 1.0 trains unshifted). null uses the family "
+            "default: auto for qwen-image, ltx-2 and minimax-h3, otherwise the model's own "
+            "scheduler shift (3.0 for Z-Image-Turbo, 6.0 for Z-Image)."
         ),
     )
     save_steps: int = Field(

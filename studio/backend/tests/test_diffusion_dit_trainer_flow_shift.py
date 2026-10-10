@@ -56,11 +56,11 @@ def test_flow_shift_defaults_per_family():
     flux = DiffusionLoraConfig(
         base_model = "black-forest-labs/FLUX.1-dev", data_dir = "d", output_dir = "o"
     ).normalized()
-    assert flux.flow_shift == 1.0
+    assert flux.flow_shift is None
     zimg = DiffusionLoraConfig(
         base_model = "Tongyi-MAI/Z-Image-Turbo", data_dir = "d", output_dir = "o"
     ).normalized()
-    assert zimg.flow_shift == 1.0
+    assert zimg.flow_shift is None
 
 
 def test_flow_shift_explicit_values_and_validation():
@@ -170,13 +170,53 @@ def test_numeric_table_applies_the_linear_shift():
 
 
 def test_identity_and_static_families_are_untouched():
-    # flow_shift 1.0 must return the scheduler's own table object (no numeric drift for FLUX / Z-Image / Krea 2), and "auto"
-    # on a static-shift scheduler is a no-op: its init already baked the shift into sigmas.
+    # The default (None) must return the scheduler's own table object (no numeric drift for FLUX / Z-Image / Krea 2), and
+    # "auto" on a static-shift scheduler is a no-op: its init already baked the shift into sigmas.
     sched = _qwen_scheduler()
+    assert _training_sigma_table(sched, None) is sched.sigmas
     assert _training_sigma_table(sched, 1.0) is sched.sigmas
     static = _flux_static_scheduler()
+    assert _training_sigma_table(static, None) is static.sigmas
     assert _training_sigma_table(static, "auto") is static.sigmas
-    assert _training_sigma_table(static, 1.0) is static.sigmas
+
+
+def test_a_numeric_shift_is_the_effective_shift_on_a_static_scheduler():
+    import torch
+
+    # Z-Image-Turbo bakes shift 3 into its sigmas. A requested 3 is that same schedule, not 3 on top of it (9), and 1.0
+    # trains on the unshifted uniform table.
+    static = _flux_static_scheduler()
+    assert torch.allclose(_training_sigma_table(static, 3.0), static.sigmas, atol = 1e-6)
+    u = _training_sigma_table(static, 1.0)
+    assert torch.allclose(u, torch.linspace(1.0, 0.001, 1000), atol = 1e-6)
+    assert torch.allclose(_training_sigma_table(static, 2.0), 2.0 * u / (1.0 + u), atol = 1e-6)
+
+
+def test_the_resume_identity_keeps_the_default_token_and_drops_min_snr_for_flow_families():
+    from core.training import diffusion_checkpoint as dc
+
+    flux = DiffusionLoraConfig(
+        base_model = "black-forest-labs/FLUX.1-dev", data_dir = "d", output_dir = "o"
+    ).normalized()
+    ident = dc.identity_for_config(flux)
+    # Earlier builds recorded the model's own schedule as "1.0", so a default run still resumes their checkpoints.
+    assert ident.flow_shift == "1.0"
+    assert ident.snr_gamma is None
+    old = dc.CheckpointIdentity.from_dict({**ident.as_dict(), "snr_gamma": "5.0"})
+    assert old.mismatch_reason(ident) is None
+    # A number changed meaning (effective, not on top of the model's shift), so it cannot continue an older run's.
+    shifted = dc.identity_for_config(
+        DiffusionLoraConfig(
+            base_model = "black-forest-labs/FLUX.1-dev", data_dir = "d", output_dir = "o", flow_shift = 3.0
+        ).normalized()
+    )
+    assert shifted.flow_shift == "effective:3.0"
+    legacy = dc.CheckpointIdentity.from_dict({**shifted.as_dict(), "flow_shift": "3.0"})
+    assert "timestep shift" in (legacy.mismatch_reason(shifted) or "")
+    sdxl = DiffusionLoraConfig(
+        base_model = "stabilityai/stable-diffusion-xl-base-1.0", data_dir = "d", output_dir = "o"
+    ).normalized()
+    assert dc.identity_for_config(sdxl).snr_gamma == "5.0"
 
 
 def test_sampled_sigma_distribution_shifts_under_auto():

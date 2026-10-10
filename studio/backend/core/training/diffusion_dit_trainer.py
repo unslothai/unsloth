@@ -177,19 +177,36 @@ def _gather_sigmas(sigma_table, indices, device, dtype, n_dim):
     return sigma
 
 
+def _unshifted_sigmas(scheduler):
+    """The uniform u table a static ``shift`` was applied to at init (or ``scheduler.sigmas`` itself
+    when nothing was baked in), rebuilt the way ``FlowMatchEulerDiscreteScheduler.__init__`` does."""
+    import numpy as np
+    import torch
+
+    sc = scheduler.config
+    if getattr(sc, "use_dynamic_shifting", False) or float(getattr(sc, "shift", 1.0) or 1.0) == 1.0:
+        return scheduler.sigmas
+    n = int(sc.num_train_timesteps)
+    u = torch.from_numpy(np.linspace(1, n, n, dtype = np.float32)[::-1].copy()) / n
+    return u.to(scheduler.sigmas.dtype)
+
+
 def _training_sigma_table(scheduler, flow_shift):
-    """The sigma table training draws index into, per ``cfg.flow_shift``. ``1.0`` (every non-Qwen
-    family's default) returns ``scheduler.sigmas`` unchanged: the historical behavior, correct
-    for the families whose schedule already matches training convention. ``"auto"`` (the
+    """The sigma table training draws index into, per ``cfg.flow_shift``. ``None`` (every family
+    outside AUTO_FLOW_SHIFT_FAMILIES) returns ``scheduler.sigmas`` unchanged: the model's own
+    schedule, static shift included. ``"auto"`` (the
     qwen-image default) reproduces the family's INFERENCE sigma distribution, which the scheduler
     never bakes into ``sigmas`` when ``use_dynamic_shifting`` is true (the static ``shift`` at
     init is skipped, so Qwen-Image otherwise trains on unshifted uniform sigmas): apply the
     scheduler's own ``time_shift`` at mu = ``max_shift`` (Qwen pins base_shift = max_shift = log
     3, so the inference mu is constant at every resolution) followed by its
     ``stretch_shift_to_terminal`` -- using the scheduler's methods keeps the transform faithful
-    across diffusers versions. A numeric value applies the standard linear shift s*u/(1+(s-1)*u)
-    (musubi/kohya style discrete_flow_shift)."""
+    across diffusers versions. A number is the EFFECTIVE shift s*u/(1+(s-1)*u) on the unshifted u
+    (musubi/kohya discrete_flow_shift): applied on top of Z-Image's baked-in 3 or 6, a 3 trained at 9
+    or 18."""
     sigmas = scheduler.sigmas
+    if flow_shift is None:
+        return sigmas
     if flow_shift == "auto":
         sc = scheduler.config
         if not getattr(sc, "use_dynamic_shifting", False):
@@ -202,9 +219,10 @@ def _training_sigma_table(scheduler, flow_shift):
             shifted = scheduler.stretch_shift_to_terminal(shifted)
         return shifted
     s = float(flow_shift)
+    u = _unshifted_sigmas(scheduler)
     if s == 1.0:
-        return sigmas
-    return s * sigmas / (1.0 + (s - 1.0) * sigmas)
+        return u
+    return s * u / (1.0 + (s - 1.0) * u)
 
 
 def _bell_loss_weights(num_train_timesteps):
@@ -2126,8 +2144,8 @@ def _train_dit(
     )
     # getattr defaults keep an un-normalized config on the historical behaviour.
     flow_shift = getattr(cfg, "flow_shift", None)
-    if flow_shift is None:
-        flow_shift = "auto" if spec.family in AUTO_FLOW_SHIFT_FAMILIES else 1.0
+    if flow_shift is None and spec.family in AUTO_FLOW_SHIFT_FAMILIES:
+        flow_shift = "auto"
     sigma_table = _training_sigma_table(scheduler, flow_shift)
     shift_active = sigma_table is not scheduler.sigmas
     num_train_ts = scheduler.config.num_train_timesteps
