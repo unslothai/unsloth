@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import os
+import sys
 
 import pytest
 
@@ -65,7 +66,9 @@ def test_claude_md_only_stands_in_for_a_missing_agents_md(home):
     assert text.endswith("From AGENTS.md") and "CLAUDE.md" not in text
 
 
-@pytest.mark.skipif(not hasattr(os, "symlink"), reason = "needs symlinks")
+@pytest.mark.skipif(
+    sys.platform == "win32", reason = "symlinks need admin or developer mode on Windows"
+)
 def test_project_root_link_reads_but_sandbox_link_does_not(home):
     _write(home / "proj/AGENTS.md", "Use pnpm.")
     # CLAUDE.md -> AGENTS.md at the root is common and stays readable.
@@ -133,6 +136,7 @@ def test_sandbox_hard_link_and_fifo_are_not_read(home):
     secret.write_text("host secret", encoding = "utf-8")
     os.link(secret, sandbox / "AGENTS.md")
     assert "host secret" not in agents_md.agents_md_text(project)
-    (sandbox / "AGENTS.md").unlink()
-    os.mkfifo(sandbox / "AGENTS.md")
-    assert agents_md.agents_md_text(project) == ""
+    if hasattr(os, "mkfifo"):
+        (sandbox / "AGENTS.md").unlink()
+        os.mkfifo(sandbox / "AGENTS.md")
+        assert agents_md.agents_md_text(project) == ""
