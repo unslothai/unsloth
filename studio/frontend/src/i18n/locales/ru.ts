@@ -2501,6 +2501,15 @@ export const ru = {
         "Старые ходы уходят в доступный для поиска архив, когда чат заполняет контекст.",
       autoCompactKeywords:
         "сжатие автоматически контекст окно обрезка скользящее контрольная точка запас архив поиск извлечение compaction rolling checkpoint headroom archive retrieval rag",
+      toolResultLimit: "Длина вывода инструментов",
+      toolResultLimitDescription: "Сколько символов одного результата Python или Терминала читает модель. По умолчанию {count}.",
+      toolResultLimitHint: "Более длинный вывод сохраняется в файл, который модель может читать по частям. Более высокий лимит действует для моделей, запущенных в Unsloth, а маленькие окна контекста по-прежнему получают меньше. API-модели сохраняют значение по умолчанию, если вы его не уменьшите.",
+      toolResultLimitDefault: "{count} (по умолчанию)",
+      toolResultLimitLocked: "Задано через UNSLOTH_TOOL_RESULT_MAX_CHARS",
+      toolResultLimitLoadError: "Не удалось загрузить длину вывода инструментов.",
+      toolResultLimitSaveError: "Не удалось сохранить длину вывода инструментов.",
+      toolResultLimitKeywords:
+        "вывод результат обрезка обрезан лимит символы длина tool output result truncate truncated truncation limit cap characters chars length terminal python",
       visibility: {
         collapsed: "Свёрнуто",
         auto: "Разворачивать во время работы",

@@ -2527,6 +2527,15 @@ export const de = {
         "Ältere Runden wandern in ein durchsuchbares Archiv, wenn ein Chat voll läuft.",
       autoCompactKeywords:
         "Komprimierung automatisch Kontext Fenster kürzen gleitend Prüfpunkt Reserve Archiv Abruf Suche compaction rolling checkpoint headroom archive retrieval rag",
+      toolResultLimit: "Länge der Tool-Ausgabe",
+      toolResultLimitDescription: "Zeichen eines Python- oder Terminal-Ergebnisses, die das Modell liest. Standard ist {count}.",
+      toolResultLimitHint: "Längere Ausgaben werden in einer Datei gespeichert, die das Modell in Teilen lesen kann. Ein höheres Limit gilt für Modelle, die in Unsloth laufen, und kleine Kontextfenster erhalten weiterhin weniger. API-Modelle behalten den Standard, außer du senkst ihn.",
+      toolResultLimitDefault: "{count} (Standard)",
+      toolResultLimitLocked: "Festgelegt durch UNSLOTH_TOOL_RESULT_MAX_CHARS",
+      toolResultLimitLoadError: "Die Länge der Tool-Ausgabe konnte nicht geladen werden.",
+      toolResultLimitSaveError: "Die Länge der Tool-Ausgabe konnte nicht gespeichert werden.",
+      toolResultLimitKeywords:
+        "Ausgabe Ergebnis abschneiden gekürzt Grenze Zeichen Länge tool output result truncate truncated truncation limit cap characters chars length terminal python",
       visibility: {
         collapsed: "Eingeklappt",
         auto: "Während der Ausführung ausklappen",

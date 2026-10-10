@@ -149,3 +149,18 @@ test("agent access (MCP) is found by the protocol and the agents' names, by the 
     ),
   );
 });
+
+const TOOL_RESULT_LIMIT_ENTRY = "settings.chat.toolResultLimit";
+
+test("the tool output length is found by truncate and limit, by the owner only", () => {
+  const index = createSettingsSearchIndex({ desktop: false, closeToTray: false });
+  assert.ok(index.chat.includes(TOOL_RESULT_LIMIT_ENTRY));
+  const haystack =
+    `${en.settings.chat.toolResultLimit} ${en.settings.chat.toolResultLimitKeywords}`.toLowerCase();
+  for (const term of ["truncat", "limit", "tool output", "characters"]) {
+    assert.ok(haystack.includes(term), `search matches "${term}"`);
+  }
+  assert.ok(!haystack.split(/\s+/).includes("mcp"), "MCP results keep the install cap");
+  assert.ok(renderedSearchEntries(index, "chat", "huggingface", true).includes(TOOL_RESULT_LIMIT_ENTRY));
+  assert.ok(!renderedSearchEntries(index, "chat", "huggingface", false).includes(TOOL_RESULT_LIMIT_ENTRY));
+});
