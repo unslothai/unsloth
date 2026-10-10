@@ -25,6 +25,8 @@ test("gallery delete accepts an externally removed image but still reports real 
         return new Response(null, { status });
       },
       readFastApiError: async () => `HTTP ${status}`,
+      // No linked machine selected: the path stays local.
+      ip: (path: string) => path,
     };
     runInNewContext(code, context);
     const deletion = context.exports.deleteGalleryImage("missing-png");

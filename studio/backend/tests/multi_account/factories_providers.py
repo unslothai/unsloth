@@ -11,6 +11,7 @@ MCP_SERVER_ID = "prov-mcp-server"
 PROMPT_ENTRY_ID = "prov-prompt-entry"
 PROMPT_LIST_ID = "prov-prompt-list"
 RETIRABLE_USERNAME = "prov-retirable"
+LINKED_INSTANCE_NAME = "matrix-link"
 
 SENTINEL = "prov-sentinel café / 日本語"
 EDITED = "prov-edited"
@@ -241,6 +242,25 @@ def seed_retirable_account(account) -> dict[str, str]:
     return {"account_id": account_id}
 
 
+@seeder("prov-linked-instance")
+def seed_linked_instance(account) -> dict[str, str]:
+    """The linked-instance registry is the installation owner's, so the row goes in the owner's database whichever account the matrix seeds."""
+    from storage import linked_instances_db
+    from utils.account_context import OWNER, run_as
+
+    stale = run_as(OWNER, linked_instances_db.get_instance_by_name, LINKED_INSTANCE_NAME)
+    if stale is not None:
+        run_as(OWNER, linked_instances_db.delete_instance, stale["id"])
+    row = run_as(
+        OWNER,
+        linked_instances_db.create_instance,
+        LINKED_INSTANCE_NAME,
+        "http://127.0.0.1:9",
+        "sk-matrix",
+    )
+    return {"instance_id": row["id"]}
+
+
 PROMPT_ENTRY_BODY = {
     "id": PROMPT_ENTRY_ID,
     "name": EDITED,
@@ -277,7 +297,32 @@ _ACCOUNTS_SELF_REASON = (
     "succeeds against alice, both managed accounts are refused, and it cannot administer itself"
 )
 
+_LINKED_INSTANCE_REASON = (
+    "owner administration route behind require_installation_owner, inverted like the accounts "
+    "routes: the registry lives in the owner's database, so the owner succeeds and both managed "
+    "accounts are refused"
+)
+_LINKED_INSTANCE_NETWORK = (
+    "owner-only and forwards to the linked machine's URL, so a success needs a live remote "
+    "Unsloth; the PATCH and DELETE factories cover the same owner guard"
+)
+
 FACTORIES = {
+    "routes.linked_instances:PATCH:/{instance_id}": Factory(
+        "prov-linked-instance",
+        {"allow_tools": True},
+        owner = (200,),
+        right = (403,),
+        wrong = (403,),
+        reason = _LINKED_INSTANCE_REASON,
+    ),
+    "routes.linked_instances:DELETE:/{instance_id}": Factory(
+        "prov-linked-instance",
+        owner = (200,),
+        right = (403,),
+        wrong = (403,),
+        reason = _LINKED_INSTANCE_REASON,
+    ),
     "routes.providers:PUT:/{provider_id}": Factory(
         "prov-provider", {"display_name": EDITED}, fragment = EDITED
     ),
@@ -373,4 +418,9 @@ SKIPPED = {
     "routes.openai_codex_auth:POST:/{provider_id}/oauth/flows/{flow_id}/complete": (
         "completing a flow exchanges the pasted authorization code with auth.openai.com"
     ),
+    "routes.linked_instances:GET:/{instance_id}/proxy/{path:path}": _LINKED_INSTANCE_NETWORK,
+    "routes.linked_instances:POST:/{instance_id}/proxy/{path:path}": _LINKED_INSTANCE_NETWORK,
+    "routes.linked_instances:PATCH:/{instance_id}/proxy/{path:path}": _LINKED_INSTANCE_NETWORK,
+    "routes.linked_instances:DELETE:/{instance_id}/proxy/{path:path}": _LINKED_INSTANCE_NETWORK,
+    "routes.linked_instances:POST:/{instance_id}/test": _LINKED_INSTANCE_NETWORK,
 }

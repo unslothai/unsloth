@@ -4,6 +4,7 @@
 import { withBackgroundLoadNotice } from "@/lib/model-lifecycle-events";
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
+import { linkedProxyPath } from "@/features/model-picker/linked/linked-id";
 import {
   isMemoryEstimateRefusal,
   MEMORY_REFUSAL_HEADER,
@@ -297,6 +298,33 @@ export interface DiffusionGenerateResponse {
   images: GalleryImage[];
 }
 
+const IMAGES_MACHINE_KEY = "unsloth_images_machine";
+let imagesMachine: string | null = (() => {
+  try {
+    return localStorage.getItem(IMAGES_MACHINE_KEY);
+  } catch {
+    return null;
+  }
+})();
+
+/** Linked instance the Images page loads and generates on, or null for this machine. */
+export function getImagesMachine(): string | null {
+  return imagesMachine;
+}
+
+export function setImagesMachine(id: string | null): void {
+  imagesMachine = id;
+  try {
+    if (id) localStorage.setItem(IMAGES_MACHINE_KEY, id);
+    else localStorage.removeItem(IMAGES_MACHINE_KEY);
+  } catch {
+    // Ignore unavailable storage.
+  }
+}
+
+const ip = (path: string) =>
+  imagesMachine ? linkedProxyPath(imagesMachine, path) : path;
+
 async function parseJson<T>(response: Response): Promise<T> {
   if (!response.ok) {
     throw new Error(await readFastApiError(response));
@@ -307,7 +335,7 @@ async function parseJson<T>(response: Response): Promise<T> {
 export async function getDiffusionStatus(
   signal?: AbortSignal,
 ): Promise<DiffusionStatus> {
-  return parseJson(await authFetch("/api/inference/images/status", { signal }));
+  return parseJson(await authFetch(ip("/api/inference/images/status"), { signal }));
 }
 
 // One family's bf16 component sizes and estimated resident footprint per quant scheme.
@@ -328,19 +356,19 @@ export interface DiffusionInferenceInfoResponse {
 /** Static per-family footprint summary for the Advanced Dtype tradeoff. Hardware-independent, so
  *  it is safe to fetch before a load. */
 export async function getDiffusionInferenceInfo(): Promise<DiffusionInferenceInfoResponse> {
-  return parseJson(await authFetch("/api/inference/images/info"));
+  return parseJson(await authFetch(ip("/api/inference/images/info")));
 }
 
 export async function getDiffusionLoadProgress(
   signal?: AbortSignal,
 ): Promise<DiffusionLoadProgress> {
   return parseJson(
-    await authFetch("/api/inference/images/load-progress", { signal }),
+    await authFetch(ip("/api/inference/images/load-progress"), { signal }),
   );
 }
 
 export async function getGenerateProgress(): Promise<DiffusionGenerateProgress> {
-  return parseJson(await authFetch("/api/inference/images/generate-progress"));
+  return parseJson(await authFetch(ip("/api/inference/images/generate-progress")));
 }
 
 export async function loadDiffusionModel(body: DiffusionLoadRequest): Promise<DiffusionStatus> {
@@ -351,7 +379,7 @@ export async function loadDiffusionModel(body: DiffusionLoadRequest): Promise<Di
     body.model_path,
     async () =>
       parseJson<DiffusionStatus>(
-        await authFetch("/api/inference/images/load", {
+        await authFetch(ip("/api/inference/images/load"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body),
@@ -390,7 +418,7 @@ export async function getDiffusionDownloadPlan(
   body: DiffusionLoadRequest,
 ): Promise<DiffusionDownloadPlan> {
   return parseJson(
-    await authFetch("/api/inference/images/download-plan", {
+    await authFetch(ip("/api/inference/images/download-plan"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -419,7 +447,7 @@ export async function generateDiffusionImage(
 ): Promise<DiffusionGenerateResponse> {
   let response: Response;
   try {
-    response = await authFetch("/api/inference/images/generate", {
+    response = await authFetch(ip("/api/inference/images/generate"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -463,7 +491,7 @@ export async function cancelDiffusionGeneration(
     // a 401 refresh-and-replay firing after the stopped run settled can land on a run the user started meanwhile.
     // The signal lets the caller drop a pending one.
     await authFetch(
-      "/api/inference/images/generate/cancel",
+      ip("/api/inference/images/generate/cancel"),
       { method: "POST", signal },
       { retryNetworkErrors: false },
     ),
@@ -471,14 +499,14 @@ export async function cancelDiffusionGeneration(
 }
 
 export async function unloadDiffusionModel(): Promise<DiffusionStatus> {
-  return parseJson(await authFetch("/api/inference/images/unload", { method: "POST" }));
+  return parseJson(await authFetch(ip("/api/inference/images/unload"), { method: "POST" }));
 }
 
 /** List diffusion LoRA adapters, optionally filtered to a model family. */
 export async function listDiffusionLoras(family?: string): Promise<DiffusionLoraInfo[]> {
   const qs = family ? `?family=${encodeURIComponent(family)}` : "";
   const data = await parseJson<{ loras: DiffusionLoraInfo[] }>(
-    await authFetch(`/api/models/diffusion-loras${qs}`),
+    await authFetch(ip(`/api/models/diffusion-loras${qs}`)),
   );
   return data.loras ?? [];
 }
@@ -489,7 +517,7 @@ export async function listDiffusionControlNets(
 ): Promise<DiffusionControlNetInfo[]> {
   const qs = family ? `?family=${encodeURIComponent(family)}` : "";
   const data = await parseJson<{ controlnets: DiffusionControlNetInfo[] }>(
-    await authFetch(`/api/models/diffusion-controlnets${qs}`),
+    await authFetch(ip(`/api/models/diffusion-controlnets${qs}`)),
   );
   return data.controlnets ?? [];
 }
@@ -503,7 +531,7 @@ export interface GalleryPage {
 export async function getGallery(offset = 0, limit = 50, archived = false): Promise<GalleryPage> {
   return parseJson(
     await authFetch(
-      `/api/inference/images/gallery?offset=${offset}&limit=${limit}&archived=${archived}`,
+      ip(`/api/inference/images/gallery?offset=${offset}&limit=${limit}&archived=${archived}`),
     ),
   );
 }
@@ -512,7 +540,7 @@ export async function getGallery(offset = 0, limit = 50, archived = false): Prom
 /** Move one image to just after `afterId` (null = front). The server also decides the pin. */
 export async function moveGalleryImage(id: string, afterId: string | null): Promise<GalleryImage> {
   return parseJson(
-    await authFetch(`/api/inference/images/gallery/${id}/move`, {
+    await authFetch(ip(`/api/inference/images/gallery/${id}/move`), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ after_id: afterId }),
@@ -526,7 +554,7 @@ export async function addGalleryImageToProject(
   projectId: string,
 ): Promise<{ path: string; already: boolean }> {
   return parseJson(
-    await authFetch(`/api/inference/images/gallery/${id}/project`, {
+    await authFetch(ip(`/api/inference/images/gallery/${id}/project`), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ project_id: projectId }),
@@ -539,7 +567,7 @@ export async function setGalleryImageFlags(
   flags: { pinned?: boolean; archived?: boolean },
 ): Promise<GalleryImage> {
   return parseJson(
-    await authFetch(`/api/inference/images/gallery/${id}`, {
+    await authFetch(ip(`/api/inference/images/gallery/${id}`), {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(flags),
@@ -548,13 +576,13 @@ export async function setGalleryImageFlags(
 }
 
 export async function deleteGalleryImage(id: string): Promise<void> {
-  const res = await authFetch(`/api/inference/images/gallery/${id}`, { method: "DELETE" });
+  const res = await authFetch(ip(`/api/inference/images/gallery/${id}`), { method: "DELETE" });
   // Already absent: let the caller remove the cached entry.
   if (!res.ok && res.status !== 404) throw new Error(await readFastApiError(res));
 }
 
 export async function clearGallery(): Promise<void> {
-  const res = await authFetch("/api/inference/images/gallery", { method: "DELETE" });
+  const res = await authFetch(ip("/api/inference/images/gallery"), { method: "DELETE" });
   if (!res.ok) throw new Error(await readFastApiError(res));
 }
 

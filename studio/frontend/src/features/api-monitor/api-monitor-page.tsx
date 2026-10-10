@@ -25,17 +25,20 @@ import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import type { ApiMonitorEntry } from "@/features/chat";
 import { isExternalModelId } from "@/features/chat/external-providers";
 import { modelIdsMatch } from "@/features/hub/lib/model-identity";
+import { useIsAccountOwner } from "@/features/auth";
 import {
   lanApiUrls,
   loadLanAccess,
   useSettingsDialogStore,
 } from "@/features/settings";
+import { useLinkedInstancesOverview } from "@/features/settings/hooks/use-linked-instances-overview";
 import { remoteApiOrigin } from "@/features/settings/api/remote-access-state";
 import { getApiBase, isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import {
+  ApiIcon,
   Copy01Icon,
   Delete02Icon,
   PauseIcon,
@@ -43,14 +46,15 @@ import {
   PowerSocket01Icon,
   Refresh01Icon,
   Settings02Icon,
-  ApiIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useEffect, useMemo, useRef, useState } from "react";
 import { ApiModelLoadControls } from "./components/api-model-load-controls";
+import { LinkedInstancesRail } from "./components/linked-instances-rail";
 import { SavedModelSettingsPanel } from "./components/saved-model-settings";
 import { isLifecycleEntry, lifecycleLabel } from "./lifecycle";
 import { unloadResident } from "./unload-resident";
+import { useFitToViewport } from "./use-fit-to-viewport";
 import {
   type MonitorStatusFilter,
   filterEntries,
@@ -144,12 +148,12 @@ function StatCard({
 }): ReactElement {
   return (
     <div className="flex min-w-0 flex-col gap-1 rounded-xl border border-border/60 bg-card px-4 py-3">
-      <span className="truncate text-ui-11 font-medium uppercase tracking-wider text-muted-foreground">
+      <span className="text-ui-11 font-medium uppercase tracking-wider text-muted-foreground">
         {label}
       </span>
       <span
         className={cn(
-          "truncate text-ui-22 font-semibold leading-tight tracking-[-0.02em]",
+          "break-words text-ui-22 font-semibold leading-tight tracking-[-0.02em]",
           tone === "error" && "text-red-600 dark:text-red-400",
           tone === "active" && "text-blue-600 dark:text-blue-400",
         )}
@@ -157,9 +161,7 @@ function StatCard({
         {value}
       </span>
       {hint ? (
-        <span className="truncate text-ui-11 text-muted-foreground">
-          {hint}
-        </span>
+        <span className="text-ui-11 text-muted-foreground">{hint}</span>
       ) : null}
     </div>
   );
@@ -213,7 +215,9 @@ function CopyButton({
 
 function ContextUsageBar({
   value,
-}: { value?: number | null }): ReactElement | null {
+}: {
+  value?: number | null;
+}): ReactElement | null {
   if (value == null) {
     return null;
   }
@@ -274,7 +278,7 @@ function RequestRow({
             {formatTime(entry.started_at)}
           </span>
         </div>
-        <div className="min-w-0 truncate pl-4 text-ui-11 text-muted-foreground">
+        <div className="min-w-0 break-all pl-4 text-ui-11 text-muted-foreground">
           {entry.model}
         </div>
         {entry.error ? (
@@ -314,8 +318,8 @@ function RequestRow({
           {formatDuration(entry.duration_ms)}
         </span>
       </div>
-      <div className="flex min-w-0 items-center gap-2 pl-4">
-        <span className="truncate text-ui-11 text-muted-foreground">
+      <div className="flex min-w-0 flex-wrap items-center gap-x-2 pl-4">
+        <span className="min-w-0 break-all text-ui-11 text-muted-foreground">
           {entry.model}
         </span>
         <span className="ml-auto flex shrink-0 items-center gap-2 text-ui-11 tabular-nums text-muted-foreground">
@@ -423,7 +427,6 @@ function RequestDetail({
     ? (detail.reply ?? entry.reply_preview)
     : entry.reply_preview;
 
-
   return (
     <div className="flex min-w-0 flex-col gap-5 p-5">
       <header className="flex min-w-0 flex-col gap-2">
@@ -494,7 +497,8 @@ function RequestDetail({
           // Duration minus this is the queue wait, not slow decoding.
           {
             label: "Generating",
-            value: entry.decode_ms != null ? formatDuration(entry.decode_ms) : "–",
+            value:
+              entry.decode_ms != null ? formatDuration(entry.decode_ms) : "–",
           },
           {
             label: "Prompt speed",
@@ -657,7 +661,8 @@ export function ApiMonitorPage(): ReactElement {
     [entries, statusFilter, query],
   );
   const selected = useMemo(
-    () => visible.find((entry) => entry.id === selectedId) ?? null,
+    () =>
+      visible.find((entry) => entry.id === selectedId) ?? visible[0] ?? null,
     [visible, selectedId],
   );
 
@@ -719,6 +724,23 @@ export function ApiMonitorPage(): ReactElement {
   const serverStatus = data?.status ?? "idle";
   // older backends omit the field, so only explicit `false` disables recording.
   const loggingDisabled = data?.logging_enabled === false;
+  const isOwner = useIsAccountOwner();
+  const linked = useLinkedInstancesOverview(isOwner);
+  const hasLinked = isOwner && linked.instances.length > 0;
+  const logRef = useRef<HTMLElement>(null);
+  const savedSettingsRef = useRef<HTMLDivElement>(null);
+  const logHeight = useFitToViewport(logRef, { trailing: savedSettingsRef });
+  const exampleModel =
+    data?.active_model ??
+    Object.values(linked.statuses).find((s) => s.loaded.length > 0)
+      ?.loaded[0] ??
+    "MODEL";
+  const exampleRequest = [
+    `curl ${baseUrl}/chat/completions \\`,
+    `  -H "Authorization: Bearer $UNSLOTH_API_KEY" \\`,
+    `  -H "Content-Type: application/json" \\`,
+    `  -d '{"model": "${exampleModel}", "messages": [{"role": "user", "content": "Hello"}]}'`,
+  ].join("\n");
   const statusCopy =
     serverStatus === "generating"
       ? "Serving requests"
@@ -727,7 +749,14 @@ export function ApiMonitorPage(): ReactElement {
         : "No model loaded";
 
   return (
-    <main className="mx-auto flex w-full max-w-6xl 3xl:max-w-[calc(1440px*var(--ui-space-scale,1))] 4xl:max-w-[calc(1760px*var(--ui-space-scale,1))] flex-col gap-6 px-6 pb-10 pt-12 max-sm:px-4 max-sm:pt-8 font-heading sm:px-10">
+    <main
+      className={cn(
+        "mx-auto flex w-full flex-col gap-6 px-6 pb-10 pt-12 max-sm:px-4 max-sm:pt-8 font-heading sm:px-10",
+        hasLinked
+          ? "max-w-[calc(72rem+19rem)] 3xl:max-w-[calc(1440px*var(--ui-space-scale,1)+19rem)] 4xl:max-w-[calc(1760px*var(--ui-space-scale,1)+19rem)]"
+          : "max-w-6xl 3xl:max-w-[calc(1440px*var(--ui-space-scale,1))] 4xl:max-w-[calc(1760px*var(--ui-space-scale,1))]",
+      )}
+    >
       <GuidedTour {...tour.tourProps} />
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div className="flex min-w-0 flex-col gap-1">
@@ -738,7 +767,10 @@ export function ApiMonitorPage(): ReactElement {
             Live traffic through Unsloth&apos;s OpenAI-compatible server.
           </p>
         </div>
-        <div data-tour="api-toolbar" className="flex flex-wrap items-center gap-2">
+        <div
+          data-tour="api-toolbar"
+          className="flex flex-wrap items-center gap-2"
+        >
           <ApiModelLoadControls
             activeModel={data?.active_model}
             onSettled={refresh}
@@ -831,217 +863,261 @@ export function ApiMonitorPage(): ReactElement {
         </div>
       </header>
 
-      {/* Checked first when a client can't reach the API: base URL and what is loaded. */}
-      <section
-        data-tour="api-endpoint"
-        className="flex flex-wrap items-center gap-x-6 gap-y-3 rounded-xl border border-border/60 bg-card px-4 py-3"
+      <div
+        className={cn(
+          "flex min-w-0 flex-col gap-6",
+          hasLinked &&
+            "xl:grid xl:grid-cols-[minmax(0,1fr)_minmax(0,17rem)] xl:items-start",
+        )}
       >
-        <div className="flex min-w-0 items-center gap-2.5">
-          <span className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-border/60 bg-muted/40">
-            <HugeiconsIcon
-              icon={ApiIcon}
-              strokeWidth={1.75}
-              className="size-4"
-            />
-          </span>
-          <div className="flex min-w-0 flex-col">
-            <span className="text-ui-10 font-medium uppercase tracking-wider text-muted-foreground">
-              Base URL
-            </span>
-            <span className="truncate font-mono text-ui-12 text-foreground">
-              {baseUrl}
-            </span>
-          </div>
-          <CopyButton value={baseUrl} label="Copy API base URL" />
-        </div>
-        <div className="flex min-w-0 flex-col">
-          <span className="text-ui-10 font-medium uppercase tracking-wider text-muted-foreground">
-            Status
-          </span>
-          <span className="flex items-center gap-1.5 text-ui-12 text-foreground">
-            <span
-              className={cn(
-                "size-2 rounded-full",
-                serverStatus === "generating"
-                  ? "bg-blue-500 animate-pulse"
-                  : serverStatus === "ready"
-                    ? "bg-emerald-500"
-                    : "bg-muted-foreground",
-              )}
-              aria-hidden={true}
-            />
-            {statusCopy}
-          </span>
-        </div>
-        {data?.queue ? (
-          <div className="flex min-w-0 flex-col">
-            <span className="text-ui-10 font-medium uppercase tracking-wider text-muted-foreground">
-              Slots
-            </span>
-            <span
-              className={cn(
-                "text-ui-12 tabular-nums text-foreground",
-                data.queue.queued > 0 && "text-amber-700 dark:text-amber-500",
-              )}
-            >
-              {data.queue.active}/{data.queue.capacity} busy
-              {data.queue.queued > 0 ? ` · ${data.queue.queued} queued` : ""}
-            </span>
-          </div>
-        ) : null}
-        <div className="flex min-w-0 flex-1 flex-col">
-          <span className="text-ui-10 font-medium uppercase tracking-wider text-muted-foreground">
-            Loaded model
-          </span>
-          <span className="truncate text-ui-12 text-foreground">
-            {data?.active_model ?? "None"}
-            {data?.context_length
-              ? ` · ${formatCount(data.context_length)} ctx`
-              : ""}
-          </span>
-        </div>
-        {paused ? (
-          <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-2.5 py-1 text-ui-11 font-medium text-amber-700 dark:text-amber-500">
-            Paused
-          </span>
-        ) : null}
-      </section>
-
-      {error || unloadError ? (
-        <div className="rounded-xl border border-red-500/40 bg-red-500/5 px-4 py-3 text-sm text-red-600 dark:text-red-400">
-          {error || unloadError}
-        </div>
-      ) : null}
-
-      <section className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-        <StatCard
-          label="In flight"
-          value={formatCount(stats.active)}
-          tone={stats.active > 0 ? "active" : "default"}
-        />
-        <StatCard
-          label="Requests"
-          value={formatCount(stats.total)}
-          hint={loggingDisabled ? "recording off" : "recent window"}
-        />
-        <StatCard label="Completed" value={formatCount(stats.completed)} />
-        <StatCard
-          label="Errors"
-          value={formatCount(stats.errors)}
-          tone={stats.errors > 0 ? "error" : "default"}
-          hint={
-            stats.errorRate != null
-              ? `${Math.round(stats.errorRate * 100)}% of finished`
-              : undefined
-          }
-        />
-        <StatCard
-          label="Avg latency"
-          value={
-            stats.avgDurationMs == null
-              ? "–"
-              : formatDuration(stats.avgDurationMs)
-          }
-          hint={
-            stats.maxDurationMs != null
-              ? `max ${formatDuration(stats.maxDurationMs)}`
-              : undefined
-          }
-        />
-        <StatCard
-          label="Throughput"
-          value={
-            stats.tokensPerSecond == null
-              ? "–"
-              : `${stats.tokensPerSecond.toFixed(1)} tok/s`
-          }
-          hint={`${formatCount(stats.totalTokens)} tokens · generation only`}
-        />
-      </section>
-
-      <section className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-border/60 bg-card">
-        <div className="flex flex-wrap items-center gap-2 border-b border-border/60 px-4 py-3">
-          <Input
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search model, endpoint, preview or error"
-            aria-label="Search API requests"
-            className="h-9 w-full min-w-0 flex-1 max-sm:basis-full rounded-full border-none bg-muted shadow-none dark:bg-background sm:w-64 sm:flex-none"
+        {hasLinked ? (
+          <LinkedInstancesRail
+            overview={linked}
+            className="xl:sticky xl:top-6 xl:col-start-2 xl:row-start-1"
           />
-          <Select
-            value={statusFilter}
-            onValueChange={(value) =>
-              setStatusFilter(value as MonitorStatusFilter)
-            }
+        ) : null}
+        <div className="flex min-w-0 flex-col gap-6 xl:col-start-1 xl:row-start-1">
+          {/* Checked first when a client can't reach the API: base URL and what is loaded. */}
+          <section
+            data-tour="api-endpoint"
+            className="flex flex-wrap items-center gap-x-6 gap-y-3 rounded-xl border border-border/60 bg-card px-4 py-3"
           >
-            <SelectTrigger
-              aria-label="Filter by status"
-              className="h-9 w-[calc(150px*var(--ui-space-scale,1))] rounded-full border-none bg-muted shadow-none dark:bg-background"
-            >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {STATUS_FILTERS.map((option) => (
-                <SelectItem key={option.value} value={option.value}>
-                  {option.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <span className="ml-auto shrink-0 text-ui-11 text-muted-foreground">
-            {formatCount(visible.length)} of {formatCount(entries.length)}
-          </span>
-        </div>
-
-        <div
-          data-tour="api-log"
-          className="grid min-h-0 grid-cols-1 lg:grid-cols-[minmax(0,380px)_minmax(0,1fr)] 4xl:grid-cols-[minmax(0,480px)_minmax(0,1fr)]"
-        >
-          <div className="max-h-[calc(560px*var(--ui-space-scale,1))] min-h-[calc(220px*var(--ui-space-scale,1))] max-lg:max-h-[45dvh] 3xl:max-h-[calc(100dvh-22rem*var(--ui-space-scale,1))] overflow-y-auto border-b border-border/60 lg:border-b-0 lg:border-r">
-            {loading ? (
-              <div className="flex flex-col gap-3 p-4">
-                {[0, 1, 2].map((i) => (
-                  <Skeleton key={i} className="h-16 w-full rounded-lg" />
-                ))}
-              </div>
-            ) : visible.length === 0 ? (
-              <p className="px-4 py-10 text-center text-sm text-muted-foreground">
-                {entries.length > 0
-                  ? "No requests match this filter."
-                  : loggingDisabled
-                    ? "Recording is off: UNSLOTH_STUDIO_DISABLE_API_MONITOR is set. Requests and model loads still run normally, they are just not listed here. Unset the variable and restart Unsloth to re-enable."
-                    : "No API traffic yet. Point a client at the base URL above to see requests here."}
-              </p>
-            ) : (
-              visible.map((entry) => (
-                <RequestRow
-                  key={entry.id}
-                  entry={entry}
-                  selected={entry.id === selectedId}
-                  onSelect={() => setSelectedId(entry.id)}
+            <div className="flex min-w-0 items-center gap-2.5">
+              <span className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-border/60 bg-muted/40">
+                <HugeiconsIcon
+                  icon={ApiIcon}
+                  strokeWidth={1.75}
+                  className="size-4"
                 />
-              ))
-            )}
-          </div>
+              </span>
+              <div className="flex min-w-0 flex-col">
+                <span className="text-ui-10 font-medium uppercase tracking-wider text-muted-foreground">
+                  Base URL
+                </span>
+                <span className="break-all font-mono text-ui-12 text-foreground">
+                  {baseUrl}
+                </span>
+              </div>
+              <CopyButton value={baseUrl} label="Copy API base URL" />
+            </div>
+            <div className="flex min-w-0 flex-col">
+              <span className="text-ui-10 font-medium uppercase tracking-wider text-muted-foreground">
+                Status
+              </span>
+              <span className="flex items-center gap-1.5 text-ui-12 text-foreground">
+                <span
+                  className={cn(
+                    "size-2 rounded-full",
+                    serverStatus === "generating"
+                      ? "bg-blue-500 animate-pulse"
+                      : serverStatus === "ready"
+                        ? "bg-emerald-500"
+                        : "bg-muted-foreground",
+                  )}
+                  aria-hidden={true}
+                />
+                {statusCopy}
+              </span>
+            </div>
+            {data?.queue ? (
+              <div className="flex min-w-0 flex-col">
+                <span className="text-ui-10 font-medium uppercase tracking-wider text-muted-foreground">
+                  Slots
+                </span>
+                <span
+                  className={cn(
+                    "text-ui-12 tabular-nums text-foreground",
+                    data.queue.queued > 0 &&
+                      "text-amber-700 dark:text-amber-500",
+                  )}
+                >
+                  {data.queue.active}/{data.queue.capacity} busy
+                  {data.queue.queued > 0
+                    ? ` · ${data.queue.queued} queued`
+                    : ""}
+                </span>
+              </div>
+            ) : null}
+            <div className="flex min-w-0 flex-1 flex-col">
+              <span className="text-ui-10 font-medium uppercase tracking-wider text-muted-foreground">
+                Loaded model
+              </span>
+              <span className="break-all text-ui-12 text-foreground">
+                {data?.active_model ?? "None"}
+                {data?.context_length
+                  ? ` · ${formatCount(data.context_length)} ctx`
+                  : ""}
+              </span>
+            </div>
+            {paused ? (
+              <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-2.5 py-1 text-ui-11 font-medium text-amber-700 dark:text-amber-500">
+                Paused
+              </span>
+            ) : null}
+          </section>
 
-          <div className="max-h-[calc(560px*var(--ui-space-scale,1))] min-h-[calc(220px*var(--ui-space-scale,1))] max-lg:max-h-[45dvh] 3xl:max-h-[calc(100dvh-22rem*var(--ui-space-scale,1))] overflow-y-auto">
-            {selected ? (
-              <RequestDetail
-                entry={selected}
-                detail={details[selected.id]}
-                loading={loadingDetails.has(selected.id)}
+          {error || unloadError ? (
+            <div className="rounded-xl border border-red-500/40 bg-red-500/5 px-4 py-3 text-sm text-red-600 dark:text-red-400">
+              {error || unloadError}
+            </div>
+          ) : null}
+
+          <section className="grid grid-cols-[repeat(auto-fit,minmax(calc(10rem*var(--ui-space-scale,1)),1fr))] gap-3">
+            <StatCard
+              label="In flight"
+              value={formatCount(stats.active)}
+              tone={stats.active > 0 ? "active" : "default"}
+            />
+            <StatCard
+              label="Requests"
+              value={formatCount(stats.total)}
+              hint={loggingDisabled ? "recording off" : "recent window"}
+            />
+            <StatCard label="Completed" value={formatCount(stats.completed)} />
+            <StatCard
+              label="Errors"
+              value={formatCount(stats.errors)}
+              tone={stats.errors > 0 ? "error" : "default"}
+              hint={
+                stats.errorRate != null
+                  ? `${Math.round(stats.errorRate * 100)}% of finished`
+                  : undefined
+              }
+            />
+            <StatCard
+              label="Avg latency"
+              value={
+                stats.avgDurationMs == null
+                  ? "–"
+                  : formatDuration(stats.avgDurationMs)
+              }
+              hint={
+                stats.maxDurationMs != null
+                  ? `max ${formatDuration(stats.maxDurationMs)}`
+                  : undefined
+              }
+            />
+            <StatCard
+              label="Throughput"
+              value={
+                stats.tokensPerSecond == null
+                  ? "–"
+                  : `${stats.tokensPerSecond.toFixed(1)} tok/s`
+              }
+              hint={`${formatCount(stats.totalTokens)} tokens · generation only`}
+            />
+          </section>
+
+          <section
+            ref={logRef}
+            style={logHeight != null ? { height: logHeight } : undefined}
+            className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-border/60 bg-card"
+          >
+            <div className="flex flex-wrap items-center gap-2 border-b border-border/60 px-4 py-3">
+              <Input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="Search model, endpoint, preview or error"
+                aria-label="Search API requests"
+                className="h-9 w-full min-w-[calc(18rem*var(--ui-space-scale,1))] flex-1 max-sm:min-w-0 max-sm:basis-full rounded-full border-none bg-muted shadow-none dark:bg-background"
               />
-            ) : (
-              <p className="flex h-full items-center justify-center px-6 py-10 text-center text-sm text-muted-foreground">
-                Select a request to inspect its prompt, reply, tokens and
-                errors.
-              </p>
-            )}
-          </div>
-        </div>
-      </section>
+              <Select
+                value={statusFilter}
+                onValueChange={(value) =>
+                  setStatusFilter(value as MonitorStatusFilter)
+                }
+              >
+                <SelectTrigger
+                  aria-label="Filter by status"
+                  className="h-9 w-[calc(150px*var(--ui-space-scale,1))] rounded-full border-none bg-muted shadow-none dark:bg-background"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {STATUS_FILTERS.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <span className="ml-auto shrink-0 text-ui-11 text-muted-foreground">
+                {formatCount(visible.length)} of {formatCount(entries.length)}
+              </span>
+            </div>
 
-      <SavedModelSettingsPanel />
+            <div
+              data-tour="api-log"
+              className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[minmax(0,380px)_minmax(0,1fr)] lg:grid-rows-[minmax(0,1fr)] 4xl:grid-cols-[minmax(0,480px)_minmax(0,1fr)]"
+            >
+              <div className="min-h-[calc(220px*var(--ui-space-scale,1))] overflow-y-auto max-lg:max-h-[45dvh] lg:min-h-0 border-b border-border/60 lg:border-b-0 lg:border-r">
+                {loading ? (
+                  <div className="flex flex-col gap-3 p-4">
+                    {[0, 1, 2].map((i) => (
+                      <Skeleton key={i} className="h-16 w-full rounded-lg" />
+                    ))}
+                  </div>
+                ) : visible.length === 0 ? (
+                  <p className="px-4 py-10 text-center text-sm text-muted-foreground">
+                    {entries.length > 0
+                      ? "No requests match this filter."
+                      : loggingDisabled
+                        ? "Recording is off: UNSLOTH_STUDIO_DISABLE_API_MONITOR is set. Requests and model loads still run normally, they are just not listed here. Unset the variable and restart Unsloth to re-enable."
+                        : "No API traffic yet. Point a client at the base URL above to see requests here."}
+                  </p>
+                ) : (
+                  visible.map((entry) => (
+                    <RequestRow
+                      key={entry.id}
+                      entry={entry}
+                      selected={entry.id === selected?.id}
+                      onSelect={() => setSelectedId(entry.id)}
+                    />
+                  ))
+                )}
+              </div>
+
+              <div className="min-h-[calc(220px*var(--ui-space-scale,1))] overflow-y-auto max-lg:max-h-[45dvh] lg:min-h-0">
+                {selected ? (
+                  <RequestDetail
+                    entry={selected}
+                    detail={details[selected.id]}
+                    loading={loadingDetails.has(selected.id)}
+                  />
+                ) : (
+                  <div className="flex h-full flex-col justify-center gap-3 px-6 py-8">
+                    <div className="flex flex-col gap-1">
+                      <span className="text-sm font-medium text-foreground">
+                        Send a first request
+                      </span>
+                      <span className="text-ui-12 text-muted-foreground">
+                        It shows up here with its prompt, reply, tokens and
+                        timing. Any OpenAI or Anthropic client works the same
+                        way.
+                      </span>
+                    </div>
+                    <div className="relative">
+                      <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words break-all scroll-rounded rounded-lg border border-border/60 bg-muted/40 p-3 pr-10 font-mono text-ui-11 leading-relaxed text-foreground/90">
+                        {exampleRequest}
+                      </pre>
+                      <div className="absolute right-1.5 top-1.5">
+                        <CopyButton
+                          value={exampleRequest}
+                          label="Copy example request"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </section>
+        </div>
+      </div>
+
+      <div ref={savedSettingsRef}>
+        <SavedModelSettingsPanel />
+      </div>
     </main>
   );
 }
