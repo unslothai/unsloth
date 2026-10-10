@@ -13,7 +13,10 @@ import {
   useRef,
   useState,
 } from "react";
-import { partitionSupported } from "./source-drop-policy";
+import {
+  SUPPORTED_SOURCES_HINT,
+  partitionSupported,
+} from "./source-drop-policy";
 import { type RagUploadItem, uploadItemFromIntent } from "./use-rag-documents";
 
 export interface SourceDropOptions {
@@ -62,7 +65,7 @@ export function useSourceDrop({
       names.length === 1
         ? `Can't add ${names[0]}`
         : `Can't add ${names.length} files`,
-      { description: "Supported types: documents and source code files" },
+      { description: SUPPORTED_SOURCES_HINT },
     );
   }, []);
 
