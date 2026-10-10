@@ -5942,17 +5942,6 @@ def prepare_gpu_selection(
     return selected_gpu_ids, metadata
 
 
-def _smi_physical_gpu_count() -> Optional[int]:
-    try:
-        if IS_ROCM:
-            from . import amd as _smi_mod
-        else:
-            from . import nvidia as _smi_mod
-        return _smi_mod.get_physical_gpu_count()
-    except Exception:
-        return None
-
-
 def _nvidia_physical_gpu_row_count() -> Optional[int]:
     # Physical rows only: MIG instances created after startup add indented `nvidia-smi -L` rows, not GPUs.
     try:
@@ -5995,7 +5984,15 @@ def get_physical_gpu_count() -> int:
     device = get_device()
 
     if device == DeviceType.CUDA:
-        count = _smi_physical_gpu_count()
+        count = None
+        try:
+            if IS_ROCM:
+                from . import amd as _smi_mod
+            else:
+                from . import nvidia as _smi_mod
+            count = _smi_mod.get_physical_gpu_count()
+        except Exception:
+            pass
         if not IS_ROCM:
             _physical_gpu_count_checked_at = time.monotonic()
         if count is not None:
