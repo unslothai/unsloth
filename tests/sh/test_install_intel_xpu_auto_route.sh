@@ -132,6 +132,7 @@ assert_contains "a set mask names the pin to use" "$_mask_info" "UNSLOTH_TORCH_I
 cell "Arc + emptied mask + xpu pin -> xpu" xpu "" ZE_AFFINITY_MASK= UNSLOTH_TORCH_INDEX_FAMILY=xpu
 cell "Arc + ONEAPI_DEVICE_SELECTOR -> cpu" cpu "" ONEAPI_DEVICE_SELECTOR=level_zero:0
 cell "Arc + SYCL_DEVICE_FILTER -> cpu" cpu "" SYCL_DEVICE_FILTER=level_zero:gpu:0
+cell "Arc + SYCL_DEVICE_ALLOWLIST -> cpu" cpu "" SYCL_DEVICE_ALLOWLIST=DeviceType:cpu
 cell "Arc + ONEAPI_DEVICE_SELECTOR + xpu pin -> xpu" xpu "" ONEAPI_DEVICE_SELECTOR=level_zero:0 UNSLOTH_TORCH_INDEX_FAMILY=xpu
 _sel_info=$(env -i HOME="$_TMP" PATH="$_TOOLS" ONEAPI_DEVICE_SELECTOR=level_zero:0 bash -c ". '$_FUNC_FILE'; _ARCH=x86_64; get_torch_index_url" 2>&1 >/dev/null)
 assert_contains "a SYCL selector is named with the pin to use" "$_sel_info" "ONEAPI_DEVICE_SELECTOR is set -- skipping the Intel XPU auto route; set UNSLOTH_TORCH_INDEX_FAMILY=xpu"
@@ -142,6 +143,22 @@ assert_contains "route names UNSLOTH_DISABLE_XPU_AUTO" "$_info" "UNSLOTH_DISABLE
 make_uname aarch64
 cell "Arc on aarch64 -> cpu" cpu ""
 make_uname x86_64
+
+# The opt-out on an Arc host records a deliberate CPU backend, not install.sh's resolved answer.
+_SRC_FILE="$_TMP/source.sh"
+awk '/^# Derived from the index this script RESOLVED/ { on = 1 } on { print } on && /^    unset UNSLOTH_TORCH_BACKEND_SOURCE/ { last = 1; next } last && /^fi/ { exit }' \
+    "$INSTALL_SH" > "$_SRC_FILE"
+# source_of <env assignments...>: UNSLOTH_TORCH_BACKEND_SOURCE after the block for a resolved cpu.
+source_of() {
+    env -i HOME="$_TMP" PATH="$_TOOLS" "$@" bash -c ". '$_FUNC_FILE'; _ARCH=x86_64
+        _torch_backend_was_stated=false; _torch_backend_stated_value=''; UNSLOTH_TORCH_BACKEND=cpu
+        . '$_SRC_FILE'; printf '%s' \"\${UNSLOTH_TORCH_BACKEND_SOURCE:-unset}\"" 2>/dev/null
+}
+rm -rf "$_PCI"; add_pci 0000:03:00.0 0x8086 0x56a0 0x030000
+assert_eq "Arc + opt-out records a deliberate cpu" "unset" "$(source_of UNSLOTH_DISABLE_XPU_AUTO=1)"
+assert_eq "Arc without the opt-out keeps resolved" "resolved" "$(source_of)"
+rm -rf "$_PCI"; add_pci 0000:00:02.0 0x8086 0x46a6 0x030000
+assert_eq "opt-out without an XPU-capable GPU keeps resolved" "resolved" "$(source_of UNSLOTH_DISABLE_XPU_AUTO=1)"
 
 # One allowlist in three places: hardware.py, install_python_stack.py (update-time revalidation) and
 # the shell. The Python tables must be equal; the shell is probed on every id and bound neighbour.

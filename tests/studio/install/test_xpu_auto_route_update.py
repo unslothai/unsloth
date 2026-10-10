@@ -50,10 +50,13 @@ def _linux(monkeypatch, tmp_path):
         "ZE_AFFINITY_MASK",
         "ONEAPI_DEVICE_SELECTOR",
         "SYCL_DEVICE_FILTER",
+        "SYCL_DEVICE_ALLOWLIST",
         "UNSLOTH_DISABLE_XPU_AUTO",
         "UNSLOTH_ROCM_GFX_ARCH",
     ):
         monkeypatch.delenv(var, raising = False)
+    # install.sh exports this beside the backend it resolved.
+    monkeypatch.setenv("UNSLOTH_TORCH_BACKEND_SOURCE", "resolved")
     _pci(monkeypatch, tmp_path, ("0x8086", "0x56a0", "0x030000"))
     stack._invalidate_torch_runtime_probe()
     yield
@@ -165,6 +168,7 @@ def test_setup_sh_forces_the_pass_on_a_stale_xpu_wheel():
         "mask set",
         "oneAPI selector",
         "SYCL filter",
+        "SYCL allowlist",
         "opt-out",
     ],
 )
@@ -179,6 +183,8 @@ def test_the_unpinned_route_is_revalidated(monkeypatch, tmp_path, backend, recor
         monkeypatch.setenv("ONEAPI_DEVICE_SELECTOR", "level_zero:0")
     elif case == "SYCL filter":
         monkeypatch.setenv("SYCL_DEVICE_FILTER", "level_zero:gpu:0")
+    elif case == "SYCL allowlist":
+        monkeypatch.setenv("SYCL_DEVICE_ALLOWLIST", "DeviceType:cpu")
     elif case == "AMD beside Arc":
         _pci(
             monkeypatch,
@@ -191,6 +197,14 @@ def test_the_unpinned_route_is_revalidated(monkeypatch, tmp_path, backend, recor
     else:
         monkeypatch.setenv("UNSLOTH_DISABLE_XPU_AUTO", "1")
     assert not _run(backend, recorded).called
+
+
+def test_a_stated_xpu_backend_is_not_revalidated(monkeypatch, tmp_path):
+    # Not install.sh's resolved answer: the user asked for XPU, so a hidden Arc does not undo it.
+    _pci(monkeypatch, tmp_path)
+    monkeypatch.delenv("UNSLOTH_TORCH_BACKEND_SOURCE")
+    assert _run("xpu", None).called
+    assert not _run("", "xpu").called
 
 
 def test_an_explicit_pin_stays_authoritative(monkeypatch, tmp_path):

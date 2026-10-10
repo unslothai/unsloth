@@ -4849,6 +4849,7 @@ _intel_xpu_auto_gpu_id() {
     # Level Zero / SYCL device-filter indices need not follow PCI order, so any filter leaves the choice to a pin.
     _ix_var=""
     [ -n "${SYCL_DEVICE_FILTER+x}" ] && _ix_var=SYCL_DEVICE_FILTER
+    [ -n "${SYCL_DEVICE_ALLOWLIST+x}" ] && _ix_var=SYCL_DEVICE_ALLOWLIST
     [ -n "${ONEAPI_DEVICE_SELECTOR+x}" ] && _ix_var=ONEAPI_DEVICE_SELECTOR
     # Level Zero reads an empty or "default" mask as unset (compute-runtime isAffinityMaskSet).
     case "${ZE_AFFINITY_MASK-default}" in ""|default) ;; *) _ix_var=ZE_AFFINITY_MASK ;; esac
@@ -6819,7 +6820,13 @@ case "$_torch_index_leaf" in
 esac
 
 # Derived from the index this script RESOLVED, which on a GPU-less machine is "cpu" whether or not anyone asked. Without the marker every ordinary Linux CPU install is recorded as a deliberate choice, and a machine that later gains a GPU is never offered the repair. Only when the stated family SURVIVED the resolution: the case above has already overwritten the variable, so a caller who said "cuda" on a machine with no visible GPU now carries the resolved "cpu", and treating that as stated would deny that host the repair for good if the GPU ever became visible.
-if [ -n "${UNSLOTH_TORCH_BACKEND:-}" ] &&
+# The XPU opt-out on a host the Intel route would otherwise take is a deliberate CPU choice.
+_xpu_opted_out=false
+if [ "${UNSLOTH_TORCH_BACKEND:-}" = cpu ] && [ "${UNSLOTH_DISABLE_XPU_AUTO:-0}" = 1 ] &&
+   (UNSLOTH_DISABLE_XPU_AUTO=0 _intel_xpu_auto_gpu_id) >/dev/null 2>&1; then
+    _xpu_opted_out=true
+fi
+if [ -n "${UNSLOTH_TORCH_BACKEND:-}" ] && [ "$_xpu_opted_out" != true ] &&
    { [ "$_torch_backend_was_stated" != true ] ||
      [ "$_torch_backend_stated_value" != "$UNSLOTH_TORCH_BACKEND" ]; }; then
     export UNSLOTH_TORCH_BACKEND_SOURCE="resolved"
