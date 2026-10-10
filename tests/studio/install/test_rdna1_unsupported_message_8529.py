@@ -136,7 +136,6 @@ class TestUnsupportedNameLookup:
         assert stack_mod._gfx_arch_from_gpu_name(name) == expected
         assert stack_mod._unsupported_gfx_arch_from_gpu_name(name) is None
 
-
     @pytest.mark.parametrize("name", _NOT_RDNA1_NAMES)
     def test_supported_and_non_amd_names_are_not_claimed(self, name):
         assert stack_mod._unsupported_gfx_arch_from_gpu_name(name) is None
@@ -1437,7 +1436,6 @@ class TestPolarisRow:
     @pytest.mark.parametrize("name", _POLARIS_11_12_NAMES)
     def test_polaris_11_12_is_not_claimed(self, name):
         assert stack_mod._unsupported_gfx_arch_from_gpu_name(name) is None
-
 
     @pytest.mark.parametrize("name,_expected", _RDNA1_NAMES)
     def test_the_polaris_pattern_is_correct_on_its_own(self, name, _expected):

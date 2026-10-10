@@ -643,7 +643,6 @@ class TestAContextAboveTheModelsNativeLength:
         out = self._above(tmp_path, monkeypatch, n_ctx = self._ASKED, kv_per_token = 1024)
         assert out["backend"].max_context_length <= self._ASKED
 
-
     def test_the_pass_through_spelling_launches_too(self, tmp_path, monkeypatch):
         """The spelling a RoPE-scaled request actually arrives in."""
         cmd = self._above(

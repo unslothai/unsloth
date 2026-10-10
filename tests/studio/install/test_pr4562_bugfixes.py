@@ -79,7 +79,6 @@ def run_bash(
 class TestBinaryEnvCrossPlatform:
     """binary_env returns correct library paths for all OSes (Bug 4)."""
 
-
     def test_linux_binary_parent_comes_before_install_dir(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):

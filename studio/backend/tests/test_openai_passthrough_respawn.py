@@ -179,9 +179,6 @@ async def _run_stream(backend, lease = None):
     return "".join(chunks)
 
 
-# ── Helper ────────────────────────────────────────────────────
-
-
 # ── Non-streaming ─────────────────────────────────────────────
 
 

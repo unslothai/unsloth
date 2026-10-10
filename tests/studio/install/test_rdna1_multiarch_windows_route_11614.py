@@ -160,7 +160,6 @@ _RDNA1_NAMES = [
 
 
 class TestNameTables:
-
     @pytest.mark.parametrize(
         "name", ["AMD Radeon RX 570", "AMD Radeon RX 580", "AMD Radeon RX 550"]
     )

@@ -1598,7 +1598,6 @@ class TestHealerSignalAlignment:
     there; ungated in the healer it would stall legitimate prose until
     finalization without ever producing a promotable call."""
 
-
     def test_prose_with_bare_args_marker_streams_through(self):
         healer = StreamToolCallHealer({"Bash"})
         chunks = [

@@ -1680,7 +1680,6 @@ class TestAnExplicitPinOutranksTheManifest:
         assert ok is True
         mock_pip.assert_not_called()
 
-
     def test_the_setup_handover_still_wins_over_a_pin(self):
         # The handover describes the run that just installed; the pin may predate it.
         ok, mock_pip = _run_flavor_invariant(

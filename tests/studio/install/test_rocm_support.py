@@ -610,7 +610,6 @@ class TestDetectRocmVersion:
                 result = _detect_rocm_version()
                 assert result is None
 
-
     def test_multiple_version_sources_highest_wins(self, tmp_path):
         """When ROCm version sources disagree, the highest valid version wins."""
         info_dir = tmp_path / ".info"

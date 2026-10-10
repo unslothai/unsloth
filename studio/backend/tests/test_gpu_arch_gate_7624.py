@@ -492,7 +492,6 @@ class TestArchCrashRetrySet:
         )
         assert LlamaCppBackend._arch_crash_retry_gpu_ids([0, 1], [0, 1]) == []
 
-
     def test_empty_selection_is_a_no_op(self):
         assert LlamaCppBackend._arch_crash_retry_gpu_ids([], [0, 1]) == []
 

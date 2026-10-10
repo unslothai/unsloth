@@ -266,7 +266,6 @@ class TestTheAllowanceCannotExceedOneSlot:
             == 0
         )
 
-
     def test_unified_is_unchanged(self):
         """window == budget there, so this clamp is the same arithmetic it always was."""
         assert (
