@@ -306,3 +306,28 @@ def test_a_card_resolved_grid_base_is_linked_to_the_pick(monkeypatch):
     )
     assert b._state is not None and b._state.sample_sigmas == TURBO_GRID
     assert ("someone/community-gguf", "Qwen/Qwen-Image-2.1-Turbo") in links
+
+
+def test_a_cache_only_grid_read_falls_back_to_the_default_cache_root(monkeypatch):
+    # The plan's locality check and _fetch_assets accept a copy in either root; the grid read must too.
+    roots = []
+
+    def _index(base, **kw):
+        roots.append(kw.get("cache_dir"))
+        if kw.get("cache_dir") is not None:
+            raise FileNotFoundError(base)
+        return {"sample_sigmas": list(TURBO_GRID)}
+
+    monkeypatch.setattr(comfy_components, "read_model_index", _index)
+    monkeypatch.setattr(diffusion_mod, "hub_cache_dir", lambda: "/live")
+    grid, base = bk._base_sample_sigmas(
+        REPO,
+        FAM.base_repo,
+        None,
+        family = FAM.name,
+        explicit_base = False,
+        local_files_only = True,
+        named_base = "Qwen/Qwen-Image-2.1-Turbo",
+    )
+    assert grid == TURBO_GRID and base == "Qwen/Qwen-Image-2.1-Turbo"
+    assert roots == ["/live", None]

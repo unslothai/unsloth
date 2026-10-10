@@ -1091,14 +1091,23 @@ def upstream_is_gated(repo_id: Optional[str]) -> bool:
 
 
 def named_variant_base(fam: "DiffusionFamily", *names: Optional[str]) -> Optional[str]:
-    """The longest of ``fam.named_variant_bases`` whose name appears in ``names`` (separators folded), or None."""
-    identity = "".join(c for c in " ".join(n or "" for n in names).lower() if c.isalnum())
-    hits = [
-        b
-        for b in getattr(fam, "named_variant_bases", ()) or ()
-        if "".join(c for c in b.rsplit("/", 1)[-1].lower() if c.isalnum()) in identity
-    ]
-    return max(hits, key = len) if hits else None
+    """The longest of ``fam.named_variant_bases`` named by ``names`` (separators folded), or None. The most specific
+    name (the last: the GGUF file after its repo) decides first, and one that spells the family's own base without a
+    variant ends the search, so a plain 2.1 file in a Turbo-named repo keeps 2.1."""
+
+    def fold(text: Optional[str]) -> str:
+        return "".join(c for c in (text or "").lower() if c.isalnum())
+
+    variants = [(b, fold(b.rsplit("/", 1)[-1])) for b in getattr(fam, "named_variant_bases", ()) or ()]
+    plain = fold((getattr(fam, "base_repo", "") or "").rsplit("/", 1)[-1])
+    for name in reversed([n for n in names if n]):
+        identity = fold(name)
+        hits = [b for b, key in variants if key and key in identity]
+        if hits:
+            return max(hits, key = len)
+        if plain and plain in identity:
+            return None
+    return None
 
 
 def canonical_base(repo_id: Optional[str]) -> str:
@@ -1467,6 +1476,13 @@ def family_prequant_repo(
         return None
     # Both tables are keyed on lowercased upstream ids.
     base = canonical_base(base_repo).lower()
+    named = named_variant_base(fam, base_repo) if base else None
+    if named and named.lower() != base:
+        # A local copy (or other id) naming a variant: that variant's row when the loader's tail compare will accept
+        # its checkpoint, else nothing, never the family default, which is baked from another base's weights.
+        if base.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1] != named.lower().rsplit("/", 1)[-1]:
+            return None
+        base = named.lower()
     if base:
         # getattr, because the video loader calls this with a VideoFamily, which has no such field. A plain attribute
         # read raises AttributeError, resolve_prequant_source swallows it in its bare except and hands back None, and

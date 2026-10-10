@@ -233,12 +233,17 @@ def _base_sample_sigmas(
         elif not explicit_base and named_base:
             # Cache-only (e.g. the OpenAI route's auto-switch) reads no card: the pick's own name decides.
             base = named_base
-        index = read_model_index(
-            base,
-            hf_token = hf_token,
-            local_files_only = local_files_only,
-            cache_dir = hub_cache_dir(),
-        )
+        # Cache-only reads try both roots, as the plan's locality check and _fetch_assets do.
+        roots = (hub_cache_dir(), None) if local_files_only else (hub_cache_dir(),)
+        for i, root in enumerate(roots):
+            try:
+                index = read_model_index(
+                    base, hf_token = hf_token, local_files_only = local_files_only, cache_dir = root
+                )
+                break
+            except Exception:  # noqa: BLE001
+                if i == len(roots) - 1:
+                    raise
     except Exception as exc:  # noqa: BLE001 - no grid is the pre-grid behaviour
         logger.debug("sd_cpp.sample_sigmas_unavailable: %s", exc)
         return None, base

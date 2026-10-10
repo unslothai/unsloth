@@ -968,3 +968,39 @@ def test_a_local_turbo_gguf_resolves_the_turbo_base_by_name(
     monkeypatch.setattr(dmod, "_remember_companion_base", lambda repo_id, base: None)
     fam = detect_family_for_pick(str(tmp_path), name, "qwen-image-2.1")
     assert dmod._resolve_base_repo(str(tmp_path), None, fam, None, name) == expected
+
+
+@pytest.mark.parametrize(
+    "repo, gguf, expected",
+    [
+        ("someone/Qwen-Image-2.1-GGUF", "qwen-image-2.1-turbo-Q4_K_M.gguf", "Qwen/Qwen-Image-2.1-Turbo"),
+        ("someone/Qwen-Image-2.1-Turbo-GGUF", "model-Q4_K_M.gguf", "Qwen/Qwen-Image-2.1-Turbo"),
+        # The selected file decides: a plain 2.1 file in a Turbo-named repo or folder keeps 2.1.
+        ("someone/Qwen-Image-2.1-Turbo-GGUF", "qwen_image_2.1_Q4_K_M.gguf", None),
+        ("/models/qwen-image-2.1-turbo", "qwenimage21-Q8_0.gguf", None),
+        ("someone/Qwen-Image-2.1-GGUF", "qwen-image-2.1-Q4_K_M.gguf", None),
+    ],
+)
+def test_the_selected_file_decides_the_named_variant(repo, gguf, expected):
+    from core.inference.diffusion_families import named_variant_base
+
+    assert named_variant_base(detect_family("Qwen/Qwen-Image-2.1"), repo, gguf) == expected
+
+
+@pytest.mark.parametrize(
+    "base, expected",
+    [
+        ("Qwen/Qwen-Image-2.1-Turbo", "unsloth/Qwen-Image-2.1-Turbo-FP8"),
+        # A local Turbo pipeline: the Turbo artifact when the loader's tail compare accepts it, else none at all.
+        ("/models/Qwen-Image-2.1-Turbo", "unsloth/Qwen-Image-2.1-Turbo-FP8"),
+        ("/models/qwen_image_21_turbo", None),
+        ("/models/Qwen-Image-2.1", "unsloth/Qwen-Image-2.1-FP8"),
+        ("Qwen/Qwen-Image-2.1", "unsloth/Qwen-Image-2.1-FP8"),
+    ],
+)
+def test_a_local_turbo_pipeline_never_plans_the_2_1_artifact(base, expected):
+    from core.inference.diffusion_families import family_prequant_repo
+
+    fam = detect_family("Qwen/Qwen-Image-2.1")
+    for scheme in ("int8", "fp8"):
+        assert family_prequant_repo(fam, scheme, base_repo = base) == expected, (base, scheme)
