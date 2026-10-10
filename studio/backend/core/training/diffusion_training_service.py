@@ -955,6 +955,8 @@ class DiffusionTrainingService:
             )
             self._state["checkpoint_path"] = None
             self._state["checkpoint_step"] = None
+            # Their files are deleted (here, or by the child before it reported), so listing them would serve 404s.
+            self._state["samples"] = []
             self._own_checkpoints = []
         if samples:
             try:
@@ -1217,6 +1219,8 @@ class DiffusionTrainingService:
                     s["resume_blocked_reason"] = (
                         "This run was stopped without saving, so it was discarded."
                     )
+                    # The child deleted this run's previews with its checkpoints.
+                    s["samples"] = []
             elif etype == "error":
                 # Reset in_model_load too: an error during model loading has no model_load_completed.
                 s.update(

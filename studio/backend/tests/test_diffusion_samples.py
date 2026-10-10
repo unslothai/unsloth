@@ -296,6 +296,25 @@ def test_service_folds_sample_events_and_persists(monkeypatch, tmp_path):
     assert "samples" not in dts.list_diffusion_runs()[0]
 
 
+def test_a_discarded_run_lists_no_previews(tmp_path, monkeypatch):
+    # Stop-without-saving deletes the previews (the child before its discarded completion, else the parent), so the
+    # run must stop listing them or the UI renders cards whose image route 404s.
+    import core.training.diffusion_training_service as dts
+
+    monkeypatch.setattr(dts, "_runs_dir", lambda: tmp_path / "runs")
+    good = "samples/20261010-014028-0993fe/step-50-0.png"
+    for discard in ("event", "parent"):
+        svc = dts.DiffusionTrainingService()
+        svc._state.update(job_id = "b" * 32, status = "running", output_dir = str(tmp_path))
+        svc._apply_event({"type": "sample", "step": 50, "images": [{"path": good, "prompt": "p"}]})
+        assert svc.status()["samples"]
+        if discard == "event":
+            svc._apply_event({"type": "complete", "output_dir": str(tmp_path), "discarded": True})
+        else:
+            svc._apply_discard_intent(delete = True)
+        assert svc.status()["samples"] == [], discard
+
+
 def test_sample_list_is_bounded():
     from core.training.diffusion_training_service import _SAMPLES_CAP, _append_samples
 
