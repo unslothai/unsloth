@@ -1037,6 +1037,7 @@ async def _collect_models_from_default_sources(
         if key not in seen_hf:
             seen_hf.add(key)
             hf_sources.append(("oMLX HF cache", omlx_dir, False))
+    real_hf_cache_roots = tuple(cache_dir for _label, cache_dir, _active in hf_sources)
 
     discovered_sources = []
     custom_sources = []
@@ -1142,7 +1143,7 @@ async def _collect_models_from_default_sources(
         # Off the loop, like the scan above it: the probe opens directories, and on a stalled network mount scandir sits in the kernel with nothing to yield to.
         await asyncio.to_thread(note_scan_folder_scanned, row_path, found = bool(custom_models))
         for model in custom_models:
-            row = _promote_to_custom_source(model)
+            row = _promote_to_custom_source(model, real_hf_cache_roots)
             row._scan_root = str(folder_path)
             local_models.append(row)
 
@@ -1269,13 +1270,21 @@ def _scan_custom_folder(
     return selectable[:_MAX_MODELS_PER_CUSTOM_FOLDER]
 
 
-def _promote_to_custom_source(model: LocalModelInfo) -> LocalModelInfo:
-    if model.source in {"hf_cache", "ollama", "hermes"}:
+def _promote_to_custom_source(
+    model: LocalModelInfo, real_hf_cache_roots: tuple[Path, ...]
+) -> LocalModelInfo:
+    """Assign scan-folder ownership without relabeling a configured HF cache."""
+    if model.source in {"ollama", "hermes"}:
+        return model
+    if model.source == "hf_cache" and any(
+        path_is_same_or_child(Path(model.path), root) for root in real_hf_cache_roots
+    ):
         return model
     return model.model_copy(
         update = {
             "source": "custom",
             "model_id": None,
+            "active_cache": None,
             "inventory_id": _local_inventory_id(
                 "custom",
                 model.model_format,

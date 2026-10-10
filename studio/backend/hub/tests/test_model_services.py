@@ -730,7 +730,7 @@ def _path_model_row(tmp_path: Path, source: str):
 @pytest.mark.parametrize("reverse", [False, True])
 def test_local_inventory_dedupes_same_path_across_lmstudio_and_custom(tmp_path, reverse):
     lmstudio = _path_model_row(tmp_path, "lmstudio")
-    custom = local_inventory._promote_to_custom_source(lmstudio)
+    custom = local_inventory._promote_to_custom_source(lmstudio, ())
     alternate_path = str(Path(lmstudio.path).parent) + "/./" + Path(lmstudio.path).name
     custom = custom.model_copy(
         update = {
@@ -759,7 +759,7 @@ def _scanned_gguf_row(
         size_bytes = 10,
     )
     if source == "custom":
-        row = local_inventory._promote_to_custom_source(row)
+        row = local_inventory._promote_to_custom_source(row, ())
         row._scan_root = str(scan_root)
     return row
 
@@ -791,7 +791,7 @@ def test_local_inventory_keeps_trainable_custom_row_over_lmstudio_copy(tmp_path)
             size_bytes = 10,
         )
         if source == "custom":
-            row = local_inventory._promote_to_custom_source(row)
+            row = local_inventory._promote_to_custom_source(row, ())
             row._scan_root = str(lm_root)
         rows.append(row)
     assert rows[1].capabilities.can_train
@@ -1703,16 +1703,19 @@ def _hf_home_with_gguf(hf_home: Path) -> None:
     repo = hf_home / "hub" / "models--Org--Model-GGUF"
     blob = repo / "blobs" / ("a" * 64)
     blob.parent.mkdir(parents = True)
-    blob.write_bytes(b"GGUF" + b"\x03\x00\x00\x00" + b"\x00" * 64)
+    payload = b"GGUF" + b"\x03\x00\x00\x00" + b"\x00" * 64
+    blob.write_bytes(payload)
     snapshot = repo / "snapshots" / ("0" * 40)
     snapshot.mkdir(parents = True)
-    (snapshot / "Model-Q4_K_M.gguf").symlink_to(blob)
+    # Hugging Face supports symlinkless caches on Windows. Using that layout also
+    # keeps this test independent of the host's symbolic-link privileges.
+    (snapshot / "Model-Q4_K_M.gguf").write_bytes(payload)
     (repo / "refs").mkdir()
     (repo / "refs" / "main").write_text("0" * 40)
 
 
 @pytest.mark.parametrize("registered", [("hf_home",), ("hf_home/hub",), ("hf_home", "hf_home/hub")])
-def test_local_inventory_lists_a_registered_hf_home(monkeypatch, tmp_path, registered):
+def test_local_inventory_lists_a_registered_hf_home_as_custom(monkeypatch, tmp_path, registered):
     _hf_home_with_gguf(tmp_path / "hf_home")
     monkeypatch.setattr(local_inventory, "note_scan_folder_scanned", lambda *_a, **_k: None)
 
@@ -1731,7 +1734,102 @@ def test_local_inventory_lists_a_registered_hf_home(monkeypatch, tmp_path, regis
     )
     rows = local_inventory._filter_and_dedupe_local_models(rows)
 
+    assert [(row.source, row.model_id) for row in rows] == [("custom", None)]
+
+
+def test_local_inventory_preserves_a_configured_hf_cache_registered_as_a_scan_folder(
+    monkeypatch, tmp_path
+):
+    hf_home = tmp_path / "hf_home"
+    hf_cache = hf_home / "hub"
+    _hf_home_with_gguf(hf_home)
+    monkeypatch.setattr(local_inventory, "note_scan_folder_scanned", lambda *_a, **_k: None)
+
+    rows = asyncio.run(
+        local_inventory._collect_models_from_default_sources(
+            tmp_path / "models",
+            hf_cache,
+            tmp_path / "missing-legacy",
+            tmp_path / "missing-default",
+            (),
+            (),
+            (),
+            (),
+            [{"path": str(hf_home)}],
+        )
+    )
+    rows = local_inventory._filter_and_dedupe_local_models(rows)
+
     assert [(row.source, row.model_id) for row in rows] == [("hf_cache", "Org/Model-GGUF")]
+
+
+def test_local_inventory_keeps_both_rows_when_the_repo_is_cached_and_parked(monkeypatch, tmp_path):
+    hf_home = tmp_path / "hf_home"
+    hf_cache = hf_home / "hub"
+    _hf_home_with_gguf(hf_home)
+    parked = tmp_path / "parked"
+    _hf_home_with_gguf(parked)
+    monkeypatch.setattr(local_inventory, "note_scan_folder_scanned", lambda *_a, **_k: None)
+
+    rows = asyncio.run(
+        local_inventory._collect_models_from_default_sources(
+            tmp_path / "models",
+            hf_cache,
+            tmp_path / "missing-legacy",
+            tmp_path / "missing-default",
+            (),
+            (),
+            (),
+            (),
+            [{"path": str(parked)}],
+        )
+    )
+    rows = local_inventory._filter_and_dedupe_local_models(rows)
+
+    # The parked copy is its own row (physical identity), the cache keeps the repo id.
+    assert sorted((row.source, row.model_id) for row in rows) == [
+        ("custom", None),
+        ("hf_cache", "Org/Model-GGUF"),
+    ]
+
+
+def test_local_inventory_keeps_the_cache_label_for_a_folder_registered_inside_the_cache(
+    monkeypatch, tmp_path
+):
+    hf_home = tmp_path / "hf_home"
+    hf_cache = hf_home / "hub"
+    _hf_home_with_gguf(hf_home)
+    nested = hf_cache / "nested"
+    repo = nested / "models--Org--Nested-GGUF"
+    blob = repo / "blobs" / ("a" * 64)
+    blob.parent.mkdir(parents = True)
+    payload = b"GGUF" + bytes([3, 0, 0, 0]) + bytes(64)
+    snapshot = repo / "snapshots" / ("0" * 40)
+    snapshot.mkdir(parents = True)
+    (snapshot / "Nested-Q4_K_M.gguf").write_bytes(payload)
+    (repo / "refs").mkdir()
+    (repo / "refs" / "main").write_text("0" * 40)
+    monkeypatch.setattr(local_inventory, "note_scan_folder_scanned", lambda *_a, **_k: None)
+
+    rows = asyncio.run(
+        local_inventory._collect_models_from_default_sources(
+            tmp_path / "models",
+            hf_cache,
+            tmp_path / "missing-legacy",
+            tmp_path / "missing-default",
+            (),
+            (),
+            (),
+            (),
+            [{"path": str(nested)}],
+        )
+    )
+    rows = local_inventory._filter_and_dedupe_local_models(rows)
+
+    assert sorted((row.source, row.model_id) for row in rows) == [
+        ("hf_cache", "Org/Model-GGUF"),
+        ("hf_cache", "Org/Nested-GGUF"),
+    ]
 
 
 def test_local_inventory_checks_for_hf_home_hub_off_the_event_loop(monkeypatch, tmp_path):
@@ -7157,7 +7255,7 @@ def test_custom_promotion_keeps_the_classifier_verdict(tmp_path, config, expecte
     rows = local_inventory._scan_custom_folder(tmp_path / "scan")
     assert rows, "the scan produced no row"
     for row in rows:
-        promoted = local_inventory._promote_to_custom_source(row)
+        promoted = local_inventory._promote_to_custom_source(row, ())
         assert promoted.source == "custom"
         assert promoted.capabilities.can_chat is expected
 
