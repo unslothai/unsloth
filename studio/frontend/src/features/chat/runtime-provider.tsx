@@ -3665,7 +3665,8 @@ function ThreadContextUsageRecount({
   // A model change wipes every thread's usage, and a still-mounted chat never reruns the history
   // loader. With a cloud model or none, no exact count follows, so refill from storage like it does.
   useEffect(() => {
-    if (!enabled || !activeThreadId || runActive) return;
+    // modelLoading: an external pick that cancels a local load clears usage again once the cancel lands.
+    if (!enabled || !activeThreadId || runActive || modelLoading) return;
     const exactCountFollows = (): boolean => {
       const store = useChatRuntimeStore.getState();
       return (
@@ -3680,6 +3681,8 @@ function ThreadContextUsageRecount({
       .then((records) => {
         const store = useChatRuntimeStore.getState();
         if (store.activeThreadId !== threadId || store.contextUsage != null) return;
+        // A turn sent during the read would get a pre-send estimate; the run ending re-fires this.
+        if (store.modelLoading || Object.values(store.runningByThreadId).some(Boolean)) return;
         if (exactCountFollows()) return;
         const sorted = records.slice().sort(compareStoredMessages);
         const branch = orderBySelectedBranch(
@@ -3699,7 +3702,7 @@ function ThreadContextUsageRecount({
         store.setContextUsage(usage);
       })
       .catch(() => undefined);
-  }, [activeThreadId, checkpoint, enabled, loadedContextLength, runActive]);
+  }, [activeThreadId, checkpoint, enabled, loadedContextLength, modelLoading, runActive]);
 
   return null;
 }
