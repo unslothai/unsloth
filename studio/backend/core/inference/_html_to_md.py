@@ -222,7 +222,9 @@ _SUP_BASE_SCAN_CHARS = 128
 # a caret binds one token: a signed number or one letter goes bare, anything longer in parentheses
 _BARE_EXPONENT = re.compile(r"[-+−]?(?:\d+(?:[.,]\d+)?|[^\W\d_])")
 # split cents: $19<sup>99</sup> is a price, not an exponent
-_PRICE_TAIL = re.compile(r"[$€£¥₹¢]\s?\d[\d,]*$")
+_PRICE_TAIL = re.compile(r"[$€£¥₹¢]\s?\d(?:[\d,.]|[ \u00a0\u202f]\d)*$")
+# note markers that keep their plain-text form, like Wikipedia's class="reference"
+_FOOTNOTE_CLASSES = frozenset({"reference", "footnote", "footnote-ref", "noteref", "fn", "cite"})
 # deeper <sup> nests render as plain text: each tracked level rescans its whole suffix on close
 _MAX_SUP_DEPTH = 8
 
@@ -1096,7 +1098,10 @@ class _MarkdownRenderer(HTMLParser):
 
         elif tag == "sup":
             target = self._emit_target()
-            reference = "reference" in (attr_dict.get("class") or "").split()
+            reference = (
+                not _FOOTNOTE_CLASSES.isdisjoint((attr_dict.get("class") or "").lower().split())
+                or (attr_dict.get("role") or "").lower() == "doc-noteref"
+            )
             self._sup_starts.append(
                 None
                 if reference

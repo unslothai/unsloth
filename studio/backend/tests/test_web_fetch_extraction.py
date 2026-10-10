@@ -753,6 +753,11 @@ def test_page_that_fits_keeps_its_links(monkeypatch):
         ("e<sup>i&pi;</sup> + 1 = 0", "e^(iπ) + 1 = 0"),
         ("now $19<sup>99</sup> or &euro; 1,299<sup>95</sup>", "now $1999 or € 1,29995"),
         ("<b>$19</b><sup>99</sup>", "**$19**99"),
+        ("&euro;1.299<sup>95</sup> or &euro;1 299<sup>95</sup>", "€1.29995 or €1 29995"),
+        (
+            'claim<sup role="doc-noteref">1</sup> and fact<sup class="footnote">2</sup>',
+            "claim1 and fact2",
+        ),
         ("x<sup>-n</sup> and 10<sup>2.5</sup>", "x^-n and 10^2.5"),
         ("now $19<sup><em>.99</em></sup>", "now $19*.99*"),
         ("A fact.<sup>1</sup> Next, a list,<sup>2</sup>", "A fact.1 Next, a list,2"),
