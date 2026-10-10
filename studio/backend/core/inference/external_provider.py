@@ -44,7 +44,7 @@ _TEMPLATE_APPLYING_PROVIDERS = frozenset({"vllm", "llama_cpp", "ollama", "custom
 # only vLLM and llama.cpp document both continuation flags on /v1/chat/completions.
 _CONTINUATION_FLAG_PROVIDERS = frozenset({"vllm", "llama_cpp"})
 
-# custom may reject include_usage; OpenAI Responses supplies usage, while listed streams require it.
+# custom may reject include_usage; OpenAI Responses returns usage without it; listed streams need it.
 _USAGE_STREAM_OPTION_PROVIDERS = frozenset(
     {"vllm", "llama_cpp", "ollama", "openrouter", "kimi", "lemonade", "qwen"}
 )
