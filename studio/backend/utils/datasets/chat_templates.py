@@ -269,8 +269,7 @@ def _sharegpt_tool_turns(conversation, content = "", probe = False):
 
 
 def _one_call_per_message(turns):
-    # Each call is followed by its own result, so one-call templates label every result with its
-    # call (gpt-oss names a result after the latest call); a shared result stays after the calls.
+    # Each call then its own result: gpt-oss names a result after the latest call.
     split = []
     index = 0
     while index < len(turns):
@@ -303,8 +302,7 @@ def _one_call_per_message(turns):
 
 def _render_conversation(tokenizer, conversation, tools = None, fallback_without_tools = True):
     candidates = []
-    # None content for templates that render calls only then (DeepSeek); one call per message
-    # for templates taking no more (Llama 3.x, gpt-oss).
+    # None content for DeepSeek-style templates; one call per message for Llama 3.x and gpt-oss.
     for content in ("", None):
         turns, _ = _sharegpt_tool_turns(conversation, content)
         if turns is conversation:
@@ -315,8 +313,7 @@ def _render_conversation(tokenizer, conversation, tools = None, fallback_without
         if split is not turns:
             candidates.append((split, _one_call_per_message(probe), markers))
     for turns, probe, markers in candidates:
-        # The markers show every call name, arguments and result survived: templates may ignore
-        # tool_calls (plain ChatML), drop tool turns, or render only the first call (gpt-oss).
+        # Templates may ignore tool_calls, drop tool turns, or render only the first call (gpt-oss).
         try:
             shown = _render_messages(tokenizer, probe, tools, fallback_without_tools)
             if all(marker in shown for marker in markers):
