@@ -1819,6 +1819,17 @@ export const sv = {
         showAudioCppUpdates: "Aviseringar om audio.cpp-uppdateringar",
         showAudioCppUpdatesDescription:
           "Avisera när audio.cpp-körmiljön behöver uppdateras för ljudsidorna. Stäng av om du aldrig använder ljud.",
+        showUnslothUpdates: "Uppdateringsaviseringar för Unsloth",
+        showUnslothUpdatesDescription:
+          "Meddela när en nyare version av Unsloth finns att installera.",
+        frequency: {
+          always: "Alltid",
+          daily: "En gång om dagen",
+          weekly: "En gång i veckan",
+          biweekly: "Varannan vecka",
+          monthly: "En gång i månaden",
+          off: "Av",
+        },
       },
       startup: {
         sectionTitle: "Start",

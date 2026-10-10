@@ -1662,6 +1662,17 @@ export const hi = {
         showAudioCppUpdates: "audio.cpp अपडेट सूचनाएं",
         showAudioCppUpdatesDescription:
           "जब ऑडियो पेजों के लिए audio.cpp रनटाइम को अपडेट की ज़रूरत हो तो सूचित करें। यदि आप कभी ऑडियो का उपयोग नहीं करते हैं तो बंद कर दें।",
+        showUnslothUpdates: "Unsloth अपडेट सूचनाएँ",
+        showUnslothUpdatesDescription:
+          "जब Unsloth का नया संस्करण इंस्टॉल करने के लिए उपलब्ध हो, तब सूचित करें।",
+        frequency: {
+          always: "हमेशा",
+          daily: "दिन में एक बार",
+          weekly: "सप्ताह में एक बार",
+          biweekly: "हर दो सप्ताह में",
+          monthly: "महीने में एक बार",
+          off: "बंद",
+        },
       },
       startup: {
         sectionTitle: "स्टार्टअप",

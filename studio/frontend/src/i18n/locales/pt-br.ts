@@ -1667,6 +1667,17 @@ export const ptBR = {
         showAudioCppUpdates: "Notificações de atualização do audio.cpp",
         showAudioCppUpdatesDescription:
           "Notifica quando o runtime do audio.cpp precisa de uma atualização para as páginas de Áudio. Desative se você nunca usa Áudio.",
+        showUnslothUpdates: "Notificações de atualização do Unsloth",
+        showUnslothUpdatesDescription:
+          "Avisar quando houver uma versão mais recente do Unsloth para instalar.",
+        frequency: {
+          always: "Sempre",
+          daily: "Uma vez por dia",
+          weekly: "Uma vez por semana",
+          biweekly: "A cada duas semanas",
+          monthly: "Uma vez por mês",
+          off: "Desativado",
+        },
       },
       startup: {
         sectionTitle: "Inicialização",

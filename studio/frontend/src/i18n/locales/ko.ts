@@ -1656,6 +1656,17 @@ export const ko = {
         showAudioCppUpdates: "audio.cpp 업데이트 알림",
         showAudioCppUpdatesDescription:
           "오디오 페이지에 필요한 audio.cpp 런타임 업데이트가 있으면 알립니다. 오디오를 사용하지 않는다면 끄세요.",
+        showUnslothUpdates: "Unsloth 업데이트 알림",
+        showUnslothUpdatesDescription:
+          "설치할 수 있는 새 Unsloth 버전이 있으면 알립니다.",
+        frequency: {
+          always: "항상",
+          daily: "하루에 한 번",
+          weekly: "일주일에 한 번",
+          biweekly: "2주에 한 번",
+          monthly: "한 달에 한 번",
+          off: "끄기",
+        },
       },
       startup: {
         sectionTitle: "시작",

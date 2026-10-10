@@ -1657,6 +1657,17 @@ export const it = {
         showAudioCppUpdates: "Notifiche di aggiornamento di audio.cpp",
         showAudioCppUpdatesDescription:
           "Avvisa quando il runtime di audio.cpp deve essere aggiornato per le pagine Audio. Disattiva le notifiche se non usi mai Audio.",
+        showUnslothUpdates: "Notifiche di aggiornamento di Unsloth",
+        showUnslothUpdatesDescription:
+          "Avvisa quando è disponibile una versione più recente di Unsloth da installare.",
+        frequency: {
+          always: "Sempre",
+          daily: "Una volta al giorno",
+          weekly: "Una volta a settimana",
+          biweekly: "Ogni due settimane",
+          monthly: "Una volta al mese",
+          off: "Disattivate",
+        },
       },
       startup: {
         sectionTitle: "Avvio",
