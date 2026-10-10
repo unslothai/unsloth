@@ -4812,6 +4812,43 @@ _nvidia_gpu_wins_over_amd() {
     fi
     return 0
 }
+# PCI device root; a function so a test can point it at a fake tree.
+_pci_devices_root() { printf '%s' /sys/bus/pci/devices; }
+
+# PCI id of the first Intel display device XPU PyTorch supports, else empty. Same allowlist as
+# studio/backend/utils/hardware/hardware.py (_INTEL_XPU_PCI_ID_RANGES, _INTEL_XPU_PCI_IDS).
+_intel_xpu_gpu_id() {
+    for _ix_vendor in "$(_pci_devices_root)"/*/vendor; do
+        [ -r "$_ix_vendor" ] || continue
+        read -r _ix_v < "$_ix_vendor" 2>/dev/null || continue
+        [ "$_ix_v" = "0x8086" ] || continue
+        _ix_dir="${_ix_vendor%vendor}"
+        read -r _ix_c < "${_ix_dir}class" 2>/dev/null || continue
+        case "$_ix_c" in 0x03*) ;; *) continue ;; esac
+        read -r _ix_d < "${_ix_dir}device" 2>/dev/null || continue
+        _ix_d=$(printf '%s' "$_ix_d" | tr '[:upper:]' '[:lower:]')
+        case "$_ix_d" in
+            0x7d55|0x7d51|0x64a0|0xb080|0xb081|0xb082|0xb083) printf '%s' "$_ix_d"; return 0 ;;
+        esac
+        _ix_n=$(printf '%d' "$_ix_d" 2>/dev/null) || continue
+        if { [ "$_ix_n" -ge 22160 ] && [ "$_ix_n" -le 22210 ]; } ||  # 0x5690-0x56C2
+           { [ "$_ix_n" -ge 2921 ] && [ "$_ix_n" -le 3045 ]; } ||    # 0x0B69-0x0BE5
+           { [ "$_ix_n" -ge 57856 ] && [ "$_ix_n" -le 58111 ]; }; then # 0xE200-0xE2FF
+            printf '%s' "$_ix_d"; return 0
+        fi
+    done
+    return 1
+}
+
+# The Intel GPU to route to XPU wheels when nothing else claimed the host, as install.ps1 does.
+# Declines beside any AMD silicon (the runtime-less reroute owns a */cpu index there).
+_intel_xpu_auto_gpu_id() {
+    [ "${UNSLOTH_DISABLE_XPU_AUTO:-0}" = 1 ] && return 1
+    [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ] && return 1
+    _amd_hardware_corroborated && return 1
+    _intel_xpu_gpu_id
+}
+
 # Returns 0 if an AMD display GPU is on the PCI bus even when ROCm cannot use it (a Strix Halo iGPU with no /dev/kfd). Only sharpens the "no GPU detected" hint. vendor 0x1002 = AMD/ATI; class 0x03* = display controller.
 _amd_gpu_present_via_pci() {
     [ -d /sys/bus/pci/devices ] || return 1
@@ -5745,6 +5782,10 @@ get_torch_index_url() {
             *) echo "$_base/cpu"; return ;;
         esac
         if ! _has_amd_rocm_gpu; then
+            if _ix_gpu=$(_intel_xpu_auto_gpu_id); then
+                echo "[INFO] Intel GPU ($_ix_gpu) detected -- selecting XPU PyTorch (UNSLOTH_DISABLE_XPU_AUTO=1 to keep CPU)." >&2
+                echo "$_base/xpu"; return
+            fi
             echo "$_base/cpu"; return
         fi
         # A generic rocm index is only safe when the gfx arch is readable: the Strix reroute (gfx1150/1151 to the arch-specific index) learns gfx from rocminfo/amd-smi, so if those are missing OR do not enumerate the GPU, an unknown-arch box might be Strix and would get the broken _grouped_mm wheels. Probe via the shared helper (override first, then rocminfo/amd-smi with visibility masks cleared); if the arch is unreadable, never guess a rocm index. A KFD-only host whose arch is still inferable from hardware IDs (PCI/cpuinfo/lspci) returns the cpu index and lets the runtime-less reroute below upgrade it to AMD per-arch wheels, and the reroute gate uses this same probe so the handoff cannot misfire. Only when inference fails too is CPU final, with the actionable warning.
@@ -6741,7 +6782,7 @@ fi
 if [ "$SKIP_TORCH" = false ]; then
     _warn_if_cuda_mask_hides_amd "$TORCH_INDEX_URL"
 fi
-# Export the resolved torch backend ("cuda", "rocm" or "cpu") so setup.sh and install_python_stack.py know what was chosen here and can skip ROCm-specific repair steps. Classify on the FINAL path segment only: a custom UNSLOTH_PYTORCH_MIRROR whose base path happens to contain "rocm" or "gfx" must not mislabel a cu*/cpu index as ROCm (radeon repo URLs end in rocm-rel-X.Y/, Strix overrides in gfxNNNN/, so the trailing slash is stripped first). Lowercase the leaf so every gfx*/rocm*/cu* arm matches regardless of case (the canonical AMD RDNA4 leaf is gfx120X-all). CUDA is branded only on a real cu[0-9]* leaf, so a mirror leaf (/current) does NOT commit a CUDA backend; an unknown leaf leaves the var unset so the stack probes the GPU. Query and fragment are dropped first, then ALL trailing slashes, in lockstep with the shared _torch_index_url_leaf extractor.
+# Export the resolved torch backend ("cuda", "rocm", "xpu" or "cpu") so setup.sh and install_python_stack.py know what was chosen here and can skip ROCm-specific repair steps. Classify on the FINAL path segment only: a custom UNSLOTH_PYTORCH_MIRROR whose base path happens to contain "rocm" or "gfx" must not mislabel a cu*/cpu index as ROCm (radeon repo URLs end in rocm-rel-X.Y/, Strix overrides in gfxNNNN/, so the trailing slash is stripped first). Lowercase the leaf so every gfx*/rocm*/cu* arm matches regardless of case (the canonical AMD RDNA4 leaf is gfx120X-all). CUDA is branded only on a real cu[0-9]* leaf, so a mirror leaf (/current) does NOT commit a CUDA backend; an unknown leaf leaves the var unset so the stack probes the GPU. Query and fragment are dropped first, then ALL trailing slashes, in lockstep with the shared _torch_index_url_leaf extractor.
 _torch_index_leaf="${TORCH_INDEX_URL%%\?*}"
 _torch_index_leaf="${_torch_index_leaf%%#*}"
 while [ -n "$_torch_index_leaf" ] && [ "${_torch_index_leaf%/}" != "$_torch_index_leaf" ]; do
@@ -6761,6 +6802,7 @@ case "$_torch_index_leaf" in
     rocm*|gfx*) export UNSLOTH_TORCH_BACKEND="rocm" ;;
     cpu)        export UNSLOTH_TORCH_BACKEND="cpu"  ;;
     cu[0-9]*)   export UNSLOTH_TORCH_BACKEND="cuda" ;;
+    xpu)        export UNSLOTH_TORCH_BACKEND="xpu"  ;;
     # Unknown leaf: unset so a stale value cannot leak and the stack probes the GPU.
     *)          unset UNSLOTH_TORCH_BACKEND ;;
 esac
@@ -6788,7 +6830,7 @@ case "$_torch_index_leaf" in
         TORCHVISION_CONSTRAINT="torchvision>=0.26.0,<0.27.0"
         TORCHAUDIO_CONSTRAINT="torchaudio>=2.11.0,<2.12.0"
         ;;
-    # Floor 2.6, not the generic 2.4: unsloth/models/_utils.py raises at import for an XPU device below it, so a mirror serving an older +xpu wheel would install something that cannot run. Reached only through an explicit pin.
+    # Floor 2.6, not the generic 2.4: unsloth/models/_utils.py raises at import for an XPU device below it, so a mirror serving an older +xpu wheel would install something that cannot run. Reached through a pin or the Intel GPU auto route.
     xpu)
         TORCH_CONSTRAINT="torch>=2.6,<2.11.0"
         TORCHVISION_CONSTRAINT="torchvision>=0.21,<0.26.0"
@@ -7330,6 +7372,12 @@ elif _has_amd_rocm_gpu; then
     else
         # AMD GPU visible to the kernel but the torch index stayed CPU: no usable ROCm userspace to pick a wheel. "none" would repeat the false diagnosis this installer used to give.
         step "gpu" "AMD GPU (no usable ROCm -- CPU fallback)" "$C_WARN"
+    fi
+elif [ "$_torch_index_leaf" = xpu ]; then
+    if _ix_gpu=$(_intel_xpu_gpu_id); then
+        step "gpu" "Intel GPU ($_ix_gpu, XPU)"
+    else
+        step "gpu" "Intel XPU (torch index pinned)"
     fi
 else
     step "gpu" "none (CPU-only)" "$C_WARN"

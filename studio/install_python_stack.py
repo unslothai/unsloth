@@ -4375,7 +4375,7 @@ _XPU_TORCH_PKG_SPEC: tuple[str, str, str] = (
 def _explicit_xpu_torch_index_url() -> "str | None":
     """The pinned wheel index URL when it names the XPU family (leaf == xpu), else None.
 
-    Intel support is a pin, never autodetection, so the pin is the only signal there is.
+    Only the pin; install.sh's Intel GPU route reaches _ensure_xpu_torch through _TORCH_BACKEND.
     """
     url = _explicit_torch_index_url()
     if url is None:
@@ -4620,7 +4620,7 @@ def _ensure_cuda_torch(*, probe_only: bool = False) -> "bool | None":
 
 
 def _ensure_xpu_torch() -> "bool | None":
-    """Install XPU torch when an explicit XPU pin is set but the venv has another build.
+    """Install XPU torch when an XPU pin, or install.sh's Intel GPU route, is not what the venv has.
 
     Counterpart to _ensure_cpu_torch for Intel. `unsloth studio update` runs setup.sh, never
     install.sh, so its XPU install path is unreachable there; and an xpu leaf names no family
@@ -4633,8 +4633,16 @@ def _ensure_xpu_torch() -> "bool | None":
     if NO_TORCH or IS_MACOS or IS_WINDOWS:
         return
     pin = _explicit_xpu_torch_index_url()
+    _source = "an explicit XPU index is pinned"
     if pin is None and _explicit_torch_index_family() != "xpu":
-        return
+        # Unpinned: install.sh's Intel GPU route (UNSLOTH_TORCH_BACKEND=xpu), or, on a standalone
+        # update, the XPU flavor that install recorded. Any other stated backend or pin wins.
+        if _explicit_torch_index_family() is not None or (_TORCH_BACKEND or _RECORDED_TORCH_TAG) != "xpu":
+            return
+        pin = _pytorch_whl_leaf_url("xpu")
+        if pin is None:
+            return
+        _source = "this install selected XPU torch for its Intel GPU"
 
     # Un-importable either way installs from the pin below. One shared probe bounds it.
     _ran, _importable, _version, _hip, _cuda = _probe_torch_runtime()
@@ -4670,7 +4678,7 @@ def _ensure_xpu_torch() -> "bool | None":
     if pin is None:
         return False
     _safe_print(
-        f"   {_why} but an explicit XPU index is pinned -- reinstalling XPU torch from "
+        f"   {_why} but {_source} -- reinstalling XPU torch from "
         f"{_strip_index_url_credentials(pin)}"
     )
     _torch_pkg, _vision_pkg, _audio_pkg = _XPU_TORCH_PKG_SPEC
