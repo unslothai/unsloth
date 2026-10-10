@@ -213,6 +213,26 @@ def test_an_epoch_covers_every_bucket_batch(tmp_path):
     assert resolve_train_steps(cfg, 9) == 5
 
 
+def test_the_resume_preflight_target_matches_the_trainer(tmp_path):
+    # The start route refuses a checkpoint at or past its target, so it must count the bucketed epoch the way the
+    # trainer does, including a resume that leaves bucketing to the checkpoint.
+    from routes.training import _diffusion_resume_target_steps
+
+    paths = [
+        _img(tmp_path / f"{kind}{i}.png", w, h)
+        for kind, (w, h) in {"p": (600, 900), "l": (900, 600), "s": (700, 700)}.items()
+        for i in range(3)
+    ]
+    pairs = [(p, "a photo") for p in paths]
+    cfg = _cfg(tmp_path, num_epochs = 1, train_batch_size = 2).normalized()
+    assert _diffusion_resume_target_steps(cfg, pairs) == 6
+    inherited = dataclasses.replace(
+        cfg, bucketing = None, resume_from_checkpoint = str(tmp_path / "missing")
+    )
+    # No readable bundle: the trainer would train square, and so does the target.
+    assert _diffusion_resume_target_steps(inherited, pairs) == 5
+
+
 def test_plan_collapses_variants_without_crop_room():
     legacy = _plan_cache_variants(2, 4, False, True, 11)
     assert _plan_cache_variants(2, 4, False, True, 11, crop_room = None) == legacy
