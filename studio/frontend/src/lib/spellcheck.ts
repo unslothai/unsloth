@@ -3,10 +3,7 @@
 
 import { useSyncExternalStore } from "react";
 
-// Whether the engine underlines misspelled words in text fields (Settings ->
-// General -> Language). On by default; only an explicit "false" disables it.
-// Off sets spellcheck="false" on <html>, which every field inherits: no field
-// opts back in, so the root decides.
+// Off sets spellcheck="false" on <html>, which every field inherits (none opts back in).
 export const SPELLCHECK_STORAGE_KEY = "unsloth_spellcheck";
 
 const listeners = new Set<() => void>();

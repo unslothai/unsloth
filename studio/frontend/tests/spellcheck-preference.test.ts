@@ -61,8 +61,7 @@ test("a toggle in another tab is applied here", () => {
 });
 
 test("no field opts back in, so the root setting reaches every input", () => {
-  // A spellCheck={true} anywhere would keep underlines in that field when the
-  // switch is off. Guard the invariant the root attribute relies on.
+  // One spellCheck={true} would keep underlines in that field with the switch off.
   const src = new URL("../src/", import.meta.url);
   const optIns = readdirSync(src, { recursive: true, encoding: "utf8" })
     .filter((file) => /\.tsx?$/.test(file))
