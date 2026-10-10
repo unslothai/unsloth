@@ -28678,6 +28678,7 @@ async def _proxy_to_external_provider(
                     bypass_permissions = bool(payload.bypass_permissions),
                     rag_scope = payload.rag_scope,
                     nudge_tool_calls = payload.nudge_tool_calls,
+                    deduplicate_tool_calls = payload.deduplicate_tool_calls,
                 )
                 if studio_tool_payloads
                 else None
@@ -29172,6 +29173,7 @@ async def _proxy_to_external_provider(
                     rag_scope = payload.rag_scope,
                     auto_heal = payload.auto_heal_tool_calls,
                     nudge_tool_calls = payload.nudge_tool_calls,
+                    deduplicate_tool_calls = payload.deduplicate_tool_calls,
                     # Matches the strip below: only a headerless caller has its calls
                     # withheld, so only it needs a healed one the wire never carried flagged.
                     on_withheld_tool_call = (None if _ui_events else _tool_call_stripper.arm),
@@ -31664,6 +31666,7 @@ async def produce_openai_chat_completions(
                     preserve_thinking = payload.preserve_thinking,
                     continue_final_message = _continue_final_message(payload, thought = True),
                     auto_heal_tool_calls = _gguf_auto_heal_tool_calls,
+                    deduplicate_tool_calls = payload.deduplicate_tool_calls is not False,
                     nudge_tool_calls = payload.nudge_tool_calls,
                     tool_choice = payload.tool_choice,
                     max_tool_iterations = payload.max_tool_calls_per_message
@@ -33795,6 +33798,7 @@ async def produce_openai_chat_completions(
                 preserve_thinking = payload.preserve_thinking,
                 continue_final_message = _sf_continue,
                 auto_heal_tool_calls = _sf_auto_heal_tool_calls,
+                deduplicate_tool_calls = payload.deduplicate_tool_calls is not False,
                 nudge_tool_calls = payload.nudge_tool_calls,
                 max_tool_iterations = _sf_tool_budget,
                 tool_call_timeout = payload.tool_call_timeout
@@ -47977,14 +47981,19 @@ async def _generate_openai_images(
         # Same order as the load (FLUX.1's base is schnell).
         from core.inference.diffusion_content import content_variant_hint
 
-        steps, guidance = default_generation_params(
-            status.get("gguf_filename"),
-            await asyncio.to_thread(
-                content_variant_hint, status.get("repo_id"), status.get("gguf_filename")
-            ),
-            status.get("repo_id"),
-            status.get("base_repo"),
-        )
+        # Resolved by the diffusers status (a shipped grid's step count included).
+        defaults = status.get("generation_defaults")
+        if isinstance(defaults, dict) and defaults.get("steps"):
+            steps, guidance = int(defaults["steps"]), float(defaults["guidance"])
+        else:
+            steps, guidance = default_generation_params(
+                status.get("gguf_filename"),
+                await asyncio.to_thread(
+                    content_variant_hint, status.get("repo_id"), status.get("gguf_filename")
+                ),
+                status.get("repo_id"),
+                status.get("base_repo"),
+            )
         reset_media_generation_progress("image")
         try:
             with account_access.media_generation("diffusion"):

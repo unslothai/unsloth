@@ -89,6 +89,7 @@ from core.inference.mcp_client import (
 from storage import mcp_servers_db
 from utils.account_context import account_thread, current_account_id, is_owner_context
 from utils.current_date_prompt_settings import strip_current_date_update_note
+from utils import sandbox_memory_limit
 from core.inference.tool_confinement import ToolConfinementUnavailable, account_confinement
 from pathlib import Path
 from utils.paths.storage_roots import RetiredAccountError, ensure_dir
@@ -9877,6 +9878,15 @@ def _build_bypass_env(workdir: str) -> dict[str, str]:
     return env
 
 
+# Read by _sandbox_preexec after the fork, so it is resolved here first: the settings store cannot be read in the child.
+_sandbox_as_bytes = 8 * 1024 * 1024 * 1024
+
+
+def _refresh_sandbox_memory_limit() -> None:
+    global _sandbox_as_bytes
+    _sandbox_as_bytes = sandbox_memory_limit.memory_limit_bytes()
+
+
 def _sandbox_preexec():
     """Best-effort sandbox setup for sandboxed subprocesses (modules are resolved at import time so
     the forked child runs no imports)."""
@@ -9916,8 +9926,9 @@ def _sandbox_preexec():
         except (ValueError, OSError):
             pass
         try:
-            as_bytes = int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_AS_GB", "8")) * 1024 * 1024 * 1024
-            _resource.setrlimit(_resource.RLIMIT_AS, (as_bytes, as_bytes))
+            as_bytes = _sandbox_as_bytes
+            if as_bytes is not None:
+                _resource.setrlimit(_resource.RLIMIT_AS, (as_bytes, as_bytes))
         except (ValueError, OSError, AttributeError):
             pass
         try:
@@ -22621,6 +22632,8 @@ def _python_exec(
             if sys.platform == "win32"
             else (_bypass_preexec if disable_sandbox else _sandbox_preexec)
         )
+        if base_preexec is _sandbox_preexec:
+            _refresh_sandbox_memory_limit()
         # Managed accounts keep their own boundary as the outer contract; `confines`, not `is not None` (placeholder).
         if confinement is None or not confinement.confines:
             prepared = _prepare_tool_launch(
@@ -22880,6 +22893,8 @@ def _bash_exec(
             if sys.platform == "win32"
             else (_bypass_preexec if disable_sandbox else _sandbox_preexec)
         )
+        if base_preexec is _sandbox_preexec:
+            _refresh_sandbox_memory_limit()
         if confinement is None or not confinement.confines:
             prepared = _prepare_tool_launch(
                 os_sandbox.ToolLaunchPlan(

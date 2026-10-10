@@ -2012,7 +2012,7 @@ test("a pick asks the status about its own model and keeps or replaces the other
 test("ejects stop only the ejected model's chats; eject all asks once and unloads the others first", () => {
   assert.match(
     USE_CHAT_MODEL_RUNTIME,
-    /function stopQueuedRuns\(decision: StopRunningChatsDecision, scoped: boolean\): void \{\s*if \(scoped\) \{\s*requestPromptQueueStop\(decision\.promptQueueThreadIds\);\s*return;\s*\}\s*cancelPreStreamRunReservations\(decision\.preStreamRunTokens\);\s*requestLocalPromptQueueStop\(decision\.promptQueueThreadIds\);/,
+    /function stopQueuedRuns\(decision: StopRunningChatsDecision, scoped: boolean\): void \{\s*if \(scoped\) \{\s*requestScopedLocalPromptQueueStop\(decision\.promptQueueThreadIds\);\s*return;\s*\}\s*cancelPreStreamRunReservations\(decision\.preStreamRunTokens\);\s*requestLocalPromptQueueStop\(decision\.promptQueueThreadIds\);/,
   );
   assert.match(
     USE_CHAT_MODEL_RUNTIME,
