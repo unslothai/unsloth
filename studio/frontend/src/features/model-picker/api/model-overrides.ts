@@ -368,6 +368,8 @@ export function fromApiOverride(
     chatTemplateOverride:
       override.chat_template_override ?? local.chatTemplateOverride,
     llamaExtraArgs: extraArgs,
+    // Browser-only: the server row has no such field, so the local choice always survives hydration.
+    useModelIni: local.useModelIni,
     gpuMemoryMode: override.gpu_memory_mode ?? local.gpuMemoryMode,
     gpuLayers: override.gpu_layers ?? local.gpuLayers,
     nCpuMoe: override.n_cpu_moe ?? local.nCpuMoe,

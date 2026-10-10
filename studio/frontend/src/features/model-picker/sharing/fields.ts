@@ -52,6 +52,8 @@ export type SharedConfigKey = Exclude<
   | "engineParallelism"
   // A named drafter can be a local directory.
   | "specDraftModel"
+  // Runs whatever file the recipient's copy holds, which the sender never saw.
+  | "useModelIni"
 >;
 type Field = { label: string; valid: Validator; error?: string };
 

@@ -64,6 +64,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   const loadedLlamaExtraArgs = useChatRuntimeStore(
     (s) => s.loadedLlamaExtraArgs,
   );
+  const useModelIni = useChatRuntimeStore((s) => s.useModelIni);
   const gpuMemoryMode = useChatRuntimeStore((s) => s.gpuMemoryMode);
   const gpuLayers = useChatRuntimeStore((s) => s.gpuLayers);
   const nCpuMoe = useChatRuntimeStore((s) => s.nCpuMoe);
@@ -140,6 +141,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       ...(loadedLlamaExtraArgs != null
         ? { llamaExtraArgs: [...loadedLlamaExtraArgs] }
         : {}),
+      ...(useModelIni ? { useModelIni: true } : {}),
     };
   }, [
     checkpoint,
@@ -168,6 +170,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
     disableVision,
     chatTemplateOverride,
     loadedLlamaExtraArgs,
+    useModelIni,
     gpuMemoryMode,
     gpuLayers,
     nCpuMoe,

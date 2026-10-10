@@ -45,6 +45,7 @@ type ResidentRuntime = Pick<
   | "requested_cache_ram"
   | "tensor_parallel"
   | "disable_vision"
+  | "model_ini_applied"
   | "chat_template_override"
   | "requested_llama_extra_args"
   | "gpu_memory_mode"
@@ -410,6 +411,12 @@ const SETTING_CHECKS: SettingCheck[] = [
     chatOnly: true,
     pinned: () => true,
     agrees: (c, s) => c.disableVision === (s.disable_vision ?? false),
+  },
+  {
+    // A status omitting it ran without the file, as every server before the field did.
+    chatOnly: true,
+    pinned: () => true,
+    agrees: (c, s) => (c.useModelIni === true) === (s.model_ini_applied === true),
   },
   {
     // Blank-trimmed on both ends: the applier and the load both send "" as null.

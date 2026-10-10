@@ -282,6 +282,12 @@ const FIELDS: FieldCase[] = [
     different: false,
   },
   {
+    key: "useModelIni",
+    statusKey: "model_ini_applied",
+    same: true,
+    different: false,
+  },
+  {
     key: "mlxInt8Prefill",
     statusKey: "mlx_int8_prefill_requested",
     same: true,

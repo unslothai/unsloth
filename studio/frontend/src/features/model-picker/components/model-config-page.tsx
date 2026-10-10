@@ -29,6 +29,8 @@ import { usePlatformStore } from "@/config/env";
 import {
   GPU_LAYERS_AUTO,
   fetchGgufStagedMetadata,
+  fetchModelIni,
+  type ModelIniResponse,
   readPersistedGpuMemoryMode,
   readPersistedSpeculativeType,
   resolveStagedDiffusionClassification,
@@ -157,6 +159,11 @@ import {
 } from "../model-config/model-config-draft";
 import { loadedConfigSignature } from "../model-config/config-signature";
 import { ggufQuantLabel } from "../model-config/model-identity";
+import {
+  formatModelIniSettings,
+  modelIniLocationLabel,
+  shouldShowModelIniRow,
+} from "../model-config/model-ini";
 import {
   CACHE_RAM_LLAMA_DEFAULT,
   CACHE_RAM_MAX,
@@ -352,6 +359,7 @@ function hasNonDefaultAdvanced(config: PerModelConfig): boolean {
     // Hidden flags can change what the model does, so a panel that opens collapsed over them says
     // "defaults" about a load that is anything but.
     (config.llamaExtraArgs != null && config.llamaExtraArgs.length > 0) ||
+    config.useModelIni === true ||
     (config.gpuMemoryMode ?? "auto") !== "auto" ||
     (config.gpuLayers != null && config.gpuLayers >= 0) ||
     (config.nCpuMoe ?? 0) > 0 ||
@@ -379,6 +387,7 @@ function withoutUnsupportedDiffusionSettings(
     config.nBatch == null &&
     config.nUbatch == null &&
     (config.llamaExtraArgs == null || config.llamaExtraArgs.length === 0) &&
+    !config.useModelIni &&
     !hasUnsupportedGpuPick
   ) {
     return config;
@@ -400,6 +409,8 @@ function withoutUnsupportedDiffusionSettings(
     // them as though it had, so a box filled before classification flipped would leave the
     // model running without what it says.
     llamaExtraArgs: null,
+    // Same reason: the file holds llama-server flags.
+    ...(config.useModelIni ? { useModelIni: false } : {}),
     ...(hasUnsupportedGpuPick
       ? {
           selectedGpuIds: undefined,
@@ -1562,6 +1573,7 @@ function GgufAdvancedSettings({
   moeLayersInputRef,
   onExtraArgsLoadableChange,
   draftKey,
+  modelIni,
 }: {
   config: PerModelConfig;
   update: (patch: Partial<PerModelConfig>) => void;
@@ -1578,6 +1590,8 @@ function GgufAdvancedSettings({
   /** Which stored entries the extra-arguments row reads, most specific first. */
   onExtraArgsLoadableChange: (loadable: boolean) => void;
   draftKey: string;
+  /** The unsloth.ini beside this GGUF, null until answered or when there is none. */
+  modelIni: ModelIniResponse | null;
 }) {
   const batchAdviceId = useId();
   const ubatchAdviceId = useId();
@@ -2058,7 +2072,51 @@ function GgufAdvancedSettings({
           draftKey={draftKey}
         />
       )}
+
+      {shouldShowModelIniRow(modelIni, true, isDiffusion) && modelIni && (
+        <ModelIniRow config={config} update={update} ini={modelIni} />
+      )}
     </>
+  );
+}
+
+/** Opt-in switch for the unsloth.ini shipped beside the GGUF. Rendered only when the file exists. */
+function ModelIniRow({
+  config,
+  update,
+  ini,
+}: {
+  config: PerModelConfig;
+  update: (patch: Partial<PerModelConfig>) => void;
+  ini: ModelIniResponse;
+}) {
+  const descriptionId = useId();
+  const settings = formatModelIniSettings(ini.args, ini.n_parallel);
+  const ignored = ini.ignored.map((item) => item.key);
+  return (
+    <div className="space-y-1">
+      <div className={ROW_CLASS}>
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className={LABEL_CLASS_WRAP}>Use .ini file (optional)</span>
+          <InfoHint>
+            Launches llama-server with the settings in this model's
+            unsloth.ini. They are applied after the rows above, so they win.
+          </InfoHint>
+        </div>
+        <Switch
+          className="panel-switch shrink-0"
+          checked={config.useModelIni === true}
+          onCheckedChange={(checked) => update({ useModelIni: checked })}
+          aria-label="Use .ini file (optional)"
+          aria-describedby={descriptionId}
+        />
+      </div>
+      <p id={descriptionId} className="text-ui-11 text-muted-foreground break-words">
+        {modelIniLocationLabel(ini)}
+        {settings ? `: ${settings}` : ""}
+        {ignored.length > 0 ? `. Ignored: ${ignored.join(", ")}` : ""}
+      </p>
+    </div>
   );
 }
 
@@ -2501,6 +2559,40 @@ export function ModelConfigPage({
   const resolvedDefaultLoading = hasLoadedDefaultTemplate
     ? false
     : templateDefaults.loading;
+
+  // The unsloth.ini beside this quant, if any. A failed lookup reads as absent: the row is optional.
+  const modelIniKey = target.isGguf && !sharedVariantUnresolved
+    ? `${target.id}\n${target.ggufVariant ?? ""}\n${hfToken || ""}`
+    : null;
+  const [fetchedModelIni, setFetchedModelIni] = useState<{
+    key: string;
+    ini: ModelIniResponse | null;
+  } | null>(null);
+  useEffect(() => {
+    if (modelIniKey == null) {
+      return;
+    }
+    const controller = new AbortController();
+    fetchModelIni(target.id, target.ggufVariant, {
+      hfToken: hfToken || undefined,
+      signal: controller.signal,
+    })
+      .then((ini) => {
+        if (!controller.signal.aborted) {
+          setFetchedModelIni({ key: modelIniKey, ini });
+        }
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) {
+          setFetchedModelIni({ key: modelIniKey, ini: null });
+        }
+      });
+    return () => controller.abort();
+  }, [modelIniKey, target.id, target.ggufVariant, hfToken]);
+  const modelIni =
+    fetchedModelIni != null && fetchedModelIni.key === modelIniKey
+      ? fetchedModelIni.ini
+      : null;
 
   // Fetch GGUF header dims to size the GPU Memory sliders; the context also fills in below.
   const contextFetchKey = target.isGguf && !sharedVariantUnresolved
@@ -3754,6 +3846,7 @@ export function ModelConfigPage({
                 moeLayersInputRef={moeLayersInputRef}
                 draftKey={draftKey}
                 onExtraArgsLoadableChange={setExtraArgsLoadable}
+                modelIni={modelIni}
               />
             )}
           </>

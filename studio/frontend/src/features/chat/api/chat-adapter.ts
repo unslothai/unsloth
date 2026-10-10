@@ -3780,6 +3780,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
             ...(resolvedExtraArgs !== undefined
               ? { llama_extra_args: resolvedExtraArgs ?? [] }
               : {}),
+            ...(config.useModelIni && !isDiffusion ? { use_model_ini: true } : {}),
           }
         : {}),
     }).catch((error: unknown) => {
@@ -3919,6 +3920,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           // Repaired from the echo alongside tensorParallel: a stale true would show Vision off over a
           // loaded projector, and the next Apply would send it.
           disableVision: loadResp.disable_vision ?? false,
+          useModelIni: loadResp.model_ini_applied === true,
+          loadedModelIni: loadResp.model_ini_applied === true,
           loadedVisionDisabledByUser: loadResp.vision_disabled_by_user ?? false,
           ...loadedGpuMemoryFields(loadResp),
           loadedCustomContextLength: keepCustomCtx,

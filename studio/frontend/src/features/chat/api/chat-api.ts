@@ -41,6 +41,7 @@ import type {
   ListModelsResponse,
   LoadModelRequest,
   LoadModelResponse,
+  ModelIniResponse,
   OpenAIChatChunk,
   OpenAIChatCompletionsRequest,
   UnloadModelRequest,
@@ -1491,6 +1492,22 @@ export async function listGgufVariants(
     });
     return parseJsonOrThrow<GgufVariantsResponse>(response);
   });
+}
+
+/** The unsloth.ini beside a GGUF variant. Absent is `found: false`, not an error. */
+export async function fetchModelIni(
+  repoId: string,
+  ggufVariant: string | null | undefined,
+  options?: { hfToken?: string; signal?: AbortSignal },
+): Promise<ModelIniResponse> {
+  const params = new URLSearchParams({ repo_id: repoId });
+  if (ggufVariant) params.set("gguf_variant", ggufVariant);
+  if (isHuggingFaceOffline()) params.set("offline", "true");
+  const response = await authFetch(`/api/models/model-ini?${params}`, {
+    headers: hubTokenHeader(options?.hfToken),
+    signal: options?.signal,
+  });
+  return parseJsonOrThrow<ModelIniResponse>(response);
 }
 
 export interface KvCacheEstimate {

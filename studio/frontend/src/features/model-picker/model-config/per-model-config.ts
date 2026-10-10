@@ -68,6 +68,8 @@ export interface PerModelConfig {
   selectedGpuIndexKind?: GpuIndexKind | null;
   /** --tensor-split bound to selectedGpuIds in picker order. `undefined` defers to the store, `null` = default. */
   tensorSplit?: number[] | null;
+  /** Launch with the unsloth.ini shipped beside the GGUF. Kept only when true, so an unset record stays byte-identical. */
+  useModelIni?: boolean;
 }
 
 export const DEFAULT_PER_MODEL_CONFIG: PerModelConfig = {
@@ -395,9 +397,10 @@ const LEGACY_MIGRATION_FLAG = "unsloth_model_configs_migrated";
 // would normalize the unknown field straight back out of the record.
 // v2 added nBatch/nUbatch, v3 llamaExtraArgs, v4 disableVision, v5 the llama-server tuning group
 // (loadMode / specDraftCacheDtype / ctxCheckpoints / cacheRam), v6 the reasoning budget pair,
-// v7 mlxKvQuant, v9 mlxInt8Prefill, v10 the per-GPU split, v11 the MLX drafter. v8 is skipped: nightly builds stamped it for the reverted custom
+// v7 mlxKvQuant, v9 mlxInt8Prefill, v10 the per-GPU split, v11 the MLX drafter, v12 useModelIni. v8 is skipped: nightly builds stamped it for the reverted custom
 // llama.cpp config (#12725), so a v8 client must not claim to understand an int8 prefill record.
-const STORAGE_SCHEMA_VERSION = 11;
+const STORAGE_SCHEMA_VERSION = 12;
+const PRE_MODEL_INI_SCHEMA_VERSION = 11;
 const PRE_MLX_DRAFTER_SCHEMA_VERSION = 10;
 const PRE_TENSOR_SPLIT_SCHEMA_VERSION = 9;
 const PRE_MLX_INT8_PREFILL_SCHEMA_VERSION = 7;
@@ -465,6 +468,7 @@ const STORED_CONFIG_FIELDS = new Set([
   "selectedGpuIds",
   "selectedGpuIndexKind",
   "tensorSplit",
+  "useModelIni",
 ]);
 
 /** Keep only a list of strings, preserving the three states above. Anything that is not an array is "not loaded"
@@ -1145,6 +1149,7 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
     llamaExtraArgs: normalizeLlamaExtraArgs(partial.llamaExtraArgs),
     ...normalizeGpuFields(partial),
     tensorSplit: normalizeTensorSplit(partial.tensorSplit, partial.selectedGpuIds),
+    ...(partial.useModelIni === true ? { useModelIni: true } : {}),
   };
 }
 
@@ -1174,8 +1179,11 @@ function storedSchemaVersion(normalized: PerModelConfig): number {
   const mode = normalized.speculativeType;
   // A kept Auto and the MLX-only modes are values an older client folds back to unset.
   const mlxMode = mode === "auto" || (MLX_ONLY_SPEC_TYPES as readonly string[]).includes(mode ?? "");
-  if (normalized.specDraftModel != null || mlxMode) {
+  if (normalized.useModelIni) {
     return STORAGE_SCHEMA_VERSION;
+  }
+  if (normalized.specDraftModel != null || mlxMode) {
+    return PRE_MODEL_INI_SCHEMA_VERSION;
   }
   if (normalized.tensorSplit != null) {
     return PRE_MLX_DRAFTER_SCHEMA_VERSION;
@@ -1386,6 +1394,7 @@ export function isDefaultConfig(config: PerModelConfig): boolean {
     // Or a config whose only change is Extra Arguments reads as default, and savePerModelConfig
     // deletes the entry it was asked to remember.
     (config.llamaExtraArgs == null || config.llamaExtraArgs.length === 0) &&
+    !config.useModelIni &&
     gpuFieldsAtDefault(config)
   );
 }

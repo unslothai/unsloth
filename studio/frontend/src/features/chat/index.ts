@@ -11,6 +11,7 @@ export {
   deleteFineTunedModel,
   fetchChatAttachmentBlob,
   fetchGgufStagedMetadata,
+  fetchModelIni,
   getCachedModelPath,
   getInferenceStatus,
   listCachedGguf,
@@ -45,6 +46,7 @@ export type {
   GgufVariantDetail,
   GgufVariantsResponse,
   InferenceStatusResponse,
+  ModelIniResponse,
 } from "./types/api";
 export {
   applyActiveModelStatusToStore,

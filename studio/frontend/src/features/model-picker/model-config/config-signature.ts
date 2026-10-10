@@ -77,6 +77,8 @@ export function loadedConfigSignature(
       ? ""
       : `${config.llamaExtraArgs.length}:${hashString(config.llamaExtraArgs.join("\u0000"))}`,
     gpuFieldsSignature(config),
+    // Appended only when on, so every signature from before the field stays as it was.
+    ...(config.useModelIni ? ["ini"] : []),
   ].join("|");
 }
 
