@@ -85,7 +85,8 @@ class ContextParallelManager:
                 "Unsloth: context parallelism needs input_ids batches (not inputs_embeds)."
             )
         bsz, seq_len = input_ids.shape
-        if "position_ids" not in inputs:
+        # .get: a collator may carry the key with None, which would leave positions shard-local.
+        if inputs.get("position_ids") is None:
             inputs["position_ids"] = (
                 torch.arange(seq_len, device = input_ids.device).expand(bsz, -1).contiguous()
             )
@@ -98,7 +99,7 @@ class ContextParallelManager:
                 "Unsloth: context parallelism needs 2D right-padded attention masks without holes."
             )
         labels = inputs.get("labels")
-        if "shift_labels" not in inputs and labels is not None:
+        if inputs.get("shift_labels") is None and labels is not None:
             inputs["shift_labels"] = F.pad(labels, (0, 1), value = -100)[:, 1:].contiguous()
         # The load balancer splits the sequence into 2 * size chunks.
         pad = (-seq_len) % (2 * self.size)
@@ -136,6 +137,16 @@ class ContextParallelManager:
         finally:
             _ACTIVE_MANAGER = previous
             F.scaled_dot_product_attention = sdpa
+
+
+def _refuse_iterable_datasets(*datasets) -> None:
+    # accelerate's batch dispatcher (dispatch_batches, the default for iterable datasets) ignores cp.
+    for dataset in datasets:
+        for d in dataset.values() if isinstance(dataset, dict) else [dataset]:
+            if isinstance(d, torch.utils.data.IterableDataset) or "IterableDataset" in type(d).__name__:
+                raise NotImplementedError(
+                    "Unsloth: context parallelism does not support iterable datasets."
+                )
 
 
 def patch_sft_trainer() -> None:
@@ -229,6 +240,12 @@ def patch_sft_trainer() -> None:
         # Older accelerate ignores the "cp" mesh dim, so CP peers would get different batches.
         if Version(accelerate.__version__) < Version("1.10.0"):
             raise NotImplementedError("Unsloth: context parallelism needs accelerate >= 1.10.0.")
+        # The ring runs plain causal SDPA: the windowed mask Unsloth builds otherwise is dropped.
+        sliding_window = getattr(getattr(self.model, "config", None), "sliding_window", None)
+        if isinstance(sliding_window, int) and sliding_window > 0:
+            raise NotImplementedError(
+                "Unsloth: context parallelism does not support sliding window attention."
+            )
         if not _supports_context_parallel(self.model):
             raise NotImplementedError(
                 "Unsloth: context parallelism currently supports Llama-style attention only "
@@ -241,19 +258,11 @@ def patch_sft_trainer() -> None:
             raise NotImplementedError(
                 f"Unsloth: context parallelism supports DDP only, not {distributed_type}."
             )
-        # accelerate's batch dispatcher (default for iterable / streaming datasets) ignores cp.
-        eval_dataset = getattr(self, "eval_dataset", None)
-        datasets = [getattr(self, "train_dataset", None)]
-        datasets += (
-            list(eval_dataset.values()) if isinstance(eval_dataset, dict) else [eval_dataset]
-        )
-        if getattr(accelerator, "dispatch_batches", None) or any(
-            isinstance(d, torch.utils.data.IterableDataset) or "IterableDataset" in type(d).__name__
-            for d in datasets
-        ):
+        if getattr(accelerator, "dispatch_batches", None):
             raise NotImplementedError(
-                "Unsloth: context parallelism does not support iterable datasets or dispatch_batches."
+                "Unsloth: context parallelism does not support dispatch_batches."
             )
+        _refuse_iterable_datasets(getattr(self, "train_dataset", None), getattr(self, "eval_dataset", None))
         manager = ContextParallelManager(size)
         self._context_parallel_manager = manager
         manager.attach_attention_hooks(self.model)
@@ -271,14 +280,24 @@ def patch_sft_trainer() -> None:
             )
         if manager is None:
             return original_prediction_step(self, model, inputs, *args, **kwargs)
-        with manager.apply(inputs):
-            loss, *rest = original_prediction_step(self, model, inputs, *args, **kwargs)
-        # Each rank holds one shard's loss; gather_for_metrics drops ranks of a partial last batch.
-        if isinstance(loss, torch.Tensor):
-            loss = loss.detach().clone()
-            dist.all_reduce(loss, group = manager.mesh.get_group())
-            loss = loss / manager.size
-        return (loss, *rest)
+        inputs = self._prepare_inputs(inputs)
+        manager._prepare_inputs(inputs)
+        shift_labels = inputs.get("shift_labels")
+        if not isinstance(shift_labels, torch.Tensor):
+            with manager.apply(inputs):
+                return original_prediction_step(self, model, inputs, *args, **kwargs)
+        # Not the Trainer's count: transformers 4.x counts nothing in eval (each shard takes its own
+        # mean, an empty shard is NaN) and 5.x scales by world size. Counted before sharding; CP
+        # peers hold the same batch, so the world sum counts every token size times.
+        total = shift_labels.ne(-100).sum()
+        dist.all_reduce(total)
+        inputs["num_items_in_batch"] = (total // manager.size).clamp_min(1)
+        with manager.apply(inputs), torch.no_grad(), self.compute_loss_context_manager():
+            loss = self.compute_loss(model, inputs).detach()
+        # Sum of the shards = this replica's tokens over all tokens; x replicas so the eval loop's
+        # mean over ranks is the token mean over the whole batch.
+        dist.all_reduce(loss, group = manager.mesh.get_group())
+        return loss * (dist.get_world_size() // manager.size), None, None
 
     @functools.wraps(original_train)
     def patched_train(self, *args, **kwargs):
@@ -287,6 +306,8 @@ def patch_sft_trainer() -> None:
 
     @functools.wraps(original_evaluate)
     def patched_evaluate(self, *args, **kwargs):
+        if getattr(self, "_context_parallel_manager", None) is not None:
+            _refuse_iterable_datasets(args[0] if args else kwargs.get("eval_dataset"))
         _install_accelerator_state(self)
         return original_evaluate(self, *args, **kwargs)
 
@@ -294,7 +315,7 @@ def patch_sft_trainer() -> None:
     def patched_training_step(self, model, inputs, *args, **kwargs):
         manager = getattr(self, "_context_parallel_manager", None)
         if manager is not None:
-            # Counted before sharding (eval counts after); HF divides the same for parallelism_config.
+            # Counted before sharding on every CP peer; HF divides the same for parallelism_config.
             if args and args[0] is not None:
                 args = (args[0] / manager.size, *args[1:])
             elif kwargs.get("num_items_in_batch") is not None:

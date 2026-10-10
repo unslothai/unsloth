@@ -28,6 +28,19 @@ def _fake_context_parallel(sharded):
     return fake
 
 
+def test_none_position_ids_and_shift_labels_are_rebuilt():
+    # A collator may carry the keys with None: positions must still be global, targets pre-shifted.
+    inputs = {
+        "input_ids": torch.ones(1, 4, dtype = torch.long),
+        "labels": torch.tensor([[1, 2, 3, 4]]),
+        "position_ids": None,
+        "shift_labels": None,
+    }
+    _manager()._prepare_inputs(inputs)
+    assert inputs["position_ids"].tolist() == [[0, 1, 2, 3]]
+    assert inputs["shift_labels"].tolist() == [[2, 3, 4, -100]]
+
+
 def test_labels_shift_before_sharding_and_pad_to_load_balancer_chunks():
     manager = _manager(size = 2)
     labels = torch.tensor([[-100, 5, 6, 7, 8, 9]])
@@ -120,14 +133,7 @@ def test_training_step_divides_the_pre_shard_token_count_by_cp_size(monkeypatch)
         ):
             seen.append(("train", num_items_in_batch))
 
-        def prediction_step(
-            self,
-            model,
-            inputs,
-            prediction_loss_only,
-            num_items_in_batch = None,
-        ):
-            seen.append(("eval", num_items_in_batch))
+        def prediction_step(self, model, inputs, prediction_loss_only):
             return (None, None, None)
 
         def train(self):
@@ -147,9 +153,7 @@ def test_training_step_divides_the_pre_shard_token_count_by_cp_size(monkeypatch)
     batch = lambda: {"input_ids": torch.ones(1, 8, dtype = torch.long)}
     trainer.training_step(None, batch(), torch.tensor(12.0))
     trainer.training_step(None, batch(), num_items_in_batch = torch.tensor(12.0))
-    # Eval counts tokens after sharding: the gathered count is already the global one.
-    trainer.prediction_step(None, batch(), True, num_items_in_batch = torch.tensor(12.0))
-    assert [(k, float(n)) for k, n in seen] == [("train", 3.0), ("train", 3.0), ("eval", 12.0)]
+    assert [(k, float(n)) for k, n in seen] == [("train", 3.0), ("train", 3.0)]
 
 
 def test_shift_labels_is_not_an_eval_label_name():
@@ -242,6 +246,17 @@ def _patched_trainer(monkeypatch, **init_attrs):
         ):
             return (torch.tensor(1.0), None, None)
 
+        def _prepare_inputs(self, inputs):
+            return inputs
+
+        def compute_loss_context_manager(self):
+            return contextlib.nullcontext()
+
+        def compute_loss(self, model, inputs):
+            # One unit of loss per target on this rank's shard, over the count it was given.
+            targets = inputs["shift_labels"].ne(-100).sum()
+            return targets.float() / inputs["num_items_in_batch"]
+
         def train(self, *a, **k):
             return "trained"
 
@@ -253,24 +268,41 @@ def _patched_trainer(monkeypatch, **init_attrs):
     return Trainer
 
 
-def test_predictions_are_refused_but_loss_only_eval_runs(monkeypatch):
+@pytest.mark.parametrize("world_size", [2, 4])
+def test_eval_loss_is_the_token_mean_even_with_an_empty_shard(monkeypatch, world_size):
     import types
 
-    monkeypatch.setattr(cp, "context_parallel", _fake_context_parallel([]))
+    @contextlib.contextmanager
+    def first_half(mesh, buffers, buffer_seq_dims, no_restore_buffers):
+        # This rank's shard: the first half, which holds no targets (its peer holds both).
+        for buffer in buffers:
+            buffer.data = buffer[:, : buffer.shape[1] // 2].clone()
+        yield
+
+    monkeypatch.setattr(cp, "context_parallel", first_half)
+    monkeypatch.setattr(cp.dist, "get_world_size", lambda: world_size)
     Trainer = _patched_trainer(monkeypatch)
     trainer = object.__new__(Trainer)
-    manager = _manager()
-    manager.mesh = None
+    manager = _manager(size = 2)
+    manager.mesh = types.SimpleNamespace(get_group = lambda: "cp")
     trainer._context_parallel_manager = manager
-    batch = lambda: {"input_ids": torch.ones(1, 4, dtype = torch.long)}
-    reduced = []
-    monkeypatch.setattr(
-        cp.dist, "all_reduce", lambda t, group = None: (reduced.append(t), t.mul_(2))
-    )
-    manager.mesh = types.SimpleNamespace(get_group = lambda: None)
-    loss, *_ = trainer.prediction_step(None, batch(), True)
-    # Every CP rank reports the group's mean loss (here 2 ranks of 1.0 each).
-    assert reduced and loss.item() == 1.0
+    counts = []
+
+    def all_reduce(tensor, group = None):
+        if group is None:  # token count over the world: every rank holds the same count
+            counts.append(int(tensor))
+            tensor.mul_(world_size)
+        else:  # loss over the CP group: add the peer's shard (2 targets)
+            tensor.add_(2 / (counts[0] * world_size // manager.size))
+
+    monkeypatch.setattr(cp.dist, "all_reduce", all_reduce)
+    # 9 tokens pad to 12; shifted, the 2 targets sit at positions 6 and 7 (second half).
+    labels = torch.tensor([[-100] * 7 + [1, 1]])
+    batch = lambda: {"input_ids": torch.ones(1, 9, dtype = torch.long), "labels": labels.clone()}
+    loss, logits, labels_out = trainer.prediction_step(None, batch(), True)
+    # 2 targets at one unit each: the token mean is 1.0 (a per-shard mean would be NaN here).
+    assert counts == [2] and loss.item() == pytest.approx(1.0)
+    assert logits is None and labels_out is None
     with pytest.raises(NotImplementedError, match = "loss-only"):
         trainer.prediction_step(None, batch(), False)
 
@@ -410,7 +442,35 @@ def test_dispatched_or_iterable_loaders_are_refused(monkeypatch, case):
         train_dataset = Stream() if case == "iterable" else [1],
         eval_dataset = {"a": [1], "b": Stream()} if case == "eval_dict" else None,
     )
-    with pytest.raises(NotImplementedError, match = "iterable datasets or dispatch_batches"):
+    with pytest.raises(NotImplementedError, match = "iterable datasets|dispatch_batches"):
+        Trainer()
+
+
+def test_iterable_eval_dataset_passed_to_evaluate_is_refused(monkeypatch):
+    class Stream(torch.utils.data.IterableDataset):
+        def __iter__(self):
+            return iter(())
+
+    Trainer = _patched_trainer(monkeypatch)
+    trainer = object.__new__(Trainer)
+    trainer._context_parallel_manager = _manager()
+    with pytest.raises(NotImplementedError, match = "iterable datasets"):
+        trainer.evaluate(Stream())
+    with pytest.raises(NotImplementedError, match = "iterable datasets"):
+        trainer.evaluate(eval_dataset = {"a": Stream()})
+    trainer._context_parallel_manager = None
+    assert trainer.evaluate(Stream()) == "evaluated"
+
+
+def test_sliding_window_models_are_refused(monkeypatch):
+    import types
+
+    _cp_env(monkeypatch)
+    args = types.SimpleNamespace(context_parallel_size = 2, label_smoothing_factor = 0.0)
+    accelerator = types.SimpleNamespace(distributed_type = types.SimpleNamespace(name = "MULTI_GPU"))
+    model = types.SimpleNamespace(config = types.SimpleNamespace(sliding_window = 4096))
+    Trainer = _patched_trainer(monkeypatch, args = args, accelerator = accelerator, model = model)
+    with pytest.raises(NotImplementedError, match = "sliding window"):
         Trainer()
 
 
