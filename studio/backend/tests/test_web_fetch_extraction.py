@@ -750,6 +750,7 @@ def test_page_that_fits_keeps_its_links(monkeypatch):
         ("x<sup>n&times;2</sup>", "x^(n×2)"),
         ("x<sup>2n</sup> and y<sup>n2</sup>", "x^(2n) and y^(n2)"),
         ("x<sup>2<em>n</em></sup>", "x^(2*n*)"),
+        ("x<sup>2*3</sup> and x<sup><em>n</em></sup>", "x^(2*3) and x^*n*"),
         ("e<sup>i&pi;</sup> + 1 = 0", "e^(iπ) + 1 = 0"),
         ("now $19<sup>99</sup> or &euro; 1,299<sup>95</sup>", "now $1999 or € 1,29995"),
         ("<b>$19</b><sup>99</sup>", "**$19**99"),

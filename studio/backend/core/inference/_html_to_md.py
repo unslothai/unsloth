@@ -640,7 +640,8 @@ class _MarkdownRenderer(HTMLParser):
             )
         ):
             return
-        token = shown.translate(_STRIP_MD_DELIMITERS)
+        # only the emphasis wrapping a whole exponent is renderer syntax; an inner * is an operator
+        token = shown.strip(_MD_DELIMITERS)
         bare = _BARE_EXPONENT.fullmatch(token) or (
             token.startswith("(") and token.endswith(")") and token.count("(") == 1
         )
