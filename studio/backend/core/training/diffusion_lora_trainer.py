@@ -58,13 +58,17 @@ from core.training.diffusion_train_common import (  # noqa: F401
     _plan_cache_variants,
     _publish_to_lora_catalog,
     _restore_perf_flags,
+    bucket_groups,
     discover_image_caption_pairs,
     get_trainer,
     PermutationBatchSampler,
+    plan_image_canvases,
+    resolve_bucketing,
     resolve_train_steps,
     restore_resume_state,
     write_resume_checkpoint,
 )
+from core.training.diffusion_train_extras import BucketBatchSampler, cover_resize_dims
 from core.training.diffusion_checkpoint import (
     clear_own_checkpoints,
     discard_preexisting_checkpoints,
@@ -86,70 +90,74 @@ def compute_sdxl_add_time_ids(resolution: int) -> tuple[int, int, int, int, int,
     return (resolution, resolution, 0, 0, resolution, resolution)
 
 
-def _load_image_tensor(
-    path: str, resolution: int, center_crop: bool, random_flip: bool, rng: random.Random
+def _canvas(resolution: Any) -> tuple[int, int]:
+    """(w, h) of the training canvas: a bucket tuple, or the legacy square ``resolution``."""
+    if isinstance(resolution, (tuple, list)):
+        return int(resolution[0]), int(resolution[1])
+    return int(resolution), int(resolution)
+
+
+def _crop_to_canvas(
+    path: str, resolution: Any, center_crop: bool, pick: Any, flip: Any
 ) -> tuple[Any, tuple[int, int, int, int, int, int]]:
-    """CxHxW pixels in [-1, 1] with SDXL time ids for the EXIF-oriented crop."""
+    """Cover-resize to the canvas, crop at ``pick(range_x, range_y)``, optionally mirror. Returns
+    CxHxW pixels in [-1, 1] and SDXL time ids (original_h, original_w, crop_top, crop_left,
+    target_h, target_w); a square canvas reproduces the legacy short-side geometry exactly."""
     import numpy as np
     import torch
     from PIL import Image, ImageOps
 
     from core.inference.mcp_images import flattened_rgb
 
+    cw, ch = _canvas(resolution)
     # apply EXIF orientation before geometry so rotated photos train upright.
     img = flattened_rgb(ImageOps.exif_transpose(Image.open(path)), background = (255, 255, 255))
     original_w, original_h = img.size
-    scale = resolution / min(original_w, original_h)
-    resized_w = max(resolution, round(original_w * scale))
-    resized_h = max(resolution, round(original_h * scale))
+    resized_w, resized_h = cover_resize_dims(original_w, original_h, cw, ch)
     img = img.resize((resized_w, resized_h), Image.LANCZOS)
     if center_crop:
-        left, top = (resized_w - resolution) // 2, (resized_h - resolution) // 2
+        left, top = (resized_w - cw) // 2, (resized_h - ch) // 2
     else:
-        left = rng.randint(0, max(0, resized_w - resolution))
-        top = rng.randint(0, max(0, resized_h - resolution))
-    img = img.crop((left, top, left + resolution, top + resolution))
+        left, top = pick(resized_w - cw, resized_h - ch)
+    img = img.crop((left, top, left + cw, top + ch))
     crop_left = left
-    if random_flip and rng.random() < 0.5:
+    if flip():
         img = img.transpose(Image.FLIP_LEFT_RIGHT)
         # mirror the crop origin after a flip to match diffusers.
-        crop_left = max(0, resized_w - resolution - left)
+        crop_left = max(0, resized_w - cw - left)
     arr = np.asarray(img, dtype = np.float32) / 255.0
     tensor = torch.from_numpy(arr).permute(2, 0, 1) * 2.0 - 1.0
-    time_ids = (original_h, original_w, top, crop_left, resolution, resolution)
+    time_ids = (original_h, original_w, top, crop_left, ch, cw)
     return tensor, time_ids
+
+
+def _load_image_tensor(
+    path: str, resolution: Any, center_crop: bool, random_flip: bool, rng: random.Random
+) -> tuple[Any, tuple[int, int, int, int, int, int]]:
+    """CxHxW pixels in [-1, 1] with SDXL time ids for the EXIF-oriented crop."""
+    return _crop_to_canvas(
+        path,
+        resolution,
+        center_crop,
+        lambda rx, ry: (rng.randint(0, max(0, rx)), rng.randint(0, max(0, ry))),
+        lambda: random_flip and rng.random() < 0.5,
+    )
 
 
 def _load_image_tensor_planned(
-    path: str, resolution: int, center_crop: bool, u_left: float, u_top: float, flip: bool
+    path: str, resolution: Any, center_crop: bool, u_left: float, u_top: float, flip: bool
 ) -> tuple[Any, tuple[int, int, int, int, int, int]]:
     """cache loader preserving ``_load_image_tensor`` crop, flip, and legacy center semantics."""
-    import numpy as np
-    import torch
-    from PIL import Image, ImageOps
-
-    from core.inference.mcp_images import flattened_rgb
-
-    img = flattened_rgb(ImageOps.exif_transpose(Image.open(path)), background = (255, 255, 255))
-    original_w, original_h = img.size
-    scale = resolution / min(original_w, original_h)
-    resized_w = max(resolution, round(original_w * scale))
-    resized_h = max(resolution, round(original_h * scale))
-    img = img.resize((resized_w, resized_h), Image.LANCZOS)
-    if center_crop:
-        left, top = (resized_w - resolution) // 2, (resized_h - resolution) // 2
-    else:
-        left = min(int(u_left * (resized_w - resolution + 1)), max(0, resized_w - resolution))
-        top = min(int(u_top * (resized_h - resolution + 1)), max(0, resized_h - resolution))
-    img = img.crop((left, top, left + resolution, top + resolution))
-    crop_left = left
-    if flip:
-        img = img.transpose(Image.FLIP_LEFT_RIGHT)
-        crop_left = max(0, resized_w - resolution - left)
-    arr = np.asarray(img, dtype = np.float32) / 255.0
-    tensor = torch.from_numpy(arr).permute(2, 0, 1) * 2.0 - 1.0
-    time_ids = (original_h, original_w, top, crop_left, resolution, resolution)
-    return tensor, time_ids
+    return _crop_to_canvas(
+        path,
+        resolution,
+        center_crop,
+        lambda rx, ry: (
+            min(int(u_left * (rx + 1)), max(0, rx)),
+            min(int(u_top * (ry + 1)), max(0, ry)),
+        ),
+        lambda: flip,
+    )
 
 
 def _encode_sdxl_prompts(
@@ -180,7 +188,16 @@ def _encode_sdxl_prompts(
 
 
 def _build_sdxl_latent_cache(
-    vae, vae_scale, image_paths, cfg, device, weight_dtype, on_event, check_stop
+    vae,
+    vae_scale,
+    image_paths,
+    cfg,
+    device,
+    weight_dtype,
+    on_event,
+    check_stop,
+    canvases = None,
+    plan = None,
 ):
     """Precompute the per-image latent posterior cache: for each planned crop/flip variant,
     encode once and store ``(A, B, time_ids)`` on CPU in fp32. ``A`` and ``B`` are the affine
@@ -190,12 +207,14 @@ def _build_sdxl_latent_cache(
     per-step sample happens in fp32 and only the RESULT is cast to weight_dtype, matching the
     in-loop path (encode fp32 -> sample fp32 -> scale -> .to(weight_dtype)); fp32 doubles the
     cache RAM over bf16 but the cache is tiny (a handful of latents per image). Returns None if
-    the build was interrupted by a stop request. ``vae_scale`` is read before the VAE is freed."""
+    the build was interrupted by a stop request. ``vae_scale`` is read before the VAE is freed.
+    ``canvases`` holds each image's bucket for a bucketed run (None: the square resolution)."""
     import torch
 
-    plan = _plan_cache_variants(
-        len(image_paths), cfg.cache_variants, cfg.center_crop, cfg.random_flip, cfg.seed
-    )
+    if plan is None:
+        plan = _plan_cache_variants(
+            len(image_paths), cfg.cache_variants, cfg.center_crop, cfg.random_flip, cfg.seed
+        )
 
     def _hold(t):
         t = t.to(torch.float32).cpu()
@@ -215,7 +234,12 @@ def _build_sdxl_latent_cache(
         variants = []
         for u_left, u_top, flip in plan[i]:
             tensor, time_ids = _load_image_tensor_planned(
-                path, cfg.resolution, cfg.center_crop, u_left, u_top, flip
+                path,
+                cfg.resolution if canvases is None else canvases[i],
+                cfg.center_crop,
+                u_left,
+                u_top,
+                flip,
             )
             pixel_values = tensor.unsqueeze(0).to(device, dtype = torch.float32)
             with torch.no_grad():
@@ -308,7 +332,7 @@ def run_diffusion_lora_training(
     except Exception:  # noqa: BLE001 - never let log tidying stop a training run
         pass
 
-    cfg = config.normalized()
+    cfg = resolve_bucketing(config.normalized())
     rng = random.Random(cfg.seed)
     torch.manual_seed(cfg.seed)
 
@@ -446,6 +470,7 @@ def run_diffusion_lora_training(
         ) not in ("1", "true")
         # Over the host-memory budget; keep the VAE resident and encode in-loop.
         latent_cache = None
+        canvases, crop_room = plan_image_canvases(cfg, [p for p, _ in pairs])
         if use_cache:
             latent_cache = _build_sdxl_latent_cache(
                 vae,
@@ -456,6 +481,15 @@ def run_diffusion_lora_training(
                 weight_dtype,
                 on_event,
                 _check_stop,
+                canvases = canvases,
+                plan = _plan_cache_variants(
+                    len(pairs),
+                    cfg.cache_variants,
+                    cfg.center_crop,
+                    cfg.random_flip,
+                    cfg.seed,
+                    crop_room = crop_room,
+                ),
             )
             if latent_cache is LATENT_CACHE_OVER_BUDGET:
                 latent_cache = None
@@ -496,12 +530,19 @@ def run_diffusion_lora_training(
 
         # Permutation-cycle index sampler: each image is visited once per cycle before any repeat, so a
         # short run does not leave a small dataset partly unseen.
-        index_sampler = PermutationBatchSampler(len(pairs), rng)
+        # Bucketed runs draw each batch from one bucket so its latents stack into one shape.
+        index_sampler = (
+            PermutationBatchSampler(len(pairs), rng)
+            if canvases is None
+            else BucketBatchSampler(bucket_groups(canvases), rng)
+        )
 
         def _next_batch() -> tuple[list[int], list[str], list[str]]:
             # Draw the full configured batch, not min(batch, n): the sampler refills across cycles so a small
             # dataset still yields that many indices.
             idx = index_sampler.next_batch(cfg.train_batch_size)
+            if canvases is not None:
+                idx = idx[1]
             chosen = [pairs[i] for i in idx]
             return idx, [c[0] for c in chosen], [c[1] for c in chosen]
 
@@ -573,8 +614,14 @@ def run_diffusion_lora_training(
                     )
                 else:
                     loaded = [
-                        _load_image_tensor(p, cfg.resolution, cfg.center_crop, cfg.random_flip, rng)
-                        for p in img_paths
+                        _load_image_tensor(
+                            p,
+                            cfg.resolution if canvases is None else canvases[i],
+                            cfg.center_crop,
+                            cfg.random_flip,
+                            rng,
+                        )
+                        for i, p in zip(idx, img_paths)
                     ]
                     pixel_values = torch.stack([t for t, _ in loaded]).to(
                         device, dtype = torch.float32

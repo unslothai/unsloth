@@ -391,14 +391,47 @@ class PersistentConditioningCache:
             return None
 
 
-# Buckets snap to 64 pixels: the DiT families divide by 8 in the VAE and 2 again in latent patching, and regional
-# torch.compile prefers few distinct shapes.
+# Non-square bucket edges snap to 64 pixels: a multiple of every family's latent grid (VAE factor x patch: 16 for the
+# FLUX / Qwen / Z-Image / Krea DiTs, 32 for LTX-2, and SDXL's U-Net downsamples the 8x latent twice more), and a coarse
+# step keeps the bucket count, and with it the compiled shapes, small (5 at 512, 9 at 768, 13 at 1024).
 
 BUCKET_DIVISOR = 64
 
 # Widest aspect ratio a bucket may take; anything more extreme clamps to it (matching the common
 # practice of capping panoramas).
 MAX_BUCKET_RATIO = 2.0
+
+
+def bucket_resolutions(
+    resolution: int,
+    divisor: int = BUCKET_DIVISOR,
+    max_ratio: float = MAX_BUCKET_RATIO,
+) -> list[tuple[int, int]]:
+    """Every (w, h) bucket for ``resolution``: the square (resolution, resolution) itself, plus each
+    width on the ``divisor`` grid paired with the tallest grid height whose area stays within
+    resolution**2 (kohya's BucketManager rule), both orientations, aspect within ``max_ratio``.
+    The square keeps the exact legacy canvas even when ``resolution`` is off the 64 grid."""
+    base = int(resolution)
+    area = base * base
+    out = {(base, base)}
+    w = divisor
+    while w * w <= area * max_ratio:
+        h = (area // w) // divisor * divisor
+        if h >= divisor and 1.0 / max_ratio <= w / h <= max_ratio:
+            out.add((w, h))
+            out.add((h, w))
+        w += divisor
+    return sorted(out)
+
+
+def nearest_bucket(width: int, height: int, buckets: list[tuple[int, int]]) -> tuple[int, int]:
+    """The bucket whose aspect ratio is closest in log space; ties go to the larger area, then the
+    sorted order, so assignment is deterministic. An exactly square image always lands in the
+    square bucket."""
+    if width <= 0 or height <= 0:
+        raise ValueError("image dimensions must be positive")
+    r = math.log(width / height)
+    return min(buckets, key = lambda b: (abs(math.log(b[0] / b[1]) - r), -b[0] * b[1], b))
 
 
 def compute_bucket(
@@ -408,18 +441,8 @@ def compute_bucket(
     divisor: int = BUCKET_DIVISOR,
     max_ratio: float = MAX_BUCKET_RATIO,
 ) -> tuple[int, int]:
-    """The (bucket_w, bucket_h) for an image: preserve aspect (clamped to
-    ``max_ratio``), keep area ~= base_resolution**2, snap both dims to
-    ``divisor``. A square input maps exactly to (base, base)."""
-    if width <= 0 or height <= 0:
-        raise ValueError("image dimensions must be positive")
-    ratio = width / height
-    ratio = max(1.0 / max_ratio, min(max_ratio, ratio))
-    area = float(base_resolution) * float(base_resolution)
-    bw = math.sqrt(area * ratio)
-    bh = bw / ratio
-    snap = lambda v: max(divisor, int(round(v / divisor)) * divisor)  # noqa: E731
-    return snap(bw), snap(bh)
+    """The (bucket_w, bucket_h) for an image of ``width`` x ``height``."""
+    return nearest_bucket(width, height, bucket_resolutions(base_resolution, divisor, max_ratio))
 
 
 def assign_buckets(
@@ -428,42 +451,98 @@ def assign_buckets(
     divisor: int = BUCKET_DIVISOR,
     max_ratio: float = MAX_BUCKET_RATIO,
 ) -> dict[tuple[int, int], list[int]]:
+    choices = bucket_resolutions(base_resolution, divisor, max_ratio)
     buckets: dict[tuple[int, int], list[int]] = {}
     for i, (w, h) in enumerate(sizes):
-        buckets.setdefault(compute_bucket(w, h, base_resolution, divisor, max_ratio), []).append(i)
+        buckets.setdefault(nearest_bucket(w, h, choices), []).append(i)
     return buckets
+
+
+def cover_resize_dims(width: int, height: int, canvas_w: int, canvas_h: int) -> tuple[int, int]:
+    """The size an image is resized to before cropping to the canvas: the smallest uniform scale
+    that covers both edges. For a square canvas this is exactly the legacy short-side resize."""
+    scale = max(canvas_w / width, canvas_h / height)
+    return max(canvas_w, round(width * scale)), max(canvas_h, round(height * scale))
+
+
+def oriented_image_size(path: str) -> tuple[int, int]:
+    """(width, height) after EXIF orientation, from the header only (no pixel decode)."""
+    from PIL import Image
+
+    with Image.open(path) as im:
+        w, h = im.size
+        try:
+            orientation = im.getexif().get(0x0112, 1)
+        except Exception:  # noqa: BLE001 -- unreadable EXIF is treated as upright, like exif_transpose
+            orientation = 1
+    return (h, w) if orientation in (5, 6, 7, 8) else (w, h)
 
 
 class BucketBatchSampler:
     """Batch indices so every batch comes from ONE bucket (one latent shape).
 
-    Within each bucket the draw is a reshuffled permutation (each cycle visits
-    every image once, like the trainers' PermutationBatchSampler); the bucket
-    for each batch is drawn weighted by bucket size so coverage stays uniform
-    across the dataset. Seed-deterministic via the caller's ``rng``. A batch
-    never mixes buckets; a bucket smaller than the batch size wraps within
-    itself so the batch shape stays fixed."""
+    Epoch-style like the trainers' PermutationBatchSampler: each cycle shuffles every bucket,
+    cuts it into batches of ``k`` (a bucket's last partial batch wraps within itself so the batch
+    shape stays fixed), then shuffles the batch order, so every image is seen once per cycle and
+    buckets interleave. Seed-deterministic via the caller's ``rng``; ``state_dict`` captures the
+    cycle in progress for a resume checkpoint."""
 
     def __init__(self, buckets: dict[tuple[int, int], list[int]], rng: random.Random):
         if not buckets or not any(buckets.values()):
             raise ValueError("BucketBatchSampler needs at least one bucketed item")
         self._rng = rng
-        self._shapes = sorted(buckets.keys())
+        self._shapes = sorted(s for s in buckets if buckets[s])
         self._items = {s: list(buckets[s]) for s in self._shapes}
-        self._weights = [len(self._items[s]) for s in self._shapes]
-        self._order: dict[tuple[int, int], list[int]] = {s: [] for s in self._shapes}
-        self._pos = {s: 0 for s in self._shapes}
+        self._batches: list[tuple[tuple[int, int], list[int]]] = []
+        self._pos = 0
+
+    def _refill(self, k: int) -> None:
+        batches: list[tuple[tuple[int, int], list[int]]] = []
+        for shape in self._shapes:
+            order = list(self._items[shape])
+            self._rng.shuffle(order)
+            count = -(-len(order) // k)
+            stream = (order * (-(-count * k // len(order))))[: count * k]
+            batches.extend((shape, stream[b * k : (b + 1) * k]) for b in range(count))
+        self._rng.shuffle(batches)
+        self._batches, self._pos = batches, 0
 
     def next_batch(self, k: int) -> tuple[tuple[int, int], list[int]]:
-        shape = self._rng.choices(self._shapes, weights = self._weights, k = 1)[0]
-        out: list[int] = []
-        while len(out) < k:
-            order, pos = self._order[shape], self._pos[shape]
-            if pos >= len(order):
-                order = list(self._items[shape])
-                self._rng.shuffle(order)
-                self._order[shape], pos = order, 0
-            take = min(k - len(out), len(order) - pos)
-            out.extend(order[pos : pos + take])
-            self._pos[shape] = pos + take
-        return shape, out
+        if self._pos >= len(self._batches) or len(self._batches[self._pos][1]) != k:
+            self._refill(k)
+        shape, idxs = self._batches[self._pos]
+        self._pos += 1
+        return shape, list(idxs)
+
+    def _bucket_key(self) -> list[list[Any]]:
+        return [[s[0], s[1], list(self._items[s])] for s in self._shapes]
+
+    def state_dict(self) -> dict[str, Any]:
+        return {
+            "kind": "bucket",
+            "buckets": self._bucket_key(),
+            "batches": [[s[0], s[1], list(i)] for s, i in self._batches],
+            "pos": int(self._pos),
+        }
+
+    def load_state_dict(self, state: Optional[dict[str, Any]]) -> bool:
+        """Restore a cycle saved by ``state_dict``; False (never a silent fresh cycle) when the state
+        is not a bucket cycle for exactly this bucket assignment, see PermutationBatchSampler."""
+        if not isinstance(state, dict) or state.get("kind") != "bucket":
+            return False
+        try:
+            if [[int(w), int(h), [int(i) for i in idx]] for w, h, idx in state["buckets"]] != (
+                self._bucket_key()
+            ):
+                return False
+            batches = [((int(w), int(h)), [int(i) for i in idx]) for w, h, idx in state["batches"]]
+            pos = int(state.get("pos") or 0)
+        except (KeyError, TypeError, ValueError):
+            return False
+        for shape, idxs in batches:
+            if shape not in self._items or not set(idxs) <= set(self._items[shape]):
+                return False
+        if not 0 <= pos <= len(batches):
+            return False
+        self._batches, self._pos = batches, pos
+        return True

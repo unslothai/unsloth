@@ -99,6 +99,9 @@ _IDENTITY_LABELS: tuple[tuple[str, str], ...] = (
     ("cache_variants", "cached crop variants"),
     ("center_crop", "centre cropping"),
     ("random_flip", "random flipping"),
+    # Buckets change every non-square image's canvas and the batch order, so a square bundle must not continue
+    # bucketed. A manifest from before the field trained square (see _LEGACY_IDENTITY_DEFAULTS).
+    ("bucketing", "aspect ratio buckets"),
     # TF32 versus strict fp32 continues the trajectory at a different numeric precision, and off is the documented
     # strict-reproducibility mode.
     ("enable_tf32", "TF32 matmuls"),
@@ -139,6 +142,7 @@ _OPTIONAL_IDENTITY_FIELDS = frozenset(
         "cache_variants",
         "center_crop",
         "random_flip",
+        "bucketing",
         "enable_tf32",
         "train_batch_size",
         "gradient_accumulation_steps",
@@ -148,6 +152,9 @@ _OPTIONAL_IDENTITY_FIELDS = frozenset(
         "base_precision_effective",
     }
 )
+# The value a field had before it was recorded. Only the BUNDLE side takes it: an incoming None is the route's
+# pre-trainer identity, which has not resolved the field yet and stays "cannot tell".
+_LEGACY_IDENTITY_DEFAULTS: dict[str, str] = {"bucketing": "off"}
 # What source_revision() returns when it cannot resolve a revision offline.
 _UNRESOLVED_REVISION = "unresolved"
 
@@ -215,6 +222,7 @@ class CheckpointIdentity:
     cache_variants: Optional[int] = None
     center_crop: Optional[str] = None
     random_flip: Optional[str] = None
+    bucketing: Optional[str] = None
     enable_tf32: Optional[str] = None
     train_batch_size: Optional[int] = None
     gradient_accumulation_steps: Optional[int] = None
@@ -256,6 +264,7 @@ class CheckpointIdentity:
             "cache_variants": self.cache_variants,
             "center_crop": self.center_crop,
             "random_flip": self.random_flip,
+            "bucketing": self.bucketing,
             "enable_tf32": self.enable_tf32,
             "train_batch_size": self.train_batch_size,
             "gradient_accumulation_steps": self.gradient_accumulation_steps,
@@ -298,6 +307,7 @@ class CheckpointIdentity:
                 cache_variants = _optional_int(data.get("cache_variants")),
                 center_crop = _optional_str(data.get("center_crop")),
                 random_flip = _optional_str(data.get("random_flip")),
+                bucketing = _optional_str(data.get("bucketing")),
                 enable_tf32 = _optional_str(data.get("enable_tf32")),
                 train_batch_size = _optional_int(data.get("train_batch_size")),
                 gradient_accumulation_steps = _optional_int(data.get("gradient_accumulation_steps")),
@@ -326,6 +336,8 @@ class CheckpointIdentity:
         mine, theirs = self.as_dict(), other.as_dict()
         for field, label in _IDENTITY_LABELS:
             a, b = mine.get(field), theirs.get(field)
+            if a in (None, "") and field in _LEGACY_IDENTITY_DEFAULTS:
+                a = _LEGACY_IDENTITY_DEFAULTS[field]
             # None / "" is "cannot tell", NOT falsiness: a lora_dropout of 0.0 is a real value and the commonest one,
             # so truthiness would skip exactly the 0.0-against-0.15 comparison that matters.
             if field in _OPTIONAL_IDENTITY_FIELDS and (a in (None, "") or b in (None, "")):
@@ -561,6 +573,7 @@ def identity_for_config(
         cache_variants = int(getattr(cfg, "cache_variants", 0) or 0),
         center_crop = _flag_key(getattr(cfg, "center_crop", None)),
         random_flip = _flag_key(getattr(cfg, "random_flip", None)),
+        bucketing = _flag_key(getattr(cfg, "bucketing", None)),
         enable_tf32 = _flag_key(getattr(cfg, "enable_tf32", None)),
         train_batch_size = int(getattr(cfg, "train_batch_size", 0) or 0),
         gradient_accumulation_steps = int(getattr(cfg, "gradient_accumulation_steps", 0) or 0),
@@ -1853,6 +1866,24 @@ def _assert_loadable(path: Path, manifest: dict[str, Any]) -> None:
                 f"The '{role}' file in '{path.name}' could not be read back "
                 f"({type(error).__name__}), so this checkpoint cannot be resumed."
             ) from error
+
+
+def recorded_bucketing(path_value: str) -> bool:
+    """Whether the bundle a resume of ``path_value`` continues trained with aspect-ratio buckets,
+    so a resume request that leaves the field unset keeps the run's recorded behaviour. A bundle
+    written before the field existed trained square. Unreadable paths answer False and leave the
+    refusal to ``preflight_resume``."""
+    try:
+        root = resolve_resume_dir(path_value)
+    except ResumeError:
+        return False
+    explicit = read_checkpoint(root) if checkpoint_step(root) >= 0 else None
+    candidates = [(root, explicit)] if explicit is not None else iter_valid_checkpoints(root)
+    for _path, manifest in candidates:
+        identity = manifest.get("identity")
+        if isinstance(identity, dict):
+            return _optional_str(identity.get("bucketing")) == "on"
+    return False
 
 
 def preflight_resume(

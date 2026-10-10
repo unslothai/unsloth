@@ -449,6 +449,8 @@ export function DiffusionTrainPanel({
   // Same for checkpoints: MiniMax-H3's loop writes no resume bundle and its validation REFUSES a
   // nonzero save_steps, so offering the field meant a rejected Start with nothing saying why.
   const supportsCheckpoints = reportedFamily?.supports_checkpoints ?? true;
+  // Same for buckets: MiniMax-H3 always trains one packed canvas, and an older backend drops the field.
+  const supportsBucketing = reportedFamily?.supports_bucketing ?? false;
   // Same for the batch axis: MiniMax-H3's forward covers ONE packed sequence and its validation REFUSES a batch
   // above 1 rather than clamping, so a value carried over from another family rejected Start with nothing saying
   // why. Hidden when the family caps it at 1.
@@ -502,6 +504,8 @@ export function DiffusionTrainPanel({
   const [lrWarmupSteps, setLrWarmupSteps] = useState(0);
   // Gradient checkpointing trades ~20-30% step time for a large activation-VRAM saving.
   const [gradCheckpoint, setGradCheckpoint] = useState(true);
+  // Aspect-ratio buckets keep non-square photos whole instead of cropping them square.
+  const [bucketing, setBucketing] = useState(true);
   // sdxl (U-Net) trains in a mixed-precision autocast; the DiT families quantise the frozen base
   // weights and ignore this.
   const [precision, setPrecision] = useState<"bf16" | "fp16" | "no">("bf16");
@@ -1171,6 +1175,7 @@ export function DiffusionTrainPanel({
         gradient_accumulation_steps: gradAccum,
         seed,
         gradient_checkpointing: gradCheckpoint,
+        bucketing: supportsBucketing ? bucketing : undefined,
         lr_scheduler: lrScheduler,
         lr_warmup_steps: lrScheduler === "constant" ? 0 : lrWarmupSteps,
         lora_rank: rank,
@@ -1210,6 +1215,8 @@ export function DiffusionTrainPanel({
     seed,
     saveSteps,
     gradCheckpoint,
+    supportsBucketing,
+    bucketing,
     lrScheduler,
     lrWarmupSteps,
     rank,
@@ -1492,6 +1499,26 @@ export function DiffusionTrainPanel({
             </SelectContent>
           </Select>
         </div>
+
+        {supportsBucketing && (
+          <div className={fieldClass}>
+            <FieldLabel hint="Trains each image at the same pixel count but its own shape (portrait, landscape or square), so non-square photos are not cropped square.">
+              Aspect ratio buckets
+            </FieldLabel>
+            <Select
+              value={bucketing ? "on" : "off"}
+              onValueChange={(v) => setBucketing(v === "on")}
+            >
+              <SelectTrigger className={selectClass} aria-label="Aspect ratio buckets">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="on">On (keep aspect)</SelectItem>
+                <SelectItem value="off">Off (square crop)</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        )}
 
         {isDiT ? (
           <div className={fieldClass}>

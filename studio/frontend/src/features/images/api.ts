@@ -621,6 +621,9 @@ export interface DiffusionTrainingStartRequest {
   cache_variants?: number;
   // Allow TF32 matmuls on Ampere+ for a throughput win at negligible quality cost.
   enable_tf32?: boolean;
+  // Aspect-ratio buckets: each image trains on the same-area canvas nearest its aspect instead of a
+  // square crop. Omitted: on for a new run, and a resume keeps what its checkpoint recorded.
+  bucketing?: boolean;
   // Write a resumable checkpoint every N optimizer steps. 0 (the default) writes none; a
   // stop-and-save always writes one, so Resume stays available either way.
   save_steps?: number;
@@ -814,6 +817,9 @@ export interface DiffusionTrainableFamily {
   // Whether the family's loop writes checkpoint bundles (gates the "Checkpoint every" field).
   // Undefined on an older backend, which has no checkpointless family, so it reads as true.
   supports_checkpoints?: boolean;
+  // Whether the family's loop trains aspect-ratio buckets (gates the "Aspect ratio buckets" control).
+  // Undefined on an older backend, which ignores the field, so the control stays hidden there.
+  supports_bucketing?: boolean;
   /** 1 for a family whose forward covers one packed sequence; null/absent means unrestricted. */
   max_train_batch_size?: number | null;
   // When set, deploying a LoRA trained on this family previews it on this repo instead of the
