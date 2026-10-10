@@ -277,3 +277,32 @@ def test_autocast_matches_the_per_record_head(monkeypatch):
     scale = theirs[0][theirs[3]].abs().max().item()
     assert logits <= 2e-2 * scale and grads < 5e-2
     assert torch.equal(ours[0].argmax(-1), theirs[0].argmax(-1))
+
+
+@pytest.mark.skipif(not has_real_cuda(), reason = "Inductor pads saved strides on CUDA")
+def test_checkpointed_head_trains_under_a_compiled_layer_norm(monkeypatch):
+    # #13160: Unsloth's F.layer_norm compiles itself. A memory over 1024 tokens gets a padded
+    # mean / rstd stride in its first (static) graph; the shorter queries recompile it dynamically,
+    # the checkpoint recompute picked that newer graph and the first graph's backward crashed.
+    original = getattr(clef.functional, "_uncompiled_layer_norm", clef.functional.layer_norm)
+    monkeypatch.setattr(clef.functional, "_uncompiled_layer_norm", original, raising = False)
+    monkeypatch.setattr(clef.functional, "layer_norm", torch.compile(original))
+    torch._dynamo.reset()
+    torch.manual_seed(0)
+    length, width = 1222, 512
+    head = clef.JointSchemaHead(HIDDEN, width, 2, 2, 4, 64).cuda().train()
+    question = reference.EncodedQuestion("q", 0, (5, 8), ((10, 12), (14, 17)), ("0", "1"))
+    records = [reference.EncodedRecord(tuple(range(length)), (question,), "r")] * 2
+    hidden = torch.randn(len(records), length, HIDDEN, device = "cuda")
+    ids = torch.zeros(len(records), length, dtype = torch.long, device = "cuda")
+    mask = torch.ones_like(ids)
+    embedding = torch.randn(length, HIDDEN, device = "cuda")
+    grad_out = torch.randn(len(records), 2, device = "cuda")
+    results = {}
+    for checkpoint in ("1", "0"):
+        monkeypatch.setenv("UNSLOTH_CLEF_CHECKPOINT", checkpoint)
+        results[checkpoint] = _run(
+            head, head.forward, hidden, ids, mask, records, embedding, grad_out
+        )
+    for a, b in zip(_max_error(results["1"], results["0"]), (1e-5, 1e-5, 1e-4)):
+        assert a < b
