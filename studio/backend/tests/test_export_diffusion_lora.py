@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
@@ -61,6 +62,28 @@ def test_export_never_overwrites_other_files(loras, tmp_path):
     assert json.loads((out_dir / "bare.json").read_text()) == {"model_type": "llama"}
     # Re-exporting the same bytes reuses its slot instead of piling up copies.
     assert dl.export_local_lora("mystyle", out_dir) == out_dir / "mystyle-2.safetensors"
+
+
+def test_export_never_shares_a_sidecar_with_another_format(loras, tmp_path):
+    out_dir = tmp_path / "shared"
+    out_dir.mkdir()
+    (out_dir / "mystyle.gguf").write_bytes(b"gguf")
+    (out_dir / "mystyle.json").write_text(json.dumps({"family": "flux", "kind": "diffusion-lora"}))
+    assert dl.export_local_lora("mystyle", out_dir) == out_dir / "mystyle-2.safetensors"
+    assert json.loads((out_dir / "mystyle.json").read_text())["family"] == "flux"
+
+
+def test_a_failed_copy_leaves_nothing_behind(loras, tmp_path, monkeypatch):
+    import shutil
+
+    def boom(src, dst):
+        Path(dst).write_bytes(b"half")
+        raise OSError("disk full")
+
+    monkeypatch.setattr(shutil, "copy2", boom)
+    with pytest.raises(OSError):
+        dl.export_local_lora("mystyle", tmp_path / "out")
+    assert list((tmp_path / "out").iterdir()) == []
 
 
 def test_export_refuses_ids_outside_the_local_catalog(loras, tmp_path):

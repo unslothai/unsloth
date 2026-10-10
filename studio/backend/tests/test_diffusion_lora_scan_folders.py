@@ -13,7 +13,7 @@ import struct
 import pytest
 
 from core.inference import diffusion_lora as dl
-from storage.studio_db import add_scan_folder_with_status
+import storage.studio_db as studio_db
 
 _MARK = {"kind": "diffusion-lora"}
 
@@ -29,6 +29,21 @@ def _safetensors(path, sidecar = None):
     return path
 
 
+# The registered-folder table itself (normalisation, denylist) is covered elsewhere; macOS tmp_path
+# lives under /private/var, which registration refuses, so the rows are faked here.
+_FOLDERS: list = []
+
+
+def register(folder):
+    _FOLDERS.append({"path": str(folder)})
+
+
+@pytest.fixture(autouse = True)
+def _folders(monkeypatch):
+    _FOLDERS.clear()
+    monkeypatch.setattr(studio_db, "list_scan_folders", lambda: list(_FOLDERS))
+
+
 @pytest.fixture
 def catalog(tmp_path, monkeypatch):
     d = tmp_path / "loras"
@@ -41,6 +56,10 @@ def _local():
     return {e.id: e for e in dl.list_loras() if e.source == "local"}
 
 
+def _by_path(path):
+    return next(e for e in _local().values() if e.local_path == str(path))
+
+
 def test_an_export_in_a_custom_folder_is_listed(catalog, tmp_path):
     (catalog / "mystyle.safetensors").write_bytes(b"w")
     (catalog / "mystyle.json").write_text(
@@ -50,36 +69,41 @@ def test_an_export_in_a_custom_folder_is_listed(catalog, tmp_path):
     dl.export_local_lora("mystyle", folder / "image-loras")
     (catalog / "mystyle.safetensors").unlink()
     (catalog / "mystyle.json").unlink()
-    add_scan_folder_with_status(str(folder))
+    register(str(folder))
 
-    entry = _local()["mystyle"]
-    assert entry.local_path == str(folder / "image-loras" / "mystyle.safetensors")
+    entry = _by_path(folder / "image-loras" / "mystyle.safetensors")
+    assert entry.display_name == "mystyle" and entry.id.startswith("mystyle-")
     assert entry.families == ("sdxl",) and entry.fine_tuned
-    assert dl.resolve_one("mystyle", 1.0).path == entry.local_path
+    assert dl.resolve_one(entry.id, 1.0).path == entry.local_path
 
 
 def test_unmarked_weights_in_a_custom_folder_are_ignored(catalog, tmp_path):
     folder = tmp_path / "my-models"
     _safetensors(folder / "model.safetensors")
     _safetensors(folder / "notes.safetensors", sidecar = {"family": "sdxl"})
-    add_scan_folder_with_status(str(folder))
+    register(str(folder))
     assert _local() == {}
 
 
-def test_a_name_taken_in_the_catalog_gets_a_suffix(catalog, tmp_path):
+def test_custom_folder_ids_stay_stable_when_folders_change(catalog, tmp_path):
     (catalog / "style.safetensors").write_bytes(b"catalog")
-    folder = tmp_path / "my-models"
-    _safetensors(folder / "style.safetensors", sidecar = _MARK)
-    add_scan_folder_with_status(str(folder))
-    local = _local()
-    assert local["style"].local_path == str(catalog / "style.safetensors")
-    assert local["style-2"].local_path == str(folder / "style.safetensors")
-    assert not local["style-2"].fine_tuned
+    folders = [tmp_path / name for name in ("a", "b", "c")]
+    for folder in folders:
+        _safetensors(folder / "style.safetensors", sidecar = _MARK)
+        register(str(folder))
+    assert _local()["style"].local_path == str(catalog / "style.safetensors")
+    ids = {str(f): _by_path(f / "style.safetensors").id for f in folders}
+    assert len(set(ids.values())) == 3 and not _by_path(folders[2] / "style.safetensors").fine_tuned
+
+    _FOLDERS.pop(0)
+    for folder in folders[1:]:
+        assert _by_path(folder / "style.safetensors").id == ids[str(folder)]
+    assert ids[str(folders[0])] not in _local()
 
 
 def test_the_catalog_registered_as_a_custom_folder_is_not_listed_twice(catalog, tmp_path):
     _safetensors(catalog / "style.safetensors", sidecar = _MARK)
-    add_scan_folder_with_status(str(catalog))
+    register(str(catalog))
     assert list(_local()) == ["style"]
 
 
@@ -131,7 +155,7 @@ def test_a_managed_account_only_sees_custom_folder_loras_it_may_access(
 
     folder = tmp_path / "shared"
     _safetensors(folder / "style.safetensors", sidecar = _MARK)
-    add_scan_folder_with_status(str(folder))
+    register(str(folder))
     monkeypatch.setattr(account_access, "managed_account", lambda: True)
     monkeypatch.setattr(account_access, "model_visible", lambda reference, **_: False)
     assert _local() == {}

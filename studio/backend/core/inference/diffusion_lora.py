@@ -15,6 +15,7 @@ validates the id against the catalog / local dir / HF hub before loading.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -36,6 +37,7 @@ _ALL_EXTS = (".safetensors", ".gguf")
 # ``kind`` in a ``<stem>.json`` sidecar marking the weight beside it as an image LoRA, not model weights.
 LORA_SIDECAR_KIND = "diffusion-lora"
 _MAX_SCAN_FOLDER_SUBDIRS = 200
+_EXPORT_LOCK = threading.Lock()
 
 
 @dataclass(frozen = True)
@@ -150,7 +152,8 @@ def _scan_folder_roots() -> list[Path]:
 
 
 def _scan_local() -> list[LoraCatalogEntry]:
-    files = _weight_files(loras_dir())
+    root_dir = loras_dir()
+    files = _weight_files(root_dir)
     # Two files sharing a stem but differing in extension collide on id (== stem), so a colliding stem keeps the full
     # filename.
     stem_counts: dict[str, int] = {}
@@ -174,10 +177,11 @@ def _scan_local() -> list[LoraCatalogEntry]:
             if key in seen or not is_image_lora_file(p) or not visible(str(p)):
                 continue
             seen.add(key)
-            entry_id, n = p.stem, 2
-            while entry_id in used:
-                entry_id = f"{p.stem}-{n}"
-                n += 1
+            # Keyed on the file's own path, never on scan order: saved recipes must not drift onto
+            # another folder's same-named adapter when folders are added or removed.
+            entry_id = f"{p.stem}-{hashlib.sha1(key.encode()).hexdigest()[:8]}"
+            if entry_id in used:
+                continue
             used.add(entry_id)
             found.append((p, entry_id))
 
@@ -193,7 +197,7 @@ def _scan_local() -> list[LoraCatalogEntry]:
         entries.append(
             LoraCatalogEntry(
                 id = entry_id,
-                display_name = entry_id,
+                display_name = entry_id if p.parent == root_dir else p.stem,
                 source = "local",
                 fmt = "gguf" if p.suffix.lower() == ".gguf" else "safetensors",
                 local_path = str(p),
@@ -267,11 +271,12 @@ def _catalog_by_id() -> dict[str, LoraCatalogEntry]:
 def export_local_lora(lora_id: str, dest_dir: Path) -> Path:
     """Copy a local adapter into ``dest_dir`` with a ``<stem>.json`` sidecar carrying the image LoRA marker.
 
-    Takes a catalog id, never a path, so only listed image LoRAs can be read.
-    Returns the copied weight file; a name already taken by other bytes or a foreign ``.json`` gets a suffix.
+    Takes a catalog id, never a path, so only listed image LoRAs can be read. Returns the copied weight
+    file; a stem already used by other bytes, another weight format or a foreign ``.json`` gets a suffix.
     """
     import filecmp
     import shutil
+    import tempfile
 
     entry = next((e for e in _scan_local() if e.id == lora_id), None)
     if entry is None or not entry.local_path:
@@ -280,22 +285,35 @@ def export_local_lora(lora_id: str, dest_dir: Path) -> Path:
     dest_dir.mkdir(parents = True, exist_ok = True)
 
     def _free(out: Path) -> bool:
-        if out.exists():
-            if os.path.samefile(src, out):
-                return True
-            if not filecmp.cmp(src, out, shallow = False):
-                return False
-        return not out.with_suffix(".json").exists() or is_image_lora_file(out)
+        if out.exists() and os.path.samefile(src, out):
+            return True
+        # The sidecar is per stem, so a sibling weight of another format would share it.
+        if any(out.with_suffix(ext).exists() for ext in _ALL_EXTS if ext != out.suffix.lower()):
+            return False
+        if not out.exists():
+            return not out.with_suffix(".json").exists()
+        return filecmp.cmp(src, out, shallow = False) and (
+            not out.with_suffix(".json").exists() or is_image_lora_file(out)
+        )
 
-    out, n = dest_dir / src.name, 2
-    while not _free(out):
-        out = dest_dir / f"{src.stem}-{n}{src.suffix}"
-        n += 1
-    # Exporting into the folder it already sits in would copy a file onto itself.
-    if not (out.exists() and os.path.samefile(src, out)):
-        shutil.copy2(src, out)
-    meta = {**(_sidecar_data(src) or {}), "kind": LORA_SIDECAR_KIND}
-    out.with_suffix(".json").write_text(json.dumps(meta, indent = 2), encoding = "utf-8")
+    with _EXPORT_LOCK:
+        out, n = dest_dir / src.name, 2
+        while not _free(out):
+            out = dest_dir / f"{src.stem}-{n}{src.suffix}"
+            n += 1
+        # Exporting into the folder it already sits in would copy a file onto itself.
+        if not (out.exists() and os.path.samefile(src, out)):
+            # Partial copies stay under a name no scanner reads, so a failed export leaves nothing behind.
+            fd, tmp = tempfile.mkstemp(dir = dest_dir, prefix = f".{src.stem}.", suffix = ".part")
+            os.close(fd)
+            try:
+                shutil.copy2(src, tmp)
+                os.replace(tmp, out)
+            except BaseException:
+                Path(tmp).unlink(missing_ok = True)
+                raise
+        meta = {**(_sidecar_data(src) or {}), "kind": LORA_SIDECAR_KIND}
+        out.with_suffix(".json").write_text(json.dumps(meta, indent = 2), encoding = "utf-8")
     return out
 
 
