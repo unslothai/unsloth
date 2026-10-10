@@ -339,7 +339,6 @@ class LemonadeNpuBackend:
         return str(version).lstrip("v") if version else None
 
     def _installed_flm_version(self) -> Optional[str]:
-        """``flm version`` of the installed binary, rerun only when that binary changes."""
         binary = self._flm_binary()
         if binary is None:
             return None
@@ -351,7 +350,7 @@ class LemonadeNpuBackend:
         cached = self._flm_version_cache
         if cached is not None and cached[0] == key:
             return cached[1]
-        # A failure is kept too: a binary that cannot answer is not rerun on every status read.
+        # Failures are cached too, so a mute binary is not rerun per status read.
         version = self._flm_version(binary)
         self._flm_version_cache = (key, version)
         return version
@@ -368,10 +367,7 @@ class LemonadeNpuBackend:
     def _versions(
         self, binary: Optional[Path], validated: Optional[str]
     ) -> dict[str, Optional[str]]:
-        """Installed runtime versions. A pending upgrade reports the ones it will replace."""
-        # Enable replaces flm under this lock, and running flm then could block the update on
-        # Windows. Not waiting keeps status prompt through an Enable or a load: it answers with
-        # the versions last read instead.
+        # Non-blocking: Enable replaces flm under this lock (a running flm blocks that on Windows).
         if not self._lock.acquire(blocking = False):
             return dict(self._last_versions)
         try:

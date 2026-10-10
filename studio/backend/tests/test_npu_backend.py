@@ -545,7 +545,6 @@ def _enable_in_background(npu):
 def test_enable_waits_for_a_version_probe_already_running(npu, monkeypatch):
     import threading
 
-    # Slows every FastFlowLM install; lemond reads it at start, so this first Enable too.
     monkeypatch.setenv("FAKE_LEMOND_INSTALL_SECONDS", "3")
     npu.enable()
     npu._flm_version_cache = None

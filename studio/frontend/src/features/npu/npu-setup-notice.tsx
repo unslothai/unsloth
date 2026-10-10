@@ -71,7 +71,6 @@ export function NpuSetupNotice({ catalog }: { catalog: NpuCatalog }) {
 const version = (value: string | null | undefined) =>
   value ? ` v${value}` : "";
 
-/** Credits the runtimes and names their installed versions, so a pin bump is visible. */
 export function NpuPoweredBy({
   status,
   className,
