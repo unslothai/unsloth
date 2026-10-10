@@ -267,6 +267,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
         prequantRepo: "unsloth/Qwen-Image-2.1-Turbo-FP8",
         prequantSizeGb: { fp8: 7.12, int8: 7.26 },
       }),
+      gguf("unsloth/Qwen-Image-2.1-Turbo-GGUF"),
     ],
   },
   {
