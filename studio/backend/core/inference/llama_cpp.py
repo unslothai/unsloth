@@ -36724,6 +36724,7 @@ class LlamaCppBackend:
         on_decode_slot: Optional[Callable[[str, int], None]] = None,
         thinking_budget_tokens: Optional[int] = None,
         mcp_image = None,
+        deduplicate_tool_calls: bool = True,
         instruction_anchor_ids = None,
         sandbox_level: Optional[str] = None,
     ) -> Generator[dict, None, None]:
@@ -37045,6 +37046,7 @@ class LlamaCppBackend:
         tool_controller = ToolLoopController(
             tools = controller_tools,
             auto_heal_tool_calls = auto_heal_tool_calls,
+            deduplicate_tool_calls = deduplicate_tool_calls,
             session_id = session_id,
             thread_id = thread_id,
         )
@@ -38901,7 +38903,10 @@ class LlamaCppBackend:
                     _novel_kept = 0
                     _novel_at_last_keep: dict = {}
                     _deduped: list = []
-                    for _tc in tool_calls:
+                    if not deduplicate_tool_calls:
+                        _deduped = tool_calls[:_MAX_TOOL_CALLS_PER_TURN]
+                        _over_cap = tool_calls[_MAX_TOOL_CALLS_PER_TURN:]
+                    for _tc in tool_calls if deduplicate_tool_calls else ():
                         _fn = _tc.get("function", {}) or {}
                         _key = (_fn.get("name", ""), str(_fn.get("arguments", "")))
                         if _fn.get("name") in _WORKSPACE_TOOLS:

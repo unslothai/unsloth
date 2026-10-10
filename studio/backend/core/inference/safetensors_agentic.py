@@ -621,6 +621,7 @@ def run_safetensors_tool_loop(
     execute_tool: Callable[..., str],
     cancel_event: Optional[threading.Event] = None,
     auto_heal_tool_calls: bool = True,
+    deduplicate_tool_calls: bool = True,
     nudge_tool_calls: Optional[bool] = None,
     max_tool_iterations: int = 25,
     tool_call_timeout: int = 300,
@@ -771,6 +772,7 @@ def run_safetensors_tool_loop(
     tool_controller = ToolLoopController(
         tools = (None if unrestricted_tools else _authorized),
         auto_heal_tool_calls = auto_heal_tool_calls,
+        deduplicate_tool_calls = deduplicate_tool_calls,
         session_id = session_id,
         thread_id = thread_id,
     )
@@ -1421,7 +1423,10 @@ def run_safetensors_tool_loop(
             novel_kept = 0
             novel_at_last_keep: dict = {}
             deduped: list = []
-            for _tc in tool_calls:
+            if not deduplicate_tool_calls:
+                deduped = tool_calls[:_MAX_TOOL_CALLS_PER_TURN]
+                over_cap = tool_calls[_MAX_TOOL_CALLS_PER_TURN:]
+            for _tc in tool_calls if deduplicate_tool_calls else ():
                 _fn = _tc.get("function", {}) or {}
                 _key = (_fn.get("name", ""), str(_fn.get("arguments", "")))
                 if _fn.get("name") in _WORKSPACE_TOOLS:
