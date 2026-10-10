@@ -367,6 +367,9 @@ def _number(value: str, integer: bool) -> float:
 def _compile_value(opt: _Option, value: str, inverted: bool) -> list[str]:
     """Tokens for one allowlisted key, or ValueError with a short reason."""
     v = value.strip()
+    if opt.flag in ("--spec-type", "--spec-default"):
+        # Either makes Studio skip attaching the detected drafter, and repeated --spec-type accumulate.
+        raise ValueError("use Studio's speculative decoding setting instead")
     if opt.kind == "switch":
         low = v.lower()
         if low in _TRUE:
@@ -382,9 +385,6 @@ def _compile_value(opt: _Option, value: str, inverted: bool) -> list[str]:
         return [opt.negative] if opt.negative else []
     if not v:
         raise ValueError("missing value")
-    if opt.flag == "--spec-type":
-        # A raw --spec-type makes Studio skip attaching the detected drafter, and repeats accumulate.
-        raise ValueError("use Studio's speculative decoding setting instead")
     if opt.flag == "--frequency-penalty":
         # Every chat request carries its own frequency_penalty (default 0), which would override this.
         raise ValueError("set by each chat request, so a file value would never apply")
@@ -408,7 +408,8 @@ def _compile_value(opt: _Option, value: str, inverted: bool) -> list[str]:
         if v.lower() in ("auto", "all"):
             return [opt.flag, "-1" if v.lower() == "auto" else "999"]
         number = _number(v, True)
-        if number < -1:
+        # llama.cpp stores n_gpu_layers as int32_t (common/common.h).
+        if not -1 <= number <= 2**31 - 1:
             raise ValueError("expected a layer count, auto or all")
         return [opt.flag, str(number)]
     if opt.kind == "int_list":
@@ -481,6 +482,7 @@ def parse_model_ini(
 
     # One value per option: a later section replaces an earlier value (and moves it last).
     values: dict[str, list[str]] = {}
+    origin: dict[str, tuple[str, str]] = {}
     for section in chosen:
         for raw_key, value in by_name[section]:
             key = _key_name(raw_key)
@@ -522,6 +524,15 @@ def parse_model_ini(
                 continue
             values.pop(opt.flag, None)
             values[opt.flag] = tokens
+            origin[opt.flag] = (raw_key, section)
+    # check_batch_floor refuses a batch below max(2, slots); drop the key, not the whole load.
+    batch = values.get("--batch-size")
+    if batch and int(batch[1]) < max(2, result.n_parallel or 1):
+        values.pop("--batch-size")
+        key, section = origin["--batch-size"]
+        result.ignored.append(
+            {"key": key, "section": section, "reason": "must be at least 2 and the slot count"}
+        )
     result.args = [token for tokens in values.values() for token in tokens]
     return result
 

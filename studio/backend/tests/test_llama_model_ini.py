@@ -898,3 +898,23 @@ def test_spec_type_is_left_to_studios_speculative_setting():
     )
     assert "--spec-type" not in compiled.args
     assert [i["key"] for i in compiled.ignored] == ["spec-type"]
+
+
+def test_spec_default_is_left_to_studios_speculative_setting():
+    compiled = parse_model_ini("spec-default = true\n", quant = None, gguf_filename = None)
+    assert compiled.args == [] and [i["key"] for i in compiled.ignored] == ["spec-default"]
+
+
+@pytest.mark.parametrize("text", ["b = 1\n", "np = 4\nb = 3\n"])
+def test_batch_below_the_serving_floor_is_ignored(text):
+    from core.inference.llama_server_args import check_batch_floor
+
+    compiled = parse_model_ini(text + "c = 4096\n", quant = None, gguf_filename = None)
+    assert compiled.args == ["--ctx-size", "4096"]
+    assert [i["key"] for i in compiled.ignored] == ["b"]
+    check_batch_floor(compiled.args, compiled.n_parallel or 1)
+
+
+def test_gpu_layers_past_int32_are_ignored():
+    compiled = parse_model_ini("ngl = 4294967296\n", quant = None, gguf_filename = None)
+    assert compiled.args == [] and [i["key"] for i in compiled.ignored] == ["ngl"]
