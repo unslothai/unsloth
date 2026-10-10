@@ -27,6 +27,7 @@ from .llama import FastLlamaModel, logger, _vllm_will_load_weights, restore_tran
 from .mistral import FastMistralModel
 from .qwen2 import FastQwen2Model
 from .qwen3 import FastQwen3Model
+from .qwen3_tts import FastQwen3TTSModel
 from .qwen3_moe import FastQwen3MoeModel
 from .cohere import FastCohereModel
 from transformers import AutoConfig
@@ -1536,6 +1537,8 @@ class FastLanguageModel(FastLlamaModel):
                     f"to obtain the latest transformers build, then restart this session."
                 )
             dispatch_model = FastQwen3Model if model_type == "qwen3" else FastQwen3MoeModel
+        elif model_type == "qwen3_tts":
+            dispatch_model = FastQwen3TTSModel
         # Optimized Cohere and Granite paths are disabled until their errors match.
         else:
             delegated, tokenizer = FastModel.from_pretrained(
