@@ -223,9 +223,9 @@ _SUPERIOR_ABBREVIATIONS = {
     "P": frozenset({"r", "rs", "re", "res"}),
     "n": frozenset({"o", "os"}),
     "N": frozenset({"o", "os"}),
-    "S": frozenset({"t", "te", "r"}),
+    "S": frozenset({"t", "te", "ts", "tes", "r"}),
     "J": frozenset({"r"}),
-    "C": frozenset({"ie"}),
+    "C": frozenset({"ie", "ies"}),
 }
 _LAST_WORD = re.compile(r"(?<![^\W\d_])[^\W\d_]+$")
 
