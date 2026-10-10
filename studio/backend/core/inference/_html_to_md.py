@@ -20,6 +20,7 @@ import html
 import itertools
 import re
 import secrets
+import unicodedata
 from html.parser import HTMLParser
 from urllib.parse import urlsplit
 
@@ -213,6 +214,23 @@ _PLAIN_SUFFIXES = frozenset({"st", "nd", "rd", "th", "tm", "sm"})
 # French / Romance ordinals after a digit (1er, 2e, 1º, 2ª); after a letter "e" can be Euler's number
 # XVe siècle, François Ier: a Roman numeral takes ordinals like a digit
 _ROMAN_NUMERAL_TAIL = re.compile(r"(?<![^\W\d_])[IVXLCDM]+$")
+# French superior abbreviations: Mme, Mlle, Mgr, Dr, no, St, Cie; keyed on the whole base word
+_SUPERIOR_ABBREVIATIONS = {
+    "M": frozenset({"me", "mes", "lle", "lles", "gr", "e"}),
+    "D": frozenset({"r", "rs"}),
+    "n": frozenset({"o", "os"}),
+    "N": frozenset({"o", "os"}),
+    "S": frozenset({"t", "te"}),
+    "C": frozenset({"ie"}),
+}
+_LAST_WORD = re.compile(r"(?<![^\W\d_])[^\W\d_]+$")
+
+
+def _last_word(text: str) -> str:
+    match = _LAST_WORD.search(text)
+    return match.group() if match else ""
+
+
 _DIGIT_ORDINAL_SUFFIXES = frozenset(
     {"e", "er", "re", "ère", "ème", "eme", "nd", "nde", "º", "ª", "o", "a"}
 )
@@ -226,7 +244,7 @@ _SUP_BASE_SCAN_CHARS = 128
 # a caret binds one token: a signed number or one letter goes bare, anything longer in parentheses
 _BARE_EXPONENT = re.compile(r"[-+−]?(?:\d+(?:[.,]\d+)?|[^\W\d_])")
 # split cents: $19<sup>99</sup> is a price, not an exponent
-_PRICE_TAIL = re.compile(r"[$€£¥₹¢]\s?\d(?:[\d,.]|[ \u00a0\u202f]\d)*$")
+_PRICE_TAIL = re.compile(r"(\S)\s?\d(?:[\d,.]|[ \u00a0\u202f]\d)*$")
 # note markers that keep their plain-text form, like Wikipedia's class="reference"
 _FOOTNOTE_CLASSES = frozenset({"reference", "footnote", "footnote-ref", "noteref", "fn", "cite"})
 # deeper <sup> nests render as plain text: each tracked level rescans its whole suffix on close
@@ -604,12 +622,12 @@ class _MarkdownRenderer(HTMLParser):
             part = _visible_tail(part)
             if part:
                 base = part[-1]
-                if base.isdigit() and _PRICE_TAIL.search(
-                    _visible_tail("".join(p[-40:] for p in target[-8:])[-40:]).translate(
-                        _STRIP_MD_DELIMITERS
-                    )
-                ):
-                    return ""
+                if base.isdigit():
+                    context = _visible_tail("".join(p[-40:] for p in target[-8:])[-40:])
+                    price = _PRICE_TAIL.search(context.translate(_STRIP_MD_DELIMITERS))
+                    # any Unicode currency sign (Sc): $, €, ₺, ₱, ...
+                    if price and unicodedata.category(price.group(1)) == "Sc":
+                        return ""
                 return part if base.isalnum() or base in ")]}|" else ""
         return ""
 
@@ -638,6 +656,7 @@ class _MarkdownRenderer(HTMLParser):
                 (base[-1].isdigit() or _ROMAN_NUMERAL_TAIL.search(base))
                 and visible.lower() in _DIGIT_ORDINAL_SUFFIXES
             )
+            or visible in _SUPERIOR_ABBREVIATIONS.get(_last_word(base), ())
         ):
             return
         # only the emphasis wrapping a whole exponent is renderer syntax; an inner * is an operator

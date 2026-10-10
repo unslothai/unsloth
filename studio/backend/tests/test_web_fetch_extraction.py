@@ -762,6 +762,14 @@ def test_page_that_fits_keeps_its_links(monkeypatch):
             "le XVe siècle, François Ier, MAX^e",
         ),
         ("<span>$</span> <b>19</b><sup>99</sup>", "$ **19**99"),
+        (
+            "&#8378;19<sup>99</sup> or &#8369;19<sup>99</sup>, a19<sup>2</sup>",
+            "₺1999 or ₱1999, a19^2",
+        ),
+        (
+            "M<sup>me</sup> Dupont, D<sup>r</sup> Martin, n<sup>o</sup> 5, Om<sup>e</sup>",
+            "Mme Dupont, Dr Martin, no 5, Om^e",
+        ),
         ("&euro;1.299<sup>95</sup> or &euro;1 299<sup>95</sup>", "€1.29995 or €1 29995"),
         (
             'claim<sup role="doc-noteref">1</sup> and fact<sup class="footnote">2</sup>',
