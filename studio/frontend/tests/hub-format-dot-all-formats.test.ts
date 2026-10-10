@@ -36,11 +36,10 @@ test("a single format filter admits one dot color, so the dot says nothing", () 
   }
 });
 
-test("format dots show only under All formats", () => {
-  assert.ok(
-    HUB_PAGE.includes(
-      'showFormatDots: isDatasetMode || deferredFormatFilter === "all"',
-    ),
+test("format dots show only under the mixed filters, All formats and Recommended", () => {
+  assert.match(
+    HUB_PAGE,
+    /showFormatDots:\s*isDatasetMode \|\|\s*deferredFormatFilter === "all" \|\|\s*deferredFormatFilter === "recommended",/,
   );
   assert.ok(CATALOG.includes("showFormatDots={showFormatDots}"));
   assert.equal(LISTS.match(/showFormatDot=\{showFormatDots\}/g)?.length, 4);

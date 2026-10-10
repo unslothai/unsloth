@@ -38,7 +38,7 @@ export const CHANNEL_PRESETS: readonly ChannelPreset[] = [
     hint: "Most trending models published by Unsloth.",
     owner: "unsloth",
     tags: ["gguf"],
-    format: "gguf",
+    format: "recommended",
     sort: "trendingScore",
   },
   {
