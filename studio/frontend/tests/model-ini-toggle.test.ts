@@ -334,14 +334,21 @@ test("every load path sends use_model_ini only when on", () => {
   }
 });
 
-test("the config page renders the switch behind shouldShowModelIniRow with the exact label", () => {
+test("the switch sits at the top of Run settings, not inside Advanced settings", () => {
   const page = readSrc(
     "features/model-picker/components/model-config-page.tsx",
   );
-  assert.match(
-    page,
-    /shouldShowModelIniRow\(\s*modelIni,\s*true,\s*isDiffusion,\s*config\.useModelIni === true,?\s*\) && \(\s*<ModelIniRow/,
+  const mount =
+    /shouldShowModelIniRow\(\s*modelIni,\s*true,\s*resolvedIsDiffusion,\s*config\.useModelIni === true,?\s*\) && <ModelIniRow/;
+  assert.match(page, mount);
+  const at = page.search(mount);
+  // Above the memory estimate, and never in the Advanced block.
+  assert.ok(at < page.indexOf("<MemoryEstimateRow"));
+  const advanced = page.slice(
+    page.indexOf("function GgufAdvancedSettings("),
+    page.indexOf("function ModelIniRow("),
   );
+  assert.doesNotMatch(advanced, /<ModelIniRow|modelIni/);
   assert.match(page, />Use \.ini file \(optional\)</);
 });
 

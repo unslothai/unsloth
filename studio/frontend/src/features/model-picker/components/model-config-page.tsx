@@ -1573,7 +1573,6 @@ function GgufAdvancedSettings({
   moeLayersInputRef,
   onExtraArgsLoadableChange,
   draftKey,
-  modelIni,
 }: {
   config: PerModelConfig;
   update: (patch: Partial<PerModelConfig>) => void;
@@ -1590,7 +1589,6 @@ function GgufAdvancedSettings({
   /** Which stored entries the extra-arguments row reads, most specific first. */
   onExtraArgsLoadableChange: (loadable: boolean) => void;
   draftKey: string;
-  modelIni: ModelIniResponse | null | undefined;
 }) {
   const batchAdviceId = useId();
   const ubatchAdviceId = useId();
@@ -2071,10 +2069,6 @@ function GgufAdvancedSettings({
           draftKey={draftKey}
         />
       )}
-
-      {shouldShowModelIniRow(modelIni, true, isDiffusion, config.useModelIni === true) && (
-        <ModelIniRow config={config} update={update} ini={modelIni} />
-      )}
     </>
   );
 }
@@ -2101,7 +2095,7 @@ function ModelIniRow({
           <span className={LABEL_CLASS_WRAP}>Use .ini file (optional)</span>
           <InfoHint>
             Launches llama-server with the settings in this model's
-            unsloth.ini. They override the rows above, except Extra Arguments,
+            unsloth.ini. They override the settings below, except Extra Arguments,
             which still win.
           </InfoHint>
         </div>
@@ -3734,6 +3728,14 @@ export function ModelConfigPage({
             once it is loaded.
           </p>
         ) : null}
+        {target.isGguf &&
+          !audioRuntimeGguf &&
+          shouldShowModelIniRow(
+            modelIni,
+            true,
+            resolvedIsDiffusion,
+            config.useModelIni === true,
+          ) && <ModelIniRow config={config} update={update} ini={modelIni} />}
         {memoryEstimateRequest != null && !audioRuntimeGguf && (
           <MemoryEstimateRow
             estimate={memoryEstimate.estimate}
@@ -3862,7 +3864,6 @@ export function ModelConfigPage({
                 moeLayersInputRef={moeLayersInputRef}
                 draftKey={draftKey}
                 onExtraArgsLoadableChange={setExtraArgsLoadable}
-                modelIni={modelIni}
               />
             )}
           </>
