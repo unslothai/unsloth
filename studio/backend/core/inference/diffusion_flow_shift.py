@@ -128,6 +128,17 @@ def install_sample_sigmas(
     return grid
 
 
+def valid_sample_sigmas(raw: Any) -> Optional[tuple[float, ...]]:
+    """``raw`` (a model_index.json ``sample_sigmas``) as a usable grid, or None."""
+    return _valid_sample_sigmas(raw)
+
+
+def sd_cpp_sample_sigmas(grid: tuple[float, ...], steps: int) -> list[float]:
+    """The grid at ``steps`` steps for sd.cpp, which samples custom sigmas verbatim (no flow shift, step count
+    taken from their length) and needs the terminal 0 diffusers appends itself."""
+    return [*sample_sigmas_for_steps(grid, steps), 0.0]
+
+
 def sample_sigmas_for_steps(grid: tuple[float, ...], steps: int) -> list[float]:
     """The grid at ``steps`` steps: itself at its own length, else resampled along it (linear in step index). Studio's
     own, experimental: the Turbo card evaluates only the saved 8-step grid."""
