@@ -32,9 +32,20 @@ def _threads_that_fit(threads: int, cost: int) -> int:
     return max(1, min(threads, int(headroom * _OPENBLAS_MEMORY_SHARE) // cost))
 
 
+def _usable_cpus() -> int:
+    """CPUs this process may run on: an affinity mask (taskset, Slurm, cpusets) can be far below the host's."""
+    count = getattr(os, "process_cpu_count", None)  # 3.13+
+    if count is not None:
+        return count() or 1
+    try:
+        return len(os.sched_getaffinity(0)) or 1
+    except (AttributeError, OSError):
+        return os.cpu_count() or 1
+
+
 def default_openblas_threads() -> int:
     """About one thread per physical core, at most 8, fewer when memory is short."""
-    threads = max(1, min(_OPENBLAS_DEFAULT_MAX, (os.cpu_count() or 2) // 2))
+    threads = max(1, min(_OPENBLAS_DEFAULT_MAX, _usable_cpus() // 2))
     return _threads_that_fit(threads, _OPENBLAS_THREAD_COST)
 
 
@@ -129,12 +140,8 @@ def _windows_commit_headroom() -> Optional[int]:
     if kernel32.QueryInformationJobObject(
         None, 9, ctypes.byref(limits), ctypes.sizeof(limits), None
     ):
-        caps = []
-        if limits.BasicLimitInformation.LimitFlags & 0x100:  # JOB_OBJECT_LIMIT_PROCESS_MEMORY
-            caps.append(limits.ProcessMemoryLimit)
-        if limits.BasicLimitInformation.LimitFlags & 0x200:  # JOB_OBJECT_LIMIT_JOB_MEMORY
-            caps.append(limits.JobMemoryLimit)
-        if caps:
+        flags = limits.BasicLimitInformation.LimitFlags
+        if flags & 0x300:  # JOB_OBJECT_LIMIT_PROCESS_MEMORY | JOB_OBJECT_LIMIT_JOB_MEMORY
             counters = ProcessMemoryCounters()
             counters.cb = ctypes.sizeof(counters)
             kernel32.GetCurrentProcess.restype = wintypes.HANDLE
@@ -148,7 +155,11 @@ def _windows_commit_headroom() -> Optional[int]:
                 kernel32.GetCurrentProcess(), ctypes.byref(counters), counters.cb
             ):
                 used = int(counters.PrivateUsage)
-            headroom = min(headroom, max(0, int(min(caps)) - used))
+            if flags & 0x100:
+                headroom = min(headroom, max(0, int(limits.ProcessMemoryLimit) - used))
+            if flags & 0x200:  # the whole job's commit counts, so its peak, never just this process
+                job_used = max(used, int(limits.PeakJobMemoryUsed))
+                headroom = min(headroom, max(0, int(limits.JobMemoryLimit) - job_used))
     return headroom
 
 

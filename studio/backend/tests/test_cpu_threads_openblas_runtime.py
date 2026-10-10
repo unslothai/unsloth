@@ -64,6 +64,7 @@ def fake_windows(monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
     # Pinned: the cap clamps to the core count and the default fits free memory.
     monkeypatch.setattr(os, "cpu_count", lambda: 32)
+    monkeypatch.setattr(cpu_threads, "_usable_cpus", lambda: 32)
     monkeypatch.setattr(cpu_threads, "_openblas_memory_headroom", lambda: None)
     monkeypatch.setattr(ctypes, "WinDLL", fake_windll, raising = False)
     monkeypatch.setattr(ctypes, "CDLL", fake_cdll)

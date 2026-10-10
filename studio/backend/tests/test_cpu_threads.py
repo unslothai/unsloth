@@ -57,7 +57,7 @@ def test_cpu_thread_cap_normalises_valid_inputs(raw):
 
 @pytest.mark.parametrize("raw", [None, "", "   ", "\t"])
 def test_cpu_thread_cap_unset_limits_only_openblas(raw, monkeypatch):
-    monkeypatch.setattr(os, "cpu_count", lambda: 32)
+    monkeypatch.setattr(cpu_threads, "_usable_cpus", lambda: 32)
     monkeypatch.setattr(cpu_threads, "_openblas_memory_headroom", lambda: None)
     env = {} if raw is None else {"UNSLOTH_CPU_THREADS": raw}
     snapshot = dict(env)
@@ -68,10 +68,10 @@ def test_cpu_thread_cap_unset_limits_only_openblas(raw, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "cpus, expected", [(None, 1), (1, 1), (2, 1), (4, 2), (12, 6), (16, 8), (24, 8), (192, 8)]
+    "cpus, expected", [(1, 1), (2, 1), (4, 2), (12, 6), (16, 8), (24, 8), (192, 8)]
 )
 def test_openblas_default_scales_with_cores_and_is_capped(cpus, expected, monkeypatch):
-    monkeypatch.setattr(os, "cpu_count", lambda: cpus)
+    monkeypatch.setattr(cpu_threads, "_usable_cpus", lambda: cpus)
     monkeypatch.setattr(cpu_threads, "_openblas_memory_headroom", lambda: None)
 
     assert default_openblas_threads() == expected
@@ -82,7 +82,7 @@ def test_openblas_default_scales_with_cores_and_is_capped(cpus, expected, monkey
     [(None, 8), (64 << 10, 8), (2600, 8), (1280, 4), (640, 2), (320, 1), (100, 1), (0, 1)],
 )
 def test_openblas_default_shrinks_when_memory_is_short(headroom_mb, expected, monkeypatch):
-    monkeypatch.setattr(os, "cpu_count", lambda: 32)
+    monkeypatch.setattr(cpu_threads, "_usable_cpus", lambda: 32)
     monkeypatch.setattr(
         cpu_threads,
         "_openblas_memory_headroom",
@@ -92,8 +92,19 @@ def test_openblas_default_shrinks_when_memory_is_short(headroom_mb, expected, mo
     assert default_openblas_threads() == expected
 
 
+# A process pinned to one CPU of a large host (taskset, Slurm, cpusets) must not get the host's default.
+def test_the_default_follows_the_cpus_this_process_may_use(monkeypatch):
+    monkeypatch.delattr(os, "process_cpu_count", raising = False)
+    monkeypatch.setattr(os, "sched_getaffinity", lambda pid: {3}, raising = False)
+    monkeypatch.setattr(os, "cpu_count", lambda: 192)
+    monkeypatch.setattr(cpu_threads, "_openblas_memory_headroom", lambda: None)
+
+    assert cpu_threads._usable_cpus() == 1
+    assert default_openblas_threads() == 1
+
+
 def test_an_unreadable_memory_reading_keeps_the_core_count_default(monkeypatch):
-    monkeypatch.setattr(os, "cpu_count", lambda: 32)
+    monkeypatch.setattr(cpu_threads, "_usable_cpus", lambda: 32)
 
     def boom():
         raise OSError("no reading")
@@ -136,7 +147,7 @@ def test_openblas_default_keeps_user_value():
 
 @pytest.mark.parametrize("raw", ["", "  "])
 def test_openblas_default_replaces_blank_value(raw, monkeypatch):
-    monkeypatch.setattr(os, "cpu_count", lambda: 8)
+    monkeypatch.setattr(cpu_threads, "_usable_cpus", lambda: 8)
     monkeypatch.setattr(cpu_threads, "_openblas_memory_headroom", lambda: None)
     env = {"OPENBLAS_NUM_THREADS": raw}
 
