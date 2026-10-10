@@ -440,6 +440,11 @@ def test_a_leading_control_before_the_heading_title_is_dropped(between):
         ),
         ("<h3><!-- </h3> --><button>Question</button></h3><p>Answer text.</p>", "### Question"),
         (
+            "<title-card>Card</title-card><h3><button>Question</button></h3><p>Answer text.</p>",
+            "### Question",
+        ),
+        ("<p>a\nb</p>\n<h3>\n  <button>Question</button></h3><p>Answer text.</p>", "Question"),
+        (
             '<div role="presentation heading" aria-level="3"><button>Question</button></div><p>Answer text.</p>',
             "Question",
         ),

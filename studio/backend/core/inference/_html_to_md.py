@@ -17,6 +17,7 @@ error placeholders, session banners, cookie prompts) from the result.
 from __future__ import annotations
 
 import bisect
+from array import array
 import functools
 import html
 import re
@@ -492,7 +493,7 @@ _BUTTON_OPEN_RE = re.compile(r"<button", re.IGNORECASE)
 _HEADING_CLOSE_RE = re.compile(r"</h[1-6]\s*>", re.IGNORECASE)
 # raw text and comments, whose markup-looking content is not markup
 _INERT_RE = re.compile(
-    r"<!--.*?(?:-->|\Z)|<(script|style|textarea|title)\b.*?(?:</\1\s*>|\Z)",
+    r"<!--.*?(?:-->|\Z)|<(script|style|textarea|title)(?=[\s/>]).*?(?:</\1\s*>|\Z)",
     re.IGNORECASE | re.DOTALL,
 )
 # how far after a heading opens its title button may start; past it the button is dropped as before
@@ -517,15 +518,23 @@ def _title_buttons(source_html: str) -> frozenset[tuple[int, int]]:
     heading's open tag to its close is scanned, so a page pays per heading, not a second full parse."""
     if not _BUTTON_OPEN_RE.search(source_html):
         return frozenset()
-    inert = [(m.start(), m.end()) for m in _INERT_RE.finditer(source_html)]
-    inert_starts = [start for start, _ in inert]
+    # packed arrays, adjacent ranges merged: a page of a million comments stays a few MiB
+    inert_starts, inert_ends = array("q"), array("q")
+    for m in _INERT_RE.finditer(source_html):
+        if inert_ends and m.start() <= inert_ends[-1]:
+            inert_ends[-1] = max(inert_ends[-1], m.end())
+        else:
+            inert_starts.append(m.start())
+            inert_ends.append(m.end())
 
     def live(pos: int) -> bool:
         i = bisect.bisect_right(inert_starts, pos) - 1
-        return i < 0 or pos >= inert[i][1]
+        return i < 0 or pos >= inert_ends[i]
 
     # every position collected once, so a page full of heading-like text costs one pass, not one window each
-    buttons = [m.start() for m in _BUTTON_OPEN_RE.finditer(source_html) if live(m.start())]
+    buttons = array(
+        "q", (m.start() for m in _BUTTON_OPEN_RE.finditer(source_html) if live(m.start()))
+    )
     if not buttons:
         return frozenset()
     opens = sorted(
@@ -557,10 +566,14 @@ def _title_buttons(source_html: str) -> frozenset[tuple[int, int]]:
         keep |= scan.keep
     # as HTMLParser.getpos() pairs, so the renderer needs no per-line table of the whole page
     positions = set()
-    line, prev = 1, 0
+    line, prev, line_start = 1, 0, 0
     for offset in sorted(keep):
+        # only the stretch since the previous button is searched, so a minified one-line page stays linear
         line += source_html.count("\n", prev, offset)
-        positions.add((line, offset - source_html.rfind("\n", 0, offset) - 1))
+        newline = source_html.rfind("\n", prev, offset)
+        if newline >= 0:
+            line_start = newline + 1
+        positions.add((line, offset - line_start))
         prev = offset
     return frozenset(positions)
 
