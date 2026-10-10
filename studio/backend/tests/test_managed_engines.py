@@ -2493,3 +2493,26 @@ def test_vllm_mamba_retry_respects_a_cancelled_load(isolated, monkeypatch):
         engine.start("model", 4096, [0], dict(os.environ), cancel)
     engine.stop()
     assert len(launches) == 1
+
+
+@_LOCAL_ENGINE_HOST
+def test_vllm_mamba_retry_respects_an_external_stop(isolated, monkeypatch):
+    import os
+    from core.inference import managed_engine
+
+    engine, launches = _scripted_engine(isolated, monkeypatch, ["mamba", "serve"])
+    original = engine._start_once
+
+    def first_then_stop(*args):
+        try:
+            return original(*args)
+        except managed_engine._MambaSeqLimit:
+            # An unload or GPU handoff stops the engine without the load's cancel event.
+            assert engine.stop() is True
+            raise
+
+    monkeypatch.setattr(engine, "_start_once", first_then_stop)
+    with pytest.raises(RuntimeError, match = "cancelled"):
+        engine.start("model", 4096, [0], dict(os.environ))
+    engine.stop()
+    assert len(launches) == 1

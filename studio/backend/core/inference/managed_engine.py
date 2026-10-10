@@ -339,9 +339,9 @@ class ManagedEngine:
                 raise
             # Once, at the count vLLM measured: fewer sequences only shrink its CUDA graphs.
             _SEQ_LIMITS[key] = exc.blocks
-            self._cancel.clear()
             self._tail.clear()
             self._mamba_blocks = None
+            self.phase = "starting"
             return self._start_once(
                 *args, {**options, "max_num_seqs": exc.blocks}, trust_remote_code, model_path
             )
@@ -519,6 +519,10 @@ class ManagedEngine:
                 raise RuntimeError(
                     "Engine startup timed out. Try a smaller model or context length."
                 )
+        except _MambaSeqLimit:
+            # Not a stop request: an external stop() meanwhile must still cancel the relaunch.
+            self._teardown()
+            raise
         except Exception:
             self.stop()
             raise
@@ -640,9 +644,11 @@ class ManagedEngine:
             )
 
     def stop(self) -> bool:
-        from utils.process_lifetime import terminate_pid, forget_pid
-
         self._cancel.set()
+        return self._teardown()
+
+    def _teardown(self) -> bool:
+        from utils.process_lifetime import terminate_pid, forget_pid
         with self._lock:
             if self.process is not None:
                 graceful = False
