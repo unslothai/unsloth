@@ -785,6 +785,7 @@ def test_page_that_fits_keeps_its_links(monkeypatch):
         ),
         ("le P<sup>r</sup> Martin et les P<sup>rs</sup>", "le Pr Martin et les Prs"),
         ("CHF 1’299<sup>95</sup> or CHF 1'299<sup>95</sup>", "CHF 1’29995 or CHF 1'29995"),
+        ("Marque<sup>MC</sup> et Produit<sup>MD</sup>", "MarqueMC et ProduitMD"),
         (
             "M<sup>me</sup> Dupont, D<sup>r</sup> Martin, n<sup>o</sup> 5, Om<sup>e</sup>",
             "Mme Dupont, Dr Martin, no 5, Om^e",
