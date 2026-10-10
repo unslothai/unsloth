@@ -25262,7 +25262,8 @@ class LlamaCppBackend:
                         else set()
                     )
                     # Checkpoints are host RAM: a discrete card never holds them, but a
-                    # unified-memory GPU's "VRAM" is that same pool, so it still pays.
+                    # unified-memory GPU's "VRAM" is that same pool, so it still pays. ANY
+                    # shared candidate keeps the charge: Auto may later pick that one alone.
                     _gpu_ids_now = [idx for idx, _free in gpus]
                     _placement_ctx_checkpoints = (
                         _fit_ctx_checkpoints
@@ -25276,9 +25277,7 @@ class LlamaCppBackend:
                                     self._amd_apu_wants_unified_memory(_gpu_ids_now)
                                     or (
                                         self._integrated_cuda_probe_is_free()
-                                        and self._integrated_cuda_selection_is_all_shared(
-                                            _gpu_ids_now
-                                        )
+                                        and self._integrated_cuda_unified_memory(_gpu_ids_now)
                                     )
                                 )
                             )

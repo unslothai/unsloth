@@ -53,9 +53,10 @@ def _plan(
     cache_type_kv = "q8_0",
     ctx_checkpoints_flag = "--ctx-checkpoints",
     unified = False,
+    memory = None,
 ):
     """Return the generated plan plus what its own context really costs."""
-    memory = [(0, vram_mib, vram_mib)]
+    memory = memory or [(0, vram_mib, vram_mib)]
     backend, gguf = _backend(tmp_path, vulkan = False, memory = memory)
     backend._amd_apu_wants_unified_memory = lambda *_a, **_k: unified
 
@@ -196,6 +197,32 @@ class TestUnifiedMemoryStillPays:
             unified = True,
         )
         assert asked["reserve_bytes"] > 0
+        assert (asked["ctx"], asked["slots"], asked["fit"]) != (
+            free["ctx"],
+            free["slots"],
+            free["fit"],
+        )
+
+    def test_one_integrated_cuda_candidate_keeps_the_charge(self, tmp_path, monkeypatch):
+        """A discrete sibling must not drop it: Auto can still land on the SoC alone."""
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        monkeypatch.setattr(
+            LlamaCppBackend, "_integrated_cuda_probe_is_free", staticmethod(lambda: True)
+        )
+        monkeypatch.setattr(LlamaCppBackend, "_integrated_cuda_gpu_ids", staticmethod(lambda: {0}))
+        mixed = [(0, CARD_MIB, CARD_MIB), (1, CARD_MIB, CARD_MIB)]
+
+        def plan(checkpoints):
+            return _plan(
+                tmp_path,
+                weights_mib = 9_200,
+                n_parallel = 4,
+                ctx_checkpoints = checkpoints,
+                memory = mixed,
+            )
+
+        free, asked = plan(0), plan(32)
         assert (asked["ctx"], asked["slots"], asked["fit"]) != (
             free["ctx"],
             free["slots"],
