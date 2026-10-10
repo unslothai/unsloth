@@ -805,6 +805,10 @@ def test_page_that_fits_keeps_its_links(monkeypatch):
             "la Pre Durand, 12bis rue, article 3ter",
         ),
         (
+            'claim<sup class="citation">2</sup> and fact<sup class="endnote-ref">3</sup>',
+            "claim2 and fact3",
+        ),
+        (
             "M<sup>me</sup> Dupont, D<sup>r</sup> Martin, n<sup>o</sup> 5, Om<sup>e</sup>",
             "Mme Dupont, Dr Martin, no 5, Om^e",
         ),

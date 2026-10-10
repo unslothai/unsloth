@@ -297,6 +297,8 @@ _ZERO_DECIMAL_CURRENCIES = frozenset(
 )
 _CODE_PRICE_TAIL = re.compile(r"\b([A-Z]{3})[ \u00a0\u202f]?\d(?:[\d,.'’]|[ \u00a0\u202f]\d)*$")
 # note markers that keep their plain-text form, like Wikipedia's class="reference"
+# class tokens containing these mark a note too: footnote-reference, citation, endnote-ref
+_FOOTNOTE_CLASS_PARTS = ("footnote", "noteref", "cite", "citation", "endnote")
 _FOOTNOTE_CLASSES = frozenset({"reference", "footnote", "footnote-ref", "noteref", "fn", "cite"})
 # deeper <sup> nests render as plain text: each tracked level rescans its whole suffix on close
 _MAX_SUP_DEPTH = 8
@@ -1199,7 +1201,8 @@ class _MarkdownRenderer(HTMLParser):
             target = self._emit_target()
             reference = (
                 any(
-                    token in _FOOTNOTE_CLASSES or "footnote" in token or "noteref" in token
+                    token in _FOOTNOTE_CLASSES
+                    or any(part in token for part in _FOOTNOTE_CLASS_PARTS)
                     for token in (attr_dict.get("class") or "").lower().split()
                 )
                 or "doc-noteref" in (attr_dict.get("role") or "").lower().split()
