@@ -7728,7 +7728,7 @@ class LlamaCppBackend:
         self._context_length: Optional[int] = None
         self._effective_context_length: Optional[int] = None
         self._max_context_length: Optional[int] = None
-        # Ceiling a fit priced inside the GPU / Metal budget; None when only an anchor or floor exists.
+        # Ceiling a fit priced inside the GPU / Metal budget; None for an anchor or floor.
         self._vram_fit_context_length: Optional[int] = None
         self._effective_parallel_slots: int = 1
         # --parallel the last load asked for, before any fit-time reduction.
