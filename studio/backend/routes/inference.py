@@ -3740,6 +3740,8 @@ from models.inference import (
     EstimateMemoryResponse,
     Int8PrefillAvailabilityRequest,
     Int8PrefillAvailabilityResponse,
+    MlxDraftersRequest,
+    MlxDraftersResponse,
     TransformersUpgradeInfo,
     TransformersUpgradeCheckRequest,
     TransformersUpgradeCheckResponse,
@@ -8374,6 +8376,11 @@ def _unsloth_serving_fields(model_info: dict) -> dict:
         "context_length_enforced": model_info.get("context_length_enforced"),
         "context_length_fitted": _positive_int_or_none(model_info.get("context_length_fitted")),
         "context_unbounded_when_batched": bool(model_info.get("context_unbounded_when_batched")),
+        "speculative_type": model_info.get("speculative_type"),
+        "spec_draft_n_max": model_info.get("spec_draft_n_max"),
+        "spec_draft_model": model_info.get("spec_draft_model"),
+        "spec_drafter_kind": model_info.get("spec_drafter_kind"),
+        "spec_fallback_reason": model_info.get("spec_fallback_reason"),
     }
 
 
@@ -8402,6 +8409,7 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
         mlx_int8_prefill_requested = None,
         mlx_int8_prefill_reason = None,
         mlx_context_budget = None,
+        spec_draft_model = None,
         chat_template_override_reason = None,
         context_length_enforced = True,
         context_length_fitted = None,
@@ -11928,6 +11936,7 @@ async def load_model_for_preview(
 ) -> None:
     if account_access.managed_account():
         await asyncio.to_thread(account_access.require_model_access, request.model_path)
+    await _require_drafter_access(request)
     account_access.require_idle_other_accounts()
     from core.inference.llama_keepwarm import (
         inference_lifecycle_gate,
@@ -14988,7 +14997,7 @@ def _mlx_estimate_ceiling(model_dir: str) -> Optional[int]:
     return None if native is None else min(int(native), MAX_REQUESTABLE_CONTEXT)
 
 
-def _mlx_estimate_fitted_context(config, model_dir: str, load_in_4bit: bool, kv_bits):
+def _mlx_estimate_fitted_context(config, model_dir: str, load_in_4bit: bool, kv_bits, **route):
     """The window a load naming no Context Length would be fitted to."""
     from core.inference.mlx_inference import (
         mlx_fit_to_memory,
@@ -15006,7 +15015,46 @@ def _mlx_estimate_fitted_context(config, model_dir: str, load_in_4bit: bool, kv_
             not getattr(config, "is_vision", False) or mlx_vlm_snapshot_store_available()
         ),
         kv_bits = kv_bits,
+        **route,
     )
+
+
+def _mlx_estimate_drafter(request, model_identifier, model_dir, ceiling, load_in_4bit: bool):
+    """``((path, builtin), fitted context, speculates)`` of an MLX load of *request*: the drafter it
+    would attach, chosen as the load chooses it, and whether it speculates at all (so loads through mlx-vlm)."""
+    from core.inference import mlx_speculative
+    from core.inference.mlx_inference import mlx_drafter_fit, parse_mlx_kv_quant
+    from core.inference.mlx_memory import _loads_as_vision, _snapshot_config
+
+    mode = mlx_speculative.mlx_spec_mode(request.speculative_type)
+    if not mlx_speculative.speculates_on_route(
+        mode, _loads_as_vision(_snapshot_config(model_dir) or {}), request.spec_draft_model
+    ):
+        return None, None, False
+    resolution = mlx_speculative.resolve_speculation(
+        request.speculative_type,
+        request.spec_draft_model,
+        model_dir = model_dir,
+        target_name = model_identifier,
+        allowed = _discoverable_drafters(model_identifier),
+    )
+    bits, turboquant = parse_mlx_kv_quant(request.mlx_kv_quant)
+    legacy_bits = request.mlx_kv_quant is None and request.mlx_kv_bits is not None
+    kv_quant = bits is not None or turboquant or legacy_bits
+    if mlx_speculative.speculation_refusal(kv_quant = kv_quant, distributed = False, lora = False):
+        return None, None, False
+    for source in resolution.sources:
+        attaches, fitted = mlx_drafter_fit(
+            model_dir,
+            ceiling,
+            request.max_seq_length or None,
+            source,
+            load_in_4bit = load_in_4bit,
+            costless = mode == "auto",
+        )
+        if attaches:
+            return (source.path, source.builtin), fitted, True
+    return None, None, True
 
 
 def _mlx_estimate_available() -> bool:
@@ -16791,6 +16839,96 @@ def _vllm_engine_hint(engine: Optional[str]) -> str:
         return ""
 
 
+# Quantizations the Default engine cannot run, with the packages that would let it (Studio ships none).
+_MANAGED_ENGINE_QUANTIZATIONS = {
+    "compressed-tensors": (),
+    "awq": ("gptqmodel", "awq"),
+    "gptq": ("gptqmodel", "auto_gptq"),
+}
+_OFFERED_ENGINES = ("vllm", "sglang")
+
+
+def _managed_engine_offer(
+    metadata, *, engine, is_gguf, is_lora, is_audio, supported
+) -> Optional[dict]:
+    """The engines to offer for a checkpoint the Default engine cannot run, or None.
+
+    ``supported(engine, quant_method)`` is asked last, so the GPU probe only runs for these
+    checkpoints. GGUF, adapters and audio models are refused by the optional engines."""
+    if (
+        engine not in (None, "auto")
+        or is_gguf
+        or is_lora
+        or is_audio
+        or not isinstance(metadata, dict)
+    ):
+        return None
+    text_config = metadata.get("text_config")
+    quant = metadata.get("quantization_config") or (
+        text_config.get("quantization_config") if isinstance(text_config, dict) else None
+    )
+    method = quant.get("quant_method") if isinstance(quant, dict) else None
+    if not isinstance(method, str):
+        return None
+    method = method.strip().lower()
+    if method not in _MANAGED_ENGINE_QUANTIZATIONS:
+        return None
+    import importlib.util
+
+    for module in _MANAGED_ENGINE_QUANTIZATIONS[method]:
+        try:
+            if importlib.util.find_spec(module) is not None:
+                return None
+        except (ImportError, ValueError):
+            pass
+    engines = [name for name in _OFFERED_ENGINES if supported(name, method)]
+    return {"quantization": method, "engines": engines} if engines else None
+
+
+def _managed_engine_offer_for(config, hf_token) -> Optional[dict]:
+    """``_managed_engine_offer`` from the checkpoint's own config.json; None on any failure."""
+    try:
+        if config.is_local:
+            path = Path(config.path) / "config.json"
+        else:
+            from huggingface_hub import hf_hub_download, try_to_load_from_cache
+
+            # Resolving the model already cached config.json; the Hub round trip costs ~45 ms per pick.
+            cached = try_to_load_from_cache(config.identifier, "config.json")
+            path = Path(
+                cached
+                if isinstance(cached, str)
+                else hf_hub_download(config.identifier, "config.json", token = hf_token)
+            )
+        metadata = json.loads(path.read_text(encoding = "utf-8"))
+        from core.inference.engine_install import _driver_rows, support_reason
+
+        def supported(name, method):
+            if support_reason(name) is not None:
+                return False
+            if name != "sglang" or method != "compressed-tensors":
+                return True
+            # SGLang 0.5.20's compressed-tensors NVFP4 needs SM 10.0; vLLM falls back to Marlin from 7.5.
+            try:
+                return any(
+                    float(row[1]) >= 10.0 for row in _driver_rows(None) or () if len(row) == 2
+                )
+            except ValueError:
+                return False
+
+        return _managed_engine_offer(
+            metadata,
+            engine = "auto",
+            is_gguf = getattr(config, "is_gguf", False),
+            is_lora = getattr(config, "is_lora", False),
+            is_audio = getattr(config, "is_audio", False),
+            supported = supported,
+        )
+    except Exception as exc:
+        logger.debug("Managed engine offer check failed for '%s': %s", config.identifier, exc)
+        return None
+
+
 def _diagnosis_text(msg: str) -> str:
     """``msg`` up to the startup-diagnostics block, which is not ours to read.
 
@@ -17177,6 +17315,8 @@ def _mlx_runtime_settings_match(backend, request) -> bool:
         return True
     from core.inference.mlx_inference import encode_mlx_kv_quant, parse_mlx_kv_quant
 
+    from core.inference.mlx_speculative import mlx_spec_mode
+
     requested = encode_mlx_kv_quant(*parse_mlx_kv_quant(getattr(request, "mlx_kv_quant", None)))
     return (
         entry["mlx_kv_quant_requested"] == requested
@@ -17184,6 +17324,9 @@ def _mlx_runtime_settings_match(backend, request) -> bool:
         == (request.chat_template_override or None)
         and bool(entry.get("mlx_int8_prefill_requested"))
         == bool(getattr(request, "mlx_int8_prefill", False))
+        and entry.get("speculative_type", "auto") == mlx_spec_mode(request.speculative_type)
+        and entry.get("spec_draft_model") == (getattr(request, "spec_draft_model", None) or None)
+        and entry.get("spec_draft_n_max") == _positive_int_or_none(request.spec_draft_n_max)
     )
 
 
@@ -17917,6 +18060,20 @@ async def _run_gguf_load_attempt(
         return False
 
 
+async def _require_drafter_access(request) -> None:
+    """A named MLX drafter is a second model reference, so the caller needs access to it too."""
+    drafter = getattr(request, "spec_draft_model", None)
+    if account_access.managed_account() and isinstance(drafter, str) and drafter.strip():
+        await asyncio.to_thread(account_access.require_model_access, drafter.strip())
+
+
+def _discoverable_drafters(model_path: str) -> Optional[list]:
+    """The cached drafters a load may attach on its own: any for the owner, else those the account may see."""
+    if not account_access.managed_account():
+        return None
+    return [row["repo_id"] for row in _mlx_cached_drafters(model_path)]
+
+
 def _require_resolved_base_access(config) -> None:
     """Grants apply to the base in an adapter's config, so it cannot pull a foreign cached base."""
     base = getattr(config, "base_model", None)
@@ -18133,6 +18290,7 @@ async def _load_model_impl(
     native_access_deferred = _defers_access_to_native_grant(request)
     if account_access.managed_account() and not native_access_deferred:
         await asyncio.to_thread(account_access.require_model_access, request.model_path)
+    await _require_drafter_access(request)
     request = await asyncio.to_thread(_as_ollama_manifest_request, request)
     _requested_model_id = request.model_path
     request = await asyncio.to_thread(
@@ -19217,6 +19375,12 @@ async def _load_model_impl(
                 subject = current_subject,
                 mlx_kv_quant = request.mlx_kv_quant,
                 mlx_int8_prefill = request.mlx_int8_prefill,
+                speculative_type = request.speculative_type,
+                spec_draft_n_max = request.spec_draft_n_max,
+                spec_draft_model = request.spec_draft_model,
+                spec_drafters_allowed = await asyncio.to_thread(
+                    _discoverable_drafters, request.model_path
+                ),
                 chat_template_override = request.chat_template_override,
                 load_cancel_event = load_cancel_event,
                 on_prior_worker_released = _release_chat_after_teardown,
@@ -20048,6 +20212,16 @@ async def validate_model(
             except Exception as e:
                 logger.debug("Header probe failed for %s: %s", model_log_label, e)
 
+        managed_engine_offer = None
+        if request.engine == "auto" and not is_gguf:
+            managed_engine_offer = await asyncio.to_thread(
+                _offline_guarded,
+                (model_identifier, config.identifier, getattr(config, "base_model", None)),
+                _managed_engine_offer_for,
+                config,
+                request.hf_token,
+            )
+
         return restore_inventory_handles(
             ValidateModelResponse(
                 valid = True,
@@ -20081,6 +20255,7 @@ async def validate_model(
                 requires_transformers_upgrade = transformers_upgrade is not None,
                 transformers_upgrade = transformers_upgrade,
                 mlx_loads_base_model = await asyncio.to_thread(_mlx_base_for_config, config),
+                managed_engine_offer = managed_engine_offer,
             )
         )
 
@@ -20786,6 +20961,7 @@ async def estimate_memory(
     native_access_deferred = _defers_access_to_native_grant(request)
     if account_access.managed_account() and not native_access_deferred:
         await asyncio.to_thread(account_access.require_model_access, request.model_path)
+    await _require_drafter_access(request)
     from core.inference.llama_cpp import _args_place_tensors_on_cpu
     from core.inference.llama_server_args import (
         _effective_tensor_parallel,
@@ -20864,10 +21040,17 @@ async def estimate_memory(
             if mlx_kv_bits is not None and mlx_kv_quant_is_refused(model_dir, mlx_kv_bits):
                 mlx_kv_bits = None
             mlx_named_ctx = request.max_seq_length or 0
-            mlx_fitted_ctx = None
-            if not mlx_named_ctx:
+            mlx_drafter, mlx_fitted_ctx, mlx_speculates = _mlx_estimate_drafter(
+                request,
+                model_identifier,
+                model_dir,
+                _mlx_estimate_ceiling(model_dir),
+                mlx_load_in_4bit,
+            )
+            mlx_route = {"vision": True} if mlx_speculates else {}
+            if not mlx_named_ctx and mlx_drafter is None:
                 mlx_fitted_ctx = _mlx_estimate_fitted_context(
-                    config, model_dir, mlx_load_in_4bit, mlx_kv_bits
+                    config, model_dir, mlx_load_in_4bit, mlx_kv_bits, **mlx_route
                 )
             mlx_priced_ctx = mlx_named_ctx or mlx_fitted_ctx or _mlx_estimate_ceiling(model_dir)
             if not mlx_priced_ctx:
@@ -20877,6 +21060,8 @@ async def estimate_memory(
                 n_ctx = mlx_priced_ctx,
                 kv_bits = mlx_kv_bits,
                 load_in_4bit = mlx_load_in_4bit,
+                **mlx_route,
+                **({} if mlx_drafter is None else {"drafter": mlx_drafter}),
             )
             if mlx_breakdown is None:
                 return EstimateMemoryResponse(available = False, reason = "unsizable")
@@ -21017,6 +21202,35 @@ async def estimate_memory(
     # Header walks and file stats are blocking; keep them off the event loop so a
     # slider drag cannot stall streaming chats.
     return await asyncio.to_thread(_estimate)
+
+
+def _mlx_cached_drafters(model_path: str) -> list:
+    from core.inference import mlx_speculative
+    from utils.utils import hf_cache_snapshot_dir
+
+    model_dir = model_path if os.path.isdir(model_path) else hf_cache_snapshot_dir(model_path)
+    if model_dir is None:
+        return []
+    config = mlx_speculative._read_config(model_dir)
+    # The cache is shared between accounts: list only what this one may see.
+    return account_access.filter_model_rows(
+        [
+            {"repo_id": repo, "kind": source.kind, "named": named}
+            for repo, source, named in mlx_speculative.cached_drafters(model_path, config)
+        ]
+    )
+
+
+@router.post("/mlx-drafters", response_model = MlxDraftersResponse)
+async def mlx_drafters(
+    request: MlxDraftersRequest, current_subject: str = Depends(get_current_subject)
+):
+    """Cached drafters an MLX load of this model could name. Reads only local config files."""
+    if account_access.managed_account():
+        await asyncio.to_thread(account_access.require_model_access, request.model_path)
+    return MlxDraftersResponse(
+        drafters = await asyncio.to_thread(_mlx_cached_drafters, request.model_path)
+    )
 
 
 @router.post("/unload", response_model = UnloadResponse)
@@ -22028,7 +22242,6 @@ async def _slot_status(current_subject: str):
                 **_runtime_fields,
                 requested_context_length = llama_backend.requested_n_ctx,
                 llama_cpp_supports_mtp = _supports_mtp,
-                spec_fallback_reason = llama_backend.spec_fallback_reason,
                 spec_fallback_binary_changed = _spec_fallback_binary_changed(llama_backend),
                 spec_probe_retry_pending = _spec_probe_retry_pending(llama_backend),
                 spec_dflash_retry_pending = _spec_dflash_retry_pending(llama_backend),
@@ -22039,7 +22252,6 @@ async def _slot_status(current_subject: str):
                 tensor_parallel_dropped_by_arch_gate = _arch_gate_dropped_tensor_parallel(
                     llama_backend
                 ),
-                spec_drafter_kind = llama_backend.spec_drafter_kind,
                 llama_cpp_prebuilt_stale = _stale,
                 llama_cpp_installed_tag = _installed_tag,
                 llama_cpp_latest_tag = _latest_tag,

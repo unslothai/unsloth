@@ -79,7 +79,7 @@ class _Session:
         self.rows.remove(handle)
         self.settled[handle] = self.stats_at_retire.get(handle, {})
 
-    def step(self):
+    def step(self, waiting):
         for handle in list(self.rows):
             events = self.script.get(handle) or []
             if not events:

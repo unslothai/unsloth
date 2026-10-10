@@ -164,6 +164,18 @@ def _bound_splits(original_init, args, kwargs):
     return bound.arguments.get("train_dataset"), bound.arguments.get("eval_dataset")
 
 
+def _wants_eval_logits(original_init, args, kwargs) -> bool:
+    """compute_metrics / preprocess_logits_for_metrics set UNSLOTH_RETURN_LOGITS, but only inside the
+    wrapped __init__, after the padding-free decision: read them here so they block it as the flag does."""
+    try:
+        bound = inspect.signature(original_init).bind_partial(None, *args, **kwargs).arguments
+    except Exception:
+        bound = kwargs
+    return any(
+        bound.get(name) is not None for name in ("compute_metrics", "preprocess_logits_for_metrics")
+    )
+
+
 def _cap_is_enforceable_without_padding_free(config, train, evals) -> bool:
     """Whether dropping padding-free actually leaves something enforcing the cap.
 
@@ -1483,6 +1495,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
             or is_encoder_decoder
             or (is_hybrid and not hybrid_varlen_active)
             or (os.environ.get("UNSLOTH_RETURN_LOGITS", "0") == "1")
+            or _wants_eval_logits(original_init, args, kwargs)
             or forward_rejects_packing
         )
         requested_pack = bool(getattr(config_arg, "packing", False))

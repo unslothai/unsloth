@@ -336,7 +336,9 @@ def set_openai_auto_switch(
 VALID_KV_CACHE_DTYPES = frozenset(
     {"f16", "bf16", "q8_0", "q4_0", "q4_1", "q5_0", "q5_1", "iq4_nl", "f32"}
 )
-VALID_SPECULATIVE_TYPES = frozenset(
+# The GGUF control never offers these, and a GGUF load drops them.
+MLX_ONLY_SPEC_TYPES = frozenset({"eagle3"})
+VALID_SPECULATIVE_TYPES = MLX_ONLY_SPEC_TYPES | frozenset(
     {
         "auto",
         "mtp",
@@ -360,7 +362,9 @@ VALID_SPECULATIVE_TYPES = frozenset(
 # Only these consume spec_draft_n_max (mirrors DRAFT_N_MAX_SPEC_TYPES in the UI).
 DRAFT_N_MAX_SPEC_TYPES = frozenset(
     {"mtp", "mtp+ngram", "draft-mtp", "dspark", "draft-dspark", "dflash", "draft-dflash"}
+    | MLX_ONLY_SPEC_TYPES
 )
+DRAFTER_MODEL_SPEC_TYPES = DRAFT_N_MAX_SPEC_TYPES | {"auto", "default"}
 # Only these load a separate draft model, and so a draft context for the dtype to apply to. Mirrors SEPARATE_DRAFT_MODEL_SPEC_TYPES in the UI.
 SEPARATE_DRAFT_MODEL_SPEC_TYPES = frozenset({"dspark", "draft-dspark", "dflash", "draft-dflash"})
 # Mirrors _LOAD_MODE_VALUES in llama_server_args.py. "auto" is the llama.cpp default and is not stored: an entry holding it would pin what a build may redefine.
@@ -470,6 +474,10 @@ def normalize_model_override(
             spec_draft_n_max = _bounded_int(payload.get("spec_draft_n_max"), minimum = 1, maximum = 16)
             if spec_draft_n_max:
                 entry["spec_draft_n_max"] = spec_draft_n_max
+        spec_draft_model = payload.get("spec_draft_model")
+        if speculative_type in DRAFTER_MODEL_SPEC_TYPES and isinstance(spec_draft_model, str):
+            if 0 < len(spec_draft_model.strip()) <= 1024:
+                entry["spec_draft_model"] = spec_draft_model.strip()
         # Same rule, narrower set: the dtype needs a separate draft model, and only the sidecar modes always load one.
         if speculative_type in SEPARATE_DRAFT_MODEL_SPEC_TYPES:
             spec_draft_cache_type = _clean_str(
@@ -648,12 +656,19 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
             )
         override = {**override, "llama_extra_args": kept}
 
+    # MLX drafter settings; a GGUF load reads an MLX-only mode as no stored mode, keeping its launch flags.
+    gguf_drops = set()
+    if is_gguf:
+        gguf_drops.add("spec_draft_model")
+        if override.get("speculative_type") in MLX_ONLY_SPEC_TYPES:
+            gguf_drops.update(("speculative_type", "spec_draft_n_max"))
     for source, target in (
         ("llama_extra_args", "llama_extra_args"),
         ("kv_cache_dtype", "cache_type_kv"),
         ("n_parallel", "n_parallel"),
         ("speculative_type", "speculative_type"),
         ("spec_draft_n_max", "spec_draft_n_max"),
+        ("spec_draft_model", "spec_draft_model"),
         ("reasoning_budget", "reasoning_budget"),
         ("reasoning_budget_message", "reasoning_budget_message"),
         ("tensor_parallel", "tensor_parallel"),
@@ -661,7 +676,7 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
         ("chat_template_override", "chat_template_override"),
         ("mlx_int8_prefill", "mlx_int8_prefill"),
     ):
-        if override.get(source) is not None:
+        if override.get(source) is not None and source not in gguf_drops:
             kwargs[target] = override[source]
 
     mlx_kv_quant = _mlx_kv_quant_of(override)

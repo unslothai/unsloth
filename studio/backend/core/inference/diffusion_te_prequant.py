@@ -515,6 +515,7 @@ def load_prequant_text_encoder(
     config_overrides: Optional[dict] = None,
     local_files_only: bool = False,
     trim_lm_head: bool = False,
+    failures: Optional[list] = None,
 ) -> Optional[Any]:
     """Load the pre-cast text encoder described by ``source`` (on CPU, for pipeline
     assembly to place), with the layerwise upcast hooks already installed.
@@ -529,7 +530,7 @@ def load_prequant_text_encoder(
     the pipeline's assembly normally passes to ``from_pretrained`` (forward-behaviour
     flags only; the state dict is unaffected by them).
     ``trim_lm_head`` builds the encoder without its untied ``lm_head`` and never reads that tensor
-    (``diffusion_text_encoder_trim``)."""
+    (``diffusion_text_encoder_trim``). ``failures`` collects the error text of a load that raised."""
     try:
         if source.kind == "path" and not _local_prequant_path_allowed(source.location):
             _warn(
@@ -690,6 +691,9 @@ def load_prequant_text_encoder(
         return encoder
     except Exception as exc:  # noqa: BLE001 - fall back to the dense download + cast
         _warn(logger, f"{scheme}:{component}:{source.kind}", exc)
+        if failures is not None:
+            # text only: the exception's traceback would pin this frame's checkpoint through the fp8 retry
+            failures.append(str(exc))
         return None
 
 
@@ -741,6 +745,7 @@ def te_prequant_pipe_kwargs(
     hf_token: Optional[str] = None,
     logger: Any = None,
     local_files_only: bool = False,
+    dense_source: Optional[str] = None,
 ) -> dict[str, Any]:
     supplied = supplied_component_pipe_kwargs(
         base,
@@ -760,6 +765,7 @@ def te_prequant_pipe_kwargs(
         logger = logger,
         local_files_only = local_files_only,
         skip_components = tuple(supplied),
+        dense_source = dense_source,
     )
     injected.update(supplied)
     return injected
@@ -776,6 +782,7 @@ def _te_prequant_pipe_kwargs(
     logger: Any = None,
     local_files_only: bool = False,
     skip_components: tuple = (),
+    dense_source: Optional[str] = None,
 ) -> dict[str, Any]:
     """Component overrides for pipeline assembly: ``{<component>: <pre-cast encoder>}``
     for every ``TE_PREQUANT_COMPONENTS`` attr the family hosts a pre-cast checkpoint for
@@ -785,10 +792,18 @@ def _te_prequant_pipe_kwargs(
     Gated exactly like the runtime cast (mode normalized, device-supported, family not
     denied), so injection can never engage where ``quantize_text_encoders`` would not.
     The later ``quantize_text_encoders`` call re-applies the cast idempotently and keeps
-    status reporting truthful."""
+    status reporting truthful.
+
+    ``dense_source`` is the local directory or repo id assembly reads without fetching (None when it can
+    still fetch). A pre-cast encoder that fails to load with no dense weights there raises: the plan left
+    those shards out of the prefetch, so assembly would die on a missing shard instead."""
+    unavailable: list[str] = []
+    failures: list = []
+    cause = ""
     try:
         from .diffusion_precision import TE_QUANT_FP8, normalize_te_quant, te_quant_supported
         from .diffusion_text_encoder_trim import family_trims_lm_head
+        from .media_locality import _hosted_component_cached
 
         sources = te_prequant_sources_for_base(
             fam,
@@ -802,6 +817,7 @@ def _te_prequant_pipe_kwargs(
         for component, source in sources.items():
             if component in skip_components:
                 continue
+            failures.clear()
             trim = component == "text_encoder" and family_trims_lm_head(getattr(fam, "name", None))
             encoder = load_prequant_text_encoder(
                 base,
@@ -813,6 +829,7 @@ def _te_prequant_pipe_kwargs(
                 logger = logger,
                 local_files_only = local_files_only,
                 trim_lm_head = trim,
+                failures = failures,
             )
             fp8_names = tuple(
                 n for n in te_candidate_filenames(source) if n != getattr(source, "filename", None)
@@ -841,13 +858,24 @@ def _te_prequant_pipe_kwargs(
                     logger = logger,
                     local_files_only = local_files_only,
                     trim_lm_head = trim,
+                    failures = failures,
                 )
             if encoder is not None:
                 injected[component] = encoder
-        return injected
+            elif dense_source and not _hosted_component_cached(dense_source, component, "", ""):
+                unavailable.append(component)
+                cause = f" ({failures[-1]})" if failures else cause
+        if not unavailable:
+            return injected
     except Exception as exc:  # noqa: BLE001 - injection is an optimisation, never a blocker
         _warn(logger, "pipe_kwargs", exc)
         return {}
+    raise RuntimeError(
+        f"The pre-quantized {', '.join(unavailable)} for {base} could not be loaded{cause}. Its dense "
+        "weights were not downloaded because the pre-quantized copy replaces them. If memory ran out "
+        "(os error 1455 means the Windows page file is too small), close other apps or enlarge the page "
+        "file and load again, or set Text encoder precision to Dense (bf16)."
+    )
 
 
 def _held_locally(repo_id: str, name: Optional[str], hf_token: Optional[str]) -> bool:
