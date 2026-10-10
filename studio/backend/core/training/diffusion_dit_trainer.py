@@ -2391,6 +2391,8 @@ def _train_dit(
                 sample_vae.to("cpu")
                 if device == "cuda":
                     torch.cuda.empty_cache()
+                elif device == "xpu":
+                    torch.xpu.empty_cache()
 
     if sample_plan is not None and resumed == 0:
         # The step-0 baseline is what every later preview is compared against.
