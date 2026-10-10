@@ -613,7 +613,10 @@ class TestTheWireCarriesAThoughtPartial:
         from core.inference.chat_template_helpers import trailing_assistant_resume_kind
 
         source = Path(llama_cpp.__file__).read_text()
-        assert "trailing_assistant_resume_kind(conversation) if continue_final_message else None" in source
+        assert (
+            "trailing_assistant_resume_kind(conversation) if continue_final_message else None"
+            in source
+        )
         # A partial paused inside its thought has no prose and must still be resumed.
         thought_only = [
             {"role": "user", "content": "hi"},

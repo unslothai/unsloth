@@ -95,7 +95,13 @@ def _loopback_opener():
     return opener
 
 
-def scrape_llama_metrics(base_url, timeout_s = 3.0, *, headers = None, opener = None):
+def scrape_llama_metrics(
+    base_url,
+    timeout_s = 3.0,
+    *,
+    headers = None,
+    opener = None,
+):
     """One /metrics read as a {name: float} dict, or None if it could not be read.
 
     Split out of the daemon's own scrape so a caller needing a single sample reuses this
