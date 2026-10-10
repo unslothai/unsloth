@@ -1,17 +1,7 @@
-# Copyright 2023-present Daniel Han-Chen, Michael Han-Chen & the Unsloth team. All rights reserved.
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Lesser General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-# You should have received a copy of the GNU Lesser General Public License
-# along with this program.  If not, see <https://www.gnu.org/licenses/>.
-
-"""Packed rows on the transformers modeling path run xformers / flash varlen instead of SDPA over a
-dense block-causal mask; anything else falls through to the wrapped "sdpa" unchanged."""
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+"""Packed rows on the transformers modeling path run a varlen flash kernel (torch's, else xformers /
+flash-attn) instead of SDPA over a dense block-causal mask; anything else reaches the wrapped "sdpa"."""
 
 import inspect
 import os
