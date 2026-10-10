@@ -1367,12 +1367,19 @@ pub fn browser_view_supported() -> bool {
 }
 
 /// Whether pages sit under the app's webview (`browser_layer`). Elsewhere covered pages are snapshotted.
+/// Asked once per load of the app, so it also drops input state a reload left behind.
 #[tauri::command]
-pub fn browser_view_layered() -> bool {
+pub fn browser_view_layered<R: Runtime>(webview: Webview<R>) -> Result<bool, String> {
+    require_main(&webview)?;
     #[cfg(target_os = "macos")]
-    return browser_view_supported();
+    {
+        if crate::browser_layer::set_input(false, &[]) {
+            let _ = webview.run_on_main_thread(|| crate::browser_layer::ignore_page_moves(false));
+        }
+        Ok(browser_view_supported())
+    }
     #[cfg(not(target_os = "macos"))]
-    false
+    Ok(false)
 }
 
 /// The panel UI over the page: all of it while a menu or dialog is open, else clickable rects.
@@ -1384,7 +1391,10 @@ pub fn browser_view_input<R: Runtime>(
 ) -> Result<(), String> {
     require_main(&webview)?;
     #[cfg(target_os = "macos")]
-    crate::browser_layer::set_input(blocked, &exclude);
+    if crate::browser_layer::set_input(blocked, &exclude) {
+        let _ =
+            webview.run_on_main_thread(move || crate::browser_layer::ignore_page_moves(blocked));
+    }
     #[cfg(not(target_os = "macos"))]
     let _ = (blocked, exclude);
     Ok(())

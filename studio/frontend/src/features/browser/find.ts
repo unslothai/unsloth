@@ -9,7 +9,7 @@ import {
   notifyFindTargets,
   registerFindTarget,
 } from "@/features/find-in-page";
-import { hasNativeView, nativeFind, refreshCoveredPage } from "./native-view";
+import { focusPanel, hasNativeView, nativeFind, refreshCoveredPage } from "./native-view";
 import { sendFrameCommand } from "./page-frame";
 import { type BrowserTab, currentEntry, useBrowserStore } from "./store";
 
@@ -82,6 +82,13 @@ export function registerBrowserFind(contains: (node: Node) => boolean): () => vo
       else sendFrameCommand(searchedTabId, { command: "findStep", delta });
     },
     result: () => result,
+    // The chord from the app menu while the native page has keys: this document isn't focused.
+    takeFocus: () => {
+      const tab = activeTab();
+      if (!searchable(tab) || !hasNativeView(tab.id) || document.hasFocus()) return false;
+      void focusPanel(tab.id);
+      return true;
+    },
   });
   // Another tab, or a page turning into a document, moves or drops the search.
   let tabId = activeTab()?.id;

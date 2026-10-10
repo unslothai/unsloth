@@ -10,7 +10,7 @@ const frames: (() => void)[] = [];
 const mutations: (() => void)[] = [];
 const rect = (x: number, y: number, width: number, height: number) =>
   ({ left: x, top: y, right: x + width, bottom: y + height, width, height }) as DOMRect;
-type Overlay = { getBoundingClientRect: () => DOMRect; closest: () => null; querySelector: () => null };
+type Overlay = { getBoundingClientRect: () => DOMRect; closest: () => null; querySelector: () => object | null };
 const overlay = (box: DOMRect): Overlay => ({
   getBoundingClientRect: () => box,
   closest: () => null,
@@ -50,11 +50,14 @@ const wrapper = node("wrapper", "rgba(0, 0, 0, 0)", section);
 const placeholder = node("placeholder", "oklch(1 0 0 / 1)", wrapper);
 
 const noop = () => undefined;
+const listeners = new Map<string, (event: { target: unknown }) => void>();
 Object.assign(globalThis, {
   window: Object.assign(globalThis, { innerWidth: 1000, addEventListener: noop, removeEventListener: noop }),
   document: {
     documentElement: Object.assign(html, { dataset: {} }),
     body: {},
+    addEventListener: (type: string, listener: (event: { target: unknown }) => void) => listeners.set(type, listener),
+    removeEventListener: (type: string) => listeners.delete(type),
     querySelector: (selector: string) => (selector.startsWith("[data-native-page") ? placeholder : null),
     querySelectorAll: (selector: string) =>
       selector.startsWith("[data-sonner-toast]") ? clickable : selector.startsWith("[data-radix") ? blocking : [],
@@ -120,6 +123,9 @@ test("a menu over a layered page neither captures nor hides it, and owns its inp
       [true, true, false, true],
     );
     assert.equal(section.vars.get("--native-hole-bg"), "oklch(0.97 0 0)");
+    // the rect goes on each holed node (the vars don't inherit), so moving it restyles only those
+    assert.equal(placeholder.vars.get("--native-hole-y"), "100px");
+    assert.equal(wrapper.vars.has("--native-hole-x"), false);
 
     // a theme switch recolors them, though the page didn't move; read mid-switch, it tries again
     html.className = "html dark";
@@ -142,6 +148,16 @@ test("a menu over a layered page neither captures nor hides it, and owns its inp
     await frame();
     assert.ok(calls.some(({ command, args }) => command === "browser_view_zoom" && args?.zoom === 1.5));
 
+    // a menu away from the page owns it too, so a click there closes the menu; a hover card doesn't
+    blocking.length = 0;
+    blocking.push(overlay(rect(0, 600, 200, 100)));
+    await frame();
+    assert.deepEqual(lastInput(), { blocked: true, exclude: [] });
+    blocking.length = 0;
+    blocking.push({ ...overlay(rect(0, 600, 200, 100)), querySelector: () => ({}) });
+    await frame();
+    assert.deepEqual(lastInput(), { blocked: false, exclude: [] });
+
     // a toast over the page takes input only where it is
     blocking.length = 0;
     clickable.push(overlay(rect(600, 600, 200.5, 50)));
@@ -150,6 +166,12 @@ test("a menu over a layered page neither captures nor hides it, and owns its inp
       blocked: false,
       exclude: [{ x: 600, y: 600, width: 202, height: 51, viewportWidth: 1000 }],
     });
+    // a toast sliding in is measured as it moves, not on the next recheck
+    clickable[0] = overlay(rect(600, 560, 200, 50));
+    listeners.get("transitionrun")?.({ target: { closest: () => ({}) } });
+    for (const callback of frames.splice(0)) callback();
+    await settle();
+    assert.equal((lastInput()?.exclude as { y: number }[])[0].y, 560);
     clickable.length = 0;
     await frame();
     assert.deepEqual(lastInput(), { blocked: false, exclude: [] });

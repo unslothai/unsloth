@@ -2,13 +2,13 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 //! macOS: browser pages sit under the app's webview, which is transparent over them, so panel
-//! overlays draw on top of the live page. The app's webview returns nil from `hitTest:` over the
-//! page unless panel UI covers that point (`browser_view_input`).
+//! overlays draw on top of the live page. The app's webview returns nil from `hitTest:` and
+//! `_hitTest:dragTypes:` over the page unless panel UI covers that point (`browser_view_input`).
 
 use crate::browser_webview::ViewBounds;
-use objc2::runtime::{AnyClass, AnyObject, Imp, Sel};
-use objc2::sel;
-use objc2_app_kit::{NSEvent, NSView, NSWindowOrderingMode};
+use objc2::runtime::{AnyClass, AnyObject, Bool, Imp, Sel};
+use objc2::{msg_send, sel};
+use objc2_app_kit::{NSView, NSWindowOrderingMode};
 use objc2_foundation::{ns_string, NSNumber, NSObjectNSKeyValueCoding, NSPoint, NSRect, NSSize};
 use std::ptr::null_mut;
 use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
@@ -16,15 +16,19 @@ use std::sync::{Mutex, OnceLock};
 use tauri::{Runtime, Webview};
 
 type HitTest = unsafe extern "C-unwind" fn(*mut AnyObject, Sel, NSPoint) -> *mut AnyObject;
-type MouseMoved = unsafe extern "C-unwind" fn(*mut AnyObject, Sel, *mut AnyObject);
+/// AppKit's private drop target lookup; WKWebView claims its whole frame without `hitTest:`.
+type DragHitTest = unsafe extern "C-unwind" fn(
+    *mut AnyObject,
+    Sel,
+    *mut NSPoint,
+    *mut AnyObject,
+) -> *mut AnyObject;
 
 /// The app's webview, set once on the main thread; it lives as long as the app.
 static MAIN: AtomicPtr<AnyObject> = AtomicPtr::new(null_mut());
 static INSTALLING: AtomicBool = AtomicBool::new(false);
 static HIT_TEST: OnceLock<HitTest> = OnceLock::new();
-static MOUSE_MOVED: OnceLock<MouseMoved> = OnceLock::new();
-/// Whether the app's webview last saw the pointer over the page.
-static MAIN_OVER_PAGE: AtomicBool = AtomicBool::new(false);
+static DRAG_HIT_TEST: OnceLock<DragHitTest> = OnceLock::new();
 static INPUT: Mutex<Input> = Mutex::new(Input {
     blocked: false,
     exclude: Vec::new(),
@@ -38,11 +42,37 @@ struct Input {
     exclude: Vec<(f64, f64, f64, f64, f64)>,
 }
 
-/// Sets which parts of the page the panel's UI covers.
-pub fn set_input(blocked: bool, exclude: &[ViewBounds]) {
+/// Sets which parts of the page the panel's UI covers; true when `blocked` changed.
+pub fn set_input(blocked: bool, exclude: &[ViewBounds]) -> bool {
     let mut input = INPUT.lock().unwrap();
+    let changed = input.blocked != blocked;
     input.blocked = blocked;
     input.exclude = exclude.iter().map(ViewBounds::parts).collect();
+    changed
+}
+
+/// Stops pages hovering and setting the cursor under a menu. WebKit's tracking areas see every
+/// move in the window whatever is on top, so `hitTest:` can't. Main thread.
+pub fn ignore_page_moves(ignore: bool) {
+    let Some(main) = main_view() else {
+        return;
+    };
+    let selector = sel!(_setIgnoresMouseMoveEvents:);
+    // Safety: the main thread's view tree; the private setter (macOS 13+) is checked first.
+    unsafe {
+        let Some(parent) = main.superview() else {
+            return;
+        };
+        for view in parent.subviews().iter() {
+            if std::ptr::eq(&*view, main) || !std::ptr::eq(view.class(), main.class()) {
+                continue;
+            }
+            let responds: bool = msg_send![&*view, respondsToSelector: selector];
+            if responds {
+                let _: () = msg_send![&*view, _setIgnoresMouseMoveEvents: Bool::new(ignore)];
+            }
+        }
+    }
 }
 
 /// Makes the app's webview transparent and routes input. Runs once, before any page exists.
@@ -86,9 +116,9 @@ unsafe fn install_on(view: *mut AnyObject) {
         return;
     };
     // Pages share wry's class, so the overrides check for the main view by pointer.
-    let (Some(hit_test), Some(mouse_moved)) = (
+    let (Some(hit_test), Some(drag_hit_test)) = (
         class.instance_method(sel!(hitTest:)),
-        class.instance_method(sel!(mouseMoved:)),
+        class.instance_method(sel!(_hitTest:dragTypes:)),
     ) else {
         log::warn!("browser pages stay over the panel: the webview class can't be routed");
         return;
@@ -98,8 +128,8 @@ unsafe fn install_on(view: *mut AnyObject) {
         let _ = HIT_TEST.set(std::mem::transmute::<Imp, HitTest>(
             hit_test.implementation(),
         ));
-        let _ = MOUSE_MOVED.set(std::mem::transmute::<Imp, MouseMoved>(
-            mouse_moved.implementation(),
+        let _ = DRAG_HIT_TEST.set(std::mem::transmute::<Imp, DragHitTest>(
+            drag_hit_test.implementation(),
         ));
         let class = (class as *const AnyClass).cast_mut();
         objc2::ffi::class_replaceMethod(
@@ -110,9 +140,9 @@ unsafe fn install_on(view: *mut AnyObject) {
         );
         objc2::ffi::class_replaceMethod(
             class,
-            sel!(mouseMoved:),
-            std::mem::transmute::<MouseMoved, Imp>(routed_mouse_moved),
-            objc2::ffi::method_getTypeEncoding(mouse_moved),
+            sel!(_hitTest:dragTypes:),
+            std::mem::transmute::<DragHitTest, Imp>(routed_drag_hit_test),
+            objc2::ffi::method_getTypeEncoding(drag_hit_test),
         );
         // Private KVC key, as used by wry's `transparent` option.
         let main = &*(view as *const NSView);
@@ -196,36 +226,24 @@ unsafe extern "C-unwind" fn routed_hit_test(
     unsafe { original(this, cmd, point) }
 }
 
-/// Drops moves meant for the other view, so page hover and cursor don't fight panel menus.
-unsafe extern "C-unwind" fn routed_mouse_moved(
+/// Files dragged over the page drop on it, as before it sat under the app's webview.
+unsafe extern "C-unwind" fn routed_drag_hit_test(
     this: *mut AnyObject,
     cmd: Sel,
-    event: *mut AnyObject,
-) {
-    // Safety: AppKit passes a live NSEvent.
-    if let (Some(main), Some(ns_event)) =
-        (main_view(), unsafe { (event as *const NSEvent).as_ref() })
+    point: *mut NSPoint,
+    types: *mut AnyObject,
+) -> *mut AnyObject {
+    if let Some(main) = main_view().filter(|main| std::ptr::eq(*main as *const NSView, this.cast()))
     {
-        let is_main = std::ptr::eq(main as *const NSView, this.cast());
-        // Safety: `this` is a live NSView (wry's class).
-        let this_view = unsafe { &*(this as *const NSView) };
-        if is_main || this_view.window() == main.window() {
-            let point = main.convertPoint_fromView(ns_event.locationInWindow(), None);
-            let page = over_page(main, point);
-            if is_main {
-                // Pass the first move onto the page through to end the panel's hover.
-                if page && MAIN_OVER_PAGE.swap(true, Ordering::Relaxed) {
-                    return;
-                }
-                if !page {
-                    MAIN_OVER_PAGE.store(false, Ordering::Relaxed);
-                }
-            } else if !page {
-                return;
+        // Safety: AppKit passes a live point in the superview's coordinates, on the main thread.
+        if let Some(at) = unsafe { point.as_ref() } {
+            let local = main.convertPoint_fromView(*at, unsafe { main.superview() }.as_deref());
+            if over_page(main, local) {
+                return null_mut();
             }
         }
     }
-    let original = MOUSE_MOVED.get().expect("installed before routing");
+    let original = DRAG_HIT_TEST.get().expect("installed before routing");
     // Safety: AppKit's arguments, forwarded to the original implementation.
-    unsafe { original(this, cmd, event) }
+    unsafe { original(this, cmd, point, types) }
 }

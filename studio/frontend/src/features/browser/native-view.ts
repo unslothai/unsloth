@@ -368,6 +368,7 @@ const OVERLAY_SELECTOR =
 // Layered mode: menus and dialogs take all page input, so an outside click closes them.
 const BLOCKING_SELECTOR =
   '[data-radix-popper-content-wrapper], [role="dialog"], [role="alertdialog"], [data-slot$="-overlay"], [data-native-cover]';
+const MENU_SELECTOR = "[data-radix-popper-content-wrapper]";
 // Layered mode: these take input only within their own rect.
 const CLICKABLE_SELECTOR = "[data-sonner-toast], .find-bar-surface";
 
@@ -386,19 +387,37 @@ function intersects(a: DOMRect, b: DOMRect): boolean {
   return a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
 }
 
-function overlays(selector: string, rect: DOMRect, tooltips = false): DOMRect[] {
+const TOOLTIP = '[role="tooltip"]';
+// Hover cards close on their own once the pointer leaves, like tooltips.
+const HOVER_ONLY = '[role="tooltip"], [data-slot="hover-card-content"]';
+
+/** Boxes of `selector` over `rect` (anywhere when null), minus those holding `skip`. */
+function overlays(selector: string, rect: DOMRect | null, skip: string | null = TOOLTIP): DOMRect[] {
   const boxes: DOMRect[] = [];
   for (const element of document.querySelectorAll<HTMLElement>(selector)) {
     if (element.closest("[data-native-page]")) continue;
-    if (!tooltips && element.querySelector('[role="tooltip"]')) continue;
+    if (skip && element.querySelector(skip)) continue;
     const box = element.getBoundingClientRect();
-    if (box.width > 0 && box.height > 0 && intersects(box, rect)) boxes.push(box);
+    if (box.width > 0 && box.height > 0 && (!rect || intersects(box, rect))) boxes.push(box);
   }
   return boxes;
 }
 
-function covered(rect: DOMRect): boolean {
-  return overlays(OVERLAY_SELECTOR, rect, true).length > 0;
+function covering(rect: DOMRect): "none" | "tooltip" | "other" {
+  if (overlays(OVERLAY_SELECTOR, rect).length > 0) return "other";
+  return overlays(OVERLAY_SELECTOR, rect, null).length > 0 ? "tooltip" : "none";
+}
+
+// A page covered only by a tooltip stays parked this long after it closes (or until the pointer
+// reaches the page), so hovering along the toolbar captures once, not per button.
+const TOOLTIP_HOLD_MS = 250;
+let tooltipHold = 0;
+
+function coveredNow(rect: DOMRect): boolean {
+  const cover = covering(rect);
+  if (cover === "tooltip") tooltipHold = performance.now() + TOOLTIP_HOLD_MS;
+  else if (cover === "other") tooltipHold = 0;
+  return cover !== "none" || performance.now() < tooltipHold;
 }
 
 type Input = { blocked: boolean; exclude: Bounds[] };
@@ -406,7 +425,10 @@ type Input = { blocked: boolean; exclude: Bounds[] };
 const NO_INPUT: Input = { blocked: false, exclude: [] };
 
 function panelInput(rect: DOMRect): Input {
-  if (overlays(BLOCKING_SELECTOR, rect).length > 0) return { blocked: true, exclude: [] };
+  // A menu away from the page owns it too, so a click on the page closes the menu, as anywhere else.
+  if (overlays(BLOCKING_SELECTOR, rect).length > 0 || overlays(MENU_SELECTOR, null, HOVER_ONLY).length > 0) {
+    return { blocked: true, exclude: [] };
+  }
   const exclude = overlays(CLICKABLE_SELECTOR, rect).map((box) => ({
     x: Math.floor(box.left),
     y: Math.floor(box.top),
@@ -417,7 +439,8 @@ function panelInput(rect: DOMRect): Input {
   return { blocked: false, exclude };
 }
 
-let sentInput = JSON.stringify(NO_INPUT);
+// Empty, so the first sync after a reload clears a menu's block the backend kept.
+let sentInput = "";
 
 // Sent directly, not queued, so a menu owns the page as soon as it opens.
 function sendInput(input: Input): void {
@@ -433,6 +456,7 @@ const HOLE_VARS = ["--native-hole-x", "--native-hole-y", "--native-hole-w", "--n
 let holed: HTMLElement[] = [];
 let holeSignature = "";
 let holeTab: string | null = null;
+let holeBounds: Bounds | null = null;
 
 function opaque(color: string): boolean {
   if (color === "transparent") return false;
@@ -441,24 +465,31 @@ function opaque(color: string): boolean {
 }
 
 function openHole(tabId: string, bounds: Bounds): void {
-  const style = document.documentElement.style;
-  const values = [bounds.x, bounds.y, bounds.width, bounds.height];
-  HOLE_VARS.forEach((name, index) => style.setProperty(name, `${values[index]}px`));
+  const moved = JSON.stringify(bounds) !== JSON.stringify(holeBounds);
   holeTab = tabId;
-  markHole();
+  holeBounds = bounds;
+  if (!markHole() && moved) placeHole();
 }
 
-/** Re-reads background colors when the chain, its classes or the theme change. */
-function markHole(): void {
+// Set on each holed node, not the root: the vars don't inherit (index.css), so a move restyles
+// only those nodes instead of the whole document.
+function placeHole(): void {
+  if (!holeBounds) return;
+  const values = [holeBounds.x, holeBounds.y, holeBounds.width, holeBounds.height];
+  for (const node of holed) HOLE_VARS.forEach((name, index) => node.style.setProperty(name, `${values[index]}px`));
+}
+
+/** Re-reads background colors when the chain, its classes or the theme change; true if it did. */
+function markHole(): boolean {
   const element = holeTab ? placeholder(holeTab) : null;
-  if (!element) return;
+  if (!element) return false;
   const chain: HTMLElement[] = [];
   for (let node: HTMLElement | null = element; node; node = node.parentElement) chain.push(node);
   // Theme: html classes, palette and inline color vars, minus our own.
   const root = document.documentElement;
   const theme = (root.style.cssText ?? "").replace(/--native-hole-[^;]*;?/g, "");
   const signature = `${root.dataset.palette}|${theme}|${chain.map((node) => node.className).join("|")}`;
-  if (signature === holeSignature && holed.every((node) => node.isConnected)) return;
+  if (signature === holeSignature && holed.every((node) => node.isConnected)) return false;
   unmarkHole();
   holeSignature = signature;
   const colors = chain.map((node) => getComputedStyle(node));
@@ -468,15 +499,17 @@ function markHole(): void {
     node.style.setProperty("--native-hole-bg", computed.backgroundColor);
     holed.push(node);
   });
+  placeHole();
   for (const node of holed) node.setAttribute(HOLE_ATTRIBUTE, "");
   // Mid theme switch everything can read transparent: retry next sync.
   if (holed.length === 0) holeSignature = "";
+  return true;
 }
 
 function unmarkHole(): void {
   for (const node of holed) {
     node.removeAttribute(HOLE_ATTRIBUTE);
-    node.style.removeProperty("--native-hole-bg");
+    for (const name of ["--native-hole-bg", ...HOLE_VARS]) node.style.removeProperty(name);
   }
   holed = [];
   holeSignature = "";
@@ -484,8 +517,8 @@ function unmarkHole(): void {
 
 function closeHole(): void {
   holeTab = null;
+  holeBounds = null;
   unmarkHole();
-  for (const name of HOLE_VARS) document.documentElement.style.removeProperty(name);
 }
 
 function visibleRect(element: HTMLElement): DOMRect | null {
@@ -540,7 +573,7 @@ function desiredView(): Desired {
   else insetToasts(page?.rect ?? null);
   if (!page) return null;
   const { tab, entry, rect } = page;
-  if (!layered && covered(rect)) return { tabId: tab.id, covered: true, zoom: tab.zoom };
+  if (!layered && coveredNow(rect)) return { tabId: tab.id, covered: true, zoom: tab.zoom };
   return {
     tabId: tab.id,
     url: entry.url,
@@ -774,6 +807,8 @@ onNativeViewsClosed(() => {
   pump();
 });
 
+const MOTION_EVENTS = ["transitionrun", "transitionend", "animationstart", "animationend"] as const;
+
 export function startNativeViews(): () => void {
   listenOnce();
   let frame = 0;
@@ -808,6 +843,18 @@ export function startNativeViews(): () => void {
   // Theme switches recolor the backgrounds around the hole.
   overlays.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "style", "data-palette"] });
   window.addEventListener("resize", schedule);
+  // Toasts and the find bar mount without a body mutation and slide in: measure them as they move.
+  const moved = (event: Event) => {
+    if ((event.target as Element | null)?.closest?.(CLICKABLE_SELECTOR)) schedule();
+  };
+  for (const type of MOTION_EVENTS) document.addEventListener(type, moved, true);
+  const reachedPage = (event: Event) => {
+    if (tooltipHold && (event.target as Element | null)?.closest?.("[data-native-page]")) {
+      tooltipHold = 0;
+      schedule();
+    }
+  };
+  document.addEventListener("pointerover", reachedPage, true);
   const interval = window.setInterval(schedule, RECHECK_MS);
   void askLayered().then(schedule);
   schedule();
@@ -818,7 +865,10 @@ export function startNativeViews(): () => void {
     overlays.disconnect();
     resizeObserver.disconnect();
     window.removeEventListener("resize", schedule);
+    for (const type of MOTION_EVENTS) document.removeEventListener(type, moved, true);
+    document.removeEventListener("pointerover", reachedPage, true);
     window.clearInterval(interval);
+    tooltipHold = 0;
     // close pages because hidden native views keep scripts and media running.
     generation += 1;
     pending = null;

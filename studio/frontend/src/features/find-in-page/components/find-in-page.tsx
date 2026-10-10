@@ -29,7 +29,7 @@ import {
 import { createPortal } from "react-dom";
 import { FIND_SCOPE_ATTRIBUTE } from "../lib/find-attributes.ts";
 import { isFindScopeBackgrounded } from "../lib/find-backgrounded.ts";
-import { findTarget, findTargetHolding, onFindRequest } from "../lib/find-targets.ts";
+import { findTarget, findTargetHolding, onFindRequest, takeFindFocus } from "../lib/find-targets.ts";
 
 const DISMISSIBLE_SURFACE_SELECTOR =
   '[data-slot="popover-content"], [role="menu"], [role="listbox"]';
@@ -204,9 +204,12 @@ export function FindInPage({ enabled = true }: { enabled?: boolean }) {
   const originRef = useRef<HTMLElement | null>(null);
   const requestFocus = useCallback((targetId?: string | null) => {
     const active = document.activeElement;
+    // Keys in a native page leave `activeElement` stale: that page is where the reader is.
+    const outside = targetId === undefined ? takeFindFocus() : undefined;
     // Searches where the reader is: the page while focus is in the browser, else the chat. Pressed
     // again from the bar's own field, it keeps searching what it was.
     if (targetId !== undefined) setScope(targetId);
+    else if (outside) setScope(outside.id);
     else if (!(active instanceof Element && active.closest('[role="search"]')))
       setScope(findTargetHolding(active)?.id ?? null);
     if (

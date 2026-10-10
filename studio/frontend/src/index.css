@@ -6020,7 +6020,33 @@ html:has([data-blocking-screen]) .interface-zoom-position {
 }
 
 /* macOS: backgrounds around a browser page skip its rect (`--native-hole-*`, viewport px), so the
-   native page under the app's webview shows through. */
+   native page under the app's webview shows through. Not inherited: moving the hole restyles only
+   the holed nodes. */
+@property --native-hole-x {
+	syntax: "<length>";
+	inherits: false;
+	initial-value: 0px;
+}
+@property --native-hole-y {
+	syntax: "<length>";
+	inherits: false;
+	initial-value: 0px;
+}
+@property --native-hole-w {
+	syntax: "<length>";
+	inherits: false;
+	initial-value: 0px;
+}
+@property --native-hole-h {
+	syntax: "<length>";
+	inherits: false;
+	initial-value: 0px;
+}
+@property --native-hole-bg {
+	syntax: "*";
+	inherits: false;
+}
+
 [data-native-hole] {
 	--native-hole-fill: linear-gradient(var(--native-hole-bg), var(--native-hole-bg));
 	background-color: transparent !important;

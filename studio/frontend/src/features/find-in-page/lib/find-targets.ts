@@ -15,6 +15,8 @@ export type FindTarget = {
   search: (query: string) => void;
   step: (delta: -1 | 1) => void;
   result: () => FindTargetResult;
+  /** When keys are inside it but outside this document (a native page), moves them here: true. */
+  takeFocus?: () => boolean;
 };
 
 export const EMPTY_FIND_RESULT: FindTargetResult = { count: 0, active: -1 };
@@ -59,6 +61,11 @@ export function availableFindTargets(): FindTarget[] {
 export function findTargetHolding(node: Node | null): FindTarget | undefined {
   if (!node) return undefined;
   return availableFindTargets().find((target) => target.contains(node));
+}
+
+/** The target holding keyboard focus outside this document, which hands it back for the bar. */
+export function takeFindFocus(): FindTarget | undefined {
+  return availableFindTargets().find((target) => target.takeFocus?.() === true);
 }
 
 const requests = new Set<(targetId: string | null) => void>();

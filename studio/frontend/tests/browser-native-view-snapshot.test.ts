@@ -11,8 +11,9 @@ const mutations: (() => void)[] = [];
 const overlays: {
   getBoundingClientRect: () => DOMRect;
   closest: () => null;
-  querySelector: () => null;
+  querySelector: (selector: string) => object | null;
 }[] = [];
+const documentListeners = new Map<string, (event: { target: unknown }) => void>();
 const rect = (x: number, y: number, width: number, height: number) =>
   ({
     left: x,
@@ -53,6 +54,9 @@ Object.assign(globalThis, {
   document: {
     documentElement: { style: rootStyle },
     body: {},
+    addEventListener: (type: string, listener: (event: { target: unknown }) => void) =>
+      documentListeners.set(type, listener),
+    removeEventListener: (type: string) => documentListeners.delete(type),
     querySelector: (selector: string) =>
       selector.startsWith("[data-native-page") ? placeholder : null,
     querySelectorAll: (selector: string) =>
@@ -183,6 +187,49 @@ test("a menu that closes and reopens while the page is captured keeps the snapsh
     );
   } finally {
     stop();
+  }
+});
+
+test("tooltips along the toolbar capture the page once, and it returns when the pointer reaches it", async () => {
+  const stop = startNativeViews();
+  try {
+    useBrowserStore.getState().openUrl("https://example.net/", { newTab: true });
+    await frame();
+    await frame();
+    const tabId = useBrowserStore.getState().activeTabId;
+    const tooltip = (x: number) => ({
+      getBoundingClientRect: () => rect(x, 90, 120, 30),
+      closest: () => null,
+      querySelector: (selector: string) => (selector.includes("tooltip") ? {} : null),
+    });
+    const captures = () => calls.filter(({ command }) => command === "browser_capture").length;
+    const lastShow = () => calls.filter(({ command }) => command === "browser_view_show").at(-1)?.args;
+    const before = captures();
+    overlays.push(tooltip(600));
+    await frame();
+    captureDone?.(new Uint8Array([137, 80, 78, 71]).buffer);
+    await settle();
+    assert.equal(captures(), before + 1);
+    assert.deepEqual([lastShow()?.tabId, lastShow()?.parked], [tabId, true]);
+
+    // the next button's tooltip reuses the snapshot
+    overlays.length = 0;
+    await frame();
+    overlays.push(tooltip(700));
+    await frame();
+    overlays.length = 0;
+    await frame();
+    assert.equal(captures(), before + 1, "no capture per button");
+    assert.equal(lastShow()?.parked, true, "still parked just after the tooltip closes");
+
+    documentListeners.get("pointerover")?.({
+      target: { closest: (selector: string) => (selector === "[data-native-page]" ? {} : null) },
+    });
+    await frame();
+    assert.deepEqual([lastShow()?.tabId, lastShow()?.parked], [tabId, undefined], "the page is back");
+  } finally {
+    stop();
+    overlays.length = 0;
   }
 });
 
