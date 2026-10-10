@@ -4348,7 +4348,6 @@ def test_the_probe_reads_the_moe_cache_and_lazy_mode_flags(
         auto,
         lazy,
     )
-    # Which spelling the build reads, so only that one is honoured.
     assert caps["lazy_mode_flag"] == (
         ("--tensor-read-lazy" if "--tensor-read-lazy" in extra_help else "--lazy-mode")
         if lazy
@@ -4535,7 +4534,6 @@ def test_a_user_placement_flag_keeps_the_moe_cache_off(tmp_path, _moe_cache_host
     _backend, cmd = _cache_launch(tmp_path, extra_args = extra_args)
 
     assert not _has_moe_cache(cmd), cmd
-    # The user's own cache size reaches the child untouched.
     if "--moe-cache-mib" in extra_args:
         assert cmd.count("--moe-cache-mib") == 1 and cmd[cmd.index("--moe-cache-mib") + 1] == "4096"
 
@@ -4596,7 +4594,6 @@ def test_the_moe_cache_eligibility_gates(tmp_path, _moe_cache_host):
         dict(tensor_parallel = True),
         dict(gpu_memory_mode = "manual"),
         dict(gpu_indices = [0, 1]),
-        # Unpinned: every detected card is the child's.
         dict(gpu_indices = None),
         dict(caps = {}),
         dict(extra_args = ["--fit", "off"]),

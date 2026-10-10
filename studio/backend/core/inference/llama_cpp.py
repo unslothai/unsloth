@@ -8098,7 +8098,6 @@ class LlamaCppBackend:
         # The expert-spill micro-batch raise: the pair before it, and the argv tokens.
         self._moe_spill_batch_restore: Optional[tuple[Optional[int], Optional[int]]] = None
         self._moe_spill_batch_tokens: Optional[tuple[list[str], list[str]]] = None
-        # The --moe-cache-mib auto run the last launch added; empty when it added none.
         self._moe_cache_flags: List[str] = []
         # The tuning group the last load asked for; none = defaults, or left to
         # extras / env. What was REQUESTED, not what ran: Model Memory can replace
@@ -25467,7 +25466,6 @@ class LlamaCppBackend:
                 self._pending_plan_mib = {}
                 # Set by the expert-spill raise after the fit.
                 self._moe_spill_batch_restore: Optional[tuple[Optional[int], Optional[int]]] = None
-                # Set inside the fit; False on every path that never prices it.
                 _moe_cache_candidate = False
                 _moe_cache_ram_ok = False
                 _shared_gpus = frozenset()
@@ -28226,9 +28224,8 @@ class LlamaCppBackend:
                     )
                     _fit_load_mode = self._fit_derived_load_mode(**_fit_load_mode_kwargs)
                     if _moe_cache_candidate:
-                        # The cache frees no host RAM and can leave every routed expert
-                        # there: admit only if all of them plus the prompt cache fit pinned.
-                        # Moved out of model_size, not added on top (would count twice).
+                        # The cache frees no host RAM: every routed expert plus the prompt
+                        # cache must fit pinned (moved out of model_size, not counted twice).
                         _moe_expert_bytes = (self._gguf_tensor_scan(model_path) or (None, {}, 0))[2]
                         _moe_prompt_cache_bytes = _prompt_cache_host_bytes(
                             cache_ram,
@@ -31867,7 +31864,6 @@ class LlamaCppBackend:
                         _retry_apu_msg = None
                         if model_size is not None and _retry_wants_unified:
                             _apu_avail_mib = self._available_system_memory_mib()
-                            # Re-read for the respawn's own argv and devices.
                             _apu_resident_model_size = max(
                                 1,
                                 model_size
