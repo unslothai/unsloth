@@ -189,7 +189,7 @@ def test_cap_waits_for_torch_and_fires_after_its_module_body(
 def test_torch_keeps_its_own_loader_and_reload_does_not_stack(
     fake_windows, clean_thread_env, monkeypatch, tmp_path
 ):
-    import importlib
+    import importlib.util
 
     package = tmp_path / "torch"
     package.mkdir()
@@ -199,14 +199,17 @@ def test_torch_keeps_its_own_loader_and_reload_does_not_stack(
     monkeypatch.syspath_prepend(str(tmp_path))
     monkeypatch.delitem(sys.modules, "torch", raising = False)
 
+    # Whatever loader the path finders give torch, e.g. beartype.claw's SourceFileLoader subclass.
+    native = type(importlib.util.find_spec("torch").loader)
+    assert native is not cpu_threads._TorchLoader
     configure_cpu_threads()
     import torch
 
     # pkg_resources picks its provider by type(module.__loader__), so the wrapper must not stay visible.
-    assert type(torch.__loader__) is importlib.machinery.SourceFileLoader
+    assert type(torch.__loader__) is native
     assert torch.__spec__.loader is torch.__loader__
     importlib.reload(torch)
-    assert type(torch.__loader__) is importlib.machinery.SourceFileLoader
+    assert type(torch.__loader__) is native
     assert fake_windows == [12, 12]
 
 
