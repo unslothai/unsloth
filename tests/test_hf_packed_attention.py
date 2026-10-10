@@ -6,6 +6,7 @@ import types
 
 import pytest
 import torch
+from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
 
 from unsloth.utils import hf_packed_attention as hpa
 
@@ -98,7 +99,7 @@ def test_unpacked_calls_go_straight_through(monkeypatch):
     assert out == ("orig", None) and seen == [{"foo": 1}]
 
 
-_CUDA = pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA device")
+_CUDA = pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA device")
 
 
 @_CUDA
@@ -278,7 +279,7 @@ def test_install_forwards_router_sentinels_and_runs_once(monkeypatch):
     assert mapping["sdpa"] is router and hpa._ORIG_SDPA[0] is router
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA device")
+@_CUDA
 @pytest.mark.parametrize("route", ["torch", "dispatch"])
 @pytest.mark.parametrize("n_kv", [8, 2])
 def test_varlen_matches_sdpa_over_the_dense_mask(monkeypatch, n_kv, route):
