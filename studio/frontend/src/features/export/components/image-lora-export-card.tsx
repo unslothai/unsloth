@@ -21,11 +21,10 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useState } from "react";
 import { exportDiffusionLora } from "../api/export-api";
 
-function imageLoraLabel(lora: DiffusionLoraInfo): string {
+function imageLoraLabel(lora: DiffusionLoraInfo, clashes: boolean): string {
   const tags = [...lora.families, ...(lora.fine_tuned ? ["fine-tuned"] : [])];
-  return tags.length > 0
-    ? `${lora.display_name} (${tags.join(", ")})`
-    : lora.display_name;
+  const name = clashes ? `${lora.display_name} [${lora.id}]` : lora.display_name;
+  return tags.length > 0 ? `${name} (${tags.join(", ")})` : name;
 }
 
 export function ImageLoraExportCard() {
@@ -107,7 +106,12 @@ export function ImageLoraExportCard() {
             <SelectContent>
               {(loras ?? []).map((l) => (
                 <SelectItem key={l.id} value={l.id}>
-                  {imageLoraLabel(l)}
+                  {imageLoraLabel(
+                    l,
+                    (loras ?? []).some(
+                      (o) => o.id !== l.id && o.display_name === l.display_name,
+                    ),
+                  )}
                 </SelectItem>
               ))}
             </SelectContent>

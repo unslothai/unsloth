@@ -19,6 +19,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -170,6 +171,30 @@ def _account_allows():
         )
 
     return allows
+
+
+def _open_pinned(path: Path):
+    """Open ``path`` and prove the handle is the file now at its resolved, account-readable location,
+    so swapping a link between the catalog scan and the copy cannot redirect the read."""
+    f = open(path, "rb")
+    try:
+        real = os.path.realpath(path)
+        st, now = os.fstat(f.fileno()), os.stat(real)
+        if (st.st_dev, st.st_ino) != (now.st_dev, now.st_ino) or not _account_allows()(Path(real)):
+            raise FileNotFoundError(f"LoRA file '{path.name}' is not readable here")
+    except BaseException:
+        f.close()
+        raise
+    return f
+
+
+def _pinned_sidecar(weight_path: Path) -> Optional[dict]:
+    try:
+        with _open_pinned(weight_path.with_suffix(".json")) as f:
+            data = json.loads(f.read().decode("utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def _scan_local() -> list[LoraCatalogEntry]:
@@ -325,7 +350,7 @@ def export_local_lora(lora_id: str, dest_dir: Path) -> Path:
         while not _free(out):
             out = dest_dir / f"{src.stem}-{n}{src.suffix}"
             n += 1
-        meta = json.dumps({**(_sidecar_data(src) or {}), "kind": LORA_SIDECAR_KIND}, indent = 2)
+        meta = json.dumps({**(_pinned_sidecar(src) or {}), "kind": LORA_SIDECAR_KIND}, indent = 2)
         # Exporting into the folder it already sits in would copy a file onto itself.
         copy = not (out.exists() and os.path.samefile(src, out))
         # Both files are staged under names no scanner reads, so a failed export leaves nothing behind.
@@ -335,7 +360,11 @@ def export_local_lora(lora_id: str, dest_dir: Path) -> Path:
         try:
             if copy:
                 staged.append(_staging_name(dest_dir, src.stem))
-                shutil.copy2(src, staged[-1])
+                with _open_pinned(src) as fsrc, open(staged[-1], "xb") as fdst:
+                    shutil.copyfileobj(fsrc, fdst)
+                    st = os.fstat(fsrc.fileno())
+                os.chmod(staged[-1], stat.S_IMODE(st.st_mode))
+                os.utime(staged[-1], ns = (st.st_atime_ns, st.st_mtime_ns))
             staged.append(_staging_name(dest_dir, src.stem))
             Path(staged[-1]).write_text(meta, encoding = "utf-8")
             # Marker first: a scanner must never see the weight unmarked.

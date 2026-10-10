@@ -77,11 +77,11 @@ def test_export_never_shares_a_sidecar_with_another_format(loras, tmp_path):
 def test_a_failed_copy_leaves_nothing_behind(loras, tmp_path, monkeypatch):
     import shutil
 
-    def boom(src, dst):
-        Path(dst).write_bytes(b"half")
+    def boom(fsrc, fdst, *_):
+        fdst.write(b"half")
         raise OSError("disk full")
 
-    monkeypatch.setattr(shutil, "copy2", boom)
+    monkeypatch.setattr(shutil, "copyfileobj", boom)
     with pytest.raises(OSError):
         dl.export_local_lora("mystyle", tmp_path / "out")
     assert list((tmp_path / "out").iterdir()) == []
@@ -143,6 +143,44 @@ def test_a_case_variant_sibling_keeps_its_stem(loras, tmp_path):
     (out_dir / "mystyle.GGUF").write_bytes(b"model")
     assert dl.export_local_lora("mystyle", out_dir).name == "mystyle-2.safetensors"
     assert not (out_dir / "mystyle.json").exists()
+
+
+def test_a_source_swapped_after_the_scan_is_refused(loras, tmp_path, monkeypatch):
+    other = tmp_path / "other.safetensors"
+    other.write_bytes(b"someone else")
+    real_realpath = os.path.realpath
+    # The handle is opened on the catalog file, then the path resolves elsewhere: identities differ.
+    monkeypatch.setattr(
+        os.path,
+        "realpath",
+        lambda p, *a, **k: str(other)
+        if str(p).endswith("mystyle.safetensors") and "out" not in str(p)
+        else real_realpath(p, *a, **k),
+    )
+    with pytest.raises(FileNotFoundError):
+        dl.export_local_lora("mystyle", tmp_path / "out")
+    assert not (tmp_path / "out" / "mystyle.safetensors").exists()
+
+
+def test_the_copy_keeps_the_source_mode_and_mtime(loras, tmp_path):
+    src = loras / "mystyle.safetensors"
+    os.utime(src, (1_000_000, 1_000_000))
+    out = dl.export_local_lora("mystyle", tmp_path / "out")
+    assert out.stat().st_mtime == 1_000_000
+    assert out.stat().st_mode & 0o777 == src.stat().st_mode & 0o777
+
+
+def test_an_exported_gguf_lora_is_not_an_exported_chat_model(loras, tmp_path):
+    from utils.models.model_config import scan_exported_models
+    from utils.paths.storage_roots import exports_root
+
+    run = exports_root() / "image-loras"
+    run.mkdir(parents = True, exist_ok = True)
+    (run / "style.gguf").write_bytes(b"GGUF" + b"\0" * 60)
+    (run / "style.json").write_text(json.dumps({"kind": "diffusion-lora"}))
+    assert "image-loras" not in [r[0] for r in scan_exported_models()]
+    (run / "style.json").unlink()
+    assert "image-loras" in [r[0] for r in scan_exported_models()]
 
 
 def test_export_refuses_ids_outside_the_local_catalog(loras, tmp_path):

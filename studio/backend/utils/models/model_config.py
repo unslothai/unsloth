@@ -3962,10 +3962,14 @@ def scan_exported_models(
 
             # Flat GGUF export (exports/...-gguf/); neither mmproj files nor the imatrix an
             # imatrix export leaves beside the weights are loadable as main models.
+            from core.inference.diffusion_lora import is_image_lora_file
+
             gguf_files = [
                 f
                 for f in _iter_gguf_files(run_dir)
-                if not _is_mmproj(f.name) and not _is_imatrix_path(f.name)
+                if not _is_mmproj(f.name)
+                and not _is_imatrix_path(f.name)
+                and not is_image_lora_file(f)
             ]
             if gguf_files:
                 base_model = None
