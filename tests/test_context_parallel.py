@@ -534,7 +534,9 @@ def test_find_unused_parameters_is_off_under_cp_unless_the_user_set_it(monkeypat
         ddp_find_unused_parameters = user_value,
     )
     # What the Trainer builds for a PeftModel when the user leaves the argument as None.
-    handler = types.SimpleNamespace(find_unused_parameters = True if user_value is None else user_value)
+    handler = types.SimpleNamespace(
+        find_unused_parameters = True if user_value is None else user_value
+    )
     accelerator = types.SimpleNamespace(
         distributed_type = types.SimpleNamespace(name = "MULTI_GPU"),
         state = types.SimpleNamespace(device_mesh = None),
