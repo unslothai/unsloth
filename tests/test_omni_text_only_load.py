@@ -25,9 +25,8 @@ DEVICE = "cuda" if has_real_cuda() else "cpu"
 
 @pytest.fixture(autouse = True)
 def _stock_causal_lm_loss(monkeypatch):
-    """Any FastModel.from_pretrained earlier on this worker (an xdist neighbour, or the capture tests here)
-    swaps LOSS_MAPPING to Unsloth's Triton cross entropy, which a CPU forward cannot run. These tests check
-    routing, not the loss, so each one starts from the stock loss whatever ran before it."""
+    """An earlier FastModel.from_pretrained on this worker points LOSS_MAPPING at Unsloth's Triton CE, which a
+    CPU forward cannot run; these tests check routing, so each starts from the stock loss."""
     loss_utils = pytest.importorskip("transformers.loss.loss_utils")
     stock = loss_utils.ForCausalLMLoss
     for key, fn in list(loss_utils.LOSS_MAPPING.items()):
