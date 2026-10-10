@@ -2148,6 +2148,25 @@ def test_packing_skip_warning_keeps_custom_collator_reason(monkeypatch, caplog):
     assert "UNSLOTH_RETURN_LOGITS" not in messages[0]
 
 
+def test_context_parallel_disables_eval_packing(monkeypatch):
+    # TRL packs eval splits from eval_packing independently of packing; ring attention has no varlen path.
+    monkeypatch.delenv("UNSLOTH_RETURN_LOGITS", raising = False)
+    fake_trainer = _patch_fake_sft_trainer()
+    config = SimpleNamespace(
+        packing = True,
+        eval_packing = True,
+        padding_free = None,
+        remove_unused_columns = True,
+        context_parallel_size = 2,
+    )
+    fake_trainer(
+        model = _warn_text_model(),
+        args = config,
+        train_dataset = Dataset.from_dict({"text": ["sample"]}),
+    )
+    assert config.packing is False and config.eval_packing is False
+
+
 # --- packed-boundary guard on the fused-CE path ---------------------------------------
 # mask_packed_sequence_boundaries needs shifted labels, so fused-CE paths (which shift
 # internally) call mask_packed_boundary_labels, the pre-shift equivalent.

@@ -3144,6 +3144,16 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         max_seq_length_call = ""
         max_seq_length_post = ""
 
+    # Read by unsloth.context_parallel; a field here keeps SFTConfig itself unpatched (pickling).
+    if trainer_file == "sft_trainer" and "context_parallel_size" not in call_args:
+        max_seq_length_pre += """
+    context_parallel_size : Optional[int] = field(
+        default = 1,
+        metadata = {'help': 'Ranks per context parallel group (SDPA ring attention). 1 disables it.'},
+    )"""
+        max_seq_length_call += "context_parallel_size = 1,"
+        max_seq_length_post += "\n        self.context_parallel_size = context_parallel_size"
+
     if "output_dir" in call_args:
         saving_check = (
             "if output_dir is None and save_strategy == 'steps' and save_steps == 500:\n"

@@ -746,3 +746,6 @@ from unsloth_zoo.rl_environments import (
 # inspect.getsource() and corrupts downstream drift detectors.
 if os.environ.get("UNSLOTH_ALLOW_CPU", "0") != "1":
     _patch_trl_trainer()
+
+    from .context_parallel import patch_sft_trainer
+    patch_sft_trainer()
