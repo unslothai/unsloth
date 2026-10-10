@@ -1738,6 +1738,8 @@ test("a Word numbered list keeps its numbers", async () => {
 test("Word heading styles linked to list levels number by their level", async () => {
   const w = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
   const heading = (text: string, style: string) => `<w:p><w:pPr><w:pStyle w:val="${style}"/></w:pPr><w:r><w:t>${text}</w:t></w:r></w:p>`;
+  // A numbering style points at the list (numId 1) whose abstract definition holds the levels.
+  const linkStyle = '<w:style w:type="numbering" w:styleId="ClauseList"><w:pPr><w:numPr><w:numId w:val="1"/></w:numPr></w:pPr></w:style>';
   const styleXml = (id: string) =>
     `<w:style w:type="paragraph" w:styleId="${id}"><w:pPr><w:numPr><w:numId w:val="1"/></w:numPr></w:pPr></w:style>`;
   const bytes = zipSync({
@@ -1745,15 +1747,17 @@ test("Word heading styles linked to list levels number by their level", async ()
     "_rels/.rels": relationships([["officeDocument", "word/document.xml"]]),
     "word/_rels/document.xml.rels": relationships([["numbering", "numbering.xml"], ["styles", "styles.xml"]]),
     "word/document.xml": strToU8(
-      `<w:document ${w}><w:body>${heading("Scope", "Heading1")}${heading("Terms", "Heading2")}${heading("Notice", "Heading2")}${heading("Fees", "Heading1")}</w:body></w:document>`,
+      `<w:document ${w}><w:body>${heading("Scope", "Heading1")}${heading("Terms", "Heading2")}${heading("Notice", "Heading2")}${heading("Fees", "Heading1")}` +
+        '<w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="2"/></w:numPr></w:pPr><w:r><w:t>Styled</w:t></w:r></w:p></w:body></w:document>',
     ),
     "word/numbering.xml": strToU8(
       `<w:numbering ${w}><w:abstractNum w:abstractNumId="1">` +
         '<w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:pStyle w:val="Heading1"/><w:lvlText w:val="%1."/></w:lvl>' +
         '<w:lvl w:ilvl="1"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:pStyle w:val="Heading2"/><w:lvlText w:val="%1.%2"/></w:lvl>' +
-        '</w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num></w:numbering>',
+        '</w:abstractNum><w:abstractNum w:abstractNumId="2"><w:numStyleLink w:val="ClauseList"/></w:abstractNum>' +
+        '<w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num><w:num w:numId="2"><w:abstractNumId w:val="2"/></w:num></w:numbering>',
     ),
-    "word/styles.xml": strToU8(`<w:styles ${w}>${styleXml("Heading1")}${styleXml("Heading2")}</w:styles>`),
+    "word/styles.xml": strToU8(`<w:styles ${w}>${styleXml("Heading1")}${styleXml("Heading2")}${linkStyle}</w:styles>`),
   });
   const globals = globalThis as { DOMParser?: unknown; XMLSerializer?: unknown };
   const original = { DOMParser: globals.DOMParser, XMLSerializer: globals.XMLSerializer };
@@ -1762,7 +1766,7 @@ test("Word heading styles linked to list levels number by their level", async ()
   try {
     const { default: mammoth } = await import("mammoth");
     const { value } = await mammoth.extractRawText({ buffer: Buffer.from(writeDocxListNumbers(bytes)) });
-    assert.equal(value, "1. Scope\n\n1.1 Terms\n\n1.2 Notice\n\n2. Fees\n\n");
+    assert.equal(value, "1. Scope\n\n1.1 Terms\n\n1.2 Notice\n\n2. Fees\n\n3. Styled\n\n");
   } finally {
     Object.assign(globals, original);
   }
@@ -1923,6 +1927,11 @@ test("Word list counters follow Word's sharing, restart and bullet rules", async
   const sections: [string, number, number, boolean?][] = [["a", 1, 0], ["b", 1, 0, true], ["c", 1, 0]];
   assert.equal(await docxListText(levels, plain, sections, ' w15:restartNumberingAfterBreak="1"'), "1. a | 2. b | 1. c");
   assert.equal(await docxListText(levels, plain, sections, ' w15:restartNumberingAfterBreak="0"'), "1. a | 2. b | 3. c");
+  // Ordinal levels read 1st, 2nd, ..., 11th, 12th.
+  const ordinals = Array.from({ length: 12 }, (_, i): [string, number, number] => [`o${i + 1}`, 1, 0]);
+  assert.ok(
+    (await docxListText(wordLevel(0, "ordinal", "%1"), plain, ordinals)).endsWith("1st o1 | 2nd o2 | 3rd o3 | 4th o4 | 5th o5 | 6th o6 | 7th o7 | 8th o8 | 9th o9 | 10th o10 | 11th o11 | 12th o12"),
+  );
   // lvlRestart 0 keeps a level counting across its parents.
   const running = wordLevel(0, "decimal", "%1.") + wordLevel(1, "decimal", "(%2)", '<w:lvlRestart w:val="0"/>');
   assert.equal(

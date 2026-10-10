@@ -1056,6 +1056,10 @@ export function writeDocxTableRows(archive: Uint8Array): Uint8Array {
 
 function listNumber(n: number, format: string | undefined): string {
   if (format === "none") return "";
+  if (format === "ordinal" && Number.isSafeInteger(n) && n >= 1) {
+    const suffix = n % 100 >= 11 && n % 100 <= 13 ? "th" : (["th", "st", "nd", "rd"][n % 10] ?? "th");
+    return `${n}${suffix}`;
+  }
   const lower = format?.startsWith("lower");
   // Out-of-range counters read as decimals, like CSS (roman stops at 3999); this also bounds the loops below.
   if (n < 1 || n > (format?.endsWith("Roman") ? 3999 : 26 * 256) || !Number.isInteger(n) || !(lower || format?.startsWith("upper"))) {
@@ -1134,10 +1138,20 @@ function injectDocxListNumbers(archive: Uint8Array): Uint8Array {
   // Each instance's nine levels are resolved once, not per paragraph.
   type Instance = { abstractId: string; levels: Level[]; restarts: number[]; byStyle: Map<string, number> };
   const instances = new Map<string, Instance | undefined>();
+  // A list defined through a numbering style (numStyleLink) takes its levels from that style's list.
+  const linkedAbstract = (id: string, depth = 0): string => {
+    const link = wordValue(abstracts.get(id), "numStyleLink");
+    const style = link === undefined ? undefined : styleById.get(link);
+    if (!style || depth > 5) return id;
+    const pPr = childElements(style, style.namespaceURI ?? "", "pPr")[0];
+    const numPr = pPr && childElements(pPr, style.namespaceURI ?? "", "numPr")[0];
+    const target = wordValue(nums.get(wordValue(numPr, "numId") ?? ""), "abstractNumId");
+    return target === undefined || target === id ? id : linkedAbstract(target, depth + 1);
+  };
   const instance = (numId: string): Instance | undefined => {
     if (instances.has(numId)) return instances.get(numId);
     const num = nums.get(numId);
-    const abstractId = wordValue(num, "abstractNumId") ?? "";
+    const abstractId = linkedAbstract(wordValue(num, "abstractNumId") ?? "");
     const abstract = abstracts.get(abstractId);
     let resolved: Instance | undefined;
     if (num && abstract) {
