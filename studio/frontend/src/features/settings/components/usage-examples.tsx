@@ -56,6 +56,10 @@ import {
   statusGgufVerdict,
 } from "./agent-command";
 import { keylessBaseEligible } from "./keyless-example-eligibility";
+import {
+  readUseTunnelPref,
+  writeUseTunnelPref,
+} from "./tunnel-preference";
 
 type ExampleType =
   | "curl"
@@ -376,34 +380,14 @@ function buildSnippets(
 }
 
 const KEY_PLACEHOLDER = "sk-unsloth-YOUR_KEY";
-// the openai sdks require some api_key, so name one rather than leave it blank
+// OpenAI SDKs require an api_key value even for keyless access.
 const KEYLESS_KEY_PLACEHOLDER = "not-needed";
-const USE_TUNNEL_KEY = "unsloth_api_use_tunnel";
-// Slow retry while /v1 has nothing to name: a download or load moves no store state.
+// retry while /v1 has no model because downloads and loads do not update the store.
 const CATALOG_RETRY_MS = 15000;
-// Slower beat once something is servable: an idle unload frees a model without
-// touching the store, so residency is never settled for good.
+// keep polling after a model appears because idle unloads do not update the store.
 const CATALOG_IDLE_MS = 60000;
 
-function readUseTunnelPref(): boolean {
-  if (typeof window === "undefined") return true;
-  try {
-    return window.localStorage.getItem(USE_TUNNEL_KEY) !== "false";
-  } catch {
-    return true;
-  }
-}
-
-function writeUseTunnelPref(value: boolean): void {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(USE_TUNNEL_KEY, value ? "true" : "false");
-  } catch {
-    // Non-fatal
-  }
-}
-
-// A checkpoint can be an on-disk load path, which /v1 never advertises. Mirrors _looks_like_path.
+// match the backend path heuristic because /v1 never advertises on-disk checkpoints.
 function looksLikePath(id: string): boolean {
   return (
     id.startsWith("/") ||
@@ -415,7 +399,7 @@ function looksLikePath(id: string): boolean {
   );
 }
 
-// The model the examples name: always an id /v1 resolves against, null when there is none.
+// return only model ids that /v1 can resolve, or null when none are available.
 function useExampleModelName(keylessOnly: boolean): string | null {
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const ggufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);

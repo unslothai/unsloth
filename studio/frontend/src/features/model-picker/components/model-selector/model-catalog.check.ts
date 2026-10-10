@@ -125,6 +125,11 @@ assert.ok(qwen21);
 assert.equal(qwen21.canonicalId, "unsloth/Qwen-Image-2.1");
 assert.equal(groupForRepoId("unsloth/Qwen-Image-2.1-FP8", IMAGE_CATALOG), qwen21);
 assert.equal(groupForRepoId("unsloth/Qwen-Image-2.1-INT8", IMAGE_CATALOG), qwen21);
+// Turbo is its own group, prequant repo included: its checkpoints are baked from a different denoiser.
+const qwen21Turbo = groupForRepoId("Qwen/Qwen-Image-2.1-Turbo", IMAGE_CATALOG);
+assert.ok(qwen21Turbo);
+assert.equal(qwen21Turbo.canonicalId, "Qwen/Qwen-Image-2.1-Turbo");
+assert.equal(groupForRepoId("unsloth/Qwen-Image-2.1-Turbo-FP8", IMAGE_CATALOG), qwen21Turbo);
 assert.notEqual(groupForRepoId("Qwen/Qwen-Image", IMAGE_CATALOG), qwen21);
 assert.equal(
   groupForRepoId("Qwen/Qwen-Image", IMAGE_CATALOG)?.canonicalId,
@@ -1181,6 +1186,8 @@ const PREQUANT_ROWS = [
   ["Qwen/Qwen-Image-2512", "unsloth/Qwen-Image-2512-FP8"],
   ["black-forest-labs/FLUX.1-schnell", "unsloth/FLUX.1-schnell-FP8"],
   ["krea/Krea-2-Turbo", "unsloth/Krea-2-Turbo-FP8"],
+  ["Qwen/Qwen-Image-2.1", "unsloth/Qwen-Image-2.1-FP8"],
+  ["Qwen/Qwen-Image-2.1-Turbo", "unsloth/Qwen-Image-2.1-Turbo-FP8"],
 ] as const;
 
 for (const [id, repo] of PREQUANT_ROWS) {
