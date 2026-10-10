@@ -120,6 +120,16 @@ def test_a_save_killed_mid_promotion_still_resumes_on_its_targets(run_dir):
     assert cfg.lora_target_modules == _OLD_ZIMAGE_TARGETS
 
 
+def test_a_run_folder_named_like_a_bundle_still_resumes_on_its_targets():
+    from utils.paths import outputs_root
+
+    run_dir = outputs_root() / "checkpoint-2026"
+    run_dir.mkdir(parents = True, exist_ok = True)
+    _write_bundle(run_dir, _old_zimage_identity())
+    cfg = _zimage_cfg(resume_from_checkpoint = str(run_dir))
+    assert cfg.lora_target_modules == _OLD_ZIMAGE_TARGETS
+
+
 def test_explicit_request_targets_win_over_the_recorded_ones(run_dir):
     _write_bundle(run_dir, _old_zimage_identity())
     cfg = _zimage_cfg(
