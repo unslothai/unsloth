@@ -691,6 +691,14 @@
       "reason": "Reads back a .pt file this function just wrote with torch.save into temporary_location; never a downloaded file."
     },
     {
+      "file": "unsloth/tokenizers_v1.py",
+      "rule": "dynamic-import",
+      "sink": "spec_from_file_location",
+      "digest": "71f24ac068b052d3",
+      "count": 1,
+      "reason": "Opt-in only (UNSLOTH_TOKENIZERS_V1=1): loads the tokenizers 1.0 extension module from the directory the user installed it into (UNSLOTH_TOKENIZERS_V1_PATH, default ~/.cache/unsloth/tokenizers_v1); never a downloaded or model-supplied file."
+    },
+    {
       "file": "unsloth/trainer.py",
       "rule": "dynamic-import",
       "sink": "get_class_from_dynamic_module",

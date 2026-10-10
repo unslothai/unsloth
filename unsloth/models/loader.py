@@ -42,6 +42,7 @@ from .mistral_format import (
     prepare_mistral_format_checkpoint,
 )
 from .lora_init import adapter_used_fast_pissa, fast_lora_init, record_fast_pissa
+from ..tokenizers_v1 import tokenizers_v1_on_return
 from .loader_utils import (
     DEFAULT_DEVICE_MAP,
     OFFLOAD_EMBEDDING_AUTO,
@@ -956,6 +957,7 @@ def _vllm_unavailable_error():
 
 class FastLanguageModel(FastLlamaModel):
     @staticmethod
+    @tokenizers_v1_on_return
     @_offline_aware_load
     @mistral_format_redirect
     @track_explicit_4bit_request
@@ -1830,6 +1832,7 @@ class FastModel(FastBaseModel):
         return FastBaseModel.for_training(model, use_gradient_checkpointing)
 
     @staticmethod
+    @tokenizers_v1_on_return
     @_restore_load_scoped_env
     @_offline_aware_load
     @mistral_format_redirect
