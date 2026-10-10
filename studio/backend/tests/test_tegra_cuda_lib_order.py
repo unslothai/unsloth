@@ -21,7 +21,11 @@ SYSTEM = ("/usr/local/cuda/lib64", "/usr/local/cuda/targets/aarch64-linux/lib", 
 def host(monkeypatch, tmp_path):
     """A Linux aarch64 host whose venv carries pip CUDA and torch libs; returns a Tegra switch."""
     site = tmp_path / "lib" / "python3.12" / "site-packages"
-    pip_dirs = [site / "nvidia" / "cu13" / "lib", site / "nvidia" / "cudnn" / "lib", site / "torch" / "lib"]
+    pip_dirs = [
+        site / "nvidia" / "cu13" / "lib",
+        site / "nvidia" / "cudnn" / "lib",
+        site / "torch" / "lib",
+    ]
     for d in pip_dirs:
         d.mkdir(parents = True)
     (site / "torch" / "__init__.py").write_text("")
@@ -120,7 +124,9 @@ def test_other_hosts_still_hoist_torch_cuda_in_the_backend(host, monkeypatch):
         lambda name: type("S", (), {"origin": str(state["site"] / "torch" / "__init__.py")})(),
     )
     paths = _run_paths(monkeypatch)
-    assert paths.index(str(state["site"] / "nvidia" / "cu13" / "lib")) < paths.index("/usr/local/cuda/lib64")
+    assert paths.index(str(state["site"] / "nvidia" / "cu13" / "lib")) < paths.index(
+        "/usr/local/cuda/lib64"
+    )
 
 
 def test_is_tegra_reads_the_markers_and_never_raises(monkeypatch, tmp_path):
