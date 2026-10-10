@@ -95,6 +95,7 @@ def _select(
             transformers, "AutoModelForVision2Seq", transformers.AutoModelForImageTextToText
         ),
         "AutoModelForImageTextToText": transformers.AutoModelForImageTextToText,
+        "AutoModelForSpeechSeq2Seq": transformers.AutoModelForSpeechSeq2Seq,
         "_multimodal_auto_classes": lambda: (),
         "AutoProcessor": fake_processor,
         "AutoTokenizer": fake_tokenizer,

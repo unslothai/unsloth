@@ -187,3 +187,87 @@ test("going Back to a keyed file restores its key, so its card finds the tab aga
   store.goBack(copy?.id ?? "");
   assert.equal(useBrowserStore.getState().tabs.find((candidate) => candidate.id === copy?.id)?.openKey, null);
 });
+
+test("a page's link that turns out to be a download leaves that page showing", () => {
+  const store = useBrowserStore.getState();
+  store.openUrl("https://a.example/page", { newTab: true });
+  const tabId = useBrowserStore.getState().activeTabId ?? "";
+  const tab = () => useBrowserStore.getState().tabs.find((candidate) => candidate.id === tabId)!;
+  const page = currentEntry(tab());
+  store.navigate(tabId, { url: "https://cdn.example/setup.zip", from: "https://a.example/page" });
+  const file = currentEntry(tab());
+  assert.equal(file.kind === "web" && file.from, "https://a.example/page");
+  store.leaveDownload(tabId, file);
+  assert.equal(currentEntry(tab()), page);
+  assert.equal(tab().history.length, 1);
+  assert.equal(tab().history.includes(file), false);
+  store.navigate(tabId, { url: "https://a.example/wait" });
+  store.navigate(tabId, { url: "https://cdn.example/f.zip", from: "https://a.example/wait" }, { replace: true });
+  const replaced = currentEntry(tab());
+  store.leaveDownload(tabId, replaced);
+  assert.equal(currentEntry(tab()), replaced);
+  store.navigate(tabId, { url: "https://cdn.example/typed.zip" });
+  const typed = currentEntry(tab());
+  store.leaveDownload(tabId, typed);
+  assert.equal(currentEntry(tab()), typed);
+  store.navigate(tabId, { url: "https://cdn.example/g.zip", from: "https://cdn.example/typed.zip" });
+  const later = currentEntry(tab());
+  store.navigate(tabId, { url: "https://b.example/" });
+  store.leaveDownload(tabId, later);
+  const after = currentEntry(tab());
+  assert.equal(after.kind === "web" && after.url, "https://b.example/");
+  store.closeTab(tabId);
+});
+
+test("leaving a chat closes tabs containing its pages in history, and only those", () => {
+  const store = useBrowserStore.getState();
+  for (const tab of useBrowserStore.getState().tabs) store.closeTab(tab.id);
+  const html = (name: string, key: string) =>
+    store.openFile({ blob: new Blob(["<p>hi</p>"], { type: "text/html" }), name, contentType: "text/html", key: `html:${key}` });
+  html("shown.html", "a1");
+  html("left.html", "a2");
+  store.navigate(useBrowserStore.getState().activeTabId ?? "", { url: "https://example.com/" });
+  html("back.html", "a3");
+  const back = useBrowserStore.getState().activeTabId ?? "";
+  store.navigate(back, { url: "https://other.example/" });
+  store.goBack(back);
+  store.openUrl("https://site.example/", { newTab: true });
+  store.openFile({ blob: new Blob(["notes"]), name: "notes.txt", key: "sandbox:s:notes.txt" });
+  store.closeChatPages();
+  const shown = useBrowserStore.getState().tabs.map((tab) => {
+    const entry = currentEntry(tab);
+    return entry.kind === "file" ? entry.name : entry.kind === "web" ? entry.url : entry.kind;
+  });
+  assert.deepEqual(shown, ["https://site.example/", "notes.txt"]);
+  assert.equal(
+    useBrowserStore.getState().tabs.some((tab) =>
+      tab.history.some((entry) => entry.kind === "file" && entry.chatPage),
+    ),
+    false,
+  );
+  assert.equal(useBrowserStore.getState().open, true);
+  for (const tab of useBrowserStore.getState().tabs) store.closeTab(tab.id);
+  html("only.html", "a4");
+  store.closeChatPages();
+  assert.equal(useBrowserStore.getState().tabs.length, 0);
+  assert.equal(useBrowserStore.getState().open, false);
+});
+
+test("leaving a chat closes a duplicated page that no longer claims the card's key", () => {
+  const store = useBrowserStore.getState();
+  for (const tab of useBrowserStore.getState().tabs) store.closeTab(tab.id);
+  store.openFile({
+    blob: new Blob(["<p>hi</p>"], { type: "text/html" }),
+    name: "page.html",
+    contentType: "text/html",
+    key: "html:duplicate",
+  });
+  store.duplicateTab(useBrowserStore.getState().activeTabId ?? "");
+  assert.equal(useBrowserStore.getState().tabs.length, 2);
+  assert.equal(
+    useBrowserStore.getState().tabs.filter((tab) => tab.openKey === "file:html:duplicate").length,
+    1,
+  );
+  store.closeChatPages();
+  assert.equal(useBrowserStore.getState().tabs.length, 0);
+});

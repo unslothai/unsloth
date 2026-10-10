@@ -128,6 +128,7 @@ import {
 } from "./types/runtime";
 
 import { effectiveMinPMode, isMinPMode } from "./lib/min-p-policy";
+import { mlxSpecFallbackMessage } from "./lib/mlx-spec-fallback";
 
 export { defaultInferenceParams, type Preset } from "./presets/preset-policy";
 export type { InferenceParams } from "./types/runtime";
@@ -626,9 +627,7 @@ export function ChatSettingsPanel({
         `llama.cpp updated to ${result.tag ?? "the latest build"}.${reloadHint}`,
       );
     } else {
-      toast.error(
-        `llama.cpp update failed: ${result.error ?? "unknown error"}`,
-      );
+      toast.error(`Update failed: ${result.error ?? "unknown error"}`);
     }
   }, [applyLlamaUpdate, speculativeDrafterLabel]);
   const loadedEffectiveContext = customContextLength ?? loadedContextLength;
@@ -644,13 +643,19 @@ export function ChatSettingsPanel({
       // ngram-mod runs no drafter, so only the binary stand-down reaches it. Without
       // this the panel shows ngram selected, no speculation running, and no reason.
       speculativeType === "ngram");
+  const loadedIsMlx = useChatRuntimeStore((s) => s.loadedIsMlx);
+  const mlxSpecFallback =
+    !isExternalModel && loadedIsMlx && specFallbackReason != null
+      ? mlxSpecFallbackMessage(specFallbackReason, specDrafterKind)
+      : null;
   const showContextVramWarning =
     !isExternalModel &&
     isGguf &&
     maxContextLength != null &&
     loadedEffectiveContext != null &&
     loadedEffectiveContext > maxContextLength;
-  const showLoadedDiagnostics = showSpecFallback || showContextVramWarning;
+  const showLoadedDiagnostics =
+    showSpecFallback || mlxSpecFallback != null || showContextVramWarning;
   const hasModelContent = showLoadedDiagnostics;
   const setActivePresetSource = useChatRuntimeStore(
     (s) => s.setActivePresetSource,
@@ -1165,10 +1170,10 @@ export function ChatSettingsPanel({
                       reason: specFallbackReason,
                       drafter: speculativeDrafterLabel,
                       isLocalGguf,
-                      updateAvailable: Boolean(llamaUpdateStatus?.update_available),
+                      updateAvailable: Boolean(llamaUpdateStatus?.llama.update_available),
                     })}
                   </p>
-                  {mtpUpdatable && llamaUpdateStatus?.update_available && (
+                  {mtpUpdatable && llamaUpdateStatus?.llama.update_available && (
                     <Button
                       size="sm"
                       className="corner-squircle mt-2 h-7 text-ui-12"
@@ -1179,6 +1184,11 @@ export function ChatSettingsPanel({
                       {llamaUpdating ? "Updating..." : "Update llama.cpp"}
                     </Button>
                   )}
+                </div>
+              )}
+              {mlxSpecFallback && (
+                <div className="rounded-lg bg-amber-500/[0.08] px-3 py-2 text-ui-12 leading-[1.4] text-nav-fg/80">
+                  <p>{mlxSpecFallback}</p>
                 </div>
               )}
               {showContextVramWarning && (

@@ -207,6 +207,51 @@ def test_known_noise_does_not_fail(tmp_path: Path) -> None:
     assert result.returncode == 0, f"noise failed the lane: {result.stdout}"
 
 
+def test_winget_spinner_frames_do_not_fail(tmp_path: Path) -> None:
+    """How many spinner frames winget leaves in the log depends on how long its source query took."""
+    lines = BASELINE.split("\n")
+    base = _write(
+        tmp_path / "base", transcript = "\n".join(lines[:1] + ["   - ", "   \\ "] + lines[1:])
+    )
+    head = _write(
+        tmp_path / "head", transcript = "\n".join(lines[:1] + ["   - ", "   | ", "   - "] + lines[1:])
+    )
+    result = _run(base, head)
+    assert result.returncode == 0, f"spinner frames failed the lane: {result.stdout}"
+
+
+def test_winget_partial_progress_frames_do_not_fail(tmp_path: Path) -> None:
+    """How many partly filled download bars winget leaves in the log depends on the network."""
+    full = "  ██████████████████████████████  17.2 MB / 17.2 MB"
+    lines = BASELINE.split("\n")
+    base_bars = ["  █████████▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒  5.1 MB / 17.2 MB", full]
+    head_bars = [
+        "  ██████▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒  3.0 MB / 17.2 MB",
+        "  █████████████████████▒▒▒▒▒▒▒▒▒  70%",
+        full,
+    ]
+    base = _write(tmp_path / "base", transcript = "\n".join(lines[:1] + base_bars + lines[1:]))
+    head = _write(tmp_path / "head", transcript = "\n".join(lines[:1] + head_bars + lines[1:]))
+    result = _run(base, head)
+    assert result.returncode == 0, f"partial progress frames failed the lane: {result.stdout}"
+
+
+def test_a_download_that_never_finishes_still_compares(tmp_path: Path) -> None:
+    """The full bar a finished download ends on is kept, so losing it is reported."""
+    lines = BASELINE.split("\n")
+    full = "  ██████████████████████████████  17.2 MB / 17.2 MB"
+    base = _write(tmp_path / "base", transcript = "\n".join(lines[:1] + [full] + lines[1:]))
+    head = _write(tmp_path / "head", transcript = "\n".join(lines[:1] + lines[1:]))
+    assert _run(base, head).returncode == 2
+
+
+def test_a_dash_line_with_text_still_compares(tmp_path: Path) -> None:
+    """Only a bare frame is dropped: winget's own "  - Packages" list is output the user reads."""
+    base = _write(tmp_path / "base", transcript = BASELINE + "\n  - Packages")
+    head = _write(tmp_path / "head", transcript = BASELINE + "\n  - Package")
+    assert _run(base, head).returncode == 2
+
+
 def test_version_drift_is_normalised_but_still_printed(tmp_path: Path) -> None:
     """Normalising something away without saying so is how a lane stops telling you anything."""
     base = _write(tmp_path / "base")

@@ -28,6 +28,18 @@ export function openExternalLink(url: string): void {
  *  preventDefault; false lets native navigation proceed (relative, empty). */
 export function openLink(url: string): boolean {
   if (!url) return false;
+  // The URL parser drops tabs and newlines, so `https:\t//host` navigates like `https://host`.
+  url = url.replace(/[\t\n\r]/g, "");
+
+  // `https:host` (no slashes) is absolute too: open it as a web link instead of letting native navigation replace
+  // Studio's page.
+  if (/^https?:/i.test(url) && !url.includes("://")) {
+    try {
+      url = new URL(url).href;
+    } catch {
+      return true;
+    }
+  }
 
   // Anchor links scroll within the page, don't open externally
   if (url.startsWith("#")) {

@@ -5,9 +5,10 @@ import { useSyncExternalStore } from "react";
 
 // Whether an update banner may appear, per component. On by default; only an
 // explicit "false" (Settings -> General -> Notifications) disables it. A switch
-// each: the two components ship on their own schedules.
+// each: the components ship on their own schedules.
 const LLAMA_STORAGE_KEY = "unsloth_show_llama_update_banner";
 const WHISPER_STORAGE_KEY = "unsloth_show_whisper_update_banner";
+const AUDIO_CPP_STORAGE_KEY = "unsloth_show_audio_cpp_update_banner";
 
 const listeners = new Set<() => void>();
 
@@ -33,13 +34,17 @@ function writePref(key: string, show: boolean): void {
   for (const listener of listeners) listener();
 }
 
-// One listener set for both keys: a subscriber re-reads its own getter, so a
+// One listener set for every key: a subscriber re-reads its own getter, so a
 // notification it did not need costs it a comparison.
 function subscribe(listener: () => void): () => void {
   listeners.add(listener);
   // Sync toggles made in another tab.
   const onStorage = (event: StorageEvent) => {
-    if (event.key === LLAMA_STORAGE_KEY || event.key === WHISPER_STORAGE_KEY) {
+    if (
+      event.key === LLAMA_STORAGE_KEY ||
+      event.key === WHISPER_STORAGE_KEY ||
+      event.key === AUDIO_CPP_STORAGE_KEY
+    ) {
       listener();
     }
   };
@@ -72,4 +77,16 @@ export function setShowWhisperUpdateBanner(show: boolean): void {
 
 export function useShowWhisperUpdateBanner(): boolean {
   return useSyncExternalStore(subscribe, getShowWhisperUpdateBanner);
+}
+
+export function getShowAudioCppUpdateBanner(): boolean {
+  return readPref(AUDIO_CPP_STORAGE_KEY);
+}
+
+export function setShowAudioCppUpdateBanner(show: boolean): void {
+  writePref(AUDIO_CPP_STORAGE_KEY, show);
+}
+
+export function useShowAudioCppUpdateBanner(): boolean {
+  return useSyncExternalStore(subscribe, getShowAudioCppUpdateBanner);
 }
