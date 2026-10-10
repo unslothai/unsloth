@@ -1574,14 +1574,53 @@ def test_one_card_does_not_stand_in_for_a_listing_main():
 def test_post_body_outside_article_beats_author_bio_card():
     post = "Main post body paragraph with the actual story. " * 30
     bio = "Author bio describing the writer and their work. " * 6
+    related = "".join(
+        f"<article class='related'><h3>Related {i}</h3><p>{'Teaser for another post. ' * 9}</p></article>"
+        for i in range(3)
+    )
     html = (
         "<body><main><h1>Post title</h1>"
         f"<div class='post-content'><p>{post}</p></div>"
-        f"<article class='author-card'><p>{bio}</p></article>"
+        f"<article class='author-card'><p>{bio}</p></article>{related}"
         "</main></body>"
     )
     out = html_to_markdown(html, main_content = True)
     assert "Main post body paragraph" in out
+
+
+def test_lone_readme_article_is_kept_over_repo_page_chrome():
+    readme = "Short README describing the library. " * 8
+    rows = "".join(
+        f"<tr><td><a href='/o/r/tree/main/dir{i}'>dir{i}</a></td>"
+        f"<td><a href='/o/r/commit/{i}'>Update the dir{i} module and its tests</a></td><td>2 days ago</td></tr>"
+        for i in range(25)
+    )
+    html = (
+        "<body><main><h2>Repository files navigation</h2>"
+        f"<table><tr><th>Name</th><th>Last commit message</th><th>Last commit date</th></tr>{rows}</table>"
+        f"<article class='markdown-body'><h1>Lib</h1><p>{readme}</p></article>"
+        "<div><h2>About</h2><p>A small library for doing one thing well.</p></div>"
+        "</main></body>"
+    )
+    out = html_to_markdown(html, main_content = True)
+    assert "Short README describing the library." in out
+    assert "Last commit message" not in out
+
+
+def test_link_heavy_comments_do_not_pull_main_over_the_post():
+    post = "The post explains the topic in full detail here. " * 50
+    comments = "".join(
+        f"<article class='comment'><p><a href='https://example.com/author/{i}?{'utm_source=comments&' * 20}'>Reader {i}</a> "
+        f"says: {'Thanks for writing this up. ' * 9}</p></article>"
+        for i in range(6)
+    )
+    html = (
+        f"<body><main><article class='post'><h1>Post</h1><p>{post}</p></article>"
+        f"<section id='comments'>{comments}</section></main></body>"
+    )
+    out = html_to_markdown(html, main_content = True)
+    assert "The post explains the topic" in out
+    assert "Thanks for writing this up." not in out
 
 
 # ── truncated (unclosed) main-content scopes must still be scored ──
