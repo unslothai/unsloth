@@ -27,7 +27,12 @@ import { FolderAddIcon, FolderSyncIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { MoreHorizontalIcon } from "lucide-react";
 import { useState } from "react";
-import type { FolderSyncJob, LinkedFolderScope } from "../types/rag";
+import type {
+  FolderSyncJob,
+  LinkedFolder,
+  LinkedFolderScope,
+  LinkedFolderSkipReason,
+} from "../types/rag";
 import { useLinkedFolders } from "./use-linked-folders";
 
 /** Grouped folder card, shared with the create project dialog. */
@@ -54,6 +59,74 @@ function jobSummary(job: FolderSyncJob): string {
   return discovered == null
     ? job.stage || "Scanning folder"
     : `${processed} of ${discovered} files`;
+}
+
+const SKIP_LABELS: Record<LinkedFolderSkipReason, (count: number) => string> = {
+  gitignored: (n) => `${n} ignored by .gitignore`,
+  build_dirs: (n) => `${n} build folder${n === 1 ? "" : "s"}`,
+  too_large: (n) => `${n} large data file${n === 1 ? "" : "s"}`,
+  over_limit: (n) => `${n} past the file limit`,
+};
+
+export function skippedSummary(folder: LinkedFolder): string | null {
+  const parts = (Object.keys(SKIP_LABELS) as LinkedFolderSkipReason[]).flatMap(
+    (reason) => {
+      const count = folder.skipped?.[reason] ?? 0;
+      return count > 0 ? [SKIP_LABELS[reason](count)] : [];
+    },
+  );
+  return parts.length > 0 ? `Skipped ${parts.join(" · ")}` : null;
+}
+
+/** What the last pass left out and every file it could not index; the job error names only three. */
+function FolderReport({ folder }: { folder: LinkedFolder }) {
+  const [open, setOpen] = useState(false);
+  const skipped = skippedSummary(folder);
+  const failures = folder.failures ?? [];
+  const failureCount = folder.failureCount ?? failures.length;
+  if (!skipped && failureCount === 0) return null;
+  return (
+    <div className="mt-1 flex flex-col gap-1 text-ui-11 text-muted-foreground">
+      {skipped ? (
+        <p
+          className="truncate"
+          title={`${skipped}. Hidden folders, dependencies and secrets are never indexed.`}
+        >
+          {skipped}
+        </p>
+      ) : null}
+      {failureCount > 0 ? (
+        <>
+          <button
+            type="button"
+            aria-expanded={open}
+            onClick={() => setOpen((value) => !value)}
+            className="self-start text-destructive underline-offset-2 hover:underline"
+          >
+            {open ? "Hide" : "Show"} {failureCount} file
+            {failureCount === 1 ? "" : "s"} that couldn't be indexed
+          </button>
+          {open ? (
+            <ul className="max-h-48 overflow-y-auto rounded-lg bg-muted/40 px-2.5 py-1.5">
+              {failures.map((failure) => (
+                <li key={failure.path} className="flex min-w-0 gap-2 py-0.5">
+                  <span className="min-w-0 shrink truncate font-mono" title={failure.path}>
+                    {failure.path}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate" title={failure.error}>
+                    {failure.error}
+                  </span>
+                </li>
+              ))}
+              {failureCount > failures.length ? (
+                <li className="py-0.5">and {failureCount - failures.length} more</li>
+              ) : null}
+            </ul>
+          ) : null}
+        </>
+      ) : null}
+    </div>
+  );
 }
 
 export function LinkedFoldersManager({
@@ -233,7 +306,9 @@ export function LinkedFoldersManager({
                         aria-label={`Sync progress for ${folder.displayName}`}
                         className="mt-1.5 h-1"
                       />
-                    ) : null}
+                    ) : (
+                      <FolderReport folder={folder} />
+                    )}
                   </div>
                   {folderMenu(folder, running)}
                 </div>
@@ -383,7 +458,9 @@ export function LinkedFoldersManager({
                       aria-label={`Sync progress for ${folder.displayName}`}
                       className="mt-2 h-1.5"
                     />
-                  ) : null}
+                  ) : (
+                    <FolderReport folder={folder} />
+                  )}
                 </div>
                 {folderMenu(folder, running)}
               </li>

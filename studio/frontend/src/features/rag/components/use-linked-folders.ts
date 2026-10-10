@@ -27,6 +27,7 @@ import type {
   LinkedFolderScope,
 } from "../types/rag";
 import {
+  jobChangedSources,
   linkedFolderSourcesChanged,
   retainActiveFolderJobs,
 } from "../types/rag";
@@ -80,11 +81,15 @@ export function useLinkedFolders(
     [projectWorkScopeId],
   );
 
+  // Jobs a click here started; a periodic pass that fails again is shown on the folder row
+  // instead of toasting every 30 s.
+  const userStartedJobs = useRef(new Set<string>());
+
   const notifySourcesChanged = useCallback(
     (job: FolderSyncJob) => {
       if (notifiedJobs.current.has(job.id)) return;
       notifiedJobs.current.add(job.id);
-      onSourcesChanged?.();
+      if (jobChangedSources(job)) onSourcesChanged?.();
     },
     [onSourcesChanged],
   );
@@ -123,7 +128,8 @@ export function useLinkedFolders(
         apply(job);
         releaseController();
         notifySourcesChanged(job);
-        if (job.status === "failed") {
+        const userStarted = userStartedJobs.current.delete(job.id);
+        if (job.status === "failed" && userStarted) {
           toast.error("Folder sync failed", {
             description: job.error ?? "The folder could not be indexed.",
           });
@@ -285,6 +291,7 @@ export function useLinkedFolders(
         ...current.filter((folder) => folder.id !== result.linkedFolder.id),
         result.linkedFolder,
       ]);
+      userStartedJobs.current.add(result.job.id);
       trackJob(result.job);
       onSourcesChanged?.();
     } catch (error) {
@@ -321,6 +328,7 @@ export function useLinkedFolders(
           return started;
         });
         if (currentScopeKey.current !== operationScopeKey) return;
+        userStartedJobs.current.add(job.id);
         trackJob(job);
         onSourcesChanged?.();
       } catch (error) {

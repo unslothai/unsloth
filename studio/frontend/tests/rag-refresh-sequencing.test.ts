@@ -724,7 +724,7 @@ test("a failed project lookup leaves the scope unresolved", () => {
   );
   // And unresolved still disables the attach controls.
   assert.match(THREAD_DOCUMENTS_BAR, /const projectUnresolved = threadProjectId === undefined;/);
-  assert.match(THREAD_DOCUMENTS_BAR, /uploading \|\| projectUploading \|\| projectUnresolved/);
+  assert.match(THREAD_DOCUMENTS_BAR, /const busy = projectUnresolved;/);
 });
 
 // A row the probe could not read is not a chat with no project: answering null
