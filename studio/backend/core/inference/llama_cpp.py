@@ -16289,13 +16289,15 @@ class LlamaCppBackend:
 
             # glob.escape: a prefix with [brackets] is otherwise read as a pattern.
             _site = os.path.join(_glob.escape(sys.prefix), "lib", "python*", "site-packages")
+            _pip_dirs = []
             for _nv_pattern in [
                 os.path.join(_site, "nvidia", _sub, "lib") for _sub in ("cu*", "cudnn", "nvjitlink")
             ] + [os.path.join(_site, "torch", "lib")]:
                 for _nv_dir in _glob.glob(_nv_pattern):
                     if os.path.isdir(_nv_dir):
-                        lib_dirs.append(_nv_dir)
+                        _pip_dirs.append(_nv_dir)
 
+            _system_dirs = []
             for cuda_lib in [
                 "/usr/local/cuda/lib64",
                 f"/usr/local/cuda/targets/{_arch}-linux/lib",
@@ -16307,7 +16309,15 @@ class LlamaCppBackend:
                 f"/usr/local/cuda-12.8/targets/{_arch}-linux/lib",
             ]:
                 if os.path.isdir(cuda_lib):
-                    lib_dirs.append(cuda_lib)
+                    _system_dirs.append(cuda_lib)
+            from utils.tegra import TEGRA_LIB_DIR, is_tegra
+
+            if is_tegra():
+                # Jetson: JetPack's CUDA first; the generic pip builds load but crash on unified memory (#4862).
+                _tegra = [TEGRA_LIB_DIR] if os.path.isdir(TEGRA_LIB_DIR) else []
+                lib_dirs.extend(_tegra + _system_dirs + _pip_dirs)
+            else:
+                lib_dirs.extend(_pip_dirs + _system_dirs)
 
             # Vendored dirs go last: rescue only, never displace a runtime already found.
             from utils.llama_cpp_freshness import read_install_marker
