@@ -1091,6 +1091,8 @@ def test_xml_entities_are_refused(tmp_path):
 
 @pytest.mark.parametrize("extension", sorted(BUILDERS))
 def test_documents_upload_index_and_stay_searchable(rag_home, stub_embeddings, tmp_path, extension):
+    if not rag_db.rag_available():  # vec0 will not load on some macOS Pythons
+        pytest.skip("sqlite-vec unavailable here")
     source = BUILDERS[extension](tmp_path / f"report{extension}")
     stored, filename, _hash = _save_upload(
         UploadFile(file = io.BytesIO(source.read_bytes()), filename = source.name)
