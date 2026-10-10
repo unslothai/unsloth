@@ -306,7 +306,7 @@ def CohereAttention_fast_forward_inference(
             self.temp_O = self.temp_QA[1][:, :, :hidden_size]
 
         self.attention = torch.empty(
-            (bsz, n_heads, 1, KV_CACHE_INCREMENT + seq_len),
+            (bsz, n_heads, 1, KV_CACHE_INCREMENT + seq_len + (-seq_len) % 8),
             dtype = dtype,
             device = f"{DEVICE_TYPE_TORCH}:0",
         )

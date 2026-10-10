@@ -396,7 +396,7 @@ def Gemma2Attention_fast_forward_inference(
         # Only for Gemma2.
         self.temp_O = torch.empty((bsz, 1, hidden_size), dtype = dtype, device = device)
         self.attention = torch.empty(
-            (bsz, n_heads, 1, KV_CACHE_INCREMENT + seq_len), dtype = dtype, device = device
+            (bsz, n_heads, 1, KV_CACHE_INCREMENT + seq_len + (-seq_len) % 8), dtype = dtype, device = device
         )
 
         # Gemma 9b should use 256, not hidden_size // num_attention_heads (224); 27b uses the derived value,

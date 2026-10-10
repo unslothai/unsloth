@@ -518,15 +518,21 @@ def _gqa_decode_scores(Qn, Kn, out):
 
 
 def _gqa_decode_values(A, Vn, out):
-    """softmax(QK^T) @ V for one decode token, grouped like _gqa_decode_scores; writes out."""
+    """softmax(QK^T) @ V for one decode token, grouped like _gqa_decode_scores; writes out.
+    cuBLAS drops to a slow kernel when the reduction over the cache is not a multiple of 8, so
+    the aligned prefix is one bmm and the last few positions are accumulated on top."""
     bsz, n_heads, _, cached_len = A.shape
     _, n_kv_heads, _, head_dim = Vn.shape
     n_groups = n_heads // n_kv_heads
-    torch_matmul(
-        A.view(bsz, n_kv_heads, n_groups, cached_len),
-        Vn,
-        out = out.view(bsz, n_kv_heads, n_groups, head_dim),
-    )
+    A = A.view(bsz * n_kv_heads, n_groups, cached_len)
+    V = Vn.reshape(bsz * n_kv_heads, cached_len, head_dim)
+    O = out.view(bsz * n_kv_heads, n_groups, head_dim)
+    aligned = cached_len - cached_len % 8
+    if aligned == 0 or aligned == cached_len:
+        torch.bmm(A, V, out = O)
+    else:
+        torch.bmm(A[:, :, :aligned], V[:, :aligned], out = O)
+        O.baddbmm_(A[:, :, aligned:], V[:, aligned:])
     return out
 
 
@@ -620,8 +626,11 @@ def LlamaAttention_fast_forward_inference(
         else:
             self.temp_O = self.temp_QA[1][:, :, :hidden_size]
 
+        # Row stride kept a multiple of 8 so the grouped decode bmm stays on the fast cuBLAS path.
         self.attention = torch.empty(
-            (bsz, n_heads, 1, KV_CACHE_INCREMENT + seq_len), dtype = dtype, device = device
+            (bsz, n_heads, 1, KV_CACHE_INCREMENT + seq_len + (-seq_len) % 8),
+            dtype = dtype,
+            device = device,
         )
         self.scalar = 1.0 / math_sqrt(self.head_dim)
         self.half_head_dim = head_dim // 2

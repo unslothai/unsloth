@@ -120,14 +120,16 @@ def test_bsz1_decode_does_not_materialise_kv_per_query_head():
     assert repeated == [], repeated
 
 
-def test_gqa_helpers_write_into_head_layout_buffers():
+@pytest.mark.parametrize("L", [5, 16, 21])
+def test_gqa_helpers_write_into_head_layout_buffers(L):
+    # 5: shorter than one aligned block; 16: aligned; 21: aligned prefix plus a remainder.
     torch.manual_seed(0)
-    bsz, L, M = 2, 5, 12
-    Q = torch.randn(bsz, 1, N_HEADS, HEAD_DIM).transpose(1, 2)  # decode layout, non-contiguous
-    paged = torch.randn(M, 2, bsz, N_KV, HEAD_DIM)
+    bsz, M = 2, 32
+    Q = torch.randn(bsz, 1, N_HEADS, HEAD_DIM, dtype = torch.float64).transpose(1, 2)
+    paged = torch.randn(M, 2, bsz, N_KV, HEAD_DIM, dtype = torch.float64)
     K = paged[:L, 0].permute(1, 2, 0, 3)
     V = paged[:L, 1].permute(1, 2, 0, 3)
-    scores = torch.empty(bsz, N_HEADS, 1, M)[:, :, :, :L]
+    scores = torch.empty(bsz, N_HEADS, 1, M, dtype = torch.float64)[:, :, :, :L]
     A = llama._gqa_decode_scores(Q, K, scores)
     assert A.data_ptr() == scores.data_ptr()
     Kr = K.repeat_interleave(N_HEADS // N_KV, dim = 1)
