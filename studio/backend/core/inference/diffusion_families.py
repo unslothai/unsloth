@@ -163,6 +163,9 @@ class DiffusionFamily:
     # Lowercased bases whose weights differ from the default's, so they must not inherit ``prequant_repos`` (planning
     # acts before the base_model_id check refuses); their own ``prequant_variant_repos`` rows still win.
     prequant_excluded_bases: tuple[str, ...] = field(default_factory = tuple)
+    # Variant bases a pick's repo id or GGUF file name can name when no card ``base_model`` tag resolves one (a local
+    # file, a card without the tag), e.g. a local ``qwen_image_2.1_turbo-Q4_K_M.gguf``.
+    named_variant_bases: tuple[str, ...] = field(default_factory = tuple)
     # Preferred checkpoint FILENAME for a scheme, as (scheme, filename), overriding the ``<Model>-<SCHEME>.pt`` name
     # ``prequant_repo_filename`` derives. The derived name stays on as the fallback, so a repo hosting BOTH an old and
     # a new artifact serves the new one to a build that asks for it by name and the old one to every build that does
@@ -532,6 +535,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         ),
         # 2.1's artifacts are baked from 2.1's denoiser: for nvfp4 Turbo quantizes its own weights.
         prequant_excluded_bases = ("qwen/qwen-image-2.1-turbo",),
+        named_variant_bases = ("Qwen/Qwen-Image-2.1-Turbo",),
         # The artifacts are safetensors, not the historical torch.save pickle, so the family has to
         # NAME them: every derived fallback ends in .pt, and without these rows the loader would ask
         # the Hub for a file that is not there and silently fall back to the dense bf16 download.
@@ -1084,6 +1088,17 @@ def upstream_is_gated(repo_id: Optional[str]) -> bool:
     "has a mirror": most of the mirror table is ungated and exists only to keep the fetch inside
     ``unsloth/*``. Only the gated half justifies overriding a user's cache."""
     return (repo_id or "").strip().lower() in _GATED_UPSTREAMS
+
+
+def named_variant_base(fam: "DiffusionFamily", *names: Optional[str]) -> Optional[str]:
+    """The longest of ``fam.named_variant_bases`` whose name appears in ``names`` (separators folded), or None."""
+    identity = "".join(c for c in " ".join(n or "" for n in names).lower() if c.isalnum())
+    hits = [
+        b
+        for b in getattr(fam, "named_variant_bases", ()) or ()
+        if "".join(c for c in b.rsplit("/", 1)[-1].lower() if c.isalnum()) in identity
+    ]
+    return max(hits, key = len) if hits else None
 
 
 def canonical_base(repo_id: Optional[str]) -> str:

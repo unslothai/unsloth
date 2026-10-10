@@ -53,6 +53,7 @@ from .diffusion_content import (
 )
 from .diffusion_gguf_pipeline import load_whole_pipeline_gguf, whole_pipeline_gguf_resident_mib
 from .diffusion_families import (
+    named_variant_base,
     DIFFUSION_CANCELLED_MSG,
     DIFFUSION_NOT_LOADED_MSG,
     IDEOGRAM4_FAMILY_NAME,
@@ -1135,7 +1136,9 @@ def _with_supplied_components(load: Callable[..., dict]) -> Callable[..., dict]:
                 vae_file = vae_file,
             )
             hf_token = (kwargs.get("hf_token") or "").strip() or None
-            base = _resolve_base_repo(repo_id, kwargs.get("base_repo"), fam, hf_token)
+            base = _resolve_base_repo(
+                repo_id, kwargs.get("base_repo"), fam, hf_token, kwargs.get("gguf_filename")
+            )
             overrides = self._plan_component_overrides(
                 fam,
                 repo_id,
@@ -3380,7 +3383,7 @@ class DiffusionBackend:
         if kind == "pipeline":
             base = repo_id  # the full pipeline IS the repo
         else:
-            base = _resolve_base_repo(repo_id, base_repo, fam, hf_token)
+            base = _resolve_base_repo(repo_id, base_repo, fam, hf_token, gguf_filename)
         # Probe the repo the load will FETCH from: refusing the upstream id would reject the gated picks the ungated
         # mirror rescues, and the swap is pure, so it decides the same here as on the load thread. Only the raise
         # matters; _run_load recomputes the excused snapshot.
@@ -3551,7 +3554,11 @@ class DiffusionBackend:
                 base = kwargs["repo_id"]
             else:
                 base = _resolve_base_repo(
-                    kwargs["repo_id"], kwargs.get("base_repo"), fam, kwargs.get("hf_token")
+                    kwargs["repo_id"],
+                    kwargs.get("base_repo"),
+                    fam,
+                    kwargs.get("hf_token"),
+                    kwargs.get("gguf_filename"),
                 )
             kwargs["base_repo"] = base
             # Claimed before a byte moves, so the cache-delete guard sees a Hub component repo.
@@ -4691,7 +4698,7 @@ class DiffusionBackend:
             # plan no work.
             return {"entries": [], "total_bytes": 0, "required_bytes": 0, "checkpoint_bytes": 0}
         else:
-            base = _resolve_base_repo(repo_id, base_repo, fam, hf_token)
+            base = _resolve_base_repo(repo_id, base_repo, fam, hf_token, gguf_filename)
         # Reported, not raised. The images page falls back to /images/load on ANY plan failure, so a 400 here would
         # start the very download this is meant to prevent; carried in the envelope instead, the picker can refuse at
         # SELECTION time. Metadata only, and None whenever nothing is known to be wrong. The speech verdict belongs
@@ -5873,7 +5880,9 @@ class DiffusionBackend:
             )
         # A full pipeline is its own base; single-file kinds resolve the companion base repo.
         base = (
-            repo_id if kind == "pipeline" else _resolve_base_repo(repo_id, base_repo, fam, hf_token)
+            repo_id
+            if kind == "pipeline"
+            else _resolve_base_repo(repo_id, base_repo, fam, hf_token, gguf_filename)
         )
         # ``base`` stays the UPSTREAM id every report and table lookup keys on; ``fetch_base`` is the only id handed
         # to something that downloads. One decision per load, so nothing stages one repo and assembles from the other.
@@ -11506,7 +11515,11 @@ def _family_workflows(fam: DiffusionFamily) -> list[str]:
 
 
 def _resolve_base_repo(
-    repo_id: str, base_repo: Optional[str], fam: DiffusionFamily, hf_token: Optional[str]
+    repo_id: str,
+    base_repo: Optional[str],
+    fam: DiffusionFamily,
+    hf_token: Optional[str],
+    gguf_filename: Optional[str] = None,
 ) -> str:
     """The companion diffusers repo: caller's base, else the GGUF repo's own ``base_model`` tag,
     else the family fallback. Shared by both load paths so a direct ``load_pipeline`` call
@@ -11523,6 +11536,9 @@ def _resolve_base_repo(
             # this becomes status()["base_repo"] and a trained adapter's default base_model, both of which must stay
             # the vendor id. An EXPLICIT base_repo is verbatim.
             base = canonical_base(tag)
+        elif tag is None:
+            # No card tag (a local file): a curated variant the name spells out, never a guess beyond the table.
+            base = named_variant_base(fam, repo_id, gguf_filename) or ""
     # Returns the UPSTREAM id; the swap happens at the fetch sites only.
     resolved = resolve_base_repo(fam, base)
     _remember_companion_base(repo_id, resolved)

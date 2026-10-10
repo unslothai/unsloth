@@ -51,6 +51,7 @@ from core.inference.diffusion_families import (
     prefer_cached_legacy_source,
     prefer_ungated_mirror,
     canonical_base,
+    named_variant_base,
     resolve_base_repo,
     resolve_local_gguf_child,
     sd_cpp_text_encoders_for,
@@ -207,6 +208,7 @@ def _base_sample_sigmas(
     family: str,
     explicit_base: bool,
     local_files_only: bool,
+    named_base: Optional[str] = None,
 ) -> tuple[Optional[tuple[float, ...]], str]:
     """(the base's model_index.json grid or None for sd.cpp's own schedule, the base it came from). Without an
     explicit base the card's ``base_model`` names it, as on the diffusers route; else a community Turbo GGUF would
@@ -227,9 +229,11 @@ def _base_sample_sigmas(
             # Same trust bar as the diffusers resolver: the tag is repo-author metadata.
             if tag and _is_trusted_diffusion_repo(tag):
                 base = card_base = canonical_base(tag)
+            elif tag is None and named_base:
+                base = named_base
         elif not explicit_base:
             # Cache-only (e.g. the OpenAI route's auto-switch): the base an earlier online load took from the card.
-            base = _linked_grid_base(repo_id, base) or base
+            base = _linked_grid_base(repo_id, base) or named_base or base
         index = read_model_index(
             base,
             hf_token = hf_token,
@@ -3010,6 +3014,7 @@ class SdCppDiffusionBackend:
                 family = fam.name,
                 explicit_base = explicit_base,
                 local_files_only = local_files_only,
+                named_base = named_variant_base(fam, repo_id, gguf_filename),
             )
 
             files = SdCppModelFiles(

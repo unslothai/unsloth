@@ -234,3 +234,18 @@ def test_a_cache_only_reload_recovers_the_card_base_an_online_load_linked(monkey
     # An untrusted link is never read.
     calls["links"][REPO.lower()] = ["someone/evil"]
     assert bk._base_sample_sigmas(REPO, FAM.base_repo, None, local_files_only = True, **kw)[0] is None
+
+
+def test_a_local_turbo_gguf_without_a_card_takes_the_named_grid(monkeypatch):
+    calls = _patch_hub(monkeypatch, card_base = None, indexes = INDEXES)
+    grid, base = bk._base_sample_sigmas(
+        REPO,
+        FAM.base_repo,
+        None,
+        family = FAM.name,
+        explicit_base = False,
+        local_files_only = False,
+        named_base = "Qwen/Qwen-Image-2.1-Turbo",
+    )
+    assert grid == TURBO_GRID and base == "Qwen/Qwen-Image-2.1-Turbo"
+    assert calls["index"][-1][0] == "Qwen/Qwen-Image-2.1-Turbo"

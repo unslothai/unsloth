@@ -945,3 +945,22 @@ def test_qwen_image_21_takes_reference_images_but_is_not_an_edit_only_family():
     edit = detect_family("Qwen/Qwen-Image-Edit-2511")
     assert edit is not None and edit.name == "qwen-image-edit" and edit.edit is True
     assert edit.pipeline_class != fam.pipeline_class
+
+
+@pytest.mark.parametrize(
+    "name, card, expected",
+    [
+        ("qwen_image_2.1_turbo-Q4_K_M.gguf", None, "Qwen/Qwen-Image-2.1-Turbo"),
+        ("qwen-image-2.1-Q4_K_M.gguf", None, "Qwen/Qwen-Image-2.1"),
+        # A card tag decides when there is one, even an untrusted one that falls back to the default.
+        ("qwen_image_2.1_turbo-Q4_K_M.gguf", "someone/else", "Qwen/Qwen-Image-2.1"),
+    ],
+)
+def test_a_local_turbo_gguf_resolves_the_turbo_base_by_name(monkeypatch, tmp_path, name, card, expected):
+    from core.inference import diffusion as dmod
+    from core.inference.diffusion_families import detect_family_for_pick
+
+    monkeypatch.setattr(dmod, "_hf_base_model", lambda repo_id, token: card)
+    monkeypatch.setattr(dmod, "_remember_companion_base", lambda repo_id, base: None)
+    fam = detect_family_for_pick(str(tmp_path), name, "qwen-image-2.1")
+    assert dmod._resolve_base_repo(str(tmp_path), None, fam, None, name) == expected
