@@ -821,6 +821,14 @@ def test_nvidia_wsl_venv_never_gets_the_windows_interpreter(wsl, monkeypatch, en
     assert install._venv_python_args(engine) == ["--python", windows_python]
 
 
+def test_rocm_repository_key_ships_with_studio():
+    # repo.radeon.com serves the key at a mutable URL; Studio's copy is what the distro trusts.
+    assert wsl_host._sha256(wsl_host.ROCM_APT_KEY) == wsl_host.ROCM_APT_KEY_SHA256
+    assert wsl_host.ROCM_APT_KEY.read_text(encoding = "utf-8").startswith(
+        "-----BEGIN PGP PUBLIC KEY BLOCK-----"
+    )
+
+
 @pytest.mark.parametrize(("agents", "supported"), [("gfx1151", True), ("gfx1030", False)])
 def test_amd_wsl_install_sets_up_rocm_before_the_engine(
     amd, monkeypatch, tmp_path, agents, supported
@@ -891,7 +899,7 @@ def test_amd_wsl_price_includes_rocm_until_it_is_set_up(amd, monkeypatch):
     sizes = install._compat_file("vllm")["sizes"]
     engine = sum(size or 0 for size in sizes.values())
     rocm = wsl_host.ROCM_APT_BYTES + sum(
-        spec["size"] for spec in (wsl_host.ROCM_APT_KEY, wsl_host.ROCDXG, wsl_host.ROCDXG_SMI)
+        spec["size"] for spec in (wsl_host.ROCDXG, wsl_host.ROCDXG_SMI)
     )
     distro = {"state": "ready", "distro": "Unsloth-Engines-test"}
     monkeypatch.setattr(wsl_host, "summary", lambda: {**distro, "rocm": None})

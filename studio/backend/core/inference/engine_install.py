@@ -362,7 +362,7 @@ def download_bytes(engine: str) -> int | None:
         and summary.get("rocm") != wsl_host.ROCM_RELEASE
     ):
         total += wsl_host.ROCM_APT_BYTES + sum(
-            spec["size"] for spec in (wsl_host.ROCM_APT_KEY, wsl_host.ROCDXG, wsl_host.ROCDXG_SMI)
+            spec["size"] for spec in (wsl_host.ROCDXG, wsl_host.ROCDXG_SMI)
         )
     return total
 
@@ -1625,7 +1625,11 @@ def _install_wsl_rocm(engine: str, guest_run, progress, cancel: threading.Event)
     _update(
         engine, phase = "preparing_rocm", message = "Installing AMD ROCm in the Unsloth WSL environment"
     )
-    key = wsl_host.download(wsl_host.ROCM_APT_KEY, "rocm.gpg.key", progress, cancel)
+    key = wsl_host.ROCM_APT_KEY
+    if wsl_host._sha256(key) != wsl_host.ROCM_APT_KEY_SHA256:
+        raise RuntimeError(
+            "Studio's copy of AMD's ROCm repository key is damaged. Reinstall Studio."
+        )
     packages = [
         wsl_host.download(spec, spec["url"].rsplit("/", 1)[1], progress, cancel)
         for spec in (wsl_host.ROCDXG, wsl_host.ROCDXG_SMI)

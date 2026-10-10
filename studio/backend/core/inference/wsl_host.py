@@ -35,11 +35,10 @@ UV = {
 }
 # AMD GPUs: ROCm's userspace from AMD's apt repository, plus the DXG bridge AMD publishes as a
 # .deb, through which the HSA runtime reaches the Windows driver over /dev/dxg.
-ROCM_APT_KEY = {
-    "url": "https://repo.radeon.com/rocm/rocm.gpg.key",
-    "sha256": "2de99e2354646a90d9903e2a669fc4e36b02c1bbff7075c481e12d7edab2c88b",
-    "size": 3126,
-}
+# AMD's repository key, shipped with Studio: repo.radeon.com serves it at a mutable URL, and a
+# republished key would fail a pinned download on every fresh install.
+ROCM_APT_KEY = Path(__file__).resolve().parents[2] / "requirements" / "engines" / "rocm.gpg.key"
+ROCM_APT_KEY_SHA256 = "2de99e2354646a90d9903e2a669fc4e36b02c1bbff7075c481e12d7edab2c88b"
 ROCDXG = {
     "url": "https://github.com/ROCm/librocdxg/releases/download/v1.2.2/rocdxg-roct_1.2.2_amd64.deb",
     "sha256": "28ded1254811192ebace1f76c0227580184af7b27ab2475fb9728295a702d541",
