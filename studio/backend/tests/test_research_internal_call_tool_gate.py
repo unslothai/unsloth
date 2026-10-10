@@ -116,12 +116,17 @@ def test_the_opt_out_changes_nothing_a_default_install_does(monkeypatch, policy)
     assert (before_entry, after_entry) == ("plain", "plain")
     # Both are fresh per request (a new Event, and the monitor's per-request tok/s closure), so
     # comparing them by identity would fail for any pair of requests.
-    drop = {"cancel_event", "perf_callback", "tools_withheld"}
+    drop = {"cancel_event", "perf_callback", "tools_withheld", "on_prompt_fitted"}
     # But dropping perf_callback outright would also pass if the opt-out stopped supplying it at
     # all, silently costing that path its tok/s readout. Compare presence first, then exclude.
     assert callable(before_kwargs.get("perf_callback")) == callable(
         after_kwargs.get("perf_callback")
     ), "the opt-out must not decide whether llama.cpp timings are collected"
+    # Same for the admission re-pricing hook: a closure over this request, so it can only be
+    # compared by presence, and losing it on one side would leave that path at the pre-fit cap.
+    assert callable(before_kwargs.get("on_prompt_fitted")) == callable(
+        after_kwargs.get("on_prompt_fitted")
+    ), "the opt-out must not decide whether the wire bound is re-priced after the fit"
     # `tools_withheld` reaches the compaction gate, never the prompt: it tells
     # `_can_reset_epoch` that THIS request withdrew the tool loop, which the process-wide
     # policy cannot see. A default install can still re-admit `search_conversation` alone

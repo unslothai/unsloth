@@ -203,6 +203,10 @@ class LlamaAdmissionCancelled(LlamaAdmissionError):
     pass
 
 
+class LlamaAdmissionRecostRefused(LlamaAdmissionError):
+    """The lease could not grow; end the turn without dispatching the larger prompt."""
+
+
 def _raw_env(name: str) -> Optional[str]:
     """Value for a canonical name, falling back to its legacy spelling."""
     value = os.environ.get(name)
@@ -336,6 +340,11 @@ class LlamaAdmissionLease:
     def slot(self) -> Optional[int]:
         """Pool slot this lease holds, or None when admission is disabled."""
         return self._slot
+
+    @property
+    def released(self) -> bool:
+        """Whether release() has run: the run is being torn down, not refused."""
+        return self._released
 
     def park(self) -> bool:
         """Hand the slot back while this holder waits on something off the GPU.
