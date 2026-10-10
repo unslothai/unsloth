@@ -712,8 +712,13 @@ def test_qwen_image_21_turbo_loads_as_its_own_checkpoint_of_the_family():
     # Turbo has its own hosted int8 / fp8 denoisers; 2.1's (baked from 2.1's weights) are never planned for it, and
     # nvfp4, which Turbo does not host, quantizes its own weights rather than inheriting 2.1's.
     for scheme in ("int8", "fp8"):
-        assert family_prequant_repo(fam, scheme, base_repo = turbo) == "unsloth/Qwen-Image-2.1-Turbo-FP8"
-        assert family_prequant_repo(fam, scheme, base_repo = "Qwen/Qwen-Image-2.1") == "unsloth/Qwen-Image-2.1-FP8"
+        assert (
+            family_prequant_repo(fam, scheme, base_repo = turbo) == "unsloth/Qwen-Image-2.1-Turbo-FP8"
+        )
+        assert (
+            family_prequant_repo(fam, scheme, base_repo = "Qwen/Qwen-Image-2.1")
+            == "unsloth/Qwen-Image-2.1-FP8"
+        )
     assert family_prequant_repo(fam, "nvfp4", base_repo = turbo) is None
     # Its Qwen3-VL encoder is byte-identical to 2.1's, so the hosted int8 ConvRot encoder serves both.
     assert te_base_equivalent("Qwen/Qwen-Image-2.1", turbo)
@@ -734,10 +739,16 @@ def test_qwen_image_21_turbo_resolves_its_own_artifact_names(monkeypatch):
             "unsloth/Qwen-Image-2.1-FP8",
             ("Qwen-Image-2.1-INT8-ConvRot.safetensors", "Qwen-Image-2.1-INT8.safetensors"),
         ),
-        ("Qwen/Qwen-Image-2.1", "fp8"): ("unsloth/Qwen-Image-2.1-FP8", ("Qwen-Image-2.1-FP8.safetensors",)),
+        ("Qwen/Qwen-Image-2.1", "fp8"): (
+            "unsloth/Qwen-Image-2.1-FP8",
+            ("Qwen-Image-2.1-FP8.safetensors",),
+        ),
         ("Qwen/Qwen-Image-2.1-Turbo", "int8"): (
             "unsloth/Qwen-Image-2.1-Turbo-FP8",
-            ("Qwen-Image-2.1-Turbo-INT8-ConvRot.safetensors", "Qwen-Image-2.1-Turbo-INT8.safetensors"),
+            (
+                "Qwen-Image-2.1-Turbo-INT8-ConvRot.safetensors",
+                "Qwen-Image-2.1-Turbo-INT8.safetensors",
+            ),
         ),
         ("Qwen/Qwen-Image-2.1-Turbo", "fp8"): (
             "unsloth/Qwen-Image-2.1-Turbo-FP8",
@@ -749,7 +760,11 @@ def test_qwen_image_21_turbo_resolves_its_own_artifact_names(monkeypatch):
         assert source.location == repo, (base, scheme)
         assert source.declared_filenames == declared, (base, scheme)
         assert source.filename == declared[0], (base, scheme)
-        names = [n for n in (source.filename, *source.fallback_filenames) if not n.startswith("transformer_")]
+        names = [
+            n
+            for n in (source.filename, *source.fallback_filenames)
+            if not n.startswith("transformer_")
+        ]
         assert all(("-Turbo-" in n) == ("Turbo" in base) for n in names), names
     # The ConvRot kill switch drops the rotated name for both repos alike.
     monkeypatch.setenv("UNSLOTH_DIFFUSION_INT8_CONVROT", "0")

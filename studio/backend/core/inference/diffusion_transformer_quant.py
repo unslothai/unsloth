@@ -294,7 +294,9 @@ def convrot_prequant_repo(scheme: str, family: Optional[str] = None) -> Optional
     return _INT8_FAMILY_CONVROT_REPO.get(str(family or "").strip().lower())
 
 
-def convrot_prequant_variant_repo(scheme: str, family: Optional[str], repo_id: Optional[str]) -> bool:
+def convrot_prequant_variant_repo(
+    scheme: str, family: Optional[str], repo_id: Optional[str]
+) -> bool:
     """Whether ``repo_id`` is a variant repo that hosts the family's rotated int8 build under its own name."""
     if scheme != TQ_INT8 or not repo_id:
         return False

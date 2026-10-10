@@ -1066,7 +1066,11 @@ def _is_variant_prequant_repo(fam: Any, repo_id: Optional[str]) -> bool:
         return False
     try:
         defaults = {str(r).strip().lower() for _s, r in getattr(fam, "prequant_repos", ()) or ()}
-        variants = {str(e[2]).strip().lower() for e in getattr(fam, "prequant_variant_repos", ()) or () if len(e) == 3}
+        variants = {
+            str(e[2]).strip().lower()
+            for e in getattr(fam, "prequant_variant_repos", ()) or ()
+            if len(e) == 3
+        }
     except Exception:  # noqa: BLE001 - a malformed table keeps the declared names, today's behaviour
         return False
     return key in variants and key not in defaults
