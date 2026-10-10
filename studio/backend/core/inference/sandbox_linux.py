@@ -102,7 +102,8 @@ def _trusted_bwrap_path() -> str:
             if (
                 not stat.S_ISDIR(directory.st_mode)
                 or directory.st_uid != 0
-                or directory.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+                or (directory.st_gid != 0 and directory.st_mode & stat.S_IWGRP)
+                or directory.st_mode & stat.S_IWOTH
             ):
                 raise OSError(f"its directory is replaceable: {parent}")
             ancestor = os.path.dirname(parent)
