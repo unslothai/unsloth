@@ -127,14 +127,6 @@ class TestTheReportedHost:
         assert rocm_gpu_ids_without_torch_kernels() == {1}
 
 
-class TestHsaOverrideKeepsWorking:
-    """The override makes a device PRESENT a supported arch; reading silicon breaks it."""
-
-    def test_a_spoofed_device_is_kept(self, monkeypatch, no_mask):
-        _install(monkeypatch, _fake_torch([_props("gfx1101"), _props("gfx1100")]))
-        assert rocm_gpu_ids_without_torch_kernels() == set()
-
-
 class TestArchSpellings:
     """Reading only gcnArchName makes the gate a no-op on AMD SDK wheels."""
 

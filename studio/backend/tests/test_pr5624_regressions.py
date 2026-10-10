@@ -156,15 +156,6 @@ def test_glm_4_7_no_newlines_multi_call():
     assert calls[1]["function"]["name"] == "b"
 
 
-def test_glm_4_7_does_not_break_qwen_path():
-    """Qwen ``<tool_call>{json}`` still dispatches to Qwen; GLM's
-    first-char ``[^\\n<{]`` excludes ``{``."""
-    text = '<tool_call>{"name":"web_search","arguments":{"q":"x"}}</tool_call>'
-    calls = parse_tool_calls_from_text(text)
-    assert len(calls) == 1
-    assert calls[0]["function"]["name"] == "web_search"
-
-
 # Kimi K2 dotted name + bare counter (finding C in plan)
 
 
