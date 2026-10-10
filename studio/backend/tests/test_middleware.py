@@ -1623,7 +1623,7 @@ def test_every_api_write_route_is_body_capped(main_module):
         route.path
         for route in main_module.app.routes
         if getattr(route, "methods", None)
-        and route.methods & {"POST", "PUT", "PATCH"}
+        and route.methods & {"POST", "PUT", "PATCH", "DELETE"}
         and route.path.startswith("/api/")
     ]
     assert writes
@@ -1688,3 +1688,38 @@ def test_pattern_passthrough_streams_and_refuses_oversized_declared_bodies(main_
         ).status_code
         == 413
     )
+
+
+def test_rag_zero_upload_cap_means_unlimited(main_module, monkeypatch):
+    from core.rag import config as rag_config
+    monkeypatch.setattr(rag_config, "MAX_UPLOAD_BYTES", 0)
+    assert (
+        main_module._get_upload_passthrough_request_max_bytes("/api/rag/threads/t1/documents")
+        == sys.maxsize
+    )
+
+
+def test_delete_bodies_and_root_path_are_capped(main_module):
+    app = FastAPI(root_path = "/studio")
+    app.add_middleware(
+        main_module.MaxBodyMiddleware,
+        max_bytes_getter = lambda: 128,
+        protected_prefixes = ("/api/",),
+    )
+
+    @app.api_route("/api/models/delete-cached", methods = ["DELETE", "POST"])
+    async def delete_cached(request: Request):
+        return {"total": len(await request.body())}
+
+    c = TestClient(app, root_path = "/studio")
+
+    def gen():
+        for _ in range(4):
+            yield b"y" * 64
+
+    # DELETE with a body past the cap, and a plain DELETE without one.
+    assert c.request("DELETE", "/studio/api/models/delete-cached", content = gen()).status_code == 413
+    assert c.request("DELETE", "/studio/api/models/delete-cached").json() == {"total": 0}
+    # The root_path prefix in scope["path"] does not hide the protected prefix.
+    assert c.post("/studio/api/models/delete-cached", content = b"x" * 512).status_code == 413
+    assert c.post("/studio/api/models/delete-cached", content = b"x" * 64).json() == {"total": 64}

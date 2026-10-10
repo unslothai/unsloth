@@ -1464,6 +1464,10 @@ def _get_upload_passthrough_request_max_bytes(path: str) -> int:
         return AUDIO_INPUT_MAX_BYTES
     if _RAG_DOCUMENT_UPLOAD_RE.match(path):
         from core.rag import config as _rag_config
+
+        # RAG_MAX_UPLOAD_BYTES=0 means no cap, as the route treats it.
+        if _rag_config.MAX_UPLOAD_BYTES <= 0:
+            return sys.maxsize
         return upload_request_limit_bytes(_rag_config.MAX_UPLOAD_BYTES)
     # The trailing-slash variant reaches this middleware BEFORE the router's redirect_slashes
     # 307, so it must resolve to the same cap. JSON sub-routes keep extra path components.
@@ -1591,7 +1595,12 @@ class MaxBodyMiddleware:
             return
         method = scope.get("method", "").upper()
         path = scope.get("path", "")
-        if method not in ("POST", "PUT", "PATCH") or not any(
+        # Under `--root-path /x`, uvicorn keeps the prefix in `path`; match on the route path the router sees.
+        root_path = scope.get("root_path") or ""
+        if root_path and path.startswith(root_path):
+            path = path[len(root_path) :] or "/"
+        # DELETE too: several routes take a JSON body on DELETE (delete-cached, bulk thread delete).
+        if method not in ("POST", "PUT", "PATCH", "DELETE") or not any(
             path.startswith(p) for p in self.protected_prefixes
         ):
             await self.app(scope, receive, send)
@@ -1607,7 +1616,7 @@ class MaxBodyMiddleware:
                     declared = None
                 break
 
-        if self._is_upload_passthrough(path):
+        if method != "DELETE" and self._is_upload_passthrough(path):
             upload_max_bytes = self._upload_passthrough_max_bytes(path)
             if declared is not None:
                 if declared > upload_max_bytes:
