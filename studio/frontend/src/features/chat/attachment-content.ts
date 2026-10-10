@@ -1136,7 +1136,6 @@ function injectDocxListNumbers(archive: Uint8Array): Uint8Array {
     return byLevel;
   };
   const definedLevels = new Map<string, Map<string, Element>>();
-  // Each instance's nine levels are resolved once, not per paragraph.
   type Instance = { abstractId: string; levels: Level[]; restarts: number[]; byStyle: Map<string, number> };
   const instances = new Map<string, Instance | undefined>();
   // A list defined through a numbering style (numStyleLink) takes its levels from that style's list.
@@ -1190,13 +1189,11 @@ function injectDocxListNumbers(archive: Uint8Array): Uint8Array {
   );
 
   const counters = new Map<string, (number | undefined)[]>();
-  // Started lists that restart after a section break, so a break clears only those.
   const restartable = new Set<string>();
   const started = new Set<string>();
   const { doc, w } = body;
   const tag = (local: string) => (body.root.prefix ? `${body.root.prefix}:${local}` : local);
   let found = false;
-  // Labels a crafted part repeats past this total are not worth the rewrite.
   let budget = 1 << 20;
   const label = (p: Element, pPr: Element | undefined) => {
     // A tracked-deleted paragraph mark removes the item; Mammoth folds its text into the next paragraph.
@@ -1208,8 +1205,7 @@ function injectDocxListNumbers(archive: Uint8Array): Uint8Array {
     const list = numId === undefined ? undefined : instance(numId);
     if (!list) return;
     const { abstractId, levels, restarts, byStyle } = list;
-    // A heading style's numPr often names only the list; the level linked to the style, or to a
-    // style it is based on, supplies ilvl.
+    // A heading style's numPr often names only the list; the level linked to its style supplies ilvl.
     let linked: number | undefined;
     for (let style = wordValue(pPr, "pStyle"), depth = 0; style !== undefined && linked === undefined && depth <= 20; depth++) {
       linked = byStyle.get(style);
@@ -1218,8 +1214,7 @@ function injectDocxListNumbers(archive: Uint8Array): Uint8Array {
     const ilvl = Math.min(8, Math.max(0, Math.trunc(Number(wordValue(direct, "ilvl") ?? wordValue(styled, "ilvl") ?? linked ?? 0) || 0)));
     const { lvl, format, legal, text } = levels[ilvl];
     if (!lvl) return;
-    // Instances of one abstract definition share its counters, as in Word; a start override
-    // restarts them once, when its instance is first used.
+    // Word shares counters across instances of one abstract; a startOverride restarts them once.
     const counts = counters.get(abstractId) ?? [];
     counters.set(abstractId, counts);
     if (restartsAfterBreak.has(abstractId)) restartable.add(abstractId);
@@ -1235,7 +1230,6 @@ function injectDocxListNumbers(archive: Uint8Array): Uint8Array {
       const restart = levels[i].restart;
       if (restart === undefined || ilvl < Number(restart)) counts[i] = undefined;
     }
-    // Word caps a number format far below this; a longer one is not a label.
     if (format === "bullet" || text.length > 256) return;
     let value = "";
     for (const [index, piece] of text.split(/%([1-9])/).entries()) {
@@ -1272,7 +1266,7 @@ function injectDocxListNumbers(archive: Uint8Array): Uint8Array {
     const pPr = childElements(p, w, "pPr")[0];
     label(p, pPr);
     if (budget < 0) return archive;
-    // A section break restarts the lists that opt in (Word's "restart numbering after break").
+    // w15:restartNumberingAfterBreak
     if (pPr && restartable.size && childElements(pPr, w, "sectPr").length) {
       for (const id of restartable) counters.delete(id);
       restartable.clear();
