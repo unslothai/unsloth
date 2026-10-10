@@ -193,6 +193,13 @@ _TE_EQUIVALENT_BASES: tuple[frozenset[str], ...] = (
             "hunyuanvideo-community/hunyuanimage-2.1-diffusers",
         }
     ),
+    # Qwen3-VL-8B: one file vs four shards, but all 750 tensors byte-identical (compared 2026-10-09).
+    frozenset(
+        {
+            "qwen/qwen-image-2.1",
+            "qwen/qwen-image-2.1-turbo",
+        }
+    ),
     # Qwen3-4B: identical sha256 across the Krea-2 pair (compared 2026-08-25)
     frozenset(
         {
