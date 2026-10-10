@@ -1044,8 +1044,8 @@ def sft_trainer_assistant_mask_fallback(function_name, function):
             f"{i}try:\n"
             f"{i}    self.chat_template = get_training_chat_template(processing_class)\n"
             f"{i}except ValueError:\n"
-            # Vision datasets skip Zoo's text preparation and mask from TRL's template, so keep TRL's error.
-            f"{i}    if getattr(self, '_is_vision_dataset', False): raise\n"
+            # Zoo's text preparation reads the flag; vision datasets and skip_prepare_dataset never reach it.
+            f"{i}    if getattr(self, '_is_vision_dataset', False) or (getattr(args, 'dataset_kwargs', None) or {{}}).get('skip_prepare_dataset'): raise\n"
             f"{i}    self.chat_template = None\n"
             f"{i}    self._unsloth_assistant_mask_fallback = True\n"
             f"{i}    print('Unsloth: TRL has no training chat template for this tokenizer, so assistant_only_loss masks non-assistant tokens with train_on_responses_only markers.')"

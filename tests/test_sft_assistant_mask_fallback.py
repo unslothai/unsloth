@@ -58,6 +58,7 @@ def __init__(self, processing_class, args, get_training_chat_template, is_chat_t
 
 class _Args:
     assistant_only_loss = True
+    dataset_kwargs = None
 
 
 class _Tok:
@@ -129,4 +130,15 @@ def test_vision_dataset_keeps_trl_error():
     with pytest.raises(ValueError):
         namespace["__init__"](
             trainer, _Tok(), _Args(), _unsupported, lambda *a, **k: False, lambda: None
+        )
+
+
+def test_skipped_preparation_keeps_trl_error():
+    namespace = {"has_generation_markers": lambda template: False}
+    exec(_load()("__init__", TRL_SHAPED_INIT), namespace)
+    args = _Args()
+    args.dataset_kwargs = {"skip_prepare_dataset": True}
+    with pytest.raises(ValueError):
+        namespace["__init__"](
+            type("T", (), {})(), _Tok(), args, _unsupported, lambda *a, **k: False, lambda: None
         )
