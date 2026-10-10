@@ -8463,9 +8463,14 @@ def _apply_model_ini_to_request(request, model_identifier: str, label: str):
     if not getattr(request, "use_model_ini", False):
         return request
     try:
-        located = locate_model_ini(
-            model_identifier, request.gguf_variant, hf_token = request.hf_token
-        )
+        # Same reachability guard config resolution uses: a cached repo resolves from disk offline.
+        with _hf_offline_if_unreachable_for(model_identifier) as forced_offline:
+            located = locate_model_ini(
+                model_identifier,
+                request.gguf_variant,
+                hf_token = request.hf_token,
+                offline = bool(forced_offline),
+            )
     except NotGgufModel:
         return request
     except ValueError as exc:

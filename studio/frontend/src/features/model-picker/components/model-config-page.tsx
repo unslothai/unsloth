@@ -2103,7 +2103,8 @@ function ModelIniRow({
           <span className={LABEL_CLASS_WRAP}>Use .ini file (optional)</span>
           <InfoHint>
             Launches llama-server with the settings in this model's
-            unsloth.ini. They are applied after the rows above, so they win.
+            unsloth.ini. They override the rows above, except Extra Arguments,
+            which still win.
           </InfoHint>
         </div>
         <Switch
@@ -3179,6 +3180,8 @@ export function ModelConfigPage({
   // stands down, since its runner allocates on a different plan. The tri-state is read as a
   // tri-state, not through resolvedIsDiffusion: a GGUF still being classified may be
   // DiffusionGemma, and guessing paints a footprint from the wrong plan that never clears.
+  const iniInEstimate =
+    config.useModelIni === true && modelIni?.found ? modelIni : null;
   const memoryEstimateRequest =
     shouldRequestMemoryEstimate({
       isGguf: Boolean(target.isGguf),
@@ -3207,7 +3210,8 @@ export function ModelConfigPage({
             ? null
             : resolveMlxEstimateContext(savedContextPin(config)),
           mlxKvQuant: runtimeConfig.mlxKvQuant ?? null,
-          nParallel: runtimeConfig.nParallel,
+          // The INI's slots and flags reach the load, so the estimate prices them too.
+          nParallel: iniInEstimate?.n_parallel ?? runtimeConfig.nParallel,
           nBatch: runtimeConfig.nBatch,
           nUbatch: runtimeConfig.nUbatch,
           ctxCheckpoints: runtimeConfig.ctxCheckpoints ?? null,
@@ -3233,7 +3237,9 @@ export function ModelConfigPage({
               : null,
           nCpuMoe: runtimeConfig.nCpuMoe ?? null,
           selectedGpuIds: runtimeConfig.selectedGpuIds ?? null,
-          llamaExtraArgs: runtimeConfig.llamaExtraArgs ?? null,
+          llamaExtraArgs: iniInEstimate
+            ? [...iniInEstimate.args, ...(runtimeConfig.llamaExtraArgs ?? [])]
+            : (runtimeConfig.llamaExtraArgs ?? null),
         }
       : null;
   const memoryEstimate = useMemoryEstimate(memoryEstimateRequest);

@@ -640,3 +640,22 @@ def test_route_reads_beside_a_native_lease(monkeypatch, tmp_path):
     with pytest.raises(HTTPException) as exc:
         _call_route(monkeypatch, repo_id = "M-Q8_0.gguf", native_path_lease = "stale")
     assert exc.value.status_code == 400 and "re-select" in exc.value.detail
+
+
+def test_load_path_resolves_the_ini_offline_when_the_hub_is_unreachable(monkeypatch):
+    import contextlib
+
+    import routes.inference as routes
+
+    seen = {}
+
+    def fake_locate(*a, **k):
+        seen.update(k)
+        return mi.LocatedModelIni("c = 4096\n", "repo_root", "Q8_0", "M-Q8_0.gguf")
+
+    monkeypatch.setattr(mi, "locate_model_ini", fake_locate)
+    monkeypatch.setattr(
+        routes, "_hf_offline_if_unreachable_for", lambda _m: contextlib.nullcontext(True)
+    )
+    routes._apply_model_ini_to_request(_load_request(use_model_ini = True), "u/M-GGUF", "M")
+    assert seen["offline"] is True

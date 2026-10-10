@@ -289,3 +289,11 @@ test("the config page renders the switch behind shouldShowModelIniRow with the e
   );
   assert.match(page, />Use \.ini file \(optional\)</);
 });
+
+test("an enabled INI is priced in the memory estimate", () => {
+  const page = readSrc("features/model-picker/components/model-config-page.tsx");
+  assert.match(page, /const iniInEstimate =\s*config\.useModelIni === true && modelIni\?\.found \? modelIni : null;/);
+  assert.match(page, /nParallel: iniInEstimate\?\.n_parallel \?\? runtimeConfig\.nParallel/);
+  assert.match(page, /\[\.\.\.iniInEstimate\.args, \.\.\.\(runtimeConfig\.llamaExtraArgs \?\? \[\]\)\]/);
+  assert.match(page, /except Extra Arguments,\s*which still win/);
+});
