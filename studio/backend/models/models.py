@@ -221,6 +221,33 @@ class GgufVariantDetail(BaseModel):
     )
 
 
+class ModelIniIgnoredKey(BaseModel):
+    key: str
+    section: str
+    reason: str
+
+
+class ModelIniResponse(BaseModel):
+    """The unsloth.ini beside a GGUF variant, compiled to the settings a load would apply."""
+
+    found: bool = Field(False, description = "Whether the GGUF has an unsloth.ini")
+    filename: str = Field("unsloth.ini", description = "File name Studio looks for")
+    location: Optional[str] = Field(
+        None, description = "variant_folder, repo_root or local_dir; None when not found"
+    )
+    sections: List[str] = Field(default_factory = list, description = "Every section in the file")
+    applied_sections: List[str] = Field(
+        default_factory = list, description = "Sections applied to this variant, in order"
+    )
+    args: List[str] = Field(
+        default_factory = list, description = "llama-server arguments the INI applies"
+    )
+    n_parallel: Optional[int] = Field(None, description = "Slot count from np / parallel")
+    ignored: List[ModelIniIgnoredKey] = Field(
+        default_factory = list, description = "Keys the INI sets that Studio does not apply"
+    )
+
+
 class GgufVariantsResponse(BaseModel):
     """Response for listing GGUF quantization variants in a HuggingFace repo."""
 

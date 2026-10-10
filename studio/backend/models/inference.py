@@ -74,6 +74,8 @@ class LoadRequest(BaseModel):
     # Auto-switch only: the alias its owner-override lookup used, so the managed path-flag
     # check reads the same override row.
     _override_alias_id: Optional[str] = PrivateAttr(default = None)
+    # Tokens compiled from the model's unsloth.ini when use_model_ini resolved one.
+    _model_ini_args: tuple[str, ...] = PrivateAttr(default = ())
     load_request_id: Optional[str] = Field(
         None,
         min_length = 1,
@@ -462,6 +464,15 @@ class LoadRequest(BaseModel):
             "auth, UI/server mode) are rejected. Ignored for non-GGUF models."
         ),
     )
+    use_model_ini: bool = Field(
+        False,
+        description = (
+            "Apply the unsloth.ini shipped beside this GGUF (the variant's folder, then the "
+            "model root). Its allowlisted settings go before llama_extra_args, so typed "
+            "extras still win; np sets n_parallel. 400 when the GGUF has no unsloth.ini. "
+            "Ignored for non-GGUF models."
+        ),
+    )
     reasoning_budget: int = Field(
         -1,
         ge = -1,
@@ -614,6 +625,11 @@ class ValidateModelRequest(BaseModel):
             "the one that runs."
         ),
     )
+    use_model_ini: bool = Field(
+        False,
+        description = "Same as LoadRequest.use_model_ini, so the check judges the same command.",
+    )
+    _model_ini_args: tuple[str, ...] = PrivateAttr(default = ())
     gguf_variant: Optional[str] = Field(
         None, description = "GGUF quantization variant (e.g. 'Q4_K_M')"
     )
@@ -1953,6 +1969,10 @@ class _InferenceRuntimeFields(BaseModel):
             "it, a rollback after a failed switch restores the previous model "
             "without the arguments it had."
         ),
+    )
+    model_ini_applied: bool = Field(
+        False,
+        description = "Whether the running GGUF load applied the model's unsloth.ini.",
     )
 
 

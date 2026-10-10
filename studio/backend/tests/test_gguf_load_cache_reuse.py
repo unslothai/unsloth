@@ -1205,6 +1205,8 @@ class TestLoadHubDownloadExclusion:
             # Read from requested_extra_args, which is what the load was invoked
             # with rather than the rewritten launch list.
             "requested_llama_extra_args",
+            # From the route's unsloth.ini record, not a backend attribute.
+            "model_ini_applied",
             # Constant None: llama-server never serves an audio GGUF.
             "audio_family",
             "audio_options",
