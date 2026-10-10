@@ -423,6 +423,26 @@ def test_tokenizer_api_surface_unchanged(rc_on):
     assert all(isinstance(e, tv1._CompatEncoding) for e in got.encodings)
 
 
+@needs_rc
+def test_verify_mode_catches_a_mismatch_and_post_process_takes_rc_encodings(rc_on):
+    plain, fast = _pair(_byte_level)
+    raw = fast._tokenizer.encode(TEXTS[0], add_special_tokens = False)
+    want = plain._tokenizer.post_process(
+        plain._tokenizer.encode(TEXTS[0], add_special_tokens = False)
+    )
+    assert isinstance(raw, tv1._CompatEncoding)
+    assert fast._tokenizer.post_process(raw).ids == want.ids
+    _, other = _pair(_unigram)
+    other("warm up")
+    snapshot = fast._tokenizer._unsloth_state.snapshot
+    snapshot_v1, snapshot.v1 = snapshot.v1, other._tokenizer._unsloth_state.snapshot.v1
+    try:
+        with pytest.raises(RuntimeError, match = "differs from 0.x"):
+            fast(TEXTS)
+    finally:
+        snapshot.v1 = snapshot_v1
+
+
 def _map(
     ds,
     tok,

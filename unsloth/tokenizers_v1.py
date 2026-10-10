@@ -404,6 +404,16 @@ class TokenizersV1Backend:
     def __reduce__(self):
         return (_rewrap, (self._unsloth_base,))
 
+    def post_process(
+        self,
+        encoding,
+        pair = None,
+        add_special_tokens = True,
+    ):
+        # The native method only takes real 0.x encodings.
+        unwrap = lambda e: e._materialize() if isinstance(e, _CompatEncoding) else e
+        return self._unsloth_base.post_process(unwrap(encoding), unwrap(pair), add_special_tokens)
+
     def __copy__(self):
         return _rewrap(copy.copy(self._unsloth_base))
 
@@ -525,7 +535,8 @@ class TokenizersV1Backend:
         ]
         if os.environ.get(_VERIFY_ENV, "0") == "1":
             for text, encoding in zip(texts, out):
-                if not _same(encoding._materialize(), encoding):
+                # Against the RC encoding itself: once materialized, the wrapper reads 0.x.
+                if not _same(encoding._materialize(), encoding._v1):
                     raise RuntimeError(
                         f"Unsloth: tokenizers release candidate differs from 0.x on {text[:200]!r}"
                     )
