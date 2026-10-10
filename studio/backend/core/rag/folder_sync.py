@@ -131,7 +131,8 @@ def _read_gitignore(directory: str, base: str) -> list[gitignore.Rule]:
         raise RuntimeError(f"Couldn't read {shown}: {exc.strerror or exc}") from exc
     if len(data) > gitignore.MAX_GITIGNORE_BYTES:
         raise RuntimeError(f"{shown} is larger than {gitignore.MAX_GITIGNORE_BYTES // 1024} KB")
-    return gitignore.parse(data.decode("utf-8", "replace"), base)
+    # utf-8-sig drops a leading BOM, as git does (dir.c add_patterns_from_buffer, skip_utf8_bom).
+    return gitignore.parse(data.decode("utf-8-sig", "replace"), base)
 
 
 def _is_plain_text_ext(ext: str) -> bool:
