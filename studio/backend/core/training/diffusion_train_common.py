@@ -1000,8 +1000,7 @@ class DiffusionLoraConfig:
     lr_warmup_steps: int = 0
     center_crop: bool = False
     random_flip: bool = True
-    # Aspect-ratio buckets: each image trains on the same-area canvas nearest its aspect instead of a square crop.
-    # None resolves in normalized() (on for a fresh run) or, on a resume, to what the bundle recorded.
+    # None: on for a fresh run, the bundle's recorded value on a resume.
     bucketing: Optional[bool] = None
     caption_column: str = "text"
     adapter_name: str = "default"
@@ -1313,9 +1312,8 @@ def resolve_train_steps(
 ) -> int:
     """The effective optimizer-step count for a run. When ``cfg.num_epochs`` is set (> 0), one epoch
     is one full pass over the dataset in optimizer steps -- ceil(ceil(N / batch) / grad_accum) --
-    so the run is ``num_epochs`` such passes, capped at 100000. A bucketed run (``image_paths``
-    given) counts each bucket's batches separately, since a bucket's last partial batch is padded
-    within itself. With ``num_epochs == 0`` the explicit ``cfg.train_steps`` is used unchanged."""
+    so the run is ``num_epochs`` such passes, capped at 100000. Bucketed runs (``image_paths``)
+    count batches per bucket: a bucket pads its last batch within itself. With ``num_epochs == 0`` the explicit ``cfg.train_steps`` is used unchanged."""
     if cfg.num_epochs > 0:
         batch = max(1, cfg.train_batch_size)
         batches = math.ceil(n_images / batch)
@@ -1514,7 +1512,6 @@ def discover_image_caption_pairs(
 # The shared DiffusionLoraConfig carries save_steps / resume_from_checkpoint for every family, so a loop that
 # implements neither has to say so rather than ignore them.
 CHECKPOINTLESS_FAMILIES: frozenset[str] = frozenset({"minimax-h3"})
-# Trained from clips through one packed canvas, so its loop has no image buckets.
 UNBUCKETED_FAMILIES: frozenset[str] = frozenset({"minimax-h3"})
 
 # The batch axis is a pure replication axis for these: the layout, the rotary grid and the row timesteps are set by
@@ -1662,8 +1659,7 @@ def _plan_cache_variants(
     draws of (u_left, u_top, flip) with the crop as unit fractions the loader maps onto its
     integer crop range. Uses its own rng stream so the training loop's draws are untouched.
     Center-crop / no-flip collapse duplicate variants, so callers encode each distinct variant
-    exactly once. ``crop_room`` (bucketed runs) is each image's (x, y) crop slack: an axis with
-    none pins its fraction, so an image that fits its bucket collapses to its flip variants.
+    exactly once. ``crop_room``: per-image (x, y) crop slack; an axis with none pins its fraction.
     Pure (no torch) for CPU unit tests."""
     crop_rng = random.Random(seed)
     plan: list[list[tuple[float, float, bool]]] = []
@@ -1685,8 +1681,7 @@ def _plan_cache_variants(
 
 
 def resolve_bucketing(cfg: "DiffusionLoraConfig") -> "DiffusionLoraConfig":
-    """Settle a ``bucketing`` left unset by a resume request: the bundle's recorded behaviour, so an
-    old run (or a replayed config that predates the field) continues square."""
+    """Settle an unset ``bucketing``: the bundle's recorded value on a resume (pre-field runs stay square)."""
     if cfg.bucketing is not None:
         return cfg
     if not cfg.resume_from_checkpoint:
@@ -1699,8 +1694,7 @@ def resolve_bucketing(cfg: "DiffusionLoraConfig") -> "DiffusionLoraConfig":
 def plan_image_canvases(
     cfg: "DiffusionLoraConfig", image_paths: list[str]
 ) -> tuple[Optional[list[tuple[int, int]]], Optional[list[tuple[int, int]]]]:
-    """Per-image (w, h) training canvas and (x, y) crop slack for a bucketed run, or (None, None)
-    for the legacy square canvas. Reads image headers only."""
+    """Per-image (w, h) canvas and (x, y) crop slack, or (None, None) when unbucketed. Headers only."""
     if not cfg.bucketing:
         return None, None
     from core.training.diffusion_train_extras import (

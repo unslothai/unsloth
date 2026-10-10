@@ -3243,9 +3243,7 @@ def _resolve_diffusion_data_dir(raw: str) -> Path:
 
 
 def _diffusion_resume_target_steps(normalized_cfg: Any, pairs: list) -> int:
-    """The step target the trainer will resolve for this resume. Epoch mode counts per-bucket batches for a bucketed
-    run, and an unset ``bucketing`` inherits the checkpoint's, so both are settled here exactly as the trainer does;
-    a smaller target would refuse a late checkpoint as already finished."""
+    """The trainer's step target (bucketing and per-bucket batches settled alike); a smaller one refuses late checkpoints."""
     from core.training import diffusion_train_common as _dtc
 
     cfg = _dtc.resolve_bucketing(normalized_cfg)

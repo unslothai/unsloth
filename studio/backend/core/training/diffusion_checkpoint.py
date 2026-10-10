@@ -99,8 +99,7 @@ _IDENTITY_LABELS: tuple[tuple[str, str], ...] = (
     ("cache_variants", "cached crop variants"),
     ("center_crop", "centre cropping"),
     ("random_flip", "random flipping"),
-    # Buckets change every non-square image's canvas and the batch order, so a square bundle must not continue
-    # bucketed. A manifest from before the field trained square (see _LEGACY_IDENTITY_DEFAULTS).
+    # Buckets change canvases and batch order; a pre-field manifest trained square (_LEGACY_IDENTITY_DEFAULTS).
     ("bucketing", "aspect ratio buckets"),
     # TF32 versus strict fp32 continues the trajectory at a different numeric precision, and off is the documented
     # strict-reproducibility mode.
@@ -152,8 +151,7 @@ _OPTIONAL_IDENTITY_FIELDS = frozenset(
         "base_precision_effective",
     }
 )
-# The value a field had before it was recorded. Only the BUNDLE side takes it: an incoming None is the route's
-# pre-trainer identity, which has not resolved the field yet and stays "cannot tell".
+# Bundle side only: an incoming None is the route's unresolved pre-trainer identity ("cannot tell").
 _LEGACY_IDENTITY_DEFAULTS: dict[str, str] = {"bucketing": "off"}
 # What source_revision() returns when it cannot resolve a revision offline.
 _UNRESOLVED_REVISION = "unresolved"
@@ -1869,10 +1867,7 @@ def _assert_loadable(path: Path, manifest: dict[str, Any]) -> None:
 
 
 def recorded_bucketing(path_value: str) -> bool:
-    """Whether the bundle a resume of ``path_value`` continues trained with aspect-ratio buckets,
-    so a resume request that leaves the field unset keeps the run's recorded behaviour. A bundle
-    written before the field existed trained square. Unreadable paths answer False and leave the
-    refusal to ``preflight_resume``."""
+    """Whether the resumed bundle trained bucketed (pre-field or unreadable: False; preflight_resume refuses)."""
     try:
         root = resolve_resume_dir(path_value)
     except ResumeError:

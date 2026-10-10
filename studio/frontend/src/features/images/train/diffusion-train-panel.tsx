@@ -504,7 +504,6 @@ export function DiffusionTrainPanel({
   const [lrWarmupSteps, setLrWarmupSteps] = useState(0);
   // Gradient checkpointing trades ~20-30% step time for a large activation-VRAM saving.
   const [gradCheckpoint, setGradCheckpoint] = useState(true);
-  // Aspect-ratio buckets keep non-square photos whole instead of cropping them square.
   const [bucketing, setBucketing] = useState(true);
   // sdxl (U-Net) trains in a mixed-precision autocast; the DiT families quantise the frozen base
   // weights and ignore this.

@@ -391,9 +391,7 @@ class PersistentConditioningCache:
             return None
 
 
-# Non-square bucket edges snap to 64 pixels: a multiple of every family's latent grid (VAE factor x patch: 16 for the
-# FLUX / Qwen / Z-Image / Krea DiTs, 32 for LTX-2, and SDXL's U-Net downsamples the 8x latent twice more), and a coarse
-# step keeps the bucket count, and with it the compiled shapes, small (5 at 512, 9 at 768, 13 at 1024).
+# 64: a multiple of every family's latent grid (16 DiTs, 32 LTX-2, SDXL U-Net) and few compiled shapes.
 
 BUCKET_DIVISOR = 64
 
@@ -407,10 +405,7 @@ def bucket_resolutions(
     divisor: int = BUCKET_DIVISOR,
     max_ratio: float = MAX_BUCKET_RATIO,
 ) -> list[tuple[int, int]]:
-    """Every (w, h) bucket for ``resolution``: the square (resolution, resolution) itself, plus each
-    width on the ``divisor`` grid paired with the tallest grid height whose area stays within
-    resolution**2 (kohya's BucketManager rule), both orientations, aspect within ``max_ratio``.
-    The square keeps the exact legacy canvas even when ``resolution`` is off the 64 grid."""
+    """The exact legacy square plus kohya BucketManager buckets (tallest grid height within resolution**2)."""
     base = int(resolution)
     area = base * base
     out = {(base, base)}
@@ -425,9 +420,7 @@ def bucket_resolutions(
 
 
 def nearest_bucket(width: int, height: int, buckets: list[tuple[int, int]]) -> tuple[int, int]:
-    """The bucket whose aspect ratio is closest in log space; ties go to the larger area, then the
-    sorted order, so assignment is deterministic. An exactly square image always lands in the
-    square bucket."""
+    """Closest aspect in log space; ties: larger area, then sorted order (deterministic)."""
     if width <= 0 or height <= 0:
         raise ValueError("image dimensions must be positive")
     r = math.log(width / height)
@@ -459,8 +452,7 @@ def assign_buckets(
 
 
 def cover_resize_dims(width: int, height: int, canvas_w: int, canvas_h: int) -> tuple[int, int]:
-    """The size an image is resized to before cropping to the canvas: the smallest uniform scale
-    that covers both edges. For a square canvas this is exactly the legacy short-side resize."""
+    """Smallest uniform scale covering the canvas (square canvas = legacy short-side resize)."""
     scale = max(canvas_w / width, canvas_h / height)
     return max(canvas_w, round(width * scale)), max(canvas_h, round(height * scale))
 
@@ -481,11 +473,8 @@ def oriented_image_size(path: str) -> tuple[int, int]:
 class BucketBatchSampler:
     """Batch indices so every batch comes from ONE bucket (one latent shape).
 
-    Epoch-style like the trainers' PermutationBatchSampler: each cycle shuffles every bucket,
-    cuts it into batches of ``k`` (a bucket's last partial batch wraps within itself so the batch
-    shape stays fixed), then shuffles the batch order, so every image is seen once per cycle and
-    buckets interleave. Seed-deterministic via the caller's ``rng``; ``state_dict`` captures the
-    cycle in progress for a resume checkpoint."""
+    Epoch-style like PermutationBatchSampler: every image once per cycle; a bucket's last partial
+    batch wraps within itself so shapes stay fixed."""
 
     def __init__(self, buckets: dict[tuple[int, int], list[int]], rng: random.Random):
         if not buckets or not any(buckets.values()):
@@ -526,8 +515,7 @@ class BucketBatchSampler:
         }
 
     def load_state_dict(self, state: Optional[dict[str, Any]]) -> bool:
-        """Restore a cycle saved by ``state_dict``; False (never a silent fresh cycle) when the state
-        is not a bucket cycle for exactly this bucket assignment, see PermutationBatchSampler."""
+        """False (never a silent fresh cycle) unless the state matches this exact bucket assignment."""
         if not isinstance(state, dict) or state.get("kind") != "bucket":
             return False
         try:

@@ -59,7 +59,6 @@ def _img(
     return str(path)
 
 
-# ── bucket set and assignment ────────────────────────────────────────────────
 @pytest.mark.parametrize("res", [512, 768, 1024])
 def test_bucket_set_is_bounded_same_area_and_on_grid(res):
     buckets = bucket_resolutions(res)
@@ -68,11 +67,9 @@ def test_bucket_set_is_bounded_same_area_and_on_grid(res):
         if (w, h) != (res, res):
             assert w % BUCKET_DIVISOR == 0 and h % BUCKET_DIVISOR == 0
         assert w * h <= res * res
-        # Within ~20% of the target area, so a step costs about what the square one did.
         assert w * h >= 0.8 * res * res
         assert 0.5 <= w / h <= 2.0
         assert (h, w) in buckets
-    # Few shapes: each is a compiled graph and a cache shape.
     assert len(buckets) <= 13
 
 
@@ -93,7 +90,6 @@ def test_assignment_follows_aspect():
     assert h > w and abs(math.log((w / h) / (1080 / 1920))) < 0.1
     w, h = nearest_bucket(1920, 1080, choices)
     assert w > h
-    # A panorama clamps to the widest bucket instead of a new shape.
     assert nearest_bucket(8000, 1000, choices) == max(choices, key = lambda b: b[0] / b[1])
 
 
@@ -111,7 +107,6 @@ def test_oriented_size_reads_exif_rotation(tmp_path):
     assert oriented_image_size(_img(tmp_path / "b.jpg", 300, 200, exif_orientation = 6)) == (200, 300)
 
 
-# ── sampler ──────────────────────────────────────────────────────────────────
 def _groups():
     return {(512, 512): [0, 1, 2], (640, 384): [3, 4], (384, 640): [5, 6, 7, 8]}
 
@@ -158,13 +153,11 @@ def test_sampler_refuses_a_foreign_state():
     state = a.state_dict()
     other = BucketBatchSampler({(512, 512): [0, 1, 2, 3, 4, 5, 6, 7, 8]}, random.Random(0))
     assert not other.load_state_dict(state)
-    # A square run's permutation state is not a bucket cycle.
     assert not a.load_state_dict({"n": 9, "order": list(range(9)), "pos": 0})
     assert not a.load_state_dict(None)
     assert not a.load_state_dict({**state, "pos": 999})
 
 
-# ── canvases and the cache plan ──────────────────────────────────────────────
 def _cfg(tmp_path, **kw):
     kw.setdefault("instance_prompt", "a photo")
     return DiffusionLoraConfig(
@@ -195,8 +188,7 @@ def test_canvases_follow_each_image(tmp_path):
 
 
 def test_an_epoch_covers_every_bucket_batch(tmp_path):
-    # Three buckets of three with batch 2: each bucket pads its last batch within itself, so a full pass is 6 batches,
-    # where ceil(9 / 2) = 5 steps would end the epoch with some images unseen.
+    # 3 buckets x 3 images, batch 2: 6 batches per pass, not ceil(9 / 2) = 5.
     paths = [
         _img(tmp_path / f"{kind}{i}.png", w, h)
         for kind, (w, h) in {"p": (600, 900), "l": (900, 600), "s": (700, 700)}.items()
@@ -208,14 +200,12 @@ def test_an_epoch_covers_every_bucket_batch(tmp_path):
     assert (
         resolve_train_steps(dataclasses.replace(cfg, gradient_accumulation_steps = 4), 9, paths) == 2
     )
-    # Unbucketed (or no paths) keeps ceil(N / (batch x accumulation)).
     assert resolve_train_steps(dataclasses.replace(cfg, bucketing = False), 9, paths) == 5
     assert resolve_train_steps(cfg, 9) == 5
 
 
 def test_the_resume_preflight_target_matches_the_trainer(tmp_path):
-    # The start route refuses a checkpoint at or past its target, so it must count the bucketed epoch the way the
-    # trainer does, including a resume that leaves bucketing to the checkpoint.
+    # The route refuses a checkpoint at or past its target, so it must match the trainer's count.
     from routes.training import _diffusion_resume_target_steps
 
     paths = [
@@ -229,7 +219,6 @@ def test_the_resume_preflight_target_matches_the_trainer(tmp_path):
     inherited = dataclasses.replace(
         cfg, bucketing = None, resume_from_checkpoint = str(tmp_path / "missing")
     )
-    # No readable bundle: the trainer would train square, and so does the target.
     assert _diffusion_resume_target_steps(inherited, pairs) == 5
 
 
@@ -243,7 +232,6 @@ def test_plan_collapses_variants_without_crop_room():
     assert [v[0] for v in bucketed[1]] == [v[0] for v in legacy[1]]
 
 
-# ── per-bucket crops and SDXL time ids ───────────────────────────────────────
 def test_sdxl_bucket_crop_and_time_ids(tmp_path):
     path = _img(tmp_path / "p.png", 600, 900)
     t, ids = _load_image_tensor(path, (448, 576), False, False, random.Random(0))
@@ -276,7 +264,6 @@ def test_square_canvas_tuple_is_byte_identical_to_the_legacy_int(tmp_path):
     )
 
 
-# ── every DiT family's packing on a non-square latent ────────────────────────
 class _EchoTransformer(torch.nn.Module):
     """Returns its packed input as the prediction, so forward(noisy) round-trips to noisy exactly
     when the family's pack / position ids / unpack agree on a non-square grid."""
@@ -410,7 +397,6 @@ def test_ltx2_round_trips_non_square(h, w):
     assert (tr.calls[0]["height"], tr.calls[0]["width"]) == (h, w)
 
 
-# ── config default and the fixed H3 recipe ───────────────────────────────────
 def test_bucketing_defaults_on_for_a_fresh_run_and_unset_for_a_resume(tmp_path):
     assert _cfg(tmp_path).normalized().bucketing is True
     assert _cfg(tmp_path, bucketing = False).normalized().bucketing is False
@@ -427,7 +413,6 @@ def test_bucketing_defaults_on_for_a_fresh_run_and_unset_for_a_resume(tmp_path):
     )
     resumed = _cfg(tmp_path, resume_from_checkpoint = str(tmp_path / "nowhere")).normalized()
     assert resumed.bucketing is None
-    # Nothing readable to adopt: a resume falls back to the legacy square behaviour.
     assert resolve_bucketing(resumed).bucketing is False
 
 
@@ -436,7 +421,6 @@ def test_h3_recipe_pins_bucketing_off():
     assert train_recipe_overrides(cfg)["bucketing"] is False
 
 
-# ── resume identity ──────────────────────────────────────────────────────────
 def _identity(tmp_path, bucketing):
     cfg = dataclasses.replace(_cfg(tmp_path).normalized(), bucketing = bucketing)
     return dc.identity_for_config(cfg)
@@ -484,5 +468,4 @@ def test_persistent_cache_keys_a_bucketed_latent_by_its_canvas(tmp_path):
     plan = [[variant]]
     embeds, latents = dit._load_warm_conditioning(cache, [path], plan, ["cap"], "cpu", [(448, 576)])
     assert latents[0][0][0].shape == (1, 4, 72, 56)
-    # A square run of the same image never reads the bucketed entry, and vice versa.
     assert dit._load_warm_conditioning(cache, [path], plan, ["cap"], "cpu") == (None, None)
