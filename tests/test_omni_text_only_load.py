@@ -23,6 +23,20 @@ VOCAB = 64
 DEVICE = "cuda" if has_real_cuda() else "cpu"
 
 
+@pytest.fixture(autouse = True)
+def _stock_causal_lm_loss_on_cpu(monkeypatch):
+    """Any Unsloth load earlier in this worker repoints LOSS_MAPPING at the Triton loss for the
+    whole process, which a CPU host cannot run ("0 active drivers"). These tests are about where
+    the forward goes, so on CPU they price it with transformers' own loss; on a GPU host they keep
+    Unsloth's, as before."""
+    if DEVICE != "cpu":
+        return
+    loss_utils = pytest.importorskip("transformers.loss.loss_utils")
+    for key, fn in list(loss_utils.LOSS_MAPPING.items()):
+        if getattr(fn, "__name__", "") != "ForCausalLMLoss" and "Unsloth" in repr(fn):
+            monkeypatch.setitem(loss_utils.LOSS_MAPPING, key, loss_utils.ForCausalLMLoss)
+
+
 def _tiny_config():
     text = dict(
         vocab_size = VOCAB,

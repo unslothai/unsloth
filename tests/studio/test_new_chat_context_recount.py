@@ -612,8 +612,14 @@ export async function hydrateThreadUsage(props: any): Promise<void> {
   const modelType: string = props.modelType ?? "base";
   const pairId = props.pairId ?? undefined;
   // The thread's stored messages, which the loader reads into `msgs` above the sliced block.
-  // The block prices them with `estimateContextUsage` when nothing saved is usable (#9475).
   const msgs: any[] = props.messages ?? [];
+  // The branch the loader selects from `msgs` above the sliced block, which the block prices with
+  // `estimateContextUsage` when nothing saved is usable (#9475, #13109). No head is saved here, so
+  // it follows the newest stored row to its leaf, as the loader does without one.
+  const branch: any[] = orderBySelectedBranch(
+    msgs,
+    resolveSavedBranchHead(msgs, props.savedHeadId ?? msgs.at(-1)?.id),
+  );
   // Read once, as the loader does, just above the sliced block.
   const store = useChatRuntimeStore.getState();
 __RESTORE__
@@ -1598,9 +1604,12 @@ def test_the_harness_binds_every_loader_local_the_history_restore_reads() -> Non
         for name in declared_above - declared_in_slice
         if re.search(rf"(?<![\w$.]){re.escape(name)}\b", code)
     )
-    assert {"msgs", "remoteId"} <= set(
-        read_from_above
-    ), "the guard no longer sees the restore read `msgs` and the destructured `remoteId`"
+    # The block's own inputs change (#13109 moved the estimate from `msgs` to the selected
+    # `branch`), so pin only what proves the scan works: the destructured `remoteId`, and at least
+    # one plain `const` from above the slice.
+    assert "remoteId" in read_from_above and set(read_from_above) - {
+        "remoteId"
+    }, f"the guard no longer sees the restore read loader locals, only {read_from_above}"
     bound = _declared_names(HARNESS_HISTORY)
     missing = [name for name in read_from_above if name not in bound]
     assert not missing, (
