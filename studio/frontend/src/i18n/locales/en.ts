@@ -2518,7 +2518,7 @@ export const en = {
       toolResultLimitLoadError: "Failed to load the tool output length.",
       toolResultLimitSaveError: "Failed to save the tool output length.",
       toolResultLimitKeywords:
-        "tool output result truncate truncated truncation limit cap characters chars length terminal python mcp",
+        "tool output result truncate truncated truncation limit cap characters chars length terminal python",
       visibility: {
         collapsed: "Collapsed",
         auto: "Expand while running",

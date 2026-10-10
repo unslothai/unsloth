@@ -2670,7 +2670,7 @@ export const sv = {
       toolResultLimitLoadError: "Det gick inte att läsa in längden på verktygsutdata.",
       toolResultLimitSaveError: "Det gick inte att spara längden på verktygsutdata.",
       toolResultLimitKeywords:
-        "utdata resultat trunkera avkortad gräns tecken längd tool output result truncate truncated truncation limit cap characters chars length terminal python mcp",
+        "utdata resultat trunkera avkortad gräns tecken längd tool output result truncate truncated truncation limit cap characters chars length terminal python",
       visibility: {
         collapsed: "Hopfälld",
         auto: "Fäll ut medan den körs",

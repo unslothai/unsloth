@@ -2498,7 +2498,7 @@ export const ptBR = {
       toolResultLimitLoadError: "Não foi possível carregar o tamanho da saída das ferramentas.",
       toolResultLimitSaveError: "Não foi possível salvar o tamanho da saída das ferramentas.",
       toolResultLimitKeywords:
-        "saída resultado truncar cortado limite caracteres tamanho tool output result truncate truncated truncation limit cap characters chars length terminal python mcp",
+        "saída resultado truncar cortado limite caracteres tamanho tool output result truncate truncated truncation limit cap characters chars length terminal python",
       visibility: {
         collapsed: "Recolhido",
         auto: "Expandir durante a execução",

@@ -2588,7 +2588,7 @@ export const he = {
       toolResultLimitLoadError: "טעינת אורך פלט הכלים נכשלה.",
       toolResultLimitSaveError: "שמירת אורך פלט הכלים נכשלה.",
       toolResultLimitKeywords:
-        "פלט תוצאה קיצוץ מגבלה תווים אורך tool output result truncate truncated truncation limit cap characters chars length terminal python mcp",
+        "פלט תוצאה קיצוץ מגבלה תווים אורך tool output result truncate truncated truncation limit cap characters chars length terminal python",
       visibility: {
         collapsed: "מכווץ",
         auto: "מורחב בזמן ריצה",

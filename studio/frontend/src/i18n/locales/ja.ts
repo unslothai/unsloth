@@ -2465,7 +2465,7 @@ export const ja = {
       toolResultLimitLoadError: "ツール出力の長さを読み込めませんでした。",
       toolResultLimitSaveError: "ツール出力の長さを保存できませんでした。",
       toolResultLimitKeywords:
-        "出力 結果 切り詰め 上限 文字数 長さ tool output result truncate truncated truncation limit cap characters chars length terminal python mcp",
+        "出力 結果 切り詰め 上限 文字数 長さ tool output result truncate truncated truncation limit cap characters chars length terminal python",
       visibility: {
         collapsed: "折りたたむ",
         auto: "実行中は展開",

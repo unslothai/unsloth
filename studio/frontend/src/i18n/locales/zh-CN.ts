@@ -2442,7 +2442,7 @@ export const zhCN = {
       toolResultLimitLoadError: "无法加载工具输出长度。",
       toolResultLimitSaveError: "无法保存工具输出长度。",
       toolResultLimitKeywords:
-        "输出 结果 截断 限制 字符 长度 tool output result truncate truncated truncation limit cap characters chars length terminal python mcp",
+        "输出 结果 截断 限制 字符 长度 tool output result truncate truncated truncation limit cap characters chars length terminal python",
       visibility: {
         collapsed: "折叠",
         auto: "运行时展开",

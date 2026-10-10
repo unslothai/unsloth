@@ -2475,7 +2475,7 @@ export const ko = {
       toolResultLimitLoadError: "도구 출력 길이를 불러오지 못했습니다.",
       toolResultLimitSaveError: "도구 출력 길이를 저장하지 못했습니다.",
       toolResultLimitKeywords:
-        "출력 결과 잘림 제한 문자 길이 tool output result truncate truncated truncation limit cap characters chars length terminal python mcp",
+        "출력 결과 잘림 제한 문자 길이 tool output result truncate truncated truncation limit cap characters chars length terminal python",
       visibility: {
         collapsed: "접힘",
         auto: "실행 중 펼치기",

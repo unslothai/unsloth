@@ -2494,7 +2494,7 @@ export const ru = {
       toolResultLimitLoadError: "Не удалось загрузить длину вывода инструментов.",
       toolResultLimitSaveError: "Не удалось сохранить длину вывода инструментов.",
       toolResultLimitKeywords:
-        "вывод результат обрезка обрезан лимит символы длина tool output result truncate truncated truncation limit cap characters chars length terminal python mcp",
+        "вывод результат обрезка обрезан лимит символы длина tool output result truncate truncated truncation limit cap characters chars length terminal python",
       visibility: {
         collapsed: "Свёрнуто",
         auto: "Разворачивать во время работы",

@@ -2517,7 +2517,7 @@ export const fr = {
       toolResultLimitLoadError: "Impossible de charger la longueur de la sortie des outils.",
       toolResultLimitSaveError: "Impossible d'enregistrer la longueur de la sortie des outils.",
       toolResultLimitKeywords:
-        "sortie résultat tronquer tronqué limite caractères longueur tool output result truncate truncated truncation limit cap characters chars length terminal python mcp",
+        "sortie résultat tronquer tronqué limite caractères longueur tool output result truncate truncated truncation limit cap characters chars length terminal python",
       visibility: {
         collapsed: "Replié",
         auto: "Déplier pendant l’exécution",

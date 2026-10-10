@@ -2520,7 +2520,7 @@ export const de = {
       toolResultLimitLoadError: "Die Länge der Tool-Ausgabe konnte nicht geladen werden.",
       toolResultLimitSaveError: "Die Länge der Tool-Ausgabe konnte nicht gespeichert werden.",
       toolResultLimitKeywords:
-        "Ausgabe Ergebnis abschneiden gekürzt Grenze Zeichen Länge tool output result truncate truncated truncation limit cap characters chars length terminal python mcp",
+        "Ausgabe Ergebnis abschneiden gekürzt Grenze Zeichen Länge tool output result truncate truncated truncation limit cap characters chars length terminal python",
       visibility: {
         collapsed: "Eingeklappt",
         auto: "Während der Ausführung ausklappen",

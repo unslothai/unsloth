@@ -2482,7 +2482,7 @@ export const ar = {
       toolResultLimitLoadError: "تعذر تحميل طول مخرجات الأدوات.",
       toolResultLimitSaveError: "تعذر حفظ طول مخرجات الأدوات.",
       toolResultLimitKeywords:
-        "مخرجات نتيجة اقتطاع حد أحرف طول tool output result truncate truncated truncation limit cap characters chars length terminal python mcp",
+        "مخرجات نتيجة اقتطاع حد أحرف طول tool output result truncate truncated truncation limit cap characters chars length terminal python",
       visibility: {
         collapsed: "مطوي",
         auto: "التوسيع أثناء التشغيل",

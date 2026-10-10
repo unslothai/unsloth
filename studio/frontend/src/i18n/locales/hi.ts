@@ -2488,7 +2488,7 @@ export const hi = {
       toolResultLimitLoadError: "टूल आउटपुट की लंबाई लोड नहीं हो सकी।",
       toolResultLimitSaveError: "टूल आउटपुट की लंबाई सहेजी नहीं जा सकी।",
       toolResultLimitKeywords:
-        "आउटपुट परिणाम काटना सीमा अक्षर लंबाई tool output result truncate truncated truncation limit cap characters chars length terminal python mcp",
+        "आउटपुट परिणाम काटना सीमा अक्षर लंबाई tool output result truncate truncated truncation limit cap characters chars length terminal python",
       visibility: {
         collapsed: "संक्षिप्त",
         auto: "चलने के दौरान विस्तृत करें",
