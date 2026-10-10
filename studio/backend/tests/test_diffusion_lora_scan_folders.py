@@ -163,3 +163,18 @@ def test_a_managed_account_only_sees_custom_folder_loras_it_may_access(
         dl.export_local_lora("style", tmp_path / "out")
     with pytest.raises(FileNotFoundError):
         dl.resolve_one("style", 1.0)
+
+
+@pytest.mark.parametrize("scanner", ["routes", "inventory"])
+def test_the_lmstudio_fallback_skips_marked_loras(tmp_path, scanner):
+    if scanner == "routes":
+        from routes.models import _scan_lmstudio_dir
+    else:
+        from hub.services.models.local_inventory import _scan_lmstudio_dir
+
+    for gguf in (tmp_path / "image-loras" / "style.gguf", tmp_path / "loose.gguf"):
+        gguf.parent.mkdir(parents = True, exist_ok = True)
+        gguf.write_bytes(b"GGUF" + b"\0" * 60)
+        gguf.with_suffix(".json").write_text(json.dumps(_MARK))
+    (tmp_path / "real.gguf").write_bytes(b"GGUF" + b"\0" * 60)
+    assert [row.display_name for row in _scan_lmstudio_dir(tmp_path)] == ["real"]

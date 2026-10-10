@@ -721,6 +721,8 @@ def _scan_lmstudio_dir(
             ),
         ]
 
+    from core.inference.diffusion_lora import is_image_lora_file
+
     found: List[LocalModelInfo] = []
     for child in lm_dir.iterdir():
         try:
@@ -729,6 +731,7 @@ def _scan_lmstudio_dir(
                     _is_main_gguf_filename(child.name)
                     and child.is_file()
                     and not is_appledouble_metadata(child)
+                    and not is_image_lora_file(child)
                 ):
                     try:
                         updated_at = child.stat().st_mtime
@@ -771,7 +774,7 @@ def _scan_lmstudio_dir(
                             bool(_servable_gguf_names(model_dir))
                             or (model_dir / "config.json").exists()
                             or any(
-                                not is_appledouble_metadata(p)
+                                not is_appledouble_metadata(p) and not is_image_lora_file(p)
                                 for p in model_dir.glob("*.safetensors")
                             )
                         )
@@ -797,6 +800,7 @@ def _scan_lmstudio_dir(
                         _is_main_gguf_filename(model_dir.name)
                         and model_dir.is_file()
                         and not is_appledouble_metadata(model_dir)
+                        and not is_image_lora_file(model_dir)
                     ):
                         try:
                             updated_at = model_dir.stat().st_mtime

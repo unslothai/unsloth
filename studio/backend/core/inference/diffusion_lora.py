@@ -268,6 +268,14 @@ def _catalog_by_id() -> dict[str, LoraCatalogEntry]:
     return {e.id: e for e in (list(_CURATED) + _scan_local())}
 
 
+def _staging_name(dest_dir: Path, stem: str) -> str:
+    import tempfile
+
+    fd, tmp = tempfile.mkstemp(dir = dest_dir, prefix = f".{stem}.", suffix = ".part")
+    os.close(fd)
+    return tmp
+
+
 def export_local_lora(lora_id: str, dest_dir: Path) -> Path:
     """Copy a local adapter into ``dest_dir`` with a ``<stem>.json`` sidecar carrying the image LoRA marker.
 
@@ -276,7 +284,6 @@ def export_local_lora(lora_id: str, dest_dir: Path) -> Path:
     """
     import filecmp
     import shutil
-    import tempfile
 
     entry = next((e for e in _scan_local() if e.id == lora_id), None)
     if entry is None or not entry.local_path:
@@ -301,19 +308,27 @@ def export_local_lora(lora_id: str, dest_dir: Path) -> Path:
         while not _free(out):
             out = dest_dir / f"{src.stem}-{n}{src.suffix}"
             n += 1
+        meta = json.dumps({**(_sidecar_data(src) or {}), "kind": LORA_SIDECAR_KIND}, indent = 2)
         # Exporting into the folder it already sits in would copy a file onto itself.
-        if not (out.exists() and os.path.samefile(src, out)):
-            # Partial copies stay under a name no scanner reads, so a failed export leaves nothing behind.
-            fd, tmp = tempfile.mkstemp(dir = dest_dir, prefix = f".{src.stem}.", suffix = ".part")
-            os.close(fd)
-            try:
-                shutil.copy2(src, tmp)
-                os.replace(tmp, out)
-            except BaseException:
+        copy = not (out.exists() and os.path.samefile(src, out))
+        # Both files are staged under names no scanner reads, so a failed export leaves nothing behind.
+        staged: list[str] = []
+        created = copy and not out.exists()
+        try:
+            if copy:
+                staged.append(_staging_name(dest_dir, src.stem))
+                shutil.copy2(src, staged[-1])
+            staged.append(_staging_name(dest_dir, src.stem))
+            Path(staged[-1]).write_text(meta, encoding = "utf-8")
+            if copy:
+                os.replace(staged[0], out)
+            os.replace(staged[-1], out.with_suffix(".json"))
+        except BaseException:
+            for tmp in staged:
                 Path(tmp).unlink(missing_ok = True)
-                raise
-        meta = {**(_sidecar_data(src) or {}), "kind": LORA_SIDECAR_KIND}
-        out.with_suffix(".json").write_text(json.dumps(meta, indent = 2), encoding = "utf-8")
+            if created and not out.with_suffix(".json").exists():
+                out.unlink(missing_ok = True)
+            raise
     return out
 
 

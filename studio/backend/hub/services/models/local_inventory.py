@@ -762,6 +762,7 @@ def _scan_lmstudio_dir(
                     child.suffix.lower() == ".gguf"
                     and child.is_file()
                     and not is_appledouble_metadata(child)
+                    and not _is_image_lora_file(child)
                 ):
                     try:
                         updated_at = child.stat().st_mtime
@@ -816,6 +817,7 @@ def _scan_lmstudio_dir(
                         model_dir.suffix.lower() == ".gguf"
                         and model_dir.is_file()
                         and not is_appledouble_metadata(model_dir)
+                        and not _is_image_lora_file(model_dir)
                     ):
                         try:
                             updated_at = model_dir.stat().st_mtime

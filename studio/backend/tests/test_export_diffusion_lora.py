@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -81,6 +82,20 @@ def test_a_failed_copy_leaves_nothing_behind(loras, tmp_path, monkeypatch):
         raise OSError("disk full")
 
     monkeypatch.setattr(shutil, "copy2", boom)
+    with pytest.raises(OSError):
+        dl.export_local_lora("mystyle", tmp_path / "out")
+    assert list((tmp_path / "out").iterdir()) == []
+
+
+def test_a_failed_sidecar_write_leaves_nothing_behind(loras, tmp_path, monkeypatch):
+    real_replace = os.replace
+
+    def boom(src, dst):
+        if str(dst).endswith(".json"):
+            raise OSError("disk full")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", boom)
     with pytest.raises(OSError):
         dl.export_local_lora("mystyle", tmp_path / "out")
     assert list((tmp_path / "out").iterdir()) == []
