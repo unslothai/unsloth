@@ -34,6 +34,7 @@ import {
 import { DownloadProgressBar } from "./download-progress-bar";
 import { presentedProgress } from "./download-presentation";
 import { assetLabel } from "./required-assets";
+import { queuedStagedEntries, useStagedDownloadQueues } from "./staged-download-queue";
 
 function createOrderedJobKeysSelector(): (state: {
   jobs: Record<string, ManagedDownload>;
@@ -250,7 +251,10 @@ export function DownloadManagerPanel({
 
   const selectOrderedJobKeys = useMemo(createOrderedJobKeysSelector, []);
   const jobKeys = useDownloadManagerStore(selectOrderedJobKeys);
-  const queued = useQueuedHubEntries();
+  const hubQueued = useQueuedHubEntries();
+  const stagedQueues = useStagedDownloadQueues((s) => s.queues);
+  const jobs = useDownloadManagerStore((s) => s.jobs);
+  const queued = [...hubQueued, ...queuedStagedEntries(stagedQueues, jobs)];
   const activeCount = useDownloadManagerStore(selectActiveJobCount) + queued.length;
 
   if (!enabled || (jobKeys.length === 0 && queued.length === 0)) return null;
