@@ -463,4 +463,23 @@ def test_find_unused_parameters_is_off_under_cp_unless_the_user_set_it(monkeypat
         monkeypatch, args = args, accelerator = accelerator, model = None, train_dataset = [1]
     )
     Trainer()
-    assert handler.find_unused_parameters is (False if user_value is None else True)
+    expected = False if user_value is None else True
+    # 5.x reads the handler built at init; 4.x rebuilds it from the argument at train time.
+    assert handler.find_unused_parameters is expected
+    assert args.ddp_find_unused_parameters is expected
+
+
+def test_active_manager_is_visible_from_the_autograd_device_thread(monkeypatch):
+    # On CUDA the reentrant checkpoint recompute runs on autograd's device thread, not this one.
+    import threading
+
+    monkeypatch.setattr(cp, "context_parallel", _fake_context_parallel([]))
+    manager = _manager()
+    manager.mesh = None
+    seen = []
+    with manager.apply({"input_ids": torch.ones(1, 4, dtype = torch.long)}):
+        thread = threading.Thread(target = lambda: seen.append(cp.get_cp_manager()))
+        thread.start()
+        thread.join()
+    assert seen == [manager]
+    assert cp.get_cp_manager() is None

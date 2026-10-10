@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import contextlib
-import contextvars
 import functools
 from typing import Iterator, Optional
 
@@ -21,9 +20,9 @@ except (ImportError, AttributeError):
 
 from .device_type import DEVICE_TYPE_TORCH
 
-_ACTIVE_MANAGER: contextvars.ContextVar[Optional["ContextParallelManager"]] = (
-    contextvars.ContextVar("unsloth_active_cp_manager", default = None)
-)
+# A module global, not a ContextVar: on CUDA autograd runs backward (and so the reentrant
+# checkpoint recompute) on its own device thread, where a ContextVar set here reads as unset.
+_ACTIVE_MANAGER: Optional["ContextParallelManager"] = None
 
 # shift_labels is built before sharding so each shard's last token keeps its next-token target.
 _BUFFER_NAMES = ("input_ids", "attention_mask", "labels", "position_ids", "shift_labels")
@@ -35,7 +34,7 @@ _INSTALLED_MESH = []
 
 
 def get_cp_manager() -> Optional["ContextParallelManager"]:
-    return _ACTIVE_MANAGER.get()
+    return _ACTIVE_MANAGER
 
 
 def _supports_context_parallel(model) -> bool:
@@ -124,7 +123,8 @@ class ContextParallelManager:
             for name in _BUFFER_NAMES
             if isinstance(inputs.get(name), torch.Tensor) and inputs[name].ndim > 1
         ]
-        token = _ACTIVE_MANAGER.set(self)
+        global _ACTIVE_MANAGER
+        previous, _ACTIVE_MANAGER = _ACTIVE_MANAGER, self
         try:
             with context_parallel(
                 self.mesh,
@@ -134,7 +134,7 @@ class ContextParallelManager:
             ):
                 yield
         finally:
-            _ACTIVE_MANAGER.reset(token)
+            _ACTIVE_MANAGER = previous
 
 
 def patch_sft_trainer() -> None:
@@ -231,10 +231,13 @@ def patch_sft_trainer() -> None:
             if hasattr(accelerator, "gradient_state"):
                 accelerator.gradient_state.plugin_kwargs["sync_each_batch"] = True
             # A PEFT model is not a PreTrainedModel, so the Trainer asks DDP for find_unused_parameters,
-            # which fails with reentrant checkpointing ("mark a variable ready only once"). Read at prepare().
-            handler = getattr(accelerator, "ddp_handler", None)
-            if handler is not None and getattr(self.args, "ddp_find_unused_parameters", None) is None:
-                handler.find_unused_parameters = False
+            # which fails with reentrant checkpointing ("mark a variable ready only once"). transformers
+            # 5.x builds the DDP handler here, 4.x rebuilds it from the argument when it wraps the model.
+            if getattr(self.args, "ddp_find_unused_parameters", None) is None:
+                self.args.ddp_find_unused_parameters = False
+                handler = getattr(accelerator, "ddp_handler", None)
+                if handler is not None:
+                    handler.find_unused_parameters = False
         print(f"Unsloth: Context parallelism enabled with size = {size}.")
 
     @functools.wraps(original_prediction_step)
