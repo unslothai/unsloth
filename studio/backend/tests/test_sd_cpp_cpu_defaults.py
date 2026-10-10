@@ -10,7 +10,11 @@ import pytest
 from core.inference import sd_cpp_backend as bk
 
 
-def _cgroups(tmp_path, quotas, own = "/user.slice/app.scope"):
+def _cgroups(
+    tmp_path,
+    quotas,
+    own = "/user.slice/app.scope",
+):
     """A cgroup v2 tree where ``quotas`` maps a cgroup path to its cpu.max line, plus /proc/self/cgroup."""
     root = tmp_path / "cg"
     for rel, line in quotas.items():
@@ -52,7 +56,13 @@ def test_no_cgroup_v2_entry_reads_the_root_only(tmp_path):
     assert bk._cgroup_cpu_limit(root, missing) == 3
 
 
-def _host(monkeypatch, *, cpus = 192, limit = None, platform = "linux"):
+def _host(
+    monkeypatch,
+    *,
+    cpus = 192,
+    limit = None,
+    platform = "linux",
+):
     monkeypatch.delenv("UNSLOTH_CPU_THREADS", raising = False)
     monkeypatch.setattr(bk.sys, "platform", platform)
     monkeypatch.setattr(bk.os, "cpu_count", lambda: cpus)

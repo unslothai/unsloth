@@ -254,7 +254,9 @@ def _base_sample_sigmas(
     return grid, base
 
 
-def _cgroup_cpu_limit(root: str = "/sys/fs/cgroup", proc_cgroup: str = "/proc/self/cgroup") -> Optional[int]:
+def _cgroup_cpu_limit(
+    root: str = "/sys/fs/cgroup", proc_cgroup: str = "/proc/self/cgroup"
+) -> Optional[int]:
     """Tightest cgroup v2 cpu.max over this cgroup and its parents, in whole CPUs; None if unreadable."""
     try:
         with open(proc_cgroup, encoding = "utf-8") as f:
