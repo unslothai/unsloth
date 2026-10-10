@@ -42,8 +42,8 @@ def _qwen_scheduler():
 
 def _flux_static_scheduler():
     # A static-shift scheduler (shift baked into sigmas at init, no dynamic shifting).
-    from diffusers import FlowMatchEulerDiscreteScheduler
-    return FlowMatchEulerDiscreteScheduler(num_train_timesteps = 1000, shift = 3.0)
+    diffusers = pytest.importorskip("diffusers")
+    return diffusers.FlowMatchEulerDiscreteScheduler(num_train_timesteps = 1000, shift = 3.0)
 
 
 # ── config resolution ─────────────────────────────────────────────────────────
