@@ -35692,6 +35692,10 @@ def _slot_model_objects() -> list[dict]:
         _max_ctx = _positive_int_or_none(getattr(llama_backend, "max_context_length", None))
         if _max_ctx is not None:
             entry["max_context_length"] = _max_ctx
+        # Not the running window (context_length): omitted when no fit vouched for one (#12571).
+        _fit_ctx = _positive_int_or_none(getattr(llama_backend, "vram_fit_context_length", None))
+        if _fit_ctx is not None:
+            entry["vram_fit_context_length"] = _fit_ctx
         _native_ctx = _positive_int_or_none(getattr(llama_backend, "native_context_length", None))
         if _native_ctx is not None:
             entry["native_context_length"] = _native_ctx
