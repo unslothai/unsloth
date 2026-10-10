@@ -683,7 +683,7 @@ def run_attention(
             if _torch_varlen_takes(
                 Q, K, V, sdpa_kwargs, context.is_causal, sliding_window
             ) and not (
-                # Varlen backward may share flash-attn 2's int32 dq_accum limit (unverified), so keep the guard.
+                # Varlen backward may share flash-attn 2's int32 dq_accum limit.
                 requires_grad
                 and not _VARLEN_INT32_GUARD_DISABLED
                 and _varlen_backward_overflows_int32(
