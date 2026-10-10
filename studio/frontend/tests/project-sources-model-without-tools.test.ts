@@ -90,6 +90,7 @@ const { ThreadDocumentsBar } = loadWithStubs<typeof BarModule>(
       isTextAttachment: (name: string) => name.endsWith(".txt"),
     },
     "@/components/file-viewer": {
+      MAX_DOCUMENT_PREVIEW_BYTES: 50,
       documentKind: (name: string) =>
         name.endsWith(".pdf") ? "pdf" : name.endsWith(".docx") ? "docx" : null,
       isMarkdown: () => false,
