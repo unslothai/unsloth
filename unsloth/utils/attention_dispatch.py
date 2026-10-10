@@ -135,7 +135,6 @@ def _torch_varlen_takes(
     # torch 2.14 routes bidirectional MHA to cuDNN ragged on sm90/sm100: no head_dim 256 plan.
     if not is_causal and Q.shape[1] == K.shape[1]:
         return False
-    # Varlen backward is not deterministic.
     return not torch.are_deterministic_algorithms_enabled()
 
 
