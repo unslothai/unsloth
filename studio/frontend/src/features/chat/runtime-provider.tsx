@@ -97,6 +97,7 @@ import {
   loadExternalProviders,
   parseExternalModelId,
   externalModelSupportsStudioTools,
+  isExternalModelId,
   providerModelSupportsStudioTools,
   providerModelSupportsVision,
 } from "./external-providers";
@@ -189,6 +190,7 @@ import { chatHistoryClearBoundary } from "./utils/chat-history-clear-boundary";
 import { useBranchHeadRecorder } from "./hooks/use-branch-head-recorder";
 import { savedBranchHead } from "./utils/branch-head";
 import {
+  compareStoredMessages,
   createParentResolver,
   orderBySelectedBranch,
   orderParentsFirst,
@@ -3659,6 +3661,45 @@ function ThreadContextUsageRecount({
     runActive,
     modelLoading,
   ]);
+
+  // A model change wipes every thread's usage, and a still-mounted chat never reruns the history
+  // loader. With a cloud model or none, no exact count follows, so refill from storage like it does.
+  useEffect(() => {
+    if (!enabled || !activeThreadId || runActive) return;
+    const exactCountFollows = (): boolean => {
+      const store = useChatRuntimeStore.getState();
+      return (
+        Boolean(store.params.checkpoint) &&
+        !isExternalModelId(store.params.checkpoint) &&
+        store.loadedContextLength != null
+      );
+    };
+    if (exactCountFollows() || useChatRuntimeStore.getState().contextUsage != null) return;
+    const threadId = activeThreadId;
+    void listStoredChatMessages(threadId)
+      .then((records) => {
+        const store = useChatRuntimeStore.getState();
+        if (store.activeThreadId !== threadId || store.contextUsage != null) return;
+        if (exactCountFollows()) return;
+        const sorted = records.slice().sort(compareStoredMessages);
+        const branch = orderBySelectedBranch(
+          sorted,
+          resolveSavedBranchHead(sorted, savedBranchHead(threadId, sorted) ?? sorted.at(-1)?.id),
+        );
+        const saved = [...branch].reverse().find((m) => m.role === "assistant")?.metadata
+          ?.contextUsage as
+          | (Parameters<typeof store.setContextUsage>[0] & { modelId?: string })
+          | undefined;
+        const usage =
+          saved?.modelId && saved.modelId === store.params.checkpoint
+            ? saved
+            : estimateContextUsage(branch);
+        if (!usage) return;
+        store.setThreadContextUsage(threadId, usage);
+        store.setContextUsage(usage);
+      })
+      .catch(() => undefined);
+  }, [activeThreadId, checkpoint, enabled, loadedContextLength, runActive]);
 
   return null;
 }
