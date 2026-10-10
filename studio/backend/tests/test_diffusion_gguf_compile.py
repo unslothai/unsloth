@@ -96,7 +96,6 @@ def test_compile_failure_falls_back_to_eager():
     guarded = gc._guard(compiled, eager, logging.getLogger("t"))
     x = torch.ones(3)
     assert torch.equal(guarded(x), x * 2)
-    # The failed compile is not retried on every linear of every step.
     assert torch.equal(guarded(x), x * 2)
     assert calls == ["compiled", "eager", "eager"]
 

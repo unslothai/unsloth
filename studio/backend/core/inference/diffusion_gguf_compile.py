@@ -89,9 +89,8 @@ def install_compiled_dequant(logger: Any = None) -> bool:
 
 
 def _guard(compiled: Any, eager: Any, logger: Any) -> Any:
-    """``compiled`` behind an eager fallback, like the block and VAE decode compiles. torch.compile is lazy, so a
-    toolchain Triton cannot build its driver with (#9897: clang-cl on Windows ROCm without the CRT headers) fails
-    on the first generation; nothing ran yet, so the stock dequant answers that call and every later one."""
+    """``compiled`` behind an eager fallback, like the block and VAE decode compiles: a lazy compile that fails on
+    the first generation (#9897, Triton could not build its driver) ran nothing, so the stock dequant answers."""
     failed: list = []
 
     @functools.wraps(eager)
