@@ -557,6 +557,7 @@ def run_diffusion_lora_training(
         peak_gb = 0.0
         t_start = time.time()
         t_steady = None
+        t_rate = t_start
         # Starts at the resumed step so a no-op resume (nothing left to train) still reports the real step.
         done = resumed
 
@@ -626,9 +627,10 @@ def run_diffusion_lora_training(
             return stop_latched
 
         def _sample(step: int) -> None:
-            nonlocal sample_plan
+            nonlocal sample_plan, t_rate, t_steady
             if sample_plan is None:
                 return
+            t_round = time.time()
             parked = next(sample_vae.parameters()).device.type == "cpu"
             try:
                 with isolated_sampling(device, compiled):
@@ -647,6 +649,10 @@ def run_diffusion_lora_training(
                     sample_vae.to("cpu")
                     if device == "cuda":
                         torch.cuda.empty_cache()
+                spent = time.time() - t_round
+                t_rate += spent
+                if t_steady is not None:
+                    t_steady += spent
 
         if sample_plan is not None:
             try:
@@ -758,7 +764,7 @@ def run_diffusion_lora_training(
                         (ran_here - 1) * per_step / max(now - t_steady, 1e-6), 3
                     )
                 else:
-                    samples_per_second = round(ran_here * per_step / max(now - t_start, 1e-6), 3)
+                    samples_per_second = round(ran_here * per_step / max(now - t_rate, 1e-6), 3)
                 _emit(
                     on_event,
                     "progress",

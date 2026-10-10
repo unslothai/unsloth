@@ -541,3 +541,15 @@ def test_trainers_latch_a_stop_seen_mid_round_and_render_a_resume_baseline(modul
     assert "stop_now = stop_latched" in src and "if stop_latched:" in src
     # A resumed run renders its baseline at the restored step, after restore_resume_state.
     assert src.index("_sample(resumed)") > src.index("restore_resume_state(")
+
+
+@pytest.mark.parametrize("module", ["diffusion_dit_trainer", "diffusion_lora_trainer"])
+def test_sample_rounds_are_left_out_of_the_reported_rate(module):
+    import importlib
+    import inspect
+
+    src = inspect.getsource(importlib.import_module(f"core.training.{module}"))
+    sample = src[src.index("def _sample(step: int)") :]
+    sample = sample[: sample.index("\n\n")]
+    assert "t_rate += spent" in sample and "t_steady += spent" in sample
+    assert "/ max(now - t_rate, 1e-6)" in src and "/ max(now - t_start, 1e-6)" not in src
