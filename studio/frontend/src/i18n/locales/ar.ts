@@ -317,6 +317,8 @@ export const ar = {
       copied: "تم النسخ",
       copyFailed: "تعذّر نسخ الملف.",
       wrap: "التفاف الأسطر",
+      reactNeedsNode: "تحتاج معاينات React إلى Node.js 20.19 أو أحدث. ثبّته إن لم يكن موجودًا، ثم أعد تشغيل إعداد Unsloth.",
+      reactFailed: "تعذّر تجهيز هذه المعاينة. شغّلها مرة أخرى لإعادة المحاولة.",
     },
     pages: {
       searchDownloads: "البحث في سجل التنزيلات",

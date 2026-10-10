@@ -329,6 +329,8 @@ export const sv = {
       copied: "Kopierat",
       copyFailed: "Det gick inte att kopiera filen.",
       wrap: "Radbryt",
+      reactNeedsNode: "React-förhandsvisningar kräver Node.js 20.19 eller senare. Installera det om det saknas och kör sedan Unsloths installation igen.",
+      reactFailed: "Det gick inte att förbereda förhandsvisningen. Kör den igen för att försöka på nytt.",
     },
     pages: {
       searchDownloads: "Sök i hämtningshistoriken",

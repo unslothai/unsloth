@@ -4402,6 +4402,24 @@ async def artifact_preview_page(token: str):
     )
 
 
+from core.inference import react_preview
+
+
+class ArtifactReactCompileRequest(BaseModel):
+    source: str
+    lang: Literal["jsx", "tsx"] = "tsx"
+
+
+@studio_router.post("/artifact-react-compile", include_in_schema = False)
+async def compile_artifact_react_preview(
+    request: ArtifactReactCompileRequest, current_subject: str = Depends(get_current_subject)
+):
+    """Compile a chat React component for the preview frame; Node only transpiles, never runs it."""
+    if len(request.source.encode("utf-8", "surrogatepass")) > react_preview.MAX_SOURCE_BYTES:
+        raise HTTPException(status_code = 413, detail = "This component is too large to preview")
+    return await react_preview.compile_react_preview_async(request.source, request.lang)
+
+
 # A bare "*" is refused: such a template gets the default-deny.
 _MCP_APP_DOMAIN_RE = _re.compile(
     r"^(?:(?:https?|wss?)://)?"

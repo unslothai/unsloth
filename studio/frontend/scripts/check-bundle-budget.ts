@@ -360,6 +360,36 @@ export function eagerChunksFromHtml(html: string): string[] {
   return [...blocking, ...entry, ...preloads];
 }
 
+/**
+ * Text that marks React-preview runtime code. The preview libraries and the bootstrap that imports
+ * them are only ever fetched when a preview opens, so either string in a startup chunk means that
+ * code was pulled onto the startup path: a static import where a lazy one was meant.
+ */
+export const LAZY_ONLY_NEEDLES = ["__unslothModules", "__vite_ssr_import__"];
+
+/** Every (chunk, needle) pair where an eager chunk contains a needle. A chunk that cannot be read is skipped. */
+export function eagerChunksContaining(
+  distDir: string,
+  chunks: string[],
+  needles: string[],
+): { chunk: string; needle: string }[] {
+  const found: { chunk: string; needle: string }[] = [];
+  for (const chunk of chunks) {
+    let text: string;
+    try {
+      text = readFileSync(join(distDir, chunk), "utf8");
+    } catch {
+      continue; // measure() reports a missing chunk; this only looks inside the ones that exist.
+    }
+    for (const needle of needles) {
+      if (text.includes(needle)) {
+        found.push({ chunk, needle });
+      }
+    }
+  }
+  return found;
+}
+
 type Measured = { name: string; raw: number; transfer: number };
 
 /**
@@ -454,6 +484,18 @@ function main(): number {
     console.log(
       `  ${kb(c.raw).padStart(10)} raw  ${kb(c.transfer).padStart(9)} transfer  ${c.name}`,
     );
+  }
+
+  const lazyOnly = eagerChunksContaining(DIST, names, LAZY_ONLY_NEEDLES);
+  if (lazyOnly.length > 0) {
+    console.error("\nReact-preview runtime code is on the startup path:");
+    for (const { chunk, needle } of lazyOnly) {
+      console.error(`  ${chunk} contains ${needle}`);
+    }
+    console.error(
+      "It belongs only in chunks reached through import(). Find the static import that pulled it in.",
+    );
+    return 1;
   }
 
   const over: string[] = [];

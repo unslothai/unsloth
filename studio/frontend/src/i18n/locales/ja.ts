@@ -318,6 +318,8 @@ export const ja = {
       copied: "コピーしました",
       copyFailed: "ファイルをコピーできませんでした。",
       wrap: "行を折り返す",
+      reactNeedsNode: "React プレビューには Node.js 20.19 以降が必要です。インストールされていない場合はインストールしてから、Unsloth のセットアップを再実行してください。",
+      reactFailed: "このプレビューを準備できませんでした。もう一度実行して再試行してください。",
     },
     pages: {
       searchDownloads: "ダウンロード履歴を検索",

@@ -317,6 +317,8 @@ export const ko = {
       copied: "복사됨",
       copyFailed: "파일을 복사하지 못했습니다.",
       wrap: "줄 바꿈",
+      reactNeedsNode: "React 미리 보기에는 Node.js 20.19 이상이 필요합니다. 없으면 설치한 다음 Unsloth 설정을 다시 실행하세요.",
+      reactFailed: "이 미리 보기를 준비하지 못했습니다. 다시 실행해 재시도하세요.",
     },
     pages: {
       searchDownloads: "다운로드 기록 검색",

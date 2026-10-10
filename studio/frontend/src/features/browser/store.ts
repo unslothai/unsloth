@@ -7,6 +7,7 @@ import { unwrapRedirect } from "./address";
 import type { BrowserPage } from "./api";
 import { PageCache, cacheLimits, reportedDeviceMemory } from "./page-cache";
 import { defaultZoom } from "./prefs-store";
+import { REACT_PREVIEW_KEY_PREFIX, REACT_PREVIEW_TYPE } from "./react-preview-type";
 
 export type BrowserEntry =
   | { kind: "newtab" }
@@ -510,11 +511,13 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
       const openKey = key ? `file:${key}` : null;
       const fileId = newId("file");
       files.set(fileId, blob);
+      const type = contentType || blob.type;
       const entry: BrowserEntry = {
         kind: "file",
         fileId,
         name: name || "Untitled",
-        contentType: contentType || blob.type,
+        // Only a React preview opened from chat runs as one; a file that claims the type is text.
+        contentType: type === REACT_PREVIEW_TYPE && !key?.startsWith(REACT_PREVIEW_KEY_PREFIX) ? "text/plain" : type,
         plainText,
         ...(openKey ? { openKey } : {}),
         ...(key?.startsWith("html:") ? { chatPage: true } : {}),

@@ -316,6 +316,8 @@ export const it = {
       copied: "Copiato",
       copyFailed: "Impossibile copiare il file.",
       wrap: "A capo automatico",
+      reactNeedsNode: "Le anteprime React richiedono Node.js 20.19 o successivo. Installalo se manca, poi esegui di nuovo la configurazione di Unsloth.",
+      reactFailed: "Impossibile preparare questa anteprima. Eseguila di nuovo per riprovare.",
     },
     pages: {
       searchDownloads: "Cerca nella cronologia dei download",
