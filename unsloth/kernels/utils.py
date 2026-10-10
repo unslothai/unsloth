@@ -119,11 +119,26 @@ def is_rdna():
     )
 
 
+try:
+    from math import sumprod as _sumprod
+except ImportError:  # Python < 3.12
+
+    def _sumprod(a, b):
+        return sum(x * y for x, y in zip(a, b))
+
+
 def long_indexing(*tensors, block = 0):
     # True when an element offset into any tensor (+ a block of masked lanes) can pass int32.
-    return any(
-        sum((n - 1) * s for n, s in zip(t.shape, t.stride())) + block >= 2**31 for t in tensors
-    )
+    # numel() is not enough for strided views (transposed Q / K): their offsets reach past it.
+    for t in tensors:
+        if t.is_contiguous():
+            extent = t.numel()
+        else:
+            stride = t.stride()
+            extent = _sumprod(t.shape, stride) - sum(stride) + 1
+        if extent + block > 2**31:
+            return True
+    return False
 
 
 def calculate_settings(

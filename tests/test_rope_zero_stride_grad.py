@@ -111,3 +111,15 @@ def test_rope_rows_past_2_pow_31_elements(implementation):
             Fast_RoPE_Embedding_QK.apply(Q, K, cos, sin, idx)
             out = Q[-1, :, -4:]
     torch.testing.assert_close(out, ref.half())
+
+
+def test_long_indexing_bounds_the_largest_offset():
+    from unsloth.kernels.utils import long_indexing
+
+    meta = dict(device = "meta")
+    assert not long_indexing(torch.empty(2**31, **meta))
+    assert long_indexing(torch.empty(2**31 + 1, **meta))
+    assert long_indexing(torch.empty(2**31 - 8, **meta), block = 16)
+    # 4 elements, but the last one sits 2^31 + 1 elements past the first.
+    assert long_indexing(torch.empty(2**31 + 2, **meta).as_strided((2, 2), (2**31, 1)))
+    assert not long_indexing(torch.empty(64, 128, **meta).t(), torch.empty(0, 4096, **meta))
