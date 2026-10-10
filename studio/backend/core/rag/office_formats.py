@@ -1300,6 +1300,17 @@ def xls(path: str) -> list[Section]:
     if stream is None:
         raise ValueError("not an Excel 97-2003 workbook")
     data = cf.open(stream)
+    # BIFF5/7 (Excel 5.0/95) stores byte strings in the CODEPAGE encoding, without the
+    # BIFF8 option-flags byte.
+    biff8 = data[4:6] != b"\x00\x05"
+    codec = "cp1252"
+
+    def short(body: bytes, pos: int, length_bytes: int) -> str:
+        if biff8:
+            return _xls_short_string(body, pos, length_bytes)
+        count = body[pos] if length_bytes == 1 else struct.unpack_from("<H", body, pos)[0]
+        start = pos + length_bytes
+        return body[start : start + count].decode(codec, "replace")
 
     sheets: list[tuple[str, int]] = []
     strings: list[str] = []
@@ -1317,14 +1328,16 @@ def xls(path: str) -> list[Section]:
             sst = None
         if kind == 0x002F:
             raise ValueError("file is password protected")
-        if kind == 0x0085 and len(body) >= 8 and body[5] == 0:  # BOUNDSHEET, worksheet
-            sheets.append((_xls_short_string(body, 6, 1), struct.unpack_from("<I", body, 0)[0]))
+        if kind == 0x0042 and len(body) >= 2 and not biff8:  # CODEPAGE
+            codec = _code_page_codec(struct.unpack_from("<H", body)[0])
+        elif kind == 0x0085 and len(body) >= 8 and body[5] == 0:  # BOUNDSHEET, worksheet
+            sheets.append((short(body, 6, 1), struct.unpack_from("<I", body, 0)[0]))
         elif kind == 0x00FC and len(body) >= 8:  # SST
             sst_count, sst = struct.unpack_from("<I", body, 4)[0], [body[8:]]
         elif kind == 0x003C and sst is not None:
             sst.append(body)
         elif kind == 0x041E and len(body) >= 5:  # FORMAT
-            formats[struct.unpack_from("<H", body)[0]] = _xls_short_string(body, 2, 2)
+            formats[struct.unpack_from("<H", body)[0]] = short(body, 2, 2 if biff8 else 1)
         elif kind == 0x00E0 and len(body) >= 4:  # XF
             xf_formats.append(struct.unpack_from("<H", body, 2)[0])
         elif kind == 0x0022 and len(body) >= 2:  # DATEMODE
@@ -1351,7 +1364,8 @@ def xls(path: str) -> list[Section]:
             nonlocal string
             if string is not None:
                 try:
-                    put(*string[0], _xls_string(string[1], 0, 0)[0])
+                    text = _xls_string(string[1], 0, 0)[0] if biff8 else short(string[1][0], 0, 2)
+                    put(*string[0], text)
                 except (ValueError, struct.error, IndexError):
                     pass
                 string = None
@@ -1388,7 +1402,7 @@ def xls(path: str) -> list[Section]:
                     put(r, c + i, number(_rk(v), xf))
             elif kind == 0x0204:  # LABEL
                 r, c, _xf = struct.unpack_from("<HHH", body)
-                put(r, c, _xls_short_string(body, 6, 2))
+                put(r, c, short(body, 6, 2))
             elif kind == 0x0205:  # BOOLERR
                 r, c, _xf, v, is_error = struct.unpack_from("<HHHBB", body)
                 if not is_error:

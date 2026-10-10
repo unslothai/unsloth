@@ -784,6 +784,31 @@ def test_xls_reads_continued_strings_numbers_formulas_and_dates(tmp_path):
     )
 
 
+def test_xls_reads_excel_95_byte_strings(tmp_path):
+    def text(value, size):
+        raw = value.encode("cp1251")
+        return struct.pack("<B" if size == 1 else "<H", len(raw)) + raw
+
+    bof = _record(0x0809, struct.pack("<HH", 0x0500, 0x0005) + b"\0" * 4)
+    globals_ = lambda offset: (
+        bof
+        + _record(0x0042, struct.pack("<H", 1251))  # CODEPAGE
+        + _record(0x0085, struct.pack("<IBB", offset, 0, 0) + text("Выручка", 1))
+        + _record(0x000A, b"")
+    )
+    sheet = (
+        bof
+        + _record(0x0204, struct.pack("<HHH", 0, 0, 0) + text("Zebramarker", 2))
+        + _record(0x0204, struct.pack("<HHH", 0, 1, 0) + text("Привет", 2))
+        + _record(0x0006, struct.pack("<HHH", 1, 0, 0) + b"\0" * 6 + b"\xff\xff" + b"\0" * 6)
+        + _record(0x0207, text("formula text", 2))
+        + _record(0x000A, b"")
+    )
+    path = tmp_path / "excel95.xls"
+    path.write_bytes(compound_file({("Book",): globals_(len(globals_(0))) + sheet}))
+    assert _text(path) == "Sheet: Выручка\nZebramarker | Привет\nformula text"
+
+
 def test_ppt_reads_slide_text_and_skips_masters(tmp_path):
     pages = parsers.parse(str(build_ppt(tmp_path / "deck.ppt")))
     assert [(p.page_number, p.text) for p in pages] == [
@@ -929,6 +954,22 @@ def test_compound_file_reads_mini_and_regular_streams():
     assert reader.open("small") == small
     assert reader.open("DIR", "Large") == large
     assert sorted(reader.listdir()) == ["dir", "small"]
+
+
+def test_compound_file_reads_each_fat_sector_once_per_file_sector():
+    # Every DIFAT slot names the same FAT sector: the FAT must stay the size of the file.
+    data = bytearray(compound_file({("small",): b"a" * 100}))
+    n_difat = 64
+    first = len(data) // 512 - 1
+    data += b"".join(
+        struct.pack("<128I", *([0] * 127 + [first + i + 1 if i + 1 < n_difat else 0xFFFFFFFE]))
+        for i in range(n_difat)
+    )
+    struct.pack_into("<I", data, 0x2C, 0)  # no FAT sector count to trim by
+    struct.pack_into("<II", data, 0x44, first, n_difat)
+    reader = cfb.CompoundFile(bytes(data))
+    assert len(reader._fat) <= len(data) // 4
+    assert reader.open("small") == b"a" * 100
 
 
 # ---------------------------------------------------------------- failures

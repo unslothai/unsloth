@@ -53,15 +53,18 @@ class CompoundFile:
 
         fat_sectors = [s for s in struct.unpack_from("<109I", data, 0x4C) if s < _DIFAT]
         per = self._sector // 4
+        # Enough FAT sectors to map every sector of the file; a crafted DIFAT can name one
+        # sector millions of times.
+        max_fat = len(data) // self._sector // per + 1
         sector, seen = first_difat, set()
         for _ in range(n_difat):
-            if sector >= _DIFAT or sector in seen:
+            if sector >= _DIFAT or sector in seen or len(fat_sectors) >= max_fat:
                 break
             seen.add(sector)
             words = struct.unpack(f"<{per}I", self._raw_sector(sector))
             fat_sectors += [s for s in words[:-1] if s < _DIFAT]
             sector = words[-1]
-        fat_sectors = fat_sectors[:n_fat] if n_fat else fat_sectors
+        fat_sectors = fat_sectors[: min(n_fat or max_fat, max_fat)]
         self._fat: list[int] = []
         for s in fat_sectors:
             self._fat.extend(struct.unpack(f"<{per}I", self._raw_sector(s)))
