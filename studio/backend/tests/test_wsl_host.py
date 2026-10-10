@@ -987,6 +987,8 @@ def test_rocm_setup_script_is_idempotent_and_pinned():
     for package in ("rocm-libs", "rocprofiler-sdk", "hsa-amd-aqlprofile", "libopenmpi3t64", "gcc"):
         assert package in script
     assert "7.2.1|7.2.1-*) installed=1" in script and 'apt-get install -y "$2" "$3"' in script
+    # A retry after a cancelled install repairs dpkg before apt-get runs again.
+    assert script.index("dpkg --configure -a") < script.index("apt-get update")
     assert "{release}" not in script
 
 

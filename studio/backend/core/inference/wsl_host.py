@@ -69,6 +69,8 @@ if [ "$installed" = 0 ] || [ ! -e /opt/rocm/lib/librocdxg.so.1 ] || [ ! -e /opt/
   cp "$1" /etc/apt/keyrings/rocm.asc
   echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.asc] https://repo.radeon.com/rocm/apt/{release} noble main" > /etc/apt/sources.list.d/rocm.list
   printf 'Package: *\\nPin: release o=repo.radeon.com\\nPin-Priority: 600\\n' > /etc/apt/preferences.d/rocm-pin-600
+  # A cancelled install can leave dpkg interrupted, which fails every later apt-get.
+  dpkg --configure -a
   apt-get update
   # rocm-libs is what PyTorch links (rocBLAS, MIOpen, RCCL, ...); vLLM's PyTorch also links
   # OpenMPI and the ROCm profiler libraries, and Triton compiles its HIP driver with gcc.
