@@ -263,18 +263,33 @@ def _sharegpt_tool_turns(conversation, content = "", probe = False):
 
 
 def _one_call_per_message(turns):
-    # Results stay where they are: interleaving them would reorder the source, and a shared
-    # result cannot be split.
+    # Each call is followed by its own result, so one-call templates label every result with its
+    # call (gpt-oss names a result after the latest call); a shared result stays after the calls.
     split = []
-    for message in turns:
+    index = 0
+    while index < len(turns):
+        message = turns[index]
+        index += 1
         calls = message.get("tool_calls") if isinstance(message, dict) else None
-        if calls and len(calls) > 1:
-            split.extend(
-                {**message, "tool_calls": [call], "content": message["content"] if not i else ""}
-                for i, call in enumerate(calls)
-            )
-        else:
+        if not calls or len(calls) < 2:
             split.append(message)
+            continue
+        run = []
+        while (
+            index < len(turns)
+            and isinstance(turns[index], dict)
+            and turns[index].get("role") == "tool"
+        ):
+            run.append(turns[index])
+            index += 1
+        results = {result.get("tool_call_id"): result for result in run}
+        paired = len(run) == len(calls) and all(call.get("id") in results for call in calls)
+        for i, call in enumerate(calls):
+            split.append({**message, "tool_calls": [call], "content": message["content"] if not i else ""})
+            if paired:
+                split.append(results[call["id"]])
+        if not paired:
+            split.extend(run)
     return split if len(split) != len(turns) else turns
 
 

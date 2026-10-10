@@ -348,7 +348,7 @@ def test_sharegpt_parallel_calls_are_split_for_one_call_templates():
     text = result["dataset"][0]["text"]
     paris = text.index('{"name": "get_weather", "parameters": {"city": "Paris"}}')
     rome = text.index('{"name": "get_time", "parameters": {"city": "Rome"}}')
-    assert paris < rome < text.index('{"temp": 18}') < text.index('{"time": "noon"}')
+    assert paris < text.index('{"temp": 18}') < rome < text.index('{"time": "noon"}')
     assert "function_call" not in text
 
 
@@ -461,3 +461,31 @@ def test_sharegpt_call_is_kept_when_the_template_omits_the_function_name():
     result = _format_sharegpt([_sharegpt_tool_row(call)], no_names)
 
     assert "get_weather" in result["dataset"][0]["text"]
+
+
+def test_sharegpt_split_results_follow_their_own_call():
+    latest_call_names_results = (
+        "{%- set ns = namespace(last='') %}{%- for message in messages %}"
+        "{%- if message.tool_calls %}{%- set ns.last = message.tool_calls[0].function.name %}"
+        "{{- '<call ' + ns.last + '>' + message.tool_calls[0].function.arguments }}"
+        "{%- elif message.role == 'tool' %}{{- '<result from=' + ns.last + '>' + message.content }}"
+        "{%- else %}{{- '<' + message.role + '>' + message.content }}{%- endif %}"
+        "{%- endfor %}"
+    )
+    call = json.dumps(
+        [
+            {"name": "get_weather", "arguments": {"city": "Paris"}},
+            {"name": "get_time", "arguments": {"city": "Rome"}},
+        ]
+    )
+    row = _sharegpt_tool_row(call)
+    row["conversations"].insert(3, {"from": "observation", "value": '{"time": "noon"}'})
+
+    text = _format_sharegpt([row], latest_call_names_results)["dataset"][0]["text"]
+
+    assert (
+        text.index("<call get_weather>")
+        < text.index('{"temp": 18}')
+        < text.index("<call get_time>")
+    )
+    assert text.index("<call get_time>") < text.index('{"time": "noon"}')
