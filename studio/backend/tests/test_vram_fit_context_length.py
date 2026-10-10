@@ -237,8 +237,13 @@ def test_a_two_card_fit_is_published(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize(
     "extra_args",
-    [["--device", "CUDA0"], ["--split-mode", "none"]],
-    ids = ["narrower-device", "split-mode-none"],
+    [
+        ["--device", "CUDA0"],
+        ["--split-mode", "none"],
+        ["--tensor-split", "100,1"],
+        ["--fit", "on", "--fit-target", "8192"],
+    ],
+    ids = ["narrower-device", "split-mode-none", "skewed-split", "user-fitter"],
 )
 def test_a_placement_narrower_than_the_fit_claims_no_fit(tmp_path, monkeypatch, extra_args):
     backend = _two_card_load(tmp_path, monkeypatch, extra_args = tuple(extra_args))

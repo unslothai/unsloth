@@ -4532,6 +4532,15 @@ _CPU_PLACEMENT_PRESENCE_FLAGS = (_MOE_OFFLOAD_FLAGS - _CPU_MOE_COUNT_FLAGS) | fr
     {"-ot", "--override-tensor"}
 )
 _CPU_PLACEMENT_FLAGS = _MOE_OFFLOAD_FLAGS | frozenset({"-ot", "--override-tensor"})
+_VRAM_FIT_VOIDING_FLAGS = (
+    frozenset({"-fit", "--fit"}) | _FIT_CONTROL_FLAGS | _TENSOR_SPLIT_FLAGS | _SPLIT_MODE_FLAGS
+)
+_VRAM_FIT_VOIDING_ENV_VARS = (
+    "LLAMA_ARG_FIT",
+    *_FIT_CONTROL_ENV_VARS,
+    "LLAMA_ARG_TENSOR_SPLIT",
+    "LLAMA_ARG_SPLIT_MODE",
+)
 _THREAD_OVERRIDE_FLAGS = frozenset({"-t", "--threads"})
 _GENERATION_CPU_AFFINITY_FLAGS = frozenset({"-C", "--cpu-mask", "-Cr", "--cpu-range"})
 _TENSOR_SPLIT_FLAGS = frozenset({"--tensor-split", "-ts"})
@@ -30711,6 +30720,9 @@ class LlamaCppBackend:
                         or _sidecar_adapter_bytes(extra_args) != 0
                         or _child_env.get("LLAMA_ARG_MMPROJ")
                         or _child_env.get("LLAMA_ARG_MMPROJ_URL")
+                        # A hand-set fitter or split ratio re-places what the fit priced.
+                        or _extra_args_set_any_flag(_child_extras, _VRAM_FIT_VOIDING_FLAGS)
+                        or any(_child_env.get(name) for name in _VRAM_FIT_VOIDING_ENV_VARS)
                     ):
                         _vram_fit_ctx = None
                 self._vram_fit_context_length = _vram_fit_ctx
