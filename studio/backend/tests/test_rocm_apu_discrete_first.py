@@ -10,7 +10,13 @@ import utils.hardware.hardware as hw
 from utils.hardware import DeviceType, auto_select_gpu_ids
 
 
-def _auto_select(devices, unified, required_gb, *, rocm = True):
+def _auto_select(
+    devices,
+    unified,
+    required_gb,
+    *,
+    rocm = True,
+):
     inventory = [
         {"index": d["index"], "_rocm_known_unified": d["index"] in unified} for d in devices
     ]
@@ -25,8 +31,11 @@ def _auto_select(devices, unified, required_gb, *, rocm = True):
         patch.object(
             hw,
             "_get_parent_visible_gpu_spec",
-            return_value = {"raw": None, "numeric_ids": [d["index"] for d in devices],
-                            "supports_explicit_gpu_ids": True},
+            return_value = {
+                "raw": None,
+                "numeric_ids": [d["index"] for d in devices],
+                "supports_explicit_gpu_ids": True,
+            },
         ),
         patch.object(hw, "rocm_gpu_ids_without_torch_kernels", return_value = set()),
         patch.object(hw, "get_parent_visible_gpu_ids", return_value = [d["index"] for d in devices]),
