@@ -160,7 +160,6 @@ def test_unpatched_trl_row_overflows(name):
 
 @pytest.mark.parametrize("name", ["orpo", "cpo"])
 def test_the_row_cap_anchors_on_this_trl(name):
-    # A tokenize_row without max_prompt_length must take the cap; a silent no-op ships the overflow.
     src = textwrap.dedent(_trainer(name)[1]["tokenize_row"])
     if "max_prompt_length" in src:
         pytest.skip("this TRL truncates the prompt itself")

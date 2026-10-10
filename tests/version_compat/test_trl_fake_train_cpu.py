@@ -332,8 +332,7 @@ def test_dpo_trains_on_cpu(tmp_path):
     import trl.trainer.dpo_trainer as trl_dpo
 
     assert DPOTrainer.__name__ == "UnslothDPOTrainer", "DPO patch did not apply"
-    # trl 1.15 scores DPO through its fused LM head (`model(..., fused_lm_head=True)`), a Triton kernel with no CPU
-    # path, so plain TRL cannot train DPO on CPU either; GPU runs are unaffected.
+    # trl 1.15 DPO uses a Triton fused LM head with no CPU path; plain TRL fails here too.
     if "fused_lm_head=True" in inspect.getsource(trl_dpo):
         pytest.skip("this trl's DPO loss is a Triton GPU kernel")
     model, tok = _load_plain()
