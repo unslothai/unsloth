@@ -32,7 +32,11 @@ def _linux(monkeypatch):
     stack._invalidate_torch_runtime_probe()
 
 
-def _run(backend, recorded, version = "2.11.0+cpu"):
+def _run(
+    backend,
+    recorded,
+    version = "2.11.0+cpu",
+):
     with (
         patch.object(stack, "_TORCH_BACKEND", backend),
         patch.object(stack, "_RECORDED_TORCH_TAG", recorded),

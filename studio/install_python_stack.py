@@ -4637,7 +4637,10 @@ def _ensure_xpu_torch() -> "bool | None":
     if pin is None and _explicit_torch_index_family() != "xpu":
         # Unpinned: install.sh's Intel GPU route (UNSLOTH_TORCH_BACKEND=xpu), or, on a standalone
         # update, the XPU flavor that install recorded. Any other stated backend or pin wins.
-        if _explicit_torch_index_family() is not None or (_TORCH_BACKEND or _RECORDED_TORCH_TAG) != "xpu":
+        if (
+            _explicit_torch_index_family() is not None
+            or (_TORCH_BACKEND or _RECORDED_TORCH_TAG) != "xpu"
+        ):
             return
         pin = _pytorch_whl_leaf_url("xpu")
         if pin is None:
