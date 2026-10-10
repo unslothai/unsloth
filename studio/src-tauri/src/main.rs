@@ -921,6 +921,61 @@ fn setup_linux_media_permissions(app: &tauri::App) -> Result<(), Box<dyn std::er
     Ok(())
 }
 
+// wry's WM_SIZE handler sets the controller bounds before resizing the container (with
+// SWP_ASYNCWINDOWPOS), and a fast drag can leave the page at an older size. Resize the
+// container, then the controller, to the client rect read now.
+#[cfg(windows)]
+fn sync_webview_bounds(window: &tauri::Window) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Controller;
+    use windows::Win32::Foundation::{HWND, RECT};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetClientRect, IsIconic, SetWindowPos, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER,
+    };
+
+    let Some(webview_window) = window.app_handle().get_webview_window(window.label()) else {
+        return;
+    };
+    let Ok(hwnd) = window.hwnd() else {
+        return;
+    };
+    // HWND is not Send; carry the raw handle into the main-thread closure.
+    let raw_hwnd = hwnd.0 as isize;
+    let result = webview_window.with_webview(move |webview| unsafe {
+        let hwnd = HWND(raw_hwnd as *mut _);
+        if IsIconic(hwnd).as_bool() {
+            return;
+        }
+        let mut rect = RECT::default();
+        if GetClientRect(hwnd, &mut rect).is_err() {
+            return;
+        }
+        let controller: ICoreWebView2Controller = webview.controller();
+        let mut container = HWND::default();
+        if controller.ParentWindow(&mut container).is_ok() && container != hwnd {
+            let _ = SetWindowPos(
+                container,
+                None,
+                0,
+                0,
+                rect.right,
+                rect.bottom,
+                SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+        }
+        if let Err(error) = controller.SetBounds(RECT {
+            left: 0,
+            top: 0,
+            right: rect.right,
+            bottom: rect.bottom,
+        }) {
+            warn!("Could not resize the Windows WebView: {error}");
+        }
+    });
+    if let Err(error) = result {
+        warn!("Could not reach the Windows WebView to resize it: {error}");
+    }
+}
+
 // Compile in both Windows profiles so dependency skew fails in CI, even though
 // the guard is installed only in release builds.
 #[cfg(windows)]
@@ -2403,6 +2458,13 @@ fn main() {
                 window
                     .state::<native_intents::NativeIntakeState>()
                     .note_dropped_paths(paths);
+            }
+            #[cfg(windows)]
+            if matches!(
+                event,
+                tauri::WindowEvent::Resized(_) | tauri::WindowEvent::ScaleFactorChanged { .. }
+            ) {
+                sync_webview_bounds(window);
             }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 // Never close directly: the only window, so closing exits before the reap.
