@@ -748,6 +748,7 @@ def test_page_that_fits_keeps_its_links(monkeypatch):
         ("the 1<sup><em>st</em></sup> one", "the 1*st* one"),
         ("a<b><sup>2</sup></b>", "a**^2**"),
         ("x<sup>n&times;2</sup>", "x^(n×2)"),
+        ("x<sup>2n</sup> and y<sup>n2</sup>", "x^(2n) and y^(n2)"),
         ("now $19<sup><em>.99</em></sup>", "now $19*.99*"),
         ("A fact.<sup>1</sup> Next, a list,<sup>2</sup>", "A fact.1 Next, a list,2"),
         ("(a+b)<sup>2</sup> and km<sup>2</sup>.", "(a+b)^2 and km^2."),

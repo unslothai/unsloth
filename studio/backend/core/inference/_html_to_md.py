@@ -217,7 +217,8 @@ _MD_DELIMITERS = "*_`"
 _SITE_LINK_MARKER_TAIL = re.compile(r"\x00[0-9a-f]+:\d+:[se]\x00$")
 # parts a base lookup reads back: enough for delimiters and link markers, bounded on hostile pages
 _SUP_BASE_SCAN_PARTS = 8
-_GROUPED_EXPONENT = re.compile(r"\s|\S[-+−/=×·⋅]")
+# spaces, binary operators, or an implicit product (2n, n2) need parentheses after a caret
+_GROUPED_EXPONENT = re.compile(r"\s|\S[-+−/=×·⋅]|\d[^\W\d_]|[^\W\d_]\d")
 # deeper <sup> nests render as plain text: each tracked level rescans its whole suffix on close
 _MAX_SUP_DEPTH = 8
 
