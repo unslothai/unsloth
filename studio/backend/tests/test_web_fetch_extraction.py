@@ -407,6 +407,27 @@ def test_a_leading_control_before_the_heading_title_is_dropped():
     assert "More information" not in out
 
 
+@pytest.mark.parametrize(
+    "html, heading",
+    [
+        (
+            "<hgroup><h1><button>Question</button></h1><p>Sub</p></hgroup><p>Answer text.</p>",
+            "# Question",
+        ),
+        ("<h3><button>First<br>Second</button></h3><p>Answer text.</p>", "### First Second"),
+        (
+            "<h3><button hidden>old</button><button>Question</button></h3><p>Answer text.</p>",
+            "### Question",
+        ),
+    ],
+)
+def test_heading_button_title_edge_cases(html, heading):
+    out = html_to_markdown(html)
+    assert heading in out
+    assert "Answer text." in out
+    assert "old" not in out
+
+
 def test_inline_markup_in_a_heading_button_stays_in_order():
     out = html_to_markdown("<h3><button><em>Question</em> one</button></h3><p>Answer text.</p>")
     assert "### Question one" in out

@@ -453,6 +453,7 @@ class _MarkdownRenderer(HTMLParser):
         self._heading_has_text: bool = False
         # Text of a heading's leading <button>, held until the heading closes: kept only when no title follows it.
         self._heading_button_at: int | None = None
+        self._heading_button_owner: int = 0
         self._heading_button_parts: list[str] = []
 
         self._link_href: str | None = None
@@ -996,6 +997,7 @@ class _MarkdownRenderer(HTMLParser):
             and self._heading_marks
             and not self._heading_has_text
             and self._heading_button_at is None
+            and not _is_hidden_element(dict(attrs))
         )
         if tag in _SKIP_TAGS and not heading_button:
             self._skip_depth += 1
@@ -1004,10 +1006,13 @@ class _MarkdownRenderer(HTMLParser):
         attr_dict = dict(attrs)
         if heading_button:
             self._heading_button_at = len(self._open_tags)
+            self._heading_button_owner = self._heading_marks[-1]
         if not self._enter_tag(tag, attr_dict):
             return
         # inside the held button tags only track hidden state; their markup would land before the replayed text
         if self._in_heading_button():
+            if tag == "br":
+                self._heading_button_parts.append(" ")
             return
 
         if tag in _HEADING_TAGS:
@@ -1183,13 +1188,13 @@ class _MarkdownRenderer(HTMLParser):
         return at is not None and 0 <= at < len(self._open_tags) and self._open_tags[at] == "button"
 
     def _flush_heading_button(self, tag: str) -> None:
-        """Render the held button text as the title when *tag* closes the outermost heading with nothing after it."""
+        """Render the held button text as the title when *tag* closes its heading with nothing after it."""
         for i in range(len(self._open_tags) - 1, -1, -1):
             if self._open_tags[i] == tag:
                 break
         else:
             return
-        if i > self._heading_marks[0]:
+        if i > self._heading_button_owner:
             return
         parts, self._heading_button_parts = self._heading_button_parts, []
         if not self._heading_has_text:
