@@ -3468,7 +3468,8 @@ export function ModelConfigPage({
         resolvedIsDiffusion,
         gpuDevices,
       ),
-      { unsetIsAuto: true },
+      // MLX stores an explicit Auto apart from unset (storedSpeculativeAuto), so only GGUF folds them.
+      { unsetIsAuto: !targetIsMlx },
     );
   const saveState =
     rememberChanged || (savedNow && !matchesSaved)

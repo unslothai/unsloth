@@ -4434,3 +4434,11 @@ def test_every_run_settings_gear_marks_saved_settings():
     assert len(run_settings) >= 10, "the run-settings gears moved; update this guard"
     missing = [g.splitlines()[1].strip() for g in run_settings if "savedFor=" not in g]
     assert not missing, f"run-settings gears without savedFor: {missing}"
+
+
+def test_saved_state_keeps_an_mlx_auto_apart_from_unset():
+    """MLX persists an explicit Auto distinct from unset, so the header's saved check must not fold
+    them together there, or a newly picked Auto reads as already saved and is dropped on close."""
+    page = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
+    assert "{ unsetIsAuto: !targetIsMlx }" in page
+    assert "storedSpeculativeAuto(next, targetIsMlx)" in page

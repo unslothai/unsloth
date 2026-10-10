@@ -139,3 +139,8 @@ test("against its saved record, a draft's Auto matches a saved null but an expli
   assert.ok(!mtpEqual(BASE, { ...BASE, speculativeType: "mtp" }, saved));
   assert.ok(mtpEqual({ ...BASE, speculativeType: "mtp" }, { ...BASE, speculativeType: "MTP" }, saved));
 });
+
+test("an MLX draft's Auto is a change against a saved null when Auto is not folded", () => {
+  const mtpEqual = configsEqual("mtp");
+  assert.ok(!mtpEqual(BASE, { ...BASE, speculativeType: "auto" }, { unsetIsAuto: false }));
+});
