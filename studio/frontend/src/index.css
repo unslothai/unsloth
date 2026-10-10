@@ -3354,6 +3354,11 @@ html[data-chat-font] .aui-root {
 	.dark :is(.composer-pill-btn, .unsloth-thinking-pill, .unsloth-composer-plus):is(:hover:not(:disabled), [data-state="open"]) {
 		background-color: color-mix(in srgb, var(--accent) 60%, var(--card));
 	}
+	/* Classic and Minimal dark --primary is near the resting ink: dim off pills (#12025). */
+	:root:is([data-palette="classic"], [data-palette="minimal"]).dark
+		:is(.composer-pill-btn, .unsloth-thinking-pill)[data-active="false"] {
+		color: color-mix(in oklab, var(--foreground) 60%, transparent);
+	}
 	/* Permission-level pill: higher-contrast grey than the resting pills so
 	   the active level stays legible (darker in light mode, lighter in dark).
 	   Full access looks like every other level. */
