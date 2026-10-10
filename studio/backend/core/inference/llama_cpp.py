@@ -30735,6 +30735,7 @@ class LlamaCppBackend:
                         or any(_child_env.get(name) for name in _VRAM_FIT_VOIDING_ENV_VARS)
                         # Any surviving --device: the cap sweep may have pooled cards it leaves out.
                         or _extra_args_main_device(_child_extras) is not None
+                        or _extra_args_draft_device_pin(_child_extras) is not None
                         or _child_env.get("LLAMA_ARG_DEVICE")
                         # --no-kv-offload keeps the whole cache in host RAM at any context.
                         or not _kv_offload_from_args(_child_extras, _child_env)

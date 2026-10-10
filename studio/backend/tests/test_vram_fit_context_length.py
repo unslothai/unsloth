@@ -250,8 +250,16 @@ def test_a_two_card_fit_is_published(tmp_path, monkeypatch):
         ["--tensor-split", "100,1"],
         ["--fit", "on", "--fit-target", "8192"],
         ["--rpc", "192.168.1.2:50052"],
+        ["--spec-draft-device", "CUDA1"],
     ],
-    ids = ["narrower-device", "split-mode-none", "skewed-split", "user-fitter", "rpc"],
+    ids = [
+        "narrower-device",
+        "split-mode-none",
+        "skewed-split",
+        "user-fitter",
+        "rpc",
+        "draft-device",
+    ],
 )
 def test_a_placement_narrower_than_the_fit_claims_no_fit(tmp_path, monkeypatch, extra_args):
     backend = _two_card_load(tmp_path, monkeypatch, extra_args = tuple(extra_args))
