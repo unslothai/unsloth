@@ -1631,9 +1631,12 @@ def test_every_api_write_route_is_body_capped(main_module):
         assert any(path.startswith(p) for p in main_module._BODY_PROTECTED_PREFIXES), path
 
 
-def test_rag_document_uploads_pass_through_on_their_own_cap(main_module):
+def test_rag_document_uploads_pass_through_on_their_own_cap(main_module, monkeypatch):
     from core.rag import config as rag_config
     from utils.upload_limits import upload_request_limit_bytes
+
+    # A positive cap, whatever RAG_MAX_UPLOAD_BYTES the suite runs with (0 is covered separately).
+    monkeypatch.setattr(rag_config, "MAX_UPLOAD_BYTES", 200 * 1024 * 1024)
 
     pattern = main_module._RAG_DOCUMENT_UPLOAD_RE
     for path in (
