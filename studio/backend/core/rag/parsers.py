@@ -60,6 +60,7 @@ _HTML_PRE_TAGS = frozenset(("listing", "plaintext", "pre", "textarea", "xmp"))
 # Atomic inline boxes: their text never runs into a neighbour's, but they do not break the line.
 _HTML_BOX_TAGS = frozenset(("button", "img", "input", "select"))
 _HTML_ROW_GROUPS = frozenset(("thead", "tbody", "tfoot"))
+_HTML_TABLE_DEPTH = 32
 
 
 class _HtmlTable:
@@ -90,6 +91,10 @@ class _Stripper(HTMLParser):
         self.out: list[str] = []
         self._tables: list[_HtmlTable] = []
         self._span_budget = span_budget
+        self._deep = 0
+
+    def _in_table(self) -> bool:
+        return bool(self._tables) and not self._skip and not self._deep
 
     def _end_cell(self) -> None:
         self._flush()
@@ -162,18 +167,21 @@ class _Stripper(HTMLParser):
             self._skip += inert
         elif tag in _HTML_SKIP_TAGS:
             self._skip += 1
-        elif tag in ("td", "th") and self._tables and not self._skip:
+        elif tag in ("td", "th") and self._in_table():
             self._start_cell(attrs)
-        elif tag == "tr" and self._tables and not self._skip:
+        elif tag == "tr" and self._in_table():
             self._end_row()
             self._flush()
             self._tables[-1].row = []
-        elif tag in _HTML_ROW_GROUPS and self._tables and not self._skip:
+        elif tag in _HTML_ROW_GROUPS and self._in_table():
             self._end_row()
             self._tables[-1].spans = []
         elif tag in _HTML_BLOCK_TAGS and not self._skip:
             self._flush()
-            if tag == "table":
+            # Each nesting level copies its lines into the parent, so very deep tables read as plain blocks.
+            if tag == "table" and (self._deep or len(self._tables) >= _HTML_TABLE_DEPTH):
+                self._deep += 1
+            elif tag == "table":
                 if self._tables and self.out is not self._tables[-1].sink and None not in self.out:
                     self.out.append(None)
                 self._tables.append(_HtmlTable(self.out))
@@ -192,18 +200,20 @@ class _Stripper(HTMLParser):
         elif tag in _HTML_SKIP_TAGS:
             if self._skip:
                 self._skip -= 1
-        elif tag in ("td", "th") and self._tables and not self._skip:
+        elif tag in ("td", "th") and self._in_table():
             self._end_cell()
-        elif tag in _HTML_ROW_GROUPS and self._tables and not self._skip:
+        elif tag in _HTML_ROW_GROUPS and self._in_table():
             self._end_row()
             self._tables[-1].spans = []
-        elif tag in ("tr", "table") and self._tables and not self._skip:
+        elif tag in ("tr", "table") and self._in_table():
             self._end_row()
             if tag == "table":
                 self._tables.pop()
             self._flush()
         elif tag in _HTML_BLOCK_TAGS and not self._skip:
             self._flush()
+            if tag == "table" and self._deep:
+                self._deep -= 1
             if tag in _HTML_PRE_TAGS and self._pre:
                 self._pre -= 1
         elif tag in _HTML_BOX_TAGS and not self._skip and not self._pre:

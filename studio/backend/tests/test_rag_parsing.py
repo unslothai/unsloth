@@ -837,6 +837,11 @@ def test_html_rowspan_stops_at_its_row_group(tmp_path):
     assert text == "Plan | Price\nTeam | $49\n | $490\nPro | $99"
 
 
+def test_html_tables_nested_past_the_depth_cap_read_as_blocks(tmp_path):
+    text = _parse_html(tmp_path, "<table><tr><td>" * 32 + "<table><tr><td>a<td>b" + "<p>end")
+    assert text == "a\nb\nend"
+
+
 def test_html_stray_cell_end_keeps_words_apart(tmp_path):
     text = _parse_html(tmp_path, "<table><tr><td>Total</td>Note</td>Extra</tr></table>")
     assert text == "Note\nExtra\nTotal"
