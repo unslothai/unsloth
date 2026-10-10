@@ -66,7 +66,9 @@ type ExampleType =
   | "javascriptTools"
   | "curlAdvanced"
   | "pythonAdvanced"
-  | "javascriptAdvanced";
+  | "javascriptAdvanced"
+  | "curlTraining"
+  | "pythonTraining";
 type Os = "unix" | "windows";
 type Variant = "plain" | "tools" | "advanced";
 
@@ -80,6 +82,8 @@ const TYPE_TABS: { id: ExampleType; label: string }[] = [
   { id: "curlAdvanced", label: "curl + advanced" },
   { id: "pythonAdvanced", label: "Python + advanced" },
   { id: "javascriptAdvanced", label: "JavaScript + advanced" },
+  { id: "curlTraining", label: "curl + training" },
+  { id: "pythonTraining", label: "Python + training" },
 ];
 
 // guards a restored tab against a snippet type dropped in a later release.
@@ -92,6 +96,8 @@ const TYPE_LABEL_KEY: Partial<Record<ExampleType, TranslationKey>> = {
   curlAdvanced: "settings.apiKeys.exampleCurlAdvanced",
   pythonAdvanced: "settings.apiKeys.examplePythonAdvanced",
   javascriptAdvanced: "settings.apiKeys.exampleJavaScriptAdvanced",
+  curlTraining: "settings.apiKeys.exampleCurlTraining",
+  pythonTraining: "settings.apiKeys.examplePythonTraining",
 };
 
 const OS_AWARE: Record<ExampleType, boolean> = {
@@ -104,9 +110,20 @@ const OS_AWARE: Record<ExampleType, boolean> = {
   curlAdvanced: true,
   pythonAdvanced: false,
   javascriptAdvanced: false,
+  curlTraining: true,
+  pythonTraining: false,
 };
 
-const CURL_TYPES = new Set<ExampleType>(["curl", "curlTools", "curlAdvanced"]);
+const CURL_TYPES = new Set<ExampleType>([
+  "curl",
+  "curlTools",
+  "curlAdvanced",
+  "curlTraining",
+]);
+// Training needs no loaded chat model, so these render even when /v1 has nothing to serve.
+type TrainingType = "curlTraining" | "pythonTraining";
+const isTrainingType = (t: ExampleType): t is TrainingType =>
+  t === "curlTraining" || t === "pythonTraining";
 const JAVASCRIPT_TYPES = new Set<ExampleType>([
   "javascript",
   "javascriptTools",
@@ -123,6 +140,17 @@ const ADV = {
   min_p: 0.05,
   repetition_penalty: 1.1,
   max_tokens: 1024,
+} as const;
+
+const TRAIN = {
+  model: "unsloth/Llama-3.2-1B-Instruct",
+  dataset: "mlabonne/FineTome-100k",
+  maxSteps: 60,
+  imageBase: "stabilityai/stable-diffusion-xl-base-1.0",
+  imageData: "my-images",
+  imageOut: "my-images-lora",
+  imagePrompt: "a photo of sks cat",
+  imageSteps: 500,
 } as const;
 
 const DOC_LINKS = [
@@ -353,6 +381,187 @@ for await (const chunk of response) {
 }`;
 }
 
+const trainBody = {
+  model_name: TRAIN.model,
+  training_type: "LoRA/QLoRA",
+  hf_dataset: TRAIN.dataset,
+  format_type: "auto",
+  max_steps: TRAIN.maxSteps,
+};
+// The preflight refuses uncaptioned images; instance_prompt captions those without a .txt.
+const imageTrainBody = {
+  base_model: TRAIN.imageBase,
+  data_dir: TRAIN.imageData,
+  output_dir: TRAIN.imageOut,
+  instance_prompt: TRAIN.imagePrompt,
+  train_steps: TRAIN.imageSteps,
+};
+
+function curlTrainingUnix(base: string, key: string): string {
+  const auth = `-H "Authorization: Bearer ${key}"`;
+  return `# LLM LoRA fine-tune.
+START=$(curl -s ${base}/api/train/start \\
+  ${auth} \\
+  -H "Content-Type: application/json" \\
+  -d '${shSingle(JSON.stringify(trainBody, null, 2))}')
+echo "$START"
+# No job_id on an HTTP error; "status": "error" means another job is running and its id is not ours.
+JOB_ID=$(echo "$START" | grep -v '"status":"error"' | grep -o '"job_id":"[^"]*"' | cut -d'"' -f4)
+
+# Wait: phase goes loading_model -> training -> completed (or error / stopped).
+PHASE=
+while [ -n "$JOB_ID" ]; do
+  STATUS=$(curl -s ${base}/api/train/status ${auth})
+  PHASE=$(echo "$STATUS" | grep -o '"phase":"[^"]*"' | cut -d'"' -f4)
+  case "$PHASE" in completed|error|stopped) echo "$STATUS"; break ;; esac
+  sleep 10
+done
+
+# Stop early and save a checkpoint (from another terminal, with this JOB_ID):
+# curl ${base}/api/train/stop ${auth} -H "Content-Type: application/json" \\
+#   -d "{\\"expected_job_id\\": \\"$JOB_ID\\", \\"save\\": true}"
+
+# Image (SDXL) LoRA, once the LLM run has finished without an error.
+if [ "$PHASE" = completed ] || [ "$PHASE" = stopped ]; then
+  curl ${base}/api/train/diffusion/dataset \\
+    ${auth} \\
+    -F "name=${TRAIN.imageData}" -F "files=@cat1.png" -F "files=@cat2.png"
+  # The LLM worker exits a few seconds after "completed"; until then start answers 409.
+  for i in $(seq 12); do
+    CODE=$(curl -s -o image-start.json -w '%{http_code}' ${base}/api/train/diffusion/start \\
+      ${auth} \\
+      -H "Content-Type: application/json" \\
+      -d '${shSingle(JSON.stringify(imageTrainBody, null, 2))}')
+    [ "$CODE" != 409 ] && break
+    sleep 5
+  done
+  cat image-start.json
+  # Wait for the image job; its final status is completed, stopped or error.
+  while curl -s ${base}/api/train/diffusion/status ${auth} | grep -q '"active":true'; do sleep 10; done
+  curl ${base}/api/train/diffusion/status ${auth}
+fi`;
+}
+
+function curlTrainingWindows(base: string, key: string): string {
+  const auth = `-H "Authorization: Bearer ${key}"`;
+  return `# LLM LoRA fine-tune.
+$body = '${psSingle(JSON.stringify(trainBody, null, 2))}'
+Set-Content -Path train.json -Value $body -Encoding ascii
+$start = curl.exe -s ${base}/api/train/start \`
+  ${auth} \`
+  -H "Content-Type: application/json" \`
+  -d "@train.json" | ConvertFrom-Json
+$start
+# No job_id on an HTTP error; "status": "error" means another job is running and its id is not ours.
+$phase = $null
+if ($start.job_id -and $start.status -ne "error") {
+  # Wait: phase goes loading_model -> training -> completed (or error / stopped).
+  do {
+    Start-Sleep 10
+    $s = curl.exe -s ${base}/api/train/status ${auth} | ConvertFrom-Json
+    "$($s.phase) $($s.message)"
+  } until ($s.phase -in "completed", "error", "stopped")
+  $phase = $s.phase
+}
+
+# Stop early and save a checkpoint (from another window, with this job_id):
+# @{expected_job_id = $start.job_id; save = $true} | ConvertTo-Json | Set-Content stop.json -Encoding ascii
+# curl.exe ${base}/api/train/stop ${auth} -H "Content-Type: application/json" -d "@stop.json"
+
+# Image (SDXL) LoRA, once the LLM run has finished without an error.
+if ($phase -in "completed", "stopped") {
+  curl.exe ${base}/api/train/diffusion/dataset \`
+    ${auth} \`
+    -F "name=${TRAIN.imageData}" -F "files=@cat1.png" -F "files=@cat2.png"
+  $body = '${psSingle(JSON.stringify(imageTrainBody, null, 2))}'
+  Set-Content -Path image-train.json -Value $body -Encoding ascii
+  # The LLM worker exits a few seconds after "completed"; until then start answers 409.
+  for ($i = 0; $i -lt 12; $i++) {
+    $code = curl.exe -s -o image-start.json -w "%{http_code}" ${base}/api/train/diffusion/start \`
+      ${auth} \`
+      -H "Content-Type: application/json" \`
+      -d "@image-train.json"
+    if ($code -ne "409") { break }
+    Start-Sleep 5
+  }
+  Get-Content image-start.json
+  # Wait for the image job; its final status is completed, stopped or error.
+  do {
+    Start-Sleep 10
+    $d = curl.exe -s ${base}/api/train/diffusion/status ${auth} | ConvertFrom-Json
+    "$($d.step) / $($d.total_steps) $($d.loss)"
+  } while ($d.active)
+  "$($d.status) $($d.message)"
+}`;
+}
+
+// Strings and numbers only, so the JSON text is also a Python dict literal.
+const pyDict = (body: object): string => JSON.stringify(body, null, 4);
+
+function pythonTrainingSnippet(base: string, key: string): string {
+  return `import time
+import requests
+
+BASE = ${j(base)}
+HEADERS = {"Authorization": ${j(`Bearer ${key}`)}}
+
+# LLM LoRA fine-tune
+r = requests.post(f"{BASE}/api/train/start", headers=HEADERS, json=${pyDict(trainBody)})
+r.raise_for_status()
+started = r.json()
+# "error" means another job is running; its job_id is not this run's.
+if started["status"] == "error":
+    raise SystemExit(started["message"])
+job_id = started["job_id"]
+
+while True:
+    status = requests.get(f"{BASE}/api/train/status", headers=HEADERS).json()
+    print(status["phase"], status["message"])
+    if status["job_id"] == job_id and status["phase"] in ("completed", "error", "stopped"):
+        break
+    time.sleep(10)
+if status["phase"] == "error":
+    raise SystemExit(status["error"] or status["message"])
+
+# Stop early and save a checkpoint:
+# requests.post(f"{BASE}/api/train/stop", headers=HEADERS,
+#               json={"expected_job_id": job_id, "save": True})
+
+# Image (SDXL) LoRA: upload images (+ optional .txt captions), then train
+files = [("files", open(p, "rb")) for p in ["cat1.png", "cat2.png"]]
+requests.post(f"{BASE}/api/train/diffusion/dataset", headers=HEADERS,
+              data={"name": ${j(TRAIN.imageData)}}, files=files).raise_for_status()
+image_job = ${pyDict(imageTrainBody)}
+# The LLM worker exits a few seconds after "completed"; until then start answers 409.
+for _ in range(12):
+    r = requests.post(f"{BASE}/api/train/diffusion/start", headers=HEADERS, json=image_job)
+    if r.status_code != 409:
+        break
+    time.sleep(5)
+r.raise_for_status()
+
+while (s := requests.get(f"{BASE}/api/train/diffusion/status", headers=HEADERS).json())["active"]:
+    print(s["step"], "/", s["total_steps"], s["loss"])
+    time.sleep(10)
+print(s["status"], s["message"])
+if s["status"] == "error":
+    raise SystemExit(s["message"])`;
+}
+
+function buildTrainingSnippets(
+  base: string,
+  key: string,
+  os: Os,
+): Record<TrainingType, string> {
+  return {
+    curlTraining:
+      os === "windows"
+        ? curlTrainingWindows(base, key)
+        : curlTrainingUnix(base, key),
+    pythonTraining: pythonTrainingSnippet(base, key),
+  };
+}
+
 // every variant but "plain" asks for the server-side tools, so it needs its own key
 function buildSnippets(
   base: string,
@@ -360,7 +569,7 @@ function buildSnippets(
   toolsKey: string,
   model: string,
   os: Os,
-): Record<ExampleType, string> {
+): Record<Exclude<ExampleType, TrainingType>, string> {
   const curl = os === "windows" ? curlWindows : curlUnix;
   return {
     curl: curl(base, key, model, "plain"),
@@ -818,6 +1027,12 @@ export function UsageExamples({
   const toolsKey =
     apiKey ||
     (keylessBase && keylessTools ? KEYLESS_KEY_PLACEHOLDER : KEY_PLACEHOLDER);
+  // keyless "inference" scope never reaches /api/train; "full" admits the dummy bearer there
+  const trainKey =
+    apiKey ||
+    (keylessBase && keylessScope === "full"
+      ? KEYLESS_KEY_PLACEHOLDER
+      : KEY_PLACEHOLDER);
   // agent tools are client-side schemas sent through the admitted inference routes.
   const agentKey =
     apiKey || (keylessBase ? KEYLESS_KEY_PLACEHOLDER : KEY_PLACEHOLDER);
@@ -827,6 +1042,13 @@ export function UsageExamples({
     () => (model ? buildSnippets(base, key, toolsKey, model, os) : null),
     [base, key, toolsKey, model, os],
   );
+  const trainingSnippets = useMemo(
+    () => buildTrainingSnippets(base, trainKey, os),
+    [base, trainKey, os],
+  );
+  const snippet = isTrainingType(lang)
+    ? trainingSnippets[lang]
+    : (snippets?.[lang] ?? null);
   // Agent command must target the server the panel shows, not the :8888 default.
   const agentCommand = useMemo(
     () => buildAgentCommand(base, agentKey, os, agent),
@@ -843,8 +1065,8 @@ export function UsageExamples({
       : "python";
 
   const handleCopy = async () => {
-    if (!snippets) return;
-    if (await copyToClipboard(snippets[lang])) {
+    if (!snippet) return;
+    if (await copyToClipboard(snippet)) {
       setCopied(true);
       setTimeout(() => setCopied(false), 1800);
     }
@@ -997,7 +1219,7 @@ export function UsageExamples({
             </button>
           </div>
         ) : null}
-        {snippets ? (
+        {snippet ? (
           <div className="relative min-w-0">
             <button
               type="button"
@@ -1014,8 +1236,8 @@ export function UsageExamples({
                 : t("settings.apiKeys.copy")}
             </button>
             <HighlightedCode
-              key={snippets[lang]}
-              code={snippets[lang]}
+              key={snippet}
+              code={snippet}
               language={shikiLang}
               redactFromReload={Boolean(apiKey)}
             />

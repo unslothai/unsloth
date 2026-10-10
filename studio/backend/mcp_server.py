@@ -9,7 +9,9 @@ GPU work or write model artifacts.
 from __future__ import annotations
 
 import hmac
+import ntpath
 import asyncio
+import posixpath
 from typing import Any
 
 from fastmcp import FastMCP
@@ -69,6 +71,26 @@ def _dump(value: Any) -> Any:
     """Convert Pydantic responses to plain JSON values for MCP clients."""
     if hasattr(value, "model_dump"):
         return value.model_dump(mode = "json")
+    return value
+
+
+def _dump_redacted(value: Any) -> Any:
+    """Host paths as opaque references; the second pass catches diffusion fields (lora_path,
+    ema_path, catalog_path, resume_blocked_reason) that redact_host_paths has no name for."""
+    from hub.utils.host_paths import redact_host_paths
+    return _reference_absolute_paths(redact_host_paths(_dump(value), via_api_key = True))
+
+
+def _reference_absolute_paths(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _reference_absolute_paths(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_reference_absolute_paths(item) for item in value]
+    if isinstance(value, str):
+        from hub.utils.host_paths import cache_reference, redact_paths_in_text
+        if posixpath.isabs(value) or ntpath.isabs(value):
+            return cache_reference(value) or ""
+        return redact_paths_in_text(value)
     return value
 
 
@@ -157,6 +179,50 @@ def create_studio_mcp() -> FastMCP:
         limit = _clamp(limit, 1, 200)
         offset = max(0, offset)
         return _dump(await list_runs(limit = limit, offset = offset, current_subject = "mcp"))
+
+    @mcp.tool
+    async def get_diffusion_training_status() -> dict[str, Any]:
+        """Read the active diffusion (Images) LoRA training job, its step, loss, and metrics."""
+        from routes.training import diffusion_training_status
+        return _dump_redacted(await diffusion_training_status(current_subject = "mcp"))
+
+    @mcp.tool
+    async def start_diffusion_training(config: dict[str, Any]) -> dict[str, Any]:
+        """Start a diffusion (Images) LoRA training job from a DiffusionTrainingStartRequest-shaped object.
+
+        Requires base_model, data_dir (a dataset name under the Unsloth datasets root) and output_dir.
+        Call get_diffusion_training_status first and do not start work while another job runs.
+        """
+        from models.training import DiffusionTrainingStartRequest
+        from routes.training import start_diffusion_training as start
+
+        from fastapi import HTTPException
+
+        from hub.utils.host_paths import redact_paths_in_text
+
+        request = DiffusionTrainingStartRequest.model_validate(config)
+        try:
+            result = await start(request, current_subject = "mcp", via_api_key = True)
+        except HTTPException as e:
+            # Refusals quote the resolved data_dir ("data_dir is not a directory: /home/...").
+            raise HTTPException(e.status_code, redact_paths_in_text(e.detail)) from None
+        return _dump_redacted(result)
+
+    @mcp.tool
+    async def stop_diffusion_training(save: bool = True) -> dict[str, Any]:
+        """Stop the running diffusion training job; save=False cancels without exporting the adapter."""
+        from models.training import DiffusionTrainingStopRequest
+        from routes.training import stop_diffusion_training as stop
+
+        return _dump_redacted(
+            await stop(DiffusionTrainingStopRequest(save = save), current_subject = "mcp")
+        )
+
+    @mcp.tool
+    async def list_diffusion_training_runs(limit: int = 20) -> dict[str, Any]:
+        """List finished diffusion training runs, newest first."""
+        from routes.training import list_diffusion_training_runs as list_runs
+        return _dump_redacted(await list_runs(limit = _clamp(limit, 1, 200), current_subject = "mcp"))
 
     @mcp.tool
     def validate_recipe(recipe: dict[str, Any]) -> dict[str, Any]:
