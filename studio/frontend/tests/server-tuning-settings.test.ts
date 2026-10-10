@@ -113,7 +113,9 @@ test("a record only claims the new schema version when it carries one", () => {
   // toStoredConfig stamps the OLDEST version that understands every field
   // present, so an older client can still rewrite a record it fully knows.
   const source = readSrc("features/model-picker/model-config/per-model-config.ts");
-  assert.match(source, /const STORAGE_SCHEMA_VERSION = 10;/);
+  assert.match(source, /const STORAGE_SCHEMA_VERSION = 11;\nconst PRE_MLX_DRAFTER_SCHEMA_VERSION = 10;/);
+  assert.match(source, /specDraftModel != null \|\| mlxMode\)\s*\{\s*return STORAGE_SCHEMA_VERSION;/);
+  assert.match(source, /tensorSplit != null\)\s*\{\s*return PRE_MLX_DRAFTER_SCHEMA_VERSION;/);
   assert.match(source, /const PRE_TENSOR_SPLIT_SCHEMA_VERSION = 9;/);
   assert.match(source, /const PRE_MLX_INT8_PREFILL_SCHEMA_VERSION = 7;/);
   assert.match(source, /const PRE_MLX_KV_QUANT_SCHEMA_VERSION = 6;/);

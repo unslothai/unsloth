@@ -47,6 +47,8 @@ export interface ApiModelOverride {
   // biome-ignore lint/style/useNamingConvention: API schema
   spec_draft_n_max?: number;
   // biome-ignore lint/style/useNamingConvention: API schema
+  spec_draft_model?: string;
+  // biome-ignore lint/style/useNamingConvention: API schema
   n_parallel?: number;
   // biome-ignore lint/style/useNamingConvention: API schema
   reasoning_budget?: number;
@@ -347,6 +349,7 @@ export function fromApiOverride(
       : (local.mlxKvQuant ?? null),
     speculativeType: override.speculative_type ?? local.speculativeType,
     specDraftNMax: override.spec_draft_n_max ?? local.specDraftNMax,
+    specDraftModel: override.spec_draft_model ?? local.specDraftModel,
     specDraftCacheDtype:
       override.spec_draft_cache_type ?? local.specDraftCacheDtype,
     nParallel: override.n_parallel ?? local.nParallel,
@@ -416,6 +419,9 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
   }
   if (config.specDraftNMax && config.specDraftNMax > 0) {
     payload.spec_draft_n_max = config.specDraftNMax;
+  }
+  if (config.specDraftModel) {
+    payload.spec_draft_model = config.specDraftModel;
   }
   // Blank follows the server-wide --parallel default, which is the app default here.
   if (config.nParallel && config.nParallel > 0) {
@@ -568,6 +574,8 @@ async function sendModelOverride(
       // can still predate.
       // biome-ignore lint/style/useNamingConvention: API schema
       mirrors_reasoning_budget: true,
+      // biome-ignore lint/style/useNamingConvention: API schema
+      mirrors_spec_draft_model: true,
       // Only sent when set, so an older backend is not handed an unknown key every save.
       ...(options?.fillAbsentFields
         ? // biome-ignore lint/style/useNamingConvention: API schema

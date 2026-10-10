@@ -49,6 +49,7 @@ export interface PersistedChatSettings {
   searchImages?: boolean;
   autoHealToolCalls?: boolean;
   nudgeToolCalls?: boolean;
+  deduplicateToolCalls?: boolean;
   maxToolCallsPerMessage?: number;
   toolCallTimeout?: number;
   reasoningEnabled?: boolean;
