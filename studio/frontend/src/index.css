@@ -3530,7 +3530,8 @@ html[data-chat-font] .aui-root {
 
 	/* max(): at 480px tall the clamp is 192px, under the twelve-row compact
 	   height, so expanding would clip. svh, since dvh tracks Safari's bar. */
-	.aui-composer-root[data-writing-expanded="true"] .unsloth-composer-editor {
+	/* Either composer root: the thread's form or compare's wrapper. */
+	[data-writing-expanded="true"] .unsloth-composer-editor {
 		height: max(
 			var(--composer-editor-height, calc(40px * var(--ui-space-scale, 1))),
 			clamp(8rem, calc(80svh - 12rem), 42rem)
