@@ -3877,12 +3877,12 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           kvCacheDtype: structuredKvCacheDtypeAfterLoad(
             loadResp.cache_type_kv,
             config.kvCacheDtype,
-            loadResp.model_ini_applied,
+            loadResp.model_ini_cache_type,
           ),
           loadedKvCacheDtype: structuredKvCacheDtypeAfterLoad(
             loadResp.cache_type_kv,
             config.kvCacheDtype,
-            loadResp.model_ini_applied,
+            loadResp.model_ini_cache_type,
           ),
           ...mlxRuntimeStateFrom(loadResp),
           // Click-time value, not the resolved backend echo (see performLoad).
@@ -3959,12 +3959,12 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           kvCacheDtype: structuredKvCacheDtypeAfterLoad(
             loadResp.cache_type_kv,
             config.kvCacheDtype,
-            loadResp.model_ini_applied,
+            loadResp.model_ini_cache_type,
           ),
           loadedKvCacheDtype: structuredKvCacheDtypeAfterLoad(
             loadResp.cache_type_kv,
             config.kvCacheDtype,
-            loadResp.model_ini_applied,
+            loadResp.model_ini_cache_type,
           ),
           ...mlxRuntimeStateFrom(loadResp),
           nParallel: committedSlots,

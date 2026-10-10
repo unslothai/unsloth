@@ -141,6 +141,7 @@ import { residentModelMatchesPick } from "../lib/resident-model-match";
 import {
   loadedContextForParams,
   mergeBackendRecommendedInference,
+  modelIniSamplingKeysAfterMerge,
   qwenThinkingParamsWithModelIni,
   resolveFitMaxSeqLength,
   isReplayedLoadContext,
@@ -2837,6 +2838,8 @@ export function useChatModelRuntime() {
                   modelId,
                   presetSource: useChatRuntimeStore.getState().activePresetSource,
                   loadedContextLength: loadedFields.loadedContextLength,
+                  previousModelIniSamplingKeys:
+                    useChatRuntimeStore.getState().modelIniSamplingKeys,
                 }),
                 // The served window, as background and compare loads already record,
                 // or the active model reports a context it is not running at.
@@ -2857,6 +2860,13 @@ export function useChatModelRuntime() {
                 maxTokensCap: loadedContextCap,
               },
             );
+            useChatRuntimeStore.setState((state) => ({
+              modelIniSamplingKeys: modelIniSamplingKeysAfterMerge(
+                state.activePresetSource,
+                state.modelIniSamplingKeys,
+                loadResponse,
+              ),
+            }));
             // Qwen3.5/3.6 small models (0.8B, 2B, 4B, 9B) disable thinking by default. Anchored regex:
             // first "Xb" / "X.Xb" after start-of-string or [-_/.] so the version literal in "qwen3.5" /
             // "qwen3.6" does not match first, and "Qwen3.5-35B-A3B" yields 35 (total), not 3 (MoE active).
@@ -2884,7 +2894,7 @@ export function useChatModelRuntime() {
             const loadedKv = structuredKvCacheDtypeAfterLoad(
               loadResponse.cache_type_kv,
               loadKvCacheDtype,
-              loadResponse.model_ini_applied,
+              loadResponse.model_ini_cache_type,
             );
             const loadedTp = loadResponse.tensor_parallel ?? false;
             const loadedSpec = normalizeSpeculativeType(

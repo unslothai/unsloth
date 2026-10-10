@@ -1963,12 +1963,12 @@ export function SharedComposer({
           kvCacheDtype: structuredKvCacheDtypeAfterLoad(
             resp.cache_type_kv,
             ownConfig.kvCacheDtype,
-            resp.model_ini_applied,
+            resp.model_ini_cache_type,
           ),
           loadedKvCacheDtype: structuredKvCacheDtypeAfterLoad(
             resp.cache_type_kv,
             ownConfig.kvCacheDtype,
-            resp.model_ini_applied,
+            resp.model_ini_cache_type,
           ),
           ...mlxRuntimeStateFrom(resp),
           // Click-time value, not the resolved echo (see the single-model load).

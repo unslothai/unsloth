@@ -9,8 +9,11 @@ import test from "node:test";
 import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
-const { mergeBackendRecommendedInference, qwenThinkingParamsWithModelIni } =
-  await import("../src/features/chat/presets/preset-policy.ts");
+const {
+  mergeBackendRecommendedInference,
+  modelIniSamplingKeysAfterMerge,
+  qwenThinkingParamsWithModelIni,
+} = await import("../src/features/chat/presets/preset-policy.ts");
 const { resolveQwenThinkingParams } = await import(
   "../src/features/chat/utils/qwen-sampling-table.ts"
 );
@@ -105,5 +108,65 @@ test("both sites that lay the thinking table over a load apply the INI's keys on
   assert.match(
     readSrc("features/chat/lib/apply-inference-status-to-store.ts"),
     /qwenThinkingParamsWithModelIni\(qwenParams, status\)/,
+  );
+});
+
+function merge(
+  inference: Record<string, number>,
+  current: typeof DEFAULT_INFERENCE_PARAMS,
+  previousModelIniSamplingKeys?: string[],
+) {
+  return mergeBackendRecommendedInference({
+    current: { ...current, checkpoint: QWEN },
+    response: { is_gguf: true, inference },
+    modelId: QWEN,
+    presetSource: "builtin-default",
+    loadedContextLength: 4096,
+    previousModelIniSamplingKeys,
+  });
+}
+
+test("a penalty the INI set goes back to default once the file stops supplying it", () => {
+  const fromIni = { ...DEFAULT_INFERENCE_PARAMS, repetitionPenalty: 1.1 };
+  assert.equal(
+    merge({ temperature: 0.7 }, fromIni, ["temperature", "repetition_penalty"]).repetitionPenalty,
+    DEFAULT_INFERENCE_PARAMS.repetitionPenalty,
+  );
+  // A penalty the user set, with no INI history, is kept.
+  assert.equal(merge({ temperature: 0.7 }, fromIni, []).repetitionPenalty, 1.1);
+  assert.equal(merge({ temperature: 0.7 }, fromIni).repetitionPenalty, 1.1);
+  // The file still supplying it keeps winning.
+  assert.equal(
+    merge({ repetition_penalty: 1.2 }, fromIni, ["repetition_penalty"]).repetitionPenalty,
+    1.2,
+  );
+});
+
+test("only a Default-preset merge changes which keys the INI owns", () => {
+  const response = { model_ini_sampling_keys: ["repetition_penalty"] };
+  assert.deepEqual(modelIniSamplingKeysAfterMerge("builtin-default", [], response), [
+    "repetition_penalty",
+  ]);
+  assert.deepEqual(modelIniSamplingKeysAfterMerge("builtin-default", ["temperature"], {}), []);
+  assert.deepEqual(modelIniSamplingKeysAfterMerge("custom", ["temperature"], response), [
+    "temperature",
+  ]);
+});
+
+test("both merge sites pass the previous INI keys and record the new ones", () => {
+  const runtime = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
+  assert.match(
+    runtime,
+    /previousModelIniSamplingKeys:\s*useChatRuntimeStore\.getState\(\)\.modelIniSamplingKeys,/,
+  );
+  assert.match(
+    runtime,
+    /modelIniSamplingKeys: modelIniSamplingKeysAfterMerge\(\s*state\.activePresetSource,\s*state\.modelIniSamplingKeys,\s*loadResponse,\s*\)/,
+  );
+  const status = readSrc("features/chat/lib/apply-inference-status-to-store.ts");
+  assert.match(status, /previousModelIniSamplingKeys: store\.modelIniSamplingKeys,/);
+  assert.match(
+    status,
+    /modelIniSamplingKeys: modelIniSamplingKeysAfterMerge\(\s*state\.activePresetSource,\s*state\.modelIniSamplingKeys,\s*status,\s*\)/,
   );
 });

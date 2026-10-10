@@ -3241,7 +3241,7 @@ export function ModelConfigPage({
           llamaExtraArgs: iniInEstimate
             ? [
                 ...(runtimeGpuMemoryMode === "manual"
-                  ? withoutModelIniOffloadFlags(iniInEstimate.args)
+                  ? withoutModelIniOffloadFlags(iniInEstimate.args, runtimeConfig.gpuLayers)
                   : iniInEstimate.args),
                 ...(runtimeConfig.llamaExtraArgs ?? []),
               ]

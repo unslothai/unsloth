@@ -219,7 +219,7 @@ test("a resident server matches only when it ran with the file exactly when aske
   );
 });
 
-test("an applied INI's cache type is not adopted as the structured setting", () => {
+test("a cache type the INI set is not adopted as the structured setting; a temperature-only INI's echo is", () => {
   assert.equal(structuredKvCacheDtypeAfterLoad("q8_0", null, true), null);
   assert.equal(structuredKvCacheDtypeAfterLoad("q8_0", "f16", true), "f16");
   assert.equal(structuredKvCacheDtypeAfterLoad("q8_0", null, false), "q8_0");
@@ -228,11 +228,11 @@ test("an applied INI's cache type is not adopted as the structured setting", () 
   const sites: [string, RegExp][] = [
     [
       "features/chat/hooks/use-chat-model-runtime.ts",
-      /const loadedKv = structuredKvCacheDtypeAfterLoad\(\s*loadResponse\.cache_type_kv,\s*loadKvCacheDtype,\s*loadResponse\.model_ini_applied,\s*\)/,
+      /const loadedKv = structuredKvCacheDtypeAfterLoad\(\s*loadResponse\.cache_type_kv,\s*loadKvCacheDtype,\s*loadResponse\.model_ini_cache_type,\s*\)/,
     ],
     [
       "features/chat/shared-composer.tsx",
-      /kvCacheDtype: structuredKvCacheDtypeAfterLoad\(\s*resp\.cache_type_kv,\s*ownConfig\.kvCacheDtype,\s*resp\.model_ini_applied,\s*\)/,
+      /kvCacheDtype: structuredKvCacheDtypeAfterLoad\(\s*resp\.cache_type_kv,\s*ownConfig\.kvCacheDtype,\s*resp\.model_ini_cache_type,\s*\)/,
     ],
   ];
   for (const [path, pattern] of sites) {
@@ -242,12 +242,12 @@ test("an applied INI's cache type is not adopted as the structured setting", () 
   const adapter = readSrc("features/chat/api/chat-adapter.ts");
   const adopted =
     adapter.match(
-      /structuredKvCacheDtypeAfterLoad\(\s*loadResp\.cache_type_kv,\s*config\.kvCacheDtype,\s*loadResp\.model_ini_applied,\s*\)/g,
+      /structuredKvCacheDtypeAfterLoad\(\s*loadResp\.cache_type_kv,\s*config\.kvCacheDtype,\s*loadResp\.model_ini_cache_type,\s*\)/g,
     ) ?? [];
   assert.equal(adopted.length, 4);
   assert.match(
     readSrc("features/chat/lib/apply-inference-status-to-store.ts"),
-    /status\.cache_type_kv !== undefined &&\s*status\.model_ini_applied !== true &&/,
+    /status\.cache_type_kv !== undefined &&\s*status\.model_ini_cache_type !== true &&/,
   );
 });
 
@@ -355,32 +355,55 @@ test("an enabled INI is priced in the memory estimate", () => {
   assert.match(page, /nParallel: iniInEstimate\?\.n_parallel \?\? runtimeConfig\.nParallel/);
   assert.match(
     page,
-    /\.\.\.\(runtimeGpuMemoryMode === "manual"\s*\? withoutModelIniOffloadFlags\(iniInEstimate\.args\)\s*: iniInEstimate\.args\),\s*\.\.\.\(runtimeConfig\.llamaExtraArgs \?\? \[\]\),/,
+    /\.\.\.\(runtimeGpuMemoryMode === "manual"\s*\? withoutModelIniOffloadFlags\(iniInEstimate\.args, runtimeConfig\.gpuLayers\)\s*: iniInEstimate\.args\),\s*\.\.\.\(runtimeConfig\.llamaExtraArgs \?\? \[\]\),/,
   );
   assert.match(page, /except Extra Arguments,\s*which still win/);
 });
 
 test("Manual GPU memory prices the INI without the placement flags the load drops", () => {
-  assert.deepEqual(
-    withoutModelIniOffloadFlags([
+  const ini = [
+    "--ctx-size",
+    "4096",
+    "--gpu-layers",
+    "-1",
+    "--fit",
+    "off",
+    "--n-cpu-moe",
+    "30",
+    "--cpu-moe",
+    "--tensor-split",
+    "1,1",
+    "-ngl=99",
+    "--cache-type-k",
+    "q8_0",
+    "--temp",
+    "0.42",
+  ];
+  // A fixed layer count owns the split too (_should_strip_tensor_split: manual and gpu_layers >= 0).
+  for (const layers of [0, 24]) {
+    assert.deepEqual(withoutModelIniOffloadFlags(ini, layers), [
       "--ctx-size",
       "4096",
-      "--gpu-layers",
-      "-1",
-      "--fit",
-      "off",
-      "--n-cpu-moe",
-      "30",
-      "--cpu-moe",
-      "--tensor-split",
-      "1,1",
-      "-ngl=99",
       "--cache-type-k",
       "q8_0",
       "--temp",
       "0.42",
-    ]),
-    ["--ctx-size", "4096", "--cache-type-k", "q8_0", "--temp", "0.42"],
-  );
-  assert.deepEqual(withoutModelIniOffloadFlags([]), []);
+    ]);
+  }
+  // Auto layers in Manual keep the INI's split, as the load does.
+  for (const layers of [-1, null, undefined]) {
+    assert.deepEqual(withoutModelIniOffloadFlags(ini, layers), [
+      "--ctx-size",
+      "4096",
+      "--tensor-split",
+      "1,1",
+      "--cache-type-k",
+      "q8_0",
+      "--temp",
+      "0.42",
+    ]);
+  }
+  assert.deepEqual(withoutModelIniOffloadFlags(["-ts=3,1"], -1), ["-ts=3,1"]);
+  assert.deepEqual(withoutModelIniOffloadFlags(["-ts=3,1"], 8), []);
+  assert.deepEqual(withoutModelIniOffloadFlags([], 0), []);
 });

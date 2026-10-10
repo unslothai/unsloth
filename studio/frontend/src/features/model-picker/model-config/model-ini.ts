@@ -62,14 +62,14 @@ export function shouldShowModelIniRow(
   return isGguf && !isDiffusion && (ini?.found === true || switchedOn);
 }
 
-/** The structured cache type a load leaves set. With an unsloth.ini applied the echo is the file's
- *  `-ctk`, and adopting it would keep that cache type once the switch is turned off. */
+/** The structured cache type a load leaves set. When the unsloth.ini set the cache type the echo is the
+ *  file's, and adopting it would keep that cache type once the switch is turned off. */
 export function structuredKvCacheDtypeAfterLoad(
   echoed: string | null | undefined,
   sent: string | null | undefined,
-  modelIniApplied: boolean | null | undefined,
+  modelIniCacheType: boolean | null | undefined,
 ): string | null {
-  return (modelIniApplied === true ? sent : echoed) ?? null;
+  return (modelIniCacheType === true ? sent : echoed) ?? null;
 }
 
 // Placement flags Manual GPU memory owns; the backend drops them from the INI the same way (_model_ini_tokens).
@@ -80,13 +80,17 @@ const OFFLOAD_VALUE_FLAGS = new Set([
   "--fit",
   "--n-cpu-moe",
   "-ncmoe",
-  "--tensor-split",
-  "-ts",
 ]);
+const TENSOR_SPLIT_FLAGS = new Set(["--tensor-split", "-ts"]);
 const OFFLOAD_SWITCH_FLAGS = new Set(["--cpu-moe", "-cmoe"]);
 
-/** `args` less the offload flags (and their values) a Manual GPU memory load would not launch. */
-export function withoutModelIniOffloadFlags(args: readonly string[]): string[] {
+/** `args` less the offload flags (and their values) a Manual GPU memory load would not launch. The split
+ *  goes only with a fixed layer count, as routes/inference.py `_should_strip_tensor_split` decides. */
+export function withoutModelIniOffloadFlags(
+  args: readonly string[],
+  manualGpuLayers: number | null | undefined,
+): string[] {
+  const stripTensorSplit = manualGpuLayers != null && manualGpuLayers >= 0;
   const kept: string[] = [];
   for (let i = 0; i < args.length; i += 1) {
     const token = args[i];
@@ -94,7 +98,7 @@ export function withoutModelIniOffloadFlags(args: readonly string[]): string[] {
     if (OFFLOAD_SWITCH_FLAGS.has(flag)) {
       continue;
     }
-    if (OFFLOAD_VALUE_FLAGS.has(flag)) {
+    if (OFFLOAD_VALUE_FLAGS.has(flag) || (stripTensorSplit && TENSOR_SPLIT_FLAGS.has(flag))) {
       if (!token.includes("=")) {
         i += 1;
       }
