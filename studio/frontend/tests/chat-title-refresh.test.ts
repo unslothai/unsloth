@@ -115,20 +115,28 @@ test("a refresh is as cheap as the automatic title, with its own prompt", async 
   );
 });
 
-test("a refresh asks the selected model, never the one that answered, and none when none is loaded", () => {
+test("a refresh asks the selected model only while it is serving, and writes the title guarded", () => {
   const source = readFileSync(
     new URL("../src/features/chat/components/chat-row-menu.ts", import.meta.url),
     "utf8",
   ).replace(/\s+/g, " ");
+  const serving = source.slice(
+    source.indexOf("async function titleModelServing"),
+    source.indexOf("export async function regenerateChatTitle"),
+  );
+  // An idle-unloaded local model is reloaded by any completion naming it, so residency is read first.
+  assert.match(serving, /const status = await getInferenceStatus\(\);/);
+  assert.match(serving, /if \(!status\.active_model \|\| status\.is_audio \|\| status\.is_diffusion\) return false;/);
   const body = source.slice(
     source.indexOf("export async function regenerateChatTitle"),
     source.indexOf("/** The sandbox"),
   );
-  assert.match(body, /const \{ params, modelLoading \} = useChatRuntimeStore\.getState\(\);/);
+  assert.match(body, /const checkpoint = !modelLoading \? params\.checkpoint : "";/);
   assert.match(
     body,
-    /\(params\.checkpoint && !modelLoading \? await titleFromModel\(params\.checkpoint, excerpt\) : null\) \?\? heuristicChatTitle\(branch\)/,
+    /\(serving \? await titleFromModel\(checkpoint, excerpt\) : null\) \?\? heuristicChatTitle\(branch\)/,
   );
+  assert.match(body, /updateChatThread\(id, \{ title \}, startTitle === undefined \? \{\} : \{ expectedTitle: startTitle \}\)/);
   assert.doesNotMatch(body, /answeringCheckpoint|titleCheckpoint/);
 });
 
@@ -168,6 +176,13 @@ test("without a model text with no spaced words keeps its first line", () => {
   assert.equal(heuristicChatTitle([message(0, "user", text("如何用Python读取CSV文件？"))]), "如何用Python读取CSV文件");
   assert.equal(heuristicChatTitle([]), null);
   assert.equal(heuristicChatTitle([message(0, "assistant", text("Hello there"))]), null);
+});
+
+test("without a model words with combining marks stay whole", () => {
+  const hindi = "मुझे पायथन डेकोरेटर समझाओ, खासकर तर्क वाले डेकोरेटर";
+  const title = heuristicChatTitle([message(0, "user", text(hindi))]) ?? "";
+  assert.ok(title.length > 0);
+  for (const word of title.split(" ")) assert.ok(hindi.split(/[\s,]+/).includes(word), word);
 });
 
 test("without a model reasoning and tool output never pick the title", () => {

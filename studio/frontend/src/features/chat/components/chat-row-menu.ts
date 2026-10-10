@@ -13,15 +13,19 @@ import {
 } from "../utils/conversation-markdown";
 import { allRecordedSandboxSessionIds } from "../utils/recorded-sandbox-session";
 import { liveThreadBranch } from "../utils/live-thread-head";
-import { forkChatThread, streamChatCompletions } from "../api/chat-api";
+import {
+  forkChatThread,
+  getInferenceStatus,
+  streamChatCompletions,
+  updateChatThread,
+} from "../api/chat-api";
+import { parseExternalModelId } from "../external-providers";
+import { normalizeModelIdentity } from "../../hub/lib/model-identity";
 import {
   settleThreadScopedSettingsForCopy,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
-import {
-  renameChatItem,
-  type SidebarItem,
-} from "../hooks/use-chat-sidebar-items";
+import type { SidebarItem } from "../hooks/use-chat-sidebar-items";
 import {
   exportConversationCsv,
   exportConversationMarkdown,
@@ -32,6 +36,7 @@ import {
 import {
   getStoredChatThread,
   listStoredChatMessages,
+  listStoredChatThreads,
 } from "../utils/chat-history-storage";
 import { savedBranchHead } from "../utils/branch-head";
 import { orderByParentChain } from "../utils/message-order";
@@ -152,8 +157,24 @@ async function titleFromModel(checkpoint: string, excerpt: string): Promise<stri
   }
 }
 
-/** Uses the selected model, never the one that answered (an idle local model would be reloaded for a
- *  few words); without one, the messages. A comparison's panes share user turns, so one is read. */
+/** A local model is asked only while it is serving: a request naming an idle-unloaded one makes the
+ *  backend load it again, multi-GB for a few words. */
+async function titleModelServing(checkpoint: string): Promise<boolean> {
+  if (parseExternalModelId(checkpoint) !== null) return true;
+  try {
+    const status = await getInferenceStatus();
+    if (!status.active_model || status.is_audio || status.is_diffusion) return false;
+    const want = normalizeModelIdentity(checkpoint);
+    return [status.model_identifier, status.active_model, ...(status.serving_checkpoints ?? [])].some(
+      (id) => !!id && (id === checkpoint || normalizeModelIdentity(id) === want),
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** Uses the selected model, never the one that answered, and only while it is serving; else the
+ *  messages. A comparison's panes share user turns, so one is read. */
 export async function regenerateChatTitle(
   item: SidebarItem,
 ): Promise<RegenerateTitleOutcome> {
@@ -162,9 +183,12 @@ export async function regenerateChatTitle(
   try {
     const threadId = getSidebarItemThreadIds(item)[0];
     const liveBranch = liveThreadBranch(threadId);
-    const [startTitle, raw] = await Promise.all([
+    const { params, modelLoading } = useChatRuntimeStore.getState();
+    const checkpoint = !modelLoading ? params.checkpoint : "";
+    const [startTitle, raw, serving] = await Promise.all([
       getStoredChatThread(threadId).then((thread) => thread?.title),
       listStoredChatMessages(threadId),
+      checkpoint ? titleModelServing(checkpoint) : false,
     ]);
     // The branch on screen, else the one reopening the chat shows, as the exports read it.
     const storedIds = new Set(raw.map((m) => m.id));
@@ -176,16 +200,24 @@ export async function regenerateChatTitle(
       : raw;
     const excerpt = titleRefreshExcerpt(branch);
     if (!excerpt) return "empty";
-    const { params, modelLoading } = useChatRuntimeStore.getState();
     const title =
-      (params.checkpoint && !modelLoading
-        ? await titleFromModel(params.checkpoint, excerpt)
-        : null) ?? heuristicChatTitle(branch);
+      (serving ? await titleFromModel(checkpoint, excerpt) : null) ?? heuristicChatTitle(branch);
     if (!title) return "empty";
-    // A rename made while the model answered wins.
-    const current = (await getStoredChatThread(threadId))?.title;
-    if (current !== startTitle || title === current) return "unchanged";
-    await renameChatItem({ ...item, title: current ?? item.title }, title);
+    if (title === startTitle) return "unchanged";
+    const ids =
+      item.type === "single"
+        ? [threadId]
+        : [...new Set((await listStoredChatThreads({ pairId: item.id, includeArchived: true })).map((t) => t.id))];
+    try {
+      // Guarded: a rename that lands while the title is generated wins (409).
+      await Promise.all(
+        ids.map((id) =>
+          updateChatThread(id, { title }, startTitle === undefined ? {} : { expectedTitle: startTitle }),
+        ),
+      );
+    } catch {
+      return (await getStoredChatThread(threadId))?.title !== startTitle ? "unchanged" : "failed";
+    }
     return "renamed";
   } catch {
     return "failed";

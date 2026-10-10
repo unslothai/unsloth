@@ -433,7 +433,8 @@ const TITLE_STOPWORDS = new Set(
     "es son hay sobre del al lo se te nos est pour avec sur dans comment wie was ich kann ein eine für auf posso não mais os em na"
   ).split(" "),
 );
-const TITLE_WORD = /[\p{L}\p{N}][\p{L}\p{N}'’_-]*/gu;
+// \p{M} inside a word: Devanagari vowel signs and Arabic harakat are marks, not word breaks.
+const TITLE_WORD = /[\p{L}\p{N}][\p{L}\p{M}\p{N}'’_-]*/gu;
 const TITLE_MAX_WORDS = 6;
 
 function isTitleWord(word: string): boolean {
