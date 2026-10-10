@@ -212,7 +212,7 @@ def _render_conversation(tokenizer, conversation, tools = None):
                 attempt, tokenize = False, add_generation_prompt = False, **tools_kwargs
             )
         except Exception as error:
-            # keep loaded rows for DeepSeek V3 None content, but prefer cleaned-row errors from loader-added None keys.
+            # allow DeepSeek V3 None content; prefer cleaned errors when loaders add None keys.
             if first_error is None:
                 first_error = error
     if tools:
@@ -299,7 +299,7 @@ def keep_renderable_chat_template(tokenizer, dataset, chat_column, own_template)
 
 
 def resolve_dataset_chat_template(tokenizer, model_name, dataset, chat_column):
-    """Choose on the first split and reuse for evaluation and saving."""
+    """choose a template on the first split and reuse it for evaluation and saving."""
     remembered = getattr(tokenizer, _CHOSEN_TEMPLATE_ATTR, None)
     if remembered is not None and remembered[0] == model_name:
         _set_chat_template(tokenizer, remembered[1])

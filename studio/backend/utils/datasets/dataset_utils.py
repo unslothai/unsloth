@@ -310,7 +310,11 @@ def _apply_user_mapping_alpaca(
     mapping: dict,
     batch_size: int = 1000,
 ):
-    """Apply user-provided column mapping to convert dataset to Alpaca format. Accepts any format's role names, normalises via _TO_CHATML, then maps user -> instruction, system -> input, assistant -> output. Advisor ``__label_mapping`` names label values; ``__system_prompt`` is prepended to instruction, since system-role columns already fill input. Returns a dataset with instruction/input/output columns."""
+    """convert user mappings to Alpaca instruction, input, and output columns.
+
+    role names are normalized through ``_TO_CHATML`` and ``__label_mapping`` names label values.
+    ``__system_prompt`` prepends instruction because mapped system columns already fill input.
+    """
     meta = {k: v for k, v in mapping.items() if k.startswith("__")}
     column_roles = {k: v for k, v in mapping.items() if not k.startswith("__")}
     system_prompt = meta.get("__system_prompt", "")
