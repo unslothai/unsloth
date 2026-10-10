@@ -176,3 +176,34 @@ def test_empty_prefix_matches_full_attention():
         expected = qmod.QwenImage21AttnProcessor()(attn, states, segments = [])
         actual = bounded._processor_class()()(attn, states, segments = [])
     torch.testing.assert_close(actual, expected)
+
+
+def test_mps_installs_bounded_attention_without_trusting_the_probe(monkeypatch):
+    from core.inference.diffusion import _quadratic_attention
+
+    pipe, modules = make_pipe()
+    target = SimpleNamespace(backend = "mps", device = "mps", dtype = torch.bfloat16)
+    # MPS SDPA ignores sdpa_kernel, so the probe reports fused kernels it does not run.
+    monkeypatch.setattr(attention, "sdpa_math_only", lambda t: False)
+    warned = []
+    monkeypatch.setattr(attention, "warn_if_sdpa_math_only", lambda *a, **k: warned.append(a))
+    attention.apply_attention_backend(pipe, None, target = target)
+    assert all(type(m.processor) is bounded._processor_class() for m in modules)
+    assert bounded.bounded_math_attention(pipe)
+    assert not _quadratic_attention(target, None, pipe)
+    assert not warned
+
+
+@pytest.mark.parametrize(
+    "target, math_only, expected",
+    [
+        (SimpleNamespace(backend = "mps", device = "mps"), False, True),
+        (SimpleNamespace(backend = "rocm", device = "cuda"), True, True),
+        (SimpleNamespace(backend = "rocm", device = "cuda"), False, False),
+        (SimpleNamespace(backend = "cuda", device = "cuda"), True, False),
+        (SimpleNamespace(backend = "cpu", device = "cpu"), True, False),
+    ],
+)
+def test_bounded_attention_targets(monkeypatch, target, math_only, expected):
+    monkeypatch.setattr(attention, "sdpa_math_only", lambda t: math_only)
+    assert bounded.needs_bounded_attention(target) is expected

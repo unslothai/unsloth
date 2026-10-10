@@ -145,17 +145,31 @@ def _processor_class():
     return BoundedMathQwenImage21AttnProcessor
 
 
+def needs_bounded_attention(target: Any) -> bool:
+    """ROCm with only SDPA math, or MPS.
+
+    MPS SDPA ignores ``sdpa_kernel`` (so the probe reads every backend as available) and, in the torch Studio installs
+    on macOS, builds the full score matrix plus its softmax copy for any query over 8 tokens: about 34 GB per call at
+    2048x2048 in bf16, which the uncapped MPS allocator serves from swap."""
+    if getattr(target, "device", None) == "mps":
+        return True
+    if getattr(target, "backend", None) != "rocm":
+        return False
+    from .diffusion_attention import sdpa_math_only
+
+    return sdpa_math_only(target)
+
+
 def install(
     pipe: Any,
     target: Any,
     logger: Any = None,
 ) -> bool:
-    """A correctness fallback for every ROCm architecture, independent of speed mode."""
-    from .diffusion_attention import sdpa_math_only
+    """A correctness fallback for every ROCm architecture and Apple Silicon, independent of speed mode."""
     from .diffusion_qwenimage21_rocm import _processor_class as speed_processor_class
     from diffusers.models.transformers.transformer_qwenimage21 import QwenImage21AttnProcessor
 
-    if getattr(target, "backend", None) != "rocm" or not sdpa_math_only(target):
+    if not needs_bounded_attention(target):
         return False
     transformer = getattr(pipe, "transformer", None)
     if type(transformer).__name__ != "QwenImage21Transformer2DModel":
