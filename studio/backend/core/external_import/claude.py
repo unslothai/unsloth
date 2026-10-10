@@ -117,7 +117,14 @@ def read_transcript(path: Path, thread_id: str, session_id: str) -> Transcript:
     for index, record in enumerate(records):
         uuid = str(record.get("uuid") or "")
         reply = record.get("message", {}).get("id") if record["type"] == "assistant" else None
-        if record["type"] != "assistant" or reply != active_reply:
+        continues_reply = record["type"] == "assistant" and reply and reply == active_reply
+        if continues_reply and active_blocks:
+            ancestor, seen = record.get("parentUuid"), set()
+            while ancestor and ancestor not in imported and ancestor not in seen:
+                seen.add(ancestor)
+                ancestor = links.get(ancestor)
+            continues_reply = ancestor == active_blocks[-1]
+        if not continues_reply:
             if active_blocks:
                 tail_of.update((block, active_blocks[-1]) for block in active_blocks)
             active_reply = reply

@@ -402,6 +402,25 @@ def test_claude_duplicate_reply_ids_do_not_merge_sequential_responses(claude_hom
     assert [m["parentId"] for m in messages] == [None, ids[0], ids[1], ids[2], ids[1]]
 
 
+def test_claude_duplicate_reply_ids_do_not_merge_sibling_responses(claude_home):
+    first = c_asst("a1", [{"type": "text", "text": "first"}], parent = "u1")
+    first["message"]["id"] = "duplicate"
+    alternate = c_asst("a2", [{"type": "text", "text": "alternate"}], parent = "u1")
+    alternate["message"]["id"] = "duplicate"
+    path = _session(
+        claude_home,
+        records = [
+            c_user("u1", "one"),
+            first,
+            alternate,
+            c_user("u2", "rewind from first", parent = "a1"),
+        ],
+    )
+    messages = claude.read_transcript(path, "t", "s1").messages
+    ids = [m["id"] for m in messages]
+    assert [m["parentId"] for m in messages] == [None, ids[0], ids[0], ids[1]]
+
+
 @pytest.mark.parametrize("logical", ["never-written", "at2"])
 def test_claude_parallel_tool_calls_and_compaction_keep_one_conversation(claude_home, logical):
     def block(uuid, reply, content, parent):
