@@ -4373,7 +4373,11 @@ _CACHE_CAPS_ON = dict(
 
 @pytest.fixture
 def _moe_cache_host(monkeypatch, _discrete_linux_host):
+    import utils.hardware as hardware
     import utils.model_memory_settings as mm
+
+    # A discrete CUDA host on every runner: macOS CI is Apple Silicon.
+    monkeypatch.setattr(hardware, "is_apple_silicon", lambda: False)
 
     monkeypatch.setattr(mm, "get_model_memory_settings", lambda: (False, False))
     monkeypatch.setattr(mm, "get_keep_resident", lambda: False)
