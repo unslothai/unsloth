@@ -997,6 +997,7 @@ class _MarkdownRenderer(HTMLParser):
             and self._heading_marks
             and not self._heading_has_text
             and self._heading_button_at is None
+            and not self._hidden_marks
             and not _is_hidden_element(dict(attrs))
         )
         if tag in _SKIP_TAGS and not heading_button:
@@ -1013,6 +1014,9 @@ class _MarkdownRenderer(HTMLParser):
         if self._in_heading_button():
             if tag == "br":
                 self._heading_button_parts.append(" ")
+            return
+        # a break after the held title would land ahead of it at replay
+        if tag == "br" and self._heading_button_parts and not self._heading_has_text:
             return
 
         if tag in _HEADING_TAGS:
@@ -1257,6 +1261,11 @@ class _MarkdownRenderer(HTMLParser):
 
     def flush_pending(self) -> None:
         """Flush open side-buffers into ``_out`` after close(), recovering truncated HTML."""
+        # a fetch cut inside the heading never reaches its end tag
+        if self._heading_button_parts and self._heading_marks and not self._heading_has_text:
+            self._heading_button_at = -1
+            self.handle_data("".join(self._heading_button_parts).strip())
+            self._heading_button_parts = []
         # Headers first: a frame finalizes its inner buffers, then emits into the enclosing link or cell, which must
         # still be open here; it is finalized below.
         self._flush_header_frames()

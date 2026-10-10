@@ -419,6 +419,11 @@ def test_a_leading_control_before_the_heading_title_is_dropped():
             "<h3><button hidden>old</button><button>Question</button></h3><p>Answer text.</p>",
             "### Question",
         ),
+        (
+            "<h3><span hidden><button>old</button></span><button>Question</button></h3><p>Answer text.</p>",
+            "### Question",
+        ),
+        ("<h3><button>Question</button><br></h3><p>Answer text.</p>", "### Question"),
     ],
 )
 def test_heading_button_title_edge_cases(html, heading):
@@ -426,6 +431,11 @@ def test_heading_button_title_edge_cases(html, heading):
     assert heading in out
     assert "Answer text." in out
     assert "old" not in out
+
+
+@pytest.mark.parametrize("cut", ["<h3><button>Question", "<h3><button>Question</button>"])
+def test_heading_button_cut_by_the_fetch_cap_keeps_its_title(cut):
+    assert "### Question" in html_to_markdown("<p>Answer text.</p>" + cut)
 
 
 def test_inline_markup_in_a_heading_button_stays_in_order():
