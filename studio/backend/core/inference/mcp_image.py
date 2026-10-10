@@ -233,11 +233,20 @@ def settle_image_call(
 
 
 IMAGE_NOTE_PREFIX = "[The user attached an image to this message."
+_IMAGE_NOTE_INSTRUCTION = " You cannot see it. To use it, call "
+
+
+def _is_attached_image_note(text: str) -> bool:
+    return text.startswith(IMAGE_NOTE_PREFIX + _IMAGE_NOTE_INSTRUCTION) and text.endswith(".]")
 
 
 def strip_attached_image_note(text: str) -> str:
     """``text`` without the note from ``note_attached_image``, for readers of what the user typed."""
-    return text.split(IMAGE_NOTE_PREFIX, 1)[0]
+    if _is_attached_image_note(text):
+        return ""
+    head, separator, tail = text.rpartition(f"\n\n{IMAGE_NOTE_PREFIX}")
+    note = IMAGE_NOTE_PREFIX + tail
+    return head if separator and _is_attached_image_note(note) else text
 
 
 def note_attached_image(messages: list, targets: list[tuple[str, str]]) -> list:
@@ -250,7 +259,7 @@ def note_attached_image(messages: list, targets: list[tuple[str, str]]) -> list:
     calls = " or ".join(
         f"{name} with {json.dumps({field: ATTACHED_IMAGE})}" for name, field in targets
     )
-    note = f"{IMAGE_NOTE_PREFIX} You cannot see it. To use it, call {calls}.]"
+    note = f"{IMAGE_NOTE_PREFIX}{_IMAGE_NOTE_INSTRUCTION}{calls}.]"
     for index in range(len(messages) - 1, -1, -1):
         message = messages[index]
         if not isinstance(message, dict) or message.get("role") != "user":

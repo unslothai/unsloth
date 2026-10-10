@@ -471,6 +471,20 @@ def test_retrieval_queries_ignore_the_note():
     assert tools_mod._last_user_text(parts) == "what is this?"
 
 
+def test_retrieval_queries_keep_a_literal_note_prefix_from_the_user():
+    text = (
+        "Explain this literal text: [The user attached an image to this message. "
+        "It came from a log."
+    )
+    assert tools_mod._last_user_text([{"role": "user", "content": text}]) == text
+    noted = note_attached_image(
+        [{"role": "user", "content": text}], [("mcp__srv1__lookup", "image")]
+    )
+    assert tools_mod._last_user_text(noted) == text
+    parts = [{"type": "text", "text": text}]
+    assert tools_mod._last_user_text([{"role": "user", "content": parts}]) == text
+
+
 def _one_call_turns():
     turns = iter(
         [

@@ -14717,12 +14717,11 @@ def _last_user_text(conversation: list[dict]) -> str:
             return strip_current_date_update_note(strip_attached_image_note(content)).strip()
         if isinstance(content, list):
             parts = [
-                p.get("text", "")
+                strip_attached_image_note(p.get("text", ""))
                 for p in content
                 if isinstance(p, dict) and p.get("type") in ("text", "input_text")
             ]
-            text = strip_attached_image_note(" ".join(t for t in parts if t))
-            return strip_current_date_update_note(text).strip()
+            return strip_current_date_update_note(" ".join(t for t in parts if t)).strip()
         return ""
     return ""
 
