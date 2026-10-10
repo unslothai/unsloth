@@ -4532,8 +4532,8 @@ _CPU_PLACEMENT_PRESENCE_FLAGS = (_MOE_OFFLOAD_FLAGS - _CPU_MOE_COUNT_FLAGS) | fr
     {"-ot", "--override-tensor"}
 )
 _CPU_PLACEMENT_FLAGS = _MOE_OFFLOAD_FLAGS | frozenset({"-ot", "--override-tensor"})
-# Pass-through that re-places what a fit priced: the fitter, split, remote (RPC) devices, or
-# draft tensors moved onto a card of their own.
+# Pass-through that re-places what a fit priced: the fitter, split, remote (RPC) devices,
+# draft tensors moved onto a card of their own, or an unpriced vocoder GGUF.
 _VRAM_FIT_VOIDING_FLAGS = (
     frozenset(
         {
@@ -4543,6 +4543,8 @@ _VRAM_FIT_VOIDING_FLAGS = (
             "-otd",
             "--override-tensor-draft",
             "--spec-draft-override-tensor",
+            "-mv",
+            "--model-vocoder",
         }
     )
     | _FIT_CONTROL_FLAGS
@@ -41009,10 +41011,11 @@ class LlamaCppBackend:
             from utils.utils import hf_env_offline
             model_repo_path = resolve_bicodec_repo_path(local_files_only = hf_env_offline())
 
-        LlamaCppBackend._codec_mgr.load_codec(audio_type, device, model_repo_path = model_repo_path)
         # The codec holds memory the load-time fit never priced: VRAM on CUDA, and on a
         # unified-memory host the very pool the fit sized even when it lands on the CPU.
+        # Cleared first, as the model is already listed while the codec allocates.
         self._vram_fit_context_length = None
+        LlamaCppBackend._codec_mgr.load_codec(audio_type, device, model_repo_path = model_repo_path)
         logger.info(f"Loaded audio codec for GGUF TTS: {audio_type}")
 
     def generate_audio_response(

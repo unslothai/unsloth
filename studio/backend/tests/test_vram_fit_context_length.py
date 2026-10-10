@@ -253,6 +253,7 @@ def test_a_two_card_fit_is_published(tmp_path, monkeypatch):
         ["--spec-draft-device", "CUDA1"],
         ["--mmproj-device", "CUDA1"],
         ["-otd", "blk=CUDA1"],
+        ["--model-vocoder", "vocoder.gguf"],
     ],
     ids = [
         "narrower-device",
@@ -263,6 +264,7 @@ def test_a_two_card_fit_is_published(tmp_path, monkeypatch):
         "draft-device",
         "mmproj-device",
         "draft-tensor-override",
+        "vocoder",
     ],
 )
 def test_a_placement_narrower_than_the_fit_claims_no_fit(tmp_path, monkeypatch, extra_args):
@@ -340,13 +342,16 @@ def test_a_tts_codec_drops_the_fit(monkeypatch, cuda):
 
     from core.inference.llama_cpp import LlamaCppBackend
 
+    seen = []
+
     class _Codecs:
         def load_codec(self, *_a, **_kw):
-            pass
+            # The field is already gone while the codec allocates.
+            seen.append(backend.vram_fit_context_length)
 
     monkeypatch.setattr(LlamaCppBackend, "_codec_mgr", _Codecs())
     monkeypatch.setattr(torch.cuda, "is_available", lambda: cuda)
     backend = LlamaCppBackend()
     backend._vram_fit_context_length = 65536
     backend.init_audio_codec("snac", audio_codec_path = "unused")
-    assert backend.vram_fit_context_length is None
+    assert seen == [None] and backend.vram_fit_context_length is None
