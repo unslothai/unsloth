@@ -281,6 +281,10 @@ _CURRENCY_CODES = frozenset(
     ).split()
 )
 _THREE_DECIMAL_CURRENCIES = frozenset({"BHD", "IQD", "JOD", "KWD", "LYD", "OMR", "TND"})
+# no minor unit: JPY 10<sup>12</sup> is a power, never cents
+_ZERO_DECIMAL_CURRENCIES = frozenset(
+    "BIF CLP DJF GNF ISK JPY KMF KRW PYG RWF UGX VND VUV XAF XOF XPF".split()
+)
 _CODE_PRICE_TAIL = re.compile(r"\b([A-Z]{3})[ \u00a0\u202f]?\d(?:[\d,.'’]|[ \u00a0\u202f]\d)*$")
 # note markers that keep their plain-text form, like Wikipedia's class="reference"
 _FOOTNOTE_CLASSES = frozenset({"reference", "footnote", "footnote-ref", "noteref", "fn", "cite"})
@@ -675,7 +679,11 @@ class _MarkdownRenderer(HTMLParser):
         if price and unicodedata.category(price.group(1)) == "Sc":
             return 2
         code = _CODE_PRICE_TAIL.search(context)
-        if not code or code.group(1) not in _CURRENCY_CODES:
+        if (
+            not code
+            or code.group(1) not in _CURRENCY_CODES
+            or code.group(1) in _ZERO_DECIMAL_CURRENCIES
+        ):
             return 0
         return 3 if code.group(1) in _THREE_DECIMAL_CURRENCIES else 2
 

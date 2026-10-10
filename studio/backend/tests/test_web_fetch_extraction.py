@@ -792,6 +792,7 @@ def test_page_that_fits_keeps_its_links(monkeypatch):
             "KWD 19950, BHD 1234, USD 10^100",
         ),
         ("M<sup>r</sup> and M<sup>rs</sup> Smith", "Mr and Mrs Smith"),
+        ("JPY 10<sup>12</sup> and KRW 10<sup>12</sup>", "JPY 10^12 and KRW 10^12"),
         (
             "M<sup>me</sup> Dupont, D<sup>r</sup> Martin, n<sup>o</sup> 5, Om<sup>e</sup>",
             "Mme Dupont, Dr Martin, no 5, Om^e",
