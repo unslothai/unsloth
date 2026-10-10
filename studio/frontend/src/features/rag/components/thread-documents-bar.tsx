@@ -2,12 +2,15 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
-  type RefObject,
+  type ReactNode,
   useCallback,
   useEffect,
+  useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
+import { ChevronLeftIcon, ChevronRightIcon, PlusIcon, XIcon } from "lucide-react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   AttachmentIcon,
@@ -15,6 +18,31 @@ import {
   FolderAttachmentIcon,
   Folder02Icon,
 } from "@hugeicons/core-free-icons";
+import {
+  AttachmentKindIcon,
+  CARD_EDGE,
+  CARD_SIZE,
+  CARD_SLOT,
+  CARD_SURFACE,
+  FileCardBody,
+} from "@/components/assistant-ui/attachment";
+import {
+  type AttachmentPreview,
+  AttachmentCardPreview,
+  attachmentPreview,
+} from "@/components/assistant-ui/attachment-card-preview";
+import { LocalFileDialog } from "@/components/assistant-ui/attachment-document-dialog";
+import {
+  MAX_DOCUMENT_PREVIEW_BYTES,
+  documentKind,
+  isMarkdown,
+} from "@/components/file-viewer";
+import { Spinner } from "@/components/ui/spinner";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { useAui } from "@assistant-ui/react";
@@ -31,12 +59,17 @@ import {
   ChatThreadDeletedError,
   ensureStoredChatThread,
   getStoredChatThread,
+  annotationsOfFile,
+  attachmentFileKind,
+  isPastedTextFile,
+  isTextAttachment,
   isThreadIncognito,
 } from "@/features/chat";
 import {
   useNativeAttachmentTargetKey,
   useNativeIntentStore,
 } from "@/features/native-intents";
+import { openFilePicker } from "@/lib/open-file-picker";
 import { toast } from "@/lib/toast";
 import {
   DropdownMenu,
@@ -47,19 +80,16 @@ import {
 } from "@/components/ui/dropdown-menu";
 import {
   announceProjectSourcesUpdated,
+  getDocumentFileUrl,
   invalidateProjectSources,
   listKnowledgeBases,
+  listLinkedFolders,
   subscribeKnowledgeBasesChanged,
   listProjectDocuments,
   listThreadDocuments,
 } from "../api/rag-api";
 import { useRagAvailabilityStore } from "../api/rag-availability";
-import {
-  type DocumentStatus,
-  RAG_UPLOAD_ACCEPT,
-  type RagDocument,
-  isLinkedFolderManaged,
-} from "../types/rag";
+import { type RagDocument, isLinkedFolderManaged } from "../types/rag";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -70,13 +100,25 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { DocumentStatusChip } from "./document-status-chip";
+import { STAGE_LABELS } from "./document-status-chip";
+import { useDocumentPreviewStore } from "./preview-store";
 import {
   type KnowledgeBaseFocus,
   KnowledgeBaseDialog,
 } from "./knowledge-base-dialog";
+import {
+  RAG_SOURCE_UPLOAD_ACCEPT,
+  SUPPORTED_SOURCES_HINT,
+  isSupportedSourceName,
+} from "./source-drop-policy";
 import { EXPIRY_GRACE_MS } from "./staged-source";
-import { uploadItemFromIntent, useRagDocuments } from "./use-rag-documents";
+import {
+  type RagUploadItem,
+  type TrackedDocument,
+  uploadItemFromIntent,
+  useRagDocuments,
+} from "./use-rag-documents";
+import { useSourceDrop } from "./use-source-drop";
 
 // Refetched after any KB mutation so a rename shows at once.
 function useKnowledgeBaseName(kbId: string | null): string | null {
@@ -109,38 +151,6 @@ function useKnowledgeBaseName(kbId: string | null): string | null {
   return known !== null && known.kbId === kbId ? known.name : null;
 }
 
-// Shown when retrieval comes from a KB, so the source isn't invisible.
-function KnowledgeBaseSourceChip({
-  name,
-  onOpen,
-  buttonRef,
-}: {
-  name: string | null;
-  onOpen: () => void;
-  buttonRef: RefObject<HTMLButtonElement | null>;
-}) {
-  return (
-    <div className="mb-2 flex w-full flex-row items-center gap-1.5 pl-0.5 pr-1.5 pt-0.5 pb-1">
-      <button
-        ref={buttonRef}
-        type="button"
-        onClick={onOpen}
-        className="composer-pill-btn min-w-0 max-w-full"
-        title="Add or remove documents"
-      >
-        <HugeiconsIcon
-          icon={FileDatabaseIcon}
-          strokeWidth={2}
-          className="size-3.5 shrink-0"
-        />
-        <span className="min-w-0 truncate">
-          {name ? `Knowledge base: ${name}` : "Knowledge base"}
-        </span>
-      </button>
-    </div>
-  );
-}
-
 /**
 * Confirm a thread is stored before documents are indexed against it. An id reaches this
 * component before its row write lands, from a cached initialize() or from activeThreadId, and
@@ -162,47 +172,6 @@ async function requireStoredThread(threadId: string): Promise<void> {
   if (!stored) {
     throw new Error(`Thread ${threadId} was not persisted`);
   }
-}
-
-/** shows inherited sources because Docs off does not stop retrieval. */
-function InheritedProjectSources({
-  documents,
-  unused,
-}: {
-  documents: { id: string; filename: string; status: DocumentStatus }[];
-  unused: boolean;
-}) {
-  return (
-    <div className="mb-2 flex w-full flex-row items-center gap-1.5 pl-0.5 pr-1.5 pt-0.5 pb-1">
-      <span
-        className="composer-pill-btn shrink-0 cursor-default !text-foreground/60"
-        title={
-          unused
-            ? "The selected model can't search documents, so this chat doesn't use its project's sources. Pick a model with tool support to use them."
-            : "This chat retrieves from its project's sources. Manage them in the project's Sources tab."
-        }
-      >
-        <HugeiconsIcon icon={FolderAttachmentIcon} strokeWidth={2} className="size-3.5" />
-        <span>{unused ? "Project sources not used" : "Project sources"}</span>
-      </span>
-      {/* cap linked folders because their sources can fill the viewport. */}
-      <div
-        className={cn(
-          "flex max-h-24 flex-1 flex-row flex-wrap items-center gap-1.5 overflow-y-auto",
-          unused && "opacity-50",
-        )}
-      >
-        {documents.map((doc) => (
-          <DocumentStatusChip
-            key={`inherited:${doc.id}`}
-            filename={doc.filename}
-            status={doc.status}
-            shared={true}
-          />
-        ))}
-      </div>
-    </div>
-  );
 }
 
 /** row data avoids stale activeProjectId; undefined blocks attachments. */
@@ -266,54 +235,584 @@ function useThreadProjectId(
     : undefined;
 }
 
-/** The composer's attach control. Wording and glyph follow the active target, so
- * a project chat says up front where the file is going. */
-function AttachFilesButton({
+function isRagIndexable(file: File): boolean {
+  // Pasted text and annotations are not documents.
+  if (isPastedTextFile(file) || annotationsOfFile(file)) return false;
+  return isSupportedSourceName(file.name);
+}
+
+/** Display names of a project's linked folders, read once per set of folder ids. */
+function useLinkedFolderNames(
+  projectId: string | null,
+  folderIds: string,
+): ReadonlyMap<string, string> {
+  const [names, setNames] = useState<ReadonlyMap<string, string>>(new Map());
+  useEffect(() => {
+    if (!projectId || !folderIds) return;
+    let cancelled = false;
+    listLinkedFolders({ type: "project", id: projectId })
+      .then((folders) => {
+        if (cancelled) return;
+        setNames(new Map(folders.map((f) => [f.id, f.displayName])));
+      })
+      .catch(() => {
+        // The card falls back to a generic label.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, folderIds]);
+  return names;
+}
+
+/** Splits project documents into loose files and per-folder groups. A linked folder can
+ * hold thousands of files, so it is drawn as one card rather than one card per file. */
+function groupByLinkedFolder(docs: TrackedDocument[]): {
+  loose: TrackedDocument[];
+  folders: [string, TrackedDocument[]][];
+} {
+  const loose: TrackedDocument[] = [];
+  const folders = new Map<string, TrackedDocument[]>();
+  for (const doc of docs) {
+    const folderId = doc.linkedFolderId;
+    if (!folderId) {
+      loose.push(doc);
+      continue;
+    }
+    const group = folders.get(folderId);
+    if (group) group.push(doc);
+    else folders.set(folderId, [doc]);
+  }
+  return { loose, folders: [...folders] };
+}
+
+function isProcessing(doc: TrackedDocument): boolean {
+  return doc.status === "pending" || doc.status === "running";
+}
+
+function ProjectBadge() {
+  return (
+    <span
+      className="pointer-events-none absolute top-1.5 left-1.5 inline-flex items-center gap-1 rounded-full bg-muted px-1.5 py-0.5 text-ui-10 text-muted-foreground"
+      aria-hidden={true}
+    >
+      <HugeiconsIcon icon={Folder02Icon} strokeWidth={2} className="size-3" />
+      Project
+    </span>
+  );
+}
+
+function LinkedFolderCard({
+  name,
+  docs,
+}: {
+  name: string | undefined;
+  docs: TrackedDocument[];
+}) {
+  const indexing = docs.filter(isProcessing).length;
+  const label = name ?? "Linked folder";
+  const count = `${docs.length} ${docs.length === 1 ? "file" : "files"}`;
+  return (
+    <div className={cn("relative", CARD_SLOT)}>
+      <ProjectBadge />
+      <div
+        title={`${label}: ${count}, kept in sync and shared with every chat in this project. Manage it in the project's Sources tab.`}
+        className={cn("flex overflow-hidden rounded-[15px]", CARD_SIZE, CARD_EDGE)}
+      >
+        <FileCardBody
+          name={label}
+          kind="document"
+          icon={
+            <HugeiconsIcon
+              icon={Folder02Icon}
+              strokeWidth={1.75}
+              className="size-3.25 shrink-0 text-muted-foreground"
+            />
+          }
+          center={
+            <span className="flex flex-col items-center gap-1.5 text-center text-ui-11">
+              {indexing > 0 ? (
+                <Spinner className="size-4" />
+              ) : (
+                <HugeiconsIcon icon={Folder02Icon} strokeWidth={1.5} className="size-6" />
+              )}
+              <span>{indexing > 0 ? `Indexing ${indexing} of ${docs.length}` : count}</span>
+              <span className="sr-only">linked folder, shared with the project</span>
+            </span>
+          }
+        />
+      </div>
+    </div>
+  );
+}
+
+// Same cap as composer attachment previews; bigger files keep the icon.
+const MAX_THUMBNAIL_BYTES = 10 * 1024 * 1024;
+const THUMBNAIL_CACHE_BYTES = 48 * 1024 * 1024;
+// Source files fetched for card thumbnails, by document id, so a re-render or a return to the chat
+// does not download them again. Insertion order doubles as LRU order.
+const thumbnailFiles = new Map<string, Promise<File | null>>();
+const thumbnailSizes = new Map<string, number>();
+let thumbnailBytes = 0;
+
+function forgetThumbnail(id: string): void {
+  thumbnailFiles.delete(id);
+  thumbnailBytes -= thumbnailSizes.get(id) ?? 0;
+  thumbnailSizes.delete(id);
+}
+
+/** The stored source as a File, or null past `maxBytes` (0 = no cap). */
+async function fetchSourceFile(
+  doc: TrackedDocument,
+  maxBytes: number,
+): Promise<File | null> {
+  const response = await fetch(await getDocumentFileUrl(doc.id));
+  if (!response.ok) return null;
+  if (maxBytes && Number(response.headers.get("content-length")) > maxBytes) {
+    void response.body?.cancel();
+    return null;
+  }
+  const blob = await response.blob();
+  if (blob.size === 0 || (maxBytes && blob.size > maxBytes)) return null;
+  // Linked-folder documents are named by their relative path.
+  const name = doc.filename.split("/").pop() ?? doc.filename;
+  // Most types are served as octet-stream; an empty type lets the extension decide the kind.
+  const type = blob.type === "application/octet-stream" ? "" : blob.type;
+  return new File([blob], name, { type });
+}
+
+const fetchThumbnailFile = (doc: TrackedDocument) =>
+  fetchSourceFile(doc, MAX_THUMBNAIL_BYTES);
+
+/** Whether the attachment viewer can show this source: pages, markdown or text. */
+function isViewableSource(name: string): boolean {
+  return (
+    documentKind(name) !== null ||
+    isMarkdown(name) ||
+    isTextAttachment(name, undefined)
+  );
+}
+
+function loadThumbnailFile(doc: TrackedDocument): Promise<File | null> {
+  const cached = thumbnailFiles.get(doc.id);
+  if (cached) {
+    thumbnailFiles.delete(doc.id);
+    thumbnailFiles.set(doc.id, cached);
+    return cached;
+  }
+  const pending = fetchThumbnailFile(doc).catch(() => null);
+  thumbnailFiles.set(doc.id, pending);
+  void pending.then((file) => {
+    if (thumbnailFiles.get(doc.id) !== pending) return;
+    // A failure is not remembered, so the next mount tries again.
+    if (file === null) {
+      forgetThumbnail(doc.id);
+      return;
+    }
+    thumbnailSizes.set(doc.id, file.size);
+    thumbnailBytes += file.size;
+    for (const oldest of thumbnailFiles.keys()) {
+      if (thumbnailBytes <= THUMBNAIL_CACHE_BYTES || oldest === doc.id) break;
+      forgetThumbnail(oldest);
+    }
+  });
+  return pending;
+}
+
+type Thumbnail =
+  | { kind: "image"; url: string }
+  | { kind: "file"; file: File; preview: AttachmentPreview };
+
+/** The card's thumbnail while the card is on screen; off screen it lets go of the file, which the
+ * byte-capped cache may still hold for its return. */
+function useDocumentThumbnail(
+  doc: TrackedDocument,
+  enabled: boolean,
+  element: HTMLElement | null,
+): Thumbnail | null {
+  const [visible, setVisible] = useState(false);
+  const [thumbnail, setThumbnail] = useState<Thumbnail | null>(null);
+  useEffect(() => {
+    if (!enabled || !element) return;
+    const observer = new IntersectionObserver(
+      (entries) => setVisible(entries[entries.length - 1].isIntersecting),
+      { rootMargin: "200px" },
+    );
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [enabled, element]);
+  useEffect(() => {
+    if (!enabled || !visible) {
+      setThumbnail(null);
+      return;
+    }
+    let cancelled = false;
+    let objectUrl: string | null = null;
+    void loadThumbnailFile(doc).then((file) => {
+      if (cancelled || !file) return;
+      const kind = attachmentFileKind(file.name, file.type);
+      if (kind === "image") {
+        // An <img> renders an SVG only with its type; it never runs the SVG's scripts.
+        const svg = /\.svg$/i.test(file.name) && !file.type;
+        objectUrl = URL.createObjectURL(
+          svg ? new Blob([file], { type: "image/svg+xml" }) : file,
+        );
+        setThumbnail({ kind: "image", url: objectUrl });
+        return;
+      }
+      const preview = attachmentPreview(file, kind);
+      if (preview) setThumbnail({ kind: "file", file, preview });
+    });
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+    // The id names the stored file; the rest of the row changes with progress frames.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doc.id, enabled, visible]);
+  return enabled ? thumbnail : null;
+}
+
+/** An indexed document, drawn as a composer attachment card. */
+function DocumentCard({
+  doc,
+  shared,
+  onRemove,
+}: {
+  doc: TrackedDocument;
+  shared: boolean;
+  onRemove?: () => void;
+}) {
+  const openPreview = useDocumentPreviewStore((s) => s.openPreview);
+  const kind = attachmentFileKind(doc.filename, undefined);
+  const processing = isProcessing(doc);
+  const failed = doc.status === "failed";
+  const pending = doc.id.startsWith("pending_");
+  const percent =
+    doc.progress != null
+      ? Math.round(doc.progress <= 1 ? doc.progress * 100 : doc.progress)
+      : null;
+  const stageLabel = (doc.stage && STAGE_LABELS[doc.stage]) || "Indexing";
+  const center = processing ? (
+    <span className="flex flex-col items-center gap-1.5 text-center text-ui-11">
+      <Spinner className="size-4" />
+      <span className="line-clamp-2">
+        {stageLabel}
+        {percent != null ? ` ${percent}%` : null}
+      </span>
+    </span>
+  ) : failed ? (
+    <span className="line-clamp-3 text-center text-ui-11 text-destructive">
+      Couldn't index
+    </span>
+  ) : (
+    <AttachmentKindIcon kind={kind} className="size-6" />
+  );
+  const ready = doc.status === "completed" && !pending;
+  const [slot, setSlot] = useState<HTMLDivElement | null>(null);
+  const thumbnail = useDocumentThumbnail(doc, ready, slot);
+  // PDFs open the source preview, which can jump to a page. Without a chunk it has no text for
+  // anything else, so other files open in the attachment viewer, read on click.
+  const isPdf = kind === "pdf";
+  const viewable = !isPdf && isViewableSource(doc.filename);
+  const thumbnailFile = thumbnail?.kind === "file" ? thumbnail.file : null;
+  const loadSource = useCallback(async (): Promise<Blob> => {
+    // The thumbnail's copy when there is one; past its cap, up to the viewer's own limit, the
+    // same one the Library holds to. Past that the viewer says it can't preview.
+    const file =
+      thumbnailFile ?? (await fetchSourceFile(doc, MAX_DOCUMENT_PREVIEW_BYTES));
+    if (!file) throw new Error(`Couldn't preview ${doc.filename}`);
+    const textual =
+      documentKind(file.name, file.type) === null && !isMarkdown(file.name, file.type);
+    // Served as octet-stream: the viewer reads text only when the type says so.
+    return textual ? new File([file], file.name, { type: "text/plain" }) : file;
+    // The id names the stored file; the rest of the row changes with progress frames.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doc.id, thumbnailFile]);
+  const canOpen = ready && (isPdf || viewable);
+  const preview =
+    thumbnail?.kind === "image" ? (
+      <img
+        src={thumbnail.url}
+        alt=""
+        className="h-full w-full object-cover"
+      />
+    ) : thumbnail?.kind === "file" ? (
+      <AttachmentCardPreview
+        file={thumbnail.file}
+        preview={thumbnail.preview}
+        fallback={
+          <span className="flex h-full items-center justify-center">
+            <AttachmentKindIcon kind={kind} className="size-6" />
+          </span>
+        }
+      />
+    ) : undefined;
+  const card = (
+      <button
+        type="button"
+        disabled={!canOpen}
+        onClick={
+          isPdf
+            ? () => openPreview({ documentId: doc.id, filename: doc.filename })
+            : undefined
+        }
+        title={
+          doc.error ??
+          (shared
+            ? `${doc.filename}: shared with every chat in this project`
+            : doc.filename)
+        }
+        aria-label={[
+          canOpen ? `Preview ${doc.filename}` : doc.filename,
+          processing ? `${stageLabel}${percent != null ? ` ${percent}%` : ""}` : null,
+          failed ? "couldn't index" : null,
+          shared ? "shared with the project" : null,
+        ]
+          .filter(Boolean)
+          .join(", ")}
+        className={cn(
+          "flex overflow-hidden rounded-[15px] text-left transition-colors disabled:cursor-default",
+          CARD_SIZE,
+          CARD_EDGE,
+          canOpen && CARD_SURFACE,
+          canOpen && "cursor-pointer",
+          failed && "border-destructive/40",
+        )}
+      >
+        <FileCardBody
+          name={doc.filename}
+          kind={kind}
+          center={center}
+          preview={preview}
+        />
+      </button>
+  );
+  return (
+    <div
+      ref={setSlot}
+      className={cn(
+        "group/attachment-card relative",
+        CARD_SLOT,
+      )}
+    >
+      {viewable && ready ? (
+        <LocalFileDialog name={doc.filename.split("/").pop() ?? doc.filename} load={loadSource}>
+          {card}
+        </LocalFileDialog>
+      ) : (
+        card
+      )}
+      {shared ? <ProjectBadge /> : null}
+      {onRemove && !processing ? (
+        <button
+          type="button"
+          onClick={onRemove}
+          aria-label={`Remove ${doc.filename}`}
+          className="absolute top-1.5 right-1.5 flex size-5 items-center justify-center rounded-full bg-foreground text-background opacity-0 shadow-sm transition-opacity focus-visible:opacity-100 group-hover/attachment-card:opacity-100 group-focus-within/attachment-card:opacity-100 [@media(pointer:coarse)]:opacity-100"
+        >
+          <XIcon className="size-3 stroke-[2.5px]" />
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+/** Trailing "Add files" card. */
+function AddFilesCard({
   disabled,
-  compact,
-  sharesWithProject,
   onClick,
 }: {
   disabled: boolean;
-  /** Icon-only once documents are attached, to leave the chips room. */
-  compact: boolean;
-  sharesWithProject: boolean;
   onClick: () => void;
 }) {
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      className={cn(
-        "composer-pill-btn shrink-0 -translate-y-px !text-foreground/80",
-        // Square button so the rounded-full hover reads as a circle.
-        compact && "size-8 justify-center px-0",
-      )}
-      aria-label={
-        sharesWithProject
-          ? "Attach documents to this project"
-          : "Attach documents to this thread"
-      }
-      title={
-        sharesWithProject
-          ? "Attach documents for retrieval, shared with every chat in this project"
-          : "Attach documents for retrieval in this chat"
-      }
+    <div className={CARD_SLOT}>
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={onClick}
+        className={cn(
+          "unsloth-files-add-card flex flex-col items-center justify-center gap-1.5 rounded-[15px] border border-dashed border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)] text-ui-12 text-muted-foreground transition-colors hover:border-[color-mix(in_oklab,var(--foreground)_calc(35%*var(--contrast-edge-gain,1)),transparent)] hover:text-foreground",
+          CARD_SIZE,
+        )}
+      >
+        <PlusIcon className="size-5 stroke-[1.5px]" />
+        Add files
+      </button>
+    </div>
+  );
+}
+
+/** Card above the composer: a header with controls over a strip of the chat's files. */
+function ChatFilesPanel({
+  icon,
+  title,
+  titleSuffix,
+  note,
+  headerControls,
+  onClose,
+  closeLabel,
+  onDropItems,
+  dropDisabledReason,
+  info,
+  count,
+  children,
+}: {
+  icon: typeof Folder02Icon;
+  title: string;
+  /** Muted text after the title. */
+  titleSuffix?: string;
+  /** Shown in a tooltip on the file count. */
+  info?: string;
+  /** "4 files", drawn as a pill apart from the title. */
+  count?: string;
+  note?: ReactNode;
+  headerControls?: ReactNode;
+  onClose?: () => void;
+  closeLabel?: string;
+  /** Handles browser and desktop drops on the panel. Unset, drops fall through to the composer. */
+  onDropItems?: (items: RagUploadItem[]) => void;
+  /** Set while the panel can't take files: a drop is still claimed and refused with this. */
+  dropDisabledReason?: string;
+  children?: ReactNode;
+}) {
+  const stripRef = useRef<HTMLDivElement>(null);
+  const [scroll, setScroll] = useState({ back: false, forward: false });
+  const measure = useCallback(() => {
+    const el = stripRef.current;
+    if (!el) return;
+    const back = el.scrollLeft > 1;
+    const forward = el.scrollWidth - el.clientWidth - el.scrollLeft > 1;
+    setScroll((prev) =>
+      prev.back === back && prev.forward === forward ? prev : { back, forward },
+    );
+  }, []);
+  useLayoutEffect(() => {
+    const el = stripRef.current;
+    if (!el) return;
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    // Adding a card does not resize the strip.
+    const mutations = new MutationObserver(measure);
+    mutations.observe(el, { childList: true });
+    return () => {
+      observer.disconnect();
+      mutations.disconnect();
+    };
+  }, [measure]);
+  const page = (direction: 1 | -1) => {
+    const el = stripRef.current;
+    if (!el) return;
+    el.scrollBy({ left: direction * el.clientWidth * 0.8, behavior: "smooth" });
+  };
+  const overflowing = scroll.back || scroll.forward;
+  // Drops here are indexed; elsewhere they attach to the message. The page handler skips
+  // prevented drops, and the desktop's window-wide handler skips registered targets.
+  const ignoreDrop = useCallback(() => {}, []);
+  const { dragging, dropProps, nativeDropTarget } = useSourceDrop({
+    onItems: onDropItems ?? ignoreDrop,
+    disabledReason: dropDisabledReason,
+  });
+  const acceptsDrop = Boolean(onDropItems);
+  const heading = (
+    <h2 className="min-w-0 truncate text-ui-14 font-medium text-foreground">
+      {title}
+      {titleSuffix ? (
+        <span className="font-normal text-muted-foreground"> {titleSuffix}</span>
+      ) : null}
+    </h2>
+  );
+  return (
+    <section
+      ref={acceptsDrop ? nativeDropTarget : undefined}
+      aria-label={title}
+      className="unsloth-files-panel"
+      data-dragging={acceptsDrop && dragging ? "true" : undefined}
+      {...(acceptsDrop ? dropProps : {})}
     >
-      <HugeiconsIcon
-        icon={sharesWithProject ? Folder02Icon : AttachmentIcon}
-        strokeWidth={2}
-        className="size-3.5"
-      />
-      {compact ? null : (
-        <span>
-          {sharesWithProject
-            ? "Add files for this project"
-            : "Add files to chat with"}
-        </span>
-      )}
-    </button>
+      {acceptsDrop ? (
+        <div className="unsloth-files-panel-drop-overlay" aria-hidden={true}>
+          <PlusIcon className="size-5" />
+          Drop to chat with these files
+        </div>
+      ) : null}
+      <div className="flex min-h-8 items-center gap-2 pl-1">
+        <HugeiconsIcon
+          icon={icon}
+          strokeWidth={1.75}
+          className="size-4 shrink-0 text-muted-foreground"
+        />
+        {heading}
+        {count && info ? (
+          // Only resting on the count opens it, and it shuts on leaving: it must not linger over the cards.
+          <Tooltip delayDuration={300} disableHoverableContent={true}>
+            <TooltipTrigger asChild={true}>
+              <span
+                // biome-ignore lint/a11y/noNoninteractiveTabindex: focus opens the tooltip for keyboard users.
+                tabIndex={0}
+                aria-label={`${count}. ${info}`}
+                className="unsloth-files-panel-count cursor-default focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              >
+                {count}
+              </span>
+            </TooltipTrigger>
+            <TooltipContent className="max-w-[calc(300px*var(--ui-space-scale,1))] text-ui-11 leading-snug">
+              {info}
+            </TooltipContent>
+          </Tooltip>
+        ) : count ? (
+          <span className="unsloth-files-panel-count">{count}</span>
+        ) : null}
+        {note}
+        <div className="ml-auto flex shrink-0 items-center gap-1">
+          {headerControls}
+          {overflowing ? (
+            <>
+              <button
+                type="button"
+                className="unsloth-files-panel-icon-btn"
+                onClick={() => page(-1)}
+                disabled={!scroll.back}
+                aria-label="Scroll files back"
+              >
+                <ChevronLeftIcon className="size-4" />
+              </button>
+              <button
+                type="button"
+                className="unsloth-files-panel-icon-btn"
+                onClick={() => page(1)}
+                disabled={!scroll.forward}
+                aria-label="Scroll files forward"
+              >
+                <ChevronRightIcon className="size-4" />
+              </button>
+            </>
+          ) : null}
+          {onClose ? (
+            <button
+              type="button"
+              className="unsloth-files-panel-icon-btn"
+              onClick={onClose}
+              aria-label={closeLabel ?? "Close"}
+              title={closeLabel}
+            >
+              <XIcon className="size-4" />
+            </button>
+          ) : null}
+        </div>
+      </div>
+      {children ? (
+        <div
+          ref={stripRef}
+          onScroll={measure}
+          className="unsloth-files-panel-strip"
+        >
+          {children}
+        </div>
+      ) : null}
+    </section>
   );
 }
 
@@ -358,7 +857,7 @@ function AttachmentTargetMenu({
           disabled={disabled}
           aria-label="Choose where attached files go"
           title="Choose where attached files go"
-          className="composer-pill-btn attachment-target-pill shrink-0 -translate-y-px gap-1 !text-foreground/70 pl-3 pr-1.5"
+          className="composer-pill-btn attachment-target-pill shrink-0 gap-1 !text-foreground/70 pl-3 pr-1.5"
         >
           <span className="text-ui-12">
             {sharesWithProject ? "Project" : "This chat"}
@@ -371,7 +870,7 @@ function AttachmentTargetMenu({
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent
-        align="start"
+        align="end"
         className="unsloth-plus-menu w-[calc(328px*var(--ui-space-scale,1))]"
       >
         <DropdownMenuLabel>New files go to</DropdownMenuLabel>
@@ -433,7 +932,6 @@ export function ThreadDocumentsBar({
     (s) => s.setThreadProjectAttachmentTarget,
   );
   const aui = useAui();
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // materialize locally; append() reuses the id without a mid-upload remount.
   const [materializedId, setMaterializedId] = useState<string | null>(null);
@@ -616,6 +1114,27 @@ export function ThreadDocumentsBar({
     [ensureThreadId, projectId, sharesWithProject, upload, uploadToProject],
   );
 
+  // Only files added or dropped here are indexed; composer attachments stay with the message.
+  const attachIndexable = useCallback(
+    (files: File[]) => {
+      const indexable = files.filter(isRagIndexable);
+      const skipped = files.length - indexable.length;
+      if (skipped > 0) {
+        toast.error(
+          skipped === 1
+            ? `"${files.find((file) => !isRagIndexable(file))?.name}" can't be searched`
+            : `${skipped} files can't be searched`,
+          { description: SUPPORTED_SOURCES_HINT },
+        );
+      }
+      if (indexable.length > 0) attach(indexable);
+    },
+    [attach],
+  );
+  const pickFiles = useCallback(() => {
+    openFilePicker(RAG_SOURCE_UPLOAD_ACCEPT, attachIndexable);
+  }, [attachIndexable]);
+
   // Desktop drops land in the native-intent store because the drop listener lives on
   // the chat page; only the chat that received the OS drop may drain its batch.
   const nativeAttachmentTargetKey = useNativeAttachmentTargetKey();
@@ -703,27 +1222,28 @@ export function ThreadDocumentsBar({
     setRagEnabled,
   ]);
 
-  const chipScrollRef = useRef<HTMLDivElement>(null);
-  const [chipsOverflow, setChipsOverflow] = useState(false);
-  // Removing a project source here deletes it for every chat, beside a chat chip
+  // Removing a project source here deletes it for every chat, beside a chat card
   // whose X is undoable. Confirm, as the Sources tab and Settings do.
   const [removingShared, setRemovingShared] = useState<RagDocument | null>(null);
-  const updateChipFade = useCallback(() => {
-    const el = chipScrollRef.current;
-    if (!el) return;
-    setChipsOverflow(el.scrollHeight - el.scrollTop - el.clientHeight > 1);
-  }, []);
-  useEffect(() => {
-    updateChipFade();
-  }, [documents, updateChipFade]);
 
-  // Open the picker synchronously to keep the click's user activation. Do NOT
-  // materialize here: setActiveThreadId while the native dialog is open can remount
-  // the composer and orphan this <input>. Materialize in onChange instead.
-  const handleAddDocs = useCallback(() => {
-    fileInputRef.current?.click();
-  }, []);
-
+  const projectGroups = useMemo(
+    () => groupByLinkedFolder(projectDocuments),
+    [projectDocuments],
+  );
+  const folderNames = useLinkedFolderNames(
+    projectId,
+    projectGroups.folders.map(([id]) => id).join(","),
+  );
+  const folderCards = projectGroups.folders.map(([folderId, docs]) => (
+    <div
+      key={`folder:${folderId}`}
+      className={cn("contents", ragToolDisabled && "[&>*]:opacity-50")}
+    >
+      <LinkedFolderCard name={folderNames.get(folderId)} docs={docs} />
+    </div>
+  ));
+  const fileCount = documents.length + projectDocuments.length;
+  const countSuffix = fileCount === 1 ? "1 file" : `${fileCount} files`;
   // Every branch, always the first fragment child: an "Add" must open after the source
   // moves, and deleting the active KB in it must not remount it.
   const kbDialog = (
@@ -749,10 +1269,23 @@ export function ThreadDocumentsBar({
     return (
       <>
         {kbDialog}
-        <KnowledgeBaseSourceChip
-          name={activeKbName}
-          onOpen={() => setKbDialogFocus({ kbId })}
-          buttonRef={kbChipRef}
+        {/* Keyed per mode: the strip's observers attach on mount, and this one has no strip. */}
+        <ChatFilesPanel
+          key="kb"
+          icon={FileDatabaseIcon}
+          title={activeKbName ? `Knowledge base: ${activeKbName}` : "Knowledge base"}
+          onClose={() => setRagEnabled(false)}
+          closeLabel="Stop chatting with files"
+          headerControls={
+            <button
+              ref={kbChipRef}
+              type="button"
+              onClick={() => setKbDialogFocus({ kbId })}
+              className="unsloth-files-panel-action"
+            >
+              Manage files
+            </button>
+          }
         />
       </>
     );
@@ -763,10 +1296,36 @@ export function ThreadDocumentsBar({
       <>
         {kbDialog}
         {projectDocuments.length > 0 ? (
-          <InheritedProjectSources
-            documents={projectDocuments}
-            unused={ragToolDisabled}
-          />
+          <ChatFilesPanel
+            key="project"
+            icon={FolderAttachmentIcon}
+            title={ragToolDisabled ? "Project sources not used" : "Project sources"}
+            count={countSuffix}
+            note={
+              <span
+                className="hidden truncate text-ui-12 text-muted-foreground @[32rem]/files-panel:inline"
+                title={
+                  ragToolDisabled
+                    ? "The selected model can't search documents, so this chat doesn't use its project's sources. Pick a model with tool support to use them."
+                    : "This chat retrieves from its project's sources. Manage them in the project's Sources tab."
+                }
+              >
+                {ragToolDisabled
+                  ? "The selected model can't search documents"
+                  : "This chat retrieves from its project's sources"}
+              </span>
+            }
+          >
+            {folderCards}
+            {projectGroups.loose.map((doc) => (
+              <div
+                key={`inherited:${doc.id}`}
+                className={cn("contents", ragToolDisabled && "[&>*]:opacity-50")}
+              >
+                <DocumentCard doc={doc} shared={true} />
+              </div>
+            ))}
+          </ChatFilesPanel>
         ) : null}
       </>
     );
@@ -774,71 +1333,75 @@ export function ThreadDocumentsBar({
 
   // block attachments until the chat's project is known to avoid guessing their scope.
   const busy = uploading || projectUploading || projectUnresolved;
-  const chipCount = documents.length + projectDocuments.length;
+  // Still claim a drop while busy, or it falls through and attaches to the message instead.
+  const busyReason = !busy
+    ? undefined
+    : projectUnresolved
+      ? "Still loading this chat's project. Try again in a moment."
+      : "Still uploading. Drop the files again once it finishes.";
 
   return (
     <>
       {kbDialog}
-      <div className="mb-2 flex w-full flex-row items-start gap-1.5 pl-0.5 pr-1.5 pt-0.5 pb-1">
-        {/* keep controls aligned with top-aligned chips. */}
-        <div className="flex shrink-0 items-center gap-1.5">
-          <AttachFilesButton
-            disabled={busy}
-            compact={chipCount > 0}
-            sharesWithProject={sharesWithProject}
-            onClick={handleAddDocs}
-          />
-          {/* Only a project chat has two scopes to choose between. */}
-          {projectId ? (
-            <AttachmentTargetMenu
+      <ChatFilesPanel
+        key="files"
+        icon={FileDatabaseIcon}
+        title="Chat with files"
+        titleSuffix="(RAG)"
+        count={countSuffix}
+        info="Add or drop documents, spreadsheets, slides, e-books, email or code. The model searches them as you chat and cites what it uses."
+        onDropItems={attach}
+        dropDisabledReason={busyReason}
+        onClose={() => setRagEnabled(false)}
+        closeLabel="Stop chatting with files"
+        note={
+          ragToolDisabled && fileCount > 0 ? (
+            <span
+              className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-ui-11 text-muted-foreground"
+              title="The selected model can't search documents, so these files aren't used. Pick a model with tool support to use them."
+            >
+              Not used
+            </span>
+          ) : null
+        }
+        headerControls={
+          <>
+            {/* Only a project chat has two scopes to choose between. */}
+            {projectId ? (
+              <AttachmentTargetMenu
+                disabled={busy}
+                sharesWithProject={sharesWithProject}
+                onSelect={(target) =>
+                  setThreadProjectAttachmentTarget(effectiveThreadId, target)
+                }
+              />
+            ) : null}
+            <button
+              type="button"
               disabled={busy}
-              sharesWithProject={sharesWithProject}
-              onSelect={(target) =>
-                setThreadProjectAttachmentTarget(effectiveThreadId, target)
+              onClick={pickFiles}
+              className="unsloth-files-panel-action"
+              title={
+                busyReason ??
+                (sharesWithProject
+                  ? "Add files for retrieval, shared with every chat in this project"
+                  : "Add files for retrieval in this chat")
               }
-            />
-          ) : null}
-        </div>
-        <input
-          ref={fileInputRef}
-          type="file"
-          multiple
-          accept={RAG_UPLOAD_ACCEPT}
-          className="hidden"
-          onChange={(e) => {
-            const files = Array.from(e.target.files ?? []);
-            e.target.value = "";
-            if (files.length === 0) return;
-            attach(files);
-          }}
-        />
-        {ragToolDisabled && chipCount > 0 ? (
-          <span
-            className="composer-pill-btn shrink-0 cursor-default !text-foreground/60"
-            title="The selected model can't search documents, so these files aren't used. Pick a model with tool support to use them."
+            >
+              Add files
+            </button>
+          </>
+        }
+      >
+        {/* project sources precede thread sources because they outlive the chat. */}
+        {folderCards}
+        {projectGroups.loose.map((doc) => (
+          <div
+            key={`project:${doc.id}`}
+            className={cn("contents", ragToolDisabled && "[&>*]:opacity-50")}
           >
-            Not used
-          </span>
-        ) : null}
-        {/* cap chip rows and fade overflow. */}
-        <div
-          ref={chipScrollRef}
-          onScroll={updateChipFade}
-          className={cn(
-            "flex max-h-24 flex-1 flex-row flex-wrap items-center gap-1.5 overflow-y-auto",
-            chipsOverflow && "rag-docs-bottom-fade",
-            ragToolDisabled && "opacity-50",
-          )}
-        >
-          {/* project sources precede thread sources because they outlive the chat. */}
-          {projectDocuments.map((doc) => (
-            <DocumentStatusChip
-              key={`project:${doc.id}`}
-              filename={doc.filename}
-              status={doc.status}
-              progress={doc.progress}
-              stage={doc.stage}
-              error={doc.error}
+            <DocumentCard
+              doc={doc}
               shared={true}
               onRemove={
                 doc.id.startsWith("pending_") || isLinkedFolderManaged(doc)
@@ -846,53 +1409,55 @@ export function ThreadDocumentsBar({
                   : () => setRemovingShared(doc)
               }
             />
-          ))}
-          {documents.map((doc) => (
-            <DocumentStatusChip
-              key={doc.id}
-              filename={doc.filename}
-              status={doc.status}
-              progress={doc.progress}
-              stage={doc.stage}
-              error={doc.error}
+          </div>
+        ))}
+        {documents.map((doc) => (
+          <div
+            key={doc.id}
+            className={cn("contents", ragToolDisabled && "[&>*]:opacity-50")}
+          >
+            <DocumentCard
+              doc={doc}
+              shared={false}
               onRemove={
                 doc.id.startsWith("pending_")
                   ? undefined
                   : () => void remove(doc.id)
               }
             />
-          ))}
-        </div>
-        <AlertDialog
-          open={removingShared !== null}
-          onOpenChange={(open) => {
-            if (!open) setRemovingShared(null);
-          }}
-        >
-          <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogTitle>Remove from project sources</AlertDialogTitle>
-              <AlertDialogDescription>
-                Remove "{removingShared?.filename}"? Every chat in this project
-                loses it, and the file and its indexed content are deleted. This
-                cannot be undone.
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogCancel>Cancel</AlertDialogCancel>
-              <AlertDialogAction
-                onClick={() => {
-                  const doc = removingShared;
-                  setRemovingShared(null);
-                  if (doc) void removeFromProject(doc.id);
-                }}
-              >
-                Remove
-              </AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
-      </div>
+          </div>
+        ))}
+        <AddFilesCard disabled={busy} onClick={pickFiles} />
+      </ChatFilesPanel>
+      <AlertDialog
+        open={removingShared !== null}
+        onOpenChange={(open) => {
+          if (!open) setRemovingShared(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove from project sources</AlertDialogTitle>
+            <AlertDialogDescription>
+              Remove "{removingShared?.filename}"? Every chat in this project
+              loses it, and the file and its indexed content are deleted. This
+              cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                const doc = removingShared;
+                setRemovingShared(null);
+                if (doc) void removeFromProject(doc.id);
+              }}
+            >
+              Remove
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   );
 }

@@ -220,7 +220,13 @@ const DocumentDialog: FC<
               : truncateAttachmentPreviewText(await blob.text());
           next = { blob, text, truncated };
         } else if (textFallback && blob.type.startsWith("text/")) {
-          const { text, truncated } = truncateAttachmentPreviewText(await blob.text());
+          // A File decodes as the composer does (BOM, UTF-16); a code page it refuses still shows raw.
+          const { text, truncated } =
+            blob instanceof File
+              ? await readAttachmentText(blob, source.name, blob.type).catch(async () =>
+                  truncateAttachmentPreviewText(await blob.text()),
+                )
+              : truncateAttachmentPreviewText(await blob.text());
           next = { blob, plain: text, truncated };
         }
         if (!cancelled) setLoaded(next);
@@ -280,6 +286,33 @@ const SentOriginalDialog: FC<
     </DocumentDialog>
   );
 };
+
+/** A file outside any message, such as a chat with files source, read on open: pages, markdown or
+ *  text (a text/* blob). */
+export const LocalFileDialog: FC<PropsWithChildren<{ name: string; load: () => Promise<Blob> }>> = ({
+  children,
+  name,
+  load,
+}) => (
+  <DocumentDialog
+    source={{
+      kind: "document",
+      name,
+      contentType: undefined,
+      file: undefined,
+      src: undefined,
+      audio: undefined,
+      video: undefined,
+      text: undefined,
+      hasOriginal: true,
+    }}
+    load={load}
+    redactFromReload={false}
+    textFallback={true}
+  >
+    {children}
+  </DocumentDialog>
+);
 
 export const AttachmentDocumentDialog: FC<
   PropsWithChildren<{ source: AttachmentSource; redactFromReload: boolean }>

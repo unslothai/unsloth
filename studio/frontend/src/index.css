@@ -764,7 +764,7 @@
 
 /* Lift the dark composer slightly; flavor cards sit close to the page. */
 :root:where([data-palette="blueberry"], [data-palette="butterfly-pea"], [data-palette="cherry"], [data-palette="cinnamon"], [data-palette="cotton-candy"], [data-palette="dragon-fruit"], [data-palette="earl-grey"], [data-palette="espresso"], [data-palette="honey"], [data-palette="licorice"], [data-palette="macaron"], [data-palette="matcha"], [data-palette="mint"], [data-palette="neon-cyberpunk"], [data-palette="oat-milk"], [data-palette="peach"], [data-palette="pina-paraiso"], [data-palette="plum"], [data-palette="tangerine"], [data-palette="taro"], [data-palette="wasabi"], [data-palette="yuzu"])[data-palette].dark
-	:is(.chat-composer-surface, .unsloth-composer-surface) {
+	:is(.chat-composer-surface, .unsloth-composer-surface, .unsloth-files-panel) {
 	background-color: color-mix(in srgb, var(--card), var(--th-fg) 4%);
 }
 
@@ -6050,4 +6050,82 @@ html:has([data-blocking-screen]) .interface-zoom-position {
 .browser-annotating,
 .browser-annotating *:not([data-annotate-ui], [data-annotate-ui] *) {
   cursor: none !important;
+}
+
+/* Chat with files card above the composer. */
+.unsloth-files-panel {
+	@apply relative mb-2 flex w-full flex-col gap-5 overflow-hidden rounded-[24px] px-4 pt-4 pb-6;
+	container: files-panel / inline-size;
+	font-family: var(--font-sans);
+	background-color: #ffffff;
+	/* Light mode: a flat 1px edge, about #dbdbdb on white, no shadow. */
+	border: 1px solid rgb(0 0 0 / calc(0.14 * var(--contrast-edge-gain, 1)));
+	transition: box-shadow 0.1s, border-color 0.1s;
+}
+.dark .unsloth-files-panel {
+	background-color: var(--card);
+	border-color: transparent;
+	box-shadow: var(--composer-shadow);
+}
+.unsloth-files-panel[data-dragging="true"] {
+	border-color: var(--primary);
+}
+.dark .unsloth-files-panel[data-dragging="true"] {
+	box-shadow:
+		0 0 0 1.5px var(--primary),
+		var(--composer-shadow);
+}
+/* "4 files": its own pill, apart from the title. */
+.unsloth-files-panel-count {
+	@apply inline-flex h-6 shrink-0 items-center rounded-full px-2.5 text-ui-12 font-medium tabular-nums text-foreground/75;
+	background-color: color-mix(in oklab, var(--foreground) 6%, transparent);
+}
+.dark .unsloth-files-panel-count {
+	background-color: color-mix(in oklab, var(--foreground) 10%, transparent);
+}
+.unsloth-files-panel-drop-overlay {
+	@apply pointer-events-none absolute inset-0 z-20 flex items-center justify-center gap-2 rounded-[inherit] bg-background/90 text-sm font-medium text-primary opacity-0 backdrop-blur-sm transition-opacity duration-150 dark:bg-card/90;
+}
+.unsloth-files-panel[data-dragging="true"] .unsloth-files-panel-drop-overlay {
+	opacity: 1;
+}
+/* One target at a time: over the panel, the composer's "Drop files here" would mislead. */
+.aui-composer-root:has(.unsloth-files-panel[data-dragging="true"]) .aui-composer-drop-overlay {
+	opacity: 0 !important;
+}
+/* Inset at rest; cards scroll under the panel edges. */
+.unsloth-files-panel-strip {
+	@apply -mx-4 flex flex-row flex-nowrap gap-2 overflow-x-auto overscroll-x-contain px-4;
+	scroll-padding-inline: 1rem;
+	scrollbar-width: none;
+}
+.unsloth-files-panel-strip::-webkit-scrollbar {
+	display: none;
+}
+.unsloth-files-panel-action {
+	@apply inline-flex h-8 shrink-0 items-center rounded-full border px-3.5 text-ui-13 text-foreground transition-colors disabled:pointer-events-none disabled:opacity-50;
+	border-color: color-mix(in oklab, var(--foreground) 14%, transparent);
+}
+.unsloth-files-panel-action:hover {
+	background-color: color-mix(in oklab, var(--foreground) 6%, transparent);
+}
+.unsloth-files-add-card:disabled {
+	@apply pointer-events-none opacity-50;
+}
+/* Dark mode: Add files is a fill, not an outline. */
+.dark .unsloth-files-panel-action,
+.dark .unsloth-files-add-card {
+	border-color: transparent;
+	background-color: color-mix(in oklab, var(--foreground) 8%, transparent);
+}
+.dark .unsloth-files-panel-action:hover,
+.dark .unsloth-files-add-card:hover {
+	border-color: transparent;
+	background-color: color-mix(in oklab, var(--foreground) 12%, transparent);
+}
+.unsloth-files-panel-icon-btn {
+	@apply inline-flex size-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground disabled:pointer-events-none disabled:opacity-35;
+}
+.unsloth-files-panel-icon-btn:hover {
+	background-color: color-mix(in oklab, var(--foreground) 6%, transparent);
 }

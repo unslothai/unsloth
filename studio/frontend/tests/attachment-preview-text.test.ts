@@ -1872,6 +1872,18 @@ test("a UTF-16 Markdown file previews as its text in the document viewer", async
   assert.match(dialog, /blob instanceof File\s*\?\s*await readAttachmentText\(blob, source\.name, source\.contentType\)/);
 });
 
+test("a UTF-16 text source opened from the files panel previews as its text", async () => {
+  const utf16 = new Uint8Array([0xff, 0xfe, ...Array.from("Café notes", (c) => [c.charCodeAt(0), 0]).flat()]);
+  const file = new File([utf16], "notes.txt", { type: "text/plain" });
+  assert.equal((await readAttachmentText(file, file.name, file.type)).text, "Café notes");
+  assert.notEqual(await file.text(), "Café notes");
+  const { readFile } = await import("node:fs/promises");
+  const dialog = await readFile(new URL("../src/components/assistant-ui/attachment-document-dialog.tsx", import.meta.url), "utf8");
+  assert.match(dialog, /blob instanceof File\s*\?\s*await readAttachmentText\(blob, source\.name, blob\.type\)/);
+  const bar = await readFile(new URL("../src/features/rag/components/thread-documents-bar.tsx", import.meta.url), "utf8");
+  assert.match(bar, /new File\(\[file\], file\.name, \{ type: "text\/plain" \}\)/);
+});
+
 async function readRtf(rtf: string | Uint8Array<ArrayBuffer>): Promise<string> {
   const content = await readRtfAttachmentContent(
     new File([rtf], "doc.rtf"),

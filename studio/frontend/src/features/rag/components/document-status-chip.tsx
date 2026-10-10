@@ -9,7 +9,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { XIcon } from "lucide-react";
 import type { DocumentStatus } from "../types/rag";
 
-const STAGE_LABELS: Record<string, string> = {
+export const STAGE_LABELS: Record<string, string> = {
   parsing: "Reading document",
   ocr: "Reading scanned pages",
   captioning: "Reading charts and figures",
