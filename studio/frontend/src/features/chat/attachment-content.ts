@@ -1190,6 +1190,8 @@ function injectDocxListNumbers(archive: Uint8Array): Uint8Array {
   );
 
   const counters = new Map<string, (number | undefined)[]>();
+  // Started lists that restart after a section break, so a break clears only those.
+  const restartable = new Set<string>();
   const started = new Set<string>();
   const { doc, w } = body;
   const tag = (local: string) => (body.root.prefix ? `${body.root.prefix}:${local}` : local);
@@ -1220,6 +1222,7 @@ function injectDocxListNumbers(archive: Uint8Array): Uint8Array {
     // restarts them once, when its instance is first used.
     const counts = counters.get(abstractId) ?? [];
     counters.set(abstractId, counts);
+    if (restartsAfterBreak.has(abstractId)) restartable.add(abstractId);
     if (!started.has(numId!)) {
       started.add(numId!);
       for (const at of restarts) if (at < counts.length) counts.length = at;
@@ -1270,7 +1273,10 @@ function injectDocxListNumbers(archive: Uint8Array): Uint8Array {
     label(p, pPr);
     if (budget < 0) return archive;
     // A section break restarts the lists that opt in (Word's "restart numbering after break").
-    if (pPr && childElements(pPr, w, "sectPr").length) for (const id of restartsAfterBreak) counters.delete(id);
+    if (pPr && restartable.size && childElements(pPr, w, "sectPr").length) {
+      for (const id of restartable) counters.delete(id);
+      restartable.clear();
+    }
   }
   if (!found) return archive;
   return zipSync({ ...unzipSync(archive), [main]: strToU8(new XMLSerializer().serializeToString(doc)) }, { level: 0 });
