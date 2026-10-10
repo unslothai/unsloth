@@ -1273,6 +1273,10 @@ export const en = {
       grantsLabel: "Faster tool starts",
       grantsDescription: "Keeps read-only access to Unsloth's own runtime folders between calls. When off, each call starts a few seconds slower.",
       lockedGrants: "Set by UNSLOTH_MXC_PERSISTENT_READ_GRANTS",
+      memoryLabel: "Memory limit",
+      memoryDescription: "Most memory one sandboxed Python or Terminal call can reserve. Applies from the next call. Default is {defaultSize} GB.",
+      memoryLocked: "Set by UNSLOTH_STUDIO_SANDBOX_AS_GB",
+      memoryInvalid: "Enter a whole number from {min} to {max}.",
       restored: "Removed access from {count} folders.",
       hostPrepLabel: "Administrator setup",
       prepPrepared: "Done",
@@ -2071,6 +2075,8 @@ export const en = {
         label: "Display language",
         description: "The language used by Unsloth.",
         autoDetect: "Auto detect",
+        spellCheck: "Spell check",
+        spellCheckDescription: "Underline misspelled words as you type.",
       },
       layout: {
         title: "Layout",
@@ -2889,7 +2895,7 @@ export const en = {
         backendDescription:
           "Auto serves Clef through llama.cpp when the model has a GGUF build and falls back to PyTorch otherwise. llama.cpp also reads images.",
         backendDescriptionMlx:
-          "Auto serves Clef text through MLX on Apple Silicon and through llama.cpp when only the model's GGUF build is loaded or downloaded. MLX reads text only. llama.cpp also reads images.",
+          "Auto serves Clef through MLX on Apple Silicon and through llama.cpp when only the model's GGUF build is loaded or downloaded. MLX reads images for Clef models only. llama.cpp also reads images.",
         backendStatus: "Runtime: {backend}",
         backendNone: "unavailable",
         mediaImages: "Reads text and images.",
@@ -2916,6 +2922,19 @@ export const en = {
         connectionMissing: "This connection is gone or has no decision models. Pick another model.",
         addConnection: "To use a hosted decision model, add TypeSafe, Liquid AI or OpenRouter in Connections.",
         openConnections: "Open Connections",
+      },
+      mcp: {
+        title: "Agent access (MCP)",
+        description: "Let coding agents such as Claude Code and Codex use Unsloth Studio over MCP. Agents sign in with an access token from this page.",
+        enable: "Allow agent connections",
+        enableDescription: "Serves /mcp/ to requests that carry an Unsloth Studio access token.",
+        lockedByEnv: "Set by {name}.",
+        loadError: "Couldn't load agent access settings.",
+        saveError: "Couldn't save the agent access setting.",
+        agent: "Agent",
+        exportKeyHint: "Set {name} to an access token from this page before you start the agent.",
+        configFileHint: "Add this to {path}.",
+        keywords: "mcp model context protocol agents claude codex tools",
       },
     },
     about: {
@@ -3816,6 +3835,13 @@ export const en = {
     discard: "Discard",
     mentions: "Skills",
     manage: "Manage skills",
+    bulkActions: "Skill actions",
+    enableAll: "Enable all",
+    disableAll: "Disable all",
+    resetAll: "Reset to defaults",
+    resetTitle: "Reset all skills?",
+    resetDescription: "Every skill goes back to how a fresh install has it: your skills and Claude skills on, bundled skills off. Your on and off choices are cleared.",
+    reset: "Reset",
   },
   // The Library page, its file viewer, and the menus and toasts that act on its files.
   library: {

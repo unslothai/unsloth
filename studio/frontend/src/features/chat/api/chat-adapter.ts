@@ -48,27 +48,28 @@ import { loadManagedLlamaFlags } from "@/features/model-picker/api/llama-flags";
 import { fetchLoadExtraArgs } from "@/features/model-picker/api/model-overrides";
 import { sanitizeStoredExtraArgs } from "@/features/model-picker/model-config/llama-extra-args";
 import { usePlatformStore } from "@/config/env";
+import { resolveSpeculativeType } from "@/lib/speculative-modes";
 
 import { getSkillsSnapshot, settleSkillsForText } from "./skills-api";
 
-function lastUserText(
+function messageText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((part) =>
+      part && typeof part === "object" && typeof (part as { text?: unknown }).text === "string"
+        ? (part as { text: string }).text
+        : "",
+    )
+    .join(" ");
+}
+
+function userTexts(
   messages: readonly { role?: string; content?: unknown }[],
-): string {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (message?.role !== "user") continue;
-    const content = message.content;
-    if (typeof content === "string") return content;
-    if (!Array.isArray(content)) return "";
-    return content
-      .map((part) =>
-        part && typeof part === "object" && typeof (part as { text?: unknown }).text === "string"
-          ? (part as { text: string }).text
-          : "",
-      )
-      .join(" ");
-  }
-  return "";
+): string[] {
+  return messages
+    .filter((message) => message?.role === "user")
+    .map((message) => messageText(message.content));
 }
 import { projectHasSources } from "@/features/rag/api/rag-api";
 import {
@@ -250,7 +251,7 @@ import {
   providerSupportsFastMode,
 } from "../provider-capabilities";
 import { selectCodeToolNames } from "./code-tool-placement";
-import { skillToolsOffered } from "./skill-tools";
+import { skillToolNames } from "./skill-tools";
 import { ragScopeContextLength } from "./rag-context-length";
 import {
   type PendingImageEditReference,
@@ -379,6 +380,7 @@ import {
   generateAudio,
   GenerationLengthError,
   fetchGgufStagedMetadata,
+  getChatAgentsMd,
   getInferenceStatus,
   listCachedGguf,
   listCachedModels,
@@ -388,6 +390,11 @@ import {
   StreamInterruptedError,
   validateModel,
 } from "./chat-api";
+import {
+  type AgentsMdRecord,
+  composeChatInstructions,
+  EMPTY_AGENTS_MD,
+} from "../utils/agents-md";
 import {
   createOpenAIContainer,
   listOpenAIContainers,
@@ -2170,15 +2177,16 @@ export async function buildLocalTokenCountHistory(
             : "",
         )
       : "";
-  const projectInstructions = await resolveProjectInstructions(threadId);
-  const combinedSystemPrompt = [
-    projectInstructions
-      ? `<project_instructions>\n${projectInstructions}\n</project_instructions>`
-      : "",
-    safeSystemPrompt.trim(),
-  ]
-    .filter(Boolean)
-    .join("\n\n");
+  const projectId = await resolveProjectId(threadId);
+  const [projectInstructions, agentsMd] = await Promise.all([
+    resolveProjectInstructions(projectId),
+    resolveAgentsMd(projectId),
+  ]);
+  const combinedSystemPrompt = composeChatInstructions({
+    agentsMd,
+    projectInstructions,
+    systemPrompt: safeSystemPrompt,
+  });
   if (combinedSystemPrompt) {
     outboundMessages.unshift({
       role: "system",
@@ -2232,6 +2240,7 @@ export function buildLocalTokenCountReasoning(): Record<string, unknown> {
 /** The tool flags a completion would send, so the count includes the schemas and the action nudge. */
 export async function buildLocalTokenCountExtras(
   threadId: string | undefined,
+  messages: readonly { role?: string; content?: unknown }[] = [],
 ): Promise<Record<string, unknown>> {
   const state = useChatRuntimeStore.getState();
   const {
@@ -2274,10 +2283,12 @@ export async function buildLocalTokenCountExtras(
     : false;
   const ragOn = ragEnabled || projectRagEnabled;
 
-  await settleSkillsForText("");
-  const hasEnabledSkills = skillToolsOffered(
+  // re-fetch for every counted user turn so skills created since page load match request pricing.
+  await settleSkillsForText(userTexts(messages).join("\n"));
+  const skillTools = skillToolNames(
     getSkillsSnapshot().skills,
     codeToolsEnabled,
+    userTexts(messages),
   );
   if (
     !toolsEnabled &&
@@ -2285,7 +2296,7 @@ export async function buildLocalTokenCountExtras(
     !mcpEnabledForChat &&
     !ragOn &&
     !deepResearchEnabled &&
-    !hasEnabledSkills
+    skillTools.length === 0
   ) {
     // Explicit false, not omission: the server defaults tools on. The permission level rides
     // along because `--enable-tools` still outranks that false in _effective_enable_tools.
@@ -2314,8 +2325,8 @@ export async function buildLocalTokenCountExtras(
       ...(ragOn ? ["search_knowledge_base"] : []),
       ...(toolsEnabled ? ["web_search"] : []),
       ...(codeToolsEnabled ? ["python", "terminal", "edit_file", "view_image"] : []),
-      // Same gate as the request: with no enabled skill neither tool is sent, so neither is priced.
-      ...(hasEnabledSkills ? ["read_skill", "create_skill"] : []),
+      // match the request gate so token pricing includes only sent skill tools.
+      ...skillTools,
     ],
     mcp_enabled: mcpEnabledForChat,
     // Top level, not inside rag_scope: an archived thread puts search_conversation and its
@@ -2384,11 +2395,7 @@ async function resolveUseAdapter(
   }
 }
 
-async function resolveProjectInstructions(
-  threadId: string | undefined,
-  readThreadRecord?: ThreadRecordReader,
-): Promise<string> {
-  const projectId = await resolveProjectId(threadId, readThreadRecord);
+async function resolveProjectInstructions(projectId: string | null): Promise<string> {
   if (!projectId) {
     return "";
   }
@@ -2400,11 +2407,33 @@ async function resolveProjectInstructions(
   return project.instructions?.trim() ?? "";
 }
 
+// Background recounts and the send that follows them ask within moments: one read serves both.
+const AGENTS_MD_TTL_MS = 2_000;
+const agentsMdByProject = new Map<
+  string,
+  { at: number; value: Promise<AgentsMdRecord> }
+>();
+
+/** The AGENTS.md text for a request; a failed read sends what it would without the file. */
+function resolveAgentsMd(projectId: string | null): Promise<AgentsMdRecord> {
+  const key = projectId ?? "";
+  const now = Date.now();
+  const hit = agentsMdByProject.get(key);
+  if (hit && now - hit.at < AGENTS_MD_TTL_MS) {
+    return hit.value;
+  }
+  const value = getChatAgentsMd(projectId).catch(() => EMPTY_AGENTS_MD);
+  agentsMdByProject.set(key, { at: now, value });
+  return value;
+}
+
 export async function resolveChatInstructions(
   threadId: string | undefined,
   systemPrompt: unknown,
   systemVariables: unknown,
   readThreadRecord?: ThreadRecordReader,
+  // Only what goes to the model carries AGENTS.md; copies and exports of a chat keep its own instructions.
+  opts?: { agentsMd?: boolean },
 ): Promise<string> {
   const safeSystemPrompt =
     typeof systemPrompt === "string"
@@ -2413,18 +2442,16 @@ export async function resolveChatInstructions(
           typeof systemVariables === "string" ? systemVariables : "",
         )
       : "";
-  const projectInstructions = await resolveProjectInstructions(
-    threadId,
-    readThreadRecord,
-  );
-  return [
-    projectInstructions
-      ? `<project_instructions>\n${projectInstructions}\n</project_instructions>`
-      : "",
-    safeSystemPrompt.trim(),
-  ]
-    .filter(Boolean)
-    .join("\n\n");
+  const projectId = await resolveProjectId(threadId, readThreadRecord);
+  const [projectInstructions, agentsMd] = await Promise.all([
+    resolveProjectInstructions(projectId),
+    opts?.agentsMd ? resolveAgentsMd(projectId) : undefined,
+  ]);
+  return composeChatInstructions({
+    agentsMd,
+    projectInstructions,
+    systemPrompt: safeSystemPrompt,
+  });
 }
 
 // Answered once per thread and reused: sandbox, RAG scope and instructions each resolve the
@@ -2693,6 +2720,8 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "specFallbackReason",
   "specDraftNMax",
   "loadedSpecDraftNMax",
+  "specDraftModel",
+  "loadedSpecDraftModel",
 ] as const satisfies readonly (keyof ChatRuntimeState)[];
 
 type VisibleModelRuntimeState = Pick<
@@ -3657,10 +3686,25 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       config.customContextLength ?? null,
       effectiveMaxSeqLength,
     );
-    const effectiveSpeculativeType =
-      config.speculativeType ?? specSettings.speculativeType;
+    const candidateIsMlx = isServedByMlx(
+      candidate.kind === "gguf",
+      platform.deviceType,
+      platform.chatOnlyReason,
+    );
+    // MLX falls back to the standing preference: the live store may hold another model's settings.
+    const standingSpec = candidateIsMlx
+      ? resolveSpeculativeSettingsForLoad({ usePersistedPreference: true })
+      : specSettings;
+    const effectiveSpeculativeType = resolveSpeculativeType(
+      config.speculativeType,
+      standingSpec.speculativeType ?? "auto",
+      candidateIsMlx,
+    );
     const effectiveSpecDraftNMax =
-      config.specDraftNMax ?? specSettings.specDraftNMax;
+      config.specDraftNMax ?? standingSpec.specDraftNMax;
+    const mlxDrafter = candidateIsMlx
+      ? { spec_draft_model: config.specDraftModel ?? null }
+      : {};
     const effectiveChatTemplateOverride = config.chatTemplateOverride?.trim()
       ? config.chatTemplateOverride
       : null;
@@ -3735,6 +3779,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       mlx_int8_prefill: config.mlxInt8Prefill ?? false,
       speculative_type: effectiveSpeculativeType,
       spec_draft_n_max: effectiveSpecDraftNMax,
+      ...mlxDrafter,
       reasoning_budget:
         candidate.kind === "gguf" && !isDiffusion ? config.reasoningBudget : -1,
       reasoning_budget_message:
@@ -3773,8 +3818,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     options?.abortSignal?.throwIfAborted();
     applyAutoLoadRuntimeState(options, () => {
       // Persist the global preference only when the value came from global settings, or autoloading
-      // a remembered model rewrites the default.
-      if (config.speculativeType == null) {
+      // a remembered model rewrites the default. MLX only reads it.
+      if (config.speculativeType == null && !candidateIsMlx) {
         saveSpeculativeType(effectiveSpeculativeType);
       }
       // Self-gates on is_gguf (skips diffusion), so persists only for a real GGUF load.
@@ -4736,6 +4781,7 @@ export function createOpenAIStreamAdapter(
           params.systemPrompt,
           params.systemVariables,
           readThreadRecord,
+          { agentsMd: true },
         );
         if (transitionSignal.aborted) return;
         const ragScope =
@@ -5376,6 +5422,7 @@ export function createOpenAIStreamAdapter(
         params.systemPrompt,
         params.systemVariables,
         readThreadRecord,
+        { agentsMd: true },
       );
       if (combinedSystemPrompt) {
         outboundMessages.unshift({
@@ -6553,11 +6600,13 @@ export function createOpenAIStreamAdapter(
           forceRefreshPublicKey = false,
         ): Promise<OpenAIChatCompletionsRequest> => {
           if (supportsStudioToolsForThisTurn) {
-            await settleSkillsForText(lastUserText(outboundMessages));
+            // include every user turn because follow-ups still need skills mentioned earlier.
+            await settleSkillsForText(userTexts(outboundMessages).join("\n"));
           }
-          const hasEnabledSkills = skillToolsOffered(
+          const skillTools = skillToolNames(
             getSkillsSnapshot().skills,
             codeToolsEnabled,
+            userTexts(outboundMessages),
           );
           if (externalSelection && externalProvider) {
             // Per-thread container reuse; empty falls back to container_auto. Anthropic uses its own key.
@@ -6717,7 +6766,7 @@ export function createOpenAIStreamAdapter(
                 mcpEnabledForChat ||
                 ragEnabled ||
                 projectRagEnabled ||
-                hasEnabledSkills ||
+                skillTools.length > 0 ||
                 // Armed research needs Studio's loop: deep_research is appended past every tool filter, but
                 // only for a request that asked for the loop at all.
                 deepResearchArmed)
@@ -6728,9 +6777,7 @@ export function createOpenAIStreamAdapter(
                         ? ["search_knowledge_base"]
                         : []),
                       ...(toolsEnabled ? ["web_search"] : []),
-                      ...(hasEnabledSkills
-                        ? ["read_skill", "create_skill"]
-                        : []),
+                      ...skillTools,
                       ...studioLocalCodeTools,
                       // Hosted tools with no local stand-in; their pills stay lit regardless, so listing only local
                       // names dropped Images/Fetch whenever another tool selected this branch. Search is excluded
@@ -6759,6 +6806,7 @@ export function createOpenAIStreamAdapter(
                     // false, not omitted: omission follows UNSLOTH_TOOL_CALL_NUDGE, which the
                     // launchers set to 1 when unset, so this loop would keep nudging (#9686, #9125).
                     nudge_tool_calls: false,
+                    deduplicate_tool_calls: runtime.deduplicateToolCalls,
                     // This branch runs the tools here, so say so by name: enabled_tools ["web_search"] is
                     // byte-identical to an older bundle's hosted search.
                     run_tools_locally: true,
@@ -6946,7 +6994,7 @@ export function createOpenAIStreamAdapter(
                 mcpEnabledForChat ||
                 ragEnabled ||
                 projectRagEnabled ||
-                hasEnabledSkills ||
+                skillTools.length > 0 ||
                 deepResearchArmed)
               ? {
                   enable_tools: true,
@@ -6956,9 +7004,7 @@ export function createOpenAIStreamAdapter(
                       ? ["search_knowledge_base"]
                       : []),
                     ...(toolsEnabled ? ["web_search"] : []),
-                    ...(hasEnabledSkills
-                      ? ["read_skill", "create_skill"]
-                      : []),
+                    ...skillTools,
                     ...(codeToolsEnabled
                       ? ["python", "terminal", "edit_file", "view_image"]
                       : []),
@@ -7000,6 +7046,7 @@ export function createOpenAIStreamAdapter(
                     : {}),
                   auto_heal_tool_calls: runtime.autoHealToolCalls,
                   nudge_tool_calls: runtime.nudgeToolCalls,
+                  deduplicate_tool_calls: runtime.deduplicateToolCalls,
                   max_tool_calls_per_message: runtime.maxToolCallsPerMessage,
                   tool_call_timeout: (() => {
                     const mins = runtime.toolCallTimeout;

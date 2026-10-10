@@ -173,6 +173,35 @@ def _mlx_target(checkpoint: Checkpoint) -> Checkpoint | None:
     )
 
 
+def _mlx_reads_images(checkpoint: Checkpoint) -> bool:
+    """Whether the MLX form of an entry reads images: a Clef with its vision tower and processor, on an unsloth-zoo that reads them."""
+    if checkpoint.layout != "clef" or _mlx_target(checkpoint) is None:
+        return False
+    try:
+        from unsloth_zoo.mlx.decision import ClefModel
+    except Exception:
+        return False
+    if not getattr(ClefModel, "takes_images", False):
+        return False
+    if not checkpoint.is_local:
+        return True
+    import json
+
+    folder = Path(checkpoint.source).expanduser()
+    try:
+        config = json.loads((folder / "config.json").read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        return False
+    return (
+        isinstance(config, dict)
+        and config.get("vision_config") is not None
+        and any(
+            (folder / name).is_file()
+            for name in ("processor_config.json", "preprocessor_config.json")
+        )
+    )
+
+
 def _mlx_repos(companion) -> tuple:
     return (companion.base, companion) if companion.base else (companion,)
 
@@ -236,17 +265,26 @@ def _mlx_dirs(checkpoint: Checkpoint, local_only: bool) -> tuple[Path, Path | No
     return folders[-1], (folders[0] if len(folders) > 1 else None)
 
 
-def _mlx_choice(checkpoint: Checkpoint, images, questions, preference: str) -> Checkpoint | None:
-    """Auto on Apple Silicon answers text through the MLX engine, unless only the llama.cpp form is at hand."""
+def _mlx_choice(
+    checkpoint: Checkpoint,
+    unread,
+    questions,
+    preference: str,
+    seen: bool = False,
+) -> Checkpoint | None:
+    """Auto on Apple Silicon prefers MLX unless only llama.cpp is at hand or MLX cannot read the images (`unread`); `seen` = it can."""
     from .native_worker import request_gap
 
-    if preference != "auto" or images or request_gap(questions or {}) is not None:
+    if preference != "auto" or unread or request_gap(questions or {}) is not None:
         return None
     if (target := _mlx_target(checkpoint)) is None:
         return None
     if _loaded == target and _agent is not None:
         return target
     native = _native_target(checkpoint)
+    if seen and native is not None and not _native_reads_images(native):
+        # Without a vision projector the llama.cpp form would refuse the images MLX reads.
+        return target
     if native is not None and _native_unavailable(checkpoint, native) is None:
         # A resident llama.cpp server keeps answering, and a downloaded GGUF serves before the MLX form is fetched.
         if _loaded == native and _agent is not None:
@@ -382,17 +420,20 @@ def select(
     """(what serves this request, why Auto did not pick llama.cpp); raises for what nothing here can serve.
 
     Auto takes llama.cpp when the entry has a GGUF and Studio's llama-server serves decisions, else PyTorch;
-    on Apple Silicon it answers text through unsloth-zoo's MLX engine first.
-    Images are llama.cpp only. Laya is always served by PyTorch, a GGUF entry otherwise by llama.cpp.
+    on Apple Silicon it answers through unsloth-zoo's MLX engine first.
+    Images are read by llama.cpp, and by MLX for a Clef. Laya is always served by PyTorch, a GGUF entry otherwise by llama.cpp.
     """
     from utils.systemone_settings import get_backend
 
     from .native_worker import request_gap
 
+    # Only route-checked images reach MLX: state images would be decoded unvalidated in this process.
+    unread = bool(state_images or (images and not _mlx_reads_images(checkpoint)))
     if (preference or get_backend()) == MLX and checkpoint.layout in ("clef", GGUF):
-        return _select_mlx(checkpoint, images or state_images), None
-    # Images in the state keep a request off MLX only: every other route reads them as before.
-    mlx = _mlx_choice(checkpoint, images or state_images, questions, preference or get_backend())
+        return _select_mlx(checkpoint, unread), None
+    mlx = _mlx_choice(
+        checkpoint, unread, questions, preference or get_backend(), bool(images) and not unread
+    )
     if mlx is not None:
         return mlx, None
     if checkpoint.layout == GGUF:
@@ -439,13 +480,13 @@ def select(
     return checkpoint, reason
 
 
-def _select_mlx(checkpoint: Checkpoint, images) -> Checkpoint:
+def _select_mlx(checkpoint: Checkpoint, unread) -> Checkpoint:
     """The MLX runtime answers through the engine or not at all, whatever llama.cpp has loaded or downloaded."""
-    if images:
+    if unread:
         raise Unavailable(
             400,
             "api_usage_error",
-            "Images are served only by llama.cpp; set the Decision API runtime to Auto or llama.cpp.",
+            f"The MLX runtime does not read these images for {checkpoint.name}; set the Decision API runtime to Auto or llama.cpp.",
         )
     if not _engine_available():
         reason = "The MLX runtime needs Apple Silicon with the Decision API on the GPU."
@@ -527,15 +568,20 @@ def native_ready(checkpoint) -> bool:
 
 
 def input_modalities(checkpoint) -> list[str]:
-    """What this entry reads here: images too when llama.cpp serves it with a vision projector."""
+    """What this entry reads here: images too when llama.cpp serves it with a vision projector, or MLX a Clef that has its tower."""
+    if mlx_ready(checkpoint) and _mlx_reads_images(checkpoint):
+        return ["text", "image"]
     if not native_ready(checkpoint):
         return ["text"]
-    native = _native_target(checkpoint)
+    return ["text", "image"] if _native_reads_images(_native_target(checkpoint)) else ["text"]
+
+
+def _native_reads_images(native: Checkpoint) -> bool:
     if native.is_local:
         from .gguf_export_contract import served_files
         files = served_files(Path(native.source).expanduser(), "clef")
-        return ["text", "image"] if files is not None and files[2] is not None else ["text"]
-    return ["text", "image"] if GGUF_COMPANIONS[native.name].mmproj else ["text"]
+        return files is not None and files[2] is not None
+    return bool(GGUF_COMPANIONS[native.name].mmproj)
 
 
 def _native_gpu() -> bool:
@@ -881,7 +927,12 @@ class _EngineAgent:
         self.model = None
         _release_memory()
 
-    def decide(self, state, questions: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    def decide(
+        self,
+        state,
+        questions: dict[str, dict[str, Any]],
+        images = None,
+    ) -> dict[str, Any]:
         from unsloth_zoo.mlx.decision import DecisionRequestError, DecisionUnsupportedError
 
         # As on llama.cpp, a question without instructions is asked by its id.
@@ -918,7 +969,11 @@ class _EngineAgent:
                         f"The state is longer than the {limit} tokens this model reads beside a question. Shorten it.",
                     )
         try:
-            return self.model.answer(state, questions)
+            return (
+                self.model.answer(state, questions, images)
+                if images
+                else self.model.answer(state, questions)
+            )
         except DecisionUnsupportedError as exc:
             raise Unavailable(501, "not_supported_error", str(exc)) from None
         except DecisionRequestError as exc:
@@ -2092,7 +2147,7 @@ def _route(checkpoint: Checkpoint, state, questions, images) -> dict[str, Any]:
 
 
 def _state_has_images(state) -> bool:
-    """Image parts of a chat-message state, which llama.cpp reads and the MLX engine refuses (as unsloth-zoo scans them)."""
+    """Image parts of a chat-message state, which llama.cpp reads; they keep a request off the MLX engine (as unsloth-zoo scans them)."""
     messages = state.get("messages") if isinstance(state, dict) else state
     for message in messages if isinstance(messages, list) else []:
         content = message.get("content") if isinstance(message, dict) else None
@@ -2122,7 +2177,7 @@ def _decide(
             _last_used = time.monotonic()
             return result
         if _is_mlx(checkpoint):
-            result = agent.decide(state, questions)
+            result = agent.decide(state, questions, images)
             _last_used = time.monotonic()
             return {
                 "model": checkpoint.name,

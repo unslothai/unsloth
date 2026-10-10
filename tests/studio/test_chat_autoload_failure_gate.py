@@ -258,6 +258,10 @@ function isExternalModelId(value: unknown) {
 function resolvePreserveThinkingOnLoad(resp: any) {
   return Boolean(resp?.supports_preserve_thinking && resp?.preserve_thinking_default);
 }
+// Verbatim from lib/speculative-modes.ts, so a load asks for the mode production would.
+function resolveSpeculativeType(chosen: string | null, standing: string, isMlx: boolean) {
+  return chosen ?? (isMlx && standing === "ngram" ? "auto" : standing);
+}
 
 function resolveInferenceCheckpointId(status: any) {
   return status.active_model

@@ -1195,6 +1195,7 @@ class TestLoadHubDownloadExclusion:
             "mlx_int8_prefill_requested",
             "mlx_int8_prefill_reason",
             "mlx_context_budget",
+            "spec_draft_model",
             "chat_template_override_reason",
             # Constant True: llama.cpp allocates the window it reports.
             "context_length_enforced",

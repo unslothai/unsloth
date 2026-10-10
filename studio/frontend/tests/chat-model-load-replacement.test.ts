@@ -47,7 +47,7 @@ const blocks = {
   loadGate: section(runtime, "async function performLoad(): Promise<void> {", "const pendingLoadConfig ="),
   stagedMetadata: section(runtime, "if (isGguf && isDiffusion === undefined) {", "const targetIsDiffusion = isDiffusion === true;"),
   validation: section(runtime, "const validation = await validateModel({", "if (validation.mlx_loads_base_model) {"),
-  recheck: section(runtime, "// Re-check the tracked picker for a load that was already starting", "const forceCancelActive = stopDecision.forceCancelActive;"),
+  recheck: section(runtime, "// Re-check the tracked picker for a load that was already starting", "let forceCancelActive = stopDecision.forceCancelActive;"),
   terminal: section(runtime, "await performLoad();", "// Last act of this run's coroutine"),
   failedCancel: section(section(runtime, "const cancelLoadRun = useCallback(", "const cancelLoadingWithCheckpointPolicy = useCallback("), "// The request failed, so reconcile against the backend before releasing the", "return false;"),
   cancelReconcile: section(section(runtime, "const cancelLoadRun = useCallback(", "const cancelLoadingWithCheckpointPolicy = useCallback("), "if (\n              (!run.loadAttemptPath", "activeLoadRunRef.current = releaseOwnedModelLoadRun("),
