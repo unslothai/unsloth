@@ -222,6 +222,21 @@ test("an unreadable record leaves the defaults", () => {
   assert.equal(out.fineTuneAction, "train");
 });
 
+test("a dismissed driver notice round-trips, and a non-string record is dropped", () => {
+  useSettingsPanelPrefsStore.getState().dismissDriverWarning("32.0.31041.1004");
+  assert.equal(
+    JSON.parse(store.get(KEY) as string).state.dismissedDriverWarning,
+    "32.0.31041.1004",
+  );
+  const merged = useSettingsPanelPrefsStore.persist.getOptions().merge;
+  assert.ok(merged);
+  const state = useSettingsPanelPrefsStore.getState();
+  assert.equal(
+    merged({ dismissedDriverWarning: 42 }, state).dismissedDriverWarning,
+    null,
+  );
+});
+
 // Last: it rehydrates the store. Corrupt JSON must not take settings down.
 test("corrupt JSON does not break the store", async () => {
   store.set(KEY, "{not json");
