@@ -1878,6 +1878,11 @@ html.force-reduced-motion *::after {
 	scroll-behavior: auto !important;
 }
 
+/* Same popup exemption as the OS-level media block below. */
+html.force-reduced-motion [data-radix-popper-content-wrapper] {
+	transition-property: none !important;
+}
+
 /* Same loader exceptions as the OS-level media block below: freezing
    spinners removes the only signal that work is in flight. */
 html.force-reduced-motion .animate-spin {
@@ -5564,6 +5569,12 @@ html.force-reduced-motion .sidebar-section-drop-line {
 		animation-iteration-count: 1 !important;
 		transition-duration: 0.01ms !important;
 		scroll-behavior: auto !important;
+	}
+
+	/* The duration above turns on transitions everywhere (transition-property defaults to all), so
+	   Radix moving a popup from its parking spot to its anchor became a one-frame slide in WebKit. */
+	html:not(.force-motion) [data-radix-popper-content-wrapper] {
+		transition-property: none !important;
 	}
 
 	html:not(.force-motion) .animate-spin {
