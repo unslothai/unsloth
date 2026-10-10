@@ -343,6 +343,22 @@ def _snapshot_resolves_to(
     return True
 
 
+def manifest_matches_download(
+    manifest: Optional[download_manifest.Manifest],
+    metadata: Optional[download_registry.DownloadMetadata],
+) -> bool:
+    """A reused scope must not read a previous file set or revision's manifest."""
+    files = frozenset(getattr(metadata, "scoped_files", ()) or ())
+    if manifest is None or not files:
+        return True
+    if frozenset(file.path for file in manifest.expected_files) != files:
+        return False
+    hashes = frozenset(getattr(metadata, "progress_blob_hashes", ()) or ())
+    return not hashes or hashes == frozenset(
+        file.sha256 for file in manifest.expected_files if file.sha256
+    )
+
+
 def compute_snapshot_progress(
     *,
     repo_type: RepoType,
@@ -373,10 +389,18 @@ def compute_snapshot_progress(
     active_root = Path(metadata_hub_cache) if metadata_hub_cache else None
 
     expected_total = max(expected_bytes, 0)
-    # Always resolve the revision's blob hashes so stale blobs from a superseded revision cannot inflate the count; they degrade to empty (count-all) only when metadata is unavailable (e.g. offline). Take the larger total so a low caller hint cannot cap the bar.
+    # Resolve revision hashes so superseded blobs cannot inflate the count.
+    # Unavailable metadata falls back to the caller's estimate.
     meta_total, expected_hashes = metadata_resolver(repo_id, hf_token)
     meta_total = max(0, meta_total)
-    expected_total = max(expected_total, meta_total)
+    # A resolved variant's total is exact: max() with a hint left over from an earlier scoped pick never shrinks.
+    expected_total = (
+        meta_total if variant is not None and meta_total > 0 else max(expected_total, meta_total)
+    )
+
+    scoped_files = frozenset(getattr(metadata, "scoped_files", ()) or ())
+    if variant is not None and scoped_files:
+        variant_file_matcher = lambda path, **_kwargs: path in scoped_files
 
     # Without resolved hashes a variant must not count unscoped blobs, since sibling quants share one blobs/ dir; a no-variant snapshot owns the whole dir and counts unscoped.
     count_unscoped = variant is None
@@ -467,13 +491,15 @@ def compute_snapshot_progress(
         snapshot_dirs: "_Lazy[list[Path]]" = _Lazy(
             lambda entry = entry: _retained_snapshot_dirs(entry)
         )
-        entry_manifest: "_Lazy[Optional[download_manifest.Manifest]]" = _Lazy(
+        raw_manifest: "_Lazy[Optional[download_manifest.Manifest]]" = _Lazy(
             lambda entry = entry: download_manifest.read_manifest(
-                repo_type,
-                repo_id,
-                variant,
-                hub_cache = entry.parent,
+                repo_type, repo_id, variant, hub_cache = entry.parent
             )
+        )
+        entry_manifest: "_Lazy[Optional[download_manifest.Manifest]]" = _Lazy(
+            lambda raw_manifest = raw_manifest: raw_manifest.get()
+            if manifest_matches_download(raw_manifest.get(), metadata)
+            else None
         )
         if variant is not None:
             # The best reading across every retained snapshot, since the variant can live in an older revision, and because huggingface_hub 1.18's Windows copy layout can move a completed file straight into the snapshot and leave a blob-only tally at zero.
@@ -487,7 +513,12 @@ def compute_snapshot_progress(
                         frozenset(partial_bytes),
                     )
                     for snap in snapshot_dirs.get()
-                    if not expected_hashes or _snapshot_resolves_to(manifest, snap, expected_hashes)
+                    # A rejected manifest means an old pick: its same-named snapshot files are not ours.
+                    if manifest_matches_download(raw_manifest.get(), metadata)
+                    and (
+                        not expected_hashes
+                        or _snapshot_resolves_to(manifest, snap, expected_hashes)
+                    )
                 ),
                 default = 0,
             )

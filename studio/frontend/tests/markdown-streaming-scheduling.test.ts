@@ -164,6 +164,10 @@ test("streaming reparses only the active Markdown tail", () => {
     "{!incrementalRender}",
   );
   assert.equal(
+    jsxAttribute(streamdown, "remend")?.initializer?.getText(source),
+    "{pendingLinkRepair ? LITERAL_LINK_REMEND : undefined}",
+  );
+  assert.equal(
     jsxAttribute(streamdown, "parseMarkdownIntoBlocksFn")?.initializer?.getText(
       source,
     ),

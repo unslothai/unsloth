@@ -26,7 +26,10 @@ from ..models._utils import *
 from ..utils.packing import (
     build_sdpa_packed_attention_mask,
     build_xformers_block_causal_mask,
+    cover_padded_cu_seqlens,
     move_xformers_attention_bias,
+    packed_block_mask,
+    packed_segment_lengths,
 )
 
 flash_attn_func = None
@@ -74,6 +77,79 @@ _XFORMERS_FP32_UNSUPPORTED = (
     torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 10
 )
 SDPA_HAS_GQA = "enable_gqa" in (scaled_dot_product_attention.__doc__ or "")
+
+# Packed SDPA runs per segment: a dense (T, T) mask + enable_gqa leaves only the math kernel.
+_SDPA_PACKED_SEGMENTS = os.environ.get("UNSLOTH_SDPA_PACKED_SEGMENTS", "1").lower() not in (
+    "0",
+    "false",
+    "no",
+    "off",
+)
+
+
+def _sdpa_flash_takes_gqa(Q: Tensor) -> bool:
+    # Only flash / math take enable_gqa: expand K/V elsewhere (pre-sm80, fp32, wide heads, ROCm).
+    return (
+        SDPA_HAS_GQA
+        and Q.is_cuda
+        and torch.version.hip is None
+        and Q.dtype in (torch.float16, torch.bfloat16)
+        and Q.shape[-1] <= 256
+        and Q.shape[-1] % 8 == 0
+        and torch.cuda.get_device_capability(Q.device)[0] >= 8
+    )
+
+
+def _sdpa_packed_segments(
+    Q: Tensor,
+    K: Tensor,
+    V: Tensor,
+    lengths: Tuple[int, ...],
+    *,
+    n_groups: int,
+    is_causal: bool,
+    sliding_window: Optional[int],
+    sdpa_kwargs: dict,
+) -> Optional[Tensor]:
+    """Q (1, H, T, D), K / V (1, H_kv, T, D) -> (1, T, H, D), the block-diagonal mask's result;
+    None when the lengths do not tile the row."""
+    if sum(length for length in lengths if length > 0) != Q.shape[-2]:
+        return None
+    gqa = n_groups != 1 and _sdpa_flash_takes_gqa(Q)
+    if n_groups != 1 and not gqa:
+        K = K.repeat_interleave(n_groups, dim = 1)
+        V = V.repeat_interleave(n_groups, dim = 1)
+    outs, start, i = [], 0, 0
+    lengths = [length for length in lengths if length > 0]
+    while i < len(lengths):
+        length = lengths[i]
+        j = i
+        while j < len(lengths) and lengths[j] == length:
+            j += 1
+        n = j - i
+        end = start + n * length
+
+        def split(x):
+            return x[0, :, start:end].unflatten(1, (n, length)).transpose(0, 1)
+
+        kwargs = dict(sdpa_kwargs)
+        windowed = sliding_window is not None and length > sliding_window
+        if windowed:
+            kwargs["attn_mask"] = packed_block_mask(
+                length,
+                dtype = Q.dtype,
+                device = Q.device,
+                sliding_window = sliding_window,
+                is_causal = is_causal,
+            )
+        kwargs["is_causal"] = is_causal and not windowed
+        if gqa:
+            kwargs["enable_gqa"] = True
+        out = scaled_dot_product_attention(split(Q), split(K), split(V), **kwargs)
+        outs.append(out.transpose(1, 2).flatten(0, 1))
+        start, i = end, j
+    return torch.cat(outs, dim = 0).unsqueeze(0)
+
 
 # PrefixGrouper kernel, resolved once when the env gate is on so PG-off users never load torch flex_attention.
 _flex_shared_prefix_attention = None
@@ -200,6 +276,7 @@ class AttentionContext:
     # PrefixGrouper: non-None routes Q/K/V through the FlexAttention shared-prefix kernel; None leaves
     # every existing construction and behavior unchanged.
     prefix_seg_info: Optional[Any] = None
+    is_causal: bool = True
 
 
 def select_attention_backend(use_varlen: bool = False) -> str:
@@ -314,7 +391,7 @@ def run_attention(
         backend = SDPA
 
     # Both varlen-capable backends land in the same flash-attn 2 backward kernel, so guard both before
-    # the int32 overflow aborts the process. Integer arithmetic only, no device sync.
+    # the int32 overflow aborts the process. Integer arithmetic plus one cached sync per step.
     if backend in (FLASH_VARLEN, XFORMERS) and not _VARLEN_INT32_GUARD_DISABLED:
         # Both terms are needed. Q/K/V: a frozen hidden state feeding trainable LoRA q/k/v still yields a
         # Q that requires grad. context.requires_grad: gradient checkpointing runs its FIRST forward under
@@ -325,9 +402,13 @@ def run_attention(
         )
         if will_backward:
             seq_info = context.seq_info
-            # seq_info[0] is the per-document length tensor; .numel() needs no D2H copy.
-            n_seqs = seq_info[0].numel() if seq_info is not None else context.bsz
             total_q = context.bsz * context.q_len
+            # Includes the collator's trailing pad segment.
+            n_seqs = (
+                cover_padded_cu_seqlens(seq_info, total_q)[0].numel() - 1
+                if seq_info is not None
+                else context.bsz
+            )
             if _varlen_backward_overflows_int32(n_seqs, total_q, context.n_heads, context.head_dim):
                 # SDPA cannot apply logit softcapping, so rerouting a softcapped model (Gemma 2) would keep it
                 # training on wrong logits and gradients, worse than the fault this guard avoids.
@@ -359,13 +440,22 @@ def run_attention(
     flash_varlen_kwargs = config.flash_varlen_kwargs or {}
     sdpa_kwargs = config.sdpa_kwargs or {}
     xformers_kwargs = config.xformers_kwargs or {}
+    # Mask builders only see is_causal when False, so causal callers and their patches are unchanged.
+    direction = {}
+    if not context.is_causal:
+        flash_dense_kwargs = {**flash_dense_kwargs, "causal": False}
+        flash_varlen_kwargs = {**flash_varlen_kwargs, "causal": False}
+        direction = {"is_causal": False}
 
     bsz = context.bsz
     n_heads = context.n_heads
     q_len = context.q_len
     head_dim = context.head_dim
     kv_seq_len = context.kv_seq_len
-    requires_grad = context.requires_grad
+    # Eval forwards can backpropagate (LoRA-GA calibration); xformers' inference GQA layout cannot.
+    requires_grad = context.requires_grad or (
+        torch.is_grad_enabled() and (Q.requires_grad or K.requires_grad or V.requires_grad)
+    )
     sliding_window = context.sliding_window
     # A non-positive window means "no local attention", not "a window of nothing": a config spelling
     # it 0 would put the mask's lower bound above its causal upper bound.
@@ -400,7 +490,7 @@ def run_attention(
         Q_f = Q.transpose(1, 2).reshape(bsz * q_len, n_heads, head_dim)
         K_f = K.transpose(1, 2).reshape(bsz * q_len, config.n_kv_heads, head_dim)
         V_f = V.transpose(1, 2).reshape(bsz * q_len, config.n_kv_heads, head_dim)
-        _, cu_seqlens, max_seqlen = context.seq_info
+        cu_seqlens, max_seqlen = cover_padded_cu_seqlens(context.seq_info, bsz * q_len)
         return flash_attn_varlen_func(
             Q_f,
             K_f,
@@ -423,6 +513,7 @@ def run_attention(
         # Only CausalLM_fast_forward supplies the mask; a direct decoder call (Liger, TRL's get_decoder paths) would attend bidirectionally.
         if (
             base_mask is None
+            and context.is_causal
             and xformers is not None
             and context.seq_info is None
             and q_len == kv_seq_len
@@ -432,6 +523,8 @@ def run_attention(
             context.seq_info,
             sliding_window = sliding_window,
             base_mask = base_mask,
+            total_tokens = K.shape[-2],
+            **direction,
         )
         attn_bias = move_xformers_attention_bias(attn_bias, Q.device)
 
@@ -490,12 +583,33 @@ def run_attention(
     else:
         local_mask = context.attention_mask
         is_causal_local = False
+        if (
+            _SDPA_PACKED_SEGMENTS
+            and context.seq_info is not None
+            and local_mask is None
+            and Q.shape[0] == 1
+            and Q.shape[-2] == K.shape[-2]
+        ):
+            out = _sdpa_packed_segments(
+                Q,
+                K,
+                V,
+                packed_segment_lengths(context.seq_info, K.shape[-2]),
+                n_groups = config.n_groups,
+                is_causal = context.is_causal,
+                sliding_window = sliding_window,
+                sdpa_kwargs = sdpa_kwargs,
+            )
+            if out is not None:
+                return out
         if context.seq_info is not None and local_mask is None:
             local_mask = build_sdpa_packed_attention_mask(
                 context.seq_info,
                 dtype = Q.dtype,
                 device = Q.device,
                 sliding_window = sliding_window,
+                total_tokens = K.shape[-2],
+                **direction,
             )
         else:
             q_len_local = Q.shape[-2]
@@ -516,7 +630,13 @@ def run_attention(
                     q_pos = torch.arange(past_len, past_len + q_len_local, device = Q.device)
                     k_pos = torch.arange(k_len_local, device = Q.device)
 
-                    causal_keep = k_pos[None, :] <= q_pos[:, None]  # True = allowed (SDPA)
+                    causal_keep = (
+                        k_pos[None, :] <= q_pos[:, None]
+                        if context.is_causal
+                        else torch.ones(
+                            (q_len_local, k_len_local), dtype = torch.bool, device = Q.device
+                        )
+                    )  # True = allowed (SDPA)
                     if sliding_window is not None:
                         causal_keep &= k_pos[None, :] >= (q_pos[:, None] - (sliding_window - 1))
 
@@ -546,7 +666,9 @@ def run_attention(
                     q_len_local, k_len_local, sliding_window, Q.device
                 )
 
-            is_causal_local = local_mask is None and q_len_local == k_len_local
+            is_causal_local = (
+                context.is_causal and local_mask is None and q_len_local == k_len_local
+            )
 
         kwargs = dict(sdpa_kwargs)
         kwargs.setdefault("attn_mask", local_mask)

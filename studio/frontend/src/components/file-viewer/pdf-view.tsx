@@ -4,10 +4,11 @@
 import { Spinner } from "@/components/ui/spinner";
 import { useT } from "@/i18n";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { Document, Page, pdfjs, usePageContext } from "react-pdf";
 import "react-pdf/dist/Page/TextLayer.css";
 import { queueParse } from "./parse-queue";
+import { usePdfWorker } from "./use-pdf-worker";
 import { useWidth } from "./use-width";
 
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
@@ -244,17 +245,20 @@ export default function PdfView({
   const [failed, setFailed] = useState<Blob | null>(null);
   const width = Math.max(200, Math.min(available, MAX_PAGE_WIDTH)) * scale;
   const slot = useParseSlot(firstPageOnly, file);
+  const pdfWorker = usePdfWorker(slot.ready && failed !== file);
+  const options = useMemo(() => (pdfWorker ? { ...PDF_OPTIONS, worker: pdfWorker.worker } : null), [pdfWorker]);
 
   if (failed === file) {
     return <p className="m-auto text-sm text-muted-foreground">{t("library.preview.cannotPreview")}</p>;
   }
-  if (!slot.ready) return <div className="size-full bg-muted/60" />;
+  if (!slot.ready || !options) return <div className="size-full bg-muted/60" />;
   return (
     <div ref={setContainer} className="size-full overflow-auto bg-muted/60">
       <Document
         file={file}
-        options={PDF_OPTIONS}
+        options={options}
         onLoadSuccess={(document) => {
+          pdfWorker?.loaded.add(document);
           slot.release();
           setPdf(document);
           setPages(document.numPages);

@@ -23,6 +23,13 @@ from utils.subprocess_compat import windows_hidden_subprocess_kwargs
 _logger = logging.getLogger(__name__)
 
 FLASH_ATTN_RELEASE_BASE_URL = "https://github.com/Dao-AILab/flash-attention/releases/download"
+# Pinned wheels; utils.kernel_install wraps them for the training worker, SSM runtime and CLI.
+CAUSAL_CONV1D_PACKAGE_VERSION = "1.6.1"
+CAUSAL_CONV1D_RELEASE_TAG = "v1.6.1.post4"
+CAUSAL_CONV1D_RELEASE_BASE_URL = "https://github.com/Dao-AILab/causal-conv1d/releases/download"
+MAMBA_SSM_PACKAGE_VERSION = "2.3.1"
+MAMBA_SSM_RELEASE_TAG = "v2.3.1"
+MAMBA_SSM_RELEASE_BASE_URL = "https://github.com/state-spaces/mamba/releases/download"
 
 
 # No arch gate, deliberately: has_blackwell_gpu() skipped flash-attn before sm_100+ wheels existed (#5420) and became the bug once they did (#6961), denying B200 hosts a working wheel. An arch gate encodes a snapshot of what upstream ships and goes stale silently both ways; the post-install import check catches a wheel that will not load whatever the cause.
@@ -384,6 +391,7 @@ def install_wheel(
     python_executable: str,
     use_uv: bool,
     uv_needs_system: bool = False,
+    reinstall: bool = False,
     run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
 ) -> list[tuple[str, subprocess.CompletedProcess[str]]]:
     attempts: list[tuple[str, subprocess.CompletedProcess[str]]] = []
@@ -392,7 +400,11 @@ def install_wheel(
         uv_cmd = ["uv", "pip", "install"]
         if uv_needs_system:
             uv_cmd.append("--system")
-        uv_cmd.extend(["--python", python_executable, "--no-deps", wheel_url])
+        uv_cmd.extend(["--python", python_executable, "--no-deps"])
+        # Without it an installed same-version build (another CUDA, or a broken copy) is kept.
+        if reinstall:
+            uv_cmd.append("--reinstall")
+        uv_cmd.append(wheel_url)
         result = run(
             uv_cmd,
             stdout = subprocess.PIPE,
@@ -406,7 +418,10 @@ def install_wheel(
         if result.returncode == 0:
             return attempts
 
-    pip_cmd = [python_executable, "-m", "pip", "install", "--no-deps", wheel_url]
+    pip_cmd = [python_executable, "-m", "pip", "install", "--no-deps"]
+    if reinstall:
+        pip_cmd.append("--force-reinstall")
+    pip_cmd.append(wheel_url)
     result = run(
         pip_cmd,
         stdout = subprocess.PIPE,
@@ -433,5 +448,11 @@ def url_exists(url: str) -> bool | None:
         reason = f"HTTP {exc.code}"
     except (OSError, http.client.HTTPException) as exc:
         reason = str(exc)
-    _logger.warning("url_exists(%s): %s; could not check prebuilt wheel availability", url, reason)
+    shown = redact_url_credentials(url)
+    if shown != url:
+        # The error text can echo the userinfo (urllib reads `user:token@host` as a port).
+        reason = reason if reason.startswith("HTTP ") else "unreachable"
+    _logger.warning(
+        "url_exists(%s): %s; could not check prebuilt wheel availability", shown, reason
+    )
     return None

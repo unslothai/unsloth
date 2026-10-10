@@ -29,6 +29,7 @@ export {
 export { useTrainingHistorySidebarItems } from "./hooks/use-training-history-sidebar";
 export { useTrainingRuntimeLifecycle } from "./hooks/use-training-runtime-lifecycle";
 export { useTrainingCompletionWatch } from "./hooks/use-training-completion-watch";
+export { useDuplicateTrainingRun } from "./hooks/use-duplicate-training-run";
 export {
   removeTrainingUnloadGuard,
   useTrainingUnloadGuard,
@@ -51,7 +52,11 @@ export type {
   TrainingConfigState,
 } from "./types/config";
 export { getModelConfig, listLocalModels } from "./api/models-api";
-export type { LocalModelInfo, ModelConfigResponse } from "./api/models-api";
+export type {
+  DecisionCheckpoint,
+  LocalModelInfo,
+  ModelConfigResponse,
+} from "./api/models-api";
 export type {
   TrainingPhase,
   TrainingViewData,

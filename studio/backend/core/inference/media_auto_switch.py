@@ -236,6 +236,7 @@ async def _start_load(
         await load_diffusion_model_gated(
             DiffusionLoadRequest(
                 model_path = pick.model_path,
+                display_repo_id = pick.model_id,
                 gguf_filename = pick.gguf_filename,
                 model_kind = pick.model_kind,
                 hf_token = hf_token,
@@ -249,6 +250,7 @@ async def _start_load(
         await load_video_model_gated(
             VideoLoadRequest(
                 model_path = pick.model_path,
+                display_repo_id = pick.model_id,
                 gguf_filename = pick.gguf_filename,
                 model_kind = pick.model_kind,
                 h3_task = partition,

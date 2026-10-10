@@ -39,6 +39,7 @@ from core.inference.context_window import (
     truncate_oldest_messages,
 )
 from core.inference.instruction_pin import is_substantive
+from utils.current_date_prompt_settings import strip_current_date_update_note
 
 # "checkpoint" resets the epoch; "rolling" is the pre-existing window, byte for byte, and is both the A/B arm and the
 # escape hatch for a template family that misbehaves.
@@ -288,7 +289,7 @@ def _select_items(
         head = group[0]
         if not is_substantive(head, min_chars = min_chars):
             return None
-        text = _text_of(head)
+        text = strip_current_date_update_note(_text_of(head))
         attachment = _ATTACHMENT.search(text)
         text = (text[: attachment.start()] if attachment else text).strip()
         if not text:

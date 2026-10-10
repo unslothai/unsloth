@@ -390,7 +390,7 @@ const ActivityRow = memo(function ActivityRow({
         </ul>
       ) : null}
       {activity.reasoning ? (
-        <div className="max-h-64 overflow-y-auto whitespace-pre-wrap break-words rounded-xl bg-muted/35 px-3 py-2 leading-relaxed text-foreground/80">
+        <div className="max-h-64 overflow-y-auto whitespace-pre-wrap break-words scroll-rounded rounded-xl bg-muted/35 px-3 py-2 leading-relaxed text-foreground/80">
           {activity.state === "running" && activity.reasoning.length > 8000
             ? `…\n${activity.reasoning.slice(-8000)}`
             : activity.reasoning}

@@ -228,7 +228,15 @@ def test_named_checkpoint_swaps_the_resident_model(client, runtime):
             422,
             "invalid_request_error",
         ),
-        ({"images": ["data:image/png;base64,AAAA"]}, 400, "api_usage_error"),
+        (
+            {
+                "images": [
+                    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+                ]
+            },
+            400,
+            "api_usage_error",
+        ),
         (
             {"questions": {f"q{i}": {"type": "noul"} for i in range(65)}},
             422,
@@ -287,6 +295,23 @@ def test_failed_load_backs_off_and_reports_why(client, monkeypatch):
     assert int(first.headers["Retry-After"]) >= 1
     assert _post(client).status_code == 503
     assert attempts == ["laya-multilingual"]
+
+
+def test_failed_load_logs_the_underlying_cause(client, monkeypatch, caplog):
+    def fail(checkpoint):
+        try:
+            raise RuntimeError("HIP error: invalid device function")
+        except RuntimeError as exc:
+            raise ModuleNotFoundError("Could not import module 'AutoTokenizer'") from exc
+
+    monkeypatch.setattr(laya_runtime, "_load_checkpoint", fail)
+    with caplog.at_level("WARNING", logger = laya_runtime.__name__):
+        response = _post(client)
+    assert response.status_code == 503
+    assert "HIP error" not in response.json()["detail"]["message"]
+    [record] = [r for r in caplog.records if r.getMessage().startswith("System One load failed")]
+    assert "HIP error: invalid device function" in caplog.text
+    assert record.exc_info is not None
 
 
 def test_settings_never_report_an_install(client):
@@ -2053,3 +2078,13 @@ def test_mlx_overflow_in_a_later_chunk_reruns_the_whole_request_in_fp32(monkeypa
         ("float32", 2),
         ("float32", 1),
     ]
+
+
+def test_an_env_pinned_local_clef_folder_keeps_the_clef_layout(monkeypatch, tmp_path):
+    from core.systemone import catalog
+
+    for name in ("config.json", "joint_head.safetensors", "joint_head_config.json"):
+        (tmp_path / name).write_text("{}", encoding = "utf-8")
+    monkeypatch.setenv("UNSLOTH_SYSTEMONE_MODEL", str(tmp_path))
+    monkeypatch.delenv("UNSLOTH_SYSTEMONE_SUBFOLDER", raising = False)
+    assert catalog.default_checkpoint().layout == "clef"

@@ -10,17 +10,23 @@ import {
   AlertTitle,
 } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 // eslint-disable-next-line no-restricted-imports -- the settings barrel imports this feature back
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import { useLocale, useT } from "@/i18n";
 import { apiUrl } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
 import {
-  ShieldAlertIcon,
-  Trash2Icon,
-  TriangleAlertIcon,
-  XIcon,
-} from "lucide-react";
+  Alert02Icon,
+  Cancel01Icon,
+  MultiplicationSignCircleIcon,
+} from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { BanIcon, XIcon } from "lucide-react";
 import {
   type RefObject,
   useCallback,
@@ -46,6 +52,19 @@ import { hashArtifactCode } from "./types";
 const HTML_FRAME_DEFAULT_HEIGHT = 400;
 const HTML_FRAME_MAX_HEIGHT = 900;
 const BLOCKED_HOSTS_SHOWN = 3;
+
+// Canvas notices look like the app's toasts: same surface, shadow, type and pill actions.
+// The wrapper spans the canvas, so only the notice itself takes clicks.
+const NOTICE_WRAP = "pointer-events-none absolute inset-x-0 top-0 flex justify-center p-2";
+const NOTICE =
+  "pointer-events-auto max-w-[calc(460px*var(--ui-space-scale,1))] gap-y-0.5 rounded-[calc(var(--radius)+6px)] border-transparent bg-popover py-3 ps-4.5 text-ui-13 leading-normal text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] has-data-[slot=alert-action]:pe-12 dark:bg-card dark:shadow-[0_2px_8px_-2px_var(--background)]";
+const NOTICE_BODY =
+  "text-ui-13 leading-[1.4] text-muted-foreground [&_p:not(:last-child)]:mb-2.5";
+const NOTICE_BUTTON = "h-6 rounded-full px-2 text-ui-12 font-medium";
+const NOTICE_PRIMARY = `${NOTICE_BUTTON} bg-foreground text-background hover:bg-foreground hover:opacity-90`;
+const NOTICE_SECONDARY = `${NOTICE_BUTTON} border-transparent bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)] text-foreground hover:bg-[color-mix(in_oklab,var(--foreground)_calc(12%*var(--contrast-wash-gain,1)),transparent)] dark:bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)] dark:hover:bg-[color-mix(in_oklab,var(--foreground)_calc(12%*var(--contrast-wash-gain,1)),transparent)]`;
+const NOTICE_CLOSE =
+  "size-5 rounded-full bg-popover text-popover-foreground hover:bg-muted hover:text-popover-foreground dark:bg-card dark:hover:bg-muted";
 // Entries are per URL, not per host, so a page pulling a whole CDN directory counts each file.
 // Still far above what a real one trips.
 const BLOCKED_URIS_TRACKED = 100;
@@ -119,7 +138,7 @@ export function buildArtifactSrcDoc(code: string): string {
 // UI, but downloads must go through Unsloth's explicit controls outside the sandbox.
 export function ArtifactHtmlFrame({
   code,
-  title = "HTML canvas preview",
+  title = "HTML preview",
   className,
   fill = false,
   actionFocusTargetRef,
@@ -372,25 +391,26 @@ export function ArtifactHtmlFrame({
         title={title}
       />
       {showBlockedBanner ? (
-        <div className="absolute inset-x-0 top-0 p-2">
+        <div className={NOTICE_WRAP}>
           <Alert
             role="group"
-            dir={locale === "ar" ? "rtl" : "ltr"}
+            dir={locale === "ar" || locale === "he" ? "rtl" : "ltr"}
             aria-label={t("settings.chat.artifacts.blockedTitle")}
-            className="border-amber-500/40 bg-background/95 shadow-md backdrop-blur"
+            className={NOTICE}
           >
-            <ShieldAlertIcon className="text-amber-500" />
-            <AlertAction>
+            <HugeiconsIcon icon={Alert02Icon} strokeWidth={2} className="size-4" />
+            <AlertAction className="top-2 end-2">
               <Button
-                size="icon-sm"
+                size="icon-xs"
                 variant="ghost"
+                className={NOTICE_CLOSE}
                 aria-label={t("settings.chat.artifacts.blockedDismiss")}
                 onClick={() => {
                   focusAfterAction();
                   setDismissedCode(code);
                 }}
               >
-                <XIcon />
+                <HugeiconsIcon icon={Cancel01Icon} strokeWidth={2.25} className="size-3" />
               </Button>
             </AlertAction>
             <AlertTitle role="alert">
@@ -402,7 +422,7 @@ export function ArtifactHtmlFrame({
                 })}
               </span>
             </AlertTitle>
-            <AlertDescription>
+            <AlertDescription className={NOTICE_BODY}>
               <p>
                 {t(
                   blockedForCanvas.uris.length === 1
@@ -416,7 +436,8 @@ export function ArtifactHtmlFrame({
               </p>
               <div className="flex flex-wrap gap-2">
                 <Button
-                  size="sm"
+                  size="xs"
+                  className={NOTICE_PRIMARY}
                   onClick={() => {
                     focusAfterAction();
                     setGrantedCode(code);
@@ -425,11 +446,12 @@ export function ArtifactHtmlFrame({
                   {t("settings.chat.artifacts.blockedBannerAction")}
                 </Button>
                 <Button
-                  size="sm"
+                  size="xs"
                   variant="outline"
+                  className={NOTICE_SECONDARY}
                   onClick={() => {
-                    useSettingsDialogStore.getState().openDialog("chat", {
-                      scrollTarget: "chat-canvas-network",
+                    useSettingsDialogStore.getState().openDialog("browser", {
+                      scrollTarget: "browser-html-network",
                       focusFallback:
                         actionFocusTargetRef?.current ?? iframeRef.current,
                     });
@@ -443,29 +465,30 @@ export function ArtifactHtmlFrame({
         </div>
       ) : null}
       {showErrorBanner && firstError && !showBlockedBanner ? (
-        <div className="absolute inset-x-0 top-0 p-2">
+        <div className={NOTICE_WRAP}>
           <Alert
             role="group"
-            dir={locale === "ar" ? "rtl" : "ltr"}
+            dir={locale === "ar" || locale === "he" ? "rtl" : "ltr"}
             aria-label={errorTitle}
-            className="border-destructive/40 bg-background/95 shadow-md backdrop-blur"
+            className={NOTICE}
           >
-            <TriangleAlertIcon className="text-destructive" />
-            <AlertAction>
+            <HugeiconsIcon icon={MultiplicationSignCircleIcon} strokeWidth={2} className="size-4" />
+            <AlertAction className="top-2 end-2">
               <Button
-                size="icon-sm"
+                size="icon-xs"
                 variant="ghost"
+                className={NOTICE_CLOSE}
                 aria-label={t("settings.chat.artifacts.blockedDismiss")}
                 onClick={() => {
                   focusAfterAction();
                   setErrorsDismissedCode(code);
                 }}
               >
-                <XIcon />
+                <HugeiconsIcon icon={Cancel01Icon} strokeWidth={2.25} className="size-3" />
               </Button>
             </AlertAction>
             <AlertTitle role="alert">{errorTitle}</AlertTitle>
-            <AlertDescription>
+            <AlertDescription className={NOTICE_BODY}>
               <p
                 className="line-clamp-2 break-words font-mono text-ui-11p5"
                 title={firstError.text}
@@ -476,7 +499,8 @@ export function ArtifactHtmlFrame({
               <div className="flex flex-wrap items-center gap-2">
                 {onFixWithModel ? (
                   <Button
-                    size="sm"
+                    size="xs"
+                    className={NOTICE_PRIMARY}
                     onClick={() => onFixWithModel(buildCanvasFixPrompt(title, errors))}
                     title={t("settings.chat.artifacts.errorHint")}
                   >
@@ -485,8 +509,9 @@ export function ArtifactHtmlFrame({
                 ) : null}
                 {onConsoleOpenChange ? (
                   <Button
-                    size="sm"
+                    size="xs"
                     variant="outline"
+                    className={NOTICE_SECONDARY}
                     onClick={() => onConsoleOpenChange(!consoleOpen)}
                   >
                     {t(
@@ -504,7 +529,7 @@ export function ArtifactHtmlFrame({
       {consoleOpen ? (
         <section
           aria-label={t("settings.chat.artifacts.consoleTitle")}
-          dir={locale === "ar" ? "rtl" : "ltr"}
+          dir={locale === "ar" || locale === "he" ? "rtl" : "ltr"}
           className="absolute inset-x-0 bottom-0 flex h-2/5 min-h-32 flex-col border-t border-border bg-background/95 text-xs backdrop-blur"
         >
           <div
@@ -519,25 +544,39 @@ export function ArtifactHtmlFrame({
               )}
             </span>
             <span className="flex-1" />
-            <Button
-              size="icon-sm"
-              variant="ghost"
-              aria-label={t("settings.chat.artifacts.consoleClear")}
-              onClick={() => {
-                dropPendingEntries();
-                setOutput(emptyCanvasConsole(code));
-              }}
-            >
-              <Trash2Icon />
-            </Button>
-            <Button
-              size="icon-sm"
-              variant="ghost"
-              aria-label={t("settings.chat.artifacts.consoleClose")}
-              onClick={() => onConsoleOpenChange?.(false)}
-            >
-              <XIcon />
-            </Button>
+            <Tooltip>
+              <TooltipTrigger asChild={true}>
+                <Button
+                  size="icon-sm"
+                  variant="ghost"
+                  aria-label={t("settings.chat.artifacts.consoleClear")}
+                  onClick={() => {
+                    dropPendingEntries();
+                    setOutput(emptyCanvasConsole(code));
+                  }}
+                >
+                  <BanIcon />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="tooltip-compact">
+                {t("settings.chat.artifacts.consoleClear")}
+              </TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild={true}>
+                <Button
+                  size="icon-sm"
+                  variant="ghost"
+                  aria-label={t("settings.chat.artifacts.consoleClose")}
+                  onClick={() => onConsoleOpenChange?.(false)}
+                >
+                  <XIcon />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="tooltip-compact">
+                {t("settings.chat.artifacts.consoleClose")}
+              </TooltipContent>
+            </Tooltip>
           </div>
           <ol className="min-h-0 flex-1 overflow-auto pb-2 font-mono">
             {outputForCanvas.capped ? (

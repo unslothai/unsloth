@@ -6,6 +6,7 @@
 // and Projects with the same header menu every other list carries.
 
 import assert from "node:assert/strict";
+import { register } from "node:module";
 import test from "node:test";
 
 import {
@@ -52,6 +53,7 @@ function resetStore() {
     customSections: initial.customSections,
     sectionByChatId: initial.sectionByChatId,
     sectionByProjectId: initial.sectionByProjectId,
+    sectionByPageId: initial.sectionByPageId,
     hiddenSections: initial.hiddenSections,
     sectionOrder: initial.sectionOrder,
     pendingNewChatSection: null,
@@ -339,6 +341,7 @@ function context(overrides: Partial<SidebarDropContext> = {}): SidebarDropContex
     pinnedProjectIds: new Set(),
     sectionByChatId: { s1: S },
     sectionByProjectId: { lab: S },
+    sectionByPageId: {},
     sectionSort: () => "manual",
     orders: {
       pinned: ["p1"],
@@ -703,12 +706,12 @@ test("the sidebar and account menus share one flat surface and type; other menus
   );
   const tagged = ":is\\(\\.unsloth-plus-menu, \\.app-user-menu\\)\\.sidebar-menu\\[data-slot\\]";
   // No shadow in dark mode, over the shared menu shadow's !important. Light mode keeps it.
-  assert.match(css, new RegExp(`\\.dark ${tagged} \\{\\n\\s*box-shadow: none !important;`));
+  assert.match(css, new RegExp(`\\.dark ${tagged},\\n\\s*\\.dark \\.app-user-menu\\.menu-soft-surface-up \\{\\n\\s*box-shadow: none !important;`));
   assert.doesNotMatch(css, new RegExp(`\\n\\t${tagged} \\{\\n\\s*box-shadow: none`));
   assert.match(
     css,
     new RegExp(
-      `\\.dark ${tagged} \\{\\n\\s*background-color: color-mix\\(in srgb, var\\(--card\\), white 7%\\);\\n\\s*color: #fff;`,
+      `\\.dark ${tagged} \\{\\n\\s*background-color: color-mix\\(in srgb, var\\(--card\\), white 6\\.5%\\);\\n\\s*color: #fff;`,
     ),
   );
   // The system face at 14px, scaled, on sidebar rows and account rows alike.
@@ -941,13 +944,8 @@ test("a chat filed from its menu while its drop into a folder is in flight keeps
 });
 
 test("custom sections re-measure the bottom fade when they change the list's height", () => {
-  const deps = APP_SIDEBAR.slice(
-    APP_SIDEBAR.indexOf("// Recompute bottom-fade on mount"),
-    APP_SIDEBAR.indexOf("// Resizing changes clientHeight"),
-  );
-  for (const dep of ["visibleCustomSections.length", "collapsedSectionIds", "customSectionRowCount", "projectsSectionHidden"]) {
-    assert.ok(deps.includes(`    ${dep},\n`), dep);
-  }
+  // They draw inside the scroller, whose sections the fade observer watches.
+  assert.match(APP_SIDEBAR, /for \(const section of el\.children\) observer\.observe\(section\);/);
 });
 
 test("Alt + arrow on a section's header moves it, as it moves a row", async () => {
@@ -1045,4 +1043,111 @@ test("a row's section menu offers Remove from section only when it is in one", a
     assert.match(source, /removeFromSection: "/, locale);
     assert.doesNotMatch(source, /noSection:/, locale);
   }
+});
+
+// ---------------------------------------------------------------------------------------------
+// Pinned pages drag like chats
+
+const page = (id: string, section: SidebarDragItem["section"], scope: string): SidebarDragItem => ({
+  kind: "page",
+  id,
+  section,
+  scope,
+  projectId: null,
+});
+
+test("a pinned page reorders among Pinned's chats, and a sorted Pinned switches to Manual", () => {
+  const ctx = context({ orders: { ...context().orders, pinned: ["p1", "pg"] } });
+  const plan = plannedDrop(
+    planSidebarDrop(page("pg", "pinned", PINNED_ORDER_SCOPE), chatRow("pinned", PINNED_ORDER_SCOPE, "p1"), "top", ctx),
+  );
+  assert.deepEqual(plan.action, { kind: "reorder" });
+  assert.deepEqual(plan.effects.orders, [{ scope: PINNED_ORDER_SCOPE, ids: ["pg", "p1"] }]);
+  const sorted = plannedDrop(
+    planSidebarDrop(page("pg", "pinned", PINNED_ORDER_SCOPE), chatRow("pinned", PINNED_ORDER_SCOPE, "p1"), "top", {
+      ...ctx,
+      pinnedSort: "updated",
+    }),
+  );
+  assert.equal(sorted.effects.switchSort, "pinned");
+});
+
+test("a pinned page files into a custom section and comes back to Pinned", () => {
+  const into = plannedDrop(
+    planSidebarDrop(page("pg", "pinned", PINNED_ORDER_SCOPE), chatRow(SCOPE, SCOPE, "s1"), "bottom", context()),
+  );
+  assert.deepEqual(into.action, { kind: "section", sectionId: S });
+  assert.deepEqual(into.effects.fileInSection, { kind: "page", id: "pg", sectionId: S });
+  assert.deepEqual(into.effects.orders, [{ scope: SCOPE, ids: ["lab", "s1", "pg"] }]);
+  assert.equal(into.effects.unpinChat, undefined);
+
+  const filed = context({
+    sectionByPageId: { pg: S },
+    orders: { ...context().orders, sections: (sectionId) => (sectionId === S ? ["lab", "s1", "pg"] : []) },
+  });
+  const back = plannedDrop(
+    planSidebarDrop(page("pg", SCOPE, SCOPE), chatRow("pinned", PINNED_ORDER_SCOPE, "p1"), "top", filed),
+  );
+  assert.deepEqual(back.action, { kind: "pin" });
+  assert.deepEqual(back.effects.fileInSection, { kind: "page", id: "pg", sectionId: null });
+  assert.deepEqual(back.effects.orders, [{ scope: PINNED_ORDER_SCOPE, ids: ["pg", "p1"] }]);
+  const reorder = plannedDrop(planSidebarDrop(page("pg", SCOPE, SCOPE), chatRow(SCOPE, SCOPE, "s1"), "top", filed));
+  assert.deepEqual(reorder.action, { kind: "reorder" });
+  assert.deepEqual(reorder.effects.orders, [{ scope: SCOPE, ids: ["lab", "pg", "s1"] }]);
+});
+
+test("a pinned page has no place in Recents, Projects or a folder", () => {
+  const drag = page("pg", "pinned", PINNED_ORDER_SCOPE);
+  assert.equal(planSidebarDrop(drag, chatRow("recents", RECENTS_ORDER_SCOPE, "r1"), "top", context()), null);
+  assert.equal(planSidebarDrop(drag, { section: "projects" }, "top", context()), null);
+  assert.equal(
+    planSidebarDrop(drag, chatRow("projects", projectOrderScope("home"), "c3", "home"), "top", context()),
+    null,
+  );
+});
+
+test("pages file into sections, and a deleted section gives them back to Pinned", () => {
+  resetStore();
+  const store = useSidebarOrganizationStore.getState();
+  const gone = store.createCustomSection("Gone")!;
+  const kept = store.createCustomSection("Kept")!;
+  store.setPagesSection(["a", "b"], gone);
+  store.setPagesSection(["b"], kept);
+  assert.deepEqual({ ...useSidebarOrganizationStore.getState().sectionByPageId }, { a: gone, b: kept });
+  store.deleteCustomSection(gone);
+  assert.deepEqual({ ...useSidebarOrganizationStore.getState().sectionByPageId }, { b: kept });
+  store.setPagesSection(["b"], null);
+  assert.deepEqual({ ...useSidebarOrganizationStore.getState().sectionByPageId }, {});
+});
+
+test("an empty Pinned takes a dragged page as its first row", () => {
+  const empty = context({
+    sectionByPageId: { pg: S },
+    orders: { ...context().orders, pinned: [], sections: (sectionId) => (sectionId === S ? ["pg"] : []) },
+  });
+  for (const zone of [{ section: "pinned" as const }, { section: "pinned" as const, header: true }]) {
+    const plan = plannedDrop(planSidebarDrop(page("pg", SCOPE, SCOPE), zone, "bottom", empty));
+    assert.deepEqual(plan.cue, { ring: sectionRingKey("pinned") });
+    assert.deepEqual(plan.effects.orders, [{ scope: PINNED_ORDER_SCOPE, ids: ["pg"] }]);
+    assert.deepEqual(plan.effects.fileInSection, { kind: "page", id: "pg", sectionId: null });
+  }
+});
+
+test("undoing a removed section files its pages back into it", async () => {
+  // remove-custom-section.ts imports without an extension.
+  const resolver = `export function resolve(specifier, context, next) {
+    if (specifier === "./sidebar-organization-store") return next(specifier + ".ts", context);
+    return next(specifier, context);
+  }`;
+  register(`data:text/javascript,${encodeURIComponent(resolver)}`);
+  const { removeCustomSectionWithUndo } = await import("../src/features/chat/stores/remove-custom-section.ts");
+  resetStore();
+  const store = useSidebarOrganizationStore.getState();
+  const id = store.createCustomSection("Reading")!;
+  store.setPagesSection(["pg"], id);
+  const section = useSidebarOrganizationStore.getState().customSections.find((s) => s.id === id)!;
+  const undo = removeCustomSectionWithUndo(section);
+  assert.deepEqual({ ...useSidebarOrganizationStore.getState().sectionByPageId }, {});
+  undo();
+  assert.deepEqual({ ...useSidebarOrganizationStore.getState().sectionByPageId }, { pg: id });
 });

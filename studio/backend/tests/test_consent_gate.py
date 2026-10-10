@@ -1971,3 +1971,21 @@ class TestDiscardRemoteCodeDownload:
         src = (_BACKEND / "routes/models.py").read_text(encoding = "utf-8")
         assert "created_by_scan" in src
         assert "discard-remote-code" in src
+
+
+class TestModelFileCountsAsRemoteCode:
+    """mlx-lm / mlx-vlm exec_module a config's ``model_file`` with no trust check, so it is remote
+    code exactly like ``auto_map`` and must reach the scan and approval dialog."""
+
+    def test_local_model_file_is_remote_code(self, tmp_path):
+        (tmp_path / "config.json").write_text(json.dumps({"model_file": "custom_model.py"}))
+        (tmp_path / "custom_model.py").write_text("class Model: pass\nclass ModelArgs: pass\n")
+        assert consent._config_has_auto_map(str(tmp_path)) is True
+
+    def test_plain_local_config_is_not_remote_code(self, tmp_path):
+        (tmp_path / "config.json").write_text(json.dumps({"model_type": "llama"}))
+        assert consent._config_has_auto_map(str(tmp_path)) is False
+
+    def test_empty_model_file_is_not_remote_code(self, tmp_path):
+        (tmp_path / "config.json").write_text(json.dumps({"model_file": ""}))
+        assert consent._config_has_auto_map(str(tmp_path)) is False

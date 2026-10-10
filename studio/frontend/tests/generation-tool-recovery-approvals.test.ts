@@ -8,9 +8,8 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const { createGenerationToolRecovery } = await import(
-  "../src/features/chat/utils/generation-tool-recovery.ts"
-);
+const { createGenerationToolRecovery } =
+  await import("../src/features/chat/utils/generation-tool-recovery.ts");
 
 // A durable tool turn parks the backend on a human decision and keeps waiting for the returning
 // session (state/tool_approvals.wait_tool_decision). The reopened tab IS that session, so the card it
@@ -86,12 +85,25 @@ test("a call that parked BEFORE the tab closed is re-raised from the seed", asyn
       },
     },
   ];
-  const recovery = createGenerationToolRecovery(carried, "run-1", 40, spy.hooks);
+  const recovery = createGenerationToolRecovery(
+    carried,
+    "run-1",
+    40,
+    spy.hooks,
+  );
 
-  assert.deepEqual(spy.registered, [], "nothing is armed before the session is known");
+  assert.deepEqual(
+    spy.registered,
+    [],
+    "nothing is armed before the session is known",
+  );
   await recovery.armSeededApprovals("sess-1");
   assert.deepEqual(spy.registered, [
-    { partId: "sess-1:thread-1:appr-7", approvalId: "appr-7", sessionId: "sess-1" },
+    {
+      partId: "sess-1:thread-1:appr-7",
+      approvalId: "appr-7",
+      sessionId: "sess-1",
+    },
   ]);
 });
 
@@ -109,8 +121,17 @@ test("a finished card is never re-armed from the seed", async () => {
       },
     },
   ];
-  await createGenerationToolRecovery(carried, "run-1", 40, spy.hooks).armSeededApprovals("sess-1");
-  assert.deepEqual(spy.registered, [], "an answered call has a result; it is not waiting on anyone");
+  await createGenerationToolRecovery(
+    carried,
+    "run-1",
+    40,
+    spy.hooks,
+  ).armSeededApprovals("sess-1");
+  assert.deepEqual(
+    spy.registered,
+    [],
+    "an answered call has a result; it is not waiting on anyone",
+  );
 });
 
 test("the seed and the frame can name the same call without raising two cards", async () => {
@@ -132,7 +153,11 @@ test("the seed and the frame can name the same call without raising two cards", 
   recovery.apply(parkedStart("appr-1"), 5, 9, "sess-1");
 
   assert.equal(spy.live.size, 1, "one card, however many times it was named");
-  assert.equal(carried.length, 1, "and the frame folded into the saved card, not a second one");
+  assert.equal(
+    carried.length,
+    1,
+    "and the frame folded into the saved card, not a second one",
+  );
   assert.equal(spy.live.get("sess-1:thread-1:appr-1")?.approvalId, "appr-1");
 });
 
@@ -142,7 +167,8 @@ test("the decision goes away when the call gets a result", async () => {
   const recovery = createGenerationToolRecovery(carried, "run-1", 0, spy.hooks);
 
   recovery.apply(parkedStart("appr-1"), 0, 1, "sess-1");
-  const partId = (carried[0].part as Record<string, unknown>).toolCallId as string;
+  const partId = (carried[0].part as Record<string, unknown>)
+    .toolCallId as string;
   assert.equal(spy.live.size, 1);
 
   recovery.apply(
@@ -216,7 +242,12 @@ test("a run that ends without a tool_end still takes its cards down", async () =
   // went with the restart. The terminal guard at the call site covers a run that was ALREADY
   // terminal when recovery attached; this covers one that gets there afterwards.
   const spy = spyConfirmations();
-  const recovery = createGenerationToolRecovery(seededParkedCard(), "run-1", 40, spy.hooks);
+  const recovery = createGenerationToolRecovery(
+    seededParkedCard(),
+    "run-1",
+    40,
+    spy.hooks,
+  );
 
   await recovery.armSeededApprovals("sess-1");
   assert.equal(spy.registered.length, 1);
@@ -236,9 +267,14 @@ test("the run-level sweep only takes down cards this recovery armed", async () =
   // Same scoping rule as the per-call disarm: a recovery shares the store with whatever else is on
   // screen, so a card it never raised is not its business to resolve.
   const spy = spyConfirmations();
-  const recovery = createGenerationToolRecovery(seededParkedCard(), "run-1", 40, spy.hooks);
+  const recovery = createGenerationToolRecovery(
+    seededParkedCard(),
+    "run-1",
+    40,
+    spy.hooks,
+  );
 
-  recovery.disarmAll();                       // armed nothing, so it resolves nothing
+  recovery.disarmAll(); // armed nothing, so it resolves nothing
   assert.deepEqual(spy.resolved, []);
 });
 
@@ -249,10 +285,19 @@ test("a call the user already answered is not re-armed on reopen", async () => {
   // call that is already executing, and every press 404s. The card's shape cannot tell the two
   // apart, so the server is asked.
   const spy = spyConfirmations();
-  const recovery = createGenerationToolRecovery(seededParkedCard(), "run-1", 40, spy.hooks);
+  const recovery = createGenerationToolRecovery(
+    seededParkedCard(),
+    "run-1",
+    40,
+    spy.hooks,
+  );
 
   await recovery.armSeededApprovals("sess-1", async () => false);
-  assert.deepEqual(spy.registered, [], "an answered call must not get its buttons back");
+  assert.deepEqual(
+    spy.registered,
+    [],
+    "an answered call must not get its buttons back",
+  );
   assert.equal(spy.live.size, 0);
 });
 
@@ -260,7 +305,12 @@ test("a call that really is still parked is armed as before", async () => {
   // The control for the test above. If the check were wired the wrong way round, the feature would
   // stop working entirely and the negative test alone would still pass.
   const spy = spyConfirmations();
-  const recovery = createGenerationToolRecovery(seededParkedCard(), "run-1", 40, spy.hooks);
+  const recovery = createGenerationToolRecovery(
+    seededParkedCard(),
+    "run-1",
+    40,
+    spy.hooks,
+  );
 
   await recovery.armSeededApprovals("sess-1", async () => true);
   assert.equal(spy.registered.length, 1);
@@ -271,12 +321,21 @@ test("a check that cannot be answered still arms the card", async () => {
   // Offline, or a backend too old to have the route. Losing the buttons on a call that really is
   // parked is the worse failure, so an unanswerable question falls back to the old behaviour.
   const spy = spyConfirmations();
-  const recovery = createGenerationToolRecovery(seededParkedCard(), "run-1", 40, spy.hooks);
+  const recovery = createGenerationToolRecovery(
+    seededParkedCard(),
+    "run-1",
+    40,
+    spy.hooks,
+  );
 
   await recovery.armSeededApprovals("sess-1", async () => {
     throw new Error("network down");
   });
-  assert.equal(spy.registered.length, 1, "a failed check must not cost a parked call its buttons");
+  assert.equal(
+    spy.registered.length,
+    1,
+    "a failed check must not cost a parked call its buttons",
+  );
 });
 
 // ── The check and the replay now run concurrently ───────────────────────────
@@ -314,7 +373,12 @@ test("a card finished while its status request was in flight is not armed afterw
       },
     },
   ];
-  const recovery = createGenerationToolRecovery(carried, "run-1", 40, spy.hooks);
+  const recovery = createGenerationToolRecovery(
+    carried,
+    "run-1",
+    40,
+    spy.hooks,
+  );
 
   // Held open so the replay lands strictly between the answer and the resume, which is the race.
   let release: (value: boolean) => void = () => {};
@@ -352,9 +416,52 @@ test("a card still unresolved when the status request returns is armed as before
       },
     },
   ];
-  const recovery = createGenerationToolRecovery(carried, "run-1", 40, spy.hooks);
+  const recovery = createGenerationToolRecovery(
+    carried,
+    "run-1",
+    40,
+    spy.hooks,
+  );
   await recovery.armSeededApprovals("sess-1", async () => true);
   assert.deepEqual(spy.registered, [
-    { partId: "sess-1:thread-1:appr-10", approvalId: "appr-10", sessionId: "sess-1" },
+    {
+      partId: "sess-1:thread-1:appr-10",
+      approvalId: "appr-10",
+      sessionId: "sess-1",
+    },
   ]);
+});
+
+test("a reopened tab rebuilds an MCP App result, so the widget mounts again", () => {
+  const carried: { at: number; part: unknown }[] = [];
+  const replay = createGenerationToolRecovery(carried, "run-1", 0).apply;
+  const ui = {
+    resourceUri: "ui://weather/view.html",
+    structuredContent: { c: 21 },
+  };
+  const image = { data: "AAAA", mimeType: "image/png" };
+  replay(
+    {
+      type: "tool_start",
+      tool_call_id: "c1",
+      tool_name: "mcp__s1__get_weather",
+      arguments: {},
+    },
+    0,
+    1,
+  );
+  replay(
+    {
+      type: "tool_end",
+      tool_call_id: "c1",
+      result: `21 C\n__MCP_UI__:${JSON.stringify(ui)}\n__MCP_IMAGES__:${JSON.stringify([image])}`,
+    },
+    1,
+    2,
+  );
+  assert.deepEqual((carried[0].part as { result: unknown }).result, {
+    text: "21 C",
+    images: [image],
+    ui,
+  });
 });

@@ -108,7 +108,7 @@ def add_scan_folder_endpoint(
     # a relative one anchored) cannot answer for the host. Inside the try, since an exception
     # raised while evaluating an argument never reaches the function it was passed to.
     try:
-        payload = local_inventory.add_scan_folder_response(body.path)
+        payload = local_inventory.add_scan_folder_response(body.path, body.recursive)
     except HTTPException as error:
         raise HTTPException(
             status_code = error.status_code,

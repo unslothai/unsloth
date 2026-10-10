@@ -9,6 +9,7 @@ and with the PUT about what is unusable here."""
 
 from pathlib import Path
 import sys
+import time
 import types as _types
 
 
@@ -103,7 +104,7 @@ def test_resolution_selects_the_backend_for_the_new_model_not_the_old_one(client
     monkeypatch.setattr(
         settings,
         "_llama_backend_active",
-        lambda model = None: seen.append(model) or False,
+        lambda model = None, token = None: seen.append(model) or False,
     )
     import utils.utils as utils
 
@@ -114,7 +115,14 @@ def test_resolution_selects_the_backend_for_the_new_model_not_the_old_one(client
     assert body["backend"] == "sentence-transformers"
 
 
-def test_runtime_st_failure_is_planned_as_a_managed_gguf_download(client, monkeypatch):
+@pytest.mark.parametrize(
+    "runtime_available, can_load",
+    # ST cannot run at all, or it runs but cannot open this model (a repo saved by a newer major).
+    [(False, True), (True, False)],
+)
+def test_runtime_st_failure_is_planned_as_a_managed_gguf_download(
+    client, monkeypatch, runtime_available, can_load
+):
     from core.rag import embeddings
 
     monkeypatch.setattr(embeddings.config, "EMBED_BACKEND", "auto")
@@ -124,7 +132,12 @@ def test_runtime_st_failure_is_planned_as_a_managed_gguf_download(client, monkey
         "_resolve_auto_for_model",
         lambda model = None: "sentence-transformers",
     )
-    monkeypatch.setattr(embeddings, "sentence_transformers_runtime_available", lambda: False)
+    monkeypatch.setattr(
+        embeddings, "sentence_transformers_runtime_available", lambda: runtime_available
+    )
+    monkeypatch.setattr(
+        embeddings, "sentence_transformers_can_load", lambda model, token = None: can_load
+    )
     monkeypatch.setattr(embeddings, "_llama_server_runtime_available", lambda: True)
     monkeypatch.setattr(
         settings, "_cached_embedding_gguf", lambda candidates, require_variant: None
@@ -142,6 +155,42 @@ def test_runtime_st_failure_is_planned_as_a_managed_gguf_download(client, monkey
     assert body["download_repo"] == "org/embed-GGUF"
     assert body["files"] == ["embed-F16.gguf"]
     assert body["size_bytes"] == 1234
+
+
+def test_request_token_reaches_the_backend_loadability_probe(client, monkeypatch):
+    from core.rag import embeddings
+
+    seen = []
+    monkeypatch.setattr(embeddings.config, "EMBED_BACKEND", "auto")
+    monkeypatch.setattr(embeddings, "_forced_backends", {})
+    monkeypatch.setattr(
+        embeddings, "_resolve_auto_for_model", lambda model = None: "sentence-transformers"
+    )
+    monkeypatch.setattr(embeddings, "sentence_transformers_runtime_available", lambda: True)
+    monkeypatch.setattr(
+        embeddings,
+        "sentence_transformers_can_load",
+        lambda model, token = None: seen.append((model, token)) or False,
+    )
+    monkeypatch.setattr(embeddings, "_llama_server_runtime_available", lambda: True)
+    monkeypatch.setattr(
+        settings, "_cached_embedding_gguf", lambda candidates, require_variant: None
+    )
+    monkeypatch.setattr(
+        settings,
+        "_remote_embedding_gguf_plan",
+        lambda candidates, token: (candidates[0], ["embed-F16.gguf"]),
+    )
+    monkeypatch.setattr(settings, "_hf_files_size", lambda repo, files, token: 1234)
+
+    body = client.get(
+        "/embedding-model/resolve",
+        params = {"model": "org/private-embed"},
+        headers = {"X-Unsloth-HF-Token": "hf_request"},
+    ).json()
+
+    assert seen == [("org/private-embed", "hf_request")]
+    assert body["backend"] == "llama"
 
 
 def test_sentence_transformers_local_path_is_already_present(client, monkeypatch, tmp_path):
@@ -376,6 +425,11 @@ def _no_gguf_anywhere(monkeypatch):
     )
     monkeypatch.setattr(settings, "_remote_embedding_gguf_plan", lambda candidates, token: None)
     monkeypatch.setattr(settings, "_search_hub_for_gguf", lambda m, token: None)
+    from core.rag import embeddings
+
+    monkeypatch.setattr(
+        embeddings, "sentence_transformers_can_load", lambda model, token = None: True
+    )
 
 
 def test_no_gguf_falls_back_to_the_models_own_safetensors(client, monkeypatch):
@@ -452,6 +506,86 @@ def test_explicit_llama_policy_does_not_offer_safetensors(client, monkeypatch):
     body = _resolve(client, "acme/safetensors-only").json()
     assert body["backend"] == "llama"
     assert body["error"].startswith("No GGUF weights found")
+
+
+def test_no_safetensors_fallback_for_a_model_st_cannot_open(client, monkeypatch):
+    """A model planned on llama-server because ST cannot open it must not fall back to the download ST
+    then fails to load."""
+    from core.rag import embeddings
+
+    _no_gguf_anywhere(monkeypatch)
+    monkeypatch.setattr(settings, "_llama_runtime_available", lambda: True)
+    monkeypatch.setattr(settings, "_sentence_transformers_fallback_allowed", lambda model: True)
+    monkeypatch.setattr(
+        embeddings, "sentence_transformers_can_load", lambda model, token = None: False
+    )
+    monkeypatch.setattr(
+        settings,
+        "_safetensors_plan",
+        lambda *a: (_ for _ in ()).throw(AssertionError("ST fallback must not be probed")),
+    )
+    body = _resolve(client, "acme/st6-embedder").json()
+    assert body["backend"] == "llama"
+    assert body["download_repo"] is None
+    assert "needs a newer sentence-transformers or transformers" in body["error"]
+
+
+def test_a_spent_budget_does_not_undo_a_proven_incompatibility(client, monkeypatch):
+    """The backend check proves ST cannot open the model, then the GGUF search spends the whole budget. The
+    fallback check that follows cannot run, and must not answer "loadable" and offer the cached safetensors."""
+    from core.rag import embeddings
+
+    monkeypatch.setattr(embeddings.config, "EMBED_BACKEND", "auto")
+    monkeypatch.setattr(embeddings, "_forced_backends", {})
+    monkeypatch.setattr(
+        embeddings, "_resolve_auto_for_model", lambda model = None: "sentence-transformers"
+    )
+    monkeypatch.setattr(embeddings, "sentence_transformers_runtime_available", lambda: True)
+    monkeypatch.setattr(embeddings, "_llama_server_runtime_available", lambda: True)
+    st6_modules = [{"type": "sentence_transformers.no_such_module.transformer.Transformer"}]
+    monkeypatch.setattr(
+        embeddings,
+        "_repo_json",
+        lambda name, filename, token: st6_modules if filename == "modules.json" else {},
+    )
+    pytest.importorskip("sentence_transformers")
+
+    def _search_spends_the_budget(candidates, token):
+        settings._EMBEDDING_RESOLVE_DEADLINE.set(time.monotonic() - 1)
+        return None
+
+    monkeypatch.setattr(settings, "_llama_runtime_available", lambda: True)
+    monkeypatch.setattr(
+        settings, "_cached_embedding_gguf", lambda candidates, require_variant: None
+    )
+    monkeypatch.setattr(settings, "_remote_embedding_gguf_plan", _search_spends_the_budget)
+    monkeypatch.setattr(settings, "_search_hub_for_gguf", lambda m, token: None)
+    monkeypatch.setattr(settings, "_sentence_transformers_fallback_allowed", lambda model: True)
+    monkeypatch.setattr(settings, "_safetensors_plan", lambda m, token: (m, ["model.safetensors"]))
+
+    body = _resolve(client, "acme/st6-embedder").json()
+    assert body["backend"] == "llama"
+    assert body["download_repo"] is None
+    assert "needs a newer sentence-transformers or transformers" in body["error"]
+    # Kept for that resolution only: a fixed folder or another caller's access must be asked afresh.
+    assert embeddings.sentence_transformers_known_unloadable("acme/st6-embedder") is False
+
+
+def test_st_load_check_keeps_the_plan_once_the_resolve_budget_is_spent(monkeypatch):
+    from core.rag import embeddings
+
+    monkeypatch.setattr(
+        embeddings,
+        "sentence_transformers_can_load",
+        lambda model, token = None: (_ for _ in ()).throw(
+            AssertionError("must not probe past the budget")
+        ),
+    )
+    marker = settings._EMBEDDING_RESOLVE_DEADLINE.set(time.monotonic() - 1)
+    try:
+        assert settings._sentence_transformers_can_load("acme/st6-embedder") is True
+    finally:
+        settings._EMBEDDING_RESOLVE_DEADLINE.reset(marker)
 
 
 def test_the_fallback_stays_in_the_models_own_repo(monkeypatch):

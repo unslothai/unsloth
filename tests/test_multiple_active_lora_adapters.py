@@ -32,13 +32,17 @@ class _Block(torch.nn.Module):
         self.act_fn = torch.nn.SiLU()
 
 
-def _peft_block(adapters):
+def _peft_block(adapters, lora_bias = False):
     from peft import LoraConfig, get_peft_model
 
     torch.manual_seed(3407)
     targets = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
     cfg = lambda r: LoraConfig(
-        r = r, lora_alpha = 2 * r, target_modules = targets, init_lora_weights = False
+        r = r,
+        lora_alpha = 2 * r,
+        target_modules = targets,
+        init_lora_weights = False,
+        lora_bias = lora_bias,
     )
     model = get_peft_model(_Block(), cfg(2), adapter_name = "a")
     if adapters > 1:
@@ -47,6 +51,10 @@ def _peft_block(adapters):
     model = model.to("cuda", torch.bfloat16)
     for name, p in model.named_parameters():
         p.requires_grad_("lora_" in name)
+    if lora_bias:
+        with torch.no_grad():
+            for proj in targets:
+                model.base_model.model.get_submodule(proj).lora_B["a"].bias.normal_()
     return model, model.base_model.model
 
 
@@ -98,8 +106,24 @@ def test_qkv_o_mlp_match_peft(adapters):
         model,
     )
     if adapters > 1:
-        # The second adapter must be in the graph, not just the first.
         assert any(".b." in n for n in qkv) and any(".b." in n for n in mlp)
+
+
+def test_qkv_o_mlp_match_peft_with_lora_bias():
+    from unsloth.kernels import apply_lora_mlp_swiglu, apply_lora_o, apply_lora_qkv
+
+    model, block = _peft_block(1, lora_bias = True)
+    _check(
+        lambda X: apply_lora_qkv(block, X),
+        lambda X: (block.q_proj(X), block.k_proj(X), block.v_proj(X)),
+        model,
+    )
+    _check(lambda X: apply_lora_o(block, X), block.o_proj, model)
+    _check(
+        lambda X: apply_lora_mlp_swiglu(block, X),
+        lambda X: block.down_proj(block.act_fn(block.gate_proj(X)) * block.up_proj(X)),
+        model,
+    )
 
 
 @pytest.mark.parametrize("adapters", [1, 2])
@@ -113,3 +137,41 @@ def test_fast_linear_forward_decode_matches_peft(adapters):
         got = fast_linear_forward(block.q_proj, X, out = out)
         torch.testing.assert_close(got, block.q_proj(X), rtol = 2e-2, atol = 2e-2)
         assert got.data_ptr() == out.data_ptr()
+
+
+@pytest.mark.parametrize("q_len", [1, 5])
+def test_fast_linear_forward_applies_dora_magnitude(q_len):
+    from peft import LoraConfig, get_peft_model
+    from unsloth.kernels import fast_linear_forward
+
+    torch.manual_seed(3407)
+    cfg = LoraConfig(
+        r = 4, lora_alpha = 8, target_modules = ["q_proj"], init_lora_weights = False, use_dora = True
+    )
+    block = get_peft_model(_Block(), cfg).to("cuda", torch.bfloat16).base_model.model
+    X = torch.randn(1, q_len, H, device = "cuda", dtype = torch.bfloat16)
+    with torch.no_grad():
+        # a trained magnitude differs from the initial DoRA row norms
+        block.q_proj.lora_magnitude_vector["default"].weight.mul_(1.5)
+        torch.testing.assert_close(
+            fast_linear_forward(block.q_proj, X), block.q_proj(X), rtol = 2e-2, atol = 2e-2
+        )
+
+
+@pytest.mark.parametrize("q_len", [1, 5])
+def test_fast_linear_forward_adds_lora_bias(q_len):
+    from peft import LoraConfig, get_peft_model
+    from unsloth.kernels import fast_linear_forward
+
+    torch.manual_seed(3407)
+    cfg = LoraConfig(
+        r = 4, lora_alpha = 8, target_modules = ["q_proj"], init_lora_weights = False, lora_bias = True
+    )
+    block = get_peft_model(_Block(), cfg).to("cuda", torch.bfloat16).base_model.model
+    X = torch.randn(1, q_len, H, device = "cuda", dtype = torch.bfloat16)
+    with torch.no_grad():
+        # a trained lora_B bias differs from its zero initialization
+        block.q_proj.lora_B["default"].bias.normal_()
+        torch.testing.assert_close(
+            fast_linear_forward(block.q_proj, X), block.q_proj(X), rtol = 2e-2, atol = 2e-2
+        )

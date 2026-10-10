@@ -80,6 +80,20 @@ def _validate_github_seed_static(source: dict[str, Any]) -> list[ValidateError]:
     return errors
 
 
+def _all_blocks_dropped_message(columns: list[Any]) -> str:
+    # Reword only: Data Designer's profiler also fails when no generated column is kept (#10836).
+    names = [
+        column.name
+        for column in columns
+        if getattr(column, "drop", False) and column.name != "_internal_row_id"
+    ]
+    listed = f" ({', '.join(names)})" if names else ""
+    return (
+        f'Every block is set to "Keep out of final dataset"{listed}. Turn that off on at least '
+        "one block: source data fields cannot be the only columns in the output."
+    )
+
+
 def _collect_validation_errors(recipe: dict[str, Any]) -> list[ValidateError]:
     try:
         from data_designer.engine.compiler import (
@@ -118,7 +132,10 @@ def _collect_validation_errors(recipe: dict[str, Any]) -> list[ValidateError]:
             continue
         code = getattr(violation.type, "value", None)
         path = violation.column if violation.column else None
-        message = str(violation.message).strip() or "Validation failed."
+        if code == "all_columns_dropped":
+            message = _all_blocks_dropped_message(config.columns)
+        else:
+            message = str(violation.message).strip() or "Validation failed."
         errors.append(
             ValidateError(
                 message = message,

@@ -76,6 +76,7 @@ from utils.models.model_identity import restore_hf_cache_repo_identity
 from utils.models.unsloth_mirror import unsloth_public_mirror
 from utils.models.model_config import _env_offline
 from utils.datasets import format_and_template_dataset
+from utils.datasets.cells import csv_as_text_kwargs
 from utils.datasets.chat_templates import get_training_chat_template
 from utils.datasets.completion_masking import apply_completion_masking
 from utils.datasets.iterable import is_streaming_dataset as detect_streaming_dataset
@@ -362,6 +363,11 @@ class UnslothTrainer:
         self.is_audio_vlm = False
         self._audio_type = None
         self._use_gradient_checkpointing = "unsloth"
+        self._offload_layers = 0
+        self._prefetch_depth = 2
+        self._gpu_ids = None
+        self._offload_layer_devices = None
+        self._offload_plan_shape = {}
         # True until a probe says otherwise, so a path that never probes cannot trip the inconclusive-detection guard.
         self._audio_type_known = True
         self._is_dataset_audio = False
@@ -570,6 +576,96 @@ class UnslothTrainer:
                 except Exception as e:
                     logger.error(f"Error in progress callback: {e}")
 
+    def _offload_load_kwargs(self, device_map = None) -> dict:
+        # Loading the offloaded layers straight into host RAM is what lets a model larger than the card load at all.
+        if not self._offload_layers:
+            return {}
+        # A fixed count loads to host only onto one card (core raises on a multi-GPU map); get_peft_model swaps it there.
+        if self._offload_layers != "auto" and device_map in ("unsloth_balanced", "balanced"):
+            return {}
+        return {
+            "offload_layers": self._offload_layers,
+            # Auto plans at load; without the run's batch and rank it sizes for batch 1, rank 16.
+            "device_map_planner_kwargs": {
+                "prefetch_depth": self._prefetch_depth,
+                **self._offload_plan_shape,
+            },
+        }
+
+    def _offload_peft_kwargs(self) -> dict:
+        if not self._offload_layers:
+            return {}
+        return {"offload_layers": self._offload_layers, "prefetch_depth": self._prefetch_depth}
+
+    def _offload_snapshot(self) -> Optional[dict]:
+        """Where each decoder layer is and what the last steps' copies cost, for the live panel."""
+        swapper = (
+            getattr(self.model, "_unsloth_block_swap", None) if self.model is not None else None
+        )
+        stats = getattr(swapper, "stats", None)
+        if stats is None:
+            return None
+        try:
+            snap = stats()
+            # JSON object keys must be strings.
+            snap["state"] = {str(k): v for k, v in snap["state"].items()}
+            if torch.cuda.is_available():
+                device = getattr(swapper, "device", None)
+                snap["vram_allocated_bytes"] = torch.cuda.memory_allocated(device)
+                snap["vram_peak_bytes"] = torch.cuda.max_memory_allocated(device)
+                snap["vram_total_bytes"] = torch.cuda.get_device_properties(device).total_memory
+                get_fraction = getattr(torch.cuda, "get_per_process_memory_fraction", None)
+                if get_fraction is not None:
+                    snap["vram_fraction"] = get_fraction(device)
+                snap["vram_devices"] = self._offload_vram_devices()
+                snap["layer_device"] = self._offload_layer_device_map(swapper)
+            return snap
+        except Exception as exc:
+            logger.debug("offload stats unavailable: %s", exc)
+            return None
+
+    def _offload_vram_devices(self) -> list:
+        gpu_ids = getattr(self, "_gpu_ids", None)
+        get_fraction = getattr(torch.cuda, "get_per_process_memory_fraction", None)
+        devices = []
+        for i in range(torch.cuda.device_count()):
+            entry = {
+                "index": i,
+                "gpu_id": gpu_ids[i] if gpu_ids and i < len(gpu_ids) else i,
+                "name": torch.cuda.get_device_properties(i).name,
+                "allocated_bytes": torch.cuda.memory_allocated(i),
+                "peak_bytes": torch.cuda.max_memory_allocated(i),
+                "total_bytes": torch.cuda.get_device_properties(i).total_memory,
+            }
+            if get_fraction is not None:
+                entry["fraction"] = get_fraction(i)
+            devices.append(entry)
+        return devices
+
+    def _offload_layer_device_map(self, swapper) -> dict:
+        """Torch ordinal of every decoder layer: an offloaded one's home card, a resident one's weights."""
+        key = (id(swapper), tuple(getattr(swapper, "indices", ())))
+        cached = getattr(self, "_offload_layer_devices", None)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        devices = {}
+        for li, block in zip(getattr(swapper, "indices", ()), getattr(swapper, "blocks", ())):
+            home = getattr(block, "home", None)
+            if home is not None and home.type == "cuda" and home.index is not None:
+                devices[str(li)] = home.index
+        try:
+            from unsloth_zoo.block_swap import find_decoder_layers
+            for li, layer in enumerate(find_decoder_layers(self.model)):
+                if str(li) in devices:
+                    continue
+                p = next(layer.parameters(), None)
+                if p is not None and p.device.type == "cuda" and p.device.index is not None:
+                    devices[str(li)] = p.device.index
+        except Exception as exc:
+            logger.debug("offload layer devices unavailable: %s", exc)
+        self._offload_layer_devices = (key, devices)
+        return devices
+
     def _create_progress_callback(self):
         """Create a TrainerCallback for progress tracking. Reused by all training branches."""
         from transformers import TrainerCallback
@@ -688,6 +784,7 @@ class UnslothTrainer:
                     num_tokens = num_tokens,
                     eval_loss = logs.get("eval_loss", None),
                     is_run_summary = is_run_summary,
+                    offload = trainer_ref._offload_snapshot(),
                     status_message = "",
                 )
 
@@ -901,8 +998,17 @@ class UnslothTrainer:
         model_revision: Optional[str] = None,
         use_gradient_checkpointing: Union[str, bool] = "unsloth",
         on_model_resolved: Optional[Callable[[str], None]] = None,
+        offload_layers: Union[int, str] = 0,
+        prefetch_depth: Union[int, str] = 2,
+        offload_plan_shape: Optional[dict] = None,
     ) -> bool:
         """Load model for training (supports both text and vision models)"""
+        # Offloading streams frozen base weights, so it has nothing to do in a full finetune.
+        self._offload_layers = 0 if full_finetuning else (offload_layers or 0)
+        self._prefetch_depth = prefetch_depth or 2
+        # Physical ids behind each torch ordinal, so the panel names cards as the settings do.
+        self._gpu_ids = list(gpu_ids) if gpu_ids else None
+        self._offload_plan_shape = {k: v for k, v in (offload_plan_shape or {}).items() if v}
         self.load_in_4bit = load_in_4bit
         self.trust_remote_code = trust_remote_code
         # The loader installs the checkpointing implementation; a full finetune never reinstalls it.
@@ -1122,6 +1228,7 @@ class UnslothTrainer:
                     use_exact_model_name = model_revision is not None,
                     use_gradient_checkpointing = use_gradient_checkpointing,
                     on_model_resolved = on_model_resolved,
+                    **self._offload_load_kwargs(device_map),
                 )
                 logger.info(f"Loaded {self._audio_type} audio model (FastLanguageModel)")
 
@@ -1198,6 +1305,7 @@ class UnslothTrainer:
                     use_exact_model_name = model_revision is not None,
                     use_gradient_checkpointing = use_gradient_checkpointing,
                     on_model_resolved = on_model_resolved,
+                    **self._offload_load_kwargs(device_map),
                 )
                 logger.info("Loaded audio VLM model (FastModel)")
 
@@ -1215,6 +1323,7 @@ class UnslothTrainer:
                     use_exact_model_name = model_revision is not None,
                     use_gradient_checkpointing = use_gradient_checkpointing,
                     on_model_resolved = on_model_resolved,
+                    **self._offload_load_kwargs(device_map),
                 )
                 logger.info("Loaded vision model")
 
@@ -1244,6 +1353,7 @@ class UnslothTrainer:
                     use_exact_model_name = model_revision is not None,
                     use_gradient_checkpointing = use_gradient_checkpointing,
                     on_model_resolved = on_model_resolved,
+                    **self._offload_load_kwargs(device_map),
                 )
                 logger.info("Loaded text model")
 
@@ -1296,6 +1406,9 @@ class UnslothTrainer:
                     model_revision = model_revision,
                     use_gradient_checkpointing = use_gradient_checkpointing,
                     on_model_resolved = on_model_resolved,
+                    offload_layers = offload_layers,
+                    prefetch_depth = prefetch_depth,
+                    offload_plan_shape = offload_plan_shape,
                 )
             error_msg = str(e)
             error_lower = error_msg.lower()
@@ -1446,6 +1559,7 @@ class UnslothTrainer:
                     use_rslora = use_rslora,
                     use_dora = use_dora,
                     loftq_config = {"loftq_bits": 4, "loftq_iter": 1} if use_loftq else None,
+                    **self._offload_peft_kwargs(),
                 )
                 if self.is_audio_vlm:
                     peft_kwargs.update(
@@ -1523,6 +1637,7 @@ class UnslothTrainer:
                     use_dora = use_dora,
                     loftq_config = {"loftq_bits": 4, "loftq_iter": 1} if use_loftq else None,
                     modules_to_save = modules_to_save,
+                    **self._offload_peft_kwargs(),
                 )
             else:
                 logger.info(f"Text model LoRA configuration:")
@@ -1543,6 +1658,7 @@ class UnslothTrainer:
                     use_dora = use_dora,
                     loftq_config = {"loftq_bits": 4, "loftq_iter": 1} if use_loftq else None,
                     modules_to_save = modules_to_save,
+                    **self._offload_peft_kwargs(),
                 )
 
             if self.should_stop:
@@ -2760,6 +2876,8 @@ class UnslothTrainer:
             def _raw_mode_label() -> str:
                 return "CPT" if is_cpt else "raw text"
 
+            raw_text_column = {}
+
             def _apply_raw_text_prep(ds: Dataset, split_name: str) -> Dataset:
                 try:
                     result = prepare_raw_text_dataset(
@@ -2768,6 +2886,7 @@ class UnslothTrainer:
                         split_name = split_name,
                         eos_token = getattr(self.tokenizer, "eos_token", None),
                         append_eos = True,
+                        text_column = raw_text_column.get("train"),
                     )
                 except ValueError as exc:
                     error_msg = str(exc)
@@ -2777,12 +2896,14 @@ class UnslothTrainer:
 
                 for notice in result.notices:
                     if notice.level == "warning":
-                        logger.warning(notice.message)
                         if notice.update_status:
-                            self._update_progress(status_message = notice.message)
+                            self._record_warning(notice.message)
+                        else:
+                            logger.warning(notice.message)
                     else:
                         logger.info(f"{notice.message}\n")
 
+                raw_text_column.setdefault(split_name, result.source_column)
                 return result.dataset
 
             # S3 datasets download to a local temp dir, then use the local-file path below.
@@ -2807,7 +2928,12 @@ class UnslothTrainer:
 
                 if all_files:
                     loader = self._loader_for_files(all_files)
-                    dataset = load_dataset(loader, data_files = all_files, split = "train")
+                    dataset = load_dataset(
+                        loader,
+                        data_files = all_files,
+                        split = "train",
+                        **csv_as_text_kwargs(all_files),
+                    )
 
                     if self.should_stop:
                         logger.info("Stopped during dataset loading\n")
@@ -2824,7 +2950,10 @@ class UnslothTrainer:
                     if eval_all_files:
                         eval_loader = self._loader_for_files(eval_all_files)
                         eval_dataset = load_dataset(
-                            eval_loader, data_files = eval_all_files, split = "train"
+                            eval_loader,
+                            data_files = eval_all_files,
+                            split = "train",
+                            **csv_as_text_kwargs(eval_all_files),
                         )
                         has_separate_eval_source = True
                         logger.info(
@@ -4041,11 +4170,12 @@ class UnslothTrainer:
             if is_deepseek_ocr:
                 logger.info("Detected DeepSeek OCR model\n")
                 if not _ensure_deepseek_ocr_installed():
+                    # No manual snapshot_download instruction: it told the user to create
+                    # a deepseek_ocr directory in the working directory, which is exactly
+                    # the directory the loader must not pick up over the pinned source.
                     error_msg = (
-                        "Failed to install DeepSeek OCR module. "
-                        "Please install manually: "
-                        "from huggingface_hub import snapshot_download; "
-                        "snapshot_download('unsloth/DeepSeek-OCR', local_dir='deepseek_ocr')"
+                        "Could not prepare the DeepSeek OCR module. "
+                        "Check network access to huggingface.co and try again."
                     )
                     logger.error(error_msg)
                     self._update_progress(error = error_msg, is_training = False)
@@ -4661,37 +4791,26 @@ class UnslothTrainer:
 
 
 def _ensure_deepseek_ocr_installed():
-    """Auto-install the DeepSeek OCR module from HF hub if missing. Returns True if available
-    (already installed or just installed)."""
+    """Install the pinned DeepSeek OCR module if needed. Returns True if available.
+
+    Routed through the pinned-source machinery the other Hub-published sources use, so
+    the fetch is at a fixed revision and the import is checked to have come from it.
+    The old version decided "already available" with a bare
+    `from deepseek_ocr... import`, which any `deepseek_ocr` directory anywhere on
+    `sys.path` satisfied: that directory got imported and the real download was skipped.
+    """
     try:
-        from deepseek_ocr.modeling_deepseekocr import format_messages
-        logger.info("DeepSeek OCR module already available")
-        return True
-    except ImportError:
-        pass
+        logger.info("Preparing the DeepSeek OCR module...")
 
-    try:
-        logger.info("DeepSeek OCR module not found. Auto-installing from HuggingFace...")
-        logger.info("\n Downloading DeepSeek OCR module from HuggingFace...\n")
+        from utils.third_party_source import (
+            ensure_deepseek_ocr_source,
+            import_deepseek_ocr_module,
+        )
 
-        from huggingface_hub import snapshot_download
-        import sys
-        import os
+        source = ensure_deepseek_ocr_source()
+        import_deepseek_ocr_module("deepseek_ocr.modeling_deepseekocr", source)
 
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        parent_dir = os.path.dirname(script_dir)
-
-        local_dir = os.path.join(parent_dir, "deepseek_ocr")
-
-        snapshot_download("unsloth/DeepSeek-OCR", local_dir = local_dir, local_dir_use_symlinks = False)
-
-        if parent_dir not in sys.path:
-            sys.path.insert(0, parent_dir)
-
-        from deepseek_ocr.modeling_deepseekocr import format_messages
-
-        logger.info("DeepSeek OCR module installed successfully")
-        logger.info("DeepSeek OCR module installed successfully!\n")
+        logger.info("DeepSeek OCR module ready")
         return True
 
     except Exception as e:

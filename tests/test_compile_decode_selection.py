@@ -31,6 +31,7 @@ def _model(model_type, text_type = None):
 @pytest.fixture(autouse = True)
 def _zoo_supports_it(monkeypatch):
     monkeypatch.setattr(vision, "unsloth_decode_compile", object())
+    monkeypatch.setattr(vision, "_zoo_module_available", lambda name: True)
     monkeypatch.setenv("UNSLOTH_COMPILE_DECODE", "1")
     monkeypatch.delenv("UNSLOTH_COMPILE_DISABLE", raising = False)
     monkeypatch.delenv("UNSLOTH_EAGER_DECODE", raising = False)
@@ -48,10 +49,19 @@ def test_decode_compile_is_opt_in(monkeypatch):
         _model("qwen3_5_moe", "qwen3_5_moe_text"),
         _model("qwen3_5_text"),
         _model("qwen3_5_moe_text"),
+        _model("gpt_oss"),
     ],
 )
 def test_qwen3_5_compiles_decode(model):
     assert _compiles_decode(model)
+
+
+def test_gpt_oss_needs_the_routed_zoo_patch(monkeypatch):
+    # Older unsloth_zoo cannot trace a gpt-oss decode step into one CUDA graph.
+    monkeypatch.setattr(vision, "_zoo_module_available", lambda name: False)
+    assert not _compiles_decode(_model("gpt_oss"))
+    assert not vision._eager_decodes(_model("gpt_oss"))
+    assert _compiles_decode(_model("qwen3_5", "qwen3_5_text"))
 
 
 @pytest.mark.parametrize(

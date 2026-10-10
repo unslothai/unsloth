@@ -13,7 +13,6 @@ export type PlusMenuItemId =
   | "savedPrompts"
   | "compareChat"
   | "exportChat"
-  | "canvas"
   | "projects";
 
 // Canonical order used both for the pinned items at the top level and for the items that fall
@@ -25,7 +24,6 @@ export const PLUS_MENU_ORDER: PlusMenuItemId[] = [
   "savedPrompts",
   "compareChat",
   "exportChat",
-  "canvas",
   "projects",
 ];
 
@@ -39,7 +37,6 @@ const DEFAULT_PINS: Record<PlusMenuItemId, boolean> = {
   savedPrompts: false,
   compareChat: false,
   exportChat: false,
-  canvas: false,
 };
 
 export const PLUS_MENU_PINS_STORAGE_KEY = "unsloth_plus_menu_pins";

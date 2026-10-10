@@ -13,11 +13,11 @@ def _widen(
     pin_ids,
     cmd,
     inherited = None,
-    may_widen = True,
+    allowed_ids = None,
 ):
     cmd = list(cmd)
     widened, note = llama_cpp._widen_pin_ids_for_companion_devices(
-        cmd, pin_ids, inherited, may_widen = may_widen
+        cmd, pin_ids, inherited, allowed_ids = allowed_ids
     )
     return cmd, widened, note
 
@@ -141,18 +141,50 @@ def test_load_model_uses_the_argv_and_skips_an_unmappable_mask():
     window = src[at - 400 : at + 200]
     assert "_visibility_mask_is_unmappable()" in window
     assert 'env.get("LLAMA_ARG_DEVICE", "")' in window
-    assert "may_widen = not gpu_ids" in src[at : at + 300]
+    assert "allowed_ids = gpu_ids or None" in src[at : at + 300]
 
 
-def test_an_explicit_gpu_ids_pin_is_never_widened_onto_another_card():
-    cmd, pin, note = _widen([0], ["--mmproj-device", "CUDA1"], may_widen = False)
+def test_a_widened_explicit_pin_is_what_status_and_dedupe_see():
+    # #12467: /status echoed the pre-widen pin [0], so a replayed load lost GPU 1.
+    import inspect
+
+    src = inspect.getsource(llama_cpp.LlamaCppBackend.load_model)
+    at = src.index("_widen_pin_ids_for_companion_devices(")
+    window = src[at : at + 900]
+    assert "if gpu_ids:" in window
+    assert "self._adopt_widened_pin(_pin_ids)" in window
+
+    backend = llama_cpp.LlamaCppBackend.__new__(llama_cpp.LlamaCppBackend)
+    backend._is_diffusion = False
+    backend._requested_gpu_ids, backend._gpu_ids = [0, 1], [0]
+    backend._adopt_widened_pin([0, 1])
+    assert backend._gpu_ids == [0, 1]
+    assert backend.matches_gpu_ids([0, 1]) is True
+    assert backend.matches_gpu_ids([0]) is False
+
+    backend._gpu_ids = None
+    backend._adopt_widened_pin([0, 1])
+    assert backend._gpu_ids is None
+
+
+def test_explicit_gpu_ids_never_widen_onto_an_unselected_card():
+    cmd, pin, note = _widen([0], ["--mmproj-device", "CUDA1"], allowed_ids = [0])
     assert pin == [0]
     assert cmd == ["--mmproj-device", "CUDA1"]
     assert note == ""
 
 
+def test_explicit_gpu_ids_widen_onto_a_selected_card_the_fit_left_out():
+    # #12467: gpu_ids [0, 1] saved, the fit chose [0], the projector names GPU 1
+    cmd, pin, note = _widen([0], ["--mmproj-device", "CUDA1"], allowed_ids = [0, 1])
+    assert pin == [0, 1]
+    assert _value(cmd, "--mmproj-device") == "CUDA1"
+    assert cmd[-2:] == ["--device", "CUDA0"]
+    assert note
+
+
 def test_an_explicit_pin_still_renumbers_a_companion_on_one_of_its_cards():
-    cmd, pin, _ = _widen([2, 3], ["--mmproj-device", "CUDA3"], may_widen = False)
+    cmd, pin, _ = _widen([2, 3], ["--mmproj-device", "CUDA3"], allowed_ids = [2, 3])
     assert pin == [2, 3]
     assert _value(cmd, "--mmproj-device") == "CUDA1"
     assert "--device" not in cmd

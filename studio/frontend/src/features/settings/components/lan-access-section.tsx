@@ -20,6 +20,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { usePlatformStore } from "@/config/env";
 import {
   loadLanAccess,
   startLanAccess,
@@ -36,6 +37,7 @@ import {
   lanAccessErrorMessage,
   lanAccessPortReadOnly,
   lanAccessStopDisconnectsOrigin,
+  lanApiUrls,
   validLanAccessPort,
 } from "@/features/settings/api/lan-access-state";
 import { isTauri } from "@/lib/api-base";
@@ -246,6 +248,7 @@ export function LanAccessSection() {
 
   const applyStatus = useCallback((next: LanAccessStatus) => {
     setStatus(next);
+    usePlatformStore.setState({ lanUrls: lanApiUrls(next) });
   }, []);
 
   useEffect(() => {

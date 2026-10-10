@@ -6,6 +6,7 @@ import platform
 import shutil
 import subprocess
 import threading
+import time
 from typing import Any, Optional
 
 from loggers import get_logger
@@ -75,11 +76,58 @@ def _uuid_visible_ordinal_map(
     return visible_ordinals
 
 
+_UUID_MASK_TTL_S = 30.0
+_uuid_mask_cache: dict[tuple[str, int], tuple[float, Optional[list[int]]]] = {}
+
+
+def resolve_uuid_mask(parent_cuda_visible_devices: str) -> Optional[list[int]]:
+    """Physical nvidia-smi indices for a full-GPU UUID mask, in mask order; None if any token is unresolvable."""
+    # gpu_query never caches a failure, and the parent GPU spec is read on every poll and load:
+    # without this a hung nvidia-smi costs its full timeout per call.
+    # Keyed on the static generation so invalidate_static() (eGPU hotplug, driver reset) drops it too.
+    key = (parent_cuda_visible_devices, gpu_query._static_gen)
+    hit = _uuid_mask_cache.get(key)
+    if hit is not None and time.monotonic() - hit[0] < _UUID_MASK_TTL_S:
+        return None if hit[1] is None else list(hit[1])
+    ids = _query_uuid_mask(parent_cuda_visible_devices)
+    _uuid_mask_cache.clear()
+    _uuid_mask_cache[key] = (time.monotonic(), ids)
+    return None if ids is None else list(ids)
+
+
+def _query_uuid_mask(parent_cuda_visible_devices: str) -> Optional[list[int]]:
+    try:
+        result = gpu_query.run_nvidia_smi(
+            [_nvidia_smi_executable(), "--query-gpu=index,uuid", "--format=csv,noheader"],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 5,
+            env = child_env_without_native_path_secret(),
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        logger.warning("nvidia-smi query failed while resolving a UUID mask: %s", e)
+        return None
+    if result.returncode != 0:
+        return None
+    gpu_rows = []
+    for line in result.stdout.strip().splitlines():
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) == 2 and parts[0].isdecimal():
+            gpu_rows.append((int(parts[0]), parts[1]))
+    visible_ordinals = _uuid_visible_ordinal_map(parent_cuda_visible_devices, gpu_rows)
+    if visible_ordinals is None:
+        return None
+    return sorted(visible_ordinals, key = visible_ordinals.__getitem__)
+
+
 def get_physical_gpu_count() -> Optional[int]:
     """Return physical GPU count via nvidia-smi, or None on failure."""
     try:
         result = gpu_query.run_nvidia_smi(
-            ["nvidia-smi", "-L"],
+            [_nvidia_smi_executable(), "-L"],
             capture_output = True,
             text = True,
             encoding = "utf-8",
@@ -103,7 +151,7 @@ def get_primary_gpu_utilization() -> dict[str, Any]:
     try:
         result = gpu_query.run_nvidia_smi(
             [
-                "nvidia-smi",
+                _nvidia_smi_executable(),
                 "--query-gpu=utilization.gpu,temperature.gpu,"
                 "memory.used,memory.total,power.draw,power.limit",
                 "--format=csv,noheader,nounits",
@@ -152,7 +200,7 @@ def get_visible_gpu_utilization(
     try:
         result = gpu_query.run_nvidia_smi(
             [
-                "nvidia-smi",
+                _nvidia_smi_executable(),
                 f"--query-gpu={query_fields}",
                 "--format=csv,noheader,nounits",
             ],

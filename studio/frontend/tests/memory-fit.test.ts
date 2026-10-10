@@ -644,3 +644,188 @@ test("capacity advice does not assume a pageable load mode", () => {
     assert.doesNotMatch(result.advisory?.text ?? "", /paging|will load|will fit/);
   }
 });
+
+// ---------------------------------------------------------------------------
+// Auto context: an unpinned context is priced at the native length, which the loader shrinks
+
+/** An 8 GB card at the default budget, beside 32 GB of RAM. */
+const EIGHT_GB_CARD: Partial<MemoryFitCapacity> = {
+  gpuCapacityGb: 7.2,
+  totalCapacityGb: 39.2,
+  systemRamCapacityGb: 32,
+  freeGpuCapacityGb: 7,
+  usableSystemRamGb: 22,
+};
+/** Qwen3-8B Q4_K_M at its native 40,960 tokens, and what remains at the shortest context. */
+const NATIVE_QWEN3_8B = { gpuBytes: 10.45 * GB, totalBytes: 10.45 * GB, nCtx: 40960 };
+const QWEN3_8B_FLOOR = 4.82 * GB;
+/** An unpinned context the loader shrinks to `bytes`, with layers free to move past it. */
+const floorAt = (bytes: number) => ({
+  contextIsPinned: false,
+  gpuFloorBytes: bytes,
+  floorCanOffload: true,
+});
+
+test("an unpinned context over the card is not an overage when the floor fits", () => {
+  const result = fit(
+    { ...NATIVE_QWEN3_8B, ...floorAt(QWEN3_8B_FLOOR) },
+    EIGHT_GB_CARD,
+  );
+  assert.equal(result.gpuFit, "fits");
+  assert.equal(result.totalFit, "fits");
+  assert.equal(
+    result.advisory?.text,
+    "Estimated at the full 40,960-token context. Auto context will shrink it to fit.",
+  );
+  assert.equal(result.advisory?.tone, "muted");
+});
+
+test("a pinned context over the card still exceeds, as does an older backend's answer", () => {
+  for (const pin of [{ contextIsPinned: true }, {}]) {
+    const result = fit({ ...NATIVE_QWEN3_8B, ...pin }, EIGHT_GB_CARD);
+    assert.equal(result.gpuFit, "exceeds", JSON.stringify(pin));
+    assert.equal(result.advisory?.text, ADVISORY_TEXTS.gpuExceeds);
+  }
+});
+
+test("an unpinned context without a floor keeps the native verdict", () => {
+  const result = fit(
+    { ...NATIVE_QWEN3_8B, contextIsPinned: false, gpuFloorBytes: null },
+    EIGHT_GB_CARD,
+  );
+  assert.equal(result.gpuFit, "exceeds");
+});
+
+test("a floor over the card is a real overage, and the note does not send the user to Auto", () => {
+  // The floor is Auto's shortest context; past it the launch spills layers to the CPU.
+  const result = fit(
+    {
+      gpuBytes: 14 * GB,
+      totalBytes: 14 * GB,
+      nCtx: 131072,
+      ...floorAt(9 * GB),
+    },
+    EIGHT_GB_CARD,
+  );
+  assert.equal(result.gpuFit, "exceeds");
+  assert.equal(result.advisory?.tone, "warn");
+  assert.equal(
+    result.advisory?.text,
+    "Exceeds GPU memory even at the shortest context the loader tries, so some layers will run on the CPU and generation will be slower.",
+  );
+});
+
+test("an unpinned context that already fits prints no note", () => {
+  const result = fit(
+    { gpuBytes: 4 * GB, totalBytes: 4 * GB, nCtx: 8192, ...floorAt(3.5 * GB) },
+    EIGHT_GB_CARD,
+  );
+  assert.equal(result.gpuFit, "fits");
+  assert.equal(result.advisory, null);
+});
+
+test("a single pool draws the same verdict from the floor", () => {
+  const result = fit(
+    { gpuBytes: 70 * GB, totalBytes: 70 * GB, nCtx: 262144, ...floorAt(20 * GB) },
+    {},
+    APPLE,
+  );
+  assert.equal(result.totalFit, "fits");
+  assert.equal(
+    result.advisory?.text,
+    "Estimated at the full 262,144-token context. Auto context will shrink it to fit.",
+  );
+});
+
+test("free-memory pressure outranks the Auto note, since the loader fits against what is free", () => {
+  const result = fit(
+    { ...NATIVE_QWEN3_8B, ...floorAt(5.92 * GB) },
+    { ...EIGHT_GB_CARD, freeGpuCapacityGb: 3 },
+  );
+  assert.equal(result.gpuFit, "tight");
+  assert.equal(
+    result.advisory?.text,
+    "Fits this GPU, but little VRAM is free right now, so Auto may pick a shorter context or run some layers on the CPU. Free memory first.",
+  );
+});
+
+test("on one pool, pressure outranks the Auto note too", () => {
+  const result = fit(
+    { gpuBytes: 70 * GB, totalBytes: 70 * GB, nCtx: 262144, ...floorAt(20 * GB) },
+    { freeGpuCapacityGb: 10, usableSystemRamGb: 10 },
+    APPLE,
+  );
+  assert.equal(
+    result.advisory?.text,
+    "Fits this machine, but little memory is free right now, so Auto may pick a shorter context. Free memory first.",
+  );
+});
+
+test("pressure still outranks the Auto note when the floor itself is tight", () => {
+  // A 7.05 GiB floor on a 7.2 GiB budget classifies tight rather than fits.
+  const result = fit(
+    { ...NATIVE_QWEN3_8B, ...floorAt(7.05 * GB) },
+    { ...EIGHT_GB_CARD, freeGpuCapacityGb: 3 },
+  );
+  assert.equal(result.rawGpuFit, "tight");
+  assert.equal(
+    result.advisory?.text,
+    "Fits this GPU, but little VRAM is free right now, so Auto may pick a shorter context or run some layers on the CPU. Free memory first.",
+  );
+});
+
+test("a pinned tight fit under pressure gets the pressure note too", () => {
+  const result = fit({ gpuBytes: 7.05 * GB, totalBytes: 7.05 * GB }, { ...EIGHT_GB_CARD, freeGpuCapacityGb: 3 });
+  assert.equal(result.rawGpuFit, "tight");
+  assert.equal(
+    result.advisory?.text,
+    "Fits this GPU, but little VRAM is free right now. Free memory or try Auto context.",
+  );
+});
+
+test("a floor over the card says loading may fail where layers cannot move", () => {
+  const result = fit(
+    { gpuBytes: 14 * GB, totalBytes: 14 * GB, nCtx: 131072, ...floorAt(9 * GB), floorCanOffload: false },
+    EIGHT_GB_CARD,
+  );
+  assert.equal(result.gpuFit, "exceeds");
+  assert.equal(
+    result.advisory?.text,
+    "Exceeds GPU memory even at the shortest context the loader tries, and these settings keep layers from moving to the CPU, so loading may fail.",
+  );
+});
+
+test("pressure where layers cannot move promises only a shorter context", () => {
+  const result = fit(
+    { ...NATIVE_QWEN3_8B, ...floorAt(5.92 * GB), floorCanOffload: false },
+    { ...EIGHT_GB_CARD, freeGpuCapacityGb: 3 },
+  );
+  assert.equal(
+    result.advisory?.text,
+    "Fits this GPU, but little VRAM is free right now, so Auto may pick a shorter context. Free memory first.",
+  );
+});
+
+/** 16 GB of RAM beside the 8 GB card, so a host share can be over or under it. */
+const SMALL_HOST = { systemRamCapacityGb: 16, totalCapacityGb: 23.2, usableSystemRamGb: 15 };
+
+test("a context whose GPU share fits is opened native, so its host share is too", () => {
+  // A drafter cache on the CPU grows with the context, and nothing shrinks it here.
+  const result = fit(
+    { gpuBytes: 2 * GB, totalBytes: 30 * GB, nCtx: 262144, ...floorAt(1 * GB) },
+    { ...EIGHT_GB_CARD, ...SMALL_HOST },
+  );
+  assert.equal(result.hostShareBytes, 28 * GB);
+  assert.equal(result.hostShareFit, "exceeds");
+});
+
+test("a shrunk context keeps its host terms at native, the bound that holds", () => {
+  // The fitted context is unknown, and sliding-window caches do not grow linearly.
+  const result = fit(
+    { gpuBytes: 9 * GB, totalBytes: 29 * GB, nCtx: 131072, ...floorAt(5 * GB) },
+    { ...EIGHT_GB_CARD, ...SMALL_HOST },
+  );
+  assert.equal(result.gpuFit, "fits");
+  assert.equal(result.hostShareBytes, 20 * GB);
+  assert.equal(result.hostShareFit, "exceeds");
+});

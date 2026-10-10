@@ -277,9 +277,6 @@ export function usePersonalizationSync(enabled: boolean): void {
           const keepLocalChatWidth =
             remote.chatWidthSaved === false ||
             remote.appearance.customization?.chatWidth === undefined;
-          const keepLocalComposerAttachments =
-            remote.composerAttachmentsSaved === false ||
-            remote.appearance.customization?.composerAttachments === undefined;
           const keepLocalSentAttachments =
             remote.sentAttachmentsSaved === false ||
             remote.appearance.customization?.sentAttachments === undefined;
@@ -295,9 +292,6 @@ export function usePersonalizationSync(enabled: boolean): void {
                 }),
                 ...(keepLocalChatWidth && {
                   chatWidth: localCustomization.chatWidth,
-                }),
-                ...(keepLocalComposerAttachments && {
-                  composerAttachments: localCustomization.composerAttachments,
                 }),
                 ...(keepLocalSentAttachments && {
                   sentAttachments: localCustomization.sentAttachments,

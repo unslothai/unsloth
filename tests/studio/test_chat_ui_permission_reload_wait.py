@@ -72,3 +72,19 @@ def test_the_permission_reload_settles_on_a_bounded_pill_wait():
     assert isinstance(timeout, ast.Constant) and 0 < timeout.value <= 60_000, ast.unparse(
         visible[0]
     )
+
+
+def test_a_reload_that_booted_the_app_gets_no_second_chance():
+    """The one extra reload is for an app shell that never started (no composer, no /api calls).
+    A page that booted and still has no pill is the regression this step exists to catch."""
+    source = (Path(__file__).resolve().parent / "playwright_chat_ui.py").read_text(encoding = "utf-8")
+    start = source.index("def reload_and_wait_for_pill():")
+    body = source[start : source.index("\n    # choose()", start)]
+    assert body.count("page.reload(") == 2, "the step reloads more than once extra"
+    guard = body.index('if state.get("composer")')
+    assert (
+        body[guard : body.index("\n", body.index("raise", guard))].rstrip().endswith("raise")
+    ), "a booted page without the pill must fail, not retry"
+    assert (
+        body.index("_boot_state()") < body.index('shoot("04-permission-pill-missing")') < guard
+    ), "record the page state and a screenshot before deciding"

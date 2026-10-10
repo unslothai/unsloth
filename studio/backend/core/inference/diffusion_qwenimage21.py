@@ -21,6 +21,7 @@ import weakref
 from typing import Any, Optional
 
 FAST_STEP_ENV = "UNSLOTH_DIFFUSION_Q21_FAST_STEP"
+COMPACT_KV_ENV = "UNSLOTH_DIFFUSION_Q21_COMPACT_KV"
 
 _MODULE = "diffusers.models.transformers.transformer_qwenimage21"
 _CLASS = "QwenImage21Transformer2DModel"
@@ -114,6 +115,7 @@ class _Layout:
         "vlm_row",
         "_segments",
         "_vlm_text",
+        "_tails",
         "__weakref__",
     )
 
@@ -135,6 +137,7 @@ def _build_layout(model: Any, mod: Any, img_mask: Any, shapes: list, device: Any
     lay.vlm_row = img_mask[0].clone()  # the caller may reuse and rewrite its mask
     lay._segments = None
     lay._vlm_text = {}
+    lay._tails = None
     return lay
 
 
@@ -198,6 +201,68 @@ def _layout_for(
     return lay
 
 
+def _tails(lay: _Layout) -> tuple:
+    """The decode rows of the RoPE table and modulation mask; one view per layout, so a graph replay can tell by
+    identity that its copy is current."""
+    if lay._tails is None:
+        lay._tails = (lay.rotary_emb[lay.prefix_len :], lay.target_token_mask[lay.prefix_len :])
+    return lay._tails
+
+
+def _cached_core(
+    model: Any,
+    text_dtype: Any,
+    total: int,
+    prefix_len: int,
+    hidden_states: Any,
+    timestep: Any,
+    encoder_hidden_states_mask: Any,
+    text_positions: Any,
+    vlm_text: Any,
+    rotary_emb: Any,
+    modulation_mask: Any,
+    layer_cache: Any,
+) -> Any:
+    """One decode step from the prefix KV cache. Reads no host value off the device, so it records as a CUDA graph;
+    the eager step and the graph run this same code. ``layer_cache(i)`` returns block ``i``'s cache entry."""
+    import torch
+
+    batch_size = hidden_states.shape[0]
+    device = hidden_states.device
+    hidden_states = model.img_in(hidden_states)
+    # Keep the stock (batch, total, dim) layout so the blocks see the same strides.
+    full = torch.empty((batch_size, total, hidden_states.shape[2]), dtype = text_dtype, device = device)
+    full[:, prefix_len:] = hidden_states[:, hidden_states.shape[1] - (total - prefix_len) :]
+
+    timestep = timestep.to(hidden_states.dtype)
+    timestep = torch.cat([timestep, timestep.new_zeros(1)], dim = 0)
+    temb = model.time_text_embed(timestep, hidden_states)
+    modulation = model.modulation(temb)
+
+    attention_mask = None
+    if encoder_hidden_states_mask is not None:
+        joint_key_valid = torch.ones(batch_size, total, dtype = torch.bool, device = device)
+        joint_key_valid[:, text_positions] = encoder_hidden_states_mask.bool()[:, vlm_text]
+        attention_mask = joint_key_valid[:, None, None, :]
+
+    joint_hidden_states = full[:, prefix_len:]
+    for index_block, block in enumerate(model.transformer_blocks):
+        joint_hidden_states = block(
+            hidden_states = joint_hidden_states,
+            modulation = modulation,
+            rotary_emb = rotary_emb,
+            attention_mask = attention_mask,
+            target_token_mask = modulation_mask,
+            layer_cache = layer_cache(index_block),
+            kv_cache_mode = "cached",
+            cache_write_slice = None,
+            segments = None,
+            key_valid = None,
+        )
+    joint_hidden_states = model.norm_out(joint_hidden_states, temb, modulation_mask)
+    return model.proj_out(joint_hidden_states)
+
+
 def _cached_step(
     model: Any,
     lay: _Layout,
@@ -207,49 +272,191 @@ def _cached_step(
     encoder_hidden_states_mask: Any,
     kv_cache: Any,
 ) -> Any:
+    rotary_emb, modulation_mask = _tails(lay)
+    return _cached_core(
+        model,
+        text_dtype,
+        lay.total,
+        lay.prefix_len,
+        hidden_states,
+        timestep,
+        encoder_hidden_states_mask,
+        lay.text_positions,
+        None
+        if encoder_hidden_states_mask is None
+        else _vlm_text(lay, encoder_hidden_states_mask.shape[1]),
+        rotary_emb,
+        modulation_mask,
+        kv_cache.get_layer,
+    )
+
+
+# ---------------------------------------------------------------------------------------------- CUDA graph step
+#
+# ``diffusion_cuda_graph.GraphedForward`` records one call into static buffers keyed by every input's shape. The
+# stock call cannot be recorded: the pipeline hands the prefix K/V over as a ``QwenImage21KVCache`` object (an opaque
+# leaf to the graph layer) and step 0 fills that cache from Python. ``graph_plan`` turns a decode step into a call
+# whose every input is a tensor or a constant: the per-layer K/V, the layout's index and RoPE tensors, latents,
+# timestep and text mask. Step 0 (the prefill) stays eager.
+#
+# The K/V, RoPE and index inputs only change when a new render (or a new layout) starts, so they are "sticky": the
+# replay copies one into its static buffer only when the caller passes a different tensor object than last time.
+
+GRAPH_STICKY = ("text_positions", "vlm_text", "rotary_emb", "modulation_mask", "kv")
+
+# A graph keeps its own copy of the prefix K/V (one per graph, up to the per-module cap). Text-only prefixes stay far
+# below this; a 1 MP condition image is ~2.2 GiB at 32 blocks, and those steps run eager rather than pin that twice.
+GRAPH_KV_MAX_BYTES = 1 << 30
+
+
+def _graph_step(
+    self,
+    hidden_states,
+    timestep,
+    encoder_hidden_states_mask,
+    text_positions,
+    vlm_text,
+    rotary_emb,
+    modulation_mask,
+    kv,
+    total,
+    prefix_len,
+    text_dtype,
+):
     import torch
 
-    batch_size = hidden_states.shape[0]
-    device = hidden_states.device
-    prefix_len = lay.prefix_len
-    hidden_states = model.img_in(hidden_states)
-    # Keep the stock (batch, total, dim) layout so the blocks see the same strides.
-    full = torch.empty(
-        (batch_size, lay.total, hidden_states.shape[2]), dtype = text_dtype, device = device
+    mod = _module()
+    caches = []
+    for key, value in kv:
+        entry = mod.QwenImage21KVLayerCache()
+        entry.store(key, value)
+        caches.append(entry)
+    output = _cached_core(
+        self,
+        getattr(torch, text_dtype),
+        total,
+        prefix_len,
+        hidden_states,
+        timestep,
+        encoder_hidden_states_mask,
+        text_positions,
+        vlm_text,
+        rotary_emb,
+        modulation_mask,
+        caches.__getitem__,
     )
-    full[:, prefix_len:] = hidden_states[:, hidden_states.shape[1] - (lay.total - prefix_len) :]
+    return (output,)
 
-    timestep = timestep.to(hidden_states.dtype)
-    timestep = torch.cat([timestep, timestep.new_zeros(1)], dim = 0)
-    temb = model.time_text_embed(timestep, hidden_states)
-    modulation = model.modulation(temb)
 
-    attention_mask = None
-    if encoder_hidden_states_mask is not None:
-        joint_key_valid = torch.ones(batch_size, lay.total, dtype = torch.bool, device = device)
-        joint_key_valid[:, lay.text_positions] = encoder_hidden_states_mask.bool()[
-            :, _vlm_text(lay, encoder_hidden_states_mask.shape[1])
-        ]
-        attention_mask = joint_key_valid[:, None, None, :]
+# Under block offload the graph wrapper sits in the forward slot under the offload hooks, which onload the top-level
+# weights: a planned step enters through the hooked forward as ``kv_cache_mode = GRAPH_STEP_MODE`` with the plan as
+# ``kv_cache`` (the forward's signature stays the pipeline's).
+GRAPH_STEP_MODE = "unsloth_graph_step"
 
-    joint_hidden_states = full[:, prefix_len:]
-    rotary_emb = lay.rotary_emb[prefix_len:]
-    modulation_mask = lay.target_token_mask[prefix_len:]
-    for index_block, block in enumerate(model.transformer_blocks):
-        joint_hidden_states = block(
-            hidden_states = joint_hidden_states,
-            modulation = modulation,
-            rotary_emb = rotary_emb,
-            attention_mask = attention_mask,
-            target_token_mask = modulation_mask,
-            layer_cache = kv_cache.get_layer(index_block),
-            kv_cache_mode = "cached",
-            cache_write_slice = None,
-            segments = None,
-            key_valid = None,
-        )
-    joint_hidden_states = model.norm_out(joint_hidden_states, temb, modulation_mask)
-    return model.proj_out(joint_hidden_states)
+
+def placed_step(forward: Any, step: dict) -> Any:
+    return forward(
+        step["hidden_states"],
+        None,
+        step["timestep"],
+        None,
+        None,
+        kv_cache = step,
+        kv_cache_mode = GRAPH_STEP_MODE,
+        return_dict = False,
+    )
+
+
+def _module() -> Any:
+    import importlib
+    return importlib.import_module(_MODULE)
+
+
+def graph_plan(module: Any, args: tuple, kwargs: dict) -> Optional[tuple]:
+    """``(callable, kwargs)`` replaying this decode step from tensors only, or None to run the call eager.
+
+    Never syncs the host on a decode step of a render whose prefill went through the fast forward (the layout is
+    then found by identity). Never raises."""
+    try:
+        return _graph_plan(module, args, kwargs)
+    except Exception:  # noqa: BLE001 - an unplannable call simply runs eager
+        return None
+
+
+def _graph_plan(module: Any, args: tuple, kwargs: dict) -> Optional[tuple]:
+    import torch
+
+    if (
+        args
+        or kwargs.get("kv_cache_mode") != "cached"
+        or kwargs.get("return_dict", True) is not False
+    ):
+        return None
+    kv_cache = kwargs.get("kv_cache")
+    hidden_states = kwargs.get("hidden_states")
+    encoder_hidden_states = kwargs.get("encoder_hidden_states")
+    timestep = kwargs.get("timestep")
+    img_mask = kwargs.get("img_mask")
+    img_shapes = kwargs.get("img_shapes")
+    mask = kwargs.get("encoder_hidden_states_mask")
+    known = {
+        "hidden_states",
+        "encoder_hidden_states",
+        "timestep",
+        "img_shapes",
+        "img_mask",
+        "encoder_hidden_states_mask",
+        "attention_kwargs",
+        "kv_cache",
+        "kv_cache_mode",
+        "return_dict",
+    }
+    # LoRA scale rides in attention_kwargs through the forward's decorator, which the graph step bypasses.
+    if set(kwargs) - known or kwargs.get("attention_kwargs"):
+        return None
+    if kv_cache is None or not torch.is_tensor(hidden_states) or not torch.is_tensor(timestep):
+        return None
+    if (
+        not torch.is_tensor(encoder_hidden_states)
+        or not torch.is_tensor(img_mask)
+        or img_shapes is None
+    ):
+        return None
+    if torch.is_grad_enabled() or fast_step_disabled() or not module.config.causal_condition:
+        return None
+    if not getattr(vars(type(module)).get("forward"), "__unsloth_q21_fast_step__", False):
+        return None
+    mod = _module()
+    lay = _layout_for(module, mod, img_mask, img_shapes, hidden_states.device, reuse_identity = True)
+    _, text_dtype = _text_dtype(module, encoder_hidden_states)
+    if text_dtype is None or not lay.tail_is_image:
+        return None
+    kv = []
+    kv_bytes = 0
+    for index in range(len(module.transformer_blocks)):
+        entry = kv_cache.get_layer(index)
+        key, value = getattr(entry, "k", None), getattr(entry, "v", None)
+        if not torch.is_tensor(key) or not torch.is_tensor(value):
+            return None
+        kv_bytes += key.numel() * key.element_size() + value.numel() * value.element_size()
+        kv.append((key, value))
+    if kv_bytes > GRAPH_KV_MAX_BYTES:
+        return None
+    rotary_emb, modulation_mask = _tails(lay)
+    plan = {
+        "hidden_states": hidden_states,
+        "timestep": timestep,
+        "encoder_hidden_states_mask": mask,
+        "text_positions": lay.text_positions if mask is not None else None,
+        "vlm_text": _vlm_text(lay, mask.shape[1]) if mask is not None else None,
+        "rotary_emb": rotary_emb,
+        "modulation_mask": modulation_mask,
+        "kv": tuple(kv),
+        "total": int(lay.total),
+        "prefix_len": int(lay.prefix_len),
+        "text_dtype": str(text_dtype).rsplit(".", 1)[-1],
+    }
+    return _graph_step.__get__(module), plan
 
 
 def _autocast_state(device_type: str) -> tuple:
@@ -293,6 +500,8 @@ def _make_forward(mod: Any, stock: Any) -> Any:
         kv_cache_mode = None,
         return_dict = True,
     ):
+        if kv_cache_mode == GRAPH_STEP_MODE:
+            return _graph_step(self, **kv_cache)
         if torch.is_grad_enabled() or torch.compiler.is_compiling() or fast_step_disabled():
             return stock_inner(
                 self,
@@ -400,6 +609,7 @@ def _make_forward(mod: Any, stock: Any) -> Any:
             cache_write_slice = slice(0, prefix_len) if kv_cache_mode == "extract" else None
             block_key_valid = joint_key_valid
 
+        compact_kv = compact_kv_enabled()
         for index_block, block in enumerate(self.transformer_blocks):
             layer_cache = kv_cache.get_layer(index_block) if kv_cache is not None else None
             joint_hidden_states = block(
@@ -414,6 +624,8 @@ def _make_forward(mod: Any, stock: Any) -> Any:
                 segments = block_segments,
                 key_valid = block_key_valid,
             )
+            if layer_cache is not None and cache_write_slice is not None and compact_kv:
+                _compact_layer_cache(layer_cache)
 
         joint_hidden_states = self.norm_out(joint_hidden_states, temb, modulation_mask)
         output = self.proj_out(joint_hidden_states)
@@ -426,15 +638,39 @@ def _make_forward(mod: Any, stock: Any) -> Any:
     wrapped = lora_scale("attention_kwargs")(forward) if callable(lora_scale) else forward
     wrapped.__unsloth_q21_fast_step__ = True
     wrapped.__unsloth_stock_forward__ = stock
+    # Read by diffusion_capture_safe: decode steps record as CUDA graphs through graph_plan.
+    wrapped.__unsloth_graph_plan__ = graph_plan
+    wrapped.__unsloth_graph_sticky__ = GRAPH_STICKY
+    wrapped.__unsloth_graph_placed__ = placed_step
     return wrapped
+
+
+def compact_kv_enabled() -> bool:
+    return (os.environ.get(COMPACT_KV_ENV) or "").strip().lower() not in ("0", "off", "false", "no")
+
+
+def _compact_layer_cache(layer_cache: Any) -> None:
+    """Copy a prefix K/V entry that is a view of a larger buffer. Under compile Inductor turns the extract step's
+    ``key[:, :prefix].clone()`` into a view of the full text + image K/V, pinning ~2 GiB across 32 blocks at 1 MP for
+    step 0. Bit-identical."""
+    for name in ("k", "v"):
+        tensor = getattr(layer_cache, name, None)
+        try:
+            if (
+                tensor is None
+                or tensor.untyped_storage().nbytes() <= tensor.numel() * tensor.element_size()
+            ):
+                continue
+            setattr(layer_cache, name, tensor.clone())
+        except Exception:  # noqa: BLE001 - a memory saving only; keep the entry as stored
+            continue
 
 
 def install(logger: Any = None) -> bool:
     if fast_step_disabled():
         return False
     try:
-        import importlib
-        mod = importlib.import_module(_MODULE)
+        mod = _module()
     except Exception:  # noqa: BLE001 - diffusers without Qwen-Image 2.1
         return False
     cls = getattr(mod, _CLASS, None)

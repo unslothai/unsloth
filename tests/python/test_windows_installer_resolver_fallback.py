@@ -1896,7 +1896,7 @@ Write-Output "EXACT:$((Resolve-StudioFinalPathInfo -Path '{studio_home}').Exact)
 
 
 _INTEGRITY_REPRO = r"""
-param($Source, $FakePython)
+param($Source, $FakePython, $TimeoutMs)
 $ErrorActionPreference = 'Stop'
 $t = $null; $e = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($Source, [ref]$t, [ref]$e)
@@ -1909,7 +1909,7 @@ foreach ($name in @('Get-StudioSystem32Tool', 'Invoke-StudioSystem32ToolBounded'
 }
 if (-not (Get-Command Read-NvidiaLibraryRawViaPython -ErrorAction SilentlyContinue)) { throw "no Python rung in $Source" }
 function Get-NvidiaProbePythonExe { return $FakePython }
-Write-Output "ANSWER:$(Read-NvidiaLibraryRawViaPython -TimeoutMs 1000)"
+Write-Output "ANSWER:$(Read-NvidiaLibraryRawViaPython -TimeoutMs ([int]$TimeoutMs))"
 """
 
 
@@ -1952,18 +1952,44 @@ def test_a_hung_integrity_tool_cannot_stall_the_nvidia_probe(tmp_path: Path, sou
         TMP = str(tmp_path),
         TMPDIR = str(tmp_path),
     )
-    started = time.monotonic()
-    result = run_pwsh(
-        ["pwsh", "-NoProfile", "-File", str(script), str(REPO_ROOT / source), str(python)],
-        env = env,
-        capture_output = True,
-        text = True,
-        timeout = 30,
-    )
-    assert result.returncode == 0, result.stderr
-    assert time.monotonic() - started < 20, "a hung integrity utility outlived its deadline"
+
+    def attempt():
+        started = time.monotonic()
+        result = run_pwsh(
+            [
+                "pwsh",
+                "-NoProfile",
+                "-File",
+                str(script),
+                str(REPO_ROOT / source),
+                str(python),
+                # The hung cases time only the integrity utilities, which carry their own deadlines,
+                # so the child keeps a 1 s budget there. The control asserts the child's answer
+                # arrives, so it gets a budget that only a genuinely hung child would exhaust.
+                "1000" if hung else "10000",
+            ],
+            env = env,
+            capture_output = True,
+            text = True,
+            timeout = 30,
+        )
+        assert result.returncode == 0, result.stderr
+        assert time.monotonic() - started < 20, "a hung integrity utility outlived its deadline"
+        return result
+
+    result = attempt()
     if hung is None:
         # Control: a healthy host still gets the Python answer, so the case above is not vacuous.
+        # On Linux, pwsh's Start-Process copies a redirected stdout into the file from an async
+        # handler, so Wait-Process can return before the child's line lands and the probe reads
+        # an empty file (about 1 in 100 runs under xdist load, as in #12471's run). Windows hands
+        # the child the file handle itself, so this race is the parity host's, not the installer's.
+        # A probe that really lost its answer comes back empty every time and still fails here.
+        for _ in range(2):
+            # Only the race's exact signature is retried; a wrong or duplicated answer fails at once.
+            if _lines(result, "ANSWER:") != ["ANSWER:"]:
+                break
+            result = attempt()
         assert _lines(result, "ANSWER:") == ["ANSWER:nvml;12;8;8.9"], result.stdout
 
 

@@ -21,7 +21,6 @@ import {
   useChatPreferencesStore,
   useChatRuntimeStore,
   usePlusMenuPrefsStore,
-  useSidebarOrganizationStore,
 } from "@/features/chat";
 import { PASTED_TEXT_THRESHOLD_CHOICES } from "@/features/chat/utils/pasted-text";
 import { refreshContextUsage } from "@/features/chat/utils/refresh-context-usage";
@@ -37,13 +36,12 @@ import {
   Folder01Icon,
   LibrariesIcon,
   McpServerIcon,
-  PencilRulerIcon,
   Scroll01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { Columns2Icon } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import {
   type CurrentDatePromptSettings,
@@ -124,17 +122,6 @@ const PLUS_MENU_SETTINGS: {
     ),
   },
   {
-    id: "canvas",
-    labelKey: "settings.chat.artifacts.title",
-    icon: (
-      <HugeiconsIcon
-        icon={PencilRulerIcon}
-        strokeWidth={2}
-        className={PLUS_MENU_ICON_CLASS}
-      />
-    ),
-  },
-  {
     id: "projects",
     labelKey: "shell.navigation.projects",
     icon: (
@@ -177,42 +164,8 @@ export function ChatTab() {
   const setShowGreetingSloth = useUserProfileStore(
     (s) => s.setShowGreetingSloth,
   );
-  const showCanvasMenuItem = useChatRuntimeStore(
-    (state) => state.showCanvasMenuItem,
-  );
-  const setShowCanvasMenuItem = useChatRuntimeStore(
-    (state) => state.setShowCanvasMenuItem,
-  );
-  const collapseHtmlArtifacts = useChatRuntimeStore(
-    (state) => state.collapseHtmlArtifacts,
-  );
-  const setCollapseHtmlArtifacts = useChatRuntimeStore(
-    (state) => state.setCollapseHtmlArtifacts,
-  );
-  const allowArtifactNetworkAccess = useChatRuntimeStore(
-    (state) => state.allowArtifactNetworkAccess,
-  );
-  const setAllowArtifactNetworkAccess = useChatRuntimeStore(
-    (state) => state.setAllowArtifactNetworkAccess,
-  );
   const searchImages = useChatRuntimeStore((state) => state.searchImages);
   const setSearchImages = useChatRuntimeStore((state) => state.setSearchImages);
-  const networkAccessRowRef = useRef<HTMLDivElement | null>(null);
-  const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
-  const consumeScrollTarget = useSettingsDialogStore(
-    (s) => s.consumeScrollTarget,
-  );
-  useEffect(() => {
-    if (scrollTarget !== "chat-canvas-network") return;
-    const frame = window.requestAnimationFrame(() => {
-      networkAccessRowRef.current?.scrollIntoView({
-        block: "center",
-        behavior: "smooth",
-      });
-      consumeScrollTarget("chat-canvas-network");
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [consumeScrollTarget, scrollTarget]);
   const hydratePersistedSettings = useChatRuntimeStore(
     (state) => state.hydratePersistedSettings,
   );
@@ -232,19 +185,11 @@ export function ChatTab() {
   const setShowMemoryBar = useChatRuntimeStore(
     (state) => state.setShowMemoryBar,
   );
-  const organizeBy = useSidebarOrganizationStore((s) => s.organizeBy);
-  const setOrganizeBy = useSidebarOrganizationStore((s) => s.setOrganizeBy);
   const showModelDisclaimer = useChatPreferencesStore(
     (state) => state.showModelDisclaimer,
   );
   const showResponseModel = useChatPreferencesStore(
     (state) => state.showResponseModel,
-  );
-  const showInlineReadAloud = useChatPreferencesStore(
-    (state) => state.showInlineReadAloud,
-  );
-  const setShowInlineReadAloud = useChatPreferencesStore(
-    (state) => state.setShowInlineReadAloud,
   );
   const showInlineEditResponse = useChatPreferencesStore(
     (state) => state.showInlineEditResponse,
@@ -260,6 +205,12 @@ export function ChatTab() {
   );
   const setAutoScrollWhileGenerating = useChatPreferencesStore(
     (state) => state.setAutoScrollWhileGenerating,
+  );
+  const showScrollToBottomButton = useChatPreferencesStore(
+    (state) => state.showScrollToBottomButton,
+  );
+  const setShowScrollToBottomButton = useChatPreferencesStore(
+    (state) => state.setShowScrollToBottomButton,
   );
   const thinkingVisibility = useChatPreferencesStore(
     (state) => state.thinkingVisibility,
@@ -455,6 +406,16 @@ export function ChatTab() {
             ))}
           </div>
         </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.scrollToBottomButton")}
+          description={t("settings.chat.scrollToBottomButtonDescription")}
+        >
+          <Switch
+            aria-label={t("settings.chat.scrollToBottomButton")}
+            checked={showScrollToBottomButton}
+            onCheckedChange={setShowScrollToBottomButton}
+          />
+        </SettingsRow>
       </SettingsSection>
 
       <SettingsSection title={t("settings.chat.groups.conversations.title")}>
@@ -611,16 +572,6 @@ export function ChatTab() {
           />
         </SettingsRow>
         <SettingsRow
-          label={t("settings.chat.inlineReadAloud")}
-          description={t("settings.chat.inlineReadAloudDescription")}
-        >
-          <Switch
-            aria-label={t("settings.chat.inlineReadAloud")}
-            checked={showInlineReadAloud}
-            onCheckedChange={setShowInlineReadAloud}
-          />
-        </SettingsRow>
-        <SettingsRow
           label={t("settings.chat.inlineEditResponse")}
           description={t("settings.chat.inlineEditResponseDescription")}
         >
@@ -628,18 +579,6 @@ export function ChatTab() {
             aria-label={t("settings.chat.inlineEditResponse")}
             checked={showInlineEditResponse}
             onCheckedChange={setShowInlineEditResponse}
-          />
-        </SettingsRow>
-        <SettingsRow
-          label={t("settings.chat.projectsSection")}
-          description={t("settings.chat.projectsSectionDescription")}
-        >
-          <Switch
-            aria-label={t("settings.chat.projectsSection")}
-            checked={organizeBy === "project"}
-            onCheckedChange={(checked) =>
-              setOrganizeBy(checked ? "project" : "list")
-            }
           />
         </SettingsRow>
         <SettingsRow
@@ -707,46 +646,13 @@ export function ChatTab() {
         </SettingsRow>
       </SettingsSection>
 
-      <SettingsSection title={t("settings.chat.artifacts.title")}>
-        <div ref={networkAccessRowRef}>
-          <SettingsRow
-            label={t("settings.chat.artifacts.allowNetworkAccess")}
-            description={t(
-              "settings.chat.artifacts.allowNetworkAccessDescription",
-            )}
-          >
-            <Switch
-              checked={allowArtifactNetworkAccess}
-              onCheckedChange={setAllowArtifactNetworkAccess}
-            />
-          </SettingsRow>
-        </div>
-        <SettingsRow
-          label={t("settings.chat.artifacts.collapseHtmlBlocks")}
-          description={t(
-            "settings.chat.artifacts.collapseHtmlBlocksDescription",
-          )}
-        >
-          <Switch
-            checked={collapseHtmlArtifacts}
-            onCheckedChange={setCollapseHtmlArtifacts}
-          />
-        </SettingsRow>
-      </SettingsSection>
 
       <SettingsSection title={t("settings.chat.groups.menu.title")}>
         {PLUS_MENU_SETTINGS.map((item) => (
           <SettingsRow key={item.id} label={t(item.labelKey)} icon={item.icon}>
-            {/* Canvas toggles menu visibility; the rest toggle pin placement. */}
             <Switch
-              checked={
-                item.id === "canvas" ? showCanvasMenuItem : plusPins[item.id]
-              }
-              onCheckedChange={
-                item.id === "canvas"
-                  ? setShowCanvasMenuItem
-                  : () => togglePlusPin(item.id)
-              }
+              checked={plusPins[item.id]}
+              onCheckedChange={() => togglePlusPin(item.id)}
             />
           </SettingsRow>
         ))}

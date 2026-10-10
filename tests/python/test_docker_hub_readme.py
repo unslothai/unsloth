@@ -42,8 +42,7 @@ def test_the_hub_readme_describes_the_shipped_images():
         "UNSLOTH_STUDIO_PASSWORD",
     ):
         assert needle in text, f"the Hub README no longer mentions {needle!r}"
-    # the previous image's conventions, none of which exist in this one
-    # Studio writes the generated password to a file and does not print it itself
+    # old-image conventions are invalid; Studio writes generated passwords to a file
     for stale in (
         "USER_PASSWORD",
         "/workspace/work",
@@ -54,11 +53,17 @@ def test_the_hub_readme_describes_the_shipped_images():
         assert stale not in text, f"the Hub README still carries {stale!r} from the old image"
 
 
+def test_the_hub_readme_runs_a_script_in_the_mounted_dir():
+    text = HUB_README.read_text(encoding = "utf-8")
+    section = text[text.index("### Scripts") :]
+    start = section.index("```")
+    command = section[start : section.index("```", start + 3)]
+    assert "python /workspace/host/train.py" in command
+    assert "-w /workspace/host" in command
+
+
 def test_the_hub_readme_explains_the_studio_volume():
-    """The volume keeps Studio's data and never pins its code; a volume from an image
-    before the code/data split is migrated with its old code kept aside. Both facts,
-    the way back to an older image, and what `docker rm` still discards have to be on
-    the page, since the quick start above them mounts the volume by default."""
+    """the Studio volume keeps data, not code, with migration, rollback, and `docker rm` limits."""
     text = HUB_README.read_text(encoding = "utf-8")
     for needle in (
         "-v unsloth-studio:/opt/unsloth-studio",
@@ -271,6 +276,11 @@ def test_the_hub_readme_matches_what_each_image_ships():
     text = HUB_README.read_text(encoding = "utf-8")
     # whisper.cpp comes from Studio's setup, so only that image has it
     assert "The `latest` image adds whisper.cpp" in text
+    # audio.cpp too, and the CUDA bundle only where Dockerfile.studio names it (no GPU at build time)
+    assert "audio.cpp (CUDA build on `linux/amd64`)" in text
+    studio_df = (HUB_README.parent / "Dockerfile.studio").read_text(encoding = "utf-8")
+    assert 'amd64) TORCH_FAMILY="cu128"; AUDIO_CPP_ACCELERATOR="cuda"' in studio_df
+    assert 'UNSLOTH_AUDIO_CPP_ACCELERATOR="${AUDIO_CPP_ACCELERATOR}"' in studio_df
     # SYNC disables the notebooks entirely; REFRESH only skips the GitHub fetch
     assert "`UNSLOTH_SKIP_NOTEBOOK_REFRESH=1` | Do not refresh the notebooks from GitHub" in text
     assert "`UNSLOTH_SKIP_NOTEBOOK_SYNC=1` | Do not set up the notebooks at all" in text

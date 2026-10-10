@@ -39,7 +39,7 @@ def _shared_setup_1(monkeypatch):
     monkeypatch.setattr(
         GgmlSttSidecar,
         "_wait_for_server",
-        staticmethod(lambda process, port, cancel_event = None: None),
+        staticmethod(lambda process, port, cancel_event = None, route = "": None),
     )
 
 
@@ -55,6 +55,7 @@ def isolate_runtime_and_stub_audio_decoder(monkeypatch, tmp_path):
         "_decode_audio_bounded",
         lambda audio, cancel_event = None: np.zeros(16000, dtype = np.float32),
     )
+    monkeypatch.setattr(ggml_module, "_supports_request_path", lambda binary: True)
 
 
 # ---------------------------------------------------------------------------
@@ -1251,9 +1252,9 @@ def test_unload_all_attempts_every_backend_even_when_one_fails(monkeypatch):
         asyncio.run(ri.stt_unload(engine = None, current_subject = "tester"))
 
     assert excinfo.value.status_code == 500
-    # The later engines are still attempted after transformers raised. mtmd is
-    # included so an Unload with no engine frees a resident llama-server too.
-    assert attempted == ["transformers", "gguf", "mtmd"]
+    # The later engines are still attempted after transformers raised. mtmd and audiocpp are
+    # included so an Unload with no engine frees a resident llama-server or audiocpp_server too.
+    assert attempted == ["transformers", "gguf", "mtmd", "audiocpp"]
 
 
 # 4. free_stt_model_for_training isolates the two backends -----------------------

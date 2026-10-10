@@ -31,7 +31,6 @@ export type Personalization = {
   // client then keeps local values instead of the server-filled defaults.
   customizationSaved: boolean;
   chatWidthSaved?: boolean;
-  composerAttachmentsSaved?: boolean;
   sentAttachmentsSaved?: boolean;
   mascotsSaved?: boolean;
   paletteSaved: boolean;
@@ -54,7 +53,6 @@ export async function savePersonalization(
     | "saved"
     | "customizationSaved"
     | "chatWidthSaved"
-    | "composerAttachmentsSaved"
     | "sentAttachmentsSaved"
     | "mascotsSaved"
     | "paletteSaved"

@@ -47,6 +47,8 @@ export const QUANT_OPTIONS: {
   { value: "iq4_xs", label: "IQ4_XS", imatrix: true },
   { value: "q2_k_l", label: "Q2_K_L" },
   { value: "q3_k_m", label: "Q3_K_M" },
+  { value: "q4_0", label: "Q4_0" },
+  { value: "q4_1", label: "Q4_1" },
   { value: "q4_k_m", label: "Q4_K_M", recommended: true },
   { value: "q5_k_m", label: "Q5_K_M" },
   { value: "q6_k", label: "Q6_K" },
@@ -221,6 +223,9 @@ export function mergedFormatPayload(value: string): {
   return { formatType: "16-bit (FP16)", compressedMethod: opt.value };
 }
 
+/** GGUF quants FastFlowLM's Q4NX converter packs directly for the AMD Ryzen AI NPU. */
+export const Q4NX_SOURCE_QUANTS = ["q4_0", "q4_1", "q4_k_m"];
+
 /**
  * llama.cpp effective bits-per-weight per quant; GGUF size ~= fp16_bytes * bpw / 16.
  * K-quant values are published average bit-rates (Q2_K_L = Unsloth Q2_K + Q8_0
@@ -233,6 +238,8 @@ export const GGUF_BPW: Record<string, number> = {
   iq4_xs: 4.25,
   q2_k_l: 3.35,
   q3_k_m: 3.91,
+  q4_0: 4.5,
+  q4_1: 5.0,
   q4_k_m: 4.83,
   q5_k_m: 5.67,
   q6_k: 6.56,

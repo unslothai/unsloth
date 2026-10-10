@@ -864,16 +864,16 @@ fn open_existing_dir(dir: &std::path::Path) -> Result<(), String> {
 
 /// Open the Unsloth logs directory in the system file manager.
 #[tauri::command]
-pub fn open_logs_dir(window: tauri::WebviewWindow) -> Result<(), String> {
-    crate::native_intents::ensure_main_window(&window)?;
+pub fn open_logs_dir(webview: tauri::Webview) -> Result<(), String> {
+    crate::native_intents::ensure_main_window(&webview)?;
     open_existing_dir(&diagnostics::logs_dir())
 }
 
 /// Open a models directory (resolved by the backend, e.g. the HF cache) in the
 /// system file manager.
 #[tauri::command]
-pub fn open_models_dir(window: tauri::WebviewWindow, path: String) -> Result<(), String> {
-    crate::native_intents::ensure_main_window(&window)?;
+pub fn open_models_dir(webview: tauri::Webview, path: String) -> Result<(), String> {
+    crate::native_intents::ensure_main_window(&webview)?;
     open_existing_dir(std::path::Path::new(&path))
 }
 
@@ -1199,6 +1199,7 @@ pub async fn start_managed_repair(
             install_state,
             install_diagnostics,
             install_repair_group_id,
+            force_installer,
         )
     })
     .await

@@ -551,11 +551,51 @@ def _iter_auto_map_strings(value):
             yield from _iter_auto_map_strings(item)
 
 
+_MAX_CONFIG_DEPTH = 12
+
+
+def iter_auto_maps(cfg, _depth: int = 0):
+    """Yield every ``auto_map`` dict in a config, at the top level and in any sub-config.
+
+    transformers reads ``auto_map`` off whichever config object builds the thing being
+    built, and for a composite model that is a SUB-config, not the top level. Reading
+    only ``cfg["auto_map"]`` therefore scans less than the load executes:
+    ``unsloth/models/_utils.py`` resolves ``text_config.auto_map["AutoModelForCausalLM"]``
+    through ``get_class_from_dynamic_module``, and ``unsloth/models/loader.py`` already
+    walks every level for the compiler because nesting goes beyond text/vision/audio
+    (Qwen-Omni ``thinker_config``, nested ``llm_config``). A repo whose only ``auto_map``
+    sits on a sub-config used to read as "ships no remote code", so the gate allowed it
+    with no scan, no findings and no fingerprint.
+
+    Depth-bounded rather than unbounded: a config is attacker-supplied JSON, and the
+    bound is what keeps a deeply nested one from costing anything. Twelve is far past
+    the deepest real composite (three).
+    """
+    if _depth > _MAX_CONFIG_DEPTH or not isinstance(cfg, dict):
+        return
+    auto_map = cfg.get("auto_map")
+    if isinstance(auto_map, dict) and auto_map:
+        yield auto_map
+    for key, value in cfg.items():
+        if key == "auto_map":
+            continue
+        if isinstance(value, dict):
+            yield from iter_auto_maps(value, _depth + 1)
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                if isinstance(item, dict):
+                    yield from iter_auto_maps(item, _depth + 1)
+
+
+def config_declares_auto_map(cfg) -> bool:
+    """Whether a config declares executable remote code anywhere in its nesting."""
+    return any(True for _ in iter_auto_maps(cfg))
+
+
 def _auto_map_refs(cfg: dict) -> set:
-    """``(repo, filename)`` pairs referenced by config auto_map. ``repo`` is ``None`` for own-repo code. An external ``owner/name--module.Class`` ref (transformers' cross-repo form) yields ``("owner/name", "module.py")`` so cross-repo code is scanned and fingerprinted too."""
+    """``(repo, filename)`` pairs referenced by config auto_map. ``repo`` is ``None`` for own-repo code. An external ``owner/name--module.Class`` ref (transformers' cross-repo form) yields ``("owner/name", "module.py")`` so cross-repo code is scanned and fingerprinted too. Every nesting level is read, since that is where a composite model's auto_map lives."""
     out = set()
-    am = cfg.get("auto_map") or {}
-    if isinstance(am, dict):
+    for am in iter_auto_maps(cfg):
         for value in am.values():
             # A value may be a string OR a [slow, fast] list (tokenizers); cover both.
             for ref in _iter_auto_map_strings(value):

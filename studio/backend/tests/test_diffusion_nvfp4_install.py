@@ -924,7 +924,16 @@ def test_install_gates_skip_kinds_the_dense_quant_path_cannot_reach():
 
     img = inspect.getsource(diffusion.DiffusionBackend)
     gate = img[: img.index("ensure_flashinfer_for_nvfp4(")].rsplit("if ", 1)[-1]
-    assert gate.lstrip("( \n").startswith("dense_quant_supported_kind(kind)")
+    # One exception, by kind: a ComfyUI nvfp4 single file (it never reaches the dense quant path, but its own codes
+    # run on the FlashInfer Linear). Every other kind still has to pass the dense-quant clause.
+    comfy, dense = gate.split(") or (", 1)
+    assert comfy.lstrip("( \n").startswith('kind == "single_file"')
+    assert "_comfy_single_file_holds_nvfp4(" in comfy
+    assert comfy.index("comfy_nvfp4_runtime_possible(") < comfy.index(
+        "_comfy_single_file_holds_nvfp4("
+    )
+    assert comfy.index("_has_active_lora(loras)") < comfy.index("_comfy_single_file_holds_nvfp4(")
+    assert dense.lstrip("( \n").startswith("dense_quant_supported_kind(kind)")
     vid = inspect.getsource(video.VideoBackend)
     gate = vid[vid.index("_nvfp4_install_wanted = (") + len("_nvfp4_install_wanted = (") :]
     assert gate.lstrip("( \n").startswith('kind == "pipeline"')
@@ -1515,3 +1524,18 @@ def test_an_unreported_failure_does_not_revert_a_concurrent_upgrade(env):
     assert "flashinfer-python" not in env.dists, reason
     assert env.dists["packaging"] == "26.0", reason
     assert not [c for c in env.commands if "packaging==25.0" in c]
+
+
+def test_cutlass_dsl_is_held_to_the_flash4_range_when_absent(env):
+    # An unconstrained resolve lands cutlass-dsl 4.8.0, which the hub FA4 build cannot load.
+    ok, reason = _ensure(env)
+    assert ok, reason
+    assert "nvidia-cutlass-dsl>=4.4,<4.6" in env.constraints_seen[0].splitlines()
+
+
+def test_an_installed_cutlass_dsl_is_pinned_not_ranged(env):
+    env.dists["nvidia-cutlass-dsl"] = "4.4.2"
+    ok, reason = _ensure(env)
+    assert ok, reason
+    pins = env.constraints_seen[0].splitlines()
+    assert "nvidia-cutlass-dsl==4.4.2" in pins and "nvidia-cutlass-dsl>=4.4,<4.6" not in pins

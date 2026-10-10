@@ -457,8 +457,15 @@ def _adapter_name_is_live(name: Optional[str], live_names: list[str]) -> bool:
     )
 
 
-# XPU-capable Intel PCI IDs (pciids.h: DG2/ATS-M, PVC, BMG); an allowlist since DG1 Iris Xe MAX is discrete but unsupported.
-_INTEL_XPU_PCI_ID_RANGES = ((0x5690, 0x56C2), (0x0B69, 0x0BE5), (0xE200, 0xE2FF))
+# XPU-capable Intel PCI IDs (pciids.h: DG2/ATS-M, BMG); an allowlist since DG1 Iris Xe MAX is discrete but unsupported.
+_INTEL_XPU_PCI_ID_RANGES = ((0x5690, 0x56C2), (0xE200, 0xE2FF))
+# Core Ultra iGPUs with Arc Graphics, which PyTorch XPU lists: the ids Intel compute-runtime (devices_base.inl) names Arc (MTL-H, ARL-H, LNL, PTL), plus the PTL Arc Pro ids it lists unnamed.
+# Then PVC (Data Center GPU Max), by exact id: a 0x0B69-0x0BE5 range would also take Cedar Trail (0x0BE0-0x0BE5, gma500).
+_INTEL_XPU_PCI_IDS = frozenset((
+    0x7D55, 0x7D51, 0x64A0, 0xB080, 0xB081, 0xB082, 0xB083,  # Core Ultra Arc iGPUs
+    0xB084, 0xB085, 0xB086, 0xB087,  # PTL Arc Pro (Mesa iris_pci_ids.h)
+    0x0BD0, 0x0BD4, 0x0BD5, 0x0BD6, 0x0BD7, 0x0BD8, 0x0BD9, 0x0BDA, 0x0BDB, 0x0B69, 0x0B6E,  # PVC
+))  # fmt: skip
 
 
 def _intel_pci_device_is_xpu_class(device_dir: str) -> Optional[bool]:
@@ -468,7 +475,9 @@ def _intel_pci_device_is_xpu_class(device_dir: str) -> Optional[bool]:
             device_id = int(fh.read().strip(), 16)
     except (OSError, ValueError):
         return None
-    return any(lo <= device_id <= hi for lo, hi in _INTEL_XPU_PCI_ID_RANGES)
+    return device_id in _INTEL_XPU_PCI_IDS or any(
+        lo <= device_id <= hi for lo, hi in _INTEL_XPU_PCI_ID_RANGES
+    )
 
 
 def _linux_drm_sysfs_records(*, distinguish_failure: bool = False) -> "list[Dict[str, Any]] | None":
@@ -1407,6 +1416,30 @@ def _xpu_device_name_or_placeholder(torch) -> str:
         return "<unavailable>"
 
 
+# RDNA 3/3.5/4 only; gfx1250 is Instinct, so avoid a broad gfx12 prefix.
+_MIOPEN_SEARCH_CUTOFF_ARCH_PREFIXES = ("gfx110", "gfx115", "gfx120")
+
+
+def _configure_rocm_miopen(torch) -> None:
+    if "MIOPEN_SEARCH_CUTOFF" in os.environ:
+        return
+    try:
+        count = torch.cuda.device_count()
+        # MIOpen's cutoff is process-wide, so every visible GPU must qualify.
+        if not count or not all(
+            _props_gfx_arch(torch.cuda.get_device_properties(i)).startswith(
+                _MIOPEN_SEARCH_CUTOFF_ARCH_PREFIXES
+            )
+            for i in range(count)
+        ):
+            return
+    except Exception as exc:
+        logger.debug("MIOpen search cutoff device probe failed: %s", exc)
+        return
+    os.environ.setdefault("MIOPEN_SEARCH_CUTOFF", "1")
+    logger.info("ROCm RDNA: enabled MIOpen search cutoff (MIOPEN_SEARCH_CUTOFF=1)")
+
+
 def _detect_hardware_locked() -> DeviceType:
     """detect_hardware() body. Call only with _DETECT_LOCK held."""
     global DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, CHAT_ONLY_DETAIL, IS_ROCM
@@ -1457,20 +1490,31 @@ def _detect_hardware_locked() -> DeviceType:
                 print(f"Hardware detected: XPU -- {device_name} ({reason})")
                 return DEVICE
 
-        # Reuse the guarded answer: a raising second is_available() would skip the XPU branch below.
+        # reuse guarded result because another is_available() exception would skip XPU fallback
         if not cuda_unavailable:
             DEVICE = DeviceType.CUDA
             CHAT_ONLY = False
             try:
                 device_name = torch.cuda.get_device_properties(0).name
             except Exception as e:
-                logger.debug("CUDA device 0 property probe failed: %s", e)
+                # failed CUDA init can make later PyTorch calls segfault, so log the cause
+                from utils.allocator_conf import ALLOCATOR_CONF_ENV_VARS
+
+                allocator_conf = {
+                    name: os.environ[name] for name in ALLOCATOR_CONF_ENV_VARS if name in os.environ
+                }
+                logger.error(
+                    "CUDA device 0 property probe failed: %r (allocator config: %s)",
+                    e,
+                    allocator_conf or "unset",
+                )
                 device_name = "<unavailable>"
 
-            # Distinguish ROCm from CUDA for display only (DeviceType stays CUDA). AMD SDK wheels do not set torch.version.hip, so fall back to __version__.
+            # AMD SDK wheels omit torch.version.hip; ROCm label uses __version__; DEVICE stays CUDA
             _hip_ver = getattr(torch.version, "hip", None)
             if _hip_ver is not None or "rocm" in torch.__version__.lower():
                 IS_ROCM = True
+                _configure_rocm_miopen(torch)
                 _hip_label = _hip_ver or torch.__version__
                 print(f"Hardware detected: ROCm (HIP {_hip_label}) -- {device_name}")
             else:
@@ -2005,6 +2049,23 @@ def _amd_smi_ids_for_hip_ids(hip_ids: Optional[list[int]]) -> Optional[list[int]
         logger.debug("Skipping amd-smi VRAM query: HIP GPU mapping is incomplete")
         return None
     return [hip_to_smi[hip_id] for hip_id in hip_ids]
+
+
+def _smi_visible_utilization(parent_visible_spec: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """SMI visible-GPU utilization keyed by the parent's ids. amd-smi filters by its own gpu ids, not HIP's, so translate when the mapping is readable."""
+    ids = parent_visible_spec["numeric_ids"]
+    smi_ids = _amd_smi_ids_for_hip_ids(ids) if IS_ROCM and ids else None
+    result = _smi_query(
+        "get_visible_gpu_utilization",
+        ids if smi_ids is None else smi_ids,
+        parent_cuda_visible_devices = parent_visible_spec["raw"],
+    )
+    if result is not None and smi_ids is not None and smi_ids != ids:
+        hip_by_smi = dict(zip(smi_ids, ids))
+        for device in result.get("devices", []):
+            device["index"] = hip_by_smi.get(device.get("index"), device.get("index"))
+        result["parent_visible_gpu_ids"] = list(ids)
+    return result
 
 
 def _free_in_torch_scope(total_bytes: int, used_gb: float) -> int:
@@ -3225,6 +3286,10 @@ def _windows_amd_adapter_records_or_none(
                         family, _ = winreg.QueryValueEx(adapter_key, "AdapterFamily")
                     except OSError:
                         family = ""
+                    try:
+                        driver_version, _ = winreg.QueryValueEx(adapter_key, "DriverVersion")
+                    except OSError:
+                        driver_version = None
                     dedicated_memory_bytes = 0
                     has_dedicated_memory = False
                     for value_name in ("DedicatedVideoMemory", "DedicatedSystemMemory"):
@@ -3246,11 +3311,159 @@ def _windows_amd_adapter_records_or_none(
                     record["gfx"] = gfx
                 if has_dedicated_memory:
                     record["dedicated_memory_bytes"] = dedicated_memory_bytes
+                driver = _parse_windows_driver_version(driver_version)
+                if driver is not None:
+                    record["driver_version"] = _format_driver_version(driver)
                 by_luid[int(luid)] = record
     except Exception as e:
         logger.debug("DirectX adapter registry read declined: %s", e)
         return None
     return by_luid
+
+
+# ROCm/TheRock#7221: Adrenalin 26.5.1 through PRO 26.9.1 let Windows power down an idle RDNA4 card and page out live HIP allocations, which freezes the whole system on multi-GPU hosts. 26.5.1 is the first bad build, 26.9.2 the fix; never a 26.3.1 bound, since RDNA4's clean 26.1.1-26.3.1 builds are 32.0.23xxx (gpuopen.com/version-table).
+_AMD_IDLE_EVICT_FIRST_BAD_DRIVER = (32, 0, 31007, 1017)
+_AMD_IDLE_EVICT_FIXED_DRIVER = (32, 0, 32015, 2008)
+_AMD_IDLE_EVICT_ISSUE_URL = "https://github.com/ROCm/TheRock/issues/7221"
+# Name fallback for a driver that wrote no AdapterFamily: RX 9060/9070 series and Radeon AI PRO R9600D/R9700.
+_RDNA4_ADAPTER_NAME = re.compile(r"\bRX\s*90[67]0\b|\bR9[67]00D?\b", re.IGNORECASE)
+_amd_driver_check_lock = threading.Lock()
+_amd_driver_check_started = False
+_amd_driver_notice: Optional[Dict[str, Any]] = None
+
+
+def _parse_windows_driver_version(value: Any) -> Optional[tuple[int, int, int, int]]:
+    """DirectX stores DriverVersion as a REG_QWORD of four 16-bit fields; the INF spells it "32.0.A.B". Either form, or None."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        if not 0 < value < 1 << 64:
+            return None
+        return tuple((value >> shift) & 0xFFFF for shift in (48, 32, 16, 0))
+    m = re.fullmatch(r"\s*(\d+)\.(\d+)\.(\d+)\.(\d+)\s*", str(value or ""))
+    return tuple(int(part) for part in m.groups()) if m else None
+
+
+def _format_driver_version(version: tuple[int, ...]) -> str:
+    return ".".join(str(part) for part in version)
+
+
+def _is_rdna4_adapter(device: Dict[str, Any]) -> bool:
+    gfx = str(device.get("gfx") or "").lower()
+    if gfx:
+        # gfx1250 is Instinct, so not a bare gfx12 prefix.
+        return gfx.startswith("gfx120")
+    return bool(_RDNA4_ADAPTER_NAME.search(str(device.get("name") or "")))
+
+
+def amd_driver_idle_evict_notice(devices: list[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """The TheRock#7221 notice for these physical inventory rows, or None. Severity is "critical" when the host has more than one GPU of any vendor, the shape that freezes Windows."""
+    flagged = []
+    for device in devices:
+        if device.get("vendor") != "amd" or not _is_rdna4_adapter(device):
+            continue
+        version = _parse_windows_driver_version(device.get("driver_version"))
+        if (
+            version is not None
+            and _AMD_IDLE_EVICT_FIRST_BAD_DRIVER <= version < _AMD_IDLE_EVICT_FIXED_DRIVER
+        ):
+            flagged.append((device, _format_driver_version(version)))
+    if not flagged:
+        return None
+    driver_version = flagged[0][1]
+    return {
+        "message": (
+            f"AMD driver {driver_version} has a known bug that can freeze Windows when an AMD "
+            "GPU sits idle, most often with more than one GPU. Update to Adrenalin 26.9.2 or later."
+        ),
+        "driver_version": driver_version,
+        "devices": [device.get("name") for device, _ in flagged],
+        "gpu_count": len(devices),
+        "severity": "critical" if len(devices) > 1 else "warning",
+        "link": _AMD_IDLE_EVICT_ISSUE_URL,
+    }
+
+
+def _windows_live_amd_driver_versions() -> Optional[list[tuple[str, str]]]:
+    """(Name, DriverVersion) of each present AMD display adapter, or None when WMI could not say. Read live because the DirectX registry keeps records of removed cards, and the inventory pairs same-named records with live cards in LUID order."""
+    if platform.system() != "Windows":
+        return None
+    try:
+        ps = (
+            "$ErrorActionPreference='Stop';"
+            "(Get-CimInstance Win32_VideoController"
+            " | Where-Object { $_.PNPDeviceID -like 'PCI\\VEN_1002*' }"
+            ' | ForEach-Object { $_.Name + "`t" + $_.DriverVersion }) -join "`n"'
+        )
+        r = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 10,
+            **_hidden_console_kwargs(),
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        logger.debug("Live AMD driver version scan failed: %s", e)
+        return None
+    if r.returncode != 0:
+        return None
+    versions = []
+    for line in (r.stdout or "").splitlines():
+        name, _, version = line.partition("\t")
+        if name.strip() and version.strip():
+            versions.append((name.strip(), version.strip()))
+    return versions
+
+
+def _check_amd_driver_idle_evict() -> None:
+    global _amd_driver_notice
+    try:
+        # The registry alone first: a host with no affected record never pays for the live WMI scans.
+        records = [{"vendor": "amd", **r} for r in _windows_amd_adapter_records_by_luid().values()]
+        if amd_driver_idle_evict_notice(records) is None:
+            return
+        live = _windows_live_amd_driver_versions()
+        if live is None:
+            return
+        rows = []
+        for d in get_physical_gpu_inventory().get("devices") or []:
+            if d.get("vendor") == "amd":
+                # The inventory's own name join: rows carry the registry description, WMI the display name.
+                match = _claim_live_adapter(d.get("name"), [name for name, _ in live])
+                d = {**d, "driver_version": live.pop(match)[1] if match is not None else None}
+            rows.append(d)
+        notice = amd_driver_idle_evict_notice(rows)
+    except Exception as e:
+        logger.debug("AMD driver idle-eviction check failed: %s", e)
+        return
+    _amd_driver_notice = notice
+    if notice is not None:
+        logger.warning("%s See %s", notice["message"], notice["link"])
+
+
+def start_amd_driver_check() -> None:
+    """Check the AMD driver against TheRock#7221 once per process, Windows only, on a daemon thread: the inventory it reads runs a WMI scan, and its result is cached for the next caller."""
+    global _amd_driver_check_started
+    if platform.system() != "Windows":
+        return
+    with _amd_driver_check_lock:
+        if _amd_driver_check_started:
+            return
+        _amd_driver_check_started = True
+    try:
+        threading.Thread(
+            target = _check_amd_driver_idle_evict, name = "amd-driver-check", daemon = True
+        ).start()
+    except Exception as e:
+        logger.debug("Could not start the AMD driver check: %s", e)
+
+
+def amd_driver_warning_report() -> Dict[str, Any]:
+    """``driver_warning`` for /api/system once the startup check has flagged this host's driver, else ``{}``."""
+    notice = _amd_driver_notice
+    return {"driver_warning": dict(notice)} if notice else {}
 
 
 def _windows_rocm_shared_pool_host_gb_by_index(devices: list[Dict[str, Any]]) -> Dict[int, float]:
@@ -3753,11 +3966,7 @@ def get_gpu_utilization() -> Dict[str, Any]:
 
     if device == DeviceType.CUDA:
         parent_visible_spec = _get_parent_visible_gpu_spec()
-        result = _smi_query(
-            "get_visible_gpu_utilization",
-            parent_visible_spec["numeric_ids"],
-            parent_cuda_visible_devices = parent_visible_spec["raw"],
-        )
+        result = _smi_visible_utilization(parent_visible_spec)
         if result is not None and "devices" in result:
             devices = result["devices"]
             numeric_ids = parent_visible_spec.get("numeric_ids")
@@ -4370,11 +4579,7 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
 
     if device == DeviceType.CUDA:
         parent_visible_spec = _get_parent_visible_gpu_spec()
-        result = _smi_query(
-            "get_visible_gpu_utilization",
-            parent_visible_spec["numeric_ids"],
-            parent_cuda_visible_devices = parent_visible_spec["raw"],
-        )
+        result = _smi_visible_utilization(parent_visible_spec)
         if result is not None:
             result["backend"] = _backend_label(device)
             numeric_ids = parent_visible_spec.get("numeric_ids")
@@ -4635,6 +4840,7 @@ def _get_parent_visible_gpu_spec() -> Dict[str, Any]:
         "CUDA_VISIBLE_DEVICES" not in os.environ
         and ("HIP_VISIBLE_DEVICES" in os.environ or "ROCR_VISIBLE_DEVICES" in os.environ)
     )
+    rocr_mask = False
     if _is_rocm_spec:
         hip_vis = os.environ.get("HIP_VISIBLE_DEVICES")
         # ROCR_VISIBLE_DEVICES is Linux-only: Windows HIP has no ROCr layer, so a stray ROCR var there masks nothing and must not be read as the ordinal->physical mapping.
@@ -4643,6 +4849,7 @@ def _get_parent_visible_gpu_spec() -> Dict[str, Any]:
             cuda_visible = hip_vis
         elif rocr_vis is not None:
             cuda_visible = rocr_vis
+            rocr_mask = True
     if cuda_visible is None:
         cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
 
@@ -4661,10 +4868,38 @@ def _get_parent_visible_gpu_spec() -> Dict[str, Any]:
             "supports_explicit_gpu_ids": True,
         }
 
-    tokens = [value.strip() for value in cuda_visible.split(",") if value.strip()]
-    try:
-        numeric_ids = [int(value) for value in tokens]
-    except ValueError:
+    # Each runtime's own rule: a negative, empty or non-numeric index ends the list ("0,2,-1,1" exposes 0
+    # and 2). CUDA reads strtoul-style ("1gpu2" is 1) and empties the set on a repeat (torch's
+    # _parse_visible_devices); HIP takes only a plain index and skips a repeat, ROCr stops at one.
+    numeric_ids = []
+    for value in (token.strip() for token in cuda_visible.split(",")):
+        prefix = re.fullmatch(r"-?\d+", value) if _is_rocm_spec else re.match(r"[+-]?\d+", value)
+        if prefix is None:
+            # A UUID/MIG id, or a mask not starting with a number, keeps the UUID path below.
+            if value and (not numeric_ids or value.upper().startswith(("GPU-", "MIG-"))):
+                numeric_ids = None
+            break
+        gpu_id = int(prefix.group())
+        if gpu_id < 0:
+            break
+        if gpu_id in numeric_ids:
+            if _is_rocm_spec and not rocr_mask:
+                continue
+            if not _is_rocm_spec:
+                numeric_ids = []
+            break
+        numeric_ids.append(gpu_id)
+    if numeric_ids is None:
+        # nvidia-smi indices are PCI order, so they only name the same cards a numeric mask written back to a child would under PCI_BUS_ID (#8873).
+        if not _is_rocm_spec and os.environ.get("CUDA_DEVICE_ORDER") == "PCI_BUS_ID":
+            from . import nvidia
+            resolved_ids = nvidia.resolve_uuid_mask(cuda_visible)
+            if resolved_ids is not None:
+                return {
+                    "raw": cuda_visible,
+                    "numeric_ids": resolved_ids,
+                    "supports_explicit_gpu_ids": True,
+                }
         return {
             "raw": cuda_visible,
             "numeric_ids": None,
@@ -5734,6 +5969,21 @@ def auto_select_gpu_ids(
     # Per-GPU check: activations do not shard, so each GPU needs its weight shard plus the full activation cost.
     vram_breakdown = estimate_metadata.get("vram_breakdown", {})
 
+    # A ROCm APU's free reading is the shared host pool: a discrete card that fits alone goes first.
+    if IS_ROCM and len(ranked) > 1:
+        unified = {
+            td["index"]
+            for td in _torch_get_device_inventory(get_parent_visible_gpu_ids())
+            if td.get("_rocm_known_unified")
+        }
+        if unified and ranked[0]["index"] in unified:
+            discrete = next(
+                (c for c in ranked if c["index"] not in unified and c["free_gb"] >= required_gb),
+                None,
+            )
+            if discrete is not None:
+                ranked = [discrete] + [c for c in ranked if c is not discrete]
+
     for candidate in ranked:
         selected.append(candidate["index"])
         if len(selected) == 1:
@@ -6003,8 +6253,13 @@ def _nvidia_inference_devices() -> list[Dict[str, Any]]:
         return []
     if allowed is not None:
         # visible_ordinal is the child's numbering, which follows the mask's order.
-        order = [int(x) for x in os.environ["CUDA_VISIBLE_DEVICES"].split(",") if x.strip()]
-        rows.sort(key = lambda row: order.index(row["index"]))
+        try:
+            order = [int(x) for x in os.environ["CUDA_VISIBLE_DEVICES"].split(",") if x.strip()]
+        except ValueError:
+            order = nvidia.resolve_uuid_mask(os.environ["CUDA_VISIBLE_DEVICES"].strip()) or []
+        rows.sort(
+            key = lambda row: order.index(row["index"]) if row["index"] in order else len(order)
+        )
     usage = nvidia.get_visible_gpu_utilization([row["index"] for row in rows])
     usage_by_index = {d.get("index"): d for d in usage.get("devices") or []}
     devices = []
