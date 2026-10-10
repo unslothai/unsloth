@@ -70,6 +70,16 @@ def validate_load(engine: str, request) -> list[int]:
         raise ValueError(
             f"On Windows, {ENGINE_NAMES[engine]} runs on one AMD GPU. Select a single GPU."
         )
+    # HIP renumbers devices after GPU_DEVICE_ORDINAL, so the engine's mask could name another card.
+    if (
+        os.environ.get("GPU_DEVICE_ORDINAL", "").strip()
+        and not wsl_host.active()
+        and profile(engine)["platform"] == "rocm"
+    ):
+        raise ValueError(
+            f"{ENGINE_NAMES[engine]} cannot select AMD GPUs while Studio runs with "
+            "GPU_DEVICE_ORDINAL set. Use HIP_VISIBLE_DEVICES or ROCR_VISIBLE_DEVICES instead."
+        )
     for gpu_id in gpu_ids:
         reason = support_reason(engine, gpu_id)
         if reason:

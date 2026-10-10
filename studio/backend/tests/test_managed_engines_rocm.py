@@ -368,6 +368,29 @@ def test_amd_refuses_4_bit_before_unloading(rocm, monkeypatch):
         )
 
 
+def test_amd_refuses_a_gpu_device_ordinal_mask(rocm, monkeypatch):
+    # HIP applies its mask after GPU_DEVICE_ORDINAL, so a selected id could reach another card.
+    from models.inference import LoadRequest
+    from core.inference import wsl_host
+
+    info = {"path": "/env", "version": "0.30.0", "profile_digest": install.profile_digest("vllm")}
+    monkeypatch.setattr(managed_engine, "installed", lambda _: info)
+    monkeypatch.setattr(managed_engine, "support_reason", lambda *a: None)
+    monkeypatch.setattr(managed_engine, "resolve_requested_gpu_ids", lambda ids: [1])
+    monkeypatch.setattr(wsl_host, "active", lambda: False)
+    request = LoadRequest(model_path = "m", engine = "vllm")
+    monkeypatch.delenv("GPU_DEVICE_ORDINAL", raising = False)
+    assert managed_engine.validate_load("vllm", request) == [1]
+    monkeypatch.setenv("GPU_DEVICE_ORDINAL", "1,0")
+    with pytest.raises(ValueError, match = "GPU_DEVICE_ORDINAL"):
+        managed_engine.validate_load("vllm", request)
+    # The NVIDIA profile never reads it.
+    monkeypatch.setattr(install, "gpu_platform", lambda: "cuda")
+    monkeypatch.setattr(install, "_studio_packages", lambda: {})
+    info["profile_digest"] = install.profile_digest("vllm")
+    assert managed_engine.validate_load("vllm", request) == [1]
+
+
 @_LINUX
 def test_a_rollback_never_crosses_gpu_platforms(rocm, monkeypatch, tmp_path):
     from models.inference import LoadRequest
