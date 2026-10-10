@@ -424,6 +424,7 @@ export function DiffusionTrainPanel({
   // sdxl trains the U-Net in mixed precision, so it uses mixed_precision instead of base_precision.
   // Everything else is a DiT family.
   const isDiT = familyName !== "sdxl";
+  const isH3 = familyName === "minimax-h3";
   // An EMPTY precision_modes list on a DiT family means this host cannot train it at all (the reason rides in
   // vram_note); only an ABSENT field means an older backend. SDXL reports [] too but is not precision-gated,
   // hence the isDiT scope.
@@ -502,6 +503,8 @@ export function DiffusionTrainPanel({
   const [lrWarmupSteps, setLrWarmupSteps] = useState(0);
   // Gradient checkpointing trades ~20-30% step time for a large activation-VRAM saving.
   const [gradCheckpoint, setGradCheckpoint] = useState(true);
+  // Opt-in: a mirrored sample teaches text, logos and one-sided features in both orientations.
+  const [randomFlip, setRandomFlip] = useState(false);
   // sdxl (U-Net) trains in a mixed-precision autocast; the DiT families quantise the frozen base
   // weights and ignore this.
   const [precision, setPrecision] = useState<"bf16" | "fp16" | "no">("bf16");
@@ -1171,6 +1174,7 @@ export function DiffusionTrainPanel({
         gradient_accumulation_steps: gradAccum,
         seed,
         gradient_checkpointing: gradCheckpoint,
+        random_flip: randomFlip,
         lr_scheduler: lrScheduler,
         lr_warmup_steps: lrScheduler === "constant" ? 0 : lrWarmupSteps,
         lora_rank: rank,
@@ -1210,6 +1214,7 @@ export function DiffusionTrainPanel({
     seed,
     saveSteps,
     gradCheckpoint,
+    randomFlip,
     lrScheduler,
     lrWarmupSteps,
     rank,
@@ -1492,6 +1497,26 @@ export function DiffusionTrainPanel({
             </SelectContent>
           </Select>
         </div>
+
+        {!isH3 && (
+          <div className={fieldClass}>
+            <FieldLabel hint="Mirrors images left-right at random for extra variety. Leave off for text, logos or subjects with one-sided features (a side parting, a scar); try on for styles and symmetric subjects.">
+              Random flip
+            </FieldLabel>
+            <Select
+              value={randomFlip ? "on" : "off"}
+              onValueChange={(v) => setRandomFlip(v === "on")}
+            >
+              <SelectTrigger className={selectClass} aria-label="Random flip">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="off">Off</SelectItem>
+                <SelectItem value="on">On (mirror images)</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        )}
 
         {isDiT ? (
           <div className={fieldClass}>

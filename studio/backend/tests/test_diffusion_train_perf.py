@@ -57,6 +57,24 @@ def _cfg(**kw) -> DiffusionLoraConfig:
 
 
 # ── _plan_cache_variants (pure, seed-deterministic) ───────────────────────────
+def test_random_flip_is_opt_in():
+    # Every other trainer's flip is opt-in; on by default it mirrored text and one-sided features in half the samples.
+    assert DiffusionLoraConfig.random_flip is False
+    req = DiffusionTrainingStartRequest(base_model = _SDXL, data_dir = "d", output_dir = "o")
+    assert req.random_flip is False
+    cfg = DiffusionLoraConfig(
+        **req.model_dump(include = {"base_model", "data_dir", "output_dir", "random_flip"})
+    )
+    plan = _plan_cache_variants(5, 4, cfg.center_crop, cfg.random_flip, cfg.seed)
+    assert not any(flip for variants in plan for (_, _, flip) in variants)
+    assert (
+        DiffusionTrainingStartRequest(
+            base_model = _SDXL, data_dir = "d", output_dir = "o", random_flip = True
+        ).random_flip
+        is True
+    )
+
+
 def test_plan_cache_variants_deterministic_and_deduped():
     # Same seed gives a byte-identical plan (its own rng stream, so it is fully reproducible).
     p1 = _plan_cache_variants(3, 4, center_crop = False, random_flip = True, seed = 123)

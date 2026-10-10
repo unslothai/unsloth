@@ -998,7 +998,8 @@ class DiffusionLoraConfig:
     lr_scheduler: str = "constant"
     lr_warmup_steps: int = 0
     center_crop: bool = False
-    random_flip: bool = True
+    # Off by default: flipping mirrors text, logos and one-sided features in half the samples.
+    random_flip: bool = False
     caption_column: str = "text"
     adapter_name: str = "default"
     hf_token: Optional[str] = None
@@ -1568,8 +1569,9 @@ def h3_train_unsupported_reason(cfg: Any) -> Optional[str]:
     return None
 
 
-# These have a DEFAULT the H3 loop disagrees with, so they are normalised rather than refused (which would 422 every
-# untouched request): one centre cover-crop, nothing flipped, a plain unweighted MSE, and exactly one cached tuple.
+# A request can carry values the H3 loop does not run (several are defaults), so they are normalised rather than refused
+# (which would 422 every untouched request): one centre cover-crop, nothing flipped, a plain unweighted MSE, and exactly
+# one cached tuple.
 _H3_FIXED_RECIPE: dict[str, Any] = {
     "center_crop": True,
     "random_flip": False,

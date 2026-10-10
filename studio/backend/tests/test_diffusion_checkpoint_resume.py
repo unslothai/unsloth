@@ -1996,7 +1996,7 @@ def test_the_identity_covers_the_input_stream(run_dir):
         ("cache_latents", False, "latent caching"),
         ("cache_variants", 8, "cached crop variants"),
         ("center_crop", True, "centre cropping"),
-        ("random_flip", False, "random flipping"),
+        ("random_flip", True, "random flipping"),
     ):
         changed_cfg = dataclasses.replace(base.cfg, **{field: value})
         reason = dc.identity_for_config(base.cfg).mismatch_reason(
@@ -2009,8 +2009,9 @@ def test_the_identity_covers_the_input_stream(run_dir):
         assert older is not None
         assert older.mismatch_reason(dc.identity_for_config(changed_cfg)) is None, field
     # False is a VALUE, not an unknown: the flags are recorded as on/off for exactly that.
-    flipped = dataclasses.replace(base.cfg, random_flip = False)
-    assert dc.identity_for_config(flipped).random_flip == "off"
+    assert dc.identity_for_config(base.cfg).random_flip == "off"
+    flipped = dataclasses.replace(base.cfg, random_flip = True)
+    assert dc.identity_for_config(flipped).random_flip == "on"
 
 
 def test_the_identity_covers_the_update_shape_and_the_resolution(run_dir):
