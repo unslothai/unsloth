@@ -34448,9 +34448,7 @@ def _slot_model_objects() -> list[dict]:
         _ctx = _positive_int_or_none(getattr(llama_backend, "context_length", None))
         if _ctx is not None:
             entry["context_length"] = _ctx
-        # Studio's estimate of the largest context this machine holds without spilling to system
-        # RAM, not a limit: the server runs at context_length, which can be larger (#12571).
-        # max_context_length is the original name, kept for clients that already read it.
+        # A no-spill VRAM estimate, not the running window (context_length); old name kept (#12571).
         _max_ctx = _positive_int_or_none(getattr(llama_backend, "max_context_length", None))
         if _max_ctx is not None:
             entry["vram_fit_context_length"] = _max_ctx
