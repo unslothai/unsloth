@@ -166,6 +166,9 @@ def test_unsloth_model_passes_through_and_gets_boundaries(fake_trl):
     assert out["packed_seq_lengths"].tolist() == [2, 3]
     # The plain (generation) forward is untouched.
     assert "packed_seq_lengths" not in lm.forward(position_ids = pos)
+    # A positional None config gets the same default.
+    mod.AsyncGRPOTrainer(Peft(CausalLM(FastBackbone())), None, None)
+    assert calls["init"][1][1].output_dir == "Tiny-Model-AsyncGRPO"
     # String ids still go through TRL's loader.
     mod.AsyncGRPOTrainer("org/x", None, args = mod.AsyncGRPOConfig("o"))
     assert calls["create"] == ["org/x"]

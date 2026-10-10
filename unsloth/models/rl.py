@@ -4299,10 +4299,15 @@ def patch_trl_async_grpo():
 
     @functools.wraps(original_init)
     def __init__(self, model, *args, **kwargs):
-        if not isinstance(model, str) and len(args) < 2 and kwargs.get("args") is None:
+        config = args[1] if len(args) >= 2 else kwargs.get("args")
+        if not isinstance(model, str) and config is None:
             # Upstream names the default output_dir from the model id string.
             name = getattr(getattr(model, "config", None), "_name_or_path", "") or "model"
-            kwargs["args"] = async_module.AsyncGRPOConfig(f"{name.split('/')[-1]}-AsyncGRPO")
+            config = async_module.AsyncGRPOConfig(f"{name.split('/')[-1]}-AsyncGRPO")
+            if len(args) >= 2:
+                args = (args[0], config, *args[2:])
+            else:
+                kwargs["args"] = config
         original_init(self, model, *args, **kwargs)
 
     trainer_class.__init__ = __init__
