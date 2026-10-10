@@ -526,7 +526,7 @@ function DocumentCard({
     const textual =
       documentKind(file.name, file.type) === null && !isMarkdown(file.name, file.type);
     // Served as octet-stream: the viewer reads text only when the type says so.
-    return textual ? new Blob([file], { type: "text/plain" }) : file;
+    return textual ? new File([file], file.name, { type: "text/plain" }) : file;
     // The id names the stored file; the rest of the row changes with progress frames.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [doc.id, thumbnailFile]);

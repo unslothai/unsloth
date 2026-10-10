@@ -220,7 +220,13 @@ const DocumentDialog: FC<
               : truncateAttachmentPreviewText(await blob.text());
           next = { blob, text, truncated };
         } else if (textFallback && blob.type.startsWith("text/")) {
-          const { text, truncated } = truncateAttachmentPreviewText(await blob.text());
+          // A File decodes as the composer does (BOM, UTF-16); a code page it refuses still shows raw.
+          const { text, truncated } =
+            blob instanceof File
+              ? await readAttachmentText(blob, source.name, blob.type).catch(async () =>
+                  truncateAttachmentPreviewText(await blob.text()),
+                )
+              : truncateAttachmentPreviewText(await blob.text());
           next = { blob, plain: text, truncated };
         }
         if (!cancelled) setLoaded(next);
