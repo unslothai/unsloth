@@ -27,6 +27,7 @@ already serves the per-forward cast from its pool. See outputs/arch_patch/SUMMAR
 
 from __future__ import annotations
 
+import functools
 import os
 from typing import Any
 
@@ -73,7 +74,8 @@ def install_compiled_dequant(logger: Any = None) -> bool:
     try:
         import torch  # noqa: PLC0415
 
-        compiled = torch.compile(gguf_utils.dequantize_gguf_tensor, dynamic = True)
+        eager = gguf_utils.dequantize_gguf_tensor
+        compiled = _guard(torch.compile(eager, dynamic = True), eager, logger)
         # force=True: the compiled callable's fingerprint differs from the original, which can_safely_patch would
         # correctly reject.
         if apply_patch(gguf_utils, _DEQUANT_ATTR, compiled, force = True):
@@ -84,6 +86,30 @@ def install_compiled_dequant(logger: Any = None) -> bool:
         _warn(logger, "install_compiled_dequant", exc)
         _compiled_dequant_installed = False
         return False
+
+
+def _guard(compiled: Any, eager: Any, logger: Any) -> Any:
+    """``compiled`` behind an eager fallback, like the block and VAE decode compiles: a lazy compile that fails on
+    the first generation (#9897, Triton could not build its driver) ran nothing, so the stock dequant answers."""
+    failed: list = []
+
+    @functools.wraps(eager)
+    def guarded(*args: Any, **kwargs: Any) -> Any:
+        if not failed:
+            try:
+                return compiled(*args, **kwargs)
+            except Exception as exc:  # noqa: BLE001 - reraised unless a compile-time failure
+                from .diffusion_speed import is_compile_failure  # noqa: PLC0415 - diffusion_speed imports this
+
+                if not is_compile_failure(exc):
+                    raise
+                failed.append(type(exc).__name__)
+                # The handled exception pins inductor's frames through the eager retry.
+                exc.__traceback__ = None
+                _warn(logger, "compiled dequant (running eager)", exc)
+        return eager(*args, **kwargs)
+
+    return guarded
 
 
 def uninstall_compiled_dequant() -> None:
