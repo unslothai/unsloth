@@ -45,6 +45,7 @@ _NS = {
     "p": "http://schemas.openxmlformats.org/presentationml/2006/main",
     "a": "http://schemas.openxmlformats.org/drawingml/2006/main",
     "c": "http://schemas.openxmlformats.org/drawingml/2006/chart",
+    "dgm": "http://schemas.openxmlformats.org/drawingml/2006/diagram",
     "office": "urn:oasis:names:tc:opendocument:xmlns:office:1.0",
     "text": "urn:oasis:names:tc:opendocument:xmlns:text:1.0",
     "table": "urn:oasis:names:tc:opendocument:xmlns:table:1.0",
@@ -61,6 +62,7 @@ _STRICT_NS = tuple(
         ("presentationml/main", "p"),
         ("drawingml/main", "a"),
         ("drawingml/chart", "c"),
+        ("drawingml/diagram", "dgm"),
         ("officeDocument/relationships", "r"),
     )
 )
@@ -455,6 +457,8 @@ def xlsx(path: str) -> list[Section]:
                 style_formats.append((fmt, custom.get(fmt, "")))
 
         sections: list[Section] = []
+        seen: set[int] = set()
+        budget = _Budget()
         for sheet in workbook.iter(_q("s", "sheet")):
             target = rels.get(sheet.get(_q("r", "id"), ""))
             if not target or not zf.has(target):
@@ -471,9 +475,7 @@ def xlsx(path: str) -> list[Section]:
                     kind, v = c.get("t", "n"), c.find(_q("s", "v"))
                     raw = v.text if v is not None and v.text is not None else ""
                     if kind == "s":
-                        value = (
-                            strings[int(raw)] if raw.isdigit() and int(raw) < len(strings) else ""
-                        )
+                        value = _shared(strings, int(raw) if raw.isdigit() else -1, seen, budget)
                     elif kind == "inlineStr":
                         inline = c.find(_q("s", "is"))
                         value = _xlsx_text(inline) if inline is not None else ""
@@ -597,6 +599,11 @@ def pptx(path: str) -> list[Section]:
                 target = slide_rels.get(chart.get(_q("r", "id"), ""))
                 if target and zf.has(target):
                     lines += _chart_lines(zf.xml(target))
+            # SmartArt labels live in the diagram data part, not the slide.
+            for diagram in slide.iter(_q("dgm", "relIds")):
+                target = slide_rels.get(diagram.get(_q("r", "dm"), ""))
+                if target and zf.has(target):
+                    lines += _drawing_lines(zf.xml(target))
             notes = next(
                 (t for t in slide_rels.values() if "notesslide" in t.lower() and zf.has(t)),
                 None,
@@ -620,6 +627,17 @@ class _Budget:
         self.left -= chars
         if self.left < 0:
             raise ValueError("document repeats too much content")
+
+
+def _shared(strings: list[str], index: int, seen: set[int], budget: _Budget) -> str:
+    """A shared string cell; reuses are charged, as one string can fill every cell."""
+    if not 0 <= index < len(strings):
+        return ""
+    if index in seen:
+        budget.spend(len(strings[index]))
+    else:
+        seen.add(index)
+    return strings[index]
 
 
 def _odf_inline(node: ET.Element, budget: _Budget) -> str:
@@ -1296,6 +1314,8 @@ def xls(path: str) -> list[Section]:
 
     sheets: list[tuple[str, int]] = []
     strings: list[str] = []
+    seen: set[int] = set()
+    budget = _Budget()
     sst: list[bytes] | None = None  # SST body and its CONTINUE records
     sst_count = 0
     formats: dict[int, str] = {}
@@ -1370,7 +1390,7 @@ def xls(path: str) -> list[Section]:
                 continue
             if kind == 0x00FD:  # LABELSST
                 r, c, _xf, i = struct.unpack_from("<HHHI", body)
-                put(r, c, strings[i] if i < len(strings) else "")
+                put(r, c, _shared(strings, i, seen, budget))
             elif kind == 0x0203:  # NUMBER
                 r, c, xf, v = struct.unpack_from("<HHHd", body)
                 put(r, c, number(v, xf))
@@ -1767,6 +1787,8 @@ def msg(path: str, html_text) -> list[Section]:
     body = _msg_prop(cf, (), "1000", codec)
     if not body and cf.exists("__substg1.0_10130102"):
         body = html_text(cf.open("__substg1.0_10130102"))
+    if not body and (html := _msg_prop(cf, (), "1013", codec)):
+        body = html_text(codecs.BOM_UTF8 + html.encode("utf-8"))
     if not body and cf.exists("__substg1.0_10090102"):
         rtf_bytes = _decompress_rtf(cf.open("__substg1.0_10090102"))
         body = _rtf_text(rtf_bytes.decode("latin-1"))

@@ -868,6 +868,57 @@ def test_msg_uses_the_smtp_address_for_exchange_senders(tmp_path):
     assert _text(path) == "From: Ann <ann@example.com>\n\nBody zebramarker"
 
 
+def test_msg_reads_a_string_html_body(tmp_path):
+    path = tmp_path / "html.msg"
+    html = '<html><head><meta charset="windows-1252"></head><body><p>Café zebramarker</p></body></html>'
+    path.write_bytes(compound_file({("__substg1.0_1013001F",): html.encode("utf-16-le")}))
+    assert _text(path).strip() == "Café zebramarker"
+
+
+def test_pptx_reads_smartart_labels(tmp_path):
+    members = {}
+    with zipfile.ZipFile(build_pptx(tmp_path / "plain.pptx")) as z:
+        members = {name: z.read(name) for name in z.namelist()}
+    dgm = 'xmlns:dgm="http://schemas.openxmlformats.org/drawingml/2006/diagram"'
+    members["ppt/slides/slide1.xml"] = members["ppt/slides/slide1.xml"].replace(
+        b"</p:spTree>",
+        f'<p:graphicFrame><a:graphic><a:graphicData><dgm:relIds {dgm} r:dm="rId2"/>'
+        "</a:graphicData></a:graphic></p:graphicFrame></p:spTree>".encode(),
+    )
+    members["ppt/slides/_rels/slide1.xml.rels"] = members[
+        "ppt/slides/_rels/slide1.xml.rels"
+    ].replace(
+        b"</Relationships>",
+        b'<Relationship Id="rId2" Target="../diagrams/data1.xml"/></Relationships>',
+    )
+    members["ppt/diagrams/data1.xml"] = (
+        f"<dgm:dataModel {dgm} {P}><dgm:ptLst>"
+        "<dgm:pt><dgm:t><a:p><a:r><a:t>Plan</a:t></a:r></a:p></dgm:t></dgm:pt>"
+        "<dgm:pt><dgm:t><a:p><a:r><a:t>Ship zebramarker</a:t></a:r></a:p></dgm:t></dgm:pt>"
+        "</dgm:ptLst></dgm:dataModel>"
+    )
+    text = _text(_zip(tmp_path / "smartart.pptx", members))
+    assert "Revenue increased\nPlan\nShip zebramarker\nNotes:" in text
+
+
+def test_xlsx_refuses_one_shared_string_filling_every_cell(tmp_path):
+    cells = "".join(f'<c r="{chr(65 + i)}1" t="s"><v>0</v></c>' for i in range(26))
+    rows = "".join(
+        f'<row r="{n}">{cells.replace("1" + chr(34), str(n) + chr(34))}</row>' for n in range(1, 60)
+    )
+    path = _zip(
+        tmp_path / "bomb.xlsx",
+        {
+            "xl/workbook.xml": f'<workbook {S}><sheets><sheet name="S" sheetId="1" r:id="rId1"/></sheets></workbook>',
+            "xl/_rels/workbook.xml.rels": f'<Relationships {REL}><Relationship Id="rId1" Target="worksheets/sheet1.xml"/></Relationships>',
+            "xl/sharedStrings.xml": f"<sst {S}><si><t>{'x' * 25_000}</t></si></sst>",
+            "xl/worksheets/sheet1.xml": f"<worksheet {S}><sheetData>{rows}</sheetData></worksheet>",
+        },
+    )
+    with pytest.raises(ValueError, match = "repeats too much content"):
+        parsers.parse(str(path))
+
+
 def test_eml_reads_every_inline_part(tmp_path):
     message = EmailMessage()
     message["Subject"] = "Two parts"
