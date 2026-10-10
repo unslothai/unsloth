@@ -785,7 +785,7 @@ export function DebuggingTab() {
                   <HugeiconsIcon
                     strokeWidth={1.75}
                     icon={InformationCircleIcon}
-                    className="size-[var(--ui-icon-size-sm)]"
+                    className="size-[var(--ui-icon-size-hint)]"
                   />
                 </button>
               </TooltipTrigger>

@@ -42,6 +42,8 @@ export interface NpuStatus {
   loaded_model: string | null;
   context_length: number | null;
   loading_model: string | null;
+  /** Installed runtime versions; absent from servers that predate them. */
+  versions?: { lemonade: string | null; fastflowlm: string | null };
 }
 
 export interface NpuModel {

@@ -5,7 +5,10 @@ export interface TransformersUpgradeInfo {
   model_type: string;
   pypi_version?: string | null;
   supported_in_pypi?: boolean;
+  /** transformers main ships it; installable from main after consent when main_version is set. */
   supported_in_main?: boolean;
+  /** transformers main version (a .devN string) at check time. */
+  main_version?: string | null;
 }
 
 export type TransformersUpgradePhase = "consent" | "installing" | "error";

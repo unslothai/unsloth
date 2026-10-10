@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -23,6 +23,11 @@ import {
   updateChatProjectInstructions,
 } from "../hooks/use-chat-projects";
 import type { ProjectRecord } from "../types";
+import {
+  imeOwnsInputKeydown,
+  inputImeHandlers,
+  newInputImeState,
+} from "../utils/composer-preferences";
 
 /** Name, instructions and linked folders for one project. The caller owns delete confirm. */
 export function EditProjectDialog({
@@ -37,7 +42,17 @@ export function EditProjectDialog({
   const [name, setName] = useState(project?.name ?? "");
   const [instructions, setInstructions] = useState(project?.instructions ?? "");
   const [busy, setBusy] = useState(false);
-  // Reseed on render, not in an effect: a stale draft would save over another project.
+  const nameImeRef = useRef(newInputImeState());
+  const nameImeHandlers = {
+    onFocus: () => inputImeHandlers(nameImeRef.current).onFocus(),
+    onBlur: () => inputImeHandlers(nameImeRef.current).onBlur(),
+    onCompositionStart: () =>
+      inputImeHandlers(nameImeRef.current).onCompositionStart(),
+    onCompositionEnd: (event: { timeStamp: number }) =>
+      inputImeHandlers(nameImeRef.current).onCompositionEnd(event),
+  };
+  // Reseed on render, not in an effect: the fields are drafts of whichever project is open, and
+  // a stale one would save the last project's text over this one.
   const [seededFor, setSeededFor] = useState(project?.id ?? null);
   if ((project?.id ?? null) !== seededFor) {
     setSeededFor(project?.id ?? null);
@@ -95,7 +110,17 @@ export function EditProjectDialog({
     >
       <DialogContent
         className="corner-squircle dialog-soft-surface gap-5 sm:max-w-lg"
+        {...nameImeHandlers}
+        // Enter saves from the name field, which a multi-line instructions box cannot do; the
+        // chord saves from either. The menus and confirmations inside portal out of here, so
+        // their own keys never reach this.
         onKeyDown={(e) => {
+          if (
+            imeOwnsInputKeydown(e, nameImeRef.current, {
+              modifiedEnterSubmits: true,
+            })
+          )
+            return;
           if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
             e.preventDefault();
             void save();
@@ -124,6 +149,14 @@ export function EditProjectDialog({
             value={name}
             onChange={(e) => setName(e.target.value)}
             onKeyDown={(e) => {
+              if (
+                imeOwnsInputKeydown(e, nameImeRef.current, {
+                  modifiedEnterSubmits: true,
+                })
+              ) {
+                e.stopPropagation();
+                return;
+              }
               if (e.key === "Enter") {
                 e.preventDefault();
                 // The chord would reach the dialog's handler too and save twice.

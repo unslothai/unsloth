@@ -54,6 +54,7 @@ export type WindowsView = {
   unsupported: RuntimeUnsupported | null;
   runtimeMissing: boolean;
   showInstallRuntime: boolean;
+  builtinInUse: boolean;
   optInChecked: boolean;
   optInDisabled: boolean;
   optInLocked: boolean;
@@ -91,6 +92,9 @@ export function windowsView(
     unsupported,
     runtimeMissing,
     showInstallRuntime: runtimeMissing && unsupported === null,
+    builtinInUse:
+      windows.builtinContainer === true &&
+      !(runtimeMissing || windows.allowDaclFallback),
     optInChecked: windows.allowDaclFallback,
     optInDisabled:
       runtimeMissing || windows.daclLockedByEnvironment || saving || running,

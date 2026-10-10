@@ -67,6 +67,7 @@ import {
 import {
   type GgufVariantFootprint,
   type MediaStudioPage,
+  awaitsCompanions,
   ggufVariantFootprint,
   useMediaCompanionBytes,
 } from "../hooks/use-media-companion-bytes";
@@ -253,24 +254,32 @@ interface GgufVariantMenuItem {
   footprint: GgufVariantFootprint | null;
 }
 
+/** Model plus uncached companion size, with the breakdown on hover; on disk, only what Run still fetches. */
 function GgufVariantSizeLabel({
   label,
   footprint,
+  downloaded = false,
 }: {
   label: string;
   footprint: GgufVariantFootprint | null;
+  downloaded?: boolean;
 }) {
   if (!footprint) return <>{label}</>;
+  const companion = formatFootprintBytes(footprint.companionBytes);
   return (
     <Tooltip delayDuration={0}>
       <TooltipTrigger asChild={true}>
         <span
           data-model-download-footprint={true}
+          data-model-needs-required-assets={downloaded || undefined}
           className="inline-flex items-center gap-1"
         >
-          {formatFootprintBytes(
-            footprint.checkpointBytes + footprint.companionBytes,
-          )}
+          {downloaded
+            ? `${companion} more to run`
+            : formatFootprintBytes(
+                footprint.checkpointBytes + footprint.companionBytes,
+              )}
+          {/* Align the icon with the digits. */}
           <HugeiconsIcon
             icon={HelpCircleIcon}
             aria-hidden={true}
@@ -281,12 +290,41 @@ function GgufVariantSizeLabel({
       </TooltipTrigger>
       <TooltipContent side="top" className="tooltip-compact">
         <span className="font-medium">
-          {formatFootprintBytes(footprint.checkpointBytes)} model +{" "}
-          {formatFootprintBytes(footprint.companionBytes)} required assets
+          {formatFootprintBytes(footprint.checkpointBytes)} model
+          {downloaded ? " on device" : ""} + {companion} required assets
         </span>
         <span className="ml-1 text-muted-foreground">
-          · assets download on Run
+          {downloaded
+            ? "· assets download on Run, once, shared across compatible variants"
+            : "· assets download on Run"}
         </span>
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+function CompanionsPendingTag({
+  companionBytes,
+  compact = false,
+}: {
+  companionBytes: number;
+  compact?: boolean;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild={true}>
+        <span className="inline-flex">
+          <DotTag
+            tone="warning"
+            label="Partial"
+            className={compact ? "max-sm:border-0 max-sm:px-0" : undefined}
+            labelClassName={compact ? "max-sm:sr-only" : undefined}
+          />
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="top" sideOffset={4}>
+        Model on device. {formatFootprintBytes(companionBytes)} of required
+        assets download on Run.
       </TooltipContent>
     </Tooltip>
   );
@@ -546,7 +584,13 @@ const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
           variant="menu"
           tooltipMode="lazy"
         />
-        {item.downloaded && <DotTag tone="success" label="On device" />}
+        {awaitsCompanions(item.downloaded, item.footprint) ? (
+          <CompanionsPendingTag
+            companionBytes={item.footprint?.companionBytes ?? 0}
+          />
+        ) : (
+          item.downloaded && <DotTag tone="success" label="On device" />
+        )}
         {!item.downloaded && item.partial && (
           <Tooltip>
             <TooltipTrigger asChild={true}>
@@ -570,6 +614,7 @@ const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
           <GgufVariantSizeLabel
             label={item.downloadSizeLabel}
             footprint={item.footprint}
+            downloaded={item.downloaded}
           />
         </span>
         {item.downloaded || item.partial ? (
@@ -847,6 +892,10 @@ export function GgufDownloadCard({
   const selectedFootprint = selected
     ? ggufVariantFootprint(selected, companionBytesByKey)
     : null;
+  const selectedAwaitsCompanions = awaitsCompanions(
+    selected?.downloaded,
+    selectedFootprint,
+  );
   const updateAvailable =
     selected?.downloaded === true && selected.update_available === true;
   const selectedVariantKey = selectedQuant
@@ -1102,13 +1151,21 @@ export function GgufDownloadCard({
                     Select quantization
                   </span>
                 )}
-                {selected?.downloaded && (
-                  <DotTag
-                    tone="success"
-                    label="On device"
-                    className="max-sm:border-0 max-sm:px-0"
-                    labelClassName="max-sm:sr-only"
+                {selectedAwaitsCompanions ? (
+                  <CompanionsPendingTag
+                    companionBytes={selectedFootprint?.companionBytes ?? 0}
+                    compact={true}
                   />
+                ) : (
+                  selected?.downloaded && (
+                    // Dot only on phones.
+                    <DotTag
+                      tone="success"
+                      label="On device"
+                      className="max-sm:border-0 max-sm:px-0"
+                      labelClassName="max-sm:sr-only"
+                    />
+                  )
                 )}
                 {selected && !selected.downloaded && selected.partial && (
                   <Tooltip>
@@ -1137,6 +1194,7 @@ export function GgufDownloadCard({
                       <GgufVariantSizeLabel
                         label={selectedDownloadSizeLabel}
                         footprint={selectedFootprint}
+                        downloaded={Boolean(selected.downloaded)}
                       />
                     </span>
                   )}

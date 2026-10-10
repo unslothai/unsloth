@@ -24,6 +24,7 @@ import {
   readPendingAttachmentTargetClaim,
   useChatRuntimeStore,
 } from "@/features/chat/stores/chat-runtime-store";
+import { useRagToolDisabled } from "@/features/chat/hooks/use-rag-tool-disabled";
 import type { ProjectAttachmentTarget } from "@/features/chat/utils/project-attachment-target";
 import {
   chatHistoryClearBoundary,
@@ -148,7 +149,7 @@ async function requireStoredThread(threadId: string): Promise<void> {
   try {
     stored = await ensureStoredChatThread(threadId);
   } catch (error) {
-    // A tombstone is an answer: indexing against it would orphan the documents.
+    // tombstones block indexing; other errors do not prove the thread is gone.
     if (error instanceof ChatThreadDeletedError) {
       throw error;
     }
@@ -159,22 +160,34 @@ async function requireStoredThread(threadId: string): Promise<void> {
   }
 }
 
-/** Shown when the Docs pill is off: project sources still reach the model. */
+/** shows inherited sources because Docs off does not stop retrieval. */
 function InheritedProjectSources({
   documents,
+  unused,
 }: {
   documents: { id: string; filename: string; status: DocumentStatus }[];
+  unused: boolean;
 }) {
   return (
     <div className="mb-2 flex w-full flex-row items-center gap-1.5 pl-0.5 pr-1.5 pt-0.5 pb-1">
       <span
         className="composer-pill-btn shrink-0 cursor-default !text-foreground/60"
-        title="This chat retrieves from its project's sources. Manage them in the project's Sources tab."
+        title={
+          unused
+            ? "The selected model can't search documents, so this chat doesn't use its project's sources. Pick a model with tool support to use them."
+            : "This chat retrieves from its project's sources. Manage them in the project's Sources tab."
+        }
       >
         <HugeiconsIcon icon={FolderAttachmentIcon} strokeWidth={2} className="size-3.5" />
-        <span>Project sources</span>
+        <span>{unused ? "Project sources not used" : "Project sources"}</span>
       </span>
-      <div className="flex max-h-24 flex-1 flex-row flex-wrap items-center gap-1.5 overflow-y-auto">
+      {/* cap linked folders because their sources can fill the viewport. */}
+      <div
+        className={cn(
+          "flex max-h-24 flex-1 flex-row flex-wrap items-center gap-1.5 overflow-y-auto",
+          unused && "opacity-50",
+        )}
+      >
         {documents.map((doc) => (
           <DocumentStatusChip
             key={`inherited:${doc.id}`}
@@ -188,7 +201,8 @@ function InheritedProjectSources({
   );
 }
 
-/** Reads of the chat's own row before the scope is left unresolved. */
+/** row data avoids stale activeProjectId; undefined blocks attachments. */
+/** retries chat row reads before leaving the project unresolved. */
 const PROJECT_LOOKUP_RETRIES = 3;
 
 /** Read from the chat's own row: activeProjectId still names the old project mid-navigation.
@@ -393,6 +407,7 @@ export function ThreadDocumentsBar({
   const ragSource = useChatRuntimeStore((s) => s.ragSource);
   const setRagSource = useChatRuntimeStore((s) => s.setRagSource);
   const setRagEnabled = useChatRuntimeStore((s) => s.setRagEnabled);
+  const ragToolDisabled = useRagToolDisabled();
   const projectAttachmentDefault = useChatRuntimeStore(
     (s) => s.projectAttachmentTarget,
   );
@@ -405,8 +420,7 @@ export function ThreadDocumentsBar({
   const aui = useAui();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Track the materialized id locally: setting activeThreadId in a project remounts this bar
-  // mid-upload (ProjectLanding's pendingNewThreadId branch) and drops the new chips.
+  // materialize locally; append() reuses the id without a mid-upload remount.
   const [materializedId, setMaterializedId] = useState<string | null>(null);
   const effectiveThreadId = threadId ?? materializedId;
   const initPromiseRef = useRef<Promise<string> | null>(null);
@@ -694,18 +708,22 @@ export function ThreadDocumentsBar({
       </>
     );
   }
-  // Project sources retrieve whether or not the Docs pill is on (chat-adapter's projectRagEnabled).
+  // project sources stay visible with Docs off because retrieval uses them; thread scope is inert.
   if (!ragEnabled) {
     return (
       <>
         {kbDialog}
         {projectDocuments.length > 0 ? (
-          <InheritedProjectSources documents={projectDocuments} />
+          <InheritedProjectSources
+            documents={projectDocuments}
+            unused={ragToolDisabled}
+          />
         ) : null}
       </>
     );
   }
 
+  // block attachments until the chat's project is known to avoid guessing their scope.
   const busy = uploading || projectUploading || projectUnresolved;
   const chipCount = documents.length + projectDocuments.length;
 
@@ -713,7 +731,7 @@ export function ThreadDocumentsBar({
     <>
       {kbDialog}
       <div className="mb-2 flex w-full flex-row items-start gap-1.5 pl-0.5 pr-1.5 pt-0.5 pb-1">
-        {/* Centred together; the row stays top-aligned for chips. */}
+        {/* keep controls aligned with top-aligned chips. */}
         <div className="flex shrink-0 items-center gap-1.5">
           <AttachFilesButton
             disabled={busy}
@@ -745,14 +763,25 @@ export function ThreadDocumentsBar({
             attach(files);
           }}
         />
+        {ragToolDisabled && chipCount > 0 ? (
+          <span
+            className="composer-pill-btn shrink-0 cursor-default !text-foreground/60"
+            title="The selected model can't search documents, so these files aren't used. Pick a model with tool support to use them."
+          >
+            Not used
+          </span>
+        ) : null}
+        {/* cap chip rows and fade overflow. */}
         <div
           ref={chipScrollRef}
           onScroll={updateChipFade}
           className={cn(
             "flex max-h-24 flex-1 flex-row flex-wrap items-center gap-1.5 overflow-y-auto",
             chipsOverflow && "rag-docs-bottom-fade",
+            ragToolDisabled && "opacity-50",
           )}
         >
+          {/* project sources precede thread sources because they outlive the chat. */}
           {projectDocuments.map((doc) => (
             <DocumentStatusChip
               key={`project:${doc.id}`}

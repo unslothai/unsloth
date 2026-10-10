@@ -7,7 +7,14 @@ import {
   shouldAbortPendingQueueForModelBoundary,
   shouldAbortPendingQueueForSettingsChange,
 } from "../src/features/chat/utils/prompt-queue-model-boundary.ts";
-import { snapshotQueuedChatRunSettings } from "../src/features/chat/utils/queued-chat-run-settings.ts";
+import {
+  normalizeQueuedPrompt,
+  queuedPromptHasContent,
+} from "../src/features/chat/utils/queued-text-attachments.ts";
+import {
+  resolveDeferredQueuedModelSettings,
+  snapshotQueuedChatRunSettings,
+} from "../src/features/chat/utils/queued-chat-run-settings.ts";
 import { reorderPromptQueueItems } from "../src/features/chat/utils/prompt-queue-reorder.ts";
 import { steeringInsertionIndex } from "../src/features/chat/utils/composer-preferences.ts";
 import { chatModelLifecycleGate } from "../src/features/chat/utils/model-lifecycle-gate.ts";
@@ -17,6 +24,7 @@ import {
   userStopTargetCancelMode,
 } from "../src/features/chat/utils/prompt-queue-user-stop.ts";
 
+// runs the production queue engine with controlled stores and transport.
 const source = ts.createSourceFile(
   "thread.tsx",
   readSrc("components/assistant-ui/thread.tsx"),
@@ -110,6 +118,8 @@ function world() {
   let indexing: () => Promise<boolean> = async () => false;
   const noop = () => undefined;
   const deps = {
+    normalizeQueuedPrompt,
+    queuedPromptHasContent,
     promptQueueRuns: runs,
     promptQueueRunOrder: [],
     promptQueueActiveRunIds: new Set(),
@@ -439,6 +449,13 @@ function composerCallbackJs(name: string) {
 const factoryJs = composerCallbackJs("startHydratedPromptQueue");
 const targetFactoryJs = composerCallbackJs("createPromptQueueTarget");
 
+test("queued files use resolved model capabilities before append", () => {
+  assert.match(
+    targetFactoryJs,
+    /const resolvedRunSettings = deferModelResolution[\s\S]*?resolveDeferredQueuedModelSettings\([\s\S]*?useChatRuntimeStore\.getState\(\)[\s\S]*?pythonToolRunsInStudio\([\s\S]*?prepareQueuedPromptFiles\([\s\S]*?withAttachmentOriginal\([\s\S]*?keepQueuedFilesForPython[\s\S]*?queuedPromptMessage\(readyPrompt\)/,
+  );
+});
+
 async function targetForSelection(
   checkpoint: string,
   modelLoading: boolean,
@@ -473,12 +490,20 @@ async function targetForSelection(
       return settings;
     },
     parseExternalModelId,
+    pythonToolRunsInStudio: () => false,
+    prepareQueuedPromptFiles: async (prompt: unknown) => prompt,
+    resolveDeferredQueuedModelSettings,
+    withAttachmentOriginal: async (_pending: unknown, complete: unknown) => complete,
+    getAuthSessionEpoch: () => 0,
     hasPreStreamRunReservation: () => false,
   };
   const create = new Function(...Object.keys(deps), targetFactoryJs)(
     ...Object.values(deps),
   ) as () => Promise<Target>;
-  return { target: Object.assign(makeTarget("chat", false), await create()), settings };
+  return {
+    target: Object.assign(makeTarget("chat", false), await create()),
+    settings,
+  };
 }
 
 function hydratedFactory(
@@ -1003,6 +1028,32 @@ test("loading defers model resolution while retaining queued sampling and permis
   assert.equal(ready.activeGgufVariant, "old-Q4.gguf");
 });
 
+test("deferred model settings take only the resolved model capability", () => {
+  const captured = snapshotQueuedChatRunSettings(
+    {
+      params: { checkpoint: "outgoing-model", temperature: 0.4 },
+      supportsTools: false,
+      codeToolsEnabled: true,
+      permissionMode: "ask",
+    } as unknown as Parameters<typeof snapshotQueuedChatRunSettings>[0],
+    { deferModelResolution: true },
+  );
+  const supported = resolveDeferredQueuedModelSettings(captured, {
+    params: { ...captured.params, checkpoint: "incoming-tools-model" },
+    supportsTools: true,
+  });
+  const unsupported = resolveDeferredQueuedModelSettings(captured, {
+    params: { ...captured.params, checkpoint: "incoming-plain-model" },
+    supportsTools: false,
+  });
+  assert.equal(supported.params.checkpoint, "incoming-tools-model");
+  assert.equal(supported.supportsTools, true);
+  assert.equal(unsupported.params.checkpoint, "incoming-plain-model");
+  assert.equal(unsupported.supportsTools, false);
+  assert.equal(supported.codeToolsEnabled, true);
+  assert.equal(captured.params.checkpoint, "");
+});
+
 for (const behavior of ["queue", "steer"] as const) {
   for (const failed of [false, true]) {
     test(`external-to-local switch waits for the incoming model: ${behavior}, failed=${failed}`, async () => {
@@ -1078,7 +1129,11 @@ test("external queues retain their provider across unrelated local loading and f
 for (const checkpoint of ["outgoing-local", ""]) {
   test(`local loading still defers model resolution: checkpoint=${checkpoint || "empty"}`, async () => {
     for (const pick of ["incoming-local", null]) {
-      const { target, settings } = await targetForSelection(checkpoint, true, pick);
+      const { target, settings } = await targetForSelection(
+        checkpoint,
+        true,
+        pick,
+      );
       assert.equal(target.usesLocalModel, true);
       assert.equal(settings.params.checkpoint, "");
       assert.equal(settings.activeGgufVariant, null);

@@ -34,20 +34,23 @@ useNpuCatalogStore.subscribe((state) =>
 
 let latestListing = 0;
 
-export async function refreshNpuModels(): Promise<void> {
-  // Only the newest answer lands: an older one could list a finished pull as missing.
+/** Whether the listing succeeded. */
+export async function refreshNpuModels(): Promise<boolean> {
+  // Only the newest answer lands: an older one could still list a finished pull as missing.
   const listing = ++latestListing;
   try {
     const models = await listNpuModels();
     if (listing === latestListing) {
       useNpuCatalogStore.setState({ models, listError: null });
     }
+    return true;
   } catch (error) {
     if (listing === latestListing) {
       useNpuCatalogStore.setState({
         listError: error instanceof Error ? error.message : String(error),
       });
     }
+    return false;
   }
 }
 

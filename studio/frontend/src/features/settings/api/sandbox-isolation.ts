@@ -35,6 +35,8 @@ export type WindowsSandboxStatus = {
   // null: MXC could not tell which host preparation steps are missing.
   hostPrepMissing: string[] | null;
   prepareRepeatsAfterRestart: boolean;
+  // true: MXC runs in Windows' built-in container; false: this Windows has none; null: unknown.
+  builtinContainer: boolean | null;
 };
 
 export type SandboxSetupPlan = {
@@ -45,12 +47,24 @@ export type SandboxSetupPlan = {
   canRun: boolean;
 };
 
+// null off Linux and on backends without the setting.
+export type SandboxMemoryStatus = {
+  // null: no cap.
+  limitGb: number | null;
+  savedGb: number;
+  defaultGb: number;
+  minGb: number;
+  maxGb: number;
+  lockedByEnvironment: boolean;
+};
+
 export type SandboxStatus = {
   platform: string;
   python: SandboxToolStatus;
   terminal: SandboxToolStatus;
   terminalShell: TerminalShell | null;
   windows: WindowsSandboxStatus | null;
+  memory: SandboxMemoryStatus | null;
   setup: SandboxSetupPlan | null;
   checkedAt: number;
   restored?: number;
@@ -59,6 +73,7 @@ export type SandboxStatus = {
 export type SandboxSettingsUpdate = {
   allowDaclFallback?: boolean;
   persistentReadGrants?: boolean;
+  memoryLimitGb?: number;
 };
 
 export type HostPrepState =
@@ -119,6 +134,23 @@ type ApiWindowsStatus = {
   host_prep_missing?: string[] | null;
   // biome-ignore lint/style/useNamingConvention: API schema
   prepare_repeats_after_restart?: boolean;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  builtin_container?: boolean | null;
+};
+
+type ApiMemoryStatus = {
+  // biome-ignore lint/style/useNamingConvention: API schema
+  limit_gb?: number | null;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  saved_gb?: number;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  default_gb?: number;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  min_gb?: number;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  max_gb?: number;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  locked_by_environment?: boolean;
 };
 
 type ApiSandboxStatus = {
@@ -128,6 +160,7 @@ type ApiSandboxStatus = {
   // biome-ignore lint/style/useNamingConvention: API schema
   terminal_shell?: TerminalShell | null;
   windows?: ApiWindowsStatus | null;
+  memory?: ApiMemoryStatus | null;
   setup?: ApiSetupPlan | null;
   // biome-ignore lint/style/useNamingConvention: API schema
   checked_at?: number;
@@ -197,6 +230,21 @@ function windowsFromApi(
         ? null
         : windows.host_prep_missing,
     prepareRepeatsAfterRestart: windows.prepare_repeats_after_restart ?? true,
+    builtinContainer: windows.builtin_container ?? null,
+  };
+}
+
+function memoryFromApi(
+  memory: ApiMemoryStatus | null | undefined,
+): SandboxMemoryStatus | null {
+  if (!memory || typeof memory.saved_gb !== "number") return null;
+  return {
+    limitGb: memory.limit_gb ?? null,
+    savedGb: memory.saved_gb,
+    defaultGb: memory.default_gb ?? 8,
+    minGb: memory.min_gb ?? 1,
+    maxGb: memory.max_gb ?? 4096,
+    lockedByEnvironment: memory.locked_by_environment ?? false,
   };
 }
 
@@ -207,6 +255,7 @@ export function statusFromApi(status: ApiSandboxStatus): SandboxStatus {
     terminal: toolFromApi(status.terminal),
     terminalShell: status.terminal_shell ?? null,
     windows: windowsFromApi(status.windows),
+    memory: memoryFromApi(status.memory),
     setup: setupFromApi(status.setup),
     checkedAt: status.checked_at ?? 0,
   };
@@ -254,12 +303,15 @@ export async function updateSandboxSettings(
   update: SandboxSettingsUpdate,
   fallbackMessage: string,
 ): Promise<SandboxStatus> {
-  const body: Record<string, boolean> = {};
+  const body: Record<string, boolean | number> = {};
   if (update.allowDaclFallback !== undefined) {
     body.allow_dacl_fallback = update.allowDaclFallback;
   }
   if (update.persistentReadGrants !== undefined) {
     body.persistent_read_grants = update.persistentReadGrants;
+  }
+  if (update.memoryLimitGb !== undefined) {
+    body.memory_limit_gb = update.memoryLimitGb;
   }
   const res = await authFetch(ROUTE, {
     method: "PUT",

@@ -25,6 +25,18 @@ export function openExternalLink(url: string): void {
 /** True means the caller should preventDefault. */
 export function openLink(url: string): boolean {
   if (!url) return false;
+  // The URL parser drops tabs and newlines, so `https:\t//host` navigates like `https://host`.
+  url = url.replace(/[\t\n\r]/g, "");
+
+  // `https:host` (no slashes) is absolute too: open it as a web link instead of letting native navigation replace
+  // Studio's page.
+  if (/^https?:/i.test(url) && !url.includes("://")) {
+    try {
+      url = new URL(url).href;
+    } catch {
+      return true;
+    }
+  }
 
   if (url.startsWith("#")) {
     window.location.hash = url;

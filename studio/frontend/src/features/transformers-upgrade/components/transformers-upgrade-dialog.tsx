@@ -15,7 +15,10 @@ import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { PackageIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { upgradeDialogActions } from "../lib/upgrade-dialog-actions";
+import {
+  upgradeDialogActions,
+  upgradeInstallVersion,
+} from "../lib/upgrade-dialog-actions";
 import { useTransformersUpgradeDialogStore } from "../stores/transformers-upgrade-dialog-store";
 
 function modelDisplayName(modelName: string | null): string {
@@ -37,9 +40,8 @@ export function TransformersUpgradeDialog() {
 
   const displayName = modelDisplayName(modelName);
   const modelType = upgrade?.model_type ?? "unknown";
-  const version = upgrade?.pypi_version ?? null;
-  // Only released PyPI versions are installable.
-  const { installable, devOnly, customCode } = upgradeDialogActions({
+  const version = upgradeInstallVersion(upgrade);
+  const { installable, fromMain, devOnly, customCode } = upgradeDialogActions({
     upgrade,
     phase,
     trustRemoteCodeFallback,
@@ -71,7 +73,18 @@ export function TransformersUpgradeDialog() {
                   <span className="font-mono text-foreground">{modelType}</span>{" "}
                   architecture, which your installed transformers does not
                   support yet.{" "}
-                  {installable ? (
+                  {installable && fromMain ? (
+                    <>
+                      No transformers release supports it yet, but the
+                      development branch (main) does. Install transformers{" "}
+                      <span className="font-medium text-foreground">
+                        {version}
+                      </span>{" "}
+                      from main to load it. Development builds are not releases
+                      and can change; the install runs once and loading
+                      continues automatically afterwards.
+                    </>
+                  ) : installable ? (
                     <>
                       Install transformers{" "}
                       <span className="font-medium text-foreground">
@@ -84,9 +97,8 @@ export function TransformersUpgradeDialog() {
                     <>
                       Even the latest transformers release on PyPI does not
                       support it yet: the architecture is only available on the
-                      transformers development branch (main), and Unsloth does
-                      not install development builds. Support arrives with the
-                      next transformers release on PyPI.
+                      transformers development branch (main), whose version
+                      could not be checked right now. Try again later.
                     </>
                   ) : (
                     <>

@@ -346,10 +346,23 @@ def list_mcp_servers(
 ):
     rows = mcp_servers_db.list_servers()
     if via_api_key or no_credential:
-        # Drop the row, not just its fields: `url` is the argv (carries credentials), `headers` is the subprocess
-        # env, and a blanked url would round-trip into update as a bogus command.
+        # url/headers hold argv/env secrets; blanking url allows bogus commands on update.
         rows = [row for row in rows if not is_stdio(row["url"])]
     return [_row_to_response(row, include_headers = not no_credential) for row in rows]
+
+
+@router.get("/research-tools")
+async def list_research_search_tools(
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: ViaApiKey = False,
+    no_credential: WithoutCredential = False,
+):
+    from core.inference.tools import mcp_search_tools
+    tools = await mcp_search_tools(include_stdio = not (via_api_key or no_credential))
+    return [
+        {key: tool[key] for key in ("serverId", "serverName", "tool", "description")}
+        for tool in tools
+    ]
 
 
 @router.post("/", response_model = McpServerResponse, status_code = 201)
@@ -503,7 +516,11 @@ async def update_mcp_server(
 
 @router.delete("/{server_id}", status_code = 204)
 @serialize_mcp_server_mutation
-async def delete_mcp_server(server_id: str, current_subject: str = Depends(get_current_subject)):
+async def delete_mcp_server(
+    server_id: str,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: ViaApiKey = False,
+):
     old = mcp_servers_db.get_server(server_id)
     if not old:
         raise HTTPException(status_code = 404, detail = "MCP server not found")
@@ -511,6 +528,9 @@ async def delete_mcp_server(server_id: str, current_subject: str = Depends(get_c
         raise HTTPException(
             status_code = 400, detail = "Managed integrations cannot be deleted; disable them instead."
         )
+    # Same rule as update: an API key cannot touch a stdio row.
+    if is_stdio(old["url"]):
+        require_ui_session_for_local_commands(via_api_key)
     if old.get("use_oauth"):
         await clear_oauth_tokens_async(old["url"])
     mcp_servers_db.delete_server(server_id)

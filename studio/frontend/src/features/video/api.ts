@@ -109,7 +109,9 @@ export interface VideoLoadRequest {
   display_repo_id?: string;
   // Required for gguf / single_file; omitted for a from_pretrained pipeline.
   gguf_filename?: string;
-  // Omit to auto-detect from gguf_filename. Non-GGUF kinds are restricted to unsloth/* or family bases.
+  // How to load the model (omit to auto-detect from gguf_filename): "gguf", "single_file"
+  // (safetensors transformer) or "pipeline". A single_file .safetensors loads from any repo;
+  // pipeline loads are restricted to unsloth/* or family bases.
   model_kind?: "gguf" | "single_file" | "pipeline";
   base_repo?: string;
   family_override?: string;

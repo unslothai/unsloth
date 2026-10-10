@@ -14,10 +14,11 @@ import { countChatInputTokens } from "../api/chat-api";
 import { isExternalModelId } from "../external-providers";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import type { MessageRecord } from "../types";
+import { savedBranchHead } from "./branch-head";
 import { listStoredChatMessages } from "./chat-history-storage";
 import { orderBySelectedBranch } from "./message-order";
 
-// Per thread so a hidden compare pane cannot invalidate the visible thread's count.
+// key generations by thread so a hidden compare pane cannot invalidate the visible count.
 const refreshGenerations = new Map<string | null, number>();
 
 function nextGeneration(threadKey: string | null): number {
@@ -182,7 +183,9 @@ export async function refreshContextUsage(
     const liveBranch = readOwnBranch();
 
     let runMessages: readonly ThreadMessage[];
+    // re-read before publishing so a turn sent during the count invalidates it.
     let countedBranch: string | null = null;
+    // only the last id witnesses the fallback because stored and runtime records hash differently.
     let countedLastId: string | null = null;
     const fromLiveBranch = Boolean(liveBranch && liveBranch.length > 0);
     if (fromLiveBranch) {
@@ -190,17 +193,19 @@ export async function refreshContextUsage(
     } else {
       const records = threadId ? await listStoredChatMessages(threadId) : [];
       if (stale()) return;
-      runMessages = orderBySelectedBranch(records).map(
-        storedMessageToRunMessage,
-      );
+      runMessages = orderBySelectedBranch(
+        records,
+        threadId ? savedBranchHead(threadId, records) : undefined,
+      ).map(storedMessageToRunMessage);
     }
 
-    // /chat/count_tokens 503s on images; bail before hashing megabytes of base64.
+    // /chat/count_tokens rejects images; hashing or sending their base64 can block the UI thread.
     if (messagesContainImage(runMessages)) return;
 
-    // toOpenAIMessages has no audio or video branch, so counting would underprice.
+    // audio is omitted from toOpenAIMessages, so counting would price only its text.
     if (findLatestUserAudioBase64(runMessages)) return;
 
+    // video counting misses server-side frames; declining also avoids hashing up to 85 MB.
     if (findLatestUserVideoBase64(runMessages)) return;
 
     if (fromLiveBranch) {
@@ -217,7 +222,10 @@ export async function refreshContextUsage(
       payloadThreadId,
     );
     if (stale()) return;
-    const countExtras = await buildLocalTokenCountExtras(payloadThreadId);
+    const countExtras = await buildLocalTokenCountExtras(
+      payloadThreadId,
+      countHistory.messages,
+    );
     if (stale()) return;
 
     // Always ask the server: templates and `--enable-tools` add tokens the client cannot see.

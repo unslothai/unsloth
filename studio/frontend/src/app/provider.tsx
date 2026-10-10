@@ -645,6 +645,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     status,
     logs,
     error,
+    installDiskFull,
     isExternalServer,
     currentStepIndex,
     progressDetail,
@@ -932,6 +933,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
             status={startupStatus}
             logs={logs}
             error={error}
+            diskFull={installDiskFull}
             currentStepIndex={currentStepIndex}
             progressDetail={startupProgressDetail}
             startupMessage={startupMessage}

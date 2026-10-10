@@ -29,6 +29,11 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { createChatProject } from "../hooks/use-chat-projects";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import type { ProjectRecord } from "../types";
+import {
+  imeOwnsInputKeydown,
+  inputImeHandlers,
+  newInputImeState,
+} from "../utils/composer-preferences";
 
 function currentRoute(): string {
   if (typeof window === "undefined") return "";
@@ -59,7 +64,17 @@ export function NewProjectDialog({
   // A desktop drop reaches `staged` only after native registration; wait before creating.
   const [stagingDrop, setStagingDrop] = useState(false);
   const [pickingFolder, setPickingFolder] = useState(false);
-  // Uploads outlive this component; do not navigate after the user has moved away.
+  const nameImeRef = useRef(newInputImeState());
+  const nameImeHandlers = {
+    onFocus: () => inputImeHandlers(nameImeRef.current).onFocus(),
+    onBlur: () => inputImeHandlers(nameImeRef.current).onBlur(),
+    onCompositionStart: () =>
+      inputImeHandlers(nameImeRef.current).onCompositionStart(),
+    onCompositionEnd: (event: { timeStamp: number }) =>
+      inputImeHandlers(nameImeRef.current).onCompositionEnd(event),
+  };
+  // Uploads outlive this component, so a slow one must not yank the user to the new project after
+  // they have navigated away.
   const mounted = useRef(true);
   useEffect(() => {
     // Set on setup too: StrictMode replays setup/cleanup/setup.
@@ -143,7 +158,14 @@ export function NewProjectDialog({
           <input
             value={name}
             onChange={(e) => setName(e.target.value)}
+            {...nameImeHandlers}
             onKeyDown={(e) => {
+              if (
+                imeOwnsInputKeydown(e, nameImeRef.current, {
+                  modifiedEnterSubmits: true,
+                })
+              )
+                return;
               if (e.key === "Enter") {
                 e.preventDefault();
                 void commitCreate();

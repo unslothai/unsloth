@@ -21,6 +21,7 @@ interface StartupScreenProps {
   status: BackendStatus;
   logs: string[];
   error: string | null;
+  diskFull: boolean;
   currentStepIndex: number;
   progressDetail: string | null;
   startupMessage: StartupMessage;
@@ -180,10 +181,12 @@ function ClosingContent() {
 
 function InstallErrorContent({
   error,
+  diskFull,
   onRetryInstall,
   onCopyDiagnostics,
 }: {
   error: string | null;
+  diskFull: boolean;
   onRetryInstall: () => void;
   onCopyDiagnostics: () => Promise<CopySupportDiagnosticsResult>;
 }) {
@@ -191,7 +194,9 @@ function InstallErrorContent({
     <>
       <Logo />
       <div className="mt-8 flex flex-col items-center gap-2">
-        <p className="text-sm font-medium text-destructive">Setup ran into a problem</p>
+        <p className="text-sm font-medium text-destructive">
+          {diskFull ? "Not enough disk space" : "Setup ran into a problem"}
+        </p>
         {error && (
           <p className="max-w-xs text-center text-xs text-muted-foreground">{error}</p>
         )}
@@ -319,6 +324,7 @@ export function StartupScreen({
   status,
   logs,
   error,
+  diskFull,
   currentStepIndex,
   progressDetail,
   startupMessage,
@@ -348,6 +354,7 @@ export function StartupScreen({
         return (
           <InstallErrorContent
             error={error}
+            diskFull={diskFull}
             onRetryInstall={onRetryInstall}
             onCopyDiagnostics={onCopyDiagnostics}
           />

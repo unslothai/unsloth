@@ -14,9 +14,10 @@ import { useT } from "@/i18n";
 import { MAX_HIGHLIGHT_CHARS } from "@/lib/markdown-plugins";
 import { cn } from "@/lib/utils";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { HTML_NAME, TEXT_NAME, TEXT_TYPE, mediaKind, textFileKind } from "./file-kind";
+import { canShowFile, mediaKind, textFileKind } from "./file-kind";
 import { stageEditsPrompt } from "./stage-edits";
 import { DEFAULT_FILE_VIEW, useBrowserStore } from "./store";
+import { VideoFile } from "./video-file";
 
 // The preview shows at most 200,000 chars (4 bytes each at most): a 50 MB body is never decoded whole.
 const MAX_TEXT_BYTES = 1024 * 1024;
@@ -202,9 +203,7 @@ export function FileView({
       );
     }
     if (media === "video") {
-      return (
-        <video src={src} controls onError={() => setFailed(true)} className="size-full bg-black object-contain" />
-      );
+      return <VideoFile src={src} name={name} tabId={tabId} onError={() => setFailed(true)} />;
     }
     return (
       <div className="m-auto w-full max-w-lg px-6">
@@ -213,7 +212,7 @@ export function FileView({
       </div>
     );
   }
-  if (plainText || TEXT_TYPE.test(contentType) || TEXT_NAME.test(name) || HTML_NAME.test(name) || !contentType) {
+  if (plainText || canShowFile(name, contentType)) {
     return (
       <TextFile
         blob={blob}

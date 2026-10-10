@@ -123,11 +123,20 @@ export type UnslothSupportStatus = "supported" | "unsupported";
 export interface UnslothSupport {
   status: UnslothSupportStatus;
   reason: string | null;
-  /** Set when the Images/Video page runs this model; status stays "unsupported" for chat pickers. */
-  supportedIn?: "images" | "video";
+  /** Set when Unsloth runs this model on a dedicated page rather than in chat. The status stays "unsupported" because the chat pickers gate on it, but the UI must not call it unsupported: the Images and Video pages load it. "vllm": only the optional vLLM engine can (#11728). */
+  supportedIn?: "images" | "video" | "vllm";
 }
 
-// Mirrors IMAGE_GEN_TASKS and the video picker's tasks.
+const VLLM_QUANT_METHODS: ReadonlySet<string> = new Set([
+  "compressed-tensors",
+  "awq",
+  "gptq",
+]);
+const VLLM_FORMAT_KEYS: ReadonlySet<string> = new Set(["awq", "gptq"]);
+// Chat only: vLLM refuses audio (_reject_unsupported_managed_kind); untagged repos count as chat.
+const VLLM_CHAT_TASKS: ReadonlySet<string> = new Set(["text-generation", "image-text-to-text"]);
+
+// Generation tasks the Images / Video pages handle. Mirrors IMAGE_GEN_TASKS and the video picker's tasks; image-to-video is included for LTX-2.3.
 const IMAGE_PAGE_TASKS: ReadonlySet<string> = new Set([
   "text-to-image",
   "image-to-image",
@@ -209,6 +218,7 @@ export function classifyUnslothSupport({
   libraryName,
   deviceType,
   quantMethod,
+  vllmAvailable = false,
 }: {
   modelId?: string | null;
   pipelineTag?: string | null;
@@ -216,6 +226,7 @@ export function classifyUnslothSupport({
   libraryName?: string | null;
   deviceType?: string | null;
   quantMethod?: string | null;
+  vllmAvailable?: boolean;
 }): UnslothSupport {
   const pipeline = pipelineTag?.toLowerCase().trim() || null;
   const lowerTags = new Set(
@@ -224,6 +235,7 @@ export function classifyUnslothSupport({
   const library = libraryName?.toLowerCase().trim() || null;
   const formatTags = excludedFormatTagsForDevice(deviceType);
   const normalizedQuant = normalizeQuantMethod(quantMethod);
+  const vllmRuns = vllmAvailable && (!pipeline || VLLM_CHAT_TASKS.has(pipeline));
 
   // GGUF runs through llama.cpp, so the HF quant_method must not disqualify it.
   const isGguf =
@@ -233,10 +245,15 @@ export function classifyUnslothSupport({
 
   if (normalizedQuant && !isGguf) {
     if (Object.hasOwn(UNSUPPORTED_QUANT_METHODS, normalizedQuant)) {
-      return {
-        status: "unsupported",
-        reason: `Detected ${UNSUPPORTED_QUANT_METHODS[normalizedQuant]}.`,
-      };
+      const reason = `Detected ${UNSUPPORTED_QUANT_METHODS[normalizedQuant]}.`;
+      // vLLM excuses only the quantization; any other rejection keeps the old answer.
+      if (vllmRuns && VLLM_QUANT_METHODS.has(normalizedQuant)) {
+        const rest = classifyUnslothSupport({ modelId, pipelineTag, tags, libraryName, deviceType, vllmAvailable });
+        if (rest.status === "supported" || rest.supportedIn === "vllm") {
+          return { status: "unsupported", reason, supportedIn: "vllm" };
+        }
+      }
+      return { status: "unsupported", reason };
     }
   }
 
@@ -264,10 +281,21 @@ export function classifyUnslothSupport({
   const formatKey = detectUnsupportedFormatKey(modelId, lowerTags, formatTags);
   if (formatKey) {
     const label = FORMAT_TAG_LABEL[formatKey] ?? `${formatKey.toUpperCase()} weights`;
-    return {
-      status: "unsupported",
-      reason: `Detected ${label}.`,
-    };
+    const reason = `Detected ${label}.`;
+    // AWQ / GPTQ must be the only format objection, else tag order would decide.
+    if (
+      vllmRuns &&
+      !isGguf &&
+      VLLM_FORMAT_KEYS.has(formatKey) &&
+      !detectUnsupportedFormatKey(
+        modelId,
+        lowerTags,
+        new Set([...formatTags].filter((tag) => !VLLM_FORMAT_KEYS.has(tag))),
+      )
+    ) {
+      return { status: "unsupported", reason, supportedIn: "vllm" };
+    }
+    return { status: "unsupported", reason };
   }
   return { status: "supported", reason: null };
 }

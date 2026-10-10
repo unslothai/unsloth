@@ -22,6 +22,11 @@ const MODEL_DEFAULTS: Array<{
   { match: "flux.2-klein-base", steps: 20, guidance: 5 },
   { match: "flux.2-klein", steps: 4, guidance: 1 },
   { match: "flux.2-dev", steps: 20, guidance: 4 },
+  // Qwen-Image-2.1 and its aliases, before the generic key, Turbo before 2.1.
+  { match: "qwen-image-2.1-turbo", steps: 8, guidance: 1 },
+  { match: "qwen-image-21-turbo", steps: 8, guidance: 1 },
+  { match: "qwenimage21-turbo", steps: 8, guidance: 1 },
+  { match: "qwenimage21turbo", steps: 8, guidance: 1 },
   { match: "qwen-image-2.1", steps: 25, guidance: 1 },
   { match: "qwen-image-21", steps: 25, guidance: 1 },
   { match: "qwen_image_21", steps: 25, guidance: 1 },
@@ -49,8 +54,13 @@ export function defaultsFor(repoId: string): {
   steps: number;
   guidance: number;
 } {
+  // Mirrors the backend's name_key_in, so both tables resolve one spelling alike.
+  const fold = (text: string) => text.replace(/[-_.\s]+/g, "-");
   const id = repoId.toLowerCase();
-  const matched = MODEL_DEFAULTS.find((entry) => id.includes(entry.match));
+  const folded = fold(id);
+  const matched = MODEL_DEFAULTS.find(
+    (entry) => id.includes(entry.match) || folded.includes(fold(entry.match)),
+  );
   return matched
     ? { steps: matched.steps, guidance: matched.guidance }
     : DEFAULT_GEN;
@@ -58,6 +68,28 @@ export function defaultsFor(repoId: string): {
 
 export function defaultsKeyFor(repoId: string, familyOverride: unknown): string {
   return defaultsFor(repoId) !== DEFAULT_GEN ? repoId : (explicitFamily(familyOverride) ?? repoId);
+}
+
+/** The loaded model's recipe for a pick that got the fallback (its name named no family), else null. */
+export function loadedRecipeFor(
+  pickDefaults: { steps: number; guidance: number } | null | undefined,
+  residentKey: string,
+  reported?: { steps?: number; guidance?: number } | null,
+): { steps: number; guidance: number } | null {
+  if (pickDefaults !== DEFAULT_GEN) return null;
+  const resident = residentRecipeFor(residentKey, reported);
+  return resident.steps === DEFAULT_GEN.steps && resident.guidance === DEFAULT_GEN.guidance ? null : resident;
+}
+
+/** The resident model's recipe: the backend's own when it reports one, else the base-repo key's. */
+export function residentRecipeFor(
+  residentKey: string,
+  reported?: { steps?: number; guidance?: number } | null,
+): { steps: number; guidance: number } {
+  if (reported && typeof reported.steps === "number" && typeof reported.guidance === "number") {
+    return { steps: reported.steps, guidance: reported.guidance };
+  }
+  return defaultsFor(residentKey);
 }
 
 export function residentDefaultsKey(

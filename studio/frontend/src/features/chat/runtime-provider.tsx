@@ -186,7 +186,14 @@ import {
   onChatAttachmentDeleted,
 } from "./utils/chat-attachment-events";
 import { chatHistoryClearBoundary } from "./utils/chat-history-clear-boundary";
-import { createParentResolver } from "./utils/message-order";
+import { useBranchHeadRecorder } from "./hooks/use-branch-head-recorder";
+import { savedBranchHead } from "./utils/branch-head";
+import {
+  createParentResolver,
+  orderBySelectedBranch,
+  orderParentsFirst,
+  resolveSavedBranchHead,
+} from "./utils/message-order";
 import { estimateContextUsage } from "./utils/estimate-chat-tokens";
 import {
   awaitStoredChatThreadWrites,
@@ -222,14 +229,10 @@ import {
 import { syncExportedRepositoryToBackend } from "./utils/delete-thread-message";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
 import {
-  attachmentContentText,
   attachmentsSample,
-  isPastedTextFile,
 } from "./utils/pasted-text";
-import {
-  annotationsContentText,
-  annotationsOfFile,
-} from "./utils/document-annotations";
+import { annotationsOfFile } from "./utils/document-annotations";
+import { completeTextAttachment } from "./utils/queued-text-attachments";
 import {
   adoptPreStreamRunReservation,
   claimPreStreamRunReservation,
@@ -668,26 +671,7 @@ class TextAttachmentAdapter implements AttachmentAdapter {
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
     const annotations = annotationsOfFile(attachment.file);
     const text = annotations ? "" : await readTextAttachmentOnce(attachment.file);
-    return {
-      id: attachment.id,
-      type: "document",
-      name: attachment.name,
-      contentType: attachment.contentType,
-      content: [
-        {
-          type: "text",
-          text: annotations
-            ? annotationsContentText(annotations)
-            : attachmentContentText(
-                attachment.name,
-                text,
-                isPastedTextFile(attachment.file),
-                attachment.file.size,
-              ),
-        },
-      ],
-      status: { type: "complete" },
-    };
+    return completeTextAttachment(attachment, text);
   }
 
   remove(): Promise<void> {
@@ -972,9 +956,11 @@ class OpenDocumentAttachmentAdapter implements AttachmentAdapter {
 
 const MAX_TOOL_ONLY_ATTACHMENT_BYTES = 200 * 1024 * 1024;
 
-/** Must match how chat-adapter.ts decides it. */
-function pythonToolRunsInStudio(): boolean {
-  const state = useChatRuntimeStore.getState();
+/** Whether this turn's python tool runs in Studio's sandbox; chat-adapter.ts decides it the same way. */
+export function pythonToolRunsInStudio(
+  state: Parameters<typeof codeToolsOn>[0] = useChatRuntimeStore.getState(),
+): boolean {
+  // The effective Code state, as the send path computes it: Full access turns it on locally.
   const codeToolsEnabled = codeToolsOn(state);
   const external = parseExternalModelId(state.params.checkpoint);
   if (!external) return state.supportsTools && codeToolsEnabled;
@@ -1756,18 +1742,9 @@ export async function ensureThreadRecord({
 function parentsFirst(
   items: readonly ExportedMessageRepositoryItem[],
 ): ExportedMessageRepositoryItem[] {
-  const byId = new Map(items.map((item) => [item.message.id, item]));
-  const seen = new Set<string>();
-  const ordered: ExportedMessageRepositoryItem[] = [];
-  const visit = (item: ExportedMessageRepositoryItem) => {
-    if (seen.has(item.message.id)) return;
-    seen.add(item.message.id);
-    const parent = item.parentId ? byId.get(item.parentId) : undefined;
-    if (parent) visit(parent);
-    ordered.push(item);
-  };
-  items.forEach(visit);
-  return ordered;
+  return orderParentsFirst(
+    items.map((item) => ({ item, id: item.message.id, parentId: item.parentId })),
+  ).map(({ item }) => item);
 }
 
 /** Save a temporary chat to history in one transaction: a failure leaves at most an empty row,
@@ -2581,7 +2558,17 @@ function useStudioRuntimeAdapters(
           }
         }
 
-        const lastAssistant = [...msgs]
+        // select the persisted branch for import and context-usage restoration
+        const savedHeadId = savedBranchHead(remoteId, msgs);
+        // follow the newest stored row to a leaf before parent-first ordering moves the tail.
+        const headId = resolveSavedBranchHead(
+          msgs,
+          savedHeadId ?? msgs.at(-1)?.id,
+        );
+        const branch = orderBySelectedBranch(msgs, headId);
+
+        // restore usage from the selected branch's last assistant message when the model matches
+        const lastAssistant = [...branch]
           .reverse()
           .find((m) => m.role === "assistant");
         const savedUsage = (lastAssistant?.metadata as Record<string, unknown>)
@@ -2590,45 +2577,53 @@ function useStudioRuntimeAdapters(
               promptTokens: number;
               completionTokens: number;
               totalTokens: number;
+              contextTokens?: number;
               cachedTokens: number;
               cacheWriteTokens?: number;
               modelId?: string;
             }
           | undefined;
         const store = useChatRuntimeStore.getState();
-        // llama.cpp stops at the window so a larger saved count is stale; MLX runs past it by design.
+        // reject usage beyond a local GGUF window; MLX and external providers have no local bound
         const localLimit = store.loadedIsGguf ? store.loadedContextLength : null;
         const withinLocalLimit =
-          !localLimit || (savedUsage?.totalTokens ?? 0) <= localLimit;
-        // Legacy unscoped usage is trusted only when a local window bounds it.
+          !localLimit || (savedUsage?.contextTokens ?? savedUsage?.totalTokens ?? 0) <= localLimit;
+        // trust legacy usage only when a known local window prevents cross-provider attribution
         const modelMatches = savedUsage?.modelId
           ? savedUsage.modelId === store.params.checkpoint
           : typeof store.loadedContextLength === "number" &&
             store.loadedContextLength > 0;
+        // retain the usage object so TypeScript preserves narrowing for later writes
         const restoredUsage =
           savedUsage && withinLocalLimit && modelMatches ? savedUsage : null;
-        const shownUsage = restoredUsage ?? estimateContextUsage(msgs);
+        const shownUsage = restoredUsage ?? estimateContextUsage(branch);
         if (shownUsage) {
-          // Key by the thread this loader read, not whichever is active after the await.
+          // key usage by the loaded thread because the active thread may change during awaits
           store.setThreadContextUsage(remoteId, shownUsage);
           if (store.activeThreadId === remoteId) {
             store.setContextUsage(shownUsage);
           }
         }
-        // Only when nothing was restored: the recount would overwrite exact totals with an estimate.
+        // recount only without exact usage; model switches qualify, and compare panes never own the bar (#7450)
         if (!restoredUsage && modelType === "base" && !pairId) {
           void refreshContextUsage({ threadId: remoteId });
         }
 
-        // Rebuild the tree when any parentId exists; fully legacy threads use fromArray.
+        // rebuild branches when parentIds exist; infer sequential parents for mixed legacy threads
         const hasParentIds = msgs.some((m) => m.parentId != null);
         if (hasParentIds) {
+          // resolve legacy parents in storage order before sorting parents ahead of children.
           const resolveParent = createParentResolver();
+          const ordered = orderParentsFirst(
+            msgs.map((m) => ({ record: m, id: m.id, parentId: resolveParent(m) })),
+          );
           return completeLoad(
             {
-              messages: msgs.map((m) => ({
-                parentId: resolveParent(m),
-                message: toThreadMessage(m),
+              // savedBranchHead selects a leaf so import retains its descendants.
+              headId,
+              messages: ordered.map(({ record, parentId }) => ({
+                parentId,
+                message: toThreadMessage(record),
               })),
             },
             remoteId,
@@ -3400,6 +3395,7 @@ function ActiveBranchRegistrar({
       try {
         return aui.thread().getState().messages;
       } catch {
+        // without a mounted thread, recount from stored records
         return null;
       }
     });
@@ -3409,6 +3405,13 @@ function ActiveBranchRegistrar({
   return null;
 }
 
+// include hidden panes because background replies also move the branch head
+function BranchHeadRecorder(): ReactElement | null {
+  useBranchHeadRecorder();
+  return null;
+}
+
+// recount an empty bar after a model change or when deep-link loading races model status
 function ThreadContextUsageRecount({
   enabled,
 }: { enabled: boolean }): ReactElement | null {
@@ -3416,7 +3419,7 @@ function ThreadContextUsageRecount({
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const loadedContextLength = useChatRuntimeStore((s) => s.loadedContextLength);
   const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
-  // A dependency: nothing else retries a count skipped while busy.
+  // subscribe to run state so a recount skipped while busy is retried when the run ends
   const runActive = useChatRuntimeStore((s) =>
     Object.values(s.runningByThreadId).some(Boolean),
   );
@@ -3816,6 +3819,7 @@ export function ChatRuntimeProvider({
           newThreadSwitchStateRef={newThreadSwitchStateRef}
         />
         <CancelRegistrar />
+        <BranchHeadRecorder />
         {initialThreadId && (
           <ThreadAutoSwitch
             threadId={initialThreadId}

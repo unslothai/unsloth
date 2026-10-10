@@ -19,9 +19,16 @@ interface QuantPickerProps {
   value: string[];
   onChange: (v: string[]) => void;
   sizes?: Record<string, string>;
+  /** Choices to offer; defaults to every GGUF quant. */
+  options?: { value: string; label: string; recommended?: boolean }[];
 }
 
-export function QuantPicker({ value, onChange, sizes }: QuantPickerProps) {
+export function QuantPicker({
+  value,
+  onChange,
+  sizes,
+  options = QUANT_OPTIONS,
+}: QuantPickerProps) {
   const toggle = (qv: string) => {
     onChange(
       value.includes(qv) ? value.filter((q) => q !== qv) : [...value, qv],
@@ -65,7 +72,7 @@ export function QuantPicker({ value, onChange, sizes }: QuantPickerProps) {
         </span>
       </div>
       <div className="flex flex-wrap gap-2 py-1 pl-1">
-        {QUANT_OPTIONS.map((q) => {
+        {options.map((q) => {
           const active = value.includes(q.value);
           const sizeLabel = sizes?.[q.value] ?? "";
           return (

@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -43,6 +44,8 @@ const composing = (value: string) => ({
   isComposition: true,
   composerIsEmpty: true,
 });
+const ARMS_WITH_IME_SESSION =
+  /armSentTextGuard\(\s*texts,\s*draftKeyRef\.current,\s*imeSessionOpenRef\.current,?\s*\)/;
 const armed = (texts: string[] = [PROMPT], key: string | null = KEY) =>
   armSentTextGuard(texts, key);
 
@@ -251,7 +254,40 @@ test("a composition begun after the send is applied", () => {
   });
 });
 
-// Windows reports AltGr as Ctrl+Alt, sometimes alongside AltGraph, so both forms count.
+test("a composition write with none open at the send is applied", () => {
+  const guard = armSentTextGuard([PROMPT], KEY, false);
+  for (const value of ["h", "\u65e5\u672c\u8a9e"]) {
+    assert.deepEqual(applySentTextGuard(guard, composing(value)), {
+      accept: true,
+      guard: null,
+    });
+  }
+});
+
+test("retyping a one-character prompt applies with no composition open at the send", () => {
+  const guard = armSentTextGuard(["?"], KEY, false);
+  assert.deepEqual(applySentTextGuard(guard, composing("?")), {
+    accept: true,
+    guard: null,
+  });
+});
+
+test("the sent text is still refused when typed by plain keys", () => {
+  const guard = armSentTextGuard([PROMPT], KEY, false);
+  assert.equal(applySentTextGuard(guard, typed(PROMPT)).accept, false);
+});
+
+test("the composer arms the guard with whether an IME session was open", () => {
+  const thread = readFileSync(
+    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(thread, ARMS_WITH_IME_SESSION);
+});
+
+// AltGr is how a lot of layouts reach @, so a one-character prompt typed with
+// it must retire the equality guard. Windows reports it as Ctrl+Alt, and some
+// builds set those flags even while AltGraph reads true, so both forms count.
 test("an AltGr character is a keystroke boundary", () => {
   assert.equal(
     isGuardRetiringKey({

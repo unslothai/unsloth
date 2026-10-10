@@ -42,6 +42,8 @@ import { BookmarkEditPopover, bookmarkTitle, removeBookmarkWithUndo } from "./bo
 import { type Bookmark, useBrowserBookmarksStore } from "./bookmarks-store";
 import { ClearBrowsingDataDialog } from "./clear-data-dialog";
 import { type DownloadItem, type HistoryItem, useBrowserHistoryStore } from "./history-store";
+import { formatSize, revealLabelKey } from "./download-format";
+import { openTarget } from "./download-open";
 import { LinkContextMenu, MenuRow } from "./link-context-menu";
 import { nativeDownloadsExist, revealNativeDownload } from "./native-downloads";
 import { SiteFavicon } from "./site-favicon";
@@ -58,22 +60,6 @@ function addDays(day: number, days: number): number {
   const date = new Date(day);
   date.setDate(date.getDate() + days);
   return date.getTime();
-}
-
-function formatSize(bytes: number, locale: string): string {
-  const units = ["byte", "kilobyte", "megabyte", "gigabyte"] as const;
-  let value = bytes;
-  let unit = 0;
-  while (value >= 1000 && unit < units.length - 1) {
-    value /= 1000;
-    unit++;
-  }
-  return new Intl.NumberFormat(locale, {
-    style: "unit",
-    unit: units[unit],
-    unitDisplay: "short",
-    maximumFractionDigits: value < 10 && unit > 0 ? 1 : 0,
-  }).format(value);
 }
 
 function PageShell({
@@ -650,14 +636,6 @@ function HistoryPage({ tabId }: { tabId: string }) {
   );
 }
 
-/** Each platform's own name for showing a file in its folder. */
-function revealLabelKey() {
-  const platform = typeof navigator === "undefined" ? "" : navigator.userAgent;
-  if (/Mac/i.test(platform)) return "browser.pages.showInFinder" as const;
-  if (/Windows/i.test(platform)) return "browser.pages.showInExplorer" as const;
-  return "browser.pages.showInFolder" as const;
-}
-
 /** Desktop downloads missing from disk, by native id; rechecked on window focus. */
 function useMissingDownloads(downloads: DownloadItem[]) {
   const [missing, setMissing] = useState<ReadonlySet<string>>(() => new Set());
@@ -690,12 +668,12 @@ function DownloadRow({
   item,
   time,
   deleted,
-  onRevealFailed,
+  onActionFailed,
 }: {
   item: DownloadItem;
   time: string;
   deleted: boolean;
-  onRevealFailed: () => void;
+  onActionFailed: () => void;
 }) {
   const t = useT();
   const locale = useLocale();
@@ -708,11 +686,14 @@ function DownloadRow({
     ? () =>
         void revealNativeDownload(nativeId).catch(() => {
           toast.error(t("browser.pages.revealFailed", { name: item.name }));
-          onRevealFailed();
+          onActionFailed();
         })
     : undefined;
-  // Files aren't kept; the row reopens the source page.
-  const open = item.url ? () => useBrowserStore.getState().openUrl(item.url ?? "", { newTab: true }) : undefined;
+  // As the Downloads button opens it: the saved file on the desktop, else this session's copy or the source page.
+  const open = openTarget({ ...item, nativeId, keptId: item.id }, (name) => {
+    toast.error(t("browser.downloads.openFailed", { name }));
+    onActionFailed();
+  });
   return (
     <LinkContextMenu
       url={item.url}
@@ -851,7 +832,7 @@ function DownloadsPage() {
                     item={item}
                     time={timeFormat.format(item.downloadedAt)}
                     deleted={item.nativeId !== undefined && missing.has(item.nativeId)}
-                    onRevealFailed={recheck}
+                    onActionFailed={recheck}
                   />
                 ))}
               </DayCard>

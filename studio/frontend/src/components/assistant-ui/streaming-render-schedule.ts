@@ -3,7 +3,10 @@
 
 import remend from "remend";
 import { type BlockProps } from "streamdown";
-import { parseMarkdownIntoBlocks } from "../../lib/parse-markdown-blocks.ts";
+import {
+  parseMarkdownBlockDetails,
+  parseMarkdownIntoBlocks,
+} from "../../lib/parse-markdown-blocks.ts";
 
 // The block list interleaves "\n\n" separators, so this is about four paragraphs of slack.
 const ROLLBACK_BLOCKS = 8;
@@ -163,27 +166,107 @@ function hasLinkReference(text: string): boolean {
   }
   return false;
 }
+// A shortcut `[label]` or collapsed `[label][]` resolves against a definition too. Code spans,
+// inline links and the like are deliberately not excluded: that only adds false positives.
+const SHORTCUT_REFERENCE_RE = /\[((?:\\[\s\S]|[^[\]\\]){1,999})\]/gu;
+const DEFINITION_LABEL_RE = /\[((?:\\[\s\S]|[^\]\\]){1,999})\]:/u;
+
+// micromark's `normalizeIdentifier`, so `[SS]` finds `[\u1E9E]:` as the renderer does.
+function normalizeLabel(label: string): string {
+  return label
+    .replace(/[\t\n\r ]+/g, " ")
+    .replace(/^ | $/g, "")
+    .toLowerCase()
+    .toUpperCase();
+}
+
+function hasShortcutReference(
+  prose: string,
+  references: string,
+  definitions: readonly string[],
+): boolean {
+  const labels = new Set<string>();
+  // Marked's tokens as well: an unmatched `[` line before a definition widens the regex's label.
+  for (const definition of [
+    ...definitions,
+    ...(prose.match(LINK_DEFINITION_KEY_RE) ?? []),
+  ]) {
+    const label = DEFINITION_LABEL_RE.exec(definition)?.[1];
+    if (label !== undefined) {
+      labels.add(normalizeLabel(label));
+    }
+  }
+  labels.delete("");
+  if (labels.size === 0) {
+    return false;
+  }
+  // Marked's definitions, not a regex: `[1]: <broken` is prose whose `[1]` is a reference.
+  const uses = normalizeLineEndings(references);
+  for (const match of uses.matchAll(SHORTCUT_REFERENCE_RE)) {
+    if (
+      !isEscaped(uses, match.index) &&
+      labels.has(normalizeLabel(match[1]))
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
 const WORD_CHARACTER_RE = /[\p{L}\p{N}_]/u;
 const HTML_TAG_START_RE = /[a-zA-Z/]/;
 
 // One memo slot: markdown-text.tsx asks for the key, then Streamdown splits the same string.
 let splitMarkdown: string | null = null;
 let splitBlocks: readonly string[] = [];
+let splitReferenceProse = "";
+let splitDefinitions: readonly string[] = [];
 
 function blocksOf(markdown: string): readonly string[] {
   if (splitMarkdown !== markdown) {
     splitMarkdown = markdown;
-    splitBlocks = parseMarkdownIntoBlocks(markdown);
+    const details = parseMarkdownBlockDetails(markdown);
+    splitBlocks = details.blocks;
+    splitReferenceProse = details.referenceProse.join("\n\n");
+    splitDefinitions = details.definitions;
   }
   return splitBlocks;
 }
 
-// Whether a reply must be lexed as one document: marked resolves link reference definitions
-// document-wide, so a `[ref]: url` outside code forces one piece. Erring toward `document` only
-// costs per-code-block controls; see tests/link-definition-oracle.test.ts.
+function referenceProseOf(markdown: string): string {
+  blocksOf(markdown);
+  return splitReferenceProse;
+}
+
+function definitionsOf(markdown: string): readonly string[] {
+  blocksOf(markdown);
+  return splitDefinitions;
+}
+
+// Which replies have to be lexed in one piece.
+//
+// marked keeps link reference definitions in one document-wide map and emits no token for a
+// label it has already seen, so a `[label][ref]` and its `[ref]: url` must reach the lexer
+// together or the reference survives as literal text. The question is therefore whether a real
+// definition exists outside code -- and the earlier answer, a hand-rolled scan for fences,
+// containers and raw HTML, kept disagreeing with marked at the seams: nested fences, the seven
+// HTML block shapes, list continuation indentation, lone-CR line endings.
+//
+// marked has already resolved every one of those by the time it hands back blocks, so the split
+// is the answer rather than something to re-derive. A fenced or indented block is code; anything
+// else is prose, and a definition line anywhere in the prose counts.
+//
+// Being wrong is not symmetric, which is why the residual imprecision sits where it does. Saying
+// `blocks` when the reply needed one document splits the pair apart and loses content. Saying
+// `document` when blocks would have done only costs that reply its per-code-block Copy and
+// Download controls -- which is what this path did for EVERY reply containing a `]:` substring
+// before. See tests/link-definition-oracle.test.ts, which pins the first case exhaustively.
+// Normalised because `\r` counts against `{1,999}` and the `\n` it replaces does
+// not, so the scope would otherwise follow the reply's line ending. NOT for
+// `blocksOf`, whose one memo slot is shared with `parseMarkdownIntoRenderableBlocks`:
+// a normalised copy misses it and costs a CRLF reply two splits per render.
+// A shortcut reference can be any `[label]`, so a definition alone is enough to pay for the split.
 function documentProse(markdown: string): string | null {
-  const normalized = normalizeLineEndings(markdown);
-  if (!hasLinkDefinition(normalized) || !hasLinkReference(normalized)) {
+  if (!hasLinkDefinition(normalizeLineEndings(markdown))) {
     return null;
   }
   const prose = normalizeLineEndings(
@@ -191,7 +274,13 @@ function documentProse(markdown: string): string | null {
       .filter((block) => !isCodeBlock(block))
       .join("\n"),
   );
-  return LINK_DEFINITION_LINE_RE.test(prose) && hasLinkReference(prose)
+  return LINK_DEFINITION_LINE_RE.test(prose) &&
+    (hasLinkReference(prose) ||
+      hasShortcutReference(
+        prose,
+        referenceProseOf(markdown),
+        definitionsOf(markdown),
+      ))
     ? prose
     : null;
 }

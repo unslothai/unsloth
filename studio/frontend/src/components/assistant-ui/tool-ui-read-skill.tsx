@@ -8,6 +8,7 @@ import {
   type ToolCallMessagePartComponent,
   useAuiState,
 } from "@assistant-ui/react";
+import { partsHaveNonEmptyText } from "@/components/assistant-ui/message-derived";
 import { Scroll01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ComponentProps, memo } from "react";
@@ -51,12 +52,7 @@ const ReadSkillToolUIImpl: ToolCallMessagePartComponent = ({
       ? `Reading ${name}…`
       : `Read ${name} · ${resource}`;
   const hasText = useAuiState(({ message }) =>
-    message.content.some(
-      (part) =>
-        part.type === "text" &&
-        "text" in part &&
-        (part as { text: string }).text.length > 0,
-    ),
+    partsHaveNonEmptyText(message.content),
   );
   const awaitingApproval = useToolAwaitingApproval(toolCallId);
   const [open, setOpen] = useToolActivityOpen(isRunning, hasText);

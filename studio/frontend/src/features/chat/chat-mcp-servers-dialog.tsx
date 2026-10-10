@@ -39,6 +39,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
+import { changedImageMappings } from "./api/mcp-image";
 import { subscribeToMcpServerMutationSettlements } from "./api/mcp-server-mutation-tracker";
 import {
   type McpImageInputMapping,
@@ -745,7 +746,10 @@ export function ChatMcpServersDialog({
           url,
           headers: headers ?? null,
           ...oauthPayload(form, stdio),
-          imageInputMappings: form.imageInputMappings,
+          imageInputMappings: changedImageMappings(
+            servers.find((s) => s.id === view.id)?.image_input_mappings ?? [],
+            form.imageInputMappings,
+          ),
         });
         if (formGenerationRef.current !== generation) return;
         toast.success("MCP server updated");

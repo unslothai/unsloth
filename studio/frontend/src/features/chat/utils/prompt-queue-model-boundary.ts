@@ -22,33 +22,32 @@ export type PromptQueueModelStopItem = {
 
 export type LocalPromptQueueStopPlan = {
   cancelActiveItem: boolean;
-  activeItemRemoved: boolean;
-  refreshTargetIdleWait: boolean;
   retainedItemIndexes: number[];
+  /** Indexes into the original items of unsent local prompts to hold until Resume. */
+  heldItemIndexes: number[];
 };
 
-/** Only local items depend on the outgoing model; external follow-ups stay valid. */
+/** A local model change ends the local reply in flight, so that item is cancelled and dropped as a
+ *  Stop drops it. Unsent local prompts are held for Resume instead of discarded (#10428), and
+ *  external-provider items are untouched since they never used the outgoing model. */
 export function planLocalPromptQueueStop(
   items: readonly PromptQueueModelStopItem[],
   runIndex: number,
 ): LocalPromptQueueStopPlan {
   const activeIndex = Math.max(runIndex, 0);
   const activeItem = items[activeIndex];
-  const retainedItemIndexes = items.flatMap((item, index) =>
-    index < activeIndex || !item.usesLocalModel ? [index] : [],
+  const cancelActiveItem = Boolean(
+    activeItem?.usesLocalModel && activeItem.dispatched,
   );
-  return {
-    cancelActiveItem: Boolean(
-      activeItem?.usesLocalModel && activeItem.dispatched,
-    ),
-    activeItemRemoved: Boolean(activeItem?.usesLocalModel),
-    refreshTargetIdleWait: Boolean(
-      runIndex < 0 &&
-        activeItem?.usesLocalModel &&
-        retainedItemIndexes.length > 0,
-    ),
-    retainedItemIndexes,
-  };
+  const retainedItemIndexes = items.flatMap((_, index) =>
+    cancelActiveItem && index === activeIndex ? [] : [index],
+  );
+  const heldItemIndexes = items.flatMap((item, index) =>
+    index >= activeIndex && item.usesLocalModel && !item.dispatched
+      ? [index]
+      : [],
+  );
+  return { cancelActiveItem, retainedItemIndexes, heldItemIndexes };
 }
 
 export function shouldAbortPendingQueueForModelBoundary({

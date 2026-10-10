@@ -238,3 +238,130 @@ test("ordinary code is still rendered per block", () => {
     );
   }
 });
+
+test("a shortcut or collapsed reference is never split from its definition", () => {
+  const failures: string[] = [];
+  for (const definition of DEFINITION_CONTEXTS) {
+    for (const neutral of NEUTRAL_BLOCKS) {
+      for (const reference of ["[g]", "[g][]", "![g]", "[G]", "[ g ]"]) {
+        for (const reply of [
+          `See ${reference}.\n\n${neutral}\n\n${definition}\n`,
+          `${definition}\n\n${neutral}\n\nSee ${reference}.\n`,
+        ]) {
+          if (asOneDocument(reply) <= asBlocks(reply)) {
+            continue;
+          }
+          if (markdownRenderScope(reply) !== "document") {
+            failures.push(JSON.stringify(reply));
+          }
+        }
+      }
+    }
+  }
+  assert.deepEqual(failures, [], failures.join("\n"));
+});
+
+test("a shortcut reference matches its definition the way CommonMark matches labels", () => {
+  for (const [reference, definition] of [
+    ["Paris is the capital [1].", "[1]: https://en.wikipedia.org/wiki/Paris"],
+    ["Read [Unsloth docs] first.", "[unsloth  DOCS]: https://docs.unsloth.ai"],
+    ["Read [Unsloth\ndocs] first.", "[unsloth docs]: https://docs.unsloth.ai"],
+    ["Read [unsloth docs] first.", "[Unsloth\tDocs]: https://docs.unsloth.ai"],
+    ["Read [a\\]b] first.", "[a\\]b]: https://x.test/ab"],
+    ["Read [`code`] first.", "[`code`]: https://x.test/code"],
+    ["Read [1](not a link) first.", "[1]: https://x.test/one"],
+    ["Read [1](foo(and(bar)) first.", "[1]: https://x.test/one"],
+    ["Read [1](<foo\nbar>) first.", "[1]: https://x.test/one"],
+    ['Read [1](<https://x.test>"title") first.', "[1]: https://x.test/one"],
+    [
+      "Read [site](https://x.test/`tag) [1] ` first.",
+      "[1]: https://x.test/one",
+    ],
+    ["Read <https://x.test/`> [1] ` first.", "[1]: https://x.test/one"],
+    ["Read <foo`bar@example.com> [1] ` first.", "[1]: https://x.test/one"],
+    ["Read https://x.test/a`b [1] ` first.", "[1]: https://x.test/one"],
+    ["Read www.x.test/a`b [1] ` first.", "[1]: https://x.test/one"],
+    [
+      "Read [a [b]](https://x.test/`tag) [1] ` first.",
+      "[1]: https://x.test/one",
+    ],
+    [
+      "Read [a `[`](https://x.test/`tag) [1] ` first.",
+      "[1]: https://x.test/one",
+    ],
+    [
+      "Read [site `]`](https://x.test/`tag) [1] ` first.",
+      "[1]: https://x.test/one",
+    ],
+    ["Read [site](foo`bar\\ ) [1] ` first.", "[1]: https://x.test/one"],
+    ["[site](foo`bar\\ ) [1] `", "[1]: https://x.test/one"],
+    ['[site](foo`bar "title\\\ncontinued") [1] `', "[1]: https://x.test/one"],
+    ["`[x](foo`[site](url`tag)) [1] `", "[1]: https://x.test/one"],
+    ["[x]: <broken [1]", "[1]: /one"],
+    ['Read <span title="`"> [1] ` first.', "[1]: https://x.test/one"],
+    ['Read <span hidden title="`"> [1] ` first.', "[1]: https://x.test/one"],
+    ['Read <span title=">`"> [1] ` first.', "[1]: https://x.test/one"],
+    ["Read <!-- ` --> [1] ` first.", "[1]: https://x.test/one"],
+    ["Read <!A`> [1] ` first.", "[1]: https://x.test/one"],
+    ['Read <a_b title="`"> ` [1] ` first.', "[1]: https://x.test/one"],
+    ["> `open\n>\n> [1]\n> `", "[1]: https://x.test/one"],
+    ["> `open\n> # heading\n> [1]\n> `", "[1]: https://x.test/one"],
+    [
+      '> [1](/inline "title\n> # heading\n> continuation")',
+      "[1]: https://x.test/one",
+    ],
+    [
+      `Read [1](${"(".repeat(33)}x${")".repeat(33)}) first.`,
+      "[1]: https://x.test/one",
+    ],
+    ["See [1].\n\n[broken", "[1]: /one"],
+    ["See [1].\n\n> [broken", "- [1]: /one"],
+    ["See [^source note].", "[^source note]: https://x.test/source"],
+    ["> [1]: /url\n2. item\n\n    See [1].", "[2]: /two"],
+    ["Read [SS] first.", "[\u1E9E]: https://x.test/ss"],
+    ["Read [Stra\u00DFe] first.", "[STRASSE]: https://x.test/strasse"],
+  ]) {
+    const reply = `${reference}\n\n${definition}\n`;
+    assert.ok(asOneDocument(reply) > asBlocks(reply), JSON.stringify(reply));
+    assert.equal(markdownRenderScope(reply), "document", JSON.stringify(reply));
+  }
+});
+
+test("inline math does not lend its backticks to a later code span", () => {
+  assert.equal(
+    markdownRenderScope("Math $a ` b$ [1] `\n\n[1]: /one\n"),
+    "document",
+  );
+  assert.equal(
+    markdownRenderScope("Cost $\n\nMath $a ` b$ [1] `\n\n[1]: /one\n"),
+    "document",
+  );
+});
+
+test("escaped backticks do not close code spans", () => {
+  assert.equal(
+    markdownRenderScope("Read ` [1] \\`\n\n[1]: /one\n"),
+    "document",
+  );
+});
+
+test("table cells do not share code span delimiters", () => {
+  const reply =
+    "| left | right |\n| --- | --- |\n| `open | [1] |\n| x | close` |\n\n[1]: /one\n";
+  assert.ok(asOneDocument(reply) > asBlocks(reply));
+  assert.equal(markdownRenderScope(reply), "document");
+});
+
+// Only labels that cannot resolve. Code spans and inline links may still pick the document
+// path: that costs Copy and Download controls, never a link.
+test("a bracketed label that is not a shortcut reference keeps block rendering", () => {
+  for (const reply of [
+    "Not a link \\[1] here.\n\n[1]: https://x.test\n",
+    "Cites [2].\n\n[1]: https://x.test/1\n",
+    "No uses.\n\n[1]: https://x.test/a\n[1]: https://x.test/b\n",
+    "```py\nx = a[1]\n```\n\n[1]: https://x.test\n",
+  ]) {
+    assert.equal(asOneDocument(reply), asBlocks(reply), JSON.stringify(reply));
+    assert.equal(markdownRenderScope(reply), "blocks", JSON.stringify(reply));
+  }
+});

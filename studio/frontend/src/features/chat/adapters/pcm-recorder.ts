@@ -30,7 +30,9 @@ const OPUS_MIME_TYPES = ["audio/webm;codecs=opus", "audio/ogg;codecs=opus"];
 // Apple WebKit also advertises only audio/mp4 but does encode; the platform tells it from WebKitGTK.
 const APPLE_WEBKIT = /iPad|iPhone|iPod|Macintosh|Mac OS X/;
 
-/** A capability test, not a Linux check, so only the broken engine takes the PCM path. */
+/** Whether this engine's MediaRecorder claims it can encode audio; `start()` may still refuse.
+ *  Kept a capability test rather than a Linux check so every engine that does work keeps
+ *  recording as it does today, and only the broken one takes the PCM path. */
 export function mediaRecorderCanEncodeAudio(
   isTypeSupported: (type: string) => boolean = (type) =>
     typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported(type),
@@ -222,13 +224,80 @@ export class PcmRecorder implements SegmentRecorder {
   }
 }
 
-/** MediaRecorder where it encodes, otherwise PCM WAV (`mimeType` is unused there). */
+type RecorderListener = ((event: RecordedDataEvent) => void) &
+  ((event: Event) => void);
+
+let mediaRecorderRefusedStart = false;
+
+/** A MediaRecorder that becomes a PcmRecorder if `start()` is refused: WebKitGTK advertises Opus,
+ *  then throws NotSupportedError without gst-plugins-bad's `uritranscodebin` (#11939). */
+class StartFallbackRecorder implements SegmentRecorder {
+  private recorder: SegmentRecorder;
+  private readonly stream: MediaStream;
+  private readonly listeners: [
+    "dataavailable" | "stop",
+    RecorderListener,
+    AddEventListenerOptions | undefined,
+  ][] = [];
+
+  constructor(stream: MediaStream, mimeType?: string) {
+    this.stream = stream;
+    this.recorder = new MediaRecorder(
+      stream,
+      mimeType ? { mimeType } : undefined,
+    );
+  }
+
+  get state(): RecordingState {
+    return this.recorder.state;
+  }
+
+  get mimeType(): string {
+    return this.recorder.mimeType;
+  }
+
+  addEventListener(
+    type: "dataavailable" | "stop",
+    listener: RecorderListener,
+    options?: AddEventListenerOptions,
+  ): void {
+    this.listeners.push([type, listener, options]);
+    this.recorder.addEventListener(type as "stop", listener, options);
+  }
+
+  start(timesliceMs?: number): void {
+    try {
+      this.recorder.start(timesliceMs);
+    } catch (error) {
+      // An ended stream is refused with the same error name and is not the engine's fault.
+      if (
+        (error as { name?: unknown } | null)?.name !== "NotSupportedError" ||
+        !this.stream.active
+      ) {
+        throw error;
+      }
+      mediaRecorderRefusedStart = true;
+      this.recorder = new PcmRecorder(this.stream);
+      for (const [type, listener, options] of this.listeners) {
+        this.recorder.addEventListener(type as "stop", listener, options);
+      }
+      this.recorder.start(timesliceMs);
+    }
+  }
+
+  stop(): void {
+    this.recorder.stop();
+  }
+}
+
+/** A recorder for `stream`: MediaRecorder where it encodes, PCM where it does not. `mimeType`
+ *  is the MediaRecorder preference and is unused on the PCM path, which always makes WAV. */
 export function createAudioRecorder(
   stream: MediaStream,
   mimeType?: string,
 ): SegmentRecorder {
-  if (!mediaRecorderCanEncodeAudio()) {
+  if (mediaRecorderRefusedStart || !mediaRecorderCanEncodeAudio()) {
     return new PcmRecorder(stream);
   }
-  return new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+  return new StartFallbackRecorder(stream, mimeType);
 }

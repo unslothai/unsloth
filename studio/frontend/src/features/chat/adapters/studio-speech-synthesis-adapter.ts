@@ -9,6 +9,7 @@ import { encryptProviderApiKey } from "../api/providers-api";
 import { getExternalProviderApiKey } from "../external-providers";
 import { stripSearchImageTokens } from "../search-images/search-images";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
+import { markdownToSpeechText } from "../utils/speech-text";
 
 /** "default" resolves to the platform's default voice; undefined lets the browser pick. */
 export function findTtsVoice(
@@ -443,8 +444,7 @@ export class StudioSpeechSynthesisAdapter implements SpeechSynthesisAdapter {
   }
 
   speak(spokenText: string): SpeechSynthesisAdapter.Utterance {
-    // Renderer markup: without this the reader says the token id out loud.
-    const text = stripSearchImageTokens(spokenText);
+    const text = markdownToSpeechText(stripSearchImageTokens(spokenText));
     const subscribers = new Set<() => void>();
 
     const handleEnd = (

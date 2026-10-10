@@ -6,6 +6,7 @@ import {
   type TransformersUpgradeCheck,
   checkTransformersUpgrade,
   confirmTransformersUpgradeIfNeeded,
+  upgradeInstallVersion,
   useTransformersUpgradeDialogStore,
 } from "@/features/transformers-upgrade";
 
@@ -32,11 +33,10 @@ export function trainingTransformersUpgradeNotice(
   check: TransformersUpgradeCheck,
   loadsIn4Bit: boolean,
 ): TrainingTransformersUpgradeNotice {
-  const installable = Boolean(
-    check.upgrade?.supported_in_pypi && check.upgrade?.pypi_version,
-  );
+  const installVersion = upgradeInstallVersion(check.upgrade);
+  const installable = installVersion !== null;
   return {
-    installVersion: installable ? (check.upgrade?.pypi_version ?? null) : null,
+    installVersion,
     fourBitUnavailable: check.forces16Bit && loadsIn4Bit,
     installSwitchesTo16Bit: installable && !check.forces16Bit && loadsIn4Bit,
   };
@@ -53,7 +53,7 @@ export function getTrainingTransformersUpgradeRequiredMessage(
 export function getTrainingTransformersUpgradeUnavailableMessage(
   modelName: string,
 ): string {
-  return `${modelName} is not supported yet by the installed transformers, and no released transformers version supports it either: the architecture is only on the transformers development branch, which Unsloth does not install. Wait for the next transformers release, or pick a model the installed transformers supports.`;
+  return `${modelName} is not supported yet by the installed transformers, and no released transformers version supports it either: the architecture is only on the transformers development branch, whose version could not be checked right now. Try again in a few minutes to install it, or pick a model the installed transformers supports.`;
 }
 
 /** The checkpoint needs a 4-bit load the latest sidecar permanently refuses. */
@@ -100,10 +100,7 @@ export async function confirmTrainingTransformersUpgrade({
       requiresTrustRemoteCode,
     };
   }
-  // Only a released version is ever installed.
-  const installable = Boolean(
-    check.upgrade.supported_in_pypi && check.upgrade.pypi_version,
-  );
+  const installable = upgradeInstallVersion(check.upgrade) !== null;
   if (check.installBreaksExactResume) {
     // The latest sidecar is a persistent overlay that refuses this checkpoint's 4-bit load.
     if (check.requiresTrustRemoteCode) {
@@ -125,7 +122,8 @@ export async function confirmTrainingTransformersUpgrade({
         requiresTrustRemoteCode,
       };
     }
-    // Dev-only: nothing to install; fall through to the dev-only message.
+    // Nothing installable (main's version unknown), so nothing can strand anything, and
+    // "start a new run instead" cannot work either. Fall through to the retry message.
   }
 
   const upgraded = await confirmTransformersUpgradeIfNeeded({
@@ -145,7 +143,7 @@ export async function confirmTrainingTransformersUpgrade({
       .catch(() => undefined);
   }
   if (!upgraded) {
-    // "Start again to install it" only applies when something is installable.
+    // "Start again to install it" only means something when there is something to install.
     return {
       proceed: false,
       error: installable

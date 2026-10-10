@@ -16,6 +16,24 @@ import { createReasoningDurationTracker } from "../src/features/chat/utils/reaso
 import { readSrc } from "./helpers/kit.ts";
 
 const THOUGHT = "The user wants three primes. Small ones are";
+const COLLECT_GEMINI_THOUGHTS =
+  /collectGeminiThoughtReplayParts\(messageContent\)/;
+const CARRY_GEMINI_THOUGHTS =
+  /thoughtParts\.length > 0 \? \{ thoughtParts \} : \{\}/;
+const REPLAY_GEMINI_THOUGHTS =
+  /continuation\.thoughtParts && continuation\.thoughtParts\.length > 0/;
+const CARRY_GEMINI_TURNS =
+  /geminiReplayTurns\.length > 0 \? \{ geminiReplayTurns \} : \{\}/;
+const REPLAY_GEMINI_TURNS =
+  /serializeGeminiContinuationTurns\(geminiReplayTurns, false\)/;
+const PRESERVE_GEMINI_BOUNDARY =
+  /geminiContinuationReplay: geminiContinuationReplay\(false\),[\s\S]*incomplete:/;
+const RETAIN_GEMINI_BOUNDARY_ACROSS_PROVIDER_SWITCH =
+  /const geminiContinuationReplayTurns =\s*continuation\?\.geminiReplayTurns\?\.length/;
+const ACTIVE_PROVIDER_DOES_NOT_GATE_GEMINI_BOUNDARY =
+  /externalProvider\?\.providerType === "gemini" &&\s*continuation\?\.geminiReplayTurns/;
+const ALLOW_GEMINI_REPLAY_WITHOUT_VISIBLE_TEXT =
+  /const hasGeminiReplayContinuation = Boolean\([\s\S]{0,500}!hasGeminiReplayContinuation/;
 
 test("the source splits a reply into the answer and the thought before it", () => {
   assert.deepEqual(
@@ -55,16 +73,60 @@ test("a thought-only turn is continuable only where a thought resumes", () => {
     }),
     false,
   );
+  assert.equal(
+    isContinuableContent([{ type: "reasoning", text: "" }], { replay: true }),
+    true,
+  );
+  assert.equal(
+    isContinuableContent([{ type: "tool-call", toolName: "web_search" }], {
+      replay: true,
+    }),
+    false,
+  );
 });
 
 test("a thought-only request is read, and its duration only travels with a thought", () => {
   assert.deepEqual(
     readContinuationRequest({
       custom: {
-        unslothContinuation: { partial: "", reasoning: THOUGHT, reasoningDuration: 7 },
+        unslothContinuation: {
+          partial: "",
+          reasoning: THOUGHT,
+          reasoningDuration: 7,
+          thoughtParts: [
+            { text: "first thought", thoughtSignature: "SIG-THOUGHT-1" },
+            { text: "second thought", thoughtSignature: "SIG-THOUGHT-2" },
+          ],
+          geminiReplayTurns: [
+            {
+              text: "2, 3",
+              thoughtSignature: "SIG-ANSWER",
+              thoughtParts: [
+                { text: "first thought", thoughtSignature: "SIG-THOUGHT-1" },
+              ],
+            },
+          ],
+        },
       },
     }),
-    { partial: "", reasoning: THOUGHT, reasoningDuration: 7 },
+    {
+      partial: "",
+      reasoning: THOUGHT,
+      reasoningDuration: 7,
+      thoughtParts: [
+        { text: "first thought", thoughtSignature: "SIG-THOUGHT-1" },
+        { text: "second thought", thoughtSignature: "SIG-THOUGHT-2" },
+      ],
+      geminiReplayTurns: [
+        {
+          text: "2, 3",
+          thoughtSignature: "SIG-ANSWER",
+          thoughtParts: [
+            { text: "first thought", thoughtSignature: "SIG-THOUGHT-1" },
+          ],
+        },
+      ],
+    },
   );
   assert.deepEqual(
     readContinuationRequest({
@@ -78,6 +140,46 @@ test("a thought-only request is read, and its duration only travels with a thoug
     }),
     null,
   );
+  assert.deepEqual(
+    readContinuationRequest({
+      custom: {
+        unslothContinuation: {
+          partial: "",
+          thoughtParts: [{ text: "", thoughtSignature: "SIG-THOUGHT" }],
+          geminiReplayTurns: [
+            {
+              text: "",
+              thoughtParts: [{ text: "", thoughtSignature: "SIG-THOUGHT" }],
+            },
+          ],
+        },
+      },
+    }),
+    {
+      partial: "",
+      thoughtParts: [{ text: "", thoughtSignature: "SIG-THOUGHT" }],
+      geminiReplayTurns: [
+        {
+          text: "",
+          thoughtParts: [{ text: "", thoughtSignature: "SIG-THOUGHT" }],
+        },
+      ],
+    },
+  );
+});
+
+test("Gemini continuations retain the provider turn boundary", () => {
+  const thread = readSrc("components/assistant-ui/thread.tsx");
+  const adapter = readSrc("features/chat/api/chat-adapter.ts");
+  assert.match(thread, COLLECT_GEMINI_THOUGHTS);
+  assert.match(thread, CARRY_GEMINI_THOUGHTS);
+  assert.match(thread, CARRY_GEMINI_TURNS);
+  assert.match(adapter, REPLAY_GEMINI_THOUGHTS);
+  assert.match(adapter, REPLAY_GEMINI_TURNS);
+  assert.match(adapter, PRESERVE_GEMINI_BOUNDARY);
+  assert.match(adapter, RETAIN_GEMINI_BOUNDARY_ACROSS_PROVIDER_SWITCH);
+  assert.doesNotMatch(adapter, ACTIVE_PROVIDER_DOES_NOT_GATE_GEMINI_BOUNDARY);
+  assert.match(adapter, ALLOW_GEMINI_REPLAY_WITHOUT_VISIBLE_TEXT);
 });
 
 function stream(

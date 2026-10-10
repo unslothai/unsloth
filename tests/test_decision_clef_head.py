@@ -199,17 +199,22 @@ def test_compile_gating(monkeypatch):
     import torch.utils._triton as triton_utils
 
     monkeypatch.setattr(triton_utils, "has_triton", lambda: True)
+    cuda = torch.device("cuda")
+    # Eager unless asked for: unset, "auto" and "0" never compile.
+    monkeypatch.delenv("UNSLOTH_CLEF_COMPILE", raising = False)
+    assert not clef._compile_supported(cuda) and clef._compiled_logits(cuda) is None
+    for choice in ("auto", "0"):
+        monkeypatch.setenv("UNSLOTH_CLEF_COMPILE", choice)
+        assert not clef._compile_supported(cuda)
+    monkeypatch.setenv("UNSLOTH_CLEF_COMPILE", "1")
+    assert clef._compile_supported(cuda)
     assert not clef._compile_supported(torch.device("cpu"))
-    assert clef._compile_supported(torch.device("cuda"))
     # ROCm reports cuda devices: compiled when its Triton is present.
     monkeypatch.setattr(torch.version, "hip", "6.4", raising = False)
-    assert clef._compile_supported(torch.device("cuda"))
+    assert clef._compile_supported(cuda)
     # Windows ROCm / CUDA wheels without Triton: eager.
     monkeypatch.setattr(triton_utils, "has_triton", lambda: False)
-    assert not clef._compile_supported(torch.device("cuda"))
-    monkeypatch.setattr(triton_utils, "has_triton", lambda: True)
-    monkeypatch.setenv("UNSLOTH_CLEF_COMPILE", "0")
-    assert not clef._compile_supported(torch.device("cuda"))
+    assert not clef._compile_supported(cuda)
 
 
 def test_a_failed_compile_falls_back_to_eager(monkeypatch):
@@ -272,3 +277,31 @@ def test_autocast_matches_the_per_record_head(monkeypatch):
     scale = theirs[0][theirs[3]].abs().max().item()
     assert logits <= 2e-2 * scale and grads < 5e-2
     assert torch.equal(ours[0].argmax(-1), theirs[0].argmax(-1))
+
+
+@pytest.mark.skipif(not has_real_cuda(), reason = "Inductor pads saved strides on CUDA")
+def test_checkpointed_head_trains_under_a_compiled_layer_norm(monkeypatch):
+    # #13160: over 1024 tokens the first (static) graph pads mean / rstd strides; the queries'
+    # dynamic recompile then served the checkpoint recompute and that backward crashed.
+    original = getattr(clef.functional, "_uncompiled_layer_norm", clef.functional.layer_norm)
+    monkeypatch.setattr(clef.functional, "_uncompiled_layer_norm", original, raising = False)
+    monkeypatch.setattr(clef.functional, "layer_norm", torch.compile(original))
+    torch._dynamo.reset()
+    torch.manual_seed(0)
+    length, width = 1222, 512
+    head = clef.JointSchemaHead(HIDDEN, width, 2, 2, 4, 64).cuda().train()
+    question = reference.EncodedQuestion("q", 0, (5, 8), ((10, 12), (14, 17)), ("0", "1"))
+    records = [reference.EncodedRecord(tuple(range(length)), (question,), "r")] * 2
+    hidden = torch.randn(len(records), length, HIDDEN, device = "cuda")
+    ids = torch.zeros(len(records), length, dtype = torch.long, device = "cuda")
+    mask = torch.ones_like(ids)
+    embedding = torch.randn(length, HIDDEN, device = "cuda")
+    grad_out = torch.randn(len(records), 2, device = "cuda")
+    results = {}
+    for checkpoint in ("1", "0"):
+        monkeypatch.setenv("UNSLOTH_CLEF_CHECKPOINT", checkpoint)
+        results[checkpoint] = _run(
+            head, head.forward, hidden, ids, mask, records, embedding, grad_out
+        )
+    for a, b in zip(_max_error(results["1"], results["0"]), (1e-5, 1e-5, 1e-4)):
+        assert a < b

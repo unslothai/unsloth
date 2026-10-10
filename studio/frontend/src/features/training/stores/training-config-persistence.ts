@@ -444,6 +444,7 @@ export function mergeTrainingConfig(
     settingsBeforeDecision: normalizeSettingsBeforeDecision(
       persistedState.settingsBeforeDecision,
     ),
+    trainAsDecision: persistedState.trainAsDecision === true,
   };
   return {
     ...merged,

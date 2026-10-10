@@ -120,6 +120,7 @@ export interface TrainingRuntimeState {
   evalLossHistory: TrainingSeriesPoint[];
   resetGeneration: number;
   stopRequested: boolean;
+  configureRequest: number;
   selectedHistoryRunId: string | null;
   currentRunViewActive: boolean;
 }

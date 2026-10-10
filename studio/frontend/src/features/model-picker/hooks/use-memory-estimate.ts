@@ -40,6 +40,7 @@ function estimateKey(request: MemoryEstimateRequest | null): string | null {
     request.ctxCheckpoints ?? null,
     request.speculativeType ?? null,
     request.specDraftNMax ?? null,
+    request.specDraftModel ?? null,
     request.specDraftCacheType ?? null,
     request.tensorParallel ?? false,
     request.disableVision ?? false,

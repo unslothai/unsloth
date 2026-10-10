@@ -2,7 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { generationFailureLogsAction } from "@/features/settings/lib/view-logs-action";
-import { readImageModel, rememberImageModel, matchesRememberedModel, type RememberedImageModel } from "./image-model-recall";
+import { readImageModel, rememberImageModel, matchesRememberedModel, componentFilesMatch, type RememberedImageModel } from "./image-model-recall";
+import { componentFileFields, splitComponentFileList } from "./component-files";
 import {
   type ReactNode,
   type SetStateAction,
@@ -186,7 +187,15 @@ import {
 import { toast } from "@/lib/toast";
 import { loadGalleryUntil } from "@/lib/gallery-deep-link";
 import { subscribeModelEjected } from "@/lib/model-lifecycle-events";
-import { DEFAULT_GEN, defaultsFor, defaultsKeyFor, residentDefaultsKey, resolutionFor } from "./image-generation-defaults";
+import {
+  DEFAULT_GEN,
+  defaultsFor,
+  defaultsKeyFor,
+  loadedRecipeFor,
+  residentDefaultsKey,
+  residentRecipeFor,
+  resolutionFor,
+} from "./image-generation-defaults";
 import {
   MIN_DIM,
   type SizeLimits,
@@ -269,11 +278,18 @@ import {
 } from "./train/train-base-selector";
 
 function withEngagedFamily(
-  { repoId, kind, filename }: RememberedImageModel,
+  { repoId, kind, filename, textEncoderFiles, vaeFile }: RememberedImageModel,
   status: Pick<DiffusionStatus, "resolved">,
 ): RememberedImageModel {
   const family = explicitFamily(resolvedFamilyOverrideSelection(status.resolved?.family_override));
-  return { repoId, kind, ...(filename ? { filename } : {}), ...(family ? { familyOverride: family } : {}) };
+  return {
+    repoId,
+    kind,
+    ...(filename ? { filename } : {}),
+    ...(family ? { familyOverride: family } : {}),
+    ...(textEncoderFiles?.length ? { textEncoderFiles } : {}),
+    ...(vaeFile ? { vaeFile } : {}),
+  };
 }
 
 function sendsTransformerQuant(kind: string | null | undefined, repoId: string): boolean {
@@ -739,6 +755,54 @@ function ResolvedBadge({
   );
 }
 
+const COMPONENT_FILES_HINT =
+  "Optional. Use separate ComfyUI text encoder / VAE .safetensors files instead of downloading the base model's. Absolute path, or relative to the model folder (e.g. ../text_encoders/clip_l.safetensors). Only for single-file or GGUF transformers.";
+
+function AdvancedTextField({
+  label,
+  hint,
+  placeholder,
+  value,
+  onValueChange,
+  multiline = false,
+}: {
+  label: string;
+  hint?: ReactNode;
+  placeholder?: string;
+  value: string;
+  onValueChange: (v: string) => void;
+  multiline?: boolean;
+}) {
+  return (
+    <div className="flex flex-col gap-1">
+      <span className="flex shrink-0 items-center gap-1 whitespace-nowrap text-xs font-medium text-muted-foreground">
+        {label}
+        {hint && <InfoHint>{hint}</InfoHint>}
+      </span>
+      {multiline ? (
+        <Textarea
+          aria-label={label}
+          rows={2}
+          spellCheck={false}
+          placeholder={placeholder}
+          value={value}
+          onChange={(e) => onValueChange(e.target.value)}
+          className="min-h-0 resize-y font-mono text-xs"
+        />
+      ) : (
+        <Input
+          aria-label={label}
+          spellCheck={false}
+          placeholder={placeholder}
+          value={value}
+          onChange={(e) => onValueChange(e.target.value)}
+          className="h-8 font-mono text-xs"
+        />
+      )}
+    </div>
+  );
+}
+
 function AdvancedSelect({
   label,
   hint,
@@ -1201,6 +1265,14 @@ function LoadedBuildSummary({ status }: { status: DiffusionStatus | null }) {
         }
         badge={<ResolvedBadge status={status} controlKey="text_encoder_quant" />}
       />
+      {status.component_files && Object.keys(status.component_files).length > 0 ? (
+        <BuildRow
+          label="Text encoder / VAE files"
+          value={Object.entries(status.component_files)
+            .map(([component, file]) => `${component}: ${file}`)
+            .join(", ")}
+        />
+      ) : null}
       <BuildRow
         label="Memory"
         value={
@@ -1236,6 +1308,7 @@ function reportLoadFailure(message: string | null | undefined, fallback: string)
 
 type Busy = "loading" | "unloading" | "generating" | null;
 type ImageLoadOptions = { kind: "gguf" | "single_file" | "pipeline"; filename?: string; displayRepoId?: string };
+type LastLoad = { repoId: string } & ImageLoadOptions & Pick<RememberedImageModel, "textEncoderFiles" | "vaeFile">;
 
 type PickRevert = {
   prev: string | null;
@@ -1260,6 +1333,8 @@ type LoadAdvanced = Pick<
   | "family_override"
   | "loras"
   | "gpu_ids"
+  | "text_encoder_file"
+  | "vae_file"
 >;
 
 function openImageLabel(t: ReturnType<typeof useT>, prompt: string): string {
@@ -1323,10 +1398,15 @@ export function ImagesPage({
   const [steps, setSteps] = useState(DEFAULT_GEN.steps);
   const [guidance, setGuidance] = useState(DEFAULT_GEN.guidance);
   const pickRecipeSuperseded = useRef<(() => boolean) | null>(null);
+  // The recipe the last pick applied, so a load that reveals the family can replace a fallback.
+  const pickDefaults = useRef<{ steps: number; guidance: number } | null>(null);
+  // Put back everything a pick optimistically applied. Setters are stable, so this never re-renders on its own.
   const revertPick = useCallback((r: PickRevert) => {
     setQuant(r.prev);
     setPendingModelDefaults(null);
-    // Equality cannot tell untouched from the user choosing the same number.
+    pickDefaults.current = null;
+    // Equality alone cannot tell "nobody touched this" from "the user chose the same number": a
+    // preset selected after the pick owns these fields.
     if (!pickRecipeSuperseded.current?.()) {
       setSteps((cur) => (cur === r.appliedSteps ? r.steps : cur));
       setGuidance((cur) => (cur === r.appliedGuidance ? r.guidance : cur));
@@ -1420,7 +1500,11 @@ export function ImagesPage({
     setTextEncoderQuant((v) => nvfp4SelectionFallback(v, nvfp4DiffusionKnown, nvfp4Diffusion));
   }, [nvfp4Diffusion, nvfp4DiffusionKnown, transformerQuant, textEncoderQuant]);
   const [memoryMode, setMemoryMode] = useState<"auto" | "fast" | "balanced" | "low_vram">("auto");
-  // Persisted: status does not say which card a pipeline is on. A stale id is dropped on send.
+  const [textEncoderFiles, setTextEncoderFiles] = useState("");
+  const [vaeFile, setVaeFile] = useState("");
+  // "auto", or the physical index to pin this load to; offered only on a multi-card CUDA/ROCm
+  // host. Persisted, unlike the selects around it: status carries the device a pipeline is on
+  // but not which card, so a refresh would reset it to Auto. A stale id is dropped on send.
   const [selectedGpu, setSelectedGpu] = usePersistedChoice(
     "unsloth_image_gpu_choice",
     "auto",
@@ -1428,7 +1512,9 @@ export function ImagesPage({
   const gpuChoices = useDiffusionGpuChoices();
   const [transformerCache, setTransformerCache] = useState<"auto" | "off" | "fbcache" | "static">("auto");
   const [cpuOffload, setCpuOffload] = useState(false);
-  const lastLoad = useRef<({ repoId: string } & ImageLoadOptions) | null>(null);
+  // The last load descriptor, so "Reapply" can reload the same model with new advanced options without re-picking it.
+  const lastLoad = useRef<LastLoad | null>(null);
+  // Render-safe mirror of whether a page-initiated load supplied a complete Reapply target.
   const [canReapply, setCanReapply] = useState(false);
   const seededResident = useRef<string | null>(null);
 
@@ -1499,11 +1585,14 @@ export function ImagesPage({
     [batchSize, count, guidance, height, negativePrompt, steps, width],
   );
   const residentDefaults = residentDefaultsKey(status?.repo_id ?? "", status?.base_repo, status?.resolved?.family_override);
+  const { steps: residentSteps, guidance: residentGuidance } = residentRecipeFor(
+    residentDefaults,
+    status?.generation_defaults,
+  );
   const imageDefaultRecipe = useMemo<ImageGenerationPresetParams>(() => {
-    const recommended =
-      pendingModelDefaults ??
-      defaultsFor(residentDefaults);
-    // Restore the resident build's canvas: a constant would put a 24 GB card back over its budget.
+    const recommended = pendingModelDefaults ?? { steps: residentSteps, guidance: residentGuidance };
+    // Reset restores the resident build's canvas, the same one the seed above applied. A constant
+    // here would quietly undo it and put a 24 GB card back over its budget.
     const size = resolutionFor(status?.base_repo ?? status?.repo_id ?? "", {
       modelKind: status?.model_kind,
       transformerQuant: status?.transformer_quant,
@@ -1520,7 +1609,8 @@ export function ImagesPage({
     };
   }, [
     pendingModelDefaults,
-    residentDefaults,
+    residentSteps,
+    residentGuidance,
     status?.base_repo,
     status?.repo_id,
     status?.model_kind,
@@ -1562,6 +1652,7 @@ export function ImagesPage({
       const claimedAt = imageFormClaimId();
       pickRecipeSuperseded.current = () => imageFormClaimId() !== claimedAt;
       const recommended = defaultsFor(defaultsKeyFor(repoId, effectiveFamilyOverride));
+      pickDefaults.current = recommended;
       setPendingModelDefaults(recommended);
       setSteps(recommended.steps);
       setGuidance(recommended.guidance);
@@ -2324,6 +2415,18 @@ export function ImagesPage({
           setRememberedModel(remembered);
         }
         setBusy(null);
+        // A fallback-recipe pick takes the loaded family recipe on an untouched form (else SDXL runs 9 steps, CFG 0).
+        const loadedRecipe = loadedRecipeFor(
+          pickDefaults.current,
+          residentDefaultsKey(loaded.repo_id ?? "", loaded.base_repo, loaded.resolved?.family_override),
+          loaded.generation_defaults,
+        );
+        pickDefaults.current = null;
+        if (loadedRecipe && !pickRecipeSuperseded.current?.()) {
+          setSteps((cur) => (cur === DEFAULT_GEN.steps ? loadedRecipe.steps : cur));
+          setGuidance((cur) => (cur === DEFAULT_GEN.guidance ? loadedRecipe.guidance : cur));
+        }
+        // Load succeeded: the optimistic quant is now the real one, so drop the pending revert.
         quantRevert.current?.commitRecipeClaim?.();
         quantRevert.current = null;
         setPendingModelDefaults(null);
@@ -2473,7 +2576,7 @@ export function ImagesPage({
     const repoId = status?.loaded ? status.repo_id : null;
     if (!repoId) return;
     if (lastLoad.current) return;
-    const seedKey = `${repoId}\0${residentDefaults}`;
+    const seedKey = `${repoId}\0${residentDefaults}\0${residentSteps}\0${residentGuidance}`;
     if (seededResident.current === seedKey) return;
     seededResident.current = seedKey;
     // Only a full pipeline is reloadable by repo id; a resident GGUF has no filename.
@@ -2484,7 +2587,7 @@ export function ImagesPage({
       residentSeeded.current = true;
       if (imagePresets.storedRecipe) return;
     }
-    const d = defaultsFor(residentDefaults);
+    const d = { steps: residentSteps, guidance: residentGuidance };
     setPendingModelDefaults(null);
     setSteps(d.steps);
     setGuidance(d.guidance);
@@ -2502,6 +2605,8 @@ export function ImagesPage({
   }, [
     imagePresets.storedRecipe,
     residentDefaults,
+    residentSteps,
+    residentGuidance,
     status?.display_repo_id,
     status?.loaded,
     status?.repo_id,
@@ -2574,6 +2679,11 @@ export function ImagesPage({
           gpuChoices.some((d) => String(d.index) === selectedGpu)
             ? [Number(selectedGpu)]
             : undefined,
+        text_encoder_file: (() => {
+          const files = splitComponentFileList(textEncoderFiles);
+          return files.length > 0 ? files : undefined;
+        })(),
+        vae_file: vaeFile.trim() || undefined,
       };
     },
     [
@@ -2588,6 +2698,8 @@ export function ImagesPage({
       familyOverride,
       selectedGpu,
       gpuChoices,
+      textEncoderFiles,
+      vaeFile,
     ],
   );
 
@@ -2624,7 +2736,15 @@ export function ImagesPage({
       const advanced = pinned ?? currentLoadAdvanced(repoId);
       const bakeLoras = advanced.loras ?? [];
       bakedLorasOnLoad.current = bakeLoras.length > 0;
-      lastLoad.current = { repoId, kind: opts.kind, filename: opts.filename, displayRepoId: opts.displayRepoId };
+      const componentFiles = componentFileFields(opts.kind, advanced.text_encoder_file, advanced.vae_file);
+      lastLoad.current = {
+        repoId,
+        kind: opts.kind,
+        filename: opts.filename,
+        displayRepoId: opts.displayRepoId,
+        textEncoderFiles: componentFiles.text_encoder_file,
+        vaeFile: componentFiles.vae_file,
+      };
       setCanReapply(true);
       lastLoadRevert.current = { prev: prevLastLoad };
       try {
@@ -2646,6 +2766,7 @@ export function ImagesPage({
           family_override: advanced.family_override,
           loras: bakeLoras.length > 0 ? bakeLoras : undefined,
           gpu_ids: advanced.gpu_ids,
+          ...componentFiles,
         });
         await startRequest;
       } catch (err) {
@@ -2842,6 +2963,7 @@ export function ImagesPage({
         // A baked LoRA always runs the dense build path, which changes the file set.
         loras: advanced.loras,
         gpu_ids: advanced.gpu_ids,
+        ...componentFileFields(opts.kind, advanced.text_encoder_file, advanced.vae_file),
       }),
     [],
   );
@@ -3964,7 +4086,18 @@ export function ImagesPage({
         (kind === "pipeline" ||
           ((kind === "gguf" || kind === "single_file") && status.gguf_filename))
       ) {
-        const model = withEngagedFamily({ repoId: status.repo_id, kind, filename: status.gguf_filename ?? undefined }, status);
+        const model = withEngagedFamily(
+          lastLoad.current &&
+            matchesRememberedModel(lastLoad.current, status) &&
+            componentFilesMatch(lastLoad.current, status.component_files)
+            ? lastLoad.current
+            : rememberedModel &&
+                matchesRememberedModel(rememberedModel, status) &&
+                componentFilesMatch(rememberedModel, status.component_files)
+              ? rememberedModel
+              : { repoId: status.repo_id, kind, filename: status.gguf_filename ?? undefined },
+          status,
+        );
         rememberImageModel(model);
         setRememberedModel(model);
       }
@@ -3988,7 +4121,14 @@ export function ImagesPage({
     const started = await handleLoad(
       rememberedModel.repoId,
       { kind: rememberedModel.kind, filename: rememberedModel.filename },
-      { ...currentLoadAdvanced(rememberedModel.repoId, false, true), family_override: rememberedModel.familyOverride },
+      // Only the family the remembered load engaged; the live selection belongs to whatever is picked next.
+      {
+        ...currentLoadAdvanced(rememberedModel.repoId, false, true),
+        family_override: rememberedModel.familyOverride,
+        // The recalled build's own encoder / VAE files, not whatever the fields hold now.
+        text_encoder_file: rememberedModel.textEncoderFiles,
+        vae_file: rememberedModel.vaeFile,
+      },
     );
     if (!started) pendingRecalledGeneration.current = null;
   }, [
@@ -4144,6 +4284,21 @@ export function ImagesPage({
           ] as [string, string][],
           nvfp4Diffusion,
         )}
+      />
+      <AdvancedTextField
+        label="Text encoder file(s)"
+        hint={COMPONENT_FILES_HINT}
+        multiline
+        placeholder="../text_encoders/clip_l.safetensors"
+        value={textEncoderFiles}
+        onValueChange={setTextEncoderFiles}
+      />
+      <AdvancedTextField
+        label="VAE file"
+        hint={COMPONENT_FILES_HINT}
+        placeholder="../vae/ae.safetensors"
+        value={vaeFile}
+        onValueChange={setVaeFile}
       />
       <AdvancedSelect
         label="Attention"

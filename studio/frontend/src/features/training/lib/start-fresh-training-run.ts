@@ -10,6 +10,7 @@ import { translate } from "@/i18n";
 import { primeNativeNotificationPermission } from "@/lib/native-notifications";
 import { toast } from "@/lib/toast";
 import { DatasetFormatError, checkDatasetFormat } from "../api/datasets-api";
+import { getCachedSystemInfo } from "@/hooks/use-system";
 import { buildTrainingStartPayload } from "../api/mappers";
 import {
   TrainingStartError,
@@ -59,6 +60,7 @@ const ROLE_REMAP: Record<string, Record<string, string>> = {
 type AttemptPhase = "preflight" | "transport" | "finished";
 
 function captureTrainingStartInputs(config: TrainingConfigState) {
+  // No hardware info: /api/system answering mid-start is not a user edit.
   return createTrainingStartInputIdentity(
     buildTrainingStartPayload(config, null),
     config,
@@ -541,7 +543,7 @@ async function submitFreshTrainingRun(
     return attempt.cancel(translate(validation.errorKey));
   }
 
-  const payload = buildTrainingStartPayload(attempt.config, hfToken);
+  const payload = buildTrainingStartPayload(attempt.config, hfToken, getCachedSystemInfo());
   if (!attempt.enterTransport()) {
     return false;
   }

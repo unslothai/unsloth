@@ -43,7 +43,7 @@ test("the render_html scan happens once per message part, above the blocks", () 
   );
   assert.match(
     impl,
-    /useAuiState\(\(\{ message \}\) =>\s*message\.parts\.some\(isRenderableRenderHtmlToolPart\),?\s*\)/,
+    /useAuiState\(\(\{ message \}\) =>\s*partsHaveRenderableRenderHtmlTool\(message\.parts\),?\s*\)/,
   );
   assert.match(
     renderer,
@@ -93,7 +93,7 @@ test("the newest message still gets the whole continue bar", () => {
     /useAuiState\(\(\{ message \}\) => message\.status\)/,
     /useAuiState\(\(\{ message \}\) => message\.metadata\)/,
     /readContinuationSource\(message\.content\)/,
-    /isContinuableContent\(message\.content, \{ thought: thoughtResumable \}\)/,
+    /isContinuableContent\(messageContent, \{[\s\S]{0,160}thought: thoughtResumable,[\s\S]{0,160}replay: geminiReplayTurns\.length > 0/,
     /findLatestUserAudioBase64\(thread\.messages, false\)/,
     /modeAllowsContinuation\(\{/,
   ]) {

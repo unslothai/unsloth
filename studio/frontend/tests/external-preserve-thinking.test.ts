@@ -35,7 +35,7 @@ test("llama.cpp sends the selected value and replays reasoning only when enabled
     assert.deepEqual(result, {replay: enabled, fields: {preserve_thinking: enabled}});
   }
   assert.match(source, /pruneOutboundHistory\(messages, replayReasoning\)/);
-  assert.match(source, /toOpenAIMessages\(message, replayReasoning\)/);
+  assert.match(source, /toOpenAIMessages\(\s*message,\s*replayReasoning,/);
 });
 
 test("switching providers never leaks a retained enabled preference", () => {

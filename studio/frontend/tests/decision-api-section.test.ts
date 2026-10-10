@@ -56,7 +56,7 @@ test("a download waits for confirmation before changing the setting", () => {
   );
   assert.doesNotMatch(apply, /startDownload\(/);
   assert.ok(
-    apply.indexOf("resolveSystemOneDownload(nextModel)") <
+    apply.indexOf("resolveSystemOneDownload(nextModel, nextBackend)") <
       apply.indexOf("updateSystemOneSettings(settingsPatch)"),
   );
   assert.match(apply, /expectedEnabled: settings\.enabled/);
@@ -98,7 +98,8 @@ test("the download goes through the manager with the exact files and one scope",
     SECTION,
     /acceptedState === "running" \|\| acceptedState === "complete"/,
   );
-  assert.match(SECTION, /resolveSystemOneDownload\(model\)\.then/);
+  assert.match(SECTION, /resolveSystemOneDownload\(model, backend\)\.then/);
+  assert.match(SECTION, /\[enabled, model, backend, mlxAvailable, downloadDone\]/);
   assert.match(SECTION, /await resyncSettingsAfterError/);
 });
 
@@ -122,6 +123,15 @@ test("GPU is offered only where the backend found one", () => {
     SECTION,
     /<SelectItem value="gpu" disabled=\{!settings\.gpuAvailable\}>/,
   );
+});
+
+test("MLX is a runtime only where the backend can serve it", () => {
+  assert.match(
+    SECTION,
+    /\{settings\.mlxAvailable \|\| backend === "mlx" \? \(\s*<SelectItem value="mlx">/,
+  );
+  assert.match(SECTION, /backend: decisionRuntimeLabel\(/);
+  assert.match(API, /return backend === "mlx" \? "MLX" : backend;/);
 });
 
 test("the copy stays plain", () => {

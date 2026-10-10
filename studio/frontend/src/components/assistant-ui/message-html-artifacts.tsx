@@ -8,29 +8,35 @@
 // other paths to avoid duplicates: skips the message when a render_html tool
 // already rendered it, and skips full documents the in-place collapse handles.
 
-import { ArtifactCard, useChatRuntimeStore } from "@/features/chat";
 import {
-  extractHtmlFences,
-  isRenderableRenderHtmlToolPart,
-} from "@/features/chat/artifacts/html-fences";
+  memoOnArray,
+  partsHaveRenderableRenderHtmlTool,
+} from "@/components/assistant-ui/message-derived";
+import { ArtifactCard, useChatRuntimeStore } from "@/features/chat";
+import { extractHtmlFences } from "@/features/chat/artifacts/html-fences";
 import { useAuiState } from "@assistant-ui/react";
 import { type FC, useMemo } from "react";
 
 // Cannot occur in chat text; keeps a fence from being stitched across non-text parts.
 const PART_SEPARATOR = "\u0000";
 
+const visibleTextBlob = memoOnArray(
+  (content: ReadonlyArray<{ type: string; text?: unknown }>) =>
+    content
+      .filter((part) => part.type === "text" && "text" in part)
+      .map((part) => (part as { text: string }).text)
+      .join(PART_SEPARATOR),
+);
+
 export const MessageHtmlArtifacts: FC = () => {
   const isRunning = useAuiState(
     ({ message }) => message.status?.type === "running",
   );
   const hasRenderHtmlTool = useAuiState(({ message }) =>
-    message.parts.some(isRenderableRenderHtmlToolPart),
+    partsHaveRenderableRenderHtmlTool(message.parts),
   );
   const textBlob = useAuiState(({ message }) =>
-    message.content
-      .filter((part) => part.type === "text" && "text" in part)
-      .map((part) => (part as { text: string }).text)
-      .join(PART_SEPARATOR),
+    visibleTextBlob(message.content),
   );
   const collapseHtmlArtifacts = useChatRuntimeStore(
     (state) => state.collapseHtmlArtifacts,

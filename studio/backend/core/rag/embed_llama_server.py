@@ -210,6 +210,7 @@ class LlamaServerBackend:
         self._force_cpu = False
         # trust_env=False skips HTTP(S)_PROXY; full URLs per request survive a respawn.
         self._client = httpx.Client(timeout = config.EMBED_REQUEST_TIMEOUT_S, trust_env = False)
+        self._api_key: str | None = None
         atexit.register(self._shutdown)
 
     @contextmanager
@@ -235,6 +236,9 @@ class LlamaServerBackend:
     @property
     def _base_url(self) -> str:
         return f"http://{config.EMBED_HOST}:{self._port}"
+
+    def _auth_headers(self) -> dict[str, str]:
+        return {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
 
     def _resolve_binary(self) -> str:
         """Find llama-server, verify embeddings support, cache it. Raises if
@@ -873,19 +877,29 @@ class LlamaServerBackend:
         lib_dirs = [binary_dir]
         # glob.escape: a prefix with [brackets] is otherwise read as a pattern.
         site = os.path.join(glob.escape(sys.prefix), "lib", "python*", "site-packages")
+        pip_dirs = []
         for pattern in (
             os.path.join(site, "nvidia", "cu*", "lib"),
             os.path.join(site, "nvidia", "cudnn", "lib"),
             os.path.join(site, "torch", "lib"),
         ):
-            lib_dirs.extend(d for d in glob.glob(pattern) if os.path.isdir(d))
-        for cuda_lib in (
-            "/usr/local/cuda/lib64",
-            f"/usr/local/cuda/targets/{arch}-linux/lib",
-            "/usr/local/cuda-12/lib64",
-        ):
-            if os.path.isdir(cuda_lib):
-                lib_dirs.append(cuda_lib)
+            pip_dirs.extend(d for d in glob.glob(pattern) if os.path.isdir(d))
+        system_dirs = [
+            d
+            for d in (
+                "/usr/local/cuda/lib64",
+                f"/usr/local/cuda/targets/{arch}-linux/lib",
+                "/usr/local/cuda-12/lib64",
+            )
+            if os.path.isdir(d)
+        ]
+        from utils.tegra import TEGRA_LIB_DIR, is_tegra
+
+        if is_tegra():
+            tegra = [TEGRA_LIB_DIR] if os.path.isdir(TEGRA_LIB_DIR) else []
+            lib_dirs.extend(tegra + system_dirs + pip_dirs)
+        else:
+            lib_dirs.extend(pip_dirs + system_dirs)
         existing = env.get("LD_LIBRARY_PATH", "")
         joined = ":".join(lib_dirs)
         env["LD_LIBRARY_PATH"] = f"{joined}:{existing}" if existing else joined
@@ -942,6 +956,23 @@ class LlamaServerBackend:
             "gpu" if use_gpu else "cpu",
             " ".join(cmd),
         )
+        from core.inference.llama_cpp import (
+            LlamaCppBackend,
+            _llama_server_api_key_enabled,
+            _llama_server_key_launch,
+        )
+
+        self._api_key = key_file = None
+        if _llama_server_api_key_enabled() and LlamaCppBackend.probe_server_capabilities(
+            binary
+        ).get("supports_api_key_file", True):
+            # Per-spawn key against permissive CORS; read once at startup, so deleted once healthy.
+            import secrets
+
+            self._api_key = secrets.token_urlsafe(32)
+            key_argv, key_env, key_file = _llama_server_key_launch(self._api_key)
+            cmd[1:1] = key_argv
+            env.update(key_env)
         self._stdout_lines = []
         # One flag at every spawn. No _graceful_shutdown step stops this backend, so an
         # encode still resolving or downloading its model as the app quits would
@@ -979,7 +1010,15 @@ class LlamaServerBackend:
             name = "llama-embed-stdout",
         )
         self._stdout_thread.start()
-        if not self._wait_for_health(config.EMBED_STARTUP_TIMEOUT_S):
+        try:
+            healthy = self._wait_for_health(config.EMBED_STARTUP_TIMEOUT_S)
+        finally:
+            if key_file is not None:
+                try:
+                    key_file.unlink()
+                except OSError:
+                    pass
+        if not healthy:
             tail = "\n".join(self._stdout_lines[-30:])
             self._kill_process()
             raise RuntimeError(
@@ -1133,7 +1172,9 @@ class LlamaServerBackend:
                 # Held across readiness AND the request, so a swap can only land between whole requests.
                 self._ensure_ready(model_name)
                 try:
-                    resp = self._client.post(f"{self._base_url}{path}", json = payload)
+                    resp = self._client.post(
+                        f"{self._base_url}{path}", json = payload, headers = self._auth_headers()
+                    )
                     resp.raise_for_status()
                     return resp.json()
                 except (*_TRANSPORT_ERRORS, httpx.TimeoutException) as e:
@@ -1229,7 +1270,12 @@ class LlamaServerBackend:
         malformed base URL, which is what an un-started server has.
         """
         try:
-            data = httpx.get(f"{self._base_url}/props", timeout = 2.0, trust_env = False).json()
+            data = httpx.get(
+                f"{self._base_url}/props",
+                headers = self._auth_headers(),
+                timeout = 2.0,
+                trust_env = False,
+            ).json()
         except Exception:  # noqa: BLE001 - see docstring
             return None
         return data if isinstance(data, dict) else None

@@ -102,14 +102,17 @@ test("the four take part in the editor's identity", () => {
 test("a record only claims the new schema version when it carries one", () => {
   // toStoredConfig stamps the oldest version that understands every field present.
   const source = readSrc("features/model-picker/model-config/per-model-config.ts");
-  assert.match(source, /const STORAGE_SCHEMA_VERSION = 9;/);
+  assert.match(source, /const STORAGE_SCHEMA_VERSION = 11;\nconst PRE_MLX_DRAFTER_SCHEMA_VERSION = 10;/);
+  assert.match(source, /specDraftModel != null \|\| mlxMode\)\s*\{\s*return STORAGE_SCHEMA_VERSION;/);
+  assert.match(source, /tensorSplit != null\)\s*\{\s*return PRE_MLX_DRAFTER_SCHEMA_VERSION;/);
+  assert.match(source, /const PRE_TENSOR_SPLIT_SCHEMA_VERSION = 9;/);
   assert.match(source, /const PRE_MLX_INT8_PREFILL_SCHEMA_VERSION = 7;/);
   assert.match(source, /const PRE_MLX_KV_QUANT_SCHEMA_VERSION = 6;/);
   assert.match(source, /const PRE_REASONING_BUDGET_SCHEMA_VERSION = 5;/);
   assert.match(source, /const PRE_SERVER_TUNING_SCHEMA_VERSION = 4;/);
   assert.match(
     source,
-    /normalized\.mlxInt8Prefill\)\s*\{\s*return STORAGE_SCHEMA_VERSION;/,
+    /normalized\.mlxInt8Prefill\)\s*\{\s*return PRE_TENSOR_SPLIT_SCHEMA_VERSION;/,
   );
   assert.match(
     source,

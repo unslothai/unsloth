@@ -54,6 +54,7 @@ export function loadedConfigSignature(
     config.speculativeType ?? "",
     config.specDraftNMax ?? "",
     config.specDraftCacheDtype ?? "",
+    config.specDraftModel ?? "",
     config.nParallel ?? "",
     config.reasoningBudget ?? "",
     `${(config.reasoningBudgetMessage ?? "").length}:${hashString(config.reasoningBudgetMessage ?? "")}`,

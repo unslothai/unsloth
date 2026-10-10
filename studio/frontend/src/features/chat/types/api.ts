@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { TransformersUpgradeInfo } from "@/features/transformers-upgrade";
+import type { ManagedEngineOffer } from "@/features/model-picker";
 import type { CustomReasoningConfig } from "../custom-reasoning";
 
 export type CpuFallbackReason = "vulkan_startup_crash";
@@ -72,7 +73,10 @@ export interface LoadModelRequest {
   /** "auto", "mtp", "dspark", "dflash", "ngram", "mtp+ngram", "off"; legacy spellings accepted. */
   speculative_type?: string | null;
   spec_draft_n_max?: number | null;
-  /** 1..64; the VRAM fitter may launch fewer to stay on GPU. */
+  /** MLX only: a companion drafter, a local directory or an already-cached repo id. */
+  spec_draft_model?: string | null;
+  /** Parallel decode slots for llama-server (--parallel), 1..64. Omit/null = the launch default. The
+   *  VRAM fitter may launch fewer to stay on GPU. */
   n_parallel?: number | null;
   /** -1 unrestricted, 0 end immediately, >0 token cap. */
   reasoning_budget?: number;
@@ -122,6 +126,8 @@ export interface ValidateModelResponse {
   requires_transformers_upgrade?: boolean;
   transformers_upgrade?: TransformersUpgradeInfo | null;
   mlx_loads_base_model?: string | null;
+  /** The Default engine cannot run this quantization; these optional engines can on this host. */
+  managed_engine_offer?: ManagedEngineOffer | null;
 }
 
 export interface GgufVariantDetail {
@@ -233,6 +239,8 @@ export interface LoadModelResponse {
   chat_template?: string | null;
   speculative_type?: string | null;
   spec_draft_n_max?: number | null;
+  spec_draft_model?: string | null;
+  /** Whether tensor-parallel split (--split-mode tensor) is active. */
   tensor_parallel?: boolean;
   /** Echoes the request, unlike vision_disabled_by_user below. */
   disable_vision?: boolean;
@@ -352,6 +360,8 @@ export interface InferenceStatusResponse {
   chat_template_override?: string | null;
   speculative_type?: string | null;
   spec_draft_n_max?: number | null;
+  spec_draft_model?: string | null;
+  /** Whether tensor-parallel split (--split-mode tensor) is active. */
   tensor_parallel?: boolean;
   disable_vision?: boolean;
   vision_disabled_by_user?: boolean;
@@ -595,6 +605,8 @@ export interface OpenAIChatCompletionsRequest {
   auto_heal_tool_calls?: boolean;
   run_tools_locally?: boolean;
   nudge_tool_calls?: boolean;
+  deduplicate_tool_calls?: boolean;
+  /** Local GGUF overflow policy. Rolling mode preserves the transcript but omits oldest turns. */
   context_overflow?: "error" | "truncate_middle" | "truncate_oldest";
   context_policy?: "checkpoint" | "rolling";
   compaction_headroom_ratio?: number;
@@ -640,6 +652,8 @@ export interface OpenAIChatChunk {
     prompt_tokens: number;
     completion_tokens: number;
     total_tokens: number;
+    /** Studio tool-loop addition: the context after the turn, for usage bars. */
+    context_tokens?: number;
   };
   timings?: Record<string, number>;
   quote_cut?: boolean;

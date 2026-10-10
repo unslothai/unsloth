@@ -32,7 +32,10 @@ export function formatDownloadBytes(bytes: number): string {
   if (bytes >= 1e6) return `${(bytes / 1e6).toFixed(1)} MB`;
   return `${Math.ceil(bytes / 1e3)} KB`;
 }
-export function assetLabel(entry: PlannedDownloadEntry): string {
+export function assetLabel(
+  entry: PlannedDownloadEntry,
+  fallback: string = entry.repoId.split("/").pop() || "Required files",
+): string {
   const files = entry.files ?? [];
   const weights = files.filter((f) =>
     /\.(safetensors|gguf|bin|pt|pth|ckpt)$/i.test(f),
@@ -42,7 +45,7 @@ export function assetLabel(entry: PlannedDownloadEntry): string {
   if (encoder && decoder) return "Encoder & decoder";
   if (encoder) return "Text encoder";
   if (decoder) return "Decoder & configuration";
-  return entry.repoId.split("/").pop() || "Required files";
+  return fallback;
 }
 
 export function checkpointFirst<T extends { checkpoint?: boolean }>(

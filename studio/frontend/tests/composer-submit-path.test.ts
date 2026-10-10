@@ -180,7 +180,7 @@ for (const active of ["runtime", "pre-stream", "queue", "idle"]) {
       threadScopedSettingsPending: false,
       threadIsRunning: false,
       promptQueueThreadIds: ["own-chat"],
-      attachmentsAreAllPastedText: false,
+      attachmentsAreQueueableText: false,
       hasMaterializingImageAttachments: false,
       hasMaterializingAudioAttachments: false,
       hasMaterializingVideoAttachments: false,
@@ -203,7 +203,7 @@ for (const active of ["runtime", "pre-stream", "queue", "idle"]) {
       canQueueCurrentPrompt: true,
       queueComposerText: (wait: boolean, behavior: string) =>
         calls.push([wait, behavior]),
-      canQueuePastedTextPrompt: false,
+      canQueueTextAttachmentsPrompt: false,
       overlay: false,
       hasAttachments: false,
       hasPendingAudio: false,
@@ -212,7 +212,7 @@ for (const active of ["runtime", "pre-stream", "queue", "idle"]) {
     };
     const release = createCallback(releaseCallback, deps);
     release();
-    release(); // An old render cannot release a cancelled/consumed send twice.
+    release(); // stale renders cannot release a consumed or cancelled send twice.
     assert.deepEqual(
       calls,
       active === "idle" ? ["clear", "send"] : [[active !== "queue", "steer"]],
@@ -234,7 +234,7 @@ for (const active of ["runtime", "pre-stream", "queue"]) {
       threadScopedSettingsPending: false,
       threadIsRunning: false,
       promptQueueThreadIds: ["own-chat"],
-      attachmentsAreAllPastedText: false,
+      attachmentsAreQueueableText: false,
       hasMaterializingImageAttachments: false,
       hasMaterializingAudioAttachments: false,
       hasMaterializingVideoAttachments: false,
@@ -258,8 +258,8 @@ for (const active of ["runtime", "pre-stream", "queue"]) {
       disableQueue: false,
       canQueueCurrentPrompt: false,
       queueComposerText: () => calls.push("queue-text"),
-      canQueuePastedTextPrompt: false,
-      queuePastedTextPrompt: () => calls.push("queue-paste"),
+      canQueueTextAttachmentsPrompt: false,
+      queueTextAttachmentsPrompt: () => calls.push("queue-paste"),
       overlay: false,
       hasAttachments: true,
       hasPendingAudio: false,
@@ -341,5 +341,8 @@ test("main, edit and comparison composers use the setting and expose settings ac
   );
   assert.match(compare, /scrollTarget: "chat-composer"/);
   const page = readSrc("features/chat/chat-page.tsx");
-  assert.match(page, /showContextWindowUsage &&\s*view.mode === "single"/);
+  assert.match(
+    page,
+    /showContextWindowUsage &&[\s\S]{0,100}view\.mode === "project" && activeThreadId != null/,
+  );
 });

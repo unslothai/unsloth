@@ -7,6 +7,7 @@ import {
   type ToolCallMessagePartComponent,
   useAuiState,
 } from "@assistant-ui/react";
+import { partsHaveNonEmptyText } from "@/components/assistant-ui/message-derived";
 import { LibraryBigIcon } from "lucide-react";
 import { Spinner } from "@/components/ui/spinner";
 
@@ -97,12 +98,7 @@ const KnowledgeBaseToolUIImpl: ToolCallMessagePartComponent = ({
   );
 
   const hasText = useAuiState(({ message }) =>
-    message.content.some(
-      (p) =>
-        p.type === "text" &&
-        "text" in p &&
-        (p as { text: string }).text.length > 0,
-    ),
+    partsHaveNonEmptyText(message.content),
   );
   // What is being approved lives inside the content, while Allow/Deny render outside it.
   const awaitingApproval = useToolAwaitingApproval(toolCallId);

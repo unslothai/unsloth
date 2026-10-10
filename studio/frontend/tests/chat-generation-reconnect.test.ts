@@ -249,6 +249,20 @@ test("credential-safe durable admission errors select the legacy stream", async 
   );
 });
 
+test("an older backend's unknown-field refusal selects the legacy stream", async () => {
+  globalThis.fetch = (async () =>
+    new Response(
+      JSON.stringify({
+        detail: "Unsupported durable request fields: sandbox_level",
+      }),
+      { status: 400, headers: { "content-type": "application/json" } },
+    )) as typeof fetch;
+  await assert.rejects(
+    createChatGenerationRun(createInput()),
+    (error: unknown) => isLegacyFallbackChatGenerationAdmissionError(error),
+  );
+});
+
 test("missing history rows select the legacy stream", async () => {
   for (const [status, detail] of [
     [404, "Thread not found"],

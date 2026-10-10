@@ -103,8 +103,8 @@ check "setup.ps1 leaves long-path policy unchanged while staging" \
     "$(has "$SETUP_PS1" 'step "long paths" "disabled; unchanged during staging"')"
 check "setup.ps1 does not install Git while staging" \
     "$(has "$SETUP_PS1" 'Background staging cannot install Git; retry with the foreground updater.')"
-check "setup.ps1 preserves foreground Git bootstrap" \
-    "$(has "$SETUP_PS1" 'if ($gitNeeded -or -not $StageRoot) {')"
+check "setup.ps1 installs Git in the foreground only when a clone needs it" \
+    "$(grep -qF 'if ($gitNeeded -or -not $StageRoot) {' "$SETUP_PS1" && echo 1 || echo 0)"
 # The branch that decides TORCHINDUCTOR_CACHE_DIR, by what it does rather than by its old
 # spelling: a staged run must take the stage root and must be asked FIRST, ahead of the Studio
 # cache and the short drive-root fallback that a normal install chooses between.

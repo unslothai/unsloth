@@ -12,15 +12,88 @@ export const SPECULATIVE_TYPES = [
   "off",
 ] as const;
 
-/** Modes using spec_draft_n_max. Mirrors DRAFT_N_MAX_SPEC_TYPES (openai_auto_switch_settings.py). */
+/** Values only an MLX load reads (studio/backend/core/inference/mlx_speculative.py). */
+export const MLX_ONLY_SPEC_TYPES = ["eagle3"] as const;
+
+export const MLX_SPECULATIVE_TYPES = [
+  "auto",
+  "mtp",
+  "dflash",
+  "dspark",
+  "eagle3",
+  "ngram",
+  "off",
+] as const;
+
+export interface MlxDrafter {
+  repo: string;
+  kind: string;
+  /** False when the drafter only fits the model's architecture and is not named for it. */
+  named: boolean;
+}
+
+/** Drafters the Drafter picker offers in `mode`, as `[repo, label]`: every cached kind under Auto,
+ *  else that kind, plus a saved choice that is not cached (or is a local folder) so it stays visible. */
+export function mlxDrafterChoices(
+  drafters: readonly MlxDrafter[],
+  mode: string,
+  selected: string | null,
+): [string, string][] {
+  const choices = drafters
+    .filter((drafter) => mode === "auto" || drafter.kind === mode)
+    .map((drafter): [string, string] => [
+      drafter.repo,
+      drafter.named ? drafter.repo : `${drafter.repo} (same architecture)`,
+    ]);
+  return selected != null && !choices.some(([repo]) => repo === selected)
+    ? [[selected, selected], ...choices]
+    : choices;
+}
+
+/** The mode an MLX load runs: every drafter kind also copies repeated text, so llama.cpp's `mtp+ngram` is `mtp`. */
+export function mlxSpeculativeMode(mode: string): string {
+  return mode === "mtp+ngram" ? "mtp" : mode;
+}
+
+/**
+ * The modes that consume spec_draft_n_max, i.e. the ones that launch a drafter
+ * with a configurable depth. Named for the setting rather than for MTP: DSpark
+ * and DFlash are in here too. Mirrors DRAFT_N_MAX_SPEC_TYPES in
+ * studio/backend/utils/openai_auto_switch_settings.py.
+ */
 export const DRAFT_N_MAX_SPEC_TYPES: ReadonlySet<string> = new Set([
   "mtp",
   "mtp+ngram",
   "dspark",
   "dflash",
+  ...MLX_ONLY_SPEC_TYPES,
 ]);
 
-/** MTP is excluded: whether it attaches a drafter file depends on the model. */
+export const DRAFTER_MODEL_SPEC_TYPES: ReadonlySet<string> = new Set([
+  ...DRAFT_N_MAX_SPEC_TYPES,
+  "auto",
+]);
+
+/** The mode a load sends: the model's own choice, else the standing preference, which GGUF loads write.
+ *  On MLX its ngram reads as auto: n-gram copying alone would move a text model onto the vision runtime. */
+export function resolveSpeculativeType(
+  chosen: string | null,
+  standing: string,
+  isMlx: boolean,
+): string {
+  return chosen ?? (isMlx && standing === "ngram" ? "auto" : standing);
+}
+
+/**
+ * The modes that always launch a SEPARATE draft model, and so a second context
+ * with its own KV cache for the draft cache dtype to apply to.
+ *
+ * MTP is left out: whether it loads a drafter file (Gemma) or reads baked-in
+ * heads out of the target GGUF (Qwen) is a property of the model, known only once
+ * the loader has read its metadata. The backend emits the draft cache flags
+ * wherever it emits --model-draft, so a stored setting still reaches an MTP load
+ * that does attach one.
+ */
 export const SEPARATE_DRAFT_MODEL_SPEC_TYPES: ReadonlySet<string> = new Set([
   "dspark",
   "dflash",

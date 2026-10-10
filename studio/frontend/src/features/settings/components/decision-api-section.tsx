@@ -25,6 +25,11 @@ import {
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
   DOWNLOAD_KIND,
   downloadManager,
   formatBytes,
@@ -35,11 +40,17 @@ import {
 import { translate, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { TaskDone01Icon } from "@hugeicons/core-free-icons";
+import {
+  ArrowUpRight01Icon,
+  PlayIcon,
+  TaskDone01Icon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useEffect, useRef, useState } from "react";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 import {
+  type SystemOneBackend,
+  decisionRuntimeLabel,
   type SystemOneConnection,
   type SystemOneDevice,
   type SystemOneDownloadPlan,
@@ -55,9 +66,11 @@ import {
   DECISION_MODEL_LABELS,
   isClefDecisionModel,
 } from "../lib/decision-model-labels";
+import { DecisionTryDialog } from "./decision-try-dialog";
 import { SettingsRow } from "./settings-row";
 
 const DOWNLOAD_SCOPE = "systemone";
+const DOCS_URL = "https://unsloth.ai/docs/models/decision-laya";
 const POLL_MS = 5000;
 const RECOMMENDED_MODEL = "laya-multilingual";
 const ENV_DISABLE = "UNSLOTH_SYSTEMONE_DISABLE";
@@ -80,6 +93,7 @@ export function DecisionApiSection(): ReactElement | null {
   );
   const [planState, setPlanState] = useState<{
     model: string;
+    backend: SystemOneBackend;
     plan: SystemOneDownloadPlan;
   } | null>(null);
   const [confirm, setConfirm] = useState<{
@@ -88,13 +102,34 @@ export function DecisionApiSection(): ReactElement | null {
     model: string;
   } | null>(null);
   const [busy, setBusy] = useState(false);
+  const [tryOpen, setTryOpen] = useState(false);
+  const [tryModel, setTryModel] = useState<string | undefined>();
   const [error, setError] = useState<string | null>(null);
   const sectionRef = useRef<HTMLElement | null>(null);
   const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
+  const decisionTryRequested = useSettingsDialogStore(
+    (s) => s.decisionTryRequested,
+  );
 
   const enabled = settings?.enabled ?? false;
+  if (tryOpen && !enabled) setTryOpen(false);
+
+  useEffect(() => {
+    if (!decisionTryRequested || !settings) return;
+    useSettingsDialogStore.getState().consumeDecisionTryRequest();
+    if (settings.enabled && settings.model === decisionTryRequested) {
+      setTryModel(decisionTryRequested);
+      setTryOpen(true);
+    }
+  }, [decisionTryRequested, settings]);
   const model = settings?.model ?? null;
-  const plan = planState && planState.model === model ? planState.plan : null;
+  const backend = settings?.backend ?? "auto";
+  const mlxAvailable = settings?.mlxAvailable ?? false;
+  // llama.cpp serves a GGUF, MLX and PyTorch the safetensors: the download follows the runtime.
+  const plan =
+    planState?.model === model && planState?.backend === backend
+      ? planState.plan
+      : null;
 
   useEffect(() => {
     let live = true;
@@ -152,20 +187,21 @@ export function DecisionApiSection(): ReactElement | null {
   useEffect(() => {
     if (!enabled || !model) return;
     let live = true;
-    resolveSystemOneDownload(model).then(
-      (next) => live && setPlanState({ model, plan: next }),
+    resolveSystemOneDownload(model, backend).then(
+      (next) => live && setPlanState({ model, backend, plan: next }),
       (err) => live && setError(errorMessage(err)),
     );
     return () => {
       live = false;
     };
-  }, [enabled, model, downloadDone]);
+    // MLX coming or going, as on a device change, changes what the runtime serves from.
+  }, [enabled, model, backend, mlxAvailable, downloadDone]);
 
   const modelLabel = (name: string) => {
     const connection = connections?.find((c) => c.name === name);
     if (connection) return `${connection.provider} · ${connection.model}`;
     const option = settings?.models.find((m) => m.name === name);
-    if (option?.kind === "fine_tune" && option.label) return option.label;
+    if (option?.label) return option.label;
     return DECISION_MODEL_LABELS[name] ? t(DECISION_MODEL_LABELS[name]) : name;
   };
 
@@ -230,6 +266,7 @@ export function DecisionApiSection(): ReactElement | null {
       // Offer the download on the switch so a first API call does not wait on a 700 MB transfer.
       const nextEnabled = patch.enabled ?? settings?.enabled;
       const nextModel = patch.model ?? settings?.model;
+      const nextBackend = patch.backend ?? backend;
       const settingsPatch =
         downloadAfter && settings
           ? {
@@ -238,10 +275,9 @@ export function DecisionApiSection(): ReactElement | null {
               expectedModel: settings.model,
             }
           : patch;
-      let resolvedPlan: { model: string; plan: SystemOneDownloadPlan } | null =
-        null;
+      let resolvedPlan: typeof planState = null;
       if (nextEnabled && nextModel && downloadAfter) {
-        const nextPlan = await resolveSystemOneDownload(nextModel);
+        const nextPlan = await resolveSystemOneDownload(nextModel, nextBackend);
         if (!nextPlan.cached) {
           if (nextPlan.error || !nextPlan.repo || nextPlan.files.length === 0) {
             throw new Error(
@@ -256,7 +292,11 @@ export function DecisionApiSection(): ReactElement | null {
           });
           return;
         }
-        resolvedPlan = { model: nextModel, plan: nextPlan };
+        resolvedPlan = {
+          model: nextModel,
+          backend: nextBackend,
+          plan: nextPlan,
+        };
       }
       const next = await updateSystemOneSettings(settingsPatch);
       setSettings(next);
@@ -279,7 +319,11 @@ export function DecisionApiSection(): ReactElement | null {
       const next = await updateSystemOneSettings(accepted.patch);
       setSettings(next);
       if (next.model === accepted.model) {
-        setPlanState({ model: accepted.model, plan: accepted.plan });
+        setPlanState({
+          model: accepted.model,
+          backend: next.backend,
+          plan: accepted.plan,
+        });
       }
     } catch (err) {
       await resyncSettingsAfterError(
@@ -311,14 +355,53 @@ export function DecisionApiSection(): ReactElement | null {
             className="size-4 text-foreground"
           />
         </div>
-        <div className="flex min-w-0 flex-col gap-0.5">
-          <h2 className="settings-heading text-base font-semibold font-heading">
-            {t("settings.apiKeys.decisionApi.title")}
-          </h2>
+        <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+          <div className="flex min-w-0 items-baseline gap-2">
+            <h2 className="settings-heading text-base font-semibold font-heading">
+              {t("settings.apiKeys.decisionApi.title")}
+            </h2>
+            {/* title, not aria-label, so the accessible name stays the visible text. */}
+            <a
+              href={DOCS_URL}
+              target="_blank"
+              rel="noreferrer"
+              title={t("settings.apiKeys.decisionApi.docsLabel")}
+              className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            >
+              {t("settings.apiKeys.decisionApi.docs")}
+              <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
+            </a>
+          </div>
           <p className="text-xs text-muted-foreground leading-relaxed">
             {t("settings.apiKeys.decisionApi.description")}
           </p>
         </div>
+        {settings ? (
+          <Tooltip>
+            <TooltipTrigger asChild={true}>
+              <span className="shrink-0">
+                <Button
+                  size="sm"
+                  className="shrink-0 gap-1.5"
+                  disabled={!enabled}
+                  onClick={() => setTryOpen(true)}
+                >
+                  <HugeiconsIcon
+                    icon={PlayIcon}
+                    strokeWidth={2}
+                    className="size-3.5"
+                  />
+                  {t("decisions.tryIt")}
+                </Button>
+              </span>
+            </TooltipTrigger>
+            {enabled ? null : (
+              <TooltipContent side="bottom">
+                {t("decisions.tryItOff")}
+              </TooltipContent>
+            )}
+          </Tooltip>
+        ) : null}
       </div>
 
       {error ? (
@@ -345,6 +428,11 @@ export function DecisionApiSection(): ReactElement | null {
   const remote = connections?.find((c) => c.name === settings.model);
   const knownModel = current !== undefined || isRemote;
   const longLabel = isRemote || current?.kind === "fine_tune";
+  // Laya is PyTorch only; Clef runs on any runtime, a GGUF-only model on llama.cpp or MLX.
+  const runtimeChoice =
+    isClefDecisionModel(settings.model) ||
+    settings.layout === "clef" ||
+    !!current?.llamaCppOnly;
   const connectionGroups = [
     ...new Set(connections?.map((c) => c.providerId)),
   ].map((id) => connections?.filter((c) => c.providerId === id) ?? []);
@@ -518,7 +606,7 @@ export function DecisionApiSection(): ReactElement | null {
                         key={option.name}
                         value={option.name}
                         disabled={!option.available}
-                        title={option.unavailableReason ?? undefined}
+                        title={option.unavailableReason ?? option.description}
                       >
                         <span className="flex items-center gap-2">
                           {modelLabel(option.name)}
@@ -555,6 +643,65 @@ export function DecisionApiSection(): ReactElement | null {
             )}
           </div>
         </SettingsRow>
+
+        {runtimeChoice ? (
+          <>
+            <SettingsRow
+              label={t("settings.apiKeys.decisionApi.backend")}
+              description={t(
+                settings.mlxAvailable
+                  ? "settings.apiKeys.decisionApi.backendDescriptionMlx"
+                  : "settings.apiKeys.decisionApi.backendDescription",
+              )}
+            >
+              <Select
+                value={backend}
+                disabled={busy}
+                onValueChange={(value) =>
+                  void apply({ backend: value as SystemOneBackend }, true)
+                }
+              >
+                <SelectTrigger
+                  className="w-36"
+                  aria-label={t("settings.apiKeys.decisionApi.backend")}
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="auto">
+                    {t("settings.apiKeys.decisionApi.backendAuto")}
+                  </SelectItem>
+                  <SelectItem value="llama.cpp">llama.cpp</SelectItem>
+                  {settings.mlxAvailable || backend === "mlx" ? (
+                    <SelectItem value="mlx">
+                      {decisionRuntimeLabel("mlx")}
+                    </SelectItem>
+                  ) : null}
+                  <SelectItem value="pytorch">PyTorch</SelectItem>
+                </SelectContent>
+              </Select>
+            </SettingsRow>
+            <p
+              className="pb-3 text-xs text-muted-foreground leading-relaxed"
+              data-decision-backend
+            >
+              {t("settings.apiKeys.decisionApi.backendStatus", {
+                backend: decisionRuntimeLabel(
+                  (settings.loadedModel === settings.model
+                    ? settings.loadedBackend
+                    : settings.effectiveBackend) ??
+                    t("settings.apiKeys.decisionApi.backendNone"),
+                ),
+              })}
+              {settings.fallbackReason ? ` · ${settings.fallbackReason}` : ""}{" "}
+              {t(
+                settings.inputModalities.includes("image")
+                  ? "settings.apiKeys.decisionApi.mediaImages"
+                  : "settings.apiKeys.decisionApi.mediaText",
+              )}
+            </p>
+          </>
+        ) : null}
 
         {isRemote ? null : (
           <SettingsRow
@@ -608,6 +755,17 @@ export function DecisionApiSection(): ReactElement | null {
         ) : null}
       </div>
 
+      <DecisionTryDialog
+        open={tryOpen && enabled}
+        onOpenChange={setTryOpen}
+        initialModel={tryModel}
+        settings={settings}
+        connections={connections ?? []}
+        onRun={() => {
+          loadSystemOneSettings().then(setSettings, () => undefined);
+        }}
+      />
+
       <AlertDialog
         open={confirm !== null}
         onOpenChange={(open) => {
@@ -623,7 +781,10 @@ export function DecisionApiSection(): ReactElement | null {
             </AlertDialogMedia>
             <AlertDialogTitle>
               {t(
-                isClefDecisionModel(confirm?.model ?? settings.model)
+                isClefDecisionModel(confirm?.model ?? settings.model) ||
+                  settings.models.find(
+                    (m) => m.name === (confirm?.model ?? settings.model),
+                  )?.llamaCppOnly
                   ? "settings.apiKeys.decisionApi.downloadConfirmTitleModel"
                   : "settings.apiKeys.decisionApi.downloadConfirmTitle",
                 { model: modelLabel(confirm?.model ?? settings.model) },

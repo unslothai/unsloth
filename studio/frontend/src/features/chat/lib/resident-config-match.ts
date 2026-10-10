@@ -9,7 +9,12 @@ import {
   resolveTensorParallel,
   stripManagedOffloadFlags,
 } from "./llama-extra-args-normalize";
+import { reconcileTensorSplit } from "@/hooks/gpu-tensor-split";
 import type { GpuIndexKind } from "@/hooks/gpu-selection";
+import {
+  mlxSpeculativeMode,
+  resolveSpeculativeType,
+} from "@/lib/speculative-modes";
 
 import type { InferenceStatusResponse } from "../types/api";
 
@@ -25,6 +30,7 @@ type ResidentRuntime = Pick<
   | "mlx_int8_prefill_requested"
   | "speculative_type"
   | "spec_draft_n_max"
+  | "spec_draft_model"
   | "requested_parallel_slots"
   | "requested_n_batch"
   | "requested_n_ubatch"
@@ -46,6 +52,7 @@ type ResidentRuntime = Pick<
   | "requested_gpu_ids"
   | "gpu_ids"
   | "is_gguf"
+  | "is_mlx"
   | "is_diffusion"
   | "diffusion_requested_ngl"
   | "diffusion_split_supported"
@@ -89,7 +96,7 @@ export type StandingConfigDefaults = {
   resolveContextLength: (customContextLength: number | null) => number;
   /** Server default for an unset `--parallel`; null when unreadable. */
   parallelSlots: number | null;
-  /** The applier clears splitRatio, so any remembered config asks for the default. */
+  /** Current store ratio, used only when a staged config does not state its own. */
   splitRatio: number[] | null;
   /** Passed in rather than imported to keep this module a React-free leaf. */
   normalizeSpeculative: (value: string | null | undefined) => string | null;
@@ -138,10 +145,15 @@ export function residentSpeculativeNeedsRepair(
     | "spec_dflash_retry_pending"
     | "spec_dspark_sidecar_absent"
     | "spec_drafter_kind"
+    | "is_mlx"
   >,
   resolvedSpeculativeType: string | null,
   sendsGgufPath = false,
 ): boolean {
+  // Every arm below is llama.cpp's; an identical MLX load dedupes.
+  if (status.is_mlx === true) {
+    return false;
+  }
   const mode = resolvedSpeculativeType ?? "auto";
   // These arms record no fallback reason, so the reason check below cannot see them.
   if (status.spec_probe_retry_pending === true) {
@@ -219,16 +231,33 @@ const SETTING_CHECKS: SettingCheck[] = [
       Boolean(c.mlxInt8Prefill) === (s.mlx_int8_prefill_requested === true),
   },
   {
-    // Always pinned: unset resolves to the standing preference.
+    // Always pinned: an unset mode resolves to the standing preference and the load sends it. Reading
+    // it as silence let a pick asking for "off" adopt a resident MTP runtime.
+    mlxComparable: true,
     pinned: () => true,
-    agrees: (c, s, standing) =>
-      (standing.normalizeSpeculative(c.speculativeType) ??
-        standing.speculativeType) ===
-      (standing.normalizeSpeculative(s.speculative_type) ??
-        standing.speculativeType),
+    agrees: (c, s, standing) => {
+      const unset = resolveSpeculativeType(
+        null,
+        standing.speculativeType ?? "auto",
+        s.is_mlx === true,
+      );
+      const mode = (value: string | null | undefined) => {
+        const resolved = standing.normalizeSpeculative(value) ?? unset;
+        return s.is_mlx === true ? mlxSpeculativeMode(resolved) : resolved;
+      };
+      return mode(c.speculativeType) === mode(s.speculative_type);
+    },
   },
   {
-    // Pinned: the backend reloads on a null-vs-explicit flip.
+    mlxComparable: true,
+    pinned: () => true,
+    agrees: (c, s) => (c.specDraftModel ?? null) === (s.spec_draft_model ?? null),
+  },
+  {
+    mlxComparable: true,
+    // Pinned like the rest: _runtime_matches_intent reloads for the null-against-explicit
+    // flip, so an unset limit asks for the default. No `draft_depth_matters` gate here,
+    // as the status carries a count only when a depth-consuming load recorded an override.
     pinned: () => true,
     agrees: (c, s) =>
       // After MTP-free recovery null means unknown, not default; let /load decide.
@@ -379,14 +408,20 @@ const SETTING_CHECKS: SettingCheck[] = [
     },
   },
   {
-    // An auto-mode resident reports the planner's own split, so it agrees unless the store holds a
-    // ratio (kept across a pending Manual-to-Auto edit, and the load sends it).
+    // A remembered split is dropped with its GPU pick; auto loads may report a planner split unasked.
     placement: true,
     ggufPlacement: true,
     pinned: () => true,
-    agrees: (_c, s, standing) =>
-      (s.gpu_memory_mode === "auto" && standing.splitRatio == null) ||
-      sameList(standing.splitRatio, s.tensor_split),
+    agrees: (c, s, standing) => {
+      const split = c.tensorSplit !== undefined
+        ? reconcileTensorSplit(
+            c.tensorSplit,
+            c.selectedGpuIds,
+            standing.reconcileGpuIds(c.selectedGpuIds ?? null, c.selectedGpuIndexKind),
+          )
+        : standing.splitRatio;
+      return (s.gpu_memory_mode === "auto" && split == null) || sameList(split, s.tensor_split);
+    },
   },
   {
     // A managed override the backend would reject must not be folded into no override.

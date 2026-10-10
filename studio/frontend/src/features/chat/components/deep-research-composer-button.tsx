@@ -17,14 +17,29 @@ import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { XIcon } from "lucide-react";
-import { type KeyboardEvent, useState } from "react";
+import {
+  type Dispatch,
+  type KeyboardEvent,
+  type SetStateAction,
+  useEffect,
+  useState,
+} from "react";
+import {
+  listResearchMcpTools,
+  type ResearchMcpTool,
+} from "../api/mcp-servers-api";
 import {
   DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS,
+  MAX_RESEARCH_MCP_SOURCES,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
 import { MAX_RESEARCH_MODEL_TIMEOUT_SECONDS } from "../utils/mirrored-chat-settings";
-import type { ResearchWebsitePolicy } from "../types/research";
+import type {
+  ResearchMcpSource,
+  ResearchWebsitePolicy,
+} from "../types/research";
 
+// the backend caps seconds; this field takes minutes.
 const MAX_RESEARCH_MODEL_TIMEOUT_MINUTES = Math.floor(
   MAX_RESEARCH_MODEL_TIMEOUT_SECONDS / 60,
 );
@@ -142,6 +157,120 @@ function DomainList({
   );
 }
 
+const matches = (tool: ResearchMcpTool, value: ResearchMcpSource) =>
+  value.serverId === tool.serverId && value.tool === tool.tool;
+
+function McpSourceList({
+  values,
+  onChange,
+}: {
+  values: ResearchMcpSource[];
+  onChange: Dispatch<SetStateAction<ResearchMcpSource[]>>;
+}) {
+  const [tools, setTools] = useState<ResearchMcpTool[] | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    listResearchMcpTools().then(
+      (found) => {
+        if (cancelled) return;
+        setTools(found);
+      },
+      () => {
+        if (!cancelled) setTools([]);
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const unavailableValues = values.filter(
+    (value) => tools !== null && !tools.some((tool) => matches(tool, value)),
+  );
+
+  return (
+    <div className="space-y-2">
+      <div>
+        <div className="text-sm font-medium">MCP search sources</div>
+        <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
+          Every research search also sends its query to the tools turned on
+          here. Choose up to {MAX_RESEARCH_MCP_SOURCES}.
+        </p>
+      </div>
+      {tools === null ? (
+        <p className="text-xs text-muted-foreground">Loading MCP tools…</p>
+      ) : tools.length === 0 ? (
+        <p className="text-xs text-muted-foreground">
+          No enabled MCP server has a search tool that takes a single query.
+        </p>
+      ) : (
+        tools.map((tool) => (
+          <label
+            key={`${tool.serverId}:${tool.tool}`}
+            className="flex cursor-pointer items-start justify-between gap-6"
+          >
+            <span className="min-w-0">
+              <span className="block break-words text-sm">
+                {tool.serverName} · {tool.tool}
+              </span>
+              {tool.description ? (
+                <span className="block line-clamp-2 text-xs text-muted-foreground">
+                  {tool.description}
+                </span>
+              ) : null}
+            </span>
+            <Switch
+              checked={values.some((value) => matches(tool, value))}
+              disabled={
+                !values.some((value) => matches(tool, value)) &&
+                values.length >= MAX_RESEARCH_MCP_SOURCES
+              }
+              onCheckedChange={(checked) =>
+                onChange(
+                  checked
+                    ? [
+                        ...values,
+                        { serverId: tool.serverId, tool: tool.tool },
+                      ].slice(0, MAX_RESEARCH_MCP_SOURCES)
+                    : values.filter(
+                        (value) => !matches(tool, value),
+                      ),
+                )
+              }
+              aria-label={`Search with ${tool.serverName} ${tool.tool}`}
+            />
+          </label>
+        ))
+      )}
+      {unavailableValues.map((value) => (
+        <div
+          key={`${value.serverId}:${value.tool}`}
+          className="flex items-start justify-between gap-6"
+        >
+          <span className="min-w-0 break-words text-sm">
+            {value.serverId} · {value.tool}
+            <span className="block text-xs text-muted-foreground">
+              Currently unavailable. Selection kept until you remove it.
+            </span>
+          </span>
+          <button
+            type="button"
+            className="text-sm text-muted-foreground hover:text-foreground"
+            aria-label={`Remove unavailable source ${value.serverId} ${value.tool}`}
+            onClick={() =>
+              onChange(values.filter((item) =>
+                item.serverId !== value.serverId || item.tool !== value.tool,
+              ))
+            }
+          >
+            Remove
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function DeepResearchComposerButton({
   onConfigure,
 }: {
@@ -205,6 +334,10 @@ export function DeepResearchWebsiteAccessDialog({
   const setModelTimeoutSeconds = useChatRuntimeStore(
     (state) => state.setResearchModelTimeoutSeconds,
   );
+  const mcpSources = useChatRuntimeStore((state) => state.researchMcpSources);
+  const setMcpSources = useChatRuntimeStore(
+    (state) => state.setResearchMcpSources,
+  );
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -214,6 +347,8 @@ export function DeepResearchWebsiteAccessDialog({
           setPolicy={setPolicy}
           modelTimeoutSeconds={modelTimeoutSeconds}
           setModelTimeoutSeconds={setModelTimeoutSeconds}
+          mcpSources={mcpSources}
+          setMcpSources={setMcpSources}
           onClose={() => onOpenChange(false)}
         />
       ) : null}
@@ -226,16 +361,22 @@ function DeepResearchWebsiteAccessContent({
   setPolicy,
   modelTimeoutSeconds,
   setModelTimeoutSeconds,
+  mcpSources,
+  setMcpSources,
   onClose,
 }: {
   policy: ResearchWebsitePolicy;
   setPolicy: (policy: ResearchWebsitePolicy) => void;
   modelTimeoutSeconds: number;
   setModelTimeoutSeconds: (seconds: number) => void;
+  mcpSources: ResearchMcpSource[];
+  setMcpSources: (sources: ResearchMcpSource[]) => void;
   onClose: () => void;
 }) {
   const [draft, setDraft] = useState<ResearchWebsitePolicy>(policy);
+  const [mcpDraft, setMcpDraft] = useState<ResearchMcpSource[]>(mcpSources);
   const [unlimited, setUnlimited] = useState(modelTimeoutSeconds === 0);
+  // re-enabling the limit from unlimited starts at the default.
   const [timeoutMinutes, setTimeoutMinutes] = useState(
     String(
       Math.ceil(
@@ -243,7 +384,7 @@ function DeepResearchWebsiteAccessContent({
       ),
     ),
   );
-  // Replay stored seconds when untouched: the minutes field cannot spell every API value.
+  // preserve stored seconds when the rounded minutes field is untouched.
   const [timeoutEdited, setTimeoutEdited] = useState(false);
 
   return (
@@ -316,6 +457,7 @@ function DeepResearchWebsiteAccessContent({
           values={draft.blockedDomains}
           onChange={(blockedDomains) => setDraft({ ...draft, blockedDomains })}
         />
+        <McpSourceList values={mcpDraft} onChange={setMcpDraft} />
       </div>
       <DialogFooter>
         <Button variant="ghost" onClick={onClose}>
@@ -324,8 +466,9 @@ function DeepResearchWebsiteAccessContent({
         <Button
           onClick={() => {
             setPolicy(draft);
+            setMcpSources(mcpDraft);
             const minutes = Number(timeoutMinutes);
-            // max does not stop a typed value; falling to the default would shorten a long run.
+            // typed values bypass max; clamp to avoid a short default timeout.
             setModelTimeoutSeconds(
               unlimited
                 ? 0

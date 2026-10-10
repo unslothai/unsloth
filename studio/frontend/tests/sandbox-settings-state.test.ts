@@ -32,6 +32,7 @@ const windows = (
   grantsLockedByEnvironment: false,
   hostPrepMissing: [],
   prepareRepeatsAfterRestart: true,
+  builtinContainer: null,
   ...overrides,
 });
 
@@ -185,6 +186,34 @@ test("the grants switch appears only with the opt-in on and a runtime installed"
   assert.equal(missing.showGrantsRow, false);
   assert.equal(missing.runtimeMissing, true);
   assert.equal(missing.optInDisabled, true);
+});
+
+test("the built-in container row shows only when MXC runs in it", () => {
+  const builtin = (overrides: Partial<WindowsSandboxStatus>) =>
+    windowsView(
+      windows({ allowDaclFallback: false, ...overrides }),
+      null,
+      false,
+    ).builtinInUse;
+  assert.equal(builtin({ builtinContainer: true }), true);
+  assert.equal(builtin({ builtinContainer: false }), false);
+  assert.equal(builtin({ builtinContainer: null }), false);
+  assert.equal(
+    builtin({ builtinContainer: true, allowDaclFallback: true }),
+    false,
+  );
+  assert.equal(
+    builtin({ builtinContainer: true, runtimeInstalled: false }),
+    false,
+  );
+  const view = windowsView(
+    windows({ allowDaclFallback: false, builtinContainer: true }),
+    null,
+    false,
+  );
+  assert.equal(view.optInChecked, false);
+  assert.equal(view.optInDisabled, false);
+  assert.equal(view.showPrepareButton, false);
 });
 
 test("a save in flight disables both switches", () => {

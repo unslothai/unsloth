@@ -135,6 +135,7 @@ const FIELDS: FieldCase[] = [
     same: 16,
     different: 8,
   },
+  { key: "specDraftModel", statusKey: "spec_draft_model", same: "org/d", different: "org/e" },
   {
     key: "nParallel",
     statusKey: "requested_parallel_slots",

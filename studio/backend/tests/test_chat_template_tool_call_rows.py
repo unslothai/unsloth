@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from datasets import Dataset
 
-from utils.datasets import apply_chat_template_to_dataset
+from utils.datasets import apply_chat_template_to_dataset, format_and_template_dataset
 from utils.datasets.chat_templates import keep_renderable_chat_template
 
 _GEMMA4_TEMPLATE = (
@@ -221,3 +221,309 @@ def test_template_probe_counts_rows_after_cleaning():
 
     assert note is None
     assert tokenizer.chat_template == _LLAMA3_TEMPLATE
+
+
+def _sharegpt_tool_row(call):
+    return {
+        "conversations": [
+            {"from": "human", "value": "Weather in Paris?"},
+            {"from": "function_call", "value": call},
+            {"from": "observation", "value": '{"temp": 18}'},
+            {"from": "gpt", "value": "It is 18C in Paris."},
+        ]
+    }
+
+
+def _format_sharegpt(rows, template):
+    return format_and_template_dataset(
+        Dataset.from_list(rows),
+        model_name = "stub-model",
+        tokenizer = _JinjaTokenizer(template),
+        num_proc = 1,
+    )
+
+
+def test_sharegpt_function_call_and_observation_train_as_tool_turns():
+    call = json.dumps({"name": "get_weather", "arguments": {"city": "Paris"}})
+
+    result = _format_sharegpt([_sharegpt_tool_row(call)], _LLAMA3_TEMPLATE)
+
+    assert result["success"] is True, result["errors"]
+    text = result["dataset"][0]["text"]
+    assert (
+        "<|start_header_id|>assistant<|end_header_id|>\n\n"
+        '{"name": "get_weather", "parameters": {"city": "Paris"}}' in text
+    )
+    assert '<|start_header_id|>ipython<|end_header_id|>\n\n{"temp": 18}' in text
+    assert "function_call" not in text
+    assert "observation" not in text
+
+
+def test_sharegpt_function_call_list_trains_every_call():
+    call = json.dumps(
+        [
+            {"name": "get_weather", "arguments": {"city": "Paris"}},
+            {"name": "get_weather", "arguments": '{"city": "Rome"}'},
+        ]
+    )
+
+    result = _format_sharegpt([_sharegpt_tool_row(call)], _QWEN35_TEMPLATE)
+
+    assert result["success"] is True, result["errors"]
+    text = result["dataset"][0]["text"]
+    assert "<|im_start|>assistant\n<tool_call>\n<function=get_weather>" in text
+    assert "<parameter=city>\nParis\n</parameter>" in text
+    assert "<parameter=city>\nRome\n</parameter>" in text
+    assert '<|im_start|>tool\n{"temp": 18}' in text
+
+
+def test_sharegpt_function_call_that_is_not_json_is_kept_as_written():
+    result = _format_sharegpt([_sharegpt_tool_row("get_weather(Paris)")], _QWEN35_TEMPLATE)
+
+    assert result["success"] is True, result["errors"]
+    assert "<|im_start|>function_call\nget_weather(Paris)" in result["dataset"][0]["text"]
+
+
+def test_sharegpt_function_call_is_kept_when_the_template_ignores_tool_calls():
+    plain_chatml = (
+        "{% for message in messages %}{{'<|im_start|>' + message['role'] + '\\n'"
+        " + message['content'] + '<|im_end|>\\n'}}{% endfor %}"
+    )
+    call = json.dumps({"name": "get_weather", "arguments": {"city": "Paris"}})
+
+    result = _format_sharegpt([_sharegpt_tool_row(call)], plain_chatml)
+
+    assert result["success"] is True, result["errors"]
+    assert f"<|im_start|>function_call\n{call}" in result["dataset"][0]["text"]
+
+
+def test_sharegpt_function_call_renders_on_a_template_gating_calls_on_null_content():
+    call = json.dumps({"name": "get_weather", "arguments": {"city": "Paris"}})
+
+    result = _format_sharegpt([_sharegpt_tool_row(call)], _DEEPSEEK_TEMPLATE)
+
+    assert result["success"] is True, result["errors"]
+    text = result["dataset"][0]["text"]
+    assert '<call>get_weather\n{"city": "Paris"}</call>' in text
+    assert '<output>{"temp": 18}' in text
+
+
+def test_sharegpt_call_name_in_the_prompt_does_not_hide_an_ignored_call():
+    plain_chatml = (
+        "{% for message in messages %}{{'<|im_start|>' + message['role'] + '\\n'"
+        " + message['content'] + '<|im_end|>\\n'}}{% endfor %}"
+    )
+    call = json.dumps({"name": "get_weather", "arguments": {"city": "Paris"}})
+    row = _sharegpt_tool_row(call)
+    row["conversations"][0]["value"] = "Use get_weather for Paris."
+
+    result = _format_sharegpt([row], plain_chatml)
+
+    assert f"<|im_start|>function_call\n{call}" in result["dataset"][0]["text"]
+
+
+def test_sharegpt_function_call_keeps_explicit_null_arguments():
+    call = json.dumps({"name": "get_weather", "arguments": {"city": "Paris", "unit": None}})
+
+    result = _format_sharegpt([_sharegpt_tool_row(call)], _LLAMA3_TEMPLATE)
+
+    assert result["success"] is True, result["errors"]
+    assert '"parameters": {"city": "Paris", "unit": null}' in result["dataset"][0]["text"]
+
+
+def test_sharegpt_parallel_calls_are_split_for_one_call_templates():
+    call = json.dumps(
+        [
+            {"name": "get_weather", "arguments": {"city": "Paris"}},
+            {"name": "get_time", "arguments": {"city": "Rome"}},
+        ]
+    )
+
+    row = _sharegpt_tool_row(call)
+    row["conversations"].insert(3, {"from": "observation", "value": '{"time": "noon"}'})
+
+    result = _format_sharegpt([row], _LLAMA3_TEMPLATE)
+
+    assert result["success"] is True, result["errors"]
+    text = result["dataset"][0]["text"]
+    paris = text.index('{"name": "get_weather", "parameters": {"city": "Paris"}}')
+    rome = text.index('{"name": "get_time", "parameters": {"city": "Rome"}}')
+    assert paris < text.index('{"temp": 18}') < rome < text.index('{"time": "noon"}')
+    assert "function_call" not in text
+
+
+def test_sharegpt_parallel_calls_sharing_one_result_render_natively_in_order():
+    call = json.dumps(
+        [
+            {"name": "get_weather", "arguments": {"city": "Paris"}},
+            {"name": "get_time", "arguments": {"city": "Rome"}},
+        ]
+    )
+
+    result = _format_sharegpt([_sharegpt_tool_row(call)], _LLAMA3_TEMPLATE)
+
+    assert result["success"] is True, result["errors"]
+    text = result["dataset"][0]["text"]
+    assert text.index("Rome") < text.index('{"temp": 18}')
+    assert "function_call" not in text
+
+
+def test_sharegpt_repeated_call_name_is_not_lost_on_a_first_call_only_template():
+    first_call_only = (
+        "{%- for message in messages %}"
+        "{%- if message.tool_calls %}{%- set call = message.tool_calls[0].function %}"
+        "{{- '<call ' + call.name + '>' + call.arguments + '</call>' }}"
+        "{%- elif message.role == 'tool' %}{{- '<result from=get_weather>' + message.content }}"
+        "{%- else %}{{- '<' + message.role + '>' + message.content }}{%- endif %}"
+        "{%- endfor %}"
+    )
+    call = json.dumps(
+        [
+            {"name": "get_weather", "arguments": {"city": "Paris"}},
+            {"name": "get_weather", "arguments": {"city": "Rome"}},
+        ]
+    )
+    row = _sharegpt_tool_row(call)
+    row["conversations"].insert(3, {"from": "observation", "value": '{"temp": 21}'})
+
+    result = _format_sharegpt([row], first_call_only)
+
+    assert result["success"] is True, result["errors"]
+    assert "Rome" in result["dataset"][0]["text"]
+
+
+def test_sharegpt_results_are_kept_when_the_template_drops_tool_turns():
+    no_tool_turns = (
+        "{%- for message in messages %}"
+        "{%- if message.tool_calls %}{%- set call = message.tool_calls[0].function %}"
+        "{{- '<call>' + call.name + call.arguments }}"
+        "{%- elif message.role != 'tool' %}{{- '<' + message.role + '>' + message.content }}"
+        "{%- endif %}{%- endfor %}"
+    )
+    call = json.dumps({"name": "get_weather", "arguments": {"city": "Paris"}})
+
+    result = _format_sharegpt([_sharegpt_tool_row(call)], no_tool_turns)
+
+    assert '{"temp": 18}' in result["dataset"][0]["text"]
+
+
+def test_sharegpt_parallel_results_are_labelled_with_their_own_call():
+    call = json.dumps(
+        [
+            {"name": "get_weather", "arguments": {"city": "Paris"}},
+            {"name": "get_time", "arguments": {"city": "Rome"}},
+        ]
+    )
+    row = _sharegpt_tool_row(call)
+    row["conversations"].insert(3, {"from": "observation", "value": '{"time": "noon"}'})
+
+    result = _format_sharegpt([row], _GEMMA4_TEMPLATE.read_text(encoding = "utf-8"))
+
+    assert result["success"] is True, result["errors"]
+    text = result["dataset"][0]["text"]
+    assert "response:get_weather{" in text
+    assert "response:get_time{" in text
+
+
+def test_sharegpt_repeated_call_with_only_boolean_arguments_is_not_lost():
+    first_call_only = (
+        "{%- for message in messages %}"
+        "{%- if message.tool_calls %}{%- set call = message.tool_calls[0].function %}"
+        "{{- '<call ' + call.name + '>' + call.arguments + '</call>' }}"
+        "{%- elif message.role == 'tool' %}{{- '<result from=set_light>' + message.content }}"
+        "{%- else %}{{- '<' + message.role + '>' + message.content }}{%- endif %}"
+        "{%- endfor %}"
+    )
+    call = json.dumps(
+        [
+            {"name": "set_light", "arguments": {"on": True}},
+            {"name": "set_light", "arguments": {"on": False}},
+        ]
+    )
+    row = _sharegpt_tool_row(call)
+    row["conversations"].insert(3, {"from": "observation", "value": '{"ok": 1}'})
+
+    result = _format_sharegpt([row], first_call_only)
+
+    text = result["dataset"][0]["text"]
+    assert '{"on": true}' in text and '{"on": false}' in text
+
+
+def test_sharegpt_call_is_kept_when_the_template_omits_the_function_name():
+    no_names = (
+        "{%- for message in messages %}"
+        "{%- if message.tool_calls %}{{- '<call>' + message.tool_calls[0].function.arguments }}"
+        "{%- else %}{{- '<' + message.role + '>' + message.content }}{%- endif %}"
+        "{%- endfor %}"
+    )
+    call = json.dumps({"name": "get_weather", "arguments": {"city": "Paris"}})
+
+    result = _format_sharegpt([_sharegpt_tool_row(call)], no_names)
+
+    assert "get_weather" in result["dataset"][0]["text"]
+
+
+def test_sharegpt_split_results_follow_their_own_call():
+    latest_call_names_results = (
+        "{%- set ns = namespace(last='') %}{%- for message in messages %}"
+        "{%- if message.tool_calls %}{%- set ns.last = message.tool_calls[0].function.name %}"
+        "{{- '<call ' + ns.last + '>' + message.tool_calls[0].function.arguments }}"
+        "{%- elif message.role == 'tool' %}{{- '<result from=' + ns.last + '>' + message.content }}"
+        "{%- else %}{{- '<' + message.role + '>' + message.content }}{%- endif %}"
+        "{%- endfor %}"
+    )
+    call = json.dumps(
+        [
+            {"name": "get_weather", "arguments": {"city": "Paris"}},
+            {"name": "get_time", "arguments": {"city": "Rome"}},
+        ]
+    )
+    row = _sharegpt_tool_row(call)
+    row["conversations"].insert(3, {"from": "observation", "value": '{"time": "noon"}'})
+
+    text = _format_sharegpt([row], latest_call_names_results)["dataset"][0]["text"]
+
+    assert (
+        text.index("<call get_weather>")
+        < text.index('{"temp": 18}')
+        < text.index("<call get_time>")
+    )
+    assert text.index("<call get_time>") < text.index('{"time": "noon"}')
+
+
+def test_sharegpt_split_calls_keep_null_content_for_templates_gating_on_it():
+    one_call_null_content = (
+        "{%- for message in messages %}"
+        "{%- if message.role == 'assistant' and message.content is none %}"
+        "{%- if message.tool_calls | length != 1 %}{{- raise_exception('one call') }}{%- endif %}"
+        "{{- '<call>' + message.tool_calls[0].function.name + message.tool_calls[0].function.arguments }}"
+        "{%- elif message.role == 'tool' %}{{- '<output>' + message.content }}"
+        "{%- elif message.role in ('user', 'assistant') %}{{- '<' + message.role + '>' + message.content }}"
+        "{%- endif %}{%- endfor %}"
+    )
+    call = json.dumps(
+        [
+            {"name": "get_weather", "arguments": {"city": "Paris"}},
+            {"name": "get_time", "arguments": {"city": "Rome"}},
+        ]
+    )
+    row = _sharegpt_tool_row(call)
+    row["conversations"].insert(3, {"from": "observation", "value": '{"time": "noon"}'})
+
+    text = _format_sharegpt([row], one_call_null_content)["dataset"][0]["text"]
+
+    assert '<call>get_weather{"city": "Paris"}' in text
+    assert '<call>get_time{"city": "Rome"}' in text
+
+
+def test_sharegpt_non_json_call_is_not_dropped_by_a_template_skipping_unknown_roles():
+    known_roles_only = (
+        "{%- for message in messages %}"
+        "{%- if message.role in ('user', 'assistant', 'tool') %}"
+        "{{- '<' + message.role + '>' + message.content }}{%- endif %}"
+        "{%- endfor %}"
+    )
+
+    result = _format_sharegpt([_sharegpt_tool_row("get_weather(Paris)")], known_roles_only)
+
+    assert "<tool>" not in result["dataset"][0]["text"]

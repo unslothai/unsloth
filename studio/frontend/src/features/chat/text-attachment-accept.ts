@@ -1131,14 +1131,21 @@ export async function isBinaryOfficeTemplate(file: File): Promise<boolean> {
   );
 }
 
+/** decodes editor text, including the BOM from Windows Registry Editor. */
 export async function readTextAttachment(file: File): Promise<string> {
   const bytes = new Uint8Array(await file.arrayBuffer());
   return decodeTextAttachmentBytes(bytes, file.name);
 }
 
+// the cache entry is collected with its File, so removed attachments retain no data.
 const decodedOnce = new WeakMap<File, string>();
 
-/** Decode once per file: attaching already decodes, so sending must not re-read it. */
+/** returns adapter-decoded text without starting another read. */
+export function cachedTextAttachment(file: File): string | undefined {
+  return decodedOnce.get(file);
+}
+
+/** caches text decoded during attachment validation so sending does not reread the file. */
 export async function readTextAttachmentOnce(file: File): Promise<string> {
   const cached = decodedOnce.get(file);
   if (cached !== undefined) {
@@ -1149,7 +1156,7 @@ export async function readTextAttachmentOnce(file: File): Promise<string> {
   return text;
 }
 
-// MIME is unreliable for source files, so match by extension too.
+// source file MIME types are unreliable, so extensions must also match.
 export const TEXT_ATTACHMENT_ACCEPT = [
   "text/plain,text/markdown,text/csv,text/tab-separated-values,text/xml,text/json,text/css",
   "text/vtt,application/x-subrip,text/x-log,text/calendar,text/vcard,message/rfc822",

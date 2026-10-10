@@ -128,6 +128,7 @@ import {
 } from "./types/runtime";
 
 import { effectiveMinPMode, isMinPMode } from "./lib/min-p-policy";
+import { mlxSpecFallbackMessage } from "./lib/mlx-spec-fallback";
 
 export { defaultInferenceParams, type Preset } from "./presets/preset-policy";
 export type { InferenceParams } from "./types/runtime";
@@ -595,9 +596,7 @@ export function ChatSettingsPanel({
         `llama.cpp updated to ${result.tag ?? "the latest build"}.${reloadHint}`,
       );
     } else {
-      toast.error(
-        `llama.cpp update failed: ${result.error ?? "unknown error"}`,
-      );
+      toast.error(`Update failed: ${result.error ?? "unknown error"}`);
     }
   }, [applyLlamaUpdate, speculativeDrafterLabel]);
   const loadedEffectiveContext = customContextLength ?? loadedContextLength;
@@ -612,13 +611,19 @@ export function ChatSettingsPanel({
       speculativeType === "dflash" ||
       // ngram-mod runs no drafter, so only the binary stand-down reaches it.
       speculativeType === "ngram");
+  const loadedIsMlx = useChatRuntimeStore((s) => s.loadedIsMlx);
+  const mlxSpecFallback =
+    !isExternalModel && loadedIsMlx && specFallbackReason != null
+      ? mlxSpecFallbackMessage(specFallbackReason, specDrafterKind)
+      : null;
   const showContextVramWarning =
     !isExternalModel &&
     isGguf &&
     maxContextLength != null &&
     loadedEffectiveContext != null &&
     loadedEffectiveContext > maxContextLength;
-  const showLoadedDiagnostics = showSpecFallback || showContextVramWarning;
+  const showLoadedDiagnostics =
+    showSpecFallback || mlxSpecFallback != null || showContextVramWarning;
   const hasModelContent = showLoadedDiagnostics;
   const setActivePresetSource = useChatRuntimeStore(
     (s) => s.setActivePresetSource,
@@ -1116,10 +1121,10 @@ export function ChatSettingsPanel({
                       reason: specFallbackReason,
                       drafter: speculativeDrafterLabel,
                       isLocalGguf,
-                      updateAvailable: Boolean(llamaUpdateStatus?.update_available),
+                      updateAvailable: Boolean(llamaUpdateStatus?.llama.update_available),
                     })}
                   </p>
-                  {mtpUpdatable && llamaUpdateStatus?.update_available && (
+                  {mtpUpdatable && llamaUpdateStatus?.llama.update_available && (
                     <Button
                       size="sm"
                       className="corner-squircle mt-2 h-7 text-ui-12"
@@ -1130,6 +1135,11 @@ export function ChatSettingsPanel({
                       {llamaUpdating ? "Updating..." : "Update llama.cpp"}
                     </Button>
                   )}
+                </div>
+              )}
+              {mlxSpecFallback && (
+                <div className="rounded-lg bg-amber-500/[0.08] px-3 py-2 text-ui-12 leading-[1.4] text-nav-fg/80">
+                  <p>{mlxSpecFallback}</p>
                 </div>
               )}
               {showContextVramWarning && (
@@ -1637,6 +1647,7 @@ export function ChatSettingsPanel({
             <div className="flex flex-col gap-5">
               <AutoHealToolCallsToggle />
               <NudgeToolCallsToggle />
+              <DeduplicateToolCallsToggle />
               <ConfirmToolCallsToggle />
               <BypassPermissionsToggle />
               <MaxToolCallsSlider />
@@ -1969,6 +1980,35 @@ function NudgeToolCallsToggle() {
         className="panel-switch shrink-0"
         checked={nudgeToolCalls}
         onCheckedChange={setNudgeToolCalls}
+      />
+    </div>
+  );
+}
+
+function DeduplicateToolCallsToggle() {
+  const deduplicateToolCalls = useChatRuntimeStore(
+    (s) => s.deduplicateToolCalls,
+  );
+  const setDeduplicateToolCalls = useChatRuntimeStore(
+    (s) => s.setDeduplicateToolCalls,
+  );
+
+  return (
+    <div className="flex min-h-8 items-center justify-between gap-3">
+      <div className="flex min-w-0 items-center gap-1.5">
+        <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
+          Deduplicate Tool Calls
+        </span>
+        <InfoHint>
+          Skips a tool call identical to one that already succeeded in this
+          response and tells the model it was a duplicate. Turn off to let a
+          repeated call run again.
+        </InfoHint>
+      </div>
+      <Switch
+        className="panel-switch shrink-0"
+        checked={deduplicateToolCalls}
+        onCheckedChange={setDeduplicateToolCalls}
       />
     </div>
   );

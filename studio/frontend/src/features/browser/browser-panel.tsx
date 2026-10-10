@@ -34,7 +34,9 @@ import {
   ATTACHMENT_KIND_ICONS,
   ATTACHMENT_KIND_ICON_CLASS,
   attachmentFileKind,
+  useChatRuntimeStore,
 } from "@/features/chat";
+import { formatBytes } from "@/features/hub";
 import { startLibraryChat } from "@/features/library";
 import {
   useSettingsDialogStore,
@@ -103,13 +105,15 @@ import { OtherSurfaceError, canPrintFrames, printPage, screenshotPage } from "./
 import { canScreenshot } from "./screenshot-support";
 import { stageEditsPrompt } from "./stage-edits";
 import { type BrowserDownload, saveBrowserDownload, saveNeedsClick } from "./downloads";
+import { DownloadsButton } from "./downloads-button";
 import { BROWSER_FIND_TARGET, registerBrowserFind } from "./find";
 import { ClearBrowsingDataDialog } from "./clear-data-dialog";
 import { SiteFavicon } from "./site-favicon";
 import { AnnotateLayer, WebAnnotateLayer } from "./annotate-layer";
 import { BookmarkStar, BookmarksBar } from "./bookmarks";
 import { useBookmarkFor } from "./bookmarks-store";
-import { browserTabType, textFileKind } from "./file-kind";
+import { browserTabType, mediaKind, textFileKind } from "./file-kind";
+import { canCopyVideoFrame, copyVideoFrame, tabVideo } from "./video-registry";
 import { CONTEXT_MENU } from "./link-context-menu";
 import { CONTEXT_TAB_MENU, TabMenuItems, focusRenameField, renameTabTo, setTabMuted } from "./tab-menu";
 import {
@@ -1037,6 +1041,8 @@ function tabDownload(tab: BrowserTab | undefined): BrowserDownload | undefined {
     ? {
         ...page,
         url: tab.displayUrl ?? (entry.kind === "web" ? entry.url : null),
+        // Only a temporary page's own flag: otherwise the chat shown when Download is clicked decides.
+        temporary: entry.kind === "web" && entry.temporary ? true : undefined,
       }
     : undefined;
 }
@@ -1046,20 +1052,12 @@ function webAddress(tab: BrowserTab | undefined): string | null {
   return entry?.kind === "web" ? (tab?.displayUrl ?? entry.url) : null;
 }
 
-function WebActions({ tab }: { tab: BrowserTab | undefined }) {
-  const t = useT();
-  const download = tabDownload(tab);
+function WebActions({ tab, visible }: { tab: BrowserTab | undefined; visible: boolean }) {
   return (
     <>
       <AnnotatePageButton tab={tab} />
-      <IconButton
-        label={t("browser.download")}
-        disabled={!download}
-        onClick={() => download && void saveBrowserDownload(download)}
-        className={NAV_BUTTON}
-      >
-        <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-4.5" />
-      </IconButton>
+      {/* Recent downloads and the one in flight; saving the page itself is in the menu. */}
+      <DownloadsButton className={NAV_BUTTON} visible={visible} />
     </>
   );
 }
@@ -1136,6 +1134,8 @@ function ZoomControl({ tab }: { tab: BrowserTab | undefined }) {
 }
 
 async function takeScreenshot(tab: BrowserTab, page: HTMLElement, t: ReturnType<typeof useT>): Promise<void> {
+  const shown = currentEntry(tab);
+  const temporary = useChatRuntimeStore.getState().incognito || (shown.kind === "web" && shown.temporary === true);
   let blob: Blob | null;
   try {
     blob = await screenshotPage(tab, page);
@@ -1154,7 +1154,7 @@ async function takeScreenshot(tab: BrowserTab, page: HTMLElement, t: ReturnType<
   const pad = (value: number) => String(value).padStart(2, "0");
   const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}.${pad(now.getMinutes())}.${pad(now.getSeconds())}`;
   const name = `Screenshot ${entry.kind === "web" ? hostOf(entry.url) : tab.title || "page"} ${stamp}.png`.replace(/[\\/:*?"<>|]+/g, "-");
-  const download: BrowserDownload = { blob, name, contentType: "image/png", url: null };
+  const download: BrowserDownload = { blob, name, contentType: "image/png", url: null, temporary };
   const attach = useBrowserStore.getState().attachToChat;
   if (attach && (await attach(new File([blob], name, { type: "image/png" })))) {
     toast.success(t("browser.screenshot.added"), {
@@ -1179,6 +1179,7 @@ function PanelMenu({ tab, children }: { tab: BrowserTab | undefined; children?: 
   const device = useBrowserStore((state) => state.device);
   const [clearOpen, setClearOpen] = useState(false);
   const webUrl = webAddress(tab);
+  const pageSave = fileTab ? undefined : tabDownload(tab);
   const bookmarked = useBookmarkFor(webUrl) !== undefined;
   const toolbarMode = useBrowserPrefsStore((state) => state.bookmarksToolbar);
   // The star's editor opens as the menu closes; focus going back to the menu button would shut it.
@@ -1266,6 +1267,12 @@ function PanelMenu({ tab, children }: { tab: BrowserTab | undefined; children?: 
           </DropdownMenuItem>
           <DropdownMenuItem disabled={!webUrl} onSelect={() => webUrl && openExternalLink(webUrl)}>
             {t("browser.openExternal")}
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            disabled={!pageSave}
+            onSelect={() => pageSave && void saveBrowserDownload(pageSave)}
+          >
+            {t("browser.downloads.savePage")}
           </DropdownMenuItem>
           <DropdownMenuSeparator />
           </>
@@ -1391,7 +1398,8 @@ function AnnotatePageButton({ tab }: { tab: BrowserTab | undefined }) {
   );
 }
 
-function WebToolbar({ tab }: { tab: BrowserTab | undefined }) {
+/** `visible`: the panel's chat is shown (BrowserPanel `active`). */
+function WebToolbar({ tab, visible }: { tab: BrowserTab | undefined; visible: boolean }) {
   const t = useT();
   const { goBack, goForward, reload } = useBrowserStore.getState();
   const native = nativePage(tab);
@@ -1450,7 +1458,7 @@ function WebToolbar({ tab }: { tab: BrowserTab | undefined }) {
         }
       />
       <div className="flex shrink-0 items-center gap-0.5">
-        <WebActions tab={tab} />
+        <WebActions tab={tab} visible={visible} />
         <PanelMenu tab={tab} />
       </div>
     </>
@@ -1460,13 +1468,18 @@ function WebToolbar({ tab }: { tab: BrowserTab | undefined }) {
 /** HTML and code use the browser chrome; other files keep the floating controls. */
 function usesBrowserChrome(entry: Extract<BrowserEntry, { kind: "file" }>): boolean {
   const kind = textFileKind(entry.name, entry.contentType, entry.plainText);
-  return kind === "html" || kind === "code";
+  return kind === "html" || kind === "code" || isVideoEntry(entry);
+}
+
+function isVideoEntry(entry: Extract<BrowserEntry, { kind: "file" }>): boolean {
+  return !entry.plainText && mediaKind(entry.name, entry.contentType) === "video";
 }
 
 function BrowserFileToolbar({
   tab,
   entry,
-}: { tab: BrowserTab; entry: Extract<BrowserEntry, { kind: "file" }> }) {
+  visible,
+}: { tab: BrowserTab; entry: Extract<BrowserEntry, { kind: "file" }>; visible: boolean }) {
   const t = useT();
   const navigate = useNavigate();
   const requestEdits = useBrowserStore((state) => state.requestEdits);
@@ -1664,6 +1677,7 @@ function BrowserFileToolbar({
         >
           <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-4.5" />
         </IconButton>
+        <DownloadsButton className={NAV_BUTTON} visible={visible} idleHidden={true} />
         <PanelMenu tab={tab}>
           <div className="flex items-start gap-3 px-3 py-2 text-sm">
             <KindIcon name={entry.name} contentType={entry.contentType} className="mt-0.5 size-4.5" mono={true} />
@@ -1675,7 +1689,7 @@ function BrowserFileToolbar({
               <HugeiconsIcon icon={ArrowUpRight01Icon} strokeWidth={1.75} className="size-4" />
               {t("browser.file.openIn")}
             </DropdownMenuSubTrigger>
-            <DropdownMenuSubContent className="min-w-52 rounded-[20px] p-1.5">
+            <DropdownMenuSubContent className="browser-menu min-w-52 rounded-[20px] p-1.5">
               <DropdownMenuItem onSelect={openInNewChat}>
                 <HugeiconsIcon icon={BubbleChatAddIcon} strokeWidth={1.75} className="size-4.5" />
                 {t("browser.file.newChat")}
@@ -1728,7 +1742,8 @@ function BrowserFileToolbar({
 function FloatingFileToolbar({
   tab,
   entry,
-}: { tab: BrowserTab; entry: Extract<BrowserEntry, { kind: "file" }> }) {
+  visible,
+}: { tab: BrowserTab; entry: Extract<BrowserEntry, { kind: "file" }>; visible: boolean }) {
   const t = useT();
   const navigate = useNavigate();
   const requestEdits = useBrowserStore((state) => state.requestEdits);
@@ -2049,6 +2064,179 @@ function FloatingFileToolbar({
         onClick={() => download && void saveBrowserDownload(download)}
         className="size-9"
       />
+      <DownloadsButton className={cn(PILL, "size-9")} visible={visible} idleHidden={true} />
+    </>
+  );
+}
+
+const SPLIT_PILL = cn(PILL, "flex h-9 shrink-0 items-center rounded-full");
+const SPLIT_PART =
+  "flex h-full cursor-pointer items-center rounded-full text-ui-13p5 text-foreground outline-none transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_6%,transparent)] focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 data-[state=open]:bg-[color-mix(in_oklab,var(--foreground)_8%,transparent)]";
+
+function SplitChevron() {
+  return (
+    <HugeiconsIcon
+      icon={ChevronDownStandardIcon}
+      strokeWidth={1.75}
+      className="size-4 shrink-0 text-muted-foreground"
+    />
+  );
+}
+
+/** Video file bar: the name, then Copy and Open, each with its options. */
+function VideoFileToolbar({
+  tab,
+  entry,
+  visible,
+}: { tab: BrowserTab; entry: Extract<BrowserEntry, { kind: "file" }>; visible: boolean }) {
+  const t = useT();
+  const navigate = useNavigate();
+  const download = tabDownload(tab);
+  const blob = download?.blob;
+  const { goBack, goForward } = useBrowserStore.getState();
+  // A blob URL can't be handed to another app from the desktop app.
+  const tabType = isTauri ? null : browserTabType(entry.name, entry.contentType || blob?.type || "");
+  const canOpenTab = tabType !== null;
+  const frameCopies = canCopyVideoFrame();
+  const openInBrowser = () => {
+    if (!blob || !tabType) return;
+    const url = URL.createObjectURL(new Blob([blob], { type: tabType }));
+    window.open(url, "_blank", "noopener,noreferrer");
+    window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  };
+  const openInNewChat = () => {
+    if (!blob) return;
+    startLibraryChat(navigate, {
+      files: [new File([blob], entry.name, { type: entry.contentType || blob.type })],
+    });
+  };
+  const save = () => download && void saveBrowserDownload(download);
+  const copyFrame = () => {
+    const video = tabVideo(tab.id);
+    if (!video) return;
+    void copyVideoFrame(video).then((ok) =>
+      ok ? toast.success(t("browser.video.frameCopied")) : toast.error(t("browser.video.copyFrameFailed")),
+    );
+  };
+  const copyName = () =>
+    void copyToClipboard(entry.name).then((ok) => ok && toast.success(t("browser.video.nameCopied")));
+  const extension = /\.([a-z0-9]+)$/i.exec(entry.name)?.[1]?.toUpperCase();
+  const meta = [extension, blob ? formatBytes(blob.size) : null].filter(Boolean).join(" · ");
+  return (
+    <>
+      {/* As the panel narrows, back/forward and then Copy hide before the name does. */}
+      <div className="hidden shrink-0 items-center gap-0.5 @[34rem]:flex">
+        <IconButton
+          label={t("browser.back")}
+          disabled={tab.index === 0}
+          onClick={() => goBack(tab.id)}
+          className={NAV_BUTTON}
+        >
+          <ArrowLeft strokeWidth={NAV_STROKE} className={NAV_ICON} />
+        </IconButton>
+        <IconButton
+          label={t("browser.forward")}
+          disabled={tab.index >= tab.history.length - 1}
+          onClick={() => goForward(tab.id)}
+          className={NAV_BUTTON}
+        >
+          <ArrowRight strokeWidth={NAV_STROKE} className={NAV_ICON} />
+        </IconButton>
+      </div>
+      <div
+        title={entry.name}
+        className={cn(PILL_SURFACE, "flex h-9 min-w-24 flex-1 items-center gap-2 rounded-full px-3.5")}
+      >
+        <KindIcon name={entry.name} contentType={entry.contentType} className="size-4.5" />
+        <span className="min-w-0 truncate text-ui-13p5 text-foreground">{entry.name}</span>
+        {meta ? (
+          <span className="hidden shrink-0 text-ui-12 text-muted-foreground @[30rem]:inline">{meta}</span>
+        ) : null}
+      </div>
+      {/* Without Copy frame (desktop app) the name is all there is to copy. */}
+      <div className={cn(SPLIT_PILL, "hidden @[26rem]:flex")}>
+        <Tooltip>
+          <TooltipTrigger asChild={true}>
+            <button
+              type="button"
+              aria-label={frameCopies ? t("browser.video.copyFrame") : t("browser.video.copyName")}
+              onClick={frameCopies ? copyFrame : copyName}
+              className={cn(SPLIT_PART, frameCopies ? "pl-2.5 pr-1" : "px-2.5")}
+            >
+              <HugeiconsIcon icon={Copy01Icon} strokeWidth={1.75} className="size-4.5" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom" className="tooltip-compact">
+            {frameCopies ? t("browser.video.copyFrame") : t("browser.video.copyName")}
+          </TooltipContent>
+        </Tooltip>
+        {frameCopies ? (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild={true}>
+              <button type="button" aria-label={t("browser.video.copyOptions")} className={cn(SPLIT_PART, "pr-2 pl-1")}>
+                <SplitChevron />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" sideOffset={6} className="browser-menu min-w-52 rounded-[20px] p-1.5">
+              <DropdownMenuItem onSelect={copyFrame}>
+                <HugeiconsIcon icon={Copy01Icon} strokeWidth={1.75} className="size-4" />
+                {t("browser.video.copyFrame")}
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={copyName}>
+                <HugeiconsIcon icon={TextWrapIcon} strokeWidth={1.75} className="size-4" />
+                {t("browser.video.copyName")}
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        ) : null}
+      </div>
+      <div className={SPLIT_PILL}>
+        <button
+          type="button"
+          disabled={!blob}
+          onClick={canOpenTab ? openInBrowser : save}
+          title={canOpenTab ? t("browser.file.newBrowserTab") : t("browser.video.saveAs")}
+          className={cn(SPLIT_PART, "gap-1.5 pr-1.5 pl-3")}
+        >
+          <HugeiconsIcon
+            icon={canOpenTab ? ArrowUpRight01Icon : Download01Icon}
+            strokeWidth={1.75}
+            className="size-4.5"
+          />
+          {canOpenTab ? t("browser.video.open") : t("browser.video.saveAs")}
+        </button>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild={true}>
+            <button
+              type="button"
+              disabled={!blob}
+              aria-label={t("browser.video.openOptions")}
+              className={cn(SPLIT_PART, "pr-2.5 pl-1")}
+            >
+              <SplitChevron />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" sideOffset={6} className="browser-menu min-w-56 rounded-[20px] p-1.5">
+            {canOpenTab ? (
+              <DropdownMenuItem onSelect={openInBrowser}>
+                <HugeiconsIcon icon={InternetIcon} strokeWidth={1.75} className="size-4.5" />
+                {t("browser.file.newBrowserTab")}
+              </DropdownMenuItem>
+            ) : null}
+            <DropdownMenuItem onSelect={openInNewChat}>
+              <HugeiconsIcon icon={BubbleChatAddIcon} strokeWidth={1.75} className="size-4.5" />
+              {t("browser.file.newChat")}
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={save}>
+              <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-4.5" />
+              {t("browser.video.saveAs")}
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
+      <DownloadsButton className={NAV_BUTTON} visible={visible} idleHidden={true} />
+      <PanelMenu tab={tab} />
     </>
   );
 }
@@ -2208,15 +2396,19 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
         >
           {activeTab && activeEntry?.kind === "file" ? (
             floatingFileControls ? (
-              <FloatingFileToolbar tab={activeTab} entry={activeEntry} />
+              <FloatingFileToolbar tab={activeTab} entry={activeEntry} visible={active} />
+            ) : isVideoEntry(activeEntry) ? (
+              <VideoFileToolbar tab={activeTab} entry={activeEntry} visible={active} />
             ) : (
-              <BrowserFileToolbar tab={activeTab} entry={activeEntry} />
+              <BrowserFileToolbar tab={activeTab} entry={activeEntry} visible={active} />
             )
           ) : (
-            <WebToolbar tab={activeTab} />
+            <WebToolbar tab={activeTab} visible={active} />
           )}
         </div>
-        {floatingFileControls ? null : <BookmarksBar tab={activeTab} />}
+        {floatingFileControls || (activeEntry?.kind === "file" && isVideoEntry(activeEntry)) ? null : (
+          <BookmarksBar tab={activeTab} />
+        )}
         {deviceWidth ? <DeviceBar /> : null}
         <div
           ref={setPageElement}
@@ -2266,6 +2458,7 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
               key={`${activeTab.id}:${activeEntry.fileId}`}
               page={pageElement}
               fileName={activeEntry.name}
+              zoom={activeTab.zoom}
             />
           ) : null}
           {activeTab && activeEntry && (pageAnnotating === "frame" || pageAnnotating === "native") ? (
@@ -2285,6 +2478,7 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
               page={pageElement}
               fileName={tabTitle(activeTab, activeEntry)}
               url={webAddress(activeTab) ?? undefined}
+              zoom={activeTab.zoom}
             />
           ) : null}
         </div>

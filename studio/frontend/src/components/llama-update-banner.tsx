@@ -9,9 +9,12 @@ import {
   useLlamaUpdateCheck,
 } from "@/hooks/use-llama-update-check";
 import {
-  useShowLlamaUpdateBanner,
-  useShowWhisperUpdateBanner,
-} from "@/hooks/use-llama-update-pref";
+  type NotificationChannel,
+  markNotificationShown,
+  useDocumentVisible,
+  useNotificationDue,
+  useNotificationFrequency,
+} from "@/hooks/use-notification-frequency";
 import {
   heldUpdateBannerPref,
   llamaReleaseChanged,
@@ -109,8 +112,27 @@ export function LlamaUpdateBanner({
   enabled = true,
   positioned = true,
 }: LlamaUpdateBannerProps): ReactElement | null {
-  const showLlamaBannerPref = useShowLlamaUpdateBanner();
-  const showWhisperBannerPref = useShowWhisperUpdateBanner();
+  // The open card stays allowed after it records itself as shown.
+  const [shownChannel, setShownChannel] = useState<NotificationChannel | null>(
+    null,
+  );
+  const allowed = (channel: NotificationChannel, due: boolean, off: boolean) =>
+    !off && (due || shownChannel === channel);
+  const showLlamaBannerPref = allowed(
+    "llama",
+    useNotificationDue("llama"),
+    useNotificationFrequency("llama") === "off",
+  );
+  const showWhisperBannerPref = allowed(
+    "whisper",
+    useNotificationDue("whisper"),
+    useNotificationFrequency("whisper") === "off",
+  );
+  const showAudioCppBannerPref = allowed(
+    "audio",
+    useNotificationDue("audio"),
+    useNotificationFrequency("audio") === "off",
+  );
   const [changelogVersion, setChangelogVersion] = useState<string | null>(null);
   // Not gated on showBannerPref: this instance is the app-wide listener for cross-tab reload resync.
   const { status, visible, applying, apply, dismiss, snooze } =
@@ -125,19 +147,29 @@ export function LlamaUpdateBanner({
     {
       llama: Boolean(status?.llama.update_available) || migrationPending,
       whisper: Boolean(status?.whisper?.update_available),
+      audio: Boolean(status?.audio?.update_available),
     },
-    { llama: showLlamaBannerPref, whisper: showWhisperBannerPref },
+    {
+      llama: showLlamaBannerPref,
+      whisper: showWhisperBannerPref,
+      audio: showAudioCppBannerPref,
+    },
   );
   // Use its own release pair and size; the backend's top-level ones are llama's.
   const offer =
-    component === "whisper.cpp" ? status?.whisper : status?.llama;
+    component === "whisper.cpp"
+      ? status?.whisper
+      : component === "audio.cpp"
+        ? status?.audio
+        : status?.llama;
   const sizeBytes = offer?.update_size_bytes ?? null;
   const latestTag = offer?.latest_tag ?? null;
   const installedTag = offer?.installed_tag ?? null;
 
   async function handleUpdate() {
-    // Read before applying: the status refreshes as the job runs.
-    const migrating = migrationPending;
+    // Read before applying (the status refreshes mid-job). An audio.cpp update may keep
+    // the old runtime, so only the job's message says what happened, as for a migration.
+    const migrating = migrationPending || component === "audio.cpp";
     const result = await apply();
     if (result?.ok) {
       const updatedTag =
@@ -152,15 +184,19 @@ export function LlamaUpdateBanner({
         }),
       );
     } else if (result) {
-      toast.error(
-        `${component} update failed: ${result.error ?? "unknown error"}`,
-      );
+      // The failing phase need not be the component the card names.
+      toast.error(`Update failed: ${result.error ?? "unknown error"}`);
     }
   }
 
   const livePref =
-    component === "whisper.cpp" ? showWhisperBannerPref : showLlamaBannerPref;
-  // Held across a chained apply; an error counts as in flight so the retry stays on screen.
+    component === "whisper.cpp"
+      ? showWhisperBannerPref
+      : component === "audio.cpp"
+        ? showAudioCppBannerPref
+        : showLlamaBannerPref;
+  // Held across a chained apply, which renames the card mid-job. An error counts
+  // as in flight so a failed phase keeps its retry on screen.
   const jobState = status?.job.state;
   const [heldPref, setHeldPref] = useState<boolean | null>(null);
   useEffect(() => {
@@ -174,7 +210,24 @@ export function LlamaUpdateBanner({
     visible &&
     status != null &&
     (llamaUpdateOffered(status) || applying);
-  // A migration can be offered at an installed release, where the backend pair replaces it.
+  const channel: NotificationChannel =
+    component === "whisper.cpp"
+      ? "whisper"
+      : component === "audio.cpp"
+        ? "audio"
+        : "llama";
+  const tabVisible = useDocumentVisible();
+  useEffect(() => {
+    // livePref: a chained apply can rename the held card to a muted component.
+    if (show && tabVisible && livePref && shownChannel !== channel) {
+      markNotificationShown(channel);
+      setShownChannel(channel);
+    } else if (!show && shownChannel !== null) {
+      setShownChannel(null);
+    }
+  }, [show, tabVisible, livePref, channel, shownChannel]);
+  // A migration re-applies the install's own automatic choice, so it can be offered at a
+  // release the machine already has, where the backend pair replaces the version line.
   const backendChange =
     status?.backend_migration_available && status.to_backend
       ? `${backendLabel(status.from_backend)} \u2192 ${backendLabel(status.to_backend)}`

@@ -129,12 +129,15 @@ test("an uncounted chat reports no per-turn rows", () => {
   );
 });
 
-test("the header renders the bar on the window alone, with usage optional", () => {
+test("the header renders the bar for single chats and active project threads", () => {
   const page = readSrc("features/chat/chat-page.tsx");
   assert.match(
     page,
-    /showContextWindowUsage &&\s*view\.mode === "single" &&\s*\(contextUsage \|\| contextWindowKnown\)/,
+    /\{showContextWindowUsage &&\s*\(view\.mode === "single" \|\|\s*\(view\.mode === "project" && activeThreadId != null\)\) &&\s*\(contextUsage \|\| contextWindowKnown\) \? \(/,
   );
-  assert.match(page, /used=\{contextUsage\?\.totalTokens \?\? null\}/);
+  assert.match(
+    page,
+    /used=\{contextUsage\?\.contextTokens \?\? contextUsage\?\.totalTokens \?\? null\}/,
+  );
 });
 

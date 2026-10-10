@@ -20,6 +20,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
@@ -32,6 +39,7 @@ import {
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
+  MoreHorizontalIcon,
   PlusSignIcon,
   Refresh01Icon,
   Scroll01Icon,
@@ -54,6 +62,7 @@ import {
   getSkillManifest,
   isValidSkillName,
   listSkills,
+  setAllSkillsEnabled,
   setSkillEnabled,
   type SkillDraft,
   type SkillManifest,
@@ -68,6 +77,8 @@ type View = { kind: "library" } | { kind: "new" } | { kind: "skill"; key: string
 const EMPTY_DRAFT: SkillDraft = { name: "", description: "", instructions: "" };
 const LIBRARY: View = { kind: "library" };
 const SECTIONS: ReadonlyArray<SkillRecord["source"]> = ["agents", "claude", "bundled"];
+// `*` is the bulk-change sentinel because skill names cannot contain it.
+const ALL_SKILLS = "*";
 
 // Shadowed rows share a name, so skills are keyed by source too.
 const keyOf = (skill: SkillRecord) => `${skill.source}:${skill.name}`;
@@ -108,6 +119,8 @@ export function ChatSkillsDialog({
   const [changing, setChanging] = useState<string | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState<SkillRecord | null>(null);
   const [confirmingDiscard, setConfirmingDiscard] = useState<(() => void) | null>(null);
+  const [confirmingReset, setConfirmingReset] = useState(false);
+  // Reseeded on render so the first frame after opening is already reset.
   const [seenOpen, setSeenOpen] = useState(open);
   if (open !== seenOpen) {
     setSeenOpen(open);
@@ -119,6 +132,7 @@ export function ChatSkillsDialog({
       setManifests(new Map());
       setConfirmingDelete(null);
       setConfirmingDiscard(null);
+      setConfirmingReset(false);
     }
   }
   useEffect(() => {
@@ -252,6 +266,18 @@ export function ChatSkillsDialog({
     setManifests(new Map());
     void listSkills(true).catch(() => undefined);
     if (selected) readManifest(selected);
+  };
+
+  const usable = skills.filter((skill) => skill.valid && !skill.shadowed);
+  const toggleAll = async (enabled: boolean | null) => {
+    setChanging(ALL_SKILLS);
+    try {
+      await setAllSkillsEnabled(enabled);
+    } catch (cause) {
+      toast.error(t("skills.updateError"), { description: describe(cause) });
+    } finally {
+      setChanging(null);
+    }
   };
 
   const toggle = async (name: string, enabled: boolean) => {
@@ -391,6 +417,42 @@ export function ChatSkillsDialog({
               >
                 {loading ? <Spinner /> : <HugeiconsIcon icon={Refresh01Icon} strokeWidth={2} />}
               </Button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild={true}>
+                  <Button
+                    type="button"
+                    size="icon-sm"
+                    variant="ghost"
+                    disabled={loading || usable.length === 0 || changing !== null}
+                    aria-label={t("skills.bulkActions")}
+                    title={t("skills.bulkActions")}
+                  >
+                    {changing === ALL_SKILLS ? (
+                      <Spinner />
+                    ) : (
+                      <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={2} />
+                    )}
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem
+                    disabled={usable.every((skill) => skill.enabled)}
+                    onSelect={() => void toggleAll(true)}
+                  >
+                    {t("skills.enableAll")}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    disabled={!usable.some((skill) => skill.enabled)}
+                    onSelect={() => void toggleAll(false)}
+                  >
+                    {t("skills.disableAll")}
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onSelect={() => setConfirmingReset(true)}>
+                    {t("skills.resetAll")}
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
               <Button type="button" size="sm" onClick={openNew}>
                 <HugeiconsIcon icon={PlusSignIcon} strokeWidth={2} />
                 {t("skills.newSkill")}
@@ -421,7 +483,7 @@ export function ChatSkillsDialog({
                         <SkillRow
                           key={keyOf(skill)}
                           skill={skill}
-                          changing={changing === skill.name}
+                          changing={changing !== null}
                           onOpen={() => openSkill(skill)}
                           onToggle={(enabled) => void toggle(skill.name, enabled)}
                         />
@@ -568,7 +630,11 @@ export function ChatSkillsDialog({
                 <label className="flex items-center gap-2 text-sm text-muted-foreground">
                   <Switch
                     checked={selected.valid && !selected.shadowed && selected.enabled}
-                    disabled={!selected.valid || selected.shadowed || changing === selected.name}
+                    disabled={
+                      !selected.valid ||
+                      selected.shadowed ||
+                      changing !== null
+                    }
                     aria-label={t(selected.enabled ? "skills.disable" : "skills.enable", {
                       name: selected.name,
                     })}
@@ -644,6 +710,27 @@ export function ChatSkillsDialog({
               }}
             >
               {t("common.delete")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={open && confirmingReset} onOpenChange={setConfirmingReset}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("skills.resetTitle")}</AlertDialogTitle>
+            <AlertDialogDescription>{t("skills.resetDescription")}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => {
+                setConfirmingReset(false);
+                void toggleAll(null);
+              }}
+            >
+              {t("skills.reset")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -736,6 +823,12 @@ function SkillRow({
       />
       <div className="flex min-w-0 flex-wrap items-center gap-2">
         <span className="truncate font-medium text-ui-14">{skill.name}</span>
+        <HugeiconsIcon
+          icon={ChevronRightStandardIcon}
+          strokeWidth={2}
+          aria-hidden="true"
+          className="-ml-1 size-4 shrink-0 text-muted-foreground/50 transition-colors group-hover:text-foreground"
+        />
         {skill.shadowed ? <Badge variant="secondary">{t("skills.shadowed")}</Badge> : null}
         {skill.linked ? <Badge variant="outline">{t("skills.linked")}</Badge> : null}
         {skill.valid ? null : <Badge variant="destructive">{t("skills.invalid")}</Badge>}
@@ -756,14 +849,6 @@ function SkillRow({
       >
         {skill.valid ? skill.description : skill.error}
       </p>
-      <span className="flex h-[1lh] translate-y-[0.1em] items-center self-start justify-self-center text-ui-13">
-        <HugeiconsIcon
-          icon={ChevronRightStandardIcon}
-          strokeWidth={2}
-          aria-hidden="true"
-          className="size-4 text-muted-foreground/50 transition-colors group-hover:text-foreground"
-        />
-      </span>
     </div>
   );
 }

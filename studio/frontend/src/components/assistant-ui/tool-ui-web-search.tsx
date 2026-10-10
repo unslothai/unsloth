@@ -3,6 +3,7 @@
 
 "use client";
 
+import { partsHaveNonEmptyText } from "@/components/assistant-ui/message-derived";
 import {
   type ToolCallMessagePartComponent,
   useAuiState,
@@ -144,12 +145,7 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
   const sources = resultText ? parseSearchResults(resultText) : [];
 
   const hasText = useAuiState(({ message }) =>
-    message.content.some(
-      (p) =>
-        p.type === "text" &&
-        "text" in p &&
-        (p as { text: string }).text.length > 0,
-    ),
+    partsHaveNonEmptyText(message.content),
   );
   // What is being approved lives inside the content, while Allow/Deny render outside it.
   const awaitingApproval = useToolAwaitingApproval(toolCallId);

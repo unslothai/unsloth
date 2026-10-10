@@ -233,6 +233,23 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     ],
   },
   {
+    // A different denoiser with its own FP8/INT8 checkpoints; no unsloth mirror, so the vendor pipeline is the row.
+    canonicalId: "Qwen/Qwen-Image-2.1-Turbo",
+    displayName: "Qwen-Image 2.1 Turbo",
+    description: "Text-to-image and image editing in 8 steps",
+    scope: "image",
+    // Same reason as 2.1's alias: the int8 half of the prequant repo has no artifact row.
+    aliases: ["unsloth/Qwen-Image-2.1-Turbo-FP8"],
+    artifacts: [
+      bf16Pipeline("Qwen/Qwen-Image-2.1-Turbo", 33, {
+        totalParams: 7115124736,
+        prequantRepo: "unsloth/Qwen-Image-2.1-Turbo-FP8",
+        prequantSizeGb: { fp8: 7.12, int8: 7.26 },
+      }),
+      gguf("unsloth/Qwen-Image-2.1-Turbo-GGUF"),
+    ],
+  },
+  {
     canonicalId: "unsloth/Qwen-Image-2512",
     displayName: "Qwen-Image 2512",
     description: "Text-to-image",

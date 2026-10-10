@@ -71,6 +71,8 @@ interface InstallLatestTransformersResponse {
   model_unloaded?: boolean;
   /** On a version mismatch, the newer release Retry should use. */
   latest_version?: string | null;
+  /** On a version-mismatch failure: transformers main's current version. */
+  latest_main_version?: string | null;
 }
 
 /** Synchronous, can take minutes. `forceCancelActive` carries the user's "stop N chats" answer;

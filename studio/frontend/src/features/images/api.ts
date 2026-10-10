@@ -31,6 +31,9 @@ export interface DiffusionStatus {
   dtype: string | null;
   model_kind?: string | null;
   gguf_filename?: string | null;
+  // Supplied text-encoder / VAE files: pipeline component -> basename.
+  component_files?: Record<string, string> | null;
+  // Selected GGUF quant. Newer backends report this separately from the compute dtype.
   gguf_variant?: string | null;
   cpu_offload: boolean;
   // ENGAGED runtime build, not the load request. null = the GGUF ran as-is.
@@ -54,6 +57,8 @@ export interface DiffusionStatus {
   // Per-Advanced-control provenance, keyed by control name. Present only when a model is loaded on a
   // backend that records it; absent on older backends.
   resolved?: Record<string, DiffusionResolvedControl> | null;
+  // Default steps / guidance the backend renders the loaded model with (file header before base repo).
+  generation_defaults?: { steps?: number; guidance?: number } | null;
 }
 
 export interface DiffusionConditioning {
@@ -95,12 +100,17 @@ export interface DiffusionLoadRequest {
   model_path: string;
   display_repo_id?: string;
   gguf_filename?: string;
-  // Non-GGUF kinds are restricted to unsloth/* repos.
+  // How to load the model (omit to auto-detect from gguf_filename). A single_file .safetensors loads from any repo;
+  // pipeline loads are restricted to unsloth/* repos, the official bases, or a local path.
   model_kind?: "gguf" | "single_file" | "pipeline";
   base_repo?: string;
   family_override?: string;
   hf_token?: string;
   cpu_offload?: boolean;
+  // Separate .safetensors files (e.g. ComfyUI models/text_encoders, models/vae); gguf / single_file only.
+  text_encoder_file?: string | string[];
+  vae_file?: string;
+  // Advanced (load-time) tuning. All optional; omit for the backend's auto defaults.
   speed_mode?: "off" | "eager" | "default" | "max";
   transformer_quant?: "auto" | "none" | "off" | "int8" | "fp8" | "nvfp4" | "mxfp8";
   // "none"/"off" pin the bf16 encoder; omitting it lets the family choose. 409 if the host cannot run it.
@@ -692,6 +702,11 @@ export interface DiffusionTrainingInfo {
   datasets_root: string;
   outputs_root: string;
   datasets: DiffusionDatasetSummary[];
+  // includes occupied folders without trainable media, which `datasets` omits.
+  dataset_names?: string[];
+  // occupied captions-only folders that the diffusion uploader may safely continue.
+  continuation_dataset_names?: string[];
+  // Added by the multi-family trainer backend; tolerate its absence.
   families?: DiffusionTrainableFamily[];
 }
 
@@ -706,9 +721,11 @@ export interface DiffusionDatasetUploadResult extends DiffusionDatasetSummary {
 export async function uploadDiffusionDataset(
   name: string,
   files: File[],
+  createOnly = false,
 ): Promise<DiffusionDatasetUploadResult> {
   const form = new FormData();
   form.append("name", name);
+  form.append("create_only", createOnly ? "true" : "false");
   for (const f of files) form.append("files", f);
   return parseJson(
     await authFetch("/api/train/diffusion/dataset", { method: "POST", body: form }),

@@ -206,7 +206,7 @@ fn local_dialog_path(path: tauri_plugin_dialog::FilePath) -> Result<PathBuf, Str
 }
 
 /// Stage the write beside the destination so a partial file never replaces a real one.
-fn staged_temp_file(path: &Path) -> Result<tempfile::NamedTempFile, String> {
+pub(crate) fn staged_temp_file(path: &Path) -> Result<tempfile::NamedTempFile, String> {
     let parent = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -431,16 +431,14 @@ pub async fn save_native_file(
     request: tauri::ipc::Request<'_>,
 ) -> Result<Option<String>, String> {
     crate::native_intents::ensure_main_window(&webview)?;
-    Ok(save_request_with_dialog(&app, &request)
+    Ok(save_request_with_dialog(&app, &request, None)
         .await?
         .map(|path| saved_file_name(&path)))
 }
 
-/// Save the request body where the user picks; None if cancelled. Keep the path off the webview.
-pub(crate) async fn save_request_with_dialog(
-    app: &AppHandle,
-    request: &tauri::ipc::Request<'_>,
-) -> Result<Option<PathBuf>, String> {
+fn request_file<'a>(
+    request: &'a tauri::ipc::Request<'_>,
+) -> Result<(String, Cow<'a, [u8]>), String> {
     let encoded_name = request
         .headers()
         .get(NATIVE_FILE_NAME_HEADER)
@@ -450,17 +448,31 @@ pub(crate) async fn save_request_with_dialog(
     let file_name = decode_default_file_name(encoded_name)?;
     let content = invoke_body_bytes(request.body())
         .ok_or_else(|| "Native export content must be binary.".to_string())?;
+    Ok((file_name, content))
+}
+
+/// Save the request body where the user picks, starting in `directory`; None if cancelled.
+pub(crate) async fn save_request_with_dialog(
+    app: &AppHandle,
+    request: &tauri::ipc::Request<'_>,
+    directory: Option<&Path>,
+) -> Result<Option<PathBuf>, String> {
+    let (file_name, content) = request_file(request)?;
     let (filter_name, extensions) = save_filter(&file_name);
     let extension_refs = extensions.iter().map(String::as_str).collect::<Vec<_>>();
     let (tx, rx) = tokio::sync::oneshot::channel();
-    app.dialog()
+    let mut dialog = app
+        .dialog()
         .file()
         .set_title("Save Unsloth export")
         .set_file_name(file_name)
-        .add_filter(filter_name, &extension_refs)
-        .save_file(move |path| {
-            let _ = tx.send(path);
-        });
+        .add_filter(filter_name, &extension_refs);
+    if let Some(directory) = directory {
+        dialog = dialog.set_directory(directory);
+    }
+    dialog.save_file(move |path| {
+        let _ = tx.send(path);
+    });
     let selected_path = rx
         .await
         .map_err(|_| "Save dialog closed unexpectedly.".to_string())?
@@ -550,6 +562,69 @@ pub fn cancel_native_file_save(
     crate::native_intents::ensure_main_window(&webview)?;
     registry.cancel(&token);
     Ok(())
+}
+
+/// Room under the usual 255-byte name limit for the " (999)" a taken name gets.
+const MAX_DOWNLOAD_NAME_BYTES: usize = 240;
+const WINDOWS_DEVICE_NAMES: [&str; 22] = [
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+];
+
+fn is_bidi_control(c: char) -> bool {
+    matches!(
+        c,
+        '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+    )
+}
+
+/// A website's file name made safe everywhere: no separators, control or reserved characters, trailing dots/spaces or device names; length capped.
+pub(crate) fn safe_download_name(name: &str) -> String {
+    let mut name: String = name
+        .chars()
+        .map(|c| {
+            // Bidi controls too: `invoice\u{202e}fdp.exe` must not read as `invoiceexe.pdf`.
+            if c.is_control() || is_bidi_control(c) || "/\\:*?\"<>|".contains(c) {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let kept = name.trim_end_matches(['.', ' ']).len();
+    name.truncate(kept);
+    if name.trim_matches(['.', ' ']).is_empty() {
+        return "download".into();
+    }
+    let device = name.split('.').next().unwrap_or("").trim_end();
+    if WINDOWS_DEVICE_NAMES
+        .iter()
+        .any(|reserved| reserved.eq_ignore_ascii_case(device))
+    {
+        name.insert(0, '_');
+    }
+    if name.len() > MAX_DOWNLOAD_NAME_BYTES {
+        let extension = name
+            .rfind('.')
+            .filter(|&at| at > 0 && name.len() - at <= 32)
+            .map_or("", |at| &name[at..]);
+        let mut end = MAX_DOWNLOAD_NAME_BYTES - extension.len();
+        while !name.is_char_boundary(end) {
+            end -= 1;
+        }
+        name = format!("{}{extension}", &name[..end]);
+    }
+    name
+}
+
+pub(crate) fn save_request_in(
+    request: &tauri::ipc::Request<'_>,
+    directory: &Path,
+) -> Result<PathBuf, String> {
+    let (file_name, content) = request_file(request)?;
+    let path = unique_destination(directory, &safe_download_name(&file_name))?;
+    save_selected_file(Some(path), content.as_ref())?
+        .ok_or_else(|| "Failed to save the file.".to_string())
 }
 
 /// Save a backend URL by streaming it to the chosen path.
@@ -676,8 +751,13 @@ fn log_archive_directory() -> Result<PathBuf, String> {
     Ok(directory)
 }
 
-/// `name.zip`, then `name (2).zip`, so a second export does not replace the first. Best effort.
-fn unique_destination(directory: &Path, file_name: &str) -> Result<PathBuf, String> {
+/// `name.zip`, then `name (2).zip`, the way a browser download uniquifies.
+///
+/// Exporting twice must not silently replace the archive the user is still attaching to
+/// an issue. Best effort by nature -- another process can take the name between the check
+/// and the rename -- but it removes the case that actually happens, which is the same
+/// user pressing the button again.
+pub(crate) fn unique_destination(directory: &Path, file_name: &str) -> Result<PathBuf, String> {
     let candidate = directory.join(file_name);
     if !candidate.exists() {
         return Ok(candidate);
@@ -796,7 +876,8 @@ fn strip_verbatim_prefix(text: String) -> String {
     text
 }
 
-fn display_path(path: &Path) -> String {
+/// The absolute, symlink-resolved path to show the user.
+pub(crate) fn display_path(path: &Path) -> String {
     let resolved = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     strip_verbatim_prefix(resolved.display().to_string())
 }
@@ -928,6 +1009,31 @@ pub async fn pick_native_training_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn download_names_are_safe_on_every_platform() {
+        assert_eq!(safe_download_name("report:2026.pdf"), "report_2026.pdf");
+        assert_eq!(
+            safe_download_name("a<b>c|d?e*f\"g.txt"),
+            "a_b_c_d_e_f_g.txt"
+        );
+        assert_eq!(safe_download_name("evil\u{7}name.sh"), "evil_name.sh");
+        assert_eq!(
+            safe_download_name("invoice\u{202e}fdp.exe"),
+            "invoice_fdp.exe"
+        );
+        assert_eq!(safe_download_name("a\u{2066}b\u{061c}.txt"), "a_b_.txt");
+        assert_eq!(safe_download_name("CON"), "_CON");
+        assert_eq!(safe_download_name("nul.tar.gz"), "_nul.tar.gz");
+        assert_eq!(safe_download_name("console.log"), "console.log");
+        assert_eq!(safe_download_name("notes. . "), "notes");
+        assert_eq!(safe_download_name(".."), "download");
+        assert_eq!(safe_download_name(" "), "download");
+        let long = format!("{}.pdf", "\u{3042}".repeat(255));
+        let safe = safe_download_name(&long);
+        assert!(safe.len() <= MAX_DOWNLOAD_NAME_BYTES, "{}", safe.len());
+        assert!(safe.ends_with("\u{3042}.pdf"));
+    }
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_path(name: &str) -> PathBuf {

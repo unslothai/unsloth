@@ -38,8 +38,13 @@ const GLUE_WINDOW = () =>
   );
 
 test("the thread renders rows through MessageByIndex, never ThreadPrimitive.Messages", () => {
-  // Switching provider shapes on convergence would change the element type and remount every message.
-  assert.match(GLUE, /<MessageByIndexProvider key=\{index\} index=\{index\}>/);
+  // Upstream renders MessageByIndexProvider -> RenderChildrenWithAccessor -> children; this row map
+  // renders MessageByIndexProvider -> children. Switching between the two on convergence would
+  // change the element type at that position, so React would unmount and rebuild every message.
+  assert.match(
+    GLUE,
+    /<AuiProvider key=\{index\} value=\{gate\.row\(index\)\}>\s*<MessageByIndexProvider index=\{index\}>/,
+  );
   assert.doesNotMatch(
     GLUE,
     /<ThreadPrimitive\.Messages\b/,
@@ -248,7 +253,11 @@ test("the row map is memoized on the slot identity", () => {
   // Messages skips re-render only while its children function keeps identity.
   assert.match(
     GLUE,
-    /useMemo\(\(\) => \{[\s\S]*?\}, \[count, mountWindow, renderMessage\]\)/,
+    /useMemo\(\(\) => \{[\s\S]*?\}, \[count, mountWindow, renderMessage, gate\]\)/,
+  );
+  assert.match(
+    GLUE,
+    /const gate = useMemo\(\(\) => createRowNotificationGate\(aui\), \[aui\]\)/,
   );
   assert.match(GLUE, /prev\.renderMessage === next\.renderMessage/);
   assert.match(THREAD, /const renderThreadMessage = proplessSlot\(/);

@@ -611,7 +611,7 @@ test("opening the panel ticks Remember for any model with a resolvable row", () 
   // Local-only write; a default merge is a clear that must travel, so it is unconditional.
   assert.match(
     PANEL,
-    /savePerModelConfig\(\s*configId,\s*target\.ggufVariant,\s*rememberedConfig,/,
+    /savePerModelConfig\(\s*configId,\s*target\.ggufVariant,\s*storedSpeculativeAuto\(rememberedConfig, !target\.isGguf\),/,
   );
   // Clear evicted models first, or their server rows keep applying unforgettably.
   assert.match(PANEL, /for \(const dropped of hydrationEvicted\)[\s\S]*?return;/);
@@ -647,4 +647,19 @@ test("a localStorage that throws degrades on every path instead of propagating",
     Object.assign(globalThis, { localStorage: storage });
     asWindow.window.localStorage = storage;
   }
+});
+
+
+test("the MLX drafter mirrors to the server and back", () => {
+  const config = normalizePerModelConfig({ speculativeType: "eagle3", specDraftModel: "o/d" });
+  assert.equal(toApiOverride(config).spec_draft_model, "o/d");
+  // biome-ignore lint/style/useNamingConvention: API schema
+  const row = { speculative_type: "auto", spec_draft_model: "o/d" };
+  assert.equal(fromApiOverride(row).specDraftModel, "o/d");
+  // Without the flag the backend keeps a drafter the save cleared.
+  const overrides = path.join(
+    path.dirname(fileURLToPath(import.meta.url)),
+    "../src/features/model-picker/api/model-overrides.ts",
+  );
+  assert.match(readFileSync(overrides, "utf8"), /mirrors_spec_draft_model: true/);
 });

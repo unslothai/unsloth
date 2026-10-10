@@ -56,6 +56,10 @@ import {
   statusGgufVerdict,
 } from "./agent-command";
 import { keylessBaseEligible } from "./keyless-example-eligibility";
+import {
+  readUseTunnelPref,
+  writeUseTunnelPref,
+} from "./tunnel-preference";
 
 type ExampleType =
   | "curl"
@@ -369,33 +373,14 @@ function buildSnippets(
 }
 
 const KEY_PLACEHOLDER = "sk-unsloth-YOUR_KEY";
-// the openai sdks require some api_key
+// OpenAI SDKs require an api_key value even for keyless access.
 const KEYLESS_KEY_PLACEHOLDER = "not-needed";
-const USE_TUNNEL_KEY = "unsloth_api_use_tunnel";
-// A download or load moves no store state, so keep retrying.
+// retry while /v1 has no model because downloads and loads do not update the store.
 const CATALOG_RETRY_MS = 15000;
-// An idle unload frees a model without touching the store.
+// keep polling after a model appears because idle unloads do not update the store.
 const CATALOG_IDLE_MS = 60000;
 
-function readUseTunnelPref(): boolean {
-  if (typeof window === "undefined") return true;
-  try {
-    return window.localStorage.getItem(USE_TUNNEL_KEY) !== "false";
-  } catch {
-    return true;
-  }
-}
-
-function writeUseTunnelPref(value: boolean): void {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(USE_TUNNEL_KEY, value ? "true" : "false");
-  } catch {
-    // Non-fatal
-  }
-}
-
-// Mirrors _looks_like_path; /v1 never advertises an on-disk load path.
+// match the backend path heuristic because /v1 never advertises on-disk checkpoints.
 function looksLikePath(id: string): boolean {
   return (
     id.startsWith("/") ||
@@ -407,6 +392,7 @@ function looksLikePath(id: string): boolean {
   );
 }
 
+// return only model ids that /v1 can resolve, or null when none are available.
 function useExampleModelName(keylessOnly: boolean): string | null {
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const ggufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
@@ -846,30 +832,31 @@ export function UsageExamples({
               />
               <span className="text-ui-11 font-medium text-foreground">
                 {t("settings.apiKeys.secureHttps")}
+                {/* Only when not launched with --secure: the raw 0.0.0.0 port is
+                    still globally reachable, so point the user at --secure. */}
+                {secure ? null : (
+                  <Tooltip>
+                    <TooltipTrigger asChild={true}>
+                      {/* Inline on the baseline, like a glyph after the label. */}
+                      <button
+                        type="button"
+                        className="ml-1.5 inline-flex align-baseline rounded text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                        aria-label={t("settings.apiKeys.secureHttpsHint")}
+                      >
+                        {/* Follows the UI font size, like the SettingsRow hint
+                            this matches. */}
+                        <HugeiconsIcon
+                          icon={InformationCircleIcon}
+                          className="size-[var(--ui-icon-size-hint)]"
+                        />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent className="max-w-[calc(260px*var(--ui-space-scale,1))] text-ui-11 leading-snug">
+                      {t("settings.apiKeys.secureHttpsHint")}
+                    </TooltipContent>
+                  </Tooltip>
+                )}
               </span>
-              {/* Only when not launched with --secure: the raw 0.0.0.0 port is
-                  still globally reachable, so point the user at --secure. */}
-              {secure ? null : (
-                <Tooltip>
-                  <TooltipTrigger asChild={true}>
-                    <button
-                      type="button"
-                      className="flex items-center rounded text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                      aria-label={t("settings.apiKeys.secureHttpsHint")}
-                    >
-                      {/* Follows the UI font size, like the SettingsRow hint
-                          this matches. */}
-                      <HugeiconsIcon
-                        icon={InformationCircleIcon}
-                        className="size-[var(--ui-icon-size-sm)]"
-                      />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent className="max-w-[calc(260px*var(--ui-space-scale,1))] text-ui-11 leading-snug">
-                    {t("settings.apiKeys.secureHttpsHint")}
-                  </TooltipContent>
-                </Tooltip>
-              )}
             </div>
             <button
               type="button"

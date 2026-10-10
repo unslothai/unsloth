@@ -752,9 +752,24 @@ export function VoiceTab() {
               : "missing",
         });
         if (download.downloading) {
-          // Adopt a transfer that outlived the page that started it.
-          if (download.model && !isTrackingSttDownload(download.model)) {
-            trackSttDownload(download.model);
+          // Adopt a transfer that outlived the page that started it, so it
+          // still shows in the download panel.
+          if (
+            download.model &&
+            !isTrackingSttDownload(
+              download.model,
+              undefined,
+              download.download_id,
+            )
+          ) {
+            trackSttDownload(download.model, {
+              // Saved keys already encode their quant; only folder rows carry one.
+              ggufVariant: sttModelVariant(
+                download.model,
+                download.variant ?? "",
+              ),
+              downloadId: download.download_id,
+            });
           }
           watchedDownloadRef.current = download.model;
           window.setTimeout(() => {
@@ -888,13 +903,16 @@ export function VoiceTab() {
   const beginSttDownload = async () => {
     setSttDownloadStarting(true);
     try {
-      await startSttDownload(
+      const download = await startSttDownload(
         sttModel,
         hfApiToken(hfToken),
         undefined,
         sttVariant,
       );
-      trackSttDownload(sttModel, { ggufVariant: sttVariant });
+      trackSttDownload(sttModel, {
+        ggufVariant: sttVariant,
+        downloadId: download.download_id,
+      });
       startedDownloadRef.current = { model: sttModel, variant: sttVariant };
       // The status effect only re-polls while it can see a download. Its last read was before this
       // one existed, and the on-demand branch schedules nothing, so without a nudge the tab shows

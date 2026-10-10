@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { normalizeTensorSplit } from "@/hooks/gpu-tensor-split";
 import type { GpuIndexKind } from "@/hooks/use-gpu-info";
 import {
   cachedRepoConfigId,
@@ -15,6 +16,8 @@ import {
 import { isExternalModelId } from "@/features/chat/external-providers";
 import {
   DRAFT_N_MAX_SPEC_TYPES,
+  DRAFTER_MODEL_SPEC_TYPES,
+  MLX_ONLY_SPEC_TYPES,
   SEPARATE_DRAFT_MODEL_SPEC_TYPES,
 } from "@/lib/speculative-modes";
 
@@ -31,6 +34,8 @@ export interface PerModelConfig {
   specDraftNMax: number | null;
   /** Draft-context KV dtype, independent of kvCacheDtype. Optional so older blobs parse. */
   specDraftCacheDtype?: string | null;
+  /** MLX companion drafter, a repo id or local path. Optional so older blobs parse. */
+  specDraftModel?: string | null;
   nParallel: number | null;
   reasoningBudget: number;
   reasoningBudgetMessage: string;
@@ -54,7 +59,7 @@ export interface PerModelConfig {
   nCpuMoe?: number;
   selectedGpuIds?: number[] | null;
   selectedGpuIndexKind?: GpuIndexKind | null;
-  /** Never stored. `undefined` defers to the store, `null` = default. */
+  /** --tensor-split bound to selectedGpuIds in picker order. `undefined` defers to the store, `null` = default. */
   tensorSplit?: number[] | null;
 }
 
@@ -70,6 +75,7 @@ export const DEFAULT_PER_MODEL_CONFIG: PerModelConfig = {
   speculativeType: null,
   specDraftNMax: null,
   specDraftCacheDtype: null,
+  specDraftModel: null,
   nParallel: null,
   reasoningBudget: -1,
   reasoningBudgetMessage: "",
@@ -350,10 +356,14 @@ export const PER_MODEL_CONFIG_STORAGE_KEY = "unsloth_model_configs";
 const STORAGE_KEY = PER_MODEL_CONFIG_STORAGE_KEY;
 const LEGACY_STORAGE_KEY = "unsloth_load_settings";
 const LEGACY_MIGRATION_FLAG = "unsloth_model_configs_migrated";
-// v2 nBatch/nUbatch, v3 llamaExtraArgs, v4 disableVision, v5 tuning group, v6 reasoning pair,
-// v7 mlxKvQuant, v9 mlxInt8Prefill. v8 is skipped: nightly builds stamped it for a reverted config, so a v8 client must not
-// claim to understand an int8 prefill record.
-const STORAGE_SCHEMA_VERSION = 9;
+// would normalize the unknown field straight back out of the record.
+// v2 added nBatch/nUbatch, v3 llamaExtraArgs, v4 disableVision, v5 the llama-server tuning group
+// (loadMode / specDraftCacheDtype / ctxCheckpoints / cacheRam), v6 the reasoning budget pair,
+// v7 mlxKvQuant, v9 mlxInt8Prefill, v10 the per-GPU split, v11 the MLX drafter. v8 is skipped: nightly builds stamped it for the reverted custom
+// llama.cpp config (#12725), so a v8 client must not claim to understand an int8 prefill record.
+const STORAGE_SCHEMA_VERSION = 11;
+const PRE_MLX_DRAFTER_SCHEMA_VERSION = 10;
+const PRE_TENSOR_SPLIT_SCHEMA_VERSION = 9;
 const PRE_MLX_INT8_PREFILL_SCHEMA_VERSION = 7;
 const PRE_MLX_KV_QUANT_SCHEMA_VERSION = 6;
 const PRE_REASONING_BUDGET_SCHEMA_VERSION = 5;
@@ -400,6 +410,7 @@ const STORED_CONFIG_FIELDS = new Set([
   "speculativeType",
   "specDraftNMax",
   "specDraftCacheDtype",
+  "specDraftModel",
   "nParallel",
   "reasoningBudget",
   "reasoningBudgetMessage",
@@ -417,6 +428,7 @@ const STORED_CONFIG_FIELDS = new Set([
   "nCpuMoe",
   "selectedGpuIds",
   "selectedGpuIndexKind",
+  "tensorSplit",
 ]);
 
 /** Anything not an array is "not loaded" (`undefined`), never "cleared". */
@@ -487,8 +499,9 @@ function canonicalizeSpeculativeType(value: string): string | null {
   if (!s) {
     return null;
   }
+  // Kept: an MLX model's explicit Auto beats a standing "off". GGUF saves fold it via storedSpeculativeAuto.
   if (s === "auto" || s === "default") {
-    return null;
+    return "auto";
   }
   // _LEGACY_SPEC_MODE_MAP's off spellings; null would mean follow-global and enable a drafter under Auto.
   if (s === "off" || s === "none" || s === "disable" || s === "disabled") {
@@ -506,13 +519,37 @@ function canonicalizeSpeculativeType(value: string): string | null {
   if (s === "ngram" || s === "ngram-mod" || s === "ngram-simple") {
     return "ngram";
   }
-  if (s === "mtp+ngram") {
-    return "mtp+ngram";
+  if (s === "mtp+ngram" || (MLX_ONLY_SPEC_TYPES as readonly string[]).includes(s)) {
+    return s;
   }
   return null;
 }
 
-/** "auto" folds to null: it is the default, which a build may redefine. */
+/** The config as storage keeps it: GGUF reads Auto as "follow the standing preference", spelled null,
+ *  while an MLX model stores its explicit Auto. */
+export function storedSpeculativeAuto<T extends Pick<PerModelConfig, "speculativeType">>(
+  config: T,
+  isMlx: boolean,
+): T {
+  return !isMlx && config.speculativeType === "auto"
+    ? { ...config, speculativeType: null }
+    : config;
+}
+
+/** An edit to draft tokens or the drafter. Made while the mode is unset, it pins the shown mode:
+ *  storage keeps either value only beside a mode that reads it. */
+export function pinSpeculativeMode(
+  config: Pick<PerModelConfig, "speculativeType">,
+  shownMode: string,
+  patch: Partial<PerModelConfig>,
+): Partial<PerModelConfig> {
+  return config.speculativeType == null
+    ? { ...patch, speculativeType: shownMode }
+    : patch;
+}
+
+/** Canonicalize a stored --load-mode, or null to follow the llama.cpp default. "auto" folds
+ *  to null: it IS the default, so storing it would pin a value the build may redefine. */
 export function canonicalizeLoadMode(value: unknown): string | null {
   if (typeof value !== "string") {
     return null;
@@ -769,7 +806,8 @@ function parseLegacyModelKey(
 }
 
 function legacyEntryToConfig(raw: Record<string, unknown>): PerModelConfig {
-  return normalizeV1({
+  // Written before any MLX control, so its Auto is GGUF's.
+  return storedSpeculativeAuto(normalizeV1({
     customContextLength:
       typeof raw.contextLength === "number" ? raw.contextLength : null,
     maxSeqLength: null,
@@ -801,7 +839,7 @@ function legacyEntryToConfig(raw: Record<string, unknown>): PerModelConfig {
         : Array.isArray(raw.selectedGpuIds)
           ? (raw.selectedGpuIds as number[])
           : undefined,
-  });
+  }), false);
 }
 
 function mergeLegacyEntries(
@@ -954,6 +992,14 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
     VALID_KV_CACHE_DTYPES.has(partial.specDraftCacheDtype)
       ? partial.specDraftCacheDtype
       : null;
+  const specDraftModel =
+    speculativeType != null &&
+    DRAFTER_MODEL_SPEC_TYPES.has(speculativeType) &&
+    typeof partial.specDraftModel === "string" &&
+    partial.specDraftModel.trim().length > 0 &&
+    partial.specDraftModel.trim().length <= 1024
+      ? partial.specDraftModel.trim()
+      : null;
   return {
     engineParallelism: partial.engineParallelism === "pipeline" || partial.engineParallelism === "data"
       ? partial.engineParallelism : "tensor",
@@ -983,6 +1029,7 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
     speculativeType,
     specDraftNMax,
     specDraftCacheDtype,
+    specDraftModel,
     loadMode: canonicalizeLoadMode(partial.loadMode),
     ctxCheckpoints: normalizeCtxCheckpoints(partial.ctxCheckpoints),
     cacheRam: normalizeCacheRam(partial.cacheRam),
@@ -1030,10 +1077,11 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
         : null,
     llamaExtraArgs: normalizeLlamaExtraArgs(partial.llamaExtraArgs),
     ...normalizeGpuFields(partial),
+    tensorSplit: normalizeTensorSplit(partial.tensorSplit, partial.selectedGpuIds),
   };
 }
 
-/** The UI carries sentinels storage does not ("auto" -> null), which would read as non-default. */
+/** A config in the exact shape storage keeps, so a UI value storage drops cannot read as non-default. */
 export function normalizePerModelConfig(raw: unknown): PerModelConfig {
   return normalize(raw);
 }
@@ -1054,8 +1102,17 @@ function normalize(raw: unknown): PerModelConfig {
 /** Oldest version that understands every present field, so older clients can still rewrite it.
   Only a TRUE disableVision needs v4; same for the tuning group and reasoning pair. */
 function storedSchemaVersion(normalized: PerModelConfig): number {
-  if (normalized.mlxInt8Prefill) {
+  const mode = normalized.speculativeType;
+  // A kept Auto and the MLX-only modes are values an older client folds back to unset.
+  const mlxMode = mode === "auto" || (MLX_ONLY_SPEC_TYPES as readonly string[]).includes(mode ?? "");
+  if (normalized.specDraftModel != null || mlxMode) {
     return STORAGE_SCHEMA_VERSION;
+  }
+  if (normalized.tensorSplit != null) {
+    return PRE_MLX_DRAFTER_SCHEMA_VERSION;
+  }
+  if (normalized.mlxInt8Prefill) {
+    return PRE_TENSOR_SPLIT_SCHEMA_VERSION;
   }
   if (normalized.mlxKvQuant != null) {
     return PRE_MLX_INT8_PREFILL_SCHEMA_VERSION;
@@ -1245,6 +1302,7 @@ export function isDefaultConfig(config: PerModelConfig): boolean {
     config.nUbatch == null &&
     // Compared against null: 0 checkpoints and 0 or -1 cache are values, and a default-judged entry is deleted.
     (config.specDraftCacheDtype ?? null) === null &&
+    (config.specDraftModel ?? null) === null &&
     (config.loadMode ?? null) === null &&
     config.ctxCheckpoints == null &&
     config.cacheRam == null &&
@@ -1264,7 +1322,8 @@ function gpuFieldsAtDefault(config: PerModelConfig): boolean {
     (config.gpuMemoryMode ?? "auto") === "auto" &&
     (config.gpuLayers == null || config.gpuLayers < 0) &&
     (config.nCpuMoe == null || config.nCpuMoe === 0) &&
-    config.selectedGpuIds == null
+    config.selectedGpuIds == null &&
+    config.tensorSplit == null
   );
 }
 

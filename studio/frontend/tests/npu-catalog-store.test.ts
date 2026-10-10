@@ -372,6 +372,16 @@ test("an older list answer never overwrites a newer one", async () => {
   ]);
 });
 
+test("a listing reports whether it succeeded, so a failed one can re-read the status", async () => {
+  const { store, listings, backend } = harness();
+  const listed = store.refreshNpuModels();
+  listings[0].resolve([]);
+  assert.equal(await listed, true);
+  backend.reachable = false;
+  assert.equal(await store.refreshNpuModels(), false);
+  assert.equal(store.useNpuCatalogStore.getState().listError, "Failed to fetch");
+});
+
 test("a running pull counts as a download for the desktop quit warning", async () => {
   const { store, pulls, listings, activity } = harness();
   const job = store.followNpuDownload("qwen3-0.6b-FLM");

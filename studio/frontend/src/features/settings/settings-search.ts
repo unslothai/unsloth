@@ -19,9 +19,12 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.general.huggingFaceToken",
     "settings.appearance.language.title",
     "settings.appearance.language.label",
+    "settings.appearance.language.spellCheck",
     "settings.general.notifications.sectionTitle",
+    "settings.general.notifications.showUnslothUpdates",
     "settings.general.notifications.showLlamaUpdates",
     "settings.general.notifications.showWhisperUpdates",
+    "settings.general.notifications.showAudioCppUpdates",
     "settings.general.previewSharing.sectionTitle",
     "settings.general.previewSharing.enableLabel",
     "settings.general.previewSharing.revokeLabel",
@@ -152,6 +155,8 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "browser.importBookmarksSetting",
     "browser.downloadsTitle",
     "browser.askWhereToSaveSetting",
+    "browser.askBeforeDownloadingSetting",
+    "browser.downloadSitesSetting",
     "browser.saveDownloadHistorySetting",
     "browser.browsingDataTitle",
     "browser.saveHistorySetting",
@@ -204,18 +209,19 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.apiKeys.description",
     "settings.apiKeys.accessTokens",
     "settings.apiKeys.decisionApi.title",
+    "settings.apiKeys.mcp.title",
   ],
-  // The cards label themselves in English in every locale, so keys could not match their anchor.
+  // the English card labels cannot match localized keys, so the header carries both entries.
   "remote-lan": ["settings.remoteLan.title", "settings.remoteLan.description"],
   agents: [
-    // Every key needs a rendered data-settings-label, or a hit has nothing to scroll to.
+    // every key needs a rendered data-settings-label as its scroll target.
     "settings.agents.title",
     "settings.agents.description",
     "settings.agents.intro",
     "settings.agents.agent",
     "settings.agents.model",
     "settings.agents.quantization",
-    // subagent.title is absent: its label only mounts for agents that support subagents.
+    // subagent.title has no stable scroll target because its label mounts conditionally.
     "settings.agents.options.title",
     "settings.agents.remote.title",
     "settings.agents.passthrough.title",
@@ -348,12 +354,9 @@ export function createSettingsSearchIndex({
       // GPU capability message tells users to search Settings for Repair.
       "settings.general.repairInstall.label",
     ],
+    browser: [...SETTINGS_SEARCH_INDEX.browser, "browser.downloadLocationSetting"],
     about: SETTINGS_SEARCH_INDEX.about.filter(
       (key) => key !== "settings.about.updates",
-    ),
-    // The row is web only.
-    browser: SETTINGS_SEARCH_INDEX.browser.filter(
-      (key) => key !== "browser.askWhereToSaveSetting",
     ),
   };
 }
@@ -363,11 +366,12 @@ const HUGGING_FACE_ONLY_ENTRIES: ReadonlySet<TranslationKey> = new Set([
   "settings.general.hub.datasetsServer",
 ]);
 
-// Rows of a tab every account sees that render only for the owner (the OS sandbox sections).
+// owner-only rows on tabs visible to every account.
 const OWNER_ONLY_ENTRIES: ReadonlySet<TranslationKey> = new Set([
   "settings.sandbox.toolsSection",
   "settings.sandbox.python",
   "settings.sandbox.terminal",
+  "settings.apiKeys.mcp.title",
 ]);
 
 export function renderedSearchEntries(
@@ -392,6 +396,7 @@ export const SETTINGS_SEARCH_KEYWORDS: Partial<
   "settings.sandbox.toolsSection": "settings.sandbox.setupKeywords",
   "settings.resources.storage.caches.label":
     "settings.resources.storage.caches.keywords",
+  // match mlock, vram, ulimit, and pin even though the labels omit them.
   "settings.resources.modelMemory.title":
     "settings.resources.modelMemory.modelMemoryKeywords",
   "settings.resources.modelMemory.keepResident":
@@ -399,9 +404,12 @@ export const SETTINGS_SEARCH_KEYWORDS: Partial<
   "settings.resources.modelMemory.noRamReserve":
     "settings.resources.modelMemory.modelMemoryKeywords",
   "settings.chat.autoCompact": "settings.chat.autoCompactKeywords",
+  // match action verbs omitted from these descriptive labels.
   "settings.chat.thinking.visibility": "settings.chat.visibilityKeywords",
   "settings.chat.tools.visibility": "settings.chat.visibilityKeywords",
   "settings.chat.tools.foldIntoThinking": "settings.chat.visibilityKeywords",
   "settings.chat.autoScroll": "settings.chat.autoScrollKeywords",
   "settings.chat.scrollToBottomButton": "settings.chat.scrollToBottomButtonKeywords",
+  // match protocol and agent names omitted from the title.
+  "settings.apiKeys.mcp.title": "settings.apiKeys.mcp.keywords",
 };

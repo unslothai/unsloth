@@ -8,16 +8,21 @@ export type SentTextGuard = {
   /** Draft key the send cleared, so another thread's identical draft still restores. */
   readonly draftKey: string | null;
   readonly userInputSince: boolean;
+  /** An IME composition was open at the send; if not, a composition write is typing (WebKitGTK
+   *  on Wayland commits every keystroke as one, #10012). */
+  readonly compositionOpen: boolean;
 };
 
 export function armSentTextGuard(
   texts: readonly string[],
   draftKey: string | null,
+  compositionOpen = true,
 ): SentTextGuard {
   return {
     texts: texts.filter((text) => text.length > 0),
     draftKey,
     userInputSince: false,
+    compositionOpen,
   };
 }
 
@@ -72,7 +77,11 @@ export function applySentTextGuard(
 ): { accept: boolean; guard: SentTextGuard | null } {
   if (guard === null) return { accept: true, guard: null };
   if (write.isDeliberate) return { accept: true, guard: null };
-  // Equality alone would swallow every retry of a one-character prompt.
+  if (write.isComposition && !guard.compositionOpen) {
+    return { accept: true, guard: null };
+  }
+  // Re-typing the whole prompt is only one write when it is one character, so equality alone
+  // would swallow every retry of a "?" or a single emoji.
   if (guard.texts.includes(write.value)) {
     if (guard.userInputSince) return { accept: true, guard: null };
     return { accept: false, guard };

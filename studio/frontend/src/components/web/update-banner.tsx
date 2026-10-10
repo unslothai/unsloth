@@ -4,6 +4,7 @@
 import { Button } from "@/components/ui/button";
 import { ReleaseNotesPanel } from "@/components/update/release-notes-panel";
 import { type DeviceType, usePlatformStore } from "@/config/env";
+import { useNotificationGate } from "@/hooks/use-notification-frequency";
 import { useWebUpdateCheck } from "@/hooks/use-web-update-check";
 import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
@@ -35,6 +36,7 @@ export function WebUpdateBanner({
   positioned = true,
 }: WebUpdateBannerProps): ReactElement | null {
   const { status, dismiss, snooze } = useWebUpdateCheck({ enabled });
+  const open = useNotificationGate("unsloth", status != null && !isTauri);
   const deviceType = usePlatformStore((s) => s.deviceType);
   const installCmd = installCommandForDevice(deviceType);
   const [copiedVersion, setCopiedVersion] = useState<string | null>(null);
@@ -71,7 +73,7 @@ export function WebUpdateBanner({
 
   return (
     <AnimatePresence>
-      {status ? (
+      {status && open ? (
         <motion.div
           initial={{ opacity: 0, y: 12, scale: 0.96 }}
           animate={{ opacity: 1, y: 0, scale: 1 }}

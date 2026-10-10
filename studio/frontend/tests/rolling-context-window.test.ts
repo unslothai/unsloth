@@ -15,6 +15,7 @@ import { readSrc } from "./helpers/kit.ts";
 
 const COMPACTION_NOTICE = readSrc("components/assistant-ui/compaction-notice.tsx");
 const THREAD = readSrc("components/assistant-ui/thread.tsx");
+const DERIVED = readSrc("components/assistant-ui/message-derived.ts");
 const CHAT_ADAPTER = readSrc("features/chat/api/chat-adapter.ts");
 
 const adapter = readSrc("features/chat/api/chat-adapter.ts");
@@ -201,8 +202,11 @@ test("the compaction notice renders from persisted metadata, not from a message"
 test("the compaction notice uses the shared boundary/checkpoint predicate", () => {
   assert.match(THREAD, /const showsNotice = useAuiState/);
   assert.match(THREAD, /contextTruncation && showsNotice && !isEditing/);
-  assert.match(THREAD, /shouldShowCompactionNotice\(value, previousDropped\)/);
-  assert.match(THREAD, /for \(const message of thread\.messages\)/);
+  assert.match(THREAD, /compactionNoticeMessageIds\(thread\.messages\)\.has\(messageId\)/);
+  assert.match(DERIVED, /shouldShowCompactionNotice\(value, previousDropped\)/);
+  // Walked in order, not against the preceding message: turns between two moves report
+  // the same count and must not reset the baseline.
+  assert.match(DERIVED, /for \(const message of messages\)/);
 });
 
 const noticeTurns = (dropped: (number | null)[]): number[] => {

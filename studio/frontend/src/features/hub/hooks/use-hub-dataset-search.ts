@@ -401,14 +401,16 @@ export function useHubDatasetSearch(
     modelType?: HubModelType | null;
     accessToken?: string;
     enabled?: boolean;
-    /** Hold new requests without hiding what is on screen (`enabled` false returns []). */
+    /** pauses new requests while retaining visible results; `enabled` clears results when false. */
     paused?: boolean;
     sortBy?: DatasetSortKey;
     sortDirection?: DatasetSortDirection;
+    pinnedIds?: readonly string[];
   },
 ) {
   const {
     modelType,
+    pinnedIds,
     accessToken,
     enabled = true,
     paused = false,
@@ -450,7 +452,14 @@ export function useHubDatasetSearch(
       return curatedIds.map(toCuratedDatasetResult);
     }
 
-    if (!modelType) return baseResults;
+    if (!modelType) {
+      if (hasQuery || !pinnedIds?.length) return baseResults;
+      const pinned = new Set(pinnedIds.map((id) => id.toLowerCase()));
+      return [
+        ...pinnedIds.map(toCuratedDatasetResult),
+        ...baseResults.filter((ds) => !pinned.has(ds.id.toLowerCase())),
+      ];
+    }
 
     const boosted: HfDatasetResult[] = [];
     const neutral: HfDatasetResult[] = [];
@@ -462,7 +471,7 @@ export function useHubDatasetSearch(
     }
 
     return [...boosted, ...neutral];
-  }, [enabled, search.results, modelType, query]);
+  }, [enabled, search.results, modelType, query, pinnedIds]);
 
   return { ...search, results };
 }

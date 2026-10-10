@@ -3,6 +3,7 @@
 
 // Server mirror of per-model config (otherwise browser-only) so API auto-switch loads get it.
 
+import { normalizeTensorSplit, reconcileTensorSplit } from "@/hooks/gpu-tensor-split";
 import { authFetch } from "@/features/auth";
 import type { GpuIndexKind } from "@/hooks/gpu-selection";
 import { readFastApiError } from "@/lib/format-fastapi-error";
@@ -43,6 +44,8 @@ export interface ApiModelOverride {
   // biome-ignore lint/style/useNamingConvention: API schema
   spec_draft_n_max?: number;
   // biome-ignore lint/style/useNamingConvention: API schema
+  spec_draft_model?: string;
+  // biome-ignore lint/style/useNamingConvention: API schema
   n_parallel?: number;
   // biome-ignore lint/style/useNamingConvention: API schema
   reasoning_budget?: number;
@@ -72,6 +75,8 @@ export interface ApiModelOverride {
   gpu_layers?: number;
   // biome-ignore lint/style/useNamingConvention: API schema
   n_cpu_moe?: number;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  tensor_split?: number[] | null;
   // biome-ignore lint/style/useNamingConvention: API schema
   gpu_ids?: number[];
   // Absent means "physical", all an older row could mean.
@@ -272,7 +277,18 @@ export function fromApiOverride(
     : local.llamaExtraArgs;
   // A row without ids says nothing about placement, so the local pin keeps its namespace.
   const serverGpuIds = override.gpu_ids?.length ? override.gpu_ids : null;
-  // The context pin spans two fields; a row stating either owns both, or it loads at two lengths.
+  const tensorSplit = "tensor_split" in override
+    ? normalizeTensorSplit(override.tensor_split, serverGpuIds)
+    : serverGpuIds
+      ? (override.gpu_index_kind ?? "physical") === (local.selectedGpuIndexKind ?? "physical")
+        ? reconcileTensorSplit(local.tensorSplit, local.selectedGpuIds, serverGpuIds)
+        : null
+      : local.tensorSplit;
+
+  // The pin is ONE setting in one of two fields, and an edit clears the other
+  // (contextPinPatch). Filling them from different sources mints a record that loads at
+  // two lengths, since the picker reads customContextLength first and the API's
+  // auto-switch max_seq_length first. So a row stating either field owns both.
   const serverStatesPin =
     override.custom_context_length != null || override.max_seq_length != null;
   const serverStatesKvQuant =
@@ -295,6 +311,7 @@ export function fromApiOverride(
       : (local.mlxKvQuant ?? null),
     speculativeType: override.speculative_type ?? local.speculativeType,
     specDraftNMax: override.spec_draft_n_max ?? local.specDraftNMax,
+    specDraftModel: override.spec_draft_model ?? local.specDraftModel,
     specDraftCacheDtype:
       override.spec_draft_cache_type ?? local.specDraftCacheDtype,
     nParallel: override.n_parallel ?? local.nParallel,
@@ -317,6 +334,8 @@ export function fromApiOverride(
     gpuLayers: override.gpu_layers ?? local.gpuLayers,
     nCpuMoe: override.n_cpu_moe ?? local.nCpuMoe,
     selectedGpuIds: serverGpuIds ?? local.selectedGpuIds ?? null,
+    tensorSplit,
+    // reconcileGpuSelection drops the pin if this host numbers its devices the other way.
     selectedGpuIndexKind: serverGpuIds
       ? (override.gpu_index_kind ?? "physical")
       : (local.selectedGpuIndexKind ?? null),
@@ -358,6 +377,10 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
   if (config.specDraftNMax && config.specDraftNMax > 0) {
     payload.spec_draft_n_max = config.specDraftNMax;
   }
+  if (config.specDraftModel) {
+    payload.spec_draft_model = config.specDraftModel;
+  }
+  // Blank follows the server-wide --parallel default, which is the app default here.
   if (config.nParallel && config.nParallel > 0) {
     payload.n_parallel = config.nParallel;
   }
@@ -415,6 +438,11 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
   const gpuIndexKind = config.selectedGpuIndexKind ?? "physical";
   if (config.selectedGpuIds && config.selectedGpuIds.length > 0) {
     payload.gpu_ids = config.selectedGpuIds;
+    const tensorSplit = normalizeTensorSplit(config.tensorSplit, config.selectedGpuIds);
+    // Explicit null clears a saved split; an older client omitting it keeps its value.
+    payload.tensor_split = tensorSplit;
+    // Sent only when it is not the legacy default, so a physical pin's payload is
+    // unchanged from before this field.
     if (gpuIndexKind !== "physical") {
       payload.gpu_index_kind = gpuIndexKind;
     }
@@ -483,6 +511,9 @@ async function sendModelOverride(
       mirrors_server_tuning: true,
       // biome-ignore lint/style/useNamingConvention: API schema
       mirrors_reasoning_budget: true,
+      // biome-ignore lint/style/useNamingConvention: API schema
+      mirrors_spec_draft_model: true,
+      // Only sent when set, so an older backend is not handed an unknown key every save.
       ...(options?.fillAbsentFields
         ? // biome-ignore lint/style/useNamingConvention: API schema
           { fill_absent_fields: true }

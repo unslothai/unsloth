@@ -90,7 +90,7 @@ def read_install_marker(
     p = Path(binary_path)
     marker: Optional[dict] = None
     # Cover all managed binary layouts (binary is 1-4 dirs deep).
-    for parent in p.parents[:5]:
+    for parent in list(p.parents)[:5]:
         candidate = parent / marker_name
         if candidate.is_file():
             try:
