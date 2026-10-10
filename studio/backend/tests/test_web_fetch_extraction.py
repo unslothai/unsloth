@@ -775,6 +775,10 @@ def test_page_that_fits_keeps_its_links(monkeypatch):
             "AED 1999, TWD 1999, ILS 1999",
         ),
         (
+            "ZWG 19<sup>99</sup>, les 1<sup>ers</sup> et 1<sup>res</sup>",
+            "ZWG 1999, les 1ers et 1res",
+        ),
+        (
             "M<sup>me</sup> Dupont, D<sup>r</sup> Martin, n<sup>o</sup> 5, Om<sup>e</sup>",
             "Mme Dupont, Dr Martin, no 5, Om^e",
         ),

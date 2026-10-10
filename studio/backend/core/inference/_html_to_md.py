@@ -232,7 +232,26 @@ def _last_word(text: str) -> str:
 
 
 _DIGIT_ORDINAL_SUFFIXES = frozenset(
-    {"e", "er", "re", "ère", "ème", "eme", "nd", "nde", "º", "ª", "o", "a"}
+    {
+        "e",
+        "es",
+        "er",
+        "ers",
+        "re",
+        "res",
+        "ère",
+        "ème",
+        "èmes",
+        "eme",
+        "emes",
+        "nd",
+        "nde",
+        "ndes",
+        "º",
+        "ª",
+        "o",
+        "a",
+    }
 )
 _MD_DELIMITERS = "*_`"
 _STRIP_MD_DELIMITERS = str.maketrans("", "", _MD_DELIMITERS)
@@ -401,6 +420,7 @@ _CURRENCY_CODES = frozenset(
         "YER",
         "ZAR",
         "ZMW",
+        "ZWG",
         "ZWL",
     }
 )
