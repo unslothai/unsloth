@@ -9,6 +9,7 @@ import re
 import struct
 import zipfile
 from email.message import EmailMessage
+from xml.etree import ElementTree as ET
 from xml.sax.saxutils import escape
 from pathlib import Path
 
@@ -700,6 +701,22 @@ def test_pptx_reads_chart_titles_and_cached_data(tmp_path, cat, val):
     assert _text(path) == "Sales zebramarker\nQ1 | Q2\nNorth | 1200 | 1300\nSouth | 900 | 950"
 
 
+def test_scatter_series_keep_their_own_x_values():
+    C = 'xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"'
+    pt = lambda i, v: f'<c:pt idx="{i}"><c:v>{v}</c:v></c:pt>'
+    series = lambda name, xs, ys: (
+        f"<c:ser><c:tx><c:strRef><c:strCache>{pt(0, name)}</c:strCache></c:strRef></c:tx>"
+        f"<c:xVal><c:numRef><c:numCache>{pt(0, xs[0])}{pt(1, xs[1])}</c:numCache></c:numRef></c:xVal>"
+        f"<c:yVal><c:numRef><c:numCache>{pt(0, ys[0])}{pt(1, ys[1])}</c:numCache></c:numRef></c:yVal></c:ser>"
+    )
+    root = ET.fromstring(
+        f"<c:chartSpace {C}><c:chart><c:plotArea><c:scatterChart>"
+        f"{series('A', (1, 2), (10, 20))}{series('B', (5, 6), (50, 60))}"
+        "</c:scatterChart></c:plotArea></c:chart></c:chartSpace>"
+    )
+    assert office_formats._chart_lines(root) == ["A", "1 | 10", "2 | 20", "B", "5 | 50", "6 | 60"]
+
+
 def test_odp_reads_one_page_per_slide(tmp_path):
     pages = parsers.parse(str(build_odp(tmp_path / "slides.odp")))
     assert [(p.page_number, p.text) for p in pages] == [
@@ -889,10 +906,14 @@ def test_msg_uses_the_smtp_address_for_exchange_senders(tmp_path):
     assert _text(path) == "From: Ann <ann@example.com>\n\nBody zebramarker"
 
 
-def test_msg_reads_a_string_html_body(tmp_path):
+@pytest.mark.parametrize("plain", [None, "\r\n \r\n"])
+def test_msg_reads_a_string_html_body(tmp_path, plain):
     path = tmp_path / "html.msg"
     html = '<html><head><meta charset="windows-1252"></head><body><p>Café zebramarker</p></body></html>'
-    path.write_bytes(compound_file({("__substg1.0_1013001F",): html.encode("utf-16-le")}))
+    streams = {("__substg1.0_1013001F",): html.encode("utf-16-le")}
+    if plain is not None:  # a blank plain body must not hide the HTML one
+        streams[("__substg1.0_1000001F",)] = plain.encode("utf-16-le")
+    path.write_bytes(compound_file(streams))
     assert _text(path).strip() == "Café zebramarker"
 
 

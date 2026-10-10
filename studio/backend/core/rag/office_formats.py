@@ -554,18 +554,29 @@ def _without_slide_number(root: ET.Element) -> ET.Element:
 def _chart_lines(root: ET.Element) -> list[str]:
     """Chart title and axis titles, then the cached data as rows of category and values."""
     lines = _drawing_lines(root)
-    names, categories, values = [], {}, []
+    names, series_categories, values = [], [], []
     for series in root.iter(_q("c", "ser")):
         name = series.find(f"{_q('c', 'tx')}//{_q('c', 'v')}")
         names.append(name.text or "" if name is not None else "")
-        points = {}
+        categories, points = {}, {}
         # Scatter and bubble charts cache xVal/yVal instead of cat/val.
         for axes, store in ((("cat", "xVal"), categories), (("val", "yVal"), points)):
             for axis in axes:
                 for point in series.iterfind(f"{_q('c', axis)}//{_q('c', 'pt')}"):
                     v = point.find(_q("c", "v"))
                     store[int(point.get("idx", "0") or 0)] = v.text or "" if v is not None else ""
+        series_categories.append(categories)
         values.append(points)
+    if len({tuple(sorted(c.items())) for c in series_categories if c}) > 1:
+        # Each series has its own X values: one block per series.
+        for name, categories, points in zip(names, series_categories, values):
+            lines += [name] if name else []
+            for idx in sorted(set(categories) | set(points)):
+                line = _row([categories.get(idx, ""), points.get(idx, "")])
+                if line:
+                    lines.append(line)
+        return lines
+    categories = next((c for c in series_categories if c), {})
     if any(names) and len(names) > 1:
         lines.append(_row(["", *names]).lstrip(" |"))
     for idx in sorted(set(categories) | {i for points in values for i in points}):
@@ -1792,7 +1803,7 @@ def msg(path: str, html_text) -> list[Section]:
         for label in ("From", "To", "Cc", "Date", "Subject")
         if headers[label]
     ]
-    body = _msg_prop(cf, (), "1000", codec)
+    body = (_msg_prop(cf, (), "1000", codec) or "").strip()
     if not body and cf.exists("__substg1.0_10130102"):
         body = html_text(cf.open("__substg1.0_10130102"))
     if not body and (html := _msg_prop(cf, (), "1013", codec)):
