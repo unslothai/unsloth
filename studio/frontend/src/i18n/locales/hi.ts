@@ -1669,6 +1669,8 @@ export const hi = {
           always: "हमेशा",
           daily: "दिन में एक बार",
           weekly: "सप्ताह में एक बार",
+          biweekly: "हर दो सप्ताह में",
+          monthly: "महीने में एक बार",
           off: "बंद",
         },
       },

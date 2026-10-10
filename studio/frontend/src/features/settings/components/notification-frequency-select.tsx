@@ -21,6 +21,8 @@ const LABEL_KEYS = {
   always: "settings.general.notifications.frequency.always",
   daily: "settings.general.notifications.frequency.daily",
   weekly: "settings.general.notifications.frequency.weekly",
+  biweekly: "settings.general.notifications.frequency.biweekly",
+  monthly: "settings.general.notifications.frequency.monthly",
   off: "settings.general.notifications.frequency.off",
 } as const satisfies Record<NotificationFrequency, string>;
 

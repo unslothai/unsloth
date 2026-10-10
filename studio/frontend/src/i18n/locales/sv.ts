@@ -1829,6 +1829,8 @@ export const sv = {
           always: "Alltid",
           daily: "En gång om dagen",
           weekly: "En gång i veckan",
+          biweekly: "Varannan vecka",
+          monthly: "En gång i månaden",
           off: "Av",
         },
       },

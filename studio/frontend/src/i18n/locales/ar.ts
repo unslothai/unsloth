@@ -1666,6 +1666,8 @@ export const ar = {
           always: "دائمًا",
           daily: "مرة يوميًا",
           weekly: "مرة أسبوعيًا",
+          biweekly: "كل أسبوعين",
+          monthly: "مرة شهريًا",
           off: "إيقاف",
         },
       },

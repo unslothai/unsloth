@@ -1685,6 +1685,8 @@ export const fr = {
           always: "Toujours",
           daily: "Une fois par jour",
           weekly: "Une fois par semaine",
+          biweekly: "Toutes les deux semaines",
+          monthly: "Une fois par mois",
           off: "Désactivé",
         },
       },

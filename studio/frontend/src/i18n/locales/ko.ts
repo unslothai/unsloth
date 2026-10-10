@@ -1663,6 +1663,8 @@ export const ko = {
           always: "항상",
           daily: "하루에 한 번",
           weekly: "일주일에 한 번",
+          biweekly: "2주에 한 번",
+          monthly: "한 달에 한 번",
           off: "끄기",
         },
       },

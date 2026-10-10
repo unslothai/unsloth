@@ -1646,6 +1646,8 @@ export const zhCN = {
           always: "总是",
           daily: "每天一次",
           weekly: "每周一次",
+          biweekly: "每两周一次",
+          monthly: "每月一次",
           off: "关闭",
         },
       },

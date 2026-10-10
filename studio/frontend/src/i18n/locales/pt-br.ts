@@ -1674,6 +1674,8 @@ export const ptBR = {
           always: "Sempre",
           daily: "Uma vez por dia",
           weekly: "Uma vez por semana",
+          biweekly: "A cada duas semanas",
+          monthly: "Uma vez por mês",
           off: "Desativado",
         },
       },

@@ -1766,6 +1766,8 @@ export const he = {
           always: "תמיד",
           daily: "פעם ביום",
           weekly: "פעם בשבוע",
+          biweekly: "כל שבועיים",
+          monthly: "פעם בחודש",
           off: "כבוי",
         },
       },

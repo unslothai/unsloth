@@ -1670,6 +1670,8 @@ export const ru = {
           always: "Всегда",
           daily: "Раз в день",
           weekly: "Раз в неделю",
+          biweekly: "Раз в две недели",
+          monthly: "Раз в месяц",
           off: "Выкл.",
         },
       },

@@ -1654,6 +1654,8 @@ export const ja = {
           always: "常に",
           daily: "1日1回",
           weekly: "週に1回",
+          biweekly: "2週間に1回",
+          monthly: "月に1回",
           off: "オフ",
         },
       },

@@ -25,6 +25,8 @@ test("each frequency decides when a notification may show again", () => {
   for (const [frequency, period] of [
     ["daily", DAY],
     ["weekly", 7 * DAY],
+    ["biweekly", 14 * DAY],
+    ["monthly", 30 * DAY],
   ] as const) {
     assert.equal(
       notificationDue(frequency, null, shown),
@@ -56,10 +58,24 @@ test("the old on/off switches carry over", () => {
   store.set("unsloth_show_llama_update_banner", "false");
   assert.equal(getNotificationFrequency("llama"), "off");
   // Playwright layout tests still write "true", which stays on.
-  store.set("unsloth_show_whisper_update_banner", "true");
-  assert.equal(getNotificationFrequency("whisper"), "always");
+  store.set("unsloth_show_llama_update_banner", "true");
+  assert.equal(getNotificationFrequency("llama"), "always");
   assert.equal(getNotificationFrequency("unsloth"), "always");
 });
+
+for (const [channel, legacy] of [
+  ["whisper", "unsloth_show_whisper_update_banner"],
+  ["audio", "unsloth_show_audio_cpp_update_banner"],
+] as const) {
+  test(`${channel} defaults to every two weeks, and a switched-off one stays off`, () => {
+    store.clear();
+    assert.equal(getNotificationFrequency(channel), "biweekly");
+    store.set(legacy, "false");
+    assert.equal(getNotificationFrequency(channel), "off");
+    setNotificationFrequency(channel, "always");
+    assert.equal(getNotificationFrequency(channel), "always");
+  });
+}
 
 test("choosing a frequency replaces the old switch", () => {
   store.clear();
@@ -70,8 +86,8 @@ test("choosing a frequency replaces the old switch", () => {
   store.set("unsloth_audio_notification_frequency", "hourly");
   assert.equal(
     getNotificationFrequency("audio"),
-    "always",
-    "an unknown value falls back",
+    "biweekly",
+    "an unknown value falls back to the default",
   );
 });
 

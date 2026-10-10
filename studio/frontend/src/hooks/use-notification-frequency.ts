@@ -8,6 +8,8 @@ export const NOTIFICATION_FREQUENCIES = [
   "always",
   "daily",
   "weekly",
+  "biweekly",
+  "monthly",
   "off",
 ] as const;
 export type NotificationFrequency = (typeof NOTIFICATION_FREQUENCIES)[number];
@@ -24,6 +26,16 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const PERIOD_MS: Partial<Record<NotificationFrequency, number>> = {
   daily: DAY_MS,
   weekly: 7 * DAY_MS,
+  biweekly: 14 * DAY_MS,
+  monthly: 30 * DAY_MS,
+};
+
+// whisper.cpp and audio.cpp only matter to speech and Audio users, so they ask less often.
+const DEFAULT_FREQUENCY: Partial<
+  Record<NotificationChannel, NotificationFrequency>
+> = {
+  whisper: "biweekly",
+  audio: "biweekly",
 };
 // setTimeout overflows past 2^31 - 1 ms.
 const MAX_TIMEOUT_MS = 2_147_483_647;
@@ -60,12 +72,11 @@ export function getNotificationFrequency(
     const stored = localStorage.getItem(frequencyKey(channel));
     if (isFrequency(stored)) return stored;
     const legacy = LEGACY_SWITCH_KEYS[channel];
-    return legacy && localStorage.getItem(legacy) === "false"
-      ? "off"
-      : "always";
+    if (legacy && localStorage.getItem(legacy) === "false") return "off";
   } catch {
-    return "always";
+    // storage unavailable
   }
+  return DEFAULT_FREQUENCY[channel] ?? "always";
 }
 
 export function setNotificationFrequency(
