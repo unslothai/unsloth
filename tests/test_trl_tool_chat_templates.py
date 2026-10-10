@@ -171,3 +171,24 @@ def test_template_ignoring_enable_thinking_does_not_borrow_qwen3(patched):
         trl_utils.get_training_chat_template(_tokenizer(ignores))
     with pytest.raises(ValueError, match = "Unrecognized chat template"):
         trl_utils.add_response_schema(_tokenizer(ignores))
+
+
+def test_vision_template_keeps_its_own_training_family(patched):
+    # Qwen3-VL and Qwen3-Instruct-2507 render text alike; only image content tells them apart.
+    if not hasattr(trl_utils, "qwen3_vl_chat_template"):
+        pytest.skip("this TRL has no Qwen3-VL template")
+    _, originals = patched
+    edited = "{#- Chat template fixes by Unsloth #}\n" + trl_utils.qwen3_vl_chat_template
+    try:
+        expected = originals["get_training_chat_template"](_tokenizer(trl_utils.qwen3_vl_chat_template))
+    except ValueError:
+        pytest.skip("this TRL has no Qwen3-VL training template")
+    got = trl_utils.get_training_chat_template(_tokenizer(edited))
+    assert got == (expected or trl_utils.qwen3_vl_chat_template)
+
+
+def test_named_template_sets_are_left_to_trl(patched):
+    tokenizer = _tokenizer(UNSLOTH_QWEN3)
+    tokenizer.chat_template = {"default": UNSLOTH_QWEN3, "tool_use": PLAIN}
+    with pytest.raises(ValueError, match = "Unrecognized chat template"):
+        trl_utils.add_response_schema(tokenizer)

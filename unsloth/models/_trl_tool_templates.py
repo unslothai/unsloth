@@ -83,6 +83,14 @@ _CONVERSATION_PROBES = (
     ),
 )
 
+# Text and vision families of one model line render text alike but not images. Only compared when the
+# user's template renders it: text-only templates may raise on list content.
+_IMAGE_PROBE = (
+    [{"role": "user", "content": [{"type": "image"}, {"type": "text", "text": "What is shown?"}]}],
+    True,
+    False,
+)
+
 
 def _tokenizer_of(processing_class):
     from transformers import ProcessorMixin
@@ -96,7 +104,8 @@ def _template_of(processing_class):
     if template is None and processing_class is not None:
         template = getattr(_tokenizer_of(processing_class), "chat_template", None)
     if isinstance(template, dict):
-        template = template.get("default")
+        # A named set (e.g. "tool_use") is picked per call by transformers; one family cannot stand in for it.
+        template = template.get("default") if len(template) == 1 else None
     return template if isinstance(template, str) else None
 
 
@@ -147,6 +156,15 @@ def _conversation_signature(tokenizer, template):
         return None
 
 
+def _image_signature(tokenizer, template):
+    try:
+        return tuple(
+            _render(tokenizer, template, *_IMAGE_PROBE, kwargs) for kwargs in _TEMPLATE_KWARGS
+        )
+    except Exception:
+        return None
+
+
 def _known_templates(trl_module):
     return sorted(
         (name, value)
@@ -181,11 +199,15 @@ def _matching_families(trl_module, tokenizer, template, kind):
         return _matches[key]
     signature_of = _completion_signature if kind == "completion" else _conversation_signature
     target = signature_of(tokenizer, template)
+    image_target = _image_signature(tokenizer, template) if kind == "conversation" else None
     found = []
     if target is not None:
         for name, known in _known_templates(trl_module):
-            if known != template and signature_of(tokenizer, known) == target:
-                found.append((name, known))
+            if known == template or signature_of(tokenizer, known) != target:
+                continue
+            if image_target is not None and _image_signature(tokenizer, known) != image_target:
+                continue
+            found.append((name, known))
     _matches[key] = found
     return found
 
