@@ -1020,6 +1020,26 @@ test("Max Tokens left on Max stays Max at a larger context", async () => {
   assert.equal(useChatRuntimeStore.getState().params.maxTokens, 8192);
 });
 
+// Turning the memory on adopts what is on screen, which for a model on Max is its window.
+test("turning the memory on records Max as Max", async () => {
+  useChatRuntimeStore.setState({
+    settingsHydrated: true,
+    rememberParamsPerModel: false,
+    paramsByModel: {},
+    params: { ...useChatRuntimeStore.getState().params, checkpoint: QWEN },
+  });
+  loadAt(QWEN, 30000);
+  await settled();
+  settingsHttp.puts.length = 0;
+  useChatRuntimeStore.getState().setRememberParamsPerModel(true);
+  await settled();
+
+  assert.equal(writtenFor(QWEN).maxTokens, REMEMBERED_MAX_TOKENS_MAX);
+  assert.equal(useChatRuntimeStore.getState().params.maxTokens, 30000);
+  loadAt(QWEN, 35000);
+  assert.equal(useChatRuntimeStore.getState().params.maxTokens, 35000);
+});
+
 test("a remembered Max is the window after a restart", async () => {
   useChatRuntimeStore.setState({
     settingsHydrated: false,

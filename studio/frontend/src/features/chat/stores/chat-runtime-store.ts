@@ -5729,14 +5729,19 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       const snapshot = pickRememberedParams(
         withoutActiveThreadParams(state, state.params),
       );
+      // The global set keeps the number; only the model's entry records "Max".
+      const remembered = recordMaxTokensAsMax(
+        snapshot,
+        rememberedWindow(state.params.checkpoint),
+      );
       const paramsByModel = trackParamsByModel(
         state,
         getRememberedParamsPatch(
           rememberParamsPerModel,
           state.paramsByModel,
           state.params.checkpoint,
-          snapshot,
-          snapshot,
+          remembered,
+          remembered,
         ),
         state.params.checkpoint,
       );
