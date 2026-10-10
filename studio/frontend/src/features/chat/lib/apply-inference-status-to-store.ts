@@ -15,6 +15,7 @@ import { modelDisplayName } from "@/features/hub/lib/model-identity";
 import { getInferenceStatus } from "../api/chat-api";
 import { isSpeechOnlyStatus } from "./speech-only-status";
 import {
+  layersQwenThinkingDefaults,
   mergeBackendRecommendedInference,
   replayMaxTokensCap,
 } from "../presets/preset-policy";
@@ -776,7 +777,10 @@ export function applyActiveModelStatusToStore(
       checkpointId,
       reasoningAlwaysOn || current.reasoningEnabled,
     );
-    if (qwenParams !== null && current.activePresetSource === "builtin-default") {
+    if (
+      qwenParams !== null &&
+      layersQwenThinkingDefaults(current.activePresetSource, status.model_ini_applied)
+    ) {
       current.setParams(
         { ...current.params, ...qwenParams },
         {

@@ -139,6 +139,7 @@ import {
 } from "../lib/resident-config-match";
 import { residentModelMatchesPick } from "../lib/resident-model-match";
 import {
+  layersQwenThinkingDefaults,
   loadedContextForParams,
   mergeBackendRecommendedInference,
   resolveFitMaxSeqLength,
@@ -3072,7 +3073,12 @@ export function useChatModelRuntime() {
               (loadResponse.supports_reasoning ?? false)
             ) {
               const store = useChatRuntimeStore.getState();
-              if (store.activePresetSource === "builtin-default") {
+              if (
+                layersQwenThinkingDefaults(
+                  store.activePresetSource,
+                  loadResponse.model_ini_applied,
+                )
+              ) {
                 // Same rule as the load response: defaults first, this model's remembered settings over them.
                 store.setParams({ ...store.params, ...p }, {
                   fromModelDefaults: true,

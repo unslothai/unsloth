@@ -283,6 +283,15 @@ export interface BackendInferenceEnvelope {
   inference?: BackendInferenceDefaults | null;
 }
 
+/** Whether the Qwen3 thinking table may be laid over a load's defaults. Not over a server launched with
+ *  the model's unsloth.ini: its sampling is already in `inference`, and the table would replace it. */
+export function layersQwenThinkingDefaults(
+  presetSource: ChatPresetSource,
+  modelIniApplied: boolean | null | undefined,
+): boolean {
+  return presetSource === "builtin-default" && modelIniApplied !== true;
+}
+
 export function mergeBackendRecommendedInference({
   current,
   response,
