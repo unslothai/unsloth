@@ -4364,6 +4364,12 @@ def _unsloth_gkd_chunked_loss(self, model, inputs, num_items_in_batch, layout):
         return _unsloth_gkd_note_fallback(self, "use_liger_gkd_loss")
     if getattr(self, "is_fsdp_enabled", False) or getattr(self, "is_deepspeed_enabled", False):
         return _unsloth_gkd_note_fallback(self, "FSDP / DeepSpeed")
+    jsd_kwargs = {}
+    scaler = getattr(self.accelerator, "scaler", None)
+    if scaler is not None and scaler.is_enabled():
+        if "scaler" not in inspect.signature(distillation_chunked_jsd).parameters:
+            return _unsloth_gkd_note_fallback(self, "unsloth_zoo JSD has no GradScaler support")
+        jsd_kwargs["scaler"] = scaler
     try:
         missing = any(k not in inputs for k in ("input_ids", "attention_mask", "labels"))
     except Exception:
@@ -4487,6 +4493,7 @@ def _unsloth_gkd_chunked_loss(self, model, inputs, num_items_in_batch, layout):
         teacher_final_logit_softcapping = teacher_softcap,
         # No TRL release passes a temperature to generalized_jsd_loss (GKDConfig.temperature is for sampling).
         temperature = 1.0,
+        **jsd_kwargs,
     )
     try:
         self._unsloth_gkd_chunked_calls = getattr(self, "_unsloth_gkd_chunked_calls", 0) + 1
