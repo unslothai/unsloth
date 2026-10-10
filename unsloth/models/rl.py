@@ -4192,6 +4192,12 @@ def PatchFastRL(algorithm = None, FastLanguageModel = None):
         return
     # Install the disable_gradient_checkpointing noop BEFORE patch_trl_rl_trainers, which imports more trl.* submodules: anything imported after the sys.modules walk keeps the old binding.
     patch_trl_disable_gradient_checkpointing()
+    # Also before patch_trl_rl_trainers, so the generated trainers import the wrapped helpers.
+    try:
+        from ._trl_tool_templates import patch_trl_tool_chat_templates
+        patch_trl_tool_chat_templates()
+    except Exception as e:
+        logger.info(f"Unsloth: Could not patch TRL tool-call chat template matching: {e}")
     patch_trl_rl_trainers()
     patch_trl_openenv()
     patch_trl_vllm_generation()
