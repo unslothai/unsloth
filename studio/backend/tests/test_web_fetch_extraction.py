@@ -788,6 +788,10 @@ def test_page_that_fits_keeps_its_links(monkeypatch):
         ("Marque<sup>MC</sup> et Produit<sup>MD</sup>", "MarqueMC et ProduitMD"),
         ("Brand<sup>(TM)</sup> and Other<sup>(R)</sup>", "Brand(TM) and Other(R)"),
         (
+            "KWD 19<sup>950</sup>, BHD 1<sup>234</sup>, USD 10<sup>100</sup>",
+            "KWD 19950, BHD 1234, USD 10^100",
+        ),
+        (
             "M<sup>me</sup> Dupont, D<sup>r</sup> Martin, n<sup>o</sup> 5, Om<sup>e</sup>",
             "Mme Dupont, Dr Martin, no 5, Om^e",
         ),
@@ -867,6 +871,11 @@ def test_empty_superscripts_do_not_rescan_the_page():
         "<p>" + "<b>" + "word 1 " * 40000 + "</b>" * 1 + "9" + "<sup></sup>" * 20000 + "</p>"
     )
     assert time.perf_counter() - start < 3
+
+
+def test_unclosed_superscripts_do_not_exhaust_the_depth_cap():
+    html = "<p>x<sup>2</p>" * 10 + "<p>1.898&times;10<sup>27</sup> kg</p>"
+    assert html_to_markdown(html).endswith("1.898×10^27 kg")
 
 
 def test_footnote_superscripts_render_unchanged():

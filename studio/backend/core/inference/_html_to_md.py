@@ -280,6 +280,7 @@ _CURRENCY_CODES = frozenset(
         "ZWG ZWL"
     ).split()
 )
+_THREE_DECIMAL_CURRENCIES = frozenset({"BHD", "IQD", "JOD", "KWD", "LYD", "OMR", "TND"})
 _CODE_PRICE_TAIL = re.compile(r"\b([A-Z]{3})[ \u00a0\u202f]?\d(?:[\d,.'’]|[ \u00a0\u202f]\d)*$")
 # note markers that keep their plain-text form, like Wikipedia's class="reference"
 _FOOTNOTE_CLASSES = frozenset({"reference", "footnote", "footnote-ref", "noteref", "fn", "cite"})
@@ -584,9 +585,10 @@ class _MarkdownRenderer(HTMLParser):
         # Blockquote state: stack of buffers so nested blockquotes get the right ">" depth.
         self._bq_stack: list[list[str]] = []
 
-        # per open <sup>: (output list, start) and the (copy, start) pairs that tee the same text
+        # per open <sup>: its _open_tags index, then (output list, start), the (copy, start) pairs that tee the
+        # same text, the base text and whether a currency amount precedes it
         self._sup_starts: list[
-            tuple[list[str], int, list[tuple[list[str], int]], str, bool] | None
+            tuple[int, tuple[list[str], int, list[tuple[list[str], int]], str, int] | None]
         ] = []
 
     def _nested_buffer_open(self, frame: _HeaderFrame) -> bool:
@@ -664,16 +666,18 @@ class _MarkdownRenderer(HTMLParser):
         return ""
 
     @staticmethod
-    def _after_price(target: list[str]) -> bool:
-        """True when *target* ends in a currency amount ($19, CHF 19), so two-digit cents follow."""
+    def _after_price(target: list[str]) -> int:
+        """Digits of the minor unit when *target* ends in a currency amount ($19 -> 2, KWD 19 -> 3), else 0."""
         context = _visible_tail("".join(p[-40:] for p in target[-8:])[-40:])
         context = context.translate(_STRIP_MD_DELIMITERS)
         price = _PRICE_TAIL.search(context)
         # any Unicode currency sign (Sc): $, €, ₺, ₱, ...; or an ISO code: CHF 19
         if price and unicodedata.category(price.group(1)) == "Sc":
-            return True
+            return 2
         code = _CODE_PRICE_TAIL.search(context)
-        return bool(code and code.group(1) in _CURRENCY_CODES)
+        if not code or code.group(1) not in _CURRENCY_CODES:
+            return 0
+        return 3 if code.group(1) in _THREE_DECIMAL_CURRENCIES else 2
 
     def _sup_copies(self) -> list[tuple[list[str], int]]:
         copies = [self._link_heading_parts, self._seg_heading_texts]
@@ -681,8 +685,7 @@ class _MarkdownRenderer(HTMLParser):
             copies.append(self._header_stack[-1].heading_parts)
         return [(copy, len(copy)) for copy in copies]
 
-    def _finish_sup(self) -> None:
-        opened = self._sup_starts.pop()
+    def _finish_sup(self, opened) -> None:
         if opened is None or opened[0] is not self._emit_target():
             return
         target, start, copies, base, after_price = opened
@@ -702,7 +705,7 @@ class _MarkdownRenderer(HTMLParser):
             )
             or visible in _SUPERIOR_ABBREVIATIONS.get(_last_word(base), ())
             # split cents are two digits; $2<sup>n</sup> or USD 10<sup>6</sup> stays an exponent
-            or (after_price and len(visible) == 2 and visible.isdigit())
+            or (len(visible) == after_price and visible.isdigit())
         ):
             return
         # only the emphasis wrapping a whole exponent is renderer syntax; an inner * is an operator
@@ -939,6 +942,9 @@ class _MarkdownRenderer(HTMLParser):
             if name in _IMPLICIT_CLOSERS:
                 self._closable_open -= 1
         del self._open_tags[index:]
+        # a <sup> an ancestor closed (<p>x<sup>2</p>) is gone; a kept frame would fill the depth cap
+        while self._sup_starts and self._sup_starts[-1][0] >= index:
+            self._sup_starts.pop()
 
     def _close_implicit(self, tag: str) -> None:
         """HTML5 optional-end-tag recovery for a start tag about to open.
@@ -1178,16 +1184,19 @@ class _MarkdownRenderer(HTMLParser):
                 or "doc-noteref" in (attr_dict.get("role") or "").lower().split()
             )
             self._sup_starts.append(
-                None
-                if reference
-                or len(self._sup_starts) >= _MAX_SUP_DEPTH
-                or not (base := self._sup_base(target))
-                else (
-                    target,
-                    len(target),
-                    self._sup_copies(),
-                    base,
-                    base[-1].isdigit() and self._after_price(target),
+                (
+                    len(self._open_tags) - 1,
+                    None
+                    if reference
+                    or len(self._sup_starts) >= _MAX_SUP_DEPTH
+                    or not (base := self._sup_base(target))
+                    else (
+                        target,
+                        len(target),
+                        self._sup_copies(),
+                        base,
+                        self._after_price(target) if base[-1].isdigit() else 0,
+                    ),
                 )
             )
 
@@ -1273,6 +1282,12 @@ class _MarkdownRenderer(HTMLParser):
         if self._skip_depth:
             return
 
+        closing_sup = None
+        if tag == "sup" and self._sup_starts and "sup" in self._open_tags:
+            depth = len(self._open_tags) - 1 - self._open_tags[::-1].index("sup")
+            if self._sup_starts[-1][0] == depth:
+                closing_sup = self._sup_starts.pop()[1]
+
         if not self._exit_tag(tag):
             return
 
@@ -1290,8 +1305,8 @@ class _MarkdownRenderer(HTMLParser):
         elif tag in _INLINE_EMPHASIS:
             self._emit(_INLINE_EMPHASIS[tag])
 
-        elif tag == "sup" and self._sup_starts:
-            self._finish_sup()
+        elif tag == "sup":
+            self._finish_sup(closing_sup)
 
         elif tag in _BLOCK_TAGS:
             self._emit("\n\n")
