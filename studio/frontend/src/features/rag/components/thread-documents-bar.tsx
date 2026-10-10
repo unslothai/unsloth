@@ -17,7 +17,6 @@ import {
   FileDatabaseIcon,
   FolderAttachmentIcon,
   Folder02Icon,
-  InformationCircleIcon,
 } from "@hugeicons/core-free-icons";
 import {
   AttachmentKindIcon,
@@ -664,7 +663,7 @@ function ChatFilesPanel({
   title: string;
   /** Muted text after the title. */
   titleSuffix?: string;
-  /** Shown in a tooltip on the title and the info icon beside it. */
+  /** Shown in a tooltip on the file count. */
   info?: string;
   /** "4 files", drawn as a pill apart from the title. */
   count?: string;
@@ -745,34 +744,27 @@ function ChatFilesPanel({
           strokeWidth={1.75}
           className="size-4 shrink-0 text-muted-foreground"
         />
-        {info ? (
-          // The whole title is the trigger, so hovering the heading explains it too. Only resting on
-          // it opens the tooltip, and it shuts on leaving: it must not linger over the cards.
+        {heading}
+        {count && info ? (
+          // Only resting on the count opens it, and it shuts on leaving: it must not linger over the cards.
           <Tooltip delayDuration={300} disableHoverableContent={true}>
             <TooltipTrigger asChild={true}>
-              <div
+              <span
                 // biome-ignore lint/a11y/noNoninteractiveTabindex: focus opens the tooltip for keyboard users.
                 tabIndex={0}
-                aria-label={`${title}. ${info}`}
-                className="group/files-title flex min-w-0 cursor-default items-center gap-1 rounded-md focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                aria-label={`${count}. ${info}`}
+                className="unsloth-files-panel-count cursor-default focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               >
-                {heading}
-                <HugeiconsIcon
-                  icon={InformationCircleIcon}
-                  strokeWidth={1.75}
-                  aria-hidden={true}
-                  className="size-[var(--ui-icon-size-hint)] shrink-0 text-muted-foreground transition-colors group-hover/files-title:text-foreground"
-                />
-              </div>
+                {count}
+              </span>
             </TooltipTrigger>
             <TooltipContent className="max-w-[calc(300px*var(--ui-space-scale,1))] text-ui-11 leading-snug">
               {info}
             </TooltipContent>
           </Tooltip>
-        ) : (
-          heading
-        )}
-        {count ? <span className="unsloth-files-panel-count">{count}</span> : null}
+        ) : count ? (
+          <span className="unsloth-files-panel-count">{count}</span>
+        ) : null}
         {note}
         <div className="ml-auto flex shrink-0 items-center gap-1">
           {headerControls}
@@ -1356,7 +1348,7 @@ export function ThreadDocumentsBar({
         icon={FileDatabaseIcon}
         title="Chat with files"
         titleSuffix="(RAG)"
-        count={fileCount > 0 ? countSuffix : undefined}
+        count={countSuffix}
         info="Add or drop documents, spreadsheets, slides, e-books, email or code. The model searches them as you chat and cites what it uses."
         onDropItems={attach}
         dropDisabledReason={busyReason}
