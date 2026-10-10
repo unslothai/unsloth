@@ -2051,10 +2051,9 @@ def _unsloth_average_gradients(ddp, bucket_bytes = 64 << 20):
             flat = torch.cat([g.reshape(-1) for g in chunk])
             dist.all_reduce(flat, group = group)
             flat.div_(world_size)
-            offset = 0
-            for g in chunk:
-                g.copy_(flat[offset : offset + g.numel()].view_as(g))
-                offset += g.numel()
+            # One fused copy back: a per-tensor copy_ loop costs a launch per LoRA tensor (500+ for an 8B model).
+            pieces = torch.split(flat, [g.numel() for g in chunk])
+            torch._foreach_copy_(chunk, [x.view_as(g) for x, g in zip(pieces, chunk)])
             start = stop
 
 
