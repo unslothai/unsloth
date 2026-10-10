@@ -92,3 +92,19 @@ def test_unload_forgets_the_fit(tmp_path, monkeypatch):
     assert backend.vram_fit_context_length is not None
     backend.unload_model()
     assert backend.vram_fit_context_length is None
+
+
+@pytest.mark.parametrize(
+    "state",
+    [{"_gpu_offload_active": False}, {"_cpu_fallback_reason": "vulkan_startup_crash"}],
+    ids = ["landed-on-cpu", "vulkan-cpu-fallback"],
+)
+def test_a_child_on_cpu_claims_no_fit(state):
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    backend = LlamaCppBackend()
+    backend._vram_fit_context_length = 65536
+    assert backend.vram_fit_context_length == 65536
+    for name, value in state.items():
+        setattr(backend, name, value)
+    assert backend.vram_fit_context_length is None
