@@ -28,17 +28,17 @@ from .rms_layernorm import (
 
 def _rope_embedding_QK(
     Q,
-    Q_batch_stride,
-    Q_head_stride,
-    Q_seq_stride,
+    Q_batch_stride,  # s*h*d: varies with seq_len
+    Q_head_stride,  # d fwd, s*d bwd
+    Q_seq_stride: tl.constexpr,  # h*d fwd, d bwd
     K,
     K_batch_stride,
     K_head_stride,
-    K_seq_stride,
+    K_seq_stride: tl.constexpr,  # kv*d fwd, d bwd
     cos,
-    cos_row_stride,
+    cos_row_stride: tl.constexpr,  # d
     sin,
-    sin_row_stride,
+    sin_row_stride: tl.constexpr,  # d
     rope_embedding_indices,
     seqlen,
     head_dim: tl.constexpr,

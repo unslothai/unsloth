@@ -21,7 +21,7 @@ from unsloth.kernels import rope_embedding as rope_mod
 
 
 def _compile(fn, signature, constexprs, cc):
-    signature = {**signature, **{k: "constexpr" for k in constexprs}}
+    signature = {name: signature.get(name, "constexpr") for name in fn.arg_names}
     return triton.compile(
         ASTSource(fn, signature = signature, constexprs = constexprs),
         target = GPUTarget("cuda", cc, 32),
@@ -56,6 +56,10 @@ def _rope_qk_constexprs(capability, monkeypatch):
     finally:
         rope_mod._eviction_hints_ok_at.cache_clear()
     return dict(
+        Q_seq_stride = 512,
+        K_seq_stride = 256,
+        cos_row_stride = 64,
+        sin_row_stride = 64,
         head_dim = 64,
         n_heads_K = 4,
         BACKWARD_PASS = False,
@@ -69,15 +73,11 @@ _ROPE_SIGNATURE = {
     "Q": "*fp16",
     "Q_batch_stride": "i32",
     "Q_head_stride": "i32",
-    "Q_seq_stride": "i32",
     "K": "*fp16",
     "K_batch_stride": "i32",
     "K_head_stride": "i32",
-    "K_seq_stride": "i32",
     "cos": "*fp16",
-    "cos_row_stride": "i32",
     "sin": "*fp16",
-    "sin_row_stride": "i32",
     "rope_embedding_indices": "*i32",
     "seqlen": "i32",
 }
