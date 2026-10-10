@@ -4060,6 +4060,7 @@ export const it = {
       chatAboutThis: "Chatta su questo",
       chatWithModel: "Chatta con questo modello",
       addToFavorites: "Aggiungi ai preferiti",
+      regenerateTitle: "Rigenera titolo",
       removeFromFavorites: "Rimuovi dai preferiti",
       download: "Scarica",
       addToFolder: "Aggiungi a cartella",

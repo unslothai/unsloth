@@ -4058,6 +4058,7 @@ export const es = {
       chatAboutThis: "Chatear sobre esto",
       chatWithModel: "Chatear con este modelo",
       addToFavorites: "Añadir a Favoritos",
+      regenerateTitle: "Regenerar título",
       removeFromFavorites: "Quitar de Favoritos",
       download: "Descargar",
       addToFolder: "Añadir a carpeta",
