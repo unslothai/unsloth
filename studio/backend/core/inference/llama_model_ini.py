@@ -520,7 +520,11 @@ def _read_capped(path: Path) -> str:
 
 
 def _locate_local(model_path: str, gguf_variant: Optional[str]) -> Optional[LocatedModelIni]:
-    from utils.models.model_config import _find_local_gguf_by_variant, _is_gguf_filename
+    from utils.models.model_config import (
+        _find_local_gguf_by_variant,
+        _gguf_variant_token,
+        _is_gguf_filename,
+    )
 
     path = Path(model_path).expanduser()
     gguf_file: Optional[Path] = None
@@ -550,10 +554,14 @@ def _locate_local(model_path: str, gguf_variant: Optional[str]) -> Optional[Loca
     for folder in dict.fromkeys(folders):
         candidate = folder / MODEL_INI_FILENAME
         if candidate.is_file():
+            # A local load rarely names its variant; the quant in the file name picks [Q4_K_M].
+            quant = gguf_variant or (
+                _gguf_variant_token(gguf_file.name) if gguf_file is not None else None
+            )
             return LocatedModelIni(
                 _read_capped(candidate),
                 "local_dir",
-                gguf_variant,
+                quant,
                 gguf_file.name if gguf_file is not None else None,
             )
     return None

@@ -16778,9 +16778,12 @@ def _resolve_inherited_extra_args(
     if not getattr(config, "is_gguf", False):
         return extra_llama_args
     llama_backend = get_llama_cpp_backend()
-    stored_args = _without_model_ini(llama_backend, getattr(llama_backend, "extra_args", None))
+    raw_stored = getattr(llama_backend, "extra_args", None)
+    stored_args = _without_model_ini(llama_backend, raw_stored)
     if not stored_args:
-        return extra_llama_args
+        # Only INI tokens were stored: an explicit [] makes the backend drop them, where None
+        # would keep them as this load's extras for the next load to inherit.
+        return [] if raw_stored and extra_llama_args is None else extra_llama_args
     # Inherit the previous load's extras (the chat-settings Apply path doesn't
     # round-trip them; an explicit [] still clears). Gated on (model_identifier,
     # hf_variant) to refuse cross-model pickup, and shadowing flags are

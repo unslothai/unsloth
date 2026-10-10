@@ -208,6 +208,18 @@ def test_local_ini_beside_the_selected_variant_wins_over_root(tmp_path):
     assert "0.1" in root.text
 
 
+def test_local_file_quant_selects_its_section_without_a_variant(tmp_path):
+    (tmp_path / "Qwen3-0.6B-Q4_K_M.gguf").write_bytes(b"GGUF")
+    (tmp_path / "unsloth.ini").write_text("[*]\ntemp = 0.4\n[Q4_K_M]\ntop-p = 0.77\n")
+    found = mi.locate_model_ini(str(tmp_path / "Qwen3-0.6B-Q4_K_M.gguf"))
+    compiled = mi.parse_model_ini(found.text, quant = found.quant, gguf_filename = found.gguf_filename)
+    assert found.quant == "Q4_K_M"
+    assert compiled.applied_sections == ["*", "Q4_K_M"] and compiled.args[-2:] == [
+        "--top-p",
+        "0.77",
+    ]
+
+
 def test_local_dir_without_ini_is_none_and_non_gguf_dir_raises(tmp_path):
     (tmp_path / "M-Q8_0.gguf").write_bytes(b"GGUF")
     assert mi.locate_model_ini(str(tmp_path)) is None
@@ -371,6 +383,22 @@ def test_stored_ini_prefix_is_never_inherited():
         ]
     finally:
         routes.get_llama_cpp_backend = original
+
+
+def test_ini_only_extras_are_cleared_explicitly_when_the_toggle_goes_off(monkeypatch):
+    # None would leave the INI tokens stored as this load's extras (the backend only rebinds
+    # on a list), so the load after this one would inherit them as typed extras.
+    from routes.inference import _resolve_inherited_extra_args
+    import routes.inference as routes
+
+    backend = _Backend(["--ctx-size", "8192"], ["--ctx-size", "8192"])
+    monkeypatch.setattr(routes, "get_llama_cpp_backend", lambda: backend)
+    request = SimpleNamespace(model_path = "u/M-GGUF", gguf_variant = "Q8_0", llama_extra_args = None)
+    config = SimpleNamespace(is_gguf = True, gguf_variant = "Q8_0", identifier = "u/M-GGUF")
+    assert _resolve_inherited_extra_args(request, config, "u/M-GGUF", None) == []
+    backend._studio_model_ini_record = None
+    backend.extra_args = []
+    assert _resolve_inherited_extra_args(request, config, "u/M-GGUF", None) is None
 
 
 def test_prefix_is_stale_once_another_load_rewrote_the_extras():
