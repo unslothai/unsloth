@@ -385,8 +385,7 @@ const TITLE_SYSTEM_PROMPT =
 const TITLE_REFRESH_SYSTEM_PROMPT =
   "Write 1 concise chat title for what this conversation is about now. The excerpt holds its latest messages, oldest first; weight the newest most. Rules: 2-6 words, no quotes, no punctuation, ASCII only, do not echo input. Output title only.";
 
-// The excerpt is all a refresh prefills (about 250 tokens however long the chat is): the last
-// two or three turns, the window Open WebUI titles from ({{MESSAGES:END:2}}).
+// About 250 tokens however long the chat: the last 2-3 turns, Open WebUI's {{MESSAGES:END:2}} window.
 const REFRESH_MESSAGE_CHARS = 300;
 const REFRESH_EXCERPT_CHARS = 900;
 const REFRESH_MIN_CHARS = 40;
@@ -421,8 +420,7 @@ export function titleRefreshExcerpt(messages: readonly MessageRecord[]): string 
   return lines.reverse().join("\n");
 }
 
-// Function words and filler: a title phrase never starts or ends on one. English plus the commonest
-// Spanish, French, German and Portuguese ones; other languages still get a span of their own words.
+// A title phrase never starts or ends on one of these (English plus common es/fr/de/pt).
 const TITLE_STOPWORDS = new Set(
   (
     "a an the and or but if then so of in on at to for from by with about into over after before under between through during without within " +
@@ -442,11 +440,8 @@ function isTitleWord(word: string): boolean {
   return word.length >= 3 && !TITLE_STOPWORDS.has(word.toLowerCase()) && !/^\d+$/.test(word);
 }
 
-/**
- * A title without a model: the phrase of the newest real user message (not "thanks" or "ok continue")
- * whose words the latest turns keep coming back to, assistant headings and bold counted twice.
- * Open WebUI falls back to the first message, which is the topic a drifted chat has left.
- */
+/** Title without a model: the newest real user message's phrase the latest turns keep repeating. Open WebUI
+ *  uses the first message instead, the topic a drifted chat has left. */
 export function heuristicChatTitle(messages: readonly MessageRecord[]): string | null {
   const turns = messages
     .filter((m) => m.role === "user" || m.role === "assistant")
@@ -456,7 +451,7 @@ export function heuristicChatTitle(messages: readonly MessageRecord[]): string |
   const count = (text: string, value: number) => {
     for (const word of text.match(TITLE_WORD) ?? []) {
       if (!isTitleWord(word)) continue;
-      // Names (React, TypeError, LoRA) are what a chat is about more often than not.
+      // Names (React, LoRA) weigh more.
       const name = /[A-Z]/.test(word) ? 1.5 : 1;
       const key = word.toLowerCase();
       weight.set(key, (weight.get(key) ?? 0) + value * name);

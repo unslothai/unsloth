@@ -3096,9 +3096,8 @@ export function AppSidebar() {
     }
   }
 
-  /** The title follows the model's read of the latest turns; the row itself says when it lands. */
   async function regenerateChatTitleFromMenu(item: SidebarItem) {
-    // Only a slow refresh says it is working; a fast one would just flash a toast.
+    // A fast refresh would only flash the toast.
     const toastId = `regenerate-title-${item.id}`;
     const slow = setTimeout(() => toast.loading("Regenerating title...", { id: toastId }), 400);
     const outcome = await regenerateChatTitle(item);

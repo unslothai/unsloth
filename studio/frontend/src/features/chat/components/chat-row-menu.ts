@@ -135,10 +135,9 @@ export type RegenerateTitleOutcome =
   | "failed";
 
 const regeneratingTitles = new Set<string>();
-// A title is not worth a long wait: past this the phrase from the messages stands in.
+// Past this, the title is picked from the messages instead.
 const TITLE_MODEL_WAIT_MS = 15_000;
 
-/** Null when the model cannot answer in time or answers with something unusable. */
 async function titleFromModel(checkpoint: string, excerpt: string): Promise<string | null> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TITLE_MODEL_WAIT_MS);
@@ -153,12 +152,8 @@ async function titleFromModel(checkpoint: string, excerpt: string): Promise<stri
   }
 }
 
-/**
- * Re-titles a chat from its latest turns with the model the user has selected, never the one that
- * answered: an idle local model would be reloaded for a few words. With none selected, or none that
- * answers, the title is picked from the messages themselves. A comparison's panes share their user
- * turns and title, so one pane is read.
- */
+/** Uses the selected model, never the one that answered (an idle local model would be reloaded for a
+ *  few words); without one, the messages. A comparison's panes share user turns, so one is read. */
 export async function regenerateChatTitle(
   item: SidebarItem,
 ): Promise<RegenerateTitleOutcome> {
