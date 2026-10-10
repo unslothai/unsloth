@@ -220,8 +220,11 @@ for (const [format, extensions, adapter, rustList] of [
   });
 }
 
-test("Office and Outlook drops index in chat with files and match the native allowlist", () => {
-  const office = [".doc", ".xls", ".xlsx", ".xlsm", ".ppt", ".pptx", ".msg"];
+test("Office, Outlook and web page drops index in chat with files and match the native allowlist", () => {
+  const office =
+    ".doc .xls .xlsx .xlsm .xltx .xltm .ppt .pptx .pptm .ppsx .ott .ots .otp .msg .mht .mhtml .xhtml .xht".split(
+      " ",
+    );
   for (const extension of office) {
     const path = `/docs/Report${extension.toUpperCase()}`;
     assert.equal(classifyDropPaths([path]).kind, "docs", path);
@@ -229,8 +232,8 @@ test("Office and Outlook drops index in chat with files and match the native all
     assert.ok(SUPPORTED_DROP_HINT.includes(extension));
   }
   // Types with a composer adapter keep going to the composer.
-  for (const path of ["/docs/a.odt", "/docs/a.rtf", "/docs/a.epub", "/docs/a.eml"]) {
-    assert.ok(isComposerAttachmentName(path), path);
+  for (const ext of [".odt", ".rtf", ".epub", ".eml", ".docm"]) {
+    assert.ok(isComposerAttachmentName(`/docs/a${ext}`), ext);
   }
   const rust = [
     ...(readText("../../src-tauri/src/native_path_policy.rs")

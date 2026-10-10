@@ -48,9 +48,12 @@ pub fn classify_native_model_path(path: &Path) -> Result<ClassifiedPath, String>
 
 /// Document types the RAG ingest accepts; keep in sync with `config.SUPPORTED_UPLOAD_EXTS`.
 pub const ATTACHMENT_EXTS: &[&str] = &["pdf", "txt", "md", "markdown", "docx", "html", "htm"];
-/// Office and Outlook files RAG ingest reads and no composer adapter does; keep in sync with
-/// `OFFICE_DOC_EXTS` in `drop-paths.ts`.
-pub const OFFICE_ATTACHMENT_EXTS: &[&str] = &["doc", "xls", "xlsx", "xlsm", "ppt", "pptx", "msg"];
+/// Office, Outlook and saved web page files RAG ingest reads and no composer adapter does; keep in
+/// sync with `OFFICE_DOC_EXTS` in `drop-paths.ts`.
+pub const OFFICE_ATTACHMENT_EXTS: &[&str] = &[
+    "doc", "xls", "xlsx", "xlsm", "xltx", "xltm", "ppt", "pptx", "pptm", "ppsx", "ott", "ots",
+    "otp", "msg", "mht", "mhtml", "xhtml", "xht",
+];
 /// OpenDocument files the chat composer parses directly rather than indexing as RAG sources.
 pub const OPEN_DOCUMENT_ATTACHMENT_EXTS: &[&str] = &["ods", "odt"];
 pub const RTF_ATTACHMENT_EXTS: &[&str] = &["rtf"];

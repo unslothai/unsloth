@@ -655,12 +655,37 @@ def _docx_table_rows(table) -> list[str]:
     return rows
 
 
+_WORD_EXTS = frozenset((".docx", ".docm", ".dotx", ".dotm"))
+_WORD_MAIN_TYPES = (
+    "application/vnd.ms-word.document.macroEnabled.main+xml",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.template.main+xml",
+    "application/vnd.ms-word.template.macroEnabledTemplate.main+xml",
+)
+
+
+def _open_word(path: str):
+    # docx.Document() is Package.open() plus a check that rejects the macro and template main parts.
+    import docx  # noqa: F401  (registers the .docx part types)
+    from docx.opc.constants import CONTENT_TYPE as CT
+    from docx.opc.part import PartFactory
+    from docx.package import Package
+    from docx.parts.document import DocumentPart
+
+    for content_type in _WORD_MAIN_TYPES:
+        PartFactory.part_type_for.setdefault(content_type, DocumentPart)
+    part = Package.open(path).main_document_part
+    if part.content_type not in (CT.WML_DOCUMENT_MAIN, *_WORD_MAIN_TYPES):
+        raise ValueError(
+            f"file '{os.path.basename(path)}' is not a Word file, content type is '{part.content_type}'"
+        )
+    return part.document
+
+
 def _docx(path: str) -> list[Page]:
-    import docx
     from docx.table import Table
     from docx.text.paragraph import Paragraph
 
-    document = docx.Document(path)
+    document = _open_word(path)
     lines: list[str] = []
     _docx_unwrap_table_controls(document.element.body)
     label_notes = _docx_mark_notes(document)
@@ -859,7 +884,7 @@ def parse(path: str, *, want_images: bool = False):
         pages, images, _total = _pdf(path, want_images)
         return (pages, images) if want_images else pages
 
-    if ext == ".docx":
+    if ext in _WORD_EXTS:
         pages = _docx(path)
         return (pages, []) if want_images else pages
 
@@ -887,23 +912,27 @@ def _html_bytes_text(raw: bytes) -> str:
     return "\n\n".join(page.text for page in _html(_decode_text(raw, html = True)))
 
 
+def _xhtml(path: str) -> list[tuple[str, int | None]]:
+    with open(path, "rb") as f:
+        return [(_html_bytes_text(f.read()), None)]
+
+
 def _office_document(path: str, ext: str) -> list[Page]:
     from . import office_formats as office
 
     readers = {
         ".doc": office.doc,
         ".xls": office.xls,
-        ".xlsx": office.xlsx,
-        ".xlsm": office.xlsx,
         ".ppt": office.ppt,
-        ".pptx": office.pptx,
-        ".odt": office.opendocument,
-        ".ods": office.opendocument,
-        ".odp": office.opendocument,
         ".rtf": office.rtf,
         ".epub": lambda p: office.epub(p, _html_bytes_text),
-        ".eml": lambda p: office.eml(p, _html_bytes_text),
         ".msg": lambda p: office.msg(p, _html_bytes_text),
+        **dict.fromkeys((".xlsx", ".xlsm", ".xltx", ".xltm"), office.xlsx),
+        **dict.fromkeys((".pptx", ".pptm", ".potx", ".potm", ".ppsx", ".ppsm"), office.pptx),
+        **dict.fromkeys((".odt", ".ods", ".odp", ".ott", ".ots", ".otp"), office.opendocument),
+        # Saved single-file web pages are MIME messages with an HTML body.
+        **dict.fromkeys((".eml", ".mht", ".mhtml"), lambda p: office.eml(p, _html_bytes_text)),
+        **dict.fromkeys((".xhtml", ".xht"), _xhtml),
     }
     try:
         sections = readers[ext](path)

@@ -92,7 +92,10 @@ def build_pptx(path):
 
 
 def _odf(path, body):
-    kind = {".odt": "text", ".ods": "spreadsheet", ".odp": "presentation"}[Path(path).suffix]
+    suffix = Path(path).suffix
+    kind = {".odt": "text", ".ods": "spreadsheet", ".odp": "presentation"}.get(suffix)
+    if kind is None:
+        kind = {".ott": "text", ".ots": "spreadsheet", ".otp": "presentation"}[suffix] + "-template"
     return _zip(
         path,
         {
@@ -168,6 +171,57 @@ def build_eml(path):
     message.add_alternative("<p>html copy</p>", subtype = "html")
     message.add_attachment(b"x,y\n", maintype = "text", subtype = "csv", filename = "data.csv")
     path.write_bytes(bytes(message))
+    return path
+
+
+def build_mhtml(path):
+    # Chrome's "Save page as > Webpage, single file": multipart/related with the page and its resources.
+    message = EmailMessage()
+    message["From"] = "<Saved by Blink>"
+    message["Subject"] = "Quarterly report"
+    message.set_content(
+        "<html><body><p>Zebramarker on the page.</p><img src='logo.png'></body></html>",
+        subtype = "html",
+    )
+    message.make_related()
+    message.add_related(b"\x89PNG\r\n\x1a\n", maintype = "image", subtype = "png", cid = "<logo>")
+    path.write_bytes(bytes(message))
+    return path
+
+
+def build_xhtml(path):
+    path.write_text(
+        '<?xml version="1.0" encoding="utf-8"?><html xmlns="http://www.w3.org/1999/xhtml">'
+        "<head><title>Report</title><style>p{}</style></head><body><p>Zebramarker résumé</p></body></html>",
+        encoding = "utf-8",
+    )
+    return path
+
+
+_WORD_TYPES = {
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml",
+    ".docm": "application/vnd.ms-word.document.macroEnabled.main+xml",
+    ".dotx": "application/vnd.openxmlformats-officedocument.wordprocessingml.template.main+xml",
+    ".dotm": "application/vnd.ms-word.template.macroEnabledTemplate.main+xml",
+}
+
+
+def build_word(path):
+    import docx
+
+    document = docx.Document()
+    document.add_paragraph("Quarterly report")
+    document.add_table(rows = 1, cols = 2).rows[0].cells[0].text = "Zebramarker"
+    buffer = io.BytesIO()
+    document.save(buffer)
+    with zipfile.ZipFile(buffer) as source, zipfile.ZipFile(path, "w") as target:
+        for info in source.infolist():
+            data = source.read(info)
+            if info.filename == "[Content_Types].xml":
+                data = data.replace(
+                    _WORD_TYPES[".docx"].encode(), _WORD_TYPES[path.suffix].encode()
+                )
+            target.writestr(info, data)
     return path
 
 
@@ -421,17 +475,19 @@ def build_msg(path):
 BUILDERS = {
     ".doc": build_doc,
     ".xls": build_xls,
-    ".xlsx": build_xlsx,
-    ".xlsm": build_xlsx,
     ".ppt": build_ppt,
-    ".pptx": build_pptx,
     ".msg": build_msg,
     ".eml": build_eml,
     ".rtf": build_rtf,
-    ".odt": build_odt,
-    ".ods": build_ods,
-    ".odp": build_odp,
     ".epub": build_epub,
+    **dict.fromkeys((".docm", ".dotx", ".dotm"), build_word),
+    **dict.fromkeys((".xlsx", ".xlsm", ".xltx", ".xltm"), build_xlsx),
+    **dict.fromkeys((".pptx", ".pptm", ".potx", ".potm", ".ppsx", ".ppsm"), build_pptx),
+    **dict.fromkeys((".odt", ".ott"), build_odt),
+    **dict.fromkeys((".ods", ".ots"), build_ods),
+    **dict.fromkeys((".odp", ".otp"), build_odp),
+    **dict.fromkeys((".mht", ".mhtml"), build_mhtml),
+    **dict.fromkeys((".xhtml", ".xht"), build_xhtml),
 }
 
 
@@ -649,6 +705,39 @@ def test_eml_decodes_headers_and_body(tmp_path):
     assert "Attachments: data.csv" in text
     assert "Zebramarker in the body." in text
     assert "html copy" not in text
+
+
+@pytest.mark.parametrize("extension", [".docx", ".docm", ".dotx", ".dotm"])
+def test_word_macro_and_template_files_read_like_docx(tmp_path, extension):
+    text = _text(build_word(tmp_path / f"report{extension}"))
+    assert "Quarterly report" in text and "Zebramarker" in text
+
+
+def test_word_extension_on_another_package_is_refused(tmp_path):
+    workbook = build_word(tmp_path / "report.docx").read_bytes()
+    with zipfile.ZipFile(io.BytesIO(workbook)) as source:
+        types = source.read("[Content_Types].xml").replace(
+            _WORD_TYPES[".docx"].encode(),
+            b"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml",
+        )
+        with zipfile.ZipFile(tmp_path / "sheet.docm", "w") as target:
+            for info in source.infolist():
+                target.writestr(
+                    info, types if info.filename == "[Content_Types].xml" else source.read(info)
+                )
+    with pytest.raises(ValueError, match = "not a Word file"):
+        parsers.parse(str(tmp_path / "sheet.docm"))
+
+
+def test_mhtml_reads_the_page_and_skips_resources(tmp_path):
+    text = _text(build_mhtml(tmp_path / "page.mhtml"))
+    assert "Zebramarker on the page." in text
+    assert "PNG" not in text
+
+
+def test_xhtml_reads_visible_text(tmp_path):
+    text = _text(build_xhtml(tmp_path / "page.xhtml"))
+    assert "Zebramarker résumé" in text and "p{}" not in text
 
 
 def test_rtf_keeps_text_and_drops_control_groups(tmp_path):
