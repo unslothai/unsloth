@@ -264,7 +264,7 @@ _SUP_BASE_SCAN_CHARS = 128
 # a caret binds one token: a signed number or one letter goes bare, anything longer in parentheses
 _BARE_EXPONENT = re.compile(r"[-+−]?(?:\d+(?:[.,]\d+)?|[^\W\d_])")
 # split cents: $19<sup>99</sup> is a price, not an exponent
-_PRICE_TAIL = re.compile(r"(\S)\s?\d(?:[\d,.]|[ \u00a0\u202f]\d)*$")
+_PRICE_TAIL = re.compile(r"(\S)\s?\d(?:[\d,.'’]|[ \u00a0\u202f]\d)*$")
 # ISO 4217 codes: CHF 19<sup>95</sup> is a price like $19<sup>99</sup>
 _CURRENCY_CODES = frozenset(
     (
@@ -278,7 +278,7 @@ _CURRENCY_CODES = frozenset(
         "ZWG ZWL"
     ).split()
 )
-_CODE_PRICE_TAIL = re.compile(r"\b([A-Z]{3})[ \u00a0\u202f]?\d(?:[\d,.]|[ \u00a0\u202f]\d)*$")
+_CODE_PRICE_TAIL = re.compile(r"\b([A-Z]{3})[ \u00a0\u202f]?\d(?:[\d,.'’]|[ \u00a0\u202f]\d)*$")
 # note markers that keep their plain-text form, like Wikipedia's class="reference"
 _FOOTNOTE_CLASSES = frozenset({"reference", "footnote", "footnote-ref", "noteref", "fn", "cite"})
 # deeper <sup> nests render as plain text: each tracked level rescans its whole suffix on close
