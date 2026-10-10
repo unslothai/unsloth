@@ -414,7 +414,6 @@ def test_a_leading_control_before_the_heading_title_is_dropped():
             "<hgroup><h1><button>Question</button></h1><p>Sub</p></hgroup><p>Answer text.</p>",
             "# Question",
         ),
-        ("<h3><button>First<br>Second</button></h3><p>Answer text.</p>", "### First Second"),
         (
             "<h3><button hidden>old</button><button>Question</button></h3><p>Answer text.</p>",
             "### Question",
@@ -424,6 +423,13 @@ def test_a_leading_control_before_the_heading_title_is_dropped():
             "### Question",
         ),
         ("<h3><button>Question</button><br></h3><p>Answer text.</p>", "### Question"),
+        ("<h3><em><button>Question</button></em></h3><p>Answer text.</p>", "### *Question*"),
+        (
+            "<h3><button aria-label='Settings'><svg><path/></svg></button><button>Question</button></h3>"
+            "<p>Answer text.</p>",
+            "### Question",
+        ),
+        ("<ul><li><h3><button>Question</button><li>Answer text.</ul>", "### Question"),
     ],
 )
 def test_heading_button_title_edge_cases(html, heading):
@@ -433,15 +439,17 @@ def test_heading_button_title_edge_cases(html, heading):
     assert "old" not in out
 
 
-@pytest.mark.parametrize("cut", ["<h3><button>Question", "<h3><button>Question</button>"])
+@pytest.mark.parametrize(
+    "cut", ["<h3><button>Question", "<h3><button>Question</button>", "<h3><button>Question<svg>"]
+)
 def test_heading_button_cut_by_the_fetch_cap_keeps_its_title(cut):
     assert "### Question" in html_to_markdown("<p>Answer text.</p>" + cut)
 
 
-def test_inline_markup_in_a_heading_button_stays_in_order():
-    out = html_to_markdown("<h3><button><em>Question</em> one</button></h3><p>Answer text.</p>")
-    assert "### Question one" in out
-    assert "*" not in out
+@pytest.mark.parametrize("title", ["<em>Question</em> one", "First<br>Second", "Q &amp; A"])
+def test_a_heading_button_title_renders_like_the_plain_heading(title):
+    plain = html_to_markdown(f"<h3>{title}</h3><p>Answer text.</p>")
+    assert html_to_markdown(f"<h3><button>{title}</button></h3><p>Answer text.</p>") == plain
 
 
 def test_visible_void_hr_still_renders():
