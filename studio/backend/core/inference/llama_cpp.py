@@ -30663,11 +30663,18 @@ class LlamaCppBackend:
                 self._max_context_length = (
                     max_available_ctx if max_available_ctx > 0 else self._effective_context_length
                 )
-                # The fit priced Unsloth's own placement; a user device, layer or tensor
-                # override runs one it never saw.
+                # The fit priced Unsloth's own placement and the base weights alone; a user
+                # device, layer or tensor override, or a resident adapter, is one it never saw.
+                _user_device_args = (
+                    self._strip_device_extra_args(extra_args)
+                    if _gpu_ids_own_device_flags
+                    else extra_args
+                )
                 self._vram_fit_context_length = (
                     None
-                    if _device_selection_is_cpu(extra_args, os.environ)
+                    if _extra_args_main_device(_user_device_args) is not None
+                    or os.environ.get("LLAMA_ARG_DEVICE")
+                    or _sidecar_adapter_bytes(extra_args) != 0
                     or _args_place_tensors_on_cpu(extra_args)
                     or _env_places_tensors_on_cpu()
                     or _extra_args_set_any_flag(extra_args, _GPU_LAYER_FLAGS)

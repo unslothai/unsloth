@@ -190,8 +190,14 @@ def test_a_placement_that_raises_claims_no_fit(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize(
     "extra_args",
-    [["--device", "none"], ["-ngl", "8"], ["-ot", "exps=CPU"]],
-    ids = ["cpu-device", "user-layers", "tensors-on-cpu"],
+    [
+        ["--device", "none"],
+        ["--device", "CUDA0"],
+        ["-ngl", "8"],
+        ["-ot", "exps=CPU"],
+        ["--lora", "adapter.gguf"],
+    ],
+    ids = ["cpu-device", "narrower-device", "user-layers", "tensors-on-cpu", "lora-adapter"],
 )
 def test_a_user_placement_override_claims_no_fit(tmp_path, monkeypatch, extra_args):
     (tmp_path / "metal").mkdir()
