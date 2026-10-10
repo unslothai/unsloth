@@ -126,3 +126,25 @@ def test_rows_still_train_when_the_template_rejects_tools():
     texts = _format([{"messages": _MESSAGES, "tools": [_WEATHER]}], _NoToolsTokenizer())
 
     assert texts == ["<user>Weather in Paris?<assistant>It is 21C."]
+
+
+@pytest.mark.parametrize(
+    "encode",
+    [json.dumps, lambda tools: [json.dumps(tool) for tool in tools]],
+    ids = ["json_string", "json_string_list"],
+)
+def test_json_string_tools_keep_their_null_defaults(encode):
+    tool = {
+        "type": "function",
+        "function": {
+            "name": "search_docs",
+            "parameters": {
+                "type": "object",
+                "properties": {"lang": {"type": "string", "default": None}},
+            },
+        },
+    }
+
+    texts = _format([{"messages": _MESSAGES, "tools": encode([tool])}])
+
+    assert texts[0].startswith(_catalog(tool))

@@ -184,10 +184,13 @@ def _json_cell(value):
 
 
 def _row_tools(tools):
-    tools = _json_cell(tools)
+    if isinstance(tools, list):
+        tools = [tool if isinstance(tool, str) else _drop_none_values(tool) for tool in tools]
+    else:
+        tools = _json_cell(tools)
     if not isinstance(tools, list):
         return None
-    tools = [_drop_none_values(_json_cell(tool)) for tool in tools]
+    tools = [_json_cell(tool) for tool in tools]
     if not tools or not all(isinstance(tool, dict) for tool in tools):
         return None
     return [
