@@ -243,6 +243,7 @@ _DIGIT_ORDINAL_SUFFIXES = frozenset(
         "re",
         "res",
         "ère",
+        "ères",
         "ème",
         "èmes",
         "eme",
