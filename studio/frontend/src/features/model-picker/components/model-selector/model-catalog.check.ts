@@ -133,7 +133,6 @@ assert.equal(groupForRepoId("unsloth/Qwen-Image-2.1-Turbo-FP8", IMAGE_CATALOG), 
 assert.equal(groupForRepoId("unsloth/Qwen-Image-2.1-Turbo-GGUF", IMAGE_CATALOG), qwen21Turbo);
 assert.equal(loadSpecFor("unsloth/Qwen-Image-2.1-Turbo-GGUF", IMAGE_CATALOG)?.kind, "gguf");
 assert.equal(groupForRepoId("unsloth/Qwen-Image-2.1-GGUF", IMAGE_CATALOG)?.canonicalId, "unsloth/Qwen-Image-2.1");
-// Turbo picks its own GGUF / pipeline wherever 2.1 picks its GGUF / pipeline, with the same labels.
 {
   const qwen21 = groupForRepoId("unsloth/Qwen-Image-2.1", IMAGE_CATALOG);
   assert.ok(qwen21);
