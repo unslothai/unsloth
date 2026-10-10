@@ -25,18 +25,24 @@ _OPENBLAS_DEFAULT_MAX = 8
 # share of the memory those buffers draw on that the default may spend, so a host short of it starts on fewer.
 _OPENBLAS_THREAD_COST = 32 << 20
 _OPENBLAS_MEMORY_SHARE = 0.1
+# rocm-openblas.dll is built with the stock 128 MB buffer: each of its threads commits that once CPU BLAS runs
+# (measured on gfx1151: 1978 / 3905 / 5959 MB committed at 1 / 16 / 32 threads).
+_ROCM_OPENBLAS_THREAD_COST = 128 << 20
+
+
+def _threads_that_fit(threads: int, cost: int) -> int:
+    """``threads``, or fewer when a tenth of the memory OpenBLAS's buffers draw on cannot hold one per thread."""
+    headroom = _openblas_memory_headroom()
+    if headroom is None:
+        return threads
+    return max(1, min(threads, int(headroom * _OPENBLAS_MEMORY_SHARE) // cost))
 
 
 def default_openblas_threads() -> int:
     """Studio's OPENBLAS_NUM_THREADS when nothing is configured: about one per physical core, at most 8, and
     fewer when the memory OpenBLAS's per-thread buffers draw on is short."""
     threads = max(1, min(_OPENBLAS_DEFAULT_MAX, (os.cpu_count() or 2) // 2))
-    headroom = _openblas_memory_headroom()
-    if headroom is not None:
-        threads = max(
-            1, min(threads, int(headroom * _OPENBLAS_MEMORY_SHARE) // _OPENBLAS_THREAD_COST)
-        )
-    return threads
+    return _threads_that_fit(threads, _OPENBLAS_THREAD_COST)
 
 
 def _openblas_memory_headroom() -> Optional[int]:
@@ -213,8 +219,11 @@ def _openblas_thread_target(environ: Optional[MutableMapping[str, str]] = None) 
     target = None
     if raw and raw == environ.get(_OPENBLAS_DEFAULT_MARKER):
         # Studio's default is sized for numpy's OpenBLAS. This DLL is torch's own CPU BLAS, so it gets the
-        # thread count torch uses everywhere else (one per physical core, or OMP_NUM_THREADS).
+        # thread count torch uses everywhere else (one per physical core, or OMP_NUM_THREADS), fewer when its
+        # 128 MB per-thread buffers would not fit.
         target = _torch_thread_count()
+        if target is not None:
+            target = _threads_that_fit(target, _ROCM_OPENBLAS_THREAD_COST)
     if target is None:
         try:
             target = int(raw)

@@ -129,6 +129,38 @@ def test_studio_default_gives_the_dll_torchs_thread_count(
     assert fake_windows == [12]
 
 
+# The DLL's buffers are 128 MB a thread: Studio's default shrinks torch's count when a tenth of the headroom
+# cannot hold them, but a user's own value is never second-guessed.
+@pytest.mark.parametrize("headroom_mb, expected", [(None, 12), (64 << 10, 12), (2560, 2), (500, 1)])
+def test_studio_default_fits_the_dll_to_the_memory_left(
+    fake_windows, clean_thread_env, monkeypatch, headroom_mb, expected
+):
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(12))
+    monkeypatch.setenv("OPENBLAS_NUM_THREADS", "8")
+    monkeypatch.setenv("UNSLOTH_OPENBLAS_DEFAULTED", "8")
+    monkeypatch.setattr(
+        cpu_threads,
+        "_openblas_memory_headroom",
+        lambda: None if headroom_mb is None else headroom_mb << 20,
+    )
+
+    cpu_threads.apply_openblas_runtime_cap()
+
+    assert fake_windows == [expected]
+
+
+def test_a_user_value_reaches_the_dll_however_short_memory_is(
+    fake_windows, clean_thread_env, monkeypatch
+):
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(12))
+    monkeypatch.setenv("OPENBLAS_NUM_THREADS", "6")
+    monkeypatch.setattr(cpu_threads, "_openblas_memory_headroom", lambda: 100 << 20)
+
+    cpu_threads.apply_openblas_runtime_cap()
+
+    assert fake_windows == [6]
+
+
 # A spawned worker only sees the inherited env, so the marker must tell it the 1 is Studio's default.
 def test_a_worker_inheriting_the_default_gives_the_dll_torchs_thread_count(
     fake_windows, clean_thread_env, monkeypatch
