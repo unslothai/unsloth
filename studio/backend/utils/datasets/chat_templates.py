@@ -285,7 +285,9 @@ def _one_call_per_message(turns):
         results = {result.get("tool_call_id"): result for result in run}
         paired = len(run) == len(calls) and all(call.get("id") in results for call in calls)
         for i, call in enumerate(calls):
-            split.append({**message, "tool_calls": [call], "content": message["content"] if not i else ""})
+            # Later pieces repeat no text, but keep a None content for templates gating on it.
+            content = message.get("content")
+            split.append({**message, "tool_calls": [call], "content": "" if i and content else content})
             if paired:
                 split.append(results[call["id"]])
         if not paired:

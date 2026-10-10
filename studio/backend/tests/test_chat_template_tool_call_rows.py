@@ -489,3 +489,28 @@ def test_sharegpt_split_results_follow_their_own_call():
         < text.index("<call get_time>")
     )
     assert text.index("<call get_time>") < text.index('{"time": "noon"}')
+
+
+def test_sharegpt_split_calls_keep_null_content_for_templates_gating_on_it():
+    one_call_null_content = (
+        "{%- for message in messages %}"
+        "{%- if message.role == 'assistant' and message.content is none %}"
+        "{%- if message.tool_calls | length != 1 %}{{- raise_exception('one call') }}{%- endif %}"
+        "{{- '<call>' + message.tool_calls[0].function.name + message.tool_calls[0].function.arguments }}"
+        "{%- elif message.role == 'tool' %}{{- '<output>' + message.content }}"
+        "{%- elif message.role in ('user', 'assistant') %}{{- '<' + message.role + '>' + message.content }}"
+        "{%- endif %}{%- endfor %}"
+    )
+    call = json.dumps(
+        [
+            {"name": "get_weather", "arguments": {"city": "Paris"}},
+            {"name": "get_time", "arguments": {"city": "Rome"}},
+        ]
+    )
+    row = _sharegpt_tool_row(call)
+    row["conversations"].insert(3, {"from": "observation", "value": '{"time": "noon"}'})
+
+    text = _format_sharegpt([row], one_call_null_content)["dataset"][0]["text"]
+
+    assert '<call>get_weather{"city": "Paris"}' in text
+    assert '<call>get_time{"city": "Rome"}' in text
