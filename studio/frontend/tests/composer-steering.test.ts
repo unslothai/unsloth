@@ -1182,3 +1182,70 @@ for (const behavior of ["queue", "steer"] as const) {
     assert.deepEqual(w.appended, ["use the selected provider"]);
   });
 }
+
+for (const mode of ["composer", "queue-row"] as const) {
+  test(`${mode} steer survives old-run completion before dispatch timer`, async () => {
+    const w = world();
+    const target = makeTarget("chat", true);
+    if (mode === "composer") {
+      w.startPromptQueue(["urgent steer"], target, true, "steer");
+    } else {
+      w.startPromptQueue(["urgent steer"], target, true);
+      assert.equal(w.steerPromptQueueItem(w.run().items[0].id), true);
+    }
+    const run = w.run();
+    const steer = run.items[0];
+    assert.equal(target.cancels, 1);
+    assert.equal(steer.dispatched, false);
+    // A store notification during cancellation still sees the old run alive.
+    // The queued setTimeout pump has not run yet.
+    w.handlePromptQueueRunState(run, { chat: true });
+    // Cancellation completes before the pump gets its turn.
+    target.running = false;
+    w.handlePromptQueueRunState(run, {});
+    assert.equal(
+      w.runs.has(run.id),
+      true,
+      "old-run completion deleted the unsent steer from the queue",
+    );
+    await w.dispatchQueuedPrompt(run, steer);
+    assert.deepEqual(w.appended, ["urgent steer"]);
+  });
+}
+
+test("an old cancellation edge preserves the steer ahead of later queued prompts", async () => {
+  const w = world();
+  const target = makeTarget("chat", true);
+  w.startPromptQueue(["old response", "later prompt"], target);
+  const run = w.run();
+  run.items[0].dispatched = true;
+  w.startPromptQueue(["urgent steer"], target, true, "steer");
+  const steer = run.items[0];
+  w.handlePromptQueueRunState(run, { chat: true });
+  target.running = false;
+  w.handlePromptQueueRunState(run, {});
+  assert.equal(run.items[run.index], steer);
+  await w.dispatchQueuedPrompt(run, steer);
+  assert.deepEqual(w.appended, ["urgent steer"]);
+  // Only completion of the steer itself may advance to the later prompt.
+  target.running = true;
+  w.handlePromptQueueRunState(run, { chat: true });
+  target.running = false;
+  w.handlePromptQueueRunState(run, {});
+  await w.dispatchQueuedPrompt(run, run.items[run.index]);
+  assert.deepEqual(w.appended, ["urgent steer", "later prompt"]);
+});
+
+test("a normal queue waiting at index -1 still starts after the current response", async () => {
+  const w = world();
+  const target = makeTarget("chat", true);
+  w.startPromptQueue(["next prompt"], target, true, "queue");
+  const run = w.run();
+  assert.equal(run.index, -1);
+  target.running = false;
+  w.handlePromptQueueRunState(run, {});
+  assert.equal(run.index, 0);
+  await w.dispatchQueuedPrompt(run, run.items[0]);
+  assert.deepEqual(w.appended, ["next prompt"]);
+  assert.equal(target.cancels, 0);
+});

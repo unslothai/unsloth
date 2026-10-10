@@ -2226,19 +2226,25 @@ function createPersistedRunAdapter(
       let adoptedThreadId: string | undefined;
       try {
         adoptedThreadId = await waitForRunStartHistoryAppend(options.messages);
-        throwIfReservationCancelled();
       } catch (error) {
         if (reservationToken) {
           releasePreStreamRunReservation(reservationToken);
         }
-        // Queued runs carry no direct-send reservation and their persisted preflight can still fail
-        // before the model adapter consumes the queued settings, so match pending/waiting work too.
-        requestPromptQueueStop(persistedRunThreadIds);
-        notifyPromptQueueRunFailed(
-          options.unstable_threadId ?? persistedRunThreadIds[0] ?? null,
-        );
+        // An aborted run may settle after steering has accepted a follow-up.
+        // Its late rejection must not stop that replacement queue.
+        if (!options.abortSignal.aborted) {
+          // Queued runs have no direct-send reservation, so include pending work
+          // when a genuine history write failure prevents the adapter starting.
+          requestPromptQueueStop(persistedRunThreadIds);
+          notifyPromptQueueRunFailed(
+            options.unstable_threadId ?? persistedRunThreadIds[0] ?? null,
+          );
+        }
         throw error;
       }
+      // Intentional cancellation is not a history write failure. In particular,
+      // steering cancels the old reservation while preserving its follow-up.
+      throwIfReservationCancelled();
       if (reservationToken && adoptedThreadId) {
         adoptPreStreamRunReservation(reservationToken, [
           ...reservationThreadIds,
