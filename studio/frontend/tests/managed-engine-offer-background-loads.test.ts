@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The primary picker answers /validate's managed_engine_offer with a dialog (#13135). The auto-load
-// cascade and compare panes load on their own, so they must not put a compressed-tensors, AWQ or GPTQ
-// checkpoint on the default engine either: with the library installed by hand it decompresses and
-// generates for minutes (#8861). Both decisions are lifted from the shipped source and run.
+// Auto-load and compare panes must honour managed_engine_offer like the picker (#13135, #8861).
 
 import assert from "node:assert/strict";
 import test from "node:test";
