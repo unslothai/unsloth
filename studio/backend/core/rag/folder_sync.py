@@ -1616,6 +1616,7 @@ def _reconcile_folder(job_id: str) -> None:
     # folder of scanned PDFs indexing forever (#13095). Sync changes and Rebuild retry at once.
     known_failed = {} if rebuild else _load_failed(folder)
     ingest_failed: dict[str, dict] = {}
+    cached_grace = False
     total = len(work) + len(missing)
     _set_job(job_id, stage = "ingesting", discovered = len(current), renamed = renamed)
     added = changed_count = 0
@@ -1753,7 +1754,10 @@ def _reconcile_folder(job_id: str) -> None:
                         raise _SyncCancelled
                     failures.append(rel)
                     ingest_failed[rel] = known_failed[rel]
-                    withheld.update(missing - already_withheld)
+                    if not cached_grace:
+                        # missing only shrinks during the pass, so once covers every later failure
+                        withheld.update(missing - already_withheld)
+                        cached_grace = True
                     processed += 1
                     continue
                 if len(in_flight) >= workers:
