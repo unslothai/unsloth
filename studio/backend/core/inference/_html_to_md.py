@@ -501,7 +501,8 @@ class _MarkdownRenderer(HTMLParser):
         # Blockquote state: stack of buffers so nested blockquotes get the right ">" depth.
         self._bq_stack: list[list[str]] = []
 
-        self._sup_starts: list[tuple[list[str], int, int, _HeaderFrame | None, int] | None] = []
+        # per open <sup>: (output list, start) and the (copy, start) pairs that tee the same text
+        self._sup_starts: list[tuple[list[str], int, list[tuple[list[str], int]]] | None] = []
 
     def _nested_buffer_open(self, frame: _HeaderFrame) -> bool:
         """True when a side buffer opened *inside* *frame* still holds content.
@@ -565,11 +566,25 @@ class _MarkdownRenderer(HTMLParser):
             return self._bq_stack[-1]
         return self._out
 
+    def _sup_has_base(self, target: list[str]) -> bool:
+        """A <sup> after nothing or whitespace has no base: a footnote marker the link wraps
+        (``<a href="#fn1"><sup>1</sup></a>``) or a fraction numerator (``<sup>1</sup>&frasl;``)."""
+        for part in reversed(target):
+            if part:
+                return not part[-1].isspace()
+        return False
+
+    def _sup_copies(self) -> list[tuple[list[str], int]]:
+        copies = [self._link_heading_parts, self._seg_heading_texts]
+        if self._header_stack:
+            copies.append(self._header_stack[-1].heading_parts)
+        return [(copy, len(copy)) for copy in copies]
+
     def _finish_sup(self) -> None:
         opened = self._sup_starts.pop()
         if opened is None or opened[0] is not self._emit_target():
             return
-        target, start, heading_start, frame, frame_heading_start = opened
+        target, start, copies = opened
         joined = "".join(target[start:])
         raw = joined.strip()
         shown = self._site_links.clean(raw) if self._site_links is not None else raw
@@ -584,11 +599,10 @@ class _MarkdownRenderer(HTMLParser):
         exponent = f"^({raw})" if _GROUPED_EXPONENT.search(shown) else f"^{raw}"
         exponent += joined[len(joined.rstrip()) :]
         target[start:] = [exponent]
-        if target is self._link_text_parts and len(self._link_heading_parts) > heading_start:
-            self._link_heading_parts[heading_start:] = [exponent]
-        # a stripped header keeps its headings from this copy
-        if frame is not None and "".join(frame.heading_parts[frame_heading_start:]) == joined:
-            frame.heading_parts[frame_heading_start:] = [exponent]
+        # headings are teed into these copies; a stale one renders "E=mc2" or skews the prose gate
+        for copy, copy_start in copies:
+            if "".join(copy[copy_start:]) == joined:
+                copy[copy_start:] = [exponent]
 
     def _seg_heading_prose(self) -> int:
         """Heading characters in this segment that the gate would otherwise read as
@@ -1046,17 +1060,12 @@ class _MarkdownRenderer(HTMLParser):
         elif tag == "sup":
             target = self._emit_target()
             reference = "reference" in (attr_dict.get("class") or "").split()
-            frame = self._header_stack[-1] if self._header_stack else None
             self._sup_starts.append(
                 None
-                if reference or len(self._sup_starts) >= _MAX_SUP_DEPTH
-                else (
-                    target,
-                    len(target),
-                    len(self._link_heading_parts),
-                    frame,
-                    len(frame.heading_parts) if frame is not None else 0,
-                )
+                if reference
+                or len(self._sup_starts) >= _MAX_SUP_DEPTH
+                or not self._sup_has_base(target)
+                else (target, len(target), self._sup_copies())
             )
 
         elif tag in _BLOCK_TAGS:

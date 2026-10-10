@@ -741,6 +741,9 @@ def test_page_that_fits_keeps_its_links(monkeypatch):
         ("now $19<sup>.99</sup> only", "now $19.99 only"),
         ("price<sup>*</sup> and terms<sup>&dagger;</sup>", "price* and terms†"),
         ("10<sup>6 </sup>years", "10^6 years"),
+        ("Add <sup>1</sup>&frasl;<sub>2</sub> cup", "Add 1⁄2 cup"),
+        ("Add 1 <sup>1</sup>/<sub>2</sub> cups", "Add 1 1/2 cups"),
+        ("<sup>1</sup> Footnote text", "1 Footnote text"),
     ],
 )
 def test_superscripts_keep_their_exponent(markup, expected):
@@ -774,6 +777,18 @@ def test_deeply_nested_superscripts_track_a_bounded_depth():
     out = html_to_markdown("<p>x" + "<sup>a" * 50 + "</sup>" * 50 + "</p>")
     assert out.replace("^", "") == "x" + "a" * 50
     assert out.count("^") == 8
+
+
+def test_linked_footnote_wrapping_its_superscript_renders_unchanged():
+    html = '<p>text<a role="doc-noteref" href="#fn1"><sup>1</sup></a> more</p>'
+    assert html_to_markdown(html) == "text[1](#fn1) more"
+
+
+def test_exponent_headings_do_not_read_as_body_prose():
+    heads = "".join(f"<h2>x<sup>n+{i}</sup></h2>" for i in range(67))
+    body = "<p>" + "Real document body sentence. " * 12 + "</p>"
+    html = f"<html><body><article>{heads}</article><div>{body}</div></body></html>"
+    assert "Real document body" in html_to_markdown(html, main_content = True)
 
 
 def test_footnote_superscripts_render_unchanged():
