@@ -302,6 +302,8 @@ def Qwen3Attention_fast_forward_inference(
         and attention_mask.dtype != torch.bool
     ):
         attention_mask = attention_mask.eq(0)
+    if attention_mask is not None:
+        attention_mask = attention_mask | ~attention_mask.any(dim = -1, keepdim = True)
     if attention_mask is None and Q_len == K_len:
         is_causal = True
     else:
@@ -329,6 +331,8 @@ def Qwen3Attention_fast_forward_inference(
         # (Q * scalar) @ K beats (Q @ K) * scalar for stopping overflows; see ggerganov/llama.cpp#7805
         # (comment 2153349963).
         A = torch_matmul(Qn, Knn.transpose(2, 3), out = self.attention[:, :, :, :cached_len])
+        if attention_mask is not None:
+            A.masked_fill_(~attention_mask, float("-inf"))
         A[:] = torch_nn_functional_softmax(A, dim = -1, dtype = torch.float32)
         A = torch_matmul(A, Vnn, out = Qn)
     else:
