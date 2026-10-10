@@ -96,26 +96,45 @@ def _point_references_at(monkeypatch, wrappers, original):
             elif is_wrapper(value):
                 monkeypatch.setitem(mapping, key, original)
     monkeypatch.setattr(masking_utils, "create_chunked_causal_mask", original)
+    for namespace in _mask_importer_namespaces().values():
+        if is_wrapper(namespace.get("create_chunked_causal_mask")):
+            monkeypatch.setitem(namespace, "create_chunked_causal_mask", original)
+
+
+def _mask_importer_namespaces():
+    namespaces = {}
     for name, module in list(sys.modules.items()):
         if module is None or module is masking_utils:
             continue
         if not (name.startswith("transformers.") or "unsloth_compiled" in name):
             continue
         try:
-            namespace = vars(module)
+            namespaces[name] = vars(module)
         except TypeError:
             continue
-        if is_wrapper(namespace.get("create_chunked_causal_mask")):
-            monkeypatch.setitem(namespace, "create_chunked_causal_mask", original)
+    return namespaces
 
 
 @pytest.fixture
 def unpatched(monkeypatch):
-    wrappers, original = _wrapper_chain(masking_utils.create_chunked_causal_mask)
+    live = masking_utils.create_chunked_causal_mask
+    wrappers, original = _wrapper_chain(live)
+    already_imported = set(_mask_importer_namespaces())
     if wrappers:
         _point_references_at(monkeypatch, wrappers, original)
     assert masking_utils.create_chunked_causal_mask is original
     yield original
+    # monkeypatch only restores what existed at setup. A module first imported during the test (the
+    # tiny Llama-4 imports modeling_llama4) bound the stock function, and the fix may have rewritten
+    # it to a wrapper made by this test; give it what a normal import would have bound instead.
+    for name, namespace in _mask_importer_namespaces().items():
+        if name in already_imported:
+            continue
+        value = namespace.get("create_chunked_causal_mask")
+        if value is None or any(value is wrapper for wrapper in wrappers) or value is live:
+            continue
+        if value is original or _wrapper_chain(value)[1] is original:
+            namespace["create_chunked_causal_mask"] = live
 
 
 def test_static_cache_generate_matches_dynamic(unpatched):
