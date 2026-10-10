@@ -214,10 +214,11 @@ _PLAIN_SUFFIXES = frozenset({"st", "nd", "rd", "th", "tm", "sm"})
 # French / Romance ordinals after a digit (1er, 2e, 1º, 2ª); after a letter "e" can be Euler's number
 # XVe siècle, François Ier: a Roman numeral takes ordinals like a digit
 _ROMAN_NUMERAL_TAIL = re.compile(r"(?<![^\W\d_])[IVXLCDM]+$")
-# French superior abbreviations: Mme, Mlle, Mgr, Dr, no, St, Cie; keyed on the whole base word
+# French superior abbreviations: Mme, Mlle, Mgr, Dr, Pr, no, St, Cie; keyed on the whole base word
 _SUPERIOR_ABBREVIATIONS = {
     "M": frozenset({"me", "mes", "lle", "lles", "gr", "e"}),
     "D": frozenset({"r", "rs"}),
+    "P": frozenset({"r", "rs"}),
     "n": frozenset({"o", "os"}),
     "N": frozenset({"o", "os"}),
     "S": frozenset({"t", "te"}),

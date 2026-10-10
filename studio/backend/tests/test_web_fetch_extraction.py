@@ -783,6 +783,7 @@ def test_page_that_fits_keeps_its_links(monkeypatch):
             'XCG 19<sup>99</sup>, claim<sup role="doc-noteref presentation">2</sup>',
             "XCG 1999, claim2",
         ),
+        ("le P<sup>r</sup> Martin et les P<sup>rs</sup>", "le Pr Martin et les Prs"),
         (
             "M<sup>me</sup> Dupont, D<sup>r</sup> Martin, n<sup>o</sup> 5, Om<sup>e</sup>",
             "Mme Dupont, Dr Martin, no 5, Om^e",
