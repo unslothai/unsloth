@@ -52,10 +52,12 @@ def _plan(
     vram_mib = CARD_MIB,
     cache_type_kv = "q8_0",
     ctx_checkpoints_flag = "--ctx-checkpoints",
+    unified = False,
 ):
     """Return the generated plan plus what its own context really costs."""
     memory = [(0, vram_mib, vram_mib)]
     backend, gguf = _backend(tmp_path, vulkan = False, memory = memory)
+    backend._amd_apu_wants_unified_memory = lambda *_a, **_k: unified
 
     def read(_path):
         for key, value in SWA.items():
@@ -178,3 +180,24 @@ class TestThePlanIgnoresTheReserve:
         assert default["ctx"] == zero["ctx"]
         assert default["slots"] == zero["slots"]
         assert zero["reserve_bytes"] == 0
+
+
+class TestUnifiedMemoryStillPays:
+    """An APU's "VRAM" is host RAM, so the snapshots compete with the model there."""
+
+    @pytest.mark.parametrize("checkpoints", [16, 32])
+    def test_a_unified_memory_gpu_charges_the_reserve(self, tmp_path, checkpoints):
+        free = _plan(tmp_path, weights_mib = 9_200, n_parallel = 4, ctx_checkpoints = 0, unified = True)
+        asked = _plan(
+            tmp_path,
+            weights_mib = 9_200,
+            n_parallel = 4,
+            ctx_checkpoints = checkpoints,
+            unified = True,
+        )
+        assert asked["reserve_bytes"] > 0
+        assert (asked["ctx"], asked["slots"], asked["fit"]) != (
+            free["ctx"],
+            free["slots"],
+            free["fit"],
+        )
