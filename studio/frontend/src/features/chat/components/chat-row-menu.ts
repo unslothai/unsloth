@@ -154,7 +154,10 @@ export async function regenerateChatTitle(
   try {
     const threadId = getSidebarItemThreadIds(item)[0];
     const liveBranch = liveThreadBranch(threadId);
-    const raw = await listStoredChatMessages(threadId);
+    const [startTitle, raw] = await Promise.all([
+      getStoredChatThread(threadId).then((thread) => thread?.title),
+      listStoredChatMessages(threadId),
+    ]);
     // The branch on screen, else the one reopening the chat shows, as the exports read it.
     const storedIds = new Set(raw.map((m) => m.id));
     const headId = liveBranch?.length
@@ -172,9 +175,9 @@ export async function regenerateChatTitle(
     );
     if (!title) return "failed";
     // A rename made while the model answered wins.
-    const current = (await getStoredChatThread(threadId))?.title ?? item.title;
-    if (current !== item.title || title === current) return "unchanged";
-    await renameChatItem(item, title);
+    const current = (await getStoredChatThread(threadId))?.title;
+    if (current !== startTitle || title === current) return "unchanged";
+    await renameChatItem({ ...item, title: current ?? item.title }, title);
     return "renamed";
   } catch {
     return "failed";
