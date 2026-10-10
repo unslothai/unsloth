@@ -107,7 +107,7 @@ let captureDone: ((bytes: ArrayBuffer) => void) | null = null;
 register("./helpers/browser-store-resolver.mjs", import.meta.url);
 register("./helpers/native-view-resolver.mjs", import.meta.url);
 const { currentEntry, useBrowserStore } = await import("../src/features/browser/store.ts");
-const { startNativeViews } = await import(
+const { refreshCoveredPage, startNativeViews } = await import(
   "../src/features/browser/native-view.ts"
 );
 
@@ -270,6 +270,44 @@ test("a capture that never lands keeps the page on screen instead of parking it 
     await settle();
     await frame();
     assert.equal(captures(), retried + 1, "and left alone once it lands");
+  } finally {
+    stop();
+    overlays.length = 0;
+  }
+});
+
+test("a tab opened under a lasting cover is shown and captured, not left blank, and find misses retry", async () => {
+  const stop = startNativeViews();
+  try {
+    useBrowserStore.getState().openUrl("https://example.org/a", { newTab: true });
+    await frame();
+    await frame();
+    overlays.push(menu);
+    await frame();
+    captureDone?.(new Uint8Array([137, 80, 78, 71]).buffer);
+    await settle();
+
+    // switch tabs while the cover stays
+    useBrowserStore.getState().openUrl("https://example.org/b", { newTab: true });
+    const next = useBrowserStore.getState().activeTabId;
+    await frame();
+    const shows = () => calls.filter(({ command, args }) => command === "browser_view_show" && args?.tabId === next);
+    assert.ok(shows().some(({ args }) => args?.url && !args?.parked), "the new tab is shown first");
+    captureDone?.(new Uint8Array([137, 80, 78, 71]).buffer);
+    await settle();
+    assert.equal(shows().at(-1)?.args?.parked, true, "then parked under its snapshot");
+    assert.notEqual(calls.filter(({ command }) => command === "browser_view_show").at(-1)?.args?.tabId, null);
+
+    // a find step whose capture misses is captured again
+    const captures = () => calls.filter(({ command }) => command === "browser_capture").length;
+    const before = captures();
+    if (next) refreshCoveredPage(next);
+    assert.equal(captures(), before + 1);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    await frame();
+    assert.equal(captures(), before + 2, "the missed refresh is retried");
+    captureDone?.(new Uint8Array([137, 80, 78, 71]).buffer);
+    await settle();
   } finally {
     stop();
     overlays.length = 0;

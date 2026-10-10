@@ -264,8 +264,9 @@ export function FindInPage({ enabled = true }: { enabled?: boolean }) {
     setOpen(false);
     requestAnimationFrame(() => {
       const active = document.activeElement;
+      // The bar's own cleanup may already have focused the stale origin; the page had the keys.
       if (outside) {
-        if (active === null || active === document.body) outside.returnFocus?.();
+        outside.returnFocus?.();
         return;
       }
       if (

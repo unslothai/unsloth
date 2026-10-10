@@ -217,6 +217,8 @@ function onNativeEvent(event: NativeEvent): void {
       page(tab.id).url = event.url;
       remember(tab.id, event.url);
       if (!event.loading) history.recordVisit(event.url, tab.title, temporary);
+      // A page that loads while parked would otherwise show its first (blank) frame.
+      if (!event.loading) refreshCoveredPage(tab.id);
       break;
     case "title":
       store.updateTab(tab.id, { title: event.title });
@@ -573,10 +575,8 @@ function visibleRect(element: HTMLElement): DOMRect | null {
   return new DOMRect(rect.left, rect.top, rect.width, bottom - rect.top);
 }
 
-type Desired =
-  | { tabId: string; url: string; entry: number; zoom: number; bounds: Bounds }
-  | { tabId: string; covered: true; zoom: number }
-  | null;
+type Shown = { tabId: string; url: string; entry: number; zoom: number; bounds: Bounds };
+type Desired = Shown | (Shown & { covered: true }) | null;
 
 function placeholder(tabId: string): HTMLElement | null {
   return document.querySelector<HTMLElement>(`[data-native-page="${CSS.escape(tabId)}"]`);
@@ -604,8 +604,7 @@ function desiredView(): Desired {
   else insetToasts(page?.rect ?? null);
   if (!page) return null;
   const { tab, entry, rect } = page;
-  if (!layered && coveredNow(rect)) return { tabId: tab.id, covered: true, zoom: tab.zoom };
-  return {
+  const shown: Shown = {
     tabId: tab.id,
     url: entry.url,
     entry: entryKey(entry),
@@ -618,6 +617,7 @@ function desiredView(): Desired {
       viewportWidth: window.innerWidth,
     },
   };
+  return !layered && coveredNow(rect) ? { ...shown, covered: true } : shown;
 }
 
 function pageRect(): { tab: BrowserTab; entry: Extract<BrowserEntry, { kind: "web" }>; rect: DOMRect } | null {
@@ -768,7 +768,16 @@ async function coverView(tabId: string, zoom: number): Promise<void> {
 
 /** Re-snapshots a covered page after it changes, e.g. a find step. */
 export function refreshCoveredPage(tabId: string): void {
-  if (parkedView === tabId) void paintSnapshot(tabId);
+  if (parkedView !== tabId) return;
+  // Stale until a fresh capture lands; a miss retries through the sync like a zoom.
+  staleSnapshot = tabId;
+  void paintSnapshot(tabId, true).then((painted) => {
+    if (!painted) retryCover();
+    else if (staleSnapshot === tabId) {
+      staleSnapshot = null;
+      coverFails = 0;
+    }
+  });
 }
 
 async function applyView(desired: Desired): Promise<void> {
@@ -776,11 +785,15 @@ async function applyView(desired: Desired): Promise<void> {
     closeHole();
     // keep the snapshot if an overlay reopens during capture.
     if (snapshot?.tabId !== desired?.tabId) clearSnapshot();
+    // Another tab under a lasting cover (the find bar): show it first so it can be captured, not left blank.
+    if (desired && !parkable(desired.tabId)) {
+      const { tabId, url, entry, zoom, bounds } = desired;
+      await applyView({ tabId, url, entry, zoom, bounds });
+    }
     if (desired && parkable(desired.tabId)) {
       await coverView(desired.tabId, desired.zoom);
       return;
     }
-    if (desired) await paintSnapshot(desired.tabId);
     parkedView = null;
     setShownView(null);
     await call("browser_view_show", { tabId: null });
