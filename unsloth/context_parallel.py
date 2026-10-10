@@ -286,9 +286,9 @@ def patch_sft_trainer() -> None:
         if not isinstance(shift_labels, torch.Tensor):
             with manager.apply(inputs):
                 return original_prediction_step(self, model, inputs, *args, **kwargs)
-        # Not the Trainer's count: transformers 4.x counts nothing in eval (each shard takes its own
-        # mean, an empty shard is NaN) and 5.x scales by world size. Counted before sharding; CP
-        # peers hold the same batch, so the world sum counts every token size times.
+        # Our own count: whether the trainer passes one to eval, and how it rescales the loss, differs
+        # across transformers / TRL versions (none = per-shard means, NaN on an empty shard). Counted
+        # before sharding; CP peers hold the same batch, so the world sum counts every token size times.
         total = shift_labels.ne(-100).sum()
         dist.all_reduce(total)
         inputs["num_items_in_batch"] = (total // manager.size).clamp_min(1)
