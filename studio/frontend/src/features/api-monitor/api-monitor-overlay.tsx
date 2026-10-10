@@ -329,6 +329,8 @@ function ApiMonitorPanel({
         {...{ [FIND_PORTAL_ATTRIBUTE]: "" }}
         ref={monitorRef}
         data-testid="api-monitor-panel"
+        // Takes its own clicks over a macOS browser page (native-view.ts).
+        data-native-clickable=""
         onPointerDownCapture={() => raisePanel("api-monitor")}
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}

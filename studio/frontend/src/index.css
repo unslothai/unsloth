@@ -6051,3 +6051,49 @@ html:has([data-blocking-screen]) .interface-zoom-position {
 .browser-annotating *:not([data-annotate-ui], [data-annotate-ui] *) {
   cursor: none !important;
 }
+
+/* macOS: backgrounds around a browser page skip its rect (`--native-hole-*`, viewport px), so the
+   native page under the app's webview shows through. Not inherited: moving the hole restyles only
+   the holed nodes. */
+@property --native-hole-x {
+	syntax: "<length>";
+	inherits: false;
+	initial-value: 0px;
+}
+@property --native-hole-y {
+	syntax: "<length>";
+	inherits: false;
+	initial-value: 0px;
+}
+@property --native-hole-w {
+	syntax: "<length>";
+	inherits: false;
+	initial-value: 0px;
+}
+@property --native-hole-h {
+	syntax: "<length>";
+	inherits: false;
+	initial-value: 0px;
+}
+@property --native-hole-bg {
+	syntax: "*";
+	inherits: false;
+}
+
+[data-native-hole] {
+	--native-hole-fill: linear-gradient(var(--native-hole-bg), var(--native-hole-bg));
+	background-color: transparent !important;
+	background-image: var(--native-hole-fill), var(--native-hole-fill), var(--native-hole-fill), var(--native-hole-fill) !important;
+	background-attachment: fixed !important;
+	background-repeat: no-repeat !important;
+	background-position:
+		0 0,
+		0 calc(var(--native-hole-y) + var(--native-hole-h)),
+		0 var(--native-hole-y),
+		calc(var(--native-hole-x) + var(--native-hole-w)) var(--native-hole-y) !important;
+	background-size:
+		100% var(--native-hole-y),
+		100% max(0px, calc(100% - var(--native-hole-y) - var(--native-hole-h))),
+		var(--native-hole-x) var(--native-hole-h),
+		max(0px, calc(100% - var(--native-hole-x) - var(--native-hole-w))) var(--native-hole-h) !important;
+}
