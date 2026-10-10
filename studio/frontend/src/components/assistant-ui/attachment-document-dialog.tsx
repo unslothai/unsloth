@@ -281,6 +281,28 @@ const SentOriginalDialog: FC<
   );
 };
 
+/** A file in hand outside any message, such as a chat with files source: pages, markdown or text. */
+export const LocalFileDialog: FC<PropsWithChildren<{ file: File }>> = ({ children, file }) => (
+  <DocumentDialog
+    source={{
+      kind: "document",
+      name: file.name,
+      contentType: file.type || undefined,
+      file,
+      src: undefined,
+      audio: undefined,
+      video: undefined,
+      text: undefined,
+      hasOriginal: true,
+    }}
+    load={() => Promise.resolve(file)}
+    redactFromReload={false}
+    textFallback={true}
+  >
+    {children}
+  </DocumentDialog>
+);
+
 export const AttachmentDocumentDialog: FC<
   PropsWithChildren<{ source: AttachmentSource; redactFromReload: boolean }>
 > = ({ children, source, redactFromReload }) => {

@@ -17,6 +17,7 @@ import {
   FileDatabaseIcon,
   FolderAttachmentIcon,
   Folder02Icon,
+  InformationCircleIcon,
 } from "@hugeicons/core-free-icons";
 import {
   AttachmentKindIcon,
@@ -26,7 +27,18 @@ import {
   CARD_SURFACE,
   FileCardBody,
 } from "@/components/assistant-ui/attachment";
+import {
+  type AttachmentPreview,
+  AttachmentCardPreview,
+  attachmentPreview,
+} from "@/components/assistant-ui/attachment-card-preview";
+import { LocalFileDialog } from "@/components/assistant-ui/attachment-document-dialog";
 import { Spinner } from "@/components/ui/spinner";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { useAui } from "@assistant-ui/react";
@@ -63,6 +75,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import {
   announceProjectSourcesUpdated,
+  getDocumentFileUrl,
   invalidateProjectSources,
   listKnowledgeBases,
   listLinkedFolders,
@@ -328,6 +341,101 @@ function LinkedFolderCard({
   );
 }
 
+// Same cap as composer attachment previews; bigger files keep the icon.
+const MAX_THUMBNAIL_BYTES = 10 * 1024 * 1024;
+const THUMBNAIL_CACHE_SIZE = 64;
+// Source files fetched for card thumbnails, by document id, so a re-render or a return to the chat
+// does not download them again. Insertion order doubles as LRU order.
+const thumbnailFiles = new Map<string, Promise<File | null>>();
+
+async function fetchThumbnailFile(doc: TrackedDocument): Promise<File | null> {
+  const response = await fetch(await getDocumentFileUrl(doc.id));
+  if (!response.ok) return null;
+  if (Number(response.headers.get("content-length")) > MAX_THUMBNAIL_BYTES) {
+    void response.body?.cancel();
+    return null;
+  }
+  const blob = await response.blob();
+  if (blob.size === 0 || blob.size > MAX_THUMBNAIL_BYTES) return null;
+  // Linked-folder documents are named by their relative path.
+  const name = doc.filename.split("/").pop() ?? doc.filename;
+  // Most types are served as octet-stream; an empty type lets the extension decide the kind.
+  const type = blob.type === "application/octet-stream" ? "" : blob.type;
+  return new File([blob], name, { type });
+}
+
+function loadThumbnailFile(doc: TrackedDocument): Promise<File | null> {
+  const cached = thumbnailFiles.get(doc.id);
+  if (cached) {
+    thumbnailFiles.delete(doc.id);
+    thumbnailFiles.set(doc.id, cached);
+    return cached;
+  }
+  const pending = fetchThumbnailFile(doc).catch(() => null);
+  thumbnailFiles.set(doc.id, pending);
+  // A failure is not remembered, so the next mount tries again.
+  void pending.then((file) => {
+    if (file === null && thumbnailFiles.get(doc.id) === pending) {
+      thumbnailFiles.delete(doc.id);
+    }
+  });
+  while (thumbnailFiles.size > THUMBNAIL_CACHE_SIZE) {
+    const oldest = thumbnailFiles.keys().next().value;
+    if (oldest === undefined) break;
+    thumbnailFiles.delete(oldest);
+  }
+  return pending;
+}
+
+type Thumbnail =
+  | { kind: "image"; url: string }
+  | { kind: "file"; file: File; preview: AttachmentPreview };
+
+/** The card's thumbnail, fetched once the card first scrolls into view. */
+function useDocumentThumbnail(
+  doc: TrackedDocument,
+  enabled: boolean,
+  element: HTMLElement | null,
+): Thumbnail | null {
+  const [seen, setSeen] = useState(false);
+  const [thumbnail, setThumbnail] = useState<Thumbnail | null>(null);
+  useEffect(() => {
+    if (!enabled || seen || !element) return;
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) setSeen(true);
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [enabled, seen, element]);
+  useEffect(() => {
+    if (!enabled || !seen) return;
+    let cancelled = false;
+    let objectUrl: string | null = null;
+    void loadThumbnailFile(doc).then((file) => {
+      if (cancelled || !file) return;
+      const kind = attachmentFileKind(file.name, file.type);
+      if (kind === "image") {
+        // An <img> renders an SVG only with its type; it never runs the SVG's scripts.
+        const svg = /\.svg$/i.test(file.name) && !file.type;
+        objectUrl = URL.createObjectURL(
+          svg ? new Blob([file], { type: "image/svg+xml" }) : file,
+        );
+        setThumbnail({ kind: "image", url: objectUrl });
+        return;
+      }
+      const preview = attachmentPreview(file, kind);
+      if (preview) setThumbnail({ kind: "file", file, preview });
+    });
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+    // The id names the stored file; the rest of the row changes with progress frames.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doc.id, enabled, seen]);
+  return enabled ? thumbnail : null;
+}
+
 /** An indexed document, drawn as a composer attachment card. */
 function DocumentCard({
   doc,
@@ -363,19 +471,47 @@ function DocumentCard({
   ) : (
     <AttachmentKindIcon kind={kind} className="size-6" />
   );
-  const canOpen = doc.status === "completed" && !pending;
-  return (
-    <div
-      className={cn(
-        "group/attachment-card relative",
-        CARD_SLOT,
-      )}
-    >
+  const ready = doc.status === "completed" && !pending;
+  const [slot, setSlot] = useState<HTMLDivElement | null>(null);
+  const thumbnail = useDocumentThumbnail(doc, ready, slot);
+  // PDFs open the source preview, which can jump to a page. Without a chunk it has no text for
+  // anything else, so other files open in the attachment viewer once their bytes are here.
+  const isPdf = kind === "pdf";
+  const viewerFile = useMemo(() => {
+    if (isPdf || thumbnail?.kind !== "file") return null;
+    const { file, preview } = thumbnail;
+    // Served as octet-stream: the viewer reads text only when the type says so.
+    return preview.kind === "text"
+      ? new File([file], file.name, { type: "text/plain" })
+      : file;
+  }, [isPdf, thumbnail]);
+  const canOpen = ready && (isPdf || viewerFile !== null);
+  const preview =
+    thumbnail?.kind === "image" ? (
+      <img
+        src={thumbnail.url}
+        alt=""
+        className="h-full w-full object-cover"
+      />
+    ) : thumbnail?.kind === "file" ? (
+      <AttachmentCardPreview
+        file={thumbnail.file}
+        preview={thumbnail.preview}
+        fallback={
+          <span className="flex h-full items-center justify-center">
+            <AttachmentKindIcon kind={kind} className="size-6" />
+          </span>
+        }
+      />
+    ) : undefined;
+  const card = (
       <button
         type="button"
         disabled={!canOpen}
-        onClick={() =>
-          openPreview({ documentId: doc.id, filename: doc.filename })
+        onClick={
+          isPdf
+            ? () => openPreview({ documentId: doc.id, filename: doc.filename })
+            : undefined
         }
         title={
           doc.error ??
@@ -400,8 +536,23 @@ function DocumentCard({
           failed && "border-destructive/40",
         )}
       >
-        <FileCardBody name={doc.filename} kind={kind} center={center} />
+        <FileCardBody
+          name={doc.filename}
+          kind={kind}
+          center={center}
+          preview={preview}
+        />
       </button>
+  );
+  return (
+    <div
+      ref={setSlot}
+      className={cn(
+        "group/attachment-card relative",
+        CARD_SLOT,
+      )}
+    >
+      {viewerFile ? <LocalFileDialog file={viewerFile}>{card}</LocalFileDialog> : card}
       {shared ? <ProjectBadge /> : null}
       {onRemove && !processing ? (
         <button
@@ -454,12 +605,15 @@ function ChatFilesPanel({
   closeLabel,
   onDropItems,
   dropDisabledReason,
+  info,
   children,
 }: {
   icon: typeof Folder02Icon;
   title: string;
   /** Muted text after the title. */
   titleSuffix?: string;
+  /** Shown in a tooltip on an info icon after the title. */
+  info?: string;
   note?: ReactNode;
   headerControls?: ReactNode;
   onClose?: () => void;
@@ -535,6 +689,26 @@ function ChatFilesPanel({
             <span className="font-normal text-muted-foreground"> {titleSuffix}</span>
           ) : null}
         </h2>
+        {info ? (
+          <Tooltip>
+            <TooltipTrigger asChild={true}>
+              <button
+                type="button"
+                aria-label={info}
+                className="-ml-1 flex size-6 shrink-0 cursor-help items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              >
+                <HugeiconsIcon
+                  icon={InformationCircleIcon}
+                  strokeWidth={1.75}
+                  className="size-[var(--ui-icon-size-hint)]"
+                />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent className="max-w-[calc(300px*var(--ui-space-scale,1))] text-ui-11 leading-snug">
+              {info}
+            </TooltipContent>
+          </Tooltip>
+        ) : null}
         {note}
         <div className="ml-auto flex shrink-0 items-center gap-1">
           {headerControls}
@@ -1118,6 +1292,7 @@ export function ThreadDocumentsBar({
         icon={FileDatabaseIcon}
         title="Chat with files"
         titleSuffix={fileCount > 0 ? `(RAG) · ${countSuffix}` : "(RAG)"}
+        info="Add or drop documents, spreadsheets, slides, e-books, email or code. The model searches them as you chat and cites what it uses."
         onDropItems={attach}
         dropDisabledReason={busyReason}
         onClose={() => setRagEnabled(false)}
@@ -1196,12 +1371,6 @@ export function ThreadDocumentsBar({
           </div>
         ))}
         <AddFilesCard disabled={busy} onClick={pickFiles} />
-        {fileCount === 0 ? (
-          <p className="flex max-w-[calc(18rem*var(--ui-space-scale,1))] shrink-0 items-center text-ui-12 leading-snug text-muted-foreground">
-            Add or drop documents, spreadsheets, slides or code here. The model
-            searches them and cites what it uses.
-          </p>
-        ) : null}
       </ChatFilesPanel>
       <AlertDialog
         open={removingShared !== null}

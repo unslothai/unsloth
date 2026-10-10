@@ -55,6 +55,18 @@ const { ThreadDocumentsBar } = loadWithStubs<typeof BarModule>(
       FileCardBody: ({ name }: { name: string }) =>
         React.createElement("span", null, name),
     },
+    "@/components/assistant-ui/attachment-card-preview": {
+      AttachmentCardPreview: Nothing,
+      attachmentPreview: () => null,
+    },
+    "@/components/assistant-ui/attachment-document-dialog": {
+      LocalFileDialog: Passthrough,
+    },
+    "@/components/ui/tooltip": {
+      Tooltip: Passthrough,
+      TooltipContent: Nothing,
+      TooltipTrigger: Passthrough,
+    },
     "@/components/ui/spinner": { Spinner: Nothing },
     "./preview-store": {
       useDocumentPreviewStore: selectorStore({ openPreview: () => undefined }),
@@ -73,7 +85,8 @@ const { ThreadDocumentsBar } = loadWithStubs<typeof BarModule>(
     "@/features/chat": {
       isThreadIncognito: () => false,
       chatHistoryClearBoundary: { capture: () => 0 },
-      attachmentFileKind: () => "pdf",
+      attachmentFileKind: (name: string) =>
+        name.endsWith(".pdf") ? "pdf" : "word",
     },
     "@/features/native-intents": {
       useNativeAttachmentTargetKey: () => null,
@@ -200,6 +213,23 @@ test("a linked folder's files collapse into one folder card", () => {
       assert.match(html, /3 files/);
       assert.doesNotMatch(html, /a\.py|b\.py|c\.md/);
     }
+  } finally {
+    extraProjectDocs = [];
+  }
+});
+
+// The source preview has text only for PDFs when opened without a chunk; other files wait for
+// their bytes and open in the attachment viewer instead of an empty sheet.
+test("a non-PDF card is not openable before its file has loaded", () => {
+  extraProjectDocs = [{ id: "doc-2", filename: "notes.docx", status: "completed" }];
+  try {
+    const html = renderProjectChat(
+      { checkpoint: "unsloth/Qwen3-4B-GGUF", supportsTools: true },
+      true,
+    );
+    assert.match(html, /aria-label="Preview handbook\.pdf/);
+    assert.doesNotMatch(html, /aria-label="Preview notes\.docx/);
+    assert.match(html, /<button[^>]*disabled=""[^>]*aria-label="notes\.docx/);
   } finally {
     extraProjectDocs = [];
   }

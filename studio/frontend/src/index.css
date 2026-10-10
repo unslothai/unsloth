@@ -6025,22 +6025,17 @@ html:has([data-blocking-screen]) .interface-zoom-position {
 	container: files-panel / inline-size;
 	font-family: var(--font-sans);
 	background-color: #ffffff;
-	/* Light mode: a crisp hairline from a 1px-blur ring (a translucent border reads faint) over a soft lift. */
-	--files-panel-edge:
-		0 0 1px 0 rgb(0 0 0 / calc(0.62 * var(--contrast-edge-gain, 1))),
-		0 4px 4px 0 rgb(0 0 0 / 0.04);
-	border: 1px solid transparent;
-	box-shadow: var(--files-panel-edge);
-	transition: box-shadow 0.1s;
+	/* Light mode: a flat 1px edge, #e7e7e7 on white, no shadow. */
+	border: 1px solid rgb(0 0 0 / calc(0.094 * var(--contrast-edge-gain, 1)));
+	transition: box-shadow 0.1s, border-color 0.1s;
 }
 .dark .unsloth-files-panel {
 	background-color: var(--card);
+	border-color: transparent;
 	box-shadow: var(--composer-shadow);
 }
 .unsloth-files-panel[data-dragging="true"] {
-	box-shadow:
-		0 0 0 1.5px var(--primary),
-		var(--files-panel-edge);
+	border-color: var(--primary);
 }
 .dark .unsloth-files-panel[data-dragging="true"] {
 	box-shadow:
