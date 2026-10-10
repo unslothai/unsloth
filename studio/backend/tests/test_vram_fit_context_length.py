@@ -335,7 +335,7 @@ def test_a_metal_fit_charges_swa_checkpoints(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("cuda", [True, False], ids = ["codec-on-gpu", "codec-on-cpu"])
-def test_a_gpu_tts_codec_drops_the_fit(monkeypatch, cuda):
+def test_a_tts_codec_drops_the_fit(monkeypatch, cuda):
     import torch
 
     from core.inference.llama_cpp import LlamaCppBackend
@@ -349,4 +349,4 @@ def test_a_gpu_tts_codec_drops_the_fit(monkeypatch, cuda):
     backend = LlamaCppBackend()
     backend._vram_fit_context_length = 65536
     backend.init_audio_codec("snac", audio_codec_path = "unused")
-    assert backend.vram_fit_context_length == (None if cuda else 65536)
+    assert backend.vram_fit_context_length is None

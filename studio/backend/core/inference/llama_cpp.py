@@ -41010,9 +41010,9 @@ class LlamaCppBackend:
             model_repo_path = resolve_bicodec_repo_path(local_files_only = hf_env_offline())
 
         LlamaCppBackend._codec_mgr.load_codec(audio_type, device, model_repo_path = model_repo_path)
-        if device == "cuda":
-            # The codec now holds VRAM the load-time fit never priced.
-            self._vram_fit_context_length = None
+        # The codec holds memory the load-time fit never priced: VRAM on CUDA, and on a
+        # unified-memory host the very pool the fit sized even when it lands on the CPU.
+        self._vram_fit_context_length = None
         logger.info(f"Loaded audio codec for GGUF TTS: {audio_type}")
 
     def generate_audio_response(
