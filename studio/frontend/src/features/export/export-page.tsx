@@ -94,6 +94,7 @@ import {
 } from "./export-navigation-cache";
 import { confirmLlmCompressorInstallIfNeeded } from "./hooks/use-llm-compressor-consent";
 import { useExportSizeEstimate } from "./hooks/use-export-size-estimate";
+import { saveDirectoryField } from "./lib/save-directory";
 import {
   isExportPanelActive,
   useExportRuntimeStore,
@@ -736,7 +737,10 @@ export function ExportPage() {
     sourceBaseModelName,
     sourceMode,
   ]);
-  const saveDirectory = customSaveDirectory?.trim() || defaultSaveDirectory;
+  const { inputValue: saveDirectoryInput, saveDirectory } = saveDirectoryField(
+    customSaveDirectory,
+    defaultSaveDirectory,
+  );
   // Each merged format uploads a full model to the repo root, so several to one repo would collide.
   // GGUF method exporting an adapter checkpoint as a GGUF LoRA; reuses the LoRA export path.
   const ggufAsLora =
@@ -1989,6 +1993,7 @@ export function ExportPage() {
                   destination={destination}
                   onDestinationChange={setDestination}
                   saveDirectory={saveDirectory}
+                  saveDirectoryInput={saveDirectoryInput}
                   defaultSaveDirectory={defaultSaveDirectory}
                   saveDirectoryOverridden={!!customSaveDirectory}
                   onSaveDirectoryChange={setCustomSaveDirectory}
