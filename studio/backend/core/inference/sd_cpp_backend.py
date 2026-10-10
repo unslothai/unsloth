@@ -254,14 +254,45 @@ def _base_sample_sigmas(
     return grid, base
 
 
+def _cgroup_cpu_limit(root: str = "/sys/fs/cgroup", proc_cgroup: str = "/proc/self/cgroup") -> Optional[int]:
+    """The tightest cgroup v2 CPU quota over this process's cgroup and its parents, in whole CPUs
+    (rounded up), or None when there is none or it cannot be read (cgroup v1, macOS, Windows)."""
+    try:
+        with open(proc_cgroup, encoding = "utf-8") as f:
+            rel = next(line.split("::", 1)[1].strip() for line in f if line.startswith("0::"))
+    except (OSError, StopIteration):
+        rel = "/"
+    limit: Optional[int] = None
+    path = os.path.normpath(os.path.join(root, rel.lstrip("/")))
+    while True:
+        try:
+            with open(os.path.join(path, "cpu.max"), encoding = "utf-8") as f:
+                quota, period = f.read().split()[:2]
+            if quota != "max":
+                cpus = max(1, -(-int(quota) // int(period)))
+                limit = cpus if limit is None else min(limit, cpus)
+        except (OSError, ValueError):
+            pass
+        if len(path) <= len(root.rstrip("/")) or path == os.path.dirname(path):
+            return limit
+        path = os.path.dirname(path)
+
+
 def _default_threads() -> int:
-    """Physical-core thread count for the sd.cpp CPU backend. ``threads = None`` lets sd.cpp pick
-    its own default, which is the logical-core count (all hyperthreads). For the compute-bound
-    GGML matmuls the diffusion CPU path runs, oversubscribing the hyperthreads adds scheduling
-    contention without extra throughput, so pin to physical cores instead. Falls back to 8 when
-    the count is unknown, and clamps to at least 1."""
+    """sd.cpp ``--threads``: ``UNSLOTH_CPU_THREADS`` when set (the budget the other native engines
+    honour), else the physical-core estimate ``os.cpu_count() // 2``, capped by a cgroup CPU quota:
+    ``os.cpu_count()`` sees every host CPU inside a container, so a 4-CPU quota on a 192-CPU host
+    otherwise ran 96 threads on 4 CPUs of time."""
+    try:
+        configured = int(os.environ.get("UNSLOTH_CPU_THREADS") or 0)
+    except ValueError:
+        configured = 0
+    if configured > 0:
+        return configured
     cpu = os.cpu_count()
-    return max(1, cpu // 2 if cpu else 8)
+    threads = cpu // 2 if cpu else 8
+    limit = _cgroup_cpu_limit() if sys.platform.startswith("linux") else None
+    return max(1, min(threads, limit) if limit else threads)
 
 
 def _server_binary_runnable(binary: str) -> bool:
