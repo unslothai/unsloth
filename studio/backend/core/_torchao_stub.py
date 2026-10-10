@@ -257,7 +257,7 @@ def torchao_export_loadable() -> bool:
     try:
         if importlib.machinery.PathFinder.find_spec("torchao") is None:
             return False
-        # transformers 5's TorchAoConfig minimum; torch <= 2.9 is paired with torchao 0.14.
+        # transformers 5's TorchAoConfig minimum; torch <= 2.8 is paired with torchao 0.14.
         found = re.match(r"(\d+)\.(\d+)", importlib.metadata.version("torchao"))
         if not found or (int(found[1]), int(found[2])) < _TORCHAO_EXPORT_MIN:
             return False

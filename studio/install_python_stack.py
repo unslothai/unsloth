@@ -693,7 +693,8 @@ class _FreezeNewTorchForCoreUpdate:
 # torchao's cpp is built for ONE torch release AND CUDA major. Either mismatch costs the
 # kernels, never the import: torchao/__init__.py has caught the dlopen failure since 0.12 and
 # import_fixes.py filters that warning. Match torchao to the installed torch (pytorch/ao#2919):
-#   2.9.x            -> 0.14.0
+#   2.9.x            -> 0.15.0 (cpp built for 2.9.1, and the minimum diffusers 0.41 and
+#                       transformers 5 require: 0.14.0 broke every diffusion load, #13244)
 #   2.10.x, CUDA<=12 -> 0.16.0 (cpp built for 2.10, loads via the CUDA-12 wheel)
 #   2.10.x, CUDA>=13 -> 0.17.0 (cu130: 0.16.0's CUDA-12 cpp crashes on load; 0.17.0
 #                       targets torch 2.11 so its cpp is cleanly skipped, not crashed)
@@ -705,6 +706,7 @@ class _FreezeNewTorchForCoreUpdate:
 # single default tracks whatever major PyTorch currently ships (13 as of 0.18.0), so it cannot
 # be treated as a fixed fallback major. The caller pins the index to the resident torch.
 _TORCHAO_DEFAULT_SPEC = "torchao==0.14.0"
+_TORCHAO_TORCH_29_SPEC = "torchao==0.15.0"
 _TORCHAO_TORCH_210_SPEC = "torchao==0.16.0"
 _TORCHAO_TORCH_210_CUDA13_SPEC = "torchao==0.17.0"
 _TORCHAO_TORCH_211_SPEC = "torchao==0.17.0"
@@ -728,7 +730,7 @@ def _cuda_major_from_torch_version(torch_version: str) -> int | None:
 def _select_torchao_spec(torch_version: str | None) -> str:
     """Map an installed torch version string (e.g. '2.10.0+cu130') to the torchao
     pip spec whose cpp extensions match it. Falls back to _TORCHAO_DEFAULT_SPEC for
-    torch <=2.9, a non-2.x major, or an unparseable/missing version. Pure function.
+    torch <=2.8, a non-2.x major, or an unparseable/missing version. Pure function.
     """
     if not torch_version:
         return _TORCHAO_DEFAULT_SPEC
@@ -752,6 +754,8 @@ def _select_torchao_spec(torch_version: str | None) -> str:
         if cuda_major is not None and cuda_major >= _TORCHAO_CUDA13_MIN_MAJOR:
             return _TORCHAO_TORCH_210_CUDA13_SPEC
         return _TORCHAO_TORCH_210_SPEC
+    if minor == 9:
+        return _TORCHAO_TORCH_29_SPEC
     return _TORCHAO_DEFAULT_SPEC
 
 

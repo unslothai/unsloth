@@ -759,7 +759,7 @@ def test_torchao_groups_stay_on_device_after_release_and_restore(monkeypatch):
             assert torch.equal(net(x), ref)
         restore()
         for lin in net[1]:
-            # torchao 0.14 (torch <= 2.9) keeps the v1 layout, nesting its int8 data one subclass deeper
+            # torchao 0.14 (torch <= 2.8) keeps the v1 layout, nesting its int8 data one subclass deeper
             assert set(_inner_devices(lin.weight)) == {"cuda"}
         assert torch.equal(net(x), ref)
 

@@ -68,9 +68,12 @@ def _load_module(monkeypatch):
         # The CUDA-13 branch belongs to 2.10 alone; it must not leak upward.
         ("2.12.0+cu126", "torchao==0.18.0"),
         ("2.12.0.dev20260801+cu132", "torchao==0.18.0"),
-        # torch <=2.9 keeps today's pin (already a correct match for 2.9.0).
-        ("2.9.0+cu128", "torchao==0.14.0"),
-        ("2.9.1", "torchao==0.14.0"),
+        # 2.9 -> 0.15.0, the floor diffusers 0.41 imports unconditionally (#13244).
+        ("2.9.0+cu126", "torchao==0.15.0"),
+        ("2.9.0+cu128", "torchao==0.15.0"),
+        ("2.9.1", "torchao==0.15.0"),
+        ("2.9.1+rocm6.4", "torchao==0.15.0"),
+        # torch <=2.8 keeps the historical pin.
         ("2.8.0", "torchao==0.14.0"),
         ("2.4.0", "torchao==0.14.0"),
         # Unparseable / missing / non-2.x major -> conservative default.
@@ -90,7 +93,7 @@ def test_default_spec_matches_table(monkeypatch):
     """The default/floor stays the historical pin so older torch is unchanged."""
     mod = _load_module(monkeypatch)
     assert mod._TORCHAO_DEFAULT_SPEC == "torchao==0.14.0"
-    assert mod._select_torchao_spec("2.9.0") == mod._TORCHAO_DEFAULT_SPEC
+    assert mod._select_torchao_spec("2.8.0") == mod._TORCHAO_DEFAULT_SPEC
 
 
 def test_matching_torchao_pin_does_not_need_force_reinstall(monkeypatch):
@@ -146,7 +149,7 @@ def test_the_index_pin_starves_only_where_the_retry_covers_it(monkeypatch):
     """A pin that could not be served would fail an install, because this step is fatal.
 
     Four cells cannot be served, and none of them is predictable from a rule: cu118 stops at
-    torchao 0.11.0, rocm7.0 carries 0.16.0 alone, and cu129 has 0.14.1 where the 2.9 row asks
+    torchao 0.11.0, rocm7.0 carries 0.16.0 alone, and cu129 has 0.14.1 where the 2.8 row asks
     for 0.14.0 exactly -- a hole in the MIDDLE of its range, which no floor could describe.
     All four resolve from the default index, which is where they came from before this step
     pinned anything, so the retry makes them identical to today rather than broken. Recording
@@ -168,11 +171,10 @@ def test_the_index_pin_starves_only_where_the_retry_covers_it(monkeypatch):
         ("cu118", 7, "0.14.0"),
         # cu129 publishes 0.14.1, not 0.14.0, and stops at 0.17.0.
         ("cu129", 8, "0.14.0"),
-        ("cu129", 9, "0.14.0"),
         ("cu129", 12, "0.18.0"),
         ("cu129", 13, "0.18.0"),
         # rocm7.0 publishes 0.16.0 alone, which is what its torch 2.10 row already wants.
-        ("rocm7.0", 9, "0.14.0"),
+        ("rocm7.0", 9, "0.15.0"),
     }, sorted(starved)
 
 
@@ -688,7 +690,7 @@ def test_real_or_stub_replaces_a_stub_inherited_from_run_py(monkeypatch, consume
 
 
 def test_real_or_stub_keeps_the_stub_when_torchao_is_not_loadable(monkeypatch):
-    """torch <= 2.9 pairs with torchao 0.14, which transformers 5 rejects: never load it."""
+    """torch <= 2.8 pairs with torchao 0.14, which transformers 5 rejects: never load it."""
     monkeypatch.setattr(_stub, "_is_windows_rocm", lambda: True)
     monkeypatch.setattr(_stub, "torchao_export_loadable", lambda: False)
     monkeypatch.delitem(sys.modules, "torchao", raising = False)
