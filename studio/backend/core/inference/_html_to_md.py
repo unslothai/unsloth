@@ -219,8 +219,10 @@ _SITE_LINK_MARKER_TAIL = re.compile(r"\x00[0-9a-f]+:\d+:[se]\x00$")
 # parts a base lookup reads back: enough for delimiters and link markers, bounded on hostile pages
 _SUP_BASE_SCAN_PARTS = 8
 _SUP_BASE_SCAN_CHARS = 128
-# spaces, binary operators, or an implicit product (2n, n2) need parentheses after a caret
-_GROUPED_EXPONENT = re.compile(r"\s|\S[-+−/=×·⋅]|\d[^\W\d_]|[^\W\d_]\d")
+# a caret binds one token: a signed number or one letter goes bare, anything longer in parentheses
+_BARE_EXPONENT = re.compile(r"[-+−]?(?:\d+(?:[.,]\d+)?|[^\W\d_])")
+# split cents: $19<sup>99</sup> is a price, not an exponent
+_PRICE_TAIL = re.compile(r"[$€£¥₹¢]\s?\d[\d,]*$")
 # deeper <sup> nests render as plain text: each tracked level rescans its whole suffix on close
 _MAX_SUP_DEPTH = 8
 
@@ -591,6 +593,8 @@ class _MarkdownRenderer(HTMLParser):
                 part = trimmed
             if part:
                 base = part[-1]
+                if base.isdigit() and _PRICE_TAIL.search("".join(target[-4:])[-40:]):
+                    return ""
                 return base if base.isalnum() or base in ")]}|" else ""
         return ""
 
@@ -618,10 +622,11 @@ class _MarkdownRenderer(HTMLParser):
             or (base.isdigit() and visible.lower() in _DIGIT_ORDINAL_SUFFIXES)
         ):
             return
-        grouped = _GROUPED_EXPONENT.search(shown) or _GROUPED_EXPONENT.search(
-            shown.translate(_STRIP_MD_DELIMITERS)
+        token = shown.translate(_STRIP_MD_DELIMITERS)
+        bare = _BARE_EXPONENT.fullmatch(token) or (
+            token.startswith("(") and token.endswith(")") and token.count("(") == 1
         )
-        exponent = f"^({raw})" if grouped else f"^{raw}"
+        exponent = f"^{raw}" if bare else f"^({raw})"
         exponent += joined[len(joined.rstrip()) :]
         target[start:] = [exponent]
         # headings are teed into these copies; a stale one renders "E=mc2" or skews the prose gate

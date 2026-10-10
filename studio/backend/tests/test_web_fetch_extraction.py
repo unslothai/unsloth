@@ -750,6 +750,9 @@ def test_page_that_fits_keeps_its_links(monkeypatch):
         ("x<sup>n&times;2</sup>", "x^(n×2)"),
         ("x<sup>2n</sup> and y<sup>n2</sup>", "x^(2n) and y^(n2)"),
         ("x<sup>2<em>n</em></sup>", "x^(2*n*)"),
+        ("e<sup>i&pi;</sup> + 1 = 0", "e^(iπ) + 1 = 0"),
+        ("now $19<sup>99</sup> or &euro; 1,299<sup>95</sup>", "now $1999 or € 1,29995"),
+        ("x<sup>-n</sup> and 10<sup>2.5</sup>", "x^-n and 10^2.5"),
         ("now $19<sup><em>.99</em></sup>", "now $19*.99*"),
         ("A fact.<sup>1</sup> Next, a list,<sup>2</sup>", "A fact.1 Next, a list,2"),
         ("(a+b)<sup>2</sup> and km<sup>2</sup>.", "(a+b)^2 and km^2."),
@@ -785,7 +788,7 @@ def test_stripped_header_keeps_the_exponent_in_its_heading():
 
 def test_deeply_nested_superscripts_track_a_bounded_depth():
     out = html_to_markdown("<p>x" + "<sup>a" * 50 + "</sup>" * 50 + "</p>")
-    assert out.replace("^", "") == "x" + "a" * 50
+    assert out.translate(str.maketrans("", "", "^()")) == "x" + "a" * 50
     assert out.count("^") == 8
 
 
