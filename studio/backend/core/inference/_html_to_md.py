@@ -209,8 +209,10 @@ _MIN_SCOPE_SPAN_CHARS = 256
 _INLINE_EMPHASIS = {"strong": "**", "b": "**", "em": "*", "i": "*"}
 
 _ORDINAL_SUFFIXES = frozenset({"st", "nd", "rd", "th"})
+# French ordinals after a digit (1er, 2e, 3ème); after a letter "e" can be Euler's number
+_DIGIT_ORDINAL_SUFFIXES = frozenset({"e", "er", "re", "ère", "ème", "eme", "nd", "nde"})
 _MD_DELIMITERS = "*_`"
-_GROUPED_EXPONENT = re.compile(r"\s|\S[-+−/=]")
+_GROUPED_EXPONENT = re.compile(r"\s|\S[-+−/=×·⋅]")
 # deeper <sup> nests render as plain text: each tracked level rescans its whole suffix on close
 _MAX_SUP_DEPTH = 8
 
@@ -503,7 +505,7 @@ class _MarkdownRenderer(HTMLParser):
         self._bq_stack: list[list[str]] = []
 
         # per open <sup>: (output list, start) and the (copy, start) pairs that tee the same text
-        self._sup_starts: list[tuple[list[str], int, list[tuple[list[str], int]]] | None] = []
+        self._sup_starts: list[tuple[list[str], int, list[tuple[list[str], int]], str] | None] = []
 
     def _nested_buffer_open(self, frame: _HeaderFrame) -> bool:
         """True when a side buffer opened *inside* *frame* still holds content.
@@ -567,15 +569,17 @@ class _MarkdownRenderer(HTMLParser):
             return self._bq_stack[-1]
         return self._out
 
-    def _sup_has_base(self, target: list[str]) -> bool:
-        """A <sup> after nothing or whitespace has no base: a footnote marker the link wraps
-        (``<a href="#fn1"><sup>1</sup></a>``) or a fraction numerator (``<sup>1</sup>&frasl;``)."""
+    def _sup_base(self, target: list[str]) -> str:
+        """The visible character a <sup> raises, or "" when it has none: after whitespace or
+        sentence punctuation it is a footnote marker (``fact.<sup>1</sup>``,
+        ``<a href="#fn1"><sup>1</sup></a>``) or a fraction numerator (``<sup>1</sup>&frasl;``)."""
         for part in reversed(target):
             # an emphasis or code delimiter the renderer just opened is not visible text
             part = part.rstrip(_MD_DELIMITERS)
             if part:
-                return not part[-1].isspace()
-        return False
+                base = part[-1]
+                return base if base.isalnum() or base in ")]}|" else ""
+        return ""
 
     def _sup_copies(self) -> list[tuple[list[str], int]]:
         copies = [self._link_heading_parts, self._seg_heading_texts]
@@ -587,16 +591,18 @@ class _MarkdownRenderer(HTMLParser):
         opened = self._sup_starts.pop()
         if opened is None or opened[0] is not self._emit_target():
             return
-        target, start, copies = opened
+        target, start, copies, base = opened
         joined = "".join(target[start:])
         raw = joined.strip()
         shown = self._site_links.clean(raw) if self._site_links is not None else raw
+        visible = shown.strip(_MD_DELIMITERS)
         if (
-            not shown
-            or "\n" in shown
-            or shown[0] in "[."
-            or not any(c.isalnum() for c in shown)
-            or shown.strip(_MD_DELIMITERS).lower() in _ORDINAL_SUFFIXES
+            not visible
+            or "\n" in visible
+            or visible[0] in "[."
+            or not any(c.isalnum() for c in visible)
+            or visible.lower() in _ORDINAL_SUFFIXES
+            or (base.isdigit() and visible.lower() in _DIGIT_ORDINAL_SUFFIXES)
         ):
             return
         exponent = f"^({raw})" if _GROUPED_EXPONENT.search(shown) else f"^{raw}"
@@ -1067,8 +1073,8 @@ class _MarkdownRenderer(HTMLParser):
                 None
                 if reference
                 or len(self._sup_starts) >= _MAX_SUP_DEPTH
-                or not self._sup_has_base(target)
-                else (target, len(target), self._sup_copies())
+                or not (base := self._sup_base(target))
+                else (target, len(target), self._sup_copies(), base)
             )
 
         elif tag in _BLOCK_TAGS:

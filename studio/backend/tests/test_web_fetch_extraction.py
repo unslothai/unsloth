@@ -747,6 +747,11 @@ def test_page_that_fits_keeps_its_links(monkeypatch):
         ("Add <em><sup>1</sup></em>&frasl; cup", "Add *1*⁄ cup"),
         ("the 1<sup><em>st</em></sup> one", "the 1*st* one"),
         ("a<b><sup>2</sup></b>", "a**^2**"),
+        ("x<sup>n&times;2</sup>", "x^(n×2)"),
+        ("now $19<sup><em>.99</em></sup>", "now $19*.99*"),
+        ("A fact.<sup>1</sup> Next, a list,<sup>2</sup>", "A fact.1 Next, a list,2"),
+        ("(a+b)<sup>2</sup> and km<sup>2</sup>.", "(a+b)^2 and km^2."),
+        ("le 1<sup>er</sup> mai, 2<sup>e</sup> et x<sup>e</sup>", "le 1er mai, 2e et x^e"),
     ],
 )
 def test_superscripts_keep_their_exponent(markup, expected):
