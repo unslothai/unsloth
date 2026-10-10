@@ -164,6 +164,10 @@ def gpu_platform() -> str:
     global _kfd_has_amd_gpu
     from utils.hardware import hardware
 
+    # IS_ROCM reads False until startup's background detection settles; an early status poll
+    # or install on an AMD host must not pick the CUDA profile meanwhile.
+    if not hardware.DETECTION_COMPLETE.is_set():
+        hardware.ensure_hardware_detected()
     if hardware.IS_ROCM:
         return "rocm"
     if platform.system() != "Linux" or os.path.exists("/proc/driver/nvidia/version"):
