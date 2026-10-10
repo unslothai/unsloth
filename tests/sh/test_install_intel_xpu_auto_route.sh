@@ -156,6 +156,7 @@ source_of() {
 }
 rm -rf "$_PCI"; add_pci 0000:03:00.0 0x8086 0x56a0 0x030000
 assert_eq "Arc + opt-out records a deliberate cpu" "unset" "$(source_of UNSLOTH_DISABLE_XPU_AUTO=1)"
+assert_eq "Arc + opt-out + SYCL selector still records a deliberate cpu" "unset" "$(source_of UNSLOTH_DISABLE_XPU_AUTO=1 ONEAPI_DEVICE_SELECTOR=level_zero:0)"
 assert_eq "Arc without the opt-out keeps resolved" "resolved" "$(source_of)"
 rm -rf "$_PCI"; add_pci 0000:00:02.0 0x8086 0x46a6 0x030000
 assert_eq "opt-out without an XPU-capable GPU keeps resolved" "resolved" "$(source_of UNSLOTH_DISABLE_XPU_AUTO=1)"

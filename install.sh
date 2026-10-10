@@ -6878,7 +6878,7 @@ esac
 # The XPU opt-out on a host the Intel route would otherwise take is a deliberate CPU choice.
 _xpu_opted_out=false
 if [ "${UNSLOTH_TORCH_BACKEND:-}" = cpu ] && [ "${UNSLOTH_DISABLE_XPU_AUTO:-0}" = 1 ] &&
-   (UNSLOTH_DISABLE_XPU_AUTO=0 _intel_xpu_auto_gpu_id) >/dev/null 2>&1; then
+   _intel_xpu_gpu_id >/dev/null 2>&1 && ! _amd_hardware_corroborated; then
     _xpu_opted_out=true
 fi
 if [ -n "${UNSLOTH_TORCH_BACKEND:-}" ] && [ "$_xpu_opted_out" != true ] &&
