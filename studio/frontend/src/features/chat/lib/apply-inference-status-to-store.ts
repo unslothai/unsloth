@@ -15,8 +15,8 @@ import { modelDisplayName } from "@/features/hub/lib/model-identity";
 import { getInferenceStatus } from "../api/chat-api";
 import { isSpeechOnlyStatus } from "./speech-only-status";
 import {
-  layersQwenThinkingDefaults,
   mergeBackendRecommendedInference,
+  qwenThinkingParamsWithModelIni,
   replayMaxTokensCap,
 } from "../presets/preset-policy";
 import { clampReasoningEffortToLevels } from "../provider-capabilities";
@@ -505,8 +505,10 @@ export function applyActiveModelStatusToStore(
           specDraftModel: status.spec_draft_model ?? null,
         }),
       }),
+    // An applied unsloth.ini's -ctk is what the server echoes, not a structured setting to adopt.
     ...(seedLoadParams &&
-      status.cache_type_kv !== undefined && {
+      status.cache_type_kv !== undefined &&
+      status.model_ini_applied !== true && {
         loadedKvCacheDtype: status.cache_type_kv,
         ...((prevState.loadedKvCacheDtype === null ||
           hydratingExistingModel ||
@@ -777,12 +779,9 @@ export function applyActiveModelStatusToStore(
       checkpointId,
       reasoningAlwaysOn || current.reasoningEnabled,
     );
-    if (
-      qwenParams !== null &&
-      layersQwenThinkingDefaults(current.activePresetSource, status.model_ini_sampling)
-    ) {
+    if (qwenParams !== null && current.activePresetSource === "builtin-default") {
       current.setParams(
-        { ...current.params, ...qwenParams },
+        { ...current.params, ...qwenThinkingParamsWithModelIni(qwenParams, status) },
         {
           fromModelDefaults: true,
           maxTokensCap: replayMaxTokensCap(status.context_length),

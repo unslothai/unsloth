@@ -163,6 +163,7 @@ import {
   formatModelIniSettings,
   modelIniLocationLabel,
   shouldShowModelIniRow,
+  withoutModelIniOffloadFlags,
 } from "../model-config/model-ini";
 import {
   CACHE_RAM_LLAMA_DEFAULT,
@@ -3238,7 +3239,12 @@ export function ModelConfigPage({
           nCpuMoe: runtimeConfig.nCpuMoe ?? null,
           selectedGpuIds: runtimeConfig.selectedGpuIds ?? null,
           llamaExtraArgs: iniInEstimate
-            ? [...iniInEstimate.args, ...(runtimeConfig.llamaExtraArgs ?? [])]
+            ? [
+                ...(runtimeGpuMemoryMode === "manual"
+                  ? withoutModelIniOffloadFlags(iniInEstimate.args)
+                  : iniInEstimate.args),
+                ...(runtimeConfig.llamaExtraArgs ?? []),
+              ]
             : (runtimeConfig.llamaExtraArgs ?? null),
         }
       : null;

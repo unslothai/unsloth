@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The Qwen3 thinking table must not replace sampling a server's unsloth.ini set, and only that.
+// On the Default preset the Qwen3 thinking table still applies, and an unsloth.ini outranks it only for the keys it set.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -9,7 +9,7 @@ import test from "node:test";
 import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
-const { layersQwenThinkingDefaults, mergeBackendRecommendedInference } =
+const { mergeBackendRecommendedInference, qwenThinkingParamsWithModelIni } =
   await import("../src/features/chat/presets/preset-policy.ts");
 const { resolveQwenThinkingParams } = await import(
   "../src/features/chat/utils/qwen-sampling-table.ts"
@@ -23,12 +23,12 @@ const QWEN = "unsloth/Qwen3-0.6B-GGUF";
 /** What performLoad and the status merge do, in order: the response's defaults, then the table. */
 function afterLoad(
   response: {
-    model_ini_sampling?: boolean;
+    model_ini_sampling_keys?: string[];
     inference: Record<string, number>;
   },
   current = DEFAULT_INFERENCE_PARAMS,
 ) {
-  let params = mergeBackendRecommendedInference({
+  const params = mergeBackendRecommendedInference({
     current: { ...current, checkpoint: QWEN },
     response: { is_gguf: true, ...response },
     modelId: QWEN,
@@ -36,18 +36,13 @@ function afterLoad(
     loadedContextLength: 4096,
   });
   const qwen = resolveQwenThinkingParams(QWEN, true);
-  if (
-    qwen &&
-    layersQwenThinkingDefaults("builtin-default", response.model_ini_sampling)
-  ) {
-    params = { ...params, ...qwen };
-  }
-  return params;
+  assert.ok(qwen);
+  return { ...params, ...qwenThinkingParamsWithModelIni(qwen, response) };
 }
 
-test("a load run with the unsloth.ini keeps the INI's sampling on the Default preset", () => {
+test("every sampling key the INI set wins over the Qwen3 table", () => {
   const params = afterLoad({
-    model_ini_sampling: true,
+    model_ini_sampling_keys: ["temperature", "top_p", "top_k", "min_p"],
     inference: { temperature: 0.42, top_p: 0.77, top_k: 17, min_p: 0.03 },
   });
   assert.equal(params.temperature, 0.42);
@@ -56,43 +51,31 @@ test("a load run with the unsloth.ini keeps the INI's sampling on the Default pr
   assert.equal(params.minP, 0.03);
 });
 
-test("the same model without the file goes back to its normal recommendation", () => {
+test("an INI that sets only temperature keeps the table's other values", () => {
   const params = afterLoad({
-    model_ini_sampling: false,
-    inference: { temperature: 0.42, top_p: 0.77, top_k: 17 },
+    model_ini_sampling_keys: ["temperature"],
+    inference: { temperature: 0.42, top_p: 0.8, top_k: 40 },
   });
-  assert.equal(params.temperature, 0.6);
+  assert.equal(params.temperature, 0.42);
   assert.equal(params.topP, 0.95);
   assert.equal(params.topK, 20);
-  // A server that predates the field is a load without the file.
-  assert.equal(layersQwenThinkingDefaults("builtin-default", undefined), true);
-  assert.equal(layersQwenThinkingDefaults("custom", false), false);
 });
 
-test("both sites that lay the thinking table over a load ask the helper", () => {
-  assert.match(
-    readSrc("features/chat/hooks/use-chat-model-runtime.ts"),
-    /layersQwenThinkingDefaults\(\s*store\.activePresetSource,\s*loadResponse\.model_ini_sampling,\s*\)/,
-  );
-  assert.match(
-    readSrc("features/chat/lib/apply-inference-status-to-store.ts"),
-    /layersQwenThinkingDefaults\(current\.activePresetSource, status\.model_ini_sampling\)/,
-  );
-});
-
-test("an INI with only performance settings keeps the Qwen3 thinking defaults", () => {
-  // The backend reports model_ini_sampling false for it, and inference holds only model defaults.
-  const params = afterLoad({
-    model_ini_sampling: false,
-    inference: { temperature: 0.7, top_p: 0.8, top_k: 20 },
-  });
-  assert.equal(params.temperature, 0.6);
-  assert.equal(params.topP, 0.95);
+test("no INI keys, or a server without the field, leaves the Qwen3 table untouched", () => {
+  for (const keys of [[], undefined]) {
+    const params = afterLoad({
+      ...(keys ? { model_ini_sampling_keys: keys } : {}),
+      inference: { temperature: 0.7, top_p: 0.8, top_k: 40 },
+    });
+    assert.equal(params.temperature, 0.6);
+    assert.equal(params.topP, 0.95);
+    assert.equal(params.topK, 20);
+  }
 });
 
 test("an INI repeat-penalty reaches the slider; a load without one leaves it alone", () => {
   const withIni = afterLoad({
-    model_ini_sampling: true,
+    model_ini_sampling_keys: ["temperature", "repetition_penalty"],
     inference: { temperature: 0.42, repetition_penalty: 1.1 },
   });
   assert.equal(withIni.repetitionPenalty, 1.1);
@@ -101,4 +84,26 @@ test("an INI repeat-penalty reaches the slider; a load without one leaves it alo
     { ...DEFAULT_INFERENCE_PARAMS, repetitionPenalty: 1.25 },
   );
   assert.equal(kept.repetitionPenalty, 1.25);
+});
+
+test("a key the file named but the response lacks, or an unknown key, changes nothing", () => {
+  const qwen = { temperature: 0.6, topP: 0.95 };
+  assert.deepEqual(
+    qwenThinkingParamsWithModelIni(qwen, {
+      model_ini_sampling_keys: ["top_p", "seed"],
+      inference: { temperature: 0.42 },
+    }),
+    qwen,
+  );
+});
+
+test("both sites that lay the thinking table over a load apply the INI's keys on top", () => {
+  assert.match(
+    readSrc("features/chat/hooks/use-chat-model-runtime.ts"),
+    /const p =\s*qwenTable && qwenThinkingParamsWithModelIni\(qwenTable, loadResponse\);/,
+  );
+  assert.match(
+    readSrc("features/chat/lib/apply-inference-status-to-store.ts"),
+    /qwenThinkingParamsWithModelIni\(qwenParams, status\)/,
+  );
 });

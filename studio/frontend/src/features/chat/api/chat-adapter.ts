@@ -43,6 +43,7 @@ import {
   loadedContextFields,
   resolveInitialConfig,
 } from "@/features/model-picker";
+import { structuredKvCacheDtypeAfterLoad } from "@/features/model-picker/model-config/model-ini";
 import { isMlxId } from "@/features/model-picker/components/model-selector/recommended-fit";
 import { loadManagedLlamaFlags } from "@/features/model-picker/api/llama-flags";
 import { fetchLoadExtraArgs } from "@/features/model-picker/api/model-overrides";
@@ -3873,8 +3874,16 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           preserveThinking: resolvePreserveThinkingOnLoad(loadResp),
           supportsTools: loadResp.supports_tools ?? false,
           ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
-          kvCacheDtype: loadResp.cache_type_kv ?? null,
-          loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
+          kvCacheDtype: structuredKvCacheDtypeAfterLoad(
+            loadResp.cache_type_kv,
+            config.kvCacheDtype,
+            loadResp.model_ini_applied,
+          ),
+          loadedKvCacheDtype: structuredKvCacheDtypeAfterLoad(
+            loadResp.cache_type_kv,
+            config.kvCacheDtype,
+            loadResp.model_ini_applied,
+          ),
           ...mlxRuntimeStateFrom(loadResp),
           // Click-time value, not the resolved backend echo (see performLoad).
           nParallel: committedSlots,
@@ -3947,8 +3956,16 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           preserveThinking: resolvePreserveThinkingOnLoad(loadResp),
           supportsTools: loadResp.supports_tools ?? false,
           ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
-          kvCacheDtype: loadResp.cache_type_kv ?? null,
-          loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
+          kvCacheDtype: structuredKvCacheDtypeAfterLoad(
+            loadResp.cache_type_kv,
+            config.kvCacheDtype,
+            loadResp.model_ini_applied,
+          ),
+          loadedKvCacheDtype: structuredKvCacheDtypeAfterLoad(
+            loadResp.cache_type_kv,
+            config.kvCacheDtype,
+            loadResp.model_ini_applied,
+          ),
           ...mlxRuntimeStateFrom(loadResp),
           nParallel: committedSlots,
           loadedNParallel: committedSlots,

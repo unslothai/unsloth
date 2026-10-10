@@ -155,6 +155,7 @@ import {
   type PerModelConfig,
   loadedContextFields,
 } from "@/features/model-picker";
+import { structuredKvCacheDtypeAfterLoad } from "@/features/model-picker/model-config/model-ini";
 import { loadManagedLlamaFlags } from "@/features/model-picker/api/llama-flags";
 import { fetchLoadExtraArgs } from "@/features/model-picker/api/model-overrides";
 import { sanitizeStoredExtraArgs } from "@/features/model-picker/model-config/llama-extra-args";
@@ -1959,8 +1960,16 @@ export function SharedComposer({
           supportsPreserveThinking: resp.supports_preserve_thinking ?? false,
           preserveThinking: resolvePreserveThinkingOnLoad(resp),
           supportsTools: resp.supports_tools ?? false,
-          kvCacheDtype: resp.cache_type_kv ?? null,
-          loadedKvCacheDtype: resp.cache_type_kv ?? null,
+          kvCacheDtype: structuredKvCacheDtypeAfterLoad(
+            resp.cache_type_kv,
+            ownConfig.kvCacheDtype,
+            resp.model_ini_applied,
+          ),
+          loadedKvCacheDtype: structuredKvCacheDtypeAfterLoad(
+            resp.cache_type_kv,
+            ownConfig.kvCacheDtype,
+            resp.model_ini_applied,
+          ),
           ...mlxRuntimeStateFrom(resp),
           // Click-time value, not the resolved echo (see the single-model load).
           nParallel: committedSlots,

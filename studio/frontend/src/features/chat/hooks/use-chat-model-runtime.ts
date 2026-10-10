@@ -139,9 +139,9 @@ import {
 } from "../lib/resident-config-match";
 import { residentModelMatchesPick } from "../lib/resident-model-match";
 import {
-  layersQwenThinkingDefaults,
   loadedContextForParams,
   mergeBackendRecommendedInference,
+  qwenThinkingParamsWithModelIni,
   resolveFitMaxSeqLength,
   isReplayedLoadContext,
   unpinnedDefaultRequest,
@@ -178,6 +178,7 @@ import {
   type PerModelConfig,
   loadedContextFields,
 } from "@/features/model-picker";
+import { structuredKvCacheDtypeAfterLoad } from "@/features/model-picker/model-config/model-ini";
 import {
   invalidateLlamaFlagCatalog,
   loadManagedLlamaFlags,
@@ -2880,7 +2881,11 @@ export function useChatModelRuntime() {
                 }
               }
             }
-            const loadedKv = loadResponse.cache_type_kv ?? null;
+            const loadedKv = structuredKvCacheDtypeAfterLoad(
+              loadResponse.cache_type_kv,
+              loadKvCacheDtype,
+              loadResponse.model_ini_applied,
+            );
             const loadedTp = loadResponse.tensor_parallel ?? false;
             const loadedSpec = normalizeSpeculativeType(
               loadResponse.speculative_type,
@@ -3063,22 +3068,19 @@ export function useChatModelRuntime() {
             noteLoadedModelReasoningMode(modelId, nextReasoningEnabled, true);
             // Unlock attach menus for capabilities the catalog entry lacked.
             syncModelCapabilities(modelId, loadResponse);
-            // Qwen3-family: apply thinking-mode-specific params after load.
-            const p = resolveQwenThinkingParams(
+            // Qwen3-family: apply thinking-mode-specific params after load, the unsloth.ini's keys over them.
+            const qwenTable = resolveQwenThinkingParams(
               modelId,
               nextReasoningEnabled,
             );
+            const p =
+              qwenTable && qwenThinkingParamsWithModelIni(qwenTable, loadResponse);
             if (
               p !== null &&
               (loadResponse.supports_reasoning ?? false)
             ) {
               const store = useChatRuntimeStore.getState();
-              if (
-                layersQwenThinkingDefaults(
-                  store.activePresetSource,
-                  loadResponse.model_ini_sampling,
-                )
-              ) {
+              if (store.activePresetSource === "builtin-default") {
                 // Same rule as the load response: defaults first, this model's remembered settings over them.
                 store.setParams({ ...store.params, ...p }, {
                   fromModelDefaults: true,

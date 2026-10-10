@@ -274,7 +274,10 @@ const SETTING_CHECKS: SettingCheck[] = [
   },
   {
     pinned: () => true,
-    agrees: (c, s) => (c.kvCacheDtype ?? null) === (s.cache_type_kv ?? null),
+    // Under an applied unsloth.ini the echo may be the file's -ctk, which no structured value matches.
+    agrees: (c, s) =>
+      (c.kvCacheDtype ?? null) === (s.cache_type_kv ?? null) ||
+      (c.useModelIni === true && s.model_ini_applied === true),
   },
   {
     mlxComparable: true,

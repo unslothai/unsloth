@@ -61,3 +61,46 @@ export function shouldShowModelIniRow(
 ): boolean {
   return isGguf && !isDiffusion && (ini?.found === true || switchedOn);
 }
+
+/** The structured cache type a load leaves set. With an unsloth.ini applied the echo is the file's
+ *  `-ctk`, and adopting it would keep that cache type once the switch is turned off. */
+export function structuredKvCacheDtypeAfterLoad(
+  echoed: string | null | undefined,
+  sent: string | null | undefined,
+  modelIniApplied: boolean | null | undefined,
+): string | null {
+  return (modelIniApplied === true ? sent : echoed) ?? null;
+}
+
+// Placement flags Manual GPU memory owns; the backend drops them from the INI the same way (_model_ini_tokens).
+const OFFLOAD_VALUE_FLAGS = new Set([
+  "--gpu-layers",
+  "-ngl",
+  "--n-gpu-layers",
+  "--fit",
+  "--n-cpu-moe",
+  "-ncmoe",
+  "--tensor-split",
+  "-ts",
+]);
+const OFFLOAD_SWITCH_FLAGS = new Set(["--cpu-moe", "-cmoe"]);
+
+/** `args` less the offload flags (and their values) a Manual GPU memory load would not launch. */
+export function withoutModelIniOffloadFlags(args: readonly string[]): string[] {
+  const kept: string[] = [];
+  for (let i = 0; i < args.length; i += 1) {
+    const token = args[i];
+    const flag = token.split("=", 1)[0];
+    if (OFFLOAD_SWITCH_FLAGS.has(flag)) {
+      continue;
+    }
+    if (OFFLOAD_VALUE_FLAGS.has(flag)) {
+      if (!token.includes("=")) {
+        i += 1;
+      }
+      continue;
+    }
+    kept.push(token);
+  }
+  return kept;
+}

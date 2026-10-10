@@ -284,13 +284,36 @@ export interface BackendInferenceEnvelope {
   inference?: BackendInferenceDefaults | null;
 }
 
-/** Whether the Qwen3 thinking table may be laid over a load's defaults. Not when the model's unsloth.ini
- *  set sampling: those values are already in `inference`, and the table would replace them. */
-export function layersQwenThinkingDefaults(
-  presetSource: ChatPresetSource,
-  modelIniSampling: boolean | null | undefined,
-): boolean {
-  return presetSource === "builtin-default" && modelIniSampling !== true;
+// `inference` keys an unsloth.ini can set, and the slider each one drives.
+const MODEL_INI_SAMPLING_PARAMS = {
+  temperature: "temperature",
+  top_p: "topP",
+  top_k: "topK",
+  min_p: "minP",
+  repetition_penalty: "repetitionPenalty",
+  presence_penalty: "presencePenalty",
+} as const satisfies Record<string, keyof InferenceParams>;
+
+/** The Qwen3 thinking table with each sampling key the model's unsloth.ini set taken from `inference`
+ *  instead: the file outranks the table, but only for what it names. */
+export function qwenThinkingParamsWithModelIni<T extends Partial<InferenceParams>>(
+  qwenParams: T,
+  response: {
+    inference?: BackendInferenceDefaults | null;
+    model_ini_sampling_keys?: readonly string[] | null;
+  },
+): T {
+  const merged: Partial<InferenceParams> = { ...qwenParams };
+  for (const key of response.model_ini_sampling_keys ?? []) {
+    const param = MODEL_INI_SAMPLING_PARAMS[key as keyof typeof MODEL_INI_SAMPLING_PARAMS];
+    const value = toFiniteNumber(
+      response.inference?.[key as keyof BackendInferenceDefaults],
+    );
+    if (param && value !== undefined) {
+      merged[param] = value;
+    }
+  }
+  return merged as T;
 }
 
 export function mergeBackendRecommendedInference({

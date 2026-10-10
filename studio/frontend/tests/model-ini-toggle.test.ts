@@ -60,8 +60,13 @@ const { perModelConfigsEqual, currentRuntimePerModelConfig } = loadWithStubs<{
 const { residentRuntimeMatchesConfig } = await import(
   "../src/features/chat/lib/resident-config-match.ts"
 );
-const { formatModelIniSettings, modelIniLocationLabel, shouldShowModelIniRow } =
-  await import("../src/features/model-picker/model-config/model-ini.ts");
+const {
+  formatModelIniSettings,
+  modelIniLocationLabel,
+  shouldShowModelIniRow,
+  structuredKvCacheDtypeAfterLoad,
+  withoutModelIniOffloadFlags,
+} = await import("../src/features/model-picker/model-config/model-ini.ts");
 
 const STORAGE_KEY = "unsloth_model_configs";
 
@@ -190,6 +195,51 @@ test("a resident server matches only when it ran with the file exactly when aske
     residentRuntimeMatchesConfig({ model_ini_applied: true }, on, standing),
     true,
   );
+  // The file's -ctk is the echo; the structured setting stays what the load sent.
+  assert.equal(
+    residentRuntimeMatchesConfig(
+      { model_ini_applied: true, cache_type_kv: "q8_0" },
+      on,
+      standing,
+    ),
+    true,
+  );
+  assert.equal(
+    residentRuntimeMatchesConfig({ model_ini_applied: false, cache_type_kv: "q8_0" }, off, standing),
+    false,
+  );
+});
+
+test("an applied INI's cache type is not adopted as the structured setting", () => {
+  assert.equal(structuredKvCacheDtypeAfterLoad("q8_0", null, true), null);
+  assert.equal(structuredKvCacheDtypeAfterLoad("q8_0", "f16", true), "f16");
+  assert.equal(structuredKvCacheDtypeAfterLoad("q8_0", null, false), "q8_0");
+  assert.equal(structuredKvCacheDtypeAfterLoad("q8_0", null, undefined), "q8_0");
+  assert.equal(structuredKvCacheDtypeAfterLoad(undefined, undefined, false), null);
+  const sites: [string, RegExp][] = [
+    [
+      "features/chat/hooks/use-chat-model-runtime.ts",
+      /const loadedKv = structuredKvCacheDtypeAfterLoad\(\s*loadResponse\.cache_type_kv,\s*loadKvCacheDtype,\s*loadResponse\.model_ini_applied,\s*\)/,
+    ],
+    [
+      "features/chat/shared-composer.tsx",
+      /kvCacheDtype: structuredKvCacheDtypeAfterLoad\(\s*resp\.cache_type_kv,\s*ownConfig\.kvCacheDtype,\s*resp\.model_ini_applied,\s*\)/,
+    ],
+  ];
+  for (const [path, pattern] of sites) {
+    assert.match(readSrc(path), pattern, path);
+  }
+  // Both auto-load echoes that can follow a use_model_ini load, editable and loaded alike.
+  const adapter = readSrc("features/chat/api/chat-adapter.ts");
+  const adopted =
+    adapter.match(
+      /structuredKvCacheDtypeAfterLoad\(\s*loadResp\.cache_type_kv,\s*config\.kvCacheDtype,\s*loadResp\.model_ini_applied,\s*\)/g,
+    ) ?? [];
+  assert.equal(adopted.length, 4);
+  assert.match(
+    readSrc("features/chat/lib/apply-inference-status-to-store.ts"),
+    /status\.cache_type_kv !== undefined &&\s*status\.model_ini_applied !== true &&/,
+  );
 });
 
 test("server override hydration keeps the browser's choice", () => {
@@ -294,6 +344,34 @@ test("an enabled INI is priced in the memory estimate", () => {
   const page = readSrc("features/model-picker/components/model-config-page.tsx");
   assert.match(page, /const iniInEstimate =\s*config\.useModelIni === true && modelIni\?\.found \? modelIni : null;/);
   assert.match(page, /nParallel: iniInEstimate\?\.n_parallel \?\? runtimeConfig\.nParallel/);
-  assert.match(page, /\[\.\.\.iniInEstimate\.args, \.\.\.\(runtimeConfig\.llamaExtraArgs \?\? \[\]\)\]/);
+  assert.match(
+    page,
+    /\.\.\.\(runtimeGpuMemoryMode === "manual"\s*\? withoutModelIniOffloadFlags\(iniInEstimate\.args\)\s*: iniInEstimate\.args\),\s*\.\.\.\(runtimeConfig\.llamaExtraArgs \?\? \[\]\),/,
+  );
   assert.match(page, /except Extra Arguments,\s*which still win/);
+});
+
+test("Manual GPU memory prices the INI without the placement flags the load drops", () => {
+  assert.deepEqual(
+    withoutModelIniOffloadFlags([
+      "--ctx-size",
+      "4096",
+      "--gpu-layers",
+      "-1",
+      "--fit",
+      "off",
+      "--n-cpu-moe",
+      "30",
+      "--cpu-moe",
+      "--tensor-split",
+      "1,1",
+      "-ngl=99",
+      "--cache-type-k",
+      "q8_0",
+      "--temp",
+      "0.42",
+    ]),
+    ["--ctx-size", "4096", "--cache-type-k", "q8_0", "--temp", "0.42"],
+  );
+  assert.deepEqual(withoutModelIniOffloadFlags([]), []);
 });

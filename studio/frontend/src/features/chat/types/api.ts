@@ -310,6 +310,9 @@ export interface LoadModelResponse {
   /** That unsloth.ini set sampling, so `inference` already carries it. */
   // biome-ignore lint/style/useNamingConvention: API schema
   model_ini_sampling?: boolean;
+  /** The `inference` keys that unsloth.ini set. */
+  // biome-ignore lint/style/useNamingConvention: API schema
+  model_ini_sampling_keys?: string[];
   /** Image input is off because the user asked, not because the mmproj is missing. */
   vision_disabled_by_user?: boolean;
   gpu_memory_mode?: "auto" | "manual";
@@ -461,6 +464,9 @@ export interface InferenceStatusResponse {
   /** That unsloth.ini set sampling, so `inference` already carries it. */
   // biome-ignore lint/style/useNamingConvention: API schema
   model_ini_sampling?: boolean;
+  /** The `inference` keys that unsloth.ini set. */
+  // biome-ignore lint/style/useNamingConvention: API schema
+  model_ini_sampling_keys?: string[];
   /** Image input is off because the user asked, not because the mmproj is missing. */
   vision_disabled_by_user?: boolean;
   gpu_memory_mode?: "auto" | "manual";
