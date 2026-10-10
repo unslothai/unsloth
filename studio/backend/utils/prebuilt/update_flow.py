@@ -185,7 +185,7 @@ def install_dir_for(binary_path: Optional[str], *, marker_name: str) -> Optional
     if not binary_path:
         return None
     p = Path(binary_path)
-    for parent in p.parents[:5]:
+    for parent in list(p.parents)[:5]:
         if (parent / marker_name).is_file():
             return parent
     return None

@@ -655,7 +655,11 @@ _FRAME_HTML = r"""<!doctype html>
           }
           else if (data.command === "annotateForget") annotation?.forget(Number(data.id));
           else if (data.command === "annotateNumbers") annotation ? annotation.number(data.numbers) : (numbers = data.numbers);
-          else if (data.command === "zoom") applyZoom(data.value);
+          else if (data.command === "zoom") {
+            applyZoom(data.value);
+            // A zoom fires no scroll or resize, so marks are redrawn here.
+            annotation?.redraw();
+          }
           else if (data.command === "mute") setMuted(data.on === true);
           else if (data.command === "find" && typeof data.query === "string" && data.query.length <= 1000) finder.search(data.query);
           else if (data.command === "findStep") finder.step(data.delta === -1 ? -1 : 1);
@@ -795,13 +799,21 @@ _ANNOTATE_JS = r"""
             }
             return document.documentElement;
           };
-          // Where a mark is now: around what it marks, or its blank area, moved with its anchor.
+          // Where a mark is now: a drag as drawn, a click around its target, a blank area by its anchor.
           const markBox = (mark) => {
-            if (mark.ranges) return boxOf(mark.ranges);
-            const { element, dx, dy, width, height } = mark.anchor;
+            if (mark.ranges) {
+              const box = boxOf(mark.ranges);
+              if (!box || !mark.frame) return box;
+              // Scale by the zoom change since the drag, as the content did.
+              const { dx, dy, width, height, zoom } = mark.frame;
+              const k = zoomOf() / zoom;
+              return { left: box.left + PAD + dx * k, top: box.top + PAD + dy * k, width: width * k, height: height * k };
+            }
+            const { element, dx, dy, width, height, zoom } = mark.anchor;
             if (!element.isConnected) return null;
             const rect = element.getBoundingClientRect();
-            return { left: rect.left + dx, top: rect.top + dy, width, height };
+            const k = zoomOf() / zoom;
+            return { left: rect.left + dx * k, top: rect.top + dy * k, width: width * k, height: height * k };
           };
           const boxOf = (ranges) => {
             let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
@@ -902,18 +914,23 @@ _ANNOTATE_JS = r"""
             marks.set(id, mark);
             send("mark", { id, rect: mark.at, ...details });
           };
-          const addMark = (ranges) => {
+          const addMark = (ranges, area = null) => {
             if (!ranges || !ranges.length) return;
             const quote = quoteOf(ranges);
             const picture = pictureOf(ranges);
             if (!quote && picture === null) return;
-            createMark({ ranges }, { quote, image: picture !== null, alt: picture || "", area: false });
+            // Keep a drag's box as drawn, not shrunk to its text.
+            const content = area && boxOf(ranges);
+            const frame = content
+              ? { dx: area.left - content.left - PAD, dy: area.top - content.top - PAD, width: area.width, height: area.height, zoom: zoomOf() }
+              : null;
+            createMark({ ranges, frame }, { quote, image: picture !== null, alt: picture || "", area: false });
           };
           // An area with nothing in it marks that part of the page itself.
           const addArea = (area) => {
             const element = anchorOf(area);
             const rect = element.getBoundingClientRect();
-            const anchor = { element, dx: area.left - rect.left, dy: area.top - rect.top, width: area.width, height: area.height };
+            const anchor = { element, dx: area.left - rect.left, dy: area.top - rect.top, width: area.width, height: area.height, zoom: zoomOf() };
             createMark({ anchor }, { quote: "", image: false, alt: "", area: true });
           };
           // The panel numbers the marks, matching the order they take in the chat.
@@ -983,7 +1000,7 @@ _ANNOTATE_JS = r"""
             send("up");
             if (box) {
               const ranges = blocksIn(new DOMRect(box.left, box.top, box.width, box.height));
-              ranges.length ? addMark(ranges) : addArea(box);
+              ranges.length ? addMark(ranges, box) : addArea(box);
             }
             else if (pin !== null) send("open", { id: pin });
             else addMark(blockAt(document.elementFromPoint(event.clientX, event.clientY) || event.target));
@@ -1034,7 +1051,7 @@ _ANNOTATE_JS = r"""
             pending = press = hover = lastMove = overlay = root = null;
             marks.clear();
           };
-          return { start, stop, forget, number };
+          return { start, stop, forget, number, redraw };
 """
 
 
@@ -1106,6 +1123,7 @@ class BrowserFetchRequest(BaseModel):
     body: Optional[str] = Field(default = None, max_length = 1024 * 1024)
     # favicon callers can lower the 50 MB fetch cap.
     max_bytes: Optional[int] = Field(default = None, ge = 1, le = _MAX_BROWSER_FETCH_BYTES)
+    error_page: bool = False
 
 
 _BOMS = (
@@ -1447,12 +1465,13 @@ def _fetch(
         meta_out = meta,
         cancel_event = cancel_event,
         host_headers = _studio_headers,
+        error_page = request.error_page,
     )
     return error, body if isinstance(body, bytes) else b"", content_type, meta
 
 
 def _attachment_name(meta: dict) -> Optional[str]:
-    """The server's name for a download, as a bare file name."""
+    """server-provided download name reduced to a bare file name."""
     name = meta.get("filename")
     if not isinstance(name, str):
         return None
@@ -1468,9 +1487,13 @@ def _build_response(
     meta: dict,
     cancel_event: Optional[threading.Event] = None,
 ) -> Response:
-    """Build the panel's response. Runs in the fetch pool to keep large pages off the event loop."""
-    if error is not None:
-        # The host only: a page address can carry a sign-in token.
+    """build the panel response in the fetch pool to keep large pages off the event loop."""
+    looks_html = not content_type and body[:512].lstrip().lower().startswith(
+        (b"<!doctype html", b"<html")
+    )
+    is_html = content_type in _HTML_TYPES or looks_html
+    if error is not None and (meta.get("bot_check") or not (is_html and body.strip())):
+        # log the host only because page URLs can carry sign-in tokens.
         try:
             host = urlsplit(url).hostname
         except ValueError:
@@ -1481,10 +1504,7 @@ def _build_response(
         raise HTTPException(status_code = 502, detail = error)
 
     final_url = meta.get("url") or url
-    looks_html = not content_type and body[:512].lstrip().lower().startswith(
-        (b"<!doctype html", b"<html")
-    )
-    if content_type in _HTML_TYPES or looks_html:
+    if is_html:
         if len(body) > _MAX_BROWSER_HTML_BYTES:
             raise HTTPException(
                 status_code = 502,

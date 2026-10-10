@@ -15,7 +15,6 @@ import {
   getCodeFence,
   isFullHtmlDocument,
   isHtmlFence,
-  isRenderableRenderHtmlToolPart,
   isSvgFence,
 } from "@/features/chat/artifacts/html-fences";
 // Leaf module, not the feature barrel: SEARCH_IMAGE_TAG is read at module scope
@@ -25,11 +24,15 @@ import {
   holdBackPartialSearchImageToken,
   parseSearchImagesSignature,
   placeSubjectImages,
-  precedingTextForMessagePart,
   rewriteSearchImageTokens,
   SEARCH_IMAGE_TAG,
-  searchImagesSignature,
 } from "@/features/chat/search-images/search-images";
+import {
+  partsHaveRenderableRenderHtmlTool,
+  partsPrecedingText,
+  partsSearchImagesSignature,
+  partsTextKey,
+} from "@/components/assistant-ui/message-derived";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { normalizeEscapedInlineMath } from "@/lib/escaped-inline-math";
 import { preprocessLaTeX } from "@/lib/latex";
@@ -1083,7 +1086,8 @@ const StreamdownBlock = memo((props: BlockProps) => (
   </MarkdownBlockBoundary>
 ));
 StreamdownBlock.displayName = "StreamdownBlock";
-const AUDIO_PLAYER_RE = /<audio-player\s+src="([^"]+)"\s*\/>/;
+// Only the adapter's inline wav: any other src (remote URL, WebKit-followed audio/mpegurl) fetches on render.
+const AUDIO_PLAYER_RE = /<audio-player\s+src="(data:audio\/wav;base64,[A-Za-z0-9+/=]+)"\s*\/>/;
 
 // Coalesce only token events that arrive before the browser's next paint, as
 // textgen does. There is no time or length throttle. Incremental block parsing
@@ -1295,26 +1299,18 @@ const MarkdownTextImpl = () => {
   const messageId = useAuiState(({ message }) => message.id);
   // Read once here for every block below: see RenderHtmlToolPresenceContext.
   const messageHasRenderableRenderHtmlTool = useAuiState(({ message }) =>
-    message.parts.some(isRenderableRenderHtmlToolPart),
+    partsHaveRenderableRenderHtmlTool(message.parts),
   );
   // A string, not the Map: selector results are compared by identity.
   const searchImagesKey = useAuiState(({ message }) =>
-    allowSearchImages ? searchImagesSignature(message.parts) : "",
+    allowSearchImages ? partsSearchImagesSignature(message.parts) : "",
   );
   // What earlier text parts said, so a subject named in two of them gets one card.
   const precedingText = useAuiState(({ message }) =>
-    allowSearchImages
-      ? precedingTextForMessagePart(message.parts, partIndex)
-      : "",
+    allowSearchImages ? partsPrecedingText(message.parts, partIndex) : "",
   );
   const messageTextKey = useAuiState(({ message }) =>
-    allowSearchImages
-      ? JSON.stringify(
-          message.parts
-            .filter((part) => part.type === "text")
-            .map((part) => part.text),
-        )
-      : "[]",
+    allowSearchImages ? partsTextKey(message.parts) : "[]",
   );
 
   return (

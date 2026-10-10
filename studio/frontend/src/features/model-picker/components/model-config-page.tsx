@@ -67,6 +67,14 @@ import {
   resolveMemoryCapacityGb,
 } from "@/hooks/gpu-vram";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import {
+  DRAFTER_MODEL_SPEC_TYPES,
+  MLX_SPECULATIVE_TYPES,
+  type MlxDrafter,
+  mlxDrafterChoices,
+  mlxSpeculativeMode,
+  resolveSpeculativeType,
+} from "@/lib/speculative-modes";
 import { toast } from "@/lib/toast";
 import {
   type ReactNode,
@@ -94,6 +102,7 @@ import {
   subscribeLlamaFlagCatalog,
 } from "../api/llama-flags";
 import { type MemoryEstimate } from "../api/memory-estimate";
+import { fetchMlxDrafters } from "../api/mlx-drafters";
 import {
   resolveEstimateContext,
   resolveMlxEstimateContext,
@@ -186,10 +195,12 @@ import {
   normalizeMaxSeqLength,
   normalizePerModelConfig,
   perModelConfigStorageChanged,
+  pinSpeculativeMode,
   readAdvancedSettingsOpen,
   resolveInitialConfig,
   saveAdvancedSettingsOpen,
   savePerModelConfig,
+  storedSpeculativeAuto,
   subscribeAdvancedSettingsOpen,
   VRAM_BUDGET_PERCENT_STEP,
   vramFractionToPercent,
@@ -255,6 +266,18 @@ const SPECULATIVE_TYPE_LABELS: Record<
   "mtp+ngram": "MTP+Ngram",
   off: "Off",
 };
+const MLX_SPECULATIVE_TYPE_LABELS: Record<
+  (typeof MLX_SPECULATIVE_TYPES)[number],
+  string
+> = {
+  auto: "Auto",
+  mtp: "MTP",
+  dflash: "DFlash",
+  dspark: "DSpark",
+  eagle3: "EAGLE-3",
+  ngram: "Ngram",
+  off: "Off",
+};
 
 // Lower-case where the value is the flag's own spelling, so the pick reads the same as the launch command.
 const LOAD_MODE_LABELS: Record<(typeof LOAD_MODES)[number], string> = {
@@ -314,6 +337,7 @@ function hasNonDefaultAdvanced(config: PerModelConfig): boolean {
     (config.speculativeType ?? "auto") !== "auto" ||
     config.specDraftNMax != null ||
     config.specDraftCacheDtype != null ||
+    config.specDraftModel != null ||
     config.nParallel != null ||
     config.reasoningBudget !== -1 ||
     config.reasoningBudgetMessage !== "" ||
@@ -1181,6 +1205,157 @@ function ParallelSlotsRow({
   );
 }
 
+/** Unset shows the mode the load would send. */
+function MlxSpeculativeRows({
+  config,
+  update,
+  speculativeFallback,
+  modelPath,
+}: {
+  config: PerModelConfig;
+  update: (patch: Partial<PerModelConfig>) => void;
+  speculativeFallback: string;
+  modelPath: string;
+}) {
+  const [drafters, setDrafters] = useState<MlxDrafter[]>([]);
+  useEffect(() => {
+    const controller = new AbortController();
+    setDrafters([]);
+    fetchMlxDrafters(modelPath, controller.signal)
+      .then((found) => !controller.signal.aborted && setDrafters(found))
+      .catch(() => {});
+    return () => controller.abort();
+  }, [modelPath]);
+  const mode = mlxSpeculativeMode(
+    config.speculativeType ??
+      resolveSpeculativeType(null, speculativeFallback, true),
+  );
+  return (
+    <>
+      <div className={ROW_CLASS}>
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className={LABEL_CLASS_WRAP}>Speculative Decoding</span>
+          <InfoHint>
+            Faster generation. Auto uses the first cached drafter (an MTP head
+            or assistant, then DFlash2, DFlash, DSpark, EAGLE-3), tunes the
+            draft length to this machine and drafts only while that is faster.
+            Choose a kind to force it. Every drafter also copies repeated text;
+            Ngram copies without one. Drafters are read from the local Hugging
+            Face cache, never downloaded.
+          </InfoHint>
+        </div>
+        <Select
+          value={mode}
+          onValueChange={(v) =>
+            update({
+              speculativeType: v,
+              specDraftNMax: DRAFT_N_MAX_SPEC_TYPES.has(v)
+                ? config.specDraftNMax
+                : null,
+              specDraftModel: DRAFTER_MODEL_SPEC_TYPES.has(v)
+                ? config.specDraftModel
+                : null,
+            })
+          }
+        >
+          <SelectTrigger
+            animateRadius={false}
+            icon={ChevronDownStandardIcon}
+            iconClassName="size-3.5"
+            className={SELECT_TRIGGER_CLASS}
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
+            {MLX_SPECULATIVE_TYPES.map((type) => (
+              <SelectItem key={type} value={type}>
+                {MLX_SPECULATIVE_TYPE_LABELS[type]}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      {DRAFT_N_MAX_SPEC_TYPES.has(mode) && (
+        <div className={ROW_CLASS}>
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className={LABEL_CLASS}>Draft Tokens</span>
+            <InfoHint>
+              Tokens per draft: up to the drafter's depth (3 for MTP heads),
+              every step drafts exactly this many, even when plain decoding would
+              be faster (a copy of repeated text replaces a draft when it should
+              yield more). Above that depth, or for Ngram, it is a
+              ceiling and Unsloth decodes plainly when drafting would be slower.
+              Leave blank to let Unsloth tune it for this machine.
+            </InfoHint>
+          </div>
+          <input
+            type="number"
+            min={1}
+            max={16}
+            step={1}
+            value={config.specDraftNMax ?? ""}
+            placeholder="auto"
+            onChange={(event) => {
+              const parsed = Number.parseInt(event.target.value, 10);
+              update(
+                pinSpeculativeMode(config, mode, {
+                  specDraftNMax: Number.isFinite(parsed)
+                    ? Math.max(1, Math.min(16, parsed))
+                    : null,
+                }),
+              );
+            }}
+            aria-label="Speculative decoding draft tokens"
+            className={NUMBER_INPUT_CLASS}
+          />
+        </div>
+      )}
+      {DRAFTER_MODEL_SPEC_TYPES.has(mode) && (
+        <div className={ROW_CLASS}>
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className={LABEL_CLASS}>Drafter</span>
+            <InfoHint>
+              A drafter from the local Hugging Face cache that fits this
+              model. Auto uses the model's own head or the first cached drafter
+              named for it.
+            </InfoHint>
+          </div>
+          <Select
+            value={config.specDraftModel ?? "auto"}
+            onValueChange={(v) =>
+              update(
+                pinSpeculativeMode(config, mode, {
+                  specDraftModel: v === "auto" ? null : v,
+                }),
+              )
+            }
+          >
+            <SelectTrigger
+              animateRadius={false}
+              icon={ChevronDownStandardIcon}
+              iconClassName="size-3.5"
+              aria-label="Speculative decoding drafter"
+              className={SELECT_TRIGGER_CLASS}
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
+              <SelectItem value="auto">Auto</SelectItem>
+              {mlxDrafterChoices(drafters, mode, config.specDraftModel ?? null).map(
+                ([repo, label]) => (
+                  <SelectItem key={repo} value={repo}>
+                    {label}
+                  </SelectItem>
+                ),
+              )}
+            </SelectContent>
+          </Select>
+        </div>
+      )}
+    </>
+  );
+}
+
 function MlxAdvancedSettings({
   config,
   update,
@@ -1188,6 +1363,8 @@ function MlxAdvancedSettings({
   servedByMlx,
   int8PrefillAvailable,
   onInt8PrefillChange,
+  speculativeFallback,
+  modelPath,
   onEditTemplate,
   templateOutcome,
 }: {
@@ -1199,6 +1376,8 @@ function MlxAdvancedSettings({
   servedByMlx: boolean;
   int8PrefillAvailable: boolean;
   onInt8PrefillChange: (checked: boolean) => void;
+  speculativeFallback: string;
+  modelPath: string;
   onEditTemplate: () => void;
   /** Why the loaded model could not take the override it was given. */
   templateOutcome: string | null;
@@ -1267,6 +1446,14 @@ function MlxAdvancedSettings({
             onCheckedChange={onInt8PrefillChange}
           />
         </div>
+      )}
+      {servedByMlx && (
+        <MlxSpeculativeRows
+          config={config}
+          update={update}
+          speculativeFallback={speculativeFallback}
+          modelPath={modelPath}
+        />
       )}
       {servedByMlx && (
         <ParallelSlotsRow config={config} update={update} hint={MLX_PARALLEL_HINT} />
@@ -2646,7 +2833,7 @@ export function ModelConfigPage({
           const hydrationSaved = savePerModelConfig(
             configId,
             target.ggufVariant,
-            rememberedConfig,
+            storedSpeculativeAuto(rememberedConfig, !target.isGguf),
             hydrationEvicted,
           );
           setSavedRemember(hydrationSaved);
@@ -2927,8 +3114,13 @@ export function ModelConfigPage({
           // override sends null, which the backend reads as Auto, while the selector has been showing
           // the global fallback. With the global Off and an 11 GB DSpark sidecar in the repo, the row
           // charged the sidecar for a load that disables it.
-          speculativeType: runtimeConfig.speculativeType ?? speculativeFallback ?? null,
+          speculativeType: resolveSpeculativeType(
+            runtimeConfig.speculativeType,
+            speculativeFallback,
+            targetIsMlx,
+          ),
           specDraftNMax: runtimeConfig.specDraftNMax,
+          specDraftModel: targetIsMlx ? (runtimeConfig.specDraftModel ?? null) : null,
           specDraftCacheType: runtimeConfig.specDraftCacheDtype ?? null,
           tensorParallel: runtimeConfig.tensorParallel,
           disableVision: runtimeConfig.disableVision,
@@ -3229,7 +3421,7 @@ export function ModelConfigPage({
 
   const persistConfig = (next: PerModelConfig) => {
     // Judge what storage keeps: savePerModelConfig normalizes first, so the raw object over-reports.
-    const normalized = normalizePerModelConfig(next);
+    const normalized = normalizePerModelConfig(storedSpeculativeAuto(next, targetIsMlx));
     const evicted: { modelId: string; ggufVariant: string | null }[] = [];
     const saved = remember
       ? savePerModelConfig(configId, target.ggufVariant, normalized, evicted)
@@ -3610,6 +3802,8 @@ export function ModelConfigPage({
                         ? setInt8PrefillConfirmOpen(true)
                         : update({ mlxInt8Prefill: false })
                     }
+                    speculativeFallback={speculativeFallback}
+                    modelPath={target.id}
                     onEditTemplate={() => setTemplateOpen(true)}
                     templateOutcome={chatTemplateOutcome}
                   />

@@ -77,6 +77,8 @@ export interface DiffusionStatus {
   // Per-Advanced-control provenance, keyed by control name. Present only when a model is loaded on a
   // backend that records it; absent on older backends.
   resolved?: Record<string, DiffusionResolvedControl> | null;
+  // Default steps / guidance the backend renders the loaded model with (file header before base repo).
+  generation_defaults?: { steps?: number; guidance?: number } | null;
 }
 
 export interface DiffusionConditioning {
@@ -836,6 +838,10 @@ export interface DiffusionTrainingInfo {
   datasets_root: string;
   outputs_root: string;
   datasets: DiffusionDatasetSummary[];
+  // includes occupied folders without trainable media, which `datasets` omits.
+  dataset_names?: string[];
+  // occupied captions-only folders that the diffusion uploader may safely continue.
+  continuation_dataset_names?: string[];
   // Added by the multi-family trainer backend; tolerate its absence.
   families?: DiffusionTrainableFamily[];
 }
@@ -853,9 +859,11 @@ export interface DiffusionDatasetUploadResult extends DiffusionDatasetSummary {
 export async function uploadDiffusionDataset(
   name: string,
   files: File[],
+  createOnly = false,
 ): Promise<DiffusionDatasetUploadResult> {
   const form = new FormData();
   form.append("name", name);
+  form.append("create_only", createOnly ? "true" : "false");
   for (const f of files) form.append("files", f);
   return parseJson(
     await authFetch("/api/train/diffusion/dataset", { method: "POST", body: form }),

@@ -495,7 +495,7 @@ test("an LLM run keeps its method and sends no decision fields", () => {
   assert.equal(payload.max_seq_length, 32768);
 });
 
-test("decision training is refused on Apple Silicon only", () => {
+test("decision training starts on Apple Silicon and on CUDA", () => {
   const config = {
     ...useTrainingConfigStore.getState(),
     ...HF_DECISION_DATASET,
@@ -505,8 +505,8 @@ test("decision training is refused on Apple Silicon only", () => {
   };
 
   assert.deepEqual(validateTrainingConfig(config, "mac"), {
-    ok: false,
-    errorKey: "studio.params.notSupportedAppleSilicon",
+    ok: true,
+    errorKey: null,
   });
   assert.deepEqual(validateTrainingConfig(config, "cuda"), {
     ok: true,
@@ -523,7 +523,7 @@ test("the model picker knows Laya is a decision model before its config loads", 
   const modelType = inferTrainingModelTypeFromFlags(flags);
 
   assert.equal(modelType, "decision");
-  assert.equal(isTrainingModelTypeSupportedOnDevice(modelType, "mac"), false);
+  assert.equal(isTrainingModelTypeSupportedOnDevice(modelType, "mac"), true);
   assert.equal(isTrainingModelTypeSupportedOnDevice(modelType, "cuda"), true);
 });
 
