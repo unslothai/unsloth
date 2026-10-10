@@ -4628,7 +4628,11 @@ _INTEL_XPU_PCI_IDS = frozenset((
 ))  # fmt: skip
 _PCI_DEVICES_ROOT = "/sys/bus/pci/devices"
 # Level Zero / SYCL device filters: their indices need not follow PCI order, so any of them leaves the choice to a pin.
-_INTEL_DEVICE_FILTER_VARS = ("ONEAPI_DEVICE_SELECTOR", "SYCL_DEVICE_FILTER", "SYCL_DEVICE_ALLOWLIST")
+_INTEL_DEVICE_FILTER_VARS = (
+    "ONEAPI_DEVICE_SELECTOR",
+    "SYCL_DEVICE_FILTER",
+    "SYCL_DEVICE_ALLOWLIST",
+)
 
 
 def _intel_xpu_auto_route_holds() -> bool:
@@ -4638,8 +4642,10 @@ def _intel_xpu_auto_route_holds() -> bool:
         return False
     # Level Zero reads an empty or "default" ZE_AFFINITY_MASK as unset (compute-runtime isAffinityMaskSet).
     ze_mask_set = os.environ.get("ZE_AFFINITY_MASK", "default") not in ("", "default")
-    if ze_mask_set or any(v in os.environ for v in _INTEL_DEVICE_FILTER_VARS) or os.environ.get(
-        "UNSLOTH_ROCM_GFX_ARCH"
+    if (
+        ze_mask_set
+        or any(v in os.environ for v in _INTEL_DEVICE_FILTER_VARS)
+        or os.environ.get("UNSLOTH_ROCM_GFX_ARCH")
     ):
         return False
     intel = False
@@ -4649,14 +4655,14 @@ def _intel_xpu_auto_route_holds() -> bool:
         return False
     for dev in devices:
         try:
-            vendor = (dev / "vendor").read_text().strip().lower()
-            if not (dev / "class").read_text().strip().lower().startswith("0x03"):
+            vendor = (dev / "vendor").read_text(encoding = "utf-8").strip().lower()
+            if not (dev / "class").read_text(encoding = "utf-8").strip().lower().startswith("0x03"):
                 continue
             if vendor == "0x1002":
                 return False
             if vendor != "0x8086":
                 continue
-            device_id = int((dev / "device").read_text().strip(), 16)
+            device_id = int((dev / "device").read_text(encoding = "utf-8").strip(), 16)
         except (OSError, ValueError):
             continue
         if device_id in _INTEL_XPU_PCI_IDS or any(
