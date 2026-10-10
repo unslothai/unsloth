@@ -2923,6 +2923,19 @@ export const en = {
         addConnection: "To use a hosted decision model, add TypeSafe, Liquid AI or OpenRouter in Connections.",
         openConnections: "Open Connections",
       },
+      mcp: {
+        title: "Agent access (MCP)",
+        description: "Let coding agents such as Claude Code and Codex use Unsloth Studio over MCP. Agents sign in with an access token from this page.",
+        enable: "Allow agent connections",
+        enableDescription: "Serves /mcp/ to requests that carry an Unsloth Studio access token.",
+        lockedByEnv: "Set by {name}.",
+        loadError: "Couldn't load agent access settings.",
+        saveError: "Couldn't save the agent access setting.",
+        agent: "Agent",
+        exportKeyHint: "Set {name} to an access token from this page before you start the agent.",
+        configFileHint: "Add this to {path}.",
+        keywords: "mcp model context protocol agents claude codex tools",
+      },
     },
     about: {
       title: "About",
@@ -3822,6 +3835,13 @@ export const en = {
     discard: "Discard",
     mentions: "Skills",
     manage: "Manage skills",
+    bulkActions: "Skill actions",
+    enableAll: "Enable all",
+    disableAll: "Disable all",
+    resetAll: "Reset to defaults",
+    resetTitle: "Reset all skills?",
+    resetDescription: "Every skill goes back to how a fresh install has it: your skills and Claude skills on, bundled skills off. Your on and off choices are cleared.",
+    reset: "Reset",
   },
   // The Library page, its file viewer, and the menus and toasts that act on its files.
   library: {

@@ -2891,6 +2891,19 @@ export const it = {
         addConnection: "Per usare un modello decisionale ospitato, aggiungi TypeSafe, Liquid AI o OpenRouter in Connessioni.",
         openConnections: "Apri Connessioni",
       },
+      mcp: {
+        title: "Accesso degli agenti (MCP)",
+        description: "Consenti ad agenti di programmazione come Claude Code e Codex di usare Unsloth Studio tramite MCP. Gli agenti accedono con un token di accesso di questa pagina.",
+        enable: "Consenti connessioni degli agenti",
+        enableDescription: "Rende disponibile /mcp/ alle richieste che portano un token di accesso di Unsloth Studio.",
+        lockedByEnv: "Impostato da {name}.",
+        loadError: "Impossibile caricare le impostazioni di accesso degli agenti.",
+        saveError: "Impossibile salvare l’impostazione di accesso degli agenti.",
+        agent: "Agente",
+        exportKeyHint: "Imposta {name} su un token di accesso di questa pagina prima di avviare l’agente.",
+        configFileHint: "Aggiungi questo a {path}.",
+        keywords: "mcp model context protocol agents claude codex tools agenti agente strumenti protocollo di contesto del modello",
+      },
     },
     about: {
       title: "Informazioni",
@@ -3869,6 +3882,13 @@ export const it = {
     discard: "Scarta",
     mentions: "Competenze",
     manage: "Gestisci competenze",
+    bulkActions: "Azioni sulle competenze",
+    enableAll: "Attiva tutte",
+    disableAll: "Disattiva tutte",
+    resetAll: "Ripristina predefiniti",
+    resetTitle: "Ripristinare tutte le competenze?",
+    resetDescription: "Ogni competenza torna come in una nuova installazione: le tue competenze e quelle di Claude attive, quelle incluse disattivate. Le tue scelte di attivazione vengono cancellate.",
+    reset: "Ripristina",
   },
   library: {
     tabs: {

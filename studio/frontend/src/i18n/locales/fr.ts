@@ -2933,6 +2933,19 @@ export const fr = {
         addConnection: "Pour utiliser un modèle de décision hébergé, ajoutez TypeSafe, Liquid AI ou OpenRouter dans Connexions.",
         openConnections: "Ouvrir Connexions",
       },
+      mcp: {
+        title: "Accès des agents (MCP)",
+        description: "Permettez aux agents de code comme Claude Code et Codex d’utiliser Unsloth Studio via MCP. Les agents se connectent avec un jeton d’accès de cette page.",
+        enable: "Autoriser les connexions des agents",
+        enableDescription: "Sert /mcp/ aux requêtes qui portent un jeton d’accès Unsloth Studio.",
+        lockedByEnv: "Défini par {name}.",
+        loadError: "Impossible de charger les paramètres d’accès des agents.",
+        saveError: "Impossible d’enregistrer le paramètre d’accès des agents.",
+        agent: "Agent",
+        exportKeyHint: "Définissez {name} sur un jeton d’accès de cette page avant de lancer l’agent.",
+        configFileHint: "Ajoutez ceci à {path}.",
+        keywords: "mcp model context protocol agents claude codex tools agents agent outils protocole de contexte de modèle",
+      },
       usageNoModel:
         "Chargez ou téléchargez un modèle pour voir des exemples exécutables. Aucun modèle n'est encore disponible sur ce serveur pour figurer dans les exemples.",
     },
@@ -3879,6 +3892,13 @@ export const fr = {
     discard: "Abandonner",
     mentions: "Compétences",
     manage: "Gérer les compétences",
+    bulkActions: "Actions sur les compétences",
+    enableAll: "Tout activer",
+    disableAll: "Tout désactiver",
+    resetAll: "Rétablir les valeurs par défaut",
+    resetTitle: "Réinitialiser toutes les compétences ?",
+    resetDescription: "Chaque compétence revient à son état d’installation : vos compétences et celles de Claude activées, les compétences intégrées désactivées. Vos choix d’activation sont effacés.",
+    reset: "Réinitialiser",
   },
   library: {
     tabs: {

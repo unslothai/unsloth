@@ -2888,6 +2888,19 @@ export const ar = {
         addConnection: "لاستخدام نموذج قرارات مستضاف، أضف TypeSafe أو Liquid AI أو OpenRouter في الاتصالات.",
         openConnections: "فتح الاتصالات",
       },
+      mcp: {
+        title: "وصول الوكلاء (MCP)",
+        description: "اسمح لوكلاء البرمجة مثل Claude Code وCodex باستخدام Unsloth Studio عبر MCP. يسجّل الوكلاء الدخول بتوكن وصول من هذه الصفحة.",
+        enable: "السماح باتصالات الوكلاء",
+        enableDescription: "يخدم /mcp/ للطلبات التي تحمل توكن وصول من Unsloth Studio.",
+        lockedByEnv: "مضبوط بواسطة {name}.",
+        loadError: "تعذّر تحميل إعدادات وصول الوكلاء.",
+        saveError: "تعذّر حفظ إعداد وصول الوكلاء.",
+        agent: "الوكيل",
+        exportKeyHint: "اضبط {name} على توكن وصول من هذه الصفحة قبل تشغيل الوكيل.",
+        configFileHint: "أضف هذا إلى {path}.",
+        keywords: "mcp model context protocol agents claude codex tools وكلاء وكيل أدوات بروتوكول سياق النموذج",
+      },
       usageNoModel:
         "حمّل نموذجًا أو نزّله لعرض أمثلة قابلة للتشغيل. لا يوجد في هذا الخادم أي نموذج يمكن استخدامه في الأمثلة بعد.",
     },
@@ -3796,6 +3809,13 @@ export const ar = {
     discard: "تجاهل",
     mentions: "المهارات",
     manage: "إدارة المهارات",
+    bulkActions: "إجراءات المهارات",
+    enableAll: "تفعيل الكل",
+    disableAll: "تعطيل الكل",
+    resetAll: "إعادة التعيين إلى الافتراضي",
+    resetTitle: "إعادة تعيين كل المهارات؟",
+    resetDescription: "تعود كل مهارة إلى حالتها في التثبيت الجديد: مهاراتك ومهارات Claude مفعّلة، والمهارات المضمّنة معطّلة. ستُمسح اختياراتك للتفعيل والتعطيل.",
+    reset: "إعادة التعيين",
   },
   library: {
     tabs: {

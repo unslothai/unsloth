@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Chat template utilities for dataset processing: apply chat templates to datasets and generate dataset info summaries."""
-
+import json
 import warnings as python_warnings
 
 from .cells import cell_text
@@ -164,8 +163,7 @@ def _set_chat_template(tokenizer, chat_template):
 
 
 def _drop_none_values(value):
-    # A loaded dict cannot tell an explicit null from a key another row added, so dict-typed
-    # arguments lose their nulls; JSON-string arguments keep them.
+    # loaded dicts cannot distinguish nulls from keys added by another row, unlike JSON strings.
     if isinstance(value, dict):
         return {key: _drop_none_values(item) for key, item in value.items() if item is not None}
     if isinstance(value, list):
@@ -173,7 +171,36 @@ def _drop_none_values(value):
     return value
 
 
-def _render_conversation(tokenizer, conversation):
+def _json_cell(value):
+    if not isinstance(value, str):
+        return value
+    try:
+        return json.loads(value)
+    except ValueError:
+        return None
+
+
+def _row_tools(tools):
+    if isinstance(tools, list):
+        tools = [tool if isinstance(tool, str) else _drop_none_values(tool) for tool in tools]
+    else:
+        tools = _json_cell(tools)
+    if not isinstance(tools, list):
+        return None
+    tools = [_json_cell(tool) for tool in tools]
+    if not tools or not all(isinstance(tool, dict) for tool in tools):
+        return None
+    normalized = []
+    for tool in tools:
+        if tool.get("type") is None and isinstance(tool.get("function"), dict):
+            tool = {**tool, "type": "function"}
+        elif "function" not in tool and "name" in tool:
+            tool = {"type": "function", "function": tool}
+        normalized.append(tool)
+    return normalized
+
+
+def _render_conversation(tokenizer, conversation, tools = None, fallback_without_tools = True):
     from core.inference.chat_template_helpers import _normalize_tool_call_arguments
 
     attempts = []
@@ -181,35 +208,49 @@ def _render_conversation(tokenizer, conversation):
         for attempt in (_normalize_tool_call_arguments(messages), messages):
             if not any(attempt is seen for seen in attempts):
                 attempts.append(attempt)
+    tools_kwargs = {"tools": tools} if tools else {}
     first_error = None
     for attempt in attempts:
         try:
             return tokenizer.apply_chat_template(
-                attempt, tokenize = False, add_generation_prompt = False
+                attempt, tokenize = False, add_generation_prompt = False, **tools_kwargs
             )
         except Exception as error:
-            # The row as loaded is kept for templates that need a None content (DeepSeek V3), but its
-            # error is usually a key the loader filled with None, so report the cleaned row's.
+            # allow DeepSeek V3 None content; prefer cleaned errors when loaders add None keys.
             if first_error is None:
                 first_error = error
+    if tools and fallback_without_tools:
+        return _render_conversation(tokenizer, conversation)
     raise first_error
 
 
-def _count_renderable(tokenizer, conversations):
+def _template_render_stats(tokenizer, rows):
     rendered = 0
-    for conversation in conversations:
+    advertised = 0
+    tool_rows = 0
+    for conversation, tools in rows:
         try:
-            _render_conversation(tokenizer, conversation)
+            if tools:
+                tool_rows += 1
+                with_tools = _render_conversation(tokenizer, conversation, tools)
+                try:
+                    without_tools = _render_conversation(tokenizer, conversation)
+                except Exception:
+                    advertised += 1
+                else:
+                    advertised += with_tools != without_tools
+            else:
+                _render_conversation(tokenizer, conversation)
             rendered += 1
         except Exception:
             pass
-    return rendered
+    return rendered, advertised, tool_rows
 
 
-def _sample_conversations(dataset, chat_column, limit = _TEMPLATE_PROBE_ROWS):
-    """Sample across the dataset, or from the start for streaming datasets."""
+def _sample_template_rows(dataset, chat_column, limit = _TEMPLATE_PROBE_ROWS):
+    """sample finite datasets evenly, adding one missed sparse tool row; stream from the front."""
     n_rows = len(dataset) if hasattr(dataset, "__len__") else 0
-    conversations = []
+    sampled = []
     try:
         if n_rows > limit:
             step = (n_rows - 1) / (limit - 1)
@@ -219,42 +260,63 @@ def _sample_conversations(dataset, chat_column, limit = _TEMPLATE_PROBE_ROWS):
         for row in rows:
             conversation = row.get(chat_column)
             if conversation:
-                conversations.append(conversation)
-            if len(conversations) >= limit:
+                sampled.append((conversation, _row_tools(row.get("tools"))))
+            if len(sampled) >= limit:
                 break
+        if (
+            n_rows > limit
+            and not any(tools for _, tools in sampled)
+            and "tools" in (getattr(dataset, "column_names", None) or ())
+        ):
+            for index, value in enumerate(dataset["tools"]):
+                tools = _row_tools(value)
+                if not tools:
+                    continue
+                conversation = dataset[index].get(chat_column)
+                if conversation:
+                    sampled.append((conversation, tools))
+                    break
     except Exception:
         return []
-    return conversations
+    return sampled
 
 
 def keep_renderable_chat_template(tokenizer, dataset, chat_column, own_template):
-    """Restore the checkpoint template if it renders more sampled rows; return a log note."""
+    """restore the checkpoint template when it renders more rows or preserves tool catalogs."""
     override = getattr(tokenizer, "chat_template", None)
     if not own_template or override == own_template:
         return None
 
-    conversations = _sample_conversations(dataset, chat_column)
-    if not conversations:
+    sampled = _sample_template_rows(dataset, chat_column)
+    if not sampled:
         return None
 
-    rendered_by_override = _count_renderable(tokenizer, conversations)
-    if rendered_by_override == len(conversations):
+    override_rendered, override_advertised, tool_rows = _template_render_stats(
+        tokenizer, sampled
+    )
+    if override_rendered == len(sampled) and override_advertised == tool_rows:
         return None
 
     _set_chat_template(tokenizer, own_template)
-    if _count_renderable(tokenizer, conversations) <= rendered_by_override:
+    own_rendered, own_advertised, _ = _template_render_stats(tokenizer, sampled)
+    restores_tools = (
+        tool_rows
+        and override_advertised < tool_rows
+        and own_advertised == tool_rows
+        and own_rendered == len(sampled)
+    )
+    if own_rendered <= override_rendered and not restores_tools:
         _set_chat_template(tokenizer, override)
         return None
 
     return (
-        "📝 The Unsloth chat template cannot render this dataset's conversations "
-        "(tool calls or consecutive same-role turns); using the model's own chat "
-        "template instead"
+        "📝 The Unsloth chat template cannot render every conversation or tool catalog; "
+        "using the model's own chat template instead"
     )
 
 
 def resolve_dataset_chat_template(tokenizer, model_name, dataset, chat_column):
-    """Choose on the first split and reuse for evaluation and saving."""
+    """choose a template on the first split and reuse it for evaluation and saving."""
     remembered = getattr(tokenizer, _CHOSEN_TEMPLATE_ATTR, None)
     if remembered is not None and remembered[0] == model_name:
         _set_chat_template(tokenizer, remembered[1])
@@ -515,10 +577,7 @@ def apply_chat_template_to_dataset(
 
         streamed_failures = []
 
-        # Never clobber a real column: a dataset is allowed to already carry one named
-        # like our marker, and remove_columns would then delete the user's own data.
-        # A generator-backed IterableDataset reports column_names AND features as None,
-        # so resolve_column_names' first-row probe is what sees the column there.
+        # protect real marker columns; generator-backed IterableDataset needs a first-row probe.
         from .raw_text import resolve_column_names
 
         existing_columns = set(resolve_column_names(dataset))
@@ -529,19 +588,26 @@ def apply_chat_template_to_dataset(
         def _format_chatml(examples):
             convos = examples[chat_column]
             systems = examples.get("system") or [None] * len(convos)
+            row_tools = examples.get("tools") or [None] * len(convos)
             texts = []
             row_errors = []
 
-            for convo, system in zip(convos, systems):
+            for convo, system, tools in zip(convos, systems, row_tools):
                 try:
                     with_system = _with_system_turn(convo, system)
+                    tools = _row_tools(tools)
                     try:
-                        text = _render_conversation(tokenizer, with_system)
+                        text = _render_conversation(
+                            tokenizer,
+                            with_system,
+                            tools,
+                            fallback_without_tools = with_system is convo,
+                        )
                     except Exception:
-                        # A template without a system role still trains the conversation.
+                        # unsupported system turns are omitted so the original conversation renders.
                         if with_system is convo:
                             raise
-                        text = _render_conversation(tokenizer, convo)
+                        text = _render_conversation(tokenizer, convo, tools)
 
                     if remove_bos_prefix:
                         text = text.removeprefix('<bos>')

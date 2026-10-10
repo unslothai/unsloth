@@ -29,7 +29,6 @@ os.environ.setdefault("TORCH_COMPILE_DISABLE", "1")
 os.environ.setdefault("ACCELERATE_MIXED_PRECISION", "no")
 
 import importlib
-import inspect
 import importlib.util
 import sys
 from pathlib import Path
@@ -329,12 +328,17 @@ def test_grpo_trains_on_cpu(tmp_path):
 def test_dpo_trains_on_cpu(tmp_path):
     from datasets import Dataset
     from trl import DPOConfig, DPOTrainer
-    import trl.trainer.dpo_trainer as trl_dpo
 
     assert DPOTrainer.__name__ == "UnslothDPOTrainer", "DPO patch did not apply"
-    # trl 1.15 DPO uses a Triton fused LM head with no CPU path; plain TRL fails here too.
-    if "fused_lm_head=True" in inspect.getsource(trl_dpo):
-        pytest.skip("this trl's DPO loss is a Triton GPU kernel")
+    import inspect
+
+    from trl.trainer import dpo_trainer
+
+    # TRL 1.15 scores DPO through its fused LM head, a Triton kernel with no CPU path, so
+    # plain TRL cannot train DPO on a CPU either. Only skip when that is what the installed
+    # TRL does, so an older TRL still has to train here.
+    if "fused_lm_head=True" in inspect.getsource(dpo_trainer):
+        pytest.skip("this TRL computes DPO log-probs with a Triton GPU kernel only")
     model, tok = _load_plain()
     ds = Dataset.from_list(
         [{"prompt": "Hi", "chosen": " hello friend", "rejected": " go away"}] * 8
