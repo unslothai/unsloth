@@ -233,7 +233,10 @@ def patch_sft_trainer() -> None:
             # A PEFT model is not a PreTrainedModel, so the Trainer asks DDP for find_unused_parameters,
             # which fails with reentrant checkpointing ("mark a variable ready only once"). Read at prepare().
             handler = getattr(accelerator, "ddp_handler", None)
-            if handler is not None and getattr(self.args, "ddp_find_unused_parameters", None) is None:
+            if (
+                handler is not None
+                and getattr(self.args, "ddp_find_unused_parameters", None) is None
+            ):
                 handler.find_unused_parameters = False
         print(f"Unsloth: Context parallelism enabled with size = {size}.")
 
