@@ -914,9 +914,15 @@ def mmproj_accepts_image(path: str) -> bool:
 
 
 def is_mmproj_by_metadata(meta: Optional[Dict[str, str]]) -> Optional[bool]:
-    """True/False from ``general.type``; None means fall back to filename."""
+    """True/False from ``general.type``; None means fall back to filename.
+
+    ``general.architecture == "clip"`` is llama.cpp's projector arch and wins: older
+    converters wrote ``general.type`` values like ``clip-vision`` (#9286).
+    """
     if not meta:
         return None
+    if (meta.get("general.architecture") or "").lower() == "clip":
+        return True
     t = meta.get("general.type")
     if t is None:
         return None
@@ -939,7 +945,11 @@ def _normalize_url(url: str) -> Optional[str]:
     if not has_url_host:
         return value
     host, separator, path = value.partition("/")
-    return host.lower() + (separator + path if separator else "")
+    host = host.lower()
+    # Hugging Face owner/repo IDs are case-insensitive, but arbitrary host, file, and revision paths are not.
+    if host == "huggingface.co" and len(path.split("/")) == 2:
+        path = path.casefold()
+    return host + (separator + path if separator else "")
 
 
 def _repo_path_from_url(url: str) -> Optional[str]:
@@ -964,7 +974,13 @@ def _same_repo_reference(left: str, right: str) -> bool:
         return False
     hosted = left_normalized if left_is_url else right_normalized
     host, _, _ = hosted.partition("/")
-    return host == "huggingface.co" and _repo_path_from_url(left) == _repo_path_from_url(right)
+    if host != "huggingface.co":
+        return False
+    left_path = _repo_path_from_url(left)
+    right_path = _repo_path_from_url(right)
+    if left_path and right_path and len(left_path.split("/")) == len(right_path.split("/")) == 2:
+        return left_path.casefold() == right_path.casefold()
+    return left_path == right_path
 
 
 def _hf_repo_slug_from_url(url: str) -> Optional[str]:

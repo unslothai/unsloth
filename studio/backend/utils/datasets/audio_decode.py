@@ -44,6 +44,18 @@ def _token_for_url(path: str, token_per_repo_id: Optional[dict]) -> Any:
     return token_per_repo_id.get(fields["repo_id"])
 
 
+def _av_open(av, source):
+    """Open ``source`` for reading with undecodable metadata ignored. PyAV 19 removed ``metadata_errors`` from ``av.open``, so passing it there raises TypeError before anything is read; retry without it."""
+    try:
+        return av.open(source, mode = "r", metadata_errors = "ignore")
+    except TypeError as exc:
+        if "metadata_errors" not in str(exc):
+            raise
+        # format = None is PyAV's own default (probe the container); spelling it keeps this call
+        # distinguishable from Path.open for the text-encoding lint.
+        return av.open(source, mode = "r", format = None)
+
+
 def _decode_with_av(source: Any, stream_index: Optional[int] = None) -> "tuple[Any, int]":
     """Mono float32 at the native rate through PyAV's bundled FFmpeg: every container torchcodec would have read (m4a, aac, webm, wma, amr) without a system FFmpeg. Same shape as routes/inference.py's upload decoder, minus its upload ceilings: a dataset row is not an upload."""
     import av
@@ -52,7 +64,7 @@ def _decode_with_av(source: Any, stream_index: Optional[int] = None) -> "tuple[A
     chunks = []
     rate = 0
     resampler = None
-    with av.open(source, mode = "r", metadata_errors = "ignore") as container:
+    with _av_open(av, source) as container:
         if not container.streams.audio:
             raise ValueError("audio container has no audio stream")
         # datasets.Audio(stream_index=...) is the container's absolute stream index, as torchcodec reads it; None is the best audio stream.

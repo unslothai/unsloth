@@ -22,7 +22,7 @@ const stores = {
     key: "video_rail_width",
     min: MEDIA_RAIL_WIDTH_MIN,
     max: MEDIA_RAIL_WIDTH_MAX,
-    fallback: 400,
+    fallback: 408,
     maxViewportFraction: 0.6,
   }),
   audio: createPanelWidthStore({

@@ -71,7 +71,7 @@ test("a working Recents row clears the kebab on hover", async () => {
   const kebabInset =
     inset(grab(css, /\.sidebar-row-action \{\s*@apply ([^;]*);/, "row action"), "pr") +
     inset(grab(css, /\.sidebar-row-action-glyph \{\s*@apply ([^;]*);/, "action glyph"), "size");
-  assert.equal(kebabInset, 30);
+  assert.equal(kebabInset, 27);
 
   // The row holds that room open at rest rather than on hover: a spinner sits against the same
   // edge the actions reveal over, so there is nothing to reclaim by waiting for the pointer.

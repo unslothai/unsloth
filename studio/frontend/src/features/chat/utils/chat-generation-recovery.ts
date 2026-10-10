@@ -49,13 +49,16 @@ export function generationChunkCountsTowardTiming(payload: unknown): boolean {
     | {
         _reasoningDurationMs?: unknown;
         context_truncated?: unknown;
+        quote_cut?: unknown;
         usage?: unknown;
         choices?: unknown[];
       }
     | null
     | undefined;
   if (!chunk || typeof chunk !== "object") return false;
-  if ("_reasoningDurationMs" in chunk || chunk.context_truncated) return false;
+  if ("_reasoningDurationMs" in chunk || chunk.context_truncated || chunk.quote_cut) {
+    return false;
+  }
   return !(chunk.usage && Array.isArray(chunk.choices) && chunk.choices.length === 0);
 }
 
@@ -92,6 +95,36 @@ export function generationIsSettled(
   return status !== null && TERMINAL.has(status) && cursor >= lastEventSeq;
 }
 
+/** Publish after catch-up; save at checkpoint intervals and on settlement.
+ * Server events remain available to replay any unsaved progress. */
+export function createRecoveryPublishSchedule(
+  intervalMs: number,
+  now: () => number = Date.now,
+): {
+  /** Set the cursor replay must reach before publishing. */
+  attach(lastEventSeq: number): void;
+  shouldPublish(cursor: number, settled: boolean): boolean;
+  /** Allow a save if due or settled, and record its time. */
+  takeSave(settled: boolean): boolean;
+} {
+  let attachSeq = 0;
+  let lastSaveAt = Number.NEGATIVE_INFINITY;
+  return {
+    attach(lastEventSeq) {
+      attachSeq = lastEventSeq;
+    },
+    shouldPublish(cursor, settled) {
+      return settled || cursor >= attachSeq;
+    },
+    takeSave(settled) {
+      const at = now();
+      if (!settled && at - lastSaveAt < intervalMs) return false;
+      lastSaveAt = at;
+      return true;
+    },
+  };
+}
+
 export async function loadGenerationOverlaySnapshot<TMessage, TRun>(
   threadId: string,
   listActiveRuns: (id: string) => Promise<TRun[]>,
@@ -118,10 +151,20 @@ type RecoveryUsage = {
   prompt_tokens?: unknown;
   completion_tokens?: unknown;
   total_tokens?: unknown;
-  prompt_tokens_details?: { cached_tokens?: unknown };
+  context_tokens?: unknown;
+  prompt_tokens_details?: { cached_tokens?: unknown; cache_write_tokens?: unknown };
   cache_creation_input_tokens?: unknown;
   cache_read_input_tokens?: unknown;
 };
+
+/** Tokens billed at the cache-write premium: Anthropic reports them top-level, OpenRouter in the details. */
+export function usageCacheWriteTokens(usage: RecoveryUsage | undefined): number {
+  if (typeof usage?.cache_creation_input_tokens === "number") {
+    return usage.cache_creation_input_tokens;
+  }
+  const details = usage?.prompt_tokens_details?.cache_write_tokens;
+  return typeof details === "number" ? details : 0;
+}
 
 type RecoveryTimings = {
   cache_n?: unknown;
@@ -176,6 +219,9 @@ export function recoveredGenerationFinalMetadata(options: {
       promptTokens: usage.prompt_tokens,
       completionTokens,
       totalTokens: usage.total_tokens,
+      ...(typeof usage.context_tokens === "number"
+        ? { contextTokens: usage.context_tokens }
+        : {}),
       cachedTokens:
         (typeof timings?.cache_n === "number" ? timings.cache_n : undefined) ??
         (typeof usage.prompt_tokens_details?.cached_tokens === "number"
@@ -184,10 +230,7 @@ export function recoveredGenerationFinalMetadata(options: {
         (typeof usage.cache_read_input_tokens === "number"
           ? usage.cache_read_input_tokens
           : 0),
-      cacheWriteTokens:
-        typeof usage.cache_creation_input_tokens === "number"
-          ? usage.cache_creation_input_tokens
-          : 0,
+      cacheWriteTokens: usageCacheWriteTokens(usage),
       modelId,
     };
   }
@@ -363,7 +406,16 @@ export function requestParsesThinkTags(payload: {
   enable_thinking?: boolean | null;
   reasoning_effort?: string | null;
   thinking?: { type?: string } | null;
+  provider_type?: string | null;
+  external_model?: string | null;
+  model?: string | null;
 }): boolean {
+  const provider = payload.provider_type?.trim().toLowerCase();
+  const model = (payload.external_model ?? payload.model)?.trim().toLowerCase();
+  const sonnet55BetweenTools =
+    provider === "anthropic" &&
+    (model === "claude-sonnet-5-5" || model?.startsWith("claude-sonnet-5-5-") === true);
+  if (sonnet55BetweenTools) return true;
   return !(
     payload.thinking?.type === "disabled" ||
     payload.enable_thinking === false ||
@@ -557,6 +609,32 @@ export function generationNeedsRecovery(
   );
 }
 
+/** The replay cursor with the state accumulated behind it. The usage chunk arrives before the
+ *  terminal event, so a cursor saved past it without these resumes after it and loses the token
+ *  counts and server timings for good. */
+export function generationReplayMetadata(state: {
+  cursor: number;
+  firstChunkAt?: number;
+  totalChunks?: number;
+  usage?: unknown;
+  timings?: unknown;
+}): Record<string, unknown> {
+  const next: Record<string, unknown> = { generationSeq: state.cursor };
+  if (state.firstChunkAt !== undefined) {
+    next.generationFirstChunkAt = state.firstChunkAt;
+  }
+  if (state.totalChunks !== undefined) {
+    next.generationChunkCount = state.totalChunks;
+  }
+  if (state.usage !== undefined) {
+    next.generationRecoveryUsage = state.usage;
+  }
+  if (state.timings !== undefined) {
+    next.generationRecoveryTimings = state.timings;
+  }
+  return next;
+}
+
 export function generationRecoveryMetadata(options: {
   current: Record<string, unknown>;
   runId: string;
@@ -564,6 +642,7 @@ export function generationRecoveryMetadata(options: {
   cursor: number;
   lastEventSeq: number;
   lengthLimited: boolean;
+  quoteCut?: boolean;
   firstChunkAt?: number;
   totalChunks?: number;
   usage?: unknown;
@@ -576,6 +655,7 @@ export function generationRecoveryMetadata(options: {
     cursor,
     lastEventSeq,
     lengthLimited,
+    quoteCut = false,
     firstChunkAt,
     totalChunks,
     usage,
@@ -584,8 +664,14 @@ export function generationRecoveryMetadata(options: {
   const settled = generationIsSettled(status, cursor, lastEventSeq);
   const next: Record<string, unknown> = {
     ...current,
+    ...generationReplayMetadata({
+      cursor,
+      firstChunkAt,
+      totalChunks,
+      usage,
+      timings,
+    }),
     generationRunId: runId,
-    generationSeq: cursor,
     generationStatus: status,
     generationSettled: settled,
     serverManaged: true,
@@ -593,6 +679,9 @@ export function generationRecoveryMetadata(options: {
   if (status === "completed") {
     if (lengthLimited) {
       next.incomplete = { reason: "length" };
+    } else if (quoteCut) {
+      // Must match the producer's stamp, or the server refuses the settle.
+      next.incomplete = { reason: "quote_cut" };
     } else {
       next.incomplete = undefined;
     }
@@ -600,21 +689,6 @@ export function generationRecoveryMetadata(options: {
     next.incomplete = { reason: "interrupted" };
   } else {
     next.incomplete = { reason: "cancelled" };
-  }
-  if (firstChunkAt !== undefined) {
-    next.generationFirstChunkAt = firstChunkAt;
-  }
-  if (totalChunks !== undefined) {
-    next.generationChunkCount = totalChunks;
-  }
-  // Carried with the cursor for the same reason as the two above: the usage chunk arrives before
-  // the terminal event, so a cursor published past it and reloaded would resume after it and
-  // lose the token counts and server timings for good.
-  if (usage !== undefined) {
-    next.generationRecoveryUsage = usage;
-  }
-  if (timings !== undefined) {
-    next.generationRecoveryTimings = timings;
   }
   return next;
 }
@@ -659,12 +733,19 @@ export function subscribeGenerationRecoveryTriggers(
       recover();
     }
   };
+  const onFocus = () => {
+    if (documentTarget.visibilityState !== "hidden") {
+      recover();
+    }
+  };
   windowTarget.addEventListener("online", recover);
   windowTarget.addEventListener("pageshow", recover);
+  windowTarget.addEventListener("focus", onFocus);
   documentTarget.addEventListener("visibilitychange", onVisible);
   return () => {
     windowTarget.removeEventListener("online", recover);
     windowTarget.removeEventListener("pageshow", recover);
+    windowTarget.removeEventListener("focus", onFocus);
     documentTarget.removeEventListener("visibilitychange", onVisible);
   };
 }
@@ -687,6 +768,29 @@ const liveGenerationThreads = new Map<string, string>();
  *  lands the thread's checkpoints are its only persistence, and the create retries until
  *  aborted, so the await can outlast the cap. */
 const provisionalGenerationRuns = new Set<string>();
+
+// Recovered runs need server cancellation because they have no local adapter run.
+const recoveredRunStops = new Map<string, () => void>();
+
+/** Register Stop and return cleanup that preserves newer registrations. */
+export function registerRecoveredRunStop(
+  threadId: string,
+  stop: () => void,
+): () => void {
+  recoveredRunStops.set(threadId, stop);
+  return () => {
+    if (recoveredRunStops.get(threadId) === stop) {
+      recoveredRunStops.delete(threadId);
+    }
+  };
+}
+
+/** Cancel the thread's recovered run; return false if none is registered. */
+export function stopRecoveredRun(threadId: string | null | undefined): boolean {
+  const stop = threadId ? recoveredRunStops.get(threadId) : undefined;
+  stop?.();
+  return stop !== undefined;
+}
 
 /** Claim a run as streamed by this tab. Pair with `releaseLiveGenerationRun` in a finally. */
 export function claimLiveGenerationRun(

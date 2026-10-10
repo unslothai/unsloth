@@ -2,7 +2,10 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import asyncio
+import base64
 import importlib.util
+import io
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -102,21 +105,40 @@ def test_local_csv_seed_keeps_its_values_as_written(monkeypatch, tmp_path):
     ]
 
 
+@pytest.mark.parametrize("filename", ["seed.jsonl", "seed.json"])
+def test_local_json_seed_preview_keeps_its_values_as_written(monkeypatch, tmp_path, filename):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    monkeypatch.setattr(seed_route, "account_path", lambda path: None)
+    records = [
+        {"zip": "01234", "qty": 3, "created_at": 1700000000, "date": "2024-01-01"},
+        {"zip": "90210", "qty": 4, "created_at": 1700000001, "date": "2024-01-02"},
+    ]
+    path = tmp_path / filename
+    if filename.endswith(".jsonl"):
+        path.write_text("\n".join(json.dumps(record) for record in records), encoding = "utf-8")
+    else:
+        path.write_text(json.dumps(records), encoding = "utf-8")
+
+    rows = seed_route._read_preview_rows_from_local_file(path, 10)
+
+    assert rows == records
+
+
 @pytest.mark.parametrize(
-    ("filename", "package"),
+    ("filename", "module", "package"),
     [
-        ("paper.pdf", "pymupdf4llm"),
-        ("notes.docx", "mammoth"),
+        ("paper.pdf", "pymupdf4llm", "pymupdf4llm"),
+        ("notes.docx", "docx", "python-docx"),
     ],
 )
 def test_unstructured_upload_names_missing_extractor_dependency(
-    monkeypatch, tmp_path, filename, package
+    monkeypatch, tmp_path, filename, module, package
 ):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
     monkeypatch.setattr(
         seed_route,
         "_extract_text_from_file",
-        _raise(ModuleNotFoundError(f"No module named {package!r}", name = package)),
+        _raise(ModuleNotFoundError(f"No module named {module!r}", name = module)),
     )
 
     result = _run_upload(seed_route, filename, b"%PDF-1.7")
@@ -138,6 +160,39 @@ def test_unstructured_upload_keeps_txt_path_working(monkeypatch, tmp_path):
     assert result.error is None
     assert any(name.endswith(".txt") for name in _block_files(seed_route))
     assert any(name.endswith(".extracted.txt") for name in _block_files(seed_route))
+
+
+_PNG_1X1 = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+)
+
+
+def test_unstructured_docx_upload_extracts_plain_text(monkeypatch, tmp_path):
+    docx = pytest.importorskip("docx")
+    seed_route = _load_seed_route(monkeypatch, tmp_path, inline_extraction = False)
+    document = docx.Document()
+    document.add_heading("Refunds", 1)
+    document.add_paragraph("Within 30 days (see section 4.2) - email support@example.com!")
+    address = document.add_paragraph("Ship to:")
+    address.add_run().add_break()
+    address.add_run("221B Baker Street")
+    document.add_paragraph("Prices: $5.99 + tax. Use file_name.py")
+    saved = document.add_paragraph(r"Saved to C:\data\file_1.txt")
+    saved.add_run().add_picture(io.BytesIO(_PNG_1X1))
+    source = tmp_path / "policy.docx"
+    document.save(source)
+
+    result = _run_upload(seed_route, "policy.docx", source.read_bytes())
+
+    assert result.status == "ok"
+    extracted = seed_route.UNSTRUCTURED_UPLOAD_ROOT / "block" / f"{result.file_id}.extracted.txt"
+    assert extracted.read_text(encoding = "utf-8").strip() == (
+        "Refunds\n"
+        "Within 30 days (see section 4.2) - email support@example.com!\n"
+        "Ship to:\n221B Baker Street\n"
+        "Prices: $5.99 + tax. Use file_name.py\n"
+        r"Saved to C:\data\file_1.txt"
+    )
 
 
 @pytest.mark.parametrize(

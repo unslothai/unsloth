@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useVllmAvailable } from "@/features/model-picker";
 import { useHfEndpoint, useHubName } from "@/lib/hf-endpoint";
 import {
   DropdownMenu,
@@ -213,7 +214,7 @@ export function HubListHeader({
 
   return (
     <div
-      className="flex items-center justify-between gap-4 pb-3"
+      className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 pb-3"
       aria-label={accessibleLabel}
     >
       <div className="flex min-w-0 items-center gap-1.5">
@@ -268,9 +269,7 @@ export function HubListHeader({
         )}
       </div>
       {(actions || onViewChange) && (
-        // min-w-0 (not shrink-0) so shrinkable actions (the On-device filter
-        // pills) compress before the title is forced onto two lines.
-        <div className="flex min-w-0 items-center gap-2">
+        <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2">
           {actions}
           {onViewChange && (
             <div
@@ -574,6 +573,7 @@ function useResultRowModel(
   deviceType: string | null,
   isDataset: boolean,
 ) {
+  const vllmAvailable = useVllmAvailable();
   const support = useMemo(
     () =>
       isDataset
@@ -585,8 +585,9 @@ function useResultRowModel(
             libraryName: row.result.libraryName,
             deviceType,
             quantMethod: row.result.quantMethod,
+            vllmAvailable,
           }),
-    [isDataset, row.id, row.result, deviceType],
+    [isDataset, row.id, row.result, deviceType, vllmAvailable],
   );
   const sizeLabel = formatModelParamLabel(row.repo, row.result.totalParams);
   const taskLabel = isDataset

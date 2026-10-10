@@ -406,7 +406,8 @@ export function ChatsToolbar({
           <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-5" />
         </button>
       ))}
-      <label className="relative ml-2 flex h-9 w-[min(15rem,24vw)] min-w-40 items-center rounded-full border border-border px-4 focus-within:border-ring dark:border-transparent dark:bg-card dark:focus-within:border-ring">
+      {/* Sized by the header row (cqw), not the window, as in LibraryToolbar. */}
+      <label className="relative ml-2 flex h-9 w-[clamp(10rem,calc(100cqw-30rem),min(15rem,24vw))] min-w-40 items-center rounded-full border border-border px-4 focus-within:border-ring dark:border-transparent dark:bg-card dark:focus-within:border-ring">
         <HugeiconsIcon
           icon={Search01Icon}
           strokeWidth={1.75}

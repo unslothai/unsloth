@@ -41,6 +41,7 @@ from .mistral_format import (
     mistral_format_redirect,
     prepare_mistral_format_checkpoint,
 )
+from .lora_init import adapter_used_fast_pissa, fast_lora_init, record_fast_pissa
 from .loader_utils import (
     DEFAULT_DEVICE_MAP,
     OFFLOAD_EMBEDDING_AUTO,
@@ -55,6 +56,7 @@ from .loader_utils import (
     prepare_device_map,
     requested_device_map,
     _offline_aware_load,
+    _restore_load_scoped_env,
     _resolve_checkpoint_tokenizer_name,
     _is_offline_related_error,
 )
@@ -96,6 +98,8 @@ SUPPORTS_FALCON_H1 = transformers_version >= Version("4.53.0")
 SUPPORTS_GEMMA3N = transformers_version >= Version("4.53.0")
 SUPPORTS_GPTOSS = transformers_version >= Version("4.55.0")
 SUPPORTS_GEMMA4 = transformers_version >= Version("5.5.0")
+# unsloth_zoo cannot share these models' vLLM weights with the training model.
+VLLM_UNSUPPORTED_MODEL_TYPES = ("gpt_oss",)
 # Transformers v5 meta-device loading corrupts non-persistent buffers (inv_freq); see _fix_rope_inv_freq() below.
 _NEEDS_ROPE_FIX = transformers_version >= Version("5.0.0")
 if SUPPORTS_GEMMA:
@@ -120,6 +124,7 @@ from ._utils import (
     _mark_full_finetuning,
     _get_text_only_config,
     resolve_model_class,
+    _is_seq2seq_lm_config,
     _is_family_text_decoder,
     _apply_text_only_key_mapping,
     _get_remote_composite_text_only,
@@ -133,6 +138,7 @@ from ._utils import (
 
 # Source of truth is unsloth_zoo.model_lists, re-exported for callers importing FORCE_FLOAT32 from here. The fallback list is unioned in so a newer unsloth still forces float32 for these archs against an older zoo.
 _FORCE_FLOAT32_FALLBACK = [
+    "embedding_gemma2",  # EmbeddingGemma 2: text-only loads have no gemma4 sub-config to match
     "gemma3,",
     "gemma3text",  # Gemma3TextModel (EmbeddingGemma, standalone text-only Gemma3)
     "gemma3n",
@@ -188,6 +194,36 @@ def _revision_for_resolved_repo(
         f"`{model_name}`, which does not have that revision.{remedy}"
     )
     return None
+
+
+def _record_modelscope_repo_id(model, repo_id, local_dir):
+    """A ModelScope load hands transformers the local snapshot, which becomes the model's name: PEFT copies it into adapter_config.json and the merge reads it as the base, so a 4bit snapshot refuses merged_16bit / GGUF and the adapter names a path on this machine only (#3726). Record the repo id, as a Hub load does."""
+    if repo_id is None or local_dir is None:
+        return
+    from transformers import PreTrainedModel
+
+    resolved = os.path.realpath(str(local_dir))
+    for module in model.modules():
+        if not isinstance(module, PreTrainedModel):
+            continue
+        for owner, attr in ((module, "name_or_path"), (module.config, "_name_or_path")):
+            value = getattr(owner, attr, None)
+            if isinstance(value, str) and value and os.path.realpath(value) == resolved:
+                setattr(owner, attr, repo_id)
+                # A non-PEFT GGUF export still converts the snapshot in place.
+                module._unsloth_modelscope_snapshot = str(local_dir)
+
+
+def _modelscope_snapshot_or_none(repo_id):
+    """ModelScope snapshot of an adapter's base, or None to load it by repo id from the Hugging Face Hub as before: the base need not be mirrored on ModelScope."""
+    from modelscope import snapshot_download
+    try:
+        return snapshot_download(repo_id)
+    except Exception as e:
+        logger.warning_once(
+            f"Unsloth: Could not download `{repo_id}` from ModelScope ({e}), loading it from Hugging Face."
+        )
+        return None
 
 
 def _revision_for_tokenizer_repo(
@@ -389,22 +425,24 @@ _OMNI_AUTO_CLASS_NAMES = (
 )
 
 
-def _adapter_file_keys(path):
+def _adapter_file_shapes(path):
     if path.endswith(".safetensors"):
         from safetensors import safe_open
         with safe_open(path, framework = "pt") as handle:
-            return list(handle.keys())
-    return list(torch.load(path, map_location = "meta", weights_only = True).keys())
+            return {key: tuple(handle.get_slice(key).get_shape()) for key in handle.keys()}
+    state_dict = torch.load(path, map_location = "meta", weights_only = True)
+    return {key: tuple(value.shape) for key, value in state_dict.items()}
 
 
-def _adapter_weight_keys(
+def _adapter_weight_shapes(
     adapter_name,
     token = None,
     revision = None,
     local_files_only = False,
     cache_dir = None,
+    header_only = False,
 ):
-    """Tensor names of a saved adapter without loading weights, or None."""
+    """{tensor name: shape} of a saved adapter without loading weights, or None. header_only range-reads an uncached hub header."""
     filenames = ("adapter_model.safetensors", "adapter_model.bin")
     try:
         local = os.path.expanduser(adapter_name)
@@ -412,7 +450,7 @@ def _adapter_weight_keys(
             for filename in filenames:
                 path = os.path.join(local, filename)
                 if os.path.exists(path):
-                    return _adapter_file_keys(path)
+                    return _adapter_file_shapes(path)
             return None
         from huggingface_hub import hf_hub_download
 
@@ -424,14 +462,97 @@ def _adapter_weight_keys(
                     revision = revision,
                     token = token,
                     cache_dir = cache_dir,
-                    local_files_only = local_files_only,
+                    local_files_only = local_files_only or header_only,
                 )
             except Exception:
                 continue
-            return _adapter_file_keys(path)
+            return _adapter_file_shapes(path)
+        if header_only and not local_files_only:
+            from huggingface_hub import parse_safetensors_file_metadata
+            metadata = parse_safetensors_file_metadata(
+                adapter_name, "adapter_model.safetensors", revision = revision, token = token
+            )
+            return {key: tuple(info.shape) for key, info in metadata.tensors.items()}
     except Exception:
         pass
     return None
+
+
+def _adapter_weight_keys(
+    adapter_name,
+    token = None,
+    revision = None,
+    local_files_only = False,
+    cache_dir = None,
+):
+    """Tensor names of a saved adapter without loading weights, or None."""
+    shapes = _adapter_weight_shapes(
+        adapter_name,
+        token = token,
+        revision = revision,
+        local_files_only = local_files_only,
+        cache_dir = cache_dir,
+    )
+    return None if shapes is None else list(shapes)
+
+
+_ADAPTER_VOCAB_SUFFIXES = (
+    "embed_tokens.weight",
+    "lm_head.weight",
+    "wte.weight",
+    "word_embeddings.weight",
+    "embed_in.weight",
+    "embed_out.weight",
+)
+
+
+def _adapter_vocab_rows(adapter_name, **hub_kwargs):
+    rows = []
+    for key, shape in (_adapter_weight_shapes(adapter_name, **hub_kwargs) or {}).items():
+        if len(shape) != 2:
+            continue
+        key = key.replace(".base_layer.", ".").replace(".lora_B.", ".")
+        if key.endswith(_ADAPTER_VOCAB_SUFFIXES):
+            rows.append(shape[0])
+        elif key.endswith("lora_embedding_A") or ".lora_embedding_A." in key:
+            rows.append(shape[1])
+    return max(rows, default = None)
+
+
+def _resize_vocab(model, new_size):
+    model.resize_token_embeddings(new_size)
+    # resize_token_embeddings rebuilds the embedding and drops _hf_hook, so this is the last module swap of all, after every repair above.
+    try:
+        from unsloth.models.vision import _repair_dispatch_hooks
+        _repaired = _repair_dispatch_hooks(model)
+        if _repaired:
+            logger.info(
+                f"Unsloth: re-attached dispatch hooks to {_repaired} module(s) "
+                "left unhooked by the vocabulary resize."
+            )
+    except Exception as _exc:
+        logger.warning(
+            f"Unsloth: could not check the dispatch hooks after resizing "
+            f"the vocabulary ({type(_exc).__name__}: {_exc})."
+        )
+
+
+def _grow_vocab_for_adapter(model, adapter_name, **hub_kwargs):
+    """An adapter trained after adding tokens saves more embedding rows than its base, which PeftModel refuses to load (#1215)."""
+    rows = _adapter_vocab_rows(adapter_name, **hub_kwargs)
+    try:
+        current = model.get_input_embeddings().weight.shape[0]
+        # patch_model_and_tokenizer grows only the input embedding to len(tokenizer), so lm_head can still be short.
+        output = model.get_output_embeddings()
+        if output is not None:
+            current = min(current, output.weight.shape[0])
+    except Exception:
+        return False
+    if rows is None or rows <= current:
+        return False
+    print(f"Unsloth: the adapter adds tokens, so the vocabulary grows from {current} to {rows}.")
+    _resize_vocab(model, rows)
+    return True
 
 
 def _composition_children(model_config):
@@ -496,6 +617,50 @@ def _config_has_native_class(auto_class, config):
         return False
 
 
+def _compiled_auto_model(auto_model):
+    """The compiled replacement of a concrete `auto_model` class, else `auto_model` unchanged.
+
+    unsloth_compile_transformers swaps the class in its modeling module, which an Auto class
+    resolves at load time; a class the caller imported earlier (the Whisper notebook passes
+    WhisperForConditionalGeneration) still points at the stock one and skips every compiled forward.
+    """
+    if not isinstance(auto_model, type) or getattr(auto_model, "_model_mapping", None) is not None:
+        return auto_model
+    module = sys.modules.get(getattr(auto_model, "__module__", None) or "")
+    replacement = getattr(module, auto_model.__name__, None) if module is not None else None
+    if (
+        isinstance(replacement, type)
+        and replacement is not auto_model
+        and replacement.__name__ == auto_model.__name__
+        and callable(getattr(replacement, "from_pretrained", None))
+        and _built_by_unsloth_compiler(replacement)
+    ):
+        return replacement
+    return auto_model
+
+
+def _built_by_unsloth_compiler(cls):
+    """True when `cls` is exported by a module the compiler generated (unsloth_compiled_module_*).
+
+    The compiled class keeps the original `__module__`, so check where it actually lives; a same-named
+    class another library rebound in the modeling module is not taken.
+    """
+    for name, module in list(sys.modules.items()):
+        if (
+            name.rsplit(".", 1)[-1].startswith("unsloth_compiled_module_")
+            and getattr(module, cls.__name__, None) is cls
+        ):
+            return True
+    return False
+
+
+def _has_vision_config(config):
+    # Qwen2.5-Omni checkpoints name `Qwen2_5OmniModel` (no ForConditionalGeneration) and nest vision under thinker_config.
+    return any(
+        hasattr(sub, "vision_config") for sub in (config, getattr(config, "thinker_config", None))
+    )
+
+
 def _resolve_omni_auto_model(
     model_config,
     trust_remote_code = None,
@@ -526,6 +691,25 @@ def _resolve_omni_auto_model(
             continue
     # Falling back to the concrete class the checkpoint names is WRONG: it is in no
     # auto mapping, so it leaves the processor set and downgrades to AutoTokenizer.
+    return None
+
+
+def _resolve_speech_seq2seq_auto_model(
+    model_config,
+    trust_remote_code = None,
+    **hub_kwargs,
+):
+    """AutoModelForSpeechSeq2Seq when it maps this config (Whisper, Moonshine), else None."""
+    import transformers
+
+    auto_class = getattr(transformers, "AutoModelForSpeechSeq2Seq", None)
+    try:
+        if auto_class is not None and resolve_model_class(
+            auto_class, model_config, trust_remote_code = trust_remote_code, **hub_kwargs
+        ):
+            return auto_class
+    except Exception:
+        pass
     return None
 
 
@@ -732,6 +916,31 @@ def _fix_rope_inv_freq(model):
     return model
 
 
+def _patch_from_pretrained_rope_fix():
+    """pre_patch swaps Unsloth's rotary classes into transformers, so a plain from_pretrained after an Unsloth load (a reward model TRL loads by name) also gets the corrupted inv_freq (#1494)."""
+    if not _NEEDS_ROPE_FIX:
+        return
+    import functools
+    from transformers import PreTrainedModel
+
+    original = PreTrainedModel.from_pretrained.__func__
+    if getattr(original, "_unsloth_rope_fix", False):
+        return
+
+    @functools.wraps(original)
+    def wrapped(cls, *args, **kwargs):
+        output = original(cls, *args, **kwargs)
+        # output_loading_info = True returns (model, info).
+        _fix_rope_inv_freq(output[0] if isinstance(output, tuple) else output)
+        return output
+
+    wrapped._unsloth_rope_fix = True
+    PreTrainedModel.from_pretrained = classmethod(wrapped)
+
+
+_patch_from_pretrained_rope_fix()
+
+
 def _vllm_unavailable_error():
     # vLLM installed but disabled at import (ABI break, needs transformers 5) is not "not installed".
     from unsloth import import_fixes
@@ -874,6 +1083,10 @@ class FastLanguageModel(FastLlamaModel):
             or dtype == torch.float32
         )
 
+        # Same fallback as FastModel, before requiring vLLM: it cannot run below compute capability 7.
+        if fast_inference and DEVICE_TYPE == "cuda" and torch.cuda.get_device_capability()[0] < 7:
+            print("Unsloth: vLLM does not work on older GPUs - will switch to Unsloth inference!")
+            fast_inference = False
         if fast_inference:
             if importlib.util.find_spec("vllm") is None:
                 raise _vllm_unavailable_error()
@@ -993,8 +1206,11 @@ class FastLanguageModel(FastLlamaModel):
         # Only check the flags when no non-bitsandbytes quantization_config sets the precision.
         check_precision_flags = quantization_config is None or q_load_in_4bit or q_load_in_8bit
         modelscope_pending_download = None
+        modelscope_repo_id = modelscope_dir = None
         if USE_MODELSCOPE and not os.path.exists(model_name):
             from modelscope import snapshot_download
+
+            modelscope_repo_id = model_name
             if check_precision_flags and _precision_flags_conflict(
                 load_in_4bit, load_in_8bit, load_in_16bit, load_in_fp8
             ):
@@ -1003,6 +1219,7 @@ class FastLanguageModel(FastLlamaModel):
                 model_name = snapshot_download(model_name, allow_file_pattern = ["*.json", "*.py"])
             else:
                 model_name = snapshot_download(model_name)
+            modelscope_dir = model_name
 
         # Gate before the probe below, or a pinned 4bit load fails against the mirror.
         base_revision = _revision_for_resolved_repo(
@@ -1201,6 +1418,21 @@ class FastLanguageModel(FastLlamaModel):
                 load_in_8bit = False
                 load_in_fp8 = False
                 load_in_16bit = True
+            # The adapter names its base by repo id, so fetch that from ModelScope too; a precision conflict raises below before any weights are needed.
+            if (
+                USE_MODELSCOPE
+                and not os.path.exists(model_name)
+                and not (
+                    check_precision_flags
+                    and _precision_flags_conflict(
+                        load_in_4bit, load_in_8bit, load_in_16bit, load_in_fp8
+                    )
+                )
+            ):
+                _snapshot = _modelscope_snapshot_or_none(model_name)
+                if _snapshot is not None:
+                    modelscope_repo_id, model_name = model_name, _snapshot
+                    modelscope_dir = _snapshot
             # After the -bf16 rule: the view path no longer carries the source's suffix.
             # No revision: the caller's ref names the adapter repo, and the base loads unpinned below.
             _cache_dir = kwargs.get("cache_dir", None)
@@ -1374,14 +1606,6 @@ class FastLanguageModel(FastLlamaModel):
         except Exception as e:
             print(f"Unsloth: Could not patch bitsandbytes for torch.compile - {e}")
 
-        # The optimized path never carried offload_embedding, so a request for one is dropped rather than honoured; say so instead of leaving the caller to infer it from memory use. "auto" stays quiet: it promises a decision, and off is one.
-        if offload_embedding != OFFLOAD_EMBEDDING_AUTO and offload_embedding:
-            print(
-                "Unsloth: Not offloading embeddings; the optimized path for this "
-                "architecture does not support it. Pass `device_map` or use FastModel "
-                "if you need the offload."
-            )
-
         model, tokenizer = dispatch_model.from_pretrained(
             model_name = model_name,
             max_seq_length = max_seq_length,
@@ -1406,26 +1630,19 @@ class FastLanguageModel(FastLlamaModel):
             max_lora_rank = max_lora_rank,
             disable_log_stats = disable_log_stats,
             load_in_fp8 = load_in_fp8,
+            # resize_token_embeddings below replaces the embedding and its hooks: only an explicit request offloads.
+            offload_embedding = (
+                False
+                if resize_model_vocab is not None and offload_embedding == OFFLOAD_EMBEDDING_AUTO
+                else offload_embedding
+            ),
             *args,
             **kwargs,
         )
+        _record_modelscope_repo_id(model, modelscope_repo_id, modelscope_dir)
 
         if resize_model_vocab is not None:
-            model.resize_token_embeddings(resize_model_vocab)
-            # resize_token_embeddings rebuilds the embedding and drops _hf_hook, so this is the last module swap of all, after every repair above.
-            try:
-                from unsloth.models.vision import _repair_dispatch_hooks
-                _repaired = _repair_dispatch_hooks(model)
-                if _repaired:
-                    logger.info(
-                        f"Unsloth: re-attached dispatch hooks to {_repaired} module(s) "
-                        "left unhooked by the vocabulary resize."
-                    )
-            except Exception as _exc:
-                logger.warning(
-                    f"Unsloth: could not check the dispatch hooks after resizing "
-                    f"the vocabulary ({type(_exc).__name__}: {_exc})."
-                )
+            _resize_vocab(model, resize_model_vocab)
 
         if hasattr(model, "add_model_tags"):
             model.add_model_tags(
@@ -1504,16 +1721,36 @@ class FastLanguageModel(FastLlamaModel):
             )
             if _grouped_config is not None:
                 peft_load_kwargs["config"] = _grouped_config
-            model = PeftModel.from_pretrained(
-                model,
+            if not fast_inference:
+                _grow_vocab_for_adapter(
+                    model,
+                    old_model_name,
+                    token = token,
+                    revision = revision,
+                    local_files_only = local_files_only,
+                    cache_dir = kwargs.get("cache_dir"),
+                )
+            # PEFT re-runs PiSSA at load: rebuild the residual with the algorithm that made the adapter.
+            fast_pissa = adapter_used_fast_pissa(
                 old_model_name,
                 token = token,
                 revision = revision,
                 local_files_only = local_files_only,
-                is_trainable = True,
-                trust_remote_code = trust_remote_code,
-                **peft_load_kwargs,
+                cache_dir = kwargs.get("cache_dir"),
             )
+            with fast_lora_init(force = True) if fast_pissa else contextlib.nullcontext():
+                model = PeftModel.from_pretrained(
+                    model,
+                    old_model_name,
+                    token = token,
+                    revision = revision,
+                    local_files_only = local_files_only,
+                    is_trainable = True,
+                    trust_remote_code = trust_remote_code,
+                    **peft_load_kwargs,
+                )
+            if fast_pissa:
+                record_fast_pissa(model)
             model = dispatch_model.patch_peft_model(model, use_gradient_checkpointing)
             try:
                 from .vision import _lift_endpoint_hooks_onto_adapters
@@ -1584,12 +1821,15 @@ class FastModel(FastBaseModel):
         return FastBaseModel.for_inference(model)
 
     @staticmethod
-    def for_training(model, use_gradient_checkpointing = True):
+    def for_training(model, use_gradient_checkpointing = None):
         if getattr(model, "_unsloth_slow_diffusion", False):
+            if use_gradient_checkpointing is None:
+                use_gradient_checkpointing = getattr(model, "_unsloth_gradient_checkpointing", True)
             return FastDiffusionModel.for_training(model, use_gradient_checkpointing)
         return FastBaseModel.for_training(model, use_gradient_checkpointing)
 
     @staticmethod
+    @_restore_load_scoped_env
     @_offline_aware_load
     @mistral_format_redirect
     @track_explicit_4bit_request
@@ -1752,6 +1992,10 @@ class FastModel(FastBaseModel):
                 # One whole model per rank; sharding one across the ranks' GPUs too would have every rank fighting for the same cards.
                 device_map = distributed_device_map
 
+        # Same fallback as FastLanguageModel, before requiring vLLM: zoo's vLLM loader raises on compute capability < 7.
+        if fast_inference and DEVICE_TYPE == "cuda" and torch.cuda.get_device_capability()[0] < 7:
+            print("Unsloth: vLLM does not work on older GPUs - will switch to Unsloth inference!")
+            fast_inference = False
         if fast_inference:
             if importlib.util.find_spec("vllm") is None:
                 raise _vllm_unavailable_error()
@@ -1834,9 +2078,11 @@ class FastModel(FastBaseModel):
             load_in_fp8 = False
             load_in_16bit = True
 
+        modelscope_repo_id = modelscope_dir = None
         if USE_MODELSCOPE and not os.path.exists(model_name):
             from modelscope import snapshot_download
-            model_name = snapshot_download(model_name)
+            modelscope_repo_id = model_name
+            model_name = modelscope_dir = snapshot_download(model_name)
 
         # Gate before the probe below, or a pinned 4bit load fails against the mirror.
         base_revision = _revision_for_resolved_repo(
@@ -1998,6 +2244,13 @@ class FastModel(FastBaseModel):
         model_types_all = ",".join(model_types) + ","
         _maybe_advise_fla_install(model_types)
         _raise_if_modeling_ignores_config(model_config, model_types)
+        _vllm_unsupported = [t for t in model_types if t in VLLM_UNSUPPORTED_MODEL_TYPES]
+        if fast_inference and _vllm_unsupported:
+            # Without this, vLLM loads the whole model first and weight sharing then crashes (unslothai/unsloth#4541).
+            print(
+                f"Unsloth: fast_inference (vLLM) does not support {_vllm_unsupported[0]} yet - will switch to Unsloth inference!"
+            )
+            fast_inference = False
 
         # Text-diffusion models (DiffusionGemma) take a transformers-only slow path: a custom block-diffusion generate over a novel backbone, so Unsloth's autoregressive kernel/compile patching is skipped and the unmodified HF model is loaded, keeping 4bit/8bit and PEFT LoRA.
         if is_diffusion_model_type(model_types):
@@ -2205,6 +2458,12 @@ class FastModel(FastBaseModel):
                 load_in_8bit = False
                 load_in_fp8 = False
                 load_in_16bit = True
+            # The adapter names its base by repo id, so fetch that from ModelScope too.
+            if USE_MODELSCOPE and not os.path.exists(model_name):
+                _snapshot = _modelscope_snapshot_or_none(model_name)
+                if _snapshot is not None:
+                    modelscope_repo_id, model_name = model_name, _snapshot
+                    modelscope_dir = _snapshot
             # After the -bf16 rule: the view path no longer carries the source's suffix.
             # No revision: the caller's ref names the adapter repo, and the base loads unpinned below.
             _cache_dir = kwargs.get("cache_dir", None)
@@ -2300,12 +2559,13 @@ class FastModel(FastBaseModel):
         for model_type in DISABLE_SDPA_MODEL_NAMES:
             if model_type in model_types_all:
                 supports_sdpa = False
+        auto_model = _compiled_auto_model(auto_model)
 
         # Keep the local checkpoint dir as tokenizer when self-sufficient; a VLM also needs local processor files, else fall back to the base repo so its cached processor loads.
         _ckpt_arch = getattr(model_config, "architectures", None) or []
-        _ckpt_is_vlm = any(x.endswith("ForConditionalGeneration") for x in _ckpt_arch) or hasattr(
-            model_config, "vision_config"
-        )
+        _ckpt_is_vlm = any(
+            x.endswith("ForConditionalGeneration") for x in _ckpt_arch
+        ) or _has_vision_config(model_config)
         # T5 / BART end in ForConditionalGeneration too but ship a tokenizer, not a processor.
         _ckpt_is_vlm = _ckpt_is_vlm and not _is_text_seq2seq_config(model_config)
         tokenizer_name = _resolve_checkpoint_tokenizer_name(
@@ -2337,7 +2597,7 @@ class FastModel(FastBaseModel):
         if architectures is None:
             architectures = []
         is_vlm = any(x.endswith("ForConditionalGeneration") for x in architectures)
-        is_vlm = is_vlm or hasattr(model_config, "vision_config")
+        is_vlm = is_vlm or _has_vision_config(model_config)
         if (
             is_peft
             and not text_only
@@ -2435,7 +2695,9 @@ class FastModel(FastBaseModel):
                         "Use FastVisionModel for multimodal inputs."
                     )
                     # Remap VLM text weights (tf >= 5) while model_config is still the parent (#5816).
-                    _apply_text_only_key_mapping(kwargs, model_config, text_config)
+                    _text_key_mapping = _apply_text_only_key_mapping(
+                        kwargs, model_config, text_config
+                    )
                     model_config = text_config
                     is_vlm = False
                     # model_config is no longer the repo's config, so anything rebuilding it from model_name (the device-map planner) sees a different model.
@@ -2456,7 +2718,13 @@ class FastModel(FastBaseModel):
             if _num_labels is not None:
                 from transformers import AutoModelForSequenceClassification
                 auto_model = AutoModelForSequenceClassification
-            elif _is_text_seq2seq_config(model_config):
+            elif _is_text_seq2seq_config(model_config) or (
+                # SeamlessM4T: Seq2SeqLM-mapped (text-to-text) beside its speech classes, no causal-LM class.
+                not is_vlm
+                and _is_seq2seq_lm_config(model_config)
+                and resolve_model_class(AutoModelForCausalLM, model_config, **_probe_hub_kwargs)
+                is None
+            ):
                 if fast_inference:
                     raise NotImplementedError(
                         "Unsloth: fast_inference (vLLM) does not support encoder-decoder models "
@@ -2507,6 +2775,7 @@ class FastModel(FastBaseModel):
                     if resolve_model_class(auto_model, model_config, **_probe_hub_kwargs) is None:
                         auto_model = (
                             _resolve_omni_auto_model(model_config, **_probe_hub_kwargs)
+                            or _resolve_speech_seq2seq_auto_model(model_config, **_probe_hub_kwargs)
                             or auto_model
                         )
             else:
@@ -2525,6 +2794,29 @@ class FastModel(FastBaseModel):
             )
         # A PEFT load resolved model_name to the base, which the caller's ref is not for.
         model_revision = base_revision if not is_peft else None
+
+        # _grow_vocab_for_adapter resizes the embedding after the load, which the offload hooks do not survive.
+        _adapter_grows_vocab = False
+        if is_peft and not fast_inference and offload_embedding == OFFLOAD_EMBEDDING_AUTO:
+            _adapter_rows = _adapter_vocab_rows(
+                old_model_name,
+                token = token,
+                revision = adapter_revision,
+                local_files_only = local_files_only,
+                cache_dir = kwargs.get("cache_dir"),
+                header_only = True,
+            )
+            _text_config = (
+                model_config.get_text_config()
+                if hasattr(model_config, "get_text_config")
+                else model_config
+            )
+            _base_vocab = _config_get(_text_config, "vocab_size")
+            _adapter_grows_vocab = (
+                _adapter_rows is not None
+                and _base_vocab is not None
+                and _adapter_rows > _base_vocab
+            )
 
         model, tokenizer = FastBaseModel.from_pretrained(
             model_name = model_name,
@@ -2555,7 +2847,8 @@ class FastModel(FastBaseModel):
             # resize_token_embeddings below replaces the embedding module and hooks do not follow, so an offload installed during the load would leave a CPU embedding feeding a GPU decoder. An explicit request is left alone.
             offload_embedding = (
                 False
-                if resize_model_vocab is not None and offload_embedding == OFFLOAD_EMBEDDING_AUTO
+                if (resize_model_vocab is not None or _adapter_grows_vocab)
+                and offload_embedding == OFFLOAD_EMBEDDING_AUTO
                 else offload_embedding
             ),
             float32_mixed_precision = float32_mixed_precision,
@@ -2573,23 +2866,10 @@ class FastModel(FastBaseModel):
             **kwargs,
         )
         _drop_text_only_key_mapping(model, _text_key_mapping)
+        _record_modelscope_repo_id(model, modelscope_repo_id, modelscope_dir)
 
         if resize_model_vocab is not None:
-            model.resize_token_embeddings(resize_model_vocab)
-            # resize_token_embeddings rebuilds the embedding and drops _hf_hook, so this is the last module swap of all, after every repair above.
-            try:
-                from unsloth.models.vision import _repair_dispatch_hooks
-                _repaired = _repair_dispatch_hooks(model)
-                if _repaired:
-                    logger.info(
-                        f"Unsloth: re-attached dispatch hooks to {_repaired} module(s) "
-                        "left unhooked by the vocabulary resize."
-                    )
-            except Exception as _exc:
-                logger.warning(
-                    f"Unsloth: could not check the dispatch hooks after resizing "
-                    f"the vocabulary ({type(_exc).__name__}: {_exc})."
-                )
+            _resize_vocab(model, resize_model_vocab)
 
         if hasattr(model, "add_model_tags"):
             model.add_model_tags(
@@ -2716,17 +2996,34 @@ class FastModel(FastBaseModel):
             )
             if _grouped_config is not None:
                 peft_load_kwargs["config"] = _grouped_config
-            try:
-                model = PeftModel.from_pretrained(
+            if not fast_inference:
+                _grow_vocab_for_adapter(
                     model,
                     old_model_name,
                     token = token,
                     revision = revision,
                     local_files_only = local_files_only,
-                    is_trainable = True,
-                    trust_remote_code = trust_remote_code,
-                    **peft_load_kwargs,
+                    cache_dir = kwargs.get("cache_dir"),
                 )
+            fast_pissa = adapter_used_fast_pissa(
+                old_model_name,
+                token = token,
+                revision = revision,
+                local_files_only = local_files_only,
+                cache_dir = kwargs.get("cache_dir"),
+            )
+            try:
+                with fast_lora_init(force = True) if fast_pissa else contextlib.nullcontext():
+                    model = PeftModel.from_pretrained(
+                        model,
+                        old_model_name,
+                        token = token,
+                        revision = revision,
+                        local_files_only = local_files_only,
+                        is_trainable = True,
+                        trust_remote_code = trust_remote_code,
+                        **peft_load_kwargs,
+                    )
             finally:
                 # Always restore the original PEFT method, even if loading fails.
                 if _clippable_linear_cls is not None:
@@ -2735,6 +3032,8 @@ class FastModel(FastBaseModel):
             model = FastBaseModel.post_patch_model(
                 model, use_gradient_checkpointing, trust_remote_code = trust_remote_code
             )
+            if fast_pissa:
+                record_fast_pissa(model)
             try:
                 from .vision import _lift_endpoint_hooks_onto_adapters
                 _lift_endpoint_hooks_onto_adapters(model)

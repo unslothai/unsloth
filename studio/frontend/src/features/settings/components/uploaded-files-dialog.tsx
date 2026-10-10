@@ -33,7 +33,7 @@ import { toast } from "@/lib/toast";
 import {
   ArrowUpRight01Icon,
   Delete02Icon,
-  File02Icon,
+  FileEmpty02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
@@ -154,7 +154,7 @@ function ChatImageThumb({
 function FileIconThumb() {
   return (
     <HugeiconsIcon
-      icon={File02Icon}
+      icon={FileEmpty02Icon}
       strokeWidth={1.75}
       className="size-4 text-muted-foreground"
     />

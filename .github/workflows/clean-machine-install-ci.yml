@@ -89,6 +89,7 @@ on:
       - 'studio/frontend/.npmrc'
       - 'studio/backend/core/data_recipe/oxc-validator/package.json'
       - 'studio/backend/core/data_recipe/oxc-validator/package-lock.json'
+      - 'studio/backend/core/data_recipe/oxc-validator/.npmrc'
       - 'studio/nvidia_probe.py'
       - 'studio/backend/__init__.py'
       - 'studio/backend/utils/__init__.py'
@@ -133,6 +134,7 @@ on:
       - 'studio/frontend/.npmrc'
       - 'studio/backend/core/data_recipe/oxc-validator/package.json'
       - 'studio/backend/core/data_recipe/oxc-validator/package-lock.json'
+      - 'studio/backend/core/data_recipe/oxc-validator/.npmrc'
       - 'studio/nvidia_probe.py'
       - 'studio/backend/__init__.py'
       - 'studio/backend/utils/__init__.py'
@@ -1517,16 +1519,24 @@ jobs:
         shell: pwsh
         run: |
           $log = Get-Content logs/install.log -Raw
-          if ($log -match 'Git is required but could not be installed automatically') {
-            Write-Host '::error::setup.ps1 stopped at the unconditional git gate; #7549 relaxed it to --local and source-build installs, so that has regressed'
+          # Both wordings: the pre-#12971 gate and the current --local / source-build one.
+          if ($log -match 'Git is required (but could not be installed automatically|for --local)') {
+            Write-Host '::error::setup.ps1 stopped at the git gate; only --local and llama.cpp source-build installs may need git, so that has regressed'
             exit 1
           }
-          if (-not ($log -match 'Git not found -- attempting install via winget')) {
-            Write-Host '::error::setup.ps1 found git on this machine, so the scrub leaked it back and this row never exercised the no-git path'
+          # Since #12971 setup.ps1 reaches for winget only when something clones, so on this
+          # consumer install the attempt itself is the regression, not a missing line.
+          if ($log -match 'Git not found -- attempting install via winget') {
+            Write-Host '::error::setup.ps1 tried to install git on a consumer install, which #12971 limited to --local and llama.cpp source builds'
             exit 1
           }
-          # setup.ps1:1757-1758, the non-fatal branch: git absent, nothing on the consumer
-          # path needs it, install continues.
+          # The step line is printed only when Get-Command git came back empty, so it is what
+          # proves the scrub held and this row really ran without git.
+          if (-not ($log -match 'git\s+not found \(not required\)')) {
+            Write-Host '::error::setup.ps1 never reported git as missing, so the scrub leaked it back and this row never exercised the no-git path'
+            exit 1
+          }
+          # The non-fatal branch: git absent, nothing on the consumer path needs it, install continues.
           if (-not ($log -match 'so git is not needed')) {
             Write-Host '::error::setup.ps1 never reported git as absent-but-not-required; the relaxed gate did not run'
             exit 1
@@ -1847,7 +1857,7 @@ jobs:
           }
           # Git: no Store, no winget, no git, and nothing on the consumer path needs it. The
           # relaxed gate is the only reason this row gets past setup.ps1 at all.
-          if ($log -match 'Git is required but could not be installed automatically') {
+          if ($log -match 'Git is required (but could not be installed automatically|for --local)') {
             Write-Host '::error::studio/setup.ps1 stopped at the unconditional git gate; the relax to --local and llama.cpp source-build installs has regressed'
             exit 1
           }

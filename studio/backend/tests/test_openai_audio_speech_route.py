@@ -107,12 +107,25 @@ def test_voice_and_speed_accepted_and_ignored(monkeypatch):
     assert resp.status_code == 200
 
 
-def test_non_wav_response_format_is_400(monkeypatch):
+def test_unknown_response_format_is_400(monkeypatch):
     cli, calls, saved = _make_client(monkeypatch)
-    resp = cli.post("/v1/audio/speech", json = {"input": "hi", "response_format": "mp3"})
+    resp = cli.post("/v1/audio/speech", json = {"input": "hi", "response_format": "wma"})
     assert resp.status_code == 400
-    assert "mp3" in resp.json()["error"]["message"]
+    error = resp.json()["error"]
+    assert error["param"] == "response_format"
+    assert "'wma'" in error["message"] and "mp3" in error["message"]
     assert calls == []  # rejected before any generation
+
+
+def test_sse_stream_format_is_400(monkeypatch):
+    cli, calls, saved = _make_client(monkeypatch)
+    resp = cli.post("/v1/audio/speech", json = {"input": "hi", "stream_format": "sse"})
+    assert (resp.status_code, resp.json()["error"]["param"]) == (400, "stream_format")
+    assert calls == []
+    assert (
+        cli.post("/v1/audio/speech", json = {"input": "hi", "stream_format": "audio"}).status_code
+        == 200
+    )
 
 
 def test_null_response_format_means_wav(monkeypatch):
@@ -434,6 +447,23 @@ def test_external_rejects_non_wav_response_format(monkeypatch):
     assert "Only 'wav' is supported" in resp.json()["error"]["message"]
     assert created == []
     assert speech_calls == []
+
+
+def test_external_rejects_sse_before_the_upstream_call(monkeypatch):
+    cli, _calls, _saved = _make_client(monkeypatch)
+    created, speech_calls = _install_external(monkeypatch)
+    resp = cli.post(
+        "/v1/audio/speech",
+        json = {
+            "input": "hi",
+            "provider_id": "conn-1",
+            "model": "kokoro",
+            "voice": "alloy",
+            "stream_format": "sse",
+        },
+    )
+    assert (resp.status_code, resp.json()["error"]["param"]) == (400, "stream_format")
+    assert created == [] and speech_calls == []
 
 
 def test_external_missing_model_is_400(monkeypatch):
@@ -931,6 +961,22 @@ def test_speech_opens_a_monitor_row(monkeypatch):
     assert rows[0]["model"] == "unsloth/orpheus-3b-0.1-ft"
 
 
+def test_v1_audio_generate_opens_a_monitor_row_and_the_chat_mount_does_not(monkeypatch):
+    cli, calls, saved = _make_client(monkeypatch)
+    cli.app.include_router(router, prefix = "/api/inference")
+    api_monitor.clear()
+    body = {"messages": [{"role": "user", "content": "read me"}]}
+    assert cli.post("/api/inference/audio/generate", json = body).status_code == 200
+    assert api_monitor.snapshot(include_details = False) == []
+    assert cli.post("/v1/audio/generate", json = body).status_code == 200
+    (row,) = api_monitor.snapshot(include_details = False)
+    assert (row["endpoint"], row["status"], row["model"]) == (
+        "/v1/audio/generate",
+        "completed",
+        "unsloth/orpheus-3b-0.1-ft",
+    )
+
+
 def test_tts_failure_records_an_error_row(monkeypatch):
     cli, calls, saved = _make_client(monkeypatch, generate = _boom)
     api_monitor.clear()
@@ -945,7 +991,7 @@ def test_rejected_response_format_records_nothing(monkeypatch):
     # Refused before any work, so it is not traffic the monitor should show.
     cli, calls, saved = _make_client(monkeypatch)
     api_monitor.clear()
-    resp = cli.post("/v1/audio/speech", json = {"input": "hi", "response_format": "mp3"})
+    resp = cli.post("/v1/audio/speech", json = {"input": "hi", "response_format": "wma"})
     assert resp.status_code == 400
     assert api_monitor.snapshot(include_details = False) == []
 
@@ -1002,3 +1048,18 @@ def test_an_ordinary_model_id_is_still_recorded_verbatim(monkeypatch):
             == 400
         )
         assert api_monitor.snapshot(include_details = False)[0]["model"] == requested
+
+
+def test_audio_generate_answers_with_the_text_the_clip_speaks(monkeypatch):
+    """Content is the whole spoken text, not a status label cut at 100 characters."""
+    cli, _calls, _saved = _make_client(monkeypatch)
+    text = (
+        "This sentence is deliberately longer than one hundred characters so that a "
+        "truncated label would show it. "
+    ) * 2
+    resp = cli.post(
+        "/v1/audio/generate",
+        json = {"model": "default", "messages": [{"role": "user", "content": text}]},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["choices"][0]["message"]["content"] == text

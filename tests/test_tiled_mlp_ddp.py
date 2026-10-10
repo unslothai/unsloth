@@ -78,6 +78,11 @@ def _load_patch():
 
 def _worker(rank, init_file, queue):
     try:
+        # A spawned worker gets none of conftest.py's device_type preloading, and
+        # _tiled_mlp_ddp.py imports unsloth_zoo at module level, whose GPU init refuses a CPU-only
+        # runner ("cannot find any torch accelerator"). Zoo's own switch for CPU tests skips it.
+        if not torch.cuda.is_available():
+            os.environ["UNSLOTH_ZOO_DISABLE_GPU_INIT"] = "1"
         _load_patch().patch_tiled_mlp_for_ddp()
         dist.init_process_group("gloo", init_method = f"file://{init_file}", rank = rank, world_size = 2)
         out = {}

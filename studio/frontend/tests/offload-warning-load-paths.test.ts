@@ -12,7 +12,7 @@ const LOAD_PATHS = [
   "../src/features/chat/api/chat-adapter.ts",
   "../src/features/chat/shared-composer.tsx",
   "../src/features/recipe-studio/hooks/use-recipe-executions.ts",
-  "../src/features/audio/audio-page.tsx",
+  "../src/features/audio/hooks/use-audio-model-slot.ts",
 ];
 
 test("every user-facing load path consults the offload warning", () => {

@@ -55,6 +55,26 @@ def test_build_usage_chunk_anthropic_shape():
     assert usage["prompt_tokens_details"]["cached_tokens"] == 18901
 
 
+def test_build_usage_chunk_anthropic_includes_compaction_iteration_tokens():
+    line = _build_usage_chunk(
+        "chatcmpl-compaction",
+        "anthropic",
+        {
+            "input_tokens": 23_000,
+            "output_tokens": 1_000,
+            "compaction_input_tokens": 180_000,
+            "compaction_output_tokens": 3_500,
+        },
+    )
+    assert line is not None
+    usage = json.loads(line[len("data: ") :])["usage"]
+    assert usage["prompt_tokens"] == 203_000
+    assert usage["completion_tokens"] == 4_500
+    assert usage["total_tokens"] == 207_500
+    assert usage["compaction_input_tokens"] == 180_000
+    assert usage["compaction_output_tokens"] == 3_500
+
+
 def test_build_usage_chunk_openai_shape():
     line = _build_usage_chunk(
         "chatcmpl-y",
@@ -712,16 +732,16 @@ def test_other_providers_do_not_get_the_continuation_flags(monkeypatch, provider
         ("vllm", True),
         ("openrouter", True),
         ("kimi", True),
-        # Any user-supplied base_url: a strict endpoint 400s on an unknown field.
+        ("llama_cpp", True),
+        ("ollama", True),
+        ("qwen", True),
+        # user-supplied base_url endpoints may reject the unknown field with a 400.
         ("custom", False),
-        ("ollama", False),
-        # "openai" is absent: it routes to /v1/responses, which reports usage itself.
+        # "openai" is absent because /v1/responses reports usage.
     ],
 )
 def test_streamed_usage_is_requested_only_where_documented(monkeypatch, provider_type, expected):
-    # An OAI-compatible stream omits usage without stream_options.include_usage, and
-    # these providers report no llama.cpp timings, so the monitor has no token count to
-    # derive a speed from and the row shows a blank Speed for every completed request.
+    # include_usage supplies token counts when compatible providers expose no llama.cpp timings.
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:

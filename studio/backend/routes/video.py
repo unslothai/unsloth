@@ -162,7 +162,7 @@ async def video_download_plan(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}
         )
     await _refuse_disabled_nvfp4_checkpoint(request)
-    from core.inference.diffusion import resolve_local_single_file
+    from core.inference.diffusion import resolve_local_single_file, split_local_checkpoint_path
     from core.inference.video import (
         assert_video_precision_available,
         get_video_backend,
@@ -174,7 +174,15 @@ async def video_download_plan(
     try:
         kind = resolve_video_model_kind(request.gguf_filename, request.model_kind)
         if kind == "pipeline" and not request.gguf_filename:
-            sole = await asyncio.to_thread(resolve_local_single_file, request.model_path)
+            split = await asyncio.to_thread(split_local_checkpoint_path, request.model_path)
+            if split is not None:
+                request.model_path, request.gguf_filename = split
+                kind = resolve_video_model_kind(split[1], None)
+            sole = (
+                None
+                if split is not None
+                else await asyncio.to_thread(resolve_local_single_file, request.model_path)
+            )
             if sole is not None:
                 request.gguf_filename = sole
                 kind = resolve_video_model_kind(sole, None)
@@ -183,6 +191,7 @@ async def video_download_plan(
             request.model_path,
             gguf_filename = request.gguf_filename,
             family_override = request.family_override,
+            display_repo_id = request.display_repo_id,
             model_kind = kind,
             base_repo = request.base_repo,
             transformer_quant = request.transformer_quant,
@@ -225,6 +234,7 @@ async def video_download_plan(
             gguf_filename = request.gguf_filename,
             base_repo = request.base_repo,
             family_override = request.family_override,
+            display_repo_id = request.display_repo_id,
             model_kind = kind,
             hf_token = request.hf_token,
             # The plan must see the encoder policy the load will use: an fp8 request takes a hosted pre-cast encoder, so
@@ -319,7 +329,7 @@ async def load_video_model_gated(
         for ref in (request.model_path, request.base_repo)
         if ref and _repo_is_in_the_hub_cache(ref) is not True
     ]
-    from core.inference.diffusion import resolve_local_single_file
+    from core.inference.diffusion import resolve_local_single_file, split_local_checkpoint_path
     from core.inference.diffusion_device import (
         resolve_diffusion_device_target,
         resolve_selected_cuda_ordinal,
@@ -347,7 +357,15 @@ async def load_video_model_gated(
         # A local On-Device pick can be a bare single-file .safetensors dir the picker starts as a pipeline; if it holds
         # exactly one checkpoint, load it as single_file. Mirrors images.
         if kind == "pipeline" and not request.gguf_filename:
-            sole = await asyncio.to_thread(resolve_local_single_file, request.model_path)
+            split = await asyncio.to_thread(split_local_checkpoint_path, request.model_path)
+            if split is not None:
+                request.model_path, request.gguf_filename = split
+                kind = resolve_video_model_kind(split[1], None)
+            sole = (
+                None
+                if split is not None
+                else await asyncio.to_thread(resolve_local_single_file, request.model_path)
+            )
             if sole is not None:
                 request.gguf_filename = sole
                 kind = resolve_video_model_kind(sole, None)
@@ -358,6 +376,7 @@ async def load_video_model_gated(
             gguf_filename = request.gguf_filename,
             base_repo = request.base_repo,
             family_override = request.family_override,
+            display_repo_id = request.display_repo_id,
             model_kind = kind,
             transformer_quant = request.transformer_quant,
             text_encoder_quant = request.text_encoder_quant,
@@ -411,6 +430,7 @@ async def load_video_model_gated(
             # network-free.
             return backend.begin_load(
                 request.model_path,
+                display_repo_id = request.display_repo_id,
                 # a load nobody asked for may not reach the hub: the switch verified locality
                 # from the outside, and this makes that promise the loader's own rule
                 local_files_only = not user_initiated,
@@ -438,6 +458,14 @@ async def load_video_model_gated(
 
         # begin_load signals whatever generation is running, so guard on every device.
         require_no_foreign_generations()
+        from core.inference.video_minimax_h3 import is_h3_native
+
+        if is_h3_native(fam, kind):
+            from core.inference.diffusion_engine_router import get_active_diffusion_engine
+            images = get_active_diffusion_engine()
+            if getattr(images, "runs_off_torch_device", False) is True:
+                # No arbiter owner evicts it, yet it holds the one managed sd.cpp tree H3 installs into.
+                await asyncio.to_thread(images.unload)
         if device != "cpu":
             # Register the in-flight load UNDER the arbiter lock: otherwise a competing acquire in that gap evicts VIDEO
             # before the load is marked, finds nothing to cancel, and both allocate at once. The training admission wraps
@@ -657,6 +685,7 @@ async def generate_video(
         reference_image_size = request.reference_image_size,
         flow_shift = request.flow_shift,
         audio_flow_shift = request.audio_flow_shift,
+        live_preview = request.live_preview,
     )
     # Authorize the exact resident token from generation_snapshot and pin it to the reservation,
     # so a load committing in the gap cannot render another account's weights here; on a mismatch,
@@ -762,7 +791,7 @@ async def video_status(
     from hub.utils.host_paths import redact_host_paths
 
     backend = get_video_backend()
-    status_dict = backend.status()
+    status_dict = await asyncio.to_thread(backend.status)
     if account_access.resident_hidden("video", status_dict.get("repo_id")):
         return account_access.hidden_resident_response()
     # Step-skip counters trace a clip as it runs, which generate-progress hides from other accounts:

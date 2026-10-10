@@ -1196,6 +1196,15 @@ jobs:
           Write-Host "install.ps1 -> $($sig.Status) $($sig.SignerCertificate.Subject)"
           if ($sig.Status -ne 'Valid') { Write-Host "::error::install.ps1 is $($sig.Status) after signing"; exit 1 }
 
+      # tauri-bundler downloads the NSIS toolset and WebView2 bootstrapper during
+      # bundling with one unretried GET, after the full compile and signing pass;
+      # one github.com 504 on nsis-3.11.zip failed the v0.1.901-beta Windows x64
+      # leg. Seed its tools directory up front, retried and hash checked.
+      - name: Prefetch Tauri Windows bundler tools
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: .github/scripts/prefetch-tauri-windows-tools.ps1
+
       - name: Build Windows app
         id: build_windows
         if: matrix.platform == 'windows-latest'

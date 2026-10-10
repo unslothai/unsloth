@@ -602,7 +602,9 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
         "function stopLocalPromptQueueRun(run: PromptQueueRun)",
         "function stopLocalPromptQueueRunsForThreadIds(threadIds: string[])",
     )
-    assert "if (plan.refreshTargetIdleWait)" in local_queue_stop
+    # #10428: a model change holds unsent local prompts for Resume instead of dropping them.
+    assert "item.blockedByModelFailure = true;" in local_queue_stop
+    assert "item.target.releaseModel();" in local_queue_stop
     assert "refreshPromptQueueTargetIdleWait(run);" in local_queue_stop
     assert "claimPreStreamRunReservation(reservationToken);" in RUNTIME_PROVIDER
     assert "if (!reservation.claimed)" in PRE_STREAM_RESERVATION
@@ -716,12 +718,23 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
         < side_two.index("handle2.startRun()")
     )
     assert "requestLocalPromptQueueStop" in eject
+    # #11591 moved the stop into stopQueuedRuns, shared with unloading a kept model, so the order
+    # is read across the call: eject confirms first and then stops through the helper, and the
+    # helper's whole-runtime branch cancels pre-stream reservations before stopping the queue.
     assert (
         eject.index('beginModelLoading("unloading")')
         < eject.index("await confirmStopRunningChatsIfNeeded(")
-        < eject.index("cancelPreStreamRunReservations(stopDecision.preStreamRunTokens)")
-        < eject.index("requestLocalPromptQueueStop(stopDecision.promptQueueThreadIds)")
+        < eject.index("stopQueuedRuns(stopDecision, Boolean(scope))")
     )
+    stop_queued = _between(
+        MODEL_RUNTIME,
+        "function stopQueuedRuns(decision: StopRunningChatsDecision, scoped: boolean): void {",
+        "\n}\n",
+    )
+    whole_runtime = stop_queued.split("if (scoped) {", 1)[1].split("\n  }\n", 1)[1]
+    assert whole_runtime.index(
+        "cancelPreStreamRunReservations(decision.preStreamRunTokens)"
+    ) < whole_runtime.index("requestLocalPromptQueueStop(decision.promptQueueThreadIds)")
     assert "function promptQueueRunUsesLocalModel(run: PromptQueueRun)" in THREAD
     assert ".slice(Math.max(run.index, 0))" in THREAD
     assert ".some((item) => item.target.usesLocalModel)" in THREAD

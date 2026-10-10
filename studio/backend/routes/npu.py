@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
@@ -20,8 +21,10 @@ from auth import policy
 from auth.authentication import get_current_subject
 from core.inference.npu_backend import NpuError, get_npu_backend
 from hub.services.models import account_access
+from loggers import get_logger
 
 router = APIRouter()
+logger = get_logger(__name__)
 
 _MANAGED_ACCOUNT_STATUS = {
     "supported": False,
@@ -36,6 +39,7 @@ _MANAGED_ACCOUNT_STATUS = {
     "loaded_model": None,
     "context_length": None,
     "loading_model": None,
+    "versions": {"lemonade": None, "fastflowlm": None},
 }
 
 
@@ -55,6 +59,13 @@ class _Download:
         with self.changed:
             self.events.append(event)
             self.changed.notify_all()
+
+    def percent(self) -> Optional[float]:
+        with self.changed:
+            for event in reversed(self.events):
+                if isinstance(event.get("percent"), (int, float)):
+                    return event["percent"]
+        return None
 
     def follow(self):
         """Every event so far, then each new one, until the pull ends."""
@@ -83,18 +94,30 @@ def _start_download(npu, model_id: str) -> _Download:
         job = _Download()
         _downloads[model_id] = job
 
+    def _progress() -> str:
+        percent = job.percent()
+        return "" if percent is None else f" at {percent}%"
+
     def _run() -> None:
+        logger.info(f"Downloading NPU model {model_id}")
         try:
             for event in npu.download(model_id):
                 job.publish(event)
+            logger.info(f"Downloaded NPU model {model_id}")
         except NpuError as exc:
+            logger.warning(f"NPU model download of {model_id} failed{_progress()}: {exc}")
             job.publish({"event": "error", "error": str(exc)})
         except Exception as exc:  # noqa: BLE001 -- reported on the stream, not lost in a thread
+            logger.exception(f"NPU model download of {model_id} failed{_progress()}")
             job.publish({"event": "error", "error": f"Downloading {model_id} failed: {exc}"})
         finally:
             with job.changed:
                 job.finished = True
                 job.changed.notify_all()
+            # Followers hold their own reference; nothing else reads a finished pull.
+            with _downloads_lock:
+                if _downloads.get(model_id) is job:
+                    del _downloads[model_id]
 
     threading.Thread(target = _run, daemon = True, name = "npu-pull").start()
     return job
@@ -126,14 +149,17 @@ async def list_npu_models():
     return {"models": [model.to_json() for model in models]}
 
 
-@router.post("/models/{model_id}/download", dependencies = [Depends(_require_installation_owner)])
-async def download_npu_model(model_id: str):
-    """Stream download progress through a final complete or error event.
+@router.get("/downloads", dependencies = [Depends(_require_installation_owner)])
+async def list_npu_downloads():
+    """Pulls still running, so a reopened page can follow them again."""
+    with _downloads_lock:
+        running = [(model_id, job) for model_id, job in _downloads.items() if not job.finished]
+    return {
+        "downloads": [{"model": model_id, "percent": job.percent()} for model_id, job in running]
+    }
 
-    Disconnecting stops progress updates, not the download.
-    """
-    job = _start_download(get_npu_backend(), model_id)
 
+def _event_stream(job: _Download) -> StreamingResponse:
     def _events():
         for event in job.follow():
             yield f"data: {json.dumps(event)}\n\n"
@@ -143,6 +169,25 @@ async def download_npu_model(model_id: str):
         media_type = "text/event-stream",
         headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@router.post("/models/{model_id}/download", dependencies = [Depends(_require_installation_owner)])
+async def download_npu_model(model_id: str):
+    """Stream download progress through a final complete or error event.
+
+    Disconnecting stops progress updates, not the download.
+    """
+    return _event_stream(_start_download(get_npu_backend(), model_id))
+
+
+@router.get("/models/{model_id}/download", dependencies = [Depends(_require_installation_owner)])
+async def follow_npu_download(model_id: str):
+    """The running pull's progress, from its first event. Never starts or retries one."""
+    with _downloads_lock:
+        job = _downloads.get(model_id)
+    if job is None or job.finished:
+        raise HTTPException(status_code = 404, detail = f"{model_id} is not downloading.")
+    return _event_stream(job)
 
 
 @router.delete("/models/{model_id}", dependencies = [Depends(_require_installation_owner)])

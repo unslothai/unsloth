@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { DOMParser as XmlDomParser, XMLSerializer as XmlSerializer } from "@xmldom/xmldom";
 import {
   Unzip,
   UnzipInflate,
@@ -28,11 +29,15 @@ const {
   getPdfAttachmentTextError,
   isAudioAttachment,
   isTextAttachment,
+  linearizeDocxMath,
+  markDocxNotes,
   parseAttachmentText,
   readAttachmentText,
   repackDocxAttachmentArchive,
   repackDocxPreviewArchive,
   truncateAttachmentPreviewText,
+  writeDocxBreaksAndCheckboxes,
+  writeDocxTableRows,
 } = await import("../src/features/chat/attachment-content.ts");
 const { definePDFJSModule } = await import("unpdf");
 const { readRtfAttachmentContent } =
@@ -307,6 +312,68 @@ test("extractHtmlAttachmentText keeps the line structure of the page", async () 
   );
 });
 
+test("extractHtmlAttachmentText keeps the indentation of preformatted code", async () => {
+  const extracted = await withStubDom(
+    () =>
+      element(
+        "body",
+        element("h1", textNode("Totals")),
+        element(
+          "pre",
+          textNode("def total(items):\n    s = 0\n"),
+          element("span", textNode("    for x in items:\n        s += x\n")),
+          textNode("    return s\n"),
+        ),
+        element("p", textNode("Done  here")),
+      ),
+    () => extractHtmlAttachmentText("<html/>"),
+  );
+
+  assert.equal(
+    extracted,
+    "Totals\n\ndef total(items):\n    s = 0\n    for x in items:\n        s += x\n    return s\n\nDone here",
+  );
+});
+
+test("extractHtmlAttachmentText adds no blank lines for an empty preformatted block", async () => {
+  const between = await withStubDom(
+    () =>
+      element(
+        "body",
+        element("p", textNode("X")),
+        element("pre", textNode("  \n  ")),
+        element("p", textNode("Y")),
+      ),
+    () => extractHtmlAttachmentText("<html/>"),
+  );
+  const last = await withStubDom(
+    () =>
+      element(
+        "body",
+        element("p", textNode("X")),
+        element("pre", textNode("\n")),
+      ),
+    () => extractHtmlAttachmentText("<html/>"),
+  );
+
+  assert.equal(between, "X\n\nY");
+  assert.equal(last, "X");
+});
+
+test("extractHtmlAttachmentText drops blank lines leading a preformatted block", async () => {
+  const extracted = await withStubDom(
+    () =>
+      element(
+        "body",
+        element("pre", textNode("\n  \n  first\n    second\n")),
+        element("p", textNode("Z")),
+      ),
+    () => extractHtmlAttachmentText("<html/>"),
+  );
+
+  assert.equal(extracted, "  first\n    second\n\nZ");
+});
+
 test("isAudioAttachment matches by MIME and by extension", () => {
   assert.equal(isAudioAttachment("clip.m4a", ""), true);
   assert.equal(isAudioAttachment("clip", "audio/webm"), true);
@@ -431,6 +498,7 @@ test("extractPdfAttachmentText destroys the PDF proxy after success and failure"
           ],
         }),
       }),
+      getFieldObjects: async () => null,
       destroy: async () => {
         destroyed.push("success");
       },
@@ -465,14 +533,24 @@ test("extractPdfAttachmentText destroys the PDF proxy after success and failure"
   }
 });
 
-function singlePagePdf(content: string, resources: string, extra: string[]) {
+function singlePagePdf(
+  content: string,
+  resources: string,
+  extra: string[],
+  pageEntries = "",
+  catalogEntries = "",
+) {
   const objects = [
-    "<< /Type /Catalog /Pages 2 0 R >>",
+    `<< /Type /Catalog /Pages 2 0 R ${catalogEntries}>>`,
     "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-    `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources ${resources} /Contents 4 0 R >>`,
+    `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources ${resources} /Contents 4 0 R ${pageEntries}>>`,
     `<< /Length ${content.length} >>\nstream\n${content}\nendstream`,
     ...extra,
   ];
+  return pdfBytes(objects);
+}
+
+function pdfBytes(objects: string[]) {
   let body = "%PDF-1.4\n";
   const offsets = objects.map((object, index) => {
     const offset = body.length;
@@ -530,6 +608,120 @@ test("a scanned pdf is refused unless the python tool can open it", async () => 
   );
   assert.equal(getPdfAttachmentTextError(scan.name, scanText, true), null);
   assert.equal(getPdfAttachmentTextError(typed.name, typedText, false), null);
+});
+
+test("a filled pdf form keeps the values typed into its fields", async () => {
+  const font = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>";
+  const field = (name: string, value: string, y: number) =>
+    `<< /Type /Annot /Subtype /Widget /FT /Tx /T (${name}) /V (${value}) /Rect [60 ${y} 190 ${y + 20}] /P 3 0 R >>`;
+  const checkbox = (name: string, state: string, y: number) =>
+    `<< /Type /Annot /Subtype /Widget /FT /Btn /T (${name}) /V /${state} /AS /${state} /AP << /N << /Yes 10 0 R /Off 11 0 R >> >> /Rect [60 ${y} 70 ${y + 10}] /P 3 0 R >>`;
+  const blank = "<< /Length 0 >>\nstream\n\nendstream";
+  const filled = new File(
+    [
+      singlePagePdf(
+        "BT /F1 12 Tf 20 100 Td (Name:) Tj ET",
+        "<< /Font << /F1 5 0 R >> >>",
+        [
+          font,
+          field("name", "Oscar Papa Quebec", 95),
+          field("notes", "", 60),
+          checkbox("agree", "Yes", 30),
+          checkbox("newsletter", "Off", 10),
+          blank,
+          blank,
+          `<< /Type /Annot /Subtype /Widget /FT /Tx /F 2 /T (internal) /V (hidden) /Rect [0 0 1 1] /P 3 0 R >>`,
+          `<< /Type /Annot /Subtype /Widget /FT /Ch /Ff 131072 /T (status) /TU (Marital\\nstatus) /Opt [[(1) (Single)] [(2) (Married)]] /V (2) /Rect [60 150 190 170] /P 3 0 R >>`,
+          `<< /Type /Annot /Subtype /Widget /FT /Tx /Ff 8192 /T (pin) /V (4321) /Rect [60 175 190 195] /P 3 0 R >>`,
+        ],
+        "/Annots [6 0 R 7 0 R 8 0 R 9 0 R 12 0 R 13 0 R 14 0 R] ",
+        "/AcroForm << /Fields [6 0 R 7 0 R 8 0 R 9 0 R 12 0 R 13 0 R 14 0 R] >> ",
+      ),
+    ],
+    "filled.pdf",
+    { type: "application/pdf" },
+  );
+  const fieldsOnly = new File(
+    [
+      singlePagePdf(
+        "",
+        "<< >>",
+        [field("name", "Romeo Sierra", 95)],
+        "/Annots [5 0 R] ",
+        "/AcroForm << /Fields [5 0 R] >> ",
+      ),
+    ],
+    "fields-only.pdf",
+    { type: "application/pdf" },
+  );
+
+  assert.equal(
+    await extractPdfAttachmentText(filled),
+    "Name:\nname: Oscar Papa Quebec\nagree: Yes\nMarital status: Married",
+  );
+  const fieldsOnlyText = await extractPdfAttachmentText(fieldsOnly);
+  assert.equal(fieldsOnlyText, "name: Romeo Sierra");
+  assert.equal(
+    getPdfAttachmentTextError(fieldsOnly.name, fieldsOnlyText, false),
+    null,
+  );
+});
+
+test("a multi-page pdf form keeps each page's values with that page", async () => {
+  const stream = (content: string) =>
+    `<< /Length ${content.length} >>\nstream\n${content}\nendstream`;
+  const page = (contents: number, annots: string) =>
+    `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << /Font << /F1 10 0 R >> >> /Contents ${contents} 0 R /Annots [${annots}] >>`;
+  const option = (exportName: string, tooltip: string, x: number, on: boolean) =>
+    `<< /Type /Annot /Subtype /Widget /Parent 6 0 R /TU (${tooltip}) /AS /${on ? exportName : "Off"} /AP << /N << /${exportName} 12 0 R /Off 12 0 R >> >> /Rect [${x} 20 ${x + 10} 30] /P 3 0 R >>`;
+  const form = new File(
+    [
+      pdfBytes([
+        "<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [6 0 R 9 0 R 13 0 R 14 0 R] >> >>",
+        "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>",
+        page(5, "7 0 R 8 0 R"),
+        page(11, "9 0 R 13 0 R 14 0 R"),
+        stream("BT /F1 12 Tf 20 100 Td (Filing status) Tj ET"),
+        "<< /FT /Btn /Ff 49152 /T (form1[0].c1_1[0]) /V /S /Kids [7 0 R 8 0 R] >>",
+        option("S", "Single", 20, true),
+        option("M", "Married", 60, false),
+        "<< /Type /Annot /Subtype /Widget /FT /Tx /T (form1[0].f2_01[0]) /TU (Date\\nsigned) /V (2026-09-30) /Rect [60 95 190 115] /P 4 0 R >>",
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        stream("BT /F1 12 Tf 20 100 Td (Signature) Tj ET"),
+        stream(""),
+        "<< /Type /Annot /Subtype /Widget /FT /Ch /Ff 2097152 /T (languages) /Opt [(English) (French) (German)] /V [(English) (German)] /Rect [60 40 190 80] /P 4 0 R >>",
+        "<< /Type /Annot /Subtype /Widget /FT /Tx /T (lights) /V (Off) /Rect [60 10 190 30] /P 4 0 R >>",
+      ]),
+    ],
+    "form.pdf",
+    { type: "application/pdf" },
+  );
+
+  assert.equal(
+    await extractPdfAttachmentText(form),
+    "Filing status\nform1[0].c1_1[0]: S\n\nSignature\nDate signed: 2026-09-30\nlanguages: English, German\nlights: Off",
+  );
+});
+
+test("a pdf with a damaged form field still reads its text", async () => {
+  const damaged = new File(
+    [
+      singlePagePdf(
+        "BT /F1 12 Tf 20 100 Td (Budget: 4200) Tj ET",
+        "<< /Font << /F1 5 0 R >> >>",
+        [
+          "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+          "<< /Type /Annot /Subtype /Widget /FT /Tx /T null /V (x) /Rect [60 20 190 40] >>",
+        ],
+        "/Annots [6 0 R] ",
+        "/AcroForm << /Fields [6 0 R] >> ",
+      ),
+    ],
+    "damaged.pdf",
+    { type: "application/pdf" },
+  );
+
+  assert.equal(await extractPdfAttachmentText(damaged), "Budget: 4200");
 });
 
 // The bytes are requested synchronously, so the extractor is reached without
@@ -980,14 +1172,521 @@ test("repackDocxAttachmentArchive refuses an archive that unpacks past the ceili
   );
 });
 
-/** A preview only colours what the filename says is source; extracted document text is prose whatever the file was called. */
+test("markDocxNotes numbers the references extractRawText keeps and marks the body", async () => {
+  const w = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
+  const note = (kind: string, id: number, text: string) =>
+    `<w:${kind} w:id="${id}"><w:p><w:r><w:${kind}Ref/></w:r><w:r><w:t xml:space="preserve"> ${text}</w:t></w:r></w:p></w:${kind}>`;
+  const notes = (kind: string, body: string) =>
+    strToU8(
+      `<w:${kind}s ${w}>` +
+        `<w:${kind} w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:${kind}>` +
+        `<w:${kind} w:type="continuationSeparator" w:id="0"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:${kind}>` +
+        body +
+        `</w:${kind}s>`,
+    );
+  const ref = (kind: string, id: number) =>
+    kind === "endnote"
+      ? `<w:r><w:${kind}Reference w:id="${id}">\n</w:${kind}Reference >\n</w:r>`
+      : `<w:r><w:${kind}Reference w:id="${id}"/></w:r>`;
+  const archive = repackDocxAttachmentArchive(
+    "paper.docx",
+    zipSync({
+      "[Content_Types].xml": strToU8("<Types/>"),
+      "_rels/.rels": relationships([["officeDocument", "word/document.xml"]]),
+      "word/document.xml": strToU8(
+        `<w:document ${w}><w:body><w:p><w:del w:id="9">${ref("footnote", 4)}</w:del>` +
+          `<w:r><w:t>First.</w:t></w:r>${ref("footnote", 2)}` +
+          `<w:r><w:t> Second.</w:t></w:r>${ref("footnote", 1)}${ref("endnote", 1)}` +
+          `<w:r><w:t xml:space="preserve"> \uE0007\uE001</w:t></w:r>` +
+          `<w:r><x:footnoteReference xmlns:x="http://schemas.openxmlformats.org/wordprocessingml/2006/main" x:id="3"/></w:r>` +
+          `</w:p></w:body></w:document>`,
+      ),
+      "word/_rels/document.xml.rels": relationships([
+        ["footnotes", "notes/foot.xml"],
+        ["endnotes", "endnotes.xml"],
+      ]),
+      "word/notes/foot.xml": notes(
+        "footnote",
+        note("footnote", 1, "Source: LATER") +
+          note("footnote", 2, "Source: EARLIER") +
+          note("footnote", 3, "Source: LOCALLY DECLARED") +
+          note("footnote", 4, "Source: DELETED"),
+      ),
+      "word/endnotes.xml": notes("endnote", note("endnote", 1, "Source: ENDNOTEBODY")),
+    }),
+  );
+  const original = (globalThis as { DOMParser?: unknown }).DOMParser;
+  (globalThis as { DOMParser?: unknown }).DOMParser = XmlDomParser;
+  try {
+    const marked = markDocxNotes(archive);
+    const { default: mammoth } = await import("mammoth");
+    const { value } = await mammoth.extractRawText({
+      buffer: Buffer.from(marked.archive),
+    });
+    assert.equal(
+      marked.label(value),
+      "First.[1] Second.[2][i] \uE0007\uE001[3]\n\n" +
+        "Footnotes\n[1] Source: EARLIER\n[2] Source: LATER\n[3] Source: LOCALLY DECLARED\n\n" +
+        "Endnotes\n[i] Source: ENDNOTEBODY",
+    );
+  } finally {
+    (globalThis as { DOMParser?: unknown }).DOMParser = original;
+  }
+});
+
+test("linearizeDocxMath keeps equations in the body, tables and notes", async () => {
+  const ns =
+    'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" ' +
+    'xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"';
+  const run = (text: string) => `<w:r><w:t xml:space="preserve">${text}</w:t></w:r>`;
+  const m = (text: string) => `<m:r><m:t>${text}</m:t></m:r>`;
+  const half = `<m:f><m:num>${m("1")}</m:num><m:den>${m("2")}</m:den></m:f>`;
+  const squared = `<m:sSup><m:e>${m("v")}</m:e><m:sup>${m("2")}</m:sup></m:sSup>`;
+  const mean = `<m:bar><m:barPr><m:pos m:val="top"/></m:barPr><m:e>${m("x")}</m:e></m:bar>`;
+  const root = `<m:rad><m:radPr><m:degHide m:val="1"/></m:radPr><m:deg/><m:e>${m("n")}</m:e></m:rad>`;
+  const archive = repackDocxAttachmentArchive(
+    "physics.docx",
+    zipSync({
+      "[Content_Types].xml": strToU8("<Types/>"),
+      "_rels/.rels": relationships([["officeDocument", "word/document.xml"]]),
+      "word/document.xml": strToU8(
+        `<w:document ${ns}><w:body>` +
+          `<w:p>${run("The kinetic energy is ")}<m:oMath>${m("E=")}${half}${m("m")}${squared}</m:oMath>${run(" joules.")}` +
+          `<w:r><w:footnoteReference w:id="1"/></w:r></w:p>` +
+          `<w:p><m:oMathPara><m:oMath>${m("F=ma")}</m:oMath><m:oMath>${m("p=mv")}</m:oMath></m:oMathPara></w:p>` +
+          `<w:tbl><w:tr><w:tc><w:p>${run("Error")}</w:p></w:tc><w:tc><w:p><m:oMath>` +
+          `<m:d><m:e>${m("a+b")}</m:e></m:d><w:del w:id="2" w:author="a">${m("+c")}</w:del>${root}` +
+          `</m:oMath></w:p></w:tc></w:tr></w:tbl>` +
+          `<w:p><w:del w:id="3" w:author="a"><m:oMath>${m("gone")}</m:oMath></w:del></w:p>` +
+          `</w:body></w:document>`,
+      ),
+      "word/_rels/document.xml.rels": relationships([["footnotes", "footnotes.xml"]]),
+      "word/footnotes.xml": strToU8(
+        `<w:footnotes ${ns}><w:footnote w:id="1"><w:p>${run("Where ")}<m:oMath>${mean}</m:oMath>${run(" is the mean.")}</w:p></w:footnote></w:footnotes>`,
+      ),
+    }),
+  );
+  const globals = globalThis as { DOMParser?: unknown; XMLSerializer?: unknown };
+  const original = { DOMParser: globals.DOMParser, XMLSerializer: globals.XMLSerializer };
+  globals.DOMParser = XmlDomParser;
+  globals.XMLSerializer = XmlSerializer;
+  try {
+    const marked = markDocxNotes(linearizeDocxMath(archive));
+    const { default: mammoth } = await import("mammoth");
+    const { value } = await mammoth.extractRawText({ buffer: Buffer.from(marked.archive) });
+    assert.equal(
+      marked.label(value),
+      "The kinetic energy is E=\\frac{1}{2}mv^{2} joules.[1]\n\nF=ma\np=mv\n\nError\n\n(a+b)\\sqrt{n}\n\n\n\n" +
+        "Footnotes\n[1] Where \\overline{x} is the mean.",
+    );
+  } finally {
+    Object.assign(globals, original);
+  }
+});
+
+// Same cases and expected text as the backend reader's test_docx_equation_structures.
+const OMML_CASES: [string, string][] = [
+  [
+    '<m:nary><m:naryPr><m:chr m:val="∑"/></m:naryPr><m:sub>{i=1}</m:sub><m:sup>{n}</m:sup><m:e>{i}</m:e></m:nary>',
+    "∑_{i=1}^{n}i",
+  ],
+  ["<m:nary><m:sub>{0}</m:sub><m:sup>{1}</m:sup><m:e>{x}</m:e></m:nary>", "∫_{0}^{1}x"],
+  [
+    "<m:sSubSup><m:e>{x}</m:e><m:sub>{i}</m:sub><m:sup>{2}</m:sup></m:sSubSup><m:sSub><m:e>{a}</m:e><m:sub>{0}</m:sub></m:sSub>",
+    "x_{i}^{2}a_{0}",
+  ],
+  ["<m:sPre><m:sub>{6}</m:sub><m:sup>{14}</m:sup><m:e>{C}</m:e></m:sPre>", "{}_{6}^{14}C"],
+  ["<m:limUpp><m:e>{x}</m:e><m:lim>{def}</m:lim></m:limUpp>", "x^{def}"],
+  ["<m:limLow><m:e>{lim}</m:e><m:lim>{n→∞}</m:lim></m:limLow>", "lim_{n→∞}"],
+  [
+    '<m:f><m:fPr><m:type m:val="noBar"/></m:fPr><m:num>{n}</m:num><m:den>{k}</m:den></m:f>' +
+      '<m:phant><m:phantPr><m:show m:val="off"/></m:phantPr><m:e>{xyz}</m:e></m:phant>',
+    "{n \\atop k}",
+  ],
+  ["<m:acc><m:e>{θ}</m:e></m:acc><m:rad><m:deg>{3}</m:deg><m:e>{y}</m:e></m:rad>", "θ̂\\sqrt[3]{y}"],
+  [
+    '<m:rad><m:radPr><m:degHide m:val="1"/></m:radPr><m:deg>{3}</m:deg><m:e>{x}</m:e></m:rad>' +
+      '<m:nary><m:naryPr><m:chr m:val="∑"/><m:subHide m:val="0"/><m:supHide/></m:naryPr><m:sub>{k}</m:sub><m:sup>{n}</m:sup><m:e>{a}</m:e></m:nary>',
+    "\\sqrt{x}∑_{k}a",
+  ],
+  ["<m:func><m:fName>{sin}</m:fName><m:e>{x}</m:e></m:func>", "sin x"],
+  [
+    "<m:m><m:mr><m:e>{a}</m:e><m:e>{b}</m:e></m:mr><m:mr><m:e>{c}</m:e><m:e>{d}</m:e></m:mr></m:m>",
+    "a & b \\\\ c & d",
+  ],
+  ["<m:eqArr><m:e>{x=1}</m:e><m:e>{y=2}</m:e></m:eqArr>", "x=1\ny=2"],
+  [
+    '<m:d><m:e>{a}</m:e><m:e>{b}</m:e></m:d><m:d><m:dPr><m:begChr m:val="["/><m:endChr m:val=""/></m:dPr><m:e>{c}</m:e></m:d>',
+    "(a|b)[c",
+  ],
+  [
+    '<m:bar><m:e>{x}</m:e></m:bar><m:groupChr><m:groupChrPr><m:chr m:val="⏞"/><m:pos m:val="top"/></m:groupChrPr><m:e>{y}</m:e></m:groupChr>' +
+      '<m:groupChr><m:groupChrPr><m:chr m:val="←"/></m:groupChrPr><m:e>{z}</m:e></m:groupChr>',
+    "\\underline{x}\\overbrace{y}\\underset{←}{z}",
+  ],
+  [
+    '{a}<w:r><w:t xml:space="preserve"> if </w:t></w:r>' +
+      "<w:sdt><w:sdtPr><w:showingPlcHdr/></w:sdtPr><w:sdtContent>{prompt}</w:sdtContent></w:sdt>{b}",
+    "a if b",
+  ],
+];
+
+test("linearizeDocxMath writes equations as the backend does and leaves other parts untouched", () => {
+  const ns =
+    'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" ' +
+    'xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"';
+  const archive = (body: string) =>
+    zipSync({ "word/document.xml": strToU8(`<w:document ${ns}><w:body>${body}</w:body></w:document>`) });
+  const globals = globalThis as { DOMParser?: unknown; XMLSerializer?: unknown };
+  const original = { DOMParser: globals.DOMParser, XMLSerializer: globals.XMLSerializer };
+  globals.DOMParser = XmlDomParser;
+  globals.XMLSerializer = XmlSerializer;
+  try {
+    const plain = archive('<w:p><w:r><w:t>oMath is only a word here</w:t></w:r></w:p>');
+    assert.equal(linearizeDocxMath(plain), plain);
+    // How Chromium's DOMParser returns a part cut short at an XML error.
+    const truncated = archive(
+      '<parsererror xmlns="http://www.w3.org/1999/xhtml"/><w:p><m:oMath><m:r><m:t>x</m:t></m:r></m:oMath></w:p>',
+    );
+    assert.equal(linearizeDocxMath(truncated), truncated);
+    const strict = zipSync({
+      "word/document.xml": strToU8(
+        '<w:document xmlns:w="http://purl.oclc.org/ooxml/wordprocessingml/main" xmlns:m="http://purl.oclc.org/ooxml/officeDocument/math">' +
+          "<w:body><w:p><m:oMath><m:sSup><m:e><m:r><m:t>x</m:t></m:r></m:e><m:sup><m:r><m:t>2</m:t></m:r></m:sup></m:sSup></m:oMath></w:p></w:body></w:document>",
+      ),
+    });
+    assert.ok(strFromU8(unzipSync(linearizeDocxMath(strict))["word/document.xml"]).includes(">x^{2}<"));
+    for (const [omml, expected] of OMML_CASES) {
+      const filled = omml.replace(/\{([^{}]*)\}/g, (_, text: string) => `<m:r><m:t>${text}</m:t></m:r>`);
+      const xml = strFromU8(unzipSync(linearizeDocxMath(archive(`<w:p><m:oMath>${filled}</m:oMath></w:p>`)))["word/document.xml"]);
+      const doc = new XmlDomParser().parseFromString(xml, "application/xml");
+      assert.equal(doc.getElementsByTagNameNS("http://schemas.openxmlformats.org/wordprocessingml/2006/main", "t")[0]?.textContent, expected);
+    }
+  } finally {
+    Object.assign(globals, original);
+  }
+});
+
+test("markDocxNotes reads Strict OOXML notes and skips unfilled content controls", () => {
+  const w = 'xmlns:w="http://purl.oclc.org/ooxml/wordprocessingml/main"';
+  const run = (text: string) => `<w:r><w:t xml:space="preserve">${text}</w:t></w:r>`;
+  const archive = repackDocxAttachmentArchive(
+    "strict.docx",
+    zipSync({
+      "[Content_Types].xml": strToU8("<Types/>"),
+      "_rels/.rels": relationships([["officeDocument", "word/document.xml"]]),
+      "word/document.xml": strToU8(`<w:document ${w}><w:body/></w:document>`),
+      "word/footnotes.xml": strToU8(
+        `<w:footnotes ${w}><w:footnote w:id="1"><w:p>` +
+          run("Keep") +
+          `<w:sdt><w:sdtPr><w:showingPlcHdr/></w:sdtPr><w:sdtContent>${run(" Click or tap here to enter text.")}</w:sdtContent></w:sdt>` +
+          `<w:sdt><w:sdtPr><w:showingPlcHdr w:val="0"/></w:sdtPr><w:sdtContent>${run(" FILLED")}</w:sdtContent></w:sdt>` +
+          "</w:p></w:footnote></w:footnotes>",
+      ),
+    }),
+  );
+  const original = (globalThis as { DOMParser?: unknown }).DOMParser;
+  (globalThis as { DOMParser?: unknown }).DOMParser = XmlDomParser;
+  try {
+    assert.equal(markDocxNotes(archive).label(""), "Footnotes\n[1] Keep FILLED");
+  } finally {
+    (globalThis as { DOMParser?: unknown }).DOMParser = original;
+  }
+});
+
+test("markDocxNotes skips move sources, deletions and text box fallbacks", () => {
+  const w = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
+  const mc = 'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"';
+  const run = (text: string) => `<w:r><w:t xml:space="preserve">${text}</w:t></w:r>`;
+  const box = `<w:txbxContent><w:p>${run("BOX")}</w:p></w:txbxContent>`;
+  const archive = repackDocxAttachmentArchive(
+    "moved.docx",
+    zipSync({
+      "[Content_Types].xml": strToU8("<Types/>"),
+      "_rels/.rels": relationships([["officeDocument", "word/document.xml"]]),
+      "word/document.xml": strToU8(`<w:document ${w}><w:body/></w:document>`),
+      "word/_rels/document.xml.rels": relationships([["footnotes", "footnotes.xml"]]),
+      "word/footnotes.xml": strToU8(
+        `<w:footnotes ${w} ${mc}><w:footnote w:id="1"><w:p>` +
+          run("Keep") +
+          `<w:moveFrom w:id="7">${run(" MOVED")}</w:moveFrom>` +
+          `<w:del w:id="8"><w:r><w:delText> GONE</w:delText></w:r></w:del>` +
+          run(" COVID") + "<w:r><w:noBreakHyphen/></w:r>" + run("19") +
+          `<w:moveTo w:id="9">${run(" MOVED")}</w:moveTo>` +
+          `<w:r><mc:AlternateContent><mc:Choice Requires="wps">${box}</mc:Choice>` +
+          `<mc:Fallback>${box}</mc:Fallback></mc:AlternateContent></w:r>` +
+          "</w:p></w:footnote></w:footnotes>",
+      ),
+    }),
+  );
+  const original = (globalThis as { DOMParser?: unknown }).DOMParser;
+  (globalThis as { DOMParser?: unknown }).DOMParser = XmlDomParser;
+  try {
+    assert.equal(
+      markDocxNotes(archive).label(""),
+      "Footnotes\n[1] Keep COVID-19 MOVED BOX",
+    );
+  } finally {
+    (globalThis as { DOMParser?: unknown }).DOMParser = original;
+  }
+});
+
+test("a Word file keeps its line breaks and which boxes are ticked", async () => {
+  const ns =
+    'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" ' +
+    'xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml"';
+  const run = (text: string) => `<w:r><w:t xml:space="preserve">${text}</w:t></w:r>`;
+  const box = (checked: string, glyph: string, label: string) =>
+    `<w:p><w:sdt><w:sdtPr><w14:checkbox><w14:checked w14:val="${checked}"/>` +
+    '<w14:checkedState w14:val="2612" w14:font="MS Gothic"/><w14:uncheckedState w14:val="2610" w14:font="MS Gothic"/>' +
+    `</w14:checkbox></w:sdtPr><w:sdtContent>${run(glyph)}</w:sdtContent></w:sdt>${run(label)}</w:p>`;
+  const field = (state: string, label: string) =>
+    `<w:p><w:r><w:fldChar w:fldCharType="begin"><w:ffData><w:checkBox><w:sizeAuto/>${state}</w:checkBox></w:ffData></w:fldChar></w:r>` +
+    '<w:r><w:instrText xml:space="preserve"> FORMCHECKBOX </w:instrText></w:r>' +
+    `<w:r><w:fldChar w:fldCharType="end"/></w:r>${run(label)}</w:p>`;
+  const archive = docxBytes(
+    `<w:document ${ns}><w:body>` +
+      '<w:p><w:r><w:t>Jane Doe</w:t><w:br/><w:t>42 Elm Street</w:t></w:r><w:r><w:br w:type="textWrapping"/></w:r>' +
+      `${run("Springfield, IL 62704")}</w:p>` +
+      '<w:p><w:r><w:t>Summary</w:t><w:br w:type="page"/><w:t>Details</w:t></w:r></w:p>' +
+      `<w:tbl><w:tr><w:tc><w:p>${run("Built APIs")}<w:r><w:cr/><w:t>Led team of 5</w:t></w:r></w:p></w:tc></w:tr></w:tbl>` +
+      box("1", "☒", " Smoker") +
+      box("0", "☐", " Diabetic") +
+      field('<w:default w:val="0"/><w:checked/>', " Allergies") +
+      field('<w:default w:val="0"/>', " Pregnant") +
+      '<w:p><w:r><w:t xml:space="preserve">Consent </w:t><w:fldChar w:fldCharType="begin"><w:ffData><w:checkBox><w:checked/></w:checkBox></w:ffData></w:fldChar></w:r>' +
+      '<w:r><w:instrText xml:space="preserve"> FORMCHECKBOX </w:instrText></w:r>' +
+      `<w:r><w:fldChar w:fldCharType="end"/></w:r>${run(" given")}</w:p>` +
+      "</w:body></w:document>",
+  );
+  const globals = globalThis as { DOMParser?: unknown; XMLSerializer?: unknown };
+  const original = { DOMParser: globals.DOMParser, XMLSerializer: globals.XMLSerializer };
+  globals.DOMParser = XmlDomParser;
+  globals.XMLSerializer = XmlSerializer;
+  try {
+    const { default: mammoth } = await import("mammoth");
+    const { value } = await mammoth.extractRawText({
+      buffer: Buffer.from(writeDocxBreaksAndCheckboxes(archive)),
+    });
+    assert.equal(
+      value,
+      "Jane Doe\n42 Elm Street\nSpringfield, IL 62704\n\n" +
+        "Summary\nDetails\n\n" +
+        "Built APIs\nLed team of 5\n\n" +
+        "☒ Smoker\n\n☐ Diabetic\n\n☒ Allergies\n\n☐ Pregnant\n\nConsent ☒ given\n\n",
+    );
+  } finally {
+    Object.assign(globals, original);
+  }
+});
+
+test("a Word table keeps its columns when a cell is empty", async () => {
+  const ns = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
+  const cell = (...paragraphs: string[]) =>
+    `<w:tc>${paragraphs.map((text) => `<w:p><w:r><w:t>${text}</w:t></w:r></w:p>`).join("") || "<w:p/>"}</w:tc>`;
+  const row = (...cells: string[]) => `<w:tr>${cells.join("")}</w:tr>`;
+  const bytes = docxBytes(
+    `<w:document ${ns}><w:body><w:p><w:r><w:t>Timetable</w:t></w:r></w:p><w:tbl>` +
+      row('<w:tc><w:tcPr><w:gridSpan w:val="6"/></w:tcPr><w:p><w:r><w:t>Week 1</w:t></w:r></w:p></w:tc>') +
+      row(cell("Time"), cell("Mon"), cell("Tue"), cell("Wed"), cell("Thu"), cell("Fri")) +
+      row(cell("10:00"), cell("History"), cell(), cell("Maths"), cell("Art"), cell()) +
+      row(
+        cell("11:00"),
+        '<w:tc><w:tcPr><w:gridSpan w:val="2"/></w:tcPr><w:p><w:r><w:t>Trip</w:t></w:r></w:p></w:tc>',
+        cell("Music", "Room 4"),
+        cell(),
+        cell("PE"),
+      ) +
+      "</w:tbl></w:body></w:document>",
+  );
+  const globals = globalThis as { DOMParser?: unknown; XMLSerializer?: unknown };
+  const original = { DOMParser: globals.DOMParser, XMLSerializer: globals.XMLSerializer };
+  globals.DOMParser = XmlDomParser;
+  globals.XMLSerializer = XmlSerializer;
+  try {
+    const { default: mammoth } = await import("mammoth");
+    const { value } = await mammoth.extractRawText({
+      buffer: Buffer.from(writeDocxTableRows(writeDocxBreaksAndCheckboxes(bytes))),
+    });
+    assert.equal(
+      value,
+      "Timetable\n\nWeek 1\n\n" +
+        "Time\tMon\tTue\tWed\tThu\tFri\n\n" +
+        "10:00\tHistory\t\tMaths\tArt\t\n\n" +
+        "11:00\tTrip\t\tMusic Room 4\t\tPE\n\n",
+    );
+  } finally {
+    Object.assign(globals, original);
+  }
+});
+
+test("an html table keeps its columns when a cell is empty", async () => {
+  const cell = (tag: string, text = "", colspan?: string) =>
+    Object.assign(element(tag, ...(text ? [textNode(text)] : [])), {
+      getAttribute: (name: string) => (name === "colspan" ? (colspan ?? null) : null),
+    });
+  const extracted = await withStubDom(
+    () =>
+      element(
+        "body",
+        element("h2", textNode("Timetable")),
+        element(
+          "table",
+          element(
+            "tbody",
+            element("tr", cell("th", "Time"), cell("th", "Mon"), cell("th", "Tue"), cell("th", "Wed")),
+            textNode("\n    "),
+            element("tr", cell("td", "10:00"), cell("td", "History"), cell("td"), cell("td", "Maths")),
+            element(
+              "tr",
+              cell("td", "11:00"),
+              cell("td", "Trip", "2"),
+              Object.assign(element("td", element("p", textNode("Art")), element("p", textNode("Room  4"))), {
+                getAttribute: () => null,
+              }),
+            ),
+          ),
+        ),
+        element("p", textNode("Bring a  pencil")),
+      ),
+    () => extractHtmlAttachmentText("<html/>"),
+  );
+
+  assert.equal(
+    extracted,
+    "Timetable\n\nTime\tMon\tTue\tWed\n\n10:00\tHistory\t\tMaths\n\n11:00\tTrip\t\tArt Room 4\n\nBring a pencil",
+  );
+});
+
+test("a Word row keeps its columns past skipped grid cells, tabs, line breaks and nested tables", async () => {
+  const ns = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
+  const p = (text: string) => `<w:p><w:r><w:t>${text}</w:t></w:r></w:p>`;
+  const row = (cells: string, pr = "") => `<w:tr>${pr}${cells}</w:tr>`;
+  const nested = `<w:tbl>${row(`<w:tc>${p("Room")}</w:tc><w:tc>${p("4")}</w:tc>`)}</w:tbl>`;
+  const bytes = docxBytes(
+    `<w:document ${ns}><w:body><w:tbl>` +
+      row(`<w:tc>${p("Time")}</w:tc><w:tc>${p("Mon")}</w:tc><w:tc>${p("Tue")}</w:tc>`) +
+      row(`<w:tc>${p("Lab 3")}</w:tc><w:tc>${p("Lab 4")}</w:tc>`, '<w:trPr><w:gridBefore w:val="1"/></w:trPr>') +
+      row(`<w:tc>${p("Only Tue")}</w:tc>`, '<w:trPr><w:gridBefore w:val="2"/></w:trPr>') +
+      row(`<w:tc>${p("Only Time")}</w:tc>`, '<w:trPr><w:gridAfter w:val="2"/></w:trPr>') +
+      row(
+        `<w:tc>${p("10:00")}</w:tc>` +
+          `<w:tc><w:p><w:r><w:t>A</w:t><w:tab/><w:t>B</w:t></w:r></w:p></w:tc>` +
+          `<w:tc>${nested}<w:p/></w:tc>`,
+      ) +
+      row(`<w:tc>${p("11:00")}</w:tc><w:tc><w:p><w:r><w:t>Line one</w:t><w:br/><w:t>Line two</w:t></w:r></w:p></w:tc><w:tc>${p("C")}</w:tc>`) +
+      "</w:tbl></w:body></w:document>",
+  );
+  const globals = globalThis as { DOMParser?: unknown; XMLSerializer?: unknown };
+  const original = { DOMParser: globals.DOMParser, XMLSerializer: globals.XMLSerializer };
+  globals.DOMParser = XmlDomParser;
+  globals.XMLSerializer = XmlSerializer;
+  try {
+    const { default: mammoth } = await import("mammoth");
+    const { value } = await mammoth.extractRawText({
+      buffer: Buffer.from(writeDocxTableRows(writeDocxBreaksAndCheckboxes(bytes))),
+    });
+    assert.equal(
+      value,
+      "Time\tMon\tTue\n\n\tLab 3\tLab 4\n\n\t\tOnly Tue\n\nOnly Time\t\t\n\n10:00\tA B\tRoom 4 \n\n11:00\tLine one Line two\tC\n\n",
+    );
+  } finally {
+    Object.assign(globals, original);
+  }
+});
+
+test("an html table keeps its columns under a rowspan and leaves code in a cell alone", async () => {
+  const cell = (tag: string, text = "", attributes: Record<string, string> = {}) =>
+    Object.assign(element(tag, ...(text ? [textNode(text)] : [])), {
+      getAttribute: (name: string) => attributes[name] ?? null,
+    });
+  const extracted = await withStubDom(
+    () =>
+      element(
+        "body",
+        element(
+          "table",
+          element(
+            "tbody",
+            element("tr", cell("th", "Time"), cell("th", "Mon"), cell("th", "Tue"), cell("th", "Wed")),
+            element("tr", cell("td", "09:00"), cell("td", "Science", { rowspan: "2" }), cell("td", "Art"), cell("td", "PE")),
+            element("tr", cell("td", "10:00"), cell("td", "Maths"), cell("td", "French")),
+            element("tr", cell("td", "11:00"), cell("td", "Music", { colspan: "3" })),
+            element("tr", cell("td", "ship()"), Object.assign(element("td", element("pre", textNode("def ship():\n    return 1"))), {
+              getAttribute: () => null,
+            })),
+          ),
+        ),
+      ),
+    () => extractHtmlAttachmentText("<html/>"),
+  );
+
+  assert.equal(
+    extracted,
+    "Time\tMon\tTue\tWed\n\n09:00\tScience\tArt\tPE\n\n10:00\t\tMaths\tFrench\n\n11:00\tMusic\t\t\n\nship()\n\ndef ship():\n    return 1",
+  );
+});
+
+test("an html rowspan of zero covers the rest of its row group", async () => {
+  const cell = (text: string, rowspan?: string) =>
+    Object.assign(element("td", textNode(text)), {
+      getAttribute: (name: string) => (name === "rowspan" ? (rowspan ?? null) : null),
+    });
+  const extracted = await withStubDom(
+    () =>
+      element(
+        "body",
+        element(
+          "table",
+          element(
+            "tbody",
+            element("tr", cell("All day", "0"), cell("Mon 09:00"), cell("Tue 09:00")),
+            element("tr", cell("Mon 10:00"), cell("Tue 10:00")),
+          ),
+          element("tbody", element("tr", cell("Evening"), cell("Mon 18:00"), cell("Tue 18:00"))),
+        ),
+      ),
+    () => extractHtmlAttachmentText("<html/>"),
+  );
+
+  assert.equal(
+    extracted,
+    "All day\tMon 09:00\tTue 09:00\n\n\tMon 10:00\tTue 10:00\n\nEvening\tMon 18:00\tTue 18:00",
+  );
+});
+
+test("an html rowspan keeps its full standards-defined range", async () => {
+  const cell = (text: string, rowspan?: string) =>
+    Object.assign(element("td", textNode(text)), {
+      getAttribute: (name: string) => (name === "rowspan" ? (rowspan ?? null) : null),
+    });
+  const labels = Array.from({ length: 1000 }, (_, index) => `row ${index + 1}`);
+  const extracted = await withStubDom(
+    () =>
+      element(
+        "body",
+        element(
+          "table",
+          element(
+            "tbody",
+            element("tr", cell("Group", "1001"), cell("row 0")),
+            ...labels.map((label) => element("tr", cell(label))),
+          ),
+        ),
+      ),
+    () => extractHtmlAttachmentText("<html/>"),
+  );
+
+  assert.equal(extracted, ["Group\trow 0", ...labels.map((label) => `\t${label}`)].join("\n\n"));
+});
+
 test("attachmentTextLanguage maps source files and leaves prose alone", () => {
   assert.equal(attachmentTextLanguage("train.py", null), "python");
   assert.equal(attachmentTextLanguage("Chart.YAML", null), "yaml");
   assert.equal(attachmentTextLanguage("page.html", null), "html");
   assert.equal(attachmentTextLanguage("notes.txt", null), null);
   assert.equal(attachmentTextLanguage("script.py", "PDF"), null);
-  // the label parsed from the adapter's wrapper keeps a sent extraction unhighlighted
+  // parsed adapter labels keep sent extractions unhighlighted
   assert.equal(
     attachmentTextLanguage(
       "page.html",

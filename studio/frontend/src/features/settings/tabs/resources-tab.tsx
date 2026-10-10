@@ -38,6 +38,7 @@ import {
   loadHuggingFaceCacheSettings,
   updateHuggingFaceCacheSettings,
 } from "../api/hugging-face-cache";
+import { InferenceEnginesSection } from "@/features/model-picker/components/inference-engines";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 import { CacheStorageRows } from "../components/cache-storage-rows";
 import { LlamaBackendSection } from "../components/llama-backend-section";
@@ -317,6 +318,14 @@ export function ResourcesTab() {
     const diskFree = systemInfo.disk?.free_gb ?? 0;
     const diskUsed = Math.max(0, diskTotal - diskFree);
     const diskPercent = diskTotal > 0 ? (diskUsed / diskTotal) * 100 : 0;
+    const modelsDisk = systemInfo.models_disk ?? null;
+    const modelsDiskUsed = modelsDisk
+      ? Math.max(0, modelsDisk.total_gb - modelsDisk.free_gb)
+      : 0;
+    const modelsDiskPercent =
+      modelsDisk && modelsDisk.total_gb > 0
+        ? (modelsDiskUsed / modelsDisk.total_gb) * 100
+        : 0;
     const display = gpuMemoryDisplay(displayedGpu);
     const usageDevices = display.usageDevices;
     const gpuMemoryTotals = gpuMemoryTotalsGb(usageDevices);
@@ -354,6 +363,9 @@ export function ResourcesTab() {
       diskFree,
       diskUsed,
       diskPercent,
+      modelsDisk,
+      modelsDiskUsed,
+      modelsDiskPercent,
       vramTotal,
       vramDedicated: gpuMemoryTotals.dedicated,
       vramShared: gpuMemoryTotals.shared,
@@ -570,6 +582,22 @@ export function ResourcesTab() {
             }
             percent={hostUnread ? null : metrics.diskPercent}
           />
+          {metrics.modelsDisk && (
+            <MetricTile
+              label={t("settings.resources.liveMonitor.modelsDisk")}
+              value={hostReading(
+                `${formatGb(metrics.modelsDiskUsed)} / ${formatGb(metrics.modelsDisk.total_gb)}`,
+              )}
+              detail={
+                hostUnread
+                  ? hostUnreadDetail
+                  : t("settings.resources.liveMonitor.free", {
+                      value: formatGb(metrics.modelsDisk.free_gb),
+                    })
+              }
+              percent={hostUnread ? null : metrics.modelsDiskPercent}
+            />
+          )}
           <MetricTile
             label={t(
               memoryDisplay.sharedOnly
@@ -833,6 +861,7 @@ export function ResourcesTab() {
       {/* Below the GPU section it describes, above the memory settings that
           apply to whichever backend is selected. */}
       <LlamaBackendSection />
+      <InferenceEnginesSection />
 
       <ModelMemorySection />
 
@@ -850,13 +879,52 @@ export function ResourcesTab() {
             free: formatGb(metrics.diskFree),
           })}
         />
+        {metrics.modelsDisk && (
+          <InfoRow
+            label={t("settings.resources.storage.modelsDisk")}
+            value={t("settings.resources.storage.diskUsage", {
+              used: formatGb(metrics.modelsDiskUsed),
+              total: formatGb(metrics.modelsDisk.total_gb),
+            })}
+            detail={t("settings.resources.storage.diskFree", {
+              free: formatGb(metrics.modelsDisk.free_gb),
+            })}
+          />
+        )}
         <SettingsRow
           label={t("settings.resources.storage.modelsFolder")}
           description={t("settings.resources.storage.modelsFolderDescription")}
           hint={t("settings.resources.storage.modelsFolderHint")}
           className="max-[840px]:flex-col max-[840px]:items-stretch max-[840px]:gap-2"
+          below={
+            cacheLocationDetail || hfCache?.isCustom ? (
+              <div className="w-[calc(392px*var(--ui-space-scale,1))] min-w-0 max-[840px]:w-full">
+                <div className="flex min-w-0 items-center justify-between gap-2 pl-3.5 pr-1 text-xs text-muted-foreground">
+                  {cacheLocationDetail ? (
+                    <span
+                      title={cacheLocationDetail}
+                      className="min-w-0 truncate"
+                    >
+                      {cacheLocationDetail}
+                    </span>
+                  ) : null}
+                  {hfCache?.isCustom ? (
+                    <Button
+                      variant="link"
+                      size="xs"
+                      className="h-auto px-0 text-xs"
+                      disabled={cacheSaving}
+                      onClick={() => void saveCacheFolder(null)}
+                    >
+                      {t("settings.resources.storage.resetAction")}
+                    </Button>
+                  ) : null}
+                </div>
+              </div>
+            ) : null
+          }
         >
-          <div className="grid w-[calc(392px*var(--ui-space-scale,1))] min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-x-2 gap-y-1.5 max-[840px]:w-full">
+          <div className="grid w-[calc(392px*var(--ui-space-scale,1))] min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-x-2 max-[840px]:w-full">
             <div className="relative min-w-0">
               <Input
                 readOnly
@@ -897,29 +965,6 @@ export function ResourcesTab() {
             >
               {t("settings.resources.storage.changeAction")}
             </Button>
-            {cacheLocationDetail || hfCache?.isCustom ? (
-              <div className="col-span-2 flex min-w-0 items-center justify-between gap-2 pl-3.5 pr-1 text-xs text-muted-foreground">
-                {cacheLocationDetail ? (
-                  <span
-                    title={cacheLocationDetail}
-                    className="min-w-0 truncate"
-                  >
-                    {cacheLocationDetail}
-                  </span>
-                ) : null}
-                {hfCache?.isCustom ? (
-                  <Button
-                    variant="link"
-                    size="xs"
-                    className="h-auto px-0 text-xs"
-                    disabled={cacheSaving}
-                    onClick={() => void saveCacheFolder(null)}
-                  >
-                    {t("settings.resources.storage.resetAction")}
-                  </Button>
-                ) : null}
-              </div>
-            ) : null}
           </div>
         </SettingsRow>
         <CacheStorageRows />

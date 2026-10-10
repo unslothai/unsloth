@@ -22,6 +22,7 @@ import copy
 import itertools
 import os
 import sys
+import types
 
 import pytest
 import torch
@@ -207,6 +208,7 @@ def test_repacked_weights_dequantize_exactly_and_save_in_checkpoint_layout(
     assert W.shape == checkpoint.shape and not torch.equal(W, checkpoint)
     assert torch.equal(ip.int4_dequantize(W, qs), ref)
     assert torch.equal(ip.int4_unpack(W, qs), checkpoint)
+    assert ip._fast_args(W, qs) is not None
     fast = ip._fast_rows(layout, torch.cuda.current_device())
     for rows in (1, 3, fast, fast + 1):
         x = torch.randn(rows, 1024, device = "cuda", dtype = torch.bfloat16)
@@ -538,6 +540,145 @@ def test_adopt_swaps_plain_linears_and_leaves_routers_to_the_decompress_converte
     assert rx.search("proj.weight_packed") is None
 
 
+@needs_ct
+@pytest.mark.parametrize(
+    "weights,scale_columns,adopted",
+    [
+        ({"group_size": 1}, 2, False),
+        ({"group_size": 16}, 2, False),
+        ({"group_size": 64}, 2, False),
+        ({"strategy": "channel", "group_size": None}, 1, True),
+        ({"strategy": "channel", "group_size": -1}, 1, True),
+    ],
+)
+def test_adopt_takes_a_linear_only_when_its_scale_groups_match_the_scheme(
+    tmp_path, weights, scale_columns, adopted
+):
+    # The kernel indexes weight_scale by group_size: a mismatch reads the wrong scales, or past them (#12955).
+    from safetensors.torch import save_file
+    from torch import nn
+    from unsloth.models.compressed_tensors_bnb import (
+        _build_quantization_config,
+        adopt_int4_packed_linears,
+    )
+    from test_compressed_tensors_bnb import _w4a16
+
+    with torch.device("meta"):
+        model = nn.Module()
+        model.proj = nn.Linear(64, 16, bias = False)
+    path = str(tmp_path / "model.safetensors")
+    save_file(
+        {
+            "proj.weight_packed": torch.zeros(16, 8, dtype = torch.int32),
+            "proj.weight_scale": torch.ones(16, scale_columns, dtype = torch.float32),
+            "proj.weight_shape": torch.tensor([16, 64]),
+        },
+        path,
+    )
+    ct_config = _build_quantization_config(_w4a16(weights = weights))
+    swapped, leftover = adopt_int4_packed_linears(model, ct_config, [path], torch.bfloat16)
+    assert (swapped, leftover) == ((["proj"], []) if adopted else ([], ["proj"]))
+    assert (type(model.proj) is nn.Linear) is not adopted
+
+
+@needs_gpu
+@needs_ct
+@pytest.mark.parametrize("declared", [16, 64, None])
+def test_decompress_skips_the_kernel_when_scale_groups_disagree_with_group_size(declared):
+    from compressed_tensors.quantization import QuantizationArgs, QuantizationScheme
+    from unsloth.models.compressed_tensors_bnb import _decompress_one_triton
+
+    packed, ref, _ = _packed_layer(16, 128, 4, 32, True, False, torch.bfloat16)
+
+    def decode(group_size, scale = packed["weight_scale"]):
+        args = QuantizationArgs(
+            num_bits = 4,
+            type = "int",
+            strategy = "group" if group_size else "channel",
+            group_size = group_size,
+        )
+        return _decompress_one_triton(
+            QuantizationScheme(targets = ["Linear"], weights = args),
+            packed["weight_packed"],
+            scale,
+            packed["weight_shape"],
+            None,
+            None,
+            torch.bfloat16,
+        )
+
+    assert torch.equal(decode(32), ref)
+    assert decode(declared) is None
+    assert decode(32, packed["weight_scale"][:8]) is None
+
+
+def test_a_rejected_decompress_names_the_group_size_and_scale_shape_that_disagree():
+    from unsloth.models.compressed_tensors_bnb import _decompress_one
+
+    class Rejects:
+        @staticmethod
+        def decompress(state, scheme):
+            raise ValueError("shape")
+
+    packed = torch.zeros(16, 8, dtype = torch.int32)
+    shape = torch.tensor([16, 64])
+
+    def decode(group_size, scale_columns):
+        scheme = types.SimpleNamespace(weights = types.SimpleNamespace(group_size = group_size))
+        scale = torch.ones(16, scale_columns)
+        return _decompress_one(Rejects, scheme, packed, scale, shape, None, None, torch.bfloat16)
+
+    with pytest.raises(RuntimeError, match = r"group_size = 16 for a 16 x 64 .*\(16, 2\)"):
+        decode(16, 2)
+    # A consistent scale, or a channel scheme, keeps the decoder's own error.
+    for group_size, scale_columns in ((16, 4), (None, 2), (-1, 2)):
+        with pytest.raises(ValueError, match = "shape"):
+            decode(group_size, scale_columns)
+
+
+@needs_gpu
+@pytest.mark.skipif(
+    not (HAS_CT and HAS_CONVERTERS), reason = "needs compressed-tensors and the transformers 5 loader"
+)
+@pytest.mark.parametrize("declared", [16, 64])
+@pytest.mark.usefixtures("restore_llama_patches")
+def test_a_group_size_the_scales_contradict_loads_the_right_weights_or_fails_by_name(
+    declared, tmp_path, monkeypatch, caplog
+):
+    import json
+    import logging
+
+    from unsloth import FastLanguageModel
+    from test_compressed_tensors_bnb import (
+        _same_linear4bit,
+        _tokenizer_free_load,
+        _write_tiny_packed_llama,
+    )
+
+    monkeypatch.setenv("UNSLOTH_COMPRESSED_TENSORS_INT4", "packed")
+    packed_dir, bf16_dir = _write_tiny_packed_llama(str(tmp_path))
+    for d in (packed_dir, bf16_dir):
+        _tokenizer_free_load(d, str(tmp_path))
+    config_path = os.path.join(packed_dir, "config.json")
+    with open(config_path) as f:
+        config = json.load(f)
+    for group in config["quantization_config"]["config_groups"].values():
+        group["weights"]["group_size"] = declared  # the scales were written for 32
+    with open(config_path, "w") as f:
+        json.dump(config, f)
+    kw = dict(max_seq_length = 64, dtype = torch.bfloat16, load_in_4bit = True)
+    # transformers reports the per-layer conversion errors on its own, non-propagating logger.
+    monkeypatch.setattr(logging.getLogger("transformers"), "propagate", True)
+    try:
+        model_a, _ = FastLanguageModel.from_pretrained(packed_dir, **kw)
+    except RuntimeError:
+        # compressed-tensors 0.19+ rejects the mismatch instead of inferring the groups.
+        assert f"declares group_size = {declared}" in caplog.text
+        return
+    model_b, _ = FastLanguageModel.from_pretrained(bf16_dir, **kw)
+    assert _same_linear4bit(model_a, model_b) == 2 * 7
+
+
 @needs_gpu
 @pytest.mark.skipif(
     not (HAS_CT and HAS_CONVERTERS), reason = "needs compressed-tensors and the transformers 5 loader"
@@ -643,3 +784,84 @@ def test_training_single_row_forward_uses_the_backward_weights():
     x = torch.randn(1, 512, device = "cuda", dtype = torch.bfloat16)
     want = x @ int4_dequantize(W, qs, torch.bfloat16).t()
     assert torch.equal(int4_matmul(x, W, qs, fast = False), want)
+
+
+_MARLIN_SCHEMAS = {
+    # vLLM 0.29 schema
+    "g_idx_perm": "(Tensor a, Tensor? c_or_none, Tensor b_q_weight, Tensor? b_bias_or_none, Tensor b_scales, "
+    "Tensor? a_scales, Tensor? global_scale, Tensor? b_zeros_or_none, Tensor? g_idx_or_none, Tensor? perm_or_none, "
+    "Tensor workspace, int b_type_id, SymInt size_m, SymInt size_n, SymInt size_k, bool is_k_full, "
+    "bool use_atomic_add, bool use_fp32_reduce, bool is_zp_float) -> Tensor",
+    "no_g_idx": "(Tensor a, Tensor? c_or_none, Tensor b_q_weight, Tensor? b_bias_or_none, Tensor b_scales, "
+    "Tensor? a_scales, Tensor? global_scale, Tensor? b_zeros_or_none, Tensor workspace, int b_type_id, "
+    "SymInt size_m, SymInt size_n, SymInt size_k, bool use_atomic_add, bool use_fp32_reduce, "
+    "bool is_zp_float) -> Tensor",
+    "unknown_required": "(Tensor a, Tensor b_q_weight, Tensor b_scales, Tensor workspace, int b_type_id, "
+    "Tensor new_required, SymInt size_m, SymInt size_n, SymInt size_k) -> Tensor",
+}
+
+
+@pytest.mark.parametrize("schema", sorted(_MARLIN_SCHEMAS))
+def test_marlin_gemm_arguments_follow_the_op_schema(schema):
+    import unsloth.kernels.int4_packed as ip
+
+    lib = torch.library.Library("unsloth_marlin_schema_test", "FRAGMENT")
+    name = f"marlin_gemm_{schema}"
+    lib.define(name + _MARLIN_SCHEMAS[schema])
+    op = getattr(torch.ops.unsloth_marlin_schema_test, name).default
+    mq, ms, mz, ws = (torch.zeros(i + 1) for i in range(4))
+    args = ip._marlin_gemm_args(
+        op, c_or_none = None, b_q_weight = mq, b_bias_or_none = None, b_scales = ms, b_zeros_or_none = mz,
+        workspace = ws, b_type_id = 7, size_n = 64, size_k = 128, is_k_full = True, use_atomic_add = False,
+        use_fp32_reduce = True, is_zp_float = False,
+    )  # fmt: skip
+    if schema == "unknown_required":
+        assert args is None
+        return
+    pre, post = args
+    names = [a.name for a in op._schema.arguments]
+    m = names.index("size_m")
+    by_name = dict(zip(names[1:m], pre)) | dict(zip(names[m + 1 :], post))
+    assert len(pre) == m - 1 and len(post) == len(names) - m - 1
+    assert (
+        by_name["b_q_weight"] is mq
+        and by_name["b_scales"] is ms
+        and by_name["b_zeros_or_none"] is mz
+    )
+    assert by_name["workspace"] is ws and by_name["b_type_id"] == 7
+    assert (by_name["size_n"], by_name["size_k"], by_name["use_fp32_reduce"]) == (64, 128, True)
+    assert (
+        by_name["a_scales"] is None
+        and by_name.get("g_idx_or_none") is None
+        and by_name.get("perm_or_none") is None
+    )
+
+
+@needs_gpu
+@needs_ct
+@needs_sm80
+def test_train_mode_no_grad_forward_skips_the_fused_kernel_cache():
+    # Gradient checkpointing runs its first forward under no_grad in train mode: it must use the same exact
+    # dequantize + matmul as the recompute, and must not build the fused kernel's per-layer scale cache.
+    from unsloth.kernels.int4_packed import int4_dequantize
+
+    lin, _, _ = _repacked_linear()
+    qs = lin.quant_state
+    x = torch.randn(2, 1024, device = "cuda", dtype = torch.bfloat16)
+    want = x @ int4_dequantize(lin._parameters["weight_packed"], qs, torch.bfloat16).t()
+
+    lin.train()
+    with torch.no_grad():
+        y = lin(x)
+        # The fast LoRA kernels call int4_matmul directly (default fast = True) inside their autograd forward.
+        from unsloth.kernels.utils import matmul_lora
+        z = matmul_lora(x, lin.weight, lin.quant_state, None, None, None)
+    assert qs._fast is None and torch.equal(y, want) and torch.equal(z, want)
+
+    # Eval keeps the fused kernel (and its cache); going back to training frees it.
+    lin.eval()
+    with torch.no_grad():
+        matmul_lora(x, lin.weight, lin.quant_state, None, None, None)
+    assert qs._fast is not None
+    lin.train()
+    assert qs._fast is None

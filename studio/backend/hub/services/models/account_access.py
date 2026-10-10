@@ -25,6 +25,7 @@ from huggingface_hub import HfApi, constants as hf_constants
 
 from auth import policy
 from core.inference.gpu_arbiter import GpuBusyForAnotherAccountError
+from storage.studio_db import connect_studio_db
 from utils.paths import storage_roots
 from utils.paths.storage_roots import project_workspaces_root, studio_db_path, workspace_root
 
@@ -180,9 +181,10 @@ def foreign_media_generations(account_id: str) -> int:
             total += sum(count for account, count in counts.items() if account != account_id)
         for holders in _generation_holders.values():
             total += sum(1 for holder in holders if holder != account_id)
-    # sys.modules, not an import: no video job is in flight before its module loads.
+    # sys.modules, not an import: no job is in flight before (or while) its module loads.
     video = sys.modules.get("core.inference.video")
-    reserved = video.generation_account_in_flight() if video is not None else None
+    in_flight = getattr(video, "generation_account_in_flight", None) if video is not None else None
+    reserved = in_flight() if callable(in_flight) else None
     if reserved is not None and reserved != account_id:
         total += 1
     return total
@@ -266,8 +268,22 @@ def join_resident(modality: str) -> None:
     if not policy.installation_has_managed_accounts():
         return
     require_live_account()
+    # Seed the loader only with no record (pre-accounts); an empty one means it was retired.
+    loader = _resident_loader(modality)
     with _sharers_lock:
+        if modality not in _resident_sharers and loader is not None:
+            _resident_sharers[modality] = {loader}
         _resident_sharers.setdefault(modality, set()).add(current_account_id())
+
+
+def _resident_loader(modality: str) -> str | None:
+    """The publish record (zero-VRAM residents drop the GPU claim), else the GPU claim."""
+    recorded = _resident_accounts.get(modality)
+    if recorded is not None:
+        return recorded[0]
+    from core.inference import gpu_arbiter
+
+    return gpu_arbiter.owner_account() if gpu_arbiter.current_owner() == modality else None
 
 
 def release_shared_resident(modality: str) -> bool:
@@ -364,6 +380,15 @@ def resident_hidden(modality: str | None = None, reference: str | None = None) -
                 account, references = prior
         return account != current_account_id() or reference not in references
     return False
+
+
+def joins_resident_runtime(modality: str, reference: str | None = None) -> bool:
+    """A managed caller that did not load the resident: an ordinary load joins it (#12365)."""
+    if resident_hidden(modality, reference):
+        return True
+    if not managed_account() or not resident_shared_with(modality, current_account_id()):
+        return False
+    return _resident_loader(modality) != current_account_id()
 
 
 def hidden_resident_response():
@@ -551,7 +576,12 @@ def _source_speaks_for_the_cache() -> bool:
     return active_source() != MODELSCOPE
 
 
-def repo_is_public(repo_id: str, repo_type: str = "model") -> bool:
+def repo_is_public(
+    repo_id: str,
+    repo_type: str = "model",
+    *,
+    offline: bool = False,
+) -> bool:
     """Only an anonymous Hub answer proves a shared-cache repo public."""
     if not _source_speaks_for_the_cache():
         return False
@@ -561,6 +591,8 @@ def repo_is_public(repo_id: str, repo_type: str = "model") -> bool:
         cached = _public_repos.get(key)
         if cached is not None and cached[0] > time.monotonic():
             return cached[1]
+        if offline:
+            return name in _load_public_verdicts()
         flight = _public_flights.get(key)
         leading = flight is None
         if leading:
@@ -670,7 +702,7 @@ def model_grants() -> set[str]:
     if not path.is_file():
         return set()
     try:
-        with closing(sqlite3.connect(str(path))) as conn:
+        with closing(connect_studio_db(path)) as conn:
             row = conn.execute(
                 "SELECT value_json FROM app_settings WHERE key = 'model_grants'"
             ).fetchone()
@@ -701,7 +733,7 @@ def record_model_grant(repo_id: str, repo_type: str = "model") -> None:
 
 
 def _write_grant(path: Path, key: str) -> None:
-    with closing(sqlite3.connect(str(path), timeout = 5.0)) as conn, conn:
+    with closing(connect_studio_db(path, timeout = 5.0)) as conn, conn:
         conn.execute(
             "CREATE TABLE IF NOT EXISTS app_settings (key TEXT NOT NULL PRIMARY KEY, value_json TEXT NOT NULL, updated_at TEXT NOT NULL)"
         )
@@ -729,13 +761,18 @@ def repo_visible(
     repo_type: str = "model",
     *,
     grants: set[str] | None = None,
+    offline: bool = False,
 ) -> bool:
     if not managed_account():
         return True
     if not repo_id:
         return False
     granted = model_grants() if grants is None else grants
-    return _grant_key(repo_id, repo_type) in granted or repo_is_public(repo_id, repo_type)
+    return _grant_key(repo_id, repo_type) in granted or (
+        repo_is_public(repo_id, repo_type, offline = True)
+        if offline
+        else repo_is_public(repo_id, repo_type)
+    )
 
 
 def _cached_repo(path: Path) -> tuple[str, str] | None:
@@ -753,6 +790,7 @@ def model_visible(
     *,
     grants: set[str] | None = None,
     repo_type: str = "model",
+    offline: bool = False,
 ) -> bool:
     """Grants cover repo ids and cache snapshot/file spellings; other local paths stay private."""
     if not managed_account():
@@ -760,6 +798,7 @@ def model_visible(
     if not isinstance(reference, str) or not reference:
         return False
     reference = reference.strip()
+    access_options = {"offline": True} if offline else {}
     path = Path(reference).expanduser()
     if path.is_absolute() or reference.startswith(("./", "../", "~")) or path.exists():
         try:
@@ -775,7 +814,9 @@ def model_visible(
             if cached is not None:
                 # Snapshots point at their own repo's blobs; cross-repo links are refused.
                 actual = _cached_repo(resolved)
-                return actual == cached and repo_visible(cached[0], cached[1], grants = grants)
+                return actual == cached and repo_visible(
+                    cached[0], cached[1], grants = grants, **access_options
+                )
         except (OSError, RuntimeError, ValueError):
             return False
         return False
@@ -784,11 +825,17 @@ def model_visible(
     if not all(parts[:2]):
         return False
     repo_id = "/".join(parts[:2])
-    return repo_visible(repo_id, repo_type, grants = grants)
+    return repo_visible(repo_id, repo_type, grants = grants, **access_options)
 
 
-def require_model_access(reference: str, repo_type: str = "model") -> None:
-    if not model_visible(reference, repo_type = repo_type):
+def require_model_access(
+    reference: str,
+    repo_type: str = "model",
+    *,
+    offline: bool = False,
+) -> None:
+    access_options = {"offline": True} if offline else {}
+    if not model_visible(reference, repo_type = repo_type, **access_options):
         raise HTTPException(status_code = 404, detail = "Model not found")
 
 
@@ -863,6 +910,46 @@ def require_media_references(request) -> None:
             raise HTTPException(status_code = 404, detail = "Model not found")
         elif Path(request.model_path).is_absolute():
             require_model_access(str(Path(request.model_path) / path))
+    for reference in media_component_file_references(request):
+        if reference is None:
+            raise HTTPException(status_code = 404, detail = "Model not found")
+        require_model_access(reference)
+
+
+def media_component_file_references(request) -> list[str | None]:
+    """What each supplied text-encoder / VAE file loads: a resolved local path or the Hub ``owner/repo``. None for a
+    relative path with no local ``model_path`` to resolve against. Mirrors ``parse_component_file``."""
+    supplied = getattr(request, "text_encoder_file", None)
+    supplied = [supplied] if isinstance(supplied, str) else list(supplied or ())
+    vae_file = getattr(request, "vae_file", None)
+    if isinstance(vae_file, str) and vae_file:
+        supplied.append(vae_file)
+    root = None
+    try:
+        model_path = Path(str(getattr(request, "model_path", "") or "")).expanduser()
+        if model_path.is_absolute():
+            root = model_path if model_path.is_dir() else model_path.parent
+    except OSError:
+        root = None
+    references: list[str | None] = []
+    for reference in supplied:
+        if not isinstance(reference, str) or not reference.strip():
+            continue
+        spec = reference.strip()
+        path = Path(spec).expanduser()
+        if path.is_absolute():
+            references.append(str(path.resolve()))
+            continue
+        local = root / path if root is not None else None
+        if local is not None and (
+            spec.startswith(".") or "\\" in spec or len(path.parts) < 3 or local.is_file()
+        ):
+            references.append(str(local.resolve()))
+        elif local is None and (spec.startswith(".") or "\\" in spec or len(path.parts) < 3):
+            references.append(None)
+        else:
+            references.append("/".join(spec.replace("\\", "/").split("/")[:2]))
+    return references
 
 
 def resident_components(status: dict, modality: str | None = None) -> list[str]:

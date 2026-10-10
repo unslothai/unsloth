@@ -77,6 +77,9 @@ def test_model_without_a_limit_is_untouched():
 
 @pytest.mark.parametrize("trainer", ["DPOTrainer", "KTOTrainer"])
 def test_patched_trainer_carries_the_clamp(trainer):
+    # daily-fresh-fetch has only pytest; the tests above read rl.py as text and still run there.
+    if importlib.util.find_spec("torch") is None:
+        pytest.skip("torch not installed")
     import unsloth  # noqa: F401
     import trl
 

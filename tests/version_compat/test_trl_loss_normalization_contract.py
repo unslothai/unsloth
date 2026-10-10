@@ -73,25 +73,80 @@ def test_sft_loss_type_default_is_nll_after_unsloth_patch():
     )
 
 
+def _loss_type_field(cfg_cls):
+    """TRL's `loss_type` dataclass field, or None if this TRL has no such field.
+
+    `hasattr(cfg_cls, "loss_type")` is NOT equivalent and was the bug here: from trl 0.21
+    DPOConfig declares the field with a `default_factory`, which leaves no class attribute,
+    so the hasattr form skipped DPO entirely on every recent TRL while still claiming to
+    check it.
+    """
+    import dataclasses
+    return next((f for f in dataclasses.fields(cfg_cls) if f.name == "loss_type"), None)
+
+
+def _pristine_config_cls(cfg_cls):
+    """TRL's own config class, walking past the subclass patching rebinds over it."""
+    while "_unsloth_patched_rl_config" in cfg_cls.__dict__ or cfg_cls.__name__.startswith(
+        "Unsloth"
+    ):
+        cfg_cls = cfg_cls.__mro__[1]
+    return cfg_cls
+
+
 def test_loss_type_replacement_did_not_leak_to_other_trainers():
-    """loss_type is an unrelated field in DPO/KTO/GRPO; the global dict hits all."""
+    """loss_type is an unrelated field in DPO/KTO/GRPO; the global dict hits all.
+
+    The expectation is split rather than one literal dict, because the two halves are
+    different claims and only one of them is version-independent:
+
+      * GRPO is unsloth's own default (rl.py): TRL's `dapo` from 0.22, `bnpo` before it.
+      * DPO and KTO are RELATIVE to pristine TRL, because the claim is that unsloth does
+        not touch them at all. Their values are TRL's own and change between releases:
+        trl 0.18.2 declares `DPOConfig.loss_type = "sigmoid"` as a plain default, while
+        trl 0.24.0 declares it with `default_factory=["sigmoid"]` that `__post_init__`
+        resolves back to the string. A hardcoded `["sigmoid"]` matched neither instance;
+        it matched the 0.24 field default only, and the hasattr skip above hid that.
+    """
     import unsloth  # noqa: F401
     import trl
 
     from packaging.version import Version
 
-    # Unsloth follows TRL's GRPO default from 0.22, the first TRL with "dapo".
-    grpo = "dapo" if Version(trl.__version__) >= Version("0.22.0") else "bnpo"
-    expected = {"DPOConfig": ["sigmoid"], "KTOConfig": "kto", "GRPOConfig": grpo}
-    for name, want in expected.items():
+    checked = []
+    for name in ("DPOConfig", "KTOConfig"):
         cfg_cls = getattr(trl, name, None)
-        if cfg_cls is None or not hasattr(cfg_cls, "loss_type"):
+        if cfg_cls is None or _loss_type_field(cfg_cls) is None:
             continue
+        pristine = _pristine_config_cls(cfg_cls)
+        assert "_unsloth_patched_rl_config" not in pristine.__dict__, (
+            f"the pristine walk for {name} landed on a patched class, so comparing against "
+            f"it would compare the patch with itself"
+        )
+        want = pristine(output_dir = "unused").loss_type
         got = cfg_cls(output_dir = "unused").loss_type
         assert got == want, (
-            f"{name}.loss_type is {got!r}, expected {want!r}. A loss_type "
-            "replacement leaked out of the sft_trainer branch in rl.py."
+            f"{name}.loss_type is {got!r} and pristine TRL {trl.__version__} says {want!r}. "
+            "A loss_type replacement leaked out of the sft_trainer branch in rl.py."
         )
+        checked.append(name)
+
+    grpo = getattr(trl, "GRPOConfig", None)
+    grpo_refused = Version(trl.__version__) < Version("0.20.0")  # unsloth/models/rl.py raises there
+    if grpo is not None and not grpo_refused and _loss_type_field(grpo) is not None:
+        got = grpo(output_dir = "unused").loss_type
+        # Unsloth follows TRL's GRPO default from 0.22, the first TRL with "dapo" (rl.py).
+        want = "dapo" if Version(trl.__version__) >= Version("0.22.0") else "bnpo"
+        assert got == want, (
+            f"GRPOConfig.loss_type is {got!r}, expected {want!r}. That default is unsloth's own "
+            "(rl.py), so this is either a lost override or a leak."
+        )
+        checked.append("GRPOConfig")
+
+    assert len(checked) >= 2, (
+        f"only {checked} carried a loss_type field on trl {trl.__version__}, so this test "
+        f"checked almost nothing. Retarget it rather than letting it pass empty."
+    )
 
 
 def test_explicit_loss_type_still_wins():
@@ -101,14 +156,47 @@ def test_explicit_loss_type_still_wins():
 
     if not hasattr(trl.SFTConfig, "loss_type"):
         pytest.skip("this TRL has no SFTConfig.loss_type")
-    cfg = trl.SFTConfig(output_dir = "unused", loss_type = "chunked_nll")
-    assert cfg.loss_type == "chunked_nll", "explicit loss_type was clobbered"
+    for wanted in ("chunked_nll", "dft"):
+        cfg = trl.SFTConfig(output_dir = "unused", loss_type = wanted)
+        assert cfg.loss_type == _trl_resolves(wanted), "explicit loss_type was clobbered"
+
+
+def _trl_resolves(wanted):
+    """What TRL itself makes of an explicit loss_type, so only Unsloth's own rewrites count.
+
+    TRL 1.15 deprecated "chunked_nll" as an alias of "nll" and rewrites it in its own
+    __post_init__, announcing that with a FutureWarning naming the old value. Read the
+    alias from that warning rather than from a version number.
+    """
+    import warnings
+
+    pristine = _pristine_sft_config_cls()
+    with warnings.catch_warnings(record = True) as caught:
+        warnings.simplefilter("always")
+        got = pristine(output_dir = "unused", loss_type = wanted).loss_type
+    aliased = any(
+        issubclass(w.category, FutureWarning)
+        and repr(wanted) in str(w.message)
+        and "deprecated" in str(w.message)
+        for w in caught
+    )
+    return got if aliased else wanted
+
+
+def _skip_if_unsloth_refuses_grpo():
+    # Unsloth refuses GRPO below trl 0.20.0 (unsloth/models/rl.py); the floor lane runs below it.
+    import trl
+    from packaging.version import Version
+    if Version(trl.__version__) < Version("0.20.0"):
+        pytest.skip(f"unsloth refuses GRPO on trl {trl.__version__} (< 0.20.0)")
 
 
 def test_dr_grpo_turns_off_reward_scaling_by_default():
     """TRL >= 0.22 defaults scale_rewards to "group" (= True), so dr_grpo must override both."""
     import unsloth  # noqa: F401
     import trl
+
+    _skip_if_unsloth_refuses_grpo()
 
     def scale(**kwargs):
         return trl.GRPOConfig(output_dir = "unused", loss_type = "dr_grpo", **kwargs).scale_rewards
@@ -164,7 +252,11 @@ def test_pristine_trl_sft_config_keeps_an_explicit_loss_type():
 
     for wanted in ("chunked_nll", "dft"):
         got = pristine(output_dir = "unused", loss_type = wanted).loss_type
-        assert got == wanted, f"explicit loss_type {wanted!r} was clobbered to {got!r}"
+        assert got == _trl_resolves(
+            wanted
+        ), f"explicit loss_type {wanted!r} was clobbered to {got!r}"
+    # "dft" is not an alias on any TRL, so it must always come back unchanged.
+    assert _trl_resolves("dft") == "dft"
 
 
 def test_dataclass_field_default_is_nll_for_hfargumentparser():

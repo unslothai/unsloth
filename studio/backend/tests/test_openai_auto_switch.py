@@ -4946,7 +4946,13 @@ def test_chat_count_tokens_forwards_enabled_tools(monkeypatch):
     _switched, counted = _count_tokens_backend(monkeypatch, count = 99, supports_tools = True)
     gate = {}
 
-    async def _select(payload, *, tools_on, mcp_allowed):
+    async def _select(
+        payload,
+        *,
+        tools_on,
+        mcp_allowed,
+        supports_vision = False,
+    ):
         gate.update(tools_on = tools_on, mcp_allowed = mcp_allowed)
         return [{"type": "function", "function": {"name": "web_search"}}]
 
@@ -4992,7 +4998,13 @@ def test_chat_count_tokens_strips_replayed_tool_markup(monkeypatch, fields, expe
     rendering, so a count that keeps it prices text the completion removes."""
     _switched, counted = _count_tokens_backend(monkeypatch, count = 99, supports_tools = True)
 
-    async def _select(_payload, *, tools_on, mcp_allowed):
+    async def _select(
+        _payload,
+        *,
+        tools_on,
+        mcp_allowed,
+        supports_vision = False,
+    ):
         return [{"type": "function", "function": {"name": "web_search"}}]
 
     monkeypatch.setattr(inference_route, "_select_request_tools", _select)
@@ -5094,7 +5106,13 @@ def test_chat_count_tokens_prices_the_route_the_completion_takes(
     """
     _switched, counted = _count_tokens_backend(monkeypatch, count = 99, supports_tools = True)
 
-    async def _select(payload, *, tools_on, mcp_allowed):
+    async def _select(
+        payload,
+        *,
+        tools_on,
+        mcp_allowed,
+        supports_vision = False,
+    ):
         return [{"type": "function", "function": {"name": "web_search"}}]
 
     monkeypatch.setattr(inference_route, "_select_request_tools", _select)
@@ -5190,13 +5208,14 @@ def test_chat_count_tokens_prices_the_current_date(monkeypatch):
         "current_date_prompt_line",
         lambda **_kwargs: "The current date is 2026-08-15.",
     )
+    monkeypatch.setattr(inference_route, "_local_template_system_turn", lambda *_a: (True, ""))
     thread = [{"role": "user", "content": "hi"}]
 
     _counted_body(_count_request(thread))
-    assert counted["messages"][0] == {
-        "role": "system",
-        "content": "The current date is 2026-08-15.",
-    }
+    assert counted["messages"] == [
+        {"role": "system", "content": "The current date is 2026-08-15."},
+        {"role": "user", "content": "hi"},
+    ]
 
     # The passthrough forwards the caller's request verbatim, so counting a date it never sends
     # would overcount exactly those prompts.
@@ -5212,7 +5231,13 @@ def test_chat_count_tokens_dates_only_api_server_tool_prompts(monkeypatch):
         lambda **_kwargs: "The current date is 2026-08-15.",
     )
 
-    async def _select(_payload, *, tools_on, mcp_allowed):
+    async def _select(
+        _payload,
+        *,
+        tools_on,
+        mcp_allowed,
+        supports_vision = False,
+    ):
         return [{"type": "function", "function": {"name": "web_search"}}]
 
     monkeypatch.setattr(inference_route, "_select_request_tools", _select)
@@ -5618,7 +5643,13 @@ def test_chat_count_tokens_counts_an_empty_chat_the_cli_policy_fills(monkeypatch
     """
     _switched, counted = _count_tokens_backend(monkeypatch, count = 850, supports_tools = True)
 
-    async def _select(payload, *, tools_on, mcp_allowed):
+    async def _select(
+        payload,
+        *,
+        tools_on,
+        mcp_allowed,
+        supports_vision = False,
+    ):
         return [{"type": "function", "function": {"name": "web_search"}}]
 
     monkeypatch.setattr(inference_route, "_select_request_tools", _select)
@@ -5920,7 +5951,8 @@ def test_an_empty_chat_sends_the_empty_list_unchanged(monkeypatch):
     shipped templates for Llama-3.2-1B-Instruct, Qwen3-8B, Phi-4, gemma-3-270m-it and
     mistral-7b-instruct-v0.3 driven through llama-server with --jinja: all five render.
     Injecting a placeholder system turn would add a system block to the count for Qwen3
-    (+30 chars) and Phi-4 (+38), overcounting the empty chat the bar exists to show."""
+    (+30 chars) and Phi-4 (+38), overcounting the empty chat the bar exists to show. Templates
+    that raise on no messages (Qwen3.5+) are re-priced only after refusing; see below."""
     seen = {}
 
     class _FakeResponse:
@@ -5961,6 +5993,132 @@ def test_an_empty_chat_sends_the_empty_list_unchanged(monkeypatch):
     count = _CountBackend().count_chat_tokens([], None, None, strict = True)
     assert seen["messages"] == [], "the count must not invent a turn the caller never sent"
     assert count > 0, "a fresh chat still prices the template preamble"
+
+
+class _RefusingEmptyRenderClient:
+    """llama-server with a Qwen3.5+ template that raises on no messages; strips a trailing assistant."""
+
+    sent = []
+    down = False
+    empty_status = 500
+
+    def __init__(self, **_kwargs):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+    def post(
+        self,
+        url,
+        json = None,
+    ):
+        body = json or {}
+        if url.endswith(("/apply-template", "/input_tokens")):
+            messages = body.get("messages")
+            type(self).sent.append((url.rsplit("/", 1)[-1], messages))
+            if type(self).down:
+                raise RuntimeError("timed out")
+            rendered = list(messages or [])
+            if rendered and rendered[-1].get("role") == "assistant":
+                rendered = rendered[:-1]
+            if not rendered:
+                status = type(self).empty_status
+                return _CountResponse(
+                    {"error": {"code": status, "message": "No messages provided."}},
+                    status_code = status,
+                )
+            if url.endswith("/input_tokens"):
+                return _CountResponse({"input_tokens": 7})
+            return _CountResponse(
+                {"prompt": "<|im_start|>user\n<|im_end|>\n<|im_start|>assistant\n"}
+            )
+        return _CountResponse({"tokens": str(body.get("content", "")).split()})
+
+
+class _CountResponse:
+    def __init__(
+        self,
+        payload,
+        status_code = 200,
+    ):
+        self._payload = payload
+        self.status_code = status_code
+
+    def json(self):
+        return self._payload
+
+
+@pytest.fixture
+def refusing_client(monkeypatch):
+    _RefusingEmptyRenderClient.sent = []
+    _RefusingEmptyRenderClient.down = False
+    _RefusingEmptyRenderClient.empty_status = 500
+    monkeypatch.setattr(llama_cpp_mod.httpx, "Client", _RefusingEmptyRenderClient)
+    return _RefusingEmptyRenderClient
+
+
+@pytest.mark.parametrize("prefer_native", [False, True])
+@pytest.mark.parametrize(
+    "messages",
+    [[], [{"role": "assistant", "content": '{"name": "terminal"}'}]],
+    ids = ["new_chat", "lone_pending_call"],
+)
+def test_a_template_refusing_an_empty_render_is_priced_behind_one_empty_user_turn(
+    refusing_client, prefer_native, messages
+):
+    """#12327: an empty render the template refuses is priced behind one empty user turn, once per load."""
+    backend = _CountBackend()
+    count = backend.count_chat_tokens(
+        messages, None, None, strict = True, prefer_native = prefer_native
+    )
+    assert count > 0, "a refused empty render must still be priced, not refused"
+    assert refusing_client.sent[0][1] == messages, "what the caller sent is still tried first"
+    assert refusing_client.sent[-1][1] == [{"role": "user", "content": ""}] + messages
+
+    refusing_client.sent = []
+    assert (
+        backend.count_chat_tokens(messages, None, None, strict = True, prefer_native = prefer_native)
+        == count
+    )
+    assert all(
+        sent == [{"role": "user", "content": ""}] + messages for _, sent in refusing_client.sent
+    ), "a known refusal must not be re-sent on every recount"
+
+
+def test_a_conversation_the_template_renders_costs_one_request(refusing_client):
+    """The chat path counts real conversations on every turn; the fallback must add nothing there."""
+    backend = _CountBackend()
+    backend._empty_chat_render_refused = True
+    conversation = [
+        {"role": "system", "content": "rules"},
+        {"role": "user", "content": "Read ./README.md"},
+    ]
+    backend.count_chat_tokens(conversation, None, None, strict = True)
+    assert refusing_client.sent == [("apply-template", conversation)]
+
+
+def test_an_unreachable_server_is_not_retried_or_taken_for_a_refusal(refusing_client):
+    """A timeout says nothing about the template: no second round trip, and no remembered refusal."""
+    refusing_client.down = True
+    backend = _CountBackend()
+    with pytest.raises(RuntimeError):
+        backend.count_chat_tokens([], None, None, strict = True)
+    assert len(refusing_client.sent) == 1
+    assert backend._empty_chat_render_refused is False
+
+
+def test_a_busy_server_is_not_taken_for_a_refusal(refusing_client):
+    """llama-server answers 503 while loading or out of slots; only a 500 is a template refusal."""
+    refusing_client.empty_status = 503
+    backend = _CountBackend()
+    with pytest.raises(RuntimeError):
+        backend.count_chat_tokens([], None, None, strict = True)
+    assert [m for _, m in refusing_client.sent] == [[]], "a busy server is not retried"
+    assert backend._empty_chat_render_refused is False
 
 
 def test_a_count_never_spawns_mcp_servers():
@@ -7159,6 +7317,17 @@ def test_spec_draft_n_max_only_stored_for_mtp_modes():
     assert "spec_draft_n_max" not in ngram
 
 
+def test_mlx_speculative_modes_and_drafter_survive_to_the_load():
+    stored = {"spec_draft_n_max": 4, "spec_draft_model": " d "}
+    for mode, is_gguf, kept in (
+        ("eagle3", False, {"spec_draft_n_max": 4, "spec_draft_model": "d"}),
+        ("eagle3", True, {}),
+    ):
+        entry = settings.normalize_model_override({"speculative_type": mode, **stored})
+        kwargs = settings.model_override_load_kwargs(entry, is_gguf = is_gguf)
+        assert kwargs == kept | ({} if is_gguf else {"speculative_type": mode})
+
+
 def test_resolve_fit_max_seq_length_hands_sizing_to_fit_under_manual_auto_layers():
     # Manual GPU memory with Auto layers hands the context to llama.cpp --fit, so
     # the load sends the context pin (or 0), not the stored max seq length.
@@ -7204,6 +7373,26 @@ def test_model_override_load_kwargs_gates_gpu_placement_on_gguf():
     # Every key must be a real LoadRequest field, or the load raises TypeError when
     # the user's request arrives.
     LoadRequest(model_path = "unsloth/B-GGUF", **gguf)
+
+
+@pytest.mark.parametrize("engine", ["vllm", "sglang"])
+@pytest.mark.parametrize("mode", ["tensor", "pipeline", "data"])
+def test_optional_engine_override_preserves_precision_and_gpu_order(engine, mode):
+    kwargs = settings.model_override_load_kwargs(
+        {
+            "engine": engine,
+            "engine_precision": "int4",
+            "engine_parallelism": mode,
+            "gpu_ids": [1, 0],
+        },
+        is_gguf = False,
+    )
+    request = LoadRequest(model_path = "unsloth/Qwen2.5-0.5B-Instruct", **kwargs)
+    assert request.engine == engine
+    assert request.engine_precision == "int4"
+    assert request.engine_parallelism == mode
+    assert request.gpu_ids == [1, 0]
+    assert request.load_in_4bit is False
 
 
 def test_a_carried_ctx_flag_cannot_outrank_a_freshly_saved_context(monkeypatch):
@@ -7304,6 +7493,19 @@ def test_a_saved_ctx_flag_sets_only_the_context_fields_sent(
         key: entry[key] for key in ("max_seq_length", "custom_context_length") if key in entry
     }
     assert stored == expected
+
+
+@pytest.mark.parametrize("engine", ["vllm", "sglang"])
+def test_context_save_preserves_managed_engine_settings(monkeypatch, engine):
+    _mock_override_store(monkeypatch)
+    model = "unsloth/model"
+    _put(model, engine = engine, engine_parallelism = "pipeline", engine_precision = "fp8")
+    saved = _put(model, llama_extra_args = ["-c", "65536"], custom_context_length = 4096)
+    entry = saved.overrides[model]
+    assert entry["custom_context_length"] == 65536
+    assert entry["engine"] == engine
+    assert entry["engine_parallelism"] == "pipeline"
+    assert entry["engine_precision"] == "fp8"
 
 
 def test_a_fill_keeps_the_sent_context_when_it_does_not_store_the_flag(monkeypatch):
@@ -7754,7 +7956,7 @@ def test_stale_gpu_ids_are_dropped_not_fatal(monkeypatch):
     monkeypatch.setattr(
         settings,
         "get_model_override",
-        lambda mid: {"gpu_ids": [0, 1], "max_seq_length": 4096},
+        lambda mid: {"gpu_ids": [0, 1], "tensor_split": [3, 1], "max_seq_length": 4096},
     )
 
     async def _unusable(ids, index_kind = "physical"):
@@ -7765,6 +7967,7 @@ def test_stale_gpu_ids_are_dropped_not_fatal(monkeypatch):
     _run_hook("unsloth/B-GGUF")
     req = rec.calls[0]
     assert not req.gpu_ids
+    assert req.tensor_split is None
     # The rest of the config still applies.
     assert req.max_seq_length == 4096
 
@@ -7773,12 +7976,15 @@ def test_usable_gpu_ids_are_kept(monkeypatch):
     backend, rec = _wired(
         monkeypatch, _FakeBackend(None), ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF")
     )
-    monkeypatch.setattr(settings, "get_model_override", lambda mid: {"gpu_ids": [0, 1]})
+    monkeypatch.setattr(
+        settings, "get_model_override", lambda mid: {"gpu_ids": [0, 1], "tensor_split": [3, 1]}
+    )
 
     monkeypatch.setattr(inference_route, "_override_gpu_ids_still_resolve", _usable)
 
     _run_hook("unsloth/B-GGUF")
     assert rec.calls[0].gpu_ids == [0, 1]
+    assert rec.calls[0].tensor_split == [3, 1]
 
 
 def test_override_gpu_ids_probe_never_raises(monkeypatch):
@@ -8057,7 +8263,9 @@ def test_load_retries_without_gpu_ids_when_the_loader_rejects_the_pin(monkeypatc
         monkeypatch, _FakeBackend(None), ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF")
     )
     monkeypatch.setattr(
-        settings, "get_model_override", lambda mid: {"gpu_ids": [0], "max_seq_length": 4096}
+        settings,
+        "get_model_override",
+        lambda mid: {"gpu_ids": [0, 1], "tensor_split": [3, 1], "max_seq_length": 4096},
     )
 
     monkeypatch.setattr(inference_route, "_override_gpu_ids_still_resolve", _usable)
@@ -8079,6 +8287,7 @@ def test_load_retries_without_gpu_ids_when_the_loader_rejects_the_pin(monkeypatc
     assert calls["n"] == 2
     served = rec.calls[-1]
     assert not served.gpu_ids
+    assert served.tensor_split is None
     assert served.max_seq_length == 4096
 
 
@@ -8306,7 +8515,7 @@ def test_async_scan_folder_routes_offload_storage_and_invalidation(monkeypatch):
     event_loop_thread = threading.get_ident()
     calls = []
 
-    def _add(path):
+    def _add(path, recursive = None):
         calls.append(("add", threading.get_ident()))
         return {"id": 7, "path": path, "created_at": "fake"}, True
 
@@ -8324,7 +8533,7 @@ def test_async_scan_folder_routes_offload_storage_and_invalidation(monkeypatch):
 
     async def _run():
         folder = await model_routes.add_scan_folder_endpoint(
-            SimpleNamespace(path = "/models/custom"), current_subject = "tester"
+            SimpleNamespace(path = "/models/custom", recursive = None), current_subject = "tester"
         )
         removed = await model_routes.remove_scan_folder_endpoint(7, current_subject = "tester")
         return folder, removed
@@ -9123,6 +9332,18 @@ def test_mlx_kv_quant_survives_the_whole_override_projection():
         kwargs = settings.model_override_load_kwargs({"mlx_kv_quant": "tq-4"}, is_gguf = is_gguf)
         assert kwargs["mlx_kv_quant"] == "tq-4"
         assert LoadRequest(model_path = "unsloth/A", **kwargs).mlx_kv_quant == "tq-4"
+
+
+def test_mlx_int8_prefill_is_stored_only_when_on_and_reaches_the_load(monkeypatch):
+    _mock_override_store(monkeypatch)
+    assert settings.normalize_model_override({"mlx_int8_prefill": False}) == {}
+    _put("org/m", mlx_int8_prefill = True)
+    stored = settings.get_model_overrides()["org/m"]
+    assert stored == {"mlx_int8_prefill": True}
+    kwargs = settings.model_override_load_kwargs(stored, is_gguf = False)
+    assert LoadRequest(model_path = "org/m", **kwargs).mlx_int8_prefill is True
+    _put("org/m", mlx_int8_prefill = False)
+    assert "org/m" not in settings.get_model_overrides()
 
 
 def _idle_backend(kw, monkeypatch, *, user_loaded):
@@ -9970,7 +10191,16 @@ def test_a_diffusers_pipeline_is_not_a_servable_chat_model(tmp_path):
     # The Images and Video backends own these; /v1/chat/completions cannot serve them.
 
     pipeline = _local_checkpoint(tmp_path, "SomeDiffusionPipeline")
-    (pipeline / "model_index.json").write_text("{}")
+    manifest = {
+        "_class_name": "DiffusionPipeline",
+        "transformer": ["diffusers", "Transformer2DModel"],
+    }
+    (pipeline / "model_index.json").write_text(json.dumps(manifest))
+    (pipeline / "transformer").mkdir()
+    (pipeline / "transformer" / "config.json").write_text("{}")
+    (pipeline / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(
+        _safetensors_bytes()
+    )
     info = SimpleNamespace(id = str(pipeline), path = str(pipeline))
     assert resolver.local_servable_model(info) is None
 
@@ -10820,11 +11050,11 @@ def test_the_audio_preflight_only_binds_a_non_gguf_target(monkeypatch):
         audio.setframerate(16000)
         audio.writeframes(b"\x00\x00" * 16)
     preflight = {
-        "b64": f"data:audio/wav;base64,{_b64.b64encode(wav.getvalue()).decode()}",
+        "clips": [f"data:audio/wav;base64,{_b64.b64encode(wav.getvalue()).decode()}"],
         "continue_final": True,
     }
     asyncio.run(inference_route._preflight_audio_for_switch(preflight, True))
-    assert preflight["prepared"][1] == "wav"
+    assert preflight["prepared"][0][1] == "wav"
     assert "decoded" not in preflight
 
     # the non-GGUF branch runs _decode_audio_base64, so it refuses the same input, before the load.
@@ -10877,7 +11107,7 @@ def test_a_prior_turn_image_does_not_block_a_non_gguf_audio_switch(monkeypatch):
             require_image = True,
             require_audio_input = True,
             audio_preflight = {
-                "b64": "valid",
+                "clips": ["valid"],
                 "continue_final": False,
                 "has_image": False,
             },
@@ -11337,7 +11567,7 @@ def test_mixed_audio_and_image_is_rejected_before_a_non_gguf_switch(monkeypatch)
                 require_image = True,
                 require_audio_input = True,
                 audio_preflight = {
-                    "b64": "AAAA",
+                    "clips": ["AAAA"],
                     "continue_final": False,
                     "has_image": True,
                 },
@@ -11382,7 +11612,7 @@ def test_audio_beside_a_clip_is_rejected_before_a_non_gguf_switch(monkeypatch):
                 require_audio_input = True,
                 require_video = True,
                 audio_preflight = {
-                    "b64": "AAAA",
+                    "clips": ["AAAA"],
                     "continue_final": True,
                     "has_image": True,
                     "has_video": True,
@@ -11422,7 +11652,7 @@ def test_the_gguf_audio_preflight_takes_the_base64_llama_cpp_takes():
         try:
             asyncio.run(
                 inference_route._preflight_audio_for_switch(
-                    {"b64": encoded, "continue_final": False}, True
+                    {"clips": [encoded], "continue_final": False}, True
                 )
             )
         except HTTPException:
@@ -11432,7 +11662,7 @@ def test_the_gguf_audio_preflight_takes_the_base64_llama_cpp_takes():
         with pytest.raises(HTTPException) as exc:
             asyncio.run(
                 inference_route._preflight_audio_for_switch(
-                    {"b64": bad, "continue_final": False}, True
+                    {"clips": [bad], "continue_final": False}, True
                 )
             )
         assert exc.value.status_code == 400, bad
@@ -11457,7 +11687,7 @@ def test_non_audio_bytes_are_rejected_before_a_gguf_switch(monkeypatch):
                 "tester",
                 require_audio_input = True,
                 audio_preflight = {
-                    "b64": _b64.b64encode(b"not audio").decode(),
+                    "clips": [_b64.b64encode(b"not audio").decode()],
                     "continue_final": False,
                 },
             )
@@ -11476,7 +11706,7 @@ def test_a_non_gguf_audio_target_is_refused_without_a_decoder(monkeypatch):
     with pytest.raises(HTTPException) as exc:
         asyncio.run(
             inference_route._preflight_audio_for_switch(
-                {"b64": "AAAA", "continue_final": False}, False
+                {"clips": ["AAAA"], "continue_final": False}, False
             )
         )
     assert exc.value.status_code == 400
@@ -11497,14 +11727,14 @@ def test_non_audio_bytes_are_rejected_before_a_non_gguf_switch(monkeypatch):
     with pytest.raises(HTTPException) as exc:
         asyncio.run(
             inference_route._preflight_audio_for_switch(
-                {"b64": "AAAA", "continue_final": False}, False
+                {"clips": ["AAAA"], "continue_final": False}, False
             )
         )
     assert exc.value.status_code == 400
 
-    preflight = {"b64": "GOOD", "continue_final": False}
+    preflight = {"clips": ["GOOD"], "continue_final": False}
     asyncio.run(inference_route._preflight_audio_for_switch(preflight, False))
-    assert preflight["decoded"] == "pcm"
+    assert preflight["decoded"] == ["pcm"]
 
 
 def test_a_gguf_only_host_does_not_need_torchaudio_to_accept_audio(monkeypatch):
@@ -11607,6 +11837,52 @@ def test_speech_switch_admission(monkeypatch, audio_type, context, text, instruc
     else:
         asyncio.run(call)
         assert len(recorder.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "workflow, speech_type, workflows, admitted",
+    [
+        ("separate", None, ["separate"], True),
+        ("separate", None, [], False),
+        ("clone", "audiocpp_tts", ["speak"], False),
+        ("clone", "audiocpp_tts", ["speak", "clone"], True),
+    ],
+)
+def test_audio_workflow_switch_admission(monkeypatch, workflow, speech_type, workflows, admitted):
+    backend, recorder = _speech_case(monkeypatch, speech_type, gguf = False)
+    seen = []
+    monkeypatch.setattr(
+        inference_route, "_target_audio_workflows", lambda *a: seen.append(a) or workflows
+    )
+    call = inference_route._maybe_auto_switch_model(
+        "org/B-GGUF",
+        object(),
+        "tester",
+        require_speech = speech_type is not None,
+        require_audio_workflow = workflow,
+    )
+    if admitted:
+        asyncio.run(call)
+        assert len(recorder.calls) == 1
+    else:
+        with pytest.raises(HTTPException) as error:
+            asyncio.run(call)
+        assert error.value.status_code == 400
+        assert error.value.detail["error"]["param"] == "model"
+        # Refused before the resident model is evicted.
+        assert recorder.calls == [] and backend.model_identifier == "org/A-GGUF"
+    assert seen == [("/local/B", speech_type)]
+
+
+def test_target_audio_workflows_reads_audio_cpp_targets_from_the_cache(monkeypatch):
+    from core.inference import audio_cpp_models
+
+    sep = SimpleNamespace(workflows = {"separate": None})
+    monkeypatch.setattr(audio_cpp_models, "resolve", lambda target, network: sep)
+    workflows = inference_route._target_audio_workflows
+    assert workflows("audio-cpp/audio.cpp-gguf/HTDemucs-6stems-GGUF", None) == ["separate"]
+    assert workflows("/local/csm", "csm") == ["speak"]
+    assert workflows("/local/chat", None) == []
 
 
 @pytest.mark.parametrize("audio_type", ["snac", "bicodec", "dac", "higgs_tts2"])
@@ -11937,3 +12213,131 @@ def test_preset_reasoning_budget_rejects_booleans():
     with pytest.raises(ValueError, match = "Expected a number, got a boolean"):
         ChatPresetLoadConfig(reasoningBudget = True)
     assert ChatPresetLoadConfig(reasoningBudget = 0).reasoningBudget == 0
+
+
+@pytest.mark.parametrize(
+    "image_preflight",
+    [{"b64": None, "multiple": True}, {"b64": None, "multiple": False, "remote": True}],
+    ids = ["multiple images", "remote url"],
+)
+def test_a_saved_managed_engine_target_skips_the_default_image_preflight(
+    monkeypatch, image_preflight
+):
+    from utils import openai_auto_switch_settings as settings
+
+    llama = _FakeBackend("org/A-GGUF")
+
+    class _FakeOrchestrator:
+        active_model_name = None
+        models: dict = {}
+
+    orchestrator = _FakeOrchestrator()
+    calls = []
+
+    async def _load(request, *_args, **_kwargs):
+        calls.append(request)
+        orchestrator.active_model_name = request.model_path
+
+    _wire_on(
+        monkeypatch,
+        resolves_to = ("/srv/models/Vision", None, "org/Vision"),
+        backend = llama,
+        recorder = _load,
+    )
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: orchestrator)
+    monkeypatch.setattr(inference_route, "_peek_inference_backend", lambda: orchestrator)
+    monkeypatch.setattr(resolver, "local_target_is_gguf", lambda *_a, **_kw: False)
+    monkeypatch.setattr(inference_route, "_target_accepts_request_input", lambda *_a: True)
+    monkeypatch.setattr(
+        settings,
+        "resolve_override_for_load",
+        lambda *_a: ("org/Vision", {"engine": "vllm", "engine_precision": "auto"}),
+    )
+
+    try:
+        asyncio.run(
+            inference_route._maybe_auto_switch_model(
+                "org/Vision",
+                object(),
+                "tester",
+                require_vision = True,
+                image_preflight = image_preflight,
+            )
+        )
+    except HTTPException as exc:
+        assert exc.status_code != 400 or "image" not in str(exc.detail).lower(), exc.detail
+    assert calls and calls[0].engine == "vllm"
+
+
+def test_the_legacy_bare_delete_clears_a_managed_engine_choice(override_store):
+    settings.set_model_override("org/Model", engine = "vllm", engine_precision = "int4")
+
+    _put("org/Model")
+    assert settings.get_model_override("org/Model") == {}
+
+
+def test_tensor_split_survives_the_settings_route_and_reaches_a_gguf_load(override_store):
+    _put(
+        "org/split-GGUF",
+        gpu_memory_mode = "manual",
+        gpu_layers = 66,
+        gpu_ids = [1, 2, 0],
+        tensor_split = [30, 20, 16],
+    )
+    stored = settings.get_model_override("org/split-GGUF")
+    assert stored["gpu_ids"] == [1, 2, 0]
+    assert stored["tensor_split"] == [30, 20, 16]
+    kwargs = settings.model_override_load_kwargs(stored, is_gguf = True)
+    assert kwargs["tensor_split"] == [30, 20, 16]
+    LoadRequest(model_path = "org/split-GGUF", **kwargs)
+    assert "tensor_split" not in settings.model_override_load_kwargs(stored, is_gguf = False)
+
+
+def test_an_older_client_keeps_a_split_only_with_the_same_gpu_order(override_store):
+    _put("org/split-GGUF", gpu_ids = [1, 2, 0], tensor_split = [30, 20, 16])
+    _put("org/split-GGUF", gpu_ids = [1, 2, 0], gpu_layers = 66)
+    assert settings.get_model_override("org/split-GGUF")["tensor_split"] == [30, 20, 16]
+    _put("org/split-GGUF", gpu_ids = [0, 1, 2], gpu_layers = 66)
+    assert "tensor_split" not in settings.get_model_override("org/split-GGUF")
+
+
+def test_explicit_tensor_split_reset_clears_the_server_copy(override_store):
+    _put("org/split-GGUF", gpu_ids = [1, 2, 0], tensor_split = [30, 20, 16])
+    _put("org/split-GGUF", gpu_ids = [1, 2, 0], tensor_split = None)
+    assert "tensor_split" not in settings.get_model_override("org/split-GGUF")
+
+
+@pytest.mark.parametrize(
+    "split", [[0, 0], [-1, 2], [float("nan"), 1], [float("inf"), 1], [True, 1], [1e308, 1e308]]
+)
+def test_invalid_tensor_split_is_rejected_at_the_settings_boundary(split):
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        settings_route.ModelOverridePayload(model_id = "org/split-GGUF", tensor_split = split)
+
+
+def test_tensor_split_is_dropped_if_normalizing_gpu_ids_changes_its_mapping():
+    for ids in ([0, 0], [0, -1], [0], None):
+        stored = settings.normalize_model_override({"gpu_ids": ids, "tensor_split": [2, 1]})
+        assert "tensor_split" not in stored
+    stored = settings.normalize_model_override({"gpu_ids": [1, 0], "tensor_split": [0, 2.5]})
+    assert stored["tensor_split"] == [0, 2.5]
+
+
+def test_fill_never_attaches_a_tensor_split_to_an_existing_other_gpu_order(override_store):
+    settings.set_model_override("org/split-GGUF", gpu_ids = [0, 1])
+    settings.set_model_override(
+        "org/split-GGUF", gpu_ids = [1, 0], tensor_split = [3, 1], fill_absent_fields = True
+    )
+    stored = settings.get_model_override("org/split-GGUF")
+    assert stored["gpu_ids"] == [0, 1]
+    assert "tensor_split" not in stored
+
+
+@pytest.mark.parametrize("ids", [None, [0], [0, 0], [0, -1], [0, 1, 2]])
+def test_tensor_split_requires_matching_gpu_ids_at_the_settings_boundary(ids):
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        settings_route.ModelOverridePayload(
+            model_id = "org/split-GGUF", gpu_ids = ids, tensor_split = [3, 1]
+        )

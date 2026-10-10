@@ -21,6 +21,7 @@ import { fetchDeviceType } from "@/config/env";
 import { getTauriAuthFailure, tauriAutoAuth } from "@/features/auth";
 import { resyncInferenceStatusAfterServerModelChange } from "@/features/chat";
 import { DeepLinkHandler } from "@/features/deep-links";
+import { receiveSharedRunConfigUrls } from "@/features/model-picker";
 import {
   DownloadManagerPanel,
   dismissStartToasts,
@@ -47,6 +48,7 @@ import { useTauriUpdate } from "@/hooks/use-tauri-update";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { isTauri } from "@/lib/api-base";
 import { followDesktopUpdateScreen } from "@/lib/desktop-update-activity";
+import { refreshWindowChromeTop } from "@/lib/window-chrome";
 import {
   CHAT_SETTINGS_INSET_VAR,
   getToastOffsets,
@@ -60,6 +62,7 @@ import {
   type CSSProperties,
   type ReactNode,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -464,10 +467,12 @@ function TauriUpdateLayer({
   isExternalServer,
   children,
   appContent,
+  onUpdateScreenChange,
 }: {
   isExternalServer: boolean;
   children?: ReactNode;
   appContent: ReactNode;
+  onUpdateScreenChange: (shown: boolean) => void;
 }) {
   const update = useTauriUpdate(isExternalServer);
   const isUpdating =
@@ -488,6 +493,12 @@ function TauriUpdateLayer({
     );
   }, [isUpdating]);
 
+  // Sync the parent titlebar before paint to avoid flashing sidebar chrome.
+  useLayoutEffect(() => {
+    onUpdateScreenChange(isUpdating);
+    return () => onUpdateScreenChange(false);
+  }, [isUpdating, onUpdateScreenChange]);
+
   const content = isUpdating ? (
     <UpdateScreen
       status={update.status}
@@ -501,7 +512,7 @@ function TauriUpdateLayer({
   ) : (
     <div
       // Scrolls at the cap rather than spilling cards off screen; the gutter keeps the card shadows out of that clip.
-      className="pointer-events-none fixed bottom-0 right-0 flex max-h-[100dvh] flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain"
+      className="pointer-events-none fixed bottom-0 right-0 flex max-h-[calc(100dvh-var(--studio-window-chrome-top,0px))] flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain"
       // Measured from the outside, per card, by tests/studio/playwright_update_banner_layout.py.
       data-testid="overlay-rail"
       // Gutters in px, never a spacing utility: those are rem, and the cards would drift off the corner.
@@ -581,6 +592,8 @@ const CUSTOM_CHROME_STYLE = {
   "--studio-collapsed-chat-controls-inset": "12px",
   "--studio-startup-top-inset": "42px",
   "--studio-content-top-inset": "34px",
+  "--studio-non-chat-content-top-inset": "34px",
+  "--studio-non-chat-scroller-top": "34px",
   "--studio-hidden-route-top-inset": "34px",
   // Same split as the native-mac block: chat chrome scales, window chrome does not.
   "--studio-chat-header-height": "calc(48px * var(--ui-space-scale, 1))",
@@ -588,7 +601,7 @@ const CUSTOM_CHROME_STYLE = {
   "--studio-media-header-left-inset": "calc(0.5rem * var(--ui-space-scale, 1))",
   "--studio-chat-control-height": "calc(33px * var(--ui-space-scale, 1))",
   "--studio-chat-header-right-inset": "0px",
-  "--studio-window-control-inset": "112px",
+  "--studio-window-control-inset": "138px",
 } as CSSProperties;
 
 // Mirror the titlebar heights onto <html>: overlays portalled into document.body read the wrapper styles as empty.
@@ -610,7 +623,9 @@ function DesktopChromeVarsEffect({
       "--studio-mac-titlebar-height",
       usesNativeMacTitlebar ? NATIVE_MAC_TITLEBAR_HEIGHT_VAR : null,
     );
-    set("--studio-window-control-inset", usesCustomTitlebar ? "112px" : null);
+    set("--studio-window-control-inset", usesCustomTitlebar ? "138px" : null);
+    // The toaster renders outside the wrapper.
+    set("--studio-content-top-inset", usesCustomTitlebar ? "34px" : null);
     // How far body-portaled surfaces must stay clear of the top: either titlebar paints over them.
     set(
       "--studio-window-chrome-top",
@@ -620,11 +635,19 @@ function DesktopChromeVarsEffect({
           ? NATIVE_MAC_TITLEBAR_HEIGHT_VAR
           : null,
     );
+    refreshWindowChromeTop();
+    // The macOS titlebar inset is divided by the zoom.
+    const stopZoom = usesNativeMacTitlebar
+      ? subscribeAppliedInterfaceZoom(refreshWindowChromeTop)
+      : null;
     return () => {
+      stopZoom?.();
       set("--studio-custom-titlebar-height", null);
       set("--studio-mac-titlebar-height", null);
       set("--studio-window-control-inset", null);
+      set("--studio-content-top-inset", null);
       set("--studio-window-chrome-top", null);
+      refreshWindowChromeTop();
     };
   }, [usesCustomTitlebar, usesNativeMacTitlebar]);
   return null;
@@ -636,6 +659,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     status,
     logs,
     error,
+    installDiskFull,
     isExternalServer,
     currentStepIndex,
     progressDetail,
@@ -669,6 +693,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
   const [desktopAuthRetry, setDesktopAuthRetry] = useState(0);
   const [nativeMacControlsHidden, setNativeMacControlsHidden] = useState(false);
   const [appShellReady, setAppShellReady] = useState(false);
+  const [updateScreenShown, setUpdateScreenShown] = useState(false);
   const canMountApp = status === "running" && desktopAuthReady;
   // Same as showApp below: until the shell is ready the app sits hidden behind the startup screen.
   useEffect(() => {
@@ -907,6 +932,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
           <AppReadinessBoundary onReady={setAppShellReady} revealed={showApp}>
             <TauriUpdateLayer
               isExternalServer={isExternalServer}
+              onUpdateScreenChange={setUpdateScreenShown}
               appContent={
                 <>
                   {showApp && <NativeIntentDrain />}
@@ -925,11 +951,15 @@ function TauriWrapper({ children }: { children: ReactNode }) {
         </div>
       )}
       {!showApp && (
-        <div className="fixed inset-0 z-40 bg-background">
+        <div
+          data-blocking-screen=""
+          className="fixed inset-0 z-40 bg-background"
+        >
           <StartupScreen
             status={startupStatus}
             logs={logs}
             error={error}
+            diskFull={installDiskFull}
             currentStepIndex={currentStepIndex}
             progressDetail={startupProgressDetail}
             startupMessage={startupMessage}
@@ -1001,7 +1031,9 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     );
   }
 
-  const showSidebarSurface = showApp && !hidesTitlebarSidebar;
+  // Use the startup screen's bare titlebar during updates.
+  const showSidebarSurface =
+    showApp && !hidesTitlebarSidebar && !updateScreenShown;
 
   return (
     <div
@@ -1010,7 +1042,16 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     >
       {chromeVars}
       <WindowTitlebar showSidebarSurface={showSidebarSurface} />
-      <div className="h-full min-h-0 overflow-hidden">{content}</div>
+      {/* Sign-in forms can outgrow a small window. */}
+      <div
+        className={
+          hidesTitlebarSidebar
+            ? "h-full min-h-0 overflow-x-hidden overflow-y-auto"
+            : "h-full min-h-0 overflow-hidden"
+        }
+      >
+        {content}
+      </div>
     </div>
   );
 }
@@ -1063,7 +1104,7 @@ export function AppProvider({ children }: AppProviderProps) {
     <MotionConfig reducedMotion={REDUCED_MOTION_MAP[reduceMotion]}>
       <TooltipProvider>
         <AppearanceCustomizationEffect />
-        <DeepLinkHandler />
+        <DeepLinkHandler onOpenUrls={receiveSharedRunConfigUrls} />
         <TauriWrapper>{children}</TauriWrapper>
         <SttDownloadPrompt />
         <Toaster

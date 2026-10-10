@@ -161,7 +161,8 @@ runs:
           protobuf sentencepiece triton \
           psutil packaging tqdm safetensors datasets \
           'peft>=0.18,<0.20' 'accelerate>=0.34,<2' \
-          ipython
+          ipython hf_transfer
+        # hf_transfer: declared by unsloth and unsloth_zoo, both installed --no-deps; keeps the hub 0.x lane on the user path.
         # transformers + trl from the matrix combo.
         pip install "$RESOLVED_TRANSFORMERS_SPEC"
         pip install "$RESOLVED_TRL_SPEC"

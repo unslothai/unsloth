@@ -58,6 +58,7 @@ class ExportOrchestrator:
         self.current_checkpoint: Optional[str] = None
         self.is_vision: bool = False
         self.is_peft: bool = False
+        self.decision: Optional[Dict[str, Any]] = None
 
         # Thread-safe ring buffer of worker log lines; powers the export logs SSE endpoint.
         self._log_buffer: Deque[Dict[str, Any]] = deque(maxlen = _LOG_BUFFER_MAXLEN)
@@ -87,6 +88,7 @@ class ExportOrchestrator:
     def _clear_account_result(self):
         self.current_checkpoint = None
         self.is_vision = self.is_peft = False
+        self.decision = None
         self._last_op = None
         self.clear_logs()
 
@@ -207,6 +209,12 @@ class ExportOrchestrator:
         return True
 
     def _spawn_subprocess(self, config: dict) -> None:
+        # Export does not evict loaded models; at least free an idle resident H3 sd-server.
+        try:
+            from core.inference.video_minimax_h3 import release_h3_native_servers
+            release_h3_native_servers("export subprocess starting")
+        except Exception as exc:  # noqa: BLE001 - never block an export on this
+            logger.warning("Could not release the idle video sd-server for export: %s", exc)
         # Inside an op a reservation is an install about to abort on is_export_active(), so raising here
         # would kill the export for an install that never proceeds.
         from utils.transformers_version import sidecar_swap_in_progress
@@ -553,6 +561,7 @@ class ExportOrchestrator:
                     self.current_checkpoint = None
                     self.is_vision = False
                     self.is_peft = False
+                    self.decision = None
                     raise
 
                 try:
@@ -562,6 +571,7 @@ class ExportOrchestrator:
                     self.current_checkpoint = None
                     self.is_vision = False
                     self.is_peft = False
+                    self.decision = None
                     op_success, op_message = False, str(exc)
                     return False, str(exc)
 
@@ -569,6 +579,7 @@ class ExportOrchestrator:
                     self.current_checkpoint = resp.get("checkpoint")
                     self.is_vision = resp.get("is_vision", False)
                     self.is_peft = resp.get("is_peft", False)
+                    self.decision = resp.get("decision")
                     logger.info("Checkpoint '%s' loaded in subprocess", checkpoint_path)
                     op_success, op_message = True, resp.get("message", "Loaded successfully")
                     return True, op_message
@@ -578,6 +589,7 @@ class ExportOrchestrator:
                     self.current_checkpoint = None
                     self.is_vision = False
                     self.is_peft = False
+                    self.decision = None
                     op_success, op_message = False, error
                     return False, error
             finally:
@@ -594,6 +606,7 @@ class ExportOrchestrator:
         hf_token: HfTokenArg = None,
         private: bool = False,
         compressed_method: Optional[str] = None,
+        install_missing_dependencies: bool = False,
     ) -> Tuple[bool, str, Optional[str]]:
         return self._run_export(
             "merged",
@@ -605,6 +618,7 @@ class ExportOrchestrator:
                 "hf_token": hf_token,
                 "private": private,
                 "compressed_method": compressed_method,
+                "install_missing_dependencies": install_missing_dependencies,
             },
         )
 
@@ -638,6 +652,7 @@ class ExportOrchestrator:
         hf_token: HfTokenArg = None,
         imatrix_file = None,
         private: bool = False,
+        npu_q4nx: bool = False,
     ) -> Tuple[bool, str, Optional[str]]:
         """Export model in GGUF format. `quantization_method` may be a single method or a list."""
         return self._run_export(
@@ -650,6 +665,7 @@ class ExportOrchestrator:
                 "hf_token": hf_token,
                 "imatrix_file": imatrix_file,
                 "private": private,
+                "npu_q4nx": npu_q4nx,
             },
         )
 
@@ -743,6 +759,7 @@ class ExportOrchestrator:
                 self.current_checkpoint = None
                 self.is_vision = False
                 self.is_peft = False
+                self.decision = None
                 return True
 
             self._active_op_kind = "cleanup"
@@ -765,6 +782,7 @@ class ExportOrchestrator:
                 self.current_checkpoint = None
                 self.is_vision = False
                 self.is_peft = False
+                self.decision = None
                 return success
             finally:
                 self._record_op_finished(success, "", None)

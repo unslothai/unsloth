@@ -3,17 +3,18 @@
 
 "use client";
 
+import { partsHaveNonEmptyText } from "@/components/assistant-ui/message-derived";
 import {
   type ToolCallMessagePartComponent,
   useAuiState,
 } from "@assistant-ui/react";
-import { GlobeIcon } from "lucide-react";
 
 import {
   isSearchImagesToolResult,
   useToolAwaitingApproval,
 } from "@/features/chat";
 import { escapeBidiControls } from "@/lib/escape-bidi-controls";
+import { InternetGlyph } from "@/lib/internet-icon";
 import { openLink } from "@/lib/open-link";
 import { stringifyToolResult } from "@/lib/strip-ansi";
 import { memo } from "react";
@@ -153,12 +154,7 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
 
   // Collapse when LLM starts generating text after the tool call
   const hasText = useAuiState(({ message }) =>
-    message.content.some(
-      (p) =>
-        p.type === "text" &&
-        "text" in p &&
-        (p as { text: string }).text.length > 0,
-    ),
+    partsHaveNonEmptyText(message.content),
   );
   // Ask permission gates every local tool call, and what is being approved
   // lives inside the content while Allow/Deny render outside it.
@@ -186,7 +182,7 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
       <ToolFallbackTrigger
         toolName={toolName}
         status={status}
-        icon={GlobeIcon}
+        icon={InternetGlyph}
       />
       <ToolFallbackContent>
         {/* The trigger shows only the host; Allow/Deny needs the full url. Inert text: untrusted. */}

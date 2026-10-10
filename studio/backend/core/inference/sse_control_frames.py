@@ -38,6 +38,7 @@ _CONTROL_TYPES = frozenset(
         "tool_output",
         "tool_args",
         "tool_status",
+        "skill_load",
         "diffusion_frame",
         "reasoning_summary",
     }
@@ -50,6 +51,7 @@ _CONTROL_KEYS = (
     "_diffusionFrame",
     "_reasoningDurationMs",
     "_mcp_provenance",
+    "quote_cut",
 )
 
 # A stripped frame is only worth relaying if it still says something in the provider's own vocabulary.

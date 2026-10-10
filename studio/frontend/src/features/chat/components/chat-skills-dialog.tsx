@@ -20,18 +20,28 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { useT } from "@/i18n";
+import {
+  ChevronLeftStandardIcon,
+  ChevronRightStandardIcon,
+} from "@/lib/chevron-icons";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
-  ArrowLeft01Icon,
-  ArrowRight01Icon,
+  MoreHorizontalIcon,
   PlusSignIcon,
-  RefreshIcon,
+  Refresh01Icon,
   Scroll01Icon,
   Search01Icon,
 } from "@hugeicons/core-free-icons";
@@ -41,6 +51,7 @@ import {
   type ReactElement,
   type ReactNode,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -51,6 +62,7 @@ import {
   getSkillManifest,
   isValidSkillName,
   listSkills,
+  setAllSkillsEnabled,
   setSkillEnabled,
   type SkillDraft,
   type SkillManifest,
@@ -65,6 +77,8 @@ type View = { kind: "library" } | { kind: "new" } | { kind: "skill"; key: string
 const EMPTY_DRAFT: SkillDraft = { name: "", description: "", instructions: "" };
 const LIBRARY: View = { kind: "library" };
 const SECTIONS: ReadonlyArray<SkillRecord["source"]> = ["agents", "claude", "bundled"];
+// `*` is the bulk-change sentinel because skill names cannot contain it.
+const ALL_SKILLS = "*";
 
 // A shadowed row shares its name with the one that wins, so skills are keyed by source too.
 const keyOf = (skill: SkillRecord) => `${skill.source}:${skill.name}`;
@@ -105,6 +119,7 @@ export function ChatSkillsDialog({
   const [changing, setChanging] = useState<string | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState<SkillRecord | null>(null);
   const [confirmingDiscard, setConfirmingDiscard] = useState<(() => void) | null>(null);
+  const [confirmingReset, setConfirmingReset] = useState(false);
   // Reseeded on render so the first frame after opening is already reset.
   const [seenOpen, setSeenOpen] = useState(open);
   if (open !== seenOpen) {
@@ -117,6 +132,7 @@ export function ChatSkillsDialog({
       setManifests(new Map());
       setConfirmingDelete(null);
       setConfirmingDiscard(null);
+      setConfirmingReset(false);
     }
   }
   useEffect(() => {
@@ -253,6 +269,18 @@ export function ChatSkillsDialog({
     if (selected) readManifest(selected);
   };
 
+  const usable = skills.filter((skill) => skill.valid && !skill.shadowed);
+  const toggleAll = async (enabled: boolean | null) => {
+    setChanging(ALL_SKILLS);
+    try {
+      await setAllSkillsEnabled(enabled);
+    } catch (cause) {
+      toast.error(t("skills.updateError"), { description: describe(cause) });
+    } finally {
+      setChanging(null);
+    }
+  };
+
   const toggle = async (name: string, enabled: boolean) => {
     setChanging(name);
     try {
@@ -382,21 +410,58 @@ export function ChatSkillsDialog({
               <Button
                 type="button"
                 size="icon-sm"
-                variant="outline"
+                variant="ghost"
                 disabled={loading}
                 onClick={refresh}
                 aria-label={t("skills.refresh")}
                 title={t("skills.refresh")}
               >
-                {loading ? <Spinner /> : <HugeiconsIcon icon={RefreshIcon} strokeWidth={2} />}
+                {loading ? <Spinner /> : <HugeiconsIcon icon={Refresh01Icon} strokeWidth={2} />}
               </Button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild={true}>
+                  <Button
+                    type="button"
+                    size="icon-sm"
+                    variant="ghost"
+                    disabled={loading || usable.length === 0 || changing !== null}
+                    aria-label={t("skills.bulkActions")}
+                    title={t("skills.bulkActions")}
+                  >
+                    {changing === ALL_SKILLS ? (
+                      <Spinner />
+                    ) : (
+                      <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={2} />
+                    )}
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem
+                    disabled={usable.every((skill) => skill.enabled)}
+                    onSelect={() => void toggleAll(true)}
+                  >
+                    {t("skills.enableAll")}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    disabled={!usable.some((skill) => skill.enabled)}
+                    onSelect={() => void toggleAll(false)}
+                  >
+                    {t("skills.disableAll")}
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onSelect={() => setConfirmingReset(true)}>
+                    {t("skills.resetAll")}
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
               <Button type="button" size="sm" onClick={openNew}>
                 <HugeiconsIcon icon={PlusSignIcon} strokeWidth={2} />
                 {t("skills.newSkill")}
               </Button>
             </div>
 
-            <div className="hover-scrollbar min-h-0 max-h-[min(58dvh,520px)] space-y-5 overflow-y-auto pr-1 max-sm:flex-1 max-sm:max-h-none">
+            {/* -mr-7 pr-7 spans the dialog's right padding, so the scrollbar sits on its edge. */}
+            <div className="hover-scrollbar min-h-0 max-h-[min(58dvh,520px)] -mr-7 space-y-5 overflow-y-auto pr-7 max-sm:flex-1 max-sm:max-h-none">
               {error ? (
                 <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">
                   {error}
@@ -406,9 +471,9 @@ export function ChatSkillsDialog({
                 sections
                   .filter((section) => section.skills.length > 0)
                   .map((section) => (
-                    <section key={section.source} className="space-y-2">
-                      <div className="flex items-baseline justify-between gap-3 px-1">
-                        <h3 className="text-xs font-medium text-muted-foreground">
+                    <section key={section.source} className="space-y-3">
+                      <div className="flex min-w-0 items-baseline gap-2 px-1">
+                        <h3 className="shrink-0 text-xs font-medium text-muted-foreground">
                           {t(`skills.section${sectionSuffix(section.source)}`)}
                         </h3>
                         <p className="truncate text-ui-11 text-muted-foreground/70">
@@ -419,7 +484,7 @@ export function ChatSkillsDialog({
                         <SkillRow
                           key={keyOf(skill)}
                           skill={skill}
-                          changing={changing === skill.name}
+                          changing={changing !== null}
                           onOpen={() => openSkill(skill)}
                           onToggle={(enabled) => void toggle(skill.name, enabled)}
                         />
@@ -461,7 +526,7 @@ export function ChatSkillsDialog({
                   aria-label={t("skills.title")}
                   className="-ml-2 shrink-0"
                 >
-                  <HugeiconsIcon icon={ArrowLeft01Icon} strokeWidth={2} />
+                  <HugeiconsIcon icon={ChevronLeftStandardIcon} strokeWidth={2} />
                 </Button>
                 <DialogTitle className="truncate">
                   {view.kind === "new" ? t("skills.newSkill") : (selected?.name ?? "")}
@@ -478,7 +543,7 @@ export function ChatSkillsDialog({
               </DialogDescription>
             </DialogHeader>
 
-            <div className="hover-scrollbar min-h-0 max-h-[min(62dvh,640px)] overflow-y-auto pr-1 max-sm:flex-1 max-sm:max-h-none">
+            <div className="hover-scrollbar min-h-0 max-h-[min(62dvh,640px)] -mr-7 overflow-y-auto pr-7 max-sm:flex-1 max-sm:max-h-none">
               {view.kind === "new" ? (
                 <Editor
                   formId="skill-new-form"
@@ -566,7 +631,11 @@ export function ChatSkillsDialog({
                 <label className="flex items-center gap-2 text-sm text-muted-foreground">
                   <Switch
                     checked={selected.valid && !selected.shadowed && selected.enabled}
-                    disabled={!selected.valid || selected.shadowed || changing === selected.name}
+                    disabled={
+                      !selected.valid ||
+                      selected.shadowed ||
+                      changing !== null
+                    }
                     aria-label={t(selected.enabled ? "skills.disable" : "skills.enable", {
                       name: selected.name,
                     })}
@@ -647,6 +716,27 @@ export function ChatSkillsDialog({
         </AlertDialogContent>
       </AlertDialog>
 
+      <AlertDialog open={open && confirmingReset} onOpenChange={setConfirmingReset}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("skills.resetTitle")}</AlertDialogTitle>
+            <AlertDialogDescription>{t("skills.resetDescription")}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => {
+                setConfirmingReset(false);
+                void toggleAll(null);
+              }}
+            >
+              {t("skills.reset")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       <AlertDialog
         open={open && confirmingDiscard !== null}
         onOpenChange={(next) => {
@@ -716,59 +806,71 @@ function SkillRow({
 }): ReactElement {
   const t = useT();
   const usable = skill.valid && !skill.shadowed;
+  const descriptionId = useId();
+  // The details button covers the row and the switch sits above it; only those two take pointer events.
   return (
     <div
-      role="button"
-      tabIndex={0}
-      aria-label={skill.name}
-      onClick={onOpen}
-      onKeyDown={(event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          onOpen();
-        }
-      }}
       className={cn(
-        "group flex cursor-pointer items-center gap-3 rounded-xl border border-border/60 bg-muted/20 px-4 py-3 transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]",
+        "group pointer-events-none relative grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-10 gap-y-1.5 rounded-[14px] border border-border/60 bg-muted/20 px-5 py-4 transition-colors hover:bg-muted/50 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]",
         skill.shadowed && "opacity-60",
       )}
     >
-      <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="truncate font-medium">{skill.name}</span>
-          {skill.shadowed ? <Badge variant="secondary">{t("skills.shadowed")}</Badge> : null}
-          {skill.linked ? <Badge variant="outline">{t("skills.linked")}</Badge> : null}
-          {skill.valid ? null : <Badge variant="destructive">{t("skills.invalid")}</Badge>}
-        </div>
-        <p
-          className={cn(
-            "mt-0.5 line-clamp-2 text-sm",
-            skill.valid ? "text-muted-foreground" : "text-destructive",
-          )}
-        >
-          {skill.valid ? skill.description : skill.error}
-        </p>
-      </div>
-      <span
-        className="shrink-0"
-        onClick={(event) => event.stopPropagation()}
-        onKeyDown={(event) => event.stopPropagation()}
-      >
-        <Switch
-          checked={usable && skill.enabled}
-          disabled={!usable || changing}
-          aria-label={t(skill.enabled ? "skills.disable" : "skills.enable", { name: skill.name })}
-          onCheckedChange={onToggle}
-        />
-      </span>
-      <HugeiconsIcon
-        icon={ArrowRight01Icon}
-        strokeWidth={2}
-        className="size-4 shrink-0 text-muted-foreground/50 transition-colors group-hover:text-foreground"
+      <button
+        type="button"
+        onClick={onOpen}
+        aria-label={skill.name}
+        aria-describedby={descriptionId}
+        title={(skill.valid ? skill.description : skill.error) ?? undefined}
+        className="pointer-events-auto absolute inset-0 cursor-pointer rounded-[14px] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
       />
+      <div className="flex min-w-0 flex-wrap items-center gap-2">
+        <span className="truncate font-medium text-ui-14">{skill.name}</span>
+        <HugeiconsIcon
+          icon={ChevronRightStandardIcon}
+          strokeWidth={2}
+          aria-hidden="true"
+          className="-ml-1 size-4 shrink-0 text-muted-foreground/50 transition-colors group-hover:text-foreground"
+        />
+        {skill.shadowed ? <Badge variant="secondary">{t("skills.shadowed")}</Badge> : null}
+        {skill.linked ? <Badge variant="outline">{t("skills.linked")}</Badge> : null}
+        {skill.valid ? null : <Badge variant="destructive">{t("skills.invalid")}</Badge>}
+      </div>
+      {/* Lowercase text reads lower than its box, so the controls drop to its x-height. */}
+      <Switch
+        className="pointer-events-auto translate-y-[0.11em] text-ui-14"
+        checked={usable && skill.enabled}
+        disabled={!usable || changing}
+        aria-label={t(skill.enabled ? "skills.disable" : "skills.enable", { name: skill.name })}
+        onCheckedChange={onToggle}
+      />
+      <p
+        id={descriptionId}
+        className={cn(
+          "line-clamp-2 text-ui-13",
+          skill.valid ? "text-muted-foreground" : "text-destructive",
+        )}
+      >
+        {skill.valid ? skill.description : skill.error}
+      </p>
     </div>
   );
 }
+
+// Fill and padding live on the wrapper so the scrollbar clears the rounded corners in every engine.
+// A label, so clicking the padding still focuses the field.
+function ScrollField({ htmlFor, children }: { htmlFor: string; children: ReactNode }): ReactElement {
+  return (
+    <label
+      htmlFor={htmlFor}
+      className="block cursor-text overflow-hidden rounded-xl border border-border bg-background py-3 pr-1.5 pl-3.5 transition-colors focus-within:border-ring dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:focus-within:border-transparent dark:focus-within:bg-[rgb(255_255_255_/_calc(0.12*var(--contrast-wash-gain,1)))]"
+    >
+      {children}
+    </label>
+  );
+}
+
+const SCROLL_FIELD_TEXTAREA =
+  "min-h-0 resize-none rounded-none border-0 bg-transparent p-0 pr-2 focus-visible:bg-transparent dark:bg-transparent dark:focus-visible:bg-transparent";
 
 function Field({
   htmlFor,
@@ -879,21 +981,24 @@ function Editor({
           </span>
         }
       >
-        <Textarea
-          id={`${formId}-description`}
-          value={description}
-          rows={2}
-          maxLength={1024}
-          readOnly={readOnly}
-          disabled={disabled}
-          aria-label={t("skills.descriptionLabel")}
-          placeholder={t("skills.descriptionPlaceholder")}
-          onChange={(event) => onDescription(event.target.value)}
-          className={cn(
-            "max-h-[min(12rem,30vh)] min-h-[calc(4.5rem*var(--ui-space-scale,1))] overflow-y-auto leading-relaxed",
-            readOnly && "text-muted-foreground",
-          )}
-        />
+        <ScrollField htmlFor={`${formId}-description`}>
+          <Textarea
+            id={`${formId}-description`}
+            value={description}
+            rows={2}
+            maxLength={1024}
+            readOnly={readOnly}
+            disabled={disabled}
+            aria-label={t("skills.descriptionLabel")}
+            placeholder={t("skills.descriptionPlaceholder")}
+            onChange={(event) => onDescription(event.target.value)}
+            className={cn(
+              SCROLL_FIELD_TEXTAREA,
+              "max-h-[min(12rem,30vh)] min-h-[calc(3rem*var(--ui-space-scale,1))] overflow-y-auto leading-relaxed",
+              readOnly && "text-muted-foreground",
+            )}
+          />
+        </ScrollField>
       </Field>
       <Field
         htmlFor={`${formId}-instructions`}
@@ -905,21 +1010,24 @@ function Editor({
           </span>
         }
       >
-        <Textarea
-          id={`${formId}-instructions`}
-          value={instructions}
-          fieldSizing="fixed"
-          readOnly={readOnly}
-          disabled={disabled}
-          spellCheck={false}
-          aria-label={t("skills.instructionsLabel")}
-          placeholder={t("skills.instructionsPlaceholder")}
-          onChange={(event) => onInstructions(event.target.value)}
-          className={cn(
-            "h-[min(15rem,32dvh)] min-h-28 resize-y font-mono text-ui-13 leading-relaxed",
-            readOnly && "text-muted-foreground",
-          )}
-        />
+        <ScrollField htmlFor={`${formId}-instructions`}>
+          <Textarea
+            id={`${formId}-instructions`}
+            value={instructions}
+            fieldSizing="fixed"
+            readOnly={readOnly}
+            disabled={disabled}
+            spellCheck={false}
+            aria-label={t("skills.instructionsLabel")}
+            placeholder={t("skills.instructionsPlaceholder")}
+            onChange={(event) => onInstructions(event.target.value)}
+            className={cn(
+              SCROLL_FIELD_TEXTAREA,
+              "h-[min(13.5rem,29dvh)] min-h-22 font-mono text-ui-12 leading-relaxed md:text-ui-12",
+              readOnly && "text-muted-foreground",
+            )}
+          />
+        </ScrollField>
       </Field>
     </form>
   );

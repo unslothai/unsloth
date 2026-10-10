@@ -7,7 +7,9 @@ const HEADER_TOP_OFFSET = 52;
 const DESKTOP_TITLEBAR_HEIGHT = 34;
 
 export const CHAT_SETTINGS_INSET_VAR = "--studio-chat-settings-inset";
-// Only the widest card scales with --ui-space-scale; the download panel and rail gutters do not.
+// the desktop browser panel sets this while its native page spans the toast area and adjacent settings
+export const BROWSER_PAGE_INSET_VAR = "--studio-browser-page-inset";
+// only the widest card scales with --ui-space-scale; the download panel and rail gutters stay fixed
 const CORNER_CARD_MAX_WIDTH = 448;
 const DOWNLOAD_PANEL_WIDTH = 400;
 const CORNER_CARD_GUTTERS = 44;
@@ -19,7 +21,7 @@ export function chatSettingsInsetMinColumn(uiSpaceScale = 1): number {
   );
 }
 
-const HEADER_ROUTES = new Set(["/chat", "/images", "/video"]);
+const HEADER_ROUTES = new Set(["/chat", "/images", "/video", "/audio"]);
 
 export type ToastOffset = {
   top: number;
@@ -66,7 +68,7 @@ export function insetPastChatSettings(offset: ToastOffset): {
 } {
   return {
     top: offset.top,
-    right: `calc(${offset.right}px + var(${CHAT_SETTINGS_INSET_VAR}, 0px))`,
+    right: `calc(${offset.right}px + max(var(${CHAT_SETTINGS_INSET_VAR}, 0px), var(${BROWSER_PAGE_INSET_VAR}, 0px)))`,
   };
 }
 

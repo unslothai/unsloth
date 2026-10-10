@@ -117,6 +117,50 @@ def _tool_result_event(**overrides):
     }
 
 
+_WEB_SEARCH_RESULT = (
+    "Title: Releases · ggml-org/llama.cpp\n"
+    "URL: https://github.com/ggml-org/llama.cpp/releases\n"
+    "Snippet: b9999 (2026-09-28)"
+    "\n\n---\n\n"
+    "Title: llama.cpp - Wikipedia\n"
+    "URL: https://en.wikipedia.org/wiki/Llama.cpp\n"
+    "Snippet: llama.cpp is an open source library."
+    "\n\n---\n\nIMPORTANT: These are only short snippets."
+)
+_WEB_SEARCH_HITS = [
+    {
+        "type": "web_search_result",
+        "title": "Releases · ggml-org/llama.cpp",
+        "url": "https://github.com/ggml-org/llama.cpp/releases",
+        "encrypted_content": "",
+        "page_age": None,
+    },
+    {
+        "type": "web_search_result",
+        "title": "llama.cpp - Wikipedia",
+        "url": "https://en.wikipedia.org/wiki/Llama.cpp",
+        "encrypted_content": "",
+        "page_age": None,
+    },
+]
+_WEB_SEARCH_ERROR = {"type": "web_search_tool_result_error", "error_code": "unavailable"}
+_FETCHED_URL = "https://github.com/ggml-org/llama.cpp"
+_WEB_SEARCH_OUTCOMES = [
+    ({"query": "llama.cpp"}, "No results found.", []),
+    (
+        {"query": "llama.cpp"},
+        "Search failed: the search engines did not respond.",
+        _WEB_SEARCH_ERROR,
+    ),
+    (
+        {"url": _FETCHED_URL},
+        "# llama.cpp\nTitle: quoted page text\nURL: https://example.com",
+        [{**_WEB_SEARCH_HITS[0], "title": _FETCHED_URL, "url": _FETCHED_URL}],
+    ),
+    ({"url": _FETCHED_URL}, "Failed to fetch URL: HTTP 404 Not Found", _WEB_SEARCH_ERROR),
+]
+
+
 def _tool_result_turn(
     *,
     role = "user",
@@ -482,7 +526,8 @@ def test_anthropic_emitter_holds_back_partial_think_tag():
     assert _emitter_client_text(events) == "Out"
 
 
-def test_streamed_anthropic_tool_use_records_api_monitor_reply(monkeypatch):
+@pytest.mark.parametrize("block_type", ["tool_use", "server_tool_use"])
+def test_streamed_anthropic_tool_use_records_api_monitor_reply(monkeypatch, block_type):
     import routes.inference as inf_mod
 
     monitor = ApiMonitor(max_entries = 3)
@@ -499,7 +544,7 @@ def test_streamed_anthropic_tool_use_records_api_monitor_reply(monkeypatch):
             "type": "content_block_start",
             "index": 0,
             "content_block": {
-                "type": "tool_use",
+                "type": block_type,
                 "id": "toolu_1",
                 "name": "lookup",
                 "input": {},
@@ -576,6 +621,29 @@ class TestToolActionNudge:
 
         assert "- guided: Guide this task." in nudge
         assert "create_skill" not in nudge
+        # without python or terminal, a skill's bundled scripts cannot run here.
+        assert "bundled scripts cannot run" in nudge
+        assert "Unsloth Studio's local Code tool" in nudge
+
+    @pytest.mark.parametrize("code_tool", ["python", "terminal"])
+    def test_skill_nudge_with_a_code_tool_does_not_warn_about_scripts(self, monkeypatch, code_tool):
+        import routes.inference as inference_routes
+
+        monkeypatch.setattr(
+            inference_routes,
+            "_enabled_agent_skills",
+            lambda: [{"name": "guided", "description": "Guide this task."}],
+        )
+        nudge = _build_tool_action_nudge(
+            tools = [
+                {"type": "function", "function": {"name": "read_skill"}},
+                {"type": "function", "function": {"name": code_tool}},
+            ],
+            model_name = "test",
+        )
+
+        assert "- guided: Guide this task." in nudge
+        assert "bundled scripts cannot run" not in nudge
 
 
 # =====================================================================
@@ -794,6 +862,63 @@ class TestAnthropicMessagesToOpenAI:
         assert tc["id"] == "tu_1"
         assert tc["function"]["name"] == "web_search"
         assert json.loads(tc["function"]["arguments"]) == {"query": "test"}
+
+    def test_replayed_web_search_becomes_call_and_result(self):
+        call = {"type": "server_tool_use", "name": "web_search", "input": {"query": "llama.cpp"}}
+        msgs = [
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Searching."},
+                    {**call, "id": "srvtoolu_fetch", "name": "web_fetch"},
+                    {**call, "id": "srvtoolu_1"},
+                    {
+                        "type": "web_search_tool_result",
+                        "tool_use_id": "srvtoolu_1",
+                        "content": _WEB_SEARCH_HITS,
+                    },
+                    {"type": "text", "text": "It is b9999."},
+                    {"type": "tool_use", "id": "tu_1", "name": "lookup", "input": {}},
+                ],
+            }
+        ]
+        search, result, answer = anthropic_messages_to_openai(msgs)
+
+        assert search["content"] == "Searching."
+        assert [tc["id"] for tc in search["tool_calls"]] == ["srvtoolu_1"]
+        assert result == {
+            "role": "tool",
+            "tool_call_id": "srvtoolu_1",
+            "content": (
+                "Title: Releases · ggml-org/llama.cpp\n"
+                "URL: https://github.com/ggml-org/llama.cpp/releases"
+                "\n\n---\n\n"
+                "Title: llama.cpp - Wikipedia\n"
+                "URL: https://en.wikipedia.org/wiki/Llama.cpp"
+            ),
+        }
+        assert answer["content"] == "It is b9999."
+        assert [tc["id"] for tc in answer["tool_calls"]] == ["tu_1"]
+
+    @pytest.mark.parametrize(
+        "content, text",
+        [([], "No results found."), (_WEB_SEARCH_ERROR, "Search failed: unavailable")],
+    )
+    def test_replayed_web_search_without_hits_ends_on_its_result(self, content, text):
+        # No ``input``: an unvalidated replayed block must not fail the request.
+        search_only = [
+            {"type": "server_tool_use", "id": "srvtoolu_1", "name": "web_search"},
+            {"type": "web_search_tool_result", "tool_use_id": "srvtoolu_1", "content": content},
+        ]
+        call, result = anthropic_messages_to_openai([{"role": "assistant", "content": search_only}])
+
+        assert call["tool_calls"][0]["function"]["arguments"] == "{}"
+        assert result == {"role": "tool", "tool_call_id": "srvtoolu_1", "content": text}
+
+    def test_empty_assistant_turn_is_kept(self):
+        assert anthropic_messages_to_openai([{"role": "assistant", "content": []}]) == [
+            {"role": "assistant"}
+        ]
 
     def test_tool_result_maps_to_tool_role(self):
         msgs = [_tool_result_turn(tool_use_id = "tu_1", content = "Result text")]
@@ -1681,6 +1806,74 @@ class TestAnthropicStreamEmitter:
         parsed = json.loads(events[1].split("data: ")[1])
         assert parsed["delta"]["text"] == "After tool"
 
+    def _web_search_stream(
+        self,
+        result,
+        arguments = None,
+    ):
+        e = AnthropicStreamEmitter()
+        events = e.start("msg_1", "m")
+        events += e.feed(
+            _tool_event(
+                tool_name = "web_search",
+                arguments = arguments or {"query": "llama.cpp latest release"},
+            )
+        )
+        events += e.feed(_tool_result_event(tool_name = "web_search", result = result))
+        events += e.feed({"type": "content", "text": "The latest release is b9999."})
+        events += e.finish("end_turn")
+        return events, [json.loads(ev.split("data: ")[1]) for ev in events]
+
+    def test_web_search_streams_as_server_tool_with_source_links(self):
+        events, payloads = self._web_search_stream(_WEB_SEARCH_RESULT)
+        starts = [p for p in payloads if p["type"] == "content_block_start"]
+        stops = [p["index"] for p in payloads if p["type"] == "content_block_stop"]
+        blocks = [p["content_block"] for p in starts]
+
+        assert [b["type"] for b in blocks] == ["server_tool_use", "web_search_tool_result", "text"]
+        assert blocks[0]["id"].startswith("srvtoolu_")
+        assert blocks[0]["name"] == "web_search"
+        assert blocks[1] == {
+            "type": "web_search_tool_result",
+            "tool_use_id": blocks[0]["id"],
+            "content": _WEB_SEARCH_HITS,
+        }
+        assert stops == [p["index"] for p in starts] == [0, 1, 2]
+        assert {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {
+                "type": "input_json_delta",
+                "partial_json": json.dumps({"query": "llama.cpp latest release"}),
+            },
+        } in payloads
+        assert not any(ev.startswith("event: tool_result") for ev in events)
+        assert _emitter_client_text(events) == "The latest release is b9999."
+
+    def test_consecutive_web_searches_reusing_a_call_id_stay_separate(self):
+        e = AnthropicStreamEmitter()
+        events = e.start("msg_1", "m")
+        for i, url in enumerate(["https://e.com/0", "https://e.com/1"]):
+            events += e.feed(_tool_event(tool_name = "web_search", arguments = {"url": url}))
+            events += e.feed(_tool_result_event(tool_name = "web_search", result = f"page {i}"))
+        payloads = [json.loads(ev.split("data: ")[1]) for ev in events]
+        first, first_result, second, second_result = [
+            p["content_block"] for p in payloads if p["type"] == "content_block_start"
+        ]
+
+        assert first["id"] != second["id"]
+        assert first_result["tool_use_id"] == first["id"]
+        assert second_result["tool_use_id"] == second["id"]
+        assert second_result["content"][0]["url"] == "https://e.com/1"
+
+    @pytest.mark.parametrize("arguments, result, content", _WEB_SEARCH_OUTCOMES)
+    def test_web_search_result_content_by_outcome(self, arguments, result, content):
+        _, payloads = self._web_search_stream(result, arguments)
+        blocks = [p["content_block"] for p in payloads if p["type"] == "content_block_start"]
+
+        assert [b["type"] for b in blocks] == ["server_tool_use", "web_search_tool_result", "text"]
+        assert blocks[1]["content"] == content
+
 
 # =====================================================================
 # Non-streaming tool response tests
@@ -1860,6 +2053,76 @@ class TestAnthropicToolNonStreaming:
         assert tool_blocks[0]["id"].startswith("toolu_")
         assert tool_blocks[0]["name"] == "render_html"
         assert tool_blocks[0]["input"] == {"code": "<!doctype html><html></html>"}
+
+    def test_web_search_returns_server_tool_blocks_with_source_links(self):
+        def _run_gen():
+            yield _tool_event(tool_name = "web_search", arguments = {"query": "llama.cpp release"})
+            yield _tool_result_event(tool_name = "web_search", result = _WEB_SEARCH_RESULT)
+            yield {"type": "content", "text": "The latest release is b9999."}
+
+        response = asyncio.run(
+            _anthropic_tool_non_streaming(_connected_request(), _run_gen, "msg_1", "m")
+        )
+        body = json.loads(response.body)
+        call, result, text = body["content"]
+
+        assert call["type"] == "server_tool_use"
+        assert call["id"].startswith("srvtoolu_")
+        assert call["input"] == {"query": "llama.cpp release"}
+        assert result == {
+            "type": "web_search_tool_result",
+            "tool_use_id": call["id"],
+            "content": _WEB_SEARCH_HITS,
+        }
+        assert text == {"type": "text", "text": "The latest release is b9999."}
+        assert body["stop_reason"] == "end_turn"
+
+    def test_consecutive_web_searches_reusing_a_call_id_stay_separate(self):
+        # Text-parsed calls restart at call_0 on every tool-loop iteration.
+        def _run_gen():
+            for i, query in enumerate(["first", "second"]):
+                yield _tool_event(tool_name = "web_search", arguments = {"query": query})
+                yield _tool_result_event(
+                    tool_name = "web_search", result = f"Title: T{i}\nURL: https://e.com/{i}"
+                )
+
+        response = asyncio.run(
+            _anthropic_tool_non_streaming(_connected_request(), _run_gen, "msg_1", "m")
+        )
+        first, first_result, second, second_result = json.loads(response.body)["content"]
+
+        assert [first["input"], second["input"]] == [{"query": "first"}, {"query": "second"}]
+        assert first["id"] != second["id"]
+        assert first_result["tool_use_id"] == first["id"]
+        assert second_result["tool_use_id"] == second["id"]
+        assert second_result["content"][0]["url"] == "https://e.com/1"
+
+    def test_consecutive_tool_calls_reusing_a_call_id_keep_their_own_input(self):
+        def _run_gen():
+            for code in ["print(1)", "print(2)"]:
+                yield _tool_event(arguments = {"code": code})
+                yield _tool_result_event()
+
+        response = asyncio.run(
+            _anthropic_tool_non_streaming(_connected_request(), _run_gen, "msg_1", "m")
+        )
+        blocks = json.loads(response.body)["content"]
+
+        assert [b["input"] for b in blocks] == [{"code": "print(1)"}, {"code": "print(2)"}]
+
+    @pytest.mark.parametrize("arguments, result, content", _WEB_SEARCH_OUTCOMES)
+    def test_web_search_result_content_by_outcome(self, arguments, result, content):
+        def _run_gen():
+            yield _tool_event(tool_name = "web_search", arguments = arguments)
+            yield _tool_result_event(tool_name = "web_search", result = result)
+
+        response = asyncio.run(
+            _anthropic_tool_non_streaming(_connected_request(), _run_gen, "msg_1", "m")
+        )
+        call, search_result = json.loads(response.body)["content"]
+
+        assert search_result["tool_use_id"] == call["id"]
+        assert search_result["content"] == content
 
     def test_display_strip_gates_on_declared_tools(self):
         # A final answer containing NAME[ARGS]{json} is gated on the declared tools: undeclared
@@ -3521,6 +3784,35 @@ class TestAnthropicMessagesToolRouting:
         [entry] = monitor.snapshot()
         assert entry["status"] == "completed"
         assert entry["reply_preview"] == 'Tool call: lookup({"query": "weather"})'
+
+    def test_client_tool_non_streaming_expected_cancel_returns_anthropic_499(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        async def _cancelled(*_args, **_kwargs):
+            raise inf_mod._NonStreamingRequestCancelled("Request cancelled.")
+
+        _mock_backend(monkeypatch, base_url = "http://llama.test")
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monkeypatch.setattr(inf_mod, "_anthropic_passthrough_non_streaming", _cancelled)
+        payload = _basic_payload(
+            tools = [
+                {
+                    "name": "lookup",
+                    "description": "Look something up",
+                    "input_schema": {"type": "object", "properties": {}},
+                }
+            ]
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            _drive(anthropic_messages(payload, request = self._Request(), current_subject = "t"))
+
+        assert exc.value.status_code == 499
+        assert exc.value.detail["type"] == "error"
+        [entry] = monitor.snapshot()
+        assert entry["status"] == "cancelled"
+        assert monitor.active_count() == 0
 
     def test_plain_streaming_records_active_and_completed_monitor_entry(self, monkeypatch):
         import routes.inference as inf_mod

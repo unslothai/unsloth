@@ -38,6 +38,7 @@ studio_app = typer.Typer(help = "Unsloth Studio commands.")
 def _enable_verbose_access_logs() -> None:
     os.environ["UNSLOTH_STUDIO_ACCESS_LOG_DEDUP_MS"] = "0"
     os.environ["UNSLOTH_STUDIO_ACCESS_LOG_POLL_DEDUP_MS"] = "0"
+    os.environ["LOG_LEVEL"] = "DEBUG"
 
 
 # Root order: UNSLOTH_STUDIO_HOME, STUDIO_HOME, UNSLOTH_HOME/studio, sys.prefix,
@@ -296,8 +297,8 @@ _MANAGED_CLI_IMPORT_PROBE = (
 # Generous: cold interpreter start plus package import. A timeout means "no verdict", not failure.
 _MANAGED_CLI_IMPORT_PROBE_TIMEOUT = 60
 
-# ERROR_ACCESS_DISABLED_BY_POLICY, surfaced by Python as OSError.winerror.
-_ERROR_ACCESS_DISABLED_BY_POLICY = 1260
+# Policy refusals: AppLocker 1260, App Control / Smart App Control 4551. Not 577: a bad hash can be a damaged file.
+_APPLICATION_CONTROL_WINERRORS = frozenset({1260, 4551})
 
 
 def _managed_cli_argv(
@@ -313,7 +314,7 @@ def _managed_cli_argv(
 
 def _is_application_control_block(error: OSError) -> bool:
     """True when Windows refused to start a program by policy: nothing ran."""
-    return getattr(error, "winerror", None) == _ERROR_ACCESS_DISABLED_BY_POLICY
+    return getattr(error, "winerror", None) in _APPLICATION_CONTROL_WINERRORS
 
 
 @contextlib.contextmanager
@@ -1673,6 +1674,8 @@ def _load_model_via_http(
     llama_extra_args: Optional[List[str]] = None,
     timeout: int = 600,
     request_host: str = "127.0.0.1",
+    engine: str = "auto",
+    engine_precision: str = "auto",
 ) -> dict:
     import json
     import urllib.request
@@ -1698,6 +1701,9 @@ def _load_model_via_http(
         payload["spec_draft_n_max"] = spec_draft_n_max
     if llama_extra_args:
         payload["llama_extra_args"] = list(llama_extra_args)
+    if engine != "auto":
+        payload["engine"] = engine
+        payload["engine_precision"] = engine_precision
 
     data = json.dumps(payload).encode()
     url = f"http://{_url_host(request_host)}:{port}/api/inference/load"
@@ -1721,6 +1727,73 @@ def _load_model_via_http(
     except urllib.error.HTTPError as exc:
         body = exc.read().decode(errors = "replace")
         raise RuntimeError(f"Model load failed (HTTP {exc.code}): {body}") from exc
+
+
+def _ensure_engine_installed(engine: str, yes: bool, silent: bool) -> None:
+    """Install an optional serving engine on first use, only after the owner agrees."""
+    import time
+
+    from core.inference import engine_install
+
+    # status() answers "still checking" while the GPU probe runs; this caller can wait for it.
+    reason = engine_install.support_reason(engine)
+    if reason:
+        raise RuntimeError(reason)
+    row = engine_install.status(engine)
+    # A rollback the owner chose is loadable as is, as in Settings.
+    if row.get("current") or (row.get("installed") and row.get("restored")):
+        return
+    size = row.get("download_bytes")
+    action = "Update" if row.get("installed") else "Install"
+    question = f"{action} {engine} {row['version']}" + (
+        f" (about {size / 1024**3:.1f} GiB to download)" if size else ""
+    )
+    notice = _engine_install_notice(engine, row)
+    if not yes:
+        if not sys.stdin.isatty():
+            raise RuntimeError(
+                f"{engine} is not installed. Re-run with --yes to install it, or install it "
+                "from Settings > Inference engines."
+            )
+        if notice:
+            typer.echo(notice)
+        if not typer.confirm(f"{question}?", default = False):
+            raise RuntimeError(f"{engine} was not installed, so the model was not loaded.")
+    elif not silent:
+        if notice:
+            typer.echo(notice)
+        typer.echo(f"{question}: --yes given, installing.")
+    engine_install.start_install(engine)
+    last = None
+    while True:
+        job = engine_install.status(engine)["job"]
+        if job.get("state") != "running":
+            break
+        message = job.get("message") or job.get("phase")
+        if message != last and not silent:
+            typer.echo(f"  {engine}: {message}")
+            last = message
+        time.sleep(2)
+    if job.get("state") != "success":
+        raise RuntimeError(f"{engine} installation did not finish: {job.get('message')}")
+
+
+def _engine_install_notice(engine: str, row: dict) -> Optional[str]:
+    """The Windows consent text Settings shows before the same install (managedEngines.wsl*)."""
+    if row.get("host") != "wsl":
+        return None
+    wsl = row.get("wsl") or {}
+    if wsl.get("state") == "restart_required":
+        return "Restart Windows to finish turning on WSL2, then run this command again."
+    if wsl.get("state") == "ready" and wsl.get("distro"):
+        return f"On Windows, {engine} runs inside Studio's private WSL2 environment."
+    return (
+        f"On Windows, {engine} runs inside WSL2 (Windows Subsystem for Linux). Studio will turn "
+        "on WSL2 and set up its own private Ubuntu environment for engines; your existing Linux "
+        "distributions are not touched. Windows will show one administrator (UAC) prompt, and "
+        "may ask you to restart before the installation can finish. Nothing changes unless you "
+        "answer yes."
+    )
 
 
 def _format_context_length_line(load_result: dict) -> Optional[str]:
@@ -2406,6 +2479,22 @@ def run(
             "decode speed, MoE usually don't."
         ),
     ),
+    engine: Literal["auto", "vllm", "sglang"] = typer.Option(
+        "auto",
+        "--engine",
+        rich_help_panel = _RUN_PANEL_MODEL,
+        help = (
+            "Serve a safetensors model with vLLM or SGLang instead of Studio's default "
+            "backend. Installed on first use after a confirmation (--yes skips it); "
+            "Linux NVIDIA, or Windows through WSL2."
+        ),
+    ),
+    engine_precision: Literal["auto", "bf16", "fp16", "int4", "int8", "fp8"] = typer.Option(
+        "auto",
+        "--engine-precision",
+        rich_help_panel = _RUN_PANEL_MODEL,
+        help = "Weight precision for --engine vllm/sglang (auto keeps the checkpoint's).",
+    ),
     start_api_key_marker: bool = typer.Option(
         False,
         "--start-api-key-marker",
@@ -2477,7 +2566,9 @@ def run(
     # Set before any re-exec. --log-verbose keeps llama-server's own -v passthrough working.
     if verbose:
         _enable_verbose_access_logs()
-        if not any(a in ("--verbose", "-v", "--log-verbose") for a in extra_llama_args):
+        if engine == "auto" and not any(
+            a in ("--verbose", "-v", "--log-verbose") for a in extra_llama_args
+        ):
             extra_llama_args.append("--log-verbose")
     if disable_dns_pinning:
         os.environ["UNSLOTH_STUDIO_DISABLE_DNS_PINNING"] = "1"
@@ -2520,6 +2611,13 @@ def run(
             raise typer.Exit(1)
         model = parsed_repo
         gguf_variant = gguf_variant or embedded_variant
+    if engine != "auto" and (gguf_variant or extra_llama_args):
+        typer.echo(
+            f"Error: --engine {engine} serves safetensors checkpoints; GGUF variants and "
+            "llama-server flags apply only to the default backend.",
+            err = True,
+        )
+        raise typer.Exit(2)
 
     _require_bind_host(host)
 
@@ -2668,6 +2766,8 @@ def run(
             args.append("--no-cloudflare")
         args.append("--secure" if secure else "--no-secure")
         args.append("--tensor-parallel" if tensor_parallel else "--no-tensor-parallel")
+        if engine != "auto":
+            args.extend(["--engine", engine, "--engine-precision", engine_precision])
         if verbose:
             args.append("--verbose")
         if extra_llama_args:
@@ -2739,6 +2839,12 @@ def run(
             typer.echo(f"UNSLOTH_START_PORT: {actual_port}")
             typer.echo(f"UNSLOTH_START_API_KEY: {api_key}")
 
+        if engine != "auto":
+            try:
+                _ensure_engine_installed(engine, yes, silent)
+            except RuntimeError as exc:
+                typer.echo(f"Error: {exc}", err = True)
+                raise typer.Exit(1)
         if not silent:
             typer.echo(f"Loading model: {model}...")
         try:
@@ -2755,6 +2861,8 @@ def run(
                 spec_draft_n_max = spec_draft_n_max,
                 llama_extra_args = extra_llama_args,
                 request_host = request_host,
+                engine = engine,
+                engine_precision = engine_precision,
             )
         except RuntimeError as exc:
             typer.echo(f"Error: {exc}", err = True)
@@ -4419,19 +4527,23 @@ class _WindowsLauncherUpdateTransaction:
         return False
 
     def _restore_runnable(self) -> bool:
-        """Put back the first copy that actually runs. Under Application Control every --version dies in
-        CreateProcess, so this degrades to the shape check."""
+        return self._restore_failure_reason() is None
+
+    def _restore_failure_reason(self) -> Optional[str]:
+        """Put back the first copy that actually runs; return why the CLI still cannot, or None.
+        Under Application Control every --version dies in CreateProcess, so this degrades to the
+        shape check."""
         if self._launcher_health_error() is None:
-            return True
+            return None
         candidates = self._recovery_candidates()
         for source in candidates:
             if self._restore_from(source) and self._launcher_health_error() is None:
-                return True
+                return None
         # Nothing ran; leave the best candidate rather than whichever was tried last.
         if candidates:
             self._restore_from(candidates[0])
         # Gone, or denied by policy, is still not a broken CLI. Asked only after every candidate.
-        return self._recovered_cli_health_error() is None
+        return self._recovered_cli_health_error()
 
     def _launcher_runs_error(self) -> Optional[str]:
         """Whether THIS launcher file starts and answers --version. About the file, not the CLI: the
@@ -4571,10 +4683,16 @@ class _WindowsLauncherUpdateTransaction:
         published = self.launcher.exists()
         error = self._launcher_health_error()
         if error is not None:
-            restored = self._restore_runnable()
+            reason = self._restore_failure_reason()
+            restored = reason is None
             # Setup publishing nothing is the case this exists for, so restoring is success; a launcher setup DID write that cannot run is a failure.
             if published or not restored:
-                typer.echo(f"Error: Unsloth Studio update failed because {error}.", err = True)
+                # Absence names no cause (#9804); any other error is the published launcher's own and must win over the restored copy's.
+                cause = reason if error is self._LAUNCHER_ABSENT else None
+                typer.echo(
+                    f"Error: Unsloth Studio update failed because {cause or error}.",
+                    err = True,
+                )
                 if restored:
                     typer.echo("The previous launcher was restored.", err = True)
                 elif self._retained_backup() is not None:
