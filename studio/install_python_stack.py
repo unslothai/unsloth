@@ -4635,7 +4635,9 @@ def _intel_xpu_auto_route_holds() -> bool:
     an allowlisted Intel display device on the PCI bus."""
     if os.environ.get("UNSLOTH_DISABLE_XPU_AUTO", "0") == "1":
         return False
-    if any(v in os.environ for v in _INTEL_DEVICE_FILTER_VARS) or os.environ.get("UNSLOTH_ROCM_GFX_ARCH"):
+    if any(v in os.environ for v in _INTEL_DEVICE_FILTER_VARS) or os.environ.get(
+        "UNSLOTH_ROCM_GFX_ARCH"
+    ):
         return False
     intel = False
     try:

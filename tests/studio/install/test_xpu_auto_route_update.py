@@ -60,14 +60,23 @@ def _linux(monkeypatch, tmp_path):
     stack._invalidate_torch_runtime_probe()
 
 
-def _run(backend, recorded, version = "2.11.0+cpu", probe_only = False):
+def _run(
+    backend,
+    recorded,
+    version = "2.11.0+cpu",
+    probe_only = False,
+):
     with (
         patch.object(stack, "_TORCH_BACKEND", backend),
         patch.object(stack, "_RECORDED_TORCH_TAG", recorded),
         patch.object(stack, "_probe_torch_runtime", return_value = (True, True, version, None, None)),
         patch.object(stack, "pip_install") as pip,
     ):
-        pip.result = stack._ensure_xpu_torch(probe_only = probe_only) if probe_only else stack._ensure_xpu_torch()
+        pip.result = (
+            stack._ensure_xpu_torch(probe_only = probe_only)
+            if probe_only
+            else stack._ensure_xpu_torch()
+        )
     return pip
 
 
@@ -172,7 +181,12 @@ def test_the_unpinned_route_is_revalidated(monkeypatch, tmp_path, backend, recor
     elif case == "SYCL filter":
         monkeypatch.setenv("SYCL_DEVICE_FILTER", "level_zero:gpu:0")
     elif case == "AMD beside Arc":
-        _pci(monkeypatch, tmp_path, ("0x8086", "0x56a0", "0x030000"), ("0x1002", "0x744c", "0x030000"))
+        _pci(
+            monkeypatch,
+            tmp_path,
+            ("0x8086", "0x56a0", "0x030000"),
+            ("0x1002", "0x744c", "0x030000"),
+        )
     elif case == "mask set":
         monkeypatch.setenv("ZE_AFFINITY_MASK", "0")
     elif case == "emptied mask":
