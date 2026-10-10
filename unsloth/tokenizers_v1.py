@@ -43,7 +43,6 @@ _DEFAULT_DIR = os.path.join(os.path.expanduser("~"), ".cache", "unsloth", "token
 _MODULE_NAME = "unsloth_tokenizers_v1.tokenizers"
 # Mutations the per-encode fingerprint (vocab size + component states) cannot see.
 _MUTATING = frozenset(("model", "add_tokens", "add_special_tokens", "train", "train_from_iterator"))
-# A backend whose JSON keeps changing between encodes would pay a rebuild per call.
 _MAX_REBUILDS = 16
 _PROBES = (
     "Hello world! How are you?",
@@ -443,7 +442,6 @@ class TokenizersV1Backend:
             except BaseException as error:
                 if _fatal(error):
                     raise
-                # e.g. custom Python components, which 0.x cannot serialize either.
                 state.disabled = True
                 state.snapshot = None
                 return None
@@ -652,8 +650,6 @@ def enable_tokenizers_v1(tokenizer):
 
 
 def tokenizers_v1_on_return(fn):
-    """Decorate a ``from_pretrained`` returning ``(model, tokenizer)``."""
-
     @functools.wraps(fn)
     def _wrapper(*args, **kwargs):
         result = fn(*args, **kwargs)
