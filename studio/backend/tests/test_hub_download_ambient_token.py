@@ -25,7 +25,6 @@ from auth.authentication import (
 )
 from hub.routes import datasets as datasets_routes
 from hub.routes import inventory as inventory_routes
-from hub.dependencies import get_request_hf_token
 from hub.services import download_lifecycle
 from hub.services.datasets import downloads as dataset_downloads
 from hub.services.models import downloads as model_downloads
