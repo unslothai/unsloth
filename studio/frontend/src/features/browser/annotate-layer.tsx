@@ -360,9 +360,12 @@ function holds(range: Range, place: Place): boolean {
   return selectedElement(range)?.tagName === place.tag && range.startContainer.isConnected;
 }
 
-/** The ranges, found again where their page remounted. */
-function liveRanges(mark: { ranges: Range[]; places?: (Place | null)[] }, page: HTMLElement): Range[] {
-  const indexes = new Map<Element, TextIndex>();
+/** The ranges, found again where their page remounted; `indexes` is shared by every mark in a render. */
+function liveRanges(
+  mark: { ranges: Range[]; places?: (Place | null)[] },
+  page: HTMLElement,
+  indexes: Map<Element, TextIndex>,
+): Range[] {
   return mark.ranges.map((range, index) => {
     const place = mark.places?.[index];
     if (!place || holds(range, place)) return range;
@@ -667,7 +670,8 @@ export function AnnotateLayer({
   const hoverBox = hover ? boxOf(hover, origin) : null;
   if (hoverBox) lastHoverBox.current = hoverBox;
   const shownHover = hoverBox ?? lastHoverBox.current;
-  const pendingBox = pending ? markBoxOf(liveRanges(pending, page), pending.frame, origin) : null;
+  const indexes = new Map<Element, TextIndex>();
+  const pendingBox = pending ? markBoxOf(liveRanges(pending, page, indexes), pending.frame, origin) : null;
   const count = items.length;
   // A first comment still being typed can go too: Send commits it.
   const canSend = count > 0 || (pending?.id === null && draft.trim() !== "");
@@ -694,7 +698,7 @@ export function AnnotateLayer({
         />
       ) : null}
       {items.map((item, index) => {
-        const box = item.id === pending?.id ? null : markBoxOf(liveRanges(item, page), item.frame, origin);
+        const box = item.id === pending?.id ? null : markBoxOf(liveRanges(item, page, indexes), item.frame, origin);
         return box ? (
           <Mark
             key={item.id}
