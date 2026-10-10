@@ -30,6 +30,8 @@ FONTSIZE_PROP_ALLOWED_DIRS = (
 FONTSIZE_STYLE_ALLOWLIST = {
     # Offscreen textarea; 12pt+ suppresses the iOS focus zoom. Never rendered.
     "lib/copy-to-clipboard.ts",
+    # SVG text in viewBox units: the chart scales with its width and exports as PNG, where CSS vars don't resolve.
+    "features/benchmarks/components/bench-chart.tsx",
 }
 
 
