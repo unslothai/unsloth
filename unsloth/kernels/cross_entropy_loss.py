@@ -31,7 +31,7 @@ from unsloth_zoo.loss_utils import (
 
 def _cross_entropy_forward(
     logits_ptr,
-    logits_row_stride,
+    logits_row_stride: tl.constexpr,  # VOCAB_SIZE
     loss_ptr,
     logsumexp_ptr,
     labels_ptr,
