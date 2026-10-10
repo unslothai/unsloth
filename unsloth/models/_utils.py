@@ -4804,6 +4804,10 @@ def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
         elif "num_items_in_batch" not in inputs:
             inputs["num_items_in_batch"] = num_items_in_batch
 
+    # Training twin of the #3470 prediction_step guard: a KV cache drops the packed-sequence mask.
+    if "packed_seq_lengths" in inputs and "use_cache" not in inputs:
+        inputs = {**inputs, "use_cache": False}
+
     if (
         num_items_in_batch is None
         and getattr(getattr(self, "args", self), "gradient_accumulation_steps", 1) != 1
