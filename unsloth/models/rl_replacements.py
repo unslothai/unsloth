@@ -1013,6 +1013,45 @@ def sft_trainer_push_to_hub_token(function_name, function):
 RL_FUNCTIONS["sft_trainer"].append(sft_trainer_push_to_hub_token)
 
 
+# assistant_only_loss: TRL swaps in a training template only for chat templates it knows by exact text, and raises for the rest, which includes every Unsloth template. Fall back to train_on_responses_only markers (sft_prepare_dataset in unsloth_zoo) instead of failing.
+_SFT_TRAINING_TEMPLATE = re.compile(
+    r"^(?P<indent>[ \t]*)self\.chat_template = get_training_chat_template\(processing_class\)[ \t]*$",
+    flags = re.MULTILINE,
+)
+_SFT_STOP_TOKEN_CHECK = re.compile(
+    r"if args\.assistant_only_loss and not is_chat_template_stop_token_trained\("
+)
+
+
+def sft_trainer_assistant_mask_fallback(function_name, function):
+    if function_name != "__init__" or "_unsloth_assistant_mask_fallback" in function:
+        return function
+    if _SFT_TRAINING_TEMPLATE.search(function) is None:
+        return function
+
+    def _replace(match):
+        i = match.group("indent")
+        return (
+            f"{i}try:\n"
+            f"{i}    self.chat_template = get_training_chat_template(processing_class)\n"
+            f"{i}except ValueError:\n"
+            f"{i}    self.chat_template = None\n"
+            f"{i}    self._unsloth_assistant_mask_fallback = True\n"
+            f"{i}    print('Unsloth: TRL has no training chat template for this tokenizer, so assistant_only_loss masks non-assistant tokens with train_on_responses_only markers.')"
+        )
+
+    function = _SFT_TRAINING_TEMPLATE.sub(_replace, function, count = 1)
+    function = _SFT_STOP_TOKEN_CHECK.sub(
+        "if args.assistant_only_loss and not getattr(self, '_unsloth_assistant_mask_fallback', False) and not is_chat_template_stop_token_trained(",
+        function,
+        count = 1,
+    )
+    return function
+
+
+RL_FUNCTIONS["sft_trainer"].append(sft_trainer_assistant_mask_fallback)
+
+
 def _unsloth_grpo_autocast(self):
     """Decide the GRPO autocast once and latch it on the trainer. ACCELERATE_MIXED_PRECISION is process wide, so a trainer built later but run first would hand this trainer its precision; args belongs to this trainer."""
     if not hasattr(self, "_autocast_enabled"):
