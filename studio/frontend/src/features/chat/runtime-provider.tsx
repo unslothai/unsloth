@@ -3662,8 +3662,7 @@ function ThreadContextUsageRecount({
     modelLoading,
   ]);
 
-  // A model change wipes every thread's usage, and a still-mounted chat never reruns the history
-  // loader. With a cloud model or none, no exact count follows, so refill from storage like it does.
+  // Cloud model or none: no exact count follows, and a mounted chat never reruns the history loader.
   useEffect(() => {
     // modelLoading: an external pick that cancels a local load clears usage again once the cancel lands.
     if (!enabled || !activeThreadId || runActive || modelLoading) return;
