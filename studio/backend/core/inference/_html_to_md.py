@@ -297,9 +297,10 @@ _ZERO_DECIMAL_CURRENCIES = frozenset(
 )
 _CODE_PRICE_TAIL = re.compile(r"\b([A-Z]{3})[ \u00a0\u202f]?\d(?:[\d,.'’]|[ \u00a0\u202f]\d)*$")
 # note markers that keep their plain-text form, like Wikipedia's class="reference"
-# class tokens containing these mark a note too: footnote-reference, citation, endnote-ref
-_FOOTNOTE_CLASS_PARTS = ("footnote", "noteref", "cite", "citation", "endnote")
 _FOOTNOTE_CLASSES = frozenset({"reference", "footnote", "footnote-ref", "noteref", "fn", "cite"})
+# class token parts (split on - and _) starting with these mark a note too: footnote-reference, citation
+_FOOTNOTE_CLASS_PREFIXES = ("footnote", "noteref", "cite", "citation", "endnote")
+_CLASS_PART_SPLIT = re.compile(r"[-_]")
 # deeper <sup> nests render as plain text: each tracked level rescans its whole suffix on close
 _MAX_SUP_DEPTH = 8
 
@@ -716,7 +717,9 @@ class _MarkdownRenderer(HTMLParser):
         if (
             not visible
             or "\n" in visible
-            or visible[0] in "[."
+            or visible[0] == "["
+            # $19<sup>.99</sup> is split cents; 10<sup>.5</sup> with no currency is a power
+            or (visible[0] == "." and after_price)
             or not any(c.isalnum() for c in visible)
             or visible.lower() in _PLAIN_SUFFIXES
             or (
@@ -1202,7 +1205,10 @@ class _MarkdownRenderer(HTMLParser):
             reference = (
                 any(
                     token in _FOOTNOTE_CLASSES
-                    or any(part in token for part in _FOOTNOTE_CLASS_PARTS)
+                    or any(
+                        part.startswith(_FOOTNOTE_CLASS_PREFIXES)
+                        for part in _CLASS_PART_SPLIT.split(token)
+                    )
                     for token in (attr_dict.get("class") or "").lower().split()
                 )
                 or "doc-noteref" in (attr_dict.get("role") or "").lower().split()

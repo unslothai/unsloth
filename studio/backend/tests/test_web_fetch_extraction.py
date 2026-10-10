@@ -810,6 +810,10 @@ def test_page_that_fits_keeps_its_links(monkeypatch):
         ),
         ("la D<sup>re</sup> Roy et les D<sup>res</sup>", "la Dre Roy et les Dres"),
         (
+            'x<sup class="excited">2</sup> and 10<sup>.5</sup>, $19<sup>.99</sup>',
+            "x^2 and 10^(.5), $19.99",
+        ),
+        (
             "M<sup>me</sup> Dupont, D<sup>r</sup> Martin, n<sup>o</sup> 5, Om<sup>e</sup>",
             "Mme Dupont, Dr Martin, no 5, Om^e",
         ),
