@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 import utils.hardware.hardware as hw
@@ -26,7 +28,7 @@ def smi(monkeypatch):
     monkeypatch.setattr(hw.time, "monotonic", lambda: clock["now"])
     answer = {"count": 1, "calls": 0}
 
-    def count():
+    def count(gpu_rows_only = False):
         answer["calls"] += 1
         return answer["count"]
 
@@ -91,3 +93,72 @@ def test_rocm_counts_are_never_reprobed(smi, monkeypatch):
     smi(2)
     assert hw.get_physical_gpu_count() == 1
     assert len(calls) == 1
+
+
+def test_mig_child_rows_are_not_new_gpus(monkeypatch):
+    rows = {"out": "GPU 0: NVIDIA A100 (UUID: GPU-a)\n"}
+    monkeypatch.setattr(
+        nvidia.gpu_query,
+        "run_nvidia_smi",
+        lambda argv, **kw: SimpleNamespace(returncode = 0, stdout = rows["out"]),
+    )
+    assert nvidia.get_physical_gpu_count(gpu_rows_only = True) == 1
+    rows["out"] += (
+        "  MIG 1g.5gb     Device  0: (UUID: MIG-a)\n  MIG 1g.5gb     Device  1: (UUID: MIG-b)\n"
+    )
+    assert nvidia.get_physical_gpu_count(gpu_rows_only = True) == 1
+    rows["out"] += "GPU 1: NVIDIA A100 (UUID: GPU-b)\n"
+    assert nvidia.get_physical_gpu_count(gpu_rows_only = True) == 2
+
+
+def test_the_refresh_asks_for_physical_rows_only(smi, monkeypatch):
+    seen = []
+    monkeypatch.setattr(
+        nvidia,
+        "get_physical_gpu_count",
+        lambda gpu_rows_only = False: seen.append(gpu_rows_only) or 1,
+    )
+    hw.get_physical_gpu_count()
+    smi(1)
+    hw.get_physical_gpu_count()
+    assert seen == [False, True]
+
+
+def test_the_ttl_starts_after_the_probe_returns(smi, monkeypatch):
+    def slow_probe(gpu_rows_only = False):
+        smi(1, seconds = 5.0)
+        return 1
+
+    monkeypatch.setattr(nvidia, "get_physical_gpu_count", slow_probe)
+    hw.get_physical_gpu_count()
+    # The probe took 5 s; an expiry measured from before it would re-probe 5 s early.
+    assert hw.time.monotonic() - hw._physical_gpu_count_checked_at == 0.0
+
+
+def test_the_memory_table_covers_every_parent_visible_gpu(smi, monkeypatch):
+    smi(2, seconds = 0.0)
+    monkeypatch.setattr(hw, "get_visible_gpu_count", lambda: 1)
+    monkeypatch.setattr(
+        hw, "estimate_fp16_model_size_bytes", lambda *a, **k: (8 * (1024**3), "config")
+    )
+    monkeypatch.setattr(
+        hw, "_resolve_model_identifier_for_gpu_estimate", lambda *a, **k: "unsloth/test"
+    )
+    monkeypatch.setattr(
+        hw,
+        "_load_config_for_gpu_estimate",
+        lambda *a, **k: SimpleNamespace(
+            hidden_size = 4096,
+            num_hidden_layers = 32,
+            num_attention_heads = 32,
+            num_key_value_heads = 8,
+            intermediate_size = 14336,
+            vocab_size = 128256,
+            tie_word_embeddings = False,
+        ),
+    )
+    _, metadata = hw.estimate_required_model_memory_gb(
+        "unsloth/test", training_type = "LoRA/QLoRA", load_in_4bit = True
+    )
+    assert metadata["estimation_mode"] == "detailed"
+    assert "min_per_gpu_2" in metadata["vram_breakdown"]

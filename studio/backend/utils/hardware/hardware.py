@@ -5508,7 +5508,8 @@ def estimate_required_model_memory_gb(
         metadata["estimation_mode"] = "detailed"
         metadata["attention_implementation"] = vram_config.attention_implementation
         metadata["vram_breakdown"] = breakdown.to_gb_dict()
-        max_gpus = max(1, get_visible_gpu_count())
+        # The parent-visible ids can outgrow the visible count when a GPU appears after startup; auto-selection ranks every id and reads this table.
+        max_gpus = max(1, get_visible_gpu_count(), len(get_parent_visible_gpu_ids()))
         for n_gpus in range(1, max_gpus + 1):
             metadata["vram_breakdown"][f"min_per_gpu_{n_gpus}"] = round(
                 breakdown.min_gpu_vram(n_gpus) / (1024**3), 3
@@ -5952,6 +5953,15 @@ def _smi_physical_gpu_count() -> Optional[int]:
         return None
 
 
+def _nvidia_physical_gpu_row_count() -> Optional[int]:
+    # Physical rows only: MIG instances created after startup add indented `nvidia-smi -L` rows, not GPUs.
+    try:
+        from . import nvidia
+        return nvidia.get_physical_gpu_count(gpu_rows_only = True)
+    except Exception:
+        return None
+
+
 def _refresh_physical_gpu_count() -> None:
     """Re-read a cached NVIDIA count once per TTL and keep it only if it grew: a failed probe or a lower count keeps the old one, so detection never narrows."""
     global _physical_gpu_count, _physical_gpu_count_from_smi, _physical_gpu_count_checked_at
@@ -5962,8 +5972,9 @@ def _refresh_physical_gpu_count() -> None:
     if not _physical_gpu_count_refresh_lock.acquire(blocking = False):
         return
     try:
+        count = _nvidia_physical_gpu_row_count()
+        # Stamped after the probe, so the next expiry also outlives gpu_query's own cache entry for it.
         _physical_gpu_count_checked_at = time.monotonic()
-        count = _smi_physical_gpu_count()
         previous = _physical_gpu_count
         if count is None or previous is None or count <= previous:
             return
@@ -5984,9 +5995,9 @@ def get_physical_gpu_count() -> int:
     device = get_device()
 
     if device == DeviceType.CUDA:
+        count = _smi_physical_gpu_count()
         if not IS_ROCM:
             _physical_gpu_count_checked_at = time.monotonic()
-        count = _smi_physical_gpu_count()
         if count is not None:
             _physical_gpu_count = count
             _physical_gpu_count_from_smi = True
