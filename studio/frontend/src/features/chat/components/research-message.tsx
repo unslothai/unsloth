@@ -24,6 +24,7 @@ import {
 } from "../stores/research-run-store";
 import type { ResearchMessageMetadata } from "../types/research";
 import { researchReplyOwnsRun } from "../utils/research-run-binding";
+import { researchCitation } from "../utils/research-citations";
 import { researchStatusLabel } from "./research-activity-panel";
 
 export function ResearchMessage(): ReactElement | null {
@@ -79,7 +80,7 @@ export function ResearchMessage(): ReactElement | null {
     );
   }
 
-  // A failed run's report opens with its own notice, so nothing here repeats it.
+  // failed reports include their own notice; avoid repeating it here.
   if ((run.status === "completed" || run.status === "failed") && run.report) {
     const failed = run.status === "failed";
     const sources: SourceData[] = run.sources.map((source) => ({
@@ -88,19 +89,17 @@ export function ResearchMessage(): ReactElement | null {
       title: source.title || source.url,
       description: source.snippet ?? undefined,
     }));
-    const documentSources: Citation[] = (run.documentSources ?? []).map(
-      (source, index) => ({
-        id: source.chunkId ?? String(source.id ?? index),
-        filename: source.filename,
-        page: source.page,
-        score: source.score,
-        text: source.snippet ?? "",
-        documentId: source.documentId,
-        chunkId: source.chunkId,
-      }),
-    );
+    const documentSources: Citation[] = [];
+    const mcpSources: Citation[] = [];
+    (run.documentSources ?? []).forEach((source, index) => {
+      (source.kind === "mcp" ? mcpSources : documentSources).push(
+        researchCitation(source, index),
+      );
+    });
     const documentCount = new Set(
-      documentSources.map((source) => source.documentId ?? source.filename),
+      [...documentSources, ...mcpSources].map(
+        (source) => source.documentId ?? source.filename,
+      ),
     ).size;
     const sourceCount = sources.length + documentCount;
     return (
@@ -131,6 +130,7 @@ export function ResearchMessage(): ReactElement | null {
         />
         <SourcesGroup sources={sources} allowRemoteIcons={false} />
         <DocumentSourcesGroup sources={documentSources} />
+        <DocumentSourcesGroup sources={mcpSources} label="MCP Sources" />
       </div>
     );
   }
@@ -138,7 +138,7 @@ export function ResearchMessage(): ReactElement | null {
   const failed = run.status === "failed";
   const cancelled = run.status === "cancelled";
   const needsApproval = run.status === "awaiting_approval";
-  // Name the current model call, so the long silent phases read as work rather than a stall.
+  // name the model call so long silent phases do not appear stalled.
   const liveDetail =
     runningResearchActivityTitle(session?.activities) ??
     run.plan?.title ??

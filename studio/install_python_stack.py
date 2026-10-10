@@ -182,6 +182,24 @@ def _generic_pytorch_rocm_tag(ver: tuple[int, int]) -> str | None:
     )
 
 
+# The generic bitsandbytes ROCm wheel is currently built for the rocm6.4 ABI. Keep
+# the published host-to-index mapping above literal (callers may still explicitly
+# select an older leaf), but floor automatic generic installs so torch and bnb agree.
+_GENERIC_ROCM_BNB_COMPAT_FLOOR = (6, 4)
+_GENERIC_ROCM_BNB_COMPAT_TAG = "rocm6.4"
+
+
+def _automatic_generic_pytorch_rocm_tag(ver: tuple[int, int]) -> str | None:
+    """Generic tag for an automatic install, floored to the BNB-compatible ABI."""
+    tag = _generic_pytorch_rocm_tag(ver)
+    if tag is None:
+        return None
+    key = next((k for k, candidate in _ROCM_TORCH_INDEX.items() if candidate == tag), None)
+    if key is not None and key < _GENERIC_ROCM_BNB_COMPAT_FLOOR:
+        return _GENERIC_ROCM_BNB_COMPAT_TAG
+    return tag
+
+
 _ROCM_ARCH_INDEX_FLOOR = (7, 13)  # AMD per-arch index ships torch 2.11+rocm7.13
 
 
@@ -377,17 +395,46 @@ def _windows_routes_multiarch(gfx_arch: "str | None") -> bool:
 
 
 def _multiarch_device_pack_installed(gfx_arch: "str | None") -> bool:
-    """Whether the venv carries AMD's torch and torchvision kernel packs for this card."""
+    """Whether the selected device extra is fully installed, family kernel packs included.
+    Names come from wheel metadata: family names differ between AMD releases."""
     try:
         from importlib import metadata
-        names = {
-            (d.metadata["Name"] or "").strip().lower().replace("_", "-")
-            for d in metadata.distributions()
-        }
+        from packaging.requirements import Requirement
+        from packaging.utils import canonicalize_name
+
+        gfx = _bare_gfx(gfx_arch)
+        extra = f"device-{gfx}"
+        for package in ("torch", "torchvision"):
+            root = metadata.distribution(package)
+            pending = [(root, extra)]
+            visited = set()
+            found_leaf = False
+            while pending:
+                dist, selected_extra = pending.pop()
+                key = (canonicalize_name(dist.metadata["Name"]), selected_extra)
+                if key in visited:
+                    continue
+                visited.add(key)
+                for raw in dist.requires or ():
+                    req = Requirement(raw)
+                    name = canonicalize_name(req.name)
+                    if not name.startswith(("amd-torch-device-", "amd-torchvision-device-")):
+                        continue
+                    if req.marker is not None and not req.marker.evaluate(
+                        {"extra": selected_extra}
+                    ):
+                        continue
+                    child = metadata.distribution(name)
+                    if not req.specifier.contains(child.version, prereleases = True):
+                        return False
+                    found_leaf |= name == f"amd-{package}-device-{gfx}"
+                    pending.append((child, ""))
+                    pending.extend((child, e) for e in req.extras)
+            if not found_leaf:
+                return False
+        return True
     except Exception:
         return False
-    gfx = _bare_gfx(gfx_arch)
-    return {f"amd-torch-device-{gfx}", f"amd-torchvision-device-{gfx}"} <= names
 
 
 def _windows_multiarch_torch_pkg_specs(gfx_arch: str) -> tuple[str, str, str]:
@@ -5906,6 +5953,12 @@ def _amd_torch_needs_dependency_pass() -> bool:
     # floor still needs the 7.13 fixes, and a sole gfx906 above rocm6.3 has no BLAS kernels.
     if _rocm_compat_reroute_pending(_tail_gfx, _tail_ver, _version.lower()):
         return True
+    # The generic bitsandbytes wheel is built for the rocm6.4 ABI. An automatic host therefore
+    # needs a torch reinstall when its existing generic wheel still names an older ABI;
+    # explicit pins, per-arch wheels, and gfx906 are excluded by the helper so their
+    # established routing remains authoritative.
+    if _generic_rocm_bnb_floor_pending(_tail_gfx, _detect_rocm_version(), _version.lower()):
+        return True
     return _rocm_torch_family_needs_repair(_tail_gfx, _detect_rocm_version(), _tail_host)
 
 
@@ -5960,6 +6013,34 @@ def _installed_generic_rocm_tag() -> "tuple[int, int] | None":
     return (int(_m.group(1)), int(_m.group(2))) if _m else None
 
 
+def _generic_rocm_bnb_floor_pending(
+    runtime_gfx: "str | None", host_ver: "tuple[int, int] | None", installed_ver: str
+) -> bool:
+    """Whether an automatic generic torch install predates the generic BNB ABI floor.
+
+    This is deliberately separate from ``_generic_pytorch_rocm_tag``: the latter is the
+    literal host-to-published-index resolver and remains authoritative for explicit pins.
+    Per-architecture AMD wheels own their ROCm runtime, and gfx906 keeps its legacy
+    rocm6.3-or-older path, so neither is subject to the generic BNB floor.
+    """
+    if (
+        not runtime_gfx
+        or runtime_gfx.lower() == "gfx906"
+        or host_ver is None
+        or _explicit_torch_index_url() is not None
+    ):
+        return False
+    if _torch_requires_rocm_sdk():
+        return False
+    if _generic_pytorch_rocm_tag(host_ver) is None:
+        return False
+    _installed_match = re.search(r"\+rocm(\d+)\.(\d+)", (installed_ver or "").lower())
+    if _installed_match is None:
+        return False
+    _installed_ver = (int(_installed_match.group(1)), int(_installed_match.group(2)))
+    return _installed_ver < _GENERIC_ROCM_BNB_COMPAT_FLOOR
+
+
 def _rocm_torch_family_needs_repair(
     runtime_gfx: "str | None",
     ver: "tuple[int, int] | None" = None,
@@ -6009,6 +6090,34 @@ def _rocm_torch_family_needs_repair(
     ) or _generic_only_target_below_floor(runtime_gfx, _installed_tag)
 
 
+def _windows_rocm_device_packs_need_dependency_pass() -> bool:
+    """For setup.ps1's fast path: would _ensure_rocm_torch repair this multi-arch ROCm torch?
+
+    Same gates as that repair, read from wheel metadata only; fails closed and never installs.
+    """
+    if not IS_WINDOWS or NO_TORCH or _TORCH_BACKEND in ("cuda", "cpu", "xpu"):
+        return False
+    try:
+        if (
+            _explicit_unknown_family_torch_index_url() is not None
+            or _explicit_torch_index_is_unusable()
+            or _explicit_rocm_torch_index_url() is not None
+            or _has_usable_nvidia_gpu()
+        ):
+            return False
+        gfx_arch = _detect_windows_gfx_arch()
+        if not gfx_arch or not _windows_routes_multiarch(gfx_arch):
+            return False
+        from importlib import metadata
+
+        tag = metadata.version("torch").lower().rpartition("+")[2]
+    except Exception:  # noqa: BLE001 - an unreadable host keeps the fast path
+        return False
+    if not tag.startswith("rocm"):
+        return False
+    return tag in _ROCM_MULTIARCH_BROKEN_TAGS or not _multiarch_device_pack_installed(gfx_arch)
+
+
 def _ensure_rocm_torch() -> "bool | None":
     """Reinstall torch with ROCm wheels when the venv received CPU-only torch.
 
@@ -6035,17 +6144,24 @@ def _ensure_rocm_torch() -> "bool | None":
     )
     if _explicit_torch_index_is_unusable() and (IS_WINDOWS or not _rocm_pin_unusable):
         return
-    # setup.ps1's marker; trust it only when torch imports as ROCm (a wiped venv leaves it stale).
+    # setup.ps1's marker cannot prove that the device extra is still complete.
     if os.environ.get("UNSLOTH_ROCM_TORCH_INSTALLED") == "1":
         _ran, _importable, _version, _hip, _cuda = _probe_torch_runtime()
         _torch_ok = _ran and _importable and (bool(_hip) or "rocm" in (_version or "").lower())
+        if _torch_ok and IS_WINDOWS and _explicit_rocm_torch_index_url() is None:
+            _marker_gfx = _detect_windows_gfx_arch()
+            if _windows_routes_multiarch(_marker_gfx):
+                _torch_ok = (
+                    _multiarch_device_pack_installed(_marker_gfx)
+                    and (_version or "").lower().rpartition("+")[2]
+                    not in _ROCM_MULTIARCH_BROKEN_TAGS
+                )
         if _torch_ok:
             _rocm_windows_torch_installed = True
             # ROCm torch is already installed, but bnb still needs the ROCm build
             # (pre-release wheel, else PyPI >=0.50.0).
             _install_bnb_windows_rocm()
             return
-        # torch was wiped between runs; fall through to the full install path
     if IS_MACOS:
         return
 
@@ -6077,7 +6193,7 @@ def _ensure_rocm_torch() -> "bool | None":
             and not _multiarch_device_pack_installed(gfx_arch)
         ):
             _safe_print(
-                f"   installed ROCm torch has no {gfx_arch} device pack -- reinstalling from "
+                f"   installed ROCm torch has incomplete or mismatched {gfx_arch} device packs -- reinstalling from "
                 "AMD's multi-arch index"
             )
             _torch_already_rocm = False
@@ -6322,6 +6438,7 @@ def _ensure_rocm_torch() -> "bool | None":
     # for an arch the generic wheel carries no kernels for at all.
     _arch_index_url: "str | None" = None
     _arch_index_pkgs: "tuple[str, str, str] | None" = None
+    _runtime_gfx: "str | None" = None
     # An explicit ROCm pin wins; otherwise both reroutes share one hardware probe. Skipped
     # once the inferred-arch install above has run: it resolves the same index, so re-deriving
     # it here only force-reinstalls what was just downloaded.
@@ -6585,6 +6702,23 @@ def _ensure_rocm_torch() -> "bool | None":
     # normalization, so asking it alone loses nothing, and ORing the override back in would
     # walk the no-GPU mask guard it applies above that read.
     _runtime_is_gfx906 = _runtime_target_is_gfx906()
+    # The generic bitsandbytes ROCm wheel targets the rocm6.4 ABI. Re-run the automatic
+    # generic torch selection when an existing generic wheel below that ABI would otherwise
+    # be paired with it. This is intentionally after the per-arch/missing-kernel routing and
+    # excludes explicit pins and gfx906's legacy path.
+    if (
+        rocm_torch_ready
+        and _rocm_pin is None
+        and not _inferred_arch_installed
+        and _arch_index_url is None
+        and not _runtime_is_gfx906
+        and _generic_rocm_bnb_floor_pending(_runtime_gfx, ver, _installed_torch_ver)
+    ):
+        _safe_print(
+            "   installed generic ROCm torch is below the rocm6.4 bitsandbytes ABI floor "
+            "-- reinstalling from the compatible generic index."
+        )
+        rocm_torch_ready = False
     # Reroute torch to the last gfx906-capable wheel family (rocm6.3) only when the
     # host ROCm version would otherwise pick a newer, kernel-less index -- and never
     # over an explicit pin or an active Strix reroute (the pin/Strix path installs
@@ -6666,7 +6800,20 @@ def _ensure_rocm_torch() -> "bool | None":
         elif _rocm_pin_unusable:
             tag = _pin_family
         else:
-            tag = _generic_pytorch_rocm_tag(ver)
+            # Automatic generic installs must use the ABI floor required by the
+            # generic bitsandbytes wheel, but only for a target known NOT to be gfx906:
+            # gfx906 keeps its legacy rocm6.0-6.3 path (rocm6.4 has no gfx906 BLAS
+            # kernels), and an unreadable arch might be one, so it keeps the literal
+            # resolver as before. _runtime_gfx also carries a KFD-only reading that
+            # _runtime_is_gfx906 does not see. Same gfx906 exclusion as the repair above.
+            _bnb_floor_target = (
+                bool(_runtime_gfx) and _runtime_gfx.lower() != "gfx906" and not _runtime_is_gfx906
+            )
+            tag = (
+                _automatic_generic_pytorch_rocm_tag(ver)
+                if _bnb_floor_target
+                else _generic_pytorch_rocm_tag(ver)
+            )
         if tag is None:
             _safe_print(
                 f"   No PyTorch wheel for ROCm {ver[0]}.{ver[1]} -- skipping torch reinstall"
@@ -11230,6 +11377,54 @@ def _diffusers_main_supersedes_release() -> bool:
     return _diffusers_main_requested() and _diffusers_main_resident()
 
 
+def _diffusers_main_active(req: "Path | None" = None) -> bool:
+    """Whether diffusers-main.txt has an uncommented line; an all-comment file is not "build missing"."""
+    if req is None:
+        req = REQ_ROOT / "diffusers-main.txt"
+    return _direct_reference_in_requirements(req) is not None
+
+
+def _diffusers_release_target() -> "str | None":
+    try:
+        from packaging.requirements import Requirement
+        text = (REQ_ROOT / "diffusers-pin.txt").read_text(encoding = "utf-8-sig")
+    except (ImportError, OSError, ValueError):
+        return None
+    for line in text.splitlines():
+        line = line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        try:
+            requirement = Requirement(line)
+        except Exception:  # noqa: BLE001
+            continue
+        if requirement.name.lower() != "diffusers":
+            continue
+        if requirement.marker is not None and not requirement.marker.evaluate():
+            continue
+        for spec in requirement.specifier:
+            if spec.operator == "==":
+                return spec.version
+    return None
+
+
+def _diffusers_release_behind() -> bool:
+    """Resident diffusers older than diffusers-pin.txt's ``==``; a git / zip / checkout build is judged on
+    release numbers (the main build's 0.41.0.dev0 is current), an index prerelease is not."""
+    target = _diffusers_release_target()
+    installed = _installed_distribution_version("diffusers")
+    if target is None or installed is None:
+        return False
+    direct = _recorded_direct_url("diffusers") or {}
+    built = any(k in direct for k in ("vcs_info", "archive_info", "dir_info"))
+    try:
+        from packaging.version import Version
+        have = Version(installed)
+        return (Version(have.base_version) if built else have) < Version(target)
+    except Exception:  # noqa: BLE001 - no packaging, or a version it cannot parse
+        return False
+
+
 _ARCHIVE_SHA256_RE = re.compile(r"#\s*archive-sha256:\s*([0-9a-fA-F]{64})")
 
 
@@ -11272,8 +11467,9 @@ def _diffusers_main_needs_dependency_pass() -> bool:
     github.com would repeat the whole dependency pass on every update.
     """
     req = REQ_ROOT / "diffusers-main.txt"
-    if not req.is_file():
-        return False
+    if not req.is_file() or not _diffusers_main_active(req):
+        # Not same-version damage: 11b's version check would skip it and force the pass on every update.
+        return _diffusers_release_behind() or _installed_distribution_version("diffusers") is None
     if not _diffusers_main_requested():
         # Opted out while the build is still resident: 11b puts the release back.
         return _diffusers_main_resident(req)
@@ -11305,6 +11501,41 @@ def _startup_repair_failed() -> bool:
 
 _REPAIR_LOCK_POLL_S = 5
 
+# Apart from the git key, so an old github.com failure cannot block the PyPI release.
+_DIFFUSERS_RELEASE_REPAIR_KEY = "diffusers_release_repair"
+
+
+def _release_repair_failed() -> bool:
+    try:
+        manifest = install_manifest.read_manifest() or {}
+        return manifest.get(_DIFFUSERS_RELEASE_REPAIR_KEY) == "failed"
+    except Exception:  # noqa: BLE001 - an unreadable manifest is no record of a failed try
+        return False
+
+
+def _repair_diffusers_release() -> int:
+    """11b alone for the startup self-heal, pass lock held: 0 installed, 1 nothing to do, 2 failed."""
+    global USE_UV, _STEP, _TOTAL
+    direct = _recorded_direct_url("diffusers") or {}
+    # A checkout, git or zip build is the user's: also reached by a backend that waited out a peer.
+    if any(k in direct for k in ("vcs_info", "archive_info", "dir_info")):
+        return 1
+    if not _diffusers_release_behind() or _release_repair_failed():
+        return 1
+    USE_UV = _bootstrap_uv()
+    _STEP, _TOTAL = 0, 1
+    _progress("diffusers pin")
+    installed = pip_install_try(
+        "Installing the pinned Diffusers release",
+        "--no-cache-dir",
+        req = REQ_ROOT / "diffusers-pin.txt",
+    )
+    importlib.invalidate_caches()
+    if installed and not _diffusers_release_behind():
+        return 0
+    install_manifest.update_manifest(**{_DIFFUSERS_RELEASE_REPAIR_KEY: "failed"})
+    return 2
+
 
 def _repair_diffusers_main() -> int:
     """11c on its own, for the backend's startup self-heal: 0 installed, 1 nothing to do, 2 failed.
@@ -11321,6 +11552,8 @@ def _repair_diffusers_main() -> int:
             # update leaves the pass it may be rewriting diffusers, and returning would let the backend
             # that started this import it.
             if uncontended:
+                if not _diffusers_main_active():
+                    return _repair_diffusers_release()
                 if (
                     not _diffusers_main_requested()
                     or not _diffusers_main_needs_dependency_pass()
@@ -11353,7 +11586,12 @@ def _prefetch_diffusers_main() -> int:
 
     global USE_UV
     req = REQ_ROOT / "diffusers-main.txt"
-    if (
+    release = not _diffusers_main_active(req)
+    if release:
+        # A timeout here is recorded and survivable; one inside the install refuses every start.
+        if not _diffusers_release_behind() or _release_repair_failed():
+            return 1
+    elif (
         not req.is_file()
         or not _diffusers_main_requested()
         or not _diffusers_main_needs_dependency_pass()
@@ -11371,16 +11609,22 @@ def _prefetch_diffusers_main() -> int:
         except OSError:
             pass
     # The same source _diffusers_main_step will install from, so the install hits this cache entry.
-    archive = None if _has_working_git() else _diffusers_main_archive(req)
+    archive = None if release or _has_working_git() else _diffusers_main_archive(req)
     scratch = Path(tempfile.mkdtemp(prefix = _PREFETCH_SCRATCH_PREFIX))
     temp_reqs: list[Path] = []
     try:
-        args = ("--no-deps", "--target", str(scratch))
+        args = ("--target", str(scratch)) if release else ("--no-deps", "--target", str(scratch))
+        if release:
+            req = REQ_ROOT / "diffusers-pin.txt"
         if archive is not None:
             cmd = _build_uv_cmd((*args, f"diffusers @ {archive}"))
         else:
             actual_req, temp_reqs = _effective_requirements(req)
-            cmd = _build_uv_cmd(args) + ["-r", _uv_safe_path(actual_req)]
+            # Same constraints as the install, or its resolve misses the cache.
+            constraints = (
+                ["-c", _uv_safe_path(CONSTRAINTS)] if release and CONSTRAINTS.is_file() else []
+            )
+            cmd = _build_uv_cmd(args) + constraints + ["-r", _uv_safe_path(actual_req)]
         cmd, env = _pinned_cmd_and_env(cmd)
         result = subprocess.run(
             cmd,
@@ -11423,6 +11667,10 @@ def _diffusers_main_step() -> None:
     fixed before any of this is known. An early return without a _progress leaves the bar short of
     its own total for precisely the users who opted out.
     """
+    if not _diffusers_main_active():
+        _progress("diffusers main (none pinned, skipped)")
+        _record_step("diffusers-main.txt", "skipped")
+        return
     if not _diffusers_main_requested():
         _progress("diffusers main (opted out, skipped)")
         return
@@ -12719,6 +12967,9 @@ if __name__ == "__main__":
             f"probe={_TORCH_RUNTIME_PROBE!r}"
         )
         sys.exit(0 if _needs_pass else 1)
+    if sys.argv[1:] == ["--windows-rocm-device-packs-need-dependency-pass"]:
+        # Exit 0 forces the dependency pass; exit 1 keeps the fast path.
+        sys.exit(0 if _windows_rocm_device_packs_need_dependency_pass() else 1)
     if sys.argv[1:] == ["--cuda-torch-needs-dependency-pass"]:
         # Exit 0 forces the dependency pass; exit 1 keeps the fast path.
         sys.exit(0 if _cuda_torch_needs_dependency_pass() else 1)

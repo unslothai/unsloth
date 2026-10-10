@@ -14,11 +14,11 @@ import { countChatInputTokens } from "../api/chat-api";
 import { isExternalModelId } from "../external-providers";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import type { MessageRecord } from "../types";
+import { savedBranchHead } from "./branch-head";
 import { listStoredChatMessages } from "./chat-history-storage";
 import { orderBySelectedBranch } from "./message-order";
 
-// Per thread, not per module: in compare mode a hidden pane's history load would otherwise
-// invalidate the visible thread's count, blanking the bar.
+// key generations by thread so a hidden compare pane cannot invalidate the visible count.
 const refreshGenerations = new Map<string | null, number>();
 
 function nextGeneration(threadKey: string | null): number {
@@ -206,10 +206,9 @@ export async function refreshContextUsage(
     const liveBranch = readOwnBranch();
 
     let runMessages: readonly ThreadMessage[];
-    // Re-read before publishing, so a turn sent while this count was in flight drops it.
+    // re-read before publishing so a turn sent during the count invalidates it.
     let countedBranch: string | null = null;
-    // The stored fallback's witness: storage records and ThreadMessages hash differently, so only
-    // ids survive both, and the last one moves as soon as a turn is sent.
+    // only the last id witnesses the fallback because stored and runtime records hash differently.
     let countedLastId: string | null = null;
     const fromLiveBranch = Boolean(liveBranch && liveBranch.length > 0);
     if (fromLiveBranch) {
@@ -217,24 +216,19 @@ export async function refreshContextUsage(
     } else {
       const records = threadId ? await listStoredChatMessages(threadId) : [];
       if (stale()) return;
-      runMessages = orderBySelectedBranch(records).map(
-        storedMessageToRunMessage,
-      );
+      runMessages = orderBySelectedBranch(
+        records,
+        threadId ? savedBranchHead(threadId, records) : undefined,
+      ).map(storedMessageToRunMessage);
     }
 
-    // /chat/count_tokens always 503s on images and /apply-template swaps each for a marker.
-    // Declining before the hash keeps the base64 out of it and out of a request body that can
-    // reach megabytes, both synchronous on the UI thread.
+    // /chat/count_tokens rejects images; hashing or sending their base64 can block the UI thread.
     if (messagesContainImage(runMessages)) return;
 
-    // The real request replays the newest user audio as audio_base64 but toOpenAIMessages has no
-    // audio branch, so counting would price a text-only prompt. Decline as images do.
+    // audio is omitted from toOpenAIMessages, so counting would price only its text.
     if (findLatestUserAudioBase64(runMessages)) return;
 
-    // Same for video: the request replays the clip as video_base64 and llama-server expands it
-    // into frames, while toOpenAIMessages has no video branch, so the bar would show room the
-    // window does not have. Declining also keeps up to 85 MB of base64 out of
-    // branchSignature's JSON.stringify, the same main-thread cost as the image bail.
+    // video counting misses server-side frames; declining also avoids hashing up to 85 MB.
     if (findLatestUserVideoBase64(runMessages)) return;
 
     if (fromLiveBranch) {

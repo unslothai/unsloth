@@ -26,7 +26,7 @@ None and the caller falls back to the dense download + cast. Inert with nothing 
 from __future__ import annotations
 
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Iterable, Optional
 
 # Reuse the DiT module's operator allowlist for local paths: one env var, one policy.
@@ -129,6 +129,9 @@ TE_PREQUANT_COMPONENTS = ("text_encoder", "text_encoder_2", "text_encoder_3")
 # measured encoder rather than under-stating any: an under-estimate is the expensive direction, since it lets an
 # oversized load through to the OS killer.
 TE_PREQUANT_BUDGET_SCALE = 0.65
+# The int8 ConvRot encoder alone (no fp8 fallback to cover): Qwen-Image-2.1's is 9,349,769,248 bytes against
+# 17,534,339,488 for the dense encoder, 0.533, rounded up.
+TE_INT8_CONVROT_BUDGET_SCALE = 0.56
 
 
 def te_prequant_budget_scale(
@@ -156,7 +159,24 @@ def te_prequant_budget_scale(
         )
     except Exception:  # noqa: BLE001 -- an unresolvable pre-cast just means the dense encoder
         return 1.0
-    return TE_PREQUANT_BUDGET_SCALE if sources else 1.0
+    if not sources:
+        return 1.0
+    if _int8_convrot_only(te_quant_mode, target):
+        return TE_INT8_CONVROT_BUDGET_SCALE
+    return TE_PREQUANT_BUDGET_SCALE
+
+
+def _int8_convrot_only(te_quant_mode: Optional[str], target: Any) -> bool:
+    """Whether this pick can ONLY take the int8 ConvRot file (no fp8 fallback): Apple Silicon."""
+    try:
+        from .diffusion_precision import TE_QUANT_FP8, normalize_te_quant, te_quant_supported
+        return (
+            normalize_te_quant(te_quant_mode) == "int8"
+            and int8_convrot_te_runs_on(target)
+            and not te_quant_supported(target, TE_QUANT_FP8)
+        )
+    except Exception:  # noqa: BLE001
+        return False
 
 
 # Bases whose text-encoder weights are VERIFIED byte-identical (every shard LFS sha256 compared on 2026-07-18), so one
@@ -171,6 +191,13 @@ _TE_EQUIVALENT_BASES: tuple[frozenset[str], ...] = (
             "qwen/qwen-image",
             "qwen/qwen-image-2512",
             "hunyuanvideo-community/hunyuanimage-2.1-diffusers",
+        }
+    ),
+    # Qwen3-VL-8B: one file vs four shards, but all 750 tensors byte-identical (compared 2026-10-09).
+    frozenset(
+        {
+            "qwen/qwen-image-2.1",
+            "qwen/qwen-image-2.1-turbo",
         }
     ),
     # Qwen3-4B: identical sha256 across the Krea-2 pair (compared 2026-08-25)
@@ -224,6 +251,15 @@ class TePrequantSource:
     # Names to try after ``filename``, in order, when the repo does not carry it. Only the "repo"
     # kind uses this: a local path either exists or it does not.
     fallback_filenames: tuple = ()
+
+
+def int8_convrot_te_runs_on(target: Any) -> bool:
+    """MPS runs the int8 ConvRot encoder without fp8: plain tensors, a Hadamard matmul and ``F.linear``."""
+    return getattr(target, "device", None) == "mps"
+
+
+def _is_fp8_te_name(name: Optional[str]) -> bool:
+    return bool(name) and "fp8" in str(name).lower()
 
 
 def te_prequant_repo_stem(repo_id: str, component: str, scheme: str) -> str:
@@ -398,12 +434,17 @@ def te_prequant_sources(
         denied = getattr(precision, "_te_family_denied", None)
         if callable(denied) and denied(family, mode):
             return {}
-        # int8 dequantizes to bf16 per call (no torchao) and falls back to the fp8 file: it needs what fp8 needs.
-        if not te_quant_supported(target, TE_QUANT_FP8):
+        # int8 falls back to the fp8 file, so it needs fp8; MPS runs the int8 file alone and drops the fp8 names.
+        fp8_runs = te_quant_supported(target, TE_QUANT_FP8)
+        if not fp8_runs and not (mode == "int8" and int8_convrot_te_runs_on(target)):
             return {}
         sources: dict[str, TePrequantSource] = {}
         for component in components:
             source = resolve_te_prequant_source(fam, component, mode)
+            if source is not None and not fp8_runs:
+                if source.kind == "repo" and _is_fp8_te_name(source.filename):
+                    continue
+                source = replace(source, fallback_filenames = ())
             if source is not None:
                 sources[component] = source
         return sources
@@ -473,6 +514,7 @@ def load_prequant_text_encoder(
     config_overrides: Optional[dict] = None,
     local_files_only: bool = False,
     trim_lm_head: bool = False,
+    failures: Optional[list] = None,
 ) -> Optional[Any]:
     """Load the pre-cast text encoder described by ``source`` (on CPU, for pipeline
     assembly to place), with the layerwise upcast hooks already installed.
@@ -487,7 +529,7 @@ def load_prequant_text_encoder(
     the pipeline's assembly normally passes to ``from_pretrained`` (forward-behaviour
     flags only; the state dict is unaffected by them).
     ``trim_lm_head`` builds the encoder without its untied ``lm_head`` and never reads that tensor
-    (``diffusion_text_encoder_trim``)."""
+    (``diffusion_text_encoder_trim``). ``failures`` collects the error text of a load that raised."""
     try:
         if source.kind == "path" and not _local_prequant_path_allowed(source.location):
             _warn(
@@ -648,6 +690,9 @@ def load_prequant_text_encoder(
         return encoder
     except Exception as exc:  # noqa: BLE001 - fall back to the dense download + cast
         _warn(logger, f"{scheme}:{component}:{source.kind}", exc)
+        if failures is not None:
+            # text only: the exception's traceback would pin this frame's checkpoint through the fp8 retry
+            failures.append(str(exc))
         return None
 
 
@@ -699,6 +744,7 @@ def te_prequant_pipe_kwargs(
     hf_token: Optional[str] = None,
     logger: Any = None,
     local_files_only: bool = False,
+    dense_source: Optional[str] = None,
 ) -> dict[str, Any]:
     supplied = supplied_component_pipe_kwargs(
         base,
@@ -718,6 +764,7 @@ def te_prequant_pipe_kwargs(
         logger = logger,
         local_files_only = local_files_only,
         skip_components = tuple(supplied),
+        dense_source = dense_source,
     )
     injected.update(supplied)
     return injected
@@ -734,6 +781,7 @@ def _te_prequant_pipe_kwargs(
     logger: Any = None,
     local_files_only: bool = False,
     skip_components: tuple = (),
+    dense_source: Optional[str] = None,
 ) -> dict[str, Any]:
     """Component overrides for pipeline assembly: ``{<component>: <pre-cast encoder>}``
     for every ``TE_PREQUANT_COMPONENTS`` attr the family hosts a pre-cast checkpoint for
@@ -743,10 +791,18 @@ def _te_prequant_pipe_kwargs(
     Gated exactly like the runtime cast (mode normalized, device-supported, family not
     denied), so injection can never engage where ``quantize_text_encoders`` would not.
     The later ``quantize_text_encoders`` call re-applies the cast idempotently and keeps
-    status reporting truthful."""
+    status reporting truthful.
+
+    ``dense_source`` is the local directory or repo id assembly reads without fetching (None when it can
+    still fetch). A pre-cast encoder that fails to load with no dense weights there raises: the plan left
+    those shards out of the prefetch, so assembly would die on a missing shard instead."""
+    unavailable: list[str] = []
+    failures: list = []
+    cause = ""
     try:
-        from .diffusion_precision import TE_QUANT_FP8, normalize_te_quant
+        from .diffusion_precision import TE_QUANT_FP8, normalize_te_quant, te_quant_supported
         from .diffusion_text_encoder_trim import family_trims_lm_head
+        from .media_locality import _hosted_component_cached
 
         sources = te_prequant_sources_for_base(
             fam,
@@ -760,6 +816,7 @@ def _te_prequant_pipe_kwargs(
         for component, source in sources.items():
             if component in skip_components:
                 continue
+            failures.clear()
             trim = component == "text_encoder" and family_trims_lm_head(getattr(fam, "name", None))
             encoder = load_prequant_text_encoder(
                 base,
@@ -771,6 +828,7 @@ def _te_prequant_pipe_kwargs(
                 logger = logger,
                 local_files_only = local_files_only,
                 trim_lm_head = trim,
+                failures = failures,
             )
             fp8_names = tuple(
                 n for n in te_candidate_filenames(source) if n != getattr(source, "filename", None)
@@ -780,6 +838,7 @@ def _te_prequant_pipe_kwargs(
                 and mode == "int8"
                 and source.kind == "repo"
                 and fp8_names
+                and te_quant_supported(target, TE_QUANT_FP8)
                 and _held_locally(source.location, source.filename, hf_token)
             ):
                 # The int8 file resolved but was refused: the plan dropped the dense shards, so take the fp8 names.
@@ -798,13 +857,24 @@ def _te_prequant_pipe_kwargs(
                     logger = logger,
                     local_files_only = local_files_only,
                     trim_lm_head = trim,
+                    failures = failures,
                 )
             if encoder is not None:
                 injected[component] = encoder
-        return injected
+            elif dense_source and not _hosted_component_cached(dense_source, component, "", ""):
+                unavailable.append(component)
+                cause = f" ({failures[-1]})" if failures else cause
+        if not unavailable:
+            return injected
     except Exception as exc:  # noqa: BLE001 - injection is an optimisation, never a blocker
         _warn(logger, "pipe_kwargs", exc)
         return {}
+    raise RuntimeError(
+        f"The pre-quantized {', '.join(unavailable)} for {base} could not be loaded{cause}. Its dense "
+        "weights were not downloaded because the pre-quantized copy replaces them. If memory ran out "
+        "(os error 1455 means the Windows page file is too small), close other apps or enlarge the page "
+        "file and load again, or set Text encoder precision to Dense (bf16)."
+    )
 
 
 def _held_locally(repo_id: str, name: Optional[str], hf_token: Optional[str]) -> bool:

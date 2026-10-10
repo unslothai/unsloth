@@ -1010,11 +1010,17 @@ def resolve_prequant_source(
         # Family-declared name first when there is one, then the derived chain, which puts the
         # safetensors spelling ahead of the pickle. Order-preserving dedup so a family that declares
         # exactly what the chain would derive does not make the downloader ask twice for it.
-        declared = (preferred,) if preferred else ()
+        # Declared names are the default repo's files; a variant repo gets its own spelling of each.
+        variant_repo = _is_variant_prequant_repo(fam, repo_id)
+        if variant_repo and preferred:
+            declared = (prequant_repo_filename(repo_id, scheme, ".safetensors"),)
+        else:
+            declared = (preferred,) if preferred else ()
         # rotated artifact (hosted) first, only in its own repo; the plain chain stays behind it (offline, older caches)
         from .diffusion_transformer_quant import (
             convrot_prequant_filename,
             convrot_prequant_repo,
+            convrot_prequant_variant_repo,
             int8_convrot_enabled,
         )
 
@@ -1022,6 +1028,13 @@ def resolve_prequant_source(
         rotated = convrot_prequant_filename(scheme, fam_name)
         rotated_repo = convrot_prequant_repo(scheme, fam_name)
         if (
+            variant_repo
+            and convrot_prequant_variant_repo(scheme, fam_name, repo_id)
+            and int8_convrot_enabled(fam_name)
+        ):
+            # A variant repo listed as hosting its own rotated build, named like its derived chain.
+            declared = (prequant_repo_filename(repo_id, scheme, "-ConvRot.safetensors"),) + declared
+        elif (
             rotated
             and rotated_repo
             and str(repo_id).strip().lower() == rotated_repo.lower()
@@ -1042,6 +1055,23 @@ def resolve_prequant_source(
             declared_filenames = declared,
         )
     return None
+
+
+def _is_variant_prequant_repo(fam: Any, repo_id: Optional[str]) -> bool:
+    """Whether ``repo_id`` is one of ``fam``'s per-base variant repos and not one of its default repos."""
+    key = str(repo_id or "").strip().lower()
+    if not key:
+        return False
+    try:
+        defaults = {str(r).strip().lower() for _s, r in getattr(fam, "prequant_repos", ()) or ()}
+        variants = {
+            str(e[2]).strip().lower()
+            for e in getattr(fam, "prequant_variant_repos", ()) or ()
+            if len(e) == 3
+        }
+    except Exception:  # noqa: BLE001 - a malformed table keeps the declared names, today's behaviour
+        return False
+    return key in variants and key not in defaults
 
 
 def _comfy_prequant_family(fam: Any) -> bool:
