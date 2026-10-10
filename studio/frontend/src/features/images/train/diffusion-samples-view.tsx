@@ -64,8 +64,7 @@ function SampleImage({
   );
 }
 
-// Fixed-seed previews per step: the newest round by default (it follows a live run until the user picks a step),
-// with a step strip to compare rounds.
+// Newest round by default (follows a live run until the user picks a step).
 export function DiffusionSamples({
   jobId,
   samples,

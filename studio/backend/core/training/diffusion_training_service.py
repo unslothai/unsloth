@@ -390,12 +390,11 @@ def _idle_state() -> dict[str, Any]:
         # stay index-aligned.
         "metric_video_loss": [],
         "metric_audio_loss": [],
-        # Preview images ({step, path, prompt, seed}), path relative to output_dir; see diffusion_samples.
         "samples": [],
     }
 
 
-# A round per sample_every steps; past this the oldest half after the step-0 baseline is thinned, like the metrics.
+# Past this the oldest half after the step-0 baseline is thinned, like the metrics.
 _SAMPLES_CAP = 400
 
 
@@ -405,8 +404,7 @@ def _append_samples(
     images: Any,
     output_dir: Optional[str] = None,
 ) -> None:
-    """Fold one ``sample`` event; past _SAMPLES_CAP the thinned rounds' images are deleted too, so
-    every file on disk stays listed (and reachable by the discard cleanup)."""
+    """Fold one ``sample`` event; thinned rounds' images are deleted so every file on disk stays listed."""
     from core.training.diffusion_samples import SAMPLE_PATH_RE, delete_sample_files
 
     try:
@@ -955,7 +953,7 @@ class DiffusionTrainingService:
             )
             self._state["checkpoint_path"] = None
             self._state["checkpoint_step"] = None
-            # Their files are deleted (here, or by the child before it reported), so listing them would serve 404s.
+            # Their files are deleted, so listing them would serve 404s.
             self._state["samples"] = []
             self._own_checkpoints = []
         if samples:

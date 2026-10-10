@@ -501,7 +501,6 @@ export function DiffusionTrainPanel({
   // Periodic resume points. 0 (off) keeps the default: only a stop-and-save writes one, so nothing
   // is spent on disk unless asked.
   const [saveSteps, setSaveSteps] = useState(0);
-  // Fixed-seed previews every N steps (0 = off), one prompt per line; blank uses the trigger prompt.
   const [sampleEvery, setSampleEvery] = useState(0);
   const [samplePromptsText, setSamplePromptsText] = useState("");
   // LR schedule. Warmup applies only to non-constant schedules. Seeded from the family, which is

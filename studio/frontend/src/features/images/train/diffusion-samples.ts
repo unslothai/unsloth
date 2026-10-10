@@ -8,7 +8,6 @@ export const MAX_SAMPLE_PROMPTS = 4;
 
 const LINE_BREAK = /\r?\n/;
 
-/** One prompt per line; blank lines dropped, capped at the backend's limit. */
 export function parseSamplePrompts(text: string): string[] {
   return text
     .split(LINE_BREAK)

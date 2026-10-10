@@ -1107,8 +1107,7 @@ class DiffusionMetricHistory(BaseModel):
 
 
 class DiffusionSampleImage(BaseModel):
-    """One preview image a run rendered; ``path`` is relative to the run's output_dir and is served by
-    GET /api/train/diffusion/runs/{job_id}/sample?path=..."""
+    """One preview image; ``path`` is relative to the run's output_dir."""
 
     step: int
     path: str

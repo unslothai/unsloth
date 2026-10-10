@@ -625,9 +625,8 @@ export interface DiffusionTrainingStartRequest {
   // stop-and-save always writes one, so Resume stays available either way.
   save_steps?: number;
   save_total_limit?: number;
-  // Render fixed-seed preview images every N steps (plus step 0 and the last step); 0 renders none.
+  // Plus step 0 and the last step; 0 renders none.
   sample_every?: number;
-  // Up to 4 preview prompts; empty uses the trigger prompt, else the first caption.
   sample_prompts?: string[];
   // Continue a previous run: its output_dir, or one explicit checkpoint-<N> directory inside it. train_steps then
   // means the TARGET TOTAL, so a checkpoint at 11 with train_steps 500 runs 12..500.
@@ -696,7 +695,7 @@ export interface DiffusionTrainingStatus {
   resumed_from_step?: number | null;
   // Bounded step/loss/lr history for the live charts.
   metric_history?: DiffusionMetricHistory | null;
-  // Preview images rendered so far. Absent on an older backend.
+  // Absent on an older backend.
   samples?: DiffusionSampleImage[];
 }
 

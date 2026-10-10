@@ -1043,10 +1043,9 @@ class DiffusionLoraConfig:
     save_steps: int = 0
     # How many checkpoint-<N> bundles to keep in the output dir; 0 keeps every one.
     save_total_limit: int = 2
-    # Render fixed-seed preview images every N optimizer steps (diffusion_samples); 0 disables. Not part of the resume
-    # identity: previews never touch the training math.
+    # 0 disables. Not part of the resume identity: previews never touch the training math.
     sample_every: int = 0
-    # Up to MAX_SAMPLE_PROMPTS prompts, one image each; empty uses the instance prompt, else the first caption.
+    # Empty uses the instance prompt, else the first caption.
     sample_prompts: tuple[str, ...] = ()
     # The run's output_dir, or one of its checkpoint-<N> directories; the start route resolves and validates it before
     # the trainer spawns.

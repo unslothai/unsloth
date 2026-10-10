@@ -491,7 +491,6 @@ def run_diffusion_lora_training(
                 return str(out_dir)
             else:
                 if sample_plan is not None:
-                    # Parked on the host between preview rounds, so the training loop's VRAM is unchanged.
                     sample_vae = vae.to("cpu")
                 try:
                     pipe.vae = None
@@ -655,7 +654,7 @@ def run_diffusion_lora_training(
             except Exception:  # noqa: BLE001
                 pass
             if resumed < cfg.train_steps:
-                # The baseline every later preview is compared against: step 0, or the step a resume restored.
+                # Baseline: step 0, or the step a resume restored.
                 _sample(resumed)
 
         for opt_step in range(resumed, cfg.train_steps):

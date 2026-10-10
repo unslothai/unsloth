@@ -1,17 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Fixed-seed preview images rendered during diffusion LoRA training (opt-in via ``sample_every``).
-
-Loss does not show likeness or overfitting, so every N optimizer steps the trainer renders the same
-prompts from the same seeds with the live adapter. A round never touches training state: it runs
-under ``torch.random.fork_rng`` (the CPU and accelerator generators come back exactly as they were),
-draws its own noise from a private ``torch.Generator``, never steps the training scheduler (a fresh
-copy is built from its config), and runs a compiled transformer eagerly
-(``torch.compiler.set_stance("force_eager")``) so the training graph is neither recompiled nor
-replaced. Images land under ``<output_dir>/samples/<run tag>/step-<N>-<i>.png``; the tag is per
-run, so a retrain into the same folder never overwrites or mixes in another run's previews.
-"""
+"""Fixed-seed preview images during diffusion LoRA training. A round never touches training state:
+fork_rng, private noise generator, a fresh scheduler copy, and force_eager for a compiled model."""
 
 from __future__ import annotations
 
@@ -24,17 +15,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-# Image families with a sampling path. Video families (LTX-2, MiniMax-H3) are left out: a preview there is a clip
-# with an audio stream, not a cheap still.
+# Video families are left out: a preview there is a clip with audio, not a cheap still.
 SAMPLE_FAMILIES: frozenset[str] = frozenset(
     {"sdxl", "z-image", "flux.1", "flux.2-klein", "flux.2-dev", "qwen-image", "krea-2"}
 )
 MAX_SAMPLE_PROMPTS = 4
 MAX_SAMPLE_PROMPT_CHARS = 1000
-# Previews stay modest: training resolutions above this render at it (aspect is square either way).
 MAX_SAMPLE_RESOLUTION = 768
 SAMPLES_DIRNAME = "samples"
-# The relative path every reported sample has; the route serves nothing else.
 SAMPLE_PATH_RE = re.compile(
     r"^samples/[0-9]{8}-[0-9]{6}-[0-9a-f]{6}/step-[0-9]{1,6}-[0-9]{1,2}\.png$"
 )
@@ -58,8 +46,7 @@ def validate_sample_settings(
     if any(len(p) > MAX_SAMPLE_PROMPT_CHARS for p in prompts):
         raise ValueError(f"sample prompts must be at most {MAX_SAMPLE_PROMPT_CHARS} characters")
     if every and family not in SAMPLE_FAMILIES:
-        # Refused, not ignored, like save_steps on a checkpointless family: a silently ignored setting reads as
-        # "sampling is broken".
+        # Refused, not ignored: a silently ignored setting reads as "sampling is broken".
         raise ValueError(f"sample images are not supported for {family}; set sample_every to 0")
     return every, prompts
 
@@ -86,8 +73,7 @@ class SampleSettings:
 
 
 def sample_inference_settings(family: str, base_model: str) -> SampleSettings:
-    """A preview's schedule: the family's distilled setting when the base is a distilled checkpoint,
-    else a short undistilled schedule at the pipeline's default guidance."""
+    """Distilled setting for a distilled base, else a short schedule at the pipeline's default guidance."""
     name = (base_model or "").lower()
     mode = _CFG_MODES.get(family, "uncond")
     if family == "sdxl":
@@ -177,8 +163,7 @@ class SamplePlan:
 
 
 def plan_samples(cfg: Any, family: str, captions: list[str]) -> Optional[SamplePlan]:
-    """The run's sample plan, or None when sampling is off. Default prompt: the instance prompt,
-    else the first caption."""
+    """The run's sample plan, or None when sampling is off."""
     every = int(getattr(cfg, "sample_every", 0) or 0)
     if every <= 0 or family not in SAMPLE_FAMILIES:
         return None
@@ -212,8 +197,7 @@ def sample_seed(plan: SamplePlan, index: int) -> int:
 
 @contextmanager
 def isolated_sampling(device: str, compiled: bool):
-    """No-grad, RNG-isolated and (for a compiled model) eager. The RNG fork is what keeps a run with
-    sampling on bit-identical to one with it off."""
+    """No-grad, RNG-isolated (keeps runs bit-identical with sampling on or off), eager when compiled."""
     import torch
 
     devices: list = []
@@ -232,8 +216,7 @@ def isolated_sampling(device: str, compiled: bool):
 
 
 def initial_noise(plan: SamplePlan, index: int, shape, device):
-    """Fixed-seed fp32 noise from a private CPU generator, so it is the same on every step and every
-    device and never draws from the training streams."""
+    """Fixed-seed fp32 noise from a private CPU generator; never draws from the training streams."""
     import torch
 
     gen = torch.Generator(device = "cpu").manual_seed(sample_seed(plan, index))
@@ -247,9 +230,7 @@ def flow_sigmas(
     image_seq_len: int,
     mu: Optional[float] = None,
 ):
-    """The family's inference sigma schedule (N+1 values ending at 0), from a FRESH scheduler built
-    from the training one's config: set_timesteps on the training scheduler would rewrite the
-    tables the loop draws its timesteps from."""
+    """Inference sigmas from a FRESH scheduler: set_timesteps on the training one rewrites its tables."""
     import numpy as np
     import torch
     from diffusers import FlowMatchEulerDiscreteScheduler
@@ -278,7 +259,6 @@ def flow_sigmas(
 
 
 def to_pil(images):
-    """[B,3,H,W] in [-1, 1] -> PIL images."""
     import torch
     from PIL import Image
 
@@ -323,9 +303,7 @@ def _run_dirs(base: Path, relpaths: list) -> set:
 
 
 def discard_sample_paths(output_dir: Optional[str], relpaths: list) -> None:
-    """Parent-side twin of ``discard_samples`` for a child that died before cleaning up: removes the
-    whole per-run folder the run's reported paths live in (thinned images included), then
-    ``samples/`` if that leaves it empty."""
+    """Parent-side ``discard_samples`` for a child that died before cleaning up."""
     if not output_dir:
         return
     base = Path(output_dir)
@@ -365,9 +343,7 @@ def run_sample_round(
     emit,
     stop_requested: Optional[Callable[[], bool]] = None,
 ) -> bool:
-    """Render every prompt via ``render(index, prompt) -> [1,3,H,W] in [-1,1]``, save, and emit one
-    ``sample`` event. A stop between prompts (or a render raising SampleRoundStopped) ends the round
-    early, keeping the images already finished. Returns True when the round was cut short."""
+    """Render, save and emit each prompt; a stop keeps finished images. True when cut short."""
     t0 = time.time()
     images = []
     stopped = False

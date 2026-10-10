@@ -170,12 +170,9 @@ class _FamilySpec:
     forward: Callable[..., Any]
     # Save the LoRA in diffusers format via the family pipeline's save_lora_weights.
     save: Callable[..., None]
-    # Sample images (diffusion_samples): (vae, height, width) -> (initial latent shape for one image, packed image
-    # sequence length for the schedule's shift), and the inverse of encode_latents to [B,3,H,W] pixels. None (video)
-    # means the family has no sampling path.
+    # (vae, h, w) -> (latent shape, packed seq len for the shift), and latents -> pixels. None = no sampling path.
     latent_shape: Optional[Callable[..., tuple]] = None
     decode_latents: Optional[Callable[..., Any]] = None
-    # Extra keyword arguments the forward takes only when sampling (FLUX.1's guidance embedding).
     sample_forward_kwargs: Optional[dict] = None
 
 
@@ -737,7 +734,7 @@ def _flux_forward(
     pe, pooled, text_ids = embeds_batch
     bsz, c, h, w = noisy.shape
     packed = FluxPipeline._pack_latents(noisy, bsz, c, h, w)
-    # Training feeds guidance 1.0 (the diffusers dreambooth convention); sampling feeds the inference 3.5.
+    # Training feeds guidance 1.0 (diffusers dreambooth convention); sampling feeds the inference 3.5.
     img_ids, guidance = _flux_static_inputs(bsz, h, w, device, guidance)
     model_pred = transformer(
         hidden_states = packed,
@@ -2055,8 +2052,7 @@ def _train_dit(
     # the captions (the encoders are freed right after).
     cfg_dropout = float(getattr(cfg, "cfg_dropout", 0.0) or 0.0)
     to_encode = uniq + ([""] if cfg_dropout > 0 and "" not in uniq else [])
-    # Sample prompts are encoded in the same pass but kept in their own dict: caption_embeds feeds the qwen compile
-    # pad bucket, which must not grow because a preview prompt is longer than every caption.
+    # Own dict: caption_embeds sizes the qwen compile pad bucket, which a long preview prompt must not grow.
     sample_plan = plan_samples(cfg, spec.family, captions) if spec.decode_latents else None
     sample_texts = sample_plan.encode_texts if sample_plan is not None else []
     sample_embeds: dict = {}
@@ -2150,8 +2146,7 @@ def _train_dit(
                     discarded = not _save_on_stop(),
                 )
                 return str(out_dir)
-    # Previews decode with the VAE: parked on the host between rounds when the latent cache would have freed it, so
-    # the training loop's VRAM is unchanged.
+    # VAE parked on the host between rounds when the latent cache would have freed it: training VRAM unchanged.
     sample_vae = vae if sample_plan is not None else None
     if sample_vae is not None and latent_cache is not None:
         sample_vae.to("cpu")
@@ -2407,7 +2402,7 @@ def _train_dit(
                     torch.xpu.empty_cache()
 
     if sample_plan is not None and resumed < cfg.train_steps:
-        # The baseline every later preview is compared against: step 0, or the step a resume restored.
+        # Baseline: step 0, or the step a resume restored.
         _sample(resumed)
 
     for opt_step in range(resumed, cfg.train_steps):
