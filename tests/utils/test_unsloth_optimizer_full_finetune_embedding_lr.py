@@ -236,3 +236,13 @@ def test_q_galore_embeddings_get_embedding_learning_rate():
     assert lrs["model.embed_tokens.weight"] == EMBEDDING_LR, lrs
     assert lrs["lm_head.weight"] == EMBEDDING_LR, lrs
     assert lrs["model.proj.weight"] == LR, lrs
+
+
+def test_lm_head_without_an_output_getter_still_gets_embedding_learning_rate():
+    torch = pytest.importorskip("torch")
+    model = _model(torch.nn, tied = False)
+    model.get_output_embeddings = lambda: None  # transformers 4.x default
+    lrs = _lr_by_name(torch, model)
+
+    assert lrs["lm_head.weight"] == EMBEDDING_LR, lrs
+    assert lrs["model.proj.weight"] == LR, lrs

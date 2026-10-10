@@ -723,6 +723,10 @@ def _embedding_weight_ids(model):
                 continue
             if weight is not None:
                 embedding_ids.add(id(weight))
+        # transformers 4.x's default get_output_embeddings returns None even with an lm_head.
+        weight = getattr(getattr(owner, "lm_head", None), "weight", None)
+        if weight is not None:
+            embedding_ids.add(id(weight))
     return embedding_ids
 
 
