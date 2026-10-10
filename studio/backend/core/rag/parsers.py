@@ -63,6 +63,10 @@ _HTML_ROW_GROUPS = frozenset(("thead", "tbody", "tfoot"))
 _HTML_TABLE_DEPTH = 32
 
 
+class _HtmlPre(str):
+    pass
+
+
 class _HtmlTable:
     def __init__(
         self,
@@ -137,7 +141,15 @@ class _Stripper(HTMLParser):
                     below.append(line)
                 else:
                     parent.append(line)
-            cells.append(" ".join(" ".join(line.split()) for line in parent))
+            parts: list[str] = []
+            previous_pre = False
+            for line in parent:
+                is_pre = isinstance(line, _HtmlPre)
+                if parts:
+                    parts.append("\n" if previous_pre or is_pre else " ")
+                parts.append(str(line) if is_pre else " ".join(line.split()))
+                previous_pre = is_pre
+            cells.append("".join(parts))
         if any(cells):
             table.sink.append(" | ".join(cells))
         table.sink.extend(below)
@@ -175,7 +187,7 @@ class _Stripper(HTMLParser):
         # whitespace inside <pre>/<textarea> is content; elsewhere it is layout
         text = text.strip("\n") if self._pre else " ".join(text.split())
         if text.strip():
-            self.out.append(text)
+            self.out.append(_HtmlPre(text) if self._pre else text)
 
     def handle_starttag(self, tag, attrs):
         if tag == "template":

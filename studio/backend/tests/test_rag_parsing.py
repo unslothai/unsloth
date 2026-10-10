@@ -819,6 +819,14 @@ def test_html_trailing_rowspan_keeps_columns_aligned(tmp_path):
     assert text == "Item | Notes\nNext | "
 
 
+def test_html_table_preserves_preformatted_cell_whitespace(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        "<table><tr><td><pre>a\n b<br>  c</pre></td><td>d</td></tr></table>",
+    )
+    assert text == "a\n b\n  c | d"
+
+
 def test_html_layout_and_nested_tables_keep_their_lines(tmp_path):
     text = _parse_html(
         tmp_path,
