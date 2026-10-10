@@ -209,7 +209,10 @@ def _sharegpt_tool_turns(conversation, content = "", probe = False):
                     # A JSON string keeps explicit nulls through _drop_none_values.
                     if not isinstance(arguments, str):
                         arguments = json.dumps(arguments, ensure_ascii = False)
+                    name = call["name"]
                     if probe:
+                        markers.append(f"unslothname{len(markers)}end")
+                        name = markers[-1]
                         markers.append(f"unslothcall{len(markers)}end")
                         arguments = json.dumps({"probe": markers[-1]})
                     calls_made += 1
@@ -218,7 +221,7 @@ def _sharegpt_tool_turns(conversation, content = "", probe = False):
                             # Nine alphanumerics, as Mistral requires.
                             "id": f"call{calls_made:05d}",
                             "type": "function",
-                            "function": {"name": call["name"], "arguments": arguments},
+                            "function": {"name": name, "arguments": arguments},
                         }
                     )
                 message = {"role": "assistant", "content": content, "tool_calls": tool_calls}
@@ -233,40 +236,38 @@ def _sharegpt_tool_turns(conversation, content = "", probe = False):
     return turns, markers
 
 
-def _each_call_has_a_result(turns):
-    for index, message in enumerate(turns):
+def _one_call_per_message(turns):
+    # Results stay where they are: interleaving them would reorder the source, and a shared
+    # result cannot be split.
+    split = []
+    for message in turns:
         calls = message.get("tool_calls") if isinstance(message, dict) else None
-        if not calls or len(calls) < 2:
-            continue
-        results = 0
-        for following in turns[index + 1 :]:
-            if not (isinstance(following, dict) and following.get("role") == "tool"):
-                break
-            results += 1
-        if results != len(calls):
-            return False
-    return True
+        if calls and len(calls) > 1:
+            split.extend(
+                {**message, "tool_calls": [call], "content": message["content"] if not i else ""}
+                for i, call in enumerate(calls)
+            )
+        else:
+            split.append(message)
+    return split if len(split) != len(turns) else turns
 
 
 def _render_conversation(tokenizer, conversation):
-    from core.inference.chat_template_helpers import _split_parallel_tool_calls
-
     candidates = []
-    # None content for templates that render calls only then (DeepSeek); parallel calls split
-    # for templates taking one per message (Llama 3.x), only when each call has its own result,
-    # as one shared result would land after the first call alone.
+    # None content for templates that render calls only then (DeepSeek); one call per message
+    # for templates taking no more (Llama 3.x, gpt-oss).
     for content in ("", None):
         turns, _ = _sharegpt_tool_turns(conversation, content)
         if turns is conversation:
             break
         probe, markers = _sharegpt_tool_turns(conversation, content, probe = True)
         candidates.append((turns, probe, markers))
-        split = _split_parallel_tool_calls(turns)
-        if split is not turns and _each_call_has_a_result(turns):
-            candidates.append((split, _split_parallel_tool_calls(probe), markers))
+        split = _one_call_per_message(turns)
+        if split is not turns:
+            candidates.append((split, _one_call_per_message(probe), markers))
     for turns, probe, markers in candidates:
-        # The markers show every call and result survived: templates may ignore tool_calls
-        # (plain ChatML), drop tool turns, or render only the first call (gpt-oss).
+        # The markers show every call name, arguments and result survived: templates may ignore
+        # tool_calls (plain ChatML), drop tool turns, or render only the first call (gpt-oss).
         try:
             shown = _render_messages(tokenizer, probe)
             if all(marker in shown for marker in markers):

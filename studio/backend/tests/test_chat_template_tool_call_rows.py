@@ -348,11 +348,11 @@ def test_sharegpt_parallel_calls_are_split_for_one_call_templates():
     text = result["dataset"][0]["text"]
     paris = text.index('{"name": "get_weather", "parameters": {"city": "Paris"}}')
     rome = text.index('{"name": "get_time", "parameters": {"city": "Rome"}}')
-    assert paris < text.index('{"temp": 18}') < rome < text.index('{"time": "noon"}')
+    assert paris < rome < text.index('{"temp": 18}') < text.index('{"time": "noon"}')
     assert "function_call" not in text
 
 
-def test_sharegpt_parallel_calls_sharing_one_result_are_not_reordered():
+def test_sharegpt_parallel_calls_sharing_one_result_render_natively_in_order():
     call = json.dumps(
         [
             {"name": "get_weather", "arguments": {"city": "Paris"}},
@@ -362,8 +362,10 @@ def test_sharegpt_parallel_calls_sharing_one_result_are_not_reordered():
 
     result = _format_sharegpt([_sharegpt_tool_row(call)], _LLAMA3_TEMPLATE)
 
+    assert result["success"] is True, result["errors"]
     text = result["dataset"][0]["text"]
     assert text.index("Rome") < text.index('{"temp": 18}')
+    assert "function_call" not in text
 
 
 def test_sharegpt_repeated_call_name_is_not_lost_on_a_first_call_only_template():
@@ -445,3 +447,17 @@ def test_sharegpt_repeated_call_with_only_boolean_arguments_is_not_lost():
 
     text = result["dataset"][0]["text"]
     assert '{"on": true}' in text and '{"on": false}' in text
+
+
+def test_sharegpt_call_is_kept_when_the_template_omits_the_function_name():
+    no_names = (
+        "{%- for message in messages %}"
+        "{%- if message.tool_calls %}{{- '<call>' + message.tool_calls[0].function.arguments }}"
+        "{%- else %}{{- '<' + message.role + '>' + message.content }}{%- endif %}"
+        "{%- endfor %}"
+    )
+    call = json.dumps({"name": "get_weather", "arguments": {"city": "Paris"}})
+
+    result = _format_sharegpt([_sharegpt_tool_row(call)], no_names)
+
+    assert "get_weather" in result["dataset"][0]["text"]
