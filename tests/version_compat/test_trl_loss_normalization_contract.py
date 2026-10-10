@@ -156,8 +156,31 @@ def test_explicit_loss_type_still_wins():
 
     if not hasattr(trl.SFTConfig, "loss_type"):
         pytest.skip("this TRL has no SFTConfig.loss_type")
-    cfg = trl.SFTConfig(output_dir = "unused", loss_type = "chunked_nll")
-    assert cfg.loss_type == "chunked_nll", "explicit loss_type was clobbered"
+    for wanted in ("chunked_nll", "dft"):
+        cfg = trl.SFTConfig(output_dir = "unused", loss_type = wanted)
+        assert cfg.loss_type == _trl_resolves(wanted), "explicit loss_type was clobbered"
+
+
+def _trl_resolves(wanted):
+    """What TRL itself makes of an explicit loss_type, so only Unsloth's own rewrites count.
+
+    TRL 1.15 deprecated "chunked_nll" as an alias of "nll" and rewrites it in its own
+    __post_init__, announcing that with a FutureWarning naming the old value. Read the
+    alias from that warning rather than from a version number.
+    """
+    import warnings
+
+    pristine = _pristine_sft_config_cls()
+    with warnings.catch_warnings(record = True) as caught:
+        warnings.simplefilter("always")
+        got = pristine(output_dir = "unused", loss_type = wanted).loss_type
+    aliased = any(
+        issubclass(w.category, FutureWarning)
+        and repr(wanted) in str(w.message)
+        and "deprecated" in str(w.message)
+        for w in caught
+    )
+    return got if aliased else wanted
 
 
 def _skip_if_unsloth_refuses_grpo():
@@ -229,7 +252,11 @@ def test_pristine_trl_sft_config_keeps_an_explicit_loss_type():
 
     for wanted in ("chunked_nll", "dft"):
         got = pristine(output_dir = "unused", loss_type = wanted).loss_type
-        assert got == wanted, f"explicit loss_type {wanted!r} was clobbered to {got!r}"
+        assert got == _trl_resolves(
+            wanted
+        ), f"explicit loss_type {wanted!r} was clobbered to {got!r}"
+    # "dft" is not an alias on any TRL, so it must always come back unchanged.
+    assert _trl_resolves("dft") == "dft"
 
 
 def test_dataclass_field_default_is_nll_for_hfargumentparser():

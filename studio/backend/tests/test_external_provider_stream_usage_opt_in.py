@@ -105,8 +105,14 @@ def test_an_ollama_connection_receives_the_usage_chunk():
     assert _usage_chunks(opted_in) == [_USAGE]
 
 
+def test_a_qwen_connection_receives_the_usage_chunk():
+    opted_in, body = _proxy("qwen", stream_options = {"include_usage": True})
+    assert body["stream_options"] == {"include_usage": True}
+    assert _usage_chunks(opted_in) == [_USAGE]
+
+
 def test_the_opt_in_does_not_reach_a_custom_endpoint():
-    # custom endpoints omit upstream usage requests because strict endpoints reject the field with HTTP 400.
+    # strict custom endpoints reject upstream usage requests with HTTP 400.
     _, opted_in = _proxy("custom", stream_options = {"include_usage": True})
     _, plain = _proxy("custom")
     assert opted_in == plain

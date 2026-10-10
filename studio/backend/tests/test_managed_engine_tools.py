@@ -289,6 +289,33 @@ def test_run_automatically_streams_arm_the_no_sandbox_gate(native, monkeypatch):
     assert seen == [True]
 
 
+@pytest.mark.parametrize("dedup", [None, False, True])
+def test_deduplicate_tool_calls_reaches_the_managed_loop(native, monkeypatch, dedup):
+    from core.inference import studio_tool_loop
+    from routes import managed_engine_chat
+
+    seen = []
+    original = managed_engine_chat.stream_with_studio_tools
+
+    def capture(*args, **kwargs):
+        seen.append(kwargs["policy"].deduplicate_tool_calls is not False)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(managed_engine_chat, "stream_with_studio_tools", capture)
+    monkeypatch.setattr(studio_tool_loop, "execute_tool", lambda *a, **k: "3973")
+    extra = {} if dedup is None else {"deduplicate_tool_calls": dedup}
+    run(
+        route_test._request(
+            enable_tools = True,
+            enabled_tools = ["python"],
+            permission_mode = "off",
+            max_tool_calls_per_message = 1,
+            **extra,
+        )
+    )
+    assert seen == [dedup is not False]
+
+
 @pytest.mark.parametrize(
     "choice", ["auto", "required", "none", {"type": "function", "function": {"name": "lookup"}}]
 )

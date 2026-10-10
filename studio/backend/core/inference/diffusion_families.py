@@ -160,10 +160,10 @@ class DiffusionFamily:
     # covers variants whose weights differ. Resolution prefers an exact variant match, then falls back to
     # ``prequant_repos``.
     prequant_variant_repos: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
-    # Bases (lowercased) with NO hosted checkpoint, which must not inherit ``prequant_repos``: the family fallback
-    # names an artifact baked from different weights, and planning acts on it before the load's base_model_id check
-    # can refuse it. Only for a base whose weights genuinely differ from the default.
+    # Lowercased bases with different weights: never inherit ``prequant_repos``; their variant rows still win.
     prequant_excluded_bases: tuple[str, ...] = field(default_factory = tuple)
+    # Variant bases a repo id or GGUF name can select when no card ``base_model`` tag resolves one.
+    named_variant_bases: tuple[str, ...] = field(default_factory = tuple)
     # Preferred checkpoint FILENAME for a scheme, as (scheme, filename), overriding the ``<Model>-<SCHEME>.pt`` name
     # ``prequant_repo_filename`` derives. The derived name stays on as the fallback, so a repo hosting BOTH an old and
     # a new artifact serves the new one to a build that asks for it by name and the old one to every build that does
@@ -526,6 +526,14 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ("fp8", "unsloth/Qwen-Image-2.1-FP8"),
             ("nvfp4", "unsloth/Qwen-Image-2.1-NVFP4"),
         ),
+        # Turbo's own checkpoints (a different distill); derived names (2.1's plus -Turbo) resolve them.
+        prequant_variant_repos = (
+            ("qwen/qwen-image-2.1-turbo", "int8", "unsloth/Qwen-Image-2.1-Turbo-FP8"),
+            ("qwen/qwen-image-2.1-turbo", "fp8", "unsloth/Qwen-Image-2.1-Turbo-FP8"),
+        ),
+        # 2.1's artifacts are baked from 2.1's denoiser: for nvfp4 Turbo quantizes its own weights.
+        prequant_excluded_bases = ("qwen/qwen-image-2.1-turbo",),
+        named_variant_bases = ("Qwen/Qwen-Image-2.1-Turbo",),
         # The artifacts are safetensors, not the historical torch.save pickle, so the family has to
         # NAME them: every derived fallback ends in .pt, and without these rows the loader would ask
         # the Hub for a file that is not there and silently fall back to the dense bf16 download.
@@ -1080,6 +1088,27 @@ def upstream_is_gated(repo_id: Optional[str]) -> bool:
     return (repo_id or "").strip().lower() in _GATED_UPSTREAMS
 
 
+def named_variant_base(fam: "DiffusionFamily", *names: Optional[str]) -> Optional[str]:
+    """The longest ``fam.named_variant_bases`` entry ``names`` spell (separators folded), or None. The last, most
+    specific name decides first; one spelling the plain base stops the search (a 2.1 file in a Turbo repo stays 2.1)."""
+
+    def fold(text: Optional[str]) -> str:
+        return "".join(c for c in (text or "").lower() if c.isalnum())
+
+    variants = [
+        (b, fold(b.rsplit("/", 1)[-1])) for b in getattr(fam, "named_variant_bases", ()) or ()
+    ]
+    plain = fold((getattr(fam, "base_repo", "") or "").rsplit("/", 1)[-1])
+    for name in reversed([n for n in names if n]):
+        identity = fold(name)
+        hits = [b for b, key in variants if key and key in identity]
+        if hits:
+            return max(hits, key = len)
+        if plain and plain in identity:
+            return None
+    return None
+
+
 def canonical_base(repo_id: Optional[str]) -> str:
     """A mirror id mapped back to the upstream it copies, else ``repo_id`` unchanged. Base-keyed
     tables hold UPSTREAM ids, so every lookup normalises here: a mirror reaching
@@ -1330,7 +1359,11 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("flux.2-klein-base", 20, 5.0),
     ("flux.2-klein", 4, 1.0),
     ("flux.2-dev", 20, 4.0),  # full (non-distilled)
-    # Before the generic qwen-image key (also the two below).
+    # Before the generic qwen-image key, Turbo before 2.1; qwenimage21 has no separator to fold, hence its own row.
+    ("qwen-image-2.1-turbo", 8, 1.0),
+    ("qwen-image-21-turbo", 8, 1.0),
+    ("qwenimage21-turbo", 8, 1.0),
+    ("qwenimage21turbo", 8, 1.0),
     ("qwen-image-2.1", 25, 1.0),
     ("qwen-image-21", 25, 1.0),
     ("qwen_image_21", 25, 1.0),
@@ -1414,15 +1447,30 @@ def transformer_variant_differs_from_base(
     return base_row is not None and _first_variant(rows, identifiers) not in (None, base_row)
 
 
-def default_generation_params(*identifiers: Optional[str]) -> tuple[int, float]:
-    """Default ``(steps, guidance)`` for a loaded model. The first identifier naming a known model
-    wins (repo id, then resolved base repo), so a local-path load still resolves via its base
-    repo. Keys matched as substrings, most specific first."""
+def named_generation_params(*identifiers: Optional[str]) -> Optional[tuple[int, float]]:
+    """``(steps, guidance)`` of the first identifier naming a known model (a local path resolves via its base), or None."""
     for identifier in identifiers:
         needle = (identifier or "").lower()
         for key, steps, guidance in _GENERATION_DEFAULTS:
             if name_key_in(key, needle):
                 return steps, guidance
+    return None
+
+
+def default_generation_params(*identifiers: Optional[str]) -> tuple[int, float]:
+    """:func:`named_generation_params`, else the generic fallback."""
+    return named_generation_params(*identifiers) or _GENERATION_DEFAULT_FALLBACK
+
+
+def generation_params_with_grid(
+    grid: Optional[tuple[float, ...]], *identifiers: Optional[str]
+) -> tuple[int, float]:
+    """:func:`default_generation_params`, but an unnamed load with a shipped grid runs the grid's own step count."""
+    named = named_generation_params(*identifiers)
+    if named is not None:
+        return named
+    if grid:
+        return len(grid), _GENERATION_DEFAULT_FALLBACK[1]
     return _GENERATION_DEFAULT_FALLBACK
 
 
@@ -1442,16 +1490,26 @@ def family_prequant_repo(
         return None
     # Both tables are keyed on lowercased upstream ids.
     base = canonical_base(base_repo).lower()
+    named = named_variant_base(fam, base_repo) if base else None
+    if named and named.lower() != base:
+        # A local copy naming a variant: its row if the loader's tail compare accepts it, else none (never 2.1's).
+        if (
+            base.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+            != named.lower().rsplit("/", 1)[-1]
+        ):
+            return None
+        base = named.lower()
     if base:
         # getattr, because the video loader calls this with a VideoFamily, which has no such field. A plain attribute
         # read raises AttributeError, resolve_prequant_source swallows it in its bare except and hands back None, and
         # every video family silently loses its hosted prequant checkpoint to the dense path whenever a base_repo is
         # passed.
-        if base in (getattr(fam, "prequant_excluded_bases", ()) or ()):
-            return None
+        # A variant row beats the exclusion: an excluded base may host its own checkpoints for some schemes.
         for entry_base, entry_scheme, repo_id in fam.prequant_variant_repos:
             if entry_base == base and entry_scheme == scheme:
                 return repo_id
+        if base in (getattr(fam, "prequant_excluded_bases", ()) or ()):
+            return None
     for entry_scheme, repo_id in fam.prequant_repos:
         if entry_scheme == scheme:
             return repo_id

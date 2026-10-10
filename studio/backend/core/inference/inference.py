@@ -1221,6 +1221,7 @@ class InferenceBackend:
         rag_scope: Optional[dict] = None,
         presence_penalty: float = 0.0,
         reasoning_prefilled: bool = False,
+        deduplicate_tool_calls: bool = True,
     ):
         """Run an agentic tool loop on top of ``generate_chat_response``.
 
@@ -1308,6 +1309,7 @@ class InferenceBackend:
             execute_tool = execute_tool,
             cancel_event = cancel_event,
             auto_heal_tool_calls = auto_heal_tool_calls,
+            deduplicate_tool_calls = deduplicate_tool_calls,
             nudge_tool_calls = nudge_tool_calls,
             max_tool_iterations = max_tool_iterations,
             tool_call_timeout = tool_call_timeout,
@@ -2962,7 +2964,7 @@ class InferenceBackend:
 
         logger.info(f"Sending {len(chat_messages)} messages to tokenizer:")
         for i, msg in enumerate(chat_messages):
-            logger.info(f"  {i}: {msg['role']} - {msg['content'][:50]}...")
+            logger.debug(f"  {i}: {msg['role']} - {msg['content'][:50]}...")
 
         try:
             formatted_prompt = render_prompt_with_boundary(
@@ -2995,7 +2997,7 @@ class InferenceBackend:
                 template_type,
                 chat_template_info.get("special_tokens", {}),
             )
-            logger.info(f"Manual template result: {manual_prompt[:200]}...")
+            logger.debug(f"Manual template result: {manual_prompt[:200]}...")
         else:
             logger.info("Using generic chat formatting for base model")
             manual_prompt = self._format_generic_template(manual_messages, {})
