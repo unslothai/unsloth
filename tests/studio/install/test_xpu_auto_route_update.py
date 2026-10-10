@@ -20,8 +20,25 @@ sys.modules[_SPEC.name] = stack
 _SPEC.loader.exec_module(stack)
 
 
+def _pci(monkeypatch, tmp_path, *devices):
+    """A fake PCI tree of (vendor, device, class) functions."""
+    root = tmp_path / "pci"
+    root.mkdir(exist_ok = True)
+    for old in root.iterdir():
+        for f in old.iterdir():
+            f.unlink()
+        old.rmdir()
+    for i, (vendor, device, cls) in enumerate(devices):
+        d = root / f"0000:{i:02x}:00.0"
+        d.mkdir()
+        (d / "vendor").write_text(vendor + "\n")
+        (d / "device").write_text(device + "\n")
+        (d / "class").write_text(cls + "\n")
+    monkeypatch.setattr(stack, "_PCI_DEVICES_ROOT", str(root), raising = False)
+
+
 @pytest.fixture(autouse = True)
-def _linux(monkeypatch):
+def _linux(monkeypatch, tmp_path):
     monkeypatch.setattr(stack, "NO_TORCH", False)
     monkeypatch.setattr(stack, "IS_MACOS", False)
     monkeypatch.setattr(stack, "IS_WINDOWS", False)
@@ -29,6 +46,9 @@ def _linux(monkeypatch):
         monkeypatch.delenv(var, raising = False)
     monkeypatch.setattr(stack, "_has_usable_nvidia_gpu", lambda: False)
     monkeypatch.setattr(stack, "_has_rocm_gpu", lambda: False)
+    for var in ("ZE_AFFINITY_MASK", "UNSLOTH_DISABLE_XPU_AUTO", "UNSLOTH_ROCM_GFX_ARCH"):
+        monkeypatch.delenv(var, raising = False)
+    _pci(monkeypatch, tmp_path, ("0x8086", "0x56a0", "0x030000"))
     stack._invalidate_torch_runtime_probe()
     yield
     stack._invalidate_torch_runtime_probe()
@@ -116,3 +136,49 @@ def test_setup_sh_forces_the_pass_on_a_stale_xpu_wheel():
     stack_src = (ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
     assert setup.count("--xpu-torch-needs-dependency-pass") == 2
     assert 'sys.argv[1:] == ["--xpu-torch-needs-dependency-pass"]' in stack_src
+
+
+@pytest.mark.parametrize("backend, recorded", [("xpu", None), ("", "xpu")])
+@pytest.mark.parametrize(
+    "case",
+    ["intel gone", "non-Arc iGPU only", "AMD beside Arc", "mask set", "emptied mask", "opt-out"],
+)
+def test_the_unpinned_route_is_revalidated(monkeypatch, tmp_path, backend, recorded, case):
+    if case == "intel gone":
+        _pci(monkeypatch, tmp_path)
+    elif case == "non-Arc iGPU only":
+        _pci(monkeypatch, tmp_path, ("0x8086", "0x46a6", "0x030000"))
+    elif case == "AMD beside Arc":
+        _pci(monkeypatch, tmp_path, ("0x8086", "0x56a0", "0x030000"), ("0x1002", "0x744c", "0x030000"))
+    elif case == "mask set":
+        monkeypatch.setenv("ZE_AFFINITY_MASK", "0")
+    elif case == "emptied mask":
+        monkeypatch.setenv("ZE_AFFINITY_MASK", "")
+    else:
+        monkeypatch.setenv("UNSLOTH_DISABLE_XPU_AUTO", "1")
+    assert not _run(backend, recorded).called
+
+
+def test_an_explicit_pin_stays_authoritative(monkeypatch, tmp_path):
+    _pci(monkeypatch, tmp_path)
+    monkeypatch.setenv("ZE_AFFINITY_MASK", "0")
+    monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", "xpu")
+    assert _run("", None).called
+
+
+def test_the_allowlist_matches_hardware_py():
+    import ast
+
+    def tables(path):
+        out = {}
+        for node in ast.parse(path.read_text(encoding = "utf-8")).body:
+            if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name):
+                name = node.targets[0].id
+                if name in ("_INTEL_XPU_PCI_ID_RANGES", "_INTEL_XPU_PCI_IDS"):
+                    value = node.value.args[0] if isinstance(node.value, ast.Call) else node.value
+                    out[name] = set(ast.literal_eval(value))
+        return out
+
+    hardware = tables(ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py")
+    assert tables(ROOT / "studio" / "install_python_stack.py") == hardware
+    assert len(hardware) == 2

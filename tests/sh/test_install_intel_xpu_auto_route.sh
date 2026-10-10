@@ -10,6 +10,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$SCRIPT_DIR/../.."
 INSTALL_SH="${INSTALL_SH:-$ROOT/install.sh}"
 HARDWARE_PY="$ROOT/studio/backend/utils/hardware/hardware.py"
+STACK_PY="$ROOT/studio/install_python_stack.py"
 
 _TMP=$(mktemp -d)
 trap 'rm -rf "${_TMP:?}"' EXIT
@@ -117,7 +118,10 @@ cell "Arc + opt-out -> cpu" cpu "" UNSLOTH_DISABLE_XPU_AUTO=1
 cell "Arc + declared AMD arch -> cpu" cpu "" UNSLOTH_ROCM_GFX_ARCH=gfx1100
 cell "Arc + emptied ZE_AFFINITY_MASK -> cpu" cpu "" ZE_AFFINITY_MASK=
 cell "Arc + ZE_AFFINITY_MASK=-1 -> cpu" cpu "" ZE_AFFINITY_MASK=-1
-cell "Arc + ZE_AFFINITY_MASK=0 -> xpu" xpu "" ZE_AFFINITY_MASK=0
+cell "Arc + ZE_AFFINITY_MASK=0 -> cpu (indices need not follow PCI order)" cpu "" ZE_AFFINITY_MASK=0
+cell "Arc + ZE_AFFINITY_MASK=0 + xpu pin -> xpu" xpu "" ZE_AFFINITY_MASK=0 UNSLOTH_TORCH_INDEX_FAMILY=xpu
+_mask_info=$(env -i HOME="$_TMP" PATH="$_TOOLS" ZE_AFFINITY_MASK=0 bash -c ". '$_FUNC_FILE'; _ARCH=x86_64; get_torch_index_url" 2>&1 >/dev/null)
+assert_contains "a set mask names the pin to use" "$_mask_info" "UNSLOTH_TORCH_INDEX_FAMILY=xpu"
 cell "Arc + emptied mask + xpu pin -> xpu" xpu "" ZE_AFFINITY_MASK= UNSLOTH_TORCH_INDEX_FAMILY=xpu
 _info=$(env -i HOME="$_TMP" PATH="$_TOOLS" bash -c ". '$_FUNC_FILE'; _ARCH=x86_64; get_torch_index_url" 2>&1 >/dev/null)
 assert_contains "route prints the device and the opt-out" "$_info" "Intel GPU (0x56a0) detected"
@@ -127,16 +131,22 @@ make_uname aarch64
 cell "Arc on aarch64 -> cpu" cpu ""
 make_uname x86_64
 
-# The shell allowlist is Studio's: every id the Python table accepts, and its bounds' neighbours.
+# One allowlist in three places: hardware.py, install_python_stack.py (update-time revalidation) and
+# the shell. The Python tables must be equal; the shell is probed on every id and bound neighbour.
 if command -v python3 >/dev/null 2>&1 && grep -q "^_intel_xpu_gpu_id()" "$_FUNC_FILE"; then
-    _pairs=$(python3 - "$HARDWARE_PY" <<'PY'
+    _pairs=$(python3 - "$HARDWARE_PY" "$STACK_PY" <<'PY'
 import ast, sys
-tree = ast.parse(open(sys.argv[1], encoding="utf-8").read())
-vals = {}
-for node in tree.body:
-    if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name):
-        if node.targets[0].id in ("_INTEL_XPU_PCI_ID_RANGES", "_INTEL_XPU_PCI_IDS"):
-            vals[node.targets[0].id] = ast.literal_eval(node.value.args[0] if isinstance(node.value, ast.Call) else node.value)
+def tables(path):
+    out = {}
+    for node in ast.parse(open(path, encoding="utf-8").read()).body:
+        if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name):
+            if node.targets[0].id in ("_INTEL_XPU_PCI_ID_RANGES", "_INTEL_XPU_PCI_IDS"):
+                out[node.targets[0].id] = ast.literal_eval(node.value.args[0] if isinstance(node.value, ast.Call) else node.value)
+    return out
+vals = tables(sys.argv[1])
+stack = tables(sys.argv[2])
+if {k: set(v) for k, v in stack.items()} != {k: set(v) for k, v in vals.items()}:
+    print("STACK_DIFFERS")
 ids = set(vals["_INTEL_XPU_PCI_IDS"])
 for lo, hi in vals["_INTEL_XPU_PCI_ID_RANGES"]:
     ids.update((lo, hi, (lo + hi) // 2))
@@ -149,6 +159,8 @@ for i in sorted(probe):
 PY
 )
     _mismatch=""
+    case "$_pairs" in *STACK_DIFFERS*) _mismatch=" install_python_stack.py" ;; esac
+    _pairs=$(printf '%s\n' "$_pairs" | grep -v STACK_DIFFERS)
     while read -r _id _want; do
         rm -rf "$_PCI"; add_pci 0000:03:00.0 0x8086 "$_id" 0x030000
         _got=$(env -i PATH="$_TOOLS" bash -c ". '$_FUNC_FILE'; _intel_xpu_gpu_id >/dev/null && echo yes || echo no")
@@ -156,7 +168,7 @@ PY
     done <<EOF
 $_pairs
 EOF
-    assert_eq "shell allowlist matches hardware.py ($(printf '%s\n' "$_pairs" | wc -l | tr -d ' ') ids)" "" "$_mismatch"
+    assert_eq "shell and install_python_stack.py allowlists match hardware.py ($(printf '%s\n' "$_pairs" | wc -l | tr -d ' ') ids)" "" "$_mismatch"
 fi
 
 summary

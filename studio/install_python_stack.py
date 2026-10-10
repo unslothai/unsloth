@@ -4619,6 +4619,43 @@ def _ensure_cuda_torch(*, probe_only: bool = False) -> "bool | None":
     )
 
 
+# Same allowlist as studio/backend/utils/hardware/hardware.py and install.sh's _intel_xpu_gpu_id.
+_INTEL_XPU_PCI_ID_RANGES = ((0x5690, 0x56C2), (0x0B69, 0x0BE5), (0xE200, 0xE2FF))
+_INTEL_XPU_PCI_IDS = frozenset((0x7D55, 0x7D51, 0x64A0, 0xB080, 0xB081, 0xB082, 0xB083))
+_PCI_DEVICES_ROOT = "/sys/bus/pci/devices"
+
+
+def _intel_xpu_auto_route_holds() -> bool:
+    """install.sh's Intel XPU auto route, re-asked now: opt-out, ZE_AFFINITY_MASK, AMD silicon, and
+    an allowlisted Intel display device on the PCI bus."""
+    if os.environ.get("UNSLOTH_DISABLE_XPU_AUTO", "0") == "1":
+        return False
+    if "ZE_AFFINITY_MASK" in os.environ or os.environ.get("UNSLOTH_ROCM_GFX_ARCH"):
+        return False
+    intel = False
+    try:
+        devices = sorted(Path(_PCI_DEVICES_ROOT).iterdir())
+    except OSError:
+        return False
+    for dev in devices:
+        try:
+            vendor = (dev / "vendor").read_text().strip().lower()
+            if not (dev / "class").read_text().strip().lower().startswith("0x03"):
+                continue
+            if vendor == "0x1002":
+                return False
+            if vendor != "0x8086":
+                continue
+            device_id = int((dev / "device").read_text().strip(), 16)
+        except (OSError, ValueError):
+            continue
+        if device_id in _INTEL_XPU_PCI_IDS or any(
+            lo <= device_id <= hi for lo, hi in _INTEL_XPU_PCI_ID_RANGES
+        ):
+            intel = True
+    return intel
+
+
 def _ensure_xpu_torch(probe_only: bool = False) -> "bool | None":
     """Install XPU torch when an XPU pin, or install.sh's Intel GPU route, is not what the venv has.
 
@@ -4645,6 +4682,9 @@ def _ensure_xpu_torch(probe_only: bool = False) -> "bool | None":
             return
         # A recorded XPU flavor yields to an NVIDIA or AMD GPU added since.
         if not _TORCH_BACKEND and (_has_usable_nvidia_gpu() or _has_rocm_gpu()):
+            return
+        # Unpinned, the route must still hold: Intel GPU present, not masked, not opted out.
+        if not _intel_xpu_auto_route_holds():
             return
         pin = _pytorch_whl_leaf_url("xpu")  # None: the mirror cannot express it; False below
         _source = "this install selected XPU torch for its Intel GPU"
