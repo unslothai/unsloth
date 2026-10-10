@@ -99,7 +99,8 @@ def _sources(project: Optional[dict]) -> list[tuple[tuple[Path, ...], Optional[P
     sources.append(((root / "AGENTS.md", root / "CLAUDE.md"), None))
     # Where the chat's tools run, so the model can keep notes there; after the user's file, which it refines.
     sandbox_path = project.get("sandboxPath")
-    if sandbox_path and os.path.realpath(sandbox_path) != os.path.realpath(root):
+    # Same containment tools._get_project_workdir requires before running anything there.
+    if sandbox_path and os.path.realpath(sandbox_path).startswith(os.path.realpath(root) + os.sep):
         sandbox = Path(sandbox_path)
         sources.append(((sandbox / "AGENTS.md", sandbox / "CLAUDE.md"), sandbox))
     return sources

@@ -140,3 +140,17 @@ def test_sandbox_hard_link_and_fifo_are_not_read(home):
         (sandbox / "AGENTS.md").unlink()
         os.mkfifo(sandbox / "AGENTS.md")
         assert agents_md.agents_md_text(project) == ""
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason = "symlinks need admin or developer mode on Windows"
+)
+def test_sandbox_outside_the_project_is_not_read(home):
+    # Same layout tools._get_project_workdir refuses: sandbox linked out of the project folder.
+    (home / "host/elsewhere").mkdir()
+    _write(home / "host/elsewhere/AGENTS.md", "outside rules")
+    root = home / "linked"
+    root.mkdir()
+    os.symlink(home / "host/elsewhere", root / "sandbox")
+    project = {"rootPath": str(root), "sandboxPath": str(root / "sandbox"), "archived": False}
+    assert agents_md.agents_md_text(project) == ""
