@@ -221,11 +221,15 @@ def _base_sample_sigmas(
         )
         from core.inference.diffusion_comfy_components import read_model_index
 
+        card_base = None
         if not explicit_base and not local_files_only:
             tag = _hf_base_model(repo_id, hf_token)
             # Same trust bar as the diffusers resolver: the tag is repo-author metadata.
             if tag and _is_trusted_diffusion_repo(tag):
-                base = canonical_base(tag)
+                base = card_base = canonical_base(tag)
+        elif not explicit_base:
+            # Cache-only (e.g. the OpenAI route's auto-switch): the base an earlier online load took from the card.
+            base = _linked_grid_base(repo_id, base) or base
         index = read_model_index(
             base,
             hf_token = hf_token,
@@ -236,11 +240,37 @@ def _base_sample_sigmas(
         logger.debug("sd_cpp.sample_sigmas_unavailable: %s", exc)
         return None, base
     grid = valid_sample_sigmas(index.get(SAMPLE_SIGMAS_KEY) if isinstance(index, dict) else None)
+    if grid is not None and card_base:
+        try:
+            from hub.utils.companion_assets import record_companion_link
+
+            record_companion_link(repo_id, card_base)
+        except Exception as exc:  # noqa: BLE001 - bookkeeping only
+            logger.debug("sd_cpp.grid_base_link_failed: %s", exc)
     if grid is not None:
         logger.info(
             "sd_cpp: %s ships a %d-step sampling grid; passing it as custom sigmas", base, len(grid)
         )
     return grid, base
+
+
+def _linked_grid_base(repo_id: str, default_base: str) -> Optional[str]:
+    """The most recently linked trusted base of ``repo_id`` whose cached model_index.json ships a grid, or None."""
+    from core.inference.diffusion import _is_trusted_diffusion_repo, hub_cache_dir
+    from core.inference.diffusion_comfy_components import read_model_index
+    from hub.utils.companion_assets import read_companion_links
+
+    links = read_companion_links().get(repo_id.strip().lower(), [])
+    for candidate in reversed(links):
+        if candidate == default_base or not _is_trusted_diffusion_repo(candidate):
+            continue
+        try:
+            index = read_model_index(candidate, local_files_only = True, cache_dir = hub_cache_dir())
+        except Exception:  # noqa: BLE001 - an uncached index carries no grid
+            continue
+        if isinstance(index, dict) and valid_sample_sigmas(index.get(SAMPLE_SIGMAS_KEY)) is not None:
+            return canonical_base(candidate)
+    return None
 
 
 def _default_threads() -> int:

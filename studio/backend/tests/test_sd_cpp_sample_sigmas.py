@@ -121,8 +121,18 @@ def _patch_hub(monkeypatch, *, card_base, indexes):
             raise FileNotFoundError(base)
         return indexes[base]
 
+    from hub.utils import companion_assets
+
+    links: dict = {}
+    calls["links"] = links
     monkeypatch.setattr(diffusion_mod, "_hf_base_model", _card)
     monkeypatch.setattr(comfy_components, "read_model_index", _index)
+    monkeypatch.setattr(companion_assets, "read_companion_links", lambda: {k: list(v) for k, v in links.items()})
+    monkeypatch.setattr(
+        companion_assets,
+        "record_companion_link",
+        lambda repo, base: links.setdefault(repo.strip().lower(), []).append(base) or True,
+    )
     return calls
 
 
@@ -210,3 +220,17 @@ def test_other_families_never_read_the_card_or_index(monkeypatch):
         is None
     )
     assert calls["card"] == 0 and calls["index"] == []
+
+
+def test_a_cache_only_reload_recovers_the_card_base_an_online_load_linked(monkeypatch):
+    calls = _patch_hub(monkeypatch, card_base = "Qwen/Qwen-Image-2.1-Turbo", indexes = INDEXES)
+    kw = dict(family = FAM.name, explicit_base = False)
+    assert bk._base_sample_sigmas(REPO, FAM.base_repo, None, local_files_only = False, **kw)[0] == TURBO_GRID
+    cards = calls["card"]
+    # The OpenAI route's auto-switch reloads cache-only with no base: no card read, same grid and base.
+    grid, base = bk._base_sample_sigmas(REPO, FAM.base_repo, None, local_files_only = True, **kw)
+    assert grid == TURBO_GRID and base == "Qwen/Qwen-Image-2.1-Turbo"
+    assert calls["card"] == cards
+    # An untrusted link is never read.
+    calls["links"][REPO.lower()] = ["someone/evil"]
+    assert bk._base_sample_sigmas(REPO, FAM.base_repo, None, local_files_only = True, **kw)[0] is None
