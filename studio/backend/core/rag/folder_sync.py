@@ -48,19 +48,17 @@ _last_job_account: str | None = None
 _folder_locks: weakref.WeakValueDictionary[str, threading.RLock] = weakref.WeakValueDictionary()
 _scope_locks: weakref.WeakValueDictionary[str, threading.RLock] = weakref.WeakValueDictionary()
 _named_locks_lock = threading.Lock()
-# In-process stop signal for a folder whose sync still holds rag.db. Unlink's BEGIN IMMEDIATE
-# cannot land while ingest writes, so the worker polls this without needing the writer lock.
-_folder_cancels: dict[str, threading.Event] = {}
+# Folders being unlinked, read by the worker without rag.db: an ingest can hold the writer past the
+# default 5 s busy_timeout, so the retire write alone could not stop it (#13095).
+_folder_cancels: set[str] = set()
 _folder_cancels_lock = threading.Lock()
-# Unlink / cancel must outwait a figure-heavy or embedding write; the default 5s busy_timeout is
-# what turned Stop into "database is locked" for the reporter of #13095.
-_CANCEL_BUSY_TIMEOUT_MS = 30_000
-_CANCEL_LOCK_ATTEMPTS = 8
+_UNLINK_BUSY_TIMEOUT_MS = 30_000
 _retirement_schema_lock = threading.Lock()
 _TERMINAL = {"completed", "failed"}
 _MAX_FOLDER_DEPTH = 64
 _MAX_NAMED_FAILURES = 3
 _MAX_WITHHELD_PATHS = 500
+_FAILED_RETRY_S = 6 * 3600
 _JOB_EVENT_KEEPALIVE_S = 4.0
 _SQLITE_INTEGER_MAX = (1 << 63) - 1
 # Dependency, VCS and cache trees would flood the index with third-party source.
@@ -105,7 +103,7 @@ class _SyncStopped(Exception):
 
 
 class _SyncCancelled(Exception):
-    """The user asked to stop indexing this linked folder."""
+    pass
 
 
 class _LeaseLost(Exception):
@@ -133,46 +131,18 @@ class _PendingIngestion:
 
 
 def request_cancel(folder_id: str) -> None:
-    """Ask the sync worker to stop this folder without needing a SQLite write lock."""
     with _folder_cancels_lock:
-        event = _folder_cancels.get(folder_id)
-        if event is None:
-            event = threading.Event()
-            _folder_cancels[folder_id] = event
-        event.set()
-    _wake.set()
+        _folder_cancels.add(folder_id)
 
 
 def clear_cancel(folder_id: str) -> None:
-    """Drop a prior cancel so a fresh sync is not born already stopped."""
     with _folder_cancels_lock:
-        _folder_cancels.pop(folder_id, None)
+        _folder_cancels.discard(folder_id)
 
 
 def is_cancel_requested(folder_id: str | None) -> bool:
-    if not folder_id:
-        return False
     with _folder_cancels_lock:
-        event = _folder_cancels.get(folder_id)
-        return event is not None and event.is_set()
-
-
-def _begin_immediate_for_cancel(conn) -> None:
-    """Acquire a writer lock while an ingest may still be holding rag.db (#13095)."""
-    conn.execute(f"PRAGMA busy_timeout = {_CANCEL_BUSY_TIMEOUT_MS}")
-    last_exc: sqlite3.OperationalError | None = None
-    for attempt in range(_CANCEL_LOCK_ATTEMPTS):
-        try:
-            conn.execute("BEGIN IMMEDIATE")
-            return
-        except sqlite3.OperationalError as exc:
-            if "locked" not in str(exc).lower():
-                raise
-            last_exc = exc
-            # Give the ingest thread time to notice the cancel Event and drop its write.
-            time.sleep(0.05 * (attempt + 1))
-    assert last_exc is not None
-    raise last_exc
+        return folder_id in _folder_cancels
 
 
 def _folder_lock(folder_id: str) -> threading.RLock:
@@ -623,83 +593,40 @@ def _reconcile_retired_folder_deletions() -> None:
 
 
 def delete_folder(folder_id: str, *, remove_index: bool = True) -> bool:
-    # Signal the worker before fighting for BEGIN IMMEDIATE: a figure-heavy or embedding write can
-    # hold rag.db past the default 5s busy_timeout, which is what turned Unlink into 500 for #13095.
     request_cancel(folder_id)
-    conn = rag_db.get_connection()
     try:
-        _begin_immediate_for_cancel(conn)
-        if conn.execute("SELECT 1 FROM linked_folders WHERE id=?", (folder_id,)).fetchone() is None:
-            conn.rollback()
-            return False
-        conn.execute(
-            "UPDATE linked_folders SET auto_sync=0, status='retired', "
-            "delete_remove_index=COALESCE(delete_remove_index, ?), updated_at=? WHERE id=?",
-            (int(remove_index), _now(), folder_id),
-        )
-        conn.execute(
-            "UPDATE linked_folder_sync_jobs SET status='failed', stage='error', "
-            "error='Linked folder was removed', completed_at=? "
-            "WHERE folder_id=? AND status IN ('pending','running')",
-            (_now(), folder_id),
-        )
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
-    while _delete_retired_folder(folder_id) is False:
-        time.sleep(0.05)
-    clear_cancel(folder_id)
-    return True
-
-
-def cancel_folder_sync(folder_id: str) -> dict | None:
-    """Stop in-flight indexing without unlinking the folder. Returns the latest job row."""
-    request_cancel(folder_id)
-    with _folder_lock(folder_id):
         conn = rag_db.get_connection()
         try:
-            _begin_immediate_for_cancel(conn)
-            folder = conn.execute(
-                "SELECT status, delete_remove_index FROM linked_folders WHERE id=?", (folder_id,)
-            ).fetchone()
-            if folder is None:
+            conn.execute(f"PRAGMA busy_timeout = {_UNLINK_BUSY_TIMEOUT_MS}")
+            conn.execute("BEGIN IMMEDIATE")
+            if (
+                conn.execute("SELECT 1 FROM linked_folders WHERE id=?", (folder_id,)).fetchone()
+                is None
+            ):
                 conn.rollback()
-                return None
-            if folder["status"] == "retired" or folder["delete_remove_index"] is not None:
-                conn.rollback()
-                return get_job_for_folder(folder_id)
+                return False
+            conn.execute(
+                "UPDATE linked_folders SET auto_sync=0, status='retired', "
+                "delete_remove_index=COALESCE(delete_remove_index, ?), updated_at=? WHERE id=?",
+                (int(remove_index), _now(), folder_id),
+            )
             conn.execute(
                 "UPDATE linked_folder_sync_jobs SET status='failed', stage='error', "
-                "error='Indexing was stopped', completed_at=? "
+                "error='Linked folder was removed', completed_at=? "
                 "WHERE folder_id=? AND status IN ('pending','running')",
                 (_now(), folder_id),
             )
-            conn.execute(
-                "UPDATE linked_folders SET status='ready', last_error=NULL, updated_at=? "
-                "WHERE id=? AND delete_remove_index IS NULL",
-                (_now(), folder_id),
-            )
             conn.commit()
-            _prune_terminal_jobs(conn)
         except Exception:
             conn.rollback()
             raise
         finally:
             conn.close()
-    return get_job_for_folder(folder_id)
-
-
-def get_job_for_folder(folder_id: str) -> dict | None:
-    with closing(rag_db.get_connection()) as conn:
-        row = conn.execute(
-            "SELECT * FROM linked_folder_sync_jobs WHERE folder_id=? "
-            "ORDER BY created_at DESC LIMIT 1",
-            (folder_id,),
-        ).fetchone()
-        return dict(row) if row is not None else None
+        while _delete_retired_folder(folder_id) is False:
+            time.sleep(0.05)
+        return True
+    finally:
+        clear_cancel(folder_id)
 
 
 def _retirement_connection():
@@ -1045,8 +972,6 @@ def _fold_into_active_job(conn, active, kind: str) -> None:
 
 
 def _request_sync(folder_id: str, *, rebuild: bool = False) -> str:
-    # A prior Stop must not leave the Event set, or this sync is born already cancelled.
-    clear_cancel(folder_id)
     job_id = str(uuid.uuid4())
     with closing(rag_db.get_connection()) as conn:
         conn.execute("BEGIN IMMEDIATE")
@@ -1059,6 +984,7 @@ def _request_sync(folder_id: str, *, rebuild: bool = False) -> str:
             or folder["delete_remove_index"] is not None
         ):
             raise KeyError(folder_id)
+        conn.execute("UPDATE linked_folders SET failed_files=NULL WHERE id=?", (folder_id,))
         active = conn.execute(
             "SELECT id, kind, status FROM linked_folder_sync_jobs WHERE folder_id=? "
             "AND status IN ('pending','running') ORDER BY created_at LIMIT 1",
@@ -1286,9 +1212,7 @@ def _check_running() -> None:
     stop_event = getattr(_worker_state, "stop_event", _stop)
     if stop_event.is_set():
         raise _SyncStopped
-    # Cancel is process-local so Unlink / Stop can land without waiting on rag.db's writer.
-    folder_id = getattr(_worker_state, "folder_id", None)
-    if is_cancel_requested(folder_id):
+    if is_cancel_requested(getattr(_worker_state, "folder_id", None)):
         raise _SyncCancelled
     job_id = getattr(_worker_state, "job_id", None)
     if job_id is None:
@@ -1514,6 +1438,28 @@ def _store_withheld(folder_id: str, withheld: set[str]) -> None:
         conn.commit()
 
 
+def _failure_signature(metadata: dict) -> list:
+    return [metadata["size_bytes"], metadata["mtime_ns"], *_file_identity(metadata)]
+
+
+def _load_failed(folder: dict) -> dict[str, dict]:
+    """Files whose ingestion failed recently, as {relative path: {"sig": [...], "at": epoch}}."""
+    try:
+        stored = json.loads(folder.get("failed_files") or "{}")
+    except ValueError:
+        return {}
+    if not isinstance(stored, dict):
+        return {}
+    cutoff = time.time() - _FAILED_RETRY_S
+    return {
+        rel: entry
+        for rel, entry in stored.items()
+        if isinstance(entry, dict)
+        and isinstance(entry.get("at"), (int, float))
+        and entry["at"] > cutoff
+    }
+
+
 def _failure_summary(failures: list[str]) -> str | None:
     """Name the files that could not be indexed, so the folder error is actionable."""
     if not failures:
@@ -1563,13 +1509,12 @@ def _ingest_folder_document(
         if result is None:
             raise RuntimeError("Ingestion job disappeared")
         if result["status"] != "completed":
-            if is_cancel_requested(folder["id"]):
-                raise _SyncCancelled
             raise RuntimeError(result.get("error") or "Ingestion failed")
         _check_running()
         return _IngestionResult(document_id, ingestion_job)
     except Exception as exc:  # noqa: BLE001 - the coordinator classifies it
-        if is_cancel_requested(folder["id"]) and not isinstance(exc, _SyncCancelled):
+        if is_cancel_requested(folder["id"]):
+            # The unlink cut the ingest short; that is not a file failure.
             return _IngestionResult(document_id, ingestion_job, _SyncCancelled())
         return _IngestionResult(document_id, ingestion_job, exc)
 
@@ -1664,6 +1609,10 @@ def _reconcile_folder(job_id: str) -> None:
                 key = (content_hash, os.path.splitext(rel)[1].lower())
                 missing_by_content.setdefault(key, []).append(rel)
     already_withheld = _load_withheld(folder)
+    # An unchanged file whose ingestion failed fails again: retrying it every periodic sync kept a
+    # folder of scanned PDFs indexing forever (#13095). Sync changes and Rebuild retry at once.
+    known_failed = {} if rebuild else _load_failed(folder)
+    ingest_failed: dict[str, dict] = {}
     total = len(work) + len(missing)
     _set_job(job_id, stage = "ingesting", discovered = len(current), renamed = renamed)
     added = changed_count = 0
@@ -1713,6 +1662,10 @@ def _reconcile_folder(job_id: str) -> None:
                     _cleanup_pending_ingestion(pending, result)
                     raise result.error
                 failures.append(pending.relative_path)
+                ingest_failed[pending.relative_path] = {
+                    "sig": _failure_signature(pending.metadata),
+                    "at": time.time(),
+                }
                 # A failed file may be a rename or copy of a vanished path, so grant one pass.
                 withheld.update(missing - already_withheld)
                 logger.warning(
@@ -1791,6 +1744,12 @@ def _reconcile_folder(job_id: str) -> None:
     ) as executor:
         try:
             for rel in work:
+                if known_failed.get(rel, {}).get("sig") == _failure_signature(current[rel]):
+                    failures.append(rel)
+                    ingest_failed[rel] = known_failed[rel]
+                    processed += 1
+                    update_progress()
+                    continue
                 if len(in_flight) >= workers:
                     drain_one()
                 snapshot = None
@@ -1894,10 +1853,21 @@ def _reconcile_folder(job_id: str) -> None:
         completed_at = _now(),
     )
     with closing(rag_db.get_connection()) as conn:
+        # A Sync changes queued behind this run asked for a retry, so leave nothing to skip.
         conn.execute(
-            "UPDATE linked_folders SET status=?, last_error=?, last_scan_at=?, updated_at=? "
+            "UPDATE linked_folders SET status=?, last_error=?, last_scan_at=?, updated_at=?, "
+            "failed_files=CASE WHEN EXISTS(SELECT 1 FROM linked_folder_sync_jobs "
+            "WHERE id=? AND successor_kind IS NOT NULL) THEN NULL ELSE ? END "
             "WHERE id=? AND delete_remove_index IS NULL",
-            ("ready" if error is None else "error", error, _now(), _now(), folder["id"]),
+            (
+                "ready" if error is None else "error",
+                error,
+                _now(),
+                _now(),
+                job_id,
+                json.dumps(ingest_failed) if ingest_failed else None,
+                folder["id"],
+            ),
         )
         conn.commit()
         _prune_terminal_jobs(conn)
@@ -1933,12 +1903,9 @@ def _pause_job(job_id: str) -> None:
 
 
 def _stop_job(job_id: str) -> None:
-    """Terminal stop for a user Cancel / Stop; leave the folder linked and ready."""
+    """End a job an unlink cancelled; terminal, so the queue does not reclaim it before the unlink lands."""
     job = get_job(job_id)
-    if job is None:
-        return
-    # cancel_folder_sync may already have failed the row under the longer busy_timeout.
-    if job["status"] not in ("pending", "running"):
+    if job is None or job["status"] not in ("pending", "running"):
         return
     _set_job(
         job_id,
@@ -2029,10 +1996,8 @@ def reconcile_folder(job_id: str) -> None:
             if not lease_lost and not cancelled and not account_is_retired():
                 _queue_successor(job_id)
         finally:
-            clear_cancel(folder_id)
             del _worker_state.job_id
-            if hasattr(_worker_state, "folder_id"):
-                del _worker_state.folder_id
+            del _worker_state.folder_id
             job_leases.release(job_leases.FOLDER_SYNC, job_id)
 
 

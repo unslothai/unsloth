@@ -118,13 +118,11 @@ def _set_job(
 def _progress(conn, job_id: str, stage: str, progress: float) -> None:
     if account_is_retired():
         raise job_leases.JobLeaseLost("Account is retired")
-    # Late import: folder_sync imports ingestion. Linked-folder ingest runs on the same
-    # thread-local worker state, so a Stop under a held rag.db write can land here (#13095).
-    from core.rag import folder_sync as _folder_sync
+    # An unlink stops a linked-folder document mid-embed, not after it (folder_sync imports this module).
+    from . import folder_sync
 
-    folder_id = getattr(_folder_sync._worker_state, "folder_id", None)
-    if _folder_sync.is_cancel_requested(folder_id):
-        raise job_leases.JobLeaseLost("Linked folder indexing was stopped")
+    if folder_sync.is_cancel_requested(getattr(folder_sync._worker_state, "folder_id", None)):
+        raise job_leases.JobLeaseLost("Linked folder was removed")
     if not job_leases.renew_owned(conn, job_leases.INGESTION, job_id):
         raise job_leases.JobLeaseLost("Ingestion job lease was reclaimed")
     _set_job(conn, job_id, status = "running", stage = stage, progress = progress)

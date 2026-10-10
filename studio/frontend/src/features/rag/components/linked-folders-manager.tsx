@@ -104,13 +104,6 @@ export function LinkedFoldersManager({
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
-          {running ? (
-            <DropdownMenuItem
-              onSelect={() => void manager.cancel(folder.id)}
-            >
-              Stop indexing
-            </DropdownMenuItem>
-          ) : null}
           <DropdownMenuItem
             disabled={running}
             onSelect={() => void manager.sync(folder.id)}

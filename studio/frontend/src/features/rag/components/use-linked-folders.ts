@@ -11,7 +11,6 @@ import { toast } from "@/lib/toast";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   announceProjectSourcesUpdated,
-  cancelLinkedFolder,
   createLinkedFolder,
   deleteLinkedFolder,
   getFolderSyncJob,
@@ -391,41 +390,6 @@ export function useLinkedFolders(
     ],
   );
 
-  const cancel = useCallback(
-    async (folderId: string) => {
-      const operationScopeKey = scopeKey;
-      const activeJobId =
-        folders.find((folder) => folder.id === folderId)?.activeJobId ??
-        jobs[folderId]?.id;
-      if (activeJobId) {
-        controllers.current.get(activeJobId)?.abort();
-        controllers.current.delete(activeJobId);
-      }
-      try {
-        const { job } = await withProjectWork(() =>
-          cancelLinkedFolder(folderId),
-        );
-        if (currentScopeKey.current !== operationScopeKey) return;
-        if (job) {
-          setJobs((current) => ({ ...current, [folderId]: job }));
-        } else {
-          setJobs((current) => {
-            const next = { ...current };
-            delete next[folderId];
-            return next;
-          });
-        }
-        onSourcesChanged?.();
-        void refresh({ quiet: true });
-      } catch (error) {
-        toast.error("Could not stop indexing", {
-          description: error instanceof Error ? error.message : String(error),
-        });
-      }
-    },
-    [scopeKey, folders, jobs, withProjectWork, onSourcesChanged, refresh],
-  );
-
   return {
     folders: stateScopeKey === scopeKey ? folders : [],
     jobs: stateScopeKey === scopeKey ? jobs : {},
@@ -435,7 +399,6 @@ export function useLinkedFolders(
     link,
     sync: (folderId: string) => run(folderId, "sync"),
     rebuild: (folderId: string) => run(folderId, "rebuild"),
-    cancel,
     remove,
     refresh,
   };
