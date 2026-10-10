@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import struct
 
 import pytest
@@ -189,3 +190,24 @@ def test_stacked_loras_share_one_custom_folder_scan(catalog, tmp_path, monkeypat
     resolved = dl.resolve_specs([("a", 1.0), ("b", 0.5), ("c", 0.8)])
     assert [r.path for r in resolved] == [str(catalog / f"{n}.safetensors") for n in "abc"]
     assert len(calls) == 1
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "symlinks need a privilege on Windows")
+def test_a_managed_account_cannot_reach_out_through_a_catalog_symlink(
+    catalog, tmp_path, monkeypatch
+):
+    from hub.services.models import account_access
+
+    secret = tmp_path / "elsewhere" / "secret.safetensors"
+    _safetensors(secret, sidecar = _MARK)
+    (catalog / "link.safetensors").symlink_to(secret)
+    (catalog / "own.safetensors").write_bytes(b"w")
+    monkeypatch.setattr(account_access, "managed_account", lambda: True)
+    monkeypatch.setattr(
+        account_access,
+        "model_visible",
+        lambda reference, **_: str(catalog) in os.path.realpath(reference),
+    )
+    assert list(_local()) == ["own"]
+    with pytest.raises(FileNotFoundError):
+        dl.export_local_lora("link", tmp_path / "out")

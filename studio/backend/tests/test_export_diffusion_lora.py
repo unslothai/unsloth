@@ -131,6 +131,20 @@ def test_the_marker_gets_the_umask_mode(loras, tmp_path):
     assert out.with_suffix(".json").stat().st_mode & 0o777 == 0o644
 
 
+def test_a_sentinel_stem_is_suffixed_even_in_its_own_folder(loras):
+    (loras / "config.safetensors").write_bytes(b"w")
+    assert dl.export_local_lora("config", loras).name == "config-2.safetensors"
+    assert not (loras / "config.json").exists()
+
+
+def test_a_case_variant_sibling_keeps_its_stem(loras, tmp_path):
+    out_dir = tmp_path / "shared"
+    out_dir.mkdir()
+    (out_dir / "mystyle.GGUF").write_bytes(b"model")
+    assert dl.export_local_lora("mystyle", out_dir).name == "mystyle-2.safetensors"
+    assert not (out_dir / "mystyle.json").exists()
+
+
 def test_export_refuses_ids_outside_the_local_catalog(loras, tmp_path):
     secret = tmp_path / "secret.safetensors"
     secret.write_bytes(b"secret")

@@ -155,9 +155,27 @@ def _scan_folder_roots() -> list[Path]:
     return roots
 
 
+def _account_allows():
+    """Managed accounts only see adapters (and sidecars) resolving inside paths they may read, so a
+    symlink cannot pull another account's or the host's file into listing, generation or export."""
+    from hub.services.models import account_access
+
+    if not account_access.managed_account():
+        return lambda p: True
+
+    def allows(p: Path) -> bool:
+        sidecar = p.with_suffix(".json")
+        return account_access.model_visible(str(p)) and (
+            not os.path.lexists(sidecar) or account_access.model_visible(str(sidecar))
+        )
+
+    return allows
+
+
 def _scan_local() -> list[LoraCatalogEntry]:
     root_dir = loras_dir()
-    files = _weight_files(root_dir)
+    allows = _account_allows()
+    files = [p for p in _weight_files(root_dir) if allows(p)]
     # Two files sharing a stem but differing in extension collide on id (== stem), so a colliding stem keeps the full
     # filename.
     stem_counts: dict[str, int] = {}
@@ -167,18 +185,10 @@ def _scan_local() -> list[LoraCatalogEntry]:
     used = {entry_id for _, entry_id in found}
     seen = {os.path.normcase(os.path.realpath(p)) for p in files}
     # Custom models folders contribute only sidecar-marked image LoRAs, so model weights never show up here.
-    roots = _scan_folder_roots()
-    visible = lambda p: True  # noqa: E731
-    if roots:
-        from hub.services.models import account_access
-
-        # Gate here, not only in the listing route: export and generation resolve ids through this scan.
-        if account_access.managed_account():
-            visible = account_access.model_visible
-    for root in roots:
+    for root in _scan_folder_roots():
         for p in _weight_files(root):
             key = os.path.normcase(os.path.realpath(p))
-            if key in seen or not is_image_lora_file(p) or not visible(str(p)):
+            if key in seen or not is_image_lora_file(p) or not allows(p):
                 continue
             seen.add(key)
             # Keyed on the file's own path, never on scan order: saved recipes must not drift onto
@@ -294,12 +304,15 @@ def export_local_lora(lora_id: str, dest_dir: Path) -> Path:
     dest_dir.mkdir(parents = True, exist_ok = True)
 
     def _free(out: Path) -> bool:
-        if out.exists() and os.path.samefile(src, out):
-            return True
         if out.stem.lower() in _MODEL_SENTINEL_STEMS:
             return False
-        # The sidecar is per stem, so a sibling weight of another format would share it.
-        if any(out.with_suffix(ext).exists() for ext in _ALL_EXTS if ext != out.suffix.lower()):
+        if out.exists() and os.path.samefile(src, out):
+            return True
+        # The sidecar is per stem, so a sibling weight of another format (any extension case) would share it.
+        if any(
+            c.name != out.name and c.stem == out.stem and c.suffix.lower() in _ALL_EXTS
+            for c in dest_dir.iterdir()
+        ):
             return False
         if not out.exists():
             return not out.with_suffix(".json").exists()
