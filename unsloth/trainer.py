@@ -935,10 +935,7 @@ def _migrate_previous_layout_state(
 ):
     """A checkpoint from before full finetuning embeddings got their own groups, or None.
 
-    The same exact remap as the legacy one, from the layout the name-only match built. Each
-    group keeps the saved progress against the lr its old group was built with (any
-    scheduler, ReduceLROnPlateau sets no initial_lr), scaled onto its own base lr, so the
-    moved embeddings resume at their embedding_learning_rate instead of the base one.
+    Progress is read against the old group's built lr, not initial_lr, which ReduceLROnPlateau never sets.
     """
     saved_groups = state_dict.get("param_groups") or []
     if any(g.get(_EMBEDDING_SPLIT_MARKER) for g in saved_groups):
