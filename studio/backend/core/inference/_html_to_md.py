@@ -593,7 +593,9 @@ class _MarkdownRenderer(HTMLParser):
                 part = trimmed
             if part:
                 base = part[-1]
-                if base.isdigit() and _PRICE_TAIL.search("".join(target[-4:])[-40:]):
+                if base.isdigit() and _PRICE_TAIL.search(
+                    "".join(p[-40:] for p in target[-4:])[-40:]
+                ):
                     return ""
                 return base if base.isalnum() or base in ")]}|" else ""
         return ""

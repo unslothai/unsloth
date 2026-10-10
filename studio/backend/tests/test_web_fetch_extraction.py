@@ -818,6 +818,11 @@ def test_empty_superscripts_do_not_rescan_the_page():
     start = time.perf_counter()
     html_to_markdown("<p>" + "*" * 250000 + "<sup></sup>" * 23000 + "</p>")
     assert time.perf_counter() - start < 3
+    start = time.perf_counter()
+    html_to_markdown(
+        "<p>" + "<b>" + "word 1 " * 40000 + "</b>" * 1 + "9" + "<sup></sup>" * 20000 + "</p>"
+    )
+    assert time.perf_counter() - start < 3
 
 
 def test_footnote_superscripts_render_unchanged():
