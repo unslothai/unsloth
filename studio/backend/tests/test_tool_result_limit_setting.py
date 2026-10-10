@@ -179,3 +179,13 @@ def test_route_refuses_a_save_the_environment_decides(monkeypatch):
     assert response.status_code == 409
     assert limit.MAX_CHARS_ENV in response.json()["detail"]
     assert limit.saved_max_chars() is None
+
+
+@pytest.mark.parametrize("saved", [4000, 64000])
+def test_non_code_tools_keep_the_install_cap(monkeypatch, saved):
+    """MCP, web and edit results have no spill file, and the row names Python and Terminal only."""
+    limit.set_max_chars(saved)
+    tools._REQUEST_CONTEXT_TOKENS.set(131072)
+    monkeypatch.setattr(tools, "_request_result_room", lambda: 10**9)
+    out = tools._fit_result_to_room(FILE_50K, "mcp__server__tool")
+    assert "truncated to 16000 chars for the model" in out

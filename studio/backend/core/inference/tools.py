@@ -13625,7 +13625,7 @@ def mcp_tool_input_schema(name) -> dict | None:
 
 
 def _mcp_schema_page(prefix: str, text: str, offset: int) -> str:
-    page_chars = _tool_result_char_budget()
+    page_chars = _other_tool_result_char_budget()
     while True:
         end = min(offset + page_chars, len(text))
         page = prefix + text[offset:end]
@@ -16595,6 +16595,12 @@ def _tool_result_char_budget() -> int:
         # Unknown window (an external provider, possibly a small local server): a raised setting is not applied blind.
         cap = min(cap, _MAX_OUTPUT_CHARS)
     return _result_char_budget(cap)
+
+
+def _other_tool_result_char_budget() -> int:
+    """Non-code tools keep the install cap: the setting names Python and Terminal, and these results have no spill to
+    page back through."""
+    return _result_char_budget(_MAX_OUTPUT_CHARS)
 
 
 def _page_char_budget() -> int:
@@ -21158,7 +21164,7 @@ def _fit_result_to_room(text, name = None):
     body, suffix = _split_frontend_suffix(text, name)
     if not body:
         return text
-    fitted = _truncate(body)
+    fitted = _truncate(body, _other_tool_result_char_budget())
     return fitted + suffix if fitted is not body else text
 
 

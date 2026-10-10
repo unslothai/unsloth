@@ -228,7 +228,7 @@ function ToolResultLimitRow() {
         }}
       >
         <SelectTrigger
-          className="w-36"
+          className="w-44"
           aria-label={t("settings.chat.toolResultLimit")}
         >
           <SelectValue />
