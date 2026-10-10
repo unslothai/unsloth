@@ -155,6 +155,11 @@ function generalTab(initialToken: string) {
     },
     "@/i18n": { LOCALE_STORAGE_KEY: "locale", useT: () => translate },
     "@/lib/api-base": { isTauri: false },
+    "@/lib/spellcheck": {
+      SPELLCHECK_STORAGE_KEY: "unsloth_spellcheck",
+      setSpellCheck: noop,
+      useSpellCheck: () => true,
+    },
     "@/lib/toast": { toast: { success: noop, error: noop } },
     "@/lib/utils": {
       cn: (...values: unknown[]) => values.filter(Boolean).join(" "),

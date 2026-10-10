@@ -2061,6 +2061,8 @@ export const de = {
         label: "Anzeigesprache",
         description: "Die von Unsloth verwendete Sprache.",
         autoDetect: "Automatisch erkennen",
+        spellCheck: "Rechtschreibprüfung",
+        spellCheckDescription: "Falsch geschriebene Wörter beim Tippen unterstreichen.",
       },
       layout: {
         title: "Layout",

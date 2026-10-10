@@ -2075,6 +2075,8 @@ export const en = {
         label: "Display language",
         description: "The language used by Unsloth.",
         autoDetect: "Auto detect",
+        spellCheck: "Spell check",
+        spellCheckDescription: "Underline misspelled words as you type.",
       },
       layout: {
         title: "Layout",

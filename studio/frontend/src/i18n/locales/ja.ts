@@ -2014,6 +2014,8 @@ export const ja = {
         label: "表示言語",
         description: "Unsloth で使用される言語。",
         autoDetect: "自動検出",
+        spellCheck: "スペルチェック",
+        spellCheckDescription: "入力中にスペルミスのある単語に下線を引きます。",
       },
       layout: {
         title: "レイアウト",

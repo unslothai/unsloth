@@ -2190,6 +2190,8 @@ export const sv = {
         label: "Visningsspråk",
         description: "Språket som används av Unsloth.",
         autoDetect: "Identifiera automatiskt",
+        spellCheck: "Stavningskontroll",
+        spellCheckDescription: "Stryk under felstavade ord medan du skriver.",
       },
       layout: {
         title: "Layout",

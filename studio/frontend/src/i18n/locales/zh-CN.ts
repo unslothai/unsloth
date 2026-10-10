@@ -1900,6 +1900,8 @@ export const zhCN = {
         label: "显示语言",
         description: "选择 Unsloth 使用的语言。",
         autoDetect: "自动检测",
+        spellCheck: "拼写检查",
+        spellCheckDescription: "输入时在拼写错误的单词下方显示下划线。",
       },
       theme: {
         title: "视觉样式",

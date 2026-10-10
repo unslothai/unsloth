@@ -2056,6 +2056,8 @@ export const es = {
         label: "Idioma de la interfaz",
         description: "El idioma que usa Unsloth.",
         autoDetect: "Detección automática",
+        spellCheck: "Corrector ortográfico",
+        spellCheckDescription: "Subrayar las palabras mal escritas mientras escribes.",
       },
       layout: {
         title: "Diseño",

@@ -2031,6 +2031,8 @@ export const ko = {
         label: "표시 언어",
         description: "Unsloth에서 사용하는 언어입니다.",
         autoDetect: "자동 감지",
+        spellCheck: "맞춤법 검사",
+        spellCheckDescription: "입력하는 동안 맞춤법이 틀린 단어에 밑줄을 표시합니다.",
       },
       layout: {
         title: "레이아웃",
