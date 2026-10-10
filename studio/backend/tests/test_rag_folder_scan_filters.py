@@ -105,6 +105,21 @@ def test_scan_honours_root_and_nested_gitignore(source):
     assert report["gitignored"] == 3
 
 
+def test_an_unreadable_gitignore_fails_the_scan(source, monkeypatch):
+    _write(source, ".gitignore", "secret.md\n")
+    _write(source, "secret.md")
+    real_open = open
+
+    def locked_open(path, *args, **kwargs):
+        if str(path).endswith(".gitignore"):
+            raise PermissionError(13, "Permission denied")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", locked_open)
+    with pytest.raises(RuntimeError, match = "Couldn't read .gitignore"):
+        folder_sync._scan(str(source))
+
+
 def test_scan_skips_build_output_only_beside_a_project_manifest(source):
     _write(source, "app/package.json", "{}")
     _write(source, "app/dist/bundle.js", "bundled")

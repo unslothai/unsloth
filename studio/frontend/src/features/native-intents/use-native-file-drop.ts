@@ -159,13 +159,17 @@ export function useNativeFileDrop(
   // dragenter/dragleave fire per child, so a raw boolean flickers on inner moves.
   const dragDepth = useRef(0);
 
-  const deliver = useCallback((files: File[]) => {
-    const current = latest.current;
-    if (files.length === 0) return;
-    void current.onFiles(
-      current.multiple === false ? files.slice(0, 1) : files,
-    );
-  }, []);
+  // Callers pass the options from drop time: reading `latest` after an await would hand the
+  // files to whatever destination the zone shows by then.
+  const deliver = useCallback(
+    (files: File[], current: NativeFileDropOptions) => {
+      if (files.length === 0) return;
+      void current.onFiles(
+        current.multiple === false ? files.slice(0, 1) : files,
+      );
+    },
+    [],
+  );
 
   const handleNativePaths = useCallback(
     async (paths: string[]) => {
@@ -201,7 +205,7 @@ export function useNativeFileDrop(
         if (takeIntents) {
           void takeIntents(ready as NativeIntent[]);
         } else {
-          deliver(ready as File[]);
+          deliver(ready as File[], current);
         }
       }
       if (failed > 0) {
@@ -277,7 +281,7 @@ export function useNativeFileDrop(
           );
           return;
         }
-        deliver(supported);
+        deliver(supported, current);
         toastPartiallySkipped(dropped.length - supported.length);
       };
       if (!current.folders) {
@@ -296,7 +300,8 @@ export function useNativeFileDrop(
           take(files);
           if (truncated > 0) {
             toast.info(`Added the first ${MAX_FOLDER_FILES} files`, {
-              description: `${truncated} more were left out. Drop a smaller folder for the rest.`,
+              description:
+                "The rest were left out. Drop a smaller folder for them.",
             });
           }
         },

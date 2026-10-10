@@ -175,7 +175,8 @@ export function useSourceDrop({
           }
           if (truncated > 0) {
             toast.info(`Added the first ${MAX_FOLDER_FILES} files`, {
-              description: `${truncated} more were left out. Drop a smaller folder for the rest.`,
+              description:
+                "The rest were left out. Drop a smaller folder for them.",
             });
           }
           if (supported.length > 0) {

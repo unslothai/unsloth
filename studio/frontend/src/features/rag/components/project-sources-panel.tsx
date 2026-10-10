@@ -19,7 +19,10 @@ import {
 } from "../api/rag-api";
 import { isLinkedFolderManaged } from "../types/rag";
 import { DocumentStatusChip } from "./document-status-chip";
-import { groupByLinkedFolder, useLinkedFolderNames } from "./linked-folder-groups";
+import {
+  groupByLinkedFolder,
+  useLinkedFolderNames,
+} from "./linked-folder-groups";
 import { LinkedFoldersManager } from "./linked-folders-manager";
 import {
   RAG_SOURCE_UPLOAD_ACCEPT,
@@ -60,12 +63,18 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
     (items: RagUploadItem[]) => {
       if (items.length === 0) return;
       invalidateProjectSources(projectId);
-      void upload(items).finally(() => announceProjectSourcesUpdated(projectId));
+      void upload(items).finally(() =>
+        announceProjectSourcesUpdated(projectId),
+      );
     },
     [projectId, upload],
   );
   // A drop or pick during an upload waits for it rather than being refused.
-  const { enqueue: handleItems } = useUploadQueue(uploadNow, uploading, projectId);
+  const { enqueue: handleItems } = useUploadQueue(
+    uploadNow,
+    uploading,
+    projectId,
+  );
 
   const handleRetry = useCallback(
     (documentId: string) => {
@@ -87,7 +96,8 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
       }
       if (truncated > 0) {
         toast.info(`Added the first ${MAX_FOLDER_FILES} files`, {
-          description: `${truncated} more were left out. Pick a smaller folder for the rest.`,
+          description:
+            "The rest were left out. Pick a smaller folder for them.",
         });
       }
       handleItems(fileItems(supported));
@@ -215,8 +225,8 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
               Give this project context
             </p>
             <p className="max-w-sm text-sm text-muted-foreground">
-              Add documents, spreadsheets, slides, e-books, email, text or
-              code. Every chat in this project can use them.
+              Add documents, spreadsheets, slides, e-books, email, text or code.
+              Every chat in this project can use them.
             </p>
           </div>
           <div className="mt-1 flex items-center gap-1">
@@ -294,7 +304,9 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
                     ? undefined
                     : () => void handleRemove(doc.id)
                 }
-                onRetry={canRetry(doc.id) ? () => handleRetry(doc.id) : undefined}
+                onRetry={
+                  canRetry(doc.id) ? () => handleRetry(doc.id) : undefined
+                }
               />
             ))}
           </div>

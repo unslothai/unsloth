@@ -18,10 +18,23 @@ export function useUploadQueue<T>(
   const [queued, setQueued] = useState(0);
   const latestRun = useRef(run);
   latestRun.current = run;
+  const latestKey = useRef(key);
+  latestKey.current = key;
 
   const enqueue = useCallback(
     (items: T[]) => {
       if (items.length === 0) return;
+      // A folder walk resolves after the fact: the surface may show another destination by now,
+      // and latestRun would upload there.
+      if (key !== latestKey.current) {
+        toast.info(
+          items.length === 1
+            ? "A dropped file was not added"
+            : `${items.length} dropped files were not added`,
+          { description: "You moved away before they finished reading." },
+        );
+        return;
+      }
       if (!busy && queue.current.items.length === 0) {
         latestRun.current(items);
         return;

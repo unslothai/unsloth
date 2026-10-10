@@ -192,6 +192,8 @@ export function useRagDocuments(
         numChunks?: number | null,
       ) => {
         if (stale()) return forget();
+        // Only a failure is retried; anything else lets the File go.
+        if (status !== "failed") retryItems.current.delete(documentId);
         if (status === "cancelled") {
           sigByDocId.current.delete(documentId);
           setDocuments((rows) => rows.filter((row) => row.id !== documentId));

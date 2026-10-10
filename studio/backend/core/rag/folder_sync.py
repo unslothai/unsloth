@@ -118,16 +118,19 @@ def _is_build_output_dir(name: str, parent: str) -> bool:
 
 
 def _read_gitignore(directory: str, base: str) -> list[gitignore.Rule]:
+    """The rules of `directory`'s .gitignore. One that exists but cannot be read fails the scan:
+    indexing without it would take in files the user excluded, and a failed scan deletes nothing."""
     path = os.path.join(directory, ".gitignore")
+    if not os.path.isfile(path) or os.path.islink(path):
+        return []
+    shown = f"{base}/.gitignore" if base else ".gitignore"
     try:
-        if not os.path.isfile(path) or os.path.islink(path):
-            return []
         with open(path, "rb") as handle:
             data = handle.read(gitignore.MAX_GITIGNORE_BYTES + 1)
-    except OSError:
-        return []
+    except OSError as exc:
+        raise RuntimeError(f"Couldn't read {shown}: {exc.strerror or exc}") from exc
     if len(data) > gitignore.MAX_GITIGNORE_BYTES:
-        return []
+        raise RuntimeError(f"{shown} is larger than {gitignore.MAX_GITIGNORE_BYTES // 1024} KB")
     return gitignore.parse(data.decode("utf-8", "replace"), base)
 
 
