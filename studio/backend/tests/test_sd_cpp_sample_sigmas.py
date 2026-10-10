@@ -134,10 +134,12 @@ INDEXES = {
 
 def test_community_gguf_finds_the_grid_through_its_card_base(monkeypatch):
     _patch_hub(monkeypatch, card_base = "Qwen/Qwen-Image-2.1-Turbo", indexes = INDEXES)
-    grid = bk._base_sample_sigmas(
+    grid, base = bk._base_sample_sigmas(
         REPO, FAM.base_repo, None, family = FAM.name, explicit_base = False, local_files_only = False
     )
     assert grid == TURBO_GRID
+    # Reported as the load's base, so the Images form resets to Turbo's 8 steps, not 2.1's 25.
+    assert base == "Qwen/Qwen-Image-2.1-Turbo"
 
 
 def test_base_without_a_grid_and_untrusted_tags_give_none(monkeypatch):
@@ -145,7 +147,7 @@ def test_base_without_a_grid_and_untrusted_tags_give_none(monkeypatch):
     assert (
         bk._base_sample_sigmas(
             REPO, FAM.base_repo, None, family = FAM.name, explicit_base = False, local_files_only = False
-        )
+        )[0]
         is None
     )
     # An untrusted card tag is dropped, as on the diffusers route.
@@ -157,7 +159,7 @@ def test_base_without_a_grid_and_untrusted_tags_give_none(monkeypatch):
     assert (
         bk._base_sample_sigmas(
             REPO, FAM.base_repo, None, family = FAM.name, explicit_base = False, local_files_only = False
-        )
+        )[0]
         is None
     )
     assert calls["index"] == [("Qwen/Qwen-Image-2.1", False)]
@@ -168,13 +170,13 @@ def test_explicit_base_and_cache_only_loads_skip_the_card(monkeypatch):
     assert (
         bk._base_sample_sigmas(
             REPO, "Qwen/Qwen-Image-2.1-Turbo", None, family = FAM.name, explicit_base = True, local_files_only = False
-        )
+        )[0]
         == TURBO_GRID
     )
     assert (
         bk._base_sample_sigmas(
             REPO, FAM.base_repo, None, family = FAM.name, explicit_base = False, local_files_only = True
-        )
+        )[0]
         is None
     )
     assert calls["card"] == 0
@@ -187,14 +189,14 @@ def test_invalid_or_unreadable_grids_give_none(monkeypatch, raw):
     assert (
         bk._base_sample_sigmas(
             REPO, FAM.base_repo, None, family = FAM.name, explicit_base = False, local_files_only = False
-        )
+        )[0]
         is None
     )
     _patch_hub(monkeypatch, card_base = None, indexes = {})
     assert (
         bk._base_sample_sigmas(
             REPO, FAM.base_repo, None, family = FAM.name, explicit_base = False, local_files_only = False
-        )
+        )[0]
         is None
     )
 
@@ -204,7 +206,7 @@ def test_other_families_never_read_the_card_or_index(monkeypatch):
     assert (
         bk._base_sample_sigmas(
             REPO, FAM.base_repo, None, family = "flux", explicit_base = False, local_files_only = False
-        )
+        )[0]
         is None
     )
     assert calls["card"] == 0 and calls["index"] == []

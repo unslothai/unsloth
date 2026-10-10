@@ -207,11 +207,12 @@ def _base_sample_sigmas(
     family: str,
     explicit_base: bool,
     local_files_only: bool,
-) -> Optional[tuple[float, ...]]:
-    """The base's model_index.json grid, or None (sd.cpp's own schedule). Without an explicit base the card's
-    ``base_model`` names it, as on the diffusers route; else a community Turbo GGUF would read 2.1's index."""
+) -> tuple[Optional[tuple[float, ...]], str]:
+    """(the base's model_index.json grid or None for sd.cpp's own schedule, the base it came from). Without an
+    explicit base the card's ``base_model`` names it, as on the diffusers route; else a community Turbo GGUF would
+    read 2.1's index and report 2.1's 25-step defaults."""
     if family not in _SAMPLE_SIGMAS_FAMILIES:
-        return None
+        return None, base
     try:
         from core.inference.diffusion import (
             _hf_base_model,
@@ -233,13 +234,13 @@ def _base_sample_sigmas(
         )
     except Exception as exc:  # noqa: BLE001 - no grid is the pre-grid behaviour
         logger.debug("sd_cpp.sample_sigmas_unavailable: %s", exc)
-        return None
+        return None, base
     grid = valid_sample_sigmas(index.get(SAMPLE_SIGMAS_KEY) if isinstance(index, dict) else None)
     if grid is not None:
         logger.info(
             "sd_cpp: %s ships a %d-step sampling grid; passing it as custom sigmas", base, len(grid)
         )
-    return grid
+    return grid, base
 
 
 def _default_threads() -> int:
@@ -2972,7 +2973,7 @@ class SdCppDiffusionBackend:
                 local_files_only = local_files_only,
                 vision_optional = not getattr(fam, "edit", False),
             )
-            sample_sigmas = _base_sample_sigmas(
+            sample_sigmas, grid_base = _base_sample_sigmas(
                 repo_id,
                 base,
                 hf_token,
@@ -3195,7 +3196,8 @@ class SdCppDiffusionBackend:
                 state = _SdState(
                     repo_id = repo_id,
                     display_repo_id = display_repo_id,
-                    base_repo = base,
+                    # The card's base when it shipped the grid, as the diffusers route reports it.
+                    base_repo = grid_base if sample_sigmas else base,
                     family = fam,
                     device = device,
                     files = files,
