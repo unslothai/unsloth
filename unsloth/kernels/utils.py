@@ -128,7 +128,6 @@ except ImportError:  # Python < 3.12
 
 
 def long_indexing(*tensors, block = 0):
-    # True when an element offset into any tensor (+ a block of masked lanes) can pass int32.
     # numel() is not enough for strided views (transposed Q / K): their offsets reach past it.
     for t in tensors:
         if t.is_contiguous():
