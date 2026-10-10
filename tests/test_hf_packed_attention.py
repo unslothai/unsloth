@@ -348,8 +348,14 @@ def test_compiling_leaves_the_counters_alone(monkeypatch):
         backend = "eager",
         fullgraph = True,
     )
+    positional = torch.compile(
+        lambda q: hpa._sdpa_packed_varlen(module, q, q, q, mask, 0.0, packed_seq_lengths = psl)[0],
+        backend = "eager",
+        fullgraph = True,
+    )
     before = dict(hpa.HF_PACKED_ATTENTION_STATS)
     fn(q)
+    positional(q)
     assert hpa.HF_PACKED_ATTENTION_STATS == before
 
 

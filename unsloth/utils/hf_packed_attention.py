@@ -141,7 +141,7 @@ def _sdpa_packed_varlen(
         named = {"dropout": dropout, "scaling": scaling, "is_causal": is_causal}
         for name in list(named)[: len(args)]:
             named.pop(name)
-        if kwargs.get("packed_seq_lengths") is not None:
+        if kwargs.get("packed_seq_lengths") is not None and not torch.compiler.is_compiling():
             HF_PACKED_ATTENTION_STATS["fallback"] += 1
         return orig(module, query, key, value, attention_mask, *args, **named, **kwargs)
     # Before any counter while tracing: Dynamo would guard on it and recompile every forward.
