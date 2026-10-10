@@ -130,12 +130,10 @@ const qwen21Turbo = groupForRepoId("Qwen/Qwen-Image-2.1-Turbo", IMAGE_CATALOG);
 assert.ok(qwen21Turbo);
 assert.equal(qwen21Turbo.canonicalId, "Qwen/Qwen-Image-2.1-Turbo");
 assert.equal(groupForRepoId("unsloth/Qwen-Image-2.1-Turbo-FP8", IMAGE_CATALOG), qwen21Turbo);
-// Turbo's own GGUF ladder, never 2.1's.
 assert.equal(groupForRepoId("unsloth/Qwen-Image-2.1-Turbo-GGUF", IMAGE_CATALOG), qwen21Turbo);
 assert.equal(loadSpecFor("unsloth/Qwen-Image-2.1-Turbo-GGUF", IMAGE_CATALOG)?.kind, "gguf");
 assert.equal(groupForRepoId("unsloth/Qwen-Image-2.1-GGUF", IMAGE_CATALOG)?.canonicalId, "unsloth/Qwen-Image-2.1");
-// Turbo routes like 2.1 on every host: its own GGUF where 2.1 takes the GGUF, its pipeline (hosted FP8 / INT8)
-// where 2.1 takes the pipeline, and the same "(Fast FP8)" / "(Slow)" labels.
+// Turbo picks its own GGUF / pipeline wherever 2.1 picks its GGUF / pipeline, with the same labels.
 {
   const qwen21 = groupForRepoId("unsloth/Qwen-Image-2.1", IMAGE_CATALOG);
   assert.ok(qwen21);
