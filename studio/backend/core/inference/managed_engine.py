@@ -390,19 +390,20 @@ def _rocm_visibility(env: dict, gpu_ids) -> dict:
 _PORT_LIMIT = 55535
 
 
-def _free_port() -> int:
-    """A free local port no higher than _PORT_LIMIT. Windows hands out ephemeral ports in sequence
-    from 49152, so once its counter passes the limit the OS never offers a low enough one; free
-    ports below it are then tried at random."""
+def _free_port(limit: int | None = _PORT_LIMIT) -> int:
+    """A free local port no higher than ``limit`` (None: any). Windows hands out ephemeral ports in
+    sequence from 49152, so once its counter passes the limit the OS never offers a low enough
+    one; free ports below it are then tried at random."""
+    limit = limit or 65535
     for attempt in range(100):
         with socket.socket() as sock:
-            candidate = 0 if attempt == 0 else 20000 + secrets.randbelow(_PORT_LIMIT - 20000 + 1)
+            candidate = 0 if attempt == 0 else 20000 + secrets.randbelow(limit - 20000 + 1)
             try:
                 sock.bind(("127.0.0.1", candidate))
             except OSError:
                 continue
             port = sock.getsockname()[1]
-        if port <= _PORT_LIMIT:
+        if port <= limit:
             return port
     raise RuntimeError("Could not allocate an inference server port.")
 
@@ -486,7 +487,7 @@ class ManagedEngine:
                 info = installed(self.engine)
                 if info is None:
                     raise RuntimeError("The selected engine is no longer installed.")
-                port = _free_port()
+                port = _free_port(_PORT_LIMIT if self.engine == "sglang" else None)
                 self.base_url = f"http://127.0.0.1:{port}"
                 self.model, self.context = model, context or 4096
                 stdin = None
