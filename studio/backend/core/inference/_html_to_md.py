@@ -451,6 +451,9 @@ class _MarkdownRenderer(HTMLParser):
         # Open-tag indices of headings, unwound with _hidden_marks.
         self._heading_marks: list[int] = []
         self._heading_has_text: bool = False
+        # Text of a heading's leading <button>, held until the heading closes: kept only when no title follows it.
+        self._heading_button_at: int | None = None
+        self._heading_button_parts: list[str] = []
 
         self._link_href: str | None = None
         self._link_text_parts: list[str] = []
@@ -899,6 +902,8 @@ class _MarkdownRenderer(HTMLParser):
             if tag in _HEADING_TAGS or tag == "hgroup" or _is_aria_heading(attr_dict):
                 if not self._heading_marks:
                     self._heading_has_text = False
+                    self._heading_button_at = None
+                    self._heading_button_parts = []
                 self._heading_marks.append(len(self._open_tags) - 1)
                 if self._in_link:
                     self._link_had_heading = True
@@ -986,14 +991,23 @@ class _MarkdownRenderer(HTMLParser):
         self._close_implicit(tag)
 
         # an accordion trigger (<h3><button>Question</button></h3>) carries the heading's only text
-        if tag in _SKIP_TAGS and not (
-            tag == "button" and self._heading_marks and not self._heading_has_text
-        ):
+        heading_button = (
+            tag == "button"
+            and self._heading_marks
+            and not self._heading_has_text
+            and self._heading_button_at is None
+        )
+        if tag in _SKIP_TAGS and not heading_button:
             self._skip_depth += 1
             return
 
         attr_dict = dict(attrs)
+        if heading_button:
+            self._heading_button_at = len(self._open_tags)
         if not self._enter_tag(tag, attr_dict):
+            return
+        # inside the held button tags only track hidden state; their markup would land before the replayed text
+        if self._in_heading_button():
             return
 
         if tag in _HEADING_TAGS:
@@ -1096,7 +1110,11 @@ class _MarkdownRenderer(HTMLParser):
         if self._skip_depth:
             return
 
-        if not self._exit_tag(tag):
+        if self._heading_button_parts and self._heading_marks:
+            self._flush_heading_button(tag)
+
+        in_button = self._in_heading_button()
+        if not self._exit_tag(tag) or in_button:
             return
 
         if tag == "li":
@@ -1160,8 +1178,29 @@ class _MarkdownRenderer(HTMLParser):
             return True
         return self._scope_tags is not None and self._scope_depth == 0
 
+    def _in_heading_button(self) -> bool:
+        at = self._heading_button_at
+        return at is not None and 0 <= at < len(self._open_tags) and self._open_tags[at] == "button"
+
+    def _flush_heading_button(self, tag: str) -> None:
+        """Render the held button text as the title when *tag* closes the outermost heading with nothing after it."""
+        for i in range(len(self._open_tags) - 1, -1, -1):
+            if self._open_tags[i] == tag:
+                break
+        else:
+            return
+        if i > self._heading_marks[0]:
+            return
+        parts, self._heading_button_parts = self._heading_button_parts, []
+        if not self._heading_has_text:
+            self._heading_button_at = -1  # replay as plain heading text
+            self.handle_data("".join(parts).strip())
+
     def handle_data(self, data: str) -> None:
         if self._text_suppressed():
+            return
+        if self._in_heading_button():
+            self._heading_button_parts.append(data)
             return
         if self._heading_marks and data.strip():
             self._heading_has_text = True
@@ -1191,6 +1230,9 @@ class _MarkdownRenderer(HTMLParser):
         if self._text_suppressed():
             return
         text = html.unescape(f"&{name};")
+        if self._in_heading_button():
+            self._heading_button_parts.append(text)
+            return
         if self._heading_marks and text.strip():
             self._heading_has_text = True
         self._count_header_text(text)
@@ -1200,6 +1242,9 @@ class _MarkdownRenderer(HTMLParser):
         if self._text_suppressed():
             return
         text = html.unescape(f"&#{name};")
+        if self._in_heading_button():
+            self._heading_button_parts.append(text)
+            return
         if self._heading_marks and text.strip():
             self._heading_has_text = True
         self._count_header_text(text)

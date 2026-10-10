@@ -397,6 +397,22 @@ def test_a_button_after_entity_or_nested_heading_text_is_dropped(html):
     assert "More information" not in out
 
 
+def test_a_leading_control_before_the_heading_title_is_dropped():
+    html = (
+        "<h4><button aria-expanded='false'>More information</button><span>Create Artifacts</span></h4>"
+        "<p>Body text.</p>"
+    )
+    out = html_to_markdown(html)
+    assert "#### Create Artifacts" in out
+    assert "More information" not in out
+
+
+def test_inline_markup_in_a_heading_button_stays_in_order():
+    out = html_to_markdown("<h3><button><em>Question</em> one</button></h3><p>Answer text.</p>")
+    assert "### Question one" in out
+    assert "*" not in out
+
+
 def test_visible_void_hr_still_renders():
     # Guard: the suppression must not affect non-hidden void elements.
     html = "<body><p>a</p><hr><p>b</p></body>"
