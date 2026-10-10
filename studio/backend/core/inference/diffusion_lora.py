@@ -143,6 +143,13 @@ def _is_file(p: Path) -> bool:
         return False
 
 
+def _is_dir(p: Path) -> bool:
+    try:
+        return p.is_dir()
+    except OSError:
+        return False
+
+
 def _scan_folder_roots() -> list[Path]:
     """Registered custom model folders plus their direct sub-folders (where an export lands)."""
     try:
@@ -153,12 +160,13 @@ def _scan_folder_roots() -> list[Path]:
     roots: list[Path] = []
     for folder in folders:
         root = Path(folder.get("path") or "")
-        try:
-            if not root.is_dir():
-                continue
-            subdirs = sorted(c for c in root.iterdir() if c.is_dir() and not c.name.startswith("."))
-        except OSError:
+        if not _is_dir(root):
             continue
+        try:
+            children = list(root.iterdir())
+        except OSError:
+            children = []
+        subdirs = sorted(c for c in children if not c.name.startswith(".") and _is_dir(c))
         roots.append(root)
         roots.extend(subdirs[:_MAX_SCAN_FOLDER_SUBDIRS])
     return roots

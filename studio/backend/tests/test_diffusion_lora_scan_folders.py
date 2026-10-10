@@ -274,3 +274,21 @@ def test_an_unreadable_entry_does_not_fail_the_catalog(catalog, tmp_path, monkey
 
     monkeypatch.setattr(Path, "is_file", is_file)
     assert [e.display_name for e in _local().values()] == ["good"]
+
+
+def test_an_unreadable_sibling_keeps_the_root_listed(catalog, tmp_path, monkeypatch):
+    from pathlib import Path
+
+    folder = tmp_path / "my-models"
+    _safetensors(folder / "good.safetensors", sidecar = _MARK)
+    (folder / "locked").mkdir()
+    register(folder)
+    real_is_dir = Path.is_dir
+
+    def is_dir(self):
+        if self.name == "locked":
+            raise PermissionError(13, "Permission denied")
+        return real_is_dir(self)
+
+    monkeypatch.setattr(Path, "is_dir", is_dir)
+    assert [e.display_name for e in _local().values()] == ["good"]
