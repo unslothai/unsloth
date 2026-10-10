@@ -438,6 +438,11 @@ def test_a_leading_control_before_the_heading_title_is_dropped(between):
             "<h3><button>Question</button></h3><p>Answer text.</p>",
             "### Question",
         ),
+        ("<h3><!-- </h3> --><button>Question</button></h3><p>Answer text.</p>", "### Question"),
+        (
+            '<div role="presentation heading" aria-level="3"><button>Question</button></div><p>Answer text.</p>',
+            "Question",
+        ),
     ],
 )
 def test_heading_button_title_edge_cases(html, heading):

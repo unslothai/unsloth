@@ -486,7 +486,8 @@ class _TitleButtonScan(HTMLParser):
 
 
 _HEADING_OPEN_RE = re.compile(r"<h[1-6][\s>/]", re.IGNORECASE)
-_ARIA_HEADING_RE = re.compile(r"role\s*=\s*[\"']?[^\"'>]*heading", re.IGNORECASE)
+# bounded to one short attribute value, so text repeating "role=" stays linear
+_ARIA_HEADING_RE = re.compile(r"role\s{0,8}=\s{0,8}[\"']?[^\"'<>]{0,64}?heading", re.IGNORECASE)
 _BUTTON_OPEN_RE = re.compile(r"<button", re.IGNORECASE)
 _HEADING_CLOSE_RE = re.compile(r"</h[1-6]\s*>", re.IGNORECASE)
 # raw text and comments, whose markup-looking content is not markup
@@ -529,7 +530,10 @@ def _title_buttons(source_html: str) -> frozenset[int]:
         return frozenset()
     opens = sorted(
         [m.start() for m in _HEADING_OPEN_RE.finditer(source_html)]
-        + [source_html.rfind("<", 0, m.start()) for m in _ARIA_HEADING_RE.finditer(source_html)]
+        + [
+            source_html.rfind("<", max(0, m.start() - _TITLE_BUTTON_WINDOW), m.start())
+            for m in _ARIA_HEADING_RE.finditer(source_html)
+        ]
     )
     spans: list[list[int]] = []
     for start in opens:
@@ -541,6 +545,8 @@ def _title_buttons(source_html: str) -> frozenset[int]:
         limit = start + _TITLE_HEADING_WINDOW
         # a bound only: the scan parses up to it and keeps a button only if it sees the heading end
         close = _HEADING_CLOSE_RE.search(source_html, start, limit)
+        while close and not live(close.start()):
+            close = _HEADING_CLOSE_RE.search(source_html, close.end(), limit)
         end = close.end() if close and source_html[start + 1] in "hH" else limit
         spans.append([start, min(end, len(source_html))])
     keep: set[int] = set()
