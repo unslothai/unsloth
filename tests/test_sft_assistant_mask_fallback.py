@@ -120,3 +120,23 @@ def test_older_zoo_keeps_trl_error():
     # Without a Zoo that masks from the flag, TRL's error must stand rather than train on every token.
     with pytest.raises(ValueError):
         _run(_load(zoo_reads_flag = False)("__init__", TRL_SHAPED_INIT), _unsupported)
+
+
+def test_vision_processor_keeps_trl_error():
+    class ProcessorMixin:
+        pass
+
+    class Processor(ProcessorMixin):
+        chat_template = "{{ messages }}"
+
+    namespace = {"has_generation_markers": lambda template: False}
+    exec(_load()("__init__", TRL_SHAPED_INIT), namespace)
+    with pytest.raises(ValueError):
+        namespace["__init__"](
+            type("T", (), {})(),
+            Processor(),
+            _Args(),
+            _unsupported,
+            lambda *a, **k: False,
+            lambda: None,
+        )
