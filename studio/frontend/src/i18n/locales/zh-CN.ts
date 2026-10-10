@@ -1639,6 +1639,15 @@ export const zhCN = {
         showAudioCppUpdates: "audio.cpp 更新通知",
         showAudioCppUpdatesDescription:
           "当音频页面所需的 audio.cpp 运行时需要更新时通知你。如果从不使用音频功能，可以关闭此项。",
+        showUnslothUpdates: "Unsloth 更新通知",
+        showUnslothUpdatesDescription:
+          "有新版本的 Unsloth 可供安装时通知。",
+        frequency: {
+          always: "总是",
+          daily: "每天一次",
+          weekly: "每周一次",
+          off: "关闭",
+        },
       },
       startup: {
         sectionTitle: "启动",

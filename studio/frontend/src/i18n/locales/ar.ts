@@ -1659,6 +1659,15 @@ export const ar = {
         showAudioCppUpdates: "إشعارات تحديث audio.cpp",
         showAudioCppUpdatesDescription:
           "التنبيه عندما تحتاج بيئة تشغيل audio.cpp إلى تحديث لتشغيل صفحات الصوت. أوقف التشغيل إذا كنت لا تستخدم الصوت أبدًا.",
+        showUnslothUpdates: "إشعارات تحديث Unsloth",
+        showUnslothUpdatesDescription:
+          "الإشعار عند توفر إصدار أحدث من Unsloth للتثبيت.",
+        frequency: {
+          always: "دائمًا",
+          daily: "مرة يوميًا",
+          weekly: "مرة أسبوعيًا",
+          off: "إيقاف",
+        },
       },
       startup: {
         sectionTitle: "بدء التشغيل",

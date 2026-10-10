@@ -28,14 +28,7 @@ import {
   emitTrainingRunsChanged,
   TRAINING_UI_PREFERENCE_KEYS,
 } from "@/features/training";
-import {
-  setShowAudioCppUpdateBanner,
-  setShowLlamaUpdateBanner,
-  setShowWhisperUpdateBanner,
-  useShowAudioCppUpdateBanner,
-  useShowLlamaUpdateBanner,
-  useShowWhisperUpdateBanner,
-} from "@/hooks/use-llama-update-pref";
+import { NOTIFICATION_PREF_KEYS } from "@/hooks/use-notification-frequency";
 import { useHfTokenValidation } from "@/hooks";
 import { LOCALE_STORAGE_KEY, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
@@ -79,6 +72,7 @@ import { LanguageSelect } from "../components/language-select";
 import { TRANSPORT_MODE_STORAGE_KEY } from "@/features/hub";
 import { DownloadTransportRow } from "../components/download-transport-row";
 import { HubSettingsSection } from "../components/hub-settings-section";
+import { NotificationFrequencySelect } from "../components/notification-frequency-select";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { StudioVersionSection } from "../components/studio-version-section";
@@ -163,9 +157,7 @@ const PREFS_KEYS: string[] = [
   // Guided tour flags
   "tour:studio:v1",
   // Update notifications
-  "unsloth_show_llama_update_banner",
-  "unsloth_show_whisper_update_banner",
-  "unsloth_show_audio_cpp_update_banner",
+  ...NOTIFICATION_PREF_KEYS,
   "unsloth_llama_update_offer_suppression",
   "unsloth_monitor_overlay",
   LOADED_MODELS_PREFERENCE_KEYS.show,
@@ -204,9 +196,6 @@ export function GeneralTab() {
     (s) => s.persistenceError,
   );
   const hfTokenIsPersisting = useHfTokenStore((s) => s.isPersisting);
-  const showLlamaUpdates = useShowLlamaUpdateBanner();
-  const showWhisperUpdates = useShowWhisperUpdateBanner();
-  const showAudioCppUpdates = useShowAudioCppUpdateBanner();
   const showLoadedModels = useShowLoadedModels();
 
   const [draftToken, setDraftToken] = useState(hfToken ?? "");
@@ -663,14 +652,25 @@ export function GeneralTab() {
           />
         </SettingsRow>
         <SettingsRow
+          label={t("settings.general.notifications.showUnslothUpdates")}
+          description={t(
+            "settings.general.notifications.showUnslothUpdatesDescription",
+          )}
+        >
+          <NotificationFrequencySelect
+            channel="unsloth"
+            label={t("settings.general.notifications.showUnslothUpdates")}
+          />
+        </SettingsRow>
+        <SettingsRow
           label={t("settings.general.notifications.showLlamaUpdates")}
           description={t(
             "settings.general.notifications.showLlamaUpdatesDescription",
           )}
         >
-          <Switch
-            checked={showLlamaUpdates}
-            onCheckedChange={setShowLlamaUpdateBanner}
+          <NotificationFrequencySelect
+            channel="llama"
+            label={t("settings.general.notifications.showLlamaUpdates")}
           />
         </SettingsRow>
         <SettingsRow
@@ -679,9 +679,9 @@ export function GeneralTab() {
             "settings.general.notifications.showWhisperUpdatesDescription",
           )}
         >
-          <Switch
-            checked={showWhisperUpdates}
-            onCheckedChange={setShowWhisperUpdateBanner}
+          <NotificationFrequencySelect
+            channel="whisper"
+            label={t("settings.general.notifications.showWhisperUpdates")}
           />
         </SettingsRow>
         <SettingsRow
@@ -690,9 +690,9 @@ export function GeneralTab() {
             "settings.general.notifications.showAudioCppUpdatesDescription",
           )}
         >
-          <Switch
-            checked={showAudioCppUpdates}
-            onCheckedChange={setShowAudioCppUpdateBanner}
+          <NotificationFrequencySelect
+            channel="audio"
+            label={t("settings.general.notifications.showAudioCppUpdates")}
           />
         </SettingsRow>
       </SettingsSection>

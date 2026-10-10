@@ -1759,6 +1759,15 @@ export const he = {
         showAudioCppUpdates: "התראות עדכון של audio.cpp",
         showAudioCppUpdatesDescription:
           "הודע כאשר סביבת הריצה של audio.cpp צריכה עדכון עבור דפי האודיו. כבה אם אינך משתמש באודיו אף פעם.",
+        showUnslothUpdates: "התראות עדכון של Unsloth",
+        showUnslothUpdatesDescription:
+          "הודעה כשגרסה חדשה יותר של Unsloth זמינה להתקנה.",
+        frequency: {
+          always: "תמיד",
+          daily: "פעם ביום",
+          weekly: "פעם בשבוע",
+          off: "כבוי",
+        },
       },
       startup: {
         sectionTitle: "הפעלה",

@@ -1663,6 +1663,15 @@ export const ru = {
         showAudioCppUpdates: "Уведомления об обновлениях audio.cpp",
         showAudioCppUpdatesDescription:
           "Уведомлять, когда среде выполнения audio.cpp нужно обновление для страниц «Аудио». Отключите, если вы не пользуетесь аудио.",
+        showUnslothUpdates: "Уведомления об обновлениях Unsloth",
+        showUnslothUpdatesDescription:
+          "Сообщать, когда доступна новая версия Unsloth для установки.",
+        frequency: {
+          always: "Всегда",
+          daily: "Раз в день",
+          weekly: "Раз в неделю",
+          off: "Выкл.",
+        },
       },
       startup: {
         sectionTitle: "Автозапуск",

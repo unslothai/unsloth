@@ -1718,6 +1718,15 @@ export const en = {
         showAudioCppUpdates: "audio.cpp update notifications",
         showAudioCppUpdatesDescription:
           "Notify when the audio.cpp runtime needs an update to run the Audio pages. Turn off if you never use Audio.",
+        showUnslothUpdates: "Unsloth update notifications",
+        showUnslothUpdatesDescription:
+          "Notify when a newer version of Unsloth is available to install.",
+        frequency: {
+          always: "Always",
+          daily: "Once a day",
+          weekly: "Once a week",
+          off: "Off",
+        },
       },
       startup: {
         sectionTitle: "Startup",

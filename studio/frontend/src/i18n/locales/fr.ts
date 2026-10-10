@@ -1678,6 +1678,15 @@ export const fr = {
         showAudioCppUpdates: "Notifications de mise à jour d'audio.cpp",
         showAudioCppUpdatesDescription:
           "Notifier lorsque le moteur audio.cpp doit être mis à jour pour les pages Audio. Désactivez si vous n'utilisez jamais Audio.",
+        showUnslothUpdates: "Notifications de mise à jour d'Unsloth",
+        showUnslothUpdatesDescription:
+          "Prévenir lorsqu'une version plus récente d'Unsloth est disponible à l'installation.",
+        frequency: {
+          always: "Toujours",
+          daily: "Une fois par jour",
+          weekly: "Une fois par semaine",
+          off: "Désactivé",
+        },
       },
       startup: {
         sectionTitle: "Démarrage",

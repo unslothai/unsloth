@@ -1647,6 +1647,15 @@ export const ja = {
         showAudioCppUpdates: "audio.cpp のアップデート通知",
         showAudioCppUpdatesDescription:
           "音声ページに必要な audio.cpp ランタイムの更新があるときに通知します。音声機能を使わない場合はオフにしてください。",
+        showUnslothUpdates: "Unsloth のアップデート通知",
+        showUnslothUpdatesDescription:
+          "新しいバージョンの Unsloth をインストールできるようになったときに通知します。",
+        frequency: {
+          always: "常に",
+          daily: "1日1回",
+          weekly: "週に1回",
+          off: "オフ",
+        },
       },
       startup: {
         sectionTitle: "起動",

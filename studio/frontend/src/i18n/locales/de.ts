@@ -1680,6 +1680,15 @@ export const de = {
         showAudioCppUpdates: "audio.cpp-Update-Benachrichtigungen",
         showAudioCppUpdatesDescription:
           "Benachrichtigt, wenn die audio.cpp-Laufzeit ein Update für die Audio-Seiten braucht. Deaktivieren Sie dies, wenn Sie Audio nie verwenden.",
+        showUnslothUpdates: "Unsloth-Update-Benachrichtigungen",
+        showUnslothUpdatesDescription:
+          "Benachrichtigen, wenn eine neuere Unsloth-Version zur Installation bereitsteht.",
+        frequency: {
+          always: "Immer",
+          daily: "Einmal täglich",
+          weekly: "Einmal pro Woche",
+          off: "Aus",
+        },
       },
       startup: {
         sectionTitle: "Autostart",
