@@ -514,7 +514,6 @@ export function applyActiveModelStatusToStore(
           specDraftModel: status.spec_draft_model ?? null,
         }),
       }),
-    // A cache type the unsloth.ini set is what the server echoes, not a structured setting to adopt.
     ...(seedLoadParams &&
       status.cache_type_kv !== undefined &&
       status.model_ini_cache_type !== true && {
@@ -534,8 +533,7 @@ export function applyActiveModelStatusToStore(
           tensorParallel: status.tensor_parallel,
         }),
       }),
-    // Seeded like tensorParallel: a tab that never performed the load must not show the .ini
-    // switch off over a server launched with it, or its next Reload drops the file.
+    // Seeded so a tab that never ran the load does not drop the .ini on its next Reload.
     ...(seedLoadParams &&
       status.model_ini_applied !== undefined && {
         loadedModelIni: status.model_ini_applied,

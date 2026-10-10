@@ -275,7 +275,7 @@ const SETTING_CHECKS: SettingCheck[] = [
   },
   {
     pinned: () => true,
-    // When the applied unsloth.ini set the cache type, the echo is the file's, which no structured value matches.
+    // An INI-set cache type echoes the file's value, which no structured value matches.
     agrees: (c, s) =>
       (c.kvCacheDtype ?? null) === (s.cache_type_kv ?? null) ||
       (c.useModelIni === true && s.model_ini_cache_type === true),
@@ -417,7 +417,6 @@ const SETTING_CHECKS: SettingCheck[] = [
     agrees: (c, s) => c.disableVision === (s.disable_vision ?? false),
   },
   {
-    // A status omitting it ran without the file, as every server before the field did.
     chatOnly: true,
     pinned: () => true,
     agrees: (c, s) => (c.useModelIni === true) === (s.model_ini_applied === true),

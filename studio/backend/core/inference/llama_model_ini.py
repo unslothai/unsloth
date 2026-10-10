@@ -1,14 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Optional ``unsloth.ini`` shipped beside a GGUF, compiled to llama-server pass-through args.
+"""``unsloth.ini`` beside a GGUF (llama.cpp preset INI format), compiled to llama-server args.
 
-The file uses llama.cpp's preset INI format (``common/preset.cpp``, ``docs/preset.md``), but it is
-NOT named ``preset.ini``: llama.cpp's ``-hf`` fetches a repo-root ``preset.ini`` instead of the
-GGUFs (``common/download.cpp``), so that name would change what plain llama.cpp users get.
-The file can come from any Hugging Face repo, so only an allowlist of performance and sampling
-options is applied; everything else is reported in ``ignored`` and never reaches the command.
-The tokens go through the same path as typed extra arguments (after Studio's flags, last wins)."""
+Not ``preset.ini``: llama.cpp's ``-hf`` fetches a repo-root ``preset.ini`` instead of the GGUFs
+(common/download.cpp). Any repo can ship it, so only an allowlist of options is applied."""
 
 from __future__ import annotations
 
@@ -42,12 +38,8 @@ _SPEC_TYPES = frozenset(
 _TRUE = frozenset({"on", "enabled", "true", "1"})
 _FALSE = frozenset({"off", "disabled", "false", "0"})
 
-# Router / preset-only keys llama.cpp itself skips for a single model (common/arg.cpp
-# common_params_add_preset_options); ignored without a report, as there.
 _ROUTER_ONLY = frozenset({"load-on-startup", "stop-timeout", "dedup-cache-models"})
 
-# Studio picks the model and projector from the model picker; an INI naming them (as a
-# hand-written router preset does) is normal, so these are reported, not refused.
 _STUDIO_SUPPLIED = frozenset(
     {"m", "model", "mm", "mmproj", "hf", "hfr", "hf-repo", "hff", "hf-file", "a", "alias"}
 )
@@ -223,8 +215,7 @@ _OPTIONS: tuple[_Option, ...] = (
         "LLAMA_ARG_CHAT_TEMPLATE_KWARGS",
         "json_object",
     ),
-    # Promoted samplers become chat slider values, so they keep the chat request's bounds
-    # (ChatCompletionRequest, utils/inference/inference_config.py _SAMPLING_FIELDS), else every chat 422s.
+    # Promoted into chat sliders: keep ChatCompletionRequest's bounds, else every chat 422s.
     _opt("--temp", ("temp", "temperature"), "LLAMA_ARG_TEMPERATURE", "float", lo = 0, hi = 2),
     _opt("--top-k", ("top-k",), "LLAMA_ARG_TOP_K", "int", lo = -1, hi = 100),
     _opt("--top-p", ("top-p",), "LLAMA_ARG_TOP_P", "float", lo = 0, hi = 1),
@@ -323,9 +314,7 @@ def _key_name(raw: str) -> str:
 
 
 def _parse_sections(text: str) -> list[tuple[str, list[tuple[str, Optional[str]]]]]:
-    """``[(section, [(key, value), ...]), ...]`` in file order; keys above the first header
-    go in ``default``. Mirrors common/preset.cpp parse_ini_from_file: ``;``/``#`` ends a value
-    anywhere, quotes are kept, and a repeated header starts that section over."""
+    """Mirrors common/preset.cpp parse_ini_from_file (``;``/``#`` ends a value anywhere)."""
     order: list[str] = ["default"]
     entries: dict[str, list[tuple[str, Optional[str]]]] = {"default": []}
     current = "default"
@@ -365,7 +354,6 @@ def _number(value: str, integer: bool) -> float:
 
 
 def _compile_value(opt: _Option, value: str, inverted: bool) -> list[str]:
-    """Tokens for one allowlisted key, or ValueError with a short reason."""
     v = value.strip()
     if opt.flag in ("--spec-type", "--spec-default"):
         # Either makes Studio skip attaching the detected drafter, and repeated --spec-type accumulate.
@@ -398,7 +386,6 @@ def _compile_value(opt: _Option, value: str, inverted: bool) -> list[str]:
         return [opt.flag, str(number) if opt.kind == "int" else v]
     if opt.kind == "choice":
         if opt.flag == "--split-mode":
-            # Studio's tensor-parallel switch owns the split mode; an INI value would overwrite it.
             raise ValueError("use Studio's tensor parallel setting instead")
         if v.lower() not in opt.choices:
             raise ValueError("expected one of " + ", ".join(sorted(opt.choices)))
@@ -408,7 +395,6 @@ def _compile_value(opt: _Option, value: str, inverted: bool) -> list[str]:
         if v.lower() in ("auto", "all"):
             return [opt.flag, "-1" if v.lower() == "auto" else "999"]
         number = _number(v, True)
-        # llama.cpp stores n_gpu_layers as int32_t (common/common.h).
         if not -1 <= number <= 2**31 - 1:
             raise ValueError("expected a layer count, auto or all")
         return [opt.flag, str(number)]
@@ -421,11 +407,9 @@ def _compile_value(opt: _Option, value: str, inverted: bool) -> list[str]:
     if opt.kind == "float_list":
         parts = [p.strip() for p in v.split(",")]
         numbers = [_number(part, False) for part in parts]
-        # The boundary refuses a zero total or a non-float32 ratio; ignore the key, not the load.
         if any(n < 0 or n > 3.4e38 for n in numbers) or sum(numbers) <= 0:
             raise ValueError("expected non-negative ratios with a positive total")
         tokens = [opt.flag, ",".join(parts)]
-        # The boundary's own float32 rules (subnormal shares, prefix-sum overflow).
         from .llama_server_args import parse_tensor_split_override
 
         parse_tensor_split_override(tokens)
@@ -461,16 +445,11 @@ def parse_model_ini(
     quant: Optional[str] = None,
     gguf_filename: Optional[str] = None,
 ) -> ModelIni:
-    """Compile an ``unsloth.ini`` for one GGUF variant.
-
-    Applied in order, later wins: keys above the first header and ``[*]`` (every variant), then
-    the section named after the quant (``[UD-Q4_K_XL]``) or the GGUF file stem, case-insensitive.
-    Raises ValueError only for a file too large to be an INI; bad keys land in ``ignored``."""
+    """Later wins: ``default`` and ``[*]``, then the quant or GGUF-stem section (case-insensitive)."""
     if len(text.encode("utf-8", "surrogatepass")) > MAX_MODEL_INI_BYTES:
         raise ValueError(f"{MODEL_INI_FILENAME} is larger than {MAX_MODEL_INI_BYTES // 1024} KiB")
     parsed = _parse_sections(text)
     result = ModelIni(sections = [name for name, _ in parsed])
-    # A qualified variant (``distilled/...-Q6_K``) still matches its bare ``[Q6_K]`` section.
     from utils.models.model_config import _gguf_variant_token
 
     token = _gguf_variant_token(gguf_filename) if gguf_filename else None
@@ -480,7 +459,6 @@ def parse_model_ini(
     result.applied_sections = chosen
     by_name = dict(parsed)
 
-    # One value per option: a later section replaces an earlier value (and moves it last).
     values: dict[str, list[str]] = {}
     origin: dict[str, tuple[str, str]] = {}
     for section in chosen:
@@ -556,9 +534,7 @@ def _read_capped(path: Path) -> str:
 
 
 def _stays_beside(candidate: Path, folder: Path) -> bool:
-    """Whether ``candidate`` is the folder's own file. A link may not lead elsewhere (the grant
-    covers this folder, not the link target), except a Hugging Face snapshot file, which links
-    into the same repo's ``blobs/``."""
+    """No link out of the granted folder, except an HF snapshot file into its own repo's ``blobs/``."""
     target, home = candidate.resolve(), folder.resolve()
     if target.parent == home:
         return True
@@ -602,7 +578,6 @@ def _locate_local(model_path: str, gguf_variant: Optional[str]) -> Optional[Loca
     for folder in dict.fromkeys(folders):
         candidate = folder / MODEL_INI_FILENAME
         if candidate.is_file() and _stays_beside(candidate, folder):
-            # A local load rarely names its variant; the quant in the file name picks [Q4_K_M].
             quant = gguf_variant or (
                 _gguf_variant_token(gguf_file.name) if gguf_file is not None else None
             )
@@ -626,7 +601,7 @@ def _locate_hf(
     if list_variants is None:
         from utils.models import model_config
         if offline:
-            # The listing would still ask the Hub; offline reads only what the cache holds.
+
             def list_variants(repo, hf_token = None):
                 cached = model_config._list_gguf_variants_from_hf_cache(repo)
                 if cached is None:
@@ -647,10 +622,8 @@ def _locate_hf(
             (v for v in variants if (_gguf_stem(v.filename) or "").lower().endswith(want)), None
         )
     elif variants:
-        # No quant named: the one the loader auto-selects (root rows first, then the whole set).
         from utils.models.model_config import _pick_best_gguf
 
-        # A qualified key (``distilled/Q6_K``) is not a root row; a quant-named folder is.
         names = [v.filename for v in variants if "/" not in (v.quant or "")] or [
             v.filename for v in variants
         ]
@@ -675,7 +648,6 @@ def _locate_hf(
 
 
 def _hf_download(repo_id: str, filename: str, hf_token, offline: bool) -> Optional[str]:
-    """Local path of one repo file, or None when the repo has no such file."""
     import huggingface_hub as hub
 
     from hub.utils.hf_tokens import cached_read_refused, call_with_anonymous_retry
@@ -720,8 +692,6 @@ def _hf_download(repo_id: str, filename: str, hf_token, offline: bool) -> Option
             hf_token,
         )
     except Exception as exc:
-        # EntryNotFound (no such file), LocalEntryNotFound (offline, not cached) and an
-        # unreachable Hub all mean "no INI here"; the load goes on without it.
         if type(exc).__name__ in (
             "EntryNotFoundError",
             "RemoteEntryNotFoundError",
@@ -738,10 +708,7 @@ def locate_model_ini(
     hf_token = None,
     offline: bool = False,
 ) -> Optional[LocatedModelIni]:
-    """The ``unsloth.ini`` for a GGUF model: beside the selected variant, then at the model
-    root. None when the GGUF model has none; NotGgufModel when it is not a GGUF model."""
     from utils.paths.path_utils import is_local_path
-
     if is_local_path(model_path):
         return _locate_local(model_path, gguf_variant)
     return _locate_hf(model_path, gguf_variant, hf_token, offline)

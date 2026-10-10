@@ -116,7 +116,6 @@ export interface LoadModelRequest {
   /** Load a vision-capable GGUF without its mmproj, freeing the VRAM the projector would occupy.
    *  Image input is unavailable for the session; text generation is unaffected. */
   disable_vision?: boolean | null;
-  /** Launch with the unsloth.ini shipped beside the GGUF (GGUF only). Sent only when true. */
   // biome-ignore lint/style/useNamingConvention: API schema
   use_model_ini?: boolean;
   /** GPU memory strategy for GGUF models. "auto" (default): Unsloth selects GPUs and caps context to
@@ -304,13 +303,10 @@ export interface LoadModelResponse {
    *  round-trips the Advanced Settings switch even on a GGUF that never had a projector, unlike
    *  vision_disabled_by_user below. */
   disable_vision?: boolean;
-  /** The launch used the model's unsloth.ini. */
   // biome-ignore lint/style/useNamingConvention: API schema
   model_ini_applied?: boolean;
-  /** That unsloth.ini set sampling, so `inference` already carries it. */
   // biome-ignore lint/style/useNamingConvention: API schema
   model_ini_sampling?: boolean;
-  /** The `inference` keys that unsloth.ini set. */
   // biome-ignore lint/style/useNamingConvention: API schema
   model_ini_sampling_keys?: string[];
   model_ini_cache_type?: boolean;
@@ -459,13 +455,10 @@ export interface InferenceStatusResponse {
   /** The load ran with the vision projector deliberately left unloaded. Echoes the request, so it
    *  round-trips the Advanced Settings switch even on a GGUF that never had a projector. */
   disable_vision?: boolean;
-  /** The running server was launched with the model's unsloth.ini. */
   // biome-ignore lint/style/useNamingConvention: API schema
   model_ini_applied?: boolean;
-  /** That unsloth.ini set sampling, so `inference` already carries it. */
   // biome-ignore lint/style/useNamingConvention: API schema
   model_ini_sampling?: boolean;
-  /** The `inference` keys that unsloth.ini set. */
   // biome-ignore lint/style/useNamingConvention: API schema
   model_ini_sampling_keys?: string[];
   model_ini_cache_type?: boolean;
@@ -872,11 +865,9 @@ export interface AudioConvertCaps {
   source_max_seconds: number;
 }
 
-/** GET /api/models/model-ini: the unsloth.ini beside a GGUF, compiled to the settings it would apply. */
 export interface ModelIniResponse {
   found: boolean;
   filename: string;
-  /** `variant_folder` | `repo_root` | `local_dir`, null when not found. */
   location: string | null;
   sections: string[];
   // biome-ignore lint/style/useNamingConvention: API schema

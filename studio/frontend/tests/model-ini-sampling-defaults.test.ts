@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// On the Default preset the Qwen3 thinking table still applies, and an unsloth.ini outranks it only for the keys it set.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -132,10 +131,8 @@ test("a penalty the INI set goes back to default once the file stops supplying i
     merge({ temperature: 0.7 }, fromIni, ["temperature", "repetition_penalty"]).repetitionPenalty,
     DEFAULT_INFERENCE_PARAMS.repetitionPenalty,
   );
-  // A penalty the user set, with no INI history, is kept.
   assert.equal(merge({ temperature: 0.7 }, fromIni, []).repetitionPenalty, 1.1);
   assert.equal(merge({ temperature: 0.7 }, fromIni).repetitionPenalty, 1.1);
-  // The file still supplying it keeps winning.
   assert.equal(
     merge({ repetition_penalty: 1.2 }, fromIni, ["repetition_penalty"]).repetitionPenalty,
     1.2,

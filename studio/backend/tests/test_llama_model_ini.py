@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""unsloth.ini beside a GGUF: parsing, allowlist, location, and how a load applies it."""
 
 from __future__ import annotations
 
@@ -303,7 +302,6 @@ def test_toggle_on_compiles_ini_and_moves_np_into_n_parallel(monkeypatch):
     )
     assert request.n_parallel == 2
     merged = _with_model_ini(request, request.llama_extra_args)
-    # INI first, typed extras last: llama.cpp is last-wins, so the typed --temp wins.
     assert merged == ["--ctx-size", "8192", "--temp", "0.6", "--temp", "0.2"]
 
 
@@ -383,8 +381,7 @@ def test_stored_ini_prefix_is_never_inherited():
 
 
 def test_ini_only_extras_are_cleared_explicitly_when_the_toggle_goes_off(monkeypatch):
-    # None would leave the INI tokens stored as this load's extras (the backend only rebinds
-    # on a list), so the load after this one would inherit them as typed extras.
+    # None would leave the INI tokens stored for the next load to inherit as typed extras.
     from routes.inference import _resolve_inherited_extra_args
     import routes.inference as routes
 
@@ -469,8 +466,6 @@ def test_route_unreadable_hub_reads_as_absent(monkeypatch):
 
 
 def test_already_loaded_dedupe_sees_the_ini_both_ways():
-    """The fast path compares INI + typed extras against what the resident launched, so an
-    unchanged toggle-on reload is a no-op and switching the toggle off is a reload."""
     from core.inference.llama_cpp import LlamaCppBackend
     from models.inference import LoadRequest
     from routes.inference import _active_gguf_intent
@@ -533,7 +528,6 @@ def test_typed_sampler_after_the_ini_wins_in_the_reported_defaults():
         "top_p": 0.95,
         "repetition_penalty": 1.1,
     }
-    # A typed sampler the INI never set stays out: only what the file supplied is promoted.
     backend = _Backend(["--temp", "0.6", "--top-k", "5"], ["--temp", "0.6"])
     assert "top_k" not in _with_model_ini_sampling(base, backend)
 
@@ -684,8 +678,6 @@ def test_load_path_resolves_the_ini_offline_when_the_hub_is_unreachable(monkeypa
     ],
 )
 def test_samplers_outside_the_chat_schema_are_ignored(line):
-    # Promoted into the chat sliders, so bounded like ChatCompletionRequest and
-    # inference_config._SAMPLING_FIELDS; out of range would 422 every chat request.
     compiled = parse_model_ini(line + "\n", quant = None, gguf_filename = None)
     assert compiled.args == [] and [i["key"] for i in compiled.ignored] == [line.split(" =")[0]]
 
@@ -783,10 +775,8 @@ def test_typed_sampler_spellings_and_bounds_decide_what_is_promoted():
     from routes.inference import _with_model_ini_sampling
 
     base = {"temperature": 0.7, "top_p": 0.95}
-    # llama.cpp accepts --top_p; the typed value after the INI's wins.
     backend = _Backend(["--top-p", "0.8", "--top_p", "0.2"], ["--top-p", "0.8"])
     assert _with_model_ini_sampling(base, backend)["top_p"] == 0.2
-    # Past the chat bounds: launched as typed, never pushed into the sliders.
     backend = _Backend(["--temp", "0.6", "--temp", "3"], ["--temp", "0.6"])
     assert _with_model_ini_sampling(base, backend) is base
 
@@ -820,7 +810,6 @@ def test_managed_offline_lookup_authorizes_offline(monkeypatch):
 def test_hf_without_a_variant_uses_the_loaders_auto_pick(tmp_path):
     folder_ini = tmp_path / "a.ini"
     folder_ini.write_text("temp = 0.9\n")
-    # No root GGUF: the loader auto-selects a subfolder quant, so its folder INI applies.
     variants = [
         _variant("UD-Q4_K_XL/M-UD-Q4_K_XL.gguf", "UD-Q4_K_XL"),
         _variant("Q8_0/M-Q8_0.gguf", "Q8_0"),
@@ -838,7 +827,6 @@ def test_ini_prefix_is_stripped_after_placement_drops_one_of_its_flags():
     from routes.inference import _without_model_ini
 
     prefix = ["--ctx-size", "4096", "--split-mode", "row", "--temp", "0.6"]
-    # load_model stripped --split-mode row before persisting; the typed extras follow.
     stored = ["--ctx-size", "4096", "--temp", "0.6", "--top-k", "3"]
     backend = _Backend(stored, prefix)
     assert _without_model_ini(backend, stored) == ["--top-k", "3"]
@@ -853,7 +841,6 @@ def test_local_ini_symlink_leaving_the_model_folder_is_not_read(tmp_path):
     (model / "M-Q8_0.gguf").write_bytes(b"GGUF")
     (model / "unsloth.ini").symlink_to(outside)
     assert mi.locate_model_ini(str(model / "M-Q8_0.gguf")) is None
-    # A link to a file in the same folder is still the folder's own file.
     (model / "unsloth.ini").unlink()
     (model / "real.ini").write_text("c = 4096\n")
     (model / "unsloth.ini").symlink_to(model / "real.ini")
@@ -883,7 +870,6 @@ def test_hf_snapshot_ini_linking_into_its_repos_blobs_is_read(tmp_path):
     (snap / "unsloth.ini").symlink_to(repo / "blobs" / "f00d")
     (snap / "M-Q8_0.gguf").symlink_to(repo / "blobs" / "beef")
     assert "4096" in mi.locate_model_ini(str(snap / "M-Q8_0.gguf")).text
-    # Another repo's blob is not this snapshot's file.
     other = tmp_path / "models--x--Y" / "blobs"
     other.mkdir(parents = True)
     (other / "f00d").write_text("c = 1\n")

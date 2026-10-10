@@ -74,7 +74,6 @@ class LoadRequest(BaseModel):
     # Auto-switch only: the alias its owner-override lookup used, so the managed path-flag
     # check reads the same override row.
     _override_alias_id: Optional[str] = PrivateAttr(default = None)
-    # Tokens compiled from the model's unsloth.ini when use_model_ini resolved one.
     _model_ini_args: tuple[str, ...] = PrivateAttr(default = ())
     _model_ini_applied: bool = PrivateAttr(default = False)
     _model_ini_sampling: bool = PrivateAttr(default = False)

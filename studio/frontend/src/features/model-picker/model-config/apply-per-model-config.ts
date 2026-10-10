@@ -87,7 +87,6 @@ export function applyPerModelConfigToRuntime(
       ? false
       : (config.disableVision ?? false),
     chatTemplateOverride: cleanTemplate(config.chatTemplateOverride),
-    // llama-server's own, so inert for the diffusion runner like the batch flags.
     useModelIni: options.isDiffusion ? false : config.useModelIni === true,
     // GPU Memory knobs are per-model (GGUF-only). Absent = defaults; the mode is a standing
     // preference so an absent mode falls back to the persisted one. The per-GPU split is restored

@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The opt-in "Use .ini file (optional)" switch for the unsloth.ini beside a GGUF. Off must leave
-// every stored record, signature and load payload exactly as it was before the field existed.
+// Off must leave every stored record, signature and load payload as before the field existed.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -195,7 +194,6 @@ test("a resident server matches only when it ran with the file exactly when aske
     residentRuntimeMatchesConfig({ model_ini_applied: true }, on, standing),
     true,
   );
-  // The file's -ctk is the echo; the structured setting stays what the load sent.
   assert.equal(
     residentRuntimeMatchesConfig(
       { model_ini_applied: true, model_ini_cache_type: true, cache_type_kv: "q8_0" },
@@ -204,7 +202,6 @@ test("a resident server matches only when it ran with the file exactly when aske
     ),
     true,
   );
-  // An INI that does not set the cache type leaves the structured setting in charge.
   assert.equal(
     residentRuntimeMatchesConfig(
       { model_ini_applied: true, model_ini_cache_type: false, cache_type_kv: "q8_0" },
@@ -238,7 +235,6 @@ test("a cache type the INI set is not adopted as the structured setting; a tempe
   for (const [path, pattern] of sites) {
     assert.match(readSrc(path), pattern, path);
   }
-  // Both auto-load echoes that can follow a use_model_ini load, editable and loaded alike.
   const adapter = readSrc("features/chat/api/chat-adapter.ts");
   const adopted =
     adapter.match(
@@ -379,7 +375,6 @@ test("Manual GPU memory prices the INI without the placement flags the load drop
     "--temp",
     "0.42",
   ];
-  // A fixed layer count owns the split too (_should_strip_tensor_split: manual and gpu_layers >= 0).
   for (const layers of [0, 24]) {
     assert.deepEqual(withoutModelIniOffloadFlags(ini, layers), [
       "--ctx-size",
@@ -390,7 +385,6 @@ test("Manual GPU memory prices the INI without the placement flags the load drop
       "0.42",
     ]);
   }
-  // Auto layers in Manual keep the INI's split, as the load does.
   for (const layers of [-1, null, undefined]) {
     assert.deepEqual(withoutModelIniOffloadFlags(ini, layers), [
       "--ctx-size",

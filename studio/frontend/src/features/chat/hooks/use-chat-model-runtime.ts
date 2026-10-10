@@ -2771,7 +2771,6 @@ export function useChatModelRuntime() {
               ...(isGguf && !targetIsDiffusion && loadLlamaExtraArgs !== undefined
                 ? { llama_extra_args: loadLlamaExtraArgs ?? [] }
                 : {}),
-              // Only when on, so a load without the file sends the same payload as before.
               ...(loadUseModelIni ? { use_model_ini: true } : {}),
               // omitted when blank: a null counts as set and strips inherited -b / -ub
               ...(isGguf && loadNBatch != null ? { n_batch: loadNBatch } : {}),
@@ -3078,7 +3077,7 @@ export function useChatModelRuntime() {
             noteLoadedModelReasoningMode(modelId, nextReasoningEnabled, true);
             // Unlock attach menus for capabilities the catalog entry lacked.
             syncModelCapabilities(modelId, loadResponse);
-            // Qwen3-family: apply thinking-mode-specific params after load, the unsloth.ini's keys over them.
+            // Qwen3-family: apply thinking-mode-specific params after load.
             const qwenTable = resolveQwenThinkingParams(
               modelId,
               nextReasoningEnabled,

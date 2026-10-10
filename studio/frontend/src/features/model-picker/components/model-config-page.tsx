@@ -410,7 +410,6 @@ function withoutUnsupportedDiffusionSettings(
     // them as though it had, so a box filled before classification flipped would leave the
     // model running without what it says.
     llamaExtraArgs: null,
-    // Same reason: the file holds llama-server flags.
     ...(config.useModelIni ? { useModelIni: false } : {}),
     ...(hasUnsupportedGpuPick
       ? {
@@ -1591,7 +1590,6 @@ function GgufAdvancedSettings({
   /** Which stored entries the extra-arguments row reads, most specific first. */
   onExtraArgsLoadableChange: (loadable: boolean) => void;
   draftKey: string;
-  /** The unsloth.ini beside this GGUF: undefined until answered, null when the lookup failed. */
   modelIni: ModelIniResponse | null | undefined;
 }) {
   const batchAdviceId = useId();
@@ -2081,8 +2079,7 @@ function GgufAdvancedSettings({
   );
 }
 
-/** Opt-in switch for the unsloth.ini shipped beside the GGUF. Rendered when the file exists, or while
- *  the switch is on for a file that is gone. */
+/** Also rendered while on for a file that is gone, so it can be turned off. */
 function ModelIniRow({
   config,
   update,
@@ -2569,7 +2566,6 @@ export function ModelConfigPage({
     ? false
     : templateDefaults.loading;
 
-  // The unsloth.ini beside this quant, if any. A failed lookup reads as absent: the row is optional.
   const modelIniKey = target.isGguf && !sharedVariantUnresolved
     ? `${target.id}\n${target.ggufVariant ?? ""}\n${hfToken || ""}\n${nativePathToken ?? ""}`
     : null;
@@ -3211,7 +3207,6 @@ export function ModelConfigPage({
             ? null
             : resolveMlxEstimateContext(savedContextPin(config)),
           mlxKvQuant: runtimeConfig.mlxKvQuant ?? null,
-          // The INI's slots and flags reach the load, so the estimate prices them too.
           nParallel: iniInEstimate?.n_parallel ?? runtimeConfig.nParallel,
           nBatch: runtimeConfig.nBatch,
           nUbatch: runtimeConfig.nUbatch,

@@ -19,7 +19,6 @@ export function modelIniLocationLabel(
   }
 }
 
-/** `--ctx-size 56000 --no-mmap` -> `ctx-size=56000, no-mmap`, with the slot count the INI moves to `n_parallel`. */
 export function formatModelIniSettings(
   args: readonly string[],
   nParallel: number | null,
@@ -51,8 +50,6 @@ export function formatModelIniSettings(
   return parts.join(", ");
 }
 
-/** Whether the row has anything to offer: hidden for non-GGUF targets and when the file is absent,
- *  unless the switch is still on, since it is the only way to turn a vanished file's setting off. */
 export function shouldShowModelIniRow(
   ini: Pick<ModelIniResponse, "found"> | null | undefined,
   isGguf: boolean,
@@ -62,8 +59,7 @@ export function shouldShowModelIniRow(
   return isGguf && !isDiffusion && (ini?.found === true || switchedOn);
 }
 
-/** The structured cache type a load leaves set. When the unsloth.ini set the cache type the echo is the
- *  file's, and adopting it would keep that cache type once the switch is turned off. */
+/** Adopting an INI-set cache type echo would keep it after the switch is turned off. */
 export function structuredKvCacheDtypeAfterLoad(
   echoed: string | null | undefined,
   sent: string | null | undefined,
@@ -84,8 +80,7 @@ const OFFLOAD_VALUE_FLAGS = new Set([
 const TENSOR_SPLIT_FLAGS = new Set(["--tensor-split", "-ts"]);
 const OFFLOAD_SWITCH_FLAGS = new Set(["--cpu-moe", "-cmoe"]);
 
-/** `args` less the offload flags (and their values) a Manual GPU memory load would not launch. The split
- *  goes only with a fixed layer count, as routes/inference.py `_should_strip_tensor_split` decides. */
+/** The split goes only with a fixed layer count (routes/inference.py `_should_strip_tensor_split`). */
 export function withoutModelIniOffloadFlags(
   args: readonly string[],
   manualGpuLayers: number | null | undefined,

@@ -68,7 +68,7 @@ export interface PerModelConfig {
   selectedGpuIndexKind?: GpuIndexKind | null;
   /** --tensor-split bound to selectedGpuIds in picker order. `undefined` defers to the store, `null` = default. */
   tensorSplit?: number[] | null;
-  /** Launch with the unsloth.ini shipped beside the GGUF. Kept only when true, so an unset record stays byte-identical. */
+  /** Kept only when true, so an unset record stays byte-identical. */
   useModelIni?: boolean;
 }
 

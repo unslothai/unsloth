@@ -4862,8 +4862,7 @@ async def get_model_ini(
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    """The unsloth.ini beside a GGUF variant (its folder, then the model root), compiled to the
-    allowlisted llama-server settings ``use_model_ini`` would apply. ``found`` false when absent."""
+    """The compiled unsloth.ini ``use_model_ini`` would apply; ``found`` false when absent."""
     from core.inference.llama_model_ini import (
         NotGgufModel,
         describe,
@@ -4874,7 +4873,6 @@ async def get_model_ini(
     repo_id = resolve_host_path_reference(repo_id) or repo_id
     local_path = resolve_host_path_reference(local_path) or local_path
     if native_path_lease:
-        # A native pick sends only its label; the grant names the file, as /validate reads it.
         try:
             grant = verify_native_path_lease(
                 native_path_lease,
@@ -4890,7 +4888,6 @@ async def get_model_ini(
         await asyncio.to_thread(
             account_access.require_model_access, repo_id, **({"offline": True} if offline else {})
         )
-        # The listing authorizes its own local copies; this route reads only what the grant names.
         local_path = None
     hf_token = _resolve_hub_token(hf_token_header, hf_token)
 
@@ -4913,7 +4910,6 @@ async def get_model_ini(
     except ValueError as e:
         raise HTTPException(status_code = 400, detail = str(e))
     except Exception as e:
-        # Unreachable Hub, gated repo: the toggle just stays hidden; a load reports the error.
         logger.warning(f"Could not read unsloth.ini for '{repo_id}': {e}")
         body = describe(None, None)
     return redact_host_paths(ModelIniResponse(**body), via_api_key = via_api_key)

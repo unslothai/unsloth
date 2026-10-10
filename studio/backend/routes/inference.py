@@ -8385,8 +8385,7 @@ def _unsloth_serving_fields(model_info: dict) -> dict:
 
 
 def _model_ini_record_for(request, source) -> Optional[tuple]:
-    """``(prefix, source, sets_sampling)`` for a load that applied its unsloth.ini, else None.
-    Kept even with no tokens: an INI holding only ``np`` still shaped the load."""
+    """Kept even with no tokens: an INI holding only ``np`` still shaped the load."""
     if not getattr(request, "_model_ini_applied", False):
         return None
     return (
@@ -8397,7 +8396,6 @@ def _model_ini_record_for(request, source) -> Optional[tuple]:
 
 
 def _resident_model_ini_record(llama_backend) -> Optional[tuple]:
-    """The resident load's INI record, while the stored extras are still that load's."""
     record = getattr(llama_backend, "_studio_model_ini_record", None)
     if not record or record[1] != getattr(llama_backend, "extra_args_source", None):
         return None
@@ -8409,19 +8407,16 @@ def _model_ini_resident(llama_backend) -> bool:
 
 
 def _model_ini_prefix(llama_backend) -> tuple[str, ...]:
-    """The unsloth.ini tokens the resident load put ahead of its extras."""
     record = _resident_model_ini_record(llama_backend)
     return record[0] if record else ()
 
 
 def _without_model_ini(llama_backend, args: Optional[list[str]]) -> Optional[list[str]]:
-    """``args`` (a stored extras list) minus the resident unsloth.ini prefix: the INI is
-    re-read per load, so it must never be inherited as if the user had typed it."""
+    """Stored extras minus the resident INI prefix, so it is never inherited as typed."""
     prefix = _model_ini_prefix(llama_backend)
     if not prefix or args is None:
         return args
-    # Placement can drop INI flags from the stored list (device, split-mode, tensor-split strips),
-    # so match the prefix one flag group at a time and skip groups that are gone.
+    # Placement strips can drop INI flags, so match per flag group and skip missing ones.
     groups: list[tuple[str, ...]] = []
     for token in prefix:
         if token.startswith("--") or not groups:
@@ -8437,8 +8432,7 @@ def _without_model_ini(llama_backend, args: Optional[list[str]]) -> Optional[lis
 
 
 def _model_ini_tokens(request) -> list[str]:
-    """The request's unsloth.ini tokens. Manual GPU memory owns the offload flags, the same
-    rule typed and inherited extras follow."""
+    """Manual GPU memory owns the offload flags, as for typed and inherited extras."""
     args = list(getattr(request, "_model_ini_args", ()) or ())
     if args and getattr(request, "gpu_memory_mode", None) == "manual":
         args = strip_shadowing_flags(
@@ -8455,7 +8449,6 @@ def _model_ini_tokens(request) -> list[str]:
 
 
 def _with_model_ini(request, extras: Optional[list[str]]) -> Optional[list[str]]:
-    """INI tokens first, then the caller's extras, so a typed flag still wins (last wins)."""
     ini = _model_ini_tokens(request)
     if not ini:
         return extras
@@ -8463,9 +8456,7 @@ def _with_model_ini(request, extras: Optional[list[str]]) -> Optional[list[str]]
 
 
 def _apply_model_ini_to_request(request, model_identifier: str, label: str):
-    """Resolve and compile the unsloth.ini a ``use_model_ini`` request asked for. Returns the
-    request with ``_model_ini_args`` set and ``np`` moved into ``n_parallel``; unchanged for a
-    non-GGUF model. Blocking (file listing, download): call off-loop."""
+    """Blocking (file listing, download): call off-loop."""
     from core.inference.llama_model_ini import (
         MODEL_INI_FILENAME,
         NotGgufModel,
@@ -8476,7 +8467,6 @@ def _apply_model_ini_to_request(request, model_identifier: str, label: str):
     if not getattr(request, "use_model_ini", False):
         return request
     try:
-        # Same reachability guard config resolution uses: a cached repo resolves from disk offline.
         with _hf_offline_if_unreachable_for(model_identifier) as forced_offline:
             located = locate_model_ini(
                 model_identifier,
@@ -8548,9 +8538,7 @@ _MODEL_INI_SAMPLING_BOUNDS = {
 
 
 def _model_ini_sampling_values(llama_backend) -> dict:
-    """The samplers the resident unsloth.ini supplied, keyed like ``inference``. Values come
-    from the whole launched list, last wins as in llama.cpp, so a typed --temp after the INI's
-    is the one reported."""
+    """Read from the whole launched list, last wins, so a typed --temp after the INI's is reported."""
     record = _resident_model_ini_record(llama_backend)
     if not record or not record[2]:
         return {}
@@ -8569,7 +8557,6 @@ def _model_ini_sampling_values(llama_backend) -> dict:
             values[key] = int(value) if key == "top_k" else float(value)
         except (TypeError, ValueError):
             continue
-    # A typed override past the chat bounds launches as typed but is not pushed into the sliders.
     return {
         key: value
         for key, value in values.items()
@@ -8584,8 +8571,7 @@ def _model_ini_sampling_keys(llama_backend) -> list[str]:
 
 
 def _with_model_ini_sampling(inference: Optional[dict], llama_backend) -> Optional[dict]:
-    """``inference`` with the resident unsloth.ini's sampling values on top: the chat sends its
-    sliders on every request, so a server default alone would never reach the user."""
+    """The chat sends its sliders every request, so a server default alone never reaches the user."""
     values = _model_ini_sampling_values(llama_backend)
     if not inference or not values:
         return inference
@@ -16891,8 +16877,7 @@ def _resolve_inherited_extra_args(
     raw_stored = getattr(llama_backend, "extra_args", None)
     stored_args = _without_model_ini(llama_backend, raw_stored)
     if not stored_args:
-        # Only INI tokens were stored: an explicit [] makes the backend drop them, where None
-        # would keep them as this load's extras for the next load to inherit.
+        # Only INI tokens stored: [] drops them; None would let the next load inherit them.
         return [] if raw_stored and extra_llama_args is None else extra_llama_args
     # Inherit the previous load's extras (the chat-settings Apply path doesn't
     # round-trip them; an explicit [] still clears). Gated on (model_identifier,
@@ -18672,7 +18657,6 @@ async def _load_model_impl(
         if native_access_deferred:
             await asyncio.to_thread(account_access.require_model_access, model_identifier)
 
-        # Before the slot count below, which np in the INI feeds.
         request = await asyncio.to_thread(
             _apply_model_ini_to_request, request, model_identifier, model_log_label
         )

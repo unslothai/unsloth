@@ -2516,11 +2516,9 @@ type ChatRuntimeStore = {
   loadedDisableVision: boolean | null;
   /** Load a vision GGUF without its mmproj, freeing the projector's VRAM. */
   disableVision: boolean;
-  /** Launch with the unsloth.ini beside the GGUF; `loadedModelIni` = the running server's model_ini_applied echo. */
   useModelIni: boolean;
   loadedModelIni: boolean | null;
-  /** The sampling keys the last merged load or status took from an unsloth.ini, so a value the file stops
-   *  supplying is reset instead of kept as if the user had set it. Survives unload, like the sliders. */
+  /** So a value the file stops supplying is reset, not kept as if user-set. Survives unload. */
   modelIniSamplingKeys: string[];
   /** Backend-reported: image input is off by request, not by absence of a projector. Null until first hydrated. */
   loadedVisionDisabledByUser: boolean | null;

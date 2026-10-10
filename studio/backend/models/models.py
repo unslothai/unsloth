@@ -228,8 +228,6 @@ class ModelIniIgnoredKey(BaseModel):
 
 
 class ModelIniResponse(BaseModel):
-    """The unsloth.ini beside a GGUF variant, compiled to the settings a load would apply."""
-
     found: bool = Field(False, description = "Whether the GGUF has an unsloth.ini")
     filename: str = Field("unsloth.ini", description = "File name Studio looks for")
     location: Optional[str] = Field(
