@@ -89,6 +89,8 @@ MAX_UPLOAD_BYTES = int(os.environ.get("RAG_MAX_UPLOAD_BYTES", str(200 * 1024 * 1
 # Caps prevent an accidentally broad linked folder from becoming an unbounded ingestion queue.
 FOLDER_SYNC_INTERVAL_S = float(os.environ.get("RAG_FOLDER_SYNC_INTERVAL_S", "30"))
 FOLDER_MAX_FILES = int(os.environ.get("RAG_FOLDER_MAX_FILES", "10000"))
+# Plain-text files over this in a linked folder are logs and data dumps, not documents; 0 disables.
+FOLDER_MAX_TEXT_BYTES = int(os.environ.get("RAG_FOLDER_MAX_TEXT_BYTES", str(20 * 1024 * 1024)))
 FOLDER_JOB_HISTORY_LIMIT = int(os.environ.get("RAG_FOLDER_JOB_HISTORY_LIMIT", "200"))
 # Linked-folder documents ingested concurrently, clamped to 1..4.
 FOLDER_INGEST_WORKERS = int(os.environ.get("RAG_FOLDER_INGEST_WORKERS", "2"))

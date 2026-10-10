@@ -327,6 +327,12 @@ def _folder_view(row: dict) -> dict:
         if row["status"] in {"error", "retired"}
         else "idle"
     )
+    try:
+        report = json.loads(row.get("scan_report") or "{}")
+    except ValueError:
+        report = {}
+    if not isinstance(report, dict):
+        report = {}
     return {
         "id": row["id"],
         "displayName": row["name"],
@@ -335,6 +341,10 @@ def _folder_view(row: dict) -> dict:
         "status": status,
         "error": row.get("last_error"),
         "lastSyncedAt": row.get("last_scan_at"),
+        "lastChangedAt": row.get("last_change_at"),
+        "skipped": report.get("skipped") or {},
+        "failures": report.get("failures") or [],
+        "failureCount": report.get("failureCount") or 0,
         "documentCount": row.get("file_count", 0),
         "activeJobId": row.get("active_job_id"),
         "scopeName": row.get("scope_name"),

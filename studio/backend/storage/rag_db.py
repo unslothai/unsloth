@@ -175,6 +175,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             last_scan_at TEXT,
             withheld_paths TEXT,
             failed_files TEXT,
+            scan_report TEXT,
+            last_change_at TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             UNIQUE(scope, path)
@@ -297,6 +299,11 @@ def ensure_linked_folder_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE linked_folders ADD COLUMN withheld_paths TEXT")
     if folder_cols and "failed_files" not in folder_cols:
         conn.execute("ALTER TABLE linked_folders ADD COLUMN failed_files TEXT")
+    # Last pass's skipped counts and full failure list, and when the indexed set last changed.
+    if folder_cols and "scan_report" not in folder_cols:
+        conn.execute("ALTER TABLE linked_folders ADD COLUMN scan_report TEXT")
+    if folder_cols and "last_change_at" not in folder_cols:
+        conn.execute("ALTER TABLE linked_folders ADD COLUMN last_change_at TEXT")
 
 
 def reset_schema_state_for_tests() -> None:
