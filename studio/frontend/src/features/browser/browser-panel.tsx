@@ -207,6 +207,9 @@ const PILL = cn(
 const TOOLBAR_BUTTON =
   "size-8 text-foreground disabled:hover:text-foreground disabled:opacity-30";
 
+/** IconButton's own look, for toolbar buttons rendered elsewhere (DownloadsButton). */
+const TOOLBAR_ICON_BUTTON =
+  "flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default disabled:opacity-35 disabled:hover:bg-transparent disabled:hover:text-muted-foreground";
 const NAV_BUTTON =
   "size-8 rounded-md text-foreground disabled:hover:text-foreground disabled:opacity-30";
 const NAV_ICON = "size-4.5";
@@ -245,7 +248,7 @@ function IconButton({
           onClick={onClick}
           disabled={disabled}
           className={cn(
-            "flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default disabled:opacity-35 disabled:hover:bg-transparent disabled:hover:text-muted-foreground",
+            TOOLBAR_ICON_BUTTON,
             className,
           )}
         >
@@ -1060,7 +1063,7 @@ function WebActions({ tab, visible }: { tab: BrowserTab | undefined; visible: bo
     <>
       <AnnotatePageButton tab={tab} />
       {/* Recent downloads and the one in flight; saving the page itself is in the menu. */}
-      <DownloadsButton className={NAV_BUTTON} visible={visible} />
+      <DownloadsButton className={cn(TOOLBAR_ICON_BUTTON, NAV_BUTTON)} visible={visible} />
     </>
   );
 }
@@ -1680,7 +1683,7 @@ function BrowserFileToolbar({
         >
           <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-4.5" />
         </IconButton>
-        <DownloadsButton className={NAV_BUTTON} visible={visible} idleHidden={true} />
+        <DownloadsButton className={cn(TOOLBAR_ICON_BUTTON, NAV_BUTTON)} visible={visible} idleHidden={true} />
         <PanelMenu tab={tab}>
           <div className="flex items-start gap-3 px-3 py-2 text-sm">
             <KindIcon name={entry.name} contentType={entry.contentType} className="mt-0.5 size-4.5" mono={true} />
@@ -2238,7 +2241,7 @@ function VideoFileToolbar({
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
-      <DownloadsButton className={NAV_BUTTON} visible={visible} idleHidden={true} />
+      <DownloadsButton className={cn(TOOLBAR_ICON_BUTTON, NAV_BUTTON)} visible={visible} idleHidden={true} />
       <PanelMenu tab={tab} />
     </>
   );
