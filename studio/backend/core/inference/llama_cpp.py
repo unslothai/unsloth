@@ -26928,6 +26928,28 @@ class LlamaCppBackend:
                                     )
                         # The paravirtual pin loads on CPU, so no Metal budget held anything.
                         _vram_fit_ctx = None if _paravirtual_cpu_forced else _apple_measured_ceiling
+                        # Past the wired limit Metal refuses, so it is the harder ceiling when readable.
+                        _fit_wired_mib = (
+                            int(
+                                self._apple_metal_wired_ceiling_bytes()
+                                // (1024 * 1024)
+                                * max(0.0, 1.0 - _flat_mtp_reserve)
+                            )
+                            if _vram_fit_ctx
+                            else 0
+                        )
+                        if (
+                            _fit_wired_mib > 0
+                            and _apple_footprint_mib(_vram_fit_ctx) > _fit_wired_mib
+                        ):
+                            _wired_cap = _apple_ctx_fit(
+                                _vram_fit_ctx, _FIT_FLOOR_MIN_CTX, _fit_wired_mib
+                            )
+                            _vram_fit_ctx = (
+                                _wired_cap
+                                if _apple_footprint_mib(_wired_cap) <= _fit_wired_mib
+                                else None
+                            )
                         # Unmeasured floors still rely on llama.cpp's fitter.
                         _metal_full_offload_pinned = bool(
                             _apple_host_embd and _apple_measured_ceiling is not None

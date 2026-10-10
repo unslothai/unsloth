@@ -293,3 +293,19 @@ def test_an_inherited_rpc_claims_no_fit(tmp_path, monkeypatch):
 def test_an_auto_discovered_projector_claims_no_fit(tmp_path, monkeypatch):
     backend = _two_card_load(tmp_path, monkeypatch, extra_args = ("--mmproj-auto",))
     assert backend.vram_fit_context_length is None
+
+
+def test_a_metal_fit_is_clamped_to_the_wired_limit(tmp_path, monkeypatch):
+    # The free budget holds native; 128 MiB of wired room past the ~5 GiB of weights
+    # holds about half of it at 1 KiB per token, and a wired limit under the weights none.
+    def load(sub, wired_mib):
+        (tmp_path / sub).mkdir()
+        return _metal._launch(
+            tmp_path / sub, monkeypatch, n_ctx = 1024, real_fit = True, wired_bytes = wired_mib * 2**20
+        )["backend"]
+
+    unbounded = load("unreadable", 0).vram_fit_context_length
+    clamped = load("tight", 5120 + 128).vram_fit_context_length
+    assert unbounded == _metal.NATIVE
+    assert clamped is not None and clamped < unbounded
+    assert load("under-weights", 4096).vram_fit_context_length is None
