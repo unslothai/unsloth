@@ -1863,6 +1863,13 @@ async def stream_with_studio_tools(
             # The frontend groups a round's reasoning by this id (codexLocalToolRoundId), so every tool card the loop
             # emits has to carry it, including the budget-exhausted card above.
             decision.provenance["round_id"] = round_id
+            image_share = None
+            if decision.should_execute and mcp_image is not None:
+                image_share = await asyncio.to_thread(
+                    mcp_image_share, decision.tool_name, decision.arguments, mcp_image
+                )
+                if image_share is not None:
+                    decision = controller.reprepare_call(decision)
             if not decision.should_execute:
                 completion = controller.record_noop(decision)
                 if getattr(transport, "tool_result_only_continuation", False):
@@ -1919,11 +1926,6 @@ async def stream_with_studio_tools(
                 sandbox_level = sandbox_level,
             )
             # Sending the user's image always asks, whatever the permission mode.
-            image_share = (
-                await asyncio.to_thread(mcp_image_share, name, arguments, mcp_image)
-                if mcp_image is not None
-                else None
-            )
             needs_confirmation = needs_confirmation or image_share is not None
             strict_isolation = requires_os_isolation(
                 confirm_tool_calls = confirm_tool_calls,

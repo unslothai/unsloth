@@ -38989,6 +38989,18 @@ class LlamaCppBackend:
                         provisional = provisional_match,
                         allowed_tool_names = {forced_name} if forced_name else None,
                     )
+                    image_share = None
+                    if decision.should_execute and mcp_image is not None:
+                        image_share = mcp_image_share(
+                            decision.tool_name, decision.arguments, mcp_image
+                        )
+                        if image_share is not None:
+                            decision = tool_controller.reprepare_call(
+                                decision,
+                                forced = _forced_tool_call_pending,
+                                provisional = provisional_match,
+                                allowed_tool_names = {forced_name} if forced_name else None,
+                            )
 
                     if not decision.should_execute:
                         if provisional_match:
@@ -39044,7 +39056,6 @@ class LlamaCppBackend:
                         sandbox_level = sandbox_level,
                     )
                     # Sending the user's image always asks, whatever the permission mode.
-                    image_share = mcp_image_share(decision.tool_name, decision.arguments, mcp_image)
                     needs_confirm = needs_confirm or image_share is not None
                     strict_isolation = requires_os_isolation(
                         confirm_tool_calls = bool(confirm_tool_calls),

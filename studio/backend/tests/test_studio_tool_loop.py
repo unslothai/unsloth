@@ -725,6 +725,49 @@ def test_sharing_the_attached_image_asks_even_with_bypass(executed, monkeypatch)
     assert "mcp_image" not in executed[0]
 
 
+def test_settled_image_call_is_replayed_and_deduped_with_sent_arguments(
+    executed, monkeypatch
+):
+    from core.inference.mcp_image import ATTACHED_IMAGE, McpImage
+
+    image = McpImage(mime = "image/png", data = b"IMG")
+    shared = {
+        "disclosure": {"server": "Trace", "tool": "lookup", "size_bytes": 3},
+        "image": image.approved_for("r1"),
+    }
+
+    def settle(_name, arguments, _image):
+        arguments["image"] = ATTACHED_IMAGE
+        return shared
+
+    monkeypatch.setattr(loop_mod, "mcp_image_share", settle)
+    monkeypatch.setattr(loop_mod, "begin_tool_decision", lambda *_args: object())
+    monkeypatch.setattr(
+        loop_mod, "wait_tool_decision", lambda *_args, **_kwargs: "allow"
+    )
+    monkeypatch.setattr(loop_mod, "abort_tool_decision", lambda *_args: None)
+    call = {"index": 0, "function": {"name": "python", "arguments": "{}"}}
+    transport = FakeTransport(
+        [
+            [_sse({"tool_calls": [{**call, "id": "c1"}]}), _sse(finish = "tool_calls"), _DONE],
+            [_sse({"tool_calls": [{**call, "id": "c2"}]}), _sse(finish = "tool_calls"), _DONE],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+    _run(transport, tools = [PY], mcp_image = image, bypass_permissions = True)
+
+    assert len(executed) == 1
+    replayed = next(
+        message
+        for message in reversed(transport.requests[1]["messages"])
+        if message.get("role") == "assistant" and message.get("tool_calls")
+    )
+    assert json.loads(replayed["tool_calls"][0]["function"]["arguments"]) == {
+        "image": ATTACHED_IMAGE
+    }
+
+
 def test_the_model_is_told_about_the_attached_image(executed, monkeypatch):
     from core.inference.mcp_image import McpImage
 

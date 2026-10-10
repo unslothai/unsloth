@@ -1263,6 +1263,33 @@ class ToolLoopController:
             noop_result = noop,
         )
 
+    def reprepare_call(
+        self,
+        decision: ToolCallDecision,
+        *,
+        forced: bool = False,
+        provisional: bool = False,
+        allowed_tool_names: Collection[str] | None = None,
+    ) -> ToolCallDecision:
+        """Reclassify a call after a pre-execution normalizer changed its arguments.
+
+        The decision's replay, status and duplicate key must all describe the arguments that
+        execute. A second preparation keeps the ordinary controller rules as the source of truth.
+        """
+        tool_call = decision.as_assistant_tool_call()
+        if decision.card_call_id:
+            tool_call["card_id"] = decision.card_call_id
+        refreshed = self.prepare_call(
+            tool_call,
+            forced = forced,
+            provisional = provisional,
+            allowed_tool_names = allowed_tool_names,
+        )
+        # The second pass receives an argument mapping, so retain provenance from the first parse,
+        # notably whether a local model's bare argument was healed.
+        refreshed.provenance.update(decision.provenance)
+        return refreshed
+
     def record_result(self, decision: ToolCallDecision, result: Any) -> ToolCallCompletion:
         """Record a real tool execution and return model/frontend payload helpers."""
         result_text = result if isinstance(result, str) else str(result)

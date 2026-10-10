@@ -547,8 +547,14 @@ def test_the_card_shows_the_arguments_the_call_is_sent_with(mapped_server):
     )
     sent = []
     starts = []
+    prompts = []
+
+    def single_turn(messages):
+        prompts.append(json.loads(json.dumps(messages)))
+        return iter([next(turns, "")])
+
     for event in run_safetensors_tool_loop(
-        single_turn = lambda _messages: iter([next(turns, "")]),
+        single_turn = single_turn,
         messages = [{"role": "user", "content": "what anime is this?"}],
         tools = [{"type": "function", "function": {"name": "mcp__srv1__lookup"}}],
         execute_tool = lambda name, arguments, **kwargs: sent.append(dict(arguments)) or "ok",
@@ -560,6 +566,12 @@ def test_the_card_shows_the_arguments_the_call_is_sent_with(mapped_server):
             assert resolve_tool_decision(event["approval_id"], "allow", session_id = "s")
     assert starts[0]["image_disclosure"]["tool"] == "lookup"
     assert starts[0]["arguments"] == sent[0] == {"cut_borders": True, "image": ATTACHED_IMAGE}
+    replayed = next(
+        message
+        for message in reversed(prompts[1])
+        if message.get("role") == "assistant" and message.get("tool_calls")
+    )
+    assert json.loads(replayed["tool_calls"][0]["function"]["arguments"]) == sent[0]
 
 
 def test_safetensors_loop_tells_the_model_about_the_image(mapped_server):
@@ -710,5 +722,9 @@ def test_gguf_loop_gates_and_forwards_the_image_like_the_other_loops():
     assert (
         "messages = note_attached_image(messages, mcp_image_targets(_gguf_active_tool_names(tools)))"
         in statements
+    )
+    assert "decision = tool_controller.reprepare_call(" in src
+    assert src.index("image_share = mcp_image_share(") < src.index(
+        "decision.as_assistant_tool_call()"
     )
     assert "kwargs['mcp_image'] = image_share['image']" in statements
