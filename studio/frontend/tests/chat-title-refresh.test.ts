@@ -53,7 +53,25 @@ test("a refresh reads the latest turns, oldest first, not the opening exchange",
   const lines = excerpt.split("\n");
   assert.match(lines.at(-1) ?? "", /^Assistant: Clause 10 limits liability/);
   assert.match(lines.at(-2) ?? "", /^User: what about clause 10 of the contract$/);
-  for (const line of lines) assert.ok(line.length <= 300 + "Assistant: ".length, line);
+  for (const line of lines) {
+    assert.ok(line.length <= 300 + "Assistant: ".length, line);
+    // A message is sent whole, or cut to at least 40 characters, never as a stub.
+    const body = line.replace(/^(User|Assistant): /, "");
+    assert.ok(body.length >= 40 || /^what about clause \d+ of the contract$/.test(body), line);
+  }
+});
+
+test("a message that would fit only as a stub is left out", () => {
+  // Newest first: 307 + 312 + 307 + 232 = 1158 used, so the opening prompt has 36 characters of room.
+  const excerpt = titleRefreshExcerpt([
+    message(0, "user", text("opening question about the email we started with")),
+    message(1, "assistant", text("a".repeat(220))),
+    message(2, "user", text("b".repeat(400))),
+    message(3, "assistant", text("c".repeat(400))),
+    message(4, "user", text("d".repeat(400))),
+  ]);
+  assert.doesNotMatch(excerpt, /opening/);
+  assert.match(excerpt, /^Assistant: a{220}$/m);
 });
 
 test("only visible text is sent: no reasoning, tool calls, images or system turns", () => {

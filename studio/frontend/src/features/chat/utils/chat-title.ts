@@ -388,6 +388,7 @@ const TITLE_REFRESH_SYSTEM_PROMPT =
 // The excerpt is all a refresh prefills, so it stays a few hundred tokens however long the chat is.
 const REFRESH_MESSAGE_CHARS = 300;
 const REFRESH_EXCERPT_CHARS = 1200;
+const REFRESH_MIN_CHARS = 40;
 
 function textPartsOf(content: MessageRecord["content"]): string {
   if (typeof content === "string") return content;
@@ -410,7 +411,8 @@ export function titleRefreshExcerpt(messages: readonly MessageRecord[]): string 
     if (!text) continue;
     const label = message.role === "user" ? "User: " : "Assistant: ";
     const room = Math.min(REFRESH_MESSAGE_CHARS, REFRESH_EXCERPT_CHARS - used - label.length);
-    if (room <= 0) break;
+    // A stub of a few words says less than leaving the turn out.
+    if (room < REFRESH_MIN_CHARS) break;
     const line = label + cutToUnits(text, room).trimEnd();
     lines.push(line);
     used += line.length + 1;
