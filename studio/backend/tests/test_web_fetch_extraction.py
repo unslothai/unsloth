@@ -771,6 +771,10 @@ def test_page_that_fits_keeps_its_links(monkeypatch):
             "CHF 1995 or USD 1999, ABC 10^3",
         ),
         (
+            "AED 19<sup>99</sup>, TWD 19<sup>99</sup>, ILS 19<sup>99</sup>",
+            "AED 1999, TWD 1999, ILS 1999",
+        ),
+        (
             "M<sup>me</sup> Dupont, D<sup>r</sup> Martin, n<sup>o</sup> 5, Om<sup>e</sup>",
             "Mme Dupont, Dr Martin, no 5, Om^e",
         ),
