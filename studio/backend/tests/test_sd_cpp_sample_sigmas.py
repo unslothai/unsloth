@@ -270,7 +270,11 @@ def test_the_native_plan_stages_a_named_variants_index(monkeypatch, gguf, base_r
     )
     plan = b.download_plan(repo, gguf_filename = gguf, base_repo = base_repo, model_kind = "gguf")
     index = [e for e in plan["entries"] if e["repo_id"] == "Qwen/Qwen-Image-2.1-Turbo"]
-    assert (index == [{**index[0], "files": ["model_index.json"], "checkpoint": False}]) if staged else index == []
+    assert (
+        (index == [{**index[0], "files": ["model_index.json"], "checkpoint": False}])
+        if staged
+        else index == []
+    )
 
 
 def test_a_card_resolved_grid_base_is_linked_to_the_pick(monkeypatch):
@@ -280,7 +284,9 @@ def test_a_card_resolved_grid_base_is_linked_to_the_pick(monkeypatch):
     from .test_sd_cpp_backend import _shared_setup_1
 
     links = []
-    monkeypatch.setattr(companion_assets, "record_companion_link", lambda c, b: links.append((c, b)))
+    monkeypatch.setattr(
+        companion_assets, "record_companion_link", lambda c, b: links.append((c, b))
+    )
     monkeypatch.setattr(
         bk, "_base_sample_sigmas", lambda *a, **k: (TURBO_GRID, "Qwen/Qwen-Image-2.1-Turbo")
     )

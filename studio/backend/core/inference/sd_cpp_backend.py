@@ -2993,7 +2993,6 @@ class SdCppDiffusionBackend:
                 # The card can name a base begin_load did not know; link it so the delete guard keeps its index.
                 try:
                     from hub.utils.companion_assets import record_companion_link
-
                     record_companion_link(repo_id, grid_base)
                 except Exception as exc:  # noqa: BLE001 -- bookkeeping never fails a load
                     logger.debug("sd_cpp.companion_link_record_failed: %s", exc)

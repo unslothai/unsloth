@@ -728,7 +728,9 @@ def test_a_turbo_gguf_pins_the_turbo_index_without_a_recorded_link(monkeypatch):
     turbo = "Qwen/Qwen-Image-2.1-Turbo"
     _install(
         monkeypatch,
-        _repo("someone/Qwen-Image-2.1-Turbo-GGUF", [("qwen_image_2.1_turbo_Q4_K_M.gguf", 2_000_000)]),
+        _repo(
+            "someone/Qwen-Image-2.1-Turbo-GGUF", [("qwen_image_2.1_turbo_Q4_K_M.gguf", 2_000_000)]
+        ),
         _repo(turbo, [("model_index.json", 460)]),
     )
     assert companion_cleanup.companion_dependents(turbo) == ["someone/Qwen-Image-2.1-Turbo-GGUF"]
