@@ -82,9 +82,6 @@ def _number(value: float) -> str:
     return repr(value)
 
 
-# ---------------------------------------------------------------- zip archives
-
-
 class _Archive:
     def __init__(self, path: str):
         try:
@@ -203,8 +200,6 @@ class _Archive:
                 return target
         return default if self.has(default) else None
 
-
-# ---------------------------------------------------------------- .xlsx / .xlsm
 
 # Built-in date and time format IDs, including the CJK (27-36, 50-58) and Thai (71-81) ones.
 _BUILTIN_DATE_FORMATS = {
@@ -393,7 +388,7 @@ def _format_number(value: float, code: str) -> str | None:
 
 def _cell_number(value: float, format_id: int, code: str, date1904: bool) -> str:
     """A numeric cell as its format displays it, falling back to the stored number."""
-    if len(code) > _MAX_FORMAT_CHARS:  # tokenized per cell, and the output grows with the code
+    if len(code) > _MAX_FORMAT_CHARS:  # tokenized per cell
         code = ""
     kind = _format_kind(format_id, code)
     if kind:
@@ -508,9 +503,6 @@ def xlsx(path: str) -> list[Section]:
         return sections
 
 
-# ---------------------------------------------------------------- .pptx
-
-
 def _drawing_lines(root: ET.Element) -> list[str]:
     """Paragraphs of a DrawingML part in document order; table rows as one line each."""
     lines: list[str] = []
@@ -616,9 +608,6 @@ def pptx(path: str) -> list[Section]:
             if lines:
                 sections.append(("\n".join(lines), number))
         return sections
-
-
-# ---------------------------------------------------------------- OpenDocument
 
 
 class _Budget:
@@ -808,9 +797,6 @@ def opendocument(path: str) -> list[Section]:
         return sections
 
 
-# ---------------------------------------------------------------- .epub
-
-
 def epub(path: str, html_text) -> list[Section]:
     """Chapters in spine order; ``html_text`` turns one XHTML document into text."""
     with _Archive(path) as zf:
@@ -821,7 +807,7 @@ def epub(path: str, html_text) -> list[Section]:
         opf_path = rootfile.get("full-path")
         opf = zf.xml(opf_path)
         folder = posixpath.dirname(opf_path)
-        # DRM encrypts resources listed here (paths from the container root); obfuscated fonts are never in the spine.
+        # DRM encrypted resources; obfuscated fonts are listed too but are never in the spine.
         encrypted = set()
         if zf.has("META-INF/encryption.xml"):
             for node in zf.xml("META-INF/encryption.xml").iter():
@@ -846,9 +832,6 @@ def epub(path: str, html_text) -> list[Section]:
             if text:
                 sections.append((text, None))
         return sections
-
-
-# ---------------------------------------------------------------- .eml
 
 
 def eml(path: str, html_text) -> list[Section]:
@@ -895,8 +878,6 @@ def _email_text(message, html_text) -> str:
         lines.append("Attachments: " + ", ".join(names))
     return "\n".join(lines) + "\n\n" + text.strip()
 
-
-# ---------------------------------------------------------------- .rtf
 
 _RTF_TOKEN = re.compile(
     r"\\([a-zA-Z]{1,32})(-?\d{1,10})? ?|\\'([0-9a-fA-F]{2})|\\(.)|([{}])|[\r\n]+|([^\\{}\r\n]+)",
@@ -1104,9 +1085,6 @@ def _rtf_text(data: str) -> str:
     return re.sub(r"[ \t]+\n", "\n", text).strip()
 
 
-# ---------------------------------------------------------------- compound files
-
-
 def _compound(path: str) -> CompoundFile:
     with open(path, "rb") as f:
         data = f.read()
@@ -1118,9 +1096,6 @@ def _compound(path: str) -> CompoundFile:
 
 def _clean_control(text: str) -> str:
     return re.sub(r"[\x00-\x08\x0e-\x1f]", "", text)
-
-
-# ---------------------------------------------------------------- .doc
 
 
 def doc(path: str) -> list[Section]:
@@ -1211,9 +1186,6 @@ def _word_text(raw: str) -> str:
     text = text.translate({0x0D: "\n", 0x0B: "\n", 0x0C: "\n", 0x1E: "-", 0x1F: None})
     text = re.sub(r"\n{3,}", "\n\n", text)
     return _clean_control(text).strip()
-
-
-# ---------------------------------------------------------------- .xls
 
 
 def _rk(value: int) -> float:
@@ -1311,8 +1283,7 @@ def xls(path: str) -> list[Section]:
     if stream is None:
         raise ValueError("not an Excel 97-2003 workbook")
     data = cf.open(stream)
-    # BIFF5/7 (Excel 5.0/95) stores byte strings in the CODEPAGE encoding, without the
-    # BIFF8 option-flags byte.
+    # BIFF5/7 (Excel 95) strings are CODEPAGE bytes with no BIFF8 flags byte.
     biff8 = data[4:6] != b"\x00\x05"
     codec = "cp1252"
 
@@ -1445,8 +1416,6 @@ def xls(path: str) -> list[Section]:
             sections.append((f"Sheet: {name}\n" + "\n".join(rows), None))
     return sections
 
-
-# ---------------------------------------------------------------- .ppt
 
 _PPT_TEXT_CHARS, _PPT_TEXT_BYTES = 0x0FA0, 0x0FA8
 _PPT_TEXT_HEADER, _PPT_OUTLINE_REF = 0x0F9F, 0x0F9E
@@ -1644,8 +1613,6 @@ def _ppt_scan(data: bytes) -> list[Section]:
     slides = listed if any(listed) else drawn
     return [("\n".join(lines), n) for n, lines in enumerate(slides, 1) if lines]
 
-
-# ---------------------------------------------------------------- .msg
 
 _MSG_HEADERS = (("0C1A", "From"), ("0E04", "To"), ("0E03", "Cc"), ("0037", "Subject"))
 

@@ -53,8 +53,7 @@ class CompoundFile:
 
         fat_sectors = [s for s in struct.unpack_from("<109I", data, 0x4C) if s < _DIFAT]
         per = self._sector // 4
-        # Enough FAT sectors to map every sector of the file; a crafted DIFAT can name one
-        # sector millions of times.
+        # Enough to map the whole file; a crafted DIFAT can repeat one sector millions of times.
         max_fat = len(data) // self._sector // per + 1
         sector, seen = first_difat, set()
         for _ in range(n_difat):

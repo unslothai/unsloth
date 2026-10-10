@@ -39,8 +39,7 @@ export function isComposerAttachmentName(path: string): boolean {
   );
 }
 
-/** Office and Outlook files only chat with files reads; types the composer
- * has an adapter for stay composer attachments. */
+/** Documents only chat with files reads; composer-handled types stay there. */
 const OFFICE_DOC_EXTS = RAG_DOCUMENT_UPLOAD_ACCEPT.split(",").filter(
   (ext) => !isComposerAttachmentName(`file${ext}`),
 );

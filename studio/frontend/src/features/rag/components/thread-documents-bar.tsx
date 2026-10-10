@@ -214,7 +214,6 @@ function useThreadProjectId(
     : undefined;
 }
 
-/** Extensions chat with files indexes, from the picker accept string. */
 const CHAT_FILES_EXTENSIONS = new Set(
   CHAT_FILES_ACCEPT.split(",").map((ext) => ext.trim().toLowerCase()),
 );

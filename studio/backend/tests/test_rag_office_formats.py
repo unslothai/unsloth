@@ -44,9 +44,6 @@ def _text(path):
     return "\n".join(page.text for page in parsers.parse(str(path)))
 
 
-# ---------------------------------------------------------------- builders
-
-
 def build_xlsx(path):
     serial = (dt.date(2026, 3, 31) - dt.date(1899, 12, 30)).days
     return _zip(
@@ -175,7 +172,7 @@ def build_eml(path):
 
 
 def build_mhtml(path):
-    # Chrome's "Save page as > Webpage, single file": multipart/related with the page and its resources.
+    # As Chrome saves a page: multipart/related, the page plus its resources.
     message = EmailMessage()
     message["From"] = "<Saved by Blink>"
     message["Subject"] = "Quarterly report"
@@ -489,9 +486,6 @@ BUILDERS = {
     **dict.fromkeys((".mht", ".mhtml"), build_mhtml),
     **dict.fromkeys((".xhtml", ".xht"), build_xhtml),
 }
-
-
-# ---------------------------------------------------------------- parsing
 
 
 def test_every_document_type_has_a_fixture():
@@ -993,9 +987,6 @@ def test_compound_file_reads_each_fat_sector_once_per_file_sector():
     assert reader.open("small") == b"a" * 100
 
 
-# ---------------------------------------------------------------- failures
-
-
 def test_encrypted_doc_is_refused(tmp_path):
     with pytest.raises(ValueError, match = "password"):
         parsers.parse(str(build_doc(tmp_path / "secret.doc", encrypted = True)))
@@ -1084,9 +1075,6 @@ def test_xml_entities_are_refused(tmp_path):
     )
     with pytest.raises(ValueError):
         parsers.parse(str(path))
-
-
-# ---------------------------------------------------------------- upload and indexing
 
 
 @pytest.mark.parametrize("extension", sorted(BUILDERS))

@@ -664,8 +664,8 @@ _WORD_MAIN_TYPES = (
 
 
 def _open_word(path: str):
-    # docx.Document() is Package.open() plus a check that rejects the macro and template main parts.
-    import docx  # noqa: F401  (registers the .docx part types)
+    # docx.Document() rejects the macro and template main parts.
+    import docx  # noqa: F401  (registers the part types)
     from docx.opc.constants import CONTENT_TYPE as CT
     from docx.opc.part import PartFactory
     from docx.package import Package
@@ -930,7 +930,7 @@ def _office_document(path: str, ext: str) -> list[Page]:
         **dict.fromkeys((".xlsx", ".xlsm", ".xltx", ".xltm"), office.xlsx),
         **dict.fromkeys((".pptx", ".pptm", ".potx", ".potm", ".ppsx", ".ppsm"), office.pptx),
         **dict.fromkeys((".odt", ".ods", ".odp", ".ott", ".ots", ".otp"), office.opendocument),
-        # Saved single-file web pages are MIME messages with an HTML body.
+        # .mht/.mhtml are MIME with an HTML body.
         **dict.fromkeys((".eml", ".mht", ".mhtml"), lambda p: office.eml(p, _html_bytes_text)),
         **dict.fromkeys((".xhtml", ".xht"), _xhtml),
     }

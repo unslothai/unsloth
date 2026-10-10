@@ -68,7 +68,7 @@ SOURCE_TEXT_EXTS = frozenset(
     .mmd .mermaid .puml .plantuml .dot .gv .feature .robot .http .rest .diff .patch
     """.split()
 )
-# Office (incl. macro, template and slideshow variants), OpenDocument, e-book, email, RTF and saved web pages.
+# Office, OpenDocument, e-book, email, RTF and web page files.
 DOCUMENT_UPLOAD_EXTS = frozenset(
     """
     .doc .docm .dotx .dotm .xls .xlsx .xlsm .xltx .xltm .ppt .pptx .pptm .potx .potm .ppsx .ppsm
