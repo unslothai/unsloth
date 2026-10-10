@@ -2384,6 +2384,7 @@ export function useChatModelRuntime() {
                     // when it fits.
                     gpu_layers: validateGpuLayers,
                     n_parallel: validateNParallel,
+                    ...(loadUseModelIni ? { use_model_ini: true } : {}),
                     reasoning_budget: targetIsDiffusion
                       ? -1
                       : validateReasoningBudget,

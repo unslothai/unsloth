@@ -1745,6 +1745,10 @@ export function SharedComposer({
                 gpu_layers: effectiveGpuLayers,
                 // Slots scale the KV estimate; keep validate sized like the load.
                 n_parallel: ownConfig.nParallel ?? null,
+                ...(ownConfig.useModelIni && !resolvedIsDiffusion
+                  ? // biome-ignore lint/style/useNamingConvention: API schema
+                    { use_model_ini: true }
+                  : {}),
                 reasoning_budget: resolvedIsDiffusion
                   ? -1
                   : ownConfig.reasoningBudget,

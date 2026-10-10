@@ -421,6 +421,11 @@ export async function validateModel(
         ? // biome-ignore lint/style/useNamingConvention: API schema
           { llama_extra_args: payload.llama_extra_args }
         : {}),
+      // The INI can set -c and cache types, so the preflight must size the same command.
+      ...(payload.use_model_ini
+        ? // biome-ignore lint/style/useNamingConvention: API schema
+          { use_model_ini: true }
+        : {}),
       // batch sizes scale the same estimate; omitted when blank so they never read as set
       ...(payload.n_batch != null ? { n_batch: payload.n_batch } : {}),
       ...(payload.n_ubatch != null ? { n_ubatch: payload.n_ubatch } : {}),
