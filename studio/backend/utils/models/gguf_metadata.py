@@ -946,8 +946,7 @@ def _normalize_url(url: str) -> Optional[str]:
         return value
     host, separator, path = value.partition("/")
     host = host.lower()
-    # Hub repository IDs are case-insensitive; arbitrary hosts and file/revision
-    # paths are not. Only normalize the owner/repo form used in GGUF metadata.
+    # Hugging Face owner/repo IDs are case-insensitive, but arbitrary host, file, and revision paths are not.
     if host == "huggingface.co" and len(path.split("/")) == 2:
         path = path.casefold()
     return host + (separator + path if separator else "")

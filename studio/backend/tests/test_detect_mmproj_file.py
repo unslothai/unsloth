@@ -502,7 +502,7 @@ def test_mmproj_rejection_names_mismatched_fields(tmp_path, capsys):
 
 @pytest.mark.parametrize("projection_dim", [None, 3840, 4096])
 def test_hf_repo_case_mismatch_keeps_compatible_projector(tmp_path, projection_dim):
-    """#6305: URL casing must not drop a projector, even without dimension metadata."""
+    """#6305: repo URL casing must not reject a projector without dimension metadata."""
     model = _gguf_with_general(
         tmp_path / "gemma-4-12b-it-Q4_K_M.gguf",
         {
