@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""A tokenizer Unsloth patched for saving must pickle: spawn DataLoader workers,
-datasets.map(num_proc = N) and TRL's AsyncGRPO rollout worker all receive it pickled. The
-wrapper is a bound method of a function no tokenizer has an attribute for, so pickle.loads
-failed with `Qwen2Tokenizer has no attribute unsloth_tokenizer_save_pretrained`."""
+"""Patched tokenizers must pickle (spawn DataLoader, datasets.map(num_proc), TRL AsyncGRPO)."""
 
 import copy
 import inspect

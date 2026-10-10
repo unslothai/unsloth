@@ -7277,14 +7277,8 @@ def not_implemented_save(*args, **kwargs):
 
 
 class _TokenizerBoundMethod:
-    """``types.MethodType`` for the wrappers Unsloth attaches to a tokenizer / processor instance, but picklable.
-
-    A bound method pickles as ``getattr(obj, func.__name__)``, and no tokenizer has an attribute called
-    ``unsloth_tokenizer_save_pretrained``, so ``pickle.loads`` failed: spawn DataLoader workers,
-    ``datasets.map(num_proc = N)`` and TRL's AsyncGRPO rollout worker could not receive the tokenizer.
-    Pickled, a wrapper becomes the class's own method (or None when the class has none), so the reader
-    gets a stock tokenizer and never has to import Unsloth. Copies in this process keep the wrapper.
-    """
+    """Picklable `types.MethodType`: a bound method pickles as getattr(obj, func.__name__), which no
+    tokenizer has. Unpickled it becomes the class's own method (or None), so readers need no Unsloth."""
 
     def __init__(self, func, obj, name):
         self.__func__ = func
@@ -7295,7 +7289,6 @@ class _TokenizerBoundMethod:
         return self.__func__(self.__self__, *args, **kwargs)
 
     def __getattr__(self, name):
-        # __name__, __qualname__, __wrapped__, ... like a bound method.
         if name.startswith("_unsloth") or name in ("__func__", "__self__"):
             raise AttributeError(name)
         return getattr(self.__func__, name)
@@ -7311,7 +7304,7 @@ class _TokenizerBoundMethod:
         return inspect.signature(types.MethodType(self.__func__, self.__self__))
 
     def __reduce__(self):
-        # getattr on the object while pickle rebuilds it: its __dict__ is still empty, so this is the class attribute.
+        # During unpickling __dict__ is still empty, so this resolves the class attribute.
         if hasattr(type(self.__self__), self._unsloth_name):
             return (getattr, (self.__self__, self._unsloth_name))
         return (type(None), ())
