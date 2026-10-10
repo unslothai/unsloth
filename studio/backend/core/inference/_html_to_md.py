@@ -211,6 +211,8 @@ _INLINE_EMPHASIS = {"strong": "**", "b": "**", "em": "*", "i": "*"}
 
 _PLAIN_SUFFIXES = frozenset({"st", "nd", "rd", "th", "tm", "sm"})
 # French / Romance ordinals after a digit (1er, 2e, 1º, 2ª); after a letter "e" can be Euler's number
+# XVe siècle, François Ier: a Roman numeral takes ordinals like a digit
+_ROMAN_NUMERAL_TAIL = re.compile(r"(?<![^\W\d_])[IVXLCDM]+$")
 _DIGIT_ORDINAL_SUFFIXES = frozenset(
     {"e", "er", "re", "ère", "ème", "eme", "nd", "nde", "º", "ª", "o", "a"}
 )
@@ -594,7 +596,7 @@ class _MarkdownRenderer(HTMLParser):
         return self._out
 
     def _sup_base(self, target: list[str]) -> str:
-        """The visible character a <sup> raises, or "" when it has none: after whitespace or
+        """The visible text a <sup> raises (base = its last character), or "" when none: after whitespace or
         sentence punctuation it is a footnote marker (``fact.<sup>1</sup>``,
         ``<a href="#fn1"><sup>1</sup></a>``) or a fraction numerator (``<sup>1</sup>&frasl;``)."""
         for part in itertools.islice(reversed(target), _SUP_BASE_SCAN_PARTS):
@@ -603,12 +605,12 @@ class _MarkdownRenderer(HTMLParser):
             if part:
                 base = part[-1]
                 if base.isdigit() and _PRICE_TAIL.search(
-                    _visible_tail("".join(p[-40:] for p in target[-4:])[-40:]).translate(
+                    _visible_tail("".join(p[-40:] for p in target[-8:])[-40:]).translate(
                         _STRIP_MD_DELIMITERS
                     )
                 ):
                     return ""
-                return base if base.isalnum() or base in ")]}|" else ""
+                return part if base.isalnum() or base in ")]}|" else ""
         return ""
 
     def _sup_copies(self) -> list[tuple[list[str], int]]:
@@ -632,7 +634,10 @@ class _MarkdownRenderer(HTMLParser):
             or visible[0] in "[."
             or not any(c.isalnum() for c in visible)
             or visible.lower() in _PLAIN_SUFFIXES
-            or (base.isdigit() and visible.lower() in _DIGIT_ORDINAL_SUFFIXES)
+            or (
+                (base[-1].isdigit() or _ROMAN_NUMERAL_TAIL.search(base))
+                and visible.lower() in _DIGIT_ORDINAL_SUFFIXES
+            )
         ):
             return
         token = shown.translate(_STRIP_MD_DELIMITERS)
