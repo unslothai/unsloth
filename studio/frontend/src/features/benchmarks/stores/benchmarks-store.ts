@@ -11,6 +11,7 @@ import { applyVariantToChat } from "../api/apply-to-chat";
 import { BenchSetupError, runBenchmark } from "../api/bench-runner";
 import {
   type BenchRunSummary,
+  BenchLeaseHeldError,
   deleteBenchRun,
   getBenchRun,
   listBenchRuns,
@@ -226,8 +227,16 @@ export const useBenchmarksStore = create<BenchmarksState>()(
           set({ error: err instanceof Error ? err.message : String(err) });
           return;
         }
+        // A missed renewal is retried; a lease another runner now holds means its loads would be
+        // charted under this run's rows, so stop.
+        let leaseLost: string | null = null;
         const renew = window.setInterval(
-          () => void takeBenchLease(holder).catch(() => undefined),
+          () =>
+            void takeBenchLease(holder).catch((err) => {
+              if (!(err instanceof BenchLeaseHeldError) || leaseLost) return;
+              leaseLost = `This run stopped: ${err.message}`;
+              controller?.abort();
+            }),
           15_000,
         );
         const effective: BenchConfig = {
@@ -332,6 +341,7 @@ export const useBenchmarksStore = create<BenchmarksState>()(
         } finally {
           controller = null;
           window.clearInterval(renew);
+          if (leaseLost) set({ error: leaseLost });
           void releaseBenchLease(holder);
         }
       },

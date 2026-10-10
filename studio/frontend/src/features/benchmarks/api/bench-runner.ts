@@ -218,6 +218,8 @@ async function streamOnce(
   // undercounts because one SSE chunk can carry more than one token.
   let usageTokens: number | null = null;
   let timings: Record<string, unknown> = {};
+  // A stream cut before [DONE] or a finish_reason measured only a prefix.
+  let finished = false;
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
@@ -232,6 +234,7 @@ async function streamOnce(
         .filter((l) => l.startsWith("data:"))
         .map((l) => l.slice(5).trim())
         .join("\n");
+      if (data === "[DONE]") finished = true;
       if (!data || data === "[DONE]") continue;
       let chunk: Record<string, unknown>;
       try {
@@ -250,6 +253,7 @@ async function streamOnce(
         ? (chunk.choices as Record<string, unknown>[])
         : [];
       for (const choice of choices) {
+        if (choice.finish_reason) finished = true;
         const delta = (choice.delta ?? {}) as Record<string, unknown>;
         const piece = [
           delta.content,
@@ -263,6 +267,7 @@ async function streamOnce(
       }
     }
   }
+  if (!finished) throw new Error("The stream closed before the reply finished");
   return {
     ttftMs,
     wallMs: performance.now() - started,
