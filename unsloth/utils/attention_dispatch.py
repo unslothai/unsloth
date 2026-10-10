@@ -87,6 +87,91 @@ _SDPA_PACKED_SEGMENTS = os.environ.get("UNSLOTH_SDPA_PACKED_SEGMENTS", "1").lowe
 )
 
 
+def _load_torch_varlen_attn():
+    # torch.nn.attention.varlen (2.10+) runs a packed row as one kernel; causal + GQA without K / V
+    # expansion needs window_size (2.11) and enable_gqa (2.12), so older builds keep the per-segment path.
+    if os.environ.get("UNSLOTH_TORCH_VARLEN", "1").lower() in ("0", "false", "no", "off"):
+        return None
+    try:
+        import inspect
+        from torch.nn.attention.varlen import varlen_attn
+    except Exception:
+        return None
+    params = inspect.signature(varlen_attn).parameters
+    if "window_size" not in params or "enable_gqa" not in params:
+        return None
+    return varlen_attn
+
+
+_TORCH_VARLEN_ATTN = _load_torch_varlen_attn()
+
+
+def _torch_varlen_takes(
+    Q: Tensor,
+    K: Tensor,
+    V: Tensor,
+    sdpa_kwargs: dict,
+    is_causal: bool,
+    sliding_window: Optional[int],
+) -> bool:
+    """True when torch's varlen kernel computes exactly what the per-segment SDPA path would."""
+    if _TORCH_VARLEN_ATTN is None or not Q.is_cuda or torch.version.hip is not None:
+        return False
+    if Q.dtype not in (torch.float16, torch.bfloat16) or K.dtype != Q.dtype or V.dtype != Q.dtype:
+        return False
+    if (
+        Q.shape[-1] > 256
+        or Q.shape[-1] % 8 != 0
+        or torch.cuda.get_device_capability(Q.device)[0] < 8
+    ):
+        return False
+    # No dropout, no extra mask; a bidirectional window has no (left, right) spelling matching packed_block_mask.
+    if set(sdpa_kwargs) - {"scale", "dropout_p"} or sdpa_kwargs.get("dropout_p"):
+        return False
+    if sliding_window is not None and not is_causal:
+        return False
+    # Its backward is not deterministic; keep the per-segment path for runs that asked for determinism.
+    return not torch.are_deterministic_algorithms_enabled()
+
+
+def _torch_varlen_packed(
+    Q: Tensor,
+    K: Tensor,
+    V: Tensor,
+    seq_info,
+    *,
+    n_groups: int,
+    is_causal: bool,
+    sliding_window: Optional[int],
+    scale: Optional[float],
+) -> Tensor:
+    """Q (1, H, T, D), K / V (1, H_kv, T, D) -> (1, T, H, D) over the row's segments, pad tail included."""
+    total = Q.shape[-2]
+    cu_seqlens, max_seqlen = cover_padded_cu_seqlens(seq_info, total)
+    # The per-segment path only reads lengths on the host, so callers may hand seq_info over on the CPU.
+    cu_seqlens = cu_seqlens.to(device = Q.device, dtype = torch.int32, non_blocking = True)
+    if not is_causal:
+        window_size = (-1, -1)
+    elif sliding_window is not None:
+        window_size = (sliding_window - 1, 0)  # packed_block_mask keeps k >= q - (window - 1)
+    else:
+        window_size = (-1, 0)
+    Q_f, K_f, V_f = (x[0].transpose(0, 1).contiguous() for x in (Q, K, V))
+    out = _TORCH_VARLEN_ATTN(
+        Q_f,
+        K_f,
+        V_f,
+        cu_seqlens,
+        cu_seqlens,
+        max_seqlen,
+        max_seqlen,
+        scale = scale,
+        window_size = window_size,
+        enable_gqa = n_groups != 1,
+    )
+    return out.unsqueeze(0)
+
+
 def _sdpa_flash_takes_gqa(Q: Tensor) -> bool:
     # Only flash / math take enable_gqa: expand K/V elsewhere (pre-sm80, fp32, wide heads, ROCm).
     return (
@@ -590,6 +675,29 @@ def run_attention(
             and Q.shape[0] == 1
             and Q.shape[-2] == K.shape[-2]
         ):
+            if _torch_varlen_takes(
+                Q, K, V, sdpa_kwargs, context.is_causal, sliding_window
+            ) and not (
+                # torch's varlen backward is flash-attn 2's, with the same int32 dq_accum limit.
+                requires_grad
+                and not _VARLEN_INT32_GUARD_DISABLED
+                and _varlen_backward_overflows_int32(
+                    cover_padded_cu_seqlens(context.seq_info, Q.shape[-2])[0].numel() - 1,
+                    Q.shape[-2],
+                    n_heads,
+                    head_dim,
+                )
+            ):
+                return _torch_varlen_packed(
+                    Q,
+                    K,
+                    V,
+                    context.seq_info,
+                    n_groups = config.n_groups,
+                    is_causal = context.is_causal,
+                    sliding_window = sliding_window,
+                    scale = sdpa_kwargs.get("scale"),
+                )
             out = _sdpa_packed_segments(
                 Q,
                 K,
