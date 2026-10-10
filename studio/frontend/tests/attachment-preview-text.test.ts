@@ -1810,6 +1810,43 @@ test("Word list counters follow Word's sharing, restart and bullet rules", async
     await docxListText(mixed, '<w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num>', [["x", 1, 0], ["x1", 1, 1], ["x2", 1, 1], ["y", 1, 0], ["y1", 1, 1]]),
     "x | 1) x1 | 2) x2 | y | 1) y1",
   );
+  // A tracked-deleted item neither prints nor counts.
+  const w = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
+  const redline = await (async () => {
+    const globals = globalThis as { DOMParser?: unknown; XMLSerializer?: unknown };
+    const original = { DOMParser: globals.DOMParser, XMLSerializer: globals.XMLSerializer };
+    globals.DOMParser = XmlDomParser;
+    globals.XMLSerializer = XmlSerializer;
+    const item = (text: string, rPr = "") =>
+      `<w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr>${rPr}</w:pPr><w:r><w:t>${text}</w:t></w:r></w:p>`;
+    try {
+      const bytes = zipSync({
+        "[Content_Types].xml": strToU8("<Types/>"),
+        "_rels/.rels": relationships([["officeDocument", "word/document.xml"]]),
+        "word/_rels/document.xml.rels": relationships([["numbering", "numbering.xml"]]),
+        "word/document.xml": strToU8(
+          `<w:document ${w}><w:body>${item("a")}` +
+            `<w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr><w:rPr><w:del w:id="1" w:author="x"/></w:rPr></w:pPr><w:del w:id="2" w:author="x"><w:r><w:delText>gone</w:delText></w:r></w:del></w:p>` +
+            `${item("b")}</w:body></w:document>`,
+        ),
+        "word/numbering.xml": strToU8(
+          `<w:numbering ${w}><w:abstractNum w:abstractNumId="1">${levels}</w:abstractNum>` +
+            '<w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num>' +
+            '<w:num w:numId="2"><w:abstractNumId w:val="1"/><w:lvlOverride w:ilvl="0.5"><w:startOverride w:val="1"/></w:lvlOverride></w:num></w:numbering>',
+        ),
+      });
+      const { default: mammoth } = await import("mammoth");
+      return (await mammoth.extractRawText({ buffer: Buffer.from(writeDocxListNumbers(bytes)) })).value.trim().split(/\n+/).join(" | ");
+    } finally {
+      Object.assign(globals, original);
+    }
+  })();
+  assert.equal(redline, "1. a | 2. b");
+  // A fractional override level is ignored rather than aborting the extraction.
+  assert.equal(
+    await docxListText(levels, '<w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num><w:num w:numId="2"><w:abstractNumId w:val="1"/><w:lvlOverride w:ilvl="0.5"><w:startOverride w:val="1"/></w:lvlOverride></w:num>', [["a", 1, 0], ["b", 2, 0]]),
+    "1. a | 2. b",
+  );
   // lvlRestart 0 keeps a level counting across its parents.
   const running = wordLevel(0, "decimal", "%1.") + wordLevel(1, "decimal", "(%2)", '<w:lvlRestart w:val="0"/>');
   assert.equal(

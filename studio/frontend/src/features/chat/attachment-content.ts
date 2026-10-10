@@ -1074,7 +1074,16 @@ function wordValue(node: Element | undefined, name: string): string | undefined 
   return (node && childElements(node, ns, name)[0]?.getAttributeNS(ns, "val")) || undefined;
 }
 
+// Labels are an extra: a numbering part this cannot read leaves the text as Mammoth reads it.
 export function writeDocxListNumbers(archive: Uint8Array): Uint8Array {
+  try {
+    return injectDocxListNumbers(archive);
+  } catch {
+    return archive;
+  }
+}
+
+function injectDocxListNumbers(archive: Uint8Array): Uint8Array {
   const parts = unzipSync(archive, { filter: (entry) => /\.(?:xml|rels)$/.test(entry.name) });
   const resolve = (targets: string[] | undefined, fallback: string) =>
     targets?.find((path) => Object.hasOwn(parts, path)) ?? fallback;
@@ -1114,6 +1123,9 @@ export function writeDocxListNumbers(archive: Uint8Array): Uint8Array {
   let found = false;
   for (const p of Array.from(doc.getElementsByTagNameNS(w, "p"))) {
     const pPr = childElements(p, w, "pPr")[0];
+    // A tracked-deleted paragraph mark removes the item; Mammoth folds its text into the next paragraph.
+    const mark = pPr && childElements(pPr, w, "rPr")[0];
+    if (mark && (childElements(mark, w, "del").length || childElements(mark, w, "moveFrom").length)) continue;
     const direct = pPr && childElements(pPr, w, "numPr")[0];
     const styled = styleNumPr(wordValue(pPr, "pStyle"));
     const numId = wordValue(direct, "numId") ?? wordValue(styled, "numId");
@@ -1140,7 +1152,7 @@ export function writeDocxListNumbers(archive: Uint8Array): Uint8Array {
       started.add(numId!);
       for (const node of overrides) {
         const at = Number(node.getAttributeNS(n, "ilvl"));
-        if (childElements(node, n, "startOverride").length && at >= 0 && at < counts.length) counts.length = at;
+        if (childElements(node, n, "startOverride").length && Number.isInteger(at) && at >= 0 && at < counts.length) counts.length = at;
       }
     }
     for (let i = 0; i < ilvl; i++) counts[i] ??= level(i).start;
