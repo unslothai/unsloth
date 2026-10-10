@@ -3259,6 +3259,7 @@ def test_unlink_stops_the_document_being_embedded(rag_home, stub_embeddings, mon
         return real_encode(texts, **kwargs)
 
     monkeypatch.setattr(embeddings, "encode", slow_gpu)
+    monkeypatch.setattr(ingestion, "_EMBED_BATCH", 4)
     job_id = folder_sync.request_sync(folder["id"])
     worker = threading.Thread(target = folder_sync.reconcile_folder, args = (job_id,), daemon = True)
     worker.start()
@@ -3269,7 +3270,7 @@ def test_unlink_stops_the_document_being_embedded(rag_home, stub_embeddings, mon
     worker.join(timeout = 60)
     assert not worker.is_alive()
     # The whole document takes ~30 s of embedding here.
-    assert elapsed < 10, f"unlink waited {elapsed:.1f}s for the embed"
+    assert elapsed < 8, f"unlink waited {elapsed:.1f}s for the embed"
     assert folder_sync.get_folder(folder["id"]) is None
 
 
