@@ -383,6 +383,9 @@ def _compile_value(opt: _Option, value: str, inverted: bool) -> list[str]:
         return [opt.negative] if opt.negative else []
     if not v:
         raise ValueError("missing value")
+    if opt.flag == "--main-gpu":
+        # Studio's GPU picker strips device flags from the stored args, which would orphan the prefix.
+        raise ValueError("use Studio's GPU selection instead")
     if opt.kind in ("int", "float"):
         number = _number(v, opt.kind == "int")
         if not opt.lo <= number <= opt.hi:
@@ -395,8 +398,9 @@ def _compile_value(opt: _Option, value: str, inverted: bool) -> list[str]:
             raise ValueError("expected one of " + ", ".join(sorted(opt.choices)))
         return [opt.flag, v.lower()]
     if opt.kind == "layers":
+        # llama.cpp reads auto as -1 and all as every layer (common/arg.cpp); Studio's boundary takes integers.
         if v.lower() in ("auto", "all"):
-            return [opt.flag, v.lower()]
+            return [opt.flag, "-1" if v.lower() == "auto" else "999"]
         number = _number(v, True)
         if number < -1:
             raise ValueError("expected a layer count, auto or all")

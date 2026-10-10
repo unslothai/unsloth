@@ -752,3 +752,18 @@ def test_runtime_fields_list_the_sampling_keys_the_ini_set():
 
     assert "model_ini_sampling_keys" in LoadResponse.model_fields
     assert "model_ini_sampling_keys" in InferenceStatusResponse.model_fields
+
+
+@pytest.mark.parametrize("value, expected", [("auto", "-1"), ("all", "999"), ("ALL", "999")])
+def test_gpu_layers_words_compile_to_integers_the_boundary_accepts(value, expected):
+    compiled = parse_model_ini(f"ngl = {value}\n", quant = None, gguf_filename = None)
+    assert compiled.args == ["--gpu-layers", expected]
+    assert validate_extra_args(compiled.args) == compiled.args
+
+
+def test_main_gpu_is_left_to_studios_gpu_selection():
+    compiled = parse_model_ini("main-gpu = 1\nc = 4096\n", quant = None, gguf_filename = None)
+    assert compiled.args == ["--ctx-size", "4096"]
+    assert [(i["key"], i["reason"]) for i in compiled.ignored] == [
+        ("main-gpu", "use Studio's GPU selection instead")
+    ]
