@@ -744,6 +744,9 @@ def test_page_that_fits_keeps_its_links(monkeypatch):
         ("Add <sup>1</sup>&frasl;<sub>2</sub> cup", "Add 1⁄2 cup"),
         ("Add 1 <sup>1</sup>/<sub>2</sub> cups", "Add 1 1/2 cups"),
         ("<sup>1</sup> Footnote text", "1 Footnote text"),
+        ("Add <em><sup>1</sup></em>&frasl; cup", "Add *1*⁄ cup"),
+        ("the 1<sup><em>st</em></sup> one", "the 1*st* one"),
+        ("a<b><sup>2</sup></b>", "a**^2**"),
     ],
 )
 def test_superscripts_keep_their_exponent(markup, expected):

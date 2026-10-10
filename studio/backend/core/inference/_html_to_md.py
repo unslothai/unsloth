@@ -209,6 +209,7 @@ _MIN_SCOPE_SPAN_CHARS = 256
 _INLINE_EMPHASIS = {"strong": "**", "b": "**", "em": "*", "i": "*"}
 
 _ORDINAL_SUFFIXES = frozenset({"st", "nd", "rd", "th"})
+_MD_DELIMITERS = "*_`"
 _GROUPED_EXPONENT = re.compile(r"\s|\S[-+−/=]")
 # deeper <sup> nests render as plain text: each tracked level rescans its whole suffix on close
 _MAX_SUP_DEPTH = 8
@@ -570,6 +571,8 @@ class _MarkdownRenderer(HTMLParser):
         """A <sup> after nothing or whitespace has no base: a footnote marker the link wraps
         (``<a href="#fn1"><sup>1</sup></a>``) or a fraction numerator (``<sup>1</sup>&frasl;``)."""
         for part in reversed(target):
+            # an emphasis or code delimiter the renderer just opened is not visible text
+            part = part.rstrip(_MD_DELIMITERS)
             if part:
                 return not part[-1].isspace()
         return False
@@ -593,7 +596,7 @@ class _MarkdownRenderer(HTMLParser):
             or "\n" in shown
             or shown[0] in "[."
             or not any(c.isalnum() for c in shown)
-            or shown.lower() in _ORDINAL_SUFFIXES
+            or shown.strip(_MD_DELIMITERS).lower() in _ORDINAL_SUFFIXES
         ):
             return
         exponent = f"^({raw})" if _GROUPED_EXPONENT.search(shown) else f"^{raw}"
