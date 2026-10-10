@@ -249,8 +249,9 @@ def test_a_two_card_fit_is_published(tmp_path, monkeypatch):
         ["--split-mode", "none"],
         ["--tensor-split", "100,1"],
         ["--fit", "on", "--fit-target", "8192"],
+        ["--rpc", "192.168.1.2:50052"],
     ],
-    ids = ["narrower-device", "split-mode-none", "skewed-split", "user-fitter"],
+    ids = ["narrower-device", "split-mode-none", "skewed-split", "user-fitter", "rpc"],
 )
 def test_a_placement_narrower_than_the_fit_claims_no_fit(tmp_path, monkeypatch, extra_args):
     backend = _two_card_load(tmp_path, monkeypatch, extra_args = tuple(extra_args))
@@ -272,3 +273,8 @@ def test_a_one_card_device_pin_under_a_two_card_cap_claims_no_fit(tmp_path, monk
     # The explicit context fits one card, so the selection credits one; the cap pooled two.
     backend = _two_card_load(tmp_path, monkeypatch, n_ctx = 2048, extra_args = ("--device", "CUDA0"))
     assert backend.vram_fit_context_length is None
+
+
+def test_an_inherited_rpc_claims_no_fit(tmp_path, monkeypatch):
+    monkeypatch.setenv("LLAMA_ARG_RPC", "192.168.1.2:50052")
+    assert _two_card_load(tmp_path, monkeypatch).vram_fit_context_length is None

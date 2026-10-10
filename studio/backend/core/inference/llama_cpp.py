@@ -4532,11 +4532,16 @@ _CPU_PLACEMENT_PRESENCE_FLAGS = (_MOE_OFFLOAD_FLAGS - _CPU_MOE_COUNT_FLAGS) | fr
     {"-ot", "--override-tensor"}
 )
 _CPU_PLACEMENT_FLAGS = _MOE_OFFLOAD_FLAGS | frozenset({"-ot", "--override-tensor"})
+# Pass-through that re-places what a fit priced: the fitter, split, or remote (RPC) devices.
 _VRAM_FIT_VOIDING_FLAGS = (
-    frozenset({"-fit", "--fit"}) | _FIT_CONTROL_FLAGS | _TENSOR_SPLIT_FLAGS | _SPLIT_MODE_FLAGS
+    frozenset({"-fit", "--fit", "--rpc"})
+    | _FIT_CONTROL_FLAGS
+    | _TENSOR_SPLIT_FLAGS
+    | _SPLIT_MODE_FLAGS
 )
 _VRAM_FIT_VOIDING_ENV_VARS = (
     "LLAMA_ARG_FIT",
+    "LLAMA_ARG_RPC",
     *_FIT_CONTROL_ENV_VARS,
     "LLAMA_ARG_TENSOR_SPLIT",
     "LLAMA_ARG_SPLIT_MODE",
