@@ -82,6 +82,80 @@ def test_pdf_markdown_keeps_text_drawn_over_a_picture(tmp_path, monkeypatch):
         assert sidebar in text
 
 
+def test_pdf_markdown_does_not_render_scanned_pages(tmp_path, monkeypatch):
+    # pymupdf4llm's background-colour probe renders page corners; under a full-page scan that
+    # decodes the whole image while holding the GIL, which starved the event loop until the
+    # desktop watchdog killed the backend (#13094). Text pages keep the probe.
+    pytest.importorskip("pymupdf4llm")
+    import pymupdf
+
+    from core.rag import config, parsers
+
+    monkeypatch.setattr(config, "PDF_MARKDOWN", True)
+    doc = pymupdf.open()
+    scan = doc.new_page()
+    pix = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 1000, 1300), False)
+    pix.set_rect(pix.irect, (250, 250, 240))
+    scan.insert_image(scan.rect, pixmap = pix, keep_proportion = False)
+    scan.insert_text((60, 120), "Chapter one covers shelter.", fontsize = 10)
+    text_page = doc.new_page()
+    text_page.insert_text((60, 80), "Survival Training", fontsize = 16)
+    text_page.insert_text((60, 120), "Chapter two covers water.", fontsize = 10)
+    pdf = tmp_path / "scan.pdf"
+    doc.save(str(pdf))
+    doc.close()
+
+    rendered = []
+    real_get_pixmap = pymupdf.Page.get_pixmap
+
+    def recording_get_pixmap(self, *args, **kwargs):
+        rendered.append(self.number)
+        return real_get_pixmap(self, *args, **kwargs)
+
+    monkeypatch.setattr(pymupdf.Page, "get_pixmap", recording_get_pixmap)
+    pages = parsers.parse(str(pdf))
+    assert [p.page_number for p in pages] == [1, 2]
+    assert "Chapter one covers shelter." in pages[0].text
+    assert "Chapter two covers water." in pages[1].text
+    assert "# Survival Training" in pages[1].text
+    assert 0 not in rendered
+    assert 1 in rendered
+
+
+@pytest.mark.parametrize("rotation", [0, 90, 180, 270])
+def test_scan_corner_check_follows_page_rotation(rotation):
+    import pymupdf
+
+    from core.rag import parsers
+
+    doc = pymupdf.open()
+    page = doc.new_page()
+    pix = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 2000, 500), False)
+    pix.set_rect(pix.irect, (250, 250, 240))
+    # A strip along the unrotated bottom edge covers two corners at every rotation.
+    page.insert_image(pymupdf.Rect(0, 700, 595, 842), pixmap = pix, keep_proportion = False)
+    inset = doc.new_page()
+    inset.insert_image(pymupdf.Rect(100, 100, 400, 600), pixmap = pix, keep_proportion = False)
+    for number in range(2):
+        doc[number].set_rotation(rotation)
+    assert parsers._image_covers_a_corner(doc, 0)
+    assert not parsers._image_covers_a_corner(doc, 1)
+
+
+def test_scan_corner_check_ignores_small_corner_logos():
+    # A logo is cheap to decode, so its page keeps pymupdf4llm's background probe.
+    import pymupdf
+
+    from core.rag import parsers
+
+    doc = pymupdf.open()
+    page = doc.new_page()
+    logo = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 200, 200), False)
+    logo.set_rect(logo.irect, (200, 30, 30))
+    page.insert_image(pymupdf.Rect(0, 0, 60, 60), pixmap = logo)
+    assert not parsers._image_covers_a_corner(doc, 0)
+
+
 def test_pdf_markdown_off_uses_plain_text(tmp_path, monkeypatch):
     # The toggle (RAG_PDF_MARKDOWN=0) falls back to flat PyMuPDF text: content is still
     # there, but with no Markdown markup.
@@ -786,7 +860,98 @@ def test_html_block_elements_start_new_lines(tmp_path):
         "<h1>Install <em>guide</em></h1><ul><li>One</li><li>Two <i>items</i></li></ul>"
         "<p>line one<br>line two</p><table><tr><td>cell a</td><td>cell b</td></tr></table>",
     )
-    assert text == "Install guide\nOne\nTwo items\nline one\nline two\ncell a\ncell b"
+    assert text == "Install guide\nOne\nTwo items\nline one\nline two\ncell a | cell b"
+
+
+def test_html_table_rows_keep_their_columns(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        "<table><tr><th>Plan</th><th>Price</th><th>Support</th><th>Seats</th></tr>"
+        "<tr><td>Starter</td><td>$9</td><td><p>Email</p><p>Chat</p></td><td>1</td></tr>"
+        "<tr><td>Team<td>$49<td><td>10</table><p>After</p>",
+    )
+    assert text == (
+        "Plan | Price | Support | Seats\nStarter | $9 | Email Chat | 1\nTeam | $49 |  | 10\nAfter"
+    )
+
+
+def test_html_table_spans_keep_columns_aligned(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        "<table><tr><th>Plan</th><th colspan=2>Price</th></tr>"
+        "<tr><td rowspan=2>Pro</td><td>Monthly</td><td>$20</td></tr>"
+        "<tr><td>Annual</td><td>$200</td></tr></table>",
+    )
+    assert text == "Plan | Price | \nPro | Monthly | $20\n | Annual | $200"
+
+
+def test_html_trailing_rowspan_keeps_columns_aligned(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        "<table><tr><td>Item</td><td rowspan=2>Notes</td></tr><tr><td>Next</td></tr></table>",
+    )
+    assert text == "Item | Notes\nNext | "
+
+
+def test_html_table_preserves_preformatted_cell_whitespace(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        "<table><tr><td><pre>a\n b<br>  c</pre></td><td>d</td></tr></table>",
+    )
+    assert text == "a\n b\n  c | d"
+
+
+def test_html_layout_and_nested_tables_keep_their_lines(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        "<table><tr><td><h1>Title</h1><p>Intro</p>"
+        "<table><tr><td>Name<table><tr><td>x</td><td>y</td></tr></table></td><td>Value</td></tr></table>"
+        "<p>Outro</p></td></tr></table>",
+    )
+    assert text == "Title\nIntro\nName | Value\nx | y\nOutro"
+
+
+def test_html_text_after_a_nested_table_stays_in_its_parent_cell(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        "<table><tr><td>Before<table><tr><td>x</td><td>y</td></tr></table>After</td>"
+        "<td>Peer</td></tr></table>",
+    )
+    assert text == "Before After | Peer\nx | y"
+
+
+def test_html_table_spans_are_capped_by_the_file_size(tmp_path):
+    html = "<table><tr><td colspan=1000 rowspan=65534>x" + "<tr><td>a" * 2000
+    text = _parse_html(tmp_path, html)
+    assert text.count("a") == 2000 and len(text) < 4 * len(html)
+
+
+def test_html_empty_rows_spend_the_span_budget(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        "<table><tr><td colspan=50 rowspan=65534>x" + "<tr>" * 100 + "<tr><td>a<td>b</table>",
+    )
+    assert text.splitlines()[-1] == "a | b"
+
+
+def test_html_rowspan_stops_at_its_row_group(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        "<table><thead><tr><th rowspan=3>Plan</th><th>Price</th></tr></thead>"
+        "<tbody><tr><td rowspan=0>Team</td><td>$49</td></tr><tr><td>$490</td></tr></tbody>"
+        "<tbody><tr><td>Pro</td><td>$99</td></tr></tbody></table>",
+    )
+    assert text == "Plan | Price\nTeam | $49\n | $490\nPro | $99"
+
+
+def test_html_tables_nested_past_the_depth_cap_read_as_blocks(tmp_path):
+    text = _parse_html(tmp_path, "<table><tr><td>" * 32 + "<table><tr><td>a<td>b" + "<p>end")
+    assert text == "a\nb\nend"
+
+
+def test_html_stray_cell_end_keeps_words_apart(tmp_path):
+    text = _parse_html(tmp_path, "<table><tr><td>Total</td>Note</td>Extra</tr></table>")
+    assert text == "Note\nExtra\nTotal"
 
 
 def test_html_legend_and_options_stay_separate_words(tmp_path):

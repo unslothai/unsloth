@@ -139,7 +139,12 @@ _RATE_LIMIT_WAIT_CAP_SECONDS = 60.0
 _MIN_CUDA_MAJOR = 12
 _MAX_PROBE_CUDA_MAJOR = 19
 
-# Blackwell is sm_100+ and needs toolkit >= 12.8; sm_103/sm_121 need 12.9.
+# Toolkit 12.8+ prebuilts use nvcc -compress-mode=size, "not compatible with drivers released
+# before CUDA Toolkit's 12.4 Release" (nvcc docs): every kernel load fails (#12842).
+_COMPRESSED_FATBIN_MIN_DRIVER = (12, 4)
+
+# Blackwell floor is sm_100 (B100/B200 sm_100, B300/GB300 sm_103 below consumer
+# RTX 50 sm_120); the family needs toolkit >= 12.8, sm_103/sm_121 need 12.9.
 _BLACKWELL_MIN_SM = 100
 _BLACKWELL_MIN_TOOLKIT = (12, 8)
 _BLACKWELL_SM_MIN_TOOLKIT = {103: (12, 9), 121: (12, 9)}
@@ -1626,11 +1631,27 @@ def detected_windows_runtime_lines(ops: ModuleOps) -> tuple[list[str], dict[str,
     return detected, runtime_dirs
 
 
+def driver_below_cuda_prebuilt_floor(host: Any) -> bool:
+    """A reported driver too old for any CUDA prebuilt (see _COMPRESSED_FATBIN_MIN_DRIVER)."""
+    driver = host.driver_cuda_version
+    return bool(driver) and tuple(driver[:2]) < _COMPRESSED_FATBIN_MIN_DRIVER
+
+
+def cuda_driver_floor_message(host: Any) -> str:
+    major, minor = host.driver_cuda_version[:2]
+    return (
+        f"NVIDIA driver reports CUDA {major}.{minor}, older than the CUDA "
+        f"{_COMPRESSED_FATBIN_MIN_DRIVER[0]}.{_COMPRESSED_FATBIN_MIN_DRIVER[1]} the CUDA "
+        "llama.cpp prebuilts need (their kernels fail with 'device kernel image is invalid'); "
+        "skipping them. Update the NVIDIA driver to R550 or newer (CUDA 12.4+) to use them."
+    )
+
+
 def compatible_linux_runtime_lines(host: Any) -> list[str]:
     if not host.driver_cuda_version:
         return []
     major, _minor = host.driver_cuda_version
-    if major < _MIN_CUDA_MAJOR:
+    if major < _MIN_CUDA_MAJOR or driver_below_cuda_prebuilt_floor(host):
         return []
     return _cuda_runtime_lines_for_major(major)
 

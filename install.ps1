@@ -4517,17 +4517,19 @@ function Install-UnslothStudio {
     $script:UnslothCmdShimMarker = "unsloth-studio-managed-launcher"
     $script:UnslothCliTrampoline = "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if getattr(sys.flags, 'safe_path', False) or x not in ('', os.getcwd())]; sys.argv[0] = 'unsloth'; from unsloth_cli import app; sys.exit(app())"
 
-    # ERROR_ACCESS_DISABLED_BY_POLICY via the wrapper exceptions; $LASTEXITCODE is stale here
-    # because no process was created.
+    # Policy refusal through PowerShell's wrapper exceptions: AppLocker 1260, App Control
+    # for Business and Smart App Control 4551 (ERROR_SYSTEM_INTEGRITY_POLICY_VIOLATION).
+    # $LASTEXITCODE cannot answer this: no process was created, so it still holds the
+    # exit code of whichever native command ran last.
     function Test-ApplicationControlBlock {
         param($ErrorRecord)
 
         $ex = if ($ErrorRecord -is [System.Management.Automation.ErrorRecord]) { $ErrorRecord.Exception } else { $ErrorRecord }
         while ($ex) {
             # Win32Exception carries NativeErrorCode; outer wrappers keep only the HRESULT
-            # form of the same code (0x800704EC).
-            if ($ex -is [System.ComponentModel.Win32Exception] -and $ex.NativeErrorCode -eq 1260) { return $true }
-            if ($ex.HResult -eq -2147023636) { return $true }
+            # form of the same code (0x800704EC, 0x800711C7).
+            if ($ex -is [System.ComponentModel.Win32Exception] -and $ex.NativeErrorCode -in @(1260, 4551)) { return $true }
+            if ($ex.HResult -in @(-2147023636, -2147020345)) { return $true }
             $ex = $ex.InnerException
         }
         return $false
@@ -4538,11 +4540,11 @@ function Install-UnslothStudio {
         param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path)
 
         Write-StudioLine "[ERROR] Windows Application Control blocked the managed Python runtime." -ForegroundColor Red
-        Write-StudioLine "        Windows error 1260 (ERROR_ACCESS_DISABLED_BY_POLICY)" -ForegroundColor Yellow
+        Write-StudioLine "        AppLocker, App Control for Business or Smart App Control refused to start it." -ForegroundColor Yellow
         Write-StudioLine "        Blocked program: $Path" -ForegroundColor Yellow
-        Write-StudioLine "        Ask your administrator to review AppLocker `"EXE and DLL`" event 8004," -ForegroundColor Yellow
+        Write-StudioLine "        Review AppLocker `"EXE and DLL`" event 8004," -ForegroundColor Yellow
         Write-StudioLine "        or CodeIntegrity/Operational event 3077." -ForegroundColor Yellow
-        return "Windows Application Control blocked the managed Python runtime at $Path (Windows error 1260)."
+        return "Windows Application Control blocked the managed Python runtime at $Path."
     }
 
     # One pre-quoted command line: Start-Process joins -ArgumentList unquoted.
@@ -4582,8 +4584,12 @@ function Install-UnslothStudio {
         }
     }
 
-    # Probe by launching `--version`: Windows offers no other way to ask. A denial fails
-    # synchronously; a started process is not blocked even if it times out.
+    # Does Application Control deny this launcher here? Windows cannot be asked without
+    # trying: AppLocker's cmdlets need the policy and an admin token, WDAC and Smart App
+    # Control expose nothing. A denial is free (CreateProcess fails synchronously, no
+    # child, the policy code straight back); an unaffected machine pays one `--version`,
+    # measured at a quarter second. A process that started is not blocked whatever it does next,
+    # so the timeout path still answers "not blocked" and just stops waiting.
     function Test-ShimLaunchBlocked {
         param([Parameter(Mandatory = $true)][string]$Path)
 
@@ -7102,7 +7108,7 @@ exit 0
         try {
             $psi = New-Object System.Diagnostics.ProcessStartInfo
             $psi.FileName = $PythonExe
-            $psi.Arguments = "-c `"$Code`""
+            $psi.Arguments = "-I -c `"$Code`""
             $psi.RedirectStandardOutput = $true
             $psi.RedirectStandardError = $true
             $psi.UseShellExecute = $false
@@ -7408,7 +7414,7 @@ exit 0
             $psi = New-Object System.Diagnostics.ProcessStartInfo
             $psi.FileName = $PythonExe
             # Dist metadata, not "import torch": a broken DLL would drop the pin (as in install.sh).
-            $psi.Arguments = '-c "import importlib.metadata as m; print(m.version(''torch''))"'
+            $psi.Arguments = '-I -c "import importlib.metadata as m; print(m.version(''torch''))"'
             $psi.RedirectStandardOutput = $true
             $psi.RedirectStandardError = $true
             $psi.UseShellExecute = $false
@@ -7486,7 +7492,7 @@ exit 0
             if ($SkipTorch) {
                 & $OldPy -c "import sys; print(sys.executable)" 2>$null | Out-Null
             } else {
-                & $OldPy -c "import torch; A = torch.ones((2,2)); B = A + A" 2>$null | Out-Null
+                & $OldPy -I -c "import torch; A = torch.ones((2,2)); B = A + A" 2>$null | Out-Null
             }
             $legacyOk = ($LASTEXITCODE -eq 0)
         } catch { $legacyOk = $false }
@@ -9916,7 +9922,7 @@ main()
     function New-UnslothTorchOverridesFile {
         param([string]$PythonExe)
         if ($SkipTorch) { return $null }
-        $pins = & $PythonExe -c "from importlib.metadata import version, PackageNotFoundError`nfor _p in ('torch', 'torchvision', 'torchaudio'):`n    try:`n        print(_p + '==' + version(_p))`n    except PackageNotFoundError:`n        pass" 2>$null
+        $pins = & $PythonExe -I -c "from importlib.metadata import version, PackageNotFoundError`nfor _p in ('torch', 'torchvision', 'torchaudio'):`n    try:`n        print(_p + '==' + version(_p))`n    except PackageNotFoundError:`n        pass" 2>$null
         $lines = @($pins | Where-Object { $_ -match '^torch' })
         if ($lines.Count -eq 0 -or $lines[0] -notmatch '^torch==') { return $null }
         # --overrides replaces any UV_OVERRIDE file, so fold caller files in, minus their trio,
@@ -9973,7 +9979,7 @@ main()
 
     $_desktopMinVer = if ($env:UNSLOTH_DESKTOP_BACKEND_VERSION) { $env:UNSLOTH_DESKTOP_BACKEND_VERSION.Trim() } else { "" }
     $_unslothDesktopInstallSpec = if ($_desktopMinVer) { "unsloth>=$_desktopMinVer" } else { $null }
-    $_unslothReleaseInstallSpec = if ($_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { "unsloth>=2026.10.1" }
+    $_unslothReleaseInstallSpec = if ($_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { "unsloth>=2026.10.3" }
 
     if ($_Migrated) {
         Write-TauriLog "STEP" "Installing unsloth"
@@ -9984,7 +9990,7 @@ main()
             # --no-deps means unsloth's own metadata is never read, so this spec IS the zoo
             # floor for this path. Keep it equal to the unsloth_zoo floor in pyproject.toml
             # (tests/test_installer_zoo_floor_parity.py enforces that).
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.10.1" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.10.3" }
             if ($baseInstallExit -eq 0) {
                 # pydantic WITH deps so pydantic-core matches; no-torch-runtime.txt is --no-deps.
                 $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { & $script:UvExe pip install --python $VenvPython pydantic }
@@ -10001,7 +10007,7 @@ main()
                 }
             }
         } else {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { & $script:UvExe pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.10.1" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { & $script:UvExe pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.10.3" }
         }
         if ($baseInstallExit -ne 0) {
             Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
@@ -10232,7 +10238,7 @@ main()
         substep "installing unsloth (this may take a few minutes)..."
         if ($SkipTorch) {
             # --no-deps: this spec IS the zoo floor here. Kept equal to pyproject.toml's.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.10.1" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.10.3" }
             if ($baseInstallExit -eq 0) {
                 $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { & $script:UvExe pip install --python $VenvPython pydantic }
             }
@@ -10251,11 +10257,11 @@ main()
             # Freeze the trio so this with-deps resolve cannot downgrade the pinned build.
             $script:TorchOverridesFile = New-UnslothTorchOverridesFile -PythonExe $VenvPython
             if ($script:TorchOverridesFile) {
-                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth --overrides $script:TorchOverridesFile "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.10.1" }
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth --overrides $script:TorchOverridesFile "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.10.3" }
                 Remove-UnslothTempFileQuietly -Path $script:TorchOverridesFile
                 $script:TorchOverridesFile = $null
             } else {
-                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.10.1" }
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.10.3" }
             }
         } else {
             $_unslothPkg = if ($PackageName -eq "unsloth" -and $_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { $PackageName }
@@ -10292,7 +10298,7 @@ main()
         Write-TauriLog "STEP" "Installing unsloth"
         substep "installing unsloth (this may take a few minutes)..."
         if ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install --python $VenvPython "unsloth-zoo>=2026.10.1" "$_unslothReleaseInstallSpec" --torch-backend=auto }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install --python $VenvPython "unsloth-zoo>=2026.10.3" "$_unslothReleaseInstallSpec" --torch-backend=auto }
             if ($baseInstallExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)

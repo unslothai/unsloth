@@ -30,6 +30,7 @@ on:
       - 'tests/studio/playwright_code_block_flicker.py'
       - 'tests/studio/playwright_link_definition_probe.py'
       - 'tests/studio/playwright_user_message_time.py'
+      - 'tests/studio/playwright_progressive_rows.py'
       - 'tests/studio/_code_block_flicker_analysis.py'
       - 'tests/studio/test_code_block_flicker_contract.py'
       - 'tests/studio/_playwright_robust.py'
@@ -68,6 +69,7 @@ on:
       - 'tests/studio/playwright_code_block_flicker.py'
       - 'tests/studio/playwright_link_definition_probe.py'
       - 'tests/studio/playwright_user_message_time.py'
+      - 'tests/studio/playwright_progressive_rows.py'
       - 'tests/studio/_code_block_flicker_analysis.py'
       - 'tests/studio/test_code_block_flicker_contract.py'
       - 'tests/studio/_playwright_robust.py'
@@ -376,7 +378,17 @@ jobs:
         timeout-minutes: 5
         run: python3 tests/studio/playwright_user_message_time.py
 
-      # Reduced sizes and one engine; the full measurement is too slow for every PR.
+      # the node suite runs no effects, so only this browser check covers the observer, re-arming, and cleanup.
+      - name: Browser check for paged sidebar lists
+        working-directory: ${{ github.workspace }}
+        timeout-minutes: 5
+        run: python3 tests/studio/playwright_progressive_rows.py
+
+      # Two small sizes and one repetition on Chromium: enough to prove the fixture still
+      # renders every kind of content it claims to and that the curve still rises, which is all
+      # a PR gate can afford. The measurement this harness exists for is the three-engine,
+      # three-size, three-repetition run, which takes tens of minutes and belongs on a runner
+      # asked for it deliberately, not on every frontend PR.
       - name: Browser smoke for heavy-thread interaction cost
         working-directory: ${{ github.workspace }}
         env:

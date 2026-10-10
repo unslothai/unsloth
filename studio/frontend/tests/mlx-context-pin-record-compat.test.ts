@@ -208,8 +208,8 @@ const ROWS: Row[] = [
       "and reads normally.",
   },
   {
-    name: "version 10 (genuinely future)",
-    raw: { version: 10, customContextLength: 32768 },
+    name: "version 12 (genuinely future)",
+    raw: { version: 12, customContextLength: 32768 },
     normalizedPin: null,
     rawPin: 32768,
     isDefault: true,
@@ -330,7 +330,7 @@ test("a patched pin round-trips through storage on both backends", () => {
 test("both pin shapes are stamped version 1, so neither is distinguishable by version", () => {
   assert.equal(stampedVersion({ customContextLength: 32768 }), 1);
   assert.equal(stampedVersion({ maxSeqLength: 32768 }), 1);
-  // The current client's forwards guard is `version > 9`, and v1 invites any client
+  // The current client's forwards guard is `version > 10`, and v1 invites any client
   // back to v1 to rewrite the record.
   assert.equal(
     stage({ version: 1, customContextLength: 32768 }).remembered,
@@ -354,6 +354,10 @@ test("both pin shapes are stamped version 1, so neither is distinguishable by ve
   );
   assert.equal(
     stage({ version: 10, customContextLength: 32768 }).remembered,
+    true,
+  );
+  assert.equal(
+    stage({ version: 12, customContextLength: 32768 }).remembered,
     false,
   );
 });
@@ -361,6 +365,8 @@ test("both pin shapes are stamped version 1, so neither is distinguishable by ve
 
 test("a stored mlxKvQuant stamps a version older builds refuse", () => {
   assert.equal(stampedVersion({ mlxKvQuant: "tq-4" }), 7);
+  // An older client folds a kept Auto and an MLX-only mode back to unset, so both lock it out.
+  assert.deepEqual(["auto", "eagle3", "mtp"].map((speculativeType) => stampedVersion({ speculativeType })), [11, 11, 1]);
   assert.equal(stampedVersion({ mlxKvQuant: "4" }), 7);
   assert.equal(stampedVersion({ loadMode: "mmap" }), 5);
   assert.equal(stampedVersion({ mlxKvQuant: "tq-4", loadMode: "mmap" }), 7);

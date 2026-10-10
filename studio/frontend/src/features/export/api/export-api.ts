@@ -89,6 +89,38 @@ export interface ExportOperationResponse {
   details?: { output_path?: string | null } & Record<string, unknown>;
 }
 
+/** GGUF export options for a decision model (Clef / Laya) checkpoint folder. */
+export interface DecisionExportInfo {
+  is_decision: boolean;
+  layout: "clef" | "laya";
+  /** Clef folder with LoRA adapters only; merged at export time. */
+  adapter_only: boolean;
+  /** false: llama.cpp cannot serve it (see reason); null: only the export can tell. */
+  eligible: boolean | null;
+  reason: string | null;
+  /** Allowed lowercase quantizations, default first. */
+  quantizations: string[];
+  default_quantization: string;
+  /** Where the GGUF files land: <run folder>/gguf. */
+  output_dir: string;
+  existing_export: ({ quantizations?: string[] } & Record<string, unknown>) | null;
+}
+
+/** Decision export info for a local checkpoint folder; null for any other model. */
+export async function fetchDecisionExportInfo(
+  checkpointPath: string,
+  signal?: AbortSignal,
+): Promise<DecisionExportInfo | null> {
+  const response = await authFetch(
+    `/api/export/decision-info?checkpoint_path=${encodeURIComponent(checkpointPath)}`,
+    { signal },
+  );
+  const body = await parseJson<{ decision: DecisionExportInfo | null }>(
+    response,
+  );
+  return body.decision ?? null;
+}
+
 export async function fetchCheckpoints(): Promise<CheckpointListResponse> {
   const response = await authFetch("/api/models/checkpoints");
   return parseJson<CheckpointListResponse>(response);
@@ -256,6 +288,8 @@ export interface ExportStatus {
   last_op_status?: "success" | "error" | "cancelled" | null;
   last_op_output_path?: string | null;
   last_op_error?: string | null;
+  /** {layout, adapter_only} when the loaded checkpoint is a decision model. */
+  decision?: { layout: "clef" | "laya"; adapter_only: boolean } | null;
 }
 
 /**

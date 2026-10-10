@@ -193,6 +193,67 @@ def test_windows_status_carries_the_opt_in_block(host, windows):
     assert body["windows"]["prepare_repeats_after_restart"] is True
 
 
+@pytest.mark.parametrize(
+    "dacl, capability, expected",
+    [
+        # With the fallback off wxc-exec runs only in BaseContainer, so a working MXC is that tier.
+        (False, _cap(backend = "mxc-processcontainer"), True),
+        (
+            False,
+            os_sandbox.SandboxCapability(
+                backend = "mxc-processcontainer",
+                available = False,
+                reason = mxc_probe.NO_BUILTIN_CONTAINER_REASON,
+            ),
+            False,
+        ),
+        (False, _cap(available = False, backend = "mxc-processcontainer"), None),
+        # With the fallback on, wxc-exec may have used either tier.
+        (True, _cap(backend = "mxc-processcontainer"), None),
+    ],
+)
+def test_windows_status_names_the_builtin_container(
+    host, windows, monkeypatch, dacl, capability, expected
+):
+    _calls, saved = host
+    saved["dacl"] = dacl
+    monkeypatch.setattr(os_sandbox, "capability_snapshot", lambda **_kw: capability)
+    with _client(OWNER) as client:
+        body = client.get("/sandbox").json()
+    assert body["windows"]["builtin_container"] is expected
+
+
+@pytest.mark.parametrize("dacl_before, dacl_after", [(True, False), (False, True)])
+def test_a_save_during_the_probe_leaves_the_builtin_container_unknown(
+    host, windows, monkeypatch, dacl_before, dacl_after
+):
+    """A verdict measured under one fallback setting says nothing about the tier under the other."""
+    _calls, saved = host
+    saved["dacl"] = dacl_before
+
+    def snapshot(**_kw):
+        saved["dacl"] = dacl_after  # the owner saved the switch while the probe ran
+        return _cap(backend = "mxc-processcontainer")
+
+    monkeypatch.setattr(os_sandbox, "capability_snapshot", snapshot)
+    with _client(OWNER) as client:
+        body = client.get("/sandbox").json()
+    assert body["windows"]["allow_dacl_fallback"] is dacl_after
+    assert body["windows"]["builtin_container"] is None
+
+
+def test_without_the_runtime_the_builtin_container_is_unknown(host, windows, monkeypatch):
+    block = _windows_block({"dacl": False, "grants": True}).model_copy(
+        update = {"runtime_installed": False}
+    )
+    monkeypatch.setattr(settings, "_sandbox_windows_status", lambda: block)
+    monkeypatch.setattr(
+        os_sandbox, "capability_snapshot", lambda **_kw: _cap(backend = "mxc-processcontainer")
+    )
+    with _client(OWNER) as client:
+        assert client.get("/sandbox").json()["windows"]["builtin_container"] is None
+
+
 def test_managed_account_is_refused(host, windows):
     with _client(ALICE) as client:
         assert client.get("/sandbox").status_code == 403
@@ -342,3 +403,89 @@ def test_a_status_built_before_a_save_is_not_cached(host, windows, monkeypatch):
     monkeypatch.setattr(settings, "_build_sandbox_status", build_then_save)
     settings._sandbox_status()
     assert settings._sandbox_status_cache is None
+
+
+@pytest.fixture
+def memory(monkeypatch):
+    from utils import sandbox_memory_limit
+
+    stored = {}
+    monkeypatch.delenv(sandbox_memory_limit.MEMORY_LIMIT_ENV, raising = False)
+    monkeypatch.setattr(
+        sandbox_memory_limit,
+        "saved_memory_limit_gb",
+        lambda: stored.get("gb", sandbox_memory_limit.DEFAULT_MEMORY_LIMIT_GB),
+    )
+    monkeypatch.setattr(
+        sandbox_memory_limit, "set_memory_limit_gb", lambda v: stored.__setitem__("gb", v)
+    )
+    return stored
+
+
+def test_posix_status_carries_the_memory_limit(host, posix, memory):
+    with _client(OWNER) as client:
+        body = client.get("/sandbox").json()
+    assert body["memory"] == {
+        "limit_gb": 8,
+        "saved_gb": 8,
+        "default_gb": 8,
+        "min_gb": 1,
+        "max_gb": 4096,
+        "locked_by_environment": False,
+    }
+
+
+def test_saving_the_memory_limit_shows_at_once_and_repeats_cleanly(host, posix, memory):
+    calls, _saved = host
+    with _client(OWNER) as client:
+        client.get("/sandbox")
+        for _ in range(2):
+            response = client.put("/sandbox", json = {"memory_limit_gb": 32})
+            assert response.status_code == 200, response.text
+            assert response.json()["memory"]["limit_gb"] == 32
+        assert client.get("/sandbox").json()["memory"]["saved_gb"] == 32
+    assert memory == {"gb": 32}
+    # Memory-only saves never touch the Windows MXC state.
+    assert calls["invalidate"] == 0 and calls["revoke"] == 0
+
+
+def test_the_memory_limit_env_var_wins_and_refuses_a_save(host, posix, memory, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_AS_GB", "16")
+    with _client(OWNER) as client:
+        body = client.get("/sandbox").json()["memory"]
+        assert body["limit_gb"] == 16 and body["locked_by_environment"] is True
+        response = client.put("/sandbox", json = {"memory_limit_gb": 32})
+    assert response.status_code == 409
+    assert "UNSLOTH_STUDIO_SANDBOX_AS_GB" in response.json()["detail"]
+    assert memory == {}
+
+
+@pytest.mark.parametrize("value", [0, 4097, "16", 1.5, True])
+def test_out_of_range_memory_limits_are_refused(host, posix, memory, value):
+    with _client(OWNER) as client:
+        assert client.put("/sandbox", json = {"memory_limit_gb": value}).status_code == 422
+    assert memory == {}
+
+
+def test_the_memory_limit_is_owner_and_ui_session_only(host, posix, memory):
+    with _client(ALICE) as client:
+        assert client.put("/sandbox", json = {"memory_limit_gb": 32}).status_code == 403
+    with _client(OWNER, via_api_key = True) as client:
+        assert client.put("/sandbox", json = {"memory_limit_gb": 32}).status_code == 403
+    assert memory == {}
+
+
+@pytest.mark.parametrize("platform", ["win32", "darwin"])
+def test_only_linux_has_the_memory_limit(host, memory, monkeypatch, platform):
+    monkeypatch.setattr(sys, "platform", platform)
+    with _client(OWNER) as client:
+        assert client.get("/sandbox").json()["memory"] is None
+        assert client.put("/sandbox", json = {"memory_limit_gb": 32}).status_code == 409
+    assert memory == {}
+
+
+def test_an_empty_windows_save_still_resets_every_cache(host, windows, memory):
+    calls, _saved = host
+    with _client(OWNER) as client:
+        assert client.put("/sandbox", json = {}).status_code == 200
+    assert calls["invalidate"] == 1 and calls["profile_reset"] == 1

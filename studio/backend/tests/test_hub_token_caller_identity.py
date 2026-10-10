@@ -126,7 +126,7 @@ def _st_resolver(monkeypatch, **overrides) -> None:
     stub it cares about and the rest stays out of the way.
     """
     stubs = {
-        "_llama_backend_active": lambda _m: False,
+        "_llama_backend_active": lambda _m, _token = None: False,
         "_local_sentence_transformer_is_present": lambda _m: False,
         "_st_weight_source": lambda *_a, **_k: None,
     }
@@ -137,7 +137,7 @@ def _st_resolver(monkeypatch, **overrides) -> None:
 def _gguf_resolver(monkeypatch, **overrides) -> None:
     """The llama-server preamble: six stubs is what it takes to reach the candidate lookup."""
     stubs = {
-        "_llama_backend_active": lambda _m: True,
+        "_llama_backend_active": lambda _m, _token = None: True,
         "_llama_runtime_available": lambda: True,
         "_resolves_as_local_gguf": lambda _m: False,
         "_local_gguf_backend_error": lambda _m: None,
@@ -2177,6 +2177,25 @@ def test_the_embedding_resolver_does_not_probe_before_a_cache_lookup(monkeypatch
 
     assert plan.cached is True
     assert probes["n"] == 0, "a local sentence-transformers hit still probed the Hub"
+
+
+def test_the_backend_probe_is_asked_with_the_callers_token(monkeypatch):
+    """Which backend serves a private repo depends on files only the caller's token can read (#13005)."""
+    seen = []
+
+    def _probe(model, token = None):
+        seen.append((model, token))
+        return False
+
+    _st_resolver(
+        monkeypatch,
+        _llama_backend_active = _probe,
+        _local_sentence_transformer_is_present = lambda _m: True,
+    )
+
+    settings_routes._resolve_embedding_model_plan("acme/private-st", "hf_caller")
+
+    assert seen == [("acme/private-st", "hf_caller")]
 
 
 def test_the_scan_is_refused_before_it_expands_its_targets(monkeypatch):

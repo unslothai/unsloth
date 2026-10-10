@@ -351,7 +351,7 @@ if ! [[ "$STOP_BUDGET" =~ ^[0-9]+$ ]]; then
     printf "\033[1;31mERROR:\033[0m UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S=%s is not a number of seconds.\n" "$STOP_BUDGET" >&2
     exit 1
 fi
-# 10# as in studio_launch.sh: a leading zero must not read as octal
+# matching studio_launch.sh, 10# prevents leading zeros from selecting octal
 STOP_TIMEOUT=$(( 10#$STOP_BUDGET + 30 ))
 
 declare -a PORT_FLAGS=()
@@ -360,15 +360,136 @@ if [[ -n "${UNSLOTH_PORTS:-}" ]]; then
     PORT_FLAGS=(${UNSLOTH_PORTS})
 fi
 
-# CI / piped invocations otherwise hit "the input device is not a TTY"
+# CI and piped invocations otherwise hit "the input device is not a TTY"
 TTY_FLAG=()
 if [ -t 0 ] && [ -t 1 ]; then
     TTY_FLAG=(-it)
 fi
 
-# URL runs use mounted $PWD so unsloth-run saves survive --rm; local paths still use /workspace
+# a mounted script starts in its directory so relative saves survive --rm
 WORKDIR_FLAG=()
 RUN_USER_ENV=()
+if [[ $# -gt 0 ]]; then
+    case "$1" in
+        /workspace/host | /workspace/host/*)
+            WORKDIR_FLAG=(-w /workspace/host)
+            ;;
+        *)
+            _args=("$@")
+            _runner="${1##*/}"
+            _scan_from=1
+            case "$_runner" in
+                accelerate)
+                    _runner=""
+                    if [[ "${_args[1]:-}" == launch ]]; then
+                        _runner=launcher
+                        _scan_from=2
+                    fi
+                    ;;
+                accelerate-launch | torchrun | deepspeed) _runner=launcher ;;
+                python | python[0-9]* | pypy | pypy[0-9]*)
+                    _runner=""
+                    _script=""
+                    for (( _i=1; _i < ${#_args[@]}; _i++ )); do
+                        _arg="${_args[$_i]}"
+                        if [[ "$_arg" =~ ^-([bBdEhiIOPqRsSuvVx]*)([cmWX])(.*)$ ]]; then
+                            _kind="${BASH_REMATCH[2]}"
+                            _value="${BASH_REMATCH[3]}"
+                            case "$_kind" in
+                                c) break ;;
+                                m)
+                                    if [[ -z "$_value" ]]; then
+                                        _value="${_args[$((_i + 1))]:-}"
+                                        _scan_from=$((_i + 2))
+                                    else
+                                        _scan_from=$((_i + 1))
+                                    fi
+                                    case "$_value" in
+                                        accelerate.commands.launch | deepspeed.launcher.runner | torch.distributed.launch | torch.distributed.run)
+                                            _runner=launcher
+                                            ;;
+                                    esac
+                                    break
+                                    ;;
+                                W | X)
+                                    [[ -z "$_value" ]] && _i=$((_i + 1))
+                                    continue
+                                    ;;
+                            esac
+                        fi
+                        case "$_arg" in
+                            -) break ;;
+                            --check-hash-based-pycs) _i=$((_i + 1)) ;;
+                            --)
+                                _script="${_args[$((_i + 1))]:-}"
+                                break
+                                ;;
+                            -*) ;;
+                            *) _script="${_args[$_i]}"; break ;;
+                        esac
+                    done
+                    case "$_script" in
+                        /workspace/host | /workspace/host/*) WORKDIR_FLAG=(-w /workspace/host) ;;
+                    esac
+                    ;;
+                bash | sh | zsh)
+                    _runner=""
+                    _script=""
+                    for (( _i=1; _i < ${#_args[@]}; _i++ )); do
+                        case "${_args[$_i]}" in
+                            -c | -s) break ;;
+                            -O | +O | -o | +o | --init-file | --rcfile) _i=$((_i + 1)) ;;
+                            --)
+                                _script="${_args[$((_i + 1))]:-}"
+                                break
+                                ;;
+                            -* | +*) ;;
+                            *) _script="${_args[$_i]}"; break ;;
+                        esac
+                    done
+                    case "$_script" in
+                        /workspace/host | /workspace/host/*) WORKDIR_FLAG=(-w /workspace/host) ;;
+                    esac
+                    ;;
+                *) _runner="" ;;
+            esac
+            if [[ "$_runner" == launcher ]]; then
+                _prev=""
+                for (( _i=_scan_from; _i < ${#_args[@]}; _i++ )); do
+                    _arg="${_args[$_i]}"
+                    _arg_case="$_arg"
+                    if [[ "$_arg_case" == --* ]]; then
+                        _arg_case="${_arg_case#--}"
+                        _arg_case="--${_arg_case//-/_}"
+                    fi
+                    if [[ "$_prev" == -* ]]; then
+                        _prev=""
+                        continue
+                    fi
+                    case "$_arg_case" in
+                        -m | -q | --bind_cores_to_rank | --cpu | --debug | --downcast_bf16 | --dynamo_use_dynamic | --dynamo_use_fullgraph | --dynamo_use_regional_compilation | --enable_cpu_affinity | --elastic_training | --force_multi | --fp8_use_autocast_during_eval | --module | --multi_gpu | --no_local_rank | --no_python | --no_ssh | --no_ssh_check | --no_tpu_cluster | --quiet | --run_path | --same_network | --save_pid | --standalone | --tpu | --tpu_cluster | --tpu_use_sudo | --use_cpu | --use_deepspeed | --use_env | --use_fsdp | --use_megatron_lm | --use_mps_device | --use_parallelism_config | --use_tp | --use_xpu | --virtual_local_rank)
+                            _prev=""
+                            continue
+                            ;;
+                        -- | -H?* | -e?* | -i?* | -r?* | -t?* | -*=*)
+                            _prev=""
+                            continue
+                            ;;
+                        -*)
+                            _prev="$_arg"
+                            continue
+                            ;;
+                        /workspace/host | /workspace/host/*)
+                            WORKDIR_FLAG=(-w /workspace/host)
+                            break
+                            ;;
+                        *) break ;;
+                    esac
+                done
+            fi
+            ;;
+    esac
+fi
 if [[ $# -gt 0 && "$1" == "unsloth-run" ]]; then
     for _arg in "${@:2}"; do
         case "$_arg" in
@@ -381,7 +502,7 @@ if [[ $# -gt 0 && "$1" == "unsloth-run" ]]; then
     done
 fi
 
-# no set -x: it leaks HF_TOKEN/WANDB_API_KEY; this array form is nounset-safe on macOS Bash 3.2
+# set -x leaks HF_TOKEN/WANDB_API_KEY; this array form is nounset-safe on macOS Bash 3.2
 exec docker run --rm ${TTY_FLAG[@]+"${TTY_FLAG[@]}"} \
     ${GPU_FLAG[@]+"${GPU_FLAG[@]}"} \
     --ipc=host \
