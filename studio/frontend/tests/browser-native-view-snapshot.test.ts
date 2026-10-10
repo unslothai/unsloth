@@ -160,7 +160,7 @@ test("a menu that closes and reopens while the page is captured keeps the snapsh
     // zoom from the menu reaches the parked page, and the snapshot follows it
     const captures = calls.filter(({ command }) => command === "browser_capture").length;
     const tab = useBrowserStore.getState().tabs.find((candidate) => candidate.id === tabId);
-    if (tab) useBrowserStore.getState().updateTab(tab.id, { zoom: 1.25 });
+    if (tab) useBrowserStore.getState().setZoom(tab.id, 1.25);
     await frame();
     assert.ok(
       calls.some(({ command, args }) => command === "browser_view_zoom" && args?.zoom === 1.25),

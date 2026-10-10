@@ -20,7 +20,7 @@ const overlay = (box: DOMRect): Overlay => ({
 const blocking: Overlay[] = [];
 const clickable: Overlay[] = [];
 
-function node(name: string, background: string, parent: FakeNode | null) {
+function node(name: string, background: string, parent: object | null) {
   const vars = new Map<string, string>();
   const attributes = new Set<string>();
   return {
@@ -138,7 +138,7 @@ test("a menu over a layered page neither captures nor hides it, and owns its inp
     assert.ok(!calls.some(({ command }) => command === "browser_capture"), "nothing is captured");
 
     // zoom from the menu reaches the live page at once
-    if (tabId) useBrowserStore.getState().updateTab(tabId, { zoom: 1.5 });
+    if (tabId) useBrowserStore.getState().setZoom(tabId, 1.5);
     await frame();
     assert.ok(calls.some(({ command, args }) => command === "browser_view_zoom" && args?.zoom === 1.5));
 
