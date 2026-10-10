@@ -8290,8 +8290,13 @@ class LlamaCppBackend:
     @property
     def vram_fit_context_length(self) -> Optional[int]:
         """Largest context the load-time fit priced inside GPU / Metal memory, else None."""
-        # A child wholly on CPU (--device none, the Vulkan crash fallback) holds no VRAM.
-        if self._gpu_offload_active is False or self._cpu_fallback_reason:
+        # A child wholly on CPU (--device none, Vulkan crash fallback, zero layers) holds no VRAM.
+        if (
+            self._gpu_offload_active is False
+            or self._cpu_fallback_reason
+            or self._arch_gate_forced_cpu
+            or (self._gpu_memory_mode == "manual" and self._gpu_layers == 0)
+        ):
             return None
         return self._vram_fit_context_length
 

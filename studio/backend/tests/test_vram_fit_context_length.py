@@ -97,8 +97,13 @@ def test_unload_forgets_the_fit(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize(
     "state",
-    [{"_gpu_offload_active": False}, {"_cpu_fallback_reason": "vulkan_startup_crash"}],
-    ids = ["landed-on-cpu", "vulkan-cpu-fallback"],
+    [
+        {"_gpu_offload_active": False},
+        {"_cpu_fallback_reason": "vulkan_startup_crash"},
+        {"_arch_gate_forced_cpu": True},
+        {"_gpu_memory_mode": "manual", "_gpu_layers": 0},
+    ],
+    ids = ["landed-on-cpu", "vulkan-cpu-fallback", "arch-gated-cpu", "manual-zero-layers"],
 )
 def test_a_child_on_cpu_claims_no_fit(state):
     from core.inference.llama_cpp import LlamaCppBackend
@@ -152,3 +157,15 @@ def test_a_recovered_crash_drops_the_ceiling_its_plan_priced(tmp_path, monkeypat
     assert len(launches) == 2, launches
     assert backend.max_context_length > _AUTO_OFFLOAD_CTX
     assert backend.vram_fit_context_length is None
+
+
+def test_a_zero_layer_metal_load_claims_no_fit(tmp_path, monkeypatch):
+    def load(sub, **kwargs):
+        (tmp_path / sub).mkdir()
+        return _metal._launch(
+            tmp_path / sub, monkeypatch, n_ctx = 0, metal = True, real_fit = True, **kwargs
+        )["backend"]
+
+    assert load("auto").vram_fit_context_length is not None
+    manual = load("manual", gpu_memory_mode = "manual", gpu_layers = 0)
+    assert manual.vram_fit_context_length is None
