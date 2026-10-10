@@ -2179,6 +2179,27 @@ def test_the_embedding_resolver_does_not_probe_before_a_cache_lookup(monkeypatch
     assert probes["n"] == 0, "a local sentence-transformers hit still probed the Hub"
 
 
+def test_the_backend_probe_is_asked_with_the_callers_token(monkeypatch):
+    """Whether llama-server or sentence-transformers serves a repo depends on reading its
+    modules.json and config.json, which a private repo only shows to a token that reaches it, so
+    the resolver has to ask the backend probe with the caller's own token (#13005)."""
+    seen = []
+
+    def _probe(model, token = None):
+        seen.append((model, token))
+        return False
+
+    _st_resolver(
+        monkeypatch,
+        _llama_backend_active = _probe,
+        _local_sentence_transformer_is_present = lambda _m: True,
+    )
+
+    settings_routes._resolve_embedding_model_plan("acme/private-st", "hf_caller")
+
+    assert seen == [("acme/private-st", "hf_caller")]
+
+
 def test_the_scan_is_refused_before_it_expands_its_targets(monkeypatch):
     """The per-target check inside the loop cannot stand in for this one. Target expansion
     resolves the adapter's base and its native-audio dependencies, which reads the cache and
