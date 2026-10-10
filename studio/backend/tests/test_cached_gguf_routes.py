@@ -210,6 +210,154 @@ def test_collect_local_models_prefers_complete_previous_copy(monkeypatch, tmp_pa
     }
 
 
+def _weightless_skeleton(cache: Path, repo_id: str) -> None:
+    """An aborted download's leftovers: the ref resolves to an existing but empty snapshot and no
+    quant was ever named, so the row scans as a complete (non-partial) cache entry."""
+    sha = "0" * 40
+    repo = cache / f"models--{repo_id.replace('/', '--')}"
+    (repo / "snapshots" / sha).mkdir(parents = True)
+    (repo / "refs").mkdir(parents = True)
+    (repo / "refs" / "main").write_text(sha)
+
+
+def _complete_gguf_repo(root: Path, repo_id: str) -> Path:
+    """A loadable cache-layout copy. Plain files, no symlinks: HF supports symlinkless caches on
+    Windows, and this keeps the test independent of the host's symbolic-link privileges."""
+    sha = "0" * 40
+    repo = root / f"models--{repo_id.replace('/', '--')}"
+    snapshot = repo / "snapshots" / sha
+    snapshot.mkdir(parents = True)
+    (repo / "refs").mkdir(parents = True)
+    (repo / "refs" / "main").write_text(sha)
+    (snapshot / "Model-Q4_K_M.gguf").write_bytes(b"GGUF" + bytes((3, 0, 0, 0)) + bytes(64))
+    return snapshot
+
+
+def _pin_single_cache(monkeypatch, tmp_path, active: Path) -> None:
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
+    monkeypatch.setattr("utils.paths.legacy_hf_cache_dir", lambda: tmp_path / "legacy")
+    monkeypatch.setattr("utils.paths.hf_default_cache_dir", lambda: tmp_path / "default")
+    monkeypatch.setattr("utils.paths.lmstudio_model_dirs", lambda: [])
+    # The scan reads the real Ollama/Hermes stores otherwise, and a developer machine with
+    # models there adds rows the exact-equality assertions below would fail on.
+    monkeypatch.setattr("utils.paths.ollama_model_dirs", lambda: [])
+    monkeypatch.setattr("utils.paths.hermes_model_dirs", lambda: [])
+    # An installed oMLX would join the configured cache roots AND list its models as its own
+    # rows, so the same hermetic pin applies to it.
+    monkeypatch.setattr("utils.paths.omlx_model_dirs", lambda: [])
+    monkeypatch.setattr("utils.hf_cache_settings.known_hf_hub_caches", lambda: [active])
+
+
+def test_collect_local_models_keeps_a_parked_copy_behind_a_weightless_cache_row(
+    monkeypatch, tmp_path
+):
+    # The scan-folder catalog blocker: the active cache holds only the skeleton of an aborted
+    # download (not partial -- no quant was ever named), and the repo-id dedupe collapsed the
+    # parked scan-folder copy into that skeleton, which the servability stage then dropped: the
+    # model vanished from /v1/models and /models/local although a loadable copy existed.
+    active = tmp_path / "active"
+    active.mkdir()
+    _weightless_skeleton(active, "Org/Model-GGUF")
+    parked = tmp_path / "parked"
+    snapshot = _complete_gguf_repo(parked, "Org/Model-GGUF")
+
+    _pin_single_cache(monkeypatch, tmp_path, active)
+    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [{"path": str(parked)}])
+
+    rows = models_route.collect_local_models(tmp_path / "models")
+
+    # Both rows survive: the cache keeps the repo id, the parked copy is its own custom row keyed
+    # by its path instead of collapsing into the skeleton (the cached-plus-parked semantics; the
+    # repo id moves off the parked row, see _merge_scan_folder_row).
+    assert sorted((row.source, row.model_id) for row in rows) == [
+        ("custom", None),
+        ("hf_cache", "Org/Model-GGUF"),
+    ]
+    [parked_row] = [row for row in rows if row.source == "custom"]
+    assert Path(parked_row.path) == snapshot.resolve()
+
+    # The servability stage keeps the parked copy and drops the skeleton, so the catalog still
+    # lists the repo under its public repo id.
+    from core.inference.local_model_resolver import local_servable_model
+    from core.inference.model_ids import public_model_id
+
+    assert [public_model_id(row.id) for row in rows if local_servable_model(row)] == [
+        "Org/Model-GGUF"
+    ]
+
+
+def test_collect_local_models_keeps_the_cache_label_for_a_folder_registered_over_the_cache(
+    monkeypatch, tmp_path
+):
+    # A scan folder over the active cache itself keeps the hf_cache attribution (#9986): the
+    # parked-copy promotion applies only outside the configured caches, and one physical repo
+    # still dedupes to a single row.
+    active = tmp_path / "active"
+    active.mkdir()
+    _complete_gguf_repo(active, "Org/Model-GGUF")
+
+    _pin_single_cache(monkeypatch, tmp_path, active)
+    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [{"path": str(active)}])
+
+    rows = models_route.collect_local_models(tmp_path / "models")
+
+    assert [(row.source, row.model_id) for row in rows] == [("hf_cache", "Org/Model-GGUF")]
+
+
+def test_collect_local_models_keeps_the_cache_label_for_a_folder_over_a_known_cache(
+    monkeypatch, tmp_path
+):
+    # The configured roots cover every configured cache, not just the active one: a folder
+    # registered over a known (inactive) cache keeps the hf_cache attribution the same way,
+    # or its rows would turn into parked custom copies.
+    active = tmp_path / "active"
+    active.mkdir()
+    known = tmp_path / "known"
+    _complete_gguf_repo(known, "Org/Model-GGUF")
+
+    _pin_single_cache(monkeypatch, tmp_path, active)
+    monkeypatch.setattr("utils.hf_cache_settings.known_hf_hub_caches", lambda: [active, known])
+    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [{"path": str(known)}])
+
+    rows = models_route.collect_local_models(tmp_path / "models")
+
+    assert [(row.source, row.model_id) for row in rows] == [("hf_cache", "Org/Model-GGUF")]
+
+
+def test_collect_local_models_lists_a_parked_copy_whose_newest_snapshot_holds_no_quant(
+    monkeypatch, tmp_path
+):
+    # Pinned limitation of the parked-copy promotion (#12803): the relabeled row keeps the newest
+    # snapshot's path, and a custom row serves from that one directory alone, so a parked copy
+    # whose newest snapshot holds no quant (an aborted re-download; the complete revision is the
+    # older snapshot) stays in the picker but drops out of /v1/models. An hf_cache row instead
+    # resolves its repo dir to the newest snapshot holding a whole quant, and the resolver keys
+    # that on the row's source -- the relabel loses it. Keying that resolution on the cache
+    # layout (the path) instead would serve the older revision; flip this test when that happens.
+    active = tmp_path / "active"
+    active.mkdir()
+    parked = tmp_path / "parked"
+    complete = _complete_gguf_repo(parked, "Org/Model-GGUF")
+    incomplete = complete.parent / ("1" * 40)
+    incomplete.mkdir()
+    # The inventory row names the newest snapshot dir; force the quant-less one to be newest.
+    os.utime(complete, (1_000_000_000, 1_000_000_000))
+    os.utime(incomplete, (2_000_000_000, 2_000_000_000))
+
+    _pin_single_cache(monkeypatch, tmp_path, active)
+    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [{"path": str(parked)}])
+
+    rows = models_route.collect_local_models(tmp_path / "models")
+
+    assert [(row.source, row.model_id) for row in rows] == [("custom", None)]
+    [parked_row] = rows
+    assert Path(parked_row.path) == incomplete.resolve()
+
+    from core.inference.local_model_resolver import local_servable_model
+
+    assert local_servable_model(parked_row) is None
+
+
 def test_compat_local_inventory_requests_share_scan(monkeypatch, tmp_path):
     # Total and stable on hostile input is the whole contract here; the exact
     # string is platform-dependent. POSIX realpath() rejects an embedded NUL with
