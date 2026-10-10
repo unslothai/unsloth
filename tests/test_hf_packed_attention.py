@@ -314,3 +314,63 @@ def test_varlen_matches_sdpa_over_the_dense_mask(monkeypatch, n_kv, route):
     grads_ref = torch.autograd.grad(ref, (q, k, v), g)
     for a, b in zip(grads_fast, grads_ref):
         torch.testing.assert_close(a.float(), b.float(), atol = 5e-2, rtol = 5e-2)
+
+
+def test_new_lengths_tensor_with_a_cached_mask_is_checked_again():
+    lengths = [3, 3]
+    mask = _block_causal(lengths)
+    assert hpa._mask_is_block_causal(mask, _cu(lengths), 6)
+    # A different cu_seqlens object must not be compared elementwise against the cached one.
+    assert hpa._mask_is_block_causal(mask, _cu(lengths), 6)
+
+
+def test_long_masks_are_checked_in_row_blocks(monkeypatch):
+    monkeypatch.setattr(hpa, "_MASK_CHECK_ROWS", 4)
+    lengths = [5, 7, 6]
+    mask = _block_causal(lengths).clone()
+    assert hpa._mask_is_block_causal(mask, _cu(lengths), 18)
+    mask[0, 0, 17, 0] = True
+    assert not hpa._mask_is_block_causal(mask, _cu(lengths), 18)
+
+
+@_CUDA
+def test_compiling_leaves_the_counters_alone(monkeypatch):
+    from transformers.integrations.sdpa_attention import sdpa_attention_forward
+
+    hpa._ORIG_SDPA[0] = sdpa_attention_forward
+    monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
+    lengths = [3, 3]
+    module = types.SimpleNamespace(is_causal = True, num_key_value_groups = 1, training = False)
+    q = torch.randn(1, 4, 6, 64, device = "cuda", dtype = torch.bfloat16)
+    mask, psl = _block_causal(lengths, "cuda"), torch.tensor(lengths, dtype = torch.int32)
+    fn = torch.compile(
+        lambda q: hpa._sdpa_packed_varlen(module, q, q, q, mask, packed_seq_lengths = psl)[0],
+        backend = "eager",
+        fullgraph = True,
+    )
+    before = dict(hpa.HF_PACKED_ATTENTION_STATS)
+    fn(q)
+    assert hpa.HF_PACKED_ATTENTION_STATS == before
+
+
+@_CUDA
+@pytest.mark.parametrize("grad", [False, True])
+def test_int32_overflow_falls_back_with_and_without_grad(monkeypatch, grad):
+    import unsloth.utils.attention_dispatch as ad
+
+    seen, orig = _calls()
+    hpa._ORIG_SDPA[0] = orig
+    monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
+    monkeypatch.setattr(ad, "_varlen_backward_overflows_int32", lambda *a: True)
+    lengths = [3, 3]
+    q = torch.randn(1, 4, 6, 64, device = "cuda", dtype = torch.bfloat16, requires_grad = grad)
+    psl = torch.tensor(lengths, dtype = torch.int32)
+    out = hpa._sdpa_packed_varlen(
+        types.SimpleNamespace(is_causal = True),
+        q,
+        q,
+        q,
+        _block_causal(lengths, "cuda"),
+        packed_seq_lengths = psl,
+    )
+    assert out == ("orig", None)

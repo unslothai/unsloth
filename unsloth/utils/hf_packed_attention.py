@@ -17,6 +17,7 @@ _ORIG_SDPA = [None]
 HF_PACKED_ATTENTION_STATS = {"fast": 0, "fallback": 0, "mask_checks": 0}
 # All layers of a forward share one mask object: weakref, (cu_seqlens, versions), verdict.
 _MASK_CHECK = [None, None, None]
+_MASK_CHECK_ROWS = 1024
 
 
 def _disabled() -> bool:
@@ -39,7 +40,13 @@ def _mask_is_block_causal(attention_mask, cu_seqlens, total) -> bool:
     cacheable = not (torch.is_inference(attention_mask) or torch.is_inference(cu_seqlens))
     key = (attention_mask._version, cu_seqlens._version, total) if cacheable else None
     ref, checked, verdict = _MASK_CHECK
-    if cacheable and ref is not None and ref() is attention_mask and checked == (cu_seqlens, key):
+    if (
+        cacheable
+        and ref is not None
+        and ref() is attention_mask
+        and checked[0] is cu_seqlens
+        and checked[1] == key
+    ):
         return verdict
     HF_PACKED_ATTENTION_STATS["mask_checks"] += 1
     verdict = False
@@ -49,8 +56,17 @@ def _mask_is_block_causal(attention_mask, cu_seqlens, total) -> bool:
             torch.arange(lengths.numel(), device = attention_mask.device),
             lengths.to(attention_mask.device),
         )
-        expected = (segment[:, None] == segment[None, :]).tril_()
-        verdict = bool(torch.equal(attention_mask[0, 0], expected))
+        position = torch.arange(total, device = attention_mask.device)
+        # Row blocks keep the reference to _MASK_CHECK_ROWS x T, not a second T x T mask.
+        verdict = True
+        for start in range(0, total, _MASK_CHECK_ROWS):
+            rows = slice(start, min(start + _MASK_CHECK_ROWS, total))
+            expected = (segment[rows, None] == segment[None, :]) & (
+                position[None, :] <= position[rows, None]
+            )
+            if not torch.equal(attention_mask[0, 0, rows], expected):
+                verdict = False
+                break
     if cacheable:
         _MASK_CHECK[:] = [weakref.ref(attention_mask), (cu_seqlens, key), verdict]
     return verdict
@@ -127,7 +143,8 @@ def _sdpa_packed_varlen(
         if kwargs.get("packed_seq_lengths") is not None:
             HF_PACKED_ATTENTION_STATS["fallback"] += 1
         return orig(module, query, key, value, attention_mask, *args, **named, **kwargs)
-    if kwargs.get("packed_seq_lengths") is None or _disabled():
+    # Before any counter while tracing: Dynamo would guard on it and recompile every forward.
+    if kwargs.get("packed_seq_lengths") is None or _disabled() or torch.compiler.is_compiling():
         return orig(
             module,
             query,
@@ -139,14 +156,18 @@ def _sdpa_packed_varlen(
             is_causal = is_causal,
             **kwargs,
         )
-    from .attention_dispatch import FLASH_VARLEN, XFORMERS, select_attention_backend
+    from .attention_dispatch import (
+        FLASH_VARLEN,
+        XFORMERS,
+        _varlen_backward_overflows_int32,
+        select_attention_backend,
+    )
     from .packing import get_packed_info_from_kwargs
 
     bsz, n_heads, q_len, head_dim = query.shape
     seq_info = torch_varlen = backend = None
     if (
-        not torch.compiler.is_compiling()
-        and bsz == 1
+        bsz == 1
         and q_len > 0
         and query.is_cuda
         and query.device == key.device == value.device
@@ -168,15 +189,13 @@ def _sdpa_packed_varlen(
         and not _sliding_or_softcapped(module, kwargs)
     ):
         torch_varlen = _torch_varlen(query.device)
-        if torch_varlen is not None and (
-            query.requires_grad or key.requires_grad or value.requires_grad
-        ):
-            # Same flash-2 varlen backward as run_attention guards: past int32 indexing it faults.
-            from .attention_dispatch import _varlen_backward_overflows_int32
-            n_seqs = kwargs["packed_seq_lengths"].numel()
-            if _varlen_backward_overflows_int32(n_seqs, q_len, n_heads, head_dim):
-                torch_varlen = None
         backend = select_attention_backend(use_varlen = True)
+        # Flash-2 varlen backward faults past int32 indexing. Keyed on shape, not requires_grad, so a
+        # reentrant checkpoint's no_grad forward and its recompute take the same (wrapped) path.
+        if _varlen_backward_overflows_int32(
+            kwargs["packed_seq_lengths"].numel(), q_len, n_heads, head_dim
+        ):
+            torch_varlen, backend = None, None
         if torch_varlen is not None or backend in (FLASH_VARLEN, XFORMERS):
             seq_info = get_packed_info_from_kwargs(kwargs, query.device)
     if seq_info is None or not _mask_is_block_causal(attention_mask, seq_info[1], q_len):
