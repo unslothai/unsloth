@@ -17,6 +17,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { flushSync } from "react-dom";
 import {
   CodeBlockActions,
   MarkdownTextSource,
@@ -287,6 +288,41 @@ const Fragment = memo(function Fragment({
   );
 });
 
+// IntersectionObserver reports after paint; this catches jumps past its margin before paint.
+const jumpWatchers = new WeakMap<
+  HTMLElement,
+  { checks: Set<() => void>; stop: () => void }
+>();
+
+function onViewportJump(scroll: HTMLElement, check: () => void): () => void {
+  let watcher = jumpWatchers.get(scroll);
+  if (!watcher) {
+    const checks = new Set<() => void>();
+    let last = scroll.scrollTop;
+    const listener = () => {
+      const top = scroll.scrollTop;
+      const jumped = Math.abs(top - last) >= scroll.clientHeight / 2;
+      last = top;
+      if (jumped) for (const run of [...checks]) run();
+    };
+    scroll.addEventListener("scroll", listener, { passive: true });
+    watcher = {
+      checks,
+      stop: () => {
+        scroll.removeEventListener("scroll", listener);
+        jumpWatchers.delete(scroll);
+      },
+    };
+    jumpWatchers.set(scroll, watcher);
+  }
+  const { checks, stop } = watcher;
+  checks.add(check);
+  return () => {
+    checks.delete(check);
+    if (!checks.size) stop();
+  };
+}
+
 export function ReasoningTranscript({
   initialAnchor,
   documents,
@@ -295,6 +331,9 @@ export function ReasoningTranscript({
   streaming,
 }: Props) {
   const root = useRef<HTMLDivElement>(null);
+  // Over a screen away, a transcript stops listening to the shared viewport's scroll (#12025).
+  const nearby = useRef(true);
+  const followOffset = useRef<((on: boolean) => void) | null>(null);
   const [index] = useState(() => new ReasoningTranscriptIndex());
   const fragments = useMemo(() => index.update(documents), [documents, index]);
   const [anchor, setAnchor] = useState(
@@ -326,10 +365,26 @@ export function ReasoningTranscript({
     scrollMargin: geometry.top,
     initialOffset: () => viewport()?.scrollTop ?? 0,
     observeElementOffset: (instance, callback) => {
-      // The viewport predates this transcript. Subscribe with its current offset;
-      // waiting for the next scroll event leaves TanStack's initial zero cached.
-      callback(instance.scrollElement?.scrollTop ?? 0, false);
-      return observeElementOffset(instance, callback);
+      let stop: (() => void) | undefined;
+      let generation = 0;
+      const follow = (on: boolean) => {
+        stop?.();
+        stop = undefined;
+        // TanStack's scroll-end debounce outlives its unsubscribe: drop a stopped one's call.
+        const current = ++generation;
+        if (!on) return;
+        // Seed the live offset, else TanStack keeps its initial zero or the one from before it left.
+        callback(instance.scrollElement?.scrollTop ?? 0, false);
+        stop = observeElementOffset(instance, (offset, isScrolling) => {
+          if (current === generation) callback(offset, isScrolling);
+        });
+      };
+      followOffset.current = follow;
+      follow(nearby.current);
+      return () => {
+        if (followOffset.current === follow) followOffset.current = null;
+        stop?.();
+      };
     },
     overscan: 2,
     measureElement: (element) => {
@@ -434,15 +489,16 @@ export function ReasoningTranscript({
         virtualizer.measure();
       } else {
         readingAnchor = undefined;
-        for (const row of element.querySelectorAll<HTMLElement>(
-          "[data-index]",
-        )) {
-          const captured = captureReasoningAnchor(row, scroll);
-          if (captured) {
-            readingAnchor = { ...captured, index: Number(row.dataset.index) };
-            break;
+        if (nearby.current)
+          for (const row of element.querySelectorAll<HTMLElement>(
+            "[data-index]",
+          )) {
+            const captured = captureReasoningAnchor(row, scroll);
+            if (captured) {
+              readingAnchor = { ...captured, index: Number(row.dataset.index) };
+              break;
+            }
           }
-        }
       }
       width = rect.width;
     };
@@ -453,10 +509,57 @@ export function ReasoningTranscript({
     observer.observe(element);
     observer.observe(scroll);
     if (scroll.firstElementChild) observer.observe(scroll.firstElementChild);
-    scroll.addEventListener("scroll", schedule, { passive: true });
+    if (nearby.current)
+      scroll.addEventListener("scroll", schedule, { passive: true });
+    let stopJumpWatch: (() => void) | undefined;
+    const setNearby = (near: boolean, beforePaint = false) => {
+      if (near === nearby.current) return;
+      nearby.current = near;
+      if (near) {
+        stopJumpWatch?.();
+        stopJumpWatch = undefined;
+        scroll.addEventListener("scroll", schedule, { passive: true });
+        if (beforePaint)
+          // Its top went stale while away: re-measure and render the live range before this paint.
+          flushSync(() => {
+            measure();
+            followOffset.current?.(true);
+          });
+        else {
+          followOffset.current?.(true);
+          schedule();
+        }
+      } else {
+        followOffset.current?.(false);
+        scroll.removeEventListener("scroll", schedule);
+        readingAnchor = undefined;
+        stopJumpWatch = onViewportJump(scroll, () => {
+          const box = element.getBoundingClientRect();
+          const view = scroll.getBoundingClientRect();
+          // A zero box is a closed folded round (display: none): it stays asleep.
+          if (
+            box.height > 0 &&
+            box.bottom > view.top - view.height &&
+            box.top < view.bottom + view.height
+          )
+            setNearby(true, true);
+        });
+      }
+    };
+    const proximity =
+      typeof IntersectionObserver === "undefined"
+        ? undefined
+        : new IntersectionObserver(
+            (entries) =>
+              setNearby(entries.at(-1)?.isIntersecting ?? nearby.current),
+            { root: scroll, rootMargin: "100% 0px" },
+          );
+    proximity?.observe(element);
     measure();
     return () => {
       observer.disconnect();
+      proximity?.disconnect();
+      stopJumpWatch?.();
       scroll.removeEventListener("scroll", schedule);
       cancelAnimationFrame(frame);
     };
