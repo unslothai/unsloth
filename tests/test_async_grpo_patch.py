@@ -172,7 +172,7 @@ def test_unsloth_model_passes_through_and_gets_boundaries(fake_trl):
     lm = CausalLM(FastBackbone())
     peft = Peft(lm)
     trainer = mod.AsyncGRPOTrainer(peft, None)
-    # Preloaded model is used as is, the fused head goes on the CausalLM under the PEFT wrapper.
+    # Fused head goes on the CausalLM under the PEFT wrapper.
     assert calls["create"] == []
     assert calls["fused"] == [lm]
     # Default args derived from the model name instead of crashing on model.split.
@@ -180,12 +180,9 @@ def test_unsloth_model_passes_through_and_gets_boundaries(fake_trl):
     pos = torch.tensor([[0, 1, 0, 1, 2]])
     out = lm.forward(position_ids = pos, fused_lm_head = True)
     assert out["packed_seq_lengths"].tolist() == [2, 3]
-    # The plain (generation) forward is untouched.
     assert "packed_seq_lengths" not in lm.forward(position_ids = pos)
-    # A positional None config gets the same default.
     mod.AsyncGRPOTrainer(Peft(CausalLM(FastBackbone())), None, None)
     assert calls["init"][1][1].output_dir == "Tiny-Model-AsyncGRPO"
-    # String ids still go through TRL's loader.
     mod.AsyncGRPOTrainer("org/x", None, args = mod.AsyncGRPOConfig("o"))
     assert calls["create"] == ["org/x"]
 
@@ -245,7 +242,7 @@ def test_rollout_worker_tokenizer_is_picklable():
 
     f = _load()["_without_instance_bound_methods"]
     plain = Tok()
-    assert f(plain) is plain  # nothing bound per instance: same object
+    assert f(plain) is plain
     tok = _patch_like_unsloth(Tok())
     with pytest.raises((pickle.PicklingError, AttributeError, TypeError)):
         pickle.loads(pickle.dumps(tok))
@@ -255,7 +252,6 @@ def test_rollout_worker_tokenizer_is_picklable():
     )  # the trainer's tokenizer keeps Unsloth's saving
     back = pickle.loads(pickle.dumps(clean))
     assert back.encode("a") == [1] and back.save_pretrained(".") == "plain"
-    # Processors: the nested tokenizer is cleaned too.
     proc = types.SimpleNamespace(tokenizer = _patch_like_unsloth(Tok()))
     clean_proc = f(proc)
     assert clean_proc is not proc and "save_pretrained" not in vars(clean_proc.tokenizer)

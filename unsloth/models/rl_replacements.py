@@ -1940,8 +1940,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
 
     if trl_version >= Version("0.24.0"):
         string_to_find = "        rewards_per_func = self._calculate_rewards(inputs, prompts, completions, completion_ids_list)"
-        # Tool-image rollouts (TRL's VLM tool branch) never build prompts_text, so they keep TRL's message
-        # inputs; TRL 1.15 dropped completions_text, which is rebuilt the way TRL 1.13 did.
+        # TRL's VLM tool branch has no prompts_text; TRL 1.15 dropped completions_text, rebuilt as in 1.13.
         replacement_string = (
             "        _unsloth_reward_locals = locals()\n"
             "        if images is not None and 'prompts_text' in _unsloth_reward_locals:\n"

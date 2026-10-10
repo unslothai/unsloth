@@ -4198,8 +4198,7 @@ def _packed_seq_lengths_from_position_ids(position_ids):
 
 
 def _without_instance_bound_methods(obj):
-    # Unsloth binds save_pretrained / push_to_hub per instance under its own wrapper names, which unpickling
-    # in a spawned process cannot resolve; a tokenizing-only copy drops them (the class methods remain).
+    # Per-instance save_pretrained / push_to_hub wrappers cannot be unpickled in a spawned process.
     if obj is None or not hasattr(obj, "__dict__"):
         return obj
     bound = [
@@ -4257,8 +4256,7 @@ def _unsloth_async_grpo_lm_head(original, flag):
 
 
 def patch_trl_async_grpo():
-    # TRL's AsyncGRPOTrainer only takes a model id (loaded with flash-attn3); let it take an already loaded
-    # Unsloth model instead, and keep its padding-free packed rows from attending across sequences.
+    # Let TRL's AsyncGRPOTrainer take a loaded Unsloth model; keep packed rows from attending across sequences.
     if importlib.util.find_spec("trl.experimental") is None:
         return
     try:
@@ -4301,7 +4299,6 @@ def patch_trl_async_grpo():
     def __init__(self, model, *args, **kwargs):
         config = args[1] if len(args) >= 2 else kwargs.get("args")
         if not isinstance(model, str) and config is None:
-            # Upstream names the default output_dir from the model id string.
             name = getattr(getattr(model, "config", None), "_name_or_path", "") or "model"
             config = async_module.AsyncGRPOConfig(f"{name.split('/')[-1]}-AsyncGRPO")
             if len(args) >= 2:

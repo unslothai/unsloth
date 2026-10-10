@@ -14,8 +14,7 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""The GRPO reward-call rewrite must work on TRL's VLM tool-image branch (no prompts_text) and on TRL 1.15
-(no completions_text), while vision prompts keep getting decoded text as before."""
+"""GRPO reward rewrite: TRL VLM tool-image branch (no prompts_text) and TRL 1.15 (no completions_text)."""
 
 from __future__ import annotations
 
