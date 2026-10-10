@@ -36,6 +36,7 @@ import os
 import shutil
 import re
 from .ollama_template_mappers import OLLAMA_TEMPLATES
+from .tokenizers_v1 import enable_tokenizers_v1
 try:
     from unsloth_zoo.dataset_utils import (
         train_on_responses_only as _zoo_train_on_responses_only,
@@ -2236,7 +2237,7 @@ def get_chat_template(
             getattr(tokenizer, "chat_template", None) is not None
         )
         tokenizer = _mlx_tokenizer_wrapper
-    return tokenizer
+    return enable_tokenizers_v1(tokenizer)
 
 
 def remove_special_tokens(tokenizer, prompt):
