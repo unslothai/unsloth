@@ -74,6 +74,62 @@ def test_uninstall_all(monkeypatch):
     assert gguf_utils.dequantize_gguf_tensor is orig
 
 
+def _inductor_error():
+    from torch._inductor.exc import InductorError
+
+    # What #9897 raised: Triton's driver build (clang-cl on hip_utils.c) failed inside inductor's codegen.
+    import subprocess
+    return InductorError(subprocess.CalledProcessError(1, ["clang-cl.exe", "hip_utils.c"]), None)
+
+
+def test_compile_failure_falls_back_to_eager():
+    calls: list = []
+
+    def compiled(t):
+        calls.append("compiled")
+        raise _inductor_error()
+
+    def eager(t):
+        calls.append("eager")
+        return t * 2
+
+    guarded = gc._guard(compiled, eager, logging.getLogger("t"))
+    x = torch.ones(3)
+    assert torch.equal(guarded(x), x * 2)
+    # The failed compile is not retried on every linear of every step.
+    assert torch.equal(guarded(x), x * 2)
+    assert calls == ["compiled", "eager", "eager"]
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [RuntimeError("bad weight"), torch.OutOfMemoryError("CUDA out of memory")],
+    ids = ["kernel_error", "oom"],
+)
+def test_non_compile_errors_still_raise(exc):
+    def compiled(t):
+        raise exc
+
+    guarded = gc._guard(compiled, lambda t: t, None)
+    with pytest.raises(type(exc)):
+        guarded(torch.ones(1))
+
+
+def test_installed_dequant_survives_a_failing_compile(monkeypatch):
+    def failing_compile(fn, **kwargs):
+        def compiled(*a, **k):
+            raise _inductor_error()
+
+        return compiled
+
+    monkeypatch.setattr(torch, "compile", failing_compile)
+    orig = gguf_utils.dequantize_gguf_tensor
+    assert gc.install_compiled_dequant() is True
+    plain = torch.arange(4, dtype = torch.float32)
+    # A non-GGUF tensor goes through the stock function unchanged, so this compares to the original exactly.
+    assert torch.equal(gguf_utils.dequantize_gguf_tensor(plain), orig(plain))
+
+
 class TestGgufTrimmedDimsAreRestored:
     """GGUF stores no leading size-1 axes, so ``nn.Parameter(torch.zeros((1, dim)))`` comes back as
     ``(dim,)`` and diffusers' exact shape check refuses the load. Z-Image is the live case: a GGUF
