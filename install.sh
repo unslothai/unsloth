@@ -5861,17 +5861,10 @@ get_torch_index_url() {
                     echo "$_base/rocm7.2" ;;
             esac)
             _rocm_selected_tag=${_rocm_index##*/}
-            # Automatic generic 6.0-6.3 selections then floor to rocm6.4, the oldest ROCm the
-            # bitsandbytes wheel ships a library for (#10273). gfx906 deliberately stays on the
-            # literal rocm6.0-6.3 selection: its later legacy block (when the chosen tag is newer
-            # than rocm6.3) and its prebuilt-BNB skip must remain unchanged.
-            # Normalize first, exactly as _is_gfx906_bnb_skip and the legacy reroute
-            # block do: _probe_amd_gfx_arch emits one token per rocminfo match and
-            # rocminfo names each agent twice, so a real MI50 reads "gfx906\ngfx906";
-            # an UNSLOTH_ROCM_GFX_ARCH override keeps its ISA suffix
-            # (gfx906:sramecc-:xnack-). Comparing the raw probe missed both and floored
-            # the very hosts this exemption exists for. Deduping also gives the
-            # sole-distinct-arch rule for free: a mixed host keeps the generic floor.
+            # Automatic generic 6.0-6.3 selections floor to rocm6.4, the oldest ROCm the bitsandbytes
+            # wheel ships a library for (#10273). A sole gfx906 keeps the literal tag for its legacy
+            # route and BNB skip. Normalize like _is_gfx906_bnb_skip: rocminfo names each agent twice
+            # and an override keeps its ISA suffix; a mixed host dedupes to two arches and floors.
             _bnb_floor_gfx=$(printf '%s\n' "$_amd_gfx_probe" \
                 | sed 's/:.*$//' | tr -d '[:blank:]' | awk 'NF && !seen[$0]++')
             case "$_bnb_floor_gfx" in
@@ -6415,7 +6408,9 @@ _pick_radeon_wheel() {
     esac
 }
 
-# True when torch $1 (X.Y) can run torch.compile, which Unsloth needs to train, on the Python named by the Radeon wheel tag $2 (cpXY). Dynamo reached Python 3.13 in torch 2.6 and 3.14 in torch 2.10; older tags are covered by the torch floor already. The Radeon repo can still carry an older torch for a newer Python: rocm-rel-6.4 has torch 2.5.1 as its only cp313 build, and installing that leaves a venv that imports but fails "Dynamo is not supported on Python 3.13+" on the first training step.
+# True when torch $1 (X.Y) can run torch.compile on the Python of Radeon wheel tag $2 (cpXY):
+# Dynamo reached 3.13 in torch 2.6 and 3.14 in 2.10. rocm-rel-6.4's only cp313 torch is 2.5.1,
+# which imports fine and then fails the first training step.
 _radeon_torch_compiles_for_pytag() {
     case "$2" in
         cp313) _rtc_need=6 ;;

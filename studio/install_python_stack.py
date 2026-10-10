@@ -6008,11 +6008,7 @@ def _generic_rocm_bnb_floor_pending(
         return False
     if _torch_requires_rocm_sdk():
         return False
-    selected = _generic_pytorch_rocm_tag(host_ver)
-    if selected is None:
-        return False
-    _selected_match = re.fullmatch(r"rocm(\d+)\.(\d+)", selected.lower())
-    if _selected_match is None:
+    if _generic_pytorch_rocm_tag(host_ver) is None:
         return False
     _installed_match = re.search(r"\+rocm(\d+)\.(\d+)", (installed_ver or "").lower())
     if _installed_match is None:
@@ -6373,9 +6369,6 @@ def _ensure_rocm_torch() -> "bool | None":
     _arch_index_url: "str | None" = None
     _arch_index_pkgs: "tuple[str, str, str] | None" = None
     _runtime_gfx: "str | None" = None
-    gfx_codes: list[str] = []
-    _physical_gfx: "str | None" = None
-    _host_codes: list[str] = []
     # An explicit ROCm pin wins; otherwise both reroutes share one hardware probe. Skipped
     # once the inferred-arch install above has run: it resolves the same index, so re-deriving
     # it here only force-reinstalls what was just downloaded.
@@ -6742,7 +6735,7 @@ def _ensure_rocm_torch() -> "bool | None":
             # gfx906 keeps its legacy rocm6.0-6.3 path (rocm6.4 has no gfx906 BLAS
             # kernels), and an unreadable arch might be one, so it keeps the literal
             # resolver as before. _runtime_gfx also carries a KFD-only reading that
-            # _runtime_is_gfx906 does not see. Same predicate as the repair above.
+            # _runtime_is_gfx906 does not see. Same gfx906 exclusion as the repair above.
             _bnb_floor_target = (
                 bool(_runtime_gfx) and _runtime_gfx.lower() != "gfx906" and not _runtime_is_gfx906
             )
