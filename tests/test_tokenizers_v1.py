@@ -138,8 +138,8 @@ def test_plain_calls_take_rc_and_match(rc_on, build):
         assert all(isinstance(e, tv1._CompatEncoding) for e in got.encodings)
     assert fast(TEXTS[0])["input_ids"] == plain(TEXTS[0])["input_ids"]
     assert fast.encode(TEXTS[3]) == plain.encode(TEXTS[3])
-    assert fast(TEXTS, return_tensors = "pt", padding = True)["input_ids"].tolist() == (
-        plain(TEXTS, return_tensors = "pt", padding = True)["input_ids"].tolist()
+    assert fast(TEXTS, return_tensors = "np", padding = True)["input_ids"].tolist() == (
+        plain(TEXTS, return_tensors = "np", padding = True)["input_ids"].tolist()
     )
 
 
@@ -155,7 +155,7 @@ def test_padding_and_truncation_take_rc_and_match(rc_on, side):
         {"truncation": True, "max_length": 4},
         # unsloth_zoo's dataset tokenizer call
         {"truncation": True, "max_length": 6, "add_special_tokens": False},
-        {"padding": True, "truncation": True, "max_length": 5, "return_tensors": "pt"},
+        {"padding": True, "truncation": True, "max_length": 5, "return_tensors": "np"},
     ]
     for kwargs in cases:
         want, got = plain(TEXTS, **kwargs), fast(TEXTS, **kwargs)
@@ -347,6 +347,7 @@ def test_fork_while_another_thread_holds_a_lock(rc_on, monkeypatch):
     got = fast(TEXTS)
     want_offsets = plain(TEXTS).encodings[0].offsets
     snapshot = fast._tokenizer._unsloth_state.snapshot
+    assert snapshot is not None
     held, release = threading.Event(), threading.Event()
 
     def hold():
@@ -356,7 +357,7 @@ def test_fork_while_another_thread_holds_a_lock(rc_on, monkeypatch):
 
     thread = threading.Thread(target = hold)
     thread.start()
-    held.wait()
+    assert held.wait(30)
     pid = os.fork()
     if pid == 0:
         os._exit(0 if got.encodings[0].offsets == want_offsets else 1)
@@ -400,7 +401,7 @@ def test_tokenizer_api_surface_unchanged(rc_on):
         {"tokenize": False},
         {"tokenize": True},
         {"tokenize": True, "return_dict": True},
-        {"tokenize": True, "return_dict": True, "return_tensors": "pt"},
+        {"tokenize": True, "return_dict": True, "return_tensors": "np"},
         {"tokenize": True, "add_generation_prompt": True},
         {"tokenize": True, "truncation": True, "max_length": 6},
     ]
