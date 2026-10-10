@@ -3309,7 +3309,7 @@ def test_periodic_sync_does_not_retry_an_unchanged_failed_file(
 
     job = periodic()
     assert attempts.count("bad.txt") == 1
-    assert job["status"] == "failed" and "bad.txt" in job["error"]
+    assert job["status"] == "failed" and "bad.txt" in job["error"] and job["failed"] == 1
     assert folder_sync.get_folder(folder["id"])["status"] == "error"
 
     bad.write_text("     \n\n", encoding = "utf-8")

@@ -1745,10 +1745,12 @@ def _reconcile_folder(job_id: str) -> None:
         try:
             for rel in work:
                 if known_failed.get(rel, {}).get("sig") == _failure_signature(current[rel]):
+                    # No per-file write: a folder can hold thousands of these.
+                    if is_cancel_requested(folder["id"]):
+                        raise _SyncCancelled
                     failures.append(rel)
                     ingest_failed[rel] = known_failed[rel]
                     processed += 1
-                    update_progress()
                     continue
                 if len(in_flight) >= workers:
                     drain_one()
@@ -1820,6 +1822,7 @@ def _reconcile_folder(job_id: str) -> None:
                     continue
                 processed += 1
                 update_progress()
+            update_progress()
             while in_flight:
                 drain_one()
         except Exception:
