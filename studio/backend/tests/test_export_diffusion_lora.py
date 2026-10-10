@@ -114,6 +114,23 @@ def test_the_marker_is_published_before_the_weight(loras, tmp_path, monkeypatch)
     assert dl.is_image_lora_file(out)
 
 
+def test_export_never_writes_a_model_sentinel_json(loras, tmp_path):
+    (loras / "config.safetensors").write_bytes(b"w")
+    out = dl.export_local_lora("config", tmp_path / "out")
+    assert out.name == "config-2.safetensors"
+    assert not (tmp_path / "out" / "config.json").exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason = "POSIX modes")
+def test_the_marker_gets_the_umask_mode(loras, tmp_path):
+    old = os.umask(0o022)
+    try:
+        out = dl.export_local_lora("mystyle", tmp_path / "out")
+    finally:
+        os.umask(old)
+    assert out.with_suffix(".json").stat().st_mode & 0o777 == 0o644
+
+
 def test_export_refuses_ids_outside_the_local_catalog(loras, tmp_path):
     secret = tmp_path / "secret.safetensors"
     secret.write_bytes(b"secret")

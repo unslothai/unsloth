@@ -38,6 +38,10 @@ _ALL_EXTS = (".safetensors", ".gguf")
 LORA_SIDECAR_KIND = "diffusion-lora"
 _MAX_SCAN_FOLDER_SUBDIRS = 200
 _EXPORT_LOCK = threading.Lock()
+# ``<stem>.json`` with these stems marks a model or pipeline folder to the model scanners.
+_MODEL_SENTINEL_STEMS = frozenset(
+    {"config", "adapter_config", "model_index", "modular_model_index"}
+)
 
 
 @dataclass(frozen = True)
@@ -269,11 +273,9 @@ def _catalog_by_id() -> dict[str, LoraCatalogEntry]:
 
 
 def _staging_name(dest_dir: Path, stem: str) -> str:
-    import tempfile
-
-    fd, tmp = tempfile.mkstemp(dir = dest_dir, prefix = f".{stem}.", suffix = ".part")
-    os.close(fd)
-    return tmp
+    # Not mkstemp: its 0600 file would publish an owner-only marker; a fresh open() honours the umask.
+    import secrets
+    return str(dest_dir / f".{stem}.{secrets.token_hex(8)}.part")
 
 
 def export_local_lora(lora_id: str, dest_dir: Path) -> Path:
@@ -294,6 +296,8 @@ def export_local_lora(lora_id: str, dest_dir: Path) -> Path:
     def _free(out: Path) -> bool:
         if out.exists() and os.path.samefile(src, out):
             return True
+        if out.stem.lower() in _MODEL_SENTINEL_STEMS:
+            return False
         # The sidecar is per stem, so a sibling weight of another format would share it.
         if any(out.with_suffix(ext).exists() for ext in _ALL_EXTS if ext != out.suffix.lower()):
             return False
