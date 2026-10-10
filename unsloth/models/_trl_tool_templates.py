@@ -92,6 +92,8 @@ def _tokenizer_of(processing_class):
 
 def _template_of(processing_class):
     template = getattr(processing_class, "chat_template", None)
+    if template is None and processing_class is not None:
+        template = getattr(_tokenizer_of(processing_class), "chat_template", None)
     if isinstance(template, dict):
         template = template.get("default")
     return template if isinstance(template, str) else None
@@ -109,17 +111,21 @@ def _render(tokenizer, template, messages, add_generation_prompt, tools):
 
 def _completion_signature(tokenizer, template):
     signature = []
+    rendered = 0
     for history, turn in _COMPLETION_PROBES:
         try:
             bare = _render(tokenizer, template, history, False, True)
             prompt = _render(tokenizer, template, history, True, True)
             full = _render(tokenizer, template, history + [turn], False, True)
-        except Exception:
-            return None
+        except Exception as error:
+            # Some templates refuse a probe (Llama 3.1 raises on parallel tool calls): match the refusal too.
+            signature.append(("error", type(error).__name__))
+            continue
+        rendered += 1
         # Parsers also read what the generation prompt pre-writes (e.g. an opening <think>).
         signature.append(prompt[len(bare) :] if prompt.startswith(bare) else prompt)
         signature.append(full[len(prompt) :] if full.startswith(prompt) else full)
-    return tuple(signature)
+    return tuple(signature) if rendered else None
 
 
 def _conversation_signature(tokenizer, template):
@@ -155,7 +161,13 @@ _matches = {}
 
 
 def _matching_families(trl_module, tokenizer, template, kind):
-    key = (id(trl_module), kind, template)
+    # Templates read special tokens (bos_token, eos_token), so they are part of what renders.
+    key = (
+        id(trl_module),
+        kind,
+        template,
+        repr(sorted(getattr(tokenizer, "special_tokens_map", {}).items())),
+    )
     if key in _matches:
         return _matches[key]
     signature_of = _completion_signature if kind == "completion" else _conversation_signature

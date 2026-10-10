@@ -142,3 +142,20 @@ def test_patch_is_idempotent_and_rebinds_trainer_imports(patched):
         if name in grpo.__dict__:
             assert getattr(grpo, name) is getattr(trl_utils, name)
             assert getattr(trl_utils, name)._unsloth_tool_template_patched
+
+
+def test_template_refusing_parallel_tool_calls_still_matches(patched):
+    # Llama 3.1/3.2 raise on parallel tool calls; an edited copy must still match its family.
+    if "only supports single tool-calls" not in trl_utils.llama3_2_chat_template:
+        pytest.skip("this TRL's Llama 3.2 template accepts parallel tool calls")
+    _, originals = patched
+    edited = "{#- Chat template fixes by Unsloth #}\n" + trl_utils.llama3_2_chat_template
+    tokenizer = _tokenizer(edited)
+    tokenizer.bos_token = "<|begin_of_text|>"
+    with pytest.raises(ValueError, match = "Unrecognized chat template"):
+        originals["add_response_schema"](copy.copy(tokenizer))
+    reference = _tokenizer(trl_utils.llama3_2_chat_template)
+    reference.bos_token = "<|begin_of_text|>"
+    reference = originals["add_response_schema"](reference)
+    trl_utils.add_response_schema(tokenizer)
+    assert _parser(tokenizer) == _parser(reference)
