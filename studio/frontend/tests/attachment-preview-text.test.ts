@@ -1765,11 +1765,17 @@ test("a Word legal list reads every level as a decimal and skips unnumbered leve
   }
 });
 
-async function docxListText(levels: string, nums: string, paragraphs: [string, number, number][]): Promise<string> {
-  const w = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
+async function docxListText(
+  levels: string,
+  nums: string,
+  paragraphs: [string, number, number, boolean?][],
+  abstractAttributes = "",
+): Promise<string> {
+  const w =
+    'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:w15="http://schemas.microsoft.com/office/word/2012/wordml"';
   const body = paragraphs
-    .map(([text, numId, ilvl]) =>
-      `<w:p><w:pPr><w:numPr><w:ilvl w:val="${ilvl}"/><w:numId w:val="${numId}"/></w:numPr></w:pPr><w:r><w:t>${text}</w:t></w:r></w:p>`,
+    .map(([text, numId, ilvl, sectionEnd]) =>
+      `<w:p><w:pPr><w:numPr><w:ilvl w:val="${ilvl}"/><w:numId w:val="${numId}"/></w:numPr>${sectionEnd ? "<w:sectPr/>" : ""}</w:pPr><w:r><w:t>${text}</w:t></w:r></w:p>`,
     )
     .join("");
   const bytes = zipSync({
@@ -1777,7 +1783,7 @@ async function docxListText(levels: string, nums: string, paragraphs: [string, n
     "_rels/.rels": relationships([["officeDocument", "word/document.xml"]]),
     "word/_rels/document.xml.rels": relationships([["numbering", "numbering.xml"]]),
     "word/document.xml": strToU8(`<w:document ${w}><w:body>${body}</w:body></w:document>`),
-    "word/numbering.xml": strToU8(`<w:numbering ${w}><w:abstractNum w:abstractNumId="1">${levels}</w:abstractNum>${nums}</w:numbering>`),
+    "word/numbering.xml": strToU8(`<w:numbering ${w}><w:abstractNum w:abstractNumId="1"${abstractAttributes}>${levels}</w:abstractNum>${nums}</w:numbering>`),
   });
   const globals = globalThis as { DOMParser?: unknown; XMLSerializer?: unknown };
   const original = { DOMParser: globals.DOMParser, XMLSerializer: globals.XMLSerializer };
@@ -1847,6 +1853,11 @@ test("Word list counters follow Word's sharing, restart and bullet rules", async
     await docxListText(levels, '<w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num><w:num w:numId="2"><w:abstractNumId w:val="1"/><w:lvlOverride w:ilvl="0.5"><w:startOverride w:val="1"/></w:lvlOverride></w:num>', [["a", 1, 0], ["b", 2, 0]]),
     "1. a | 2. b",
   );
+  // A section break restarts only the lists that opt in.
+  const plain = '<w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num>';
+  const sections: [string, number, number, boolean?][] = [["a", 1, 0], ["b", 1, 0, true], ["c", 1, 0]];
+  assert.equal(await docxListText(levels, plain, sections, ' w15:restartNumberingAfterBreak="1"'), "1. a | 2. b | 1. c");
+  assert.equal(await docxListText(levels, plain, sections, ' w15:restartNumberingAfterBreak="0"'), "1. a | 2. b | 3. c");
   // lvlRestart 0 keeps a level counting across its parents.
   const running = wordLevel(0, "decimal", "%1.") + wordLevel(1, "decimal", "(%2)", '<w:lvlRestart w:val="0"/>');
   assert.equal(
@@ -1860,6 +1871,8 @@ test("list counters past the alphabet or out of range stay bounded", async () =>
   const many = Array.from({ length: 28 }, (_, i): [string, number, number] => [`i${i + 1}`, 1, 0]);
   const word = await docxListText(letters, '<w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num>', many);
   assert.ok(word.endsWith("z) i26 | aa) i27 | bb) i28"), word);
+  const long = wordLevel(0, "decimal", `%1.${"x".repeat(300)}`);
+  assert.equal(await docxListText(long, '<w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num>', [["plain", 1, 0]]), "plain");
   const huge = '<w:lvl w:ilvl="999999999"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl>';
   assert.equal(await docxListText(huge, '<w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num>', [["deep", 1, 999999999]]), "deep");
 
