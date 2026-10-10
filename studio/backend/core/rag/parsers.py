@@ -57,7 +57,7 @@ _HTML_BLOCK_TAGS = frozenset(
     " td text textarea th title tr ul xmp".split()
 )
 _HTML_PRE_TAGS = frozenset(("listing", "plaintext", "pre", "textarea", "xmp"))
-# Atomic inline boxes: their text never runs into a neighbour's, but they do not break the line.
+# atomic inline boxes separate neighbouring text without breaking the line
 _HTML_BOX_TAGS = frozenset(("button", "img", "input", "select"))
 _HTML_ROW_GROUPS = frozenset(("thead", "tbody", "tfoot"))
 _HTML_TABLE_DEPTH = 32
@@ -85,7 +85,7 @@ def _html_span(attrs, name: str, limit: int) -> int:
 
 
 class _Stripper(HTMLParser):
-    """Collect visible text, one line per block element."""
+    """collect visible text, one line per block element."""
 
     def __init__(self, span_budget: int = 0) -> None:
         super().__init__()
@@ -153,7 +153,7 @@ class _Stripper(HTMLParser):
         cell: list[str] = []
         rowspan = _html_span(attrs, "rowspan", 65534)
         colspan = _html_span(attrs, "colspan", 1000)
-        # Each spanned slot is an empty field, so stop spanning once they outnumber the input's characters.
+        # each spanned slot adds an empty field, so stop when fields outnumber input characters.
         self._span_budget -= len(row) - start + colspan - 1
         if self._span_budget < 0:
             rowspan = colspan = 1
@@ -169,14 +169,14 @@ class _Stripper(HTMLParser):
     def _flush(self) -> None:
         text = "".join(self._line)
         self._line = []
-        # Whitespace inside <pre>/<textarea> is content; elsewhere it is layout.
+        # whitespace inside <pre>/<textarea> is content; elsewhere it is layout
         text = text.strip("\n") if self._pre else " ".join(text.split())
         if text.strip():
             self.out.append(text)
 
     def handle_starttag(self, tag, attrs):
         if tag == "template":
-            # A declarative shadow root (shadowrootmode=open|closed) is rendered; other templates are inert.
+            # declarative shadow roots render; other templates are inert
             inert = (dict(attrs).get("shadowrootmode") or "").lower() not in ("open", "closed")
             self._templates.append(inert)
             self._skip += inert
@@ -193,7 +193,7 @@ class _Stripper(HTMLParser):
             self._tables[-1].spans = []
         elif tag in _HTML_BLOCK_TAGS and not self._skip:
             self._flush()
-            # Each nesting level copies its lines into the parent, so very deep tables read as plain blocks.
+            # each nesting level copies lines into its parent, so deeply nested tables read as plain blocks
             if tag == "table" and (self._deep or len(self._tables) >= _HTML_TABLE_DEPTH):
                 self._deep += 1
             elif tag == "table":
@@ -206,7 +206,7 @@ class _Stripper(HTMLParser):
         elif tag in _HTML_BOX_TAGS and not self._skip and not self._pre:
             self._line.append(" ")
         elif tag == "tspan" and not self._skip and any(k in ("x", "y") for k, _ in attrs):
-            # An absolute x/y starts a new SVG text chunk (a separate label or line).
+            # absolute x/y coordinates start a separate SVG text label or line
             self._flush()
 
     def handle_endtag(self, tag):
@@ -258,9 +258,8 @@ def _html(raw: str) -> list[Page]:
     return [_page("\n".join(parser.out), 1)]
 
 
-# pymupdf4llm rebuilds text from positioned glyphs and mangles complex-shaping scripts (RTL forms,
-# Indic matras to U+FFFD), so fall back to PyMuPDF's logical-order get_text(); thresholds mirror
-# unslothai/unsloth#5351.
+# pymupdf4llm can corrupt positioned RTL and Indic glyphs; use logical-order
+# get_text() at unslothai/unsloth#5351 thresholds
 _SHAPED_PRESENTATION_FORMS = re.compile("[\ufb1d-\ufdff\ufe70-\ufefc]")
 _PDF_FALLBACK_MIN_BAD_GLYPHS = 5
 _PDF_FALLBACK_BAD_GLYPH_RATIO = 0.0005
