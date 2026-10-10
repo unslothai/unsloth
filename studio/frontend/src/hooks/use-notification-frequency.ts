@@ -158,18 +158,19 @@ export function useNotificationDue(channel: NotificationChannel): boolean {
   const lastShown = useSyncExternalStore(subscribe, () =>
     getLastShown(channel),
   );
-  const [, setTick] = useState(0);
+  const [tick, setTick] = useState(0);
   const due = notificationDue(frequency, lastShown, Date.now());
+  // `tick` re-arms the timer after a capped wake-up, which a monthly wait needs.
   useEffect(() => {
     const period = PERIOD_MS[frequency];
-    if (due || period == null || lastShown == null) return;
+    if (tick < 0 || due || period == null || lastShown == null) return;
     const wait = Math.min(
       Math.max(lastShown + period - Date.now(), 0) + 1000,
       MAX_TIMEOUT_MS,
     );
     const timer = setTimeout(() => setTick((tick) => tick + 1), wait);
     return () => clearTimeout(timer);
-  }, [due, frequency, lastShown]);
+  }, [due, frequency, lastShown, tick]);
   return due;
 }
 
@@ -190,9 +191,10 @@ export function useNotificationGate(
     if (open && !held) {
       markNotificationShown(channel);
       setHeldFor(channel);
-    } else if (!wanted && heldFor !== null) {
+    } else if ((!wanted || frequency === "off") && heldFor !== null) {
+      // Off releases the hold, so a later quiet period applies from the last showing.
       setHeldFor(null);
     }
-  }, [open, held, wanted, heldFor, channel]);
+  }, [open, held, wanted, heldFor, channel, frequency]);
   return open;
 }
