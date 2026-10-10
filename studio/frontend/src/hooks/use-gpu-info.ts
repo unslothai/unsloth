@@ -332,8 +332,7 @@ export function useInferenceGpuInfo(): GpuInfo {
   return useGpuInfoSource("inference_gpu");
 }
 
-/** Optional engines launch on torch's physical ids, as the diffusion runner does: a CUDA or ROCm
- *  device from the torch inventory (read with `useGpuDevices(true)`), never a Vulkan ordinal. */
+/** Optional engines launch on torch's physical CUDA/ROCm ids (`useGpuDevices(true)`), never a Vulkan ordinal. */
 export function isEngineGpuDevice(device: SystemGpuDevice): boolean {
   return device.diffusionPinnable;
 }

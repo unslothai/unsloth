@@ -41,7 +41,6 @@ def amd_host(rocm, monkeypatch, tmp_path):
 
     targets = {"value": ["gfx1151"]}
     monkeypatch.setattr(amd, "amd_kfd_gpu_gfx_targets", lambda: targets["value"])
-    # What Studio's own torch presents; empty when it reports nothing, as on a CPU torch.
     arches = {}
     monkeypatch.setattr(install, "_rocm_gpu_arches", lambda: dict(arches))
     libraries = set(install.ROCM_SYSTEM_LIBRARIES)
@@ -88,8 +87,7 @@ def test_rocm_engine_never_shares_studios_torch(rocm, monkeypatch):
 
 
 def test_rocm_engine_stays_isolated_even_when_studio_matches_its_lock(rocm, monkeypatch):
-    # The ROCm torch loads /opt/rocm instead of bundled libraries, so Studio's packages never stand in
-    # for it, even on a Studio that happens to run the same Python with the very same builds.
+    # The ROCm torch loads /opt/rocm, so Studio's packages never stand in, even with identical builds.
     pins = {name: version for name, (version, _) in install._pins("vllm").items()}
     monkeypatch.setattr(install, "_studio_packages", lambda: dict(pins))
     monkeypatch.setattr(install, "_torch_runtime", lambda: {"torch"})
@@ -199,8 +197,7 @@ def test_amd_support_needs_a_c_compiler(amd_host, monkeypatch):
 
 
 def test_amd_support_reads_the_target_the_gpu_presents(amd_host):
-    # An RX 7600 (gfx1102) run as gfx1100 through HSA_OVERRIDE_GFX_VERSION, which the engine
-    # inherits, is accepted; the kernel's own target is only the fallback.
+    # gfx1102 overridden to gfx1100 via HSA_OVERRIDE_GFX_VERSION is accepted; the kernel's target is a fallback.
     amd_host.targets["value"] = ["gfx1102"]
     assert install.support_reason("vllm", 0).endswith("(found gfx1102).")
     amd_host.arches.update({0: "gfx1100"})
@@ -288,8 +285,7 @@ def test_status_lists_the_precisions_the_build_loads(amd_host, monkeypatch, tmp_
 
 
 def test_engine_port_stays_below_the_limit_when_the_os_offers_high_ports(monkeypatch):
-    # Windows counts ephemeral ports up from 49152; past 55535 every OS-chosen port was refused and
-    # the load failed with "Could not allocate an inference server port".
+    # Windows ephemeral ports start at 49152; past 55535 every OS-chosen port was refused.
     taken = {30001}
 
     class Socket:
@@ -510,8 +506,7 @@ def test_rocm_engine_sees_one_device_mask_and_its_own_memory_budget(monkeypatch,
 
 @_LINUX
 def test_a_startup_timeout_names_where_the_engine_stalled(monkeypatch, tmp_path):
-    # vLLM went silent after "JIT kernel warmup" when its memory budget was too large; the error
-    # used to say only that it timed out.
+    # vLLM hangs after "JIT kernel warmup" on an oversized memory budget; the error must say so.
     import os
 
     monkeypatch.setattr(install, "engine_root", lambda: tmp_path)

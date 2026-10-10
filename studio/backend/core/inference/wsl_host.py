@@ -33,10 +33,8 @@ UV = {
     "sha256": "23bf5552d220e0842b65c862097b2ebaeba0064b74eda5e565e77fd25969d8c8",
     "size": 19831732,
 }
-# AMD GPUs: ROCm's userspace from AMD's apt repository, plus the DXG bridge AMD publishes as a
-# .deb, through which the HSA runtime reaches the Windows driver over /dev/dxg.
-# AMD's repository key, shipped with Studio: repo.radeon.com serves it at a mutable URL, and a
-# republished key would fail a pinned download on every fresh install.
+# AMD: ROCm from AMD's apt repo plus the DXG bridge .deb (HSA reaches the Windows driver via /dev/dxg).
+# The repo key ships with Studio: repo.radeon.com serves it at a mutable URL, breaking a pinned download.
 ROCM_APT_KEY = Path(__file__).resolve().parents[2] / "requirements" / "engines" / "rocm.gpg.key"
 ROCM_APT_KEY_SHA256 = "2de99e2354646a90d9903e2a669fc4e36b02c1bbff7075c481e12d7edab2c88b"
 ROCDXG = {
@@ -83,9 +81,8 @@ HSA_ENABLE_DXG_DETECTION=1 /opt/rocm/bin/rocminfo | grep -E "Name:[[:space:]]+gf
   exit 3
 }
 """.replace("{release}", ROCM_RELEASE)
-# ROCm's HSA runtime loads the DXG bridge only when asked; amd-smi is found by its soname. The
-# profiler SDK vLLM's PyTorch links aborts HIP start-up without KFD's sysfs topology, which WSL
-# lacks, so it is never registered.
+# HSA loads the DXG bridge only when asked. The profiler SDK is never registered: it aborts HIP
+# start-up without KFD's sysfs topology, which WSL lacks.
 ROCM_ENVIRONMENT = {
     "HSA_ENABLE_DXG_DETECTION": "1",
     "LD_LIBRARY_PATH": "/opt/rocm-wsl/lib",

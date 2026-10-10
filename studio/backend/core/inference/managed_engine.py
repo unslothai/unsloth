@@ -270,8 +270,7 @@ def _deep_gemm_unloadable(environment: str) -> bool:
     return False
 
 
-# The engine's own torch on its selected devices: on ROCm this is the view vLLM budgets
-# against, and no vendor CLI is required (amd-smi is optional, and absent in WSL).
+# The engine's own torch on its devices: what vLLM budgets against on ROCm (amd-smi may be absent).
 _DEVICE_MEMORY = (
     "import json, torch; print(json.dumps("
     "[torch.cuda.mem_get_info(i) for i in range(torch.cuda.device_count())]))"

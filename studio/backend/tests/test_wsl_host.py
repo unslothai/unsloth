@@ -1012,7 +1012,6 @@ def test_amd_wsl_budget_stays_inside_what_the_host_can_back(monkeypatch):
     # Windows cannot say: the VM's available memory is the bound.
     monkeypatch.setattr(managed_engine, "_wsl_amd_usable_mib", lambda ids: None)
     assert managed_engine._engine_memory_rows(info, {}, [0]) == [(102 * 1024, 61440.0)]
-    # Neither figure: the load is refused.
     monkeypatch.setattr(wsl_host, "guest", lambda argv, **k: "" if argv[0] == "cat" else "[[1, 2]]")
     with pytest.raises(ValueError, match = "memory of the WSL environment"):
         managed_engine._engine_memory_rows(info, {}, [0])
@@ -1039,7 +1038,6 @@ def test_amd_wsl_capacity_follows_the_windows_adapter(monkeypatch):
     # An APU adds 80% of the RAM Windows has available to its dedicated memory.
     monkeypatch.setattr(hardware, "_rocm_props_are_positively_unified", lambda p: True)
     assert managed_engine._wsl_amd_usable_mib([0]) == [512 + 0.8 * 100 * 1024]
-    # A discrete card keeps its dedicated memory only.
     monkeypatch.setattr(hardware, "_rocm_props_are_positively_unified", lambda p: False)
     assert managed_engine._wsl_amd_usable_mib([0]) == [512.0]
     # No registry record that names this GPU: Windows cannot say.

@@ -49,8 +49,7 @@ PROFILES = {
             {"version": "0.30.0", "torch": "2.13.0", "lock": "vllm-linux-cu130-torch213"},
             {"version": "0.26.0", "torch": "2.11.0", "lock": "vllm-linux-cu130"},
         ),
-        # AMD GPUs: vLLM's own ROCm build, Python 3.12 only. Its torch loads the host's ROCm
-        # from /opt/rocm instead of bundling it, so the environment is always isolated.
+        # AMD: vLLM's ROCm build, Python 3.12 only; its torch loads /opt/rocm, so always isolated.
         "rocm": {
             "cuda": None,
             "driver": None,
@@ -164,8 +163,7 @@ def gpu_platform() -> str:
     global _kfd_has_amd_gpu
     from utils.hardware import hardware
 
-    # IS_ROCM reads False until startup's background detection settles; an early status poll
-    # or install on an AMD host must not pick the CUDA profile meanwhile.
+    # IS_ROCM reads False until background detection settles; never pick CUDA meanwhile.
     if not hardware.DETECTION_COMPLETE.is_set():
         hardware.ensure_hardware_detected()
     if hardware.IS_ROCM:
@@ -797,9 +795,7 @@ def _rocm_reason(
         return f"{ENGINE_NAMES[engine]} requires an NVIDIA GPU. Use vLLM on AMD GPUs."
     wanted = profile(engine)
     if wsl_host.active():
-        # Studio installs ROCm inside its WSL distro and checks the GPU there; a card Studio's torch
-        # or the Windows driver already names refuses before that download. The engine launches
-        # on the selected ordinal, so that GPU's own target decides when torch names it.
+        # ROCm is checked inside WSL; a target torch or the driver already names (the selected GPU's) refuses first.
         arches = _rocm_gpu_arches() if gpu_id is not None else {}
         if gpu_id in arches:
             known = [arches[gpu_id]]
@@ -851,8 +847,7 @@ def _rocm_reason(
             "to the render and video groups, then sign in again."
         )
 
-    # The target each GPU presents to the engine (an HSA_OVERRIDE_GFX_VERSION spoof included),
-    # else the one the kernel reports.
+    # Each GPU's target as the engine sees it (HSA_OVERRIDE_GFX_VERSION included), else the kernel's.
     arches = _rocm_gpu_arches()
     if gpu_id is None:
         selected = list(arches.values()) or amd_kfd_gpu_gfx_targets() or []
