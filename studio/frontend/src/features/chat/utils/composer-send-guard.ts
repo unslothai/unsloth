@@ -13,9 +13,8 @@ export type SentTextGuard = {
   readonly draftKey: string | null;
   /** A key has been pressed since the send. See markSentTextGuardUserInput. */
   readonly userInputSince: boolean;
-  /** An IME composition was open at the send, so a later composition write can be its stale
-   *  finalise. Without one, a composition write is the user typing: WebKitGTK on Wayland commits
-   *  every keystroke as a composition with no compositionstart and a keyCode 229 keydown (#10012). */
+  /** An IME composition was open at the send; if not, a composition write is typing (WebKitGTK
+   *  on Wayland commits every keystroke as one, #10012). */
   readonly compositionOpen: boolean;
 };
 
@@ -94,8 +93,6 @@ export function applySentTextGuard(
 ): { accept: boolean; guard: SentTextGuard | null } {
   if (guard === null) return { accept: true, guard: null };
   if (write.isDeliberate) return { accept: true, guard: null };
-  // With no composition open at the send, a composition write is typing, even one matching a
-  // one-character prompt.
   if (write.isComposition && !guard.compositionOpen) {
     return { accept: true, guard: null };
   }

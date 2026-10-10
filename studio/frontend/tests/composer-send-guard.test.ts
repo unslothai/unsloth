@@ -293,9 +293,6 @@ test("a composition begun after the send is applied", () => {
   });
 });
 
-// WebKitGTK on Wayland commits each keystroke as a composition with no compositionstart and a
-// keyCode 229 keydown, so nothing records user input; with no composition open at the send,
-// that write is typing, not a stale finalise (#10012).
 test("a composition write with none open at the send is applied", () => {
   const guard = armSentTextGuard([PROMPT], KEY, false);
   for (const value of ["h", "\u65e5\u672c\u8a9e"]) {
