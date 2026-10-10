@@ -339,10 +339,52 @@ def test_sharegpt_parallel_calls_are_split_for_one_call_templates():
         ]
     )
 
-    result = _format_sharegpt([_sharegpt_tool_row(call)], _LLAMA3_TEMPLATE)
+    row = _sharegpt_tool_row(call)
+    row["conversations"].insert(3, {"from": "observation", "value": '{"time": "noon"}'})
+
+    result = _format_sharegpt([row], _LLAMA3_TEMPLATE)
 
     assert result["success"] is True, result["errors"]
     text = result["dataset"][0]["text"]
-    assert '{"name": "get_weather", "parameters": {"city": "Paris"}}' in text
-    assert '{"name": "get_time", "parameters": {"city": "Rome"}}' in text
+    paris = text.index('{"name": "get_weather", "parameters": {"city": "Paris"}}')
+    rome = text.index('{"name": "get_time", "parameters": {"city": "Rome"}}')
+    assert paris < text.index('{"temp": 18}') < rome < text.index('{"time": "noon"}')
     assert "function_call" not in text
+
+
+def test_sharegpt_parallel_calls_sharing_one_result_are_not_reordered():
+    call = json.dumps(
+        [
+            {"name": "get_weather", "arguments": {"city": "Paris"}},
+            {"name": "get_time", "arguments": {"city": "Rome"}},
+        ]
+    )
+
+    result = _format_sharegpt([_sharegpt_tool_row(call)], _LLAMA3_TEMPLATE)
+
+    text = result["dataset"][0]["text"]
+    assert text.index("Rome") < text.index('{"temp": 18}')
+
+
+def test_sharegpt_repeated_call_name_is_not_lost_on_a_first_call_only_template():
+    first_call_only = (
+        "{%- for message in messages %}"
+        "{%- if message.tool_calls %}{%- set call = message.tool_calls[0].function %}"
+        "{{- '<call ' + call.name + '>' + call.arguments + '</call>' }}"
+        "{%- elif message.role == 'tool' %}{{- '<result from=get_weather>' + message.content }}"
+        "{%- else %}{{- '<' + message.role + '>' + message.content }}{%- endif %}"
+        "{%- endfor %}"
+    )
+    call = json.dumps(
+        [
+            {"name": "get_weather", "arguments": {"city": "Paris"}},
+            {"name": "get_weather", "arguments": {"city": "Rome"}},
+        ]
+    )
+    row = _sharegpt_tool_row(call)
+    row["conversations"].insert(3, {"from": "observation", "value": '{"temp": 21}'})
+
+    result = _format_sharegpt([row], first_call_only)
+
+    assert result["success"] is True, result["errors"]
+    assert "Rome" in result["dataset"][0]["text"]

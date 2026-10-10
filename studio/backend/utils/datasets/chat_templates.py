@@ -4,6 +4,7 @@
 """Chat template utilities for dataset processing: apply chat templates to datasets and generate dataset info summaries."""
 
 import json
+import re
 import warnings as python_warnings
 
 from .cells import cell_text
@@ -176,14 +177,14 @@ def _drop_none_values(value):
 
 def _sharegpt_tool_turns(conversation, content = ""):
     """Map ShareGPT ``function_call`` / ``observation`` turns to OpenAI tool turns, and the
-    names of the calls made; the conversation itself when it has neither role."""
+    names and argument values of the calls made; the conversation itself when it has neither role."""
     if not any(
         isinstance(message, dict) and message.get("role") in ("observation", "function_call")
         for message in conversation
     ):
         return conversation, []
     turns = []
-    names = []
+    needles = []
     for message in conversation:
         role = message.get("role") if isinstance(message, dict) else None
         if role == "observation":
@@ -207,35 +208,74 @@ def _sharegpt_tool_turns(conversation, content = ""):
                             "function": {"name": call["name"], "arguments": arguments},
                         }
                     )
-                    names.append(call["name"])
+                    needles.append(call["name"])
+                    _collect_values(arguments, needles)
                 message = {"role": "assistant", "content": content, "tool_calls": tool_calls}
         turns.append(message)
-    return turns, names
+    return turns, needles
 
 
-def _renders_calls(conversation, names):
-    # Each call must add its name beyond what the other turns already say, else the
-    # template ignored tool_calls and rendered a blank assistant turn.
+_PLAIN_VALUE = re.compile(r"[A-Za-z0-9_.,:/ -]+")
+
+
+def _collect_values(arguments, needles):
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except (ValueError, RecursionError):
+            arguments = arguments.strip()
+    if isinstance(arguments, dict):
+        arguments = list(arguments.values())
+    if isinstance(arguments, list):
+        for value in arguments:
+            _collect_values(value, needles)
+    elif isinstance(arguments, str) and _PLAIN_VALUE.fullmatch(arguments):
+        # Values tojson would escape (quotes, <, &, newlines, non-ASCII) cannot be counted verbatim.
+        needles.append(arguments)
+    elif isinstance(arguments, int) and not isinstance(arguments, bool):
+        needles.append(str(arguments))
+
+
+def _renders_calls(conversation, needles):
+    # Each call must add its name and argument values beyond what the other turns already say,
+    # else the template ignored tool_calls or rendered only some of them (gpt-oss takes the first).
     said = "".join(
         message["content"]
         for message in conversation
         if isinstance(message, dict) and isinstance(message.get("content"), str)
     )
     return lambda text: all(
-        text.count(name) >= said.count(name) + names.count(name) for name in set(names)
+        text.count(needle) >= said.count(needle) + needles.count(needle) for needle in set(needles)
     )
+
+
+def _each_call_has_a_result(turns):
+    for index, message in enumerate(turns):
+        calls = message.get("tool_calls") if isinstance(message, dict) else None
+        if not calls or len(calls) < 2:
+            continue
+        results = 0
+        for following in turns[index + 1 :]:
+            if not (isinstance(following, dict) and following.get("role") == "tool"):
+                break
+            results += 1
+        if results != len(calls):
+            return False
+    return True
 
 
 def _render_conversation(tokenizer, conversation):
     from core.inference.chat_template_helpers import _split_parallel_tool_calls
 
-    tool_turns, names = _sharegpt_tool_turns(conversation)
+    tool_turns, needles = _sharegpt_tool_turns(conversation)
     if tool_turns is not conversation:
-        accept = _renders_calls(tool_turns, names)
+        accept = _renders_calls(tool_turns, needles)
         # None content for templates that render calls only then (DeepSeek); split parallel
-        # calls for templates taking one per message (Llama 3.x).
+        # calls for templates taking one per message (Llama 3.x), only when each call has its
+        # own result, as one shared result would land after the first call alone.
         candidates = [tool_turns, _sharegpt_tool_turns(conversation, content = None)[0]]
-        candidates += [_split_parallel_tool_calls(turns) for turns in candidates]
+        if _each_call_has_a_result(tool_turns):
+            candidates += [_split_parallel_tool_calls(turns) for turns in candidates]
         for turns in candidates:
             try:
                 return _render_messages(tokenizer, turns, accept)
