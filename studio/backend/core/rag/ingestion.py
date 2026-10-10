@@ -122,6 +122,8 @@ def _progress(conn, job_id: str, stage: str, progress: float) -> None:
     from . import folder_sync
 
     if folder_sync.is_cancel_requested(getattr(folder_sync._worker_state, "folder_id", None)):
+        # Terminal, so the folder cleanup can prune the row with the document it discards.
+        _set_job(conn, job_id, status = "failed", stage = "error", error = "Linked folder was removed")
         raise job_leases.JobLeaseLost("Linked folder was removed")
     if not job_leases.renew_owned(conn, job_leases.INGESTION, job_id):
         raise job_leases.JobLeaseLost("Ingestion job lease was reclaimed")
