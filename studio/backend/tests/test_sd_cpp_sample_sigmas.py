@@ -127,7 +127,9 @@ def _patch_hub(monkeypatch, *, card_base, indexes):
     calls["links"] = links
     monkeypatch.setattr(diffusion_mod, "_hf_base_model", _card)
     monkeypatch.setattr(comfy_components, "read_model_index", _index)
-    monkeypatch.setattr(companion_assets, "read_companion_links", lambda: {k: list(v) for k, v in links.items()})
+    monkeypatch.setattr(
+        companion_assets, "read_companion_links", lambda: {k: list(v) for k, v in links.items()}
+    )
     monkeypatch.setattr(
         companion_assets,
         "record_companion_link",
@@ -179,7 +181,12 @@ def test_explicit_base_and_cache_only_loads_skip_the_card(monkeypatch):
     calls = _patch_hub(monkeypatch, card_base = "Qwen/Qwen-Image-2.1-Turbo", indexes = INDEXES)
     assert (
         bk._base_sample_sigmas(
-            REPO, "Qwen/Qwen-Image-2.1-Turbo", None, family = FAM.name, explicit_base = True, local_files_only = False
+            REPO,
+            "Qwen/Qwen-Image-2.1-Turbo",
+            None,
+            family = FAM.name,
+            explicit_base = True,
+            local_files_only = False,
         )[0]
         == TURBO_GRID
     )
@@ -225,7 +232,10 @@ def test_other_families_never_read_the_card_or_index(monkeypatch):
 def test_a_cache_only_reload_recovers_the_card_base_an_online_load_linked(monkeypatch):
     calls = _patch_hub(monkeypatch, card_base = "Qwen/Qwen-Image-2.1-Turbo", indexes = INDEXES)
     kw = dict(family = FAM.name, explicit_base = False)
-    assert bk._base_sample_sigmas(REPO, FAM.base_repo, None, local_files_only = False, **kw)[0] == TURBO_GRID
+    assert (
+        bk._base_sample_sigmas(REPO, FAM.base_repo, None, local_files_only = False, **kw)[0]
+        == TURBO_GRID
+    )
     cards = calls["card"]
     # The OpenAI route's auto-switch reloads cache-only with no base: no card read, same grid and base.
     grid, base = bk._base_sample_sigmas(REPO, FAM.base_repo, None, local_files_only = True, **kw)
