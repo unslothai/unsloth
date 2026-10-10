@@ -4915,10 +4915,8 @@ function Install-UnslothStudio {
     $script:UnslothCmdShimMarker = "unsloth-studio-managed-launcher"
     $script:UnslothCliTrampoline = "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if getattr(sys.flags, 'safe_path', False) or x not in ('', os.getcwd())]; sys.argv[0] = 'unsloth'; from unsloth_cli import app; sys.exit(app())"
 
-    # Recognize a policy refusal through PowerShell's wrapper exceptions, the same way
-    # Test-AccessDeniedError above recognizes ERROR_ACCESS_DENIED. AppLocker refuses with
-    # ERROR_ACCESS_DISABLED_BY_POLICY (1260); App Control for Business and Smart App
-    # Control refuse with ERROR_SYSTEM_INTEGRITY_POLICY_VIOLATION (4551).
+    # Policy refusal through PowerShell's wrapper exceptions: AppLocker 1260, App Control
+    # for Business and Smart App Control 4551 (ERROR_SYSTEM_INTEGRITY_POLICY_VIOLATION).
     # $LASTEXITCODE cannot answer this: no process was created, so it still holds the
     # exit code of whichever native command ran last.
     function Test-ApplicationControlBlock {
