@@ -295,3 +295,54 @@ def test_sharegpt_function_call_is_kept_when_the_template_ignores_tool_calls():
 
     assert result["success"] is True, result["errors"]
     assert f"<|im_start|>function_call\n{call}" in result["dataset"][0]["text"]
+
+
+def test_sharegpt_function_call_renders_on_a_template_gating_calls_on_null_content():
+    call = json.dumps({"name": "get_weather", "arguments": {"city": "Paris"}})
+
+    result = _format_sharegpt([_sharegpt_tool_row(call)], _DEEPSEEK_TEMPLATE)
+
+    assert result["success"] is True, result["errors"]
+    text = result["dataset"][0]["text"]
+    assert '<call>get_weather\n{"city": "Paris"}</call>' in text
+    assert '<output>{"temp": 18}' in text
+
+
+def test_sharegpt_call_name_in_the_prompt_does_not_hide_an_ignored_call():
+    plain_chatml = (
+        "{% for message in messages %}{{'<|im_start|>' + message['role'] + '\\n'"
+        " + message['content'] + '<|im_end|>\\n'}}{% endfor %}"
+    )
+    call = json.dumps({"name": "get_weather", "arguments": {"city": "Paris"}})
+    row = _sharegpt_tool_row(call)
+    row["conversations"][0]["value"] = "Use get_weather for Paris."
+
+    result = _format_sharegpt([row], plain_chatml)
+
+    assert f"<|im_start|>function_call\n{call}" in result["dataset"][0]["text"]
+
+
+def test_sharegpt_function_call_keeps_explicit_null_arguments():
+    call = json.dumps({"name": "get_weather", "arguments": {"city": "Paris", "unit": None}})
+
+    result = _format_sharegpt([_sharegpt_tool_row(call)], _LLAMA3_TEMPLATE)
+
+    assert result["success"] is True, result["errors"]
+    assert '"parameters": {"city": "Paris", "unit": null}' in result["dataset"][0]["text"]
+
+
+def test_sharegpt_parallel_calls_are_split_for_one_call_templates():
+    call = json.dumps(
+        [
+            {"name": "get_weather", "arguments": {"city": "Paris"}},
+            {"name": "get_time", "arguments": {"city": "Rome"}},
+        ]
+    )
+
+    result = _format_sharegpt([_sharegpt_tool_row(call)], _LLAMA3_TEMPLATE)
+
+    assert result["success"] is True, result["errors"]
+    text = result["dataset"][0]["text"]
+    assert '{"name": "get_weather", "parameters": {"city": "Paris"}}' in text
+    assert '{"name": "get_time", "parameters": {"city": "Rome"}}' in text
+    assert "function_call" not in text
