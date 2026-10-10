@@ -405,10 +405,11 @@ class _TitleButtonScan(HTMLParser):
     trigger): the heading's first visible button with text, with no visible heading text outside it. Decided
     before rendering so the kept button renders in source order like any inline element."""
 
-    def __init__(self, start: int, snippet: str) -> None:
+    def __init__(self, start: int, snippet: str, at_eof: bool) -> None:
         super().__init__(convert_charrefs = True)
         self.keep: set[int] = set()
         self._start = start
+        self._at_eof = at_eof
         self._line_starts = _line_starts(snippet)
         self._open: list[str] = []
         self._muted: list[int] = []  # open-tag indices of hidden / skipped subtrees
@@ -456,7 +457,8 @@ class _TitleButtonScan(HTMLParser):
 
     def close(self) -> None:
         super().close()
-        self._close_headings(0)
+        # a heading still open where the snippet stops may have title text past it, unless the page ends here
+        self._close_headings(0, decided = self._at_eof)
 
     def _pop_to(self, i: int) -> None:
         if self._button_at is not None and self._button_at >= i:
@@ -470,19 +472,25 @@ class _TitleButtonScan(HTMLParser):
         self._close_headings(i)
         del self._open[i:]
 
-    def _close_headings(self, i: int) -> None:
+    def _close_headings(
+        self,
+        i: int,
+        decided: bool = True,
+    ) -> None:
         while self._headings and self._headings[-1][0] >= i:
             _, button, has_text, other = self._headings.pop()
-            if button is not None and has_text and not other:
+            if decided and button is not None and has_text and not other:
                 self.keep.add(button)
 
 
 _HEADING_OPEN_RE = re.compile(r"<h[1-6][\s>/]", re.IGNORECASE)
 _ARIA_HEADING_RE = re.compile(r"role\s*=\s*[\"']?[^\"'>]*heading", re.IGNORECASE)
 _BUTTON_OPEN_RE = re.compile(r"<button", re.IGNORECASE)
-_HEADING_CLOSE_RE = re.compile(r"</h[1-6]", re.IGNORECASE)
+_HEADING_CLOSE_RE = re.compile(r"</h[1-6]\s*>", re.IGNORECASE)
 # how far after a heading opens its title button may start; past it the button is dropped as before
 _TITLE_BUTTON_WINDOW = 4_000
+# how far the scan follows a heading to its close; a heading it cannot see end keeps the old behaviour
+_TITLE_HEADING_WINDOW = 65_536
 
 
 def _line_starts(text: str) -> list[int]:
@@ -509,16 +517,16 @@ def _title_buttons(source_html: str) -> frozenset[int]:
     for start in opens:
         if start < 0 or (spans and start < spans[-1][1]):
             continue
-        limit = start + _TITLE_BUTTON_WINDOW
-        if not _BUTTON_OPEN_RE.search(source_html, start, limit):
+        if not _BUTTON_OPEN_RE.search(source_html, start, start + _TITLE_BUTTON_WINDOW):
             continue
+        limit = start + _TITLE_HEADING_WINDOW
+        # a bound only: the scan parses up to it and keeps a button only if it sees the heading end
         close = _HEADING_CLOSE_RE.search(source_html, start, limit)
-        end = close.start() if close and source_html[start + 1] in "hH" else limit
-        if _BUTTON_OPEN_RE.search(source_html, start, end):
-            spans.append([start, end])
+        end = close.end() if close and source_html[start + 1] in "hH" else limit
+        spans.append([start, min(end, len(source_html))])
     keep: set[int] = set()
     for start, end in spans:
-        scan = _TitleButtonScan(start, source_html[start:end])
+        scan = _TitleButtonScan(start, source_html[start:end], end >= len(source_html))
         scan.feed(source_html[start:end])
         scan.close()
         keep |= scan.keep

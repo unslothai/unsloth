@@ -397,9 +397,12 @@ def test_a_button_after_entity_or_nested_heading_text_is_dropped(html):
     assert "More information" not in out
 
 
-def test_a_leading_control_before_the_heading_title_is_dropped():
+@pytest.mark.parametrize(
+    "between", ["", "<!-- </h4> -->", "<span hidden>" + "x" * 5000 + "</span>"]
+)
+def test_a_leading_control_before_the_heading_title_is_dropped(between):
     html = (
-        "<h4><button aria-expanded='false'>More information</button><span>Create Artifacts</span></h4>"
+        f"<h4><button aria-expanded='false'>More information</button>{between}<span>Create Artifacts</span></h4>"
         "<p>Body text.</p>"
     )
     out = html_to_markdown(html)
