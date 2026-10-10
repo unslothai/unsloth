@@ -59,6 +59,7 @@ _HTML_BLOCK_TAGS = frozenset(
 _HTML_PRE_TAGS = frozenset(("listing", "plaintext", "pre", "textarea", "xmp"))
 # Atomic inline boxes: their text never runs into a neighbour's, but they do not break the line.
 _HTML_BOX_TAGS = frozenset(("button", "img", "input", "select"))
+_HTML_ROW_GROUPS = frozenset(("thead", "tbody", "tfoot"))
 
 
 class _HtmlTable:
@@ -78,7 +79,7 @@ def _html_span(attrs, name: str, limit: int) -> int:
 class _Stripper(HTMLParser):
     """Collect visible text, one line per block element."""
 
-    def __init__(self) -> None:
+    def __init__(self, span_budget: int = 0) -> None:
         super().__init__()
         self._skip = 0
         self._pre = 0
@@ -86,12 +87,11 @@ class _Stripper(HTMLParser):
         self._line: list[str] = []
         self.out: list[str] = []
         self._tables: list[_HtmlTable] = []
+        self._span_budget = span_budget
 
     def _end_cell(self) -> None:
-        table = self._tables[-1]
-        if self.out is not table.sink:
-            self._flush()
-            self.out = table.sink
+        self._flush()
+        self.out = self._tables[-1].sink
 
     def _end_row(self) -> None:
         self._end_cell()
@@ -127,7 +127,12 @@ class _Stripper(HTMLParser):
         self._flush()
         cell: list[str] = []
         rowspan = _html_span(attrs, "rowspan", 65534)
-        for i in range(_html_span(attrs, "colspan", 1000)):
+        colspan = _html_span(attrs, "colspan", 1000)
+        # Each spanned slot adds an empty field, so cap them by the input size.
+        if colspan * rowspan - 1 > self._span_budget:
+            rowspan = colspan = 1
+        self._span_budget -= colspan * rowspan - 1
+        for i in range(colspan):
             if len(row) < len(spans):
                 spans[len(row)] = rowspan - 1
             else:
@@ -157,6 +162,9 @@ class _Stripper(HTMLParser):
             self._end_row()
             self._flush()
             self._tables[-1].row = []
+        elif tag in _HTML_ROW_GROUPS and self._tables and not self._skip:
+            self._end_row()
+            self._tables[-1].spans = []
         elif tag in _HTML_BLOCK_TAGS and not self._skip:
             self._flush()
             if tag == "table":
@@ -180,6 +188,9 @@ class _Stripper(HTMLParser):
                 self._skip -= 1
         elif tag in ("td", "th") and self._tables and not self._skip:
             self._end_cell()
+        elif tag in _HTML_ROW_GROUPS and self._tables and not self._skip:
+            self._end_row()
+            self._tables[-1].spans = []
         elif tag in ("tr", "table") and self._tables and not self._skip:
             self._end_row()
             if tag == "table":
@@ -205,7 +216,7 @@ class _Stripper(HTMLParser):
 
 
 def _html(raw: str) -> list[Page]:
-    parser = _Stripper()
+    parser = _Stripper(len(raw))
     parser.feed(raw)
     parser.close()
     return [_page("\n".join(parser.out), 1)]

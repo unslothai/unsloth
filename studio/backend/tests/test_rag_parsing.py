@@ -821,6 +821,25 @@ def test_html_layout_and_nested_tables_keep_their_lines(tmp_path):
     assert text == "Title\nIntro\nName | Value\nx | y\nOutro"
 
 
+def test_html_table_spans_are_capped_by_the_file_size(tmp_path):
+    text = _parse_html(tmp_path, "<table><tr><td colspan=1000 rowspan=65534>x" + "<tr><td>a" * 200)
+    assert text == "x\n" + "\n".join(["a"] * 200)
+
+
+def test_html_rowspan_stops_at_its_row_group(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        "<table><thead><tr><th rowspan=3>Plan</th><th>Price</th></tr></thead>"
+        "<tbody><tr><td>Team</td><td>$49</td></tr></tbody></table>",
+    )
+    assert text == "Plan | Price\nTeam | $49"
+
+
+def test_html_stray_cell_end_keeps_words_apart(tmp_path):
+    text = _parse_html(tmp_path, "<table><tr><td>Total</td>Note</td>Extra</tr></table>")
+    assert text == "Note\nExtra\nTotal"
+
+
 def test_html_legend_and_options_stay_separate_words(tmp_path):
     text = _parse_html(
         tmp_path,
