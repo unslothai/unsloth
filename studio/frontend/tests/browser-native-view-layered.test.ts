@@ -175,6 +175,23 @@ test("a menu over a layered page neither captures nor hides it, and owns its inp
     await frame();
     assert.deepEqual(actions().slice(-1), ["focus"]);
 
+    // switched to another tab meanwhile: the hidden page doesn't get the keys back
+    panelFocused = false;
+    blocking.push(overlay(rect(600, 200, 300, 200)));
+    await frame();
+    useBrowserStore.getState().openUrl("https://example.org/other", { newTab: true });
+    await frame();
+    await frame();
+    panelFocused = true;
+    blocking.length = 0;
+    await frame();
+    await frame();
+    assert.equal(
+      calls.filter(({ command, args }) => command === "browser_view_action" && args?.action === "focus" && args?.tabId === tabId).length,
+      1,
+      "only the earlier hand-back focused the first tab",
+    );
+
     // a toast over the page takes input only where it is
     blocking.length = 0;
     clickable.push(overlay(rect(600, 600, 200.5, 50)));

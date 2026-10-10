@@ -477,6 +477,8 @@ function lendKeys(blocked: boolean): void {
   if (!lent) return;
   requestAnimationFrame(() => {
     const active = document.activeElement;
+    // Not to a tab switched away from meanwhile: its view is hidden.
+    if (lent.tabId !== shownView) return;
     if (active === null || active === document.body || active === lent.active) focusPage(lent.tabId);
   });
 }
@@ -735,7 +737,7 @@ function retryCover(): void {
   coverRetry += 1;
 }
 
-async function coverView(tabId: string, zoom: number): Promise<void> {
+async function coverView(tabId: string, zoom: number, bounds: Bounds): Promise<void> {
   if (parkedView !== tabId) {
     // Parked without a snapshot, the placeholder would show blank.
     if (!(await paintSnapshot(tabId))) {
@@ -747,6 +749,13 @@ async function coverView(tabId: string, zoom: number): Promise<void> {
     staleSnapshot = null;
     coverFails = 0;
     setShownView(null);
+  }
+  // A resize while covered: park at the new size and capture again, or the snapshot keeps the old frame.
+  if (JSON.stringify(bounds) !== JSON.stringify(shownBounds)) {
+    shownBounds = bounds;
+    viewBounds.set(tabId, bounds);
+    await call("browser_view_show", { tabId, bounds, parked: true });
+    staleSnapshot = tabId;
   }
   if ((zooms.get(tabId) ?? 1) !== zoom) {
     zooms.set(tabId, zoom);
@@ -784,7 +793,7 @@ async function applyView(desired: Desired): Promise<void> {
       await applyView({ tabId, url, entry, zoom, bounds });
     }
     if (desired && parkable(desired.tabId)) {
-      await coverView(desired.tabId, desired.zoom);
+      await coverView(desired.tabId, desired.zoom, desired.bounds);
       return;
     }
     parkedView = null;

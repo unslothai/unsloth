@@ -314,6 +314,33 @@ test("a tab opened under a lasting cover is shown and captured, not left blank, 
   }
 });
 
+test("a resize under a lasting cover parks the page at its new size and captures it again", async () => {
+  const stop = startNativeViews();
+  try {
+    useBrowserStore.getState().openUrl("https://example.org/resize", { newTab: true });
+    await frame();
+    await frame();
+    const tabId = useBrowserStore.getState().activeTabId;
+    overlays.push(menu);
+    await frame();
+    captureDone?.(new Uint8Array([137, 80, 78, 71]).buffer);
+    await settle();
+    const captures = () => calls.filter(({ command }) => command === "browser_capture").length;
+    const before = captures();
+    pageBox = rect(500, 100, 450, 600);
+    await frame();
+    const parked = calls.filter(({ command, args }) => command === "browser_view_show" && args?.parked).at(-1)?.args;
+    assert.deepEqual([parked?.tabId, (parked?.bounds as { width: number }).width], [tabId, 450]);
+    assert.equal(captures(), before + 1, "the snapshot is taken again at the new size");
+    captureDone?.(new Uint8Array([137, 80, 78, 71]).buffer);
+    await settle();
+  } finally {
+    stop();
+    overlays.length = 0;
+    pageBox = rect(500, 100, 500, 600);
+  }
+});
+
 test("toasts move left of a page that sits beside the Run settings panel", async () => {
   const stop = startNativeViews();
   try {
