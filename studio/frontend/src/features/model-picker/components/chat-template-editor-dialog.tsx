@@ -106,7 +106,7 @@ export function ChatTemplateEditorDialog({
         handleClose();
       }}
     >
-      <DialogContent className="corner-squircle dialog-soft-surface sm:max-w-3xl">
+      <DialogContent className="dialog-soft-surface sm:max-w-3xl">
         <DialogHeader>
           <DialogTitle>
             {readOnly ? "Chat Template" : "Edit Chat Template"}
@@ -119,7 +119,7 @@ export function ChatTemplateEditorDialog({
         </DialogHeader>
         {/* Chrome does not clip a scroll area to a squircle, which squared off
             the scrollbar's corners. The wrapper carries the shape instead. */}
-        <div className="corner-squircle overflow-hidden rounded-xl">
+        <div className="overflow-hidden rounded-xl">
           <Textarea
             value={renderedDraft}
             onChange={(event) => {

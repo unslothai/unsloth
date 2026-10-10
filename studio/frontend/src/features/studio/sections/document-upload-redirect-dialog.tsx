@@ -66,7 +66,7 @@ export function DocumentUploadRedirectDialog({
           </div>
         </DialogHeader>
 
-        <div className="corner-squircle rounded-2xl border border-border/70 bg-muted/20 p-4">
+        <div className="rounded-2xl border border-border/70 bg-muted/20 p-4">
           <p className="text-sm font-medium text-foreground">
             {t("studio.dataset.documentRedirect.nextStepTitle")}
           </p>

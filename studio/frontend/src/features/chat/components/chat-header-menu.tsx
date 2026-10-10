@@ -64,7 +64,7 @@ const ICON = "size-icon";
 const LABEL = "px-3 pb-1 pt-2 font-normal text-muted-foreground";
 /** The header's "…" buttons. Open reads aria-expanded: the trigger's tooltip overwrites data-state. */
 export const CHAT_MENU_TRIGGER =
-  "flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring aria-expanded:bg-nav-surface-hover aria-expanded:text-black dark:hover:text-white dark:aria-expanded:text-white";
+  "flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-full text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring aria-expanded:bg-nav-surface-hover aria-expanded:text-black dark:hover:text-white dark:aria-expanded:text-white";
 export const CHAT_MENU = MENU;
 const MOVE_TO_LIST =
   "no-scrollbar -my-0.5 max-h-[calc(260px*var(--ui-space-scale,1))] overflow-y-auto overscroll-contain";
@@ -125,7 +125,7 @@ function TemporaryChatButton({
           type="button"
           onClick={onToggle}
           className={cn(
-            "flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+            "flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
             temporary
               ? "bg-primary/10 text-primary hover:bg-primary/15"
               : "text-nav-fg hover:bg-nav-surface-hover hover:text-black dark:hover:text-white",

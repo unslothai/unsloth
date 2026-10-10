@@ -75,7 +75,7 @@ export function ProcessorsDialog({
           <DialogTitle>Processors</DialogTitle>
         </VisuallyHidden.Root>
         <div className="space-y-4">
-          <div className="flex items-center justify-between gap-3 corner-squircle rounded-2xl border border-border/60 px-3 py-2">
+          <div className="flex items-center justify-between gap-3 rounded-2xl border border-border/60 px-3 py-2">
             <div>
               <p className="text-sm font-semibold">Schema transform</p>
               <p className="text-xs text-muted-foreground">
@@ -112,7 +112,7 @@ export function ProcessorsDialog({
                 />
                 <Textarea
                   id={templateId}
-                  className="corner-squircle nodrag min-h-[calc(220px*var(--ui-space-scale,1))]"
+                  className="nodrag min-h-[calc(220px*var(--ui-space-scale,1))]"
                   value={schemaProcessor.template}
                   onChange={(event) =>
                     updateSchema({ template: event.target.value })

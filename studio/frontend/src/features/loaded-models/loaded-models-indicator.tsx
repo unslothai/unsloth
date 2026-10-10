@@ -91,7 +91,7 @@ function LoadedModelRow({
   const label = shortModelLabel(entry.name);
   const target = loadedModelTarget(entry.source, entry.workflows);
   return (
-    <div className="flex items-center gap-2 rounded-[14px] px-1.5 py-1 transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)]">
+    <div className="flex items-center gap-2 rounded-row px-1.5 py-1 transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)]">
       {/* Only the label half is the link: the eject button cannot nest inside it. */}
       <Tooltip>
         <TooltipTrigger asChild={true}>

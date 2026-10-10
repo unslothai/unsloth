@@ -53,7 +53,7 @@ export function MonitorLink(): ReactElement {
           useSettingsDialogStore.getState().closeDialog();
           void navigate({ to: "/api-monitor" });
         }}
-        className="flex w-full min-w-0 items-center gap-3 rounded-lg border border-border/70 bg-background px-4 py-3 text-left transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        className="flex w-full min-w-0 items-center gap-3 rounded-row border border-border/70 bg-background px-4 py-3 text-left transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
       >
         <span className="relative flex size-8 shrink-0 items-center justify-center rounded-md border border-border/70 bg-muted/40">
           <HugeiconsIcon

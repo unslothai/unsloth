@@ -265,7 +265,7 @@ export function LoraParamsSection(): ReactElement | null {
                     disabled={unsupportedOnMlx || needsVisionOff}
                     aria-pressed={store.loraVariant === option.value}
                     onClick={() => store.setLoraVariant(option.value)}
-                    className={`flex-1 corner-squircle rounded-[14px] border px-3 py-2 text-left transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-60 ${selectableOptionStateClassName(store.loraVariant === option.value)}`}
+                    className={`flex-1 rounded-row border px-3 py-2 text-left transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-60 ${selectableOptionStateClassName(store.loraVariant === option.value)}`}
                   >
                     <p className="text-xs font-medium">{option.label}</p>
                     <p className="text-ui-10 text-muted-foreground">

@@ -304,7 +304,7 @@ export function UnstructuredDropZone({
               )}
               <button
                 type="button"
-                className="ml-auto inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive"
+                className="ml-auto inline-flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive"
                 onClick={(e) => {
                   e.stopPropagation();
                   handleRemove(i);

@@ -50,7 +50,7 @@ export function HfTokenIndicator({
             onClick={onOpenSettings}
             aria-label={ariaLabel}
             className={cn(
-              "hub-menu-trigger field-soft inline-flex h-9 w-full items-center justify-between gap-2 rounded-[12px] py-0 pl-1.5 pr-3 text-ui-12p5 font-medium text-foreground transition-colors",
+              "hub-menu-trigger field-soft inline-flex h-9 w-full items-center justify-between gap-2 rounded-full py-0 pl-1.5 pr-3 text-ui-12p5 font-medium text-foreground transition-colors",
               PICKER_FOCUS_VISIBLE_CLASS,
             )}
           >

@@ -50,10 +50,10 @@ const ANIMATION_DURATION = 200;
 const toolGroupVariants = cva("aui-tool-group-root group/tool-group w-full", {
   variants: {
     variant: {
-      outline: "corner-squircle rounded-lg border py-3",
+      outline: "rounded-lg border py-3",
       ghost: "",
       muted:
-        "corner-squircle rounded-lg border border-muted-foreground/30 bg-muted/30 py-3",
+        "rounded-lg border border-muted-foreground/30 bg-muted/30 py-3",
     },
   },
   defaultVariants: { variant: "ghost" },

@@ -252,7 +252,7 @@ export function ExecutionOverviewTab({
           </div>
         </div>
       )}
-      <div className="overflow-hidden rounded-xl corner-squircle border">
+      <div className="overflow-hidden rounded-xl border">
         <div className="flex items-center justify-between border-b px-3 py-2">
           <p className="text-sm font-semibold">Terminal output</p>
           <p className="text-xs text-muted-foreground">{terminalLines.length} lines</p>

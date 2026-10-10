@@ -347,7 +347,7 @@ function SheetView({
           {tabs &&
             sheets.map((item, index) => {
               const className = cn(
-                "shrink-0 rounded-md px-3 py-1 text-ui-13 transition-colors hover:bg-muted",
+                "shrink-0 rounded-row px-3 py-1 text-ui-13 transition-colors hover:bg-muted",
                 index === active ? "bg-muted font-medium text-foreground" : "text-muted-foreground",
               );
               return thumbnail ? (

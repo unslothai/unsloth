@@ -226,7 +226,7 @@ function FloatingMonitorPanel({
               onPointerUp={finishDrag}
               onPointerCancel={finishDrag}
               onLostPointerCapture={finishDrag}
-              className="touch-none cursor-grab rounded-md px-1 text-muted-foreground/60 transition-colors hover:bg-muted/60 hover:text-muted-foreground active:cursor-grabbing"
+              className="touch-none cursor-grab rounded-row px-1 text-muted-foreground/60 transition-colors hover:bg-muted/60 hover:text-muted-foreground active:cursor-grabbing"
             >
               <GripVerticalIcon className="size-3.5" />
             </div>

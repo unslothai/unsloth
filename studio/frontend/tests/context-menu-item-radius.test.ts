@@ -6,8 +6,9 @@ import test from "node:test";
 
 import { readText } from "./helpers/kit.ts";
 
-const RECTANGLE_RADIUS = /rounded-\[11px\]/;
-const PILL_RADIUS = /\brounded-(?:full|xl)\b/;
+// A one-line row draws as a pill; a taller row keeps soft corners.
+const ROW_RADIUS = /\brounded-row\b/;
+const OTHER_RADIUS = /\brounded-(?:full|xl|\[\d+px\])(?=[\s"])/;
 
 function functionBody(source: string, name: string): string {
   const start = source.indexOf(`function ${name}(`);
@@ -16,7 +17,7 @@ function functionBody(source: string, name: string): string {
   return source.slice(start, next === -1 ? undefined : next);
 }
 
-test("context-menu item hover matches the standard dropdown rectangle", async () => {
+test("context-menu item hover matches the standard dropdown pill", async () => {
   const contextItem = functionBody(
     await readText("../src/components/ui/context-menu.tsx"),
     "ContextMenuItem",
@@ -26,7 +27,7 @@ test("context-menu item hover matches the standard dropdown rectangle", async ()
     "DropdownMenuItem",
   );
 
-  assert.match(dropdownItem, RECTANGLE_RADIUS);
-  assert.match(contextItem, RECTANGLE_RADIUS);
-  assert.doesNotMatch(contextItem, PILL_RADIUS);
+  assert.match(dropdownItem, ROW_RADIUS);
+  assert.match(contextItem, ROW_RADIUS);
+  assert.doesNotMatch(contextItem, OTHER_RADIUS);
 });

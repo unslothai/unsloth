@@ -249,7 +249,7 @@ function SandboxLevelMenuPicker({ onOsSandboxMissing }: { onOsSandboxMissing?: (
           <span className="min-w-0">{t("settings.sandbox.levelPickerTitle")}</span>
           <DropdownMenuPrimitive.Item
             // my-0!: drops the menu item margin so it lines up with the question.
-            className="my-0! shrink-0 cursor-pointer rounded-sm font-normal text-muted-foreground underline decoration-muted-foreground/50 underline-offset-[3px] outline-hidden transition-colors hover:text-foreground hover:decoration-foreground/60 data-[highlighted]:text-foreground data-[highlighted]:decoration-foreground/60"
+            className="my-0! shrink-0 cursor-pointer rounded-row font-normal text-muted-foreground underline decoration-muted-foreground/50 underline-offset-[3px] outline-hidden transition-colors hover:text-foreground hover:decoration-foreground/60 data-[highlighted]:text-foreground data-[highlighted]:decoration-foreground/60"
             // Deferred past the menu's focus restore.
             onSelect={() =>
               setTimeout(

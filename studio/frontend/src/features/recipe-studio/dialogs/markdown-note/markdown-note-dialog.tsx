@@ -37,7 +37,7 @@ export function MarkdownNoteDialog({
           <input
             id={colorId}
             type="color"
-            className="nodrag h-9 w-14 cursor-pointer rounded-md border border-border/60 bg-transparent p-1"
+            className="nodrag h-9 w-14 cursor-pointer rounded-full border border-border/60 bg-transparent p-1"
             value={config.note_color ?? "#FDE68A"}
             onChange={(event) => onUpdate({ note_color: event.target.value })}
           />
@@ -66,7 +66,7 @@ export function MarkdownNoteDialog({
         />
         <Textarea
           id={markdownId}
-          className="corner-squircle nodrag min-h-[calc(180px*var(--ui-space-scale,1))]"
+          className="nodrag min-h-[calc(180px*var(--ui-space-scale,1))]"
           placeholder="## Note"
           value={config.markdown}
           onChange={(event) => onUpdate({ markdown: event.target.value })}

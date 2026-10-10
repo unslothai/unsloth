@@ -32,7 +32,7 @@ export function RunValidateFloatingControls({
       >
         <Button
           type="button"
-          className="corner-squircle h-11 px-5"
+          className="h-11 px-5"
           onClick={() => onOpenRunDialog(runDialogKind)}
           disabled={runBusy}
         >
@@ -42,7 +42,7 @@ export function RunValidateFloatingControls({
         <Button
           type="button"
           variant="outline"
-          className="corner-squircle h-11 px-5"
+          className="h-11 px-5"
           onClick={onValidate}
           disabled={validateLoading || executionLocked}
         >

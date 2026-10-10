@@ -41,7 +41,7 @@ export function SaveVoiceDialog({
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="corner-squircle dialog-soft-surface gap-5 sm:max-w-md">
+      <DialogContent className="dialog-soft-surface gap-5 sm:max-w-md">
         {/* Content unmounts on close, so each open starts from its own values. */}
         <SaveVoiceForm
           mode={mode}

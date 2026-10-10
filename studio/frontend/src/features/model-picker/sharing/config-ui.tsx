@@ -137,7 +137,7 @@ export function SharedRunConfigReview({
   const download = downloadNote(model, ggufVariant);
   return (
     <details open={true} className="group mb-5 border-b border-border pb-5">
-      <summary className="grid cursor-pointer list-none grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:ring-offset-2 focus-visible:ring-offset-background [&::-webkit-details-marker]:hidden">
+      <summary className="grid cursor-pointer list-none grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 rounded-row outline-none focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:ring-offset-2 focus-visible:ring-offset-background [&::-webkit-details-marker]:hidden">
         <span className="flex min-h-8 min-w-0 items-center gap-2">
           <span className="min-w-0 truncate text-ui-13 font-medium leading-[1.25] tracking-nav text-foreground">
             {reviewTitle(keys.length > 0, model, ggufVariant)}

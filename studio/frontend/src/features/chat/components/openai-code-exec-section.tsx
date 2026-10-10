@@ -449,7 +449,7 @@ export function OpenAICodeExecSection({
         {sortedContainers.length === 0 ? (
           // Quiet placeholder with the same muted border as row cards so an empty section does not look
           // like an active control. The first container is lazy-created on first send.
-          <div className="flex h-9 w-full items-center rounded-md border border-dashed border-border/60 bg-muted/20 px-2 text-xs text-muted-foreground">
+          <div className="flex h-9 w-full items-center rounded-full border border-dashed border-border/60 bg-muted/20 px-2 text-xs text-muted-foreground">
             None yet - one will be created on first send.
           </div>
         ) : (
@@ -465,7 +465,7 @@ export function OpenAICodeExecSection({
               return (
                 <li
                   key={c.id}
-                  className={`flex items-center gap-2 rounded-md border px-2 py-1.5 text-xs transition-colors ${
+                  className={`flex items-center gap-2 rounded-row border px-2 py-1.5 text-xs transition-colors ${
                     isActive
                       ? "border-ring-strong bg-primary/5"
                       : "border-border/60 hover:bg-muted/40"

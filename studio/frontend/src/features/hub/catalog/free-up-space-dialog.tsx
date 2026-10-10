@@ -148,7 +148,7 @@ export function FreeUpSpaceDialog({
             {companions.map((companion, index) => (
               <li
                 key={companionIdentity(companion)}
-                className="flex items-center gap-3 rounded-[10px] px-2 py-2 hover:bg-muted/50"
+                className="flex items-center gap-3 rounded-row px-2 py-2 hover:bg-muted/50"
               >
                 <Checkbox
                   id={`orphan-${index}`}

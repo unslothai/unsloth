@@ -82,7 +82,7 @@ function ShowcaseTile({
           <button
             type="button"
             onClick={onBrowse}
-            className="size-full overflow-hidden rounded-[8px] bg-muted outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="size-full overflow-hidden rounded-[14px] bg-muted outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             {url ? (
               <img
@@ -200,7 +200,7 @@ export function DatasetShowcase({
               <button
                 type="button"
                 onClick={onBrowse}
-                className="flex size-14 shrink-0 flex-col items-center justify-center rounded-[8px] bg-muted text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                className="flex size-14 shrink-0 flex-col items-center justify-center rounded-[16px] bg-muted text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <span className="text-sm font-medium">+{remaining}</span>
                 <span className="text-ui-9">more</span>

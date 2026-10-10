@@ -220,7 +220,7 @@ export function ThreadSidebar({
               <DropdownMenuTrigger asChild>
                 <button
                   type="button"
-                  className="flex items-center justify-center rounded-sm p-0.5 text-muted-foreground hover:bg-accent focus:outline-none focus-visible:ring-0"
+                  className="flex items-center justify-center rounded-row p-0.5 text-muted-foreground hover:bg-accent focus:outline-none focus-visible:ring-0"
                   title="Export options"
                 >
                   <HugeiconsIcon icon={MoreHorizontalIcon} className="size-3.5" />
@@ -340,7 +340,7 @@ export function ThreadSidebar({
           href="https://unsloth.ai/docs/new/studio/chat"
           target="_blank"
           rel="noopener noreferrer"
-          className="flex items-center gap-2 corner-squircle rounded-md px-2 py-1.5 text-xs font-medium text-primary bg-primary/10 transition-colors hover:bg-primary/20"
+          className="flex items-center gap-2 rounded-row px-2 py-1.5 text-xs font-medium text-primary bg-primary/10 transition-colors hover:bg-primary/20"
         >
           <HugeiconsIcon icon={BookOpen02Icon} className="size-4 shrink-0" strokeWidth={2} />
           <span>Learn more in docs</span>
@@ -349,7 +349,7 @@ export function ThreadSidebar({
           href="https://unsloth.ai/docs/new/changelog"
           target="_blank"
           rel="noopener noreferrer"
-          className="flex items-center gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          className="flex items-center gap-2 rounded-row px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
         >
           <HugeiconsIcon icon={NewReleasesIcon} className="size-4 shrink-0" strokeWidth={2} />
           <span>What&apos;s new</span>
@@ -359,7 +359,7 @@ export function ThreadSidebar({
       {/* Rename dialog */}
       <Dialog open={renamingItem !== null} onOpenChange={(open) => { if (!open) setRenamingItem(null); }}>
         <DialogContent
-          className="corner-squircle dialog-soft-surface sm:max-w-sm"
+          className="dialog-soft-surface sm:max-w-sm"
           onEscapeKeyDown={(e) => { if (e.isComposing || e.keyCode === 229) e.preventDefault(); }}
         >
           <DialogHeader>

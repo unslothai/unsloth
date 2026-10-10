@@ -26,7 +26,7 @@ export function ToolResultOutput({ text }: { text: string }) {
         <button
           type="button"
           onClick={() => setShowAll(true)}
-          className="mt-1 rounded px-1.5 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          className="mt-1 rounded-row px-1.5 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
         >
           {tail.hiddenLines > 0
             ? `Show all (${tail.hiddenLines.toLocaleString()} earlier lines hidden)`

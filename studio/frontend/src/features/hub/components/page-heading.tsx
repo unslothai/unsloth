@@ -29,7 +29,7 @@ export function PageHeading({
           onClick={onTitleClick}
           className={cn(
             TITLE_CLASS,
-            "cursor-pointer rounded-md text-left outline-none transition-opacity hover:opacity-80 focus-visible:ring-1 focus-visible:ring-ring",
+            "cursor-pointer rounded-row text-left outline-none transition-opacity hover:opacity-80 focus-visible:ring-1 focus-visible:ring-ring",
           )}
         >
           {title}

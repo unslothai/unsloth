@@ -163,7 +163,7 @@ export function BlenderMcpSetup({ servers, disabled, onBusyChange }: {
         {busy && <span role="status" className="inline-flex items-center gap-2 text-xs text-muted-foreground"><Spinner />Setting up / checking MCP…</span>}
       </div>
       <Collapsible className="border-t pt-3">
-        <CollapsibleTrigger className="group flex items-center gap-1 rounded-md py-1 text-xs text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+        <CollapsibleTrigger className="group flex items-center gap-1 rounded-full py-1 text-xs text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
           {config?.server_id ? "Setup help" : "Set up Blender"}
           <ChevronDown aria-hidden="true" className="size-4 text-muted-foreground transition-transform duration-200 group-data-[state=open]:rotate-180 motion-reduce:transition-none" />
         </CollapsibleTrigger>
@@ -182,7 +182,7 @@ export function BlenderMcpSetup({ servers, disabled, onBusyChange }: {
       </Collapsible>
 
       <Collapsible className="border-t pt-3">
-        <CollapsibleTrigger className="group flex w-full items-center justify-between rounded-md py-1 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+        <CollapsibleTrigger className="group flex w-full items-center justify-between rounded-full py-1 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
           Advanced settings
           <ChevronDown aria-hidden="true" className="size-4 text-muted-foreground transition-transform duration-200 group-data-[state=open]:rotate-180 motion-reduce:transition-none" />
         </CollapsibleTrigger>

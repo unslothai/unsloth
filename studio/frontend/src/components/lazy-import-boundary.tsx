@@ -52,7 +52,7 @@ export function LazyImportFailure({
           ref={reloadRef}
           type="button"
           onClick={() => window.location.reload()}
-          className="rounded-md border border-border bg-background px-3 py-1.5 font-medium text-xs hover:bg-accent"
+          className="rounded-row border border-border bg-background px-3 py-1.5 font-medium text-xs hover:bg-accent"
         >
           {reloadLabel}
         </button>
@@ -60,7 +60,7 @@ export function LazyImportFailure({
           <button
             type="button"
             onClick={onDismiss}
-            className="rounded-md border border-border bg-background px-3 py-1.5 font-medium text-xs hover:bg-accent"
+            className="rounded-row border border-border bg-background px-3 py-1.5 font-medium text-xs hover:bg-accent"
           >
             {dismissLabel}
           </button>

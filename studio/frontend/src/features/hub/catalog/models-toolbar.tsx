@@ -450,7 +450,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
                       role="checkbox"
                       aria-checked={fitOnDeviceOnly}
                       onClick={() => onFitOnDeviceOnlyChange(!fitOnDeviceOnly)}
-                      className="flex w-full cursor-pointer select-none items-center gap-2 rounded-[10px] px-3 py-2 text-left text-ui-12p5 text-muted-foreground transition-colors hover:text-foreground"
+                      className="flex w-full cursor-pointer select-none items-center gap-2 rounded-row px-3 py-2 text-left text-ui-12p5 text-muted-foreground transition-colors hover:text-foreground"
                     >
                       <Checkbox
                         checked={fitOnDeviceOnly}

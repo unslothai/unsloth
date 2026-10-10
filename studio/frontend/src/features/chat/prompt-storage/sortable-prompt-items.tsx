@@ -384,7 +384,7 @@ export function SortablePromptItems({
                   setUids((prev) => prev.filter((_, idx) => idx !== i));
                 }}
                 disabled={items.length <= minItems}
-                className="mt-1.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                className="mt-1.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
                 title="Remove"
               >
                 <XIcon className="size-3.5" />

@@ -367,7 +367,7 @@ export function RecentDictationsView({
                         ? t("settings.voice.recents.openChat")
                         : t("settings.voice.recents.view")
                     }
-                    className="flex min-w-0 flex-1 items-start gap-4 rounded-md px-1 py-3 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    className="flex min-w-0 flex-1 items-start gap-4 rounded-row px-1 py-3 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   >
                     <span className="min-w-0 flex-1">
                       <span className="line-clamp-3 whitespace-pre-wrap break-words text-sm text-foreground">

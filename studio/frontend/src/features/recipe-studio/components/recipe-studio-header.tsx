@@ -88,7 +88,7 @@ export function RecipeStudioHeader({
     <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-4 border-b px-4 py-3 max-sm:grid-cols-[minmax(0,1fr)_auto] max-sm:gap-x-2 max-sm:gap-y-2.5 max-sm:px-3">
       <div className="flex min-w-0 items-center gap-3">
         <div
-          className="flex size-8 shrink-0 items-center justify-center rounded-lg corner-squircle border border-border/70 bg-muted/20"
+          className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-border/70 bg-muted/20"
           aria-hidden={true}
         >
           <HugeiconsIcon

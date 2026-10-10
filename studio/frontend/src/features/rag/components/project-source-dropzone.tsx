@@ -402,7 +402,7 @@ export function ProjectSourceDropzone({
               {staged.map((entry) => (
                 <li
                   key={entry.id}
-                  className="flex items-center gap-2.5 rounded-[10px] px-2.5 py-2 hover:bg-muted/50"
+                  className="flex items-center gap-2.5 rounded-row px-2.5 py-2 hover:bg-muted/50"
                 >
                   <HugeiconsIcon
                     icon={FileEmpty02Icon}
@@ -438,7 +438,7 @@ export function ProjectSourceDropzone({
               type="button"
               disabled={disabled}
               onClick={() => inputRef.current?.click()}
-              className="flex items-center justify-center gap-2 rounded-[10px] py-2 text-ui-13 font-medium text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              className="flex items-center justify-center gap-2 rounded-row py-2 text-ui-13 font-medium text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
               <HugeiconsIcon
                 icon={FolderPlusIcon}

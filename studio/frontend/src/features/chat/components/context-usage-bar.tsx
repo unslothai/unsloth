@@ -119,7 +119,7 @@ export const ContextUsageBar: FC<
     : `calc(${faceWidthCh(face)}ch + 5 * var(--spacing))`;
   const compactWidth =
     compactFace === null ? "calc(30px * var(--ui-space-scale, 1))" : `calc(${faceWidthCh(compactFace)}ch + 5 * var(--spacing))`;
-  const hover = "rounded-[10px] transition-colors group-hover:bg-chat-icon-bg-hover";
+  const hover = "rounded-full transition-colors group-hover:bg-chat-icon-bg-hover";
 
   return (
     <Tooltip>

@@ -824,7 +824,7 @@ function AnnotateBar({
       <button
         type="button"
         onClick={onExit}
-        className="h-9 cursor-pointer whitespace-nowrap rounded-xl px-3 transition-colors hover:bg-muted dark:hover:bg-neutral-700"
+        className="h-9 cursor-pointer whitespace-nowrap rounded-full px-3 transition-colors hover:bg-muted dark:hover:bg-neutral-700"
       >
         {t("browser.annotate.cancel")}
       </button>
@@ -833,7 +833,7 @@ function AnnotateBar({
           type="button"
           onClick={onSend}
           disabled={sendDisabled}
-          className="h-9 cursor-pointer whitespace-nowrap rounded-xl bg-primary px-4 font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:cursor-default disabled:opacity-50"
+          className="h-9 cursor-pointer whitespace-nowrap rounded-full bg-primary px-4 font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:cursor-default disabled:opacity-50"
         >
           {t("browser.annotate.send")}
         </button>

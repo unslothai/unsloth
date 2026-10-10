@@ -53,7 +53,7 @@ export function ExecutionSidebar({
                 type="button"
                 onClick={() => onSelectExecution(execution.id)}
                 className={cn(
-                  "w-full rounded-xl corner-squircle border border-r-2 border-border/60 bg-card/60 p-3 text-left transition-colors",
+                  "w-full rounded-xl border border-r-2 border-border/60 bg-card/60 p-3 text-left transition-colors",
                   selectedExecutionId === execution.id
                     ? "border-ring-strong bg-primary/[0.045]"
                     : "hover:bg-muted/25",

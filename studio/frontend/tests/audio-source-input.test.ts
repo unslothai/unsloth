@@ -227,7 +227,7 @@ test("the whole card is the drop target, with every way in", () => {
   }
   assert.match(
     card,
-    /corner-squircle grid gap-3 rounded-4xl bg-card p-4 ring-1/,
+    /grid gap-3 rounded-4xl bg-card p-4 ring-1/,
   );
   assert.doesNotMatch(card, /shadow-/);
   assert.ok(

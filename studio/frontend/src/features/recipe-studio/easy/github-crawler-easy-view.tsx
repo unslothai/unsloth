@@ -125,7 +125,7 @@ export function GithubCrawlerEasyView({
     <div className="mx-auto flex h-full w-full max-w-2xl flex-col gap-4 overflow-y-auto px-6 py-6">
       <div className="flex items-start gap-3">
         <div
-          className="flex size-10 shrink-0 items-center justify-center rounded-lg corner-squircle border border-border/70 bg-muted/20"
+          className="flex size-10 shrink-0 items-center justify-center rounded-lg border border-border/70 bg-muted/20"
           aria-hidden={true}
         >
           <HugeiconsIcon icon={GithubIcon} className="size-5" />

@@ -210,7 +210,7 @@ function LocalGgufVariantList({
               type="button"
               onClick={() => onSelect(variant.quant)}
               className={cn(
-                "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted/60",
+                "flex w-full items-center gap-2 rounded-row px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted/60",
                 selected && "bg-background text-foreground shadow-sm",
               )}
             >
@@ -341,7 +341,7 @@ function LocalModelRow({
         disabled={probing}
         onClick={() => onSelectModel(model)}
         className={cn(
-          "flex w-full items-center gap-2 rounded-lg px-2.5 py-2.5 text-left text-sm transition-colors hover:bg-muted/50",
+          "flex w-full items-center gap-2 rounded-row px-2.5 py-2.5 text-left text-sm transition-colors hover:bg-muted/50",
           selected && "bg-muted/70 text-foreground ring-1 ring-border/70",
         )}
       >

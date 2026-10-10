@@ -55,7 +55,7 @@ export function SectionCard({
   return (
     <div
       className={cn(
-        "bg-card corner-squircle rounded-3xl ring-1 ring-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-edge-gain,1)),transparent)] flex flex-col gap-5 p-5 relative overflow-clip transition-all duration-300 ease-in-out",
+        "bg-card rounded-3xl ring-1 ring-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-edge-gain,1)),transparent)] flex flex-col gap-5 p-5 relative overflow-clip transition-all duration-300 ease-in-out",
         featured && styles.border,
         className,
       )}
@@ -67,7 +67,7 @@ export function SectionCard({
       <div className="flex items-center gap-3">
         <div
           className={cn(
-            "rounded-xl corner-squircle p-2 ring-1 shrink-0",
+            "rounded-xl p-2 ring-1 shrink-0",
             styles.iconBox,
           )}
         >

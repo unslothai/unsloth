@@ -716,7 +716,7 @@ export function TtsOutput({
                   key={clip.id}
                   {...historyReorder.tileProps(clip.id)}
                   className={cn(
-                    "group relative flex items-center gap-1 rounded-md pr-1 transition-colors hover:bg-muted",
+                    "group relative flex items-center gap-1 rounded-row pr-1 transition-colors hover:bg-muted",
                     clip.id === selectedId && "bg-muted",
                     historyReorder.draggingId === clip.id && "opacity-40",
                     nested && "ml-4",

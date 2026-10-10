@@ -172,7 +172,7 @@ export function StartTrainingCta() {
             <button
               type="button"
               onClick={ensureModelDefaultsLoaded}
-              className="inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 font-medium text-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+              className="inline-flex shrink-0 items-center gap-1 rounded-row px-1.5 py-0.5 font-medium text-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
             >
               <HugeiconsIcon
                 icon={Refresh01Icon}

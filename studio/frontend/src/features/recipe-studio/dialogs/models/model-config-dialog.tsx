@@ -284,7 +284,7 @@ export function ModelConfigDialog({
             />
             <Textarea
               id={extraBodyId}
-              className="corner-squircle nodrag"
+              className="nodrag"
               placeholder='{"top_k": 20, "min_p": 0.0}'
               value={config.inference_extra_body ?? ""}
               onChange={(event) =>
