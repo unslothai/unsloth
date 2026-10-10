@@ -952,6 +952,7 @@ def family_train_infos() -> list[dict[str, Any]]:
                 # save_steps is REFUSED for a checkpointless family, not ignored, so a panel that keeps offering
                 # "Checkpoint every" turns a nonzero value into a rejected Start with no way to see why.
                 "supports_checkpoints": name not in CHECKPOINTLESS_FAMILIES,
+                "supports_bucketing": name not in UNBUCKETED_FAMILIES,
                 # A batch > 1 is REFUSED for a family whose forward covers one packed sequence, so leaving the control
                 # unrestricted turns a reasonable 2 into a rejected Start with nothing to say why.
                 "max_train_batch_size": 1 if name in SINGLE_SEQUENCE_FAMILIES else None,
@@ -999,6 +1000,8 @@ class DiffusionLoraConfig:
     lr_warmup_steps: int = 0
     center_crop: bool = False
     random_flip: bool = True
+    # None: on for a fresh run, the bundle's recorded value on a resume.
+    bucketing: Optional[bool] = None
     caption_column: str = "text"
     adapter_name: str = "default"
     hf_token: Optional[str] = None
@@ -1270,6 +1273,11 @@ class DiffusionLoraConfig:
         # trainer resolve different captions from a metadata.jsonl and their fingerprints disagree, so an accepted
         # resume is refused in the child.
         caption_column = str(self.caption_column or "").strip() or "text"
+        bucketing = None if self.bucketing is None else _coerce_bool(self.bucketing)
+        if resolved_family in UNBUCKETED_FAMILIES:
+            bucketing = False
+        elif bucketing is None and not resume_from_checkpoint:
+            bucketing = True
         return replace(
             self,
             learning_rate = learning_rate,
@@ -1282,6 +1290,7 @@ class DiffusionLoraConfig:
             caption_column = caption_column,
             num_epochs = int(self.num_epochs),
             cache_variants = int(self.cache_variants),
+            bucketing = bucketing,
             save_steps = save_steps,
             save_total_limit = save_total_limit,
             resume_from_checkpoint = resume_from_checkpoint,
@@ -1296,14 +1305,22 @@ class DiffusionLoraConfig:
         )
 
 
-def resolve_train_steps(cfg: "DiffusionLoraConfig", n_images: int) -> int:
+def resolve_train_steps(
+    cfg: "DiffusionLoraConfig",
+    n_images: int,
+    image_paths: Optional[list[str]] = None,
+) -> int:
     """The effective optimizer-step count for a run. When ``cfg.num_epochs`` is set (> 0), one epoch
-    is one full pass over the dataset in optimizer steps -- ceil(N / (batch x grad_accum)) -- so
-    the run is ``num_epochs`` such passes, capped at 100000. With ``num_epochs == 0`` the
-    explicit ``cfg.train_steps`` is used unchanged."""
+    is one full pass over the dataset in optimizer steps -- ceil(ceil(N / batch) / grad_accum) --
+    so the run is ``num_epochs`` such passes, capped at 100000. Bucketed runs (``image_paths``)
+    count batches per bucket: a bucket pads its last batch within itself. With ``num_epochs == 0`` the explicit ``cfg.train_steps`` is used unchanged."""
     if cfg.num_epochs > 0:
-        per_step = max(1, cfg.train_batch_size * cfg.gradient_accumulation_steps)
-        steps_per_epoch = max(1, math.ceil(n_images / per_step))
+        batch = max(1, cfg.train_batch_size)
+        batches = math.ceil(n_images / batch)
+        canvases = plan_image_canvases(cfg, image_paths)[0] if image_paths is not None else None
+        if canvases is not None:
+            batches = sum(math.ceil(len(g) / batch) for g in bucket_groups(canvases).values())
+        steps_per_epoch = max(1, math.ceil(batches / max(1, cfg.gradient_accumulation_steps)))
         return min(100000, cfg.num_epochs * steps_per_epoch)
     return cfg.train_steps
 
@@ -1495,6 +1512,7 @@ def discover_image_caption_pairs(
 # The shared DiffusionLoraConfig carries save_steps / resume_from_checkpoint for every family, so a loop that
 # implements neither has to say so rather than ignore them.
 CHECKPOINTLESS_FAMILIES: frozenset[str] = frozenset({"minimax-h3"})
+UNBUCKETED_FAMILIES: frozenset[str] = frozenset({"minimax-h3"})
 
 # The batch axis is a pure replication axis for these: the layout, the rotary grid and the row timesteps are set by
 # one clip's geometry and its caption's length.
@@ -1576,6 +1594,7 @@ _H3_FIXED_RECIPE: dict[str, Any] = {
     "snr_gamma": None,
     "cache_latents": True,
     "cache_variants": 1,
+    "bucketing": False,
 }
 
 
@@ -1629,20 +1648,29 @@ def _emit(on_event: Optional[EventCb], type_: str, **kw: Any) -> None:
 
 
 def _plan_cache_variants(
-    num_images: int, cache_variants: int, center_crop: bool, random_flip: bool, seed: int
+    num_images: int,
+    cache_variants: int,
+    center_crop: bool,
+    random_flip: bool,
+    seed: int,
+    crop_room: Optional[list[tuple[int, int]]] = None,
 ) -> list[list[tuple[float, float, bool]]]:
     """Seed-deterministic crop/flip plan for the latent cache: per image, up to ``cache_variants``
     draws of (u_left, u_top, flip) with the crop as unit fractions the loader maps onto its
     integer crop range. Uses its own rng stream so the training loop's draws are untouched.
     Center-crop / no-flip collapse duplicate variants, so callers encode each distinct variant
-    exactly once. Pure (no torch) for CPU unit tests."""
+    exactly once. ``crop_room``: per-image (x, y) crop slack; an axis with none pins its fraction.
+    Pure (no torch) for CPU unit tests."""
     crop_rng = random.Random(seed)
     plan: list[list[tuple[float, float, bool]]] = []
-    for _ in range(max(0, num_images)):
+    for i in range(max(0, num_images)):
         variants: list[tuple[float, float, bool]] = []
         for _ in range(max(1, cache_variants)):
             u_left, u_top = crop_rng.random(), crop_rng.random()
             flip = bool(random_flip and crop_rng.random() < 0.5)
+            if crop_room is not None:
+                u_left = u_left if crop_room[i][0] > 0 else 0.5
+                u_top = u_top if crop_room[i][1] > 0 else 0.5
             if center_crop:
                 u_left = u_top = 0.5  # loader ignores the fractions for a center crop
             key = (u_left, u_top, flip)
@@ -1650,6 +1678,48 @@ def _plan_cache_variants(
                 variants.append(key)
         plan.append(variants)
     return plan
+
+
+def resolve_bucketing(cfg: "DiffusionLoraConfig") -> "DiffusionLoraConfig":
+    """Settle an unset ``bucketing``: the bundle's recorded value on a resume (pre-field runs stay square)."""
+    if cfg.bucketing is not None:
+        return cfg
+    if not cfg.resume_from_checkpoint:
+        return replace(cfg, bucketing = cfg.resolved_family not in UNBUCKETED_FAMILIES)
+    from core.training.diffusion_checkpoint import recorded_bucketing
+
+    return replace(cfg, bucketing = recorded_bucketing(cfg.resume_from_checkpoint))
+
+
+def plan_image_canvases(
+    cfg: "DiffusionLoraConfig", image_paths: list[str]
+) -> tuple[Optional[list[tuple[int, int]]], Optional[list[tuple[int, int]]]]:
+    """Per-image (w, h) canvas and (x, y) crop slack, or (None, None) when unbucketed. Headers only."""
+    if not cfg.bucketing:
+        return None, None
+    from core.training.diffusion_train_extras import (
+        bucket_resolutions,
+        cover_resize_dims,
+        nearest_bucket,
+        oriented_image_size,
+    )
+
+    choices = bucket_resolutions(cfg.resolution)
+    canvases, room = [], []
+    for path in image_paths:
+        w0, h0 = oriented_image_size(path)
+        bw, bh = nearest_bucket(w0, h0, choices)
+        rw, rh = cover_resize_dims(w0, h0, bw, bh)
+        canvases.append((bw, bh))
+        room.append((rw - bw, rh - bh))
+    return canvases, room
+
+
+def bucket_groups(canvases: list[tuple[int, int]]) -> dict[tuple[int, int], list[int]]:
+    groups: dict[tuple[int, int], list[int]] = {}
+    for i, shape in enumerate(canvases):
+        groups.setdefault(shape, []).append(i)
+    return groups
 
 
 # Two fp32 posterior tensors per crop/flip variant per image, so a few thousand images can exhaust pinned RAM; over
@@ -2230,6 +2300,8 @@ def _config_from_dict(config: dict) -> DiffusionLoraConfig:
         kwargs["gradient_checkpointing"] = _coerce_gradient_checkpointing(
             kwargs["gradient_checkpointing"]
         )
+    if kwargs.get("bucketing") is not None:
+        kwargs["bucketing"] = _coerce_bool(kwargs["bucketing"])
     for flag in ("cache_latents", "enable_tf32"):
         if flag in kwargs:
             kwargs[flag] = _coerce_bool(kwargs[flag])

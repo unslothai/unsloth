@@ -1317,6 +1317,8 @@ def test_the_persisted_h3_recipe_is_the_one_the_loop_runs():
         # cached-with-one anyway and the record said otherwise.
         "cache_latents": True,
         "cache_variants": 1,
+        # One packed clip canvas: no image buckets, whatever the request said.
+        "bucketing": False,
     }
     # Config-only, and no other family's loop disagrees with its request.
     other = DiffusionLoraConfig(

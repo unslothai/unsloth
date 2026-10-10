@@ -710,6 +710,9 @@ class DiffusionTrainingService:
             self._config = {
                 k: v for k, v in dict(config).items() if k not in {"hf_token", "_job_account"}
             }
+            # A resume's unset bucketing stays unset; the trainer adopts the bundle's.
+            if normalized_cfg.bucketing is not None:
+                self._config["bucketing"] = normalized_cfg.bucketing
             self._config.update(train_recipe_overrides(normalized_cfg))
             self._pump = account_thread(
                 target = self._pump_loop, args = (event_queue, self._proc), daemon = True

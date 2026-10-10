@@ -3242,6 +3242,14 @@ def _resolve_diffusion_data_dir(raw: str) -> Path:
     return resolved
 
 
+def _diffusion_resume_target_steps(normalized_cfg: Any, pairs: list) -> int:
+    """The trainer's step target (bucketing and per-bucket batches settled alike); a smaller one refuses late checkpoints."""
+    from core.training import diffusion_train_common as _dtc
+
+    cfg = _dtc.resolve_bucketing(normalized_cfg)
+    return _dtc.resolve_train_steps(cfg, len(pairs), [p for p, _ in pairs])
+
+
 def _preflight_diffusion_resume(
     config: dict,
     identity: Any,
@@ -3512,11 +3520,14 @@ async def start_diffusion_training(
             raise HTTPException(status_code = 400, detail = str(e))
         if resuming:
             try:
+                target_steps = await asyncio.to_thread(
+                    _diffusion_resume_target_steps, normalized_cfg, pairs
+                )
                 await asyncio.to_thread(
                     _preflight_diffusion_resume,
                     config,
                     resume_identity.with_dataset(dataset_fingerprint(pairs)),
-                    _dtc.resolve_train_steps(normalized_cfg, len(pairs)),
+                    target_steps,
                 )
             except ResumeError as e:
                 raise HTTPException(status_code = 400, detail = str(e))

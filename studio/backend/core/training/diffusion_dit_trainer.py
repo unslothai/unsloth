@@ -55,12 +55,15 @@ from core.training.diffusion_train_common import (
     _plan_cache_variants,
     _publish_to_lora_catalog,
     _restore_perf_flags,
+    bucket_groups,
     discover_image_caption_pairs,
     has_functional_torchao,
     flow_bf16_trainable,
     native_bf16_supported_xpu,
     PermutationBatchSampler,
+    plan_image_canvases,
     repo_is_prequantized,
+    resolve_bucketing,
     resolve_train_device,
     resolve_train_steps,
     restore_resume_state,
@@ -79,7 +82,9 @@ from core.training.diffusion_checkpoint import (
     preflight_resume,
 )
 from core.training.diffusion_train_extras import (
+    BucketBatchSampler,
     LoRAEMA,
+    cover_resize_dims,
     PersistentConditioningCache,
     save_ema_adapter,
 )
@@ -1509,17 +1514,22 @@ def _assert_gated_access(base_model: str, hf_token: Optional[str]) -> None:
         )
 
 
+def _canvas(resolution):
+    """(w, h) of the training canvas: a bucket tuple, or the legacy square ``resolution``."""
+    if isinstance(resolution, (tuple, list)):
+        return int(resolution[0]), int(resolution[1])
+    return int(resolution), int(resolution)
+
+
 def _open_resized(path, resolution):
-    """Open + EXIF-orient + short-side resize to ``resolution`` (same geometry as the SDXL loader).
-    Returns the resized PIL image and its (rw, rh)."""
+    """Open + EXIF-orient + cover-resize to the canvas (same geometry as the SDXL loader; a square
+    canvas is the legacy short-side resize). Returns the resized PIL image and its (rw, rh)."""
     from PIL import Image, ImageOps
 
     from core.inference.mcp_images import flattened_rgb
 
     img = flattened_rgb(ImageOps.exif_transpose(Image.open(path)), background = (255, 255, 255))
-    w0, h0 = img.size
-    scale = resolution / min(w0, h0)
-    rw, rh = max(resolution, round(w0 * scale)), max(resolution, round(h0 * scale))
+    rw, rh = cover_resize_dims(*img.size, *_canvas(resolution))
     return img.resize((rw, rh), Image.LANCZOS), rw, rh
 
 
@@ -1536,13 +1546,14 @@ def _load_pixel_tensor(path, resolution, center_crop, random_flip, rng):
     without the SDXL time-ids (DiT families don't use them)."""
     from PIL import Image
 
+    cw, ch = _canvas(resolution)
     img, rw, rh = _open_resized(path, resolution)
     if center_crop:
-        left, top = (rw - resolution) // 2, (rh - resolution) // 2
+        left, top = (rw - cw) // 2, (rh - ch) // 2
     else:
-        left = rng.randint(0, max(0, rw - resolution))
-        top = rng.randint(0, max(0, rh - resolution))
-    img = img.crop((left, top, left + resolution, top + resolution))
+        left = rng.randint(0, max(0, rw - cw))
+        top = rng.randint(0, max(0, rh - ch))
+    img = img.crop((left, top, left + cw, top + ch))
     if random_flip and rng.random() < 0.5:
         img = img.transpose(Image.FLIP_LEFT_RIGHT)
     return _to_unit_tensor(img)
@@ -1555,13 +1566,14 @@ def _load_pixel_tensor_planned(path, resolution, center_crop, u_left, u_top, fli
     center-crop run matches the uncached one bit-for-bit."""
     from PIL import Image
 
+    cw, ch = _canvas(resolution)
     img, rw, rh = _open_resized(path, resolution)
     if center_crop:
-        left, top = (rw - resolution) // 2, (rh - resolution) // 2
+        left, top = (rw - cw) // 2, (rh - ch) // 2
     else:
-        left = min(int(u_left * (rw - resolution + 1)), max(0, rw - resolution))
-        top = min(int(u_top * (rh - resolution + 1)), max(0, rh - resolution))
-    img = img.crop((left, top, left + resolution, top + resolution))
+        left = min(int(u_left * (rw - cw + 1)), max(0, rw - cw))
+        top = min(int(u_top * (rh - ch + 1)), max(0, rh - ch))
+    img = img.crop((left, top, left + cw, top + ch))
     if flip:
         img = img.transpose(Image.FLIP_LEFT_RIGHT)
     return _to_unit_tensor(img)
@@ -1578,6 +1590,7 @@ def _build_latent_cache(
     check_stop,
     pcache = None,
     plan = None,
+    canvases = None,
 ):
     """Precompute the per-image latent posterior cache: for each planned crop/flip variant, encode
     once and store the affine (A, B) pair on CPU (pinned when possible) in fp32. The stats stay
@@ -1614,15 +1627,18 @@ def _build_latent_cache(
     for i, path in enumerate(image_paths):
         variants = []
         for u_left, u_top, flip in plan[i]:
-            key = pcache.latent_key(path, (u_left, u_top, flip)) if pcache is not None else None
+            canvas = cfg.resolution if canvases is None else canvases[i]
+            key = (
+                pcache.latent_key(path, (u_left, u_top, flip), None if canvases is None else canvas)
+                if pcache is not None
+                else None
+            )
             entry = pcache.get(key) if key is not None else None
             if entry is not None:
                 a, b = entry
             else:
                 px = (
-                    _load_pixel_tensor_planned(
-                        path, cfg.resolution, cfg.center_crop, u_left, u_top, flip
-                    )
+                    _load_pixel_tensor_planned(path, canvas, cfg.center_crop, u_left, u_top, flip)
                     .unsqueeze(0)
                     .to(device)
                 )
@@ -1686,7 +1702,14 @@ def _encode_prompts_cached(spec, pipe, to_encode, device, pcache):
     return [hits[cap] for cap in to_encode]
 
 
-def _load_warm_conditioning(pcache, image_paths, plan, to_encode, device):
+def _load_warm_conditioning(
+    pcache,
+    image_paths,
+    plan,
+    to_encode,
+    device,
+    canvases = None,
+):
     """Load the FULL conditioning set (caption embeds + latent posterior stats) from the persistent
     cache. Returns (caption_embeds, latent_cache) on a complete hit, else (None, None) so the
     caller takes the cold path -- any missing/corrupt entry, and also an in-memory holding that
@@ -1719,7 +1742,9 @@ def _load_warm_conditioning(pcache, image_paths, plan, to_encode, device):
     for i, path in enumerate(image_paths):
         variants = []
         for variant in plan[i]:
-            entry = pcache.get(pcache.latent_key(path, variant))
+            entry = pcache.get(
+                pcache.latent_key(path, variant, None if canvases is None else canvases[i])
+            )
             if entry is None:
                 return None, None
             a, b = entry
@@ -1837,7 +1862,7 @@ def run_dit_lora_training(
     LR position, EMA shadow, sampler cycle and RNG streams from a ``checkpoint-<N>`` bundle, and
     the loop runs steps N+1..train_steps (the TARGET TOTAL). A stop-and-save and every
     ``cfg.save_steps`` interval write such a bundle."""
-    cfg = config.normalized()
+    cfg = resolve_bucketing(config.normalized())
     spec = _SPECS.get(cfg.resolved_family)
     if spec is None:
         raise ValueError(f"No DiT trainer for family {cfg.resolved_family!r}")
@@ -1893,7 +1918,11 @@ def run_dit_lora_training(
     )
     # Resolve num_epochs into a concrete train_steps now the dataset size is known, and rebind cfg so every downstream
     # read agrees.
-    cfg = replace(cfg, train_steps = resolve_train_steps(cfg, len(pairs)), num_epochs = 0)
+    cfg = replace(
+        cfg,
+        train_steps = resolve_train_steps(cfg, len(pairs), [p for p, _ in pairs]),
+        num_epochs = 0,
+    )
     # Validate a resume against this run's identity BEFORE the multi-GB phased load, using the RESOLVED LoRA targets
     # rather than the generic default the config carries.
     identity = identity_for_config(
@@ -1992,8 +2021,14 @@ def _train_dit(
             _emit(on_event, "warning", message = f"conditioning cache disabled: {exc}")
     # The crop/flip variant plan is seed-deterministic, so persistent keys are stable across runs and the warm check
     # can run before anything loads.
+    canvases, crop_room = plan_image_canvases(cfg, image_paths)
     plan = _plan_cache_variants(
-        len(image_paths), cfg.cache_variants, cfg.center_crop, cfg.random_flip, cfg.seed
+        len(image_paths),
+        cfg.cache_variants,
+        cfg.center_crop,
+        cfg.random_flip,
+        cfg.seed,
+        crop_room = crop_room,
     )
 
     pipe = None
@@ -2004,7 +2039,7 @@ def _train_dit(
     latent_cache = None
     if pcache is not None and use_cache:
         caption_embeds, latent_cache = _load_warm_conditioning(
-            pcache, image_paths, plan, to_encode, device
+            pcache, image_paths, plan, to_encode, device, canvases
         )
         if caption_embeds is not None:
             _emit(
@@ -2039,6 +2074,7 @@ def _train_dit(
                 _check_stop,
                 pcache = pcache,
                 plan = plan,
+                canvases = canvases,
             )
             if latent_cache is LATENT_CACHE_OVER_BUDGET:
                 # The estimated cache exceeded the host-memory budget; keep the VAE resident and fall through to the
@@ -2161,8 +2197,12 @@ def _train_dit(
     n_images = len(image_paths)
     batch_size = cfg.train_batch_size
     # Permutation-cycle index sampler (shared with the SDXL trainer): visits every image once per cycle, so a short
-    # run covers the whole dataset.
-    index_sampler = PermutationBatchSampler(n_images, rng)
+    # run covers the whole dataset. Bucketed runs draw each batch from one bucket so its latents stack into one shape.
+    index_sampler = (
+        PermutationBatchSampler(n_images, rng)
+        if canvases is None
+        else BucketBatchSampler(bucket_groups(canvases), rng)
+    )
 
     # Restore a previous run (adapter, optimizer moments, LR position, EMA shadow, sampler cycle, RNG streams) before
     # the loop, so it picks up at `resumed + 1`. None for a fresh run.
@@ -2243,6 +2283,8 @@ def _train_dit(
         step_loss = 0.0
         for _ in range(cfg.gradient_accumulation_steps):
             idxs = index_sampler.next_batch(batch_size)
+            if canvases is not None:
+                idxs = idxs[1]
             if latent_cache is not None:
                 latents = _sample_cached_latents(
                     latent_cache, idxs, variant_rng, device, weight_dtype
@@ -2251,7 +2293,11 @@ def _train_dit(
                 px = torch.stack(
                     [
                         _load_pixel_tensor(
-                            image_paths[i], cfg.resolution, cfg.center_crop, cfg.random_flip, rng
+                            image_paths[i],
+                            cfg.resolution if canvases is None else canvases[i],
+                            cfg.center_crop,
+                            cfg.random_flip,
+                            rng,
                         )
                         for i in idxs
                     ]
