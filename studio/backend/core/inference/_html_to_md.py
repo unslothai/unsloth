@@ -223,7 +223,8 @@ _SUPERIOR_ABBREVIATIONS = {
     "P": frozenset({"r", "rs"}),
     "n": frozenset({"o", "os"}),
     "N": frozenset({"o", "os"}),
-    "S": frozenset({"t", "te"}),
+    "S": frozenset({"t", "te", "r"}),
+    "J": frozenset({"r"}),
     "C": frozenset({"ie"}),
 }
 _LAST_WORD = re.compile(r"(?<![^\W\d_])[^\W\d_]+$")
@@ -1192,22 +1193,22 @@ class _MarkdownRenderer(HTMLParser):
                 not _FOOTNOTE_CLASSES.isdisjoint((attr_dict.get("class") or "").lower().split())
                 or "doc-noteref" in (attr_dict.get("role") or "").lower().split()
             )
-            self._sup_starts.append(
-                (
-                    len(self._open_tags) - 1,
-                    None
-                    if reference
-                    or len(self._sup_starts) >= _MAX_SUP_DEPTH
-                    or not (base := self._sup_base(target))
-                    else (
-                        target,
-                        len(target),
-                        self._sup_copies(),
-                        base,
-                        self._after_price(target) if base[-1].isdigit() else 0,
-                    ),
+            # past the cap nothing is tracked, so the stack stays bounded on hostile pages
+            if len(self._sup_starts) < _MAX_SUP_DEPTH:
+                self._sup_starts.append(
+                    (
+                        len(self._open_tags) - 1,
+                        None
+                        if reference or not (base := self._sup_base(target))
+                        else (
+                            target,
+                            len(target),
+                            self._sup_copies(),
+                            base,
+                            self._after_price(target) if base[-1].isdigit() else 0,
+                        ),
+                    )
                 )
-            )
 
         elif tag in _BLOCK_TAGS:
             if not self._li_marker_pending:

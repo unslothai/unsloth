@@ -794,6 +794,7 @@ def test_page_that_fits_keeps_its_links(monkeypatch):
         ("M<sup>r</sup> and M<sup>rs</sup> Smith", "Mr and Mrs Smith"),
         ("JPY 10<sup>12</sup> and KRW 10<sup>12</sup>", "JPY 10^12 and KRW 10^12"),
         ("les 1<sup>ères</sup> places", "les 1ères places"),
+        ("John J<sup>r</sup> and John S<sup>r</sup>", "John Jr and John Sr"),
         (
             "M<sup>me</sup> Dupont, D<sup>r</sup> Martin, n<sup>o</sup> 5, Om<sup>e</sup>",
             "Mme Dupont, Dr Martin, no 5, Om^e",
@@ -879,6 +880,14 @@ def test_empty_superscripts_do_not_rescan_the_page():
 def test_unclosed_superscripts_do_not_exhaust_the_depth_cap():
     html = "<p>x<sup>2</p>" * 10 + "<p>1.898&times;10<sup>27</sup> kg</p>"
     assert html_to_markdown(html).endswith("1.898×10^27 kg")
+
+
+def test_untracked_superscripts_keep_the_stack_bounded():
+    from core.inference._html_to_md import _MarkdownRenderer
+
+    renderer = _MarkdownRenderer()
+    renderer.feed("<p>" + "<sup>" * 5000 + "x")
+    assert len(renderer._sup_starts) <= 8
 
 
 def test_footnote_superscripts_render_unchanged():
