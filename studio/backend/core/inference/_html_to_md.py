@@ -512,8 +512,8 @@ def _offset(line_starts: list[int], pos: tuple[int, int]) -> int:
 
 
 @functools.lru_cache(maxsize = 4)
-def _title_buttons(source_html: str) -> frozenset[int]:
-    """Source offsets of the ``<button`` tags that carry their heading's title. Only the stretch from each
+def _title_buttons(source_html: str) -> frozenset[tuple[int, int]]:
+    """``(line, column)`` positions of the ``<button`` tags that carry their heading's title. Only the stretch from each
     heading's open tag to its close is scanned, so a page pays per heading, not a second full parse."""
     if not _BUTTON_OPEN_RE.search(source_html):
         return frozenset()
@@ -555,7 +555,14 @@ def _title_buttons(source_html: str) -> frozenset[int]:
         scan.feed(source_html[start:end])
         scan.close()
         keep |= scan.keep
-    return frozenset(keep)
+    # as HTMLParser.getpos() pairs, so the renderer needs no per-line table of the whole page
+    positions = set()
+    line, prev = 1, 0
+    for offset in sorted(keep):
+        line += source_html.count("\n", prev, offset)
+        positions.add((line, offset - source_html.rfind("\n", 0, offset) - 1))
+        prev = offset
+    return frozenset(positions)
 
 
 class _MarkdownRenderer(HTMLParser):
@@ -576,9 +583,8 @@ class _MarkdownRenderer(HTMLParser):
         page_span_limit: int | None = None,
     ):
         super().__init__(convert_charrefs = False)
-        # source offsets of buttons that carry their heading's title, from _title_buttons
-        self.title_buttons: frozenset[int] = frozenset()
-        self._line_starts: list[int] = []
+        # (line, column) of buttons that carry their heading's title, from _title_buttons
+        self.title_buttons: frozenset[tuple[int, int]] = frozenset()
         self._site_links = site_links
         self._out: list[str] = []
         self._skip_depth: int = 0
@@ -1135,9 +1141,7 @@ class _MarkdownRenderer(HTMLParser):
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag = tag.lower()
         title_button = (
-            tag == "button"
-            and bool(self.title_buttons)
-            and _offset(self._line_starts, self.getpos()) in self.title_buttons
+            tag == "button" and bool(self.title_buttons) and self.getpos() in self.title_buttons
         )
 
         if self._skip_depth:
@@ -1533,8 +1537,6 @@ def _new_renderer(
         page_span_limit = 2 * len(source_html),
     )
     renderer.title_buttons = _title_buttons(source_html)
-    if renderer.title_buttons:
-        renderer._line_starts = _line_starts(source_html)
     renderer.feed(source_html)
     renderer.close()
     renderer.flush_pending()
