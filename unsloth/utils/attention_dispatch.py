@@ -87,6 +87,142 @@ _SDPA_PACKED_SEGMENTS = os.environ.get("UNSLOTH_SDPA_PACKED_SEGMENTS", "1").lowe
 )
 
 
+def _load_torch_varlen_attn():
+    # Needs window_size (torch 2.11) and enable_gqa (2.12); older builds keep the per-segment path.
+    if os.environ.get("UNSLOTH_TORCH_VARLEN", "1").lower() in ("0", "false", "no", "off"):
+        return None
+    try:
+        import inspect
+        from torch.nn.attention.varlen import varlen_attn
+    except Exception:
+        return None
+    params = inspect.signature(varlen_attn).parameters
+    if "window_size" not in params or "enable_gqa" not in params:
+        return None
+    # Causal varlen always uses torch's bundled flash kernel, which some source builds omit.
+    if not getattr(torch.backends.cuda, "is_flash_attention_available", lambda: True)():
+        return None
+    return varlen_attn
+
+
+_TORCH_VARLEN_ATTN = _load_torch_varlen_attn()
+
+
+def _torch_varlen_takes(
+    Q: Tensor,
+    K: Tensor,
+    V: Tensor,
+    sdpa_kwargs: dict,
+    is_causal: bool,
+    sliding_window: Optional[int],
+) -> bool:
+    """True when torch's varlen kernel computes exactly what the per-segment SDPA path would."""
+    if _TORCH_VARLEN_ATTN is None or not Q.is_cuda or torch.version.hip is not None:
+        return False
+    if Q.dtype not in (torch.float16, torch.bfloat16) or K.dtype != Q.dtype or V.dtype != Q.dtype:
+        return False
+    if (
+        Q.shape[-1] > 256
+        or Q.shape[-1] % 8 != 0
+        or torch.cuda.get_device_capability(Q.device)[0] < 8
+    ):
+        return False
+    # A bidirectional window has no (left, right) spelling matching packed_block_mask.
+    if set(sdpa_kwargs) - {"scale", "dropout_p"} or sdpa_kwargs.get("dropout_p"):
+        return False
+    if sliding_window is not None and not is_causal:
+        return False
+    # torch 2.14 routes bidirectional MHA to cuDNN ragged on sm90/sm100: no head_dim 256 plan.
+    if not is_causal and Q.shape[1] == K.shape[1]:
+        return False
+    return not torch.are_deterministic_algorithms_enabled()
+
+
+# Above this mean segment length cuDNN's per-segment SDPA beats torch's varlen flash kernel (B200 sweep).
+_VARLEN_CUDNN_MAX_MEAN_LEN = 1024
+
+
+def _sdpa_backend_state(device, dtype, head_dim, n_heads, n_kv_heads, is_causal, enable_gqa):
+    """(flash SDPA enabled, SDPA would pick cuDNN) for these shapes. Both reads break a dynamo graph."""
+    flash = torch.backends.cuda.flash_sdp_enabled()
+    try:
+        from torch.nn.attention import SDPBackend
+
+        q = torch.empty(1, n_heads, 128, head_dim, device = device, dtype = dtype)
+        k = torch.empty(1, n_kv_heads, 128, head_dim, device = device, dtype = dtype)
+        choice = torch._fused_sdp_choice(q, k, k, is_causal = is_causal, enable_gqa = enable_gqa)
+        cudnn = choice == int(SDPBackend.CUDNN_ATTENTION)
+    except Exception:
+        cudnn = True
+    return flash, cudnn
+
+
+if hasattr(torch.compiler, "assume_constant_result"):
+    _sdpa_backend_state = torch.compiler.assume_constant_result(_sdpa_backend_state)
+
+
+def _torch_varlen_beats_segments(
+    Q: Tensor, K: Tensor, lengths: Tuple[int, ...], n_groups: int, is_causal: bool
+) -> bool:
+    """Varlen saves one SDPA launch per run of equal lengths, but its flash kernel is slower per token
+    than cuDNN on long segments; with flash already chosen, the kernel is the same and only launches drop."""
+    lengths = [length for length in lengths if length > 0]
+    runs = sum(1 for i, length in enumerate(lengths) if i == 0 or lengths[i - 1] != length)
+    if runs <= 1:
+        return False
+    flash, cudnn = _sdpa_backend_state(
+        str(Q.device),
+        Q.dtype,
+        Q.shape[-1],
+        Q.shape[1],
+        K.shape[1],
+        is_causal,
+        n_groups != 1 and _sdpa_flash_takes_gqa(Q),
+    )
+    # varlen_attn calls the flash op directly, so honour sdpa_kernel / enable_flash_sdp(False).
+    if not flash:
+        return False
+    return not cudnn or sum(lengths) / len(lengths) <= _VARLEN_CUDNN_MAX_MEAN_LEN
+
+
+def _torch_varlen_packed(
+    Q: Tensor,
+    K: Tensor,
+    V: Tensor,
+    seq_info,
+    *,
+    n_groups: int,
+    is_causal: bool,
+    sliding_window: Optional[int],
+    scale: Optional[float],
+) -> Tensor:
+    """Q (1, H, T, D), K / V (1, H_kv, T, D) -> (1, T, H, D) over the row's segments, pad tail included."""
+    total = Q.shape[-2]
+    cu_seqlens, max_seqlen = cover_padded_cu_seqlens(seq_info, total)
+    # seq_info may live on the CPU.
+    cu_seqlens = cu_seqlens.to(device = Q.device, dtype = torch.int32, non_blocking = True)
+    if not is_causal:
+        window_size = (-1, -1)
+    elif sliding_window is not None:
+        window_size = (sliding_window - 1, 0)  # packed_block_mask keeps k >= q - (window - 1)
+    else:
+        window_size = (-1, 0)
+    Q_f, K_f, V_f = (x[0].transpose(0, 1).contiguous() for x in (Q, K, V))
+    out = _TORCH_VARLEN_ATTN(
+        Q_f,
+        K_f,
+        V_f,
+        cu_seqlens,
+        cu_seqlens,
+        max_seqlen,
+        max_seqlen,
+        scale = scale,
+        window_size = window_size,
+        enable_gqa = n_groups != 1,
+    )
+    return out.unsqueeze(0)
+
+
 def _sdpa_flash_takes_gqa(Q: Tensor) -> bool:
     # Only flash / math take enable_gqa: expand K/V elsewhere (pre-sm80, fp32, wide heads, ROCm).
     return (
@@ -590,11 +726,36 @@ def run_attention(
             and Q.shape[0] == 1
             and Q.shape[-2] == K.shape[-2]
         ):
+            lengths = packed_segment_lengths(context.seq_info, K.shape[-2])
+            if (
+                _torch_varlen_takes(Q, K, V, sdpa_kwargs, context.is_causal, sliding_window)
+                and _torch_varlen_beats_segments(Q, K, lengths, config.n_groups, context.is_causal)
+            ) and not (
+                # Varlen backward may share flash-attn 2's int32 dq_accum limit.
+                requires_grad
+                and not _VARLEN_INT32_GUARD_DISABLED
+                and _varlen_backward_overflows_int32(
+                    cover_padded_cu_seqlens(context.seq_info, Q.shape[-2])[0].numel() - 1,
+                    Q.shape[-2],
+                    n_heads,
+                    head_dim,
+                )
+            ):
+                return _torch_varlen_packed(
+                    Q,
+                    K,
+                    V,
+                    context.seq_info,
+                    n_groups = config.n_groups,
+                    is_causal = context.is_causal,
+                    sliding_window = sliding_window,
+                    scale = sdpa_kwargs.get("scale"),
+                )
             out = _sdpa_packed_segments(
                 Q,
                 K,
                 V,
-                packed_segment_lengths(context.seq_info, K.shape[-2]),
+                lengths,
                 n_groups = config.n_groups,
                 is_causal = context.is_causal,
                 sliding_window = sliding_window,
