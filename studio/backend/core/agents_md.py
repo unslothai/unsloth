@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import os
 import stat
-import threading
 from pathlib import Path
 from typing import Optional
 
@@ -18,9 +17,6 @@ from utils.paths import workspace_root
 MAX_AGENTS_MD_BYTES = 32 * 1024
 TRUNCATED_NOTE = "\n[AGENTS.md truncated at 32 KiB]"
 _DISABLE_ENV = "UNSLOTH_STUDIO_AGENTS_MD"
-
-_LOCK = threading.Lock()
-_CACHE: dict[str, tuple[tuple[int, int], bytes]] = {}
 
 
 def agents_md_enabled() -> bool:
@@ -51,19 +47,10 @@ def _read(path: Path, confine: Optional[Path] = None) -> bytes:
             # A hard link is the other way to plant a host file in the sandbox.
             if not stat.S_ISREG(status.st_mode) or (confine is not None and status.st_nlink > 1):
                 return b""
-            key = (status.st_mtime_ns, status.st_size)
-            cache_key = os.fspath(path)
-            with _LOCK:
-                hit = _CACHE.get(cache_key)
-            if hit is not None and hit[0] == key:
-                return hit[1]
             # One byte over the cap is enough to know it was cut.
-            raw = handle.read(MAX_AGENTS_MD_BYTES + 1)
+            return handle.read(MAX_AGENTS_MD_BYTES + 1)
         except OSError:
             return b""
-    with _LOCK:
-        _CACHE[cache_key] = (key, raw)
-    return raw
 
 
 def _first(paths: tuple[Path, ...], confine: Optional[Path] = None) -> tuple[Optional[Path], bytes]:
