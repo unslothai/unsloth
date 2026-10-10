@@ -5812,6 +5812,21 @@ def auto_select_gpu_ids(
     # Per-GPU check: activations do not shard, so each GPU needs its weight shard plus the full activation cost.
     vram_breakdown = estimate_metadata.get("vram_breakdown", {})
 
+    # A ROCm APU's free reading is the shared host pool: a discrete card that fits alone goes first.
+    if IS_ROCM and len(ranked) > 1:
+        unified = {
+            td["index"]
+            for td in _torch_get_device_inventory(get_parent_visible_gpu_ids())
+            if td.get("_rocm_known_unified")
+        }
+        if unified and ranked[0]["index"] in unified:
+            discrete = next(
+                (c for c in ranked if c["index"] not in unified and c["free_gb"] >= required_gb),
+                None,
+            )
+            if discrete is not None:
+                ranked = [discrete] + [c for c in ranked if c is not discrete]
+
     for candidate in ranked:
         selected.append(candidate["index"])
         if len(selected) == 1:
