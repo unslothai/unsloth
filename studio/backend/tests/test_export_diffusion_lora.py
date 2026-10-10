@@ -186,7 +186,7 @@ def test_an_exported_gguf_lora_is_not_an_exported_chat_model(loras, tmp_path):
     nested.mkdir(parents = True, exist_ok = True)
     (nested / "style.gguf").write_bytes(b"GGUF" + b"\0" * 60)
     (nested / "style.json").write_text(json.dumps({"kind": "diffusion-lora"}))
-    assert not [r for r in scan_exported_models() if "run" in r[1]]
+    assert str(nested / "style.gguf") not in [r[1] for r in scan_exported_models()]
 
 
 def test_a_sibling_differing_only_in_case_keeps_its_stem(loras, tmp_path):

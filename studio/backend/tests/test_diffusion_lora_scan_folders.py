@@ -218,7 +218,10 @@ def test_a_non_utf8_filename_does_not_break_the_scan(catalog, tmp_path):
     folder = tmp_path / "my-models"
     folder.mkdir()
     name = os.fsdecode(b"st\xffyle.safetensors")
-    _safetensors(folder / name, sidecar = _MARK)
+    try:
+        _safetensors(folder / name, sidecar = _MARK)
+    except OSError:
+        pytest.skip("this filesystem refuses non-UTF-8 names (APFS)")
     register(folder)
     assert [e.local_path for e in _local().values()] == [str(folder / name)]
 
