@@ -247,14 +247,13 @@ def _deep_gemm_unloadable(environment: str) -> bool:
 STARTUP_STALL_S = 900
 STARTUP_LIMIT_S = 4 * 3600
 
-# vLLM 0.30 raises this for hybrid (Mamba / Gated DeltaNet) models when max_num_seqs, 256 by default on
-# cards under 70 GB, outruns the state blocks the KV budget holds: Qwen3.8-27B-NVFP4 on a 32 GB RTX 5090 (#8861).
+# vLLM 0.30 on hybrid models when its default max_num_seqs outruns the KV budget (Qwen3.8 NVFP4 on 32 GB, #8861).
 _MAMBA_SEQ_LIMIT = re.compile(
     r"max_num_seqs \((\d+)\) exceeds available Mamba cache blocks \((\d+)\)"
 )
 
 
-# Learned per launch config for this Studio process, so a reload skips the failing first launch.
+# Per launch config, so a reload skips the failing first launch.
 _SEQ_LIMITS: dict[tuple, int] = {}
 
 
