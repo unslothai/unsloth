@@ -230,6 +230,11 @@ def patch_sft_trainer() -> None:
             # Ring attention's backward collectives must not straddle DDP's no_sync accumulation.
             if hasattr(accelerator, "gradient_state"):
                 accelerator.gradient_state.plugin_kwargs["sync_each_batch"] = True
+            # A PEFT model is not a PreTrainedModel, so the Trainer asks DDP for find_unused_parameters,
+            # which fails with reentrant checkpointing ("mark a variable ready only once"). Read at prepare().
+            handler = getattr(accelerator, "ddp_handler", None)
+            if handler is not None and getattr(self.args, "ddp_find_unused_parameters", None) is None:
+                handler.find_unused_parameters = False
         print(f"Unsloth: Context parallelism enabled with size = {size}.")
 
     @functools.wraps(original_prediction_step)

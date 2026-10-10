@@ -433,3 +433,34 @@ def test_every_attention_layer_must_be_the_llama_forward():
     assert cp._supports_context_parallel(model(Llama, Llama))
     assert not cp._supports_context_parallel(model(Llama, Other))
     assert not cp._supports_context_parallel(model())
+
+
+@pytest.mark.parametrize("user_value", [None, True])
+def test_find_unused_parameters_is_off_under_cp_unless_the_user_set_it(monkeypatch, user_value):
+    import types
+
+    _cp_env(monkeypatch)
+    monkeypatch.setattr(
+        cp,
+        "ContextParallelManager",
+        lambda size: types.SimpleNamespace(
+            size = size, device_mesh = object(), attach_attention_hooks = lambda model: None
+        ),
+    )
+    args = types.SimpleNamespace(
+        context_parallel_size = 2,
+        label_smoothing_factor = 0.0,
+        ddp_find_unused_parameters = user_value,
+    )
+    # What the Trainer builds for a PeftModel when the user leaves the argument as None.
+    handler = types.SimpleNamespace(find_unused_parameters = True if user_value is None else user_value)
+    accelerator = types.SimpleNamespace(
+        distributed_type = types.SimpleNamespace(name = "MULTI_GPU"),
+        state = types.SimpleNamespace(device_mesh = None),
+        ddp_handler = handler,
+    )
+    Trainer = _patched_trainer(
+        monkeypatch, args = args, accelerator = accelerator, model = None, train_dataset = [1]
+    )
+    Trainer()
+    assert handler.find_unused_parameters is (False if user_value is None else True)
