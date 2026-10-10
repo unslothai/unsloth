@@ -210,8 +210,10 @@ _MIN_SCOPE_SPAN_CHARS = 256
 _INLINE_EMPHASIS = {"strong": "**", "b": "**", "em": "*", "i": "*"}
 
 _PLAIN_SUFFIXES = frozenset({"st", "nd", "rd", "th", "tm", "sm"})
-# French ordinals after a digit (1er, 2e, 3ème); after a letter "e" can be Euler's number
-_DIGIT_ORDINAL_SUFFIXES = frozenset({"e", "er", "re", "ère", "ème", "eme", "nd", "nde"})
+# French / Romance ordinals after a digit (1er, 2e, 1º, 2ª); after a letter "e" can be Euler's number
+_DIGIT_ORDINAL_SUFFIXES = frozenset(
+    {"e", "er", "re", "ère", "ème", "eme", "nd", "nde", "º", "ª", "o", "a"}
+)
 _MD_DELIMITERS = "*_`"
 _STRIP_MD_DELIMITERS = str.maketrans("", "", _MD_DELIMITERS)
 # SiteLinks wraps same-site links in invisible \x00 markers; the base is the text before them
