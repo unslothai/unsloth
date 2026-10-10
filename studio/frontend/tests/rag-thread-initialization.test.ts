@@ -148,7 +148,11 @@ function harness(
       "@/components/ui/spinner": {},
       "./preview-store": { useDocumentPreviewStore: () => undefined },
       "@/lib/chevron-icons": {},
-      "@assistant-ui/react": { useAui: () => ({ threadListItem: () => item }) },
+      "@assistant-ui/react": {
+        useAui: () => ({ threadListItem: () => item }),
+        useAuiState: (select: (s: { threadListItem: { id: string } }) => unknown) =>
+          select({ threadListItem: { id: itemId } }),
+      },
       "@/lib/utils": { cn: () => "" },
       "@/features/chat/stores/chat-runtime-store": {
         useChatRuntimeStore: store,

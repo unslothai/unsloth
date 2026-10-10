@@ -78,8 +78,7 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
   );
 
   const pickFolder = useCallback(() => {
-    openFolderPicker(({ files, truncated }) => {
-      const supported = files.filter((file) => isSupportedSourceName(file.name));
+    openFolderPicker(({ files: supported, truncated }) => {
       if (supported.length === 0) {
         toast.info("No supported files in that folder", {
           description: SUPPORTED_SOURCES_HINT,
@@ -92,7 +91,7 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
         });
       }
       handleItems(fileItems(supported));
-    });
+    }, isSupportedSourceName);
   }, [handleItems]);
 
   const groups = useMemo(() => groupByLinkedFolder(documents), [documents]);

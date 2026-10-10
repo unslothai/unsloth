@@ -46,7 +46,7 @@ import {
 } from "@/components/ui/tooltip";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
-import { useAui } from "@assistant-ui/react";
+import { useAui, useAuiState } from "@assistant-ui/react";
 import { cn } from "@/lib/utils";
 import {
   PENDING_CHAT_ATTACHMENT_KEY,
@@ -1078,12 +1078,14 @@ export function ThreadDocumentsBar({
     [ensureThreadId, projectId, sharesWithProject, upload, uploadToProject],
   );
 
-  // A drop or pick during an upload waits for it rather than being refused. Keyed by project: a
-  // new chat gets its id mid-upload, so the chat id would drop the queue it was meant for.
+  // A drop or pick during an upload waits for it rather than being refused. Keyed by the chat's
+  // list item, whose local id holds while a new chat gets its stored id mid-upload, so a queue is
+  // dropped on switching chats but not by the first upload materializing this one.
+  const threadItemId = useAuiState(({ threadListItem }) => threadListItem.id);
   const { enqueue: queueAttach, queued } = useUploadQueue<RagUploadItem>(
     attach,
     uploading || projectUploading,
-    projectId,
+    `${threadItemId}:${projectId ?? ""}`,
   );
 
   // Only files added or dropped here are indexed; composer attachments stay with the message.

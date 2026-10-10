@@ -16,6 +16,7 @@ import {
 } from "react";
 import {
   SUPPORTED_SOURCES_HINT,
+  isSupportedSourceName,
   partitionSupported,
 } from "./source-drop-policy";
 import { type RagUploadItem, uploadItemFromIntent } from "./use-rag-documents";
@@ -159,7 +160,7 @@ export function useSourceDrop({
         return;
       }
       // Read synchronously: the browser clears the drop's items once this handler returns.
-      void filesFromDrop(event.dataTransfer).then(
+      void filesFromDrop(event.dataTransfer, isSupportedSourceName).then(
         ({ files, truncated, hadFolder }) => {
           const { supported, unsupported } = partitionSupported(
             files,

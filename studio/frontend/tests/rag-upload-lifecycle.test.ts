@@ -43,6 +43,7 @@ function harness(
     list?: () => Promise<RagDocument[]>;
     /** This many uploads are refused before one goes through. */
     failUploads?: number;
+    failDeletes?: boolean;
   } = {},
 ) {
   let refusals = options.failUploads ?? 0;
@@ -130,7 +131,9 @@ function harness(
           uploads.push(threadId);
           return uploaded;
         },
-        deleteDocument: async () => undefined,
+        deleteDocument: async () => {
+          if (options.failDeletes) throw new Error("Server busy");
+        },
         noteProjectWork: () => undefined,
         streamJobEvents:
           options.events ??
@@ -320,6 +323,35 @@ test("a refused upload stays as a failed chip and Retry sends the same file agai
       hook.documents.map(({ id, status }) => ({ id, status })),
       [{ id: "doc", status: "completed" }],
     );
+  } finally {
+    app.dispose();
+  }
+});
+
+test("a retry whose delete fails keeps the failed row retryable and uploads nothing", async () => {
+  let reads = 0;
+  const app = harness({
+    failDeletes: true,
+    events: async function* () {},
+    getJob: async () => ({
+      id: "job",
+      documentId: "doc",
+      status: ++reads === 1 ? "running" : "failed",
+      error: "Invalid PDF",
+    }),
+  });
+  try {
+    let hook = app.render();
+    await flush();
+    await hook.upload([report()]);
+    await flush();
+    hook = app.render();
+    await hook.retry("doc");
+    await flush();
+    hook = app.render();
+    assert.deepEqual(app.uploads, ["thread"], "no second upload beside the undeleted one");
+    assert.equal(hook.documents[0]?.status, "failed");
+    assert.equal(hook.canRetry("doc"), true);
   } finally {
     app.dispose();
   }

@@ -717,13 +717,15 @@ export function useRagDocuments(
     [scope, uploadOne, sigBlocksReupload],
   );
 
+  /** Resolves to whether the document is gone; a failed delete puts the row back. */
   const remove = useCallback(
-    async (documentId: string) => {
+    async (documentId: string): Promise<boolean> => {
       const prev = documents;
       setDocuments((rows) => rows.filter((row) => row.id !== documentId));
+      const prevRetry = retryItems.current.get(documentId);
       retryItems.current.delete(documentId);
       // An upload that failed never reached the server, so there is nothing to delete there.
-      if (documentId.startsWith("pending_")) return;
+      if (documentId.startsWith("pending_")) return true;
       // Forget the dedup signature so re-uploading re-indexes.
       const prevSig = sigByDocId.current.get(documentId);
       sigByDocId.current.delete(documentId);
@@ -740,12 +742,15 @@ export function useRagDocuments(
           documentId,
           scope?.type === "project" ? scope.projectId : undefined,
         );
+        return true;
       } catch (err) {
         setDocuments(prev);
         if (prevSig !== undefined) sigByDocId.current.set(documentId, prevSig);
+        if (prevRetry !== undefined) retryItems.current.set(documentId, prevRetry);
         toast.error("Delete failed", {
           description: err instanceof Error ? err.message : String(err),
         });
+        return false;
       } finally {
         if (removingProjectId) {
           noteProjectWork(removingProjectId, -1);
@@ -766,7 +771,8 @@ export function useRagDocuments(
     async (documentId: string) => {
       const item = retryItems.current.get(documentId);
       if (!item) return;
-      await remove(documentId);
+      // A failed document the server still holds would sit beside its replacement.
+      if (!(await remove(documentId))) return;
       await upload([item]);
     },
     [remove, upload],

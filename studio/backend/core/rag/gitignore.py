@@ -95,7 +95,12 @@ def parse(text: str, base: str) -> list[Rule]:
         body = _translate(line)
         if not anchored:
             body = "(?:.*/)?" + body
-        rules.append(Rule(base, re.compile(f"^{body}$", re.DOTALL), negate, dir_only))
+        try:
+            regex = re.compile(f"^{body}$", re.DOTALL)
+        except re.error:
+            # A malformed class like "[z-a]" matches nothing in git; it must not fail the scan.
+            continue
+        rules.append(Rule(base, regex, negate, dir_only))
     return rules
 
 

@@ -285,7 +285,9 @@ export function useNativeFileDrop(
         return;
       }
       // Read synchronously: the browser clears the drop's items once this handler returns.
-      void filesFromDrop(event.dataTransfer).then(
+      void filesFromDrop(event.dataTransfer, (name) =>
+        hasAcceptedExt(name, exts),
+      ).then(
         ({ files, truncated, hadFolder }) => {
           if (hadFolder && files.length === 0) {
             toast.error("That folder has no files to add");

@@ -79,7 +79,11 @@ const { ThreadDocumentsBar } = loadWithStubs<typeof BarModule>(
       useDocumentPreviewStore: selectorStore({ openPreview: () => undefined }),
     },
     "@/lib/chevron-icons": {},
-    "@assistant-ui/react": { useAui: () => ({}) },
+    "@assistant-ui/react": {
+      useAui: () => ({}),
+      useAuiState: (select: (s: { threadListItem: { id: string } }) => unknown) =>
+        select({ threadListItem: { id: "local-1" } }),
+    },
     "@/lib/utils": {
       cn: (...classes: unknown[]) => classes.filter(Boolean).join(" "),
     },

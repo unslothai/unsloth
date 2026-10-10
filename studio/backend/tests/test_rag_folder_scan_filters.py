@@ -59,6 +59,12 @@ def test_gitignore_patterns(rules, rel, is_dir, expected):
     assert _ignored(rules, rel, is_dir) is expected
 
 
+def test_a_malformed_class_drops_only_its_own_rule():
+    rules = "[z-a].txt\n*.log"
+    assert not _ignored(rules, "a.txt")
+    assert _ignored(rules, "debug.log")
+
+
 def test_nested_gitignore_applies_only_below_its_directory():
     assert _ignored("*.md", "sub/a.md", base = "sub")
     assert not _ignored("*.md", "a.md", base = "sub")
