@@ -27434,6 +27434,8 @@ class LlamaCppBackend:
                     # land after the dict exists but before the later terms are added
                     # to it, which would plan against a footprint missing them.
                     _spill_inputs = None
+                    # Nor is a ceiling the fallback's own fitter may spill past.
+                    _vram_fit_ctx = None
                     tp_tensor_split = None
                     effective_ctx = requested_ctx  # fall back to original
 

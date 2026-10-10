@@ -169,3 +169,20 @@ def test_a_zero_layer_metal_load_claims_no_fit(tmp_path, monkeypatch):
     assert load("auto").vram_fit_context_length is not None
     manual = load("manual", gpu_memory_mode = "manual", gpu_layers = 0)
     assert manual.vram_fit_context_length is None
+
+
+def test_a_placement_that_raises_claims_no_fit(tmp_path, monkeypatch):
+    accelerator = next(a for a in _matrix.ACCELERATORS if a.label == "nvidia-single")
+    backend, gguf = _matrix.cell_backend(
+        tmp_path, monkeypatch, _matrix.PLATFORMS[0], accelerator, model_fraction = _matrix.FITS
+    )
+
+    def boom(*_a, **_kw):
+        raise RuntimeError("selection failed")
+
+    # Raises after the subset sweep priced a ceiling, inside the placement try.
+    backend._select_gpus_split_aware = boom
+    backend._select_gpus = boom
+    captured = _matrix._launch(backend, gguf, n_ctx = 4096)
+    assert ("--fit", "on") in zip(captured["cmd"], captured["cmd"][1:])
+    assert backend.vram_fit_context_length is None
