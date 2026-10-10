@@ -244,14 +244,30 @@ def test_round_saves_pngs_and_emits_event(tmp_path):
     assert not (tmp_path / "samples").exists()
 
 
-def test_parent_discard_removes_only_listed_paths(tmp_path):
-    keep = tmp_path / "samples" / "20260101-000000-aaaaaa" / "step-1-0.png"
+def test_parent_discard_removes_the_whole_run_folder_only(tmp_path):
+    other = tmp_path / "samples" / "20260101-000000-aaaaaa" / "step-1-0.png"
     mine = tmp_path / "samples" / "20260102-000000-bbbbbb" / "step-1-0.png"
-    for p in (keep, mine):
-        p.parent.mkdir(parents = True)
+    thinned = mine.parent / "step-2-0.png"  # on disk but no longer listed
+    for p in (other, mine, thinned):
+        p.parent.mkdir(parents = True, exist_ok = True)
         p.write_bytes(b"x")
     ds.discard_sample_paths(str(tmp_path), [mine.relative_to(tmp_path).as_posix(), "../evil.png"])
-    assert keep.is_file() and not mine.exists() and not mine.parent.exists()
+    assert other.is_file() and not mine.parent.exists()
+
+
+def test_thinning_deletes_the_evicted_files(tmp_path):
+    from core.training.diffusion_training_service import _SAMPLES_CAP, _append_samples
+
+    state = {"samples": []}
+    tag = "samples/20261010-014028-0993fe"
+    (tmp_path / tag).mkdir(parents = True)
+    for step in range(_SAMPLES_CAP + 1):
+        rel = f"{tag}/step-{step}-0.png"
+        (tmp_path / rel).write_bytes(b"x")
+        _append_samples(state, step, [{"path": rel}], str(tmp_path))
+    listed = {e["path"] for e in state["samples"]}
+    on_disk = {p.relative_to(tmp_path).as_posix() for p in (tmp_path / tag).iterdir()}
+    assert len(listed) < _SAMPLES_CAP + 1 and on_disk == listed
 
 
 # ── service state + record ───────────────────────────────────────────────────
@@ -375,3 +391,129 @@ def test_route_serves_live_job_and_hides_it_from_other_accounts(sample_client, m
     assert sample_client.client.get(url, params = q).status_code == 200
     monkeypatch.setattr(aj, "job_is_foreign", lambda service: True)
     assert sample_client.client.get(url, params = q).status_code == 404
+
+
+# ── per-family CFG + schedules (diffusers 0.41 pipelines) ──────────────────────
+def test_cfg_combination_matches_each_pipeline():
+    c = torch.randn(1, 16, 1, 8, 8, generator = torch.Generator().manual_seed(1))
+    u = torch.randn(1, 16, 1, 8, 8, generator = torch.Generator().manual_seed(2))
+    g = 4.0
+    # pipeline_stable_diffusion_xl.py / pipeline_flux2_klein.py: u + g(c - u)
+    assert torch.allclose(ds.combine_cfg("uncond", g, c, u), u + g * (c - u))
+    # pipeline_z_image.py:547, pipeline_krea2.py:666: c + g(c - u)
+    assert torch.allclose(ds.combine_cfg("cond", g, c, u), c + g * (c - u))
+    # pipeline_qwenimage.py:668-672 on the PACKED sequence, rescaled to the conditional norm per token.
+    from diffusers import QwenImagePipeline
+
+    pack = lambda t: QwenImagePipeline._pack_latents(t, 1, 16, 8, 8)  # noqa: E731
+    comb = pack(u) + g * (pack(c) - pack(u))
+    ref = comb * (
+        torch.norm(pack(c), dim = -1, keepdim = True) / torch.norm(comb, dim = -1, keepdim = True)
+    )
+    assert torch.allclose(pack(ds.combine_cfg("qwen", g, c, u)), ref, atol = 1e-5)
+
+
+@pytest.mark.parametrize(
+    "family, base, steps, guidance, uses_cfg, mode, mu",
+    [
+        ("z-image", "unsloth/Z-Image-Turbo-unsloth-bnb-4bit", 8, 0.0, False, "cond", None),
+        ("z-image", "Tongyi-MAI/Z-Image", 28, 4.0, True, "cond", None),
+        ("krea-2", "krea/Krea-2-Turbo", 8, 0.0, False, "cond", 1.15),
+        ("krea-2", "krea/Krea-2-Raw", 20, 4.5, True, "cond", None),
+        ("qwen-image", "Qwen/Qwen-Image", 20, 4.0, True, "qwen", None),
+        ("flux.2-klein", "black-forest-labs/FLUX.2-klein-base-4B", 28, 4.0, True, "uncond", None),
+        ("sdxl", "stabilityai/stable-diffusion-xl-base-1.0", 20, 5.0, True, "uncond", None),
+        ("sdxl", "stabilityai/sdxl-turbo", 4, 0.0, False, "uncond", None),
+    ],
+)
+def test_family_sample_settings(family, base, steps, guidance, uses_cfg, mode, mu):
+    st = ds.sample_inference_settings(family, base)
+    assert (st.steps, st.guidance, st.uses_cfg, st.cfg_mode, st.mu) == (
+        steps,
+        guidance,
+        uses_cfg,
+        mode,
+        mu,
+    )
+
+
+def test_fixed_mu_reaches_the_schedule():
+    from diffusers import FlowMatchEulerDiscreteScheduler
+
+    sched = FlowMatchEulerDiscreteScheduler(use_dynamic_shifting = True)
+    ref = FlowMatchEulerDiscreteScheduler.from_config(sched.config)
+    import numpy as np
+
+    ref.set_timesteps(sigmas = np.linspace(1.0, 1 / 8, 8).tolist(), mu = 1.15)
+    got, _ = ds.flow_sigmas(sched.config, "krea-2", 8, 4096, mu = 1.15)
+    assert torch.allclose(got, ref.sigmas.float())
+
+
+# ── stop during a round ──────────────────────────────────────────────────────
+def test_stop_between_prompts_ends_the_round_keeping_finished_images(tmp_path):
+    plan = ds.plan_samples(
+        _cfg(output_dir = str(tmp_path), sample_every = 1, sample_prompts = ("a", "b", "c")).normalized(),
+        "z-image",
+        ["c"],
+    )
+    rendered, events = [], []
+
+    def render(i, p):
+        rendered.append(p)
+        return torch.zeros(1, 3, 8, 8)
+
+    stopped = ds.run_sample_round(
+        plan, 5, render, None, lambda _cb, t, **kw: events.append(kw), lambda: len(rendered) >= 1
+    )
+    assert stopped and rendered == ["a"] and [e["prompt"] for e in events[0]["images"]] == ["a"]
+
+
+def test_stop_mid_denoise_aborts_the_image(tmp_path):
+    from diffusers import FlowMatchEulerDiscreteScheduler
+
+    plan = ds.plan_samples(
+        _cfg(output_dir = str(tmp_path), sample_every = 1).normalized(), "z-image", ["c"]
+    )
+    calls = []
+
+    def velocity(x, t, sig, cond):
+        calls.append(1)
+        return torch.zeros_like(x)
+
+    with pytest.raises(ds.SampleRoundStopped):
+        ds.euler_flow_sample(
+            plan = plan,
+            index = 0,
+            latent_shape = (1, 4, 8, 8),
+            image_seq_len = 16,
+            family = "z-image",
+            scheduler_config = FlowMatchEulerDiscreteScheduler(shift = 3.0).config,
+            velocity = velocity,
+            cond = "c",
+            uncond = None,
+            device = "cpu",
+            weight_dtype = torch.float32,
+            stop_requested = lambda: len(calls) >= 2,
+        )
+    assert len(calls) == 2
+    events = []
+    assert ds.run_sample_round(
+        plan,
+        1,
+        lambda i, p: (_ for _ in ()).throw(ds.SampleRoundStopped()),
+        None,
+        lambda *a, **k: events.append(k),
+    )
+    assert events == []  # nothing finished, nothing reported
+
+
+@pytest.mark.parametrize("module", ["diffusion_dit_trainer", "diffusion_lora_trainer"])
+def test_trainers_latch_a_stop_seen_mid_round_and_render_a_resume_baseline(module):
+    import importlib
+    import inspect
+
+    src = inspect.getsource(importlib.import_module(f"core.training.{module}"))
+    # The stop poll drains the request; a round that saw it must hand it to the loop.
+    assert "stop_now = stop_latched" in src and "if stop_latched:" in src
+    # A resumed run renders its baseline at the restored step, after restore_resume_state.
+    assert src.index("_sample(resumed)") > src.index("restore_resume_state(")

@@ -72,6 +72,7 @@ from core.training.diffusion_samples import (
     plan_samples,
     run_sample_round,
     sample_seed,
+    SampleRoundStopped,
 )
 from core.training.diffusion_checkpoint import (
     clear_own_checkpoints,
@@ -582,10 +583,18 @@ def run_diffusion_lora_training(
                 preexisting = preexisting_checkpoints,
             )
 
+        def _interrupt_on_stop(p, _i, _t, _kwargs):
+            # The pipeline skips its remaining steps once _interrupt is set (pipeline_stable_diffusion_xl.py).
+            if _stop_during_sample():
+                p._interrupt = True
+            return {}
+
         def _render_sdxl(index, prompt):
             res = sample_plan.resolution
             pe, pooled_c = (t.to(device, dtype = weight_dtype) for t in sample_embeds[prompt])
-            npe, npooled = (t.to(device, dtype = weight_dtype) for t in sample_embeds[""])
+            npe = npooled = None
+            if sample_plan.uses_cfg:
+                npe, npooled = (t.to(device, dtype = weight_dtype) for t in sample_embeds[""])
             noise = initial_noise(sample_plan, index, (1, 4, res // 8, res // 8), device)
             latents = pipe(
                 prompt_embeds = pe,
@@ -602,8 +611,20 @@ def run_diffusion_lora_training(
                 ),
                 output_type = "latent",
                 return_dict = False,
+                callback_on_step_end = _interrupt_on_stop,
             )[0]
+            if stop_latched:
+                raise SampleRoundStopped()
             return sample_vae.decode(latents.float() / vae_scale).sample
+
+        # The stop poll drains the request, so one seen mid-round is latched here for the loop to act on.
+        stop_latched = False
+
+        def _stop_during_sample() -> bool:
+            nonlocal stop_latched
+            if not stop_latched and _check_stop():
+                stop_latched = True
+            return stop_latched
 
         def _sample(step: int) -> None:
             nonlocal sample_plan
@@ -615,7 +636,9 @@ def run_diffusion_lora_training(
                     unet.eval()
                     if parked:
                         sample_vae.to(device)
-                    run_sample_round(sample_plan, step, _render_sdxl, on_event, _emit)
+                    run_sample_round(
+                        sample_plan, step, _render_sdxl, on_event, _emit, _stop_during_sample
+                    )
             except Exception as exc:  # noqa: BLE001 -- previews never cost the run
                 _emit(on_event, "warning", message = f"Sample images disabled after an error: {exc}")
                 sample_plan = None
@@ -631,11 +654,14 @@ def run_diffusion_lora_training(
                 pipe.set_progress_bar_config(disable = True)
             except Exception:  # noqa: BLE001
                 pass
-            if resumed == 0:
-                # The step-0 baseline is what every later preview is compared against.
-                _sample(0)
+            if resumed < cfg.train_steps:
+                # The baseline every later preview is compared against: step 0, or the step a resume restored.
+                _sample(resumed)
 
         for opt_step in range(resumed, cfg.train_steps):
+            if stop_latched:
+                stopped = True
+                break
             optimizer.zero_grad(set_to_none = True)
             step_loss = 0.0
             for _ in range(cfg.gradient_accumulation_steps):
@@ -750,6 +776,7 @@ def run_diffusion_lora_training(
             stop_now = _check_stop()
             if not stop_now and sample_plan is not None and sample_plan.due(done, cfg.train_steps):
                 _sample(done)
+                stop_now = stop_latched
             # Skipped on the final step and when stopping, since the stop path writes one at the exact step.
             if (
                 not stop_now

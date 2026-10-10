@@ -399,8 +399,15 @@ def _idle_state() -> dict[str, Any]:
 _SAMPLES_CAP = 400
 
 
-def _append_samples(state: dict[str, Any], step: Any, images: Any) -> None:
-    from core.training.diffusion_samples import SAMPLE_PATH_RE
+def _append_samples(
+    state: dict[str, Any],
+    step: Any,
+    images: Any,
+    output_dir: Optional[str] = None,
+) -> None:
+    """Fold one ``sample`` event; past _SAMPLES_CAP the thinned rounds' images are deleted too, so
+    every file on disk stays listed (and reachable by the discard cleanup)."""
+    from core.training.diffusion_samples import SAMPLE_PATH_RE, delete_sample_files
 
     try:
         istep = int(step)
@@ -422,6 +429,7 @@ def _append_samples(state: dict[str, Any], step: Any, images: Any) -> None:
         steps = sorted({e["step"] for e in entries})
         keep = set(steps[:1] + steps[1:-1][::2] + steps[-1:])
         state["samples"] = [e for e in entries if e["step"] in keep]
+        delete_sample_files(output_dir, [e["path"] for e in entries if e["step"] not in keep])
 
 
 # The value series, in append order, paired index-for-index with metric_steps. One list so a new
@@ -1168,7 +1176,12 @@ class DiffusionTrainingService:
                     ev.get("audio_loss"),
                 )
             elif etype == "sample":
-                _append_samples(s, ev.get("step"), ev.get("images"))
+                _append_samples(
+                    s,
+                    ev.get("step"),
+                    ev.get("images"),
+                    s.get("output_dir") or self._config.get("output_dir"),
+                )
             elif etype == "complete":
                 # Reset in_model_load: a stop during model load emits complete with no preceding
                 # model_load_completed, leaving a stale indicator.

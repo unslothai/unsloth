@@ -64,28 +64,71 @@ def validate_sample_settings(
     return every, prompts
 
 
-def sample_inference_settings(family: str, base_model: str) -> tuple[int, float]:
-    """(steps, guidance) for a preview: the family's distilled setting when the base is a distilled
-    checkpoint, else a short undistilled schedule. guidance <= 1 means a single conditional pass."""
+# How each diffusers pipeline combines the conditional (c) and empty-prompt (u) predictions, and above which scale it
+# runs the second pass at all: "uncond" u + g(c - u) (SDXL, FLUX.1 true CFG, FLUX.2 Klein; on when g > 1), "cond"
+# c + g(c - u) (Z-Image pipeline_z_image.py:547, Krea 2 pipeline_krea2.py:666; on when g > 0), "qwen" the "uncond"
+# combination rescaled to the conditional prediction's per-token norm (pipeline_qwenimage.py:668-672; on when g > 1).
+_CFG_MODES = {"z-image": "cond", "krea-2": "cond", "qwen-image": "qwen"}
+
+
+@dataclass(frozen = True)
+class SampleSettings:
+    steps: int
+    # The pipeline's own guidance_scale (true_cfg_scale for Qwen-Image / FLUX.1); 0 means one conditional pass.
+    guidance: float
+    cfg_mode: str = "uncond"
+    # A fixed schedule shift (Krea 2 Turbo pins mu = 1.15, pipeline_krea2.py:615); None derives it.
+    mu: Optional[float] = None
+
+    @property
+    def uses_cfg(self) -> bool:
+        return self.guidance > (0.0 if self.cfg_mode == "cond" else 1.0)
+
+
+def sample_inference_settings(family: str, base_model: str) -> SampleSettings:
+    """A preview's schedule: the family's distilled setting when the base is a distilled checkpoint,
+    else a short undistilled schedule at the pipeline's default guidance."""
     name = (base_model or "").lower()
+    mode = _CFG_MODES.get(family, "uncond")
     if family == "sdxl":
-        return 20, 5.0
+        return SampleSettings(4, 0.0) if "turbo" in name else SampleSettings(20, 5.0)
     if family == "z-image":
         if "de-turbo" in name or "turbo" not in name:
-            return 28, 4.0
-        return 8, 1.0
+            return SampleSettings(28, 4.0, mode)
+        return SampleSettings(8, 0.0, mode)
     if family == "flux.2-klein":
-        return (28, 4.0) if "base" in name else (4, 1.0)
+        return SampleSettings(28, 4.0) if "base" in name else SampleSettings(4, 0.0)
     if family == "flux.2-dev":
         # Guidance-distilled: the forward already feeds the 3.5 guidance embedding.
-        return 28, 1.0
+        return SampleSettings(28, 0.0)
     if family == "flux.1":
-        return 20, 1.0
+        return SampleSettings(20, 0.0)
     if family == "qwen-image":
-        return 20, 4.0
+        return SampleSettings(20, 4.0, mode)
     if family == "krea-2":
-        return 20, 4.5
-    return 20, 1.0
+        if "turbo" in name:
+            return SampleSettings(8, 0.0, mode, mu = 1.15)
+        return SampleSettings(20, 4.5, mode)
+    return SampleSettings(20, 0.0)
+
+
+def combine_cfg(mode: str, guidance: float, cond, uncond):
+    """One guided prediction, exactly as the family's pipeline forms it (see _CFG_MODES)."""
+    if mode == "cond":
+        return cond + guidance * (cond - uncond)
+    comb = uncond + guidance * (cond - uncond)
+    if mode == "qwen":
+        return comb * (_token_norm(cond) / _token_norm(comb))
+    return comb
+
+
+def _token_norm(v):
+    """Per-token norm of an unpacked Qwen latent [B,C,1,H,W]: the pipeline takes it over the last dim
+    of the packed [B, H/2*W/2, C*4] sequence, i.e. over the channels of each 2x2 patch."""
+    b, c, f, h, w = v.shape
+    p = v.reshape(b, c, f, h // 2, 2, w // 2, 2)
+    n = p.pow(2).sum(dim = (1, 4, 6), keepdim = True).sqrt()
+    return n.expand_as(p).reshape(v.shape)
 
 
 def sample_resolution(train_resolution: int, multiple: int = 64) -> int:
@@ -104,10 +147,12 @@ class SamplePlan:
     out_dir: Path
     tag: str
     written: list
+    cfg_mode: str = "uncond"
+    mu: Optional[float] = None
 
     @property
     def uses_cfg(self) -> bool:
-        return self.guidance > 1.0
+        return SampleSettings(self.steps, self.guidance, self.cfg_mode).uses_cfg
 
     @property
     def encode_texts(self) -> list[str]:
@@ -143,14 +188,16 @@ def plan_samples(cfg: Any, family: str, captions: list[str]) -> Optional[SampleP
             (c for c in captions if c and c.strip()), ""
         )
         prompts = (default,)
-    steps, guidance = sample_inference_settings(family, getattr(cfg, "base_model", ""))
+    settings = sample_inference_settings(family, getattr(cfg, "base_model", ""))
     multiple = 128 if family.startswith("flux.2") else 64
     return SamplePlan(
         every = every,
         prompts = prompts,
         seed = int(getattr(cfg, "seed", 0) or 0),
-        steps = steps,
-        guidance = guidance,
+        steps = settings.steps,
+        guidance = settings.guidance,
+        cfg_mode = settings.cfg_mode,
+        mu = settings.mu,
         resolution = sample_resolution(getattr(cfg, "resolution", 1024), multiple),
         out_dir = Path(cfg.output_dir).expanduser(),
         tag = f"{time.strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(3)}",
@@ -193,7 +240,13 @@ def initial_noise(plan: SamplePlan, index: int, shape, device):
     return torch.randn(tuple(shape), generator = gen, dtype = torch.float32).to(device)
 
 
-def flow_sigmas(scheduler_config: Any, family: str, steps: int, image_seq_len: int):
+def flow_sigmas(
+    scheduler_config: Any,
+    family: str,
+    steps: int,
+    image_seq_len: int,
+    mu: Optional[float] = None,
+):
     """The family's inference sigma schedule (N+1 values ending at 0), from a FRESH scheduler built
     from the training one's config: set_timesteps on the training scheduler would rewrite the
     tables the loop draws its timesteps from."""
@@ -205,12 +258,15 @@ def flow_sigmas(scheduler_config: Any, family: str, steps: int, image_seq_len: i
     sc = sched.config
     kwargs: dict = {}
     if getattr(sc, "use_dynamic_shifting", False):
-        if family.startswith("flux.2"):
+        if mu is not None:
+            kwargs["mu"] = float(mu)
+        elif family.startswith("flux.2"):
             from diffusers.pipelines.flux2.pipeline_flux2 import compute_empirical_mu
             kwargs["mu"] = compute_empirical_mu(image_seq_len, steps)
         else:
             base_len = sc.get("base_image_seq_len", 256)
-            max_len = sc.get("max_image_seq_len", 4096)
+            # pipeline_krea2.py:620 defaults the max length to 6400; every other pipeline to 4096.
+            max_len = sc.get("max_image_seq_len", 6400 if family == "krea-2" else 4096)
             base_shift = sc.get("base_shift", 0.5)
             max_shift = sc.get("max_shift", 1.15)
             m = (max_shift - base_shift) / (max_len - base_len)
@@ -256,41 +312,78 @@ def discard_samples(plan: Optional[SamplePlan]) -> None:
         pass
 
 
+def _run_dirs(base: Path, relpaths: list) -> set:
+    """The per-run tag folders (``samples/<tag>``) the reported paths name; never anything else."""
+    root = base / SAMPLES_DIRNAME
+    dirs = set()
+    for rel in relpaths:
+        if isinstance(rel, str) and SAMPLE_PATH_RE.match(rel):
+            dirs.add(root / rel.split("/")[1])
+    return dirs
+
+
 def discard_sample_paths(output_dir: Optional[str], relpaths: list) -> None:
-    """Parent-side twin of ``discard_samples`` for a child that died before cleaning up: only paths
-    the run itself reported, then their per-run folder if it is left empty."""
+    """Parent-side twin of ``discard_samples`` for a child that died before cleaning up: removes the
+    whole per-run folder the run's reported paths live in (thinned images included), then
+    ``samples/`` if that leaves it empty."""
     if not output_dir:
         return
     base = Path(output_dir)
-    dirs = set()
-    for rel in relpaths:
-        if not isinstance(rel, str) or not SAMPLE_PATH_RE.match(rel):
-            continue
-        p = base / rel
+    for d in _run_dirs(base, relpaths):
         try:
-            p.unlink()
+            if d.is_dir() and not d.is_symlink():
+                shutil.rmtree(d)
         except OSError:
             pass
-        dirs.add(p.parent)
-    for d in dirs:
-        for target in (d, d.parent):
+    try:
+        (base / SAMPLES_DIRNAME).rmdir()
+    except OSError:
+        pass
+
+
+def delete_sample_files(output_dir: Optional[str], relpaths: list) -> None:
+    """Delete individual reported images (history thinning), so no file outlives its listing."""
+    if not output_dir:
+        return
+    for rel in relpaths:
+        if isinstance(rel, str) and SAMPLE_PATH_RE.match(rel):
             try:
-                target.rmdir()
+                (Path(output_dir) / rel).unlink()
             except OSError:
                 pass
 
 
+class SampleRoundStopped(Exception):
+    """Raised by a render whose stop check fired mid-denoise."""
+
+
 def run_sample_round(
-    plan: SamplePlan, step: int, render: Callable[[int, str], Any], on_event, emit
-) -> None:
+    plan: SamplePlan,
+    step: int,
+    render: Callable[[int, str], Any],
+    on_event,
+    emit,
+    stop_requested: Optional[Callable[[], bool]] = None,
+) -> bool:
     """Render every prompt via ``render(index, prompt) -> [1,3,H,W] in [-1,1]``, save, and emit one
-    ``sample`` event."""
+    ``sample`` event. A stop between prompts (or a render raising SampleRoundStopped) ends the round
+    early, keeping the images already finished. Returns True when the round was cut short."""
     t0 = time.time()
     images = []
+    stopped = False
     for i, prompt in enumerate(plan.prompts):
-        images.extend(to_pil(render(i, prompt)))
-    entries = save_round(plan, step, images)
-    emit(on_event, "sample", step = int(step), images = entries, seconds = round(time.time() - t0, 2))
+        if stop_requested is not None and stop_requested():
+            stopped = True
+            break
+        try:
+            images.extend(to_pil(render(i, prompt)))
+        except SampleRoundStopped:
+            stopped = True
+            break
+    if images:
+        entries = save_round(plan, step, images)
+        emit(on_event, "sample", step = int(step), images = entries, seconds = round(time.time() - t0, 2))
+    return stopped
 
 
 def euler_flow_sample(
@@ -306,14 +399,17 @@ def euler_flow_sample(
     uncond,
     device,
     weight_dtype,
+    stop_requested: Optional[Callable[[], bool]] = None,
 ):
     """Flow-matching Euler: x <- x + (sigma_next - sigma) * v, with v from the training forward
-    (target convention noise - latents) and true CFG when ``plan.guidance > 1``."""
+    (target convention noise - latents) and the family pipeline's CFG combination."""
     import torch
 
-    sigmas, num_train = flow_sigmas(scheduler_config, family, plan.steps, image_seq_len)
+    sigmas, num_train = flow_sigmas(scheduler_config, family, plan.steps, image_seq_len, plan.mu)
     x = initial_noise(plan, index, latent_shape, device)
     for i in range(len(sigmas) - 1):
+        if stop_requested is not None and stop_requested():
+            raise SampleRoundStopped()
         s, s_next = float(sigmas[i]), float(sigmas[i + 1])
         t = torch.full((x.shape[0],), s * num_train, device = device, dtype = torch.float32)
         sig = torch.full((x.shape[0],), s, device = device, dtype = weight_dtype)
@@ -323,7 +419,7 @@ def euler_flow_sample(
         v = velocity(xin, t, sig, cond).float()
         if plan.uses_cfg and uncond is not None:
             v_u = velocity(xin, t, sig, uncond).float()
-            v = v_u + plan.guidance * (v - v_u)
+            v = combine_cfg(plan.cfg_mode, plan.guidance, v, v_u)
         x = x + (s_next - s) * v
     return x
 
@@ -333,6 +429,8 @@ __all__ = [
     "SAMPLE_FAMILIES",
     "SAMPLE_PATH_RE",
     "SamplePlan",
+    "SampleRoundStopped",
+    "combine_cfg",
     "discard_sample_paths",
     "discard_samples",
     "euler_flow_sample",

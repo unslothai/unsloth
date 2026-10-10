@@ -2368,8 +2368,18 @@ def _train_dit(
             uncond = uncond,
             device = device,
             weight_dtype = weight_dtype,
+            stop_requested = _stop_during_sample,
         )
         return spec.decode_latents(sample_vae, latents.to(next(sample_vae.parameters()).device))
+
+    # The stop poll drains the request, so one seen mid-round is latched here for the loop to act on.
+    stop_latched = False
+
+    def _stop_during_sample() -> bool:
+        nonlocal stop_latched
+        if not stop_latched and _check_stop():
+            stop_latched = True
+        return stop_latched
 
     def _sample(step: int) -> None:
         nonlocal sample_plan
@@ -2381,7 +2391,9 @@ def _train_dit(
                 transformer.eval()
                 if parked:
                     sample_vae.to(device)
-                run_sample_round(sample_plan, step, _render_dit, on_event, _emit)
+                run_sample_round(
+                    sample_plan, step, _render_dit, on_event, _emit, _stop_during_sample
+                )
         except Exception as exc:  # noqa: BLE001 -- previews are diagnostics, never a reason to lose the run
             _emit(on_event, "warning", message = f"Sample images disabled after an error: {exc}")
             sample_plan = None
@@ -2394,11 +2406,14 @@ def _train_dit(
                 elif device == "xpu":
                     torch.xpu.empty_cache()
 
-    if sample_plan is not None and resumed == 0:
-        # The step-0 baseline is what every later preview is compared against.
-        _sample(0)
+    if sample_plan is not None and resumed < cfg.train_steps:
+        # The baseline every later preview is compared against: step 0, or the step a resume restored.
+        _sample(resumed)
 
     for opt_step in range(resumed, cfg.train_steps):
+        if stop_latched:
+            stopped = True
+            break
         optimizer.zero_grad(set_to_none = True)
         step_loss = 0.0
         for _ in range(cfg.gradient_accumulation_steps):
@@ -2499,6 +2514,7 @@ def _train_dit(
         stop_now = _check_stop()
         if not stop_now and sample_plan is not None and sample_plan.due(done, cfg.train_steps):
             _sample(done)
+            stop_now = stop_latched
         # Skipped on the final step and when stopping, since the stop path writes one at the exact step.
         if (
             not stop_now
