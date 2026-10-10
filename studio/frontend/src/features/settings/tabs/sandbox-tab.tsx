@@ -3,6 +3,7 @@
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { useIsAccountOwner } from "@/features/auth";
@@ -30,6 +31,7 @@ import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   type HostPrepJob,
+  type SandboxMemoryStatus,
   type SandboxSettingsUpdate,
   type SandboxStatus,
   type SandboxToolStatus,
@@ -109,6 +111,98 @@ function ToolRow({
           ? t("settings.sandbox.osIsolation", { backend: view.backendLabel })
           : t("settings.sandbox.softwareSafeguards")}
       </Badge>
+    </SettingsRow>
+  );
+}
+
+function MemoryLimitRow({
+  memory,
+  saving,
+  error,
+  onSave,
+}: {
+  memory: SandboxMemoryStatus;
+  saving: boolean;
+  error: string | null;
+  onSave: (memoryLimitGb: number) => void;
+}) {
+  const t = useT();
+  const shown = memory.lockedByEnvironment ? memory.limitGb : memory.savedGb;
+  const [draft, setDraft] = useState(shown === null ? "" : String(shown));
+  const [invalid, setInvalid] = useState(false);
+  const submit = () => {
+    const value = Number(draft.trim());
+    if (
+      !Number.isInteger(value) ||
+      value < memory.minGb ||
+      value > memory.maxGb
+    ) {
+      setInvalid(true);
+      return;
+    }
+    setInvalid(false);
+    if (value !== memory.savedGb) onSave(value);
+  };
+  const note = memory.lockedByEnvironment
+    ? t("settings.sandbox.memoryLocked")
+    : invalid
+      ? t("settings.sandbox.memoryInvalid", {
+          min: String(memory.minGb),
+          max: String(memory.maxGb),
+        })
+      : error;
+  return (
+    <SettingsRow
+      label={t("settings.sandbox.memoryLabel")}
+      description={t("settings.sandbox.memoryDescription", {
+        defaultSize: String(memory.defaultGb),
+      })}
+      below={
+        note ? (
+          <span
+            className={cn(
+              NOTE_CLASS,
+              memory.lockedByEnvironment
+                ? "text-muted-foreground"
+                : "text-destructive",
+            )}
+          >
+            {note}
+          </span>
+        ) : null
+      }
+    >
+      <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5">
+          <Input
+            type="number"
+            min={memory.minGb}
+            max={memory.maxGb}
+            step={1}
+            value={draft}
+            disabled={memory.lockedByEnvironment}
+            aria-label={t("settings.sandbox.memoryLabel")}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") submit();
+            }}
+            className="h-8 w-24"
+          />
+          <span className="text-xs font-medium text-muted-foreground">
+            GB
+          </span>
+        </div>
+        {memory.lockedByEnvironment ? null : (
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={saving}
+            onClick={submit}
+          >
+            {saving ? t("common.saving") : t("common.save")}
+          </Button>
+        )}
+      </div>
     </SettingsRow>
   );
 }
@@ -644,6 +738,16 @@ function OsSandboxSections() {
                       ) : null}
                     </div>
                   </SettingsRow>
+                ) : null}
+                {status.memory ? (
+                  <MemoryLimitRow
+                    // A saved or reloaded value resets the draft.
+                    key={`${status.memory.savedGb}:${status.memory.limitGb}`}
+                    memory={status.memory}
+                    saving={saving}
+                    error={actionError}
+                    onSave={(memoryLimitGb) => void save({ memoryLimitGb })}
+                  />
                 ) : null}
               </>
             ) : null}

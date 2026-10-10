@@ -33,6 +33,12 @@ export interface SettingsPanelPrefsState {
   setApiExampleOs: (os: ExampleOs) => void;
   setApiExampleAgent: (agent: string | null) => void;
 
+  // null mcpOs follows the detected device type.
+  mcpAgent: string | null;
+  mcpOs: ExampleOs | null;
+  setMcpAgent: (agent: string) => void;
+  setMcpOs: (os: ExampleOs) => void;
+
   resourcesLiveUpdates: boolean;
   setResourcesLiveUpdates: (enabled: boolean) => void;
 
@@ -75,7 +81,7 @@ function sanitize(
       (EXAMPLE_OS_VALUES as string[]).includes(raw.agentsOs)
         ? (raw.agentsOs as ExampleOs)
         : null,
-    // A quant with no model to scope it to can never be applied.
+    // a quant without its model scope cannot be applied.
     agentsVariant: agentsVariantModel ? agentsVariant : null,
     agentsVariantModel: agentsVariant ? agentsVariantModel : null,
     apiExampleLang: text(raw.apiExampleLang),
@@ -85,6 +91,8 @@ function sanitize(
         ? (raw.apiExampleOs as ExampleOs)
         : null,
     apiExampleAgent: text(raw.apiExampleAgent),
+    mcpAgent: text(raw.mcpAgent),
+    mcpOs: EXAMPLE_OS_VALUES.find((os) => os === raw.mcpOs) ?? null,
     resourcesLiveUpdates:
       typeof raw.resourcesLiveUpdates === "boolean"
         ? raw.resourcesLiveUpdates
@@ -116,6 +124,11 @@ export const useSettingsPanelPrefsStore = create<SettingsPanelPrefsState>()(
       setApiExampleOs: (apiExampleOs) => set({ apiExampleOs }),
       setApiExampleAgent: (apiExampleAgent) => set({ apiExampleAgent }),
 
+      mcpAgent: null,
+      mcpOs: null,
+      setMcpAgent: (mcpAgent) => set({ mcpAgent }),
+      setMcpOs: (mcpOs) => set({ mcpOs }),
+
       resourcesLiveUpdates: true,
       setResourcesLiveUpdates: (resourcesLiveUpdates) =>
         set({ resourcesLiveUpdates }),
@@ -125,10 +138,9 @@ export const useSettingsPanelPrefsStore = create<SettingsPanelPrefsState>()(
     }),
     {
       name: SETTINGS_PANEL_PREFS_STORAGE_KEY,
-      // Pinned so a later shape change has somewhere to migrate from.
+      // pinned so later shape changes can migrate from this version.
       version: 1,
-      // Older records share these field names, so the sanitiser is enough. A
-      // newer one is dropped: it may reuse the names with different meaning.
+      // sanitize older records; drop newer versions that may reuse these field names.
       migrate: (persisted, version) =>
         (version < 1 ? persisted : {}) as SettingsPanelPrefsState,
       merge: (persisted, current) => sanitize(persisted, current),

@@ -15,7 +15,7 @@ import triton.language as tl
 import torch
 from ..device_type import DEVICE_COUNT
 from typing import Tuple
-from .utils import calculate_settings, torch_gpu_device, torch_device_stream
+from .utils import calculate_settings, long_indexing, torch_gpu_device, torch_device_stream
 from .rms_layernorm import (
     _BF16_TRACEABLE,
     _TRACEABLE,
@@ -44,6 +44,7 @@ def _rope_embedding_QK(
     n_heads_K: tl.constexpr,
     BACKWARD_PASS: tl.constexpr,
     HAS_ROPE_INDICES: tl.constexpr,
+    LONG_INDEXING: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
 ):
     row_position = tl.program_id(0)
@@ -77,6 +78,11 @@ def _rope_embedding_QK(
 
     batch_id = row_position // seqlen
     seq_index = row_position - batch_id * seqlen
+    if LONG_INDEXING:
+        # Widen after the int32 div/mod: 64-bit div/mod is slow at normal sizes.
+        batch_id = batch_id.to(tl.int64)
+        seq_index = seq_index.to(tl.int64)
+        head_position = head_position.to(tl.int64)
 
     q_ptr = Q + batch_id * Q_batch_stride + head_position * Q_head_stride + seq_index * Q_seq_stride
     q0 = tl.load(q_ptr + col_offsets, mask = mask, other = 0)
@@ -99,6 +105,7 @@ _rope_embedding_QK = triton.heuristics(
     {
         "BACKWARD_PASS": lambda args: bool(args["BACKWARD_PASS"]),
         "HAS_ROPE_INDICES": lambda args: bool(args["HAS_ROPE_INDICES"]),
+        "LONG_INDEXING": lambda args: bool(args["LONG_INDEXING"]),
     }
 )(_rope_embedding_QK)
 
@@ -117,6 +124,7 @@ def _rope_embedding(
     head_dim: tl.constexpr,
     n_heads: tl.constexpr,
     BACKWARD_PASS: tl.constexpr,
+    LONG_INDEXING: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
 ):
     """
@@ -151,9 +159,13 @@ def _rope_embedding(
     head_end = min((head_start + ROPE_GROUP_SIZE), n_heads)
 
     # 10% faster kernel from HuyNguyen-hust, unslothai/unsloth#238.
+    if LONG_INDEXING:
+        Q += row_position.to(tl.int64) * Q_row_stride
+    else:
+        Q += row_position * Q_row_stride
     for k in range(head_start, head_end):
-        offs_q1 = row_position * Q_row_stride + k * head_dim + col_offsets
-        offs_q2 = row_position * Q_row_stride + k * head_dim + col_offsets + half_head_dim
+        offs_q1 = k * head_dim + col_offsets
+        offs_q2 = k * head_dim + col_offsets + half_head_dim
 
         # Gemma sometimes needs RoPE done in float32 rather than bfloat16.
         Q1 = tl.load(Q + offs_q1, mask = mask, other = 0).to(sin1.dtype)
@@ -167,6 +179,7 @@ _rope_embedding = triton.jit(_rope_embedding)
 _rope_embedding = triton.heuristics(
     {
         "BACKWARD_PASS": lambda args: bool(args["BACKWARD_PASS"]),
+        "LONG_INDEXING": lambda args: bool(args["LONG_INDEXING"]),
     }
 )(_rope_embedding)
 
@@ -193,6 +206,7 @@ def _rope_rows(Q, cos, sin, seq_len, n_heads, head_dim, backward, wrap):
         head_dim,
         n_heads,
         BACKWARD_PASS = backward,
+        LONG_INDEXING = long_indexing(Q, block = BLOCK_SIZE),
         BLOCK_SIZE = BLOCK_SIZE,
         num_warps = num_warps,
     )
@@ -260,6 +274,7 @@ def _rope_qk(Q, K, cos, sin, rope_ptr, has_indices, backward, wrap):
         n_heads_K = n_heads_K,
         BACKWARD_PASS = backward,
         HAS_ROPE_INDICES = has_indices,
+        LONG_INDEXING = long_indexing(Q, K, block = BLOCK_SIZE),
         BLOCK_SIZE = BLOCK_SIZE,
         num_warps = num_warps,
     )
