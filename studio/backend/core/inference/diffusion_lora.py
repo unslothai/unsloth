@@ -33,8 +33,7 @@ from utils.paths.path_utils import is_appledouble_metadata
 _NATIVE_EXTS = (".safetensors", ".gguf")
 _DIFFUSERS_EXTS = (".safetensors",)
 _ALL_EXTS = (".safetensors", ".gguf")
-# ``kind`` in a ``<stem>.json`` sidecar that marks the weight file beside it as an image LoRA, so one
-# found outside loras/diffusion (an export, a custom models folder) is told apart from model weights.
+# ``kind`` in a ``<stem>.json`` sidecar marking the weight beside it as an image LoRA, not model weights.
 LORA_SIDECAR_KIND = "diffusion-lora"
 _MAX_SCAN_FOLDER_SUBDIRS = 200
 
@@ -52,7 +51,6 @@ class LoraCatalogEntry:
     local_path: Optional[str] = None
     size_bytes: int = 0
     weight_default: float = 1.0
-    # Trained in Unsloth (sidecar ``source == "studio-trained"``), wherever the file now sits.
     fine_tuned: bool = False
 
 
@@ -288,7 +286,6 @@ def export_local_lora(lora_id: str, dest_dir: Path) -> Path:
     # Exporting into the folder it already sits in would copy a file onto itself.
     if not (out.exists() and os.path.samefile(src, out)):
         shutil.copy2(src, out)
-    # Always a marked sidecar, so the export is picked up again from any custom models folder.
     meta = {**(_sidecar_data(src) or {}), "kind": LORA_SIDECAR_KIND}
     out.with_suffix(".json").write_text(json.dumps(meta, indent = 2), encoding = "utf-8")
     return out

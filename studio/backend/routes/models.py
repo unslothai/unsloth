@@ -418,8 +418,6 @@ def _has_non_gguf_weights(path: Path) -> bool:
         # Only the safetensors arm needs the check: a weight ".bin" is recognised by its name prefix, which a
         # "._" already fails.
         from core.inference.diffusion_lora import is_image_lora_file
-
-        # An exported or trained image LoRA is an add-on for the Images page, not a model to load.
         if any(
             not is_appledouble_metadata(f) and not is_image_lora_file(f)
             for f in path.glob("*.safetensors")

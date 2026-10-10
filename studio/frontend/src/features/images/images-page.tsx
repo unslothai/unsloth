@@ -5465,7 +5465,7 @@ export function ImagesPage({
                 <div className="space-y-2">
                   {availableLoras.length > 0 && (
                     <datalist id="diffusion-lora-suggestions">
-                      {/* Fine-tuned (trained in Unsloth) first; a datalist has no groups, so the label carries it. */}
+                      {/* A datalist has no groups, so the label carries the fine-tuned mark. */}
                       {[...availableLoras]
                         .sort((a, b) => Number(Boolean(b.fine_tuned)) - Number(Boolean(a.fine_tuned)))
                         .map((a) => (

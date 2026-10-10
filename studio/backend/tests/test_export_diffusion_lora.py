@@ -34,7 +34,6 @@ def test_export_copies_weights_and_a_marked_sidecar(loras, tmp_path):
     meta = json.loads(out.with_suffix(".json").read_text())
     assert meta == {"family": "sdxl", "source": "studio-trained", "kind": "diffusion-lora"}
     assert dl.is_image_lora_file(out)
-    # The source stays in the catalog.
     assert (loras / "mystyle.safetensors").is_file()
 
 

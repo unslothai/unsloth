@@ -53,7 +53,6 @@ def test_an_export_in_a_custom_folder_is_listed(catalog, tmp_path):
     add_scan_folder_with_status(str(folder))
 
     entry = _local()["mystyle"]
-    # Found one level down, where the Export page's default folder puts it.
     assert entry.local_path == str(folder / "image-loras" / "mystyle.safetensors")
     assert entry.families == ("sdxl",) and entry.fine_tuned
     assert dl.resolve_one("mystyle", 1.0).path == entry.local_path
@@ -97,7 +96,6 @@ def test_marked_loras_are_not_listed_as_models(tmp_path, scanner):
     assert _scan_models_dir(folder) == []
     assert _scan_models_dir(tmp_path) == []
 
-    # A bare checkpoint with no marker is still offered as before.
     _safetensors(tmp_path / "checkpoint" / "model.safetensors")
     assert [row.display_name for row in _scan_models_dir(tmp_path)] == ["checkpoint"]
 
