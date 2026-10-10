@@ -2360,3 +2360,136 @@ def test_legacy_load_in_4bit_is_validated_as_int4(monkeypatch):
         )
     )
     assert out.engine_precision == "int4" and out.load_in_4bit is False and out.gpu_ids == [0]
+
+
+def test_vllm_argv_caps_max_num_seqs_only_when_asked():
+    from core.inference.engine_adapters import ADAPTERS
+
+    def argv(engine, options = None):
+        return ADAPTERS[engine].command(
+            "/env/bin/python", "org/model", 45678, "key", 4096, 0.8, options = options
+        )
+
+    capped = argv("vllm", {"max_num_seqs": 36})
+    assert capped[capped.index("--max-num-seqs") + 1] == "36"
+    assert "--max-num-seqs" not in argv("vllm")
+    assert "--max-num-seqs" not in argv("vllm", {"precision": "auto"})
+    assert "--max-num-seqs" not in argv("sglang", {"max_num_seqs": 36})
+
+
+# The line vLLM 0.30.0 prints for Qwen3.8-27B-NVFP4 at a 32 GB RTX 5090's budget (#8861), measured on SM 12.0.
+_MAMBA_LIMIT_LINE = (
+    "(EngineCore pid=34071) ValueError: max_num_seqs (256) exceeds available Mamba cache blocks (36). "
+    "Each decode sequence requires one Mamba cache block, so CUDA graph capture cannot proceed. "
+    "Please lower max_num_seqs to at most 36 or increase gpu_memory_utilization."
+)
+
+
+def _scripted_engine(isolated, monkeypatch, outcomes):
+    """A vLLM ManagedEngine whose launches follow ``outcomes`` in order: "mamba" prints the
+    Mamba limit and exits, "crash" exits without it, "serve" answers /health."""
+    import sys
+    from types import SimpleNamespace
+    from core.inference import managed_engine
+
+    if not (isolated / "vllm" / "active.json").exists():
+        active(isolated)
+    monkeypatch.setattr(managed_engine, "gpu_memory_fraction", lambda *_: 0.8)
+    monkeypatch.setattr(managed_engine, "_SEQ_LIMITS", {})
+    engine = ManagedEngine("vllm")
+    launches = []
+
+    def command(
+        python,
+        model,
+        port,
+        key,
+        context,
+        memory,
+        tensor_parallel_size,
+        options = None,
+        **_,
+    ):
+        launches.append(dict(options or {}))
+        outcome = outcomes[len(launches) - 1]
+        if outcome == "serve":
+            code = (
+                "from http.server import BaseHTTPRequestHandler, HTTPServer\n"
+                "class Handler(BaseHTTPRequestHandler):\n"
+                " def do_GET(self):\n"
+                "  self.send_response(200); self.end_headers()\n"
+                " def log_message(self, *args): pass\n"
+                f"HTTPServer(('127.0.0.1', {port}), Handler).serve_forever()\n"
+            )
+        else:
+            line = _MAMBA_LIMIT_LINE if outcome == "mamba" else "RuntimeError: CUDA out of memory"
+            code = f"import sys\nprint({line!r}, flush = True)\nsys.exit(1)\n"
+        return [sys.executable, "-u", "-c", code]
+
+    engine.adapter = SimpleNamespace(
+        command = command,
+        progress = lambda _: None,
+        environment = lambda _: {},
+        key_environment = lambda _: {},
+    )
+    return engine, launches
+
+
+@_LOCAL_ENGINE_HOST
+def test_vllm_relaunches_once_at_the_mamba_block_count(isolated, monkeypatch):
+    import os
+
+    engine, launches = _scripted_engine(isolated, monkeypatch, ["mamba", "serve"])
+    try:
+        engine.start("model", 4096, [0], dict(os.environ), options = {"precision": "auto"})
+        assert engine.phase == "ready"
+    finally:
+        engine.stop()
+    assert [launch.get("max_num_seqs") for launch in launches] == [None, 36]
+    assert launches[1]["precision"] == "auto"
+
+    # A reload of the same config starts at the learned count instead of failing first.
+    from core.inference import managed_engine
+
+    learned = dict(managed_engine._SEQ_LIMITS)
+    engine, launches = _scripted_engine(isolated, monkeypatch, ["serve"])
+    monkeypatch.setattr(managed_engine, "_SEQ_LIMITS", learned)
+    try:
+        engine.start("model", 4096, [0], dict(os.environ), options = {"precision": "auto"})
+    finally:
+        engine.stop()
+    assert [launch.get("max_num_seqs") for launch in launches] == [36]
+
+
+@_LOCAL_ENGINE_HOST
+@pytest.mark.parametrize("outcomes", [["crash"], ["mamba", "mamba"]])
+def test_vllm_does_not_retry_other_failures_or_twice(isolated, monkeypatch, outcomes):
+    import os
+
+    engine, launches = _scripted_engine(isolated, monkeypatch, outcomes)
+    with pytest.raises(RuntimeError, match = "Engine failed to start"):
+        engine.start("model", 4096, [0], dict(os.environ))
+    engine.stop()
+    assert len(launches) == len(outcomes)
+
+
+@_LOCAL_ENGINE_HOST
+def test_vllm_mamba_retry_respects_a_cancelled_load(isolated, monkeypatch):
+    import os
+    import threading
+
+    engine, launches = _scripted_engine(isolated, monkeypatch, ["mamba", "serve"])
+    cancel = threading.Event()
+    original = engine._start_once
+
+    def first_then_cancel(*args):
+        try:
+            return original(*args)
+        finally:
+            cancel.set()
+
+    monkeypatch.setattr(engine, "_start_once", first_then_cancel)
+    with pytest.raises(RuntimeError, match = "cancelled"):
+        engine.start("model", 4096, [0], dict(os.environ), cancel)
+    engine.stop()
+    assert len(launches) == 1

@@ -204,6 +204,11 @@ class EngineAdapter:
             *parallel_args,
             *precision_args,
             *tool_args,
+            *(
+                ["--max-num-seqs", str(options["max_num_seqs"])]
+                if self.name == "vllm" and options.get("max_num_seqs")
+                else []
+            ),
             *(["--trust-remote-code"] if trust_remote_code else []),
             *self.extra_args,
             "--host",
