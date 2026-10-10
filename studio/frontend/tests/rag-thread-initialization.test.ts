@@ -120,6 +120,7 @@ function harness(
           ];
         },
         useCallback: (fn: unknown) => fn,
+        useMemo: (fn: () => unknown) => fn(),
         useEffect(effect: () => void, deps: unknown[]) {
           const index = cursor++;
           const previous = slots[index] as unknown[] | undefined;
@@ -134,7 +135,6 @@ function harness(
       "@hugeicons/core-free-icons": {},
       "lucide-react": {},
       "@/lib/tick-icon": {},
-      "@/lib/api-base": { isTauri: false },
       "@/lib/open-file-picker": {
         openFilePicker: (_accept: string, onFiles: (files: File[]) => void) => {
           pickedFiles = onFiles;
@@ -192,7 +192,13 @@ function harness(
           select: (s: { isUnavailable: () => boolean }) => unknown,
         ) => select({ isUnavailable: () => false }),
       },
-      "../types/rag": { CHAT_FILES_ACCEPT: ".docx" },
+      "../types/rag": {},
+      "./source-drop-policy": {
+        RAG_SOURCE_UPLOAD_ACCEPT: ".docx",
+        SUPPORTED_SOURCES_HINT: "",
+        isSupportedSourceName: (name: string) => name.endsWith(".docx"),
+      },
+      "./use-source-drop": {},
       "./document-status-chip": {},
       "./knowledge-base-dialog": { KnowledgeBaseDialog: "KnowledgeBaseDialog" },
       "./staged-source": { EXPIRY_GRACE_MS: 30_000 },

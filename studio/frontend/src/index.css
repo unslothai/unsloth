@@ -6021,7 +6021,7 @@ html:has([data-blocking-screen]) .interface-zoom-position {
 
 /* Chat with files card above the composer. */
 .unsloth-files-panel {
-	@apply mb-2 flex w-full flex-col gap-5 overflow-hidden rounded-[24px] px-4 pt-4 pb-6;
+	@apply relative mb-2 flex w-full flex-col gap-5 overflow-hidden rounded-[24px] px-4 pt-4 pb-6;
 	container: files-panel / inline-size;
 	font-family: var(--font-sans);
 	background-color: #ffffff;
@@ -6041,6 +6041,16 @@ html:has([data-blocking-screen]) .interface-zoom-position {
 	box-shadow:
 		0 0 0 1.5px var(--primary),
 		var(--composer-shadow);
+}
+.unsloth-files-panel-drop-overlay {
+	@apply pointer-events-none absolute inset-0 z-20 flex items-center justify-center gap-2 rounded-[inherit] bg-background/90 text-sm font-medium text-primary opacity-0 backdrop-blur-sm transition-opacity duration-150 dark:bg-card/90;
+}
+.unsloth-files-panel[data-dragging="true"] .unsloth-files-panel-drop-overlay {
+	opacity: 1;
+}
+/* One target at a time: over the panel, the composer's "Drop files here" would mislead. */
+.aui-composer-root:has(.unsloth-files-panel[data-dragging="true"]) .aui-composer-drop-overlay {
+	opacity: 0 !important;
 }
 /* Inset at rest; cards scroll under the panel edges. */
 .unsloth-files-panel-strip {

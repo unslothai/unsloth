@@ -2551,7 +2551,6 @@ const ThreadWelcome: FC<{
   const displayName = useUserProfileStore((s) => s.displayName);
   const nickname = useUserProfileStore((s) => s.nickname);
   const showGreetingSloth = useUserProfileStore((s) => s.showGreetingSloth);
-  const filesPanelOpen = useChatRuntimeStore((s) => s.ragEnabled);
   const [welcome, setWelcome] = useState<Welcome>(DEFAULT_WELCOME);
 
   useEffect(() => {
@@ -2566,11 +2565,8 @@ const ThreadWelcome: FC<{
 
   return (
     <div className="aui-thread-welcome-root mx-auto my-auto flex w-full max-w-(--thread-max-width) grow flex-col">
-      {/* With the files panel open, center the whole block on the page. */}
-      <div
-        className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-start pt-[27.5dvh] data-[files-panel=true]:justify-center data-[files-panel=true]:pt-0 data-[files-panel=true]:pb-[6dvh]"
-        data-files-panel={filesPanelOpen && !hideComposer ? "true" : undefined}
-      >
+      {/* With a files panel showing (chat with files, or project sources), center the whole block. */}
+      <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-start pt-[27.5dvh] has-[.unsloth-files-panel]:justify-center has-[.unsloth-files-panel]:pt-0 has-[.unsloth-files-panel]:pb-[6dvh]">
         {/* No padding, so the composer here is as wide as once it docks. */}
         <div className="aui-thread-welcome-message flex w-full flex-col justify-center gap-9">
           {/* Center the greeting (sloth + title) over the composer. */}

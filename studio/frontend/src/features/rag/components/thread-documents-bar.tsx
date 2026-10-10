@@ -2,11 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
-  type DragEvent,
   type ReactNode,
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -52,7 +52,6 @@ import {
   useNativeAttachmentTargetKey,
   useNativeIntentStore,
 } from "@/features/native-intents";
-import { isTauri } from "@/lib/api-base";
 import { openFilePicker } from "@/lib/open-file-picker";
 import { toast } from "@/lib/toast";
 import {
@@ -66,16 +65,13 @@ import {
   announceProjectSourcesUpdated,
   invalidateProjectSources,
   listKnowledgeBases,
+  listLinkedFolders,
   subscribeKnowledgeBasesChanged,
   listProjectDocuments,
   listThreadDocuments,
 } from "../api/rag-api";
 import { useRagAvailabilityStore } from "../api/rag-availability";
-import {
-  CHAT_FILES_ACCEPT,
-  type RagDocument,
-  isLinkedFolderManaged,
-} from "../types/rag";
+import { type RagDocument, isLinkedFolderManaged } from "../types/rag";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -92,12 +88,19 @@ import {
   type KnowledgeBaseFocus,
   KnowledgeBaseDialog,
 } from "./knowledge-base-dialog";
+import {
+  RAG_SOURCE_UPLOAD_ACCEPT,
+  SUPPORTED_SOURCES_HINT,
+  isSupportedSourceName,
+} from "./source-drop-policy";
 import { EXPIRY_GRACE_MS } from "./staged-source";
 import {
+  type RagUploadItem,
   type TrackedDocument,
   uploadItemFromIntent,
   useRagDocuments,
 } from "./use-rag-documents";
+import { useSourceDrop } from "./use-source-drop";
 
 // Refetched after any KB mutation so a rename shows at once.
 function useKnowledgeBaseName(kbId: string | null): string | null {
@@ -214,15 +217,115 @@ function useThreadProjectId(
     : undefined;
 }
 
-const CHAT_FILES_EXTENSIONS = new Set(
-  CHAT_FILES_ACCEPT.split(",").map((ext) => ext.trim().toLowerCase()),
-);
-
 function isRagIndexable(file: File): boolean {
   // Pasted text and annotations are not documents.
   if (isPastedTextFile(file) || annotationsOfFile(file)) return false;
-  const dot = file.name.lastIndexOf(".");
-  return dot >= 0 && CHAT_FILES_EXTENSIONS.has(file.name.slice(dot).toLowerCase());
+  return isSupportedSourceName(file.name);
+}
+
+/** Display names of a project's linked folders, read once per set of folder ids. */
+function useLinkedFolderNames(
+  projectId: string | null,
+  folderIds: string,
+): ReadonlyMap<string, string> {
+  const [names, setNames] = useState<ReadonlyMap<string, string>>(new Map());
+  useEffect(() => {
+    if (!projectId || !folderIds) return;
+    let cancelled = false;
+    listLinkedFolders({ type: "project", id: projectId })
+      .then((folders) => {
+        if (cancelled) return;
+        setNames(new Map(folders.map((f) => [f.id, f.displayName])));
+      })
+      .catch(() => {
+        // The card falls back to a generic label.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, folderIds]);
+  return names;
+}
+
+/** Splits project documents into loose files and per-folder groups. A linked folder can
+ * hold thousands of files, so it is drawn as one card rather than one card per file. */
+function groupByLinkedFolder(docs: TrackedDocument[]): {
+  loose: TrackedDocument[];
+  folders: [string, TrackedDocument[]][];
+} {
+  const loose: TrackedDocument[] = [];
+  const folders = new Map<string, TrackedDocument[]>();
+  for (const doc of docs) {
+    const folderId = doc.linkedFolderId;
+    if (!folderId) {
+      loose.push(doc);
+      continue;
+    }
+    const group = folders.get(folderId);
+    if (group) group.push(doc);
+    else folders.set(folderId, [doc]);
+  }
+  return { loose, folders: [...folders] };
+}
+
+function isProcessing(doc: TrackedDocument): boolean {
+  return doc.status === "pending" || doc.status === "running";
+}
+
+function ProjectBadge() {
+  return (
+    <span
+      className="pointer-events-none absolute top-1.5 left-1.5 inline-flex items-center gap-1 rounded-full bg-muted px-1.5 py-0.5 text-ui-10 text-muted-foreground"
+      aria-hidden={true}
+    >
+      <HugeiconsIcon icon={Folder02Icon} strokeWidth={2} className="size-3" />
+      Project
+    </span>
+  );
+}
+
+function LinkedFolderCard({
+  name,
+  docs,
+}: {
+  name: string | undefined;
+  docs: TrackedDocument[];
+}) {
+  const indexing = docs.filter(isProcessing).length;
+  const label = name ?? "Linked folder";
+  const count = `${docs.length} ${docs.length === 1 ? "file" : "files"}`;
+  return (
+    <div className={cn("relative", CARD_SLOT)}>
+      <ProjectBadge />
+      <div
+        title={`${label}: ${count}, kept in sync and shared with every chat in this project. Manage it in the project's Sources tab.`}
+        className={cn("flex overflow-hidden rounded-[15px]", CARD_SIZE, CARD_EDGE)}
+      >
+        <FileCardBody
+          name={label}
+          kind="document"
+          icon={
+            <HugeiconsIcon
+              icon={Folder02Icon}
+              strokeWidth={1.75}
+              className="size-3.25 shrink-0 text-muted-foreground"
+            />
+          }
+          center={
+            <span className="flex flex-col items-center gap-1.5 text-center text-ui-11">
+              {indexing > 0 ? (
+                <Spinner className="size-4" />
+              ) : (
+                <HugeiconsIcon icon={Folder02Icon} strokeWidth={1.5} className="size-6" />
+              )}
+              <span>{indexing > 0 ? `Indexing ${indexing} of ${docs.length}` : count}</span>
+              <span className="sr-only">linked folder, shared with the project</span>
+            </span>
+          }
+        />
+      </div>
+    </div>
+  );
 }
 
 /** An indexed document, drawn as a composer attachment card. */
@@ -237,7 +340,7 @@ function DocumentCard({
 }) {
   const openPreview = useDocumentPreviewStore((s) => s.openPreview);
   const kind = attachmentFileKind(doc.filename, undefined);
-  const processing = doc.status === "pending" || doc.status === "running";
+  const processing = isProcessing(doc);
   const failed = doc.status === "failed";
   const pending = doc.id.startsWith("pending_");
   const percent =
@@ -280,7 +383,14 @@ function DocumentCard({
             ? `${doc.filename}: shared with every chat in this project`
             : doc.filename)
         }
-        aria-label={canOpen ? `Preview ${doc.filename}` : doc.filename}
+        aria-label={[
+          canOpen ? `Preview ${doc.filename}` : doc.filename,
+          processing ? `${stageLabel}${percent != null ? ` ${percent}%` : ""}` : null,
+          failed ? "couldn't index" : null,
+          shared ? "shared with the project" : null,
+        ]
+          .filter(Boolean)
+          .join(", ")}
         className={cn(
           "flex overflow-hidden rounded-[15px] text-left transition-colors disabled:cursor-default",
           CARD_SIZE,
@@ -292,15 +402,7 @@ function DocumentCard({
       >
         <FileCardBody name={doc.filename} kind={kind} center={center} />
       </button>
-      {shared ? (
-        <span
-          className="pointer-events-none absolute top-1.5 left-1.5 inline-flex items-center gap-1 rounded-full bg-muted px-1.5 py-0.5 text-ui-10 text-muted-foreground"
-          aria-hidden={true}
-        >
-          <HugeiconsIcon icon={Folder02Icon} strokeWidth={2} className="size-3" />
-          Project
-        </span>
-      ) : null}
+      {shared ? <ProjectBadge /> : null}
       {onRemove && !processing ? (
         <button
           type="button"
@@ -350,7 +452,8 @@ function ChatFilesPanel({
   headerControls,
   onClose,
   closeLabel,
-  onDropFiles,
+  onDropItems,
+  dropDisabledReason,
   children,
 }: {
   icon: typeof Folder02Icon;
@@ -361,8 +464,10 @@ function ChatFilesPanel({
   headerControls?: ReactNode;
   onClose?: () => void;
   closeLabel?: string;
-  /** Handles drops on the panel. Unset, drops fall through to the composer. */
-  onDropFiles?: (files: File[]) => void;
+  /** Handles browser and desktop drops on the panel. Unset, drops fall through to the composer. */
+  onDropItems?: (items: RagUploadItem[]) => void;
+  /** Set while the panel can't take files: a drop is still claimed and refused with this. */
+  dropDisabledReason?: string;
   children?: ReactNode;
 }) {
   const stripRef = useRef<HTMLDivElement>(null);
@@ -396,47 +501,28 @@ function ChatFilesPanel({
     el.scrollBy({ left: direction * el.clientWidth * 0.8, behavior: "smooth" });
   };
   const overflowing = scroll.back || scroll.forward;
-  // Drops here are indexed; elsewhere they attach to the message. Desktop drops use native intents.
-  const acceptsDrop = Boolean(onDropFiles) && !isTauri;
-  const [dragging, setDragging] = useState(false);
-  const dragDepthRef = useRef(0);
-  const carriesFiles = (event: DragEvent) =>
-    Array.from(event.dataTransfer?.types ?? []).includes("Files");
-  const dropHandlers = acceptsDrop
-    ? {
-        onDragEnter: (event: DragEvent) => {
-          if (!carriesFiles(event)) return;
-          dragDepthRef.current += 1;
-          setDragging(true);
-        },
-        onDragOver: (event: DragEvent) => {
-          if (!carriesFiles(event)) return;
-          event.preventDefault();
-          event.dataTransfer.dropEffect = "copy";
-        },
-        onDragLeave: (event: DragEvent) => {
-          if (!carriesFiles(event)) return;
-          dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
-          if (dragDepthRef.current === 0) setDragging(false);
-        },
-        onDrop: (event: DragEvent) => {
-          dragDepthRef.current = 0;
-          setDragging(false);
-          const files = Array.from(event.dataTransfer?.files ?? []);
-          if (files.length === 0) return;
-          // The page handler skips prevented drops, so the files aren't also attached.
-          event.preventDefault();
-          onDropFiles?.(files);
-        },
-      }
-    : {};
+  // Drops here are indexed; elsewhere they attach to the message. The page handler skips
+  // prevented drops, and the desktop's window-wide handler skips registered targets.
+  const ignoreDrop = useCallback(() => {}, []);
+  const { dragging, dropProps, nativeDropTarget } = useSourceDrop({
+    onItems: onDropItems ?? ignoreDrop,
+    disabledReason: dropDisabledReason,
+  });
+  const acceptsDrop = Boolean(onDropItems);
   return (
     <section
+      ref={acceptsDrop ? nativeDropTarget : undefined}
       aria-label={title}
       className="unsloth-files-panel"
-      data-dragging={dragging ? "true" : undefined}
-      {...dropHandlers}
+      data-dragging={acceptsDrop && dragging ? "true" : undefined}
+      {...(acceptsDrop ? dropProps : {})}
     >
+      {acceptsDrop ? (
+        <div className="unsloth-files-panel-drop-overlay" aria-hidden={true}>
+          <PlusIcon className="size-5" />
+          Drop to chat with these files
+        </div>
+      ) : null}
       <div className="flex min-h-8 items-center gap-2 pl-1">
         <HugeiconsIcon
           icon={icon}
@@ -808,24 +894,15 @@ export function ThreadDocumentsBar({
           skipped === 1
             ? `"${files.find((file) => !isRagIndexable(file))?.name}" can't be searched`
             : `${skipped} files can't be searched`,
-          {
-            description:
-              "Chat with files reads documents, spreadsheets, slides, email, e-books and text files.",
-          },
+          { description: SUPPORTED_SOURCES_HINT },
         );
       }
       if (indexable.length > 0) attach(indexable);
     },
     [attach],
   );
-  // Still claim the drop, or it falls through and attaches to the message instead.
-  const refuseBusyDrop = useCallback(() => {
-    toast.info("Chat with files is busy", {
-      description: "Drop the files again once the current upload finishes.",
-    });
-  }, []);
   const pickFiles = useCallback(() => {
-    openFilePicker(CHAT_FILES_ACCEPT, attachIndexable);
+    openFilePicker(RAG_SOURCE_UPLOAD_ACCEPT, attachIndexable);
   }, [attachIndexable]);
 
   // Desktop drops land in the native-intent store because the drop listener lives on
@@ -918,6 +995,25 @@ export function ThreadDocumentsBar({
   // Removing a project source here deletes it for every chat, beside a chat card
   // whose X is undoable. Confirm, as the Sources tab and Settings do.
   const [removingShared, setRemovingShared] = useState<RagDocument | null>(null);
+
+  const projectGroups = useMemo(
+    () => groupByLinkedFolder(projectDocuments),
+    [projectDocuments],
+  );
+  const folderNames = useLinkedFolderNames(
+    projectId,
+    projectGroups.folders.map(([id]) => id).join(","),
+  );
+  const folderCards = projectGroups.folders.map(([folderId, docs]) => (
+    <div
+      key={`folder:${folderId}`}
+      className={cn("contents", ragToolDisabled && "[&>*]:opacity-50")}
+    >
+      <LinkedFolderCard name={folderNames.get(folderId)} docs={docs} />
+    </div>
+  ));
+  const fileCount = documents.length + projectDocuments.length;
+  const countSuffix = fileCount === 1 ? "1 file" : `${fileCount} files`;
   // Every branch, always the first fragment child: an "Add" must open after the source
   // moves, and deleting the active KB in it must not remount it.
   const kbDialog = (
@@ -943,7 +1039,9 @@ export function ThreadDocumentsBar({
     return (
       <>
         {kbDialog}
+        {/* Keyed per mode: the strip's observers attach on mount, and this one has no strip. */}
         <ChatFilesPanel
+          key="kb"
           icon={FileDatabaseIcon}
           title={activeKbName ? `Knowledge base: ${activeKbName}` : "Knowledge base"}
           onClose={() => setRagEnabled(false)}
@@ -969,8 +1067,10 @@ export function ThreadDocumentsBar({
         {kbDialog}
         {projectDocuments.length > 0 ? (
           <ChatFilesPanel
+            key="project"
             icon={FolderAttachmentIcon}
             title={ragToolDisabled ? "Project sources not used" : "Project sources"}
+            titleSuffix={countSuffix}
             note={
               <span
                 className="hidden truncate text-ui-12 text-muted-foreground @[32rem]/files-panel:inline"
@@ -986,7 +1086,8 @@ export function ThreadDocumentsBar({
               </span>
             }
           >
-            {projectDocuments.map((doc) => (
+            {folderCards}
+            {projectGroups.loose.map((doc) => (
               <div
                 key={`inherited:${doc.id}`}
                 className={cn("contents", ragToolDisabled && "[&>*]:opacity-50")}
@@ -1002,16 +1103,23 @@ export function ThreadDocumentsBar({
 
   // block attachments until the chat's project is known to avoid guessing their scope.
   const busy = uploading || projectUploading || projectUnresolved;
-  const fileCount = documents.length + projectDocuments.length;
+  // Still claim a drop while busy, or it falls through and attaches to the message instead.
+  const busyReason = !busy
+    ? undefined
+    : projectUnresolved
+      ? "Still loading this chat's project. Try again in a moment."
+      : "Still uploading. Drop the files again once it finishes.";
 
   return (
     <>
       {kbDialog}
       <ChatFilesPanel
+        key="files"
         icon={FileDatabaseIcon}
         title="Chat with files"
-        titleSuffix="(RAG)"
-        onDropFiles={busy ? refuseBusyDrop : attachIndexable}
+        titleSuffix={fileCount > 0 ? `(RAG) · ${countSuffix}` : "(RAG)"}
+        onDropItems={attach}
+        dropDisabledReason={busyReason}
         onClose={() => setRagEnabled(false)}
         closeLabel="Stop chatting with files"
         note={
@@ -1042,9 +1150,10 @@ export function ThreadDocumentsBar({
               onClick={pickFiles}
               className="unsloth-files-panel-action"
               title={
-                sharesWithProject
+                busyReason ??
+                (sharesWithProject
                   ? "Add files for retrieval, shared with every chat in this project"
-                  : "Add files for retrieval in this chat"
+                  : "Add files for retrieval in this chat")
               }
             >
               Add files
@@ -1053,7 +1162,8 @@ export function ThreadDocumentsBar({
         }
       >
         {/* project sources precede thread sources because they outlive the chat. */}
-        {projectDocuments.map((doc) => (
+        {folderCards}
+        {projectGroups.loose.map((doc) => (
           <div
             key={`project:${doc.id}`}
             className={cn("contents", ragToolDisabled && "[&>*]:opacity-50")}
@@ -1086,6 +1196,12 @@ export function ThreadDocumentsBar({
           </div>
         ))}
         <AddFilesCard disabled={busy} onClick={pickFiles} />
+        {fileCount === 0 ? (
+          <p className="flex max-w-[calc(18rem*var(--ui-space-scale,1))] shrink-0 items-center text-ui-12 leading-snug text-muted-foreground">
+            Add or drop documents, spreadsheets, slides or code here. The model
+            searches them and cites what it uses.
+          </p>
+        ) : null}
       </ChatFilesPanel>
       <AlertDialog
         open={removingShared !== null}
