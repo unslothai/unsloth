@@ -843,3 +843,50 @@ def test_ini_prefix_is_stripped_after_placement_drops_one_of_its_flags():
     backend = _Backend(stored, prefix)
     assert _without_model_ini(backend, stored) == ["--top-k", "3"]
     assert _without_model_ini(backend, prefix + ["--seed", "1"]) == ["--seed", "1"]
+
+
+def test_local_ini_symlink_leaving_the_model_folder_is_not_read(tmp_path):
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret = 1\n")
+    model = tmp_path / "model"
+    model.mkdir()
+    (model / "M-Q8_0.gguf").write_bytes(b"GGUF")
+    (model / "unsloth.ini").symlink_to(outside)
+    assert mi.locate_model_ini(str(model / "M-Q8_0.gguf")) is None
+    # A link to a file in the same folder is still the folder's own file.
+    (model / "unsloth.ini").unlink()
+    (model / "real.ini").write_text("c = 4096\n")
+    (model / "unsloth.ini").symlink_to(model / "real.ini")
+    assert "4096" in mi.locate_model_ini(str(model / "M-Q8_0.gguf")).text
+
+
+@pytest.mark.parametrize("value", ["0,0", "1,3.5e38", "-1,2"])
+def test_degenerate_tensor_splits_are_ignored_not_fatal(value):
+    compiled = parse_model_ini(f"ts = {value}\nc = 4096\n", quant = None, gguf_filename = None)
+    assert compiled.args == ["--ctx-size", "4096"]
+    assert [i["key"] for i in compiled.ignored] == ["ts"]
+    validate_extra_args(compiled.args)
+
+
+def test_frequency_penalty_is_left_to_the_chat_request():
+    compiled = parse_model_ini("frequency-penalty = 0.5\n", quant = None, gguf_filename = None)
+    assert compiled.args == [] and [i["key"] for i in compiled.ignored] == ["frequency-penalty"]
+
+
+def test_hf_snapshot_ini_linking_into_its_repos_blobs_is_read(tmp_path):
+    repo = tmp_path / "models--u--M-GGUF"
+    (repo / "blobs").mkdir(parents = True)
+    snap = repo / "snapshots" / "abc123"
+    snap.mkdir(parents = True)
+    (repo / "blobs" / "f00d").write_text("c = 4096\n")
+    (repo / "blobs" / "beef").write_bytes(b"GGUF")
+    (snap / "unsloth.ini").symlink_to(repo / "blobs" / "f00d")
+    (snap / "M-Q8_0.gguf").symlink_to(repo / "blobs" / "beef")
+    assert "4096" in mi.locate_model_ini(str(snap / "M-Q8_0.gguf")).text
+    # Another repo's blob is not this snapshot's file.
+    other = tmp_path / "models--x--Y" / "blobs"
+    other.mkdir(parents = True)
+    (other / "f00d").write_text("c = 1\n")
+    (snap / "unsloth.ini").unlink()
+    (snap / "unsloth.ini").symlink_to(other / "f00d")
+    assert mi.locate_model_ini(str(snap / "M-Q8_0.gguf")) is None

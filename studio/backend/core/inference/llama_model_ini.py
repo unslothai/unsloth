@@ -382,6 +382,9 @@ def _compile_value(opt: _Option, value: str, inverted: bool) -> list[str]:
         return [opt.negative] if opt.negative else []
     if not v:
         raise ValueError("missing value")
+    if opt.flag == "--frequency-penalty":
+        # Every chat request carries its own frequency_penalty (default 0), which would override this.
+        raise ValueError("set by each chat request, so a file value would never apply")
     if opt.flag == "--main-gpu":
         # Studio's GPU picker strips device flags from the stored args, which would orphan the prefix.
         raise ValueError("use Studio's GPU selection instead")
@@ -413,9 +416,10 @@ def _compile_value(opt: _Option, value: str, inverted: bool) -> list[str]:
         return [opt.flag, ",".join(parts)]
     if opt.kind == "float_list":
         parts = [p.strip() for p in v.split(",")]
-        for part in parts:
-            if _number(part, False) < 0:
-                raise ValueError("expected non-negative numbers")
+        numbers = [_number(part, False) for part in parts]
+        # The boundary refuses a zero total or a non-float32 ratio; ignore the key, not the load.
+        if any(n < 0 or n > 3.4e38 for n in numbers) or sum(numbers) <= 0:
+            raise ValueError("expected non-negative ratios with a positive total")
         return [opt.flag, ",".join(parts)]
     if opt.kind == "pattern":
         if len(v) > 1024 or re.search(r"\s", v) or "=" not in v:
@@ -532,6 +536,17 @@ def _read_capped(path: Path) -> str:
     return path.read_text(encoding = "utf-8-sig")
 
 
+def _stays_beside(candidate: Path, folder: Path) -> bool:
+    """Whether ``candidate`` is the folder's own file. A link may not lead elsewhere (the grant
+    covers this folder, not the link target), except a Hugging Face snapshot file, which links
+    into the same repo's ``blobs/``."""
+    target, home = candidate.resolve(), folder.resolve()
+    if target.parent == home:
+        return True
+    repo = target.parent.parent
+    return target.parent.name == "blobs" and home.is_relative_to(repo / "snapshots")
+
+
 def _locate_local(model_path: str, gguf_variant: Optional[str]) -> Optional[LocatedModelIni]:
     from utils.models.model_config import (
         _find_local_gguf_by_variant,
@@ -567,7 +582,7 @@ def _locate_local(model_path: str, gguf_variant: Optional[str]) -> Optional[Loca
     folders.append(root)
     for folder in dict.fromkeys(folders):
         candidate = folder / MODEL_INI_FILENAME
-        if candidate.is_file():
+        if candidate.is_file() and _stays_beside(candidate, folder):
             # A local load rarely names its variant; the quant in the file name picks [Q4_K_M].
             quant = gguf_variant or (
                 _gguf_variant_token(gguf_file.name) if gguf_file is not None else None
