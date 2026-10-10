@@ -13,7 +13,7 @@
 from unsloth_zoo.utils import Version
 from importlib.metadata import version as importlib_version
 from unsloth_zoo.hf_utils import dtype_from_config, HAS_TORCH_DTYPE
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from unsloth_zoo.llama_cpp import (
     convert_to_gguf,
     quantize_gguf,
@@ -60,17 +60,18 @@ import subprocess
 import traceback
 import psutil
 import re
-from transformers.models.llama.modeling_llama import logger
 from .models.loader_utils import (
     get_model_name,
+    sync_load_when_quantizing,
     _resolve_hub_repo_cached_file,
     _tokenizer_cache_dir,
     _tokenizer_revision,
     _tokenizer_wants_local_only,
 )
-from .models._utils import _convert_torchao_model
+from .models._utils import _convert_torchao_model, lora_relative_to_original_base
 from .models.mistral_format import raise_if_merging_mistral_format_view
 from .ollama_template_mappers import OLLAMA_TEMPLATES, MODEL_TO_OLLAMA_TEMPLATE_MAPPER
+from .device_type import clean_gpu_cache
 from transformers import ProcessorMixin, PreTrainedTokenizerBase
 from huggingface_hub import HfApi
 
@@ -994,7 +995,7 @@ def unsloth_save_model(
     assert maximum_memory_usage > 0 and maximum_memory_usage <= 0.95
 
     for _ in range(3):
-        torch.cuda.empty_cache()
+        clean_gpu_cache()
         gc.collect()
 
     save_method = save_method.lower().replace(" ", "_")
@@ -1479,17 +1480,17 @@ def unsloth_save_model(
     for j, (key, value) in enumerate(state_dict.items()):
         state_dict[key] = None
         if j % 10 == 0:
-            torch.cuda.empty_cache()
+            clean_gpu_cache()
             gc.collect()
     state_dict = None
     del state_dict
-    torch.cuda.empty_cache()
+    clean_gpu_cache()
     gc.collect()
 
     shutil.rmtree(temporary_location, ignore_errors = True)
 
     for _ in range(3):
-        torch.cuda.empty_cache()
+        clean_gpu_cache()
         gc.collect()
     return save_directory, username
 
@@ -3347,7 +3348,10 @@ def _gguf_reuses_loaded_checkpoint(model, state_dict = None):
         return False
     if state_dict is not None or getattr(model, "_unsloth_full_finetuning", False):
         return False
-    name_or_path = getattr(getattr(model, "config", None), "_name_or_path", None)
+    # A ModelScope load keeps its snapshot here, since `_name_or_path` holds the repo id (#3726).
+    name_or_path = getattr(model, "_unsloth_modelscope_snapshot", None) or getattr(
+        getattr(model, "config", None), "_name_or_path", None
+    )
     try:
         return bool(name_or_path and os.path.isdir(str(name_or_path)))
     except Exception:
@@ -3437,7 +3441,9 @@ def _gguf_model_input_directory(
 ):
     """The folder the converter reads, which is not always `save_directory`: a reused loaded checkpoint, which `unsloth_save_pretrained_gguf` assigns to `save_directory` before calling `save_to_gguf`. It matters only in the unwritable-CWD fallback, where the intermediate GGUF lands beside the reused checkpoint rather than the requested output, and the two can be on different filesystems."""
     if _gguf_reuses_loaded_checkpoint(model, state_dict):
-        return str(model.config._name_or_path)
+        return str(
+            getattr(model, "_unsloth_modelscope_snapshot", None) or model.config._name_or_path
+        )
     return save_directory
 
 
@@ -4093,7 +4099,9 @@ def unsloth_save_pretrained_gguf(
             ) from e
     else:
         # Non-PEFT model: convert the loaded checkpoint in place when it still holds the weights to export.
-        original_path = getattr(self.config, "_name_or_path", None)
+        original_path = getattr(self, "_unsloth_modelscope_snapshot", None) or getattr(
+            self.config, "_name_or_path", None
+        )
         if _gguf_reuses_loaded_checkpoint(self, state_dict):
             print(
                 f"Unsloth: Model is not a PEFT model. Using existing checkpoint at {original_path}"
@@ -4128,8 +4136,7 @@ def unsloth_save_pretrained_gguf(
     for _ in range(3):
         import gc
         gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        clean_gpu_cache()
 
     try:
         model_dtype = dtype_from_config(self.config)
@@ -5155,18 +5162,25 @@ def unsloth_convert_lora_to_ggml_and_save_locally(
     return _unsloth_save_lora_gguf(self, tokenizer, save_directory, outtype = outtype)
 
 
-from .models.loader_utils import (
-    get_model_name,
-    _resolve_hub_repo_cached_file,
-    _tokenizer_cache_dir,
-    _tokenizer_wants_local_only,
-)
-
 # Imported lazily at the two call sites: an older zoo, before its bitsandbytes import became optional, would otherwise break `import unsloth` on a host without bnb.
 from unsloth_zoo.llama_cpp import (
-    install_llama_cpp,
     convert_to_gguf as _convert_to_gguf,
 )
+
+
+def _modelscope_base_model_name(model_name, load_in_4bit = True):
+    """`get_model_name` for a merge under UNSLOTH_USE_MODELSCOPE=1: the 16bit base comes from ModelScope, like the model it was trained on, not the Hugging Face Hub (#3726)."""
+    name = get_model_name(model_name, load_in_4bit = load_in_4bit)
+    if not name or os.path.exists(name):
+        return name
+    try:
+        from modelscope import snapshot_download
+        return snapshot_download(name)
+    except Exception as e:
+        logger.warning_once(
+            f"Unsloth: Could not download `{name}` from ModelScope ({e}), trying Hugging Face."
+        )
+        return name
 
 
 def _prewarm_base_model_hub_cache(
@@ -5179,6 +5193,9 @@ def _prewarm_base_model_hub_cache(
     if os.environ.get("UNSLOTH_PREWARM_HUB_CACHE", "1").strip().lower() in _false:
         return
     if IS_KAGGLE_ENVIRONMENT or IS_COLAB_ENVIRONMENT:
+        return
+    # The merge fetches the base from ModelScope, so a Hub cache copy would go unused.
+    if os.environ.get("UNSLOTH_USE_MODELSCOPE", "0") == "1":
         return
     _true = ("1", "true", "yes", "on")
     if (
@@ -5711,19 +5728,24 @@ def unsloth_generic_save(
         _prewarm_base_model_hub_cache(model, save_method = save_method, token = token)
         from unsloth_zoo.saving_utils import merge_and_overwrite_lora
 
-        merge_and_overwrite_lora(
-            get_model_name,
-            model = model,
-            tokenizer = tokenizer,
-            save_directory = save_directory,
-            push_to_hub = push_to_hub,
-            private = private,
-            token = token,
-            save_method = save_method,
-            output_dtype = None,
-            low_disk_space_usage = True,
-            use_temp_file = False,
-        )
+        # merged_4bit merges into the loaded (already residual) weights, so it needs no conversion.
+        in_place = save_method in ("merged_4bit", "forced_merged_4bit")
+        with nullcontext() if in_place else lora_relative_to_original_base(model):
+            merge_and_overwrite_lora(
+                _modelscope_base_model_name
+                if os.environ.get("UNSLOTH_USE_MODELSCOPE", "0") == "1" and not in_place
+                else get_model_name,
+                model = model,
+                tokenizer = tokenizer,
+                save_directory = save_directory,
+                push_to_hub = push_to_hub,
+                private = private,
+                token = token,
+                save_method = save_method,
+                output_dtype = None,
+                low_disk_space_usage = True,
+                use_temp_file = False,
+            )
 
     if push_to_hub and datasets:
         try:
@@ -6104,19 +6126,17 @@ def _unsloth_save_torchao_with_given_config(
     model_restore = _offload_model_for_quantize_subprocess(model)
     for _ in range(3):
         gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        if hasattr(torch, "xpu") and torch.xpu.is_available():
-            torch.xpu.empty_cache()
+        clean_gpu_cache()
 
     # The original stays offloaded until the quantized copy is saved AND released, else both are resident at once and the restore OOMs.
     try:
-        quantized_model = auto_model.from_pretrained(
-            save_directory,
-            device_map = "auto",
-            quantization_config = quantization_config,
-            **kwargs,
-        )
+        with sync_load_when_quantizing(quantization_config, None):
+            quantized_model = auto_model.from_pretrained(
+                save_directory,
+                device_map = "auto",
+                quantization_config = quantization_config,
+                **kwargs,
+            )
 
         torchao_save_directory = save_directory + "-torchao"
 
@@ -6145,10 +6165,7 @@ def _unsloth_save_torchao_with_given_config(
             traceback.clear_frames(_exc.__traceback__)
         for _ in range(3):
             gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            if hasattr(torch, "xpu") and torch.xpu.is_available():
-                torch.xpu.empty_cache()
+            clean_gpu_cache()
         _restore_model_after_quantize_subprocess(model, model_restore)
 
     if os.path.exists(save_directory):
@@ -6640,8 +6657,7 @@ def _unsloth_save_compressed_tensors(
         model_restore = _offload_model_for_quantize_subprocess(model)
         for _ in range(3):
             gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            clean_gpu_cache()
 
         # Same boundary as the LoRA GGUF converter: False scrubs, it does not merely withhold.
         env = os.environ.copy()
@@ -6707,8 +6723,7 @@ def _unsloth_save_compressed_tensors(
             shutil.rmtree(work_tmp, ignore_errors = True)
         for _ in range(3):
             gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            clean_gpu_cache()
 
 
 def _unsloth_save_torchao(
@@ -6827,25 +6842,23 @@ def _unsloth_save_torchao(
         auto_processor = AutoProcessor if is_vlm else AutoTokenizer
 
         # Free the in-memory model's accelerator memory before reloading from disk, else it sits beside the copy and OOMs a device that fit the model once. Covers CUDA, XPU and multi-GPU dispatched shards, which a plain .to("cpu") cannot move.
-        _has_xpu = hasattr(torch, "xpu") and torch.xpu.is_available()
         model_restore = _offload_model_for_quantize_subprocess(model)
         for _ in range(3):
             gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            if _has_xpu:
-                torch.xpu.empty_cache()
+            clean_gpu_cache()
 
         # Reload the staged 16bit checkpoint with torchao applied: bfloat16 is required, and device_map="auto" falls back to CPU, so this works on any hardware.
         print(f"Unsloth: Quantizing the merged model to torchao {kind}...")
         dtype_kw = {"torch_dtype": torch.bfloat16} if HAS_TORCH_DTYPE else {"dtype": torch.bfloat16}
-        quantized_model = auto_model.from_pretrained(
-            staging,
-            device_map = "auto",
-            quantization_config = TorchAoConfig(quant_type = quant_type),
-            trust_remote_code = model_trust,
-            **dtype_kw,
-        )
+        _reload_qconfig = TorchAoConfig(quant_type = quant_type)
+        with sync_load_when_quantizing(_reload_qconfig, None):
+            quantized_model = auto_model.from_pretrained(
+                staging,
+                device_map = "auto",
+                quantization_config = _reload_qconfig,
+                trust_remote_code = model_trust,
+                **dtype_kw,
+            )
         staged_tokenizer = auto_processor.from_pretrained(staging, trust_remote_code = tok_trust)
 
         quantized_model.save_pretrained(out_dir, safe_serialization = safe_serialization)
@@ -6853,8 +6866,7 @@ def _unsloth_save_torchao(
         del quantized_model
         for _ in range(3):
             gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            clean_gpu_cache()
 
         cfg_path = os.path.join(out_dir, "config.json")
         cfg = {}
@@ -6904,17 +6916,13 @@ def _unsloth_save_torchao(
             traceback.clear_frames(_exc.__traceback__)
         for _ in range(3):
             gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            if hasattr(torch, "xpu") and torch.xpu.is_available():
-                torch.xpu.empty_cache()
+            clean_gpu_cache()
         _restore_model_after_quantize_subprocess(model, model_restore)
         if work_tmp is not None:
             shutil.rmtree(work_tmp, ignore_errors = True)
         for _ in range(3):
             gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            clean_gpu_cache()
 
 
 def unsloth_save_pretrained_torchao(

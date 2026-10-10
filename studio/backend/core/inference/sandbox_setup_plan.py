@@ -478,7 +478,7 @@ def setup_fields_for(
     *,
     available: bool | None = None,
 ) -> dict:
-    """Setup fields for a capability response: the action only for the owner on a local request."""
+    """Setup fields for a capability response: the action only for the owner, here or without a prompt."""
     from utils.client_ip import is_direct_local_request
 
     plan = detect(available)
@@ -504,13 +504,34 @@ def setup_fields_for(
     }
 
 
+# Nothing to answer on this computer, so a remote owner session (e.g. behind Colab's proxy) may start it.
+PROMPTLESS_ELEVATION = ("root", "sudo")
+
+
 def can_run_here(plan: SetupPlan, *, owner: bool, local: bool) -> bool:
     """Whether this caller gets the setup button. Blocking: may run the Linux elevation check."""
-    if not (plan.action and owner and local):
+    if not (plan.action and owner):
         return False
     if plan.action == LINUX_INSTALL:
-        return linux_elevation()[0] is not None
-    return True
+        return linux_install_allowed(local = local)[0]
+    return local
+
+
+def linux_install_allowed(*, local: bool, force: bool = False) -> tuple[bool, str | None]:
+    """(allowed, elevation kind): any elevation for a direct local request, otherwise only one with no prompt."""
+    kind = linux_elevation(force = force)[0]
+    return kind is not None and (local or kind in PROMPTLESS_ELEVATION), kind
+
+
+def remote_start_allowed(operation: str) -> bool:
+    """Whether a request that is not direct-local may start `operation`: only where no prompt appears here."""
+    if operation == WINDOWS_RUNTIME:
+        return True
+    return (
+        operation == LINUX_INSTALL
+        and sys.platform.startswith("linux")
+        and linux_install_allowed(local = False, force = True)[0]
+    )
 
 
 def _is_owner(user) -> bool:

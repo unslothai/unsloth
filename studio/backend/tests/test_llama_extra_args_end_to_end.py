@@ -36,10 +36,10 @@ def _cmd(tmp_path, **load_kwargs):
 
 
 def _stable(cmd: list[str]) -> list[str]:
-    """The command with the two values that differ per launch masked.
+    """The command with the values that differ per launch masked.
 
-    The port is picked from whatever is free and the GGUF lives under a per-test
-    tmp dir, so a literal comparison could never hold. Everything else is the
+    The port is picked from whatever is free, the GGUF lives under a per-test
+    tmp dir and the API key file is per launch, so a literal comparison could never hold. Everything else is the
     part this feature must not move.
     """
     masked = list(cmd)
@@ -48,6 +48,8 @@ def _stable(cmd: list[str]) -> list[str]:
             masked[index] = "<port>"
         elif index and masked[index - 1] in {"-m", "--model"}:
             masked[index] = "<model>"
+        elif index and masked[index - 1] == "--api-key-file":
+            masked[index] = "<api-key-file>"
     return masked
 
 

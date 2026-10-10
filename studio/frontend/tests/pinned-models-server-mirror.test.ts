@@ -14,7 +14,7 @@ const { store } = installLocalStorageFake();
 
 const { hydratePins, pinsMirrorSettledForTests, resetPinsMirrorForTests } =
   await import(
-    "../src/features/model-picker/components/model-selector/pins-mirror.ts"
+    "../src/lib/pins-mirror.ts"
   );
 const { usePinnedModelsStore } = await import(
   "../src/features/model-picker/components/model-selector/pinned-models.ts"
@@ -22,12 +22,21 @@ const { usePinnedModelsStore } = await import(
 const { usePinnedConnectedModelsStore } = await import(
   "../src/features/model-picker/components/model-selector/pinned-connected-models.ts"
 );
+const { useEmbeddingPinsStore } = await import(
+  "../src/features/settings/stores/embedding-pins-store.ts"
+);
 const { setAuthFetchHandler } = await import("./helpers/store-stubs/auth.ts");
 
 const PINNED = "unsloth_pinned_models";
 const CONNECTED = "unsloth_pinned_connected_models";
 
-type Server = { pinned: string[] | null; connected: string[] | null };
+const EMBEDDING = "unsloth_embedding_pins";
+
+type Server = {
+  pinned: string[] | null;
+  connected: string[] | null;
+  embedding?: string[] | null;
+};
 
 function serve(server: Server): { puts: Record<string, unknown>[] } {
   const puts: Record<string, unknown>[] = [];
@@ -47,6 +56,7 @@ function reset(): void {
   resetPinsMirrorForTests();
   usePinnedModelsStore.setState({ pinned: [] });
   usePinnedConnectedModelsStore.setState({ pinned: [] });
+  useEmbeddingPinsStore.setState({ pinned: [] });
 }
 
 // Sends await a dynamic import, so a fixed number of ticks does not drain them on every platform.
@@ -124,4 +134,15 @@ test("a failed read leaves the browser alone and sends nothing", async () => {
   assert.deepEqual(puts, []);
   assert.equal(store.get(PINNED), JSON.stringify(["org/b", "org/local"]));
   setAuthFetchHandler(null);
+});
+
+test("RAG embedding pins come back after an account switch and mirror every edit", async () => {
+  reset();
+  const { puts } = serve({ pinned: null, connected: null, embedding: ["unsloth/bge-m3"] });
+  await hydratePins();
+  assert.deepEqual(useEmbeddingPinsStore.getState().pinned, ["unsloth/bge-m3"]);
+  assert.equal(store.get(EMBEDDING), JSON.stringify(["unsloth/bge-m3"]));
+  useEmbeddingPinsStore.getState().togglePin("unsloth/embeddinggemma-2");
+  await settle();
+  assert.deepEqual(puts, [{ embedding: ["unsloth/bge-m3", "unsloth/embeddinggemma-2"] }]);
 });

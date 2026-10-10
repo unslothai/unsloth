@@ -27,12 +27,42 @@ from .test_explicit_skill_loading import mention_client  # noqa: F401 -- shared 
         ("~~~\n@skill-creator\n~~~", []),
         ('"quoted\n@skill-creator\n"', []),
         ("````\n```\n@skill-creator\n````", []),
-        ("> @skill-creator\n    @skill-creator\n\t@skill-creator", []),
+        ("> @skill-creator\n\n    @skill-creator\n\n\t@skill-creator", []),
         ("@Skill-creator @skill-creator/README.md @skill-creator_foo", []),
         ("@skill-creator, please", ["skill-creator"]),
         ("```@literal```\n@skill-creator", ["skill-creator"]),
         ("````\n````python\n@skill-creator\n````\n@another", ["another"]),
         ("```\n```x```\n@skill-creator\n```\n@another", ["another"]),
+        ("```\n    ```\n@skill-creator\n```\n@another", ["another"]),
+        ("~~~\n\t~~~\n@skill-creator\n~~~\n@another", ["another"]),
+        ("   ```\n@skill-creator\n   ```\n@another", ["another"]),
+        ("    ~~~\n@skill-creator", ["skill-creator"]),
+        ("> quoted prose\n@skill-creator replies below it", ["skill-creator"]),
+        ("> quoted prose\ncontinued prose\n@skill-creator", ["skill-creator"]),
+        ("> quoted prose\n> @skill-creator stays quoted\n@another", ["another"]),
+        ("- > quoted @skill-creator\n  > still @skill-creator\n  @another", ["another"]),
+        ("> quoted prose\n\n@skill-creator", ["skill-creator"]),
+        ("> quoted prose\n# @skill-creator", ["skill-creator"]),
+        ("> # heading\n@skill-creator", ["skill-creator"]),
+        ("> ```\n> code\n@skill-creator", ["skill-creator"]),
+        ("> ```\n> code\n> ```\n@skill-creator", ["skill-creator"]),
+        (r'He said "type \" carefully, then @skill-creator literally"', []),
+        (r"He said 'type \' carefully, then @skill-creator literally'", []),
+        (r'He said "type \" carefully" then @skill-creator', ["skill-creator"]),
+        (r"He said “type \” carefully, then @skill-creator literally”", []),
+        ("```\r@skill-creator\r```\r@another", ["another"]),
+        ("'please don't use @skill-creator here'", []),
+        ("‘please don’t use @skill-creator here’", []),
+        ("don't use @skill-creator here", ["skill-creator"]),
+        ('‘unclosed "quoted @skill-creator here" then @another', ["another"]),
+        ("unclosed \" then 'quoted @skill-creator here' and @another", ["another"]),
+        ("‘please don’t use it’ then @skill-creator", ["skill-creator"]),
+        ("`` code ``` xx ` @skill-creator ``", []),
+        ("`` code ``` xx ` literal `` then @skill-creator", ["skill-creator"]),
+        (r"\` @skill-creator \`", ["skill-creator"]),
+        (r"\\` @skill-creator `", []),
+        (r"` @skill-creator \`", []),
+        ("` unmatched\n\n@skill-creator\n\nclosing `", ["skill-creator"]),
     ],
 )
 def test_plain_text_intent_contract(text, expected):
@@ -211,6 +241,9 @@ def test_ask_requires_actual_scoped_approval_before_read(mention_client, monkeyp
     assert not tool_decision_is_pending(event["approval_id"])
     assert events[-1]["status"] == ("loaded" if verdict == "allow" else "unavailable")
     assert (path.read_text() in json.dumps(messages).replace("\\n", "\n")) == (verdict == "allow")
+    if verdict == "deny":
+        assert messages[0]["role"] == "system"
+        assert events[-1]["detail"] in messages[0]["content"]
 
 
 def test_closing_parked_preload_cleans_approval_slot(mention_client):
@@ -305,25 +338,28 @@ def test_safetensors_gets_complete_manifest_before_first_turn(mention_client):
     assert any(event["type"] == "skill_load" and event["status"] == "loaded" for event in events)
 
 
-def test_external_ask_flushes_skill_approval_before_waiting(mention_client, monkeypatch):
+@pytest.mark.parametrize("verdict", ["allow", "deny"])
+def test_external_ask_flushes_skill_approval_before_waiting(mention_client, monkeypatch, verdict):
     from core.inference.studio_tool_loop import (
         ToolLoopRun,
         ToolLoopPolicy,
         stream_with_studio_tools,
     )
 
-    def slow_allow(*args, **kwargs):
+    def slow_verdict(*args, **kwargs):
         import time
         time.sleep(0.3)
-        return "allow"
+        return verdict
 
-    monkeypatch.setattr(mentions, "wait_tool_decision", slow_allow)
+    monkeypatch.setattr(mentions, "wait_tool_decision", slow_verdict)
+    captured = []
 
     class Transport:
         heals_text_tool_calls = False
         sanitizes_provider_frames = False
 
         async def stream(self, **kwargs):
+            captured.append(kwargs["messages"])
             yield 'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}'
             yield "data: [DONE]"
 
@@ -353,7 +389,10 @@ def test_external_ask_flushes_skill_approval_before_waiting(mention_client, monk
     gate = next(i for i, e in enumerate(events) if '"status":"awaiting_approval"' in e)
     # The Allow / Deny card must be followed by its own keepalive write while Ask waits.
     assert events[gate + 1].startswith(":"), events[gate : gate + 2]
-    assert any('"status":"loaded"' in e for e in events)
+    assert any('"status":"loaded"' in e for e in events) == (verdict == "allow")
+    if verdict == "deny":
+        assert "@skill-creator not loaded" in captured[0][0]["content"]
+        assert "approval was denied" in captured[0][0]["content"]
 
 
 @pytest.mark.parametrize("tool_choice, max_calls", [("none", 5), ("auto", 0)])
@@ -402,6 +441,58 @@ def test_external_withdrawn_tools_skip_preload(mention_client, tool_choice, max_
     events = asyncio.run(drive())
     assert path.read_text() not in json.dumps([c.get("messages") for c in captured])
     assert not any('"type":"skill_load"' in event for event in events)
+
+
+@pytest.mark.parametrize("choice", ["auto", "none"])
+def test_safetensors_route_respects_withdrawn_tools(mention_client, monkeypatch, choice):
+    from routes import inference as api
+
+    client, gguf, manifest = mention_client
+    gguf.is_loaded = False
+    captured = []
+
+    class Backend:
+        active_model_name = "qwen"
+        models = {"qwen": {"chat_template_info": {"template": "qwen"}, "is_vision": False}}
+
+        def generate_chat_response(self, **kwargs):
+            captured.append(kwargs["messages"])
+            yield "No model tool call."
+
+        def generate_chat_completion_with_tools(self, *, messages, tools, **kwargs):
+            from core.inference.safetensors_agentic import run_safetensors_tool_loop
+            return run_safetensors_tool_loop(
+                single_turn = lambda conversation: self.generate_chat_response(messages = conversation),
+                messages = messages,
+                tools = tools,
+                execute_tool = lambda *a, **kw: pytest.fail("no model tool call"),
+                nudge_tool_calls = False,
+                permission_mode = kwargs["permission_mode"],
+            )
+
+        def reset_generation_state(self, *args):
+            pass
+
+    monkeypatch.setattr(api, "get_inference_backend", lambda: Backend())
+    monkeypatch.setattr(
+        api, "_detect_safetensors_features", lambda *a, **kw: {"supports_tools": True}
+    )
+    response = client.post(
+        "/chat/completions",
+        json = {
+            "messages": [{"role": "user", "content": "@skill-creator"}],
+            "stream": True,
+            "enable_tools": True,
+            "enabled_tools": ["read_skill"],
+            "permission_mode": "auto",
+            "tool_choice": choice,
+        },
+        headers = {"X-Unsloth-Events": "1"},
+    )
+    assert response.status_code == 200, response.text
+    assert captured, response.text
+    assert (manifest.read_text() in json.dumps(captured).replace("\\n", "\n")) == (choice == "auto")
+    assert ('"status": "loaded"' in response.text) == (choice == "auto")
 
 
 @pytest.mark.parametrize("extra", [{"tool_choice": "none"}, {"max_tool_calls_per_message": 0}])

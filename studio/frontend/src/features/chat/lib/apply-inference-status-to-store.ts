@@ -497,6 +497,14 @@ export function applyActiveModelStatusToStore(
         }),
       }),
     ...(seedLoadParams &&
+      status.spec_draft_model !== undefined && {
+        loadedSpecDraftModel: status.spec_draft_model ?? null,
+        ...((hydratingExistingModel ||
+          prevState.specDraftModel === prevState.loadedSpecDraftModel) && {
+          specDraftModel: status.spec_draft_model ?? null,
+        }),
+      }),
+    ...(seedLoadParams &&
       status.cache_type_kv !== undefined && {
         loadedKvCacheDtype: status.cache_type_kv,
         ...((prevState.loadedKvCacheDtype === null ||
@@ -552,6 +560,9 @@ export function applyActiveModelStatusToStore(
             chatTemplateOverrideReason:
               status.chat_template_override_reason ?? null,
             mlxKvQuantNote: status.mlx_kv_quant_note ?? null,
+            mlxInt8Prefill: status.mlx_int8_prefill_requested === true,
+            loadedMlxInt8PrefillRequested:
+              status.mlx_int8_prefill_requested === true,
           }
         : {
             // The verdict retires; the editable width is dormant, not wrong.
@@ -559,6 +570,7 @@ export function applyActiveModelStatusToStore(
             mlxKvQuantReason: null,
             chatTemplateOverrideReason: null,
             mlxKvQuantNote: null,
+            loadedMlxInt8PrefillRequested: false,
           })),
     // Recovery for a hydration this tab never saw, and only when nothing is staged: re-seeding
     // over an earlier edit would discard it.
@@ -569,12 +581,16 @@ export function applyActiveModelStatusToStore(
       prevState.mlxKvQuant === null &&
       prevState.loadedMlxKvQuantRequested === null &&
       prevState.mlxKvQuantReason === null &&
-      prevState.chatTemplateOverrideReason === null && {
+      prevState.chatTemplateOverrideReason === null &&
+      !prevState.mlxInt8Prefill && {
         mlxKvQuant: normalizeMlxKvQuant(status.mlx_kv_quant_requested),
         loadedMlxKvQuantRequested: normalizeMlxKvQuant(status.mlx_kv_quant_requested),
         mlxKvQuantReason: status.mlx_kv_quant_reason ?? null,
         chatTemplateOverrideReason: status.chat_template_override_reason ?? null,
         mlxKvQuantNote: status.mlx_kv_quant_note ?? null,
+        mlxInt8Prefill: status.mlx_int8_prefill_requested === true,
+        loadedMlxInt8PrefillRequested:
+          status.mlx_int8_prefill_requested === true,
       }),
     // Baseline only, never the control: the echo is the RESOLVED count and would pin a blank
     ...(seedLoadParams &&

@@ -947,3 +947,37 @@ def test_editable_package_sources_are_granted_read_only(monkeypatch, tmp_path):
     assert str(package) in readonly
     assert str(module) not in readonly
     assert str(tmp_path / "checkout") not in readonly
+
+
+def test_uv_base_prefix_junction_grants_concrete_runtime(monkeypatch, tmp_path):
+    from core.inference import mxc_policy
+
+    prefix = tmp_path / "venv"
+    prefix.mkdir()
+    base = tmp_path / "cpython-3.13.14"
+    base.mkdir()
+    alias = tmp_path / "cpython-3.13"
+    if os.name == "nt":
+        import subprocess
+        subprocess.run(
+            ["cmd.exe", "/d", "/c", "mklink", "/J", str(alias), str(base)],
+            check = True,
+            capture_output = True,
+        )
+    else:
+        alias.symlink_to(base, target_is_directory = True)
+    monkeypatch.setattr(mxc_policy.sys, "prefix", str(prefix))
+    monkeypatch.setattr(mxc_policy.sys, "base_prefix", str(alias))
+    monkeypatch.setattr(mxc_policy.site, "getsitepackages", lambda: [])
+    monkeypatch.delenv("SystemRoot", raising = False)
+    monkeypatch.delenv("WINDIR", raising = False)
+    roots = mxc_policy._runtime_read_roots(str(prefix / "python.exe"))
+    assert str(base.resolve()) in roots
+    assert str(alias) not in roots
+    assert str(tmp_path) not in roots
+    # The exception belongs only to Python's own base prefix. Arbitrary grants
+    # and workdirs must still reject the same redirect.
+    with pytest.raises(mxc_policy.MxcPolicyError, match = "reparse point"):
+        mxc_policy._runtime_read_roots(str(prefix / "python.exe"), [str(alias)])
+    with pytest.raises(mxc_policy.MxcPolicyError, match = "reparse point"):
+        mxc_policy._safe_canonical_path(str(alias), directory = True)

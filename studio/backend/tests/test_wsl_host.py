@@ -346,6 +346,7 @@ def test_wsl_launch_command(wsl, monkeypatch):
     joined = " ".join(command)
     assert command[command.index("--exec") + 2].endswith("/bin/run-engine")
     assert "CUDA_VISIBLE_DEVICES=0,2" in command and "CUDA_DEVICE_ORDER=PCI_BUS_ID" in command
+    assert "LIBRARY_PATH=/usr/lib/wsl/lib" in command
     assert "VLLM_USE_DEEP_GEMM=0" in command and "CUDA_HOME=/env/cuda" in command
     assert f"HF_HOME={wsl_host.GUEST_ROOT}/hf" in command
     # Windows paths and secrets never reach the guest command line.
@@ -569,6 +570,183 @@ def test_host_gpu_probes_hide_their_console_window(monkeypatch):
     assert seen == [0x08000000] * 2
 
 
+@pytest.mark.parametrize("present", [True, False])
+def test_wsl_build_tools_are_provisioned_only_when_missing(present):
+    calls = []
+    messages = []
+
+    def run_guest(argv):
+        calls.append(argv)
+        if len(calls) == 1:
+            return "UNSLOTH_BUILD_TOOLS_READY" if present else "UNSLOTH_BUILD_TOOLS_MISSING"
+        return ""
+
+    wsl_host.ensure_build_tools(run_guest, messages.append)
+    assert calls[0][:2] == ["sh", "-c"]
+    if present:
+        assert len(calls) == 1 and not messages
+    else:
+        assert messages == ["Installing WSL build tools"]
+        assert calls[1:] == [
+            ["dpkg", "--configure", "-a"],
+            ["apt-get", "update"],
+            ["apt-get", "install", "-y", "--no-install-recommends", "build-essential"],
+        ]
+
+
+def test_wsl_build_tool_probe_failure_does_not_install_packages():
+    calls = []
+    error = RuntimeError("WSL could not start")
+
+    def run_guest(argv):
+        calls.append(argv)
+        raise error
+
+    with pytest.raises(RuntimeError) as caught:
+        wsl_host.ensure_build_tools(run_guest)
+    assert caught.value is error
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("output", ["", "unexpected WSL output"])
+def test_wsl_build_tool_probe_requires_an_explicit_result(output):
+    calls = []
+
+    def run_guest(argv):
+        calls.append(argv)
+        return output
+
+    with pytest.raises(RuntimeError, match = "Could not check WSL build tools"):
+        wsl_host.ensure_build_tools(run_guest)
+    assert len(calls) == 1
+
+
+def test_wsl_build_tool_failure_is_reported():
+    calls = []
+
+    def run_guest(argv):
+        calls.append(argv)
+        if len(calls) == 1:
+            return "UNSLOTH_BUILD_TOOLS_MISSING"
+        raise RuntimeError("package repair failed")
+
+    with pytest.raises(RuntimeError, match = "package repair failed"):
+        wsl_host.ensure_build_tools(run_guest)
+    assert len(calls) == 2
+
+
+@_GUEST_RUNNER
+@pytest.mark.parametrize("cancel_source", ["event", "file"])
+def test_build_tool_cancellation_reaps_the_guest_process_group(
+    tmp_path, monkeypatch, cancel_source
+):
+    import threading
+
+    monkeypatch.setattr(install, "engine_root", lambda: tmp_path)
+    monkeypatch.setattr(install, "_update", lambda *args, **kwargs: None)
+    pids = tmp_path / "apt-pids"
+    code = (
+        "import os, subprocess, time; child = subprocess.Popen(['sleep', '300']); "
+        f"open({str(pids)!r}, 'w').write(f'{{os.getpid()}} {{child.pid}}'); time.sleep(300)"
+    )
+    cancel = threading.Event()
+    calls, errors = [], []
+
+    def run_guest(argv):
+        calls.append(argv)
+        if argv[0] == "sh":
+            return "UNSLOTH_BUILD_TOOLS_MISSING"
+        if argv[0] == "dpkg":
+            return ""
+        return install._run(
+            "vllm",
+            [str(_runner(tmp_path)), sys.executable, "-I", "-S", "-u", "-c", code],
+            cancel,
+            stdin_pipe = True,
+        )
+
+    def provision():
+        try:
+            wsl_host.ensure_build_tools(run_guest)
+        except RuntimeError as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target = provision)
+    thread.start()
+    try:
+        # Python start-up on a loaded -n 4 runner, not the cancellation, sets this wait.
+        deadline = time.monotonic() + 60
+        while (
+            not (pids.exists() and pids.read_text())
+            and thread.is_alive()
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.05)
+        assert pids.exists() and pids.read_text(), errors
+        apt_pid, child_pid = map(int, pids.read_text().split())
+        if cancel_source == "file":
+            (tmp_path / "vllm.cancel").touch()
+        else:
+            cancel.set()
+        thread.join(20)
+        assert not thread.is_alive()
+        assert errors and "cancelled" in str(errors[0]).lower()
+        assert _gone(apt_pid, 5) and _gone(child_pid, 5)
+        assert [
+            "apt-get",
+            "install",
+            "-y",
+            "--no-install-recommends",
+            "build-essential",
+        ] not in calls
+    finally:
+        cancel.set()
+        thread.join(20)
+
+
+def test_cancelled_preparation_does_not_start_a_guest_command(tmp_path, monkeypatch):
+    import threading
+
+    monkeypatch.setattr(install, "engine_root", lambda: tmp_path)
+    (tmp_path / "vllm.cancel").touch()
+    started = tmp_path / "started"
+    command = [sys.executable, "-c", f"open({str(started)!r}, 'w').close()"]
+    with pytest.raises(RuntimeError, match = "cancelled"):
+        install._run("vllm", command, threading.Event(), stdin_pipe = True)
+    assert not started.exists()
+
+
+def test_preparation_pipe_close_failure_still_cleans_up(tmp_path, monkeypatch):
+    import io
+    import threading
+    from utils import process_lifetime
+
+    class Stdin:
+        def close(self):
+            raise OSError("pipe already disconnected")
+
+    class Process:
+        pid = 123456
+        returncode = 0
+        stdin = Stdin()
+        stdout = io.StringIO()
+
+        def poll(self):
+            return 0
+
+        def wait(self, timeout):
+            return 0
+
+    proc, forgotten = Process(), []
+    monkeypatch.setattr(install, "engine_root", lambda: tmp_path)
+    monkeypatch.setattr(process_lifetime, "spawn_on_lifetime_thread", lambda factory: proc)
+    monkeypatch.setattr(process_lifetime, "adopt_pid", lambda pid: None)
+    monkeypatch.setattr(process_lifetime, "forget_pid", forgotten.append)
+    monkeypatch.setattr(process_lifetime, "is_process_shutting_down", lambda: False)
+    assert install._run("vllm", ["unused"], threading.Event(), stdin_pipe = True) == ""
+    assert forgotten == [proc.pid] and proc.stdout.closed
+
+
 @pytest.fixture
 def amd(wsl, monkeypatch):
     """A Windows host whose Studio PyTorch is a ROCm build."""
@@ -632,7 +810,10 @@ def test_nvidia_wsl_venv_never_gets_the_windows_interpreter(wsl, monkeypatch, en
     )
     commands = []
     monkeypatch.setattr(
-        install, "_run", lambda engine, argv, cancel, env = None: commands.append(argv)
+        install,
+        "_run",
+        lambda engine, argv, cancel, env = None, **_: commands.append(argv)
+        or "UNSLOTH_BUILD_TOOLS_READY",
     )
     install._install_wsl(engine, threading.Event())
     venv = next(c for c in commands if "venv" in c)
@@ -670,7 +851,10 @@ def test_amd_wsl_install_sets_up_rocm_before_the_engine(
 
     monkeypatch.setattr(wsl_host, "guest", guest)
     monkeypatch.setattr(
-        install, "_run", lambda engine, argv, cancel, env = None: commands.append(argv)
+        install,
+        "_run",
+        lambda engine, argv, cancel, env = None, **_: commands.append(argv)
+        or "UNSLOTH_BUILD_TOOLS_READY",
     )
     if supported:
         install._install_wsl("vllm", threading.Event())

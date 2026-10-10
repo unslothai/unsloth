@@ -37,7 +37,7 @@ const PRECISION_LABELS = [
   ["fp8", "FP8 (8-bit)"],
 ] as const;
 
-function EngineInstall({
+export function EngineInstall({
   engine,
   management = false,
   onUse,
@@ -93,12 +93,13 @@ function EngineInstall({
   };
   return (
     <div className="space-y-2 text-ui-12">
-      {!(isOwner || engine.installed) && (
+      {/* Settings shows these under the engine name (engineNote). */}
+      {!management && !(isOwner || engine.installed) && (
         <p className="text-muted-foreground">
           {t("managedEngines.ownerRequired")}
         </p>
       )}
-      {engine.unsupported_reason && (
+      {!management && engine.unsupported_reason && (
         <p className="text-muted-foreground">{engine.unsupported_reason}</p>
       )}
       {running ? (
@@ -232,7 +233,12 @@ function EngineInstall({
 
 export function InferenceEnginesSection() {
   const t = useT();
+  const isOwner = useIsAccountOwner();
   const { engines, error } = useEngines();
+  // Why the engine can't be installed, shown under its name.
+  const engineNote = (engine: EngineStatus) =>
+    engine.unsupported_reason ||
+    (isOwner || engine.installed ? undefined : t("managedEngines.ownerRequired"));
   return (
     <SettingsSection
       title={t("managedEngines.title")}
@@ -240,7 +246,11 @@ export function InferenceEnginesSection() {
     >
       {error && <p role="alert">{error}</p>}
       {engines.map((engine) => (
-        <SettingsRow key={engine.engine} label={names[engine.engine]}>
+        <SettingsRow
+          key={engine.engine}
+          label={names[engine.engine]}
+          description={engineNote(engine)}
+        >
           <EngineInstall engine={engine} management={true} />
         </SettingsRow>
       ))}

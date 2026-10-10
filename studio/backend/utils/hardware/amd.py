@@ -14,6 +14,8 @@ import shutil
 import stat
 import subprocess
 import sys
+import threading
+import time
 from pathlib import PurePath
 from typing import Any, Optional
 
@@ -379,8 +381,24 @@ def get_gpu_vram_mib() -> dict[int, tuple[int, int]]:
     return get_gpu_vram_report()[0]
 
 
+_HIP_ID_MAP_NONE_TTL_S = 300.0
+_hip_id_map_lock = threading.Lock()
+_hip_id_map_cache: Optional[tuple[float, Optional[dict[int, int]]]] = None
+
+
 def get_hip_id_by_gpu_index() -> Optional[dict[int, int]]:
-    """{amd-smi gpu id: HIP device id}, or None when the mapping is not readable. Two index spaces, one number: amd-smi's gpu id is an enumeration index in discovery order over its KFD/sysfs view, while HIP's is what ``HIP_VISIBLE_DEVICES`` names and what torch reports as ``cuda:N``, derived from the KFD node id instead (``hip_id = node_id - smallest_node_id``). They coincide on most hosts and not on all of them, so the number cannot be carried from one space to the other without this call. ``amd-smi list -e`` is the mapping AMD publishes for exactly this ("mapping physical-to-logical GPU IDs"), added in ROCm 6.4.0. None when any device lacks a usable id (an older CLI rejects ``-e`` outright, and ``hip_id`` reads "N/A" when the library cannot reach the device's KFD node) so callers decline rather than assume the identity mapping."""
+    """{amd-smi gpu id: HIP device id}, or None when the mapping is not readable. Two index spaces, one number: amd-smi's gpu id is an enumeration index in discovery order over its KFD/sysfs view, while HIP's is what ``HIP_VISIBLE_DEVICES`` names and what torch reports as ``cuda:N``, derived from the KFD node id instead (``hip_id = node_id - smallest_node_id``). They coincide on most hosts and not on all of them, so the number cannot be carried from one space to the other without this call. ``amd-smi list -e`` is the mapping AMD publishes for exactly this ("mapping physical-to-logical GPU IDs"), added in ROCm 6.4.0. None when any device lacks a usable id (an older CLI rejects ``-e`` outright, and ``hip_id`` reads "N/A" when the library cannot reach the device's KFD node) so callers decline rather than assume the identity mapping. Cached for the process; an unreadable answer is retried after five minutes."""
+    global _hip_id_map_cache
+    with _hip_id_map_lock:
+        cached = _hip_id_map_cache
+        if cached is None or (
+            cached[1] is None and time.monotonic() - cached[0] >= _HIP_ID_MAP_NONE_TTL_S
+        ):
+            cached = _hip_id_map_cache = (time.monotonic(), _read_hip_id_by_gpu_index())
+    return None if cached[1] is None else dict(cached[1])
+
+
+def _read_hip_id_by_gpu_index() -> Optional[dict[int, int]]:
     data = _run_amd_smi("list", "-e", count_failures = False)
     if data is None:
         return None

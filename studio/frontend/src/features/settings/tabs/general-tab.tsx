@@ -12,11 +12,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
-import {
-  PermissionModeDropdown,
-  useActivePermissionMode,
-  useChatRuntimeStore,
-} from "@/features/chat";
+import { useChatRuntimeStore } from "@/features/chat";
 // From the keys module, not the barrel or the store: both are in an import cycle with this file,
 // so the key was still in its temporal dead zone when the module-scope list below read it, killing
 // the module graph. The keys module imports nothing, so it is always evaluated first.
@@ -32,15 +28,15 @@ import {
   emitTrainingRunsChanged,
   TRAINING_UI_PREFERENCE_KEYS,
 } from "@/features/training";
-import {
-  setShowLlamaUpdateBanner,
-  setShowWhisperUpdateBanner,
-  useShowLlamaUpdateBanner,
-  useShowWhisperUpdateBanner,
-} from "@/hooks/use-llama-update-pref";
+import { NOTIFICATION_PREF_KEYS } from "@/hooks/use-notification-frequency";
 import { useHfTokenValidation } from "@/hooks";
 import { LOCALE_STORAGE_KEY, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
+import {
+  SPELLCHECK_STORAGE_KEY,
+  setSpellCheck,
+  useSpellCheck,
+} from "@/lib/spellcheck";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { Check, Eye, EyeOff } from "lucide-react";
@@ -81,6 +77,7 @@ import { LanguageSelect } from "../components/language-select";
 import { TRANSPORT_MODE_STORAGE_KEY } from "@/features/hub";
 import { DownloadTransportRow } from "../components/download-transport-row";
 import { HubSettingsSection } from "../components/hub-settings-section";
+import { NotificationFrequencySelect } from "../components/notification-frequency-select";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { StudioVersionSection } from "../components/studio-version-section";
@@ -88,7 +85,6 @@ import { useDesktopBooleanSetting } from "../hooks/use-desktop-boolean-setting";
 import { KEYBOARD_SHORTCUTS_STORAGE_KEY } from "../stores/keyboard-shortcuts-store";
 import { INTERFACE_SCALE_STORAGE_KEY } from "../stores/interface-scale-store";
 import { SETTINGS_PANEL_PREFS_STORAGE_KEY } from "../stores/settings-panel-prefs-store";
-import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 import { CHAT_PROJECT_ATTACHMENT_TARGET_KEY } from "@/features/chat/utils/project-attachment-target";
 
 // Keys cleared by "Reset all local preferences". NEVER include auth/session keys here -- that
@@ -101,6 +97,7 @@ const PREFS_KEYS: string[] = [
   "unsloth_appearance_customization",
   INTERFACE_SCALE_STORAGE_KEY,
   LOCALE_STORAGE_KEY,
+  SPELLCHECK_STORAGE_KEY,
   // UI state
   "sidebar_pinned",
   "sidebar_width",
@@ -123,6 +120,7 @@ const PREFS_KEYS: string[] = [
   CHAT_PROJECT_ATTACHMENT_TARGET_KEY,
   "unsloth_chat_auto_title",
   "unsloth_chat_permission_mode",
+  "unsloth_chat_sandbox_level",
   // Legacy confirm key: loadPermissionMode falls back to it, so clear both or a reset restores it.
   "unsloth_chat_confirm_tool_calls",
   "unsloth_hf_token",
@@ -165,8 +163,8 @@ const PREFS_KEYS: string[] = [
   // Guided tour flags
   "tour:studio:v1",
   // Update notifications
-  "unsloth_show_llama_update_banner",
-  "unsloth_show_whisper_update_banner",
+  ...NOTIFICATION_PREF_KEYS,
+  "unsloth_llama_update_offer_suppression",
   "unsloth_monitor_overlay",
   LOADED_MODELS_PREFERENCE_KEYS.show,
   LOADED_MODELS_PREFERENCE_KEYS.collapsed,
@@ -197,29 +195,15 @@ function resetAllPrefs() {
 export function GeneralTab() {
   const isOwner = useIsAccountOwner();
   const t = useT();
-  const permissionsRef = useRef<HTMLElement | null>(null);
-  const activePermission = useActivePermissionMode();
-  const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
-  const consumeScrollTarget = useSettingsDialogStore((s) => s.consumeScrollTarget);
-
-  // Learn more in the permission menus.
-  useEffect(() => {
-    if (scrollTarget !== "general-permissions") return;
-    const frame = window.requestAnimationFrame(() => {
-      permissionsRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
-      consumeScrollTarget("general-permissions");
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [consumeScrollTarget, scrollTarget]);
   const hfToken = useChatRuntimeStore((s) => s.hfToken);
   const setHfToken = useChatRuntimeStore((s) => s.setHfToken);
 
   const hfTokenPersistenceError = useHfTokenStore(
     (s) => s.persistenceError,
   );
-  const showLlamaUpdates = useShowLlamaUpdateBanner();
-  const showWhisperUpdates = useShowWhisperUpdateBanner();
+  const hfTokenIsPersisting = useHfTokenStore((s) => s.isPersisting);
   const showLoadedModels = useShowLoadedModels();
+  const spellCheck = useSpellCheck();
 
   const [draftToken, setDraftToken] = useState(hfToken ?? "");
   const [showToken, setShowToken] = useState(false);
@@ -262,6 +246,9 @@ export function GeneralTab() {
   });
 
   const draftRef = useRef(draftToken);
+  const tokenEditedRef = useRef(false);
+  const tokenEditRevisionRef = useRef(0);
+  const submittedTokenRevisionRef = useRef<number | null>(null);
   useEffect(() => {
     draftRef.current = draftToken;
   }, [draftToken]);
@@ -269,7 +256,16 @@ export function GeneralTab() {
   // Commit on unmount (dialog close / tab switch), skipped during the reset-prefs flow.
   useEffect(() => {
     return () => {
-      if (resetInProgress) return;
+      if (resetInProgress || !tokenEditedRef.current) return;
+      const credential = useHfTokenStore.getState();
+      if (
+        submittedTokenRevisionRef.current !== null &&
+        submittedTokenRevisionRef.current === tokenEditRevisionRef.current &&
+        !credential.isPersisting &&
+        !credential.persistenceError
+      ) {
+        return;
+      }
       const trimmed = draftRef.current.trim();
       const current = useChatRuntimeStore.getState().hfToken;
       if (trimmed !== current) {
@@ -278,13 +274,46 @@ export function GeneralTab() {
     };
   }, []);
 
+  useEffect(() => {
+    const current = hfToken ?? "";
+    if (tokenEditedRef.current) {
+      if (hfTokenIsPersisting) return;
+      if (hfTokenPersistenceError) {
+        submittedTokenRevisionRef.current = null;
+        return;
+      }
+      if (
+        submittedTokenRevisionRef.current !== tokenEditRevisionRef.current &&
+        draftRef.current.trim() !== current
+      ) {
+        return;
+      }
+      tokenEditedRef.current = false;
+      submittedTokenRevisionRef.current = null;
+    }
+    draftRef.current = current;
+    setDraftToken(current);
+  }, [hfToken, hfTokenIsPersisting, hfTokenPersistenceError]);
+
   const commitToken = () => {
-    const trimmed = draftToken.trim();
+    if (!tokenEditedRef.current) return;
+    const trimmed = draftRef.current.trim();
+    draftRef.current = trimmed;
     if (trimmed !== draftToken) setDraftToken(trimmed);
-    if (trimmed !== hfToken) setHfToken(trimmed);
+    const current = useChatRuntimeStore.getState().hfToken;
+    if (trimmed === current) {
+      tokenEditedRef.current = false;
+      submittedTokenRevisionRef.current = null;
+      return;
+    }
+    submittedTokenRevisionRef.current = tokenEditRevisionRef.current;
+    setHfToken(trimmed);
   };
 
   const clearHfToken = () => {
+    tokenEditRevisionRef.current += 1;
+    tokenEditedRef.current = true;
+    submittedTokenRevisionRef.current = tokenEditRevisionRef.current;
     draftRef.current = "";
     setDraftToken("");
     setHfToken("");
@@ -495,7 +524,14 @@ export function GeneralTab() {
                 spellCheck={false}
                 placeholder="hf_…"
                 value={draftToken}
-                onChange={(e) => setDraftToken(e.target.value)}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  tokenEditRevisionRef.current += 1;
+                  tokenEditedRef.current = value.trim() !== (hfToken ?? "");
+                  submittedTokenRevisionRef.current = null;
+                  draftRef.current = value;
+                  setDraftToken(value);
+                }}
                 onBlur={commitToken}
                 className={cn(
                   "h-8 w-full font-mono text-xs",
@@ -562,18 +598,11 @@ export function GeneralTab() {
         >
           <LanguageSelect />
         </SettingsRow>
-      </SettingsSection>
-
-      <SettingsSection
-        ref={permissionsRef}
-        title={t("settings.general.permissions.sectionTitle")}
-      >
-        {/* The selected level, explained in full. */}
         <SettingsRow
-          label={t(`settings.general.permissions.names.${activePermission.value}`)}
-          description={t(`settings.general.permissions.details.${activePermission.value}`)}
+          label={t("settings.appearance.language.spellCheck")}
+          description={t("settings.appearance.language.spellCheckDescription")}
         >
-          <PermissionModeDropdown learnMore={false} />
+          <Switch checked={spellCheck} onCheckedChange={setSpellCheck} />
         </SettingsRow>
       </SettingsSection>
 
@@ -636,14 +665,25 @@ export function GeneralTab() {
           />
         </SettingsRow>
         <SettingsRow
+          label={t("settings.general.notifications.showUnslothUpdates")}
+          description={t(
+            "settings.general.notifications.showUnslothUpdatesDescription",
+          )}
+        >
+          <NotificationFrequencySelect
+            channel="unsloth"
+            label={t("settings.general.notifications.showUnslothUpdates")}
+          />
+        </SettingsRow>
+        <SettingsRow
           label={t("settings.general.notifications.showLlamaUpdates")}
           description={t(
             "settings.general.notifications.showLlamaUpdatesDescription",
           )}
         >
-          <Switch
-            checked={showLlamaUpdates}
-            onCheckedChange={setShowLlamaUpdateBanner}
+          <NotificationFrequencySelect
+            channel="llama"
+            label={t("settings.general.notifications.showLlamaUpdates")}
           />
         </SettingsRow>
         <SettingsRow
@@ -652,9 +692,20 @@ export function GeneralTab() {
             "settings.general.notifications.showWhisperUpdatesDescription",
           )}
         >
-          <Switch
-            checked={showWhisperUpdates}
-            onCheckedChange={setShowWhisperUpdateBanner}
+          <NotificationFrequencySelect
+            channel="whisper"
+            label={t("settings.general.notifications.showWhisperUpdates")}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.general.notifications.showAudioCppUpdates")}
+          description={t(
+            "settings.general.notifications.showAudioCppUpdatesDescription",
+          )}
+        >
+          <NotificationFrequencySelect
+            channel="audio"
+            label={t("settings.general.notifications.showAudioCppUpdates")}
           />
         </SettingsRow>
       </SettingsSection>

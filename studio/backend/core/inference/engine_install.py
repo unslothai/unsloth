@@ -858,15 +858,22 @@ def _atomic_json(path: Path, data: dict) -> None:
     tmp = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
     try:
         tmp.write_text(json.dumps(data), encoding = "utf-8")
-        # Windows refuses to replace a file while a status poll is reading it.
-        for _ in range(39):
+        # Windows readers (including status polling in another Studio process) can
+        # briefly deny deletion of the destination. Keep the previous JSON intact
+        # and retry the atomic rename; permanent permission errors still surface.
+        deadline = time.monotonic() + 1.0
+        while True:
             try:
                 os.replace(tmp, path)
                 break
-            except PermissionError:
-                time.sleep(0.05)
-        else:
-            os.replace(tmp, path)
+            except OSError as exc:
+                if (
+                    sys.platform != "win32"
+                    or getattr(exc, "winerror", None) not in (5, 32, 33)
+                    or time.monotonic() >= deadline
+                ):
+                    raise
+                time.sleep(0.01)
     finally:
         tmp.unlink(missing_ok = True)
 
@@ -1145,7 +1152,9 @@ def _run(
     argv: list[str],
     cancel: threading.Event,
     env: dict | None = None,
-) -> None:
+    *,
+    stdin_pipe: bool = False,
+) -> str:
     from utils.process_lifetime import (
         adopt_pid,
         child_popen_kwargs,
@@ -1156,12 +1165,15 @@ def _run(
     )
 
     tail: deque[str] = deque(maxlen = 20)
+    if (engine_root() / f"{engine}.cancel").exists():
+        cancel.set()
     if cancel.is_set() or is_process_shutting_down():
         raise RuntimeError("Installation cancelled or Studio is shutting down.")
     proc = spawn_on_lifetime_thread(
         lambda: subprocess.Popen(
             argv,
             env = install_environment() if env is None else env,
+            stdin = subprocess.PIPE if stdin_pipe else None,
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
             text = True,
@@ -1222,9 +1234,20 @@ def _run(
                     "Installation timed out. Retry when the connection is available."
                 )
         reader.join(timeout = 2)
+        if cancel.is_set() or is_process_shutting_down():
+            raise RuntimeError("Installation cancelled or Studio is shutting down.")
         if proc.returncode:
             raise RuntimeError("Engine installation failed. " + "\n".join(tail))
+        return "\n".join(tail)
     finally:
+        if proc.stdin is not None:
+            # Closing the WSL runner's pipe stops its guest process group, including
+            # apt/dpkg children; terminating wsl.exe alone can leave them running.
+            try:
+                proc.stdin.close()
+                proc.wait(timeout = 15)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
         if proc.poll() is None:
             terminate_pid(proc.pid, timeout = 5, owner_verified = True)
         proc.wait(timeout = 10)
@@ -1472,15 +1495,19 @@ def _install_wsl(engine: str, cancel: threading.Event) -> None:
         "UV_HTTP_RETRIES": "5",
         # Cache and environments share the distro's ext4 disk.
         "UV_LINK_MODE": "hardlink",
+        "DEBIAN_FRONTEND": "noninteractive",
         **(wsl_host.ROCM_ENVIRONMENT if rocm else {}),
     }
     secrets = {key: os.environ[key] for key in _PROXIES if os.environ.get(key)}
 
     def guest_run(argv):
-        command, windows_env = wsl_host.guest_command(argv, env = env, secrets = secrets)
-        _run(engine, command, cancel, env = windows_env)
+        command, windows_env = wsl_host.guest_command(
+            [f"{guest_root}/bin/run-engine", *argv], env = env, secrets = secrets
+        )
+        return _run(engine, command, cancel, env = windows_env, stdin_pipe = True)
 
     try:
+        wsl_host.ensure_build_tools(guest_run, progress)
         if rocm:
             _install_wsl_rocm(engine, guest_run, progress, cancel)
         _update(engine, phase = "creating", message = "Preparing an isolated Python environment")

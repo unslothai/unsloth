@@ -54,8 +54,8 @@ assert_true "overrides file build is gated on SKIP_TORCH=false" "$?"
 
 # 3. The pin-collection snippet emits exact ==pins for the installed trio (run
 #    the embedded python against this test's interpreter).
-_snippet=$(sed -n '/_torch_trio_pins=\$("\$_VENV_PY" -c "/,/^" 2>\/dev\/null)/p' "$INSTALL_SH" \
-    | sed '1s/.*-c "//' | sed '$d')
+_snippet=$(sed -n '/_torch_trio_pins=\$("\$_VENV_PY" -I -c "/,/^" 2>\/dev\/null)/p' "$INSTALL_SH" \
+    | sed '1s/.*-I -c "//' | sed '$d')
 _out=$(python3 -c "$_snippet" 2>&1) || true
 # torch may or may not be importable on the test host; the snippet must not
 # crash and every line it does emit must be an exact pkg==version pin.

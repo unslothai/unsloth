@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import re
 import threading
@@ -335,7 +336,9 @@ def set_openai_auto_switch(
 VALID_KV_CACHE_DTYPES = frozenset(
     {"f16", "bf16", "q8_0", "q4_0", "q4_1", "q5_0", "q5_1", "iq4_nl", "f32"}
 )
-VALID_SPECULATIVE_TYPES = frozenset(
+# The GGUF control never offers these, and a GGUF load drops them.
+MLX_ONLY_SPEC_TYPES = frozenset({"eagle3"})
+VALID_SPECULATIVE_TYPES = MLX_ONLY_SPEC_TYPES | frozenset(
     {
         "auto",
         "mtp",
@@ -359,7 +362,9 @@ VALID_SPECULATIVE_TYPES = frozenset(
 # Only these consume spec_draft_n_max (mirrors DRAFT_N_MAX_SPEC_TYPES in the UI).
 DRAFT_N_MAX_SPEC_TYPES = frozenset(
     {"mtp", "mtp+ngram", "draft-mtp", "dspark", "draft-dspark", "dflash", "draft-dflash"}
+    | MLX_ONLY_SPEC_TYPES
 )
+DRAFTER_MODEL_SPEC_TYPES = DRAFT_N_MAX_SPEC_TYPES | {"auto", "default"}
 # Only these load a separate draft model, and so a draft context for the dtype to apply to. Mirrors SEPARATE_DRAFT_MODEL_SPEC_TYPES in the UI.
 SEPARATE_DRAFT_MODEL_SPEC_TYPES = frozenset({"dspark", "draft-dspark", "dflash", "draft-dflash"})
 # Mirrors _LOAD_MODE_VALUES in llama_server_args.py. "auto" is the llama.cpp default and is not stored: an entry holding it would pin what a build may redefine.
@@ -469,6 +474,10 @@ def normalize_model_override(
             spec_draft_n_max = _bounded_int(payload.get("spec_draft_n_max"), minimum = 1, maximum = 16)
             if spec_draft_n_max:
                 entry["spec_draft_n_max"] = spec_draft_n_max
+        spec_draft_model = payload.get("spec_draft_model")
+        if speculative_type in DRAFTER_MODEL_SPEC_TYPES and isinstance(spec_draft_model, str):
+            if 0 < len(spec_draft_model.strip()) <= 1024:
+                entry["spec_draft_model"] = spec_draft_model.strip()
         # Same rule, narrower set: the dtype needs a separate draft model, and only the sidecar modes always load one.
         if speculative_type in SEPARATE_DRAFT_MODEL_SPEC_TYPES:
             spec_draft_cache_type = _clean_str(
@@ -523,6 +532,9 @@ def normalize_model_override(
     if _coerce_bool(payload.get("tensor_parallel")):
         entry["tensor_parallel"] = True
 
+    if _coerce_bool(payload.get("mlx_int8_prefill")):
+        entry["mlx_int8_prefill"] = True
+
     # Stored only when set. Like tensor_parallel: absent means the default, so an override that never touched the switch does not pin it off for a later load.
     if _coerce_bool(payload.get("disable_vision")):
         entry["disable_vision"] = True
@@ -564,7 +576,34 @@ def normalize_model_override(
             if index_kind and index_kind != LEGACY_GPU_INDEX_KIND:
                 entry["gpu_index_kind"] = index_kind
 
+    tensor_split = normalize_tensor_split(payload.get("tensor_split"), gpu_ids)
+    if tensor_split is not None and entry.get("gpu_ids") == list(gpu_ids):
+        entry["tensor_split"] = tensor_split
+
     return entry
+
+
+def normalize_tensor_split(value: Any, gpu_ids: Any) -> Optional[list[float]]:
+    """Keep a finite positive ratio only with its unmodified ordered GPU IDs."""
+    if not isinstance(gpu_ids, (list, tuple)) or len(gpu_ids) < 2:
+        return None
+    if any(
+        isinstance(gid, bool) or not isinstance(gid, int) or not 0 <= gid <= MAX_GPU_ID
+        for gid in gpu_ids
+    ):
+        return None
+    if len(set(gpu_ids)) != len(gpu_ids):
+        return None
+    if not isinstance(value, (list, tuple)) or len(value) != len(gpu_ids):
+        return None
+    if any(isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0 for v in value):
+        return None
+    try:
+        total = sum(value)
+        valid = all(math.isfinite(v) for v in value) and math.isfinite(total) and total > 0
+    except OverflowError:
+        return None
+    return list(value) if valid else None
 
 
 def stored_gpu_index_kind(override: Mapping[str, Any]) -> str:
@@ -617,19 +656,27 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
             )
         override = {**override, "llama_extra_args": kept}
 
+    # MLX drafter settings; a GGUF load reads an MLX-only mode as no stored mode, keeping its launch flags.
+    gguf_drops = set()
+    if is_gguf:
+        gguf_drops.add("spec_draft_model")
+        if override.get("speculative_type") in MLX_ONLY_SPEC_TYPES:
+            gguf_drops.update(("speculative_type", "spec_draft_n_max"))
     for source, target in (
         ("llama_extra_args", "llama_extra_args"),
         ("kv_cache_dtype", "cache_type_kv"),
         ("n_parallel", "n_parallel"),
         ("speculative_type", "speculative_type"),
         ("spec_draft_n_max", "spec_draft_n_max"),
+        ("spec_draft_model", "spec_draft_model"),
         ("reasoning_budget", "reasoning_budget"),
         ("reasoning_budget_message", "reasoning_budget_message"),
         ("tensor_parallel", "tensor_parallel"),
         ("disable_vision", "disable_vision"),
         ("chat_template_override", "chat_template_override"),
+        ("mlx_int8_prefill", "mlx_int8_prefill"),
     ):
-        if override.get(source) is not None:
+        if override.get(source) is not None and source not in gguf_drops:
             kwargs[target] = override[source]
 
     mlx_kv_quant = _mlx_kv_quant_of(override)
@@ -652,6 +699,9 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
             kwargs["n_cpu_moe"] = override["n_cpu_moe"]
         if override.get("gpu_ids") is not None:
             kwargs["gpu_ids"] = override["gpu_ids"]
+            tensor_split = normalize_tensor_split(override.get("tensor_split"), override["gpu_ids"])
+            if tensor_split is not None:
+                kwargs["tensor_split"] = tensor_split
 
     if kwargs.get("llama_extra_args"):
         # One entry can hold a pass-through flag AND the field it shadows, and llama.cpp's last-wins parse would hand the load the stale flag, so the /load stripper (_resolve_inherited_extra_args) is imported, not mirrored. The settings page has no control for flags, so a save carries the stored ones over (routes/settings.py); the allow-list this module stays out of is validate_extra_args.
@@ -935,7 +985,7 @@ def set_model_override(
         fill_absent_fields = fill_absent_fields,
         coupled_fields = (
             # The pin and its index space are one value: filling the qualifier onto ids this browser did not write relabels them.
-            ("gpu_ids", "gpu_index_kind"),
+            ("gpu_ids", "gpu_index_kind", "tensor_split"),
             ("mlx_kv_quant", "mlx_kv_bits"),
         ),
     )

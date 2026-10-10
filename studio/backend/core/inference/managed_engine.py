@@ -659,6 +659,8 @@ class ManagedEngine:
             "CUDA_VISIBLE_DEVICES": devices,
             **({"HIP_VISIBLE_DEVICES": devices, **wsl_host.ROCM_ENVIRONMENT} if rocm else {}),
             "PYTHONNOUSERSITE": "1",
+            # C++ links FlashInfer JIT kernels against WSL's driver, outside the usual linker paths.
+            "LIBRARY_PATH": "/usr/lib/wsl/lib",
             # Weights download inside the distro's own disk; /mnt/c reads are far slower.
             "HF_HOME": f"{guest_root}/hf",
             "VLLM_CACHE_ROOT": cache,

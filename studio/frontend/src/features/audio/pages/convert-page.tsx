@@ -390,10 +390,18 @@ function useSourceSide(clip: AudioGalleryClip | null): {
     let url: string | null = null;
     let cancelled = false;
     setSide({});
-    fetchAudioBlob(
-      savedUrl ??
-        sourceFileUrl({ kind, id: sourceId ?? "", name: "", durationS: null }),
-    )
+    // The saved copy is the prepared (mono, resampled, capped) input: prefer the live recording.
+    const original = sourceId
+      ? sourceFileUrl({ kind, id: sourceId, name: "", durationS: null })
+      : null;
+    const fetchSide = (): Promise<Blob> =>
+      original
+        ? fetchAudioBlob(original).catch((error) => {
+            if (savedUrl) return fetchAudioBlob(savedUrl);
+            throw error;
+          })
+        : fetchAudioBlob(savedUrl as string);
+    fetchSide()
       .then((blob) => {
         if (cancelled) return;
         url = URL.createObjectURL(blob);

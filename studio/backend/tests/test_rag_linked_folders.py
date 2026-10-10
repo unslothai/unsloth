@@ -18,7 +18,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from core.rag import folder_sync, store
+from core.rag import embeddings, folder_sync, ingestion, store
 from storage import rag_db
 from utils.paths import rag_db_path
 
@@ -421,6 +421,50 @@ def test_reconcile_add_rename_delete_and_skip_unsupported_and_symlinks(rag_home,
             ).fetchone()
             is None
         )
+
+
+@pytest.mark.parametrize("relative", [".obsidian", "notes/.obsidian", ".cache"])
+def test_scan_does_not_enter_dot_directories(tmp_path, monkeypatch, relative):
+    source = tmp_path / "vault"
+    hidden = source / relative
+    (hidden / "plugins").mkdir(parents = True)
+    (hidden / "plugins" / "manifest.json").write_text("{}", encoding = "utf-8")
+    visible = source / "notes" / "v1.0"
+    visible.mkdir(parents = True, exist_ok = True)
+    (visible / "note.md").write_text("visible note", encoding = "utf-8")
+    original_scandir = os.scandir
+
+    def guarded_scandir(path):
+        assert Path(path) != hidden, "Hidden directories must not be traversed"
+        return original_scandir(path)
+
+    monkeypatch.setattr(folder_sync.os, "scandir", guarded_scandir)
+    found, _ = folder_sync._scan(str(source))
+    assert set(found) == {"notes/v1.0/note.md"}
+
+
+@requires_sqlite_vec
+@pytest.mark.parametrize("already_indexed", [False, True])
+def test_sync_removes_documents_in_a_dot_directory(rag_home, stub_embeddings, already_indexed):
+    source, folder = _folder(rag_home)
+    notes = source / "notes"
+    notes.mkdir()
+    (notes / "note.txt").write_text("hiddencontenttoken", encoding = "utf-8")
+    (source / "visible.txt").write_text("visiblecontenttoken", encoding = "utf-8")
+    assert _run(folder["id"])["discovered"] == 2
+
+    notes.rename(source / ".obsidian")
+    if already_indexed:
+        # reproduce a mapping created before dot directories were excluded.
+        folder_sync._rename_mapping(folder["id"], "notes/note.txt", ".obsidian/note.txt")
+    result = _run(folder["id"])
+    assert result["status"] == "completed"
+    assert result["discovered"] == 1
+    assert result["deleted"] == 1
+    with _connection() as conn:
+        assert not store.search_lexical(conn, folder["scope"], "hiddencontenttoken", 5)
+        assert store.search_lexical(conn, folder["scope"], "visiblecontenttoken", 5)
+    assert (source / ".obsidian" / "note.txt").is_file()
 
 
 def test_scan_skips_revisited_directory_identity(rag_home, monkeypatch):
@@ -3199,3 +3243,96 @@ def test_a_vec_table_resized_after_the_prefetch_falls_back_to_a_normal_ingest(
             (folder["id"],),
         ).fetchone()["document_id"]
     assert _vectors(b_id)
+
+
+@requires_sqlite_vec
+def test_unlink_stops_the_document_being_embedded(rag_home, stub_embeddings, monkeypatch):
+    """Unlink must not wait for a long embed to finish, then die on a 5 s busy_timeout (#13095)."""
+    source, folder = _folder(rag_home)
+    (source / "big.txt").write_text(" ".join(f"word{i}" for i in range(200_000)), encoding = "utf-8")
+    embedding = threading.Event()
+    real_encode = embeddings.encode
+
+    def slow_gpu(texts, **kwargs):
+        embedding.set()
+        time.sleep(0.25)
+        return real_encode(texts, **kwargs)
+
+    monkeypatch.setattr(embeddings, "encode", slow_gpu)
+    monkeypatch.setattr(ingestion, "_EMBED_BATCH", 4)
+    job_id = folder_sync.request_sync(folder["id"])
+    worker = threading.Thread(target = folder_sync.reconcile_folder, args = (job_id,), daemon = True)
+    worker.start()
+    assert embedding.wait(30), "the document never reached embedding"
+    started = time.monotonic()
+    assert folder_sync.delete_folder(folder["id"], remove_index = False) is True
+    elapsed = time.monotonic() - started
+    worker.join(timeout = 60)
+    assert not worker.is_alive()
+    # The whole document takes ~30 s of embedding here.
+    assert elapsed < 8, f"unlink waited {elapsed:.1f}s for the embed"
+    assert folder_sync.get_folder(folder["id"]) is None
+    assert _row("SELECT 1 FROM ingestion_jobs WHERE status NOT IN ('completed','failed')") is None
+
+
+@requires_sqlite_vec
+def test_periodic_sync_does_not_retry_an_unchanged_failed_file(
+    rag_home, stub_embeddings, monkeypatch
+):
+    """A file that cannot be indexed is retried when it changes or on Sync, not every period (#13095)."""
+    source, folder = _folder(rag_home)
+    (source / "good.txt").write_text("words to index", encoding = "utf-8")
+    bad = source / "bad.txt"
+    bad.write_text("   ", encoding = "utf-8")
+    attempts = []
+    real_start = ingestion.start_ingestion
+
+    def counting(*args, **kwargs):
+        attempts.append(kwargs["linked_relative_path"])
+        return real_start(*args, **kwargs)
+
+    monkeypatch.setattr(ingestion, "start_ingestion", counting)
+
+    def periodic() -> dict:
+        folder_sync._enqueue_periodic()
+        job_id = _row(
+            "SELECT id FROM linked_folder_sync_jobs WHERE folder_id=? AND status='pending'",
+            (folder["id"],),
+        )["id"]
+        folder_sync.reconcile_folder(job_id)
+        return folder_sync.get_job(job_id)
+
+    first = folder_sync.request_sync(folder["id"])
+    folder_sync.reconcile_folder(first)
+    assert attempts.count("bad.txt") == 1
+    assert "bad.txt" in folder_sync.get_job(first)["error"]
+
+    job = periodic()
+    assert attempts.count("bad.txt") == 1
+    assert job["status"] == "failed" and "bad.txt" in job["error"] and job["failed"] == 1
+    assert folder_sync.get_folder(folder["id"])["status"] == "error"
+
+    bad.write_text("     \n\n", encoding = "utf-8")
+    periodic()
+    assert attempts.count("bad.txt") == 2
+
+    manual = folder_sync.request_sync(folder["id"])
+    folder_sync.reconcile_folder(manual)
+    assert attempts.count("bad.txt") == 3
+
+    monkeypatch.setattr(folder_sync, "_FAILED_RETRY_S", 0)
+    periodic()
+    assert attempts.count("bad.txt") == 4
+    assert attempts.count("good.txt") == 1
+
+
+def test_an_unlink_cancel_only_reaches_its_own_account():
+    from utils.account_context import AccountContext, run_as
+
+    other = AccountContext("account-b", "b")
+    folder_sync.request_cancel("shared-id")
+    try:
+        assert folder_sync.is_cancel_requested("shared-id")
+        assert not run_as(other, folder_sync.is_cancel_requested, "shared-id")
+    finally:
+        folder_sync.clear_cancel("shared-id")

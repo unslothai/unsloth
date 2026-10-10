@@ -32,7 +32,7 @@ from utils.hardware import clear_gpu_cache
 
 from utils.models import is_vision_model, get_base_model_from_lora
 from utils.models.model_identity import restore_hf_cache_repo_identity
-from utils.models.model_config import detect_audio_type
+from utils.models.model_config import detect_audio_type, load_mlx_adapter_tokenizer
 from utils.paths import (
     ensure_dir,
     outputs_root,
@@ -689,6 +689,9 @@ def _publish_unsloth_model_card(hf_api, repo_id, model, hf_token):
 
 
 class ExportBackend:
+    # {"layout", "adapter_only"} for a decision checkpoint (GGUF only), else None.
+    decision: Optional[dict] = None
+
     def __init__(self):
         self.inference_backend = get_inference_backend()
         self.current_checkpoint = None
@@ -697,6 +700,7 @@ class ExportBackend:
         self.is_vision = False
         self.is_peft = False
         self._audio_type = None
+        self.decision = None
 
     def cleanup_memory(self):
         """Offload and delete all models from memory"""
@@ -711,6 +715,7 @@ class ExportBackend:
             self.current_tokenizer = None
             self.current_checkpoint = None
             self._audio_type = None
+            self.decision = None
 
             clear_gpu_cache()
 
@@ -765,6 +770,18 @@ class ExportBackend:
             logger.info(f"Loading checkpoint: {checkpoint_path}")
 
             self.cleanup_memory()
+
+            # Before the base / audio / vision probes: a decision run never reaches the chat loaders.
+            from core.export.decision import decision_kind
+
+            decision = decision_kind(checkpoint_path)
+            if decision is not None:
+                return self._load_decision_checkpoint(
+                    str(Path(checkpoint_path).expanduser()),
+                    *decision,
+                    token = token,
+                    base_model = base_model,
+                )
 
             checkpoint_path_obj = Path(checkpoint_path)
 
@@ -900,6 +917,8 @@ class ExportBackend:
                     local_files_only = local_files_only,
                     **_device_map_kw,
                 )
+                if _IS_MLX and adapter_config.exists():
+                    tokenizer = load_mlx_adapter_tokenizer(tokenizer, checkpoint_path)
 
             # Only for the multi-GPU map: a single-GPU host has no second placement to retry on.
             _offloaded = _cpu_offloaded_modules(model) if _device_map_kw else 0
@@ -975,6 +994,83 @@ class ExportBackend:
             _device_map_override = {"device_map": "sequential"},
         )
 
+    def _load_decision_checkpoint(
+        self,
+        checkpoint_path: str,
+        layout: str,
+        adapter_only: bool,
+        token: HfTokenArg = None,
+        base_model: Optional[str] = None,
+    ) -> Tuple[bool, str]:
+        """Records a decision checkpoint; its weights load (adapters) or convert (merged) at export."""
+        from core.export.decision import (
+            DecisionExportError,
+            adapter_base,
+            check_decision_eligibility,
+        )
+
+        if not _export_runtime_available():
+            return False, _export_runtime_message()
+        if adapter_only:
+            # The base FastDecisionModel will load must be the one the route authorized and scanned.
+            try:
+                resolved = adapter_base(checkpoint_path)
+            except DecisionExportError as exc:
+                return False, str(exc)
+            if base_model and resolved != base_model:
+                return False, (
+                    f"This adapter loads {resolved}, not the authorized base model {base_model}."
+                )
+        try:
+            check_decision_eligibility(checkpoint_path, token)
+        except DecisionExportError as exc:
+            return False, str(exc)
+        self.decision = {"layout": layout, "adapter_only": adapter_only}
+        # An adapter folder loads its base at export time, under the credential of this load.
+        self._decision_token = token
+        self.is_vision = False
+        self.is_peft = adapter_only
+        self.current_checkpoint = checkpoint_path
+        name = "Clef" if layout == "clef" else "Laya"
+        kind = "LoRA adapters" if adapter_only else "merged"
+        logger.info(f"Decision checkpoint ({name}, {kind}) ready for GGUF export")
+        return True, f"Loaded {name} decision model ({kind}); it exports to GGUF only"
+
+    def _export_decision_gguf(
+        self, quantization_method, push_to_hub: bool, imatrix_file, npu_q4nx: bool
+    ) -> Tuple[bool, str, Optional[str]]:
+        if push_to_hub:
+            return (
+                False,
+                "Decision model GGUF export saves to the run folder only; Hub upload is not supported.",
+                None,
+            )
+        if imatrix_file or npu_q4nx:
+            return (
+                False,
+                "Decision model GGUF export does not support imatrix or Q4NX conversion.",
+                None,
+            )
+        from core.export.decision import DecisionExportError, run_decision_gguf_export
+
+        try:
+            data = run_decision_gguf_export(
+                self.current_checkpoint,
+                quantization_method,
+                local_files_only = _hf_offline(),
+                print_output = True,
+                token = getattr(self, "_decision_token", None),
+            )
+        except (DecisionExportError, ValueError, RuntimeError) as exc:
+            logger.error(f"Decision GGUF export failed: {exc}")
+            return False, str(exc), None
+        output_dir = str(Path(self.current_checkpoint).resolve() / "gguf")
+        quants = ", ".join((data or {}).get("quantizations") or [])
+        return True, f"Decision model exported to GGUF ({quants}) in {output_dir}", output_dir
+
+    def _decision_only_gguf(self) -> Tuple[bool, str, Optional[str]]:
+        return False, "Decision models export to GGUF only.", None
+
     def _write_export_metadata(self, save_directory: str):
         """Write export_metadata.json with base model info for Chat page discovery."""
         try:
@@ -1015,6 +1111,8 @@ class ExportBackend:
         w4a16, mxfp4, mxfp8, nvfp4); it overrides ``format_type`` and is resolved against
         unsloth.save COMPRESSED_EXPORT_SCHEMES.
         """
+        if self.decision is not None:
+            return self._decision_only_gguf()
         if not _export_runtime_available():
             return False, _export_runtime_message(), None
         if not self.current_model or not self.current_tokenizer:
@@ -1309,6 +1407,8 @@ class ExportBackend:
         private: bool = False,
         base_model_id: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[str]]:
+        if self.decision is not None:
+            return self._decision_only_gguf()
         if not _export_runtime_available():
             return False, _export_runtime_message(), None
         if not self.current_model or not self.current_tokenizer:
@@ -1444,6 +1544,10 @@ class ExportBackend:
         """
         if not _export_runtime_available():
             return False, _export_runtime_message(), None
+        if self.decision is not None:
+            return self._export_decision_gguf(
+                quantization_method, push_to_hub, imatrix_file, npu_q4nx
+            )
         if not self.current_model or not self.current_tokenizer:
             return False, "No model loaded. Please select a checkpoint first.", None
 
@@ -1829,9 +1933,11 @@ class ExportBackend:
             )
 
         from unsloth_zoo import llama_cpp as _zoo_llama_cpp
+        from utils import llama_cpp_source
 
         default_dir = os.path.normpath(_zoo_llama_cpp.LLAMA_CPP_DEFAULT_DIR)
         source_dir = os.path.join(os.path.dirname(default_dir), "llama.cpp-source")
+        base_source_dir = source_dir
         # A user-set scripts dir is authoritative and is checked before any network revision lookup.
         pinned_dir = os.environ.get("UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", "").strip()
         if pinned_dir:
@@ -1844,55 +1950,73 @@ class ExportBackend:
         elif os.path.exists(os.path.join(default_dir, "convert_lora_to_gguf.py")):
             converter = os.path.join(default_dir, "convert_lora_to_gguf.py")
         else:
-            # Pinned to the installed binaries' revision (else the latest release).
+            # The installed binaries' revision (else latest), from its unslothai/llama.cpp release.
             try:
-                _repo, tag = _zoo_llama_cpp._resolve_converter_revision(default_dir)
+                repo, tag = _zoo_llama_cpp._resolve_converter_revision(default_dir)
             except Exception:
-                tag = None
-            tag = tag.split("-mix-")[0] if tag else None
-            if tag:
+                repo, tag = None, None
+            converter = None
+            if tag and llama_cpp_source.is_fork_release_tag(repo, tag):
                 source_dir = f"{source_dir}-{tag}"
-            converter = os.path.join(source_dir, "convert_lora_to_gguf.py")
-            if not os.path.exists(converter):
-                converter = None
+                if os.path.exists(os.path.join(source_dir, "convert_lora_to_gguf.py")):
+                    converter = os.path.join(source_dir, "convert_lora_to_gguf.py")
+            elif tag and not getattr(_zoo_llama_cpp, "_converter_network_allowed", lambda: True)():
+                # Offline only: online, the download path resolves the stable mix release first.
+                cached = sorted(
+                    glob.glob(f"{glob.escape(source_dir)}-{glob.escape(tag)}-mix-*"),
+                    key = os.path.getmtime,
+                )
+                cached = [
+                    d for d in cached if os.path.isfile(os.path.join(d, "convert_lora_to_gguf.py"))
+                ]
+                if cached:
+                    converter = os.path.join(cached[-1], "convert_lora_to_gguf.py")
+            # Trees the previous git-clone exporter left: llama.cpp-source-<upstream tag>, or
+            # llama.cpp-source when no revision was known.
+            legacy = base_source_dir + (f"-{tag.split('-mix-')[0]}" if tag else "")
+            if converter is None and os.path.isfile(
+                os.path.join(legacy, "convert_lora_to_gguf.py")
+            ):
+                converter = os.path.join(legacy, "convert_lora_to_gguf.py")
+            if converter is None and not tag:
+                # No revision known (offline, no marker): the newest tree any exporter left.
+                trees = [
+                    d
+                    for d in glob.glob(f"{glob.escape(base_source_dir)}-*")
+                    if os.path.isfile(os.path.join(d, "convert_lora_to_gguf.py"))
+                ]
+                if trees:
+                    converter = os.path.join(
+                        max(trees, key = os.path.getmtime), "convert_lora_to_gguf.py"
+                    )
         if converter is None:
             if not getattr(_zoo_llama_cpp, "_converter_network_allowed", lambda: True)():
                 raise RuntimeError(
                     "GGUF adapter export needs llama.cpp's convert_lora_to_gguf.py, which is not "
-                    f"installed, and offline mode forbids cloning it; clone llama.cpp into {source_dir}."
+                    "installed, and offline mode forbids downloading it; extract the "
+                    f"{llama_cpp_source.FORK_REPO} release's llama.cpp-source-<tag>.tar.gz into "
+                    f"{source_dir}."
                 )
             if not getattr(_zoo_llama_cpp, "_auto_install_enabled", lambda: True)():
                 raise RuntimeError(
-                    "GGUF adapter export needs a llama.cpp source checkout and automatic "
-                    f"installation was declined (UNSLOTH_AUTO_INSTALL=0); clone llama.cpp into {source_dir}."
+                    "GGUF adapter export needs llama.cpp's converter sources and automatic "
+                    "installation was declined (UNSLOTH_AUTO_INSTALL=0); extract the "
+                    f"{llama_cpp_source.FORK_REPO} release's llama.cpp-source-<tag>.tar.gz into "
+                    f"{source_dir}."
                 )
-            # Not install_llama_cpp: it probes apt-get even when only cloning, which fails on macOS.
-            ensure_dir(Path(source_dir).parent)
-            with tempfile.TemporaryDirectory(dir = Path(source_dir).parent) as tmp_dir:
-                clone = os.path.join(tmp_dir, "llama.cpp")
-                subprocess.run(
-                    [
-                        "git",
-                        "clone",
-                        "--depth",
-                        "1",
-                        *(["--branch", tag] if tag else []),
-                        "https://github.com/ggml-org/llama.cpp",
-                        clone,
-                    ],
-                    check = True,
-                    capture_output = True,
-                    text = True,
-                    encoding = "utf-8",
-                    errors = "replace",
+            # Not install_llama_cpp: it probes apt-get even when only fetching sources, which fails on macOS.
+            try:
+                fetched = llama_cpp_source.download_converter_source(
+                    repo, tag, Path(source_dir).parent
                 )
-                if not os.path.exists(source_dir):
-                    os.replace(clone, source_dir)
-            converter = os.path.join(source_dir, "convert_lora_to_gguf.py")
-            if not os.path.exists(converter):
+            except Exception as exc:
                 raise RuntimeError(
-                    f"convert_lora_to_gguf.py is missing from the llama.cpp clone at {source_dir}."
-                )
+                    "Could not download llama.cpp's converter sources from the "
+                    f"{llama_cpp_source.FORK_REPO} release: {exc}"
+                ) from exc
+            converter = os.path.join(str(fetched), "convert_lora_to_gguf.py")
+            if not os.path.exists(converter):
+                raise RuntimeError(f"convert_lora_to_gguf.py is missing from {fetched}.")
         if importlib.util.find_spec("gguf") is None and not os.path.isdir(
             os.path.join(os.path.dirname(converter), "gguf-py")
         ):
@@ -1975,6 +2099,8 @@ class ExportBackend:
         q8_0/f16/bf16/f32. ``adapter_format`` is 'mlx' or 'peft' (MLX servers only offer both);
         omitted resolves to the platform's native format.
         """
+        if self.decision is not None:
+            return self._decision_only_gguf()
         if not _export_runtime_available():
             return False, _export_runtime_message(), None
         if not self.current_model or not self.current_tokenizer:

@@ -15,6 +15,8 @@ import {
   sortReasoningEfforts,
 } from "./model-catalog";
 
+import { normalizeCustomReasoningConfig } from "./custom-reasoning";
+
 export { modelCatalogVersion, subscribeModelCatalog } from "./model-catalog";
 
 /** Per-provider sampling capability matrix from each provider's chat docs (2026-05).
@@ -834,8 +836,8 @@ const NO_REASONING_CAPS: ReasoningCaps = {
 
 const ANTHROPIC_REASONING_MODELS = [
   {
-    // Fable / Mythos 5 always think: `thinking.type "disabled"` 400s, so there is no off switch.
-    prefixes: ["claude-fable-5", "claude-mythos-5"],
+    // Fable, Mythos 5, and Opus 5.5 return 400 for disabled thinking; no off switch.
+    prefixes: ["claude-fable-5", "claude-mythos-5", "claude-opus-5-5"],
     supportsOff: false,
     levels: ["low", "medium", "high", "xhigh", "max"],
   },
@@ -1159,6 +1161,7 @@ export interface ExternalReasoningResolveOptions {
   baseUrl?: string | null;
   /** Custom providers can opt into OpenAI's Responses API and its reasoning controls. */
   apiType?: "chat_completions" | "responses";
+  reasoningConfig?: unknown;
 }
 
 export function effectiveExternalReasoningProviderType(
@@ -1299,6 +1302,29 @@ export function getExternalReasoningCapabilities(
   modelId: string | null | undefined,
   options?: ExternalReasoningResolveOptions,
 ): ExternalReasoningCapabilities {
+  // Check the connection before the catalog: known models must not opt Custom in.
+  if (
+    providerType?.trim().toLowerCase() === "custom" &&
+    options?.apiType !== "responses"
+  ) {
+    const config = normalizeCustomReasoningConfig(options?.reasoningConfig);
+    if (!config?.enabled) {
+      return isOpenRouterMandatoryReasoningModel(modelId ?? "")
+        ? withEnableThinkingStyle({
+            supportsReasoning: true,
+            reasoningAlwaysOn: true,
+            supportsReasoningOff: false,
+          })
+        : withEnableThinkingStyle();
+    }
+    return config.style === "reasoning_effort" || config.style === "reasoning"
+      ? withReasoningEffortStyle({
+          supportsReasoning: true,
+          supportsReasoningOff: true,
+          reasoningEffortLevels: ["none", "low", "medium", "high"],
+        })
+      : withEnableThinkingStyle({ supportsReasoning: true, supportsReasoningOff: true });
+  }
   // The capability map is keyed by the catalog's id, so look it up before case-folding.
   const catalogModel = modelId?.trim() ?? "";
   const normalizedModel = catalogModel.toLowerCase();

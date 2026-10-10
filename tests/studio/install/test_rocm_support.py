@@ -108,6 +108,11 @@ def _gpu_record_helpers(source: str) -> str:
             "_amd_smi_gpu_records",
             "_gfx_arch_slots",
             "_amd_smi_hip_order",
+            "_amd_prefer_discrete_gfx",
+            "_amd_gfx_is_shadowing_integrated",
+            "_amd_gfx_has_wheel_route",
+            "_amd_arch_index_family_for_gfx",
+            "_amd_generic_tag_carries_gfx",
         )
     )
 
@@ -1009,6 +1014,21 @@ class TestEnsureRocmTorch:
         pip_install_try mock so callers can assert on the reinstall."""
         probe = MagicMock(returncode = 0, stdout = _MARK + "2.10.0+rocm7.1|7.1|\n")
         pip_try = MagicMock(return_value = True)
+        from importlib.metadata import PackageNotFoundError
+        from types import SimpleNamespace
+
+        packages = {d.metadata["Name"].lower().replace("_", "-"): d for d in dists}
+        for package in ("torch", "torchvision"):
+            packages[package] = SimpleNamespace(
+                metadata = {"Name": package},
+                requires = [f'amd-{package}-device-{gfx}==2.11.0; extra == "device-{gfx}"'],
+            )
+
+        def distribution(name):
+            if name not in packages:
+                raise PackageNotFoundError(name)
+            return packages[name]
+
         with patch.dict(os.environ, {}, clear = False):
             os.environ.pop("UNSLOTH_ROCM_TORCH_INSTALLED", None)
             with (
@@ -1028,6 +1048,7 @@ class TestEnsureRocmTorch:
                 patch.object(stack_mod, "pip_install_try", pip_try),
                 patch("subprocess.run", return_value = probe),
                 patch("importlib.metadata.distributions", return_value = list(dists)),
+                patch("importlib.metadata.distribution", side_effect = distribution),
             ):
                 _ensure_rocm_torch()
         return pip_try
@@ -1071,6 +1092,8 @@ class TestEnsureRocmTorch:
         for n in names:
             d = MagicMock()
             d.metadata = {"Name": n}
+            d.version = "2.11.0"
+            d.requires = []
             out.append(d)
         return out
 
@@ -1156,10 +1179,19 @@ class TestEnsureRocmTorch:
         assert mock_pip_try.call_args.kwargs["force_pip"] is True
 
     def test_rocm_63_selects_correct_tag(self):
-        """ROCm 6.3 should select rocm6.3 tag."""
-        mock_pip, _ = run_ensure_rocm_torch(_has_rocm_gpu = True, _detect_rocm_version = (6, 3))
+        """Automatic generic ROCm 6.3 installs use the bitsandbytes-compatible floor.
+
+        The floor needs a target known not to be gfx906, so the arch is declared; an
+        unreadable arch keeps the literal tag (test_unreadable_arch_keeps_the_literal_generic_tag).
+        """
+        mock_pip, _ = run_ensure_rocm_torch(
+            _has_rocm_gpu = True,
+            _detect_rocm_version = (6, 3),
+            _detect_amd_gfx_codes = ["gfx1100"],
+            _infer_linux_amd_gfx_arch = None,
+        )
         torch_call = mock_pip.call_args_list[0]
-        assert "rocm6.3" in str(torch_call)
+        assert "rocm6.4" in str(torch_call)
 
     def test_query_pytorch_mirror_skips_the_generic_rocm_pin(self, monkeypatch):
         """A synthesized rocm leaf after ?token= is neither usable nor a fallback license."""
@@ -2042,7 +2074,15 @@ _RDNA4_LEAF = "gfx120x-all"
 
 
 class TestGfx1102Rocm64Floor:
-    """Navi 33 / RDNA 4 need a generic PyTorch ROCm family at or above their own floor."""
+    """Navi 33 / RDNA 4 need a generic PyTorch ROCm family at or above their own floor.
+
+    Two independent floors meet on this code path and the selected leaf is the higher
+    of them. _GENERIC_WHEEL_GFX_MIN_ROCM is per-arch and about missing Tensile kernels;
+    the generic bitsandbytes ABI floor is arch-independent and about
+    libbitsandbytes_rocm64.so being the oldest ROCm library in the wheel Unsloth
+    installs. An arch with no kernel floor can therefore still move, which is what the
+    gfx1100 cases below record.
+    """
 
     @staticmethod
     def _ensure_for_gfx(
@@ -2053,6 +2093,7 @@ class TestGfx1102Rocm64Floor:
         rocm_ver: tuple = (6, 1),
         probe_stdout: str = "\n",  # CPU torch -> repair
         wheel_family = None,
+        kfd = None,
     ):
         m = stack_mod
         for name in (
@@ -2088,7 +2129,13 @@ class TestGfx1102Rocm64Floor:
             patch.object(m, "_installed_rocm_wheel_family", return_value = wheel_family),
             patch.object(m, "_infer_linux_amd_gfx_arch", return_value = None),
             patch.object(m, "_detect_rocm_version", return_value = rocm_ver),
-            patch.object(m, "_detect_amd_gfx_codes", return_value = [gfx]),
+            patch.object(m, "_detect_amd_gfx_codes", return_value = [gfx] if gfx else []),
+            # None leaves KFD sysfs unpatched, as before; a list stands in for the topology.
+            (
+                contextlib.nullcontext()
+                if kfd is None
+                else patch.object(m, "_kfd_gfx_targets", return_value = kfd)
+            ),
             patch("platform.machine", return_value = "x86_64"),
             patch("subprocess.run", return_value = probe),
         ):
@@ -2116,10 +2163,19 @@ class TestGfx1102Rocm64Floor:
             assert unaffected not in stack_mod._GENERIC_WHEEL_GFX_MIN_ROCM
             assert stack_mod._generic_tag_lacks_kernels(unaffected, (6, 0)) is False
 
-    def test_debian_split_gfx1100_keeps_rocm61(self, monkeypatch):
-        """A Debian split host resolving rocm6.1 must leave gfx1100 on rocm6.1."""
+    def test_debian_split_gfx1100_stays_generic_at_the_bnb_floor(self, monkeypatch):
+        """A Debian split host resolving rocm6.1 keeps gfx1100 on a GENERIC wheel.
+
+        This class's subject is the per-arch reroute, and the answer for gfx1100 is
+        still no: it has kernels in every measured family, so it never goes to
+        repo.amd.com. The leaf is rocm6.4 rather than the resolved rocm6.1 because a
+        second, arch-independent floor now applies on top -- the generic bitsandbytes
+        wheel carries no ROCm library below libbitsandbytes_rocm64.so, so pairing it
+        with a +rocm6.1 torch is the unslothai#10273 segfault. The two floors compose
+        as a maximum; this asserts the composition, not the kernel floor alone.
+        """
         torch_call = str(self._ensure_for_gfx("gfx1100", monkeypatch).call_args_list[0])
-        assert "rocm6.1" in torch_call
+        assert "rocm6.4" in torch_call
         assert "repo.amd.com" not in torch_call
 
     @pytest.mark.parametrize(
@@ -2142,12 +2198,18 @@ class TestGfx1102Rocm64Floor:
         assert index in torch_call
         assert "whl/rocm6.1" not in torch_call
 
-    def test_a_gfx1102_host_already_on_rocm63_is_left_alone(self, monkeypatch):
-        """rocm6.3 already carries gfx1102, so moving it anywhere would be churn."""
+    def test_a_gfx1102_host_on_rocm63_stays_generic(self, monkeypatch):
+        """rocm6.3 already carries gfx1102, so it never needs the per-arch index.
+
+        rocm6.3 satisfies the kernel floor for gfx1102, which is why this stays on a
+        generic wheel instead of repo.amd.com. It lands on rocm6.4 rather than 6.3
+        because the bitsandbytes ABI floor applies to every arch; 6.4 carries gfx1102
+        kernels too, so nothing is lost by taking the higher of the two.
+        """
         torch_call = str(
             self._ensure_for_gfx("gfx1102", monkeypatch, rocm_ver = (6, 3)).call_args_list[0]
         )
-        assert "whl/rocm6.3" in torch_call
+        assert "whl/rocm6.4" in torch_call
         assert "repo.amd.com" not in torch_call
 
     def test_explicit_rocm61_pin_remains_authoritative(self, monkeypatch):
@@ -2196,15 +2258,51 @@ class TestGfx1102Rocm64Floor:
         assert "whl/rocm6.1" in torch_call
         assert "repo.amd.com" not in torch_call
 
-    def test_unaffected_arch_not_repaired_on_newer_host(self, monkeypatch):
-        """gfx1100 has kernels in the older families, so its wheel stays untouched."""
+    def test_kernel_unaffected_arch_is_still_repaired_below_the_bnb_floor(self, monkeypatch):
+        """An installed +rocm6.1 wheel is repaired even where the kernel floor is silent.
+
+        gfx1100 has kernels in every measured family, so the kernel floor leaves it
+        alone and it never reaches repo.amd.com. It is still reinstalled, because the
+        installed +rocm6.1 torch is below the generic bitsandbytes ABI: that pairing is
+        exactly the unslothai#10273 crash, and leaving it in place is what this PR
+        exists to stop.
+
+        This is the one case where the two floors disagree about whether to act, and it
+        has a real cost: a working install is replaced. The left-alone half of the
+        original intent is covered by test_installed_64_wheel_left_alone_on_newer_host,
+        where the installed wheel already satisfies the ABI and nothing is touched.
+        """
         pip = self._ensure_for_gfx(
             "gfx1100",
             monkeypatch,
             rocm_ver = (6, 4),
             probe_stdout = _MARK + "2.8.0+rocm6.1|6.1.40093|\n",
         )
-        pip.assert_not_called()
+        torch_call = str(pip.call_args_list[0])
+        assert "whl/rocm6.4" in torch_call
+        assert "repo.amd.com" not in torch_call
+
+    def test_kfd_only_gfx906_keeps_the_literal_generic_tag(self, monkeypatch):
+        """A runtime-only ROCm host (no rocminfo/amd-smi) names its MI50 only through KFD.
+
+        _runtime_target_is_gfx906 reads the userland probes alone, so it answers False
+        here; the floor must still see gfx906 through the selected runtime target, or the
+        MI50 is moved to rocm6.4, which ships no gfx906 BLAS kernels.
+        """
+        torch_call = str(self._ensure_for_gfx("", monkeypatch, kfd = ["gfx906"]).call_args_list[0])
+        assert "whl/rocm6.1" in torch_call
+        assert "whl/rocm6.4" not in torch_call
+
+    def test_unreadable_arch_keeps_the_literal_generic_tag(self, monkeypatch):
+        """No probe, KFD reading or inference names the arch: it might be gfx906.
+
+        The BNB floor applies only to a target known not to be gfx906, so this host keeps
+        the literal rocm6.0-6.3 selection it had before the floor existed. install.sh
+        never reaches its floor for an unreadable arch either (it returns the cpu index).
+        """
+        pip = self._ensure_for_gfx("", monkeypatch, kfd = [])
+        for call in pip.call_args_list:
+            assert "whl/rocm6.4" not in str(call)
 
     def test_install_sh_floors_resolved_rocm61_by_runtime_gfx(self):
         """Exercise install.sh's generic-routing block with a resolved leaf.
@@ -2309,6 +2407,28 @@ class TestGfx1102Rocm64Floor:
         """HIP exposes devices through CUDA_VISIBLE_DEVICES too, so it must select the target."""
         preamble = "rocminfo() { printf 'Name: gfx1100\\nName: gfx1200\\n'; }\n" + "".join(
             f"export {assignment}\n" for assignment in mask.split()
+        )
+        assert self._run_install_sh_routing(preamble) == expected
+
+    @pytest.mark.parametrize(
+        ("arches", "mask", "expected"),
+        (
+            # An unmasked iGPU listed first used to pick the wheels and strand the dGPU.
+            (("gfx1036", "gfx1201"), "", _RDNA4_LEAF),
+            (("gfx1103", "gfx1201"), "", _RDNA4_LEAF),
+            (("gfx1201", "gfx1036"), "", _RDNA4_LEAF),
+            # A mask names the device, so the iGPU it selects keeps the route.
+            (("gfx1036", "gfx1201"), "HIP_VISIBLE_DEVICES=0", "rocm6.1"),
+            (("gfx1036", "gfx1201"), "CUDA_VISIBLE_DEVICES=0", "rocm6.1"),
+            (("gfx1036",), "", "rocm6.1"),
+        ),
+    )
+    def test_install_sh_prefers_the_discrete_gpu_over_a_leading_igpu(self, arches, mask, expected):
+        preamble = (
+            "rocminfo() { printf '"
+            + "".join(f"Name: {a}\\n" for a in arches)
+            + "'; }\n"
+            + "".join(f"export {assignment}\n" for assignment in mask.split())
         )
         assert self._run_install_sh_routing(preamble) == expected
 
@@ -2528,6 +2648,8 @@ class TestGfx1102Rocm64Floor:
             with open(venv_py, "w", encoding = "utf-8") as fh:
                 fh.write(
                     "#!/bin/sh\n"
+                    # install.sh probes the venv with `-I -c CODE`; the stub only reads CODE.
+                    'if [ "$1" = "-I" ]; then shift; fi\n'
                     f'exec \'{sys.executable.replace(os.sep, "/")}\' -c "\n'
                     "import sys, types\n"
                     "t = types.ModuleType('torch')\n"
@@ -2835,6 +2957,54 @@ class TestRocmTorchIndex:
             None,
         )
         assert tag == "rocm6.4"
+
+    @pytest.mark.parametrize(
+        "ver, published, automatic",
+        [
+            ((6, 0), "rocm6.0", "rocm6.4"),
+            ((6, 1), "rocm6.1", "rocm6.4"),
+            ((6, 2), "rocm6.2", "rocm6.4"),
+            ((6, 3), "rocm6.3", "rocm6.4"),
+            ((6, 4), "rocm6.4", "rocm6.4"),
+            ((7, 0), "rocm7.0", "rocm7.0"),
+            ((7, 1), "rocm7.1", "rocm7.1"),
+            ((7, 2), "rocm7.2", "rocm7.2"),
+        ],
+    )
+    def test_automatic_generic_tag_adds_only_the_bnb_floor(self, ver, published, automatic):
+        assert stack_mod._generic_pytorch_rocm_tag(ver) == published
+        assert stack_mod._automatic_generic_pytorch_rocm_tag(ver) == automatic
+
+    def test_shell_and_python_automatic_floor_are_in_parity(self):
+        """The install.sh helper must floor exactly the same old generic tags as Python."""
+        source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
+        constant = re.search(r"^_ROCM_BNB_GENERIC_FLOOR_TAG=.*$", source, re.M)
+        helper = _extract_sh_function_body(source, "_rocm_bnb_compatible_generic_tag")
+        assert constant and helper
+        shell = shutil.which("sh")
+        if not shell:
+            pytest.skip("POSIX shell needed for resolver parity")
+        tags = tuple(_ROCM_TORCH_INDEX.values())
+        script = (
+            "set -eu\n"
+            + constant.group(0)
+            + "\n"
+            + helper
+            + "\n"
+            + "for tag in "
+            + " ".join(tags)
+            + '; do _rocm_bnb_compatible_generic_tag "$tag"; done\n'
+        )
+        result = subprocess.run([shell, "-c", script], capture_output = True, text = True)
+        assert result.returncode == 0, result.stderr
+        shell_tags = result.stdout.splitlines()
+        python_tags = [
+            stack_mod._automatic_generic_pytorch_rocm_tag(ver)
+            for ver, tag in _ROCM_TORCH_INDEX.items()
+            if tag in tags
+        ]
+        # The dict is ordered newest-first, as is the shell input above.
+        assert shell_tags == python_tags
 
 
 # TEST: hardware.py -- IS_ROCM flag and detect_hardware
@@ -3344,6 +3514,7 @@ class TestInstallShStructure:
         sh_path = PACKAGE_ROOT / "install.sh"
         source = sh_path.read_text(encoding = "utf-8")
         assert 'echo "$_base/rocm7.2"' in source  # fallback for unknown future versions
+        assert "_rocm_bnb_compatible_generic_tag" in source
         assert "rocm6.*" in source
         assert "rocm7.0" in source
         assert "rocm7.1" in source
@@ -3728,6 +3899,8 @@ class TestInstallShStructure:
         fn = _extract_sh_function_body(source, "get_torch_index_url")
         probe_fn = _extract_sh_function_body(source, "_probe_amd_gfx_arch")
         family_fn = _extract_sh_function_body(source, "_amd_arch_index_family_for_gfx")
+        bnb_floor_constant = re.search(r"^_ROCM_BNB_GENERIC_FLOOR_TAG=.*$", source, re.M)
+        bnb_floor_fn = _extract_sh_function_body(source, "_rocm_bnb_compatible_generic_tag")
         arch_fns = "\n".join(
             _extract_sh_function_body(source, _n)
             for _n in (
@@ -3752,7 +3925,7 @@ class TestInstallShStructure:
                 "_detect_rocm_version_tag",
             )
         ]
-        assert fn and probe_fn and family_fn and arch_fns
+        assert fn and probe_fn and family_fn and arch_fns and bnb_floor_constant and bnb_floor_fn
         assert all(version_fns), "ROCm version helpers not found in install.sh"
         with tempfile.TemporaryDirectory() as d:
             # Neutralise the host's real ROCm: the version chain reads
@@ -3789,6 +3962,10 @@ class TestInstallShStructure:
                 + arch_fns
                 + "\n"
                 + "\n".join(version_fns)
+                + "\n"
+                + bnb_floor_constant.group(0)
+                + "\n"
+                + bnb_floor_fn
                 + "\n"
                 + fn
                 + "\n"
@@ -4380,9 +4557,11 @@ class TestHardwareAmdBranching:
         source = hw_path.read_text(encoding = "utf-8")
         func_start = source.find("def get_gpu_utilization")
         func_body = source[func_start : source.find("\ndef ", func_start + 1)]
-        assert "_smi_query(" in func_body
-        assert '"get_visible_gpu_utilization"' in func_body
+        assert "_smi_visible_utilization(" in func_body
         assert "_reconcile_rocm_unified_memory" in func_body
+        helper_start = source.find("def _smi_visible_utilization")
+        helper = source[helper_start : source.find("\ndef ", helper_start + 1)]
+        assert re.search(r'_smi_query\(\s*"get_visible_gpu_utilization"', helper)
         smi = source[
             source.find("def _smi_query") : source.find("\ndef ", source.find("def _smi_query") + 1)
         ]
@@ -4395,10 +4574,10 @@ class TestHardwareAmdBranching:
         source = hw_path.read_text(encoding = "utf-8")
         func_start = source.find("def get_visible_gpu_utilization")
         func_body = source[func_start : source.find("\ndef ", func_start + 1)]
-        # The dispatcher call may wrap; allow whitespace before the func name arg.
-        import re as _re
-
-        assert _re.search(r'_smi_query\(\s*"get_visible_gpu_utilization"', func_body)
+        assert "_smi_visible_utilization(" in func_body
+        helper_start = source.find("def _smi_visible_utilization")
+        helper = source[helper_start : source.find("\ndef ", helper_start + 1)]
+        assert re.search(r'_smi_query\(\s*"get_visible_gpu_utilization"', helper)
         smi = source[
             source.find("def _smi_query") : source.find("\ndef ", source.find("def _smi_query") + 1)
         ]
@@ -7447,8 +7626,6 @@ class TestHipSdkInstalledButDeviceInaccessible:
 # TEST: --rocm-gfx forwarding -- setup.sh/setup.ps1 forward their resolved gfx
 # arch to install_llama_prebuilt.py so the per-gfx prebuilt is picked.
 
-_SETUP_SH_PATH = PACKAGE_ROOT / "studio" / "setup.sh"
-
 
 class TestNormalizeForwardedGfx:
     """A forwarded gfx string is reduced to a single clean gfx token."""
@@ -7798,7 +7975,6 @@ def test_pick_rocm_gfx_target_same_arch_multi_gpu(monkeypatch):
 # TEST: WSL ROCDXG fixes -- drop-in persistence + system-HIP-before-bundle
 
 
-_INSTALL_SH_PATH = PACKAGE_ROOT / "install.sh"
 _LLAMA_CPP_PATH = PACKAGE_ROOT / "studio" / "backend" / "core" / "inference" / "llama_cpp.py"
 
 

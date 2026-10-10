@@ -7,6 +7,7 @@ from __future__ import annotations
 import errno
 import functools
 import hashlib
+import ntpath
 import os
 import platform
 import re
@@ -23,8 +24,9 @@ from loggers import get_logger
 
 logger = get_logger(__name__)
 
-ToolExecutionMode = Literal["auto", "required", "full"]
-TOOL_EXECUTION_MODES = ("auto", "required", "full")
+# "software" is Sandbox Low: software safeguards without the OS sandbox, never Full access.
+ToolExecutionMode = Literal["auto", "required", "full", "software"]
+TOOL_EXECUTION_MODES = ("auto", "required", "full", "software")
 PUBLIC_TOOL_EXECUTION_MODES = ("auto", "required")
 
 PROFILE_VERSION = "unsloth-sandbox-v1"
@@ -239,10 +241,29 @@ class _ScanBudgetExceeded(Exception):
     """The walk ran out of budget: not a hazard, so it must not refuse an `auto` launch."""
 
 
+def _extended_path(path: str) -> str:
+    """The \\\\?\\ spelling of a Windows path, which reaches a file named nul, con or com1 instead of the device."""
+    if path.startswith(("\\\\?\\", "\\\\.\\")):
+        return path
+    # Callers pass an absolute workdir. normpath is string-only; abspath would hand back \\.\nul for C:\work\nul.
+    absolute = ntpath.normpath(path)
+    if absolute.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + absolute[2:]
+    return "\\\\?\\" + absolute
+
+
+# The real filesystem API, not sys.platform: tests stand in a Windows platform over a POSIX tmp_path.
+_NT_PATHS = os.name == "nt"
+
+
+def _entry_path(path: str) -> str:
+    return _extended_path(path) if _NT_PATHS else path
+
+
 def directory_signature(path: str) -> tuple:
     """Identity plus mtime for one directory, the unit a cached verdict is re-checked in."""
     try:
-        info = os.stat(path)
+        info = os.stat(_entry_path(path))
     except OSError:
         return (path, None)
     return (path, info.st_dev, info.st_ino, info.st_mtime_ns)
@@ -260,6 +281,15 @@ def _host_channel_hazard(
     witness: "list[tuple] | None" = None,
 ) -> str | None:
     """Return a host-access hazard under *root*, or None."""
+    # One namespace for listing and stat, so a directory named nul is walked as the one stat judged.
+    top = _entry_path(root)
+    hazard = _walk_for_host_channels(top, max_entries, seconds, witness)
+    return hazard if hazard is None or top == root else hazard.replace(top, root)
+
+
+def _walk_for_host_channels(
+    root: str, max_entries: int, seconds: float, witness: "list[tuple] | None"
+) -> str | None:
     deadline = time.monotonic() + seconds
     entries = 0
     # Only an unaccounted hard link leads outside; cp -al, git clone --local and pip make nlink > 1.
@@ -291,8 +321,9 @@ def _host_channel_hazard(
             if stat.S_ISLNK(info.st_mode):
                 continue
             if stat.S_ISDIR(info.st_mode):
-                # Misses a same-filesystem bind mount; Linux also asks the mount table.
-                if os.path.ismount(path):
+                # Misses a same-filesystem bind mount; Linux also asks the mount table. A Windows mounted folder is a
+                # reparse point, refused above, and ntpath.ismount calls a directory named nul the \\.\nul device root.
+                if not _NT_PATHS and os.path.ismount(path):
                     return f"contains a nested host mount: {path}"
                 continue
             if not stat.S_ISREG(info.st_mode):
@@ -833,6 +864,10 @@ def capability_snapshot(
             selected_executable = selected_executable,
             cancel_event = cancel_event,
         )
+    if force and sys.platform == "linux":
+        # A forced re-check (Settings > Refresh) also re-decides the /proc layout, which joins the identity.
+        from .sandbox_linux import forget_proc_layout
+        forget_proc_layout()
     identity = _runtime_identity()
     if sys.platform == "linux":
         from . import sandbox_linux
@@ -863,8 +898,9 @@ def capability_snapshot(
         reason = reason,
         environment = sys.platform,
         protection_state = "preview",
-        profile_id = backend.PROFILE_ID,
-        limitations = backend.LIMITATIONS,
+        # The Linux layout can vary per host (an empty /proc in containers); macOS has one profile.
+        profile_id = getattr(backend, "profile_id", lambda: backend.PROFILE_ID)(),
+        limitations = getattr(backend, "limitations", lambda: backend.LIMITATIONS)(),
         probe_generation = hashlib.sha256((identity + "available").encode()).hexdigest(),
         environment_fingerprint = identity,
         remediation = (
@@ -1060,6 +1096,20 @@ def _software_only_limitations() -> tuple[str, ...]:
     return tuple(limitations)
 
 
+def _software_launch(plan: ToolLaunchPlan, record: ToolExecutionRecord) -> PreparedSandboxLaunch:
+    return PreparedSandboxLaunch(
+        argv = plan.argv,
+        workdir = plan.workdir,
+        env = plan.env,
+        preexec_fn = plan.preexec_fn,
+        backend = "software-safeguards",
+        timeout_seconds = plan.timeout_seconds,
+        close_fds = plan.close_fds,
+        terminate_descendants = plan.terminate_descendants,
+        execution_record = record,
+    )
+
+
 def prepare_tool_launch(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
     """Unavailable hosts fall back in auto; unsafe workdirs and build failures refuse."""
     if plan.cancel_event is not None and plan.cancel_event.is_set():
@@ -1094,6 +1144,27 @@ def prepare_tool_launch(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
             ),
         )
 
+    if plan.requested_mode == "software":
+        # Chosen, not a fallback: no probe, so a host with a working OS sandbox is not checked for it.
+        return _software_launch(
+            plan,
+            ToolExecutionRecord(
+                requested_mode = plan.requested_mode,
+                effective_mode = "software_safeguards",
+                environment = sys.platform,
+                backend = "software-safeguards",
+                profile_id = "software-safeguards-v1",
+                probe_generation = "",
+                os_isolation = False,
+                retained_safeguards = tuple(
+                    item
+                    for item in _SOFTWARE_SAFEGUARDS
+                    if item != "timeout" or plan.timeout_seconds is not None
+                ),
+                limitations = _software_only_limitations(),
+            ),
+        )
+
     # Taken before the check: a reset while it runs must not be undone by this launch's answer.
     generation = tool_isolation_generation()
     capability = capability_snapshot(
@@ -1119,16 +1190,9 @@ def prepare_tool_launch(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
                 f"OS_ISOLATION_UNAVAILABLE: {capability.reason}",
                 remediation = capability.remediation,
             )
-        return PreparedSandboxLaunch(
-            argv = plan.argv,
-            workdir = plan.workdir,
-            env = plan.env,
-            preexec_fn = plan.preexec_fn,
-            backend = "software-safeguards",
-            timeout_seconds = plan.timeout_seconds,
-            close_fds = plan.close_fds,
-            terminate_descendants = plan.terminate_descendants,
-            execution_record = _record(
+        return _software_launch(
+            plan,
+            _record(
                 plan,
                 capability,
                 effective_mode = "software_safeguards",

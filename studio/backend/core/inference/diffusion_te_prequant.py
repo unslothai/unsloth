@@ -26,7 +26,7 @@ None and the caller falls back to the dense download + cast. Inert with nothing 
 from __future__ import annotations
 
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Iterable, Optional
 
 # Reuse the DiT module's operator allowlist for local paths: one env var, one policy.
@@ -39,8 +39,81 @@ from .diffusion_prequant import (
 # torch.save dict layout tag; bump on an on-disk change so old/foreign artifacts are rejected.
 TE_PREQUANT_FORMAT = "unsloth_prequant_text_encoder_state_dict_v1"
 
-# The one scheme hosted in v1 (see module docstring).
-TE_PREQUANT_SCHEMES = ("fp8",)
+# fp8: layerwise storage cast (families with te_prequant_repos). int8: ConvRot weight-only, TE_INT8_CONVROT_FILES only.
+TE_PREQUANT_SCHEMES = ("fp8", "int8")
+
+# Distinct from TE_PREQUANT_FORMAT so an fp8-only build refuses the file instead of loading int8 into bf16 Linears.
+TE_PREQUANT_FORMAT_INT8_CONVROT = "unsloth_prequant_text_encoder_int8_convrot_v1"
+
+# family -> {component: (repo_id, filename)}. ComfyUI's qwen3vl_8b_int8_convrot scheme: decoder projections int8 in the
+# group-256 Hadamard basis + fp32 per-row scale; vision tower, embedding, norms bf16; no lm_head. Built by
+# scripts/build_te_int8_convrot_checkpoint.py.
+TE_INT8_CONVROT_FILES: dict[str, dict[str, tuple[str, str]]] = {
+    "qwen-image-2.1": {
+        "text_encoder": (
+            "unsloth/Qwen-Image-2.1-FP8",
+            "Qwen-Image-2.1-text_encoder-INT8-ConvRot.safetensors",
+        ),
+    },
+}
+
+# The scheme the loaded FILE carried ("fp8" / "int8"), so quantize_text_encoders never re-casts an int8 encoder.
+TE_PREQUANT_SCHEME_ATTR = "_unsloth_te_prequant_scheme"
+
+# ``<root>/<owner>/<repo>/<filename>`` used before the Hub (os.pathsep-separated roots), as for the DiT pre-quants.
+TE_PREQUANT_MIRROR_ENV = "UNSLOTH_DIFFUSION_PREQUANT_MIRROR"
+
+
+def quantize_int8_convrot_weight(weight: Any, group_size: int = 256) -> tuple[Any, Any]:
+    """``(int8 weight, float32 [out, 1] scale)`` of a Linear weight in the ConvRot basis: ``W_rot = W @ blockdiag(H).T``
+    in float32, then symmetric per-output-channel absmax / 127 with round-half-to-even. The builder's quantizer, here so
+    the artifact and its tests share one definition; ``Int8ConvRotLinear`` is its inverse."""
+    import torch
+
+    from .diffusion_convrot import build_convrot_hadamard
+
+    out_features, in_features = weight.shape
+    if in_features % group_size:
+        raise ValueError(
+            f"in_features {in_features} is not divisible by the ConvRot group {group_size}"
+        )
+    h = build_convrot_hadamard(group_size, device = weight.device, dtype = torch.float32)
+    rotated = (
+        weight.float().reshape(out_features, in_features // group_size, group_size) @ h.T
+    ).reshape(out_features, in_features)
+    scale = (rotated.abs().amax(dim = 1, keepdim = True) / 127.0).clamp_min(1e-12)
+    return torch.round(rotated / scale).clamp(-127, 127).to(torch.int8), scale
+
+
+def family_te_int8_convrot(fam: Any, component: str) -> Optional[tuple[str, str]]:
+    """``(repo_id, filename)`` of the family's hosted int8 ConvRot encoder for ``component``, or None."""
+    name = str(getattr(fam, "name", fam) or "").strip().lower()
+    return TE_INT8_CONVROT_FILES.get(name, {}).get(component)
+
+
+def te_prequant_mirror_path(repo_id: Optional[str], name: Optional[str]) -> Optional[str]:
+    """``<mirror>/<repo_id>/<name>`` when a configured mirror holds that file, else None. Never raises."""
+    import os
+
+    raw = (os.environ.get(TE_PREQUANT_MIRROR_ENV) or "").strip()
+    if not raw or not repo_id or not name:
+        return None
+    parts = [*str(repo_id).split("/"), *str(name).split("/")]
+    if any(p in ("", ".", "..") or "\\" in p for p in parts):
+        return None
+    for root in raw.split(os.pathsep):
+        root = root.strip()
+        if not root:
+            continue
+        try:
+            base = os.path.realpath(os.path.expanduser(root))
+            candidate = os.path.realpath(os.path.join(base, *parts))
+        except Exception:  # noqa: BLE001 - a bad root is simply not a mirror
+            continue
+        if candidate.startswith(base.rstrip(os.sep) + os.sep) and os.path.isfile(candidate):
+            return candidate
+    return None
+
 
 # Components the pipeline-assembly injection covers (text_encoder_4 is family-assembled separately, see
 # diffusion_hidream.py).
@@ -56,6 +129,9 @@ TE_PREQUANT_COMPONENTS = ("text_encoder", "text_encoder_2", "text_encoder_3")
 # measured encoder rather than under-stating any: an under-estimate is the expensive direction, since it lets an
 # oversized load through to the OS killer.
 TE_PREQUANT_BUDGET_SCALE = 0.65
+# The int8 ConvRot encoder alone (no fp8 fallback to cover): Qwen-Image-2.1's is 9,349,769,248 bytes against
+# 17,534,339,488 for the dense encoder, 0.533, rounded up.
+TE_INT8_CONVROT_BUDGET_SCALE = 0.56
 
 
 def te_prequant_budget_scale(
@@ -83,7 +159,24 @@ def te_prequant_budget_scale(
         )
     except Exception:  # noqa: BLE001 -- an unresolvable pre-cast just means the dense encoder
         return 1.0
-    return TE_PREQUANT_BUDGET_SCALE if sources else 1.0
+    if not sources:
+        return 1.0
+    if _int8_convrot_only(te_quant_mode, target):
+        return TE_INT8_CONVROT_BUDGET_SCALE
+    return TE_PREQUANT_BUDGET_SCALE
+
+
+def _int8_convrot_only(te_quant_mode: Optional[str], target: Any) -> bool:
+    """Whether this pick can ONLY take the int8 ConvRot file (no fp8 fallback): Apple Silicon."""
+    try:
+        from .diffusion_precision import TE_QUANT_FP8, normalize_te_quant, te_quant_supported
+        return (
+            normalize_te_quant(te_quant_mode) == "int8"
+            and int8_convrot_te_runs_on(target)
+            and not te_quant_supported(target, TE_QUANT_FP8)
+        )
+    except Exception:  # noqa: BLE001
+        return False
 
 
 # Bases whose text-encoder weights are VERIFIED byte-identical (every shard LFS sha256 compared on 2026-07-18), so one
@@ -98,6 +191,13 @@ _TE_EQUIVALENT_BASES: tuple[frozenset[str], ...] = (
             "qwen/qwen-image",
             "qwen/qwen-image-2512",
             "hunyuanvideo-community/hunyuanimage-2.1-diffusers",
+        }
+    ),
+    # Qwen3-VL-8B: one file vs four shards, but all 750 tensors byte-identical (compared 2026-10-09).
+    frozenset(
+        {
+            "qwen/qwen-image-2.1",
+            "qwen/qwen-image-2.1-turbo",
         }
     ),
     # Qwen3-4B: identical sha256 across the Krea-2 pair (compared 2026-08-25)
@@ -151,6 +251,15 @@ class TePrequantSource:
     # Names to try after ``filename``, in order, when the repo does not carry it. Only the "repo"
     # kind uses this: a local path either exists or it does not.
     fallback_filenames: tuple = ()
+
+
+def int8_convrot_te_runs_on(target: Any) -> bool:
+    """MPS runs the int8 ConvRot encoder without fp8: plain tensors, a Hadamard matmul and ``F.linear``."""
+    return getattr(target, "device", None) == "mps"
+
+
+def _is_fp8_te_name(name: Optional[str]) -> bool:
+    return bool(name) and "fp8" in str(name).lower()
 
 
 def te_prequant_repo_stem(repo_id: str, component: str, scheme: str) -> str:
@@ -257,6 +366,27 @@ def resolve_te_prequant_source(
     override = (path_override or "").strip()
     if override:
         return TePrequantSource(kind = "path", location = override, filename = None)
+    if scheme == "int8":
+        # int8 file first, then the fp8 names in the same repo, so a miss takes fp8 rather than the dense shards.
+        hosted = family_te_int8_convrot(fam, component)
+        if hosted is None:
+            return None
+        repo_id, filename = hosted
+        fp8 = resolve_te_prequant_source(fam, component, "fp8")
+        from .diffusion_text_encoder_trim import family_trims_lm_head
+
+        if not family_trims_lm_head(getattr(fam, "name", None)):
+            # The int8 file has no lm_head; with the head kept (UNSLOTH_TE_KEEP_LM_HEAD) only the fp8 one can serve.
+            return fp8
+        fallback = ()
+        if fp8 is not None and fp8.kind == "repo" and fp8.location.lower() == repo_id.lower():
+            fallback = te_candidate_filenames(fp8)
+        return TePrequantSource(
+            kind = "repo",
+            location = repo_id,
+            filename = filename,
+            fallback_filenames = tuple(n for n in fallback if n != filename),
+        )
     repo_id = family_te_prequant_repo(fam, scheme, component)
     if repo_id:
         names = te_prequant_repo_filenames(repo_id, component, scheme)
@@ -296,7 +426,7 @@ def te_prequant_sources(
         )
 
         mode = normalize_te_quant(te_quant_mode)
-        if mode != TE_QUANT_FP8:
+        if mode not in TE_PREQUANT_SCHEMES:
             return {}
         family = getattr(fam, "name", None)
         # The per-family TE deny table ships on the video branch precision module (the image branch has no denials), so
@@ -304,11 +434,17 @@ def te_prequant_sources(
         denied = getattr(precision, "_te_family_denied", None)
         if callable(denied) and denied(family, mode):
             return {}
-        if not te_quant_supported(target, mode):
+        # int8 falls back to the fp8 file, so it needs fp8; MPS runs the int8 file alone and drops the fp8 names.
+        fp8_runs = te_quant_supported(target, TE_QUANT_FP8)
+        if not fp8_runs and not (mode == "int8" and int8_convrot_te_runs_on(target)):
             return {}
         sources: dict[str, TePrequantSource] = {}
         for component in components:
             source = resolve_te_prequant_source(fam, component, mode)
+            if source is not None and not fp8_runs:
+                if source.kind == "repo" and _is_fp8_te_name(source.filename):
+                    continue
+                source = replace(source, fallback_filenames = ())
             if source is not None:
                 sources[component] = source
         return sources
@@ -378,6 +514,7 @@ def load_prequant_text_encoder(
     config_overrides: Optional[dict] = None,
     local_files_only: bool = False,
     trim_lm_head: bool = False,
+    failures: Optional[list] = None,
 ) -> Optional[Any]:
     """Load the pre-cast text encoder described by ``source`` (on CPU, for pipeline
     assembly to place), with the layerwise upcast hooks already installed.
@@ -392,7 +529,7 @@ def load_prequant_text_encoder(
     the pipeline's assembly normally passes to ``from_pretrained`` (forward-behaviour
     flags only; the state dict is unaffected by them).
     ``trim_lm_head`` builds the encoder without its untied ``lm_head`` and never reads that tensor
-    (``diffusion_text_encoder_trim``)."""
+    (``diffusion_text_encoder_trim``). ``failures`` collects the error text of a load that raised."""
     try:
         if source.kind == "path" and not _local_prequant_path_allowed(source.location):
             _warn(
@@ -405,6 +542,8 @@ def load_prequant_text_encoder(
                 ),
             )
             return None
+
+        import os
 
         from utils.hf_cache_settings import active_hf_hub_cache
 
@@ -444,7 +583,16 @@ def load_prequant_text_encoder(
             ckpt = load_plain_prequant_safetensors(path, skip_names = skip)
         else:
             ckpt = torch.load(path, weights_only = True, map_location = "cpu")
-        if not _validate_checkpoint(ckpt, scheme, component, base, logger):
+        # By format tag: an int8 request accepts its fp8 fallback; an fp8 request never accepts an int8 file.
+        file_scheme = (
+            "int8"
+            if isinstance(ckpt, dict) and ckpt.get("format") == TE_PREQUANT_FORMAT_INT8_CONVROT
+            else "fp8"
+        )
+        if file_scheme != scheme and not (scheme == "int8" and file_scheme == "fp8"):
+            _warn(logger, scheme, ValueError(f"checkpoint scheme {file_scheme!r} != {scheme!r}"))
+            return None
+        if not _validate_checkpoint(ckpt, file_scheme, component, base, logger):
             return None
         state_dict = ckpt["state_dict"]
         te_class = (ckpt.get("metadata") or {}).get("te_class")
@@ -477,6 +625,20 @@ def load_prequant_text_encoder(
         remap_rope_parameters(getattr(config, "text_config", config))
         for key, value in (config_overrides or {}).items():
             setattr(config, key, value)
+        if file_scheme == "int8":
+            encoder = _build_int8_convrot_encoder(
+                encoder_cls, config, state_dict, dtype = dtype, trim = trim
+            )
+            setattr(encoder, TE_PREQUANT_SCHEME_ATTR, "int8")
+            if logger is not None:
+                logger.info(
+                    "diffusion.te_prequant: loaded %s int8 ConvRot weight-only checkpoint (%s)",
+                    component,
+                    path
+                    if source.kind == "path"
+                    else f"{source.location}/{os.path.basename(path)}",
+                )
+            return encoder
         if trim and config_ties_lm_head(config):
             # Tied: nothing to drop.
             trim = False
@@ -517,6 +679,7 @@ def load_prequant_text_encoder(
         target = _Target()
         target.dtype = dtype
         _cast_fp8(encoder, target)
+        setattr(encoder, TE_PREQUANT_SCHEME_ATTR, "fp8")
         if logger is not None:
             logger.info(
                 "diffusion.te_prequant: loaded %s %s checkpoint (%s)",
@@ -527,6 +690,47 @@ def load_prequant_text_encoder(
         return encoder
     except Exception as exc:  # noqa: BLE001 - fall back to the dense download + cast
         _warn(logger, f"{scheme}:{component}:{source.kind}", exc)
+        if failures is not None:
+            # text only: the exception's traceback would pin this frame's checkpoint through the fp8 retry
+            failures.append(str(exc))
+        return None
+
+
+def supplied_component_pipe_kwargs(
+    base: str,
+    *,
+    dtype: Any,
+    hf_token: Optional[str] = None,
+    local_files_only: bool = False,
+    family: Optional[str] = None,
+    logger: Any = None,
+) -> dict[str, Any]:
+    """Supplied text-encoder / VAE modules by component. Never swallows a failure: the base repo's weights for
+    these components were not downloaded, so there is nothing to fall back to."""
+    from .diffusion_comfy_components import active_component_overrides, load_override_modules
+
+    overrides = active_component_overrides()
+    if overrides is None or not overrides.files:
+        return {}
+    from utils.hf_cache_settings import active_hf_hub_cache
+
+    return load_override_modules(
+        overrides,
+        base = base,
+        dtype = dtype,
+        hf_token = hf_token,
+        local_files_only = local_files_only,
+        family = family,
+        cache_dir = active_hf_hub_cache(),
+        logger = logger if logger is not None else _module_logger(),
+    )
+
+
+def _module_logger() -> Any:
+    try:
+        from loggers import get_logger
+        return get_logger(__name__)
+    except Exception:  # noqa: BLE001
         return None
 
 
@@ -540,6 +744,44 @@ def te_prequant_pipe_kwargs(
     hf_token: Optional[str] = None,
     logger: Any = None,
     local_files_only: bool = False,
+    dense_source: Optional[str] = None,
+) -> dict[str, Any]:
+    supplied = supplied_component_pipe_kwargs(
+        base,
+        dtype = dtype,
+        hf_token = hf_token,
+        local_files_only = local_files_only,
+        family = getattr(fam, "name", None),
+        logger = logger,
+    )
+    injected = _te_prequant_pipe_kwargs(
+        fam,
+        base,
+        te_quant_mode = te_quant_mode,
+        target = target,
+        dtype = dtype,
+        hf_token = hf_token,
+        logger = logger,
+        local_files_only = local_files_only,
+        skip_components = tuple(supplied),
+        dense_source = dense_source,
+    )
+    injected.update(supplied)
+    return injected
+
+
+def _te_prequant_pipe_kwargs(
+    fam: Any,
+    base: str,
+    *,
+    te_quant_mode: Optional[str],
+    target: Any,
+    dtype: Any,
+    hf_token: Optional[str] = None,
+    logger: Any = None,
+    local_files_only: bool = False,
+    skip_components: tuple = (),
+    dense_source: Optional[str] = None,
 ) -> dict[str, Any]:
     """Component overrides for pipeline assembly: ``{<component>: <pre-cast encoder>}``
     for every ``TE_PREQUANT_COMPONENTS`` attr the family hosts a pre-cast checkpoint for
@@ -549,10 +791,18 @@ def te_prequant_pipe_kwargs(
     Gated exactly like the runtime cast (mode normalized, device-supported, family not
     denied), so injection can never engage where ``quantize_text_encoders`` would not.
     The later ``quantize_text_encoders`` call re-applies the cast idempotently and keeps
-    status reporting truthful."""
+    status reporting truthful.
+
+    ``dense_source`` is the local directory or repo id assembly reads without fetching (None when it can
+    still fetch). A pre-cast encoder that fails to load with no dense weights there raises: the plan left
+    those shards out of the prefetch, so assembly would die on a missing shard instead."""
+    unavailable: list[str] = []
+    failures: list = []
+    cause = ""
     try:
-        from .diffusion_precision import TE_QUANT_FP8
+        from .diffusion_precision import TE_QUANT_FP8, normalize_te_quant, te_quant_supported
         from .diffusion_text_encoder_trim import family_trims_lm_head
+        from .media_locality import _hosted_component_cached
 
         sources = te_prequant_sources_for_base(
             fam,
@@ -560,10 +810,14 @@ def te_prequant_pipe_kwargs(
             te_quant_mode = te_quant_mode,
             target = target,
         )
-        # Non-empty only for the one hosted scheme (see te_prequant_sources' gate).
-        mode = TE_QUANT_FP8
+        # Non-empty only for a hosted scheme (see te_prequant_sources' gate).
+        mode = normalize_te_quant(te_quant_mode) or TE_QUANT_FP8
         injected: dict[str, Any] = {}
         for component, source in sources.items():
+            if component in skip_components:
+                continue
+            failures.clear()
+            trim = component == "text_encoder" and family_trims_lm_head(getattr(fam, "name", None))
             encoder = load_prequant_text_encoder(
                 base,
                 component,
@@ -573,15 +827,161 @@ def te_prequant_pipe_kwargs(
                 scheme = mode,
                 logger = logger,
                 local_files_only = local_files_only,
-                trim_lm_head = component == "text_encoder"
-                and family_trims_lm_head(getattr(fam, "name", None)),
+                trim_lm_head = trim,
+                failures = failures,
             )
+            fp8_names = tuple(
+                n for n in te_candidate_filenames(source) if n != getattr(source, "filename", None)
+            )
+            if (
+                encoder is None
+                and mode == "int8"
+                and source.kind == "repo"
+                and fp8_names
+                and te_quant_supported(target, TE_QUANT_FP8)
+                and _held_locally(source.location, source.filename, hf_token)
+            ):
+                # The int8 file resolved but was refused: the plan dropped the dense shards, so take the fp8 names.
+                encoder = load_prequant_text_encoder(
+                    base,
+                    component,
+                    TePrequantSource(
+                        kind = "repo",
+                        location = source.location,
+                        filename = fp8_names[0],
+                        fallback_filenames = fp8_names[1:],
+                    ),
+                    dtype = dtype,
+                    hf_token = hf_token,
+                    scheme = TE_QUANT_FP8,
+                    logger = logger,
+                    local_files_only = local_files_only,
+                    trim_lm_head = trim,
+                    failures = failures,
+                )
             if encoder is not None:
                 injected[component] = encoder
-        return injected
+            elif dense_source and not _hosted_component_cached(dense_source, component, "", ""):
+                unavailable.append(component)
+                cause = f" ({failures[-1]})" if failures else cause
+        if not unavailable:
+            return injected
     except Exception as exc:  # noqa: BLE001 - injection is an optimisation, never a blocker
         _warn(logger, "pipe_kwargs", exc)
         return {}
+    raise RuntimeError(
+        f"The pre-quantized {', '.join(unavailable)} for {base} could not be loaded{cause}. Its dense "
+        "weights were not downloaded because the pre-quantized copy replaces them. If memory ran out "
+        "(os error 1455 means the Windows page file is too small), close other apps or enlarge the page "
+        "file and load again, or set Text encoder precision to Dense (bf16)."
+    )
+
+
+def _held_locally(repo_id: str, name: Optional[str], hf_token: Optional[str]) -> bool:
+    """Whether ``repo_id/name`` is on this machine (mirror or Hub cache), without touching the network."""
+    try:
+        if te_prequant_mirror_path(repo_id, name) is not None:
+            return True
+        from huggingface_hub import hf_hub_download
+
+        from utils.hf_cache_settings import active_hf_hub_cache
+
+        hf_hub_download(
+            repo_id = repo_id,
+            filename = name,
+            token = hf_token,
+            cache_dir = active_hf_hub_cache(),
+            local_files_only = True,
+        )
+        return True
+    except Exception:  # noqa: BLE001 - not cached, or unanswerable
+        return False
+
+
+def _build_int8_convrot_encoder(
+    encoder_cls: Any, config: Any, state_dict: dict, *, dtype: Any, trim: bool
+) -> Any:
+    """Every Linear with a ``<name>.weight_scale`` becomes MiniMax-H3's ``Int8ConvRotLinear``, the rest loads dense in
+    ``dtype``. Plain tensors, so ``Module.to()`` and group offloading work. Raises on any mismatch."""
+    import torch
+    from accelerate import init_empty_weights
+
+    from .diffusion_text_encoder_trim import LM_HEAD_KEY, trim_text_encoder
+    from .video_minimax_h3_te import (
+        H3_TE_CONVROT_GROUP,
+        _int8_convrot_linear_class,
+        _meta_tensor_names,
+        _validate_comfy_quant,
+    )
+
+    if not trim:
+        # The file has no lm_head; a build that keeps one would load it random.
+        raise ValueError("the int8 ConvRot encoder carries no lm_head and needs the lm_head trim")
+    if LM_HEAD_KEY in state_dict:
+        raise ValueError("the int8 ConvRot encoder unexpectedly carries an lm_head")
+    scale_suffix, quant_suffix = ".weight_scale", ".comfy_quant"
+    quantized = sorted(k[: -len(scale_suffix)] for k in state_dict if k.endswith(scale_suffix))
+    if not quantized:
+        raise ValueError("no int8 ConvRot projections in this checkpoint")
+    # include_buffers=False: rotary inv_freq buffers are built for real; parameters arrive via assign=True.
+    with init_empty_weights(include_buffers = False):
+        encoder = encoder_cls(config)
+    trim_text_encoder(encoder)
+    linear_cls = _int8_convrot_linear_class()
+    for prefix in quantized:
+        blob = state_dict.pop(prefix + quant_suffix, None)
+        if blob is None:
+            raise ValueError(f"{prefix}: quantized weight with no {quant_suffix} metadata")
+        _validate_comfy_quant(blob, prefix)
+        parent_path, _, leaf = prefix.rpartition(".")
+        parent = encoder.get_submodule(parent_path)
+        existing = getattr(parent, leaf)
+        weight = state_dict[prefix + ".weight"]
+        if not isinstance(existing, torch.nn.Linear) or weight.dtype != torch.int8:
+            raise ValueError(f"{prefix}: not an int8 weight for a Linear")
+        if (existing.out_features, existing.in_features) != tuple(weight.shape):
+            raise ValueError(
+                f"{prefix}: checkpoint shape {tuple(weight.shape)} != model "
+                f"{(existing.out_features, existing.in_features)}"
+            )
+        setattr(
+            parent,
+            leaf,
+            linear_cls(
+                existing.in_features,
+                existing.out_features,
+                bias = (prefix + ".bias") in state_dict,
+                group_size = H3_TE_CONVROT_GROUP,
+            ),
+        )
+    if any(k.endswith(quant_suffix) for k in state_dict):
+        raise ValueError("quant metadata for a projection with no scale")
+    # Storage dtypes stay (int8 payload, float32 scales); every dense float tensor follows the compute dtype.
+    for key, tensor in list(state_dict.items()):
+        if (
+            tensor.is_floating_point()
+            and not key.endswith(scale_suffix)
+            and dtype is not None
+            and tensor.dtype != dtype
+        ):
+            state_dict[key] = tensor.to(dtype)
+    # A dense decoder projection would load as bf16 and outgrow the budget this path is priced at.
+    language_model = getattr(getattr(encoder, "model", None), "language_model", None)
+    layers = getattr(language_model, "layers", None)
+    if layers is None:
+        raise ValueError("encoder has no model.language_model.layers")
+    dense = [n for n, m in layers.named_modules() if isinstance(m, torch.nn.Linear)]
+    if dense:
+        raise ValueError(
+            f"{len(dense)} decoder projection(s) are not quantized in this artifact, e.g. {sorted(dense)[0]}"
+        )
+    encoder.load_state_dict(state_dict, strict = True, assign = True)
+    stranded = _meta_tensor_names(encoder)
+    if stranded:
+        raise ValueError(f"{len(stranded)} tensor(s) still on the meta device, e.g. {stranded[0]}")
+    encoder.requires_grad_(False)
+    encoder.eval()
+    return encoder
 
 
 def _safetensors_te_class(path: str) -> Optional[str]:
@@ -636,6 +1036,11 @@ def _resolve_checkpoint_path(
             else (EntryNotFoundError,)
         )
         names = [n for n in te_candidate_filenames(source) if te_candidate_is_readable(n)]
+        # Mirror for every name before the Hub for any, so the order is the same with or without one.
+        for name in names:
+            mirrored = te_prequant_mirror_path(source.location, name)
+            if mirrored is not None:
+                return mirrored
         last: Optional[Exception] = None
         from .diffusion_prequant import _first_mirrored
 
@@ -675,10 +1080,24 @@ def _resolve_checkpoint_path(
                 )
                 return path
             except LocalEntryNotFoundError:
-                # Online this is the Hub being unreachable, not a missing name: re-raise as itself
-                # rather than blaming the next candidate for it.
+                # Online, the Hub is unreachable (not a missing name): take a later name already cached (fp8
+                # cached before the int8 file was published), else re-raise rather than blame the next one.
                 if not local_files_only:
-                    raise
+                    unreachable = sys.exc_info()[1]
+                    for cached_name in names[names.index(name) + 1 :]:
+                        try:
+                            # Both cache roots, as for any other name.
+                            return _download_checkpoint_name(
+                                source,
+                                cached_name,
+                                hf_token,
+                                cache_dir,
+                                propagate_missing = False,
+                                local_files_only = True,
+                            )
+                        except (EntryNotFoundError, LocalEntryNotFoundError):
+                            continue
+                    raise unreachable
                 last = sys.exc_info()[1]
                 continue
             except miss as exc:
@@ -698,7 +1117,8 @@ def _validate_checkpoint(ckpt: Any, scheme: str, component: str, base: str, logg
     ``te_class`` presence is checked by the caller (it resolves the class); torch /
     transformers versions are recorded by the builder for forensics but not enforced (the
     fp8 storage cast is version-stable plain-tensor data)."""
-    if not isinstance(ckpt, dict) or ckpt.get("format") != TE_PREQUANT_FORMAT:
+    expected_format = TE_PREQUANT_FORMAT_INT8_CONVROT if scheme == "int8" else TE_PREQUANT_FORMAT
+    if not isinstance(ckpt, dict) or ckpt.get("format") != expected_format:
         _warn(logger, scheme, ValueError("unrecognised pre-cast text-encoder checkpoint format"))
         return False
     if "state_dict" not in ckpt:
@@ -734,6 +1154,13 @@ def _validate_checkpoint(ckpt: Any, scheme: str, component: str, base: str, logg
     return True
 
 
+def te_prequant_unmirrored(
+    repo_id: Optional[str], files: list[tuple[str, int]]
+) -> list[tuple[str, int]]:
+    """``files`` minus those a configured mirror serves: the loader reads those in place, never from the Hub."""
+    return [(name, size) for name, size in files if te_prequant_mirror_path(repo_id, name) is None]
+
+
 def te_prequant_hub_files(
     sources: dict[str, "TePrequantSource"],
     api: Any,
@@ -749,6 +1176,19 @@ def te_prequant_hub_files(
     found: dict[str, list[tuple[str, int]]] = {}
     for component, source in sources.items():
         if getattr(source, "kind", None) != "repo" or not getattr(source, "filename", None):
+            continue
+        mirrored = next(
+            (
+                (name, te_prequant_mirror_path(source.location, name))
+                for name in te_candidate_filenames(source)
+                if te_candidate_is_readable(name)
+                and te_prequant_mirror_path(source.location, name) is not None
+            ),
+            None,
+        )
+        if mirrored is not None:
+            import os
+            found[component] = [(mirrored[0], os.path.getsize(mirrored[1]))]
             continue
         try:
             info = api.model_info(source.location, files_metadata = True)

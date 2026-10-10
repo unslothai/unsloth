@@ -916,6 +916,144 @@ export function linearizeDocxMath(archive: Uint8Array): Uint8Array {
   return zipSync({ ...unzipSync(archive), ...rewritten }, { level: 0 });
 }
 
+const W14_NAMESPACE = "http://schemas.microsoft.com/office/word/2010/wordml";
+const DOCX_BREAK_OR_CHECKBOX_RE = /<(?:[\w.-]+:)?(?:br|cr|checkbox|checkBox)[\s/>]/;
+
+export function writeDocxBreaksAndCheckboxes(archive: Uint8Array): Uint8Array {
+  const rewritten: Record<string, Uint8Array> = {};
+  const parts = unzipSync(archive, { filter: (entry) => entry.name.endsWith(".xml") });
+  for (const [name, bytes] of Object.entries(parts)) {
+    const xml = strFromU8(bytes);
+    if (!DOCX_BREAK_OR_CHECKBOX_RE.test(xml)) continue;
+    const doc = new DOMParser().parseFromString(xml, "application/xml");
+    const root = doc.documentElement;
+    const w = root?.namespaceURI ?? "";
+    if (!WORDPROCESSINGML_NAMESPACES.has(w) || doc.getElementsByTagName("parsererror").length) continue;
+    const tag = (local: string) => (root.prefix ? `${root.prefix}:${local}` : local);
+    const text = (value: string) => {
+      const t = doc.createElementNS(w, tag("t"));
+      t.setAttributeNS("http://www.w3.org/XML/1998/namespace", "xml:space", "preserve");
+      t.appendChild(doc.createTextNode(value));
+      return t;
+    };
+    const isOn = (flag: Element | undefined, ns: string) =>
+      flag !== undefined && !["0", "false", "off"].includes(flag.getAttributeNS(ns, "val") ?? "");
+    // [anchor, checked, inRun]: a legacy field's glyph goes inside its run, before the fldChar.
+    const boxes: [Element, boolean, boolean][] = [];
+    for (const box of Array.from(doc.getElementsByTagNameNS(W14_NAMESPACE, "checkbox"))) {
+      const sdt = box.parentNode?.parentNode as Element | null;
+      if ((box.parentNode as Element).localName === "sdtPr" && sdt?.localName === "sdt") {
+        boxes.push([sdt, isOn(childElements(box, W14_NAMESPACE, "checked")[0], W14_NAMESPACE), false]);
+      }
+    }
+    for (const box of Array.from(doc.getElementsByTagNameNS(w, "checkBox"))) {
+      const fldChar = box.parentNode?.parentNode as Element | null;
+      if (fldChar?.localName === "fldChar" && fldChar.parentNode) {
+        const flag = childElements(box, w, "checked")[0] ?? childElements(box, w, "default")[0];
+        boxes.push([fldChar, isOn(flag, w), true]);
+      }
+    }
+    for (const [anchor, checked, inRun] of boxes) {
+      const glyph = text(checked ? "☒" : "☐");
+      const node = inRun ? glyph : doc.createElementNS(w, tag("r"));
+      if (!inRun) node.appendChild(glyph);
+      anchor.parentNode?.insertBefore(node, anchor);
+    }
+    // mammoth drops page and column breaks, which would join surrounding words.
+    const breaks = [
+      ...Array.from(doc.getElementsByTagNameNS(w, "br")),
+      ...Array.from(doc.getElementsByTagNameNS(w, "cr")),
+    ];
+    for (const br of breaks) br.parentNode?.replaceChild(text("\n"), br);
+    if (boxes.length || breaks.length) rewritten[name] = strToU8(new XMLSerializer().serializeToString(doc));
+  }
+  if (!Object.keys(rewritten).length) return archive;
+  return zipSync({ ...unzipSync(archive), ...rewritten }, { level: 0 });
+}
+
+const DOCX_TABLE_RE = /<(?:[\w.-]+:)?tbl[\s>]/;
+
+export function writeDocxTableRows(archive: Uint8Array): Uint8Array {
+  const rewritten: Record<string, Uint8Array> = {};
+  const parts = unzipSync(archive, { filter: (entry) => entry.name.endsWith(".xml") });
+  for (const [name, bytes] of Object.entries(parts)) {
+    const xml = strFromU8(bytes);
+    if (!DOCX_TABLE_RE.test(xml)) continue;
+    const doc = new DOMParser().parseFromString(xml, "application/xml");
+    const root = doc.documentElement;
+    const w = root?.namespaceURI ?? "";
+    if (!WORDPROCESSINGML_NAMESPACES.has(w) || doc.getElementsByTagName("parsererror").length) continue;
+    const tag = (local: string) => (root.prefix ? `${root.prefix}:${local}` : local);
+    const run = (child: Element) => {
+      const r = doc.createElementNS(w, tag("r"));
+      r.appendChild(child);
+      return r;
+    };
+    const space = () => {
+      const t = doc.createElementNS(w, tag("t"));
+      t.setAttributeNS("http://www.w3.org/XML/1998/namespace", "xml:space", "preserve");
+      t.appendChild(doc.createTextNode(" "));
+      return t;
+    };
+    const tab = () => run(doc.createElementNS(w, tag("tab")));
+    const grid = (node: Element, pr: string, name: string) =>
+      Math.min(Number(childElements(node, w, pr).flatMap((e) => childElements(e, w, name))[0]?.getAttributeNS(w, "val")) || 0, 1000);
+    const outermost = (p: Element, cell: Element) => {
+      for (let node = p.parentNode; node && node !== cell; node = node.parentNode) {
+        if ((node as Element).localName === "p") return false;
+      }
+      return true;
+    };
+    // flatten nested tables before joining their paragraphs into the cell.
+    for (const table of Array.from(doc.getElementsByTagNameNS(w, "tbl")).reverse()) {
+      for (const row of Array.from(table.getElementsByTagNameNS(w, "tr"))) {
+        const cells = Array.from(row.getElementsByTagNameNS(w, "tc"));
+        const before = grid(row, "trPr", "gridBefore");
+        const after = grid(row, "trPr", "gridAfter");
+        if (cells.length + before + after < 2) {
+          for (const cell of cells) {
+            for (const child of Array.from(cell.childNodes)) {
+              if ((child as Element).localName !== "tcPr") table.parentNode?.insertBefore(child, table);
+            }
+          }
+          continue;
+        }
+        const line = doc.createElementNS(w, tag("p"));
+        for (let i = 0; i < before; i++) line.appendChild(tab());
+        cells.forEach((cell, index) => {
+          if (index) line.appendChild(tab());
+          // cell tabs and line breaks, including those in nested tables, would look like column or row separators.
+          for (const local of ["tab", "br", "cr"]) {
+            for (const mark of Array.from(cell.getElementsByTagNameNS(w, local))) {
+              if ((mark.parentNode as Element | null)?.localName === "r") mark.parentNode?.replaceChild(space(), mark);
+            }
+          }
+          for (const t of Array.from(cell.getElementsByTagNameNS(w, "t"))) {
+            for (const text of Array.from(t.childNodes)) {
+              if (text.nodeValue?.includes("\n")) t.replaceChild(doc.createTextNode(text.nodeValue.replace(/\n/g, " ")), text);
+            }
+          }
+          Array.from(cell.getElementsByTagNameNS(w, "p"))
+            .filter((p) => outermost(p, cell))
+            .forEach((p, i) => {
+              if (i) line.appendChild(run(space()));
+              for (const child of Array.from(p.childNodes)) {
+                if ((child as Element).localName !== "pPr") line.appendChild(child);
+              }
+            });
+          for (let i = 1; i < (grid(cell, "tcPr", "gridSpan") || 1); i++) line.appendChild(tab());
+        });
+        for (let i = 0; i < after; i++) line.appendChild(tab());
+        table.parentNode?.insertBefore(line, table);
+      }
+      table.parentNode?.removeChild(table);
+    }
+    rewritten[name] = strToU8(new XMLSerializer().serializeToString(doc));
+  }
+  if (!Object.keys(rewritten).length) return archive;
+  return zipSync({ ...unzipSync(archive), ...rewritten }, { level: 0 });
+}
+
 const DOCX_NOTE_REFERENCE_RE =
   /<(?:([\w.-]+):)?(footnote|endnote)Reference\b([^>]*?)(\/?)>(\s*<\/(?:[\w.-]+:)?\2Reference\s*>)?/g;
 const DOCX_NOTE_ID_RE = /(?:^|\s)(?:[\w.-]+:)?id\s*=\s*["']([^"']*)["']/;
@@ -1443,7 +1581,7 @@ export async function extractDocxAttachmentText(file: File): Promise<string> {
   );
   const marked = markDocxNotes(linearizeDocxMath(repacked));
   const { value } = await mammoth.extractRawText({
-    arrayBuffer: toArrayBuffer(marked.archive),
+    arrayBuffer: toArrayBuffer(writeDocxTableRows(writeDocxBreaksAndCheckboxes(marked.archive))),
   });
   return marked.label(value);
 }
@@ -1563,11 +1701,11 @@ export function extractHtmlAttachmentText(html: string): string {
     .join("");
 }
 
-/** Text with the line structure the source had. `textContent` runs a whole page together, so
- *  every block-level element and every `<br>` contributes a break of its own. */
+/** preserves breaks because `textContent` omits block and `<br>` boundaries. */
 function collectHtmlBlockText(
   node: Node | null,
   preformatted?: string[],
+  rowSpans?: number[],
 ): string {
   if (!node) {
     return "";
@@ -1598,13 +1736,68 @@ function collectHtmlBlockText(
     return "\n\u0000\n";
   }
 
+  if (tag === "tr" && preformatted) {
+    const cells = Array.from(element.childNodes).filter(
+      (child): child is Element =>
+        child.nodeType === ELEMENT_NODE &&
+        ["td", "th"].includes((child as Element).tagName.toLowerCase()),
+    );
+    const covered = rowSpans ?? [];
+    const slots: (Element | null)[] = [];
+    const skipCovered = () => {
+      while (covered[slots.length] > 0) {
+        covered[slots.length]--;
+        slots.push(null);
+      }
+    };
+    const span = (value: string | null, max: number) =>
+      Math.min(Math.max(Number(value) || 1, 1), max);
+    for (const cell of cells) {
+      skipCovered();
+      const rowspan = cell.getAttribute("rowspan");
+      const rows =
+        rowspan !== null && /^0+$/.test(rowspan)
+          ? Number.POSITIVE_INFINITY
+          : span(rowspan, 65534);
+      for (let i = 0; i < span(cell.getAttribute("colspan"), 1000); i++) {
+        covered[slots.length] = rows - 1;
+        slots.push(i ? null : cell);
+      }
+    }
+    for (let i = slots.length; i < covered.length; i++) {
+      if (covered[i] > 0) covered[i]--;
+    }
+    // preformatted code keeps its line breaks on the fallback path.
+    if (slots.length > 1 && !cells.some(containsPre)) {
+      const row = slots
+        .map((cell) => (cell ? collectHtmlBlockText(cell).replace(/\s+/g, " ").trim() : ""))
+        .join("\t");
+      if (!row.trim()) {
+        return "\n";
+      }
+      preformatted.push(row);
+      return "\n\u0000\n";
+    }
+  }
+
+  const groupSpans = HTML_ROW_GROUP_TAGS.has(tag) ? [] : rowSpans;
   const text = Array.from(element.childNodes)
-    .map((child) => collectHtmlBlockText(child, preformatted))
+    .map((child) => collectHtmlBlockText(child, preformatted, groupSpans))
     .join("");
   return HTML_BLOCK_TAGS.has(tag) ? `\n${text}\n` : text;
 }
 
-/** Collapses the spaces an extractor leaves between positioned runs while keeping the line breaks the source marked. */
+const HTML_ROW_GROUP_TAGS = new Set(["table", "thead", "tbody", "tfoot"]);
+
+function containsPre(node: Node): boolean {
+  return Array.from(node.childNodes).some(
+    (child) =>
+      child.nodeType === ELEMENT_NODE &&
+      ((child as Element).tagName.toLowerCase() === "pre" || containsPre(child)),
+  );
+}
+
+/** collapses extractor spacing while keeping source line breaks. */
 function normalizeExtractedText(text: string): string {
   return text
     .replace(/[^\S\n]+/g, " ")

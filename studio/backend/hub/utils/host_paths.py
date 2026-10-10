@@ -115,7 +115,9 @@ HOST_PATH_ROW_IDENTITY_FIELDS = ("id", "load_id")
 HOST_PATH_ENCODED_IDENTITY_FIELD = "inventory_id"
 HOST_PATH_ROW_SOURCE_FIELD = "source"
 # `hf_cache` is absent: those rows are named by repo id, and otherwise value decides.
-HOST_PATH_LOCAL_SOURCES = frozenset({"models_dir", "lmstudio", "ollama", "hermes", "custom"})
+HOST_PATH_LOCAL_SOURCES = frozenset(
+    {"models_dir", "lmstudio", "omlx", "ollama", "hermes", "custom"}
+)
 
 
 def _row_identity_is_a_path(payload: Mapping) -> bool:

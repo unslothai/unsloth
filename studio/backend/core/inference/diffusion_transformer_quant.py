@@ -135,6 +135,7 @@ _LTX2_INT8_EXCLUDES = ("audio", "av_cross_attn", "adaln")
 _INT8_FAMILY_EXCLUDE_NAME_TOKENS: dict[str, tuple[str, ...]] = {
     "qwen-image": _QWENIMAGE_INT8_EXCLUDES,
     "qwen-image-edit": _QWENIMAGE_INT8_EXCLUDES,  # same DiT class + unpadded text stream
+    "qwen-image-layered": _QWENIMAGE_INT8_EXCLUDES,  # same DiT class + unpadded text stream
     # 2.1 is a 32-block SINGLE-stream DiT: no add_* projections, no txt_mlp, so the 20B MMDiT's
     # exclusion list does not apply and this one was measured rather than inherited. ``txt_in`` is
     # here as a QUALITY lever, not the small-M crash guard it is on qwen-image: all four policy arms
@@ -248,8 +249,13 @@ _INT8_FAMILY_CONVROT_REPO: dict[str, str] = {
     "z-image": "unsloth/Z-Image-Turbo-FP8",
 }
 
+# Variant repos that also host a rotated build (``<Model>-INT8-ConvRot.safetensors``), listed for the same reason.
+_INT8_FAMILY_CONVROT_VARIANT_REPOS: dict[str, tuple[str, ...]] = {
+    "qwen-image-2.1": ("unsloth/Qwen-Image-2.1-Turbo-FP8",),
+}
+
 # Families whose int8 runs ConvRot unless the env turns it off; the rest stay opt-in (``=1``).
-_INT8_FAMILY_CONVROT_DEFAULT_ON: frozenset[str] = frozenset({"z-image"})
+_INT8_FAMILY_CONVROT_DEFAULT_ON: frozenset[str] = frozenset({"qwen-image-2.1", "z-image"})
 
 INT8_CONVROT_ENV = "UNSLOTH_DIFFUSION_INT8_CONVROT"
 
@@ -285,6 +291,17 @@ def convrot_prequant_repo(scheme: str, family: Optional[str] = None) -> Optional
     if scheme != TQ_INT8:
         return None
     return _INT8_FAMILY_CONVROT_REPO.get(str(family or "").strip().lower())
+
+
+def convrot_prequant_variant_repo(
+    scheme: str, family: Optional[str], repo_id: Optional[str]
+) -> bool:
+    """Whether ``repo_id`` is a variant repo that hosts the family's rotated int8 build under its own name."""
+    if scheme != TQ_INT8 or not repo_id:
+        return False
+    key = str(repo_id).strip().lower()
+    repos = _INT8_FAMILY_CONVROT_VARIANT_REPOS.get(str(family or "").strip().lower(), ())
+    return any(key == r.lower() for r in repos)
 
 
 def convrot_fqns(
@@ -435,6 +452,7 @@ _AUTO_LADDER: tuple[tuple[tuple[int, int], tuple[str, ...]], ...] = (
 _FAMILY_SCHEME_DENY: dict[str, frozenset[str]] = {
     "qwen-image": frozenset({TQ_MXFP8, TQ_NVFP4}),
     "qwen-image-edit": frozenset({TQ_MXFP8, TQ_NVFP4}),  # same DiT
+    "qwen-image-layered": frozenset({TQ_MXFP8, TQ_NVFP4}),  # same DiT
 }
 
 

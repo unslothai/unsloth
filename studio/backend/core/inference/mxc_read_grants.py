@@ -42,6 +42,8 @@ _lock = threading.Lock()
 # Root -> folder identity whose whole tree passed the credential scan in this process; a folder
 # replaced at the same path, or a new process, scans again.
 _scanned: dict[str, dict[str, int] | None] = {}
+# Root -> folder identity whose grant Windows refused in this process; skipped until restart.
+_refused: dict[str, dict[str, int] | None] = {}
 
 
 class ReadGrantError(RuntimeError):
@@ -202,6 +204,36 @@ def _identity(root: str) -> dict[str, int] | None:
         return None
 
 
+def _read_execute_covered(aces: list[tuple[int, int]]) -> bool:
+    """Check this folder and inheritable file/directory access separately.
+
+    Windows' standard Program Files ACL splits (RX) on the folder from
+    inherit-only (OI)(CI)(GR,GE) on children. Generic rights in the latter
+    must be mapped to file rights before comparing them with (RX).
+    """
+    folder = files = directories = 0
+    for mask, flags in aces:
+        if mask & 0x10000000:  # GENERIC_ALL
+            mask |= 0x1F01FF
+        if mask & 0x80000000:  # GENERIC_READ
+            mask |= 0x120089
+        if mask & 0x40000000:  # GENERIC_WRITE
+            mask |= 0x120116
+        if mask & 0x20000000:  # GENERIC_EXECUTE
+            mask |= 0x1200A0
+        if not flags & _INHERIT_ONLY:
+            folder |= mask
+        if flags & 0x4:  # NO_PROPAGATE_INHERIT cannot cover the whole tree.
+            continue
+        if flags & _OBJECT_INHERIT:
+            files |= mask
+        if flags & _CONTAINER_INHERIT:
+            directories |= mask
+    return all(
+        (mask & READ_EXECUTE_MASK) == READ_EXECUTE_MASK for mask in (folder, files, directories)
+    )
+
+
 def _package_aces(path: str) -> tuple[bool, bool]:
     """(covers, explicit) for ALL APPLICATION PACKAGES on the folder's own DACL.
 
@@ -265,8 +297,8 @@ def _package_aces(path: str) -> tuple[bool, bool]:
         if not dacl:
             # A NULL DACL already grants everyone, AppContainers included: nothing to add.
             return True, False
-        allowed, explicit = 0, False
-        inheritable = _OBJECT_INHERIT | _CONTAINER_INHERIT
+        allowed: list[tuple[int, int]] = []
+        explicit = False
         for index in range(dacl.contents.AceCount):
             raw = ctypes.c_void_p()
             if not get_ace(dacl, index, ctypes.byref(raw)):
@@ -290,10 +322,8 @@ def _package_aces(path: str) -> tuple[bool, bool]:
                 explicit = True
             if ace.Header.AceType == 1:
                 return False, explicit
-            if flags & _INHERIT_ONLY or (flags & inheritable) != inheritable:
-                continue
-            allowed |= ace.Mask
-        return (allowed & READ_EXECUTE_MASK) == READ_EXECUTE_MASK, explicit
+            allowed.append((ace.Mask, flags))
+        return _read_execute_covered(allowed), explicit
     finally:
         local_free(descriptor)
 
@@ -325,12 +355,42 @@ def _revoke(root: str) -> tuple[bool, str]:
     return _icacls(root, "/remove:g", f"*{ALL_APPLICATION_PACKAGES}")
 
 
+def _root_untouched(root: str) -> bool:
+    """icacls writes the root before propagating, so a refusal there changed nothing (#12941)."""
+    try:
+        return not _package_aces(root)[1]
+    except OSError:
+        return False
+
+
 def _save_quietly(record: dict) -> None:
     """Persist a record change after the ACL already matches it; a failed write only costs a retry."""
     try:
         _save_record(record)
     except OSError as exc:
         logger.warning("Could not update the MXC read-grant record: %s", exc)
+
+
+def _pending_grant_has_no_explicit_aces(root: str, identity: dict) -> bool:
+    """Prove a failed attempt left no explicit package ACE anywhere in its tree.
+
+    Checking only the root would miss an interrupted propagation or rollback.
+    Unknown ACLs and reparse points keep the recovery record intact.
+    """
+    pending = [root]
+    try:
+        while pending:
+            directory = pending.pop()
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    if _is_reparse(entry) or _package_aces(entry.path)[1]:
+                        return False
+                    if entry.is_dir(follow_symlinks = False):
+                        pending.append(entry.path)
+        covers, explicit = _package_aces(root)
+        return covers and not explicit and _identity(root) == identity
+    except OSError:
+        return False
 
 
 def _revoke_recorded_root(record: dict, key: str) -> str:
@@ -351,11 +411,20 @@ def _revoke_recorded_root(record: dict, key: str) -> str:
         )
         record.pop(key)
         return "dropped"
+    if record[key].get("state") == "pending" and _pending_grant_has_no_explicit_aces(key, current):
+        # Only inherited Windows permissions remain; none belong to Studio.
+        record.pop(key)
+        return "dropped"
+    # Read before revoking: a failed /remove:g may clear the root and still leave descendants.
+    never_landed = record[key].get("state") == "pending" and _root_untouched(key)
     ok, output = _revoke(key)
     if ok:
         record.pop(key)
         _scanned.pop(key, None)
         return "revoked"
+    if never_landed:
+        record.pop(key)
+        return "dropped"
     logger.warning("Could not remove the persistent MXC read grant from %s: %s", key, output)
     return "failed"
 
@@ -404,8 +473,14 @@ def _ensure_root(record: dict, root: str) -> bool:
             ) from exc
         logger.info("Keeping the per-launch MXC grant for %s: %s", root, exc)
         return False
+    if pending and covers and not explicit and _pending_grant_has_no_explicit_aces(root, current):
+        record.pop(key)
+        _save_quietly(record)
+        return True
     if covers and not pending:
         return True
+    if entry is None and _refused.get(key) == current:
+        return False
     if explicit and entry is None:
         # Someone else set an entry for that group here; /remove:g on opt-out would take theirs too.
         logger.info(
@@ -447,6 +522,15 @@ def _ensure_root(record: dict, root: str) -> bool:
         raise ReadGrantError(
             f"the MXC read grant on {root} failed ({output}) and the folder changed"
         )
+    if _root_untouched(root):
+        # e.g. Store Python under WindowsApps (TrustedInstaller): the rollback is refused too.
+        record.pop(key, None)
+        _save_quietly(record)
+        _refused[key] = identity
+        logger.info(
+            "Keeping the per-launch MXC grant for %s: Windows refused it (%s)", root, output
+        )
+        return False
     restored, restore_output = _revoke(root)
     if not restored:
         raise ReadGrantError(

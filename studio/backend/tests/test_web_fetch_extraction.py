@@ -23,7 +23,7 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-from core.inference._html_to_md import _is_aria_heading, html_to_markdown
+from core.inference._html_to_md import SiteLinks, _is_aria_heading, html_to_markdown
 from core.inference.tools import (
     _fetch_page_text,
     _fetch_url_raw,
@@ -690,6 +690,121 @@ def test_fetch_page_text_propagates_fetch_errors(monkeypatch):
     assert _fetch_page_text("https://example.com/missing") == (
         "Failed to fetch URL: HTTP 404 Not Found"
     )
+
+
+_WIKI_URL = "https://en.wikipedia.org/wiki/Python_(programming_language)"
+
+
+def _wiki_article(paragraphs):
+    body = "".join(
+        f'<p>Paragraph {i} links <a href="https://en.wikipedia.org/wiki/Some_Long_Article_Title_{i}">'
+        f'topic {i}</a>, <a href="/wiki/Another_Related_Page_{i}">a related page</a> and a note'
+        f'<sup><a href="#cite_note-{i}">[{i}]</a></sup>.</p>'
+        for i in range(paragraphs)
+    )
+    return (
+        f"<html><body><main><article>{body}"
+        "<p>Python 3.0 was released on 3 December 2008.</p>"
+        '<p>See <a href="https://www.python.org/doc/">the docs</a>.</p>'
+        "</article></main></body></html>"
+    )
+
+
+def test_long_page_spends_its_budget_on_text_not_links_into_the_site(monkeypatch):
+    out = _page_text(monkeypatch, _WIKI_URL, _wiki_article(150), "text/html")
+    assert "Python 3.0 was released on 3 December 2008." in out
+    assert "topic 149, a related page and a note[149]." in out
+    assert "[the docs](https://www.python.org/doc/)" in out
+    assert "wikipedia.org" not in out
+    assert "/wiki/" not in out
+    assert "#cite_note" not in out
+
+
+def test_page_that_fits_keeps_its_links(monkeypatch):
+    out = _page_text(monkeypatch, _WIKI_URL, _wiki_article(3), "text/html")
+    assert "[topic 1](https://en.wikipedia.org/wiki/Some_Long_Article_Title_1)" in out
+    assert "[a related page](/wiki/Another_Related_Page_1)" in out
+    assert "[[1]](#cite_note-1)" in out
+
+
+def test_page_cut_by_the_room_left_drops_its_site_link_urls(monkeypatch):
+    from core.inference import tools
+
+    context = tools._REQUEST_CONTEXT_TOKENS.set(32768)
+    room = tools._REQUEST_RESULT_BUDGET.set(1200)
+    try:
+        out = _page_text(monkeypatch, _WIKI_URL, _wiki_article(60), "text/html")
+    finally:
+        tools._REQUEST_RESULT_BUDGET.reset(room)
+        tools._REQUEST_CONTEXT_TOKENS.reset(context)
+    assert "(truncated," in out
+    assert "wikipedia.org" not in out
+
+
+def test_dropping_site_link_urls_leaves_code_samples_alone(monkeypatch):
+    filler = "".join(
+        f"<p>Guide paragraph {i} with enough words to run long.</p>" for i in range(400)
+    )
+    page = (
+        '<html><body><main><p>See <a href="#install">Install</a> or <a href="#usage">Usage</a>.</p>'
+        "<pre>[Install](#install)</pre><p>Inline <code>[Usage](#usage)</code>.</p>"
+        f"{filler}</main></body></html>"
+    )
+    out = _page_text(monkeypatch, "https://docs.example.com/guide", page, "text/html")
+    assert "```\n[Install](#install)\n```" in out
+    assert "Inline `[Usage](#usage)`." in out
+
+
+def test_dropping_site_link_urls_only_rewrites_links_emitted_by_renderer(monkeypatch):
+    filler = "".join(
+        f"<p>Guide paragraph {i} with enough words to run long.</p>" for i in range(400)
+    )
+    page = (
+        "<html><body><main>"
+        "<p>Literal Markdown: [Install](#install).</p>"
+        '<p>Inline code: <code><a href="#install">Install</a></code>.</p>'
+        '<p>Actual link: <a href="#install">Install</a>.</p>'
+        f"{filler}</main></body></html>"
+    )
+    out = _page_text(monkeypatch, "https://docs.example.com/guide", page, "text/html")
+    assert out.startswith(
+        "Literal Markdown: [Install](#install).\n\n"
+        "Inline code: `[Install](#install)`.\n\n"
+        "Actual link: Install."
+    )
+
+
+def test_dropping_site_link_urls_keeps_the_same_article(monkeypatch):
+    linked = "".join(
+        f'<p>Story one fact {i} see <a href="/topics/a-very-long-topic-slug-number-{i}">topic {i}</a>.</p>'
+        for i in range(300)
+    )
+    plain = "".join(
+        f"<p>Story two paragraph {i} with plain prose and no links.</p>" for i in range(300)
+    )
+    page = f"<html><body><article><h1>STORY ONE</h1>{linked}</article><article><h1>STORY TWO</h1>{plain}</article></body></html>"
+    out = _page_text(monkeypatch, "https://news.example.com/story-one", page, "text/html")
+    assert out.startswith("# STORY ONE\n\nStory one fact 0 see topic 0.")
+    assert "STORY TWO" not in out
+
+
+def test_dropping_site_link_urls_keeps_a_link_header_as_furniture(monkeypatch):
+    labels = "machine learning,deep learning,pytorch,cuda,transformers,lora,gguf,llama,quantization,finetuning,inference,qlora"
+    tags = "".join(
+        f'<a href="/category/topics/{t}/archive/page/1/?ref=card-header">{t}</a> '
+        for t in labels.split(",")
+    )
+    prose = "".join(
+        f"<p>Main page prose the user asked about, paragraph {i}, with enough words.</p>"
+        for i in range(250)
+    )
+    page = (
+        f"<html><body><main><h1>Main Post</h1>{prose}<aside><article><header>{tags}</header>"
+        "<p>A short teaser for a related post that is just long enough to read like a real sentence or two here.</p>"
+        "</article></aside></main></body></html>"
+    )
+    out = _page_text(monkeypatch, "https://blog.example.com/main-post", page, "text/html")
+    assert out.startswith("# Main Post\n\nMain page prose the user asked about, paragraph 0")
 
 
 def test_looks_like_html():
@@ -1431,8 +1546,7 @@ def test_many_tiny_articles_do_not_displace_substantial_main():
 
 
 def test_single_substantial_article_still_preferred_over_main():
-    # GitHub-README case: one substantial <article> inside <main> must still win
-    # over sibling <main> furniture.
+    # GitHub README pages mix a substantial <article> with repository furniture.
     article_body = "Real README documentation body text. " * 20
     html = (
         "<body><main>"
@@ -1445,16 +1559,115 @@ def test_single_substantial_article_still_preferred_over_main():
     assert "JavaScript 89.3%" not in out
 
 
-# ── truncated (unclosed) main-content scopes must still be scored ──
+def test_one_card_does_not_stand_in_for_a_listing_main():
+    cards = "".join(
+        f"<article><h2>Plan {i}</h2><p>{f'Plan {i} feature and price detail. ' * 8}</p></article>"
+        for i in range(6)
+    )
+    html = f"<body><main><h1>Pricing</h1>{cards}</main></body>"
+    out = html_to_markdown(html, main_content = True)
+    for i in range(6):
+        assert f"Plan {i} feature and price detail." in out
+
+
+def test_article_listing_without_main_uses_the_document():
+    cards = "".join(
+        f"<article><h2>Plan {i}</h2><p>{f'Plan {i} feature and price detail. ' * 8}</p></article>"
+        for i in range(6)
+    )
+    out = html_to_markdown(f"<body><h1>Pricing</h1>{cards}</body>", main_content = True)
+    for i in range(6):
+        assert f"Plan {i} feature and price detail." in out
+
+
+def test_post_body_outside_article_beats_author_bio_card():
+    post = "Main post body paragraph with the actual story. " * 30
+    bio = "Author bio describing the writer and their work. " * 6
+    related = "".join(
+        f"<article class='related'><h3>Related {i}</h3><p>{'Teaser for another post. ' * 9}</p></article>"
+        for i in range(3)
+    )
+    html = (
+        "<body><main><h1>Post title</h1>"
+        f"<div class='post-content'><p>{post}</p></div>"
+        f"<article class='author-card'><p>{bio}</p></article>{related}"
+        "</main></body>"
+    )
+    out = html_to_markdown(html, main_content = True)
+    assert "Main post body paragraph" in out
+
+
+def test_lone_readme_article_is_kept_over_repo_page_chrome():
+    readme = "Short README describing the library. " * 8
+    rows = "".join(
+        f"<tr><td><a href='/o/r/tree/main/dir{i}'>dir{i}</a></td>"
+        f"<td><a href='/o/r/commit/{i}'>Update the dir{i} module and its tests</a></td><td>2 days ago</td></tr>"
+        for i in range(25)
+    )
+    html = (
+        "<body><main><h2>Repository files navigation</h2>"
+        f"<table><tr><th>Name</th><th>Last commit message</th><th>Last commit date</th></tr>{rows}</table>"
+        f"<article class='markdown-body'><h1>Lib</h1><p>{readme}</p></article>"
+        "<div><h2>About</h2><p>A small library for doing one thing well.</p></div>"
+        "</main></body>"
+    )
+    out = html_to_markdown(html, main_content = True)
+    assert "Short README describing the library." in out
+    assert "Last commit message" not in out
+
+
+def test_link_heavy_comments_do_not_pull_main_over_the_post():
+    post = "The post explains the topic in full detail here. " * 50
+    comments = "".join(
+        f"<article class='comment'><p><a href='https://example.com/author/{i}?{'utm_source=comments&' * 20}'>Reader {i}</a> "
+        f"says: {'Thanks for writing this up. ' * 9}</p></article>"
+        for i in range(6)
+    )
+    html = (
+        f"<body><main><article class='post'><h1>Post</h1><p>{post}</p></article>"
+        f"<section id='comments'>{comments}</section></main></body>"
+    )
+    out = html_to_markdown(html, main_content = True)
+    assert "The post explains the topic" in out
+    assert "Thanks for writing this up." not in out
+
+
+def test_generated_table_spans_do_not_pull_main_over_the_post():
+    post = "Primary article prose with real details. " * 30
+    related = "Related card teaser. " * 12
+    rows = "".join(f"<tr><td>row {i}</td></tr>" for i in range(1, 80))
+    table = f"<table><tr><td rowspan='80'>repeated marker</td><td>row 0</td></tr>{rows}</table>"
+    html = (
+        "<body><main>"
+        f"<article><h1>Primary</h1><p>{post}</p></article>"
+        f"<article><p>{related}</p></article>{table}"
+        "</main></body>"
+    )
+    out = html_to_markdown(html, main_content = True)
+    assert "Primary article prose" in out
+    assert "Related card teaser." not in out
+
+
+@pytest.mark.parametrize("hide", ["hidden", "aria-hidden='true'", "style='display:none'"])
+def test_hidden_duplicate_article_is_not_a_second_card(hide):
+    post = "The post explains the topic in full detail here. " * 20
+    comments = "".join(
+        f"<div class='comment'><p>Reader {i} says: {'Thanks for writing this up, it helped. ' * 6}</p></div>"
+        for i in range(8)
+    )
+    html = (
+        f"<body><main><article><h1>Post</h1><p>{post}</p></article>"
+        f"<article {hide}><p>Duplicate</p></article><section>{comments}</section></main></body>"
+    )
+    out = html_to_markdown(html, main_content = True)
+    assert "The post explains the topic" in out
+    assert "Thanks for writing this up" not in out
 
 
 def test_truncated_open_article_scope_is_scored_and_preferred():
-    # _fetch_url_raw caps large pages, so the download can end before the closing
-    # </article>. The scope is still the main content and must be preferred over the
-    # whole document (which re-leaks the page chrome).
+    # _fetch_url_raw may truncate before </article>, so the open scope must exclude page chrome.
     chrome = "<nav>Skip to content</nav><div>Repository file tree and page chrome.</div>"
     article_body = "Real README documentation body text. " * 20
-    # No closing </article> / </body> -- the fetch cap truncated the page.
     html = f"<body>{chrome}<article><h1>Guide</h1><p>{article_body}</p>"
     out = html_to_markdown(html, main_content = True)
     assert "Real README documentation body text." in out
@@ -1519,6 +1732,41 @@ def test_fetch_url_raw_overall_deadline_aborts_across_redirects(monkeypatch):
     assert err == "Failed to fetch URL: timed out."
     assert body == ""
     assert hops["n"] < 5
+
+
+def test_fetch_url_raw_host_headers_follow_each_hop(monkeypatch):
+    # A header chosen for unsloth.ai must not ride a redirect to another site.
+    import urllib.request
+    from urllib.error import HTTPError
+
+    import core.inference.tools as tools_mod
+
+    sent = []
+
+    class _Opener:
+        def open(
+            self,
+            req,
+            timeout = None,
+        ):
+            sent.append((req.get_header("Host"), req.get_header("X-unsloth-studio")))
+            raise HTTPError(
+                req.full_url, 302, "Found", {"Location": "https://example.com/next"}, None
+            )
+
+    monkeypatch.setattr(
+        tools_mod,
+        "_validate_and_resolve_host",
+        lambda host, port: (True, "", ["203.0.113.7"]),
+    )
+    monkeypatch.setattr(urllib.request, "build_opener", lambda *handlers: _Opener())
+
+    tools_mod._fetch_url_raw(
+        "https://unsloth.ai/",
+        host_headers = lambda host: {"X-Unsloth-Studio": "1"} if host == "unsloth.ai" else {},
+    )
+    assert sent[0] == ("unsloth.ai", "1")
+    assert sent[1] == ("example.com", None)
 
 
 def test_fetch_url_raw_cancel_event_aborts_before_network(monkeypatch):
@@ -2075,6 +2323,187 @@ def test_table_nested_in_a_header_inside_a_cell_keeps_its_columns():
     assert html_to_markdown(f"<body>{html}</body>", main_content = True) == html_to_markdown(
         f"<body>{html}</body>"
     )
+    continued = "<table><tr><td><header><table><tr><td>x</td></tr></table></header>after</td><td>sibling</td></tr></table>"
+    assert html_to_markdown(continued, main_content = True) == html_to_markdown(continued)
+
+
+def test_nested_tables_flatten_into_their_outer_cell():
+    nested = "<table><tr><td>A</td><td><table><tr><td>x | y</td><td>z</td></tr></table></td><td>C</td></tr></table>"
+    assert html_to_markdown(nested).splitlines() == ["| A | x \\| y z | C |", "| --- | --- | --- |"]
+    deep = "<table><tr><td>" * 500 + "x" + "</td></tr></table>" * 500
+    assert html_to_markdown(deep) == "| x |\n| --- |"
+    article = "<article>" + "<table><tr><td>" * 8 + "x" + "</td></tr></table>" * 8 + "</article>"
+    main = "<main>" + "<p>Real page body.</p>" * 20 + "</main>"
+    assert "Real page body." in html_to_markdown(article + main, main_content = True)
+
+
+def test_spanned_table_cells_stay_in_their_columns():
+    html = (
+        "<table>"
+        "<tr><th>Rank</th><th>Nation</th><th>Gold</th><th>Silver</th><th>Bronze</th><th>Total</th></tr>"
+        "<tr><td rowspan='2'>25</td><th>Latvia</th><td>0</td><td>1</td><td>0</td><td>1</td></tr>"
+        "<tr><th>Estonia</th><td>0</td><td>1</td><td>0</td><td>1</td></tr>"
+        "<tr><td>27</td><th>Spain</th><td>0</td><td>0</td><td>1</td><td rowspan='2'>1</td></tr>"
+        "<tr><td>28</td><th>Chile</th><td>0</td><td>0</td><td>1</td></tr>"
+        "<tr><th colspan='2'>Totals (5 entries)</th><td>0</td><td>2</td><td>2</td><td>4</td></tr>"
+        "</table>"
+    )
+    lines = html_to_markdown(f"<body>{html}</body>").splitlines()
+    assert lines == [
+        "| Rank | Nation | Gold | Silver | Bronze | Total |",
+        "| --- | --- | --- | --- | --- | --- |",
+        "| 25 | Latvia | 0 | 1 | 0 | 1 |",
+        "| 25 | Estonia | 0 | 1 | 0 | 1 |",
+        "| 27 | Spain | 0 | 0 | 1 | 1 |",
+        "| 28 | Chile | 0 | 0 | 1 | 1 |",
+        "| Totals (5 entries) |  | 0 | 2 | 2 | 4 |",
+    ]
+
+
+def test_spanned_site_links_strip_on_every_repeated_row():
+    html = (
+        "<table><tr><th>Rank</th><th>Nation</th></tr>"
+        "<tr><td rowspan='2'><a href='/r25'>25</a></td><td>Estonia</td></tr>"
+        "<tr><td>Georgia</td></tr>"
+        "<tr><td colspan='2'><a href='https://ex.com/t'>Totals | all</a></td></tr></table>"
+    )
+    site_links = SiteLinks("https://ex.com/page")
+    full = html_to_markdown(f"<body>{html}</body>", site_links = site_links)
+    assert full.splitlines()[2:] == [
+        "| [25](/r25) | Estonia |",
+        "| [25](/r25) | Georgia |",
+        "| [Totals \\| all](https://ex.com/t) |  |",
+    ]
+    assert site_links.strip(full).splitlines()[2:] == [
+        "| 25 | Estonia |",
+        "| 25 | Georgia |",
+        "| Totals \\| all |  |",
+    ]
+
+
+def test_table_spans_do_not_multiply_the_page_size():
+    small_wide = "<table><tr>" + "<td colspan='1000'>x</td>" * 3 + "</tr></table>"
+    wide = "<table><tr>" + "<td colspan='1000'>x" * 30000 + "</table>"
+    tall = "<table><tr><td rowspan='65534'>" + "word " * 2000 + "<tr><td>b" * 5000 + "</table>"
+    for html in (small_wide, wide, tall):
+        assert len(html_to_markdown(html)) < 3 * len(html)
+
+    repeated = (
+        "<table><tr><td rowspan='1001'>"
+        + "x" * 100
+        + "</td></tr>"
+        + "<tr></tr>" * 1000
+        + "</table>"
+    )
+    rendered = html_to_markdown(repeated + "<p>Article sentinel.</p>")
+    assert rendered.index("Article sentinel.") < 16_000
+    quoted = (
+        "<blockquote><table><tr><td rowspan='3000'>x</td></tr>"
+        + "<tr></tr>" * 2999
+        + "</table></blockquote><p>Article sentinel.</p>"
+    )
+    assert html_to_markdown(quoted).index("Article sentinel.") < 16_000
+    nested = (
+        "<table><tr><td>"
+        + "s" * 7000
+        + "<table><tr><td rowspan='3000'>x</td></tr>"
+        + "<tr></tr>" * 2999
+        + "</table></td></tr></table><p>Article sentinel.</p>"
+    )
+    assert html_to_markdown(nested).index("Article sentinel.") < 16_000
+
+
+def test_table_spans_fit_a_small_fetch_budget(monkeypatch):
+    tall = (
+        "<html><body><table><tr><td rowspan='3000'>x</td></tr>"
+        + "<tr></tr>" * 2999
+        + "</table><p>Article sentinel.</p></body></html>"
+    )
+    assert html_to_markdown(tall, max_span_chars = 1000).index("Article sentinel.") < 2000
+
+    def fake_fetch(url, **kwargs):
+        return None, tall, "text/html"
+
+    monkeypatch.setattr("core.inference.tools._fetch_url_raw", fake_fetch)
+    assert "Article sentinel." in _fetch_page_text("https://example.com/t", max_chars = 2000)
+
+
+def test_table_span_budget_is_page_wide_and_token_weighted():
+    from core.inference._html_to_md import _new_renderer
+
+    candidate = "<article><table><tr><td colspan='1000'>x</td></tr></table></article>"
+    page = candidate * 3000
+    renderer = _new_renderer(page, frozenset({"article"}), True)
+    assert sum(len(seg) for seg in renderer.scope_segments) < 10 * len(page)
+
+    cell = "中文表格单元内容很长" * 20
+    rows = "".join(f"<tr><td>r{i}</td></tr>" for i in range(1, 50))
+    html = f"<table><tr><td rowspan='50'>{cell}</td><td>r0</td></tr>{rows}</table><p>Article sentinel.</p>"
+    assert html_to_markdown(html, max_span_chars = 3404).count(cell) == 1
+
+
+def test_nested_colspan_padding_does_not_spend_the_span_budget():
+    layout = "<table><tr><td><table><tr><td colspan='1000'>x</td></tr></table></td></tr></table>"
+    data = (
+        "<table><tr><th>Rank</th><th>Nation</th></tr>"
+        "<tr><td rowspan='2'>25</td><td>Estonia</td></tr><tr><td>Georgia</td></tr></table>"
+    )
+    pad = "<p>" + "Body text. " * 400 + "</p>"
+    assert html_to_markdown(pad + layout + data).splitlines()[-1] == "| 25 | Georgia |"
+
+
+def test_generated_table_spans_do_not_make_a_main_content_candidate():
+    body = "<main><p>" + "Real page body. " * 20 + "</p></main>"
+    decoys = (
+        "<article><table><tr><td rowspan='51'>x</td></tr>"
+        + "<tr></tr>" * 50
+        + "</table></article>",
+        "<article><blockquote><table><tr><td rowspan='101'>x</td></tr>"
+        + "<tr></tr>" * 100
+        + "</table></blockquote></article>",
+        "<article><header><table><tr><td colspan='1000'><a href='/nav'>"
+        + "Navigation " * 12
+        + "</a></td></tr></table></header><p>"
+        + "Teaser. " * 12
+        + "</p></article>",
+    )
+    for decoy in decoys:
+        out = html_to_markdown(f"<body>{decoy}{body}</body>", main_content = True)
+        assert "Real page body." in out
+
+    exhausted = (
+        "<article><table><tr><td colspan='1000' rowspan='2'>x</td></tr><tr></tr></table></article>"
+    )
+    substantive = (
+        "<article><p>"
+        + "Real page body. " * 20
+        + "</p><table><tr><td rowspan='2'>rank</td><td>one</td></tr><tr><td>two</td></tr></table></article>"
+    )
+    assert "| rank | two |" in html_to_markdown(exhausted + substantive, main_content = True)
+
+
+def test_table_spans_stop_at_row_groups_tables_and_long_cells():
+    def rows(html):
+        return html_to_markdown(f"<body>{html}</body>").splitlines()
+
+    covered_row = "<table><tr><th>A</th><th>B</th></tr><tr><td rowspan=2>a</td><td rowspan=2>b</td></tr><tr></tr><tr><td>c</td><td>d</td></tr></table>"
+    assert rows(covered_row)[-3:] == ["| a | b |", "| a | b |", "| c | d |"]
+    footer = "<table><thead><tr><th>Item</th><th>Qty</th></tr></thead><tbody><tr><td>x</td><td rowspan=2>5</td></tr></tbody><tfoot><tr><td>Total</td><td>5</td></tr></tfoot></table>"
+    assert rows(footer)[-1] == "| Total | 5 |"
+    nested = "<table><tr><td>T1</td><td><table><tr><td rowspan=2>GK</td><td>P1</td></tr></table></td></tr><tr><td>T2</td><td>S2</td></tr></table>"
+    assert rows(nested)[-1] == "| T2 | S2 |"
+    nested_under_span = "<table><tr><td rowspan=2>A</td><td><table><tr><td>B</td></tr></table></td></tr><tr><td>C</td></tr></table>"
+    assert rows(nested_under_span)[-1] == "| A | C |"
+    to_group_end = "<table><tr><th>G</th><th>N</th></tr><tbody><tr><th rowspan=0>g</th><td>1</td></tr><tr><td>2</td></tr></tbody><tbody><tr><td>h</td><td>3</td></tr></tbody></table>"
+    assert rows(to_group_end)[-3:] == ["| g | 1 |", "| g | 2 |", "| h | 3 |"]
+    sidebar = (
+        "<table><tr><td rowspan=5>"
+        + "Article body text. " * 120
+        + "</td><td>Home</td></tr>"
+        + "<tr><td>Link</td></tr>" * 4
+        + "</table>"
+    )
+    assert html_to_markdown(sidebar).count("Article body text.") == 120
 
 
 def test_truncated_header_and_blockquote_keep_source_order():
@@ -2082,7 +2511,7 @@ def test_truncated_header_and_blockquote_keep_source_order():
     assert out.index("Title") < out.index("Quote")
 
 
-# Headers interact with every buffer, so enumerate the grid: that is where the one-off bugs live.
+# headers interact with every buffer, where one-off bugs occur
 _GRID_HEADINGS = {
     "h1": "<h1>Page Title</h1>",
     "aria": "<div role='heading'>Page Title</div>",

@@ -145,6 +145,7 @@ trap 'rm -rf "$_FN_FILE" "$_GATE_FILE" "$_REROUTE_FILE" "$_E2E_DIR" "$_FAKE_SMI_
 # Same extraction contract as tests/sh/test_get_torch_index_url.sh: a missed helper makes the
 # ROCm branch answer cpu and these pass for the wrong reason. The ROCm assertion below guards it.
 {
+    sed -n '/^_ROCM_BNB_GENERIC_FLOOR_TAG=/p' "$INSTALL_SH"
     for _fn in _run_bounded _cvd_hides_nvidia _has_amd_rocm_gpu _has_usable_nvidia_gpu \
                _ensure_rocm_probe_env _rocm_torch_explicitly_requested \
                _probe_amd_gfx_arch _amd_gfx_select_ordinals \
@@ -154,7 +155,8 @@ trap 'rm -rf "$_FN_FILE" "$_GATE_FILE" "$_REROUTE_FILE" "$_E2E_DIR" "$_FAKE_SMI_
                _nvidia_cu126_verdict _cap_cuda_family_for_pre_turing \
                _rocm_tag_from_amd_smi _rocm_tag_from_version_file _rocm_tag_from_hipconfig \
                _rocm_tag_from_dpkg _rocm_tag_from_rpm _highest_rocm_tag \
-               _detect_rocm_version_tag _kfd_gfx_targets get_torch_index_url; do
+               _detect_rocm_version_tag _kfd_gfx_targets _rocm_bnb_compatible_generic_tag \
+               get_torch_index_url; do
         sed -n "/^$_fn()/,/^}/p" "$INSTALL_SH"
         echo ""
     done

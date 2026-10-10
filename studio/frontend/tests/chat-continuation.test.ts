@@ -33,6 +33,7 @@ const {
   joinContinuation,
   modeAllowsContinuation,
   noteRunStartedThisSession,
+  providerCompactionContinuationFields,
   readContinuationRequest,
   readIncompleteInfo,
   readTextThoughtSignature,
@@ -205,11 +206,16 @@ test("every stop reason has a label", () => {
   );
 });
 
-test("only text has to carry weight for a turn to count as rendered", () => {
+test("text-like parts have to carry weight for a turn to count as rendered", () => {
   assert.equal(hasRenderableContent([]), false);
   assert.equal(hasRenderableContent([{ type: "text", text: "" }]), false);
   assert.equal(hasRenderableContent([{ type: "text", text: " \n\t" }]), false);
   assert.equal(hasRenderableContent([{ type: "text", text: "hi" }]), true);
+  assert.equal(hasRenderableContent([{ type: "reasoning", text: "" }]), false);
+  assert.equal(
+    hasRenderableContent([{ type: "reasoning", text: "thought" }]),
+    true,
+  );
   // A turn that only called a tool or drew an image still answered.
   assert.equal(hasRenderableContent([{ type: "tool-call" }]), true);
   assert.equal(hasRenderableContent([{ type: "image" }]), true);
@@ -480,6 +486,52 @@ test("a continuation request is read only when it carries text", () => {
   assert.equal(readContinuationRequest(undefined), null);
 });
 
+test("a continuation carries a complete provider compaction tuple", () => {
+  const fields = {
+    providerCompaction: {
+      type: "compaction",
+      content: "summary",
+      encrypted_content: "opaque",
+    },
+    providerCompactionAfterToolCalls: 0,
+    providerCompactionProviderType: "anthropic",
+    providerCompactionModelId: "claude-opus-4-7",
+    providerCompactionConnectionKey: "v1:connection-a",
+  };
+  assert.deepEqual(
+    providerCompactionContinuationFields({ custom: fields }),
+    fields,
+  );
+  assert.deepEqual(
+    readContinuationRequest({
+      custom: {
+        unslothContinuation: { partial: "half an answer", ...fields },
+      },
+    }),
+    { partial: "half an answer", ...fields },
+  );
+  assert.deepEqual(
+    readContinuationRequest({
+      custom: {
+        unslothContinuation: {
+          partial: "half an answer",
+          ...fields,
+          providerCompactionModelId: undefined,
+        },
+      },
+    }),
+    { partial: "half an answer" },
+  );
+  assert.match(
+    THREAD,
+    /\.\.\.providerCompactionContinuationFields\(metadata\)/,
+  );
+  assert.match(
+    CHAT_ADAPTER,
+    /const continuationCompaction = continuation[\s\S]*providerCompactionForTarget\([\s\S]*content: continuationCompaction/,
+  );
+});
+
 test("a turn that called a tool cannot be continued", () => {
   // The continuation runs as a sibling, so the call and its result are absent from
   // the outbound history and the resumed text would have lost its evidence.
@@ -577,6 +629,26 @@ test("a continuation carries the Gemini signature of the turn it resumes", () =>
       custom: { unslothContinuation: { partial: "half", thoughtSignature: "SIG" } },
     }),
     { partial: "half", thoughtSignature: "SIG" },
+  );
+  assert.deepEqual(
+    readContinuationRequest({
+      custom: {
+        unslothContinuation: {
+          partial: "half",
+          answerParts: [
+            { text: "half" },
+            { text: "", thoughtSignature: "SIG-END" },
+          ],
+        },
+      },
+    }),
+    {
+      partial: "half",
+      answerParts: [
+        { text: "half" },
+        { text: "", thoughtSignature: "SIG-END" },
+      ],
+    },
   );
   // An unsigned turn stays unsigned rather than gaining an empty key.
   assert.deepEqual(
@@ -1786,7 +1858,7 @@ test("a losing claim does not follow the row onto the next branch", () => {
   const rows = readSrc("components/assistant-ui/progressive-messages.tsx");
   assert.match(
     rows,
-    /<MessageByIndexProvider key=\{index\}/,
+    /<AuiProvider key=\{index\} value=\{gate\.row\(index\)\}>\s*<MessageByIndexProvider index=\{index\}>/,
     "rows are no longer keyed by index; this test needs rewriting",
   );
 

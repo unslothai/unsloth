@@ -10,7 +10,11 @@ import type {
   S3Config,
   TrainingMethod,
 } from "@/types/training";
-import type { BackendModelConfig } from "../api/models-api";
+import type {
+  BackendModelConfig,
+  DecisionCheckpoint,
+  DecisionLayout,
+} from "../api/models-api";
 
 export type LoraVariant = "lora" | "rslora" | "loftq" | "dora";
 
@@ -59,6 +63,10 @@ export interface TrainingMethodProvenance {
 /** Column-to-role mapping, e.g. { "problem": "user", "solution": "assistant", "context": "system" } */
 export type DatasetManualMapping = Record<string, string>;
 
+/** Decoder layers kept in host RAM during LoRA training: a count (0 = off) or "auto". */
+export type OffloadLayers = number | "auto";
+export type PrefetchDepth = number | "auto";
+
 export interface TrainingConfigState {
   userEditRevision: number;
   modelType: ModelType | null;
@@ -66,6 +74,16 @@ export interface TrainingConfigState {
   modelKnownCached: boolean;
   modelLocalPath: string | null;
   modelFormat: ModelInventoryFormat | null;
+  modelSubfolder: string | null;
+  decisionCheckpoints: DecisionCheckpoint[] | null;
+  // The user's choice to train a text or vision LLM as a decision model.
+  trainAsDecision: boolean;
+  /** "laya" for Laya, "clef" for Cloudflare Clef, "llm" for an LLM trained as a decision model; the last two take QLoRA. */
+  decisionLayout: DecisionLayout | null;
+  settingsBeforeDecision: {
+    trainingMethod: TrainingMethod;
+    datasetStreaming: boolean;
+  } | null;
   projectName: string;
   trainingMethod: TrainingMethod;
   trainingMethodProvenance: TrainingMethodProvenance;
@@ -108,6 +126,11 @@ export interface TrainingConfigState {
   packing: boolean;
   trainOnCompletions: boolean;
   gradientCheckpointing: GradientCheckpointing;
+  offloadLayers: OffloadLayers;
+  offloadVramGb: number | null;
+  /** Per-GPU budget in GiB keyed by the GPU index /api/system reports; used when several GPUs are visible. */
+  offloadVramGbPerDevice: Record<string, number | null>;
+  prefetchDepth: PrefetchDepth;
   randomSeed: number;
   enableWandb: boolean;
   wandbToken: string;
@@ -193,6 +216,8 @@ export interface TrainingConfigActions {
     dataset: string,
     localPath: string | null,
   ) => void;
+  setModelSubfolder: (subfolder: string | null) => void;
+  setTrainAsDecision: (value: boolean) => void;
   setProjectName: (value: string) => void;
   ensureModelDefaultsLoaded: () => void;
   ensureDatasetChecked: () => void;
@@ -242,6 +267,10 @@ export interface TrainingConfigActions {
   setPacking: (value: boolean) => void;
   setTrainOnCompletions: (value: boolean) => void;
   setGradientCheckpointing: (value: GradientCheckpointing) => void;
+  setOffloadLayers: (value: OffloadLayers) => void;
+  setOffloadVramGb: (value: number | null) => void;
+  setOffloadVramGbForDevice: (gpuIndex: number, value: number | null) => void;
+  setPrefetchDepth: (value: PrefetchDepth) => void;
   setRandomSeed: (value: number) => void;
   setEnableWandb: (value: boolean) => void;
   setWandbToken: (value: string) => void;
@@ -255,6 +284,7 @@ export interface TrainingConfigActions {
   setFinetuneMLPModules: (value: boolean) => void;
   setTargetModules: (value: string[]) => void;
   setS3Config: (value: S3Config | null) => void;
+  restoreRunConfig: (config: Record<string, unknown>) => void;
   reset: () => void;
   resetToModelDefaults: () => void;
   applyConfigPatch: (config: BackendModelConfig) => void;

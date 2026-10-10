@@ -267,7 +267,7 @@ if not _windows_studio_mutation_entry:
         "ignore_unknown_options": True,
         "help_option_names": [],
     },
-    help = "Install prebuilt xformers / causal_conv1d / mamba_ssm wheels matching the installed torch.",
+    help = "Install prebuilt xformers / flash-attn / causal_conv1d / mamba_ssm wheels matching the installed torch (all by default).",
 )
 def install_kernels(ctx: typer.Context):
     # Listed for `unsloth --help`; the console script dispatches before typer is imported.

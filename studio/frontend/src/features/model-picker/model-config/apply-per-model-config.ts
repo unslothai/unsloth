@@ -9,6 +9,7 @@ import {
   reconcilePersistedGpuSelection,
   useChatRuntimeStore,
 } from "@/features/chat/stores/chat-runtime-store";
+import { reconcileTensorSplit } from "@/hooks/gpu-tensor-split";
 import { defaultInferenceParams } from "@/features/chat/presets/preset-policy";
 // Its own module so hosts needing only the signature skip the chat runtime store.
 import { gpuFieldsSignature } from "./config-signature";
@@ -22,16 +23,6 @@ export { gpuFieldsSignature };
 
 function cleanTemplate(value: string | null | undefined): string | null {
   return value?.trim() ? value : null;
-}
-
-function cleanTensorSplit(value: number[] | null | undefined): number[] | null {
-  if (!value || value.length < 2) {
-    return null;
-  }
-  if (!value.every((v) => Number.isFinite(v) && v >= 0)) {
-    return null;
-  }
-  return value.some((v) => v > 0) ? value : null;
 }
 
 export function applyPerModelConfigToRuntime(
@@ -67,12 +58,14 @@ export function applyPerModelConfigToRuntime(
   useChatRuntimeStore.setState({
     customContextLength: config.customContextLength ?? null,
     mlxKvQuant: config.mlxKvQuant ?? null,
+    mlxInt8Prefill: config.mlxInt8Prefill ?? false,
     kvCacheDtype: config.kvCacheDtype ?? null,
     speculativeType:
       normalizeSpeculativeType(config.speculativeType) ??
       readPersistedSpeculativeType(),
     specDraftNMax: config.specDraftNMax ?? null,
     specDraftCacheDtype: config.specDraftCacheDtype ?? null,
+    specDraftModel: config.specDraftModel ?? null,
     nParallel: config.nParallel ?? null,
     reasoningBudget: options.isDiffusion ? -1 : config.reasoningBudget,
     reasoningBudgetMessage: options.isDiffusion
@@ -95,8 +88,8 @@ export function applyPerModelConfigToRuntime(
       : (config.disableVision ?? false),
     chatTemplateOverride: cleanTemplate(config.chatTemplateOverride),
     // GPU Memory knobs are per-model (GGUF-only). Absent = defaults; the mode is a standing
-    // preference so an absent mode falls back to the persisted one. The per-GPU split is never
-    // stored. The GPU pick is reconciled against the GPUs present now. A diffusion
+    // preference so an absent mode falls back to the persisted one. The per-GPU split is restored
+    // only when the ordered GPU pick survives reconciliation. A diffusion
     // config is sanitized to gpuMemoryMode "auto" because the mode does not apply, not because
     // the user chose Auto: writing that into the live standing preference would strand the session
     // on Auto, since the load skips saveGpuMemoryMode for diffusion and the next ordinary GGUF
@@ -106,7 +99,9 @@ export function applyPerModelConfigToRuntime(
       : (config.gpuMemoryMode ?? readPersistedGpuMemoryMode()),
     gpuLayers: config.gpuLayers ?? GPU_LAYERS_AUTO,
     nCpuMoe: config.nCpuMoe ?? 0,
-    splitRatio: options.isDiffusion ? null : cleanTensorSplit(config.tensorSplit),
+    splitRatio: options.isDiffusion
+      ? null
+      : reconcileTensorSplit(config.tensorSplit, config.selectedGpuIds, gpuSelection.ids),
     selectedGpuIds: gpuSelection.ids,
     selectedGpuIndexKind: gpuSelection.indexKind,
   });
@@ -135,9 +130,11 @@ export function currentRuntimePerModelConfig(
       : null,
     kvCacheDtype: s.kvCacheDtype ?? null,
     mlxKvQuant: s.mlxKvQuant ?? null,
+    mlxInt8Prefill: s.mlxInt8Prefill ?? false,
     speculativeType: normalizeSpeculativeType(s.speculativeType),
     specDraftNMax: s.specDraftNMax ?? null,
     specDraftCacheDtype: s.specDraftCacheDtype ?? null,
+    specDraftModel: s.specDraftModel ?? null,
     nParallel: s.nParallel ?? null,
     reasoningBudget:
       s.reasoningBudget === s.loadedReasoningBudget
@@ -156,7 +153,7 @@ export function currentRuntimePerModelConfig(
     disableVision: s.disableVision ?? false,
     chatTemplateOverride: cleanTemplate(s.chatTemplateOverride),
     // Snapshot the live GPU knobs too so a failed switch rolls the previous model's GPU Memory
-    // settings back, split included (never stored).
+    // settings back, split included.
     gpuMemoryMode: s.gpuMemoryMode,
     gpuLayers: s.gpuLayers,
     nCpuMoe: s.nCpuMoe,
@@ -185,9 +182,11 @@ export function perModelConfigsEqual(
       normalizeMaxSeqLength(b.maxSeqLength) &&
     (a.kvCacheDtype ?? null) === (b.kvCacheDtype ?? null) &&
     (a.mlxKvQuant ?? null) === (b.mlxKvQuant ?? null) &&
+    Boolean(a.mlxInt8Prefill) === Boolean(b.mlxInt8Prefill) &&
     speculative(a.speculativeType) === speculative(b.speculativeType) &&
     (a.specDraftNMax ?? null) === (b.specDraftNMax ?? null) &&
     (a.specDraftCacheDtype ?? null) === (b.specDraftCacheDtype ?? null) &&
+    (a.specDraftModel ?? null) === (b.specDraftModel ?? null) &&
     (a.nParallel ?? null) === (b.nParallel ?? null) &&
     a.reasoningBudget === b.reasoningBudget &&
     a.reasoningBudgetMessage === b.reasoningBudgetMessage &&

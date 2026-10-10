@@ -14,6 +14,8 @@ import os
 import types
 from typing import Any, Optional
 
+from .diffusion_vae_tiling import axis_weights as _axis_weights
+
 WIDE_TILES_ENV = "UNSLOTH_VIDEO_VAE_WIDE_TILES"
 
 # Stock tile side: the smallest tile, so the tightest tier never needs more per tile than stock.
@@ -69,27 +71,16 @@ def axis_weights(
     ramp: Optional[int] = None,
 ) -> list:
     """Per-tile fp32 weights along one axis summing to 1: 0 within ``margin`` of a shared edge, then a linear ``ramp``."""
-    margin = MARGIN_LATENTS if margin is None else margin
-    ramp = RAMP_LATENTS if ramp is None else ramp
-    size = min(tile, length) * scale
-    pos = (torch.arange(size, dtype = torch.float64, device = "cpu") + 0.5) / scale
-    total = torch.zeros(length * scale, dtype = torch.float64, device = "cpu")
-    weights = []
-    for s in starts:
-        w = torch.ones(size, dtype = torch.float64, device = "cpu")
-        if s > 0:
-            w = torch.minimum(w, ((pos - margin) / ramp).clamp(0, 1))
-        if s + tile < length:
-            w = torch.minimum(w, ((min(tile, length) - pos - margin) / ramp).clamp(0, 1))
-        total[s * scale : s * scale + size] += w
-        weights.append(w)
-    if float(total.min()) <= 0.0:
-        raise ValueError(f"tiles {starts} leave pixels without weight on a {length}-latent axis")
-    # float64 on CPU: MPS has no float64.
-    return [
-        (w / total[s * scale : s * scale + size]).float().to(device)
-        for w, s in zip(weights, starts)
-    ]
+    return _axis_weights(
+        starts,
+        tile,
+        length,
+        scale,
+        torch,
+        device,
+        MARGIN_LATENTS if margin is None else margin,
+        RAMP_LATENTS if ramp is None else ramp,
+    )
 
 
 def output_frames(vae: Any, latent_frames: int) -> int:

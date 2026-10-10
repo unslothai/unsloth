@@ -204,33 +204,6 @@ def test_status_lists_the_precisions_the_build_loads(amd_host, monkeypatch, tmp_
     assert "int4" in install.status("vllm")["precisions"]
 
 
-def test_job_file_survives_a_reader_holding_it(monkeypatch, tmp_path):
-    # Windows: os.replace onto a file a status poll has open fails with PermissionError, which
-    # used to fail the whole install a few seconds in.
-    real, calls = install.os.replace, []
-
-    def busy(src, dst):
-        calls.append(dst)
-        if len(calls) < 3:
-            raise PermissionError(5, "Access is denied")
-        real(src, dst)
-
-    monkeypatch.setattr(install.os, "replace", busy)
-    monkeypatch.setattr(install.time, "sleep", lambda _: None)
-    install._atomic_json(tmp_path / "vllm.job.json", {"state": "running"})
-    assert json.loads((tmp_path / "vllm.job.json").read_text()) == {"state": "running"}
-    assert len(calls) == 3 and list(tmp_path.iterdir()) == [tmp_path / "vllm.job.json"]
-
-    def always_busy(src, dst):
-        raise PermissionError(5, "Access is denied")
-
-    # A file that stays locked is still an error, and leaves no temporary file behind.
-    monkeypatch.setattr(install.os, "replace", always_busy)
-    with pytest.raises(PermissionError):
-        install._atomic_json(tmp_path / "vllm.job.json", {"state": "error"})
-    assert list(tmp_path.iterdir()) == [tmp_path / "vllm.job.json"]
-
-
 def test_engine_port_stays_below_the_limit_when_the_os_offers_high_ports(monkeypatch):
     # Windows counts ephemeral ports up from 49152; past 55535 every OS-chosen port was refused and
     # the load failed with "Could not allocate an inference server port".

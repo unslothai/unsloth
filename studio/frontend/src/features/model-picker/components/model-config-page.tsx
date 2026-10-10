@@ -2,6 +2,16 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { InferenceEnginePicker } from "./inference-engines";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { useLlamaCppBackend } from "@/hooks/use-llama-backend";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -57,6 +67,14 @@ import {
   resolveMemoryCapacityGb,
 } from "@/hooks/gpu-vram";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import {
+  DRAFTER_MODEL_SPEC_TYPES,
+  MLX_SPECULATIVE_TYPES,
+  type MlxDrafter,
+  mlxDrafterChoices,
+  mlxSpeculativeMode,
+  resolveSpeculativeType,
+} from "@/lib/speculative-modes";
 import { toast } from "@/lib/toast";
 import {
   type ReactNode,
@@ -84,6 +102,7 @@ import {
   subscribeLlamaFlagCatalog,
 } from "../api/llama-flags";
 import { type MemoryEstimate } from "../api/memory-estimate";
+import { fetchMlxDrafters } from "../api/mlx-drafters";
 import {
   resolveEstimateContext,
   resolveMlxEstimateContext,
@@ -96,6 +115,7 @@ import {
   selectResidentEstimateSettings,
 } from "../model-config/resident-memory-request";
 import { useMemoryEstimate } from "../hooks/use-memory-estimate";
+import { useInt8PrefillAvailable } from "../hooks/use-int8-prefill-available";
 import {
   fetchLoadModelOverride,
   fromApiOverride,
@@ -175,10 +195,12 @@ import {
   normalizeMaxSeqLength,
   normalizePerModelConfig,
   perModelConfigStorageChanged,
+  pinSpeculativeMode,
   readAdvancedSettingsOpen,
   resolveInitialConfig,
   saveAdvancedSettingsOpen,
   savePerModelConfig,
+  storedSpeculativeAuto,
   subscribeAdvancedSettingsOpen,
   VRAM_BUDGET_PERCENT_STEP,
   vramFractionToPercent,
@@ -197,6 +219,7 @@ import {
 import { ChatTemplateEditorDialog } from "./chat-template-editor-dialog";
 import { MemoryEstimateRow } from "./memory-estimate-row";
 import type { ModelPickTarget } from "./model-selector/types";
+import { reconcileTensorSplit } from "@/hooks/gpu-tensor-split";
 import {
   NumericValueInput,
   type NumericValueInputHandle,
@@ -241,6 +264,18 @@ const SPECULATIVE_TYPE_LABELS: Record<
   dflash: "DFlash",
   ngram: "Ngram",
   "mtp+ngram": "MTP+Ngram",
+  off: "Off",
+};
+const MLX_SPECULATIVE_TYPE_LABELS: Record<
+  (typeof MLX_SPECULATIVE_TYPES)[number],
+  string
+> = {
+  auto: "Auto",
+  mtp: "MTP",
+  dflash: "DFlash",
+  dspark: "DSpark",
+  eagle3: "EAGLE-3",
+  ngram: "Ngram",
   off: "Off",
 };
 
@@ -302,6 +337,7 @@ function hasNonDefaultAdvanced(config: PerModelConfig): boolean {
     (config.speculativeType ?? "auto") !== "auto" ||
     config.specDraftNMax != null ||
     config.specDraftCacheDtype != null ||
+    config.specDraftModel != null ||
     config.nParallel != null ||
     config.reasoningBudget !== -1 ||
     config.reasoningBudgetMessage !== "" ||
@@ -335,6 +371,7 @@ function withoutUnsupportedDiffusionSettings(
     (config.gpuMemoryMode ?? "auto") === "auto" &&
     config.gpuLayers == null &&
     config.nCpuMoe == null &&
+    config.tensorSplit == null &&
     config.reasoningBudget === -1 &&
     config.reasoningBudgetMessage === "" &&
     !config.tensorParallel &&
@@ -351,6 +388,7 @@ function withoutUnsupportedDiffusionSettings(
     gpuMemoryMode: "auto",
     gpuLayers: undefined,
     nCpuMoe: undefined,
+    tensorSplit: null,
     reasoningBudget: -1,
     reasoningBudgetMessage: "",
     tensorParallel: false,
@@ -392,6 +430,7 @@ function reconcileConfigGpuSelection(
   const next = {
     ...supported,
     selectedGpuIds: reconciled.ids ?? undefined,
+    tensorSplit: reconcileTensorSplit(supported.tensorSplit, supported.selectedGpuIds, reconciled.ids),
     selectedGpuIndexKind:
       reconciled.ids === null ? undefined : reconciled.indexKind,
   };
@@ -844,7 +883,12 @@ function GpuMemorySettings({
   const setSplitShare = (id: number, value: number) => {
     const k = orderedGpuIds.indexOf(id);
     if (k < 0) return;
-    update({ tensorSplit: rebalanceSplit(splitScale, splitShares, k, value) });
+    update({
+      // Bind even an all-GPU split to the exact ordered set before it can be saved.
+      selectedGpuIds: [...orderedGpuIds],
+      selectedGpuIndexKind: gpuIndexKind,
+      tensorSplit: rebalanceSplit(splitScale, splitShares, k, value),
+    });
   };
   const commitGpuIds = (next: number[], nextSplit: number[] | null = null) => {
     if (next.length === 0) return; // keep at least one GPU selected
@@ -1161,11 +1205,166 @@ function ParallelSlotsRow({
   );
 }
 
+/** Unset shows the mode the load would send. */
+function MlxSpeculativeRows({
+  config,
+  update,
+  speculativeFallback,
+  modelPath,
+}: {
+  config: PerModelConfig;
+  update: (patch: Partial<PerModelConfig>) => void;
+  speculativeFallback: string;
+  modelPath: string;
+}) {
+  const [drafters, setDrafters] = useState<MlxDrafter[]>([]);
+  useEffect(() => {
+    const controller = new AbortController();
+    setDrafters([]);
+    fetchMlxDrafters(modelPath, controller.signal)
+      .then((found) => !controller.signal.aborted && setDrafters(found))
+      .catch(() => {});
+    return () => controller.abort();
+  }, [modelPath]);
+  const mode = mlxSpeculativeMode(
+    config.speculativeType ??
+      resolveSpeculativeType(null, speculativeFallback, true),
+  );
+  return (
+    <>
+      <div className={ROW_CLASS}>
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className={LABEL_CLASS_WRAP}>Speculative Decoding</span>
+          <InfoHint>
+            Faster generation. Auto uses the first cached drafter (an MTP head
+            or assistant, then DFlash2, DFlash, DSpark, EAGLE-3), tunes the
+            draft length to this machine and drafts only while that is faster.
+            Choose a kind to force it. Every drafter also copies repeated text;
+            Ngram copies without one. Drafters are read from the local Hugging
+            Face cache, never downloaded.
+          </InfoHint>
+        </div>
+        <Select
+          value={mode}
+          onValueChange={(v) =>
+            update({
+              speculativeType: v,
+              specDraftNMax: DRAFT_N_MAX_SPEC_TYPES.has(v)
+                ? config.specDraftNMax
+                : null,
+              specDraftModel: DRAFTER_MODEL_SPEC_TYPES.has(v)
+                ? config.specDraftModel
+                : null,
+            })
+          }
+        >
+          <SelectTrigger
+            animateRadius={false}
+            icon={ChevronDownStandardIcon}
+            iconClassName="size-3.5"
+            className={SELECT_TRIGGER_CLASS}
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
+            {MLX_SPECULATIVE_TYPES.map((type) => (
+              <SelectItem key={type} value={type}>
+                {MLX_SPECULATIVE_TYPE_LABELS[type]}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      {DRAFT_N_MAX_SPEC_TYPES.has(mode) && (
+        <div className={ROW_CLASS}>
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className={LABEL_CLASS}>Draft Tokens</span>
+            <InfoHint>
+              Tokens per draft: up to the drafter's depth (3 for MTP heads),
+              every step drafts exactly this many, even when plain decoding would
+              be faster (a copy of repeated text replaces a draft when it should
+              yield more). Above that depth, or for Ngram, it is a
+              ceiling and Unsloth decodes plainly when drafting would be slower.
+              Leave blank to let Unsloth tune it for this machine.
+            </InfoHint>
+          </div>
+          <input
+            type="number"
+            min={1}
+            max={16}
+            step={1}
+            value={config.specDraftNMax ?? ""}
+            placeholder="auto"
+            onChange={(event) => {
+              const parsed = Number.parseInt(event.target.value, 10);
+              update(
+                pinSpeculativeMode(config, mode, {
+                  specDraftNMax: Number.isFinite(parsed)
+                    ? Math.max(1, Math.min(16, parsed))
+                    : null,
+                }),
+              );
+            }}
+            aria-label="Speculative decoding draft tokens"
+            className={NUMBER_INPUT_CLASS}
+          />
+        </div>
+      )}
+      {DRAFTER_MODEL_SPEC_TYPES.has(mode) && (
+        <div className={ROW_CLASS}>
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className={LABEL_CLASS}>Drafter</span>
+            <InfoHint>
+              A drafter from the local Hugging Face cache that fits this
+              model. Auto uses the model's own head or the first cached drafter
+              named for it.
+            </InfoHint>
+          </div>
+          <Select
+            value={config.specDraftModel ?? "auto"}
+            onValueChange={(v) =>
+              update(
+                pinSpeculativeMode(config, mode, {
+                  specDraftModel: v === "auto" ? null : v,
+                }),
+              )
+            }
+          >
+            <SelectTrigger
+              animateRadius={false}
+              icon={ChevronDownStandardIcon}
+              iconClassName="size-3.5"
+              aria-label="Speculative decoding drafter"
+              className={SELECT_TRIGGER_CLASS}
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
+              <SelectItem value="auto">Auto</SelectItem>
+              {mlxDrafterChoices(drafters, mode, config.specDraftModel ?? null).map(
+                ([repo, label]) => (
+                  <SelectItem key={repo} value={repo}>
+                    {label}
+                  </SelectItem>
+                ),
+              )}
+            </SelectContent>
+          </Select>
+        </div>
+      )}
+    </>
+  );
+}
+
 function MlxAdvancedSettings({
   config,
   update,
   outcome,
   servedByMlx,
+  int8PrefillAvailable,
+  onInt8PrefillChange,
+  speculativeFallback,
+  modelPath,
   onEditTemplate,
   templateOutcome,
 }: {
@@ -1175,6 +1374,10 @@ function MlxAdvancedSettings({
   outcome: string | null;
   /** KV quantization is MLX-only; a CUDA safetensors model has no such control. */
   servedByMlx: boolean;
+  int8PrefillAvailable: boolean;
+  onInt8PrefillChange: (checked: boolean) => void;
+  speculativeFallback: string;
+  modelPath: string;
   onEditTemplate: () => void;
   /** Why the loaded model could not take the override it was given. */
   templateOutcome: string | null;
@@ -1223,6 +1426,34 @@ function MlxAdvancedSettings({
         <p className="text-ui-11 text-muted-foreground">{outcome}</p>
       ) : null}
         </div>
+      )}
+      {/* An enabled choice stays visible so it can be turned off when availability is unknown. */}
+      {servedByMlx && (int8PrefillAvailable || config.mlxInt8Prefill) && (
+        <div className={ROW_CLASS}>
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className={LABEL_CLASS}>Int8 Prefill</span>
+            <span className="shrink-0 rounded-md bg-[rgb(0_0_0_/_calc(0.04*var(--contrast-wash-gain,1)))] px-1.5 py-0.5 text-ui-10 font-medium uppercase tracking-wide text-muted-foreground dark:bg-muted">
+              Exp
+            </span>
+            <InfoHint>
+              Reads long prompts faster by doing part of the math at lower
+              precision. Answers can change and may be less accurate.
+            </InfoHint>
+          </div>
+          <Switch
+            className="panel-switch shrink-0"
+            checked={config.mlxInt8Prefill ?? false}
+            onCheckedChange={onInt8PrefillChange}
+          />
+        </div>
+      )}
+      {servedByMlx && (
+        <MlxSpeculativeRows
+          config={config}
+          update={update}
+          speculativeFallback={speculativeFallback}
+          modelPath={modelPath}
+        />
       )}
       {servedByMlx && (
         <ParallelSlotsRow config={config} update={update} hint={MLX_PARALLEL_HINT} />
@@ -2203,6 +2434,14 @@ export function ModelConfigPage({
     platformDeviceType,
     platformChatOnlyReason,
   );
+  const int8PrefillAvailable = useInt8PrefillAvailable(
+    servedByMlx &&
+      !(target.meta.nativePathToken ?? (isActiveModel ? activeNativePathToken : null))
+      ? target.id
+      : null,
+    hfToken || null,
+  );
+  const [int8PrefillConfirmOpen, setInt8PrefillConfirmOpen] = useState(false);
   // Read live, not snapshotted at mount: the sidebar copy stays mounted while collapsed.
   const advancedPreference = useSyncExternalStore(
     subscribeAdvancedSettingsOpen,
@@ -2226,11 +2465,16 @@ export function ModelConfigPage({
   // Frozen like the rest of the auto-open decision, so editing the width does not reopen the
   // section the user just closed.
   const [initialMlxKvQuant] = useState(() => configState.mlxKvQuant ?? null);
+  const [initialMlxInt8Prefill] = useState(
+    () => configState.mlxInt8Prefill ?? false,
+  );
   // Applicability stays live, unlike the snapshot above: MLX can become available after mount,
   // and a width that starts applying then has to surface.
   const autoOpenForMlxKvQuant = servedByMlx && initialMlxKvQuant != null;
+  const autoOpenForMlxInt8Prefill = servedByMlx && initialMlxInt8Prefill;
   const showAdvanced =
-    advancedPreference ?? (autoOpenAdvanced || autoOpenForMlxKvQuant);
+    advancedPreference ??
+    (autoOpenAdvanced || autoOpenForMlxKvQuant || autoOpenForMlxInt8Prefill);
   const toggleAdvanced = saveAdvancedSettingsOpen;
   const contextInputRef = useRef<NumericValueInputHandle>(null);
   const maxSeqLengthInputRef = useRef<NumericValueInputHandle>(null);
@@ -2589,7 +2833,7 @@ export function ModelConfigPage({
           const hydrationSaved = savePerModelConfig(
             configId,
             target.ggufVariant,
-            rememberedConfig,
+            storedSpeculativeAuto(rememberedConfig, !target.isGguf),
             hydrationEvicted,
           );
           setSavedRemember(hydrationSaved);
@@ -2870,8 +3114,13 @@ export function ModelConfigPage({
           // override sends null, which the backend reads as Auto, while the selector has been showing
           // the global fallback. With the global Off and an 11 GB DSpark sidecar in the repo, the row
           // charged the sidecar for a load that disables it.
-          speculativeType: runtimeConfig.speculativeType ?? speculativeFallback ?? null,
+          speculativeType: resolveSpeculativeType(
+            runtimeConfig.speculativeType,
+            speculativeFallback,
+            targetIsMlx,
+          ),
           specDraftNMax: runtimeConfig.specDraftNMax,
+          specDraftModel: targetIsMlx ? (runtimeConfig.specDraftModel ?? null) : null,
           specDraftCacheType: runtimeConfig.specDraftCacheDtype ?? null,
           tensorParallel: runtimeConfig.tensorParallel,
           disableVision: runtimeConfig.disableVision,
@@ -3172,7 +3421,7 @@ export function ModelConfigPage({
 
   const persistConfig = (next: PerModelConfig) => {
     // Judge what storage keeps: savePerModelConfig normalizes first, so the raw object over-reports.
-    const normalized = normalizePerModelConfig(next);
+    const normalized = normalizePerModelConfig(storedSpeculativeAuto(next, targetIsMlx));
     const evicted: { modelId: string; ggufVariant: string | null }[] = [];
     const saved = remember
       ? savePerModelConfig(configId, target.ggufVariant, normalized, evicted)
@@ -3547,6 +3796,14 @@ export function ModelConfigPage({
                     update={update}
                     outcome={mlxKvQuantOutcome}
                     servedByMlx={servedByMlx}
+                    int8PrefillAvailable={int8PrefillAvailable}
+                    onInt8PrefillChange={(checked) =>
+                      checked
+                        ? setInt8PrefillConfirmOpen(true)
+                        : update({ mlxInt8Prefill: false })
+                    }
+                    speculativeFallback={speculativeFallback}
+                    modelPath={target.id}
                     onEditTemplate={() => setTemplateOpen(true)}
                     templateOutcome={chatTemplateOutcome}
                   />
@@ -3675,6 +3932,34 @@ export function ModelConfigPage({
         readOnly={!target.isGguf && !servedByMlx}
         onSave={(override) => update({ chatTemplateOverride: override })}
       />
+      <AlertDialog
+        open={int8PrefillConfirmOpen}
+        onOpenChange={setInt8PrefillConfirmOpen}
+      >
+        <AlertDialogContent size="sm">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Turn on Int8 Prefill?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Long prompts are read faster, but the model&apos;s answers will
+              change and may be less accurate. Some models are affected more
+              than others. You can turn it off at any time.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              className="!bg-destructive !text-destructive-foreground hover:!bg-destructive/90"
+              onClick={() => {
+                update({ mlxInt8Prefill: true });
+                setInt8PrefillConfirmOpen(false);
+              }}
+            >
+              Turn on
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
