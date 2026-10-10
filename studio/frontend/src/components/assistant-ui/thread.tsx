@@ -1302,7 +1302,13 @@ function handlePromptQueueRunState(
   if (run.paused) {
     return;
   }
-  if (run.waitingForTargetIdle) {
+  // Cancellation can finish before the dispatch timer arms waitingForTargetIdle.
+  // That idle edge belongs to the old response, not this still-unsent prompt.
+  // index -1 remains the normal queue's wait for an existing response to finish.
+  if (
+    run.waitingForTargetIdle ||
+    (run.index >= 0 && !getActivePromptQueueItem(run)?.dispatched)
+  ) {
     clearPromptQueueRetryTimer(run);
     run.waitingForTargetIdle = false;
     const activeItem = run.items[run.index];
