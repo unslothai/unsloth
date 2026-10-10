@@ -187,6 +187,41 @@ def test_an_old_record_holding_the_upstream_form_of_the_pin_is_current(tmp_path,
     assert bk.ensure_sd_cpp_binary(accelerator = "vulkan") == str(cli)
 
 
+@pytest.mark.parametrize("with_requested_tag", [True, False])
+def test_the_old_upstream_fallback_for_the_current_pin_is_upgraded(
+    tmp_path, monkeypatch, with_requested_tag
+):
+    # #12470: leejet master-813 under the current pin cannot run Qwen-Image-2.1 and was never replaced.
+    record = {
+        "accelerator": "cuda",
+        "repo": sdmod.UPSTREAM_FALLBACK_REPO,
+        "tag": sdmod.upstream_tag_for(sdmod.DEFAULT_TAG),
+    }
+    if with_requested_tag:
+        record["requested_tag"] = sdmod.DEFAULT_TAG
+    bk, root, cli, server = _tree(tmp_path, monkeypatch, record)
+    installs: list = []
+
+    def _install(**kwargs):
+        installs.append(kwargs)
+        cli.write_bytes(b"new-build")
+        server.write_bytes(b"new-build")
+        sdmod._write_install_record(
+            root,
+            accelerator = kwargs["accelerator"],
+            repo = sdmod.UPSTREAM_FALLBACK_REPO,
+            tag = sdmod.UPSTREAM_FALLBACK_TAG,
+        )
+        return cli
+
+    monkeypatch.setattr(sdmod, "install", _install)
+    assert bk.ensure_sd_cpp_binary(accelerator = "cuda") == str(cli)
+    assert cli.read_bytes() == b"new-build"
+    assert bk.ensure_sd_cpp_binary(accelerator = "cuda") == str(cli)
+    assert bk.ensure_sd_server_binary(accelerator = "cuda") == str(server)
+    assert len(installs) == 1
+
+
 def test_kill_switch_keeps_the_installed_bundle(tmp_path, monkeypatch):
     bk, root, cli, server = _tree(
         tmp_path, monkeypatch, {"accelerator": "cuda", "repo": "r", "tag": OLD}

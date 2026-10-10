@@ -322,9 +322,77 @@ def runtime_env(binary: str, base_env: Optional[dict[str, str]] = None) -> dict[
     env = child_env_without_native_path_secret(os.environ if base_env is None else base_env)
     var = _lib_path_var()
     bindir = str(Path(binary).resolve().parent)
+    dirs = [bindir]
+    if _needs_host_cuda_runtime(bindir):
+        dirs.extend(d for d in host_cuda_runtime_dirs() if d not in dirs)
     existing = env.get(var, "")
-    env[var] = bindir + (os.pathsep + existing if existing else "")
+    env[var] = os.pathsep.join(dirs) + (os.pathsep + existing if existing else "")
     return env
+
+
+def _needs_host_cuda_runtime(bindir: str) -> bool:
+    """A CUDA bundle that ships ggml-cuda but no cudart, so it loads the host's CUDA runtime."""
+    try:
+        names = [n.lower() for n in os.listdir(bindir)]
+    except OSError:
+        return False
+    cuda = any(n == "ggml-cuda.dll" or n.startswith("libggml-cuda.so") for n in names)
+    runtime = any(n.startswith(("cudart64_", "libcudart.so")) for n in names)
+    return cuda and not runtime
+
+
+def _llama_server_binary() -> Optional[str]:
+    try:
+        from core.inference.llama_cpp import LlamaCppBackend
+        return LlamaCppBackend._find_llama_server_binary()
+    except Exception:  # noqa: BLE001 -- no llama.cpp install: nothing to share
+        return None
+
+
+def host_cuda_runtime_dirs() -> list[str]:
+    """The CUDA runtime directories llama-server gets on this host, so a runtime-less sd.cpp CUDA
+    bundle loads the same cudart / cublas. llama.cpp's own build dir is left out off Windows: its
+    libggml*.so share sonames with the bundle's (Windows searches the executable's dir first)."""
+    binary = _llama_server_binary()
+    if not binary:
+        return []
+    try:
+        from core.inference.llama_cpp import LlamaCppBackend, _llama_lib_dir
+
+        var = _lib_path_var()
+        inherited = {d for d in os.environ.get(var, "").split(os.pathsep) if d}
+        llama_dir = os.path.normcase(str(_llama_lib_dir(binary)))
+        out: list[str] = []
+        for d in (
+            LlamaCppBackend._llama_server_env_for_binary(binary).get(var, "").split(os.pathsep)
+        ):
+            if not d or d in inherited or d in out:
+                continue
+            if sys.platform != "win32" and os.path.normcase(d) == llama_dir:
+                continue
+            out.append(d)
+        return out
+    except Exception as exc:  # noqa: BLE001 -- a launch must not fail on a path lookup
+        logger.debug("sd.cpp: CUDA runtime dirs from llama.cpp unavailable: %s", exc)
+        return []
+
+
+def host_cuda_runtime_major() -> Optional[str]:
+    """The CUDA major ("12" / "13") the installed llama.cpp build links, i.e. the runtime this host
+    already resolves; torch's when llama.cpp is not a CUDA build."""
+    binary = _llama_server_binary()
+    if binary:
+        try:
+            from utils.llama_cpp_freshness import read_install_marker
+
+            line = (read_install_marker(binary) or {}).get("runtime_line")
+            match = re.fullmatch(r"cuda(\d+)", line if isinstance(line, str) else "")
+            if match:
+                return match.group(1)
+        except Exception:  # noqa: BLE001
+            pass
+    version = getattr(getattr(sys.modules.get("torch"), "version", None), "cuda", None)
+    return version.split(".")[0] if isinstance(version, str) and version else None
 
 
 def _layout_candidates(root: Path, stem: str = _BINARY_STEM) -> list[Path]:

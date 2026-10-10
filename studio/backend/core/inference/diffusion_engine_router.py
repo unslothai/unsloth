@@ -39,6 +39,7 @@ from core.inference.sd_cpp_backend import (
     _card_lookup_inventory,
     _install_allowed,
     _managed_tree_in_use,
+    _pin_moved,
     _server_binary_runnable,
     ensure_sd_cpp_binary,
     ensure_sd_server_binary,
@@ -494,6 +495,20 @@ def native_binary_installed(
     return bool(binary and SdCppEngine(binary = binary).version() is not None)
 
 
+def _resident_build_upgrades_on_load(gpu_ordinal: Optional[int]) -> bool:
+    """Whether a load's ensure_* replaces the resident managed build because the pin moved."""
+    backend = resolve_diffusion_device_target().backend
+    if off_torch_sd_cpp_device(backend) is not None:
+        gpu_ordinal = None
+    accelerator = preferred_accelerator(
+        image_install_accelerator(backend), _selected_card(gpu_ordinal)
+    )
+    resident = ensure_sd_server_binary(
+        allow_install = False, accelerator = accelerator
+    ) or ensure_sd_cpp_binary(allow_install = False, accelerator = accelerator)
+    return bool(resident) and _pin_moved(resident, accelerator)
+
+
 def predict_engine(
     fam: DiffusionFamily,
     *,
@@ -535,10 +550,15 @@ def predict_engine(
     # A permitted install counts as available only where selection would actually perform one.
     # ``ensure_*_binary`` keeps a runnable build of the right accelerator untouched, so a resident
     # build that cannot run this family is never upgraded away, and predicting native for it would
-    # stage sd-cli's companions for a load the router sends to diffusers. With nothing resident the
-    # install happens and lands on the pinned prebuilt, which is current by definition.
+    # stage sd-cli's companions for a load the router sends to diffusers. With nothing resident, or
+    # a resident build the load replaces for a moved pin, the install happens and lands on the
+    # pinned prebuilt, which is current by definition.
     native_available = native_binary_installed(gpu_ordinal = gpu_ordinal, fam = fam) or (
-        _install_allowed() and not native_binary_installed(gpu_ordinal = gpu_ordinal)
+        _install_allowed()
+        and (
+            not native_binary_installed(gpu_ordinal = gpu_ordinal)
+            or _resident_build_upgrades_on_load(gpu_ordinal)
+        )
     )
     return select_diffusion_engine(
         backend, native_available = native_available, prefer_native = prefer_native

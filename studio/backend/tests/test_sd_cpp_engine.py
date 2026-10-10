@@ -500,6 +500,94 @@ def test_runtime_env_prepends_binary_dir_to_lib_path():
     assert "/existing" in env[var]
 
 
+def _bundle(tmp_path, *names):
+    d = tmp_path / "bundle"
+    d.mkdir()
+    for n in names:
+        (d / n).write_bytes(b"x")
+    return str(d / ("sd-cli.exe" if sys.platform == "win32" else "sd-cli"))
+
+
+_CUDA_LIB = "ggml-cuda.dll" if sys.platform == "win32" else "libggml-cuda.so.0"
+_CUDART = "cudart64_13.dll" if sys.platform == "win32" else "libcudart.so.13"
+
+
+def test_runtime_env_adds_llama_cuda_runtime_dirs_for_a_runtime_less_cuda_bundle(
+    monkeypatch, tmp_path
+):
+    # The mirror's CUDA bundles carry no cudart / cublas; they load the ones llama-server gets.
+    var = eng._lib_path_var()
+    monkeypatch.setattr(eng, "host_cuda_runtime_dirs", lambda: ["/venv/nvidia/cu13/lib"])
+    binary = _bundle(tmp_path, _CUDA_LIB)
+    parts = runtime_env(binary, {var: "/existing"})[var].split(os.pathsep)
+    assert parts == [str(Path(binary).resolve().parent), "/venv/nvidia/cu13/lib", "/existing"]
+
+
+@pytest.mark.parametrize("names", [(), (_CUDA_LIB, _CUDART)])
+def test_runtime_env_leaves_other_bundles_alone(monkeypatch, tmp_path, names):
+    # CPU / Vulkan bundles, and older CUDA bundles that ship their own runtime.
+    var = eng._lib_path_var()
+    monkeypatch.setattr(
+        eng, "host_cuda_runtime_dirs", lambda: pytest.fail("no host CUDA dirs for this bundle")
+    )
+    binary = _bundle(tmp_path, *names)
+    assert runtime_env(binary, {var: "/existing"})[var].split(os.pathsep) == [
+        str(Path(binary).resolve().parent),
+        "/existing",
+    ]
+
+
+def test_host_cuda_runtime_dirs_reuse_llama_server_env_minus_its_ggml(monkeypatch, tmp_path):
+    import core.inference.llama_cpp as llama
+
+    var = eng._lib_path_var()
+    llama_dir = tmp_path / "llama" / "build" / "bin"
+    monkeypatch.setattr(eng, "_llama_server_binary", lambda: str(llama_dir / "llama-server"))
+    monkeypatch.setattr(llama, "_llama_lib_dir", lambda _b: llama_dir)
+    monkeypatch.setenv(var, "/inherited")
+    monkeypatch.setattr(
+        llama.LlamaCppBackend,
+        "_llama_server_env_for_binary",
+        staticmethod(
+            lambda _b, **_k: {
+                var: os.pathsep.join([str(llama_dir), "/venv/nvidia/cu13/lib", "/inherited"])
+            }
+        ),
+    )
+    dirs = eng.host_cuda_runtime_dirs()
+    if sys.platform == "win32":
+        assert dirs == [str(llama_dir), "/venv/nvidia/cu13/lib"]
+    else:
+        # llama.cpp's libggml*.so share sonames with the bundle's.
+        assert dirs == ["/venv/nvidia/cu13/lib"]
+
+
+def test_host_cuda_runtime_dirs_without_llama_cpp(monkeypatch):
+    monkeypatch.setattr(eng, "_llama_server_binary", lambda: None)
+    assert eng.host_cuda_runtime_dirs() == []
+
+
+@pytest.mark.parametrize(
+    "marker, torch_cuda, want",
+    [
+        ({"runtime_line": "cuda13"}, "12.8", "13"),
+        ({"runtime_line": "cuda12"}, None, "12"),
+        ({"backend": "vulkan"}, "13.0", "13"),
+        (None, None, None),
+    ],
+)
+def test_host_cuda_runtime_major_follows_llama_cpp_then_torch(
+    monkeypatch, marker, torch_cuda, want
+):
+    import utils.llama_cpp_freshness as fresh
+
+    monkeypatch.setattr(eng, "_llama_server_binary", lambda: "/llama/llama-server")
+    monkeypatch.setattr(fresh, "read_install_marker", lambda _b: marker)
+    fake_torch = types.SimpleNamespace(version = types.SimpleNamespace(cuda = torch_cuda))
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    assert eng.host_cuda_runtime_major() == want
+
+
 def test_runtime_env_scrubs_native_path_lease_secret(monkeypatch):
     # The sd-cli child is an external process and must never receive the native-path lease secret; every launch funnels through runtime_env.
     monkeypatch.setenv("UNSLOTH_STUDIO_NATIVE_PATH_LEASE_SECRET", "top-secret")
@@ -1041,3 +1129,20 @@ def test_run_forwards_clean_redraws_to_on_log(tmp_path, monkeypatch):
         "  |=========>          | 2/2 - 21.50s/it",
     ]
     assert not any("\x1b" in s for s in seen)
+
+
+@pytest.mark.parametrize(
+    "accelerator, major, want",
+    [
+        ("cuda", "13", {"accelerator": "cuda", "cuda_major": "13"}),
+        ("cuda", None, {"accelerator": "cuda"}),
+        ("vulkan", "13", {"accelerator": "vulkan"}),
+        ("cpu", "12", {"accelerator": "cpu"}),
+    ],
+)
+def test_a_cuda_install_names_the_host_runtime_major(monkeypatch, accelerator, major, want):
+    import core.inference.sd_cpp_backend as backend
+
+    monkeypatch.setattr(eng, "host_cuda_runtime_major", lambda: major)
+    monkeypatch.setattr(backend, "_accelerator_class_of", lambda a: a)
+    assert backend._install_kwargs(accelerator) == want
