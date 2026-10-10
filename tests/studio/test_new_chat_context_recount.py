@@ -2155,6 +2155,26 @@ def test_a_mounted_thread_revisited_without_a_countable_model_is_refilled(
     assert (out["cached"] or {}).get("totalTokens") == expected["totalTokens"]
 
 
+def test_a_cloud_refill_never_reads_a_thread_the_server_does_not_have_yet():
+    """A just-sent chat still carries its runtime-local id; reading it 404s (Studio UI CI, IME smoke)."""
+    out = _run(
+        textwrap.dedent(
+            """
+            // @ts-nocheck
+            import { renderThreadContextUsageRecount, seed, snapshot, useChatRuntimeStore, world } from "./harness.ts";
+            let reads = 0;
+            world.storedMessages = new Proxy({}, { get(_t, key) { if (typeof key === "string" && key.startsWith("__LOCALID_")) reads += 1; return []; } });
+            seed({ activeThreadId: "__LOCALID_fresh" });
+            renderThreadContextUsageRecount();
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            console.log(JSON.stringify({ reads, contextUsage: snapshot().contextUsage }));
+            """
+        )
+    )
+    assert out["reads"] == 0, "a runtime-local thread id has no server row to read"
+    assert out["contextUsage"] is None
+
+
 @pytest.mark.parametrize("interruption", ["run_starts_mid_read", "load_still_cancelling"])
 def test_a_cloud_refill_waits_for_a_run_or_load_to_settle(interruption):
     """A turn sent while the refill reads storage must not get the pre-send estimate, and a cancelled

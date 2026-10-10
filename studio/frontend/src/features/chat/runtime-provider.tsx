@@ -3666,6 +3666,8 @@ function ThreadContextUsageRecount({
   useEffect(() => {
     // modelLoading: an external pick that cancels a local load clears usage again once the cancel lands.
     if (!enabled || !activeThreadId || runActive || modelLoading) return;
+    // A runtime-local id has no server row yet: reading it 404s.
+    if (isAssistantLocalThreadId(activeThreadId)) return;
     const exactCountFollows = (): boolean => {
       const store = useChatRuntimeStore.getState();
       return (
