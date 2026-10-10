@@ -1878,6 +1878,11 @@ html.force-reduced-motion *::after {
 	scroll-behavior: auto !important;
 }
 
+/* Same popup exemption as the OS-level media block below. */
+html.force-reduced-motion [data-radix-popper-content-wrapper] {
+	transition-property: none !important;
+}
+
 /* Same loader exceptions as the OS-level media block below: freezing
    spinners removes the only signal that work is in flight. */
 html.force-reduced-motion .animate-spin {
