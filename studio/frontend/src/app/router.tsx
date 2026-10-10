@@ -22,6 +22,7 @@ import { Route as libraryRoute } from "./routes/library";
 import { Route as changePasswordRoute } from "./routes/change-password";
 import { Route as settingsRoute } from "./routes/settings";
 import { Route as studioRoute } from "./routes/studio";
+import { Route as notebooksRoute } from "./routes/notebooks"
 
 const routeTree = rootRoute.addChildren([
   indexRoute,
@@ -34,6 +35,7 @@ const routeTree = rootRoute.addChildren([
   projectsRoute,
   libraryRoute,
   exportRoute,
+  notebooksRoute,
   imagesRoute,
   videoRoute,
   audioRoute,

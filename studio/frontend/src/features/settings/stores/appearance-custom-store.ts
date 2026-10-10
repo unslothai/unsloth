@@ -96,6 +96,7 @@ export const SIDEBAR_NAV_ITEM_IDS = [
   "projects",
   "library",
   "images",
+  "notebooks",
   // Video and Audio sit directly under Images: the media tabs read as one group.
   "video",
   "audio",
@@ -145,7 +146,9 @@ export const SIDEBAR_NAV_DEFAULT_PINNED: Record<SidebarNavItemId, boolean> = {
   projects: true,
   library: true,
   images: true,
+  notebooks: true,
   video: false,
+  // Under "More" until a user pins it.
   audio: false,
   train: true,
   recipes: false,

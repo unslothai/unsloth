@@ -127,6 +127,7 @@ import {
   PowerIcon,
   PencilEdit02Icon,
   LayoutAlignLeftIcon,
+  Notebook01Icon,
   Settings02Icon,
   Sun03Icon,
   Tick02Icon,
@@ -2849,6 +2850,15 @@ export function AppSidebar() {
       onIntent: () => {
         preloadSilently(router.preloadRoute({ to: "/studio" }));
       },
+    },
+    notebooks: {
+      icon: Notebook01Icon,
+      label: t("shell.navigation.notebooks"),
+      active: pathname === "/notebooks" || pathname.startsWith("/notebooks/"),
+      onClick: () => {
+        navigate({ to: "/notebooks" });
+        closeMobileIfOpen();
+      }
     },
     // A host with no video device at all is disabled with a hint instead of bouncing off the root guard.
     video: {

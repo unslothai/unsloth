@@ -194,6 +194,7 @@ FRONTEND_SHIPPED_SIDEBAR_NAV = [
     ("projects", True),
     ("library", True),
     ("images", True),
+    ("notebooks", True),
     ("video", False),
     ("audio", False),
     ("train", True),
@@ -236,6 +237,7 @@ def test_customization_sidebar_nav_preserves_order_and_normalizes():
         ("projects", True),
         ("library", True),
         ("images", True),
+        ("notebooks", True),
         ("audio", False),
         ("train", True),
         ("recipes", False),
@@ -529,6 +531,7 @@ def test_personalization_route_roundtrip_real_shape(monkeypatch):
                 # Reordered and partly unpinned, so the round-trip proves order survives a save.
                 "sidebarNav": [
                     {"id": "images", "pinned": True},
+                    {"id": "notebooks", "pinned": True},
                     {"id": "video", "pinned": True},
                     {"id": "audio", "pinned": False},
                     {"id": "hub", "pinned": True},

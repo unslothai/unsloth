@@ -348,6 +348,7 @@ from routes import (
     mcp_servers_router,
     skills_router,
     models_router,
+    notebooks_router,
     providers_router,
     openai_codex_auth_router,
     rag_router,
@@ -1813,6 +1814,7 @@ app.include_router(engines_router, prefix = "/api/engines", tags = ["engines"])
 app.include_router(whisper_router, prefix = "/api/whisper", tags = ["whisper"])
 app.include_router(npu_router, prefix = "/api/npu", tags = ["npu"])
 app.include_router(export_router, prefix = "/api/export", tags = ["export"])
+app.include_router(notebooks_router, prefix = "/api/notebooks", tags = ["notebooks"])
 app.include_router(external_import_router, prefix = "/api/import", tags = ["import"])
 app.include_router(rag_router, prefix = "/api/rag", tags = ["rag"])
 app.include_router(training_history_router, prefix = "/api/train", tags = ["training-history"])
