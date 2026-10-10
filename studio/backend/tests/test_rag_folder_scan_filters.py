@@ -7,6 +7,7 @@ and what each pass reports back."""
 from __future__ import annotations
 
 import json
+import time
 from contextlib import closing
 from pathlib import Path
 
@@ -53,6 +54,15 @@ def _ignored(
         ("file?.md", "file1.md", False, True),
         ("file[0-9].md", "file7.md", False, True),
         ("file[!0-9].md", "file7.md", False, False),
+        ("a[!x]b", "a/b", False, False),
+        ("*a*b", "xaab", False, True),
+        ("*a*b", "xaa/b", False, False),
+        ("*.min.*", "app.min.js", False, True),
+        ("*.min.*", "app.js", False, False),
+        ("a*b*c", "abbc", False, True),
+        ("a*b*c", "acbc", False, True),
+        ("a*b*c", "acb", False, False),
+        ("**/x/**/y/*.md", "p/x/q/r/y/a.md", False, True),
     ],
 )
 def test_gitignore_patterns(rules, rel, is_dir, expected):
@@ -63,6 +73,17 @@ def test_a_malformed_class_drops_only_its_own_rule():
     rules = "[z-a].txt\n*.log"
     assert not _ignored(rules, "a.txt")
     assert _ignored(rules, "debug.log")
+
+
+def test_hostile_rules_match_in_bounded_time():
+    star_rule = gitignore.parse("*a" * 15 + "b", "")
+    globstar_rule = gitignore.parse("a/**/" * 7 + "b", "")
+    assert len(star_rule) == 1
+    # Too many "**/" to match in bounded time: the rule is left out.
+    assert globstar_rule == []
+    started = time.monotonic()
+    assert not gitignore.is_ignored("a" * 46, False, tuple(star_rule))
+    assert time.monotonic() - started < 1
 
 
 def test_nested_gitignore_applies_only_below_its_directory():
