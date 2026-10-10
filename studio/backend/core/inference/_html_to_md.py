@@ -210,7 +210,9 @@ _MAX_REPEATED_CELL_CHARS = 200
 _MIN_SCOPE_SPAN_CHARS = 256
 _INLINE_EMPHASIS = {"strong": "**", "b": "**", "em": "*", "i": "*"}
 
-_PLAIN_SUFFIXES = frozenset({"st", "nd", "rd", "th", "tm", "sm", "mc", "md"})
+_PLAIN_SUFFIXES = frozenset(
+    {"st", "nd", "rd", "th", "tm", "sm", "mc", "md", "(tm)", "(sm)", "(r)", "(c)"}
+)
 # French / Romance ordinals after a digit (1er, 2e, 1º, 2ª); after a letter "e" can be Euler's number
 # XVe siècle, François Ier: a Roman numeral takes ordinals like a digit
 _ROMAN_NUMERAL_TAIL = re.compile(r"(?<![^\W\d_])[IVXLCDM]+$")
