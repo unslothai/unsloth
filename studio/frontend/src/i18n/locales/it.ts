@@ -3882,6 +3882,13 @@ export const it = {
     discard: "Scarta",
     mentions: "Competenze",
     manage: "Gestisci competenze",
+    bulkActions: "Azioni sulle competenze",
+    enableAll: "Attiva tutte",
+    disableAll: "Disattiva tutte",
+    resetAll: "Ripristina predefiniti",
+    resetTitle: "Ripristinare tutte le competenze?",
+    resetDescription: "Ogni competenza torna come in una nuova installazione: le tue competenze e quelle di Claude attive, quelle incluse disattivate. Le tue scelte di attivazione vengono cancellate.",
+    reset: "Ripristina",
   },
   library: {
     tabs: {

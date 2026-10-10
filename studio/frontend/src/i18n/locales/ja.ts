@@ -3757,6 +3757,13 @@ export const ja = {
     discard: "破棄",
     mentions: "スキル",
     manage: "スキルを管理",
+    bulkActions: "スキルの操作",
+    enableAll: "すべて有効にする",
+    disableAll: "すべて無効にする",
+    resetAll: "デフォルトに戻す",
+    resetTitle: "すべてのスキルをリセットしますか？",
+    resetDescription: "すべてのスキルが新規インストール時の状態に戻ります。自分のスキルと Claude のスキルはオン、同梱スキルはオフになり、オン/オフの選択は消去されます。",
+    reset: "リセット",
   },
   library: {
     tabs: {

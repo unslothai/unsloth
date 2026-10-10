@@ -3714,6 +3714,13 @@ export const zhCN = {
     discard: "放弃",
     mentions: "技能",
     manage: "管理技能",
+    bulkActions: "技能操作",
+    enableAll: "全部启用",
+    disableAll: "全部停用",
+    resetAll: "恢复默认",
+    resetTitle: "重置所有技能？",
+    resetDescription: "每个技能都会恢复为全新安装时的状态：你的技能和 Claude 技能开启，内置技能关闭。你的开关选择将被清除。",
+    reset: "重置",
   },
   library: {
     tabs: {

@@ -3835,6 +3835,13 @@ export const en = {
     discard: "Discard",
     mentions: "Skills",
     manage: "Manage skills",
+    bulkActions: "Skill actions",
+    enableAll: "Enable all",
+    disableAll: "Disable all",
+    resetAll: "Reset to defaults",
+    resetTitle: "Reset all skills?",
+    resetDescription: "Every skill goes back to how a fresh install has it: your skills and Claude skills on, bundled skills off. Your on and off choices are cleared.",
+    reset: "Reset",
   },
   // The Library page, its file viewer, and the menus and toasts that act on its files.
   library: {
