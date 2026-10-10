@@ -51,11 +51,13 @@ export function formatModelIniSettings(
   return parts.join(", ");
 }
 
-/** Whether the row has anything to offer: hidden for non-GGUF targets and when the file is absent. */
+/** Whether the row has anything to offer: hidden for non-GGUF targets and when the file is absent,
+ *  unless the switch is still on, since it is the only way to turn a vanished file's setting off. */
 export function shouldShowModelIniRow(
   ini: Pick<ModelIniResponse, "found"> | null | undefined,
   isGguf: boolean,
   isDiffusion: boolean,
+  switchedOn = false,
 ): boolean {
-  return isGguf && !isDiffusion && ini?.found === true;
+  return isGguf && !isDiffusion && (ini?.found === true || switchedOn);
 }

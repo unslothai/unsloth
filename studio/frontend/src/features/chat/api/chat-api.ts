@@ -1503,11 +1503,19 @@ export async function listGgufVariants(
 export async function fetchModelIni(
   repoId: string,
   ggufVariant: string | null | undefined,
-  options?: { hfToken?: string; signal?: AbortSignal },
+  options?: { hfToken?: string; signal?: AbortSignal; nativePathToken?: string | null },
 ): Promise<ModelIniResponse> {
   const params = new URLSearchParams({ repo_id: repoId });
   if (ggufVariant) params.set("gguf_variant", ggufVariant);
   if (isHuggingFaceOffline()) params.set("offline", "true");
+  // A file-picked GGUF is known to the backend only through a lease; its id is just a label.
+  if (options?.nativePathToken) {
+    const { nativePathLease } = await consumeNativePathToken(
+      options.nativePathToken,
+      "validate-model",
+    );
+    params.set("native_path_lease", nativePathLease);
+  }
   const response = await authFetch(`/api/models/model-ini?${params}`, {
     headers: hubTokenHeader(options?.hfToken),
     signal: options?.signal,

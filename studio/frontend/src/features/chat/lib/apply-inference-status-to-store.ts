@@ -779,7 +779,7 @@ export function applyActiveModelStatusToStore(
     );
     if (
       qwenParams !== null &&
-      layersQwenThinkingDefaults(current.activePresetSource, status.model_ini_applied)
+      layersQwenThinkingDefaults(current.activePresetSource, status.model_ini_sampling)
     ) {
       current.setParams(
         { ...current.params, ...qwenParams },

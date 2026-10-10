@@ -1590,8 +1590,8 @@ function GgufAdvancedSettings({
   /** Which stored entries the extra-arguments row reads, most specific first. */
   onExtraArgsLoadableChange: (loadable: boolean) => void;
   draftKey: string;
-  /** The unsloth.ini beside this GGUF, null until answered or when there is none. */
-  modelIni: ModelIniResponse | null;
+  /** The unsloth.ini beside this GGUF: undefined until answered, null when the lookup failed. */
+  modelIni: ModelIniResponse | null | undefined;
 }) {
   const batchAdviceId = useId();
   const ubatchAdviceId = useId();
@@ -2073,14 +2073,15 @@ function GgufAdvancedSettings({
         />
       )}
 
-      {shouldShowModelIniRow(modelIni, true, isDiffusion) && modelIni && (
+      {shouldShowModelIniRow(modelIni, true, isDiffusion, config.useModelIni === true) && (
         <ModelIniRow config={config} update={update} ini={modelIni} />
       )}
     </>
   );
 }
 
-/** Opt-in switch for the unsloth.ini shipped beside the GGUF. Rendered only when the file exists. */
+/** Opt-in switch for the unsloth.ini shipped beside the GGUF. Rendered when the file exists, or while
+ *  the switch is on for a file that is gone. */
 function ModelIniRow({
   config,
   update,
@@ -2088,11 +2089,13 @@ function ModelIniRow({
 }: {
   config: PerModelConfig;
   update: (patch: Partial<PerModelConfig>) => void;
-  ini: ModelIniResponse;
+  ini: ModelIniResponse | null | undefined;
 }) {
   const descriptionId = useId();
-  const settings = formatModelIniSettings(ini.args, ini.n_parallel);
-  const ignored = ini.ignored.map((item) => item.key);
+  const found = ini?.found === true;
+  const pending = ini === undefined;
+  const settings = found ? formatModelIniSettings(ini.args, ini.n_parallel) : "";
+  const ignored = found ? ini.ignored.map((item) => item.key) : [];
   return (
     <div className="space-y-1">
       <div className={ROW_CLASS}>
@@ -2112,7 +2115,11 @@ function ModelIniRow({
         />
       </div>
       <p id={descriptionId} className="text-ui-11 text-muted-foreground break-words">
-        {modelIniLocationLabel(ini)}
+        {found
+          ? modelIniLocationLabel(ini)
+          : pending
+            ? ""
+            : "unsloth.ini was not found beside this model. Turn this off to load without it"}
         {settings ? `: ${settings}` : ""}
         {ignored.length > 0 ? `. Ignored: ${ignored.join(", ")}` : ""}
       </p>
@@ -2562,7 +2569,7 @@ export function ModelConfigPage({
 
   // The unsloth.ini beside this quant, if any. A failed lookup reads as absent: the row is optional.
   const modelIniKey = target.isGguf && !sharedVariantUnresolved
-    ? `${target.id}\n${target.ggufVariant ?? ""}\n${hfToken || ""}`
+    ? `${target.id}\n${target.ggufVariant ?? ""}\n${hfToken || ""}\n${nativePathToken ?? ""}`
     : null;
   const [fetchedModelIni, setFetchedModelIni] = useState<{
     key: string;
@@ -2576,6 +2583,7 @@ export function ModelConfigPage({
     fetchModelIni(target.id, target.ggufVariant, {
       hfToken: hfToken || undefined,
       signal: controller.signal,
+      nativePathToken,
     })
       .then((ini) => {
         if (!controller.signal.aborted) {
@@ -2588,11 +2596,12 @@ export function ModelConfigPage({
         }
       });
     return () => controller.abort();
-  }, [modelIniKey, target.id, target.ggufVariant, hfToken]);
+  }, [modelIniKey, target.id, target.ggufVariant, hfToken, nativePathToken]);
+  // undefined while the lookup is in flight, null when it failed.
   const modelIni =
     fetchedModelIni != null && fetchedModelIni.key === modelIniKey
       ? fetchedModelIni.ini
-      : null;
+      : undefined;
 
   // Fetch GGUF header dims to size the GPU Memory sliders; the context also fills in below.
   const contextFetchKey = target.isGguf && !sharedVariantUnresolved

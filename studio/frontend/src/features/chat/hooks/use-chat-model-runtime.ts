@@ -3076,7 +3076,7 @@ export function useChatModelRuntime() {
               if (
                 layersQwenThinkingDefaults(
                   store.activePresetSource,
-                  loadResponse.model_ini_applied,
+                  loadResponse.model_ini_sampling,
                 )
               ) {
                 // Same rule as the load response: defaults first, this model's remembered settings over them.

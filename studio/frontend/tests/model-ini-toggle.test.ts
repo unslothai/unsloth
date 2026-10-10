@@ -206,6 +206,29 @@ test("the row shows only for a found file on a llama-server GGUF", () => {
   assert.equal(shouldShowModelIniRow({ found: true }, true, true), false);
 });
 
+test("a switch left on for a file that is gone keeps its row, so it can be turned off", () => {
+  assert.equal(shouldShowModelIniRow({ found: false }, true, false, true), true);
+  assert.equal(shouldShowModelIniRow(null, true, false, true), true);
+  assert.equal(shouldShowModelIniRow(undefined, true, false, true), true);
+  assert.equal(shouldShowModelIniRow({ found: false }, false, false, true), false);
+  assert.equal(shouldShowModelIniRow({ found: false }, true, true, true), false);
+  const page = readSrc("features/model-picker/components/model-config-page.tsx");
+  assert.match(page, /unsloth\.ini was not found beside this model/);
+});
+
+test("a file-picked GGUF's INI lookup carries a native lease", () => {
+  const api = readSrc("features/chat/api/chat-api.ts");
+  const fetcher = api.slice(api.indexOf("export async function fetchModelIni"));
+  assert.match(
+    fetcher.slice(0, 1200),
+    /consumeNativePathToken\(\s*options\.nativePathToken,\s*"validate-model",?\s*\)[\s\S]*params\.set\("native_path_lease", nativePathLease\)/,
+  );
+  assert.match(fetcher.slice(0, 1200), /params\.set\("offline", "true"\)/);
+  const page = readSrc("features/model-picker/components/model-config-page.tsx");
+  assert.match(page, /const modelIniKey = [^;]*nativePathToken \?\? ""/);
+  assert.match(page, /fetchModelIni\(target\.id, target\.ggufVariant, \{[^}]*nativePathToken,/);
+});
+
 test("the description names the location and the settings", () => {
   assert.equal(
     modelIniLocationLabel({
@@ -262,7 +285,7 @@ test("the config page renders the switch behind shouldShowModelIniRow with the e
   );
   assert.match(
     page,
-    /shouldShowModelIniRow\(modelIni, true, isDiffusion\) && modelIni && \(\s*<ModelIniRow/,
+    /shouldShowModelIniRow\(\s*modelIni,\s*true,\s*isDiffusion,\s*config\.useModelIni === true,?\s*\) && \(\s*<ModelIniRow/,
   );
   assert.match(page, />Use \.ini file \(optional\)</);
 });
