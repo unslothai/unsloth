@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import * as admissionStatus from "../src/features/chat/utils/admission-status.ts";
+import * as generationLength from "../src/features/chat/api/generation-length.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
 type Module = {
@@ -57,9 +58,13 @@ function harness(slices: string[]) {
         notifyChatHistoryUpdated: () => {},
         isCoalescedHistoryEvent: () => false,
       },
-      "./generation-length.ts": { maxTokensIsTheLimit: () => "" },
+      // Pure and import-free, so the real module rather than a stub that drifts from it.
+      "./generation-length.ts": generationLength,
       "./gguf-variants-request": {},
       "./padded-response": { assertCompletedPaddedBody: () => {} },
+      "./skill-load-event": { skillLoadCardEvent: () => null },
+      "../utils/load-warning-toast": { showLoadWarning: () => {} },
+      "@/features/settings/low-disk-check": { checkDiskSpace: async () => undefined },
       "@/features/hf-auth": { prepareHfTokenForUse: async () => undefined },
       "@/features/hub/lib/abort-signals": {},
       "@/features/hub/lib/hub-token-header": { hubTokenHeader: () => ({}) },

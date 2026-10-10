@@ -16,6 +16,7 @@ import {
   resetFullAccessForMultiUser,
   transitionBrowserAccount,
 } from "../src/lib/account-transition.ts";
+import { RUNTIME_REPAIR_KEY } from "../src/hooks/runtime-repair-history.ts";
 
 function browserWith(
   values: Record<string, string> = {},
@@ -169,6 +170,33 @@ test("switch removes every content prefix and preserves only listed chrome and u
   assert.equal(b.data.get("unsloth_auth_token"), "alice-token");
   assert.equal(b.data.get(BROWSER_ACCOUNT_KEY), "alice");
   assert.deepEqual(b.replaced, ["/change-password"]);
+});
+
+test("only a switch clears the desktop browser's site data, before the new session", async () => {
+  const events: string[] = [];
+  const clear = async () => {
+    events.push("clear");
+  };
+  const b = browserWith({ [BROWSER_ACCOUNT_KEY]: "alice" });
+  await transitionBrowserAccount("alice", "/chat", () => events.push("same"), b.browser, clear);
+  await transitionBrowserAccount("bob", "/chat", () => events.push("bob"), b.browser, clear);
+  assert.deepEqual(events, ["same", "clear", "bob"]);
+  const failing = browserWith({ [BROWSER_ACCOUNT_KEY]: "bob", "unsloth-draft": "kept" });
+  await assert.rejects(
+    transitionBrowserAccount("carol", "/chat", () => events.push("carol"), failing.browser, () =>
+      Promise.reject(new Error("clear failed")),
+    ),
+  );
+  assert.equal(events.includes("carol"), false);
+  // The clear runs first, so a failed one leaves the signed-in account's data whole.
+  assert.equal(failing.browser.localStorage.getItem("unsloth-draft"), "kept");
+});
+
+test("a switch keeps the machine's llama.cpp runtime repair record", async () => {
+  const b = browserWith({ [RUNTIME_REPAIR_KEY]: "repaired", unsloth_auth_token: "owner" });
+  assert.equal(await transitionBrowserAccount("alice", "/chat", () => {}, b.browser), true);
+  assert.equal(b.data.get(RUNTIME_REPAIR_KEY), "repaired");
+  assert.equal(b.data.has("unsloth_auth_token"), false);
 });
 
 test("a first managed login clears legacy owner data even without a marker", async () => {
@@ -570,4 +598,38 @@ test("saved recipes live in a per-account store and are never purged", () => {
     accountDatabaseName("unsloth-data-recipes", stored("alice")),
     "unsloth-data-recipes:alice",
   );
+});
+
+test("transcript recovery survives reauthentication but is cleared on account changes", async () => {
+  const { readTranscriptDraft, transcriptDraftKey, writeTranscriptDraft } =
+    await import("../src/features/audio/transcript-draft.ts");
+  const b = browserWith({ [BROWSER_ACCOUNT_KEY]: "account:alice-id:alice" });
+  const originals = ["window", "sessionStorage"].map((name) => [
+    name, Object.getOwnPropertyDescriptor(globalThis, name),
+  ] as const);
+  Object.defineProperty(globalThis, "window", { configurable: true, value: b.browser });
+  Object.defineProperty(globalThis, "sessionStorage", {
+    configurable: true, value: b.browser.sessionStorage,
+  });
+  try {
+    const key = transcriptDraftKey();
+    const draft = { text: "keep this transcript", title: "speech.wav", model: "tiny" };
+    assert.equal(writeTranscriptDraft(key, draft), true);
+    b.data.delete("unsloth_auth_token");
+    await transitionBrowserAccount(
+      { username: "alice", accountId: "alice-id" }, "/chat", () => {}, b.browser,
+    );
+    assert.deepEqual(readTranscriptDraft(transcriptDraftKey()), draft);
+    await transitionBrowserAccount(
+      { username: "bob", accountId: "bob-id" }, "/chat", () => {}, b.browser,
+    );
+    assert.notEqual(transcriptDraftKey(), key);
+    assert.equal(readTranscriptDraft(key), null);
+    assert.equal(readTranscriptDraft(transcriptDraftKey()), null);
+  } finally {
+    for (const [name, descriptor] of originals) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else Reflect.deleteProperty(globalThis, name);
+    }
+  }
 });

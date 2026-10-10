@@ -927,3 +927,27 @@ def test_committed_baseline_is_empty_and_valid():
     doc = json.loads(path.read_text(encoding = "utf-8"))
     assert doc.get("entries") == []
     assert snp._load_baseline(str(path)) == set()
+
+
+@pytest.mark.parametrize("version", ["../../victim", "1.0.0/../../../victim"])
+def test_scan_one_keeps_its_cleanup_inside_the_workspace(tmp_path, monkeypatch, version):
+    """Lockfile names and versions are untrusted: scan_one's rmtree must not leave the workspace."""
+    workspace = tmp_path / "ws" / "inner"
+    workspace.mkdir(parents = True)
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    (victim / "keep.txt").write_text("keep")
+    pkg = snp.PackageEntry(
+        name = "evil",
+        version = version,
+        resolved = "https://registry.npmjs.org/evil/-/evil-1.0.0.tgz",
+        integrity = None,
+        lockfile_key = "node_modules/evil",
+    )
+    monkeypatch.setattr(snp, "download_tarball", lambda pkg, dest: (None, "integrity missing"))
+
+    findings, err = snp.scan_one(pkg, workspace)
+
+    assert (findings, err) == ([], "integrity missing")
+    assert (victim / "keep.txt").read_text() == "keep"
+    assert list(workspace.iterdir()) == []

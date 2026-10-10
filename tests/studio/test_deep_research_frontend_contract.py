@@ -143,9 +143,9 @@ def test_research_presave_keeps_the_follow_up_parent() -> None:
         "const createdRun = await createResearchRun({", 1
     )[0]
 
-    assert "const userMessageIndex = messages.indexOf(userMessage);" in presave
+    assert "const userMessageIndex = rawMessages.indexOf(userMessage);" in presave
     assert "const userMessageParentId =" in presave
-    assert "userMessageIndex > 0 ? messages[userMessageIndex - 1]!.id : null" in presave
+    assert "userMessageIndex > 0 ? rawMessages[userMessageIndex - 1]!.id : null" in presave
     # A stored null is an edited root; `??` would reparent it under the predecessor.
     assert "storedUserMessage && storedUserMessage.parentId !== undefined" in presave
     assert "? storedUserMessage.parentId" in presave
@@ -185,7 +185,17 @@ def test_research_presentation_is_integrated() -> None:
     assert "<ResearchMessage />" in thread
     assert "if (researchRunId) return null" in thread
     assert "!researchRunId &&" in thread
-    assert "if (researchRunId || ownsResearchMessage)" in thread
+    # A research message has no Delete. Since #12735 Delete is a More-menu item whose hook reports
+    # `hidden` for research messages, and the item renders nothing when hidden; before that the
+    # bar's button returned null on the same condition. Either spelling, the gate must be there.
+    delete_hook = thread.split("function useDeleteMessage()", 1)[1].split("\n}\n", 1)[0]
+    assert re.search(
+        r"hidden:\s*Boolean\(\s*researchRunId\s*\|\|\s*ownsResearchMessage\s*\)", delete_hook
+    )
+    delete_item = thread.split("const DeleteMessageMenuItem: FC = () => {", 1)[1].split(
+        "\n};\n", 1
+    )[0]
+    assert re.search(r"if\s*\(\s*hidden\s*\)\s*\{?\s*return null", delete_item)
     assert "ResearchMessageRunIdContext = createContext<string | null>(null)" in thread
     assert "researchReplyOwnsRun(boundResearchAssistantMessageId, messageId)" in thread
     assert "<ResearchMessageRunIdContext.Provider value={researchRunId}>" in thread
@@ -253,8 +263,8 @@ def test_research_presentation_is_integrated() -> None:
     assert "MutationObserver" in activity
     assert "[overflow-anchor:none]" in activity
     assert 'behavior: "smooth"' not in activity
-    assert "collapsible={showArtifactPanel}" in page
-    assert "!artifactLayoutActive &&" in page
+    assert "collapsible={showBrowserPanel}" in page
+    assert "(!artifactLayoutActive || browserFullView) &&" in page
     assert '? "30%"' in page
     assert '? "58%"' in page
     assert "key={openResearchRunId}" in page

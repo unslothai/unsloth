@@ -26,7 +26,10 @@ wired up fails here too, which is the same bug arriving from the other direction
 
 from __future__ import annotations
 
+import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import yaml
@@ -39,6 +42,11 @@ SUITE_DIRS = ("tests/version_compat", "tests/vllm_compat")
 # The bundled job. Named, not detected: if it is ever renamed, that should be a deliberate edit here rather than this
 # whole file quietly asserting nothing.
 BUNDLE_JOB = "pinned-symbol-matrix"
+
+# Cron-only; sweeps tests/version_compat/ with only pytest installed.
+SWEEP_JOB = "daily-fresh-fetch"
+# A None entry in sys.modules makes `import` raise and find_spec return None, as in that job.
+NOT_IN_THE_SWEEP = ("torch", "numpy", "transformers", "trl", "peft", "accelerate", "unsloth_zoo")
 
 # Suites with no pull_request home today.
 # This is a RECORDED GAP, not an approval, and both entries pre-date the bundling change that added this file.
@@ -141,6 +149,33 @@ def test_the_bundle_does_not_duplicate_the_install_bearing_jobs() -> None:
         )
 
 
+def test_the_daily_sweep_skips_what_it_cannot_import() -> None:
+    """A suite that needs torch must skip in the sweep, not fail (#12069 broke it daily on `import unsloth`).
+
+    Bundle suites are left out: they install nothing, already run per pull request, and fetch from the network.
+    """
+    sweep = _named_paths(_jobs()[SWEEP_JOB])
+    bundle = _named_paths(_jobs()[BUNDLE_JOB])
+    suites = sorted(s for s in _all_suites() if _covers(sweep, s) and s not in bundle)
+    assert suites, f"{SWEEP_JOB} sweeps none of {SUITE_DIRS}; retarget this test"
+
+    hide = f"import sys\nfor m in {NOT_IN_THE_SWEEP!r}: sys.modules[m] = None\nimport pytest\nsys.exit(pytest.main())"
+    proc = subprocess.run(
+        [sys.executable, "-c", hide, "-q", "-p", "no:cacheprovider", *suites],
+        cwd = REPO,
+        env = {**os.environ, "PYTHONPATH": str(REPO)},
+        capture_output = True,
+        text = True,
+        timeout = 600,
+    )
+    failed = [line for line in proc.stdout.splitlines() if line.startswith(("FAILED", "ERROR"))]
+    assert proc.returncode == 0 and not failed, (
+        f"{SWEEP_JOB} would go red: these fail without {NOT_IN_THE_SWEEP[0]} rather than skip. Guard them the way "
+        f"their neighbours do, `if importlib.util.find_spec('torch') is None: pytest.skip(...)`.\n"
+        + ("\n".join(failed[:20]) or proc.stdout[-3000:] + proc.stderr[-3000:])
+    )
+
+
 def test_the_bundle_stays_parallel_and_file_scoped() -> None:
     """Without -n the bundle is six jobs' work run end to end on one runner.
 
@@ -179,3 +214,22 @@ def test_the_install_bearing_jobs_were_not_folded_in() -> None:
             f"sibling's pins, so it cannot have been merged into anything -- check it was "
             f"not folded into {BUNDLE_JOB}, which has no torch at all."
         )
+
+
+def test_every_test_file_a_job_runs_triggers_the_workflow() -> None:
+    """A file only this workflow executes must be in its pull_request paths, or a PR that only
+    edits (or weakens) that file never runs it. The modules.json trust gate is the case that
+    prompted this: the CPU repo-test shards skip it, so this workflow is its only runner."""
+    from fnmatch import fnmatch
+
+    doc = _doc()
+    # PyYAML reads the bare `on:` key as the boolean True.
+    triggers = doc.get("on", doc.get(True)) or {}
+    patterns = (triggers.get("pull_request") or {}).get("paths") or []
+    assert patterns, "version-compat-ci.yml lost its pull_request paths filter"
+    named = set()
+    for job in _jobs().values():
+        named |= {p for p in _named_paths(job) if not p.endswith("/") and (REPO / p).is_file()}
+    assert named, "no test file found in any run step"
+    missing = sorted(p for p in named if not any(fnmatch(p, pattern) for pattern in patterns))
+    assert not missing, f"run by version-compat-ci.yml but not in its pull_request paths: {missing}"

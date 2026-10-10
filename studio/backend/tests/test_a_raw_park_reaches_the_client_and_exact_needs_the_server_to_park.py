@@ -886,6 +886,29 @@ class TestAParkDuringPrefillIsExcusedToo:
         # Both ways a read can time out ask it.
         assert source.count("_deadline_excused(") == 3
 
+    def test_a_park_notice_inside_a_byte_chunk_renews_the_window(self):
+        # The completions bytes relay hands over raw chunks, so a notice can share one with a
+        # progress event; it must renew the first-token window as a line of its own does.
+        async def chunks(first):
+            yield first
+            await asyncio.sleep(0.01)
+            yield b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'
+
+        async def run(first):
+            seen = []
+            async for item in inference._aiter_llama_stream_items(
+                chunks(first),
+                first_token_deadline = time.monotonic() + 0.005,
+                track_prefill_progress = True,
+                post_first_item_read_timeout_s = None,
+            ):
+                seen.append(item)
+            return seen
+
+        assert len(asyncio.run(run(b'data: {"choices":[]}\n\n: preempted\n\n'))) == 2
+        with pytest.raises(httpx.ReadTimeout):
+            asyncio.run(run(b'data: {"choices":[]}\n\n'))
+
 
 class TestTheGlobalOptOutBlocksAnAutoLaunch:
     def test_preemption_off_with_nothing_named_is_parking_off(self, monkeypatch):

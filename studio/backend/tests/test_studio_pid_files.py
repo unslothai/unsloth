@@ -456,6 +456,106 @@ def test_windows_reuseaddr_listener_is_not_reported_as_a_free_port():
         assert run._is_port_free("127.0.0.1", port) is False
 
 
+def test_a_loopback_bind_is_not_free_while_another_process_holds_the_wildcard():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("0.0.0.0", 0))
+        listener.listen()
+        port = listener.getsockname()[1]
+
+        assert run._is_port_free("127.0.0.1", port) is False
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason = "Windows drops the SYN to a full backlog")
+def test_a_wildcard_listener_with_a_full_backlog_is_not_a_free_port():
+    # studio.txt alone does not install psutil, the only thing that tells this apart from a free port.
+    pytest.importorskip("psutil")
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("0.0.0.0", 0))
+        listener.listen(0)
+        port = listener.getsockname()[1]
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as filler:
+            filler.settimeout(2)
+            filler.connect(("127.0.0.1", port))
+
+            assert run._is_port_free("127.0.0.1", port) is False
+
+
+@pytest.mark.parametrize(
+    ("listener", "family", "address", "collides"),
+    [
+        ("0.0.0.0", socket.AF_INET, "127.0.0.1", True),
+        ("127.0.0.1", socket.AF_INET, "127.0.0.1", True),
+        ("192.168.1.5", socket.AF_INET, "127.0.0.1", False),
+        ("::", socket.AF_INET6, "127.0.0.1", False),  # a v6-only wildcard shares the port with IPv4
+        ("::", socket.AF_INET6, "::1", True),
+    ],
+)
+def test_only_a_listener_of_the_same_family_takes_the_port(
+    monkeypatch, listener, family, address, collides
+):
+    psutil = pytest.importorskip("psutil")
+    row = SimpleNamespace(status = psutil.CONN_LISTEN, family = family, laddr = (listener, 8888))
+    monkeypatch.setattr(psutil, "net_connections", lambda kind: [row])
+
+    assert run._listener_collides(address, 8888) is collides
+
+
+def test_a_timed_out_connect_is_settled_by_the_listener_table(monkeypatch):
+    monkeypatch.setattr(run, "sys", SimpleNamespace(platform = "win32"))
+    asked = []
+    monkeypatch.setattr(
+        run, "_listener_collides", lambda address, port: asked.append((address, port)) or True
+    )
+
+    class _ProbeSocket:
+        def __init__(self, *_args):
+            pass
+
+        def setsockopt(self, *_args):
+            pass
+
+        def bind(self, _sockaddr):
+            pass
+
+        def settimeout(self, _timeout):
+            pass
+
+        def connect_ex(self, _sockaddr):
+            return errno.EWOULDBLOCK
+
+        def close(self):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            pass
+
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 8888))
+        ],
+    )
+    monkeypatch.setattr(socket, "socket", _ProbeSocket)
+
+    assert run._is_port_free("127.0.0.1", 8888) is False
+    assert asked == [("127.0.0.1", 8888)]
+
+
+def test_a_free_loopback_port_is_reported_without_a_long_wait():
+    # Windows waits out the whole connect timeout on a free port.
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+
+    start = time.monotonic()
+    assert run._is_port_free("127.0.0.1", port) is True
+    assert time.monotonic() - start < 0.75
+
+
 def test_a_hostname_records_every_address_it_resolves_to(tmp_path):
     # `localhost` binds 127.0.0.1 AND ::1. Recording only the first lets a later
     # launch on the other literal miss us and start a duplicate.
@@ -471,6 +571,7 @@ def test_a_hostname_records_every_address_it_resolves_to(tmp_path):
 def test_port_probe_checks_every_resolved_bind_address(monkeypatch, platform, occupied):
     monkeypatch.setattr(run, "sys", SimpleNamespace(platform = platform))
     bind_attempts = []
+    connect_attempts = []
     sockets = []
 
     class _ProbeSocket:
@@ -488,8 +589,21 @@ def test_port_probe_checks_every_resolved_bind_address(monkeypatch, platform, oc
             if occupied and self.family == socket.AF_INET6:
                 raise OSError("address already in use")
 
+        def settimeout(self, _timeout):
+            pass
+
+        def connect_ex(self, sockaddr):
+            connect_attempts.append((self.family, sockaddr))
+            return errno.ECONNREFUSED
+
         def close(self):
             self.closed = True
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            self.close()
 
     monkeypatch.setattr(
         socket,
@@ -502,7 +616,7 @@ def test_port_probe_checks_every_resolved_bind_address(monkeypatch, platform, oc
     monkeypatch.setattr(
         socket,
         "socket",
-        lambda family, _socktype, _proto: _ProbeSocket(family),
+        lambda family, *_args: _ProbeSocket(family),
     )
 
     assert run._is_port_free("dual-stack.test", 8888) is (not occupied)
@@ -510,8 +624,9 @@ def test_port_probe_checks_every_resolved_bind_address(monkeypatch, platform, oc
         (socket.AF_INET, ("127.0.0.1", 8888)),
         (socket.AF_INET6, ("::1", 8888, 0, 0)),
     ]
+    assert connect_attempts == ([] if occupied else bind_attempts)
     assert all(probe.closed for probe in sockets)
-    for probe in sockets:
+    for probe in sockets[: len(bind_attempts)]:
         assert ((socket.SOL_SOCKET, socket.SO_REUSEADDR, 1) in probe.options) is (
             platform != "win32"
         )
@@ -1101,6 +1216,18 @@ def test_a_startup_that_raises_takes_its_marker_back(tmp_path, monkeypatch):
 
     with pytest.raises(RuntimeError):
         run.run_server()
+
+    assert list(tmp_path.glob(run.STARTUP_MARKER_GLOB)) == []
+    assert run._OWN_STARTUP_MARKERS == []
+
+
+def test_the_real_run_server_takes_its_marker_back(tmp_path):
+    # Exercise the real decorator via run_server's empty-host rejection.
+    run.write_startup_marker()
+    assert list(tmp_path.glob(run.STARTUP_MARKER_GLOB)) != []
+
+    with pytest.raises(SystemExit):
+        run.run_server(host = "")
 
     assert list(tmp_path.glob(run.STARTUP_MARKER_GLOB)) == []
     assert run._OWN_STARTUP_MARKERS == []

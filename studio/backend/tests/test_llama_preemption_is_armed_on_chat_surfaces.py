@@ -611,11 +611,8 @@ class TestTheRespawnRetryKeepsItsControls:
         from core.inference import llama_cpp
 
         source = Path(llama_cpp.__file__).read_text(encoding = "utf-8")
-        retry = source[
-            source.index(
-                "yield from self.generate_chat_completion(\n                    retry_messages,"
-            ) :
-        ]
+        # One helper the connect and stream retries share.
+        retry = source[source.index("def _replay_on_replacement_server(") :]
         retry = retry[: retry.index("_allow_respawn_retry = False")]
         for kwarg in (
             "admission_output_allowance = admission_output_allowance,",

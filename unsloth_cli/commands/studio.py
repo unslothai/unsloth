@@ -38,9 +38,12 @@ studio_app = typer.Typer(help = "Unsloth Studio commands.")
 def _enable_verbose_access_logs() -> None:
     os.environ["UNSLOTH_STUDIO_ACCESS_LOG_DEDUP_MS"] = "0"
     os.environ["UNSLOTH_STUDIO_ACCESS_LOG_POLL_DEDUP_MS"] = "0"
+    os.environ["LOG_LEVEL"] = "DEBUG"
 
 
-# Root order: UNSLOTH_STUDIO_HOME, STUDIO_HOME, sys.prefix, legacy ~/.unsloth/studio. Markers mirror install.ps1 / uninstall.ps1 and are matched as bytes.
+# Root order: UNSLOTH_STUDIO_HOME, STUDIO_HOME, UNSLOTH_HOME/studio, sys.prefix,
+# legacy ~/.unsloth/studio. Keep this aligned with storage_roots.studio_root().
+# Shim markers mirror install.ps1 / uninstall.ps1 and are matched as bytes.
 _CMD_SHIM_MARKERS = (b"unsloth-studio-managed-launcher", b"from unsloth_cli import app")
 _CMD_SHIM_MAX_BYTES = 8192
 
@@ -76,6 +79,25 @@ def _resolve_studio_home() -> tuple[Path, bool]:
             return Path(override).expanduser().resolve(), True
         except (OSError, ValueError):
             return Path(override).expanduser(), True
+    # Keeps the CLI on the same root as storage_roots.py; see test_unsloth_home_root_agreement.py.
+    master = (os.environ.get("UNSLOTH_HOME") or "").strip()
+    if master:
+        try:
+            candidate = Path(master).expanduser().resolve() / "studio"
+        except (OSError, ValueError):
+            candidate = Path(master).expanduser() / "studio"
+        try:
+            legacy = (Path.home() / ".unsloth" / "studio").resolve()
+        except (OSError, ValueError):
+            legacy = Path.home() / ".unsloth" / "studio"
+        # install.sh and install.ps1 do not read UNSLOTH_HOME yet, so they leave the venv and the
+        # launcher at the legacy root while setup puts the runtimes under the master root:
+        # preferring <master>/studio unconditionally reported "Unsloth Studio not set up" for an
+        # install that is right there. The master root wins only when it HAS an install.
+        if candidate != legacy and not _looks_like_installer_managed_studio_home(candidate):
+            if _looks_like_installer_managed_studio_home(legacy):
+                return legacy, False
+        return candidate, candidate != legacy
     try:
         prefix = Path(sys.prefix).resolve()
         if prefix.name == "unsloth_studio":
@@ -90,25 +112,108 @@ def _resolve_studio_home() -> tuple[Path, bool]:
 
 STUDIO_HOME, _STUDIO_HOME_IS_CUSTOM = _resolve_studio_home()
 
+MASTER_ROOT_NOTE = ".unsloth-master-root"
+
+
+def _recorded_master_root() -> Optional[Path]:
+    """The master root setup recorded in this Studio tree, or None.
+
+    Keep this aligned with storage_roots._recorded_master_root(); see
+    test_unsloth_home_root_agreement.py. `UNSLOTH_HOME=/mnt/portable unsloth studio update` puts
+    node, llama.cpp and whisper.cpp BESIDE studio/ and leaves nothing in a later environment. The
+    backend recovers that from the note, so a `unsloth studio update` that did not would hand
+    setup a plain Studio root, have it refresh the runtimes one level down at <master>/studio/,
+    and leave the backend still launching the stale trees at <master>/.
+
+    The recorded root must exist and THIS Studio directory must lie inside it, so a tree copied
+    from one master root to another does not send the update, or a removal, into the original
+    install. Containment, not an exact <root>/studio match: the flat layout names one directory
+    for both, and UNSLOTH_HOME=/root with UNSLOTH_STUDIO_HOME=/root/custom/studio is a root that
+    genuinely contains its Studio somewhere other than the default child. The backend and both
+    uninstallers apply exactly this rule, and a stricter one here would have the CLI decline a
+    note the backend accepts, which is the same split this function exists to close.
+    """
+    try:
+        recorded = (STUDIO_HOME / "share" / MASTER_ROOT_NOTE).read_text(encoding = "utf-8").strip()
+    except (OSError, ValueError, UnicodeDecodeError):
+        return None
+    if not recorded:
+        return None
+    try:
+        master = Path(recorded).expanduser().resolve()
+        here = STUDIO_HOME.resolve()
+        if not (master.is_dir() and (here == master or master in here.parents)):
+            return None
+        # A legacy-rooted install has no master root, and both uninstallers already refuse what
+        # that shape records. storage_roots._is_legacy_studio_tree declines it too, and
+        # test_unsloth_home_root_agreement.py holds the two together: without this the CLI would
+        # export UNSLOTH_HOME for a note the backend has declined. Keyed on the TREE, so a note
+        # naming $HOME or any other ancestor goes with it.
+        try:
+            if here == (Path.home() / ".unsloth" / "studio").resolve():
+                return None
+        except (OSError, RuntimeError, ValueError):
+            pass
+        return master
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def _master_root_llama_dir() -> Optional[Path]:
+    """``<master>/llama.cpp`` when this install has a master root, else None.
+
+    Under UNSLOTH_HOME the runtimes are siblings of studio/, so the answer cannot be
+    derived from the studio home: <studio home>/llama.cpp is one level too deep. Both
+    the export below and the grading in _managed_llama_dir_ignoring_the_override read
+    this, so the rule exists once rather than twice.
+
+    Environment only, because the command callback recovers a recorded master root
+    into UNSLOTH_HOME before anything here runs.
+    """
+    master = (os.environ.get("UNSLOTH_HOME") or "").strip()
+    if not master:
+        return None
+    try:
+        return Path(master).expanduser().resolve() / "llama.cpp"
+    except (OSError, ValueError):
+        return Path(master).expanduser() / "llama.cpp"
+
 
 def _ensure_studio_env_exported() -> None:
-    """Re-export UNSLOTH_STUDIO_HOME / UNSLOTH_LLAMA_CPP_PATH for custom roots only, per
-    subcommand rather than at import, so unrelated importers see no env changes."""
-    if not _STUDIO_HOME_IS_CUSTOM:
+    """Re-export UNSLOTH_STUDIO_HOME / UNSLOTH_LLAMA_CPP_PATH for custom roots, and for a master
+    root the resolver above declined, per subcommand rather than at import, so unrelated
+    importers see no env changes."""
+    # storage_roots.studio_root() honours UNSLOTH_HOME with no install check, so the fallback
+    # keeping this CLI on an installed legacy root must be told to the backend too: unexported,
+    # `unsloth studio` runs the legacy venv while the backend inside it writes studio.db, auth
+    # and the pid file under <master>/studio. Exporting the root does not make it custom, since
+    # the value equals the legacy path both installers compare against.
+    # The note, when this run has no UNSLOTH_HOME of its own. Exported rather than merely read,
+    # because setup runs as a subprocess and would otherwise refresh the runtimes at
+    # <master>/studio/ while the backend kept launching the ones at <master>/.
+    if not (os.environ.get("UNSLOTH_HOME") or "").strip():
+        _recorded = _recorded_master_root()
+        if _recorded is not None:
+            os.environ["UNSLOTH_HOME"] = str(_recorded)
+    if not _STUDIO_HOME_IS_CUSTOM and not (os.environ.get("UNSLOTH_HOME") or "").strip():
         return
     # Truthy-check, not setdefault: a blank UNSLOTH_STUDIO_HOME= must not win.
-    if not os.environ.get("UNSLOTH_STUDIO_HOME"):
+    if not (os.environ.get("UNSLOTH_STUDIO_HOME") or "").strip():
         os.environ["UNSLOTH_STUDIO_HOME"] = str(STUDIO_HOME)
     try:
         _legacy_studio = (Path.home() / ".unsloth" / "studio").resolve()
         _is_legacy = STUDIO_HOME.resolve() == _legacy_studio
     except (OSError, ValueError):
         _is_legacy = STUDIO_HOME == (Path.home() / ".unsloth" / "studio")
-    if _is_legacy:
-        _llama_dir = Path.home() / ".unsloth" / "llama.cpp"
-    else:
-        _llama_dir = STUDIO_HOME / "llama.cpp"
-    if not os.environ.get("UNSLOTH_LLAMA_CPP_PATH"):
+    # The runtimes are siblings of studio/, at the master root, so STUDIO_HOME/llama.cpp is one
+    # level too deep. run.py keeps a non-blank value, so a wrong export here wins everywhere.
+    _llama_dir = _master_root_llama_dir()
+    if _llama_dir is None:
+        _llama_dir = (
+            Path.home() / ".unsloth" / "llama.cpp" if _is_legacy else STUDIO_HOME / "llama.cpp"
+        )
+    if not (os.environ.get("UNSLOTH_LLAMA_CPP_PATH") or "").strip():
         os.environ["UNSLOTH_LLAMA_CPP_PATH"] = str(_llama_dir)
 
 
@@ -123,6 +228,8 @@ DESKTOP_SECRET_HASH_KEY = "desktop_secret_hash"
 DESKTOP_SECRET_CREATED_AT_KEY = "desktop_secret_created_at"
 PBKDF2_ITERATIONS = 100_000
 _START_API_KEY_MARKER_ENV = "_UNSLOTH_START_API_KEY_MARKER"
+# Marks run()'s re-exec'd child; a marked child still outside the venv must stop, not loop.
+_STUDIO_REEXEC_ENV = "_UNSLOTH_STUDIO_REEXEC"
 _CLOUDFLARE_INTENT_ENV = "_UNSLOTH_CLOUDFLARE_INTENT"
 
 
@@ -190,8 +297,8 @@ _MANAGED_CLI_IMPORT_PROBE = (
 # Generous: cold interpreter start plus package import. A timeout means "no verdict", not failure.
 _MANAGED_CLI_IMPORT_PROBE_TIMEOUT = 60
 
-# ERROR_ACCESS_DISABLED_BY_POLICY, surfaced by Python as OSError.winerror.
-_ERROR_ACCESS_DISABLED_BY_POLICY = 1260
+# Policy refusals: AppLocker 1260, App Control / Smart App Control 4551. Not 577: a bad hash can be a damaged file.
+_APPLICATION_CONTROL_WINERRORS = frozenset({1260, 4551})
 
 
 def _managed_cli_argv(
@@ -207,7 +314,7 @@ def _managed_cli_argv(
 
 def _is_application_control_block(error: OSError) -> bool:
     """True when Windows refused to start a program by policy: nothing ran."""
-    return getattr(error, "winerror", None) == _ERROR_ACCESS_DISABLED_BY_POLICY
+    return getattr(error, "winerror", None) in _APPLICATION_CONTROL_WINERRORS
 
 
 @contextlib.contextmanager
@@ -343,6 +450,31 @@ def _studio_venv_python() -> Optional[Path]:
     return p if p.is_file() else None
 
 
+def _resolved_or_self(path: Path) -> Path:
+    try:
+        return path.resolve()
+    except (OSError, RuntimeError, ValueError):  # RuntimeError: symlink loop, Python < 3.13
+        return path
+
+
+def _running_in_studio_venv(venv_dir: Path) -> bool:
+    """Compare resolved path components: console-script shebangs hold the resolved venv path,
+    so a string prefix check against a symlinked venv_dir never matched and looped forever."""
+    prefix = Path(sys.prefix)
+    for a, b in (
+        (prefix, venv_dir),
+        (_resolved_or_self(prefix), _resolved_or_self(venv_dir)),
+    ):
+        a_s = os.path.normcase(str(a))
+        b_s = os.path.normcase(str(b)).rstrip(os.sep + (os.altsep or ""))
+        if a_s == b_s or a_s.startswith(b_s + os.sep):
+            return True
+    try:
+        return os.path.samefile(prefix, venv_dir)
+    except (OSError, ValueError):
+        return False
+
+
 def _managed_cli_site_packages_layout(python: Path) -> bool:
     """On-disk hint that the venv still carries the CLI. Weaker than the import probe: an empty
     unsloth_cli/ or an orphaned dist-info passes here."""
@@ -414,6 +546,14 @@ def _torch_requires_rocm_metapackage(venv_dir: Path) -> bool:
     return False
 
 
+# The single gfx arch this install carries kernels for, published for the backend.
+# Read by studio/backend/utils/desktop_shell_env.py, which imports ROCm variables a
+# desktop launch never received out of the login shell: that profile is where the
+# #7331 override lives, so the backend needs the same arbiter this guard uses, not
+# just the outcome of running it against a GUI environment that never had the value.
+ROCM_INSTALLED_ARCH_ENV = "UNSLOTH_ROCM_INSTALLED_ARCH"
+
+
 def _installed_rocm_single_arch(venv_dir: Path) -> Optional[str]:
     """gfx arch the ROCm runtime in *venv_dir* ACTIVELY carries kernels for, or None. Read from the
     `rocm` meta-package: globbing for rocm_sdk_libraries_gfx* would read an ORPHAN. None also
@@ -472,9 +612,14 @@ def _clear_hsa_override_contradicting_install(venv_dir: Path) -> Optional[str]:
 def _clear_hsa_override_before_launch(silent: bool = False) -> Optional[str]:
     """Run the #7331 spoof clear for whichever entry point is about to launch. Idempotent."""
     _venv = STUDIO_HOME / "unsloth_studio"
-    _arch = _clear_hsa_override_contradicting_install(
-        Path(sys.prefix) if sys.prefix.startswith(str(_venv)) else _venv
-    )
+    _root = Path(sys.prefix) if _running_in_studio_venv(_venv) else _venv
+    _arch = _clear_hsa_override_contradicting_install(_root)
+    # Published whether or not anything was cleared here: on a desktop launch the GUI
+    # environment never carried the override, so the clear above is a no-op and the
+    # contradicting value is still sitting in the profile the backend is about to read.
+    _installed = _installed_rocm_single_arch(_root)
+    if _installed and platform.system() != "Windows":
+        os.environ[ROCM_INSTALLED_ARCH_ENV] = _installed
     if _arch is not None and not silent:
         typer.echo(
             f"Cleared HSA_OVERRIDE_GFX_VERSION: this install carries {_arch} kernels "
@@ -530,7 +675,7 @@ def _load_run_module():
 
     spec = importlib.util.spec_from_file_location("studio.backend.run", run_py)
     if spec is None or spec.loader is None:
-        raise ImportError(f"Could not load studio backend from {run_py}")
+        raise ImportError(f"Could not load Unsloth backend from {run_py}")
     module = importlib.util.module_from_spec(spec)
     sys.modules["studio.backend.run"] = module
     try:
@@ -771,6 +916,12 @@ def _load_backend_auth_storage():
 
 def _write_auth_secret(path: Path, secret: str) -> None:
     path.parent.mkdir(parents = True, exist_ok = True)
+    # mkdir under a 022 umask leaves auth/ world-readable when this runs before the DB connection does it; the files
+    # below are 0600 either way, but the directory listing names them. Best-effort, like the chmods below.
+    try:
+        os.chmod(path.parent, 0o700)
+    except OSError:
+        pass
     fd, tmp_name = tempfile.mkstemp(prefix = f".{path.name}.", dir = path.parent)
     tmp_path = Path(tmp_name)
     try:
@@ -1312,88 +1463,6 @@ def _tunnel_binary_confirmed_unavailable() -> bool:
                 pass
 
 
-_REEXEC_DEPTH_ENV = "UNSLOTH_STUDIO_REEXEC_DEPTH"
-
-
-def _running_inside_studio_venv(studio_venv_dir: Path) -> bool:
-    """Whether this interpreter is the Studio venv's, symlinks and all. Compared on resolved paths:
-    `sys.prefix` is the venv's REAL directory while `STUDIO_HOME / "unsloth_studio"` is whatever path
-    the user gave, so a symlinked venv never matched and the parent re-executed forever."""
-    try:
-        prefix = Path(sys.prefix).resolve()
-        target = Path(studio_venv_dir).resolve()
-    except OSError:
-        return sys.prefix.startswith(str(studio_venv_dir))
-    return prefix == target or target in prefix.parents
-
-
-def _hand_off_landed() -> None:
-    """This process is the venv's launcher, so the marker has done its job. Left in place it
-    reaches the server and every subprocess it starts, and a fresh `unsloth studio` from an
-    integrated terminal is refused as a second hand-off of a command it never joined."""
-    os.environ.pop(_REEXEC_DEPTH_ENV, None)
-
-
-def _child_launcher_predates_the_guard(studio_venv_dir: Path) -> bool:
-    """Whether handing off would loop anyway: the venv is reached through a symlink and the
-    `unsloth` installed in it predates the symlink-aware check, so it neither resolves the
-    path nor reads the marker.
-
-    An old child cannot be guarded from here, so the parent refuses rather than start the
-    loop. A venv whose launcher cannot be found is given the benefit of the doubt.
-    """
-    try:
-        given = Path(studio_venv_dir)
-        real = given.resolve()
-    except OSError:
-        return False
-    if real == given:
-        return False
-    candidates = list(real.glob("lib/python*/site-packages/unsloth_cli/commands/studio.py"))
-    candidates += list(real.glob("Lib/site-packages/unsloth_cli/commands/studio.py"))
-    for launcher in candidates:
-        try:
-            if _REEXEC_DEPTH_ENV not in launcher.read_text(encoding = "utf-8", errors = "replace"):
-                return True
-        except OSError:
-            continue
-    return False
-
-
-def _refuse_an_old_launcher_behind_a_symlink(studio_venv_dir: Path, studio_python) -> None:
-    if not _child_launcher_predates_the_guard(studio_venv_dir):
-        return
-    typer.echo(
-        f"Error: the Studio venv at {studio_venv_dir} is reached through a symlink, and "
-        "the unsloth CLI installed in it predates the symlink-aware hand-off, so it would "
-        f"hand off to itself forever. Upgrade it ({studio_python} -m pip install -U unsloth) "
-        "or point UNSLOTH_STUDIO_HOME at the venv's real home.",
-        err = True,
-    )
-    raise typer.Exit(2)
-
-
-def _guard_reexec_loop(target: str) -> None:
-    """Refuse the second hand-off rather than loop. One hand-off is the design; a second means
-    the venv check cannot succeed in this layout. The marker is inherited through `os.execvp`
-    and `subprocess.Popen` because both pass the environment on."""
-    depth = os.environ.get(_REEXEC_DEPTH_ENV, "0")
-    try:
-        depth_n = int(depth)
-    except ValueError:
-        depth_n = 0
-    if depth_n >= 1:
-        typer.echo(
-            "Error: Unsloth handed off to the Studio venv's launcher, which did not "
-            f"recognise itself as inside {target}. Refusing to hand off again. "
-            "Check that UNSLOTH_STUDIO_HOME points at the home whose unsloth_studio venv "
-            "this is.",
-            err = True,
-        )
-        raise typer.Exit(2)
-    os.environ[_REEXEC_DEPTH_ENV] = str(depth_n + 1)
-
-
 def _child_self_suppresses(*, in_studio_venv: bool, child_run_py: Optional[Path]) -> bool:
     """True when the child serving Unsloth is provably THIS install's backend, which suppresses the
     seeded credential, so the strip can be skipped. False on ANY doubt."""
@@ -1605,6 +1674,8 @@ def _load_model_via_http(
     llama_extra_args: Optional[List[str]] = None,
     timeout: int = 600,
     request_host: str = "127.0.0.1",
+    engine: str = "auto",
+    engine_precision: str = "auto",
 ) -> dict:
     import json
     import urllib.request
@@ -1630,6 +1701,9 @@ def _load_model_via_http(
         payload["spec_draft_n_max"] = spec_draft_n_max
     if llama_extra_args:
         payload["llama_extra_args"] = list(llama_extra_args)
+    if engine != "auto":
+        payload["engine"] = engine
+        payload["engine_precision"] = engine_precision
 
     data = json.dumps(payload).encode()
     url = f"http://{_url_host(request_host)}:{port}/api/inference/load"
@@ -1653,6 +1727,73 @@ def _load_model_via_http(
     except urllib.error.HTTPError as exc:
         body = exc.read().decode(errors = "replace")
         raise RuntimeError(f"Model load failed (HTTP {exc.code}): {body}") from exc
+
+
+def _ensure_engine_installed(engine: str, yes: bool, silent: bool) -> None:
+    """Install an optional serving engine on first use, only after the owner agrees."""
+    import time
+
+    from core.inference import engine_install
+
+    # status() answers "still checking" while the GPU probe runs; this caller can wait for it.
+    reason = engine_install.support_reason(engine)
+    if reason:
+        raise RuntimeError(reason)
+    row = engine_install.status(engine)
+    # A rollback the owner chose is loadable as is, as in Settings.
+    if row.get("current") or (row.get("installed") and row.get("restored")):
+        return
+    size = row.get("download_bytes")
+    action = "Update" if row.get("installed") else "Install"
+    question = f"{action} {engine} {row['version']}" + (
+        f" (about {size / 1024**3:.1f} GiB to download)" if size else ""
+    )
+    notice = _engine_install_notice(engine, row)
+    if not yes:
+        if not sys.stdin.isatty():
+            raise RuntimeError(
+                f"{engine} is not installed. Re-run with --yes to install it, or install it "
+                "from Settings > Inference engines."
+            )
+        if notice:
+            typer.echo(notice)
+        if not typer.confirm(f"{question}?", default = False):
+            raise RuntimeError(f"{engine} was not installed, so the model was not loaded.")
+    elif not silent:
+        if notice:
+            typer.echo(notice)
+        typer.echo(f"{question}: --yes given, installing.")
+    engine_install.start_install(engine)
+    last = None
+    while True:
+        job = engine_install.status(engine)["job"]
+        if job.get("state") != "running":
+            break
+        message = job.get("message") or job.get("phase")
+        if message != last and not silent:
+            typer.echo(f"  {engine}: {message}")
+            last = message
+        time.sleep(2)
+    if job.get("state") != "success":
+        raise RuntimeError(f"{engine} installation did not finish: {job.get('message')}")
+
+
+def _engine_install_notice(engine: str, row: dict) -> Optional[str]:
+    """The Windows consent text Settings shows before the same install (managedEngines.wsl*)."""
+    if row.get("host") != "wsl":
+        return None
+    wsl = row.get("wsl") or {}
+    if wsl.get("state") == "restart_required":
+        return "Restart Windows to finish turning on WSL2, then run this command again."
+    if wsl.get("state") == "ready" and wsl.get("distro"):
+        return f"On Windows, {engine} runs inside Studio's private WSL2 environment."
+    return (
+        f"On Windows, {engine} runs inside WSL2 (Windows Subsystem for Linux). Studio will turn "
+        "on WSL2 and set up its own private Ubuntu environment for engines; your existing Linux "
+        "distributions are not touched. Windows will show one administrator (UAC) prompt, and "
+        "may ask you to restart before the installation can finish. Nothing changes unless you "
+        "answer yes."
+    )
 
 
 def _format_context_length_line(load_result: dict) -> Optional[str]:
@@ -1865,9 +2006,7 @@ def studio_default(
 
     # Resolve the child launcher BEFORE the gate: a headless gate strips the seeded password, so aborting afterwards leaves no way to log in.
     studio_venv_dir = STUDIO_HOME / "unsloth_studio"
-    in_studio_venv = _running_inside_studio_venv(studio_venv_dir)
-    if in_studio_venv:
-        _hand_off_landed()
+    in_studio_venv = _running_in_studio_venv(studio_venv_dir)
     # Before the env reaches a child: an override contradicting single-arch wheels fails every kernel launch, and install.sh's unset cannot reach here (#7331).
     _clear_hsa_override_before_launch(silent = silent)
     studio_python = run_py = None
@@ -1973,9 +2112,6 @@ def studio_default(
                     )
                 raise typer.Exit(rc)
             else:
-                # The child here is run.py, the server itself, which never hands off again;
-                # an inherited marker would reach every subprocess it starts.
-                os.environ.pop(_REEXEC_DEPTH_ENV, None)
                 os.execvp(str(studio_python), args)
         else:
             typer.echo("Unsloth Studio not set up. Run install.sh first.")
@@ -2007,6 +2143,7 @@ def studio_default(
             run_kwargs["frontend_path"] = resolved_frontend
         run_server(**run_kwargs)
 
+    _graceful_shutdown_on_sigterm()
     try:
         if run_mod._shutdown_event is not None:
             # Event.wait() with no timeout blocks at C level on Linux and swallows SIGINT.
@@ -2342,6 +2479,22 @@ def run(
             "decode speed, MoE usually don't."
         ),
     ),
+    engine: Literal["auto", "vllm", "sglang"] = typer.Option(
+        "auto",
+        "--engine",
+        rich_help_panel = _RUN_PANEL_MODEL,
+        help = (
+            "Serve a safetensors model with vLLM or SGLang instead of Studio's default "
+            "backend. Installed on first use after a confirmation (--yes skips it); "
+            "Linux NVIDIA, or Windows through WSL2."
+        ),
+    ),
+    engine_precision: Literal["auto", "bf16", "fp16", "int4", "int8", "fp8"] = typer.Option(
+        "auto",
+        "--engine-precision",
+        rich_help_panel = _RUN_PANEL_MODEL,
+        help = "Weight precision for --engine vllm/sglang (auto keeps the checkpoint's).",
+    ),
     start_api_key_marker: bool = typer.Option(
         False,
         "--start-api-key-marker",
@@ -2413,7 +2566,9 @@ def run(
     # Set before any re-exec. --log-verbose keeps llama-server's own -v passthrough working.
     if verbose:
         _enable_verbose_access_logs()
-        if not any(a in ("--verbose", "-v", "--log-verbose") for a in extra_llama_args):
+        if engine == "auto" and not any(
+            a in ("--verbose", "-v", "--log-verbose") for a in extra_llama_args
+        ):
             extra_llama_args.append("--log-verbose")
     if disable_dns_pinning:
         os.environ["UNSLOTH_STUDIO_DISABLE_DNS_PINNING"] = "1"
@@ -2456,6 +2611,13 @@ def run(
             raise typer.Exit(1)
         model = parsed_repo
         gguf_variant = gguf_variant or embedded_variant
+    if engine != "auto" and (gguf_variant or extra_llama_args):
+        typer.echo(
+            f"Error: --engine {engine} serves safetensors checkpoints; GGUF variants and "
+            "llama-server flags apply only to the default backend.",
+            err = True,
+        )
+        raise typer.Exit(2)
 
     _require_bind_host(host)
 
@@ -2491,9 +2653,16 @@ def run(
     )
 
     studio_venv_dir = STUDIO_HOME / "unsloth_studio"
-    in_studio_venv = _running_inside_studio_venv(studio_venv_dir)
-    if in_studio_venv:
-        _hand_off_landed()
+    in_studio_venv = _running_in_studio_venv(studio_venv_dir)
+    reexeced = os.environ.pop(_STUDIO_REEXEC_ENV, None) == "1"
+    if reexeced and not in_studio_venv:
+        typer.echo(
+            f"Error: re-launched through {studio_venv_dir} but still running from "
+            f"{sys.prefix}, so not re-launching again. Check that UNSLOTH_STUDIO_HOME "
+            "points at the Studio install, or re-run: unsloth studio setup",
+            err = True,
+        )
+        raise typer.Exit(1)
     studio_bin = None
     resolved_frontend = frontend
     if not in_studio_venv:
@@ -2543,9 +2712,13 @@ def run(
 
     if not in_studio_venv:
         # Application Control blocks the generated unsloth.exe on some machines but not the signed python.exe beside it.
-        launch_head = (
-            _managed_cli_argv(studio_python) if sys.platform == "win32" else [str(studio_bin)]
-        )
+        if sys.platform == "win32":
+            launch_head = _managed_cli_argv(studio_python)
+        elif _resolved_or_self(studio_venv_dir) != studio_venv_dir:
+            # Older child CLIs loop via the console script's resolved shebang; python keeps the link.
+            launch_head = [str(studio_python), "-c", _WINDOWS_CLI_ENTRYPOINT]
+        else:
+            launch_head = [str(studio_bin)]
         args = [
             *launch_head,
             "studio",
@@ -2593,6 +2766,8 @@ def run(
             args.append("--no-cloudflare")
         args.append("--secure" if secure else "--no-secure")
         args.append("--tensor-parallel" if tensor_parallel else "--no-tensor-parallel")
+        if engine != "auto":
+            args.extend(["--engine", engine, "--engine-precision", engine_precision])
         if verbose:
             args.append("--verbose")
         if extra_llama_args:
@@ -2600,11 +2775,8 @@ def run(
 
         if start_api_key_marker:
             os.environ[_START_API_KEY_MARKER_ENV] = "1"
+        os.environ[_STUDIO_REEXEC_ENV] = "1"
         try:
-            # Before the platform branch: the Windows hand-off inherits this environment as
-            # the exec does, and guarding the exec alone left it free to chain old children.
-            _refuse_an_old_launcher_behind_a_symlink(studio_venv_dir, studio_python)
-            _guard_reexec_loop(str(studio_venv_dir))
             if sys.platform == "win32":
                 with _studio_runtime_launch_guard(inherited = runtime_gate_handoff) as gate_held:
                     popen_kwargs = {}
@@ -2617,10 +2789,10 @@ def run(
                     rc = proc.wait()
                 raise typer.Exit(rc)
             else:
-                os.execvp(str(studio_bin), args)
+                os.execvp(args[0], args)
         finally:
             os.environ.pop(_START_API_KEY_MARKER_ENV, None)
-            os.environ.pop(_REEXEC_DEPTH_ENV, None)
+            os.environ.pop(_STUDIO_REEXEC_ENV, None)
 
     with _studio_deps.studio_backend_imports("unsloth studio"):
         run_mod = _load_run_module()
@@ -2667,6 +2839,12 @@ def run(
             typer.echo(f"UNSLOTH_START_PORT: {actual_port}")
             typer.echo(f"UNSLOTH_START_API_KEY: {api_key}")
 
+        if engine != "auto":
+            try:
+                _ensure_engine_installed(engine, yes, silent)
+            except RuntimeError as exc:
+                typer.echo(f"Error: {exc}", err = True)
+                raise typer.Exit(1)
         if not silent:
             typer.echo(f"Loading model: {model}...")
         try:
@@ -2683,6 +2861,8 @@ def run(
                 spec_draft_n_max = spec_draft_n_max,
                 llama_extra_args = extra_llama_args,
                 request_host = request_host,
+                engine = engine,
+                engine_precision = engine_precision,
             )
         except RuntimeError as exc:
             typer.echo(f"Error: {exc}", err = True)
@@ -2778,6 +2958,7 @@ def run(
         typer.echo(f"API Key: {api_key}")
         typer.secho(_tool_notice, fg = _tool_notice_fg, bold = True)
 
+    _graceful_shutdown_on_sigterm()
     try:
         if run_mod._shutdown_event is not None:
             while not run_mod._shutdown_event.is_set():
@@ -2920,6 +3101,19 @@ def _pid_is_studio_server(pid: int, created_times: "Sequence[float | None]" = ()
     except Exception:
         return True
     return any(abs(actual - c) < 1.0 for c in known)
+
+
+def _graceful_shutdown_on_sigterm() -> None:
+    """Route SIGTERM (docker stop, `unsloth studio stop`) into the wait loop's Ctrl+C path,
+    which stops and saves a running training job before anything is killed."""
+    import signal as _signal
+
+    def _handler(signum, frame):
+        # Restore the default so a second signal force-quits if the shutdown stalls.
+        _signal.signal(_signal.SIGTERM, _signal.SIG_DFL)
+        raise KeyboardInterrupt
+
+    _signal.signal(_signal.SIGTERM, _handler)
 
 
 def _signal_stop(pid: int) -> "str | None":
@@ -3621,6 +3815,11 @@ def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None
     # Where setup runs uv from: setup.sh cds into its own directory, setup.ps1 keeps this cwd.
     setup_cwd = None if platform.system() == "Windows" else script.parent
     env = _with_studio_uv_cache(env, cwd = setup_cwd)
+    # Saves setup.ps1 the process walk. A HINT, not a promise: only the desktop spawn guarantees
+    # the managed venv's python, while a pip install, a checkout or a staged run puts an
+    # interpreter here that is nowhere near $VenvDir. Get-SetupHostInterpreterInVenv tests
+    # containment itself, so presence of this name is never proof setup runs from the venv.
+    env = {**(env or os.environ), "UNSLOTH_SETUP_HOST_PYTHON": sys.executable}
 
     if platform.system() == "Windows":
         # Resolved, not bare: PATH is not trusted here (#9440) and the Popen below has no OSError handler.
@@ -4328,19 +4527,23 @@ class _WindowsLauncherUpdateTransaction:
         return False
 
     def _restore_runnable(self) -> bool:
-        """Put back the first copy that actually runs. Under Application Control every --version dies in
-        CreateProcess, so this degrades to the shape check."""
+        return self._restore_failure_reason() is None
+
+    def _restore_failure_reason(self) -> Optional[str]:
+        """Put back the first copy that actually runs; return why the CLI still cannot, or None.
+        Under Application Control every --version dies in CreateProcess, so this degrades to the
+        shape check."""
         if self._launcher_health_error() is None:
-            return True
+            return None
         candidates = self._recovery_candidates()
         for source in candidates:
             if self._restore_from(source) and self._launcher_health_error() is None:
-                return True
+                return None
         # Nothing ran; leave the best candidate rather than whichever was tried last.
         if candidates:
             self._restore_from(candidates[0])
         # Gone, or denied by policy, is still not a broken CLI. Asked only after every candidate.
-        return self._recovered_cli_health_error() is None
+        return self._recovered_cli_health_error()
 
     def _launcher_runs_error(self) -> Optional[str]:
         """Whether THIS launcher file starts and answers --version. About the file, not the CLI: the
@@ -4480,10 +4683,16 @@ class _WindowsLauncherUpdateTransaction:
         published = self.launcher.exists()
         error = self._launcher_health_error()
         if error is not None:
-            restored = self._restore_runnable()
+            reason = self._restore_failure_reason()
+            restored = reason is None
             # Setup publishing nothing is the case this exists for, so restoring is success; a launcher setup DID write that cannot run is a failure.
             if published or not restored:
-                typer.echo(f"Error: Unsloth Studio update failed because {error}.", err = True)
+                # Absence names no cause (#9804); any other error is the published launcher's own and must win over the restored copy's.
+                cause = reason if error is self._LAUNCHER_ABSENT else None
+                typer.echo(
+                    f"Error: Unsloth Studio update failed because {cause or error}.",
+                    err = True,
+                )
                 if restored:
                     typer.echo("The previous launcher was restored.", err = True)
                 elif self._retained_backup() is not None:
@@ -4511,6 +4720,198 @@ class _WindowsLauncherUpdateTransaction:
         return False
 
 
+def _managed_llama_runtime_is_the_active_one() -> bool:
+    """Whether preflight has a managed tree to grade at all.
+
+    Kept as the yes/no question the name asks; ``_llama_runtime_to_grade`` answers
+    which tree, and the two cannot disagree.
+    """
+    return _llama_runtime_to_grade() is not None
+
+
+def _llama_runtime_to_grade() -> Path | None:
+    """The llama.cpp tree preflight should grade, or None when the runtime the
+    backend would load is one the user chose and this PR does not grade.
+
+    ``_find_llama_server_binary`` prefers ``LLAMA_SERVER_PATH``, then
+    ``UNSLOTH_LLAMA_CPP_PATH``, then Studio's settings folder, and only then the
+    managed install. Grading the managed tree regardless would send a user who
+    runs their own build into repair over a leftover install their backend never
+    opens, and offline that repair cannot even succeed.
+
+    ``UNSLOTH_LLAMA_CPP_PATH`` needs no skip: it moves the managed root itself, so
+    ``default_managed_llama_dir`` already grades the tree it names.
+    """
+    pinned = os.environ.get("LLAMA_SERVER_PATH", "").strip()
+    # Nonblank is not the test: _scan_pinned treats an absent pin as no pin and
+    # falls through to the managed tree, so suppressing the verdict for a path
+    # that was deleted would leave a quarantined managed runtime reporting Ready.
+    # The line is the finder's own _file_status, not the directory entry: a pin
+    # that exists but is denied or not executable does stop the finder, while a
+    # symlink whose target was deleted or quarantined is is_file() False, reads as
+    # "absent" there, and falls through like any missing pin. lexists called that
+    # a pin and left the managed tree the backend really loads ungraded.
+    if pinned:
+        try:
+            stops_the_finder = Path(pinned).is_file()
+        except PermissionError:
+            # is_file raises rather than answering for a locked file on Windows;
+            # _file_status retries and then calls it "denied", which halts the
+            # finder with no fallback.
+            stops_the_finder = True
+        except OSError:
+            stops_the_finder = False
+        if stops_the_finder:
+            return None
+    # studio/backend on sys.path first. llama_cpp_path_settings imports
+    # storage.studio_db as a top level package and swallows the failure, so
+    # without this the stored selection always reads as absent and a user whose
+    # custom folder is set in Studio would be sent to repair a tree their backend
+    # never opens. Mirrors the backend_dir insert the other commands here do.
+    backend_dir = _PACKAGE_ROOT / "studio" / "backend"
+    if backend_dir.is_dir() and str(backend_dir) not in sys.path:
+        sys.path.insert(0, str(backend_dir))
+    try:
+        from studio.backend.utils.llama_cpp_path_settings import (
+            expanded_user_path,
+            get_stored_custom_llama_cpp_path,
+            llama_server_candidates,
+        )
+        from studio.install_llama_prebuilt import default_managed_llama_dir
+    except Exception:
+        # No settings module means no stored selection to honour, and no way to
+        # ask whether a folder holds a server, so the managed root stands.
+        from studio.install_llama_prebuilt import default_managed_llama_dir
+        return default_managed_llama_dir()
+    # UNSLOTH_LLAMA_CPP_PATH outranks the stored folder in the finder (1b before
+    # 2), and default_managed_llama_dir points at exactly that tree, so it is ours
+    # to grade even when an older selection is still in the settings database.
+    # Reading the setting first left the tree the backend actually opens ungraded.
+    # The managed marker is the exception: the finder skips the override when the
+    # desktop set it, so the stored folder wins again.
+    override = (os.environ.get("UNSLOTH_LLAMA_CPP_PATH") or "").strip()
+    # Classified, not merely read off the marker. studio/backend/main.py calls
+    # mark_managed_llama_cpp_path(managed) before discovery, which marks any
+    # override equal to the managed tree however it got there, and the finder then
+    # skips it. _ensure_studio_env_exported writes exactly that value under a
+    # custom STUDIO_HOME and sets no marker, so trusting the marker alone made
+    # this grade the managed tree as a user pin while the backend walked past it
+    # to the stored selection: a damaged managed tree blocked launch and was sent
+    # for repair though nothing would ever open it.
+    managed_override = os.environ.get("UNSLOTH_STUDIO_MANAGED_LLAMA_CPP_PATH") == "1"
+    if override and not managed_override:
+        # Against the tree the studio home names with the override out of the way,
+        # never default_managed_llama_dir(): that reads the override first and
+        # would call every user pin managed. The backend compares against exactly
+        # this value, STUDIO_ROOT/llama.cpp computed before it exported anything.
+        managed_override = _same_runtime_tree(
+            expanded_user_path(override), _managed_llama_dir_ignoring_the_override()
+        )
+    if override and not managed_override:
+        # Only a folder that holds a server stops discovery. _scan_pinned finds no
+        # candidate under an empty or missing override and walks on, so a tree behind
+        # it is still ours to grade; one that holds a server is not.
+        # Not graded, because nothing can repair it: setup.sh derives LLAMA_CPP_DIR
+        # from STUDIO_HOME and setup.ps1 from Get-ManagedLlamaCppDir, and neither
+        # reads UNSLOTH_LLAMA_CPP_PATH at all, so an update sent here would rebuild a
+        # different tree, report success, and leave the next launch offering the same
+        # repair forever. LLAMA_SERVER_PATH is skipped for the same reason.
+        # expanded_user_path, not Path.expanduser: the finder reads the same
+        # variable through it, and a "~name" naming no account makes expanduser
+        # raise RuntimeError out of a doctor whose whole job is to answer.
+        if _layout_stops_discovery(llama_server_candidates(expanded_user_path(override))):
+            return None
+    if get_stored_custom_llama_cpp_path() is not None:
+        return None
+    if managed_override:
+        # The finder skips an override that names the managed tree, and that tree
+        # is the one this install owns, so it is still the answer.
+        return default_managed_llama_dir()
+    # The finder has walked past the override, so the tree it reaches is the one
+    # the managed root names with that override out of the way. Reading it with
+    # the variable still set would name the folder just ruled out.
+    return _managed_llama_dir_ignoring_the_override()
+
+
+def _same_runtime_tree(left: Path, right: Path) -> bool:
+    """Whether two runtime paths name one tree, the way the backend compares them.
+
+    ``mark_managed_llama_cpp_path`` resolves both sides non-strictly and swallows
+    the same errors, so a path that has not been created yet still compares, and
+    an unreadable one answers "different" rather than raising out of the doctor.
+    """
+    try:
+        return left.resolve(strict = False) == right.resolve(strict = False)
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+def _layout_stops_discovery(candidates) -> bool:
+    """Whether a pinned folder ends ``_find_llama_server_binary``'s search.
+
+    Presence, not usability: ``_scan_pinned`` returns a hit for an executable
+    candidate, and for one that is merely present it returns the path as
+    ``non_executable`` or ``denied``, which the caller turns into ``_unavailable``
+    and a refusal to fall back. Only a layout holding no server at all is walked
+    past. Asking for the execute bit here would send preflight off to grade a
+    different tree in exactly the case where the pinned one needs repair.
+    """
+    for candidate in candidates:
+        try:
+            if candidate.is_file():
+                return True
+        except PermissionError:
+            return True
+        except OSError:
+            continue
+    return False
+
+
+def _managed_llama_dir_ignoring_the_override() -> Path:
+    """default_managed_llama_dir with UNSLOTH_LLAMA_CPP_PATH out of the way, and the
+    inferred studio home put back.
+
+    The desktop scrubs UNSLOTH_STUDIO_HOME and STUDIO_HOME before it spawns this
+    (MANAGED_CHILD_SCRUBBED_ENV), so default_managed_llama_dir reads an empty
+    environment and answers the legacy ~/.unsloth/llama.cpp. _resolve_studio_home has
+    already recovered the real root off sys.prefix by then, and preflight::managed's
+    inferred_studio_llama_root fingerprints <root>/llama.cpp on the strength of the
+    same inference, so reading only the environment here graded the legacy tree while
+    the cache watched the custom one: quarantine in the runtime actually in use
+    reported Ready and failed at model load.
+
+    Exported rather than computed, because _ensure_studio_env_exported writes exactly
+    this value and there should be one rule for it, not two that can drift.
+    """
+    from studio.install_llama_prebuilt import default_managed_llama_dir
+
+    # A master root first, for the same reason the export computes it that way: the
+    # runtimes sit beside studio/, and default_managed_llama_dir reads only the studio
+    # home, so it would answer <master>/studio/llama.cpp and grade the tree the
+    # installer exported -- the one actually in use -- as somebody's own pin, which
+    # left these installs out of the health check entirely.
+    master_dir = _master_root_llama_dir()
+    if master_dir is not None:
+        return master_dir
+
+    saved = os.environ.pop("UNSLOTH_LLAMA_CPP_PATH", None)
+    had_home = "UNSLOTH_STUDIO_HOME" in os.environ
+    saved_home = os.environ.get("UNSLOTH_STUDIO_HOME")
+    # Truthy-check, not a bare presence one, the way _ensure_studio_env_exported reads
+    # it: a blank UNSLOTH_STUDIO_HOME= is not a root either.
+    if _STUDIO_HOME_IS_CUSTOM and not (saved_home or "").strip():
+        os.environ["UNSLOTH_STUDIO_HOME"] = str(STUDIO_HOME)
+    try:
+        return default_managed_llama_dir()
+    finally:
+        if saved is not None:
+            os.environ["UNSLOTH_LLAMA_CPP_PATH"] = saved
+        if had_home:
+            os.environ["UNSLOTH_STUDIO_HOME"] = saved_home
+        else:
+            os.environ.pop("UNSLOTH_STUDIO_HOME", None)
+
+
 @studio_app.command("desktop-capabilities", hidden = True)
 def desktop_capabilities(
     json_output: bool = typer.Option(
@@ -4530,8 +4931,39 @@ def desktop_capabilities(
         # Did the install finish and are the backend boot deps still there.
         "studio_install_ok": bool(state["ok"]),
         "studio_install_reason": state["reason"],
+        # And is the llama.cpp runtime the backend loads still intact. Null when
+        # nothing is installed yet (NotInstalled, not a broken install). Older
+        # desktops ignore both keys.
+        "llama_runtime_ok": None,
+        "llama_runtime_reason": "",
         "version": "unknown",
     }
+    # Best effort: a probe that cannot answer must not turn a working install into
+    # a stale one, so a failure here leaves llama_runtime_ok null.
+    try:
+        from studio.install_llama_prebuilt import installed_runtime_health
+        runtime_root = _llama_runtime_to_grade()
+        if runtime_root is not None:
+            health = installed_runtime_health(runtime_root)
+            if health is not None:
+                payload["llama_runtime_ok"], payload["llama_runtime_reason"] = health
+        else:
+            # Null with a reason, because the two nulls are not the same thing.
+            # Nothing installed is a fact about the machine and stays true until
+            # the tree changes, so the desktop may cache it. This one is a fact
+            # about a selection the desktop's fingerprint does not watch, so the
+            # answer expires the moment the user clears their custom folder, and
+            # managed.rs declines to cache it on the strength of this reason.
+            # The verdict itself is still null, so nothing turns stale on it.
+            payload["llama_runtime_reason"] = "llama_runtime_not_managed"
+    except Exception:
+        # The third null, and the one that must not be kept. Nothing-installed is a
+        # fact about the machine; this is a fact about one attempt, and it shares the
+        # damaged tree's fingerprint, so caching it froze a Ready that was never
+        # reached over a runtime the probe would have rejected. Same reason string
+        # shape as the skip, so managed.rs refuses both without a second rule.
+        payload["llama_runtime_ok"] = None
+        payload["llama_runtime_reason"] = "llama_runtime_probe_failed"
     try:
         from importlib.metadata import version as package_version
         payload["version"] = package_version("unsloth")

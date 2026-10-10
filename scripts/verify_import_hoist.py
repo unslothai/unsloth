@@ -771,6 +771,22 @@ _SELF_TESTS = {
         "    return x\n",
         None,
     ),
+    # `app.dependency_overrides[dep] = lambda: ...` is how FastAPI route tests are written.
+    "a_subscript_key_on_the_left_hand_side_is_a_use": (
+        "app = {}\n",
+        "from .deps import dependency\napp = {}\napp[dependency] = 1\n",
+        None,
+    ),
+    "a_subscripted_object_on_the_left_hand_side_is_a_use": (
+        "def f(k, v):\n    return k, v\n",
+        "from .deps import registry\ndef f(k, v):\n    registry[k] = v\n",
+        None,
+    ),
+    "an_attribute_target_loads_the_object": (
+        "def f(v):\n    return v\n",
+        "from .deps import settings\ndef f(v):\n    settings.value = v\n",
+        None,
+    ),
     # The other direction: Literal['T'] is a VALUE, so it must NOT credit an import T.
     "a_literal_value_is_not_a_use_of_that_name": (
         "from typing import TYPE_CHECKING, Literal\ndef f(x) -> Literal['a']:\n    return x\n",

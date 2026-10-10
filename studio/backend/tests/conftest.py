@@ -42,6 +42,25 @@ _backend_root = Path(__file__).resolve().parent.parent
 if str(_backend_root) not in sys.path:
     sys.path.insert(0, str(_backend_root))
 
+# Settle the real ``loggers`` package before any test module is imported. 84 test files
+# stub it with a bare ``ModuleType``, which has no ``__path__`` and so is not a package: once
+# one wins the slot, ``from loggers.media_progress import ...`` (routes/inference.py, at module
+# level) dies with "'loggers' is not a package". Only bites when pytest is invoked from the
+# repo root, which is why the repo's own CI, run from studio/backend, never saw it.
+try:
+    import loggers  # noqa: E402
+except ImportError:
+    # loggers.handlers needs structlog, and some tests stub structlog to run without it. Where
+    # it is missing, the import this protects would die on structlog anyway.
+    pass
+else:
+    # A stub satisfies the import too: ``__path__`` is the whole difference. Also keeps the
+    # name used, which is what verify_import_hoist.py reads a module-level import for.
+    assert hasattr(loggers, "__path__"), (
+        f"the 'loggers' slot holds a non-package ({loggers!r}); a ModuleType stub from some "
+        "test module got there first, so `from loggers.media_progress import ...` will fail"
+    )
+
 # tests/_shared, as tests/conftest.py does for its own trees. Module scope, not a fixture:
 # a test module imports from it at collection, before any fixture runs.
 for _up in Path(__file__).resolve().parents:
@@ -108,6 +127,47 @@ _skills_home_counter = itertools.count()
 
 
 @pytest.fixture(autouse = True)
+def _no_real_mxc_drive_aliases(monkeypatch):
+    # A Windows test host would otherwise map real drive letters; test_mxc_drive_alias.py and the native
+    # MXC tests opt back in.
+    monkeypatch.setenv("UNSLOTH_MXC_DRIVE_ALIAS", "0")
+
+
+@pytest.fixture(autouse = True)
+def _forget_mxc_isolation_settings():
+    # Held for a second across tests that each get their own Studio home; only when already imported.
+    def _forget():
+        settings = sys.modules.get("utils.mxc_isolation_settings")
+        if settings is not None:
+            settings.forget_cached_setting()
+
+    _forget()
+    yield
+    _forget()
+
+
+@pytest.fixture(autouse = True)
+def _no_background_sandbox_probes(monkeypatch):
+    # No warm-up thread and no background re-probe; each test starts with no cached tool answer.
+    monkeypatch.setenv("UNSLOTH_DISABLE_SANDBOX_WARMUP", "1")
+
+    def _forget():
+        os_sandbox = sys.modules.get("core.inference.os_sandbox")
+        if os_sandbox is not None:
+            os_sandbox.forget_tool_isolation()
+
+    _forget()
+    yield
+    _forget()
+
+
+@pytest.fixture(autouse = True)
+def _no_restricted_region_defaults(monkeypatch):
+    # A host where Hugging Face is restricted would otherwise default the model source to ModelScope.
+    monkeypatch.setenv("UNSLOTH_MIRROR_FALLBACK", "0")
+
+
+@pytest.fixture(autouse = True)
 def _isolate_agent_skills(_skills_home_root, monkeypatch):
     # A developer's own ~/.agents or ~/.claude skills must not leak into tool-selection tests.
     from core.inference import skills as _skills
@@ -146,6 +206,52 @@ def _contain_installer_venv_root(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse = True)
+def _reset_gpu_query_cache():
+    # Only when already imported: importing utils.hardware would change import-order tests.
+    def _reset():
+        gpu_query = sys.modules.get("utils.hardware.gpu_query")
+        # A background probe thread may still be importing it; a half-built module has no cache yet.
+        reset = getattr(gpu_query, "reset", None)
+        if reset is not None:
+            reset()
+        hw = sys.modules.get("utils.hardware.hardware")
+        if hw is not None and hasattr(hw, "_last_good_visible_info"):
+            with hw._last_good_visible_lock:
+                hw._last_good_visible_info.clear()
+        amd = sys.modules.get("utils.hardware.amd")
+        if amd is not None and hasattr(amd, "_hip_id_map_lock"):
+            with amd._hip_id_map_lock:
+                amd._hip_id_map_cache = None
+
+    _reset()
+    yield
+    _reset()
+
+
+@pytest.fixture(autouse = True)
+def _restore_fp32_matmul_precision():
+    # torchao's default config handler sets set_float32_matmul_precision("high") process-wide.
+    def _get():
+        getter = getattr(sys.modules.get("torch"), "get_float32_matmul_precision", None)
+        return getter() if getter is not None else None
+
+    before = _get() or "highest"
+    yield
+    after = _get()
+    if after is not None and after != before:
+        sys.modules["torch"].set_float32_matmul_precision(before)
+
+
+@pytest.fixture(autouse = True)
+def _reset_media_import_window(monkeypatch):
+    # A load path claims the window for the process; later prewarm tests would skip.
+    warm = sys.modules.get("utils.torch_warmup")
+    if warm is not None and hasattr(warm, "_media_import_claimed"):
+        monkeypatch.setattr(warm, "_media_import_claimed", False)
+        monkeypatch.setattr(warm, "_media_import_owner", None)
+
+
+@pytest.fixture(autouse = True)
 def _isolate_studio_home(_studio_home_root, monkeypatch):
     home = _studio_home_root / f"home-{next(_studio_home_counter)}"
     home.mkdir()
@@ -162,6 +268,11 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers",
         "allow_network: let this test make non-loopback connections (see _no_outbound_network)",
+    )
+    config.addinivalue_line(
+        "markers",
+        "stages_switch_waiter: this test leaves routes.inference._auto_switch_waiters populated "
+        "on purpose (see the autouse fixture in test_openai_auto_switch.py)",
     )
 
 
@@ -277,6 +388,96 @@ def _confine_prequant_registration_memo():
 
 
 @pytest.fixture(autouse = True)
+def _isolate_generation_state():
+    """Keep one test's account fences and active generations out of the next test.
+
+    ``state.active_generations`` keeps ``_ACTIVE`` and ``_FENCED`` on the module, so they are
+    process-global and survive a test. Retiring or deactivating an account fences it, and
+    staying fenced is the CORRECT end state for those tests, so none of them is at fault: what
+    was missing is the isolation, the same way a tmp dir is isolated rather than every test
+    being asked to clean up after itself.
+
+    Measured, not guessed: 15 tests across test_job_accounts.py, test_account_storage.py,
+    test_account_integration_wiring.py and test_account_retired_workspace_recreated.py end
+    with a fenced account. Whichever of them landed in an xdist worker ahead of
+    tests/multi_account/test_routing_invariance.py made its
+    ``assert active_generations._FENCED == set()`` fail with somebody else's account id, which
+    is why that test failed in CI and passed whenever it was run on its own.
+
+    Here, not per-suite, so no test can leak. Several files already call reset_for_tests()
+    around themselves; this makes that universal, and those stay as they are since resetting
+    twice costs nothing and the local call documents the intent at its own site.
+    """
+    from state import active_generations
+
+    active_generations.reset_for_tests()
+    yield
+    active_generations.reset_for_tests()
+
+
+@pytest.fixture(autouse = True)
+def _forget_the_managed_provider_url_setting():
+    """Drop the managed-account private provider URL setting's cached answer around each test.
+
+    ``managed_provider_url_settings`` holds the owner's switch for a second so every managed
+    outbound request does not open SQLite. Each test points ``UNSLOTH_STUDIO_HOME`` at a fresh
+    store, but the held answer outlives it: a test that turned the switch on left ``True`` cached,
+    and the next test in the same xdist worker to run inside that second read it instead of its own
+    store's default, so test_managed_account_cannot_list_models_from_a_loopback_provider got a 200
+    with the loopback provider's models where it expected a 400.
+    """
+    settings = sys.modules.get("utils.managed_provider_url_settings")
+    if settings is not None:
+        settings.forget_cached_setting()
+    yield
+    settings = sys.modules.get("utils.managed_provider_url_settings")
+    if settings is not None:
+        settings.forget_cached_setting()
+
+
+@pytest.fixture(autouse = True)
+def _forget_the_cached_owner_identity():
+    """Drop ``process_lifetime``'s cached owner identity after each test.
+
+    ``_own_identity`` reads this process's identity once and keeps it, which is right in a server,
+    where it cannot change. A test that patches ``_pid_identity`` and then adopts a pid caches the
+    fake instead: test_concurrent_adopts_all_survive left ``id-<pid>`` behind, and the next test in
+    the same xdist worker to write a record wrote that, so the reaper read its own live owner as
+    gone and killed the child test_a_live_owner_is_never_reaped had just adopted. The cache is
+    recomputed on demand, so clearing it costs one ``ps`` at most.
+    """
+    yield
+    lifetime = sys.modules.get("utils.process_lifetime")
+    if lifetime is not None:
+        lifetime._owner_identity = None
+
+
+@pytest.fixture(autouse = True)
+def _isolate_wal_keepers():
+    """Close the WAL keepers a test opened, so the next test starts without them.
+
+    ``storage.studio_db`` holds one keeper connection per database in a module global, and
+    ``get_connection`` opens one on its own for any managed account, which is the correct
+    behaviour in a server and the reason nothing else closes them in a test. So every test that
+    touched a managed account's studio.db, tests/multi_account/test_alice_bob_matrix.py among
+    them, handed its keepers to whatever ran next in the same xdist worker, and
+    test_wal_keeper_declines_when_the_filesystem_refused_wal's ``assert not _wal_keepers``
+    failed with somebody else's account databases. Reproduced by running the matrix ahead of it.
+
+    Only what the test itself added is closed, and through ``close_wal_keeper_for`` so the
+    close listeners run exactly as they would in the product.
+    """
+    from storage import studio_db
+
+    before = set(studio_db._wal_keepers)
+    unsupported = set(studio_db._wal_unsupported)
+    yield
+    for path in set(studio_db._wal_keepers) - before:
+        studio_db.close_wal_keeper_for(path)
+    studio_db._wal_unsupported.intersection_update(unsupported)
+
+
+@pytest.fixture(autouse = True)
 def _isolate_audio_gallery(monkeypatch, tmp_path):
     """Keep generated-clip persistence out of the developer's real gallery.
 
@@ -308,6 +509,7 @@ def _no_background_model_scan(monkeypatch):
     # assertion became a 503 "still indexing". Cold-path tests reset _scan themselves;
     # _build_index is untouched so tests calling it directly still walk for real.
     monkeypatch.setattr(local_model_resolver, "_scan", (time.monotonic(), {}))
+    monkeypatch.setattr(local_model_resolver, "_misses", {})
 
 
 @pytest.fixture(scope = "session")
@@ -334,6 +536,15 @@ def _hf_cache_is_empty(_empty_hf_hub_cache, monkeypatch):
     except Exception:  # optional deps absent on some CI legs
         return
     monkeypatch.setattr(constants, "HF_HUB_CACHE", _empty_hf_hub_cache)
+
+
+@pytest.fixture(autouse = True)
+def _no_live_metal_wired_ceiling(monkeypatch):
+    """Keep Metal context verdicts off the host's live GPU memory."""
+    from core.inference.llama_cpp import LlamaCppBackend
+    monkeypatch.setattr(
+        LlamaCppBackend, "_apple_metal_wired_ceiling_bytes", staticmethod(lambda: 0)
+    )
 
 
 @pytest.fixture(autouse = True)
@@ -872,7 +1083,7 @@ def stub_embeddings(monkeypatch):
 
     from core.rag import config, embeddings
 
-    # Pin the backend: "auto" reprobes the hardware (nvidia-smi) on every use.
+    # Pin the backend: "auto" probes the hardware (nvidia-smi) for each backend it builds.
     monkeypatch.setattr(config, "EMBED_BACKEND", "sentence-transformers")
     dim = 32
 
@@ -1095,3 +1306,164 @@ def _admitted_inference_count_is_balanced():
         yield
     finally:
         _restore(before)
+
+
+@pytest.fixture(autouse = True)
+def _no_leaked_inventory_handles():
+    """Start every test with an empty per-request handle table.
+
+    The ContextVar a REQUEST owns is never reset between tests, so one test that resolves a
+    handle leaves the table populated for every test after it in the same worker, and a route
+    that answers a response MODEL then answers a restored dict instead.
+    """
+    try:
+        from hub.utils import host_paths
+    except Exception:  # optional deps absent on some CI legs
+        yield
+        return
+    token = host_paths._request_handles.set(None)
+    try:
+        yield
+    finally:
+        host_paths._request_handles.reset(token)
+
+
+@pytest.fixture(autouse = True)
+def _drop_the_settings_memo_between_tests():
+    """Stop one test's app settings answering another test's read.
+
+    utils.openai_auto_switch_settings memoizes every setting it reads for _CACHE_TTL_S
+    (2 seconds) in a module-level dict, which is right on a request hot path and wrong
+    across tests: suites run far faster than the TTL, so a test that reads a setting hands
+    its value to whatever runs next, and only to the tests that happen to run inside the
+    window. That is not an ordering bug a fixed test order would catch; it is a clock.
+
+    It cost a day of #11241: a leaked auto-download flag turned the withheld-model tests'
+    404 into a fetch-and-load, which then died on their own backend double and surfaced as
+    `assert 500 == 404` in the l-r shard and nowhere else.
+    """
+    from utils import openai_auto_switch_settings as _settings
+
+    _settings._cache.clear()
+    try:
+        yield
+    finally:
+        _settings._cache.clear()
+
+
+@pytest.fixture(autouse = True)
+def _drop_the_idle_reload_stash_between_tests():
+    """Stop one test's idle-unloaded model being resurrected by another test's request.
+
+    core.inference.llama_keepwarm keeps what the idle loop freed in a module-level
+    ``_last_unloaded_model`` (with its KV manifest in ``_kv_resume``) so the next request
+    can reload exactly that. The idle tests set it through a real unload and clear it only
+    on the way IN, via their own _reset_keepwarm, so whichever of them runs last in a
+    worker leaves the stash standing for every test after it, in any module.
+
+    The chat route reads that stash before it refuses anything (routes/inference.py, "Idle
+    unload may have freed the model; reload exactly what it freed"). A later test whose
+    backends are doubles then reloads a model it never mentioned: the withheld-alias test
+    went looking for unsloth/Idle-GGUF on the Hub and died on
+    ``'_B' object has no attribute 'load_model'``, reported as ``assert 500 == 404``.
+
+    That is the same symptom the settings memo above produced and a different cause, which
+    is why this clears the stash rather than widening that fixture: both hand a later test
+    an input it never set, and under xdist --dist loadgroup which tests share a worker
+    changes between runs, so it fails in one shard and nowhere else.
+
+    The two stash fields only. The counters beside them (_inflight, _pending, _last_active)
+    are live-traffic bookkeeping, and zeroing those around every test would hide exactly the
+    leak this is here to prevent.
+
+    Through _set_last_unloaded rather than by assigning the globals: the manifest names KV
+    slot files on disk, and llama_keepwarm makes whoever takes it responsible for deleting
+    them. Assigning None drops the only reference to a real snapshot and leaves the files
+    behind, so a suite that saves KV would accumulate them run after run. That call clears
+    both fields under the module lock and unlinks the slots on its way out.
+    """
+    from core.inference import llama_keepwarm as _keepwarm
+
+    _keepwarm._set_last_unloaded(None)
+    try:
+        yield
+    finally:
+        _keepwarm._set_last_unloaded(None)
+
+
+# Run with the NVFP4 switch on; test_nvfp4_diffusion_flag and test_build_prequant_checkpoint must stay off.
+_NVFP4_ENABLED_TEST_MODULES = frozenset(
+    {
+        "test_dense_quant_rocm_gate_9396",
+        "test_diffusion_auto_policy",
+        "test_diffusion_backend",
+        "test_diffusion_inference_info",
+        "test_diffusion_lora",
+        "test_diffusion_more_families",
+        "test_diffusion_native_quant",
+        "test_diffusion_pipeline_prequant",
+        "test_diffusion_precision",
+        "test_diffusion_prequant",
+        "test_diffusion_quant_pad",
+        "test_diffusion_routes",
+        "test_diffusion_te_prequant",
+        "test_diffusion_transformer_quant",
+        "test_train_precision_scheme_contract",
+        "test_video_backend",
+        "test_video_families",
+        "test_video_h3_te_quant",
+        "test_video_prequant",
+        "test_video_routes",
+        "test_xformers_stub_diffusion_parity",
+    }
+)
+_NVFP4_ENABLED_TEST_PREFIX = "test_diffusion_nvfp4_"
+
+
+@pytest.fixture(autouse = True)
+def _nvfp4_diffusion_enabled_for_nvfp4_tests(request, monkeypatch):
+    """Switch NVFP4 on for the modules above; every other module sees the default (off)."""
+    module = getattr(request, "module", None)
+    name = getattr(module, "__name__", "").rsplit(".", 1)[-1]
+    if name in _NVFP4_ENABLED_TEST_MODULES or name.startswith(_NVFP4_ENABLED_TEST_PREFIX):
+        monkeypatch.setenv("UNSLOTH_NVFP4_DIFFUSION", "1")
+    else:
+        monkeypatch.delenv("UNSLOTH_NVFP4_DIFFUSION", raising = False)
+    yield
+
+
+@pytest.fixture(autouse = True)
+def pin_installer_torch_vendor(monkeypatch):
+    """Pin the installer's torch-vendor probe so a ROCm-torch dev box answers like CI."""
+    monkeypatch.delenv("UNSLOTH_FORCE_ROCM_TORCH", raising = False)
+    for module in list(sys.modules.values()):
+        # __dict__: hasattr would trip a lazy __getattr__. _torchao_stub has its own probe.
+        if "_rocm_torch_preferred" in (getattr(module, "__dict__", None) or {}):
+            monkeypatch.setattr(module, "_installed_torch_is_rocm", lambda: None)
+
+
+@pytest.fixture(autouse = True)
+def _clear_github_rate_limit_lockout():
+    from utils.prebuilt import freshness_flow
+
+    freshness_flow._api_rate_limited_until = 0.0
+    yield
+    freshness_flow._api_rate_limited_until = 0.0
+
+
+@pytest.fixture
+def traced_offload_hooks(monkeypatch):
+    """diffusers' own group-offload hook methods for one test (install_group_offload_hooks_eager is process-wide)."""
+    go = pytest.importorskip("diffusers.hooks.group_offloading")
+    from core.inference.diffusion_memory import install_group_offload_hooks_eager
+
+    install_group_offload_hooks_eager()
+    for cls in (
+        go.GroupOffloadingHook,
+        go.LayerExecutionTrackerHook,
+        go.LazyPrefetchGroupOffloadingHook,
+    ):
+        for name, fn in list(vars(cls).items()):
+            orig = getattr(fn, "_unsloth_orig", None)
+            if orig is not None:
+                monkeypatch.setattr(cls, name, orig)

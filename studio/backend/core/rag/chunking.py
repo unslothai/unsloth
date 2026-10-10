@@ -25,6 +25,7 @@ class Chunk:
     chunk_index: int
     page_char_start: int
     page_char_end: int
+    whole_document_token_count: int | None = None
 
 
 @dataclass(frozen = True, slots = True)
@@ -126,16 +127,24 @@ def chunk_pages(
         for piece in pieces:
             starts.append(cursor)
             cursor += len(piece.text)
+        previous_end = 0
         for text, char_start, char_end in _merge(pieces, starts, max_tokens, overlap):
+            token_count = count(text)
+            overlap_chars = min(len(text), max(0, previous_end - char_start))
+            unique_text = text[overlap_chars:].lstrip("\r\n")
             out.append(
                 Chunk(
                     text = text,
-                    token_count = count(text),
+                    token_count = token_count,
                     page_number = page.page_number,
                     source_page_index = page_index,
                     chunk_index = len(out),
                     page_char_start = char_start,
                     page_char_end = char_end,
+                    whole_document_token_count = (
+                        token_count if unique_text == text else count(unique_text)
+                    ),
                 )
             )
+            previous_end = max(previous_end, char_end)
     return out

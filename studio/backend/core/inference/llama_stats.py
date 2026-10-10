@@ -73,17 +73,36 @@ def erase_llama_slot(
         return 0
 
 
+def _loopback_opener():
+    """No proxy, so the bearer only ever goes to the loopback server. No HTTPSHandler: it
+    builds an SSL context this scrape never needs."""
+    opener = urllib.request.OpenerDirector()
+    for handler in (
+        urllib.request.ProxyHandler({}),
+        urllib.request.HTTPHandler(),
+        urllib.request.HTTPDefaultErrorHandler(),
+        urllib.request.HTTPErrorProcessor(),
+    ):
+        opener.add_handler(handler)
+    return opener
+
+
 def scrape_llama_metrics(
     base_url,
     timeout_s = 3.0,
+    *,
     headers = None,
+    opener = None,
 ):
     """One /metrics read as a {name: float} dict, or None if it could not be read. Split out of the
     daemon's own scrape so a single-sample caller reuses this parser. None means "cannot tell"."""
     url = f"{str(base_url).rstrip('/')}/metrics"
+    if opener is None:
+        opener = _loopback_opener()
     try:
-        req = urllib.request.Request(url, headers = headers or {})
-        with urllib.request.urlopen(req, timeout = timeout_s) as r:
+        with opener.open(
+            urllib.request.Request(url, headers = dict(headers or {})), timeout = timeout_s
+        ) as r:
             if r.status != 200:
                 return None
             body = r.read().decode("utf-8", "replace")
@@ -115,9 +134,12 @@ class LlamaServerStatsLogger:
         logger,
         interval_s = 10.0,
         stall_timeout_s = 600.0,
+        headers = None,
     ):
         self._base_url = base_url.rstrip("/")
         self._url = f"{self._base_url}/metrics"
+        self._headers = dict(headers or {})
+        self._opener = _loopback_opener()
         self._log = logger
         self._interval = max(1.0, float(interval_s))
         self._stop = threading.Event()
@@ -138,7 +160,7 @@ class LlamaServerStatsLogger:
         self._stop.set()
 
     def _scrape(self):
-        return scrape_llama_metrics(self._base_url)
+        return scrape_llama_metrics(self._base_url, headers = self._headers, opener = self._opener)
 
     @staticmethod
     def _prompt_rate(base, tokens, seconds):
@@ -317,7 +339,11 @@ def _env_float(name, default, logger):
     return value
 
 
-def maybe_start_stats_logger(base_url, logger):
+def maybe_start_stats_logger(
+    base_url,
+    logger,
+    headers = None,
+):
     """Start a stats logger unless UNSLOTH_STUDIO_ENGINE_STATS disables it."""
     if (os.environ.get("UNSLOTH_STUDIO_ENGINE_STATS", "1") or "").strip().lower() in _OFF:
         return None
@@ -330,6 +356,7 @@ def maybe_start_stats_logger(base_url, logger):
         logger,
         interval,
         stall_timeout_s = stall_timeout,
+        headers = headers,
     )
     sl.start()
     return sl

@@ -18,9 +18,8 @@ from markdown_it.rules_inline.backticks import backtick
 from core.research.redaction import _escape_link_destination
 
 
-# Unrolled rather than (?:[^\[\]]+|\[[^\[\]]*\])* : that alternation backtracks catastrophically on
-# an unterminated "[Document:", and this runs on the event loop.
-_DOCUMENT_CITATION = re.compile(r"\[Document:[^\[\]]*(?:\[[^\[\]]*\][^\[\]]*)*\]")
+# unrolling avoids catastrophic backtracking on unclosed [Document: that would block the event loop.
+_DOCUMENT_CITATION = re.compile(r"\[(?:Document|MCP):[^\[\]]*(?:\[[^\[\]]*\][^\[\]]*)*\]")
 _MARKDOWN_LINK_START = re.compile(r"\[([^\]\n]+)\]\((https?://)")
 _SOURCES_HEADING = re.compile(
     r"^(?:#{1,6}\s+|\*\*)?"
@@ -245,7 +244,7 @@ def _validate_masked_sources(report: str, sources: list[dict], placeholders: dic
         source = source_by_url.get(url)
         if source is None:
             return None
-        title = _citation_title(source, url)
+        title = re.sub(r"(\\*)\|", r"\1\1\\|", _citation_title(source, url))
         token = _placeholder("research-citation", len(placeholders))
         placeholders[token] = f"[{title}]({_escape_link_destination(url)})"
         return token
@@ -340,7 +339,7 @@ def _validate_masked_sources(report: str, sources: list[dict], placeholders: dic
 
 
 def _validate_report_sources(report: str, sources: list[dict]) -> str:
-    """Canonicalize citations and remove model-authored source lists."""
+    """canonicalize citations and remove model-authored source lists."""
     placeholders: dict[str, str] = {}
     validated = _validate_masked_sources(_mask_code(report, placeholders), sources, placeholders)
     return _restore_placeholders(validated, placeholders)
@@ -348,16 +347,24 @@ def _validate_report_sources(report: str, sources: list[dict]) -> str:
 
 def _document_source_citation(source: dict) -> str:
     filename = str(source.get("filename") or "Document")
+    if source.get("kind") == "mcp":
+        return f"[MCP: {_mcp_source_label(source)}]"
     if source.get("page") is not None:
         return f"[Document: {filename}, p. {source['page']}]"
     return f"[Document: {filename}]"
 
 
+def _mcp_source_label(source: dict) -> str:
+    filename = str(source.get("filename") or "MCP source")
+    label = " ".join(filename.replace("[", "").replace("]", "").split())
+    return label or "MCP source"
+
+
 def _allowed_document_citations(sources: list[dict]) -> set[str]:
     allowed = set()
     for source in sources:
-        filename = str(source.get("filename") or "Document")
-        allowed.add(f"[Document: {filename}]")
+        if source.get("kind") != "mcp":
+            allowed.add(f"[Document: {source.get('filename') or 'Document'}]")
         allowed.add(_document_source_citation(source))
     return allowed
 

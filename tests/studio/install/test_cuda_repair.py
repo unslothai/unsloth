@@ -120,6 +120,7 @@ def _run_cuda_repair(
     cvd = None,
     index_family = None,
     index_url = None,
+    probe = False,
 ):
     """Invoke _ensure_cuda_torch under a fully mocked host; return the pip mock.
 
@@ -173,7 +174,12 @@ def _run_cuda_repair(
             stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
         if index_url is None:
             stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_URL", None)
-        _ensure_cuda_torch()
+        # probe asks setup.sh's fast-path question instead. Carried on the pip mock so the
+        # scenarios above keep their single return value.
+        if probe:
+            mock_pip.probe_answer = stack_mod._cuda_torch_needs_dependency_pass()
+        else:
+            mock_pip.repair_ok = _ensure_cuda_torch()
     return mock_pip
 
 
@@ -269,8 +275,23 @@ class TestCudaRepairSkips:
         mock_pip.assert_not_called()
 
     def test_deliberate_cpu_wheel_no_repair(self):
-        mock_pip = _run_cuda_repair(torch_state = "cpu")
+        with (
+            patch.object(stack_mod, "_RECORDED_TORCH_TAG", "cpu"),
+            patch.object(stack_mod, "_RECORDED_TORCH_TAG_PINNED", True),
+        ):
+            mock_pip = _run_cuda_repair(torch_state = "cpu")
         mock_pip.assert_not_called()
+
+    def test_a_cuda_request_this_run_outranks_the_pinned_cpu_record(self, monkeypatch):
+        """UNSLOTH_TORCH_BACKEND=cuda names a GPU family, so the old pinned cpu record no longer
+        speaks for this run and a CPU wheel a later step left behind is repaired."""
+        monkeypatch.delenv("UNSLOTH_TORCH_BACKEND_SOURCE", raising = False)
+        with (
+            patch.object(stack_mod, "_RECORDED_TORCH_TAG", "cpu"),
+            patch.object(stack_mod, "_RECORDED_TORCH_TAG_PINNED", True),
+        ):
+            mock_pip = _run_cuda_repair(backend = "cuda", torch_state = "cpu")
+        assert mock_pip.call_count == 1
 
     def test_backend_rocm_skips(self):
         mock_pip = _run_cuda_repair(backend = "rocm", torch_state = "hip")
@@ -514,6 +535,26 @@ class TestPreTuringWheelFamily:
         )
         mock_pip.assert_not_called()
 
+    def test_query_mirror_keeps_a_partial_family_when_no_replacement_covers(self):
+        with patch.object(stack_mod, "_PYTORCH_WHL_BASE", "https://mirror.example/whl?token=abc"):
+            mock_pip = _run_cuda_repair(
+                torch_state = "cuda|cu126|2.11.0",
+                cuda_version = "13.0",
+                compute_caps = ("7.0", "12.0"),
+            )
+        mock_pip.assert_not_called()
+        assert mock_pip.repair_ok is not False
+
+    def test_query_mirror_fails_when_a_replacement_would_cover(self):
+        with patch.object(stack_mod, "_PYTORCH_WHL_BASE", "https://mirror.example/whl?token=abc"):
+            mock_pip = _run_cuda_repair(
+                torch_state = "cuda|cu126|2.11.0",
+                cuda_version = "13.0",
+                compute_caps = ("12.0",),
+            )
+        mock_pip.assert_not_called()
+        assert mock_pip.repair_ok is False
+
     def test_cu118_kepler_build_is_kept(self):
         # torch 2.7's cu118 still built sm_37 and nothing newer does, so the replacement would strand the GPU that
         # works today.
@@ -699,6 +740,94 @@ class TestPreTuringWheelFamily:
 
 
 # The updater runs setup.ps1 -> install_python_stack.py, never install.ps1, which held the only flavor repair.
+class TestTheRepairReadsTheDriverLibrary:
+    """nvidia-smi absent or stale left the pre-Turing repair blind; the driver library
+    lists the same capabilities (#10985 taught the index selector, not the repair)."""
+
+    def test_the_inventory_supplies_the_sms_when_nvidia_smi_cannot(self):
+        inventory = SimpleNamespace(cuda_driver_version = (13, 0), devices = [{"compute_cap": "7.0"}])
+        with patch.object(stack_mod, "_nvidia_library_inventory", return_value = inventory):
+            mock_pip = _run_cuda_repair(
+                torch_state = "cuda|cu130|2.11.0", cuda_version = "13.0", smi_rc = 1
+            )
+        assert mock_pip.call_count == 1
+        assert "cu126" in _index_url(mock_pip)
+        with patch.object(stack_mod, "_nvidia_library_inventory", return_value = None):
+            blind = _run_cuda_repair(torch_state = "cuda|cu130|2.11.0", cuda_version = "13.0", smi_rc = 1)
+        blind.assert_not_called()
+
+    def test_an_unreadable_inventory_row_is_not_evidence(self):
+        inventory = SimpleNamespace(
+            cuda_driver_version = (13, 0), devices = [{"compute_cap": "7.0"}, {"compute_cap": ""}]
+        )
+        assert stack_mod._inventory_compute_sms(inventory) == []
+        with patch.object(stack_mod, "_nvidia_library_inventory", return_value = inventory):
+            mock_pip = _run_cuda_repair(
+                torch_state = "cuda|cu130|2.11.0", cuda_version = "13.0", smi_rc = 1
+            )
+        mock_pip.assert_not_called()
+
+    def test_nvidia_smi_still_wins_when_it_answers(self):
+        inventory = SimpleNamespace(cuda_driver_version = (13, 0), devices = [{"compute_cap": "7.0"}])
+        with patch.object(stack_mod, "_nvidia_library_inventory", return_value = inventory):
+            mock_pip = _run_cuda_repair(
+                torch_state = "cuda|cu130|2.11.0", cuda_version = "13.0", compute_caps = ("8.9",)
+            )
+        mock_pip.assert_not_called()
+
+
+class TestACpuWheelTheInstallRecordedAsCudaIsRepaired:
+    """Linux only recorded the expected flavour; a dependency step that resolved torch from
+    PyPI left a CPU wheel on a GPU host until the next fresh install."""
+
+    def test_the_recorded_cuda_family_brings_cuda_torch_back(self):
+        with patch.object(stack_mod, "_RECORDED_TORCH_TAG", "cu128"):
+            mock_pip = _run_cuda_repair(torch_state = "cpu", cuda_version = "12.8")
+        assert mock_pip.call_count == 1
+        assert "cu128" in _index_url(mock_pip)
+
+    def test_a_cpu_wheel_nobody_chose_is_repaired_on_an_nvidia_host(self):
+        # No record (an older manifest) and an automatic cpu record (the GPU was not detected
+        # at install time) are both accidents once an NVIDIA GPU is visible.
+        for recorded, pinned in ((None, False), ("", False), ("cpu", False)):
+            with (
+                patch.object(stack_mod, "_RECORDED_TORCH_TAG", recorded),
+                patch.object(stack_mod, "_RECORDED_TORCH_TAG_PINNED", pinned),
+            ):
+                mock_pip = _run_cuda_repair(torch_state = "cpu", cuda_version = "13.0")
+            assert mock_pip.call_count == 1, (recorded, pinned)
+            assert "cu130" in _index_url(mock_pip)
+
+    def test_a_driver_that_runs_no_cuda_wheel_keeps_its_cpu_wheel(self):
+        # CUDA 10.2: the index selector answers cpu, so the CPU wheel is what this host gets.
+        with patch.object(stack_mod, "_RECORDED_TORCH_TAG", "cu128"):
+            _run_cuda_repair(torch_state = "cpu", cuda_version = "10.2").assert_not_called()
+
+    def test_an_unreadable_driver_is_not_evidence_for_a_cuda_wheel(self):
+        # Neither nvidia-smi nor the library names the driver's CUDA version: the selector's
+        # cu126 default must not replace a CPU wheel a driver older than that could not run.
+        with (
+            patch.object(stack_mod, "_RECORDED_TORCH_TAG", "cu128"),
+            patch.object(stack_mod, "_nvidia_library_inventory", return_value = None),
+        ):
+            _run_cuda_repair(torch_state = "cpu", cuda_version = "").assert_not_called()
+            with patch.object(stack_mod, "_nvidia_smi_usable_candidates", return_value = []):
+                assert stack_mod._detect_cuda_torch_index_url(known_only = True) is None
+                assert stack_mod._detect_cuda_torch_index_url().endswith("/cu126")
+
+    def test_a_named_cpu_choice_or_an_explicit_cpu_pin_is_respected(self):
+        with (
+            patch.object(stack_mod, "_RECORDED_TORCH_TAG", "cpu"),
+            patch.object(stack_mod, "_RECORDED_TORCH_TAG_PINNED", True),
+        ):
+            _run_cuda_repair(torch_state = "cpu").assert_not_called()
+        with patch.object(stack_mod, "_RECORDED_TORCH_TAG", "cu128"):
+            _run_cuda_repair(torch_state = "cpu", index_family = "cpu").assert_not_called()
+            _run_cuda_repair(torch_state = "cpu", backend = "cpu").assert_not_called()
+            _run_cuda_repair(torch_state = "cpu", nvidia = False).assert_not_called()
+            _run_cuda_repair(torch_state = "cpu", cvd = "").assert_not_called()
+
+
 _ensure_expected_torch_flavor = stack_mod._ensure_expected_torch_flavor
 _UNSET = object()
 
@@ -733,6 +862,7 @@ def _run_flavor_invariant(
     index_family = None,
     index_url = None,
     win_arm64 = False,
+    win_arm64_interpreter = None,
     probe_cuda = None,
     probe_hip = None,
 ):
@@ -810,6 +940,13 @@ def _run_flavor_invariant(
         patch.object(stack_mod, "_RECORDED_TORCH_TAG", recorded),
         patch.object(stack_mod.platform, "machine", return_value = "AMD64"),
         patch.object(stack_mod, "_is_windows_arm64", return_value = win_arm64),
+        # The interpreter's arch, which the CUDA-preservation shortcut reads.
+        # They separate on an ARM64 machine running an emulated x64 python.
+        patch.object(
+            stack_mod,
+            "_is_win_arm64_interpreter",
+            return_value = win_arm64 if win_arm64_interpreter is None else win_arm64_interpreter,
+        ),
         patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = nvidia),
         patch.object(stack_mod.shutil, "which", side_effect = _which),
         patch.object(stack_mod.os.path, "isfile", return_value = True),
@@ -1294,6 +1431,84 @@ class TestAPinnedCpuIndexIsEnforcedToo:
         mock_pip.assert_not_called()
 
 
+class TestWindowsOnArmPreservesCudaOnlyForAnInferredExpectation:
+    """The win_arm64 CUDA shortcut must not swallow an explicit CPU pin.
+
+    Preserving an installed cu* build is right for an expectation DERIVED from the driver:
+    download.pytorch.org publishes no win_arm64 CUDA wheel, so that "repair" resolves
+    nothing. A pin is not a derivation, and /cpu does publish win_arm64 torch and
+    torchvision, so that repair has somewhere to go.
+    """
+
+    _PIN = "https://download.pytorch.org/whl/cpu"
+
+    def test_an_explicit_cpu_pin_still_repairs_a_cuda_venv(self):
+        ok, mock_pip = _run_flavor_invariant(
+            installed = "2.11.0+cu134",
+            repaired = "2.10.0+cpu",
+            expected_env = "cpu",
+            index_url = self._PIN,
+            backend = "cpu",
+            win_arm64 = True,
+        )
+        assert ok is True
+        assert mock_pip.call_count == 1
+        assert _index_url(mock_pip) == self._PIN
+        args = [str(a) for a in mock_pip.call_args.args]
+        # No win_arm64 torchaudio on /cpu either, so the existing drop still applies.
+        assert not any(a.startswith("torchaudio") for a in args)
+
+    def test_the_family_spelling_of_the_pin_is_honoured_too(self):
+        ok, mock_pip = _run_flavor_invariant(
+            installed = "2.11.0+cu134",
+            repaired = "2.10.0+cpu",
+            expected_env = "cpu",
+            index_family = "cpu",
+            backend = "cpu",
+            win_arm64 = True,
+        )
+        assert ok is True
+        assert mock_pip.call_count == 1
+
+    def test_a_driver_inferred_cuda_expectation_is_still_preserved(self):
+        ok, mock_pip = _run_flavor_invariant(
+            installed = "2.11.0+cu134",
+            expected_env = "cu130",
+            win_arm64 = True,
+        )
+        assert ok is True
+        mock_pip.assert_not_called()
+
+    def test_a_probed_cpu_tag_with_no_pin_does_not_downgrade_it(self):
+        # setup.ps1 also publishes "cpu" when its nvidia-smi probe comes back empty, and a probe
+        # result is not evidence, so the shortcut keeps the CUDA build.
+        ok, mock_pip = _run_flavor_invariant(
+            installed = "2.11.0+cu134",
+            expected_env = "cpu",
+            nvidia = False,
+            win_arm64 = True,
+        )
+        assert ok is True
+        mock_pip.assert_not_called()
+
+    def test_an_emulated_x64_interpreter_on_an_arm64_machine_still_repairs(self):
+        """The machine and the interpreter are separate axes, and the shortcut reads the
+        interpreter. Every Windows on ARM install predating native support runs an
+        emulated x64 python against ordinary win_amd64 wheels from
+        download.pytorch.org, so the repair must reach them exactly as it always did.
+        """
+        ok, mock_pip = _run_flavor_invariant(
+            installed = "2.9.1+cu118",
+            repaired = "2.10.0+cu128",
+            expected_env = "cu128",
+            win_arm64 = True,
+            win_arm64_interpreter = False,
+        )
+        assert ok is True
+        assert mock_pip.call_count == 1
+        assert _index_url(mock_pip).endswith("/cu128")
+
+
 class TestWindowsOnArmKeepsTheNoTorchaudioException:
     """No win_arm64 torchaudio wheel is published on any index.
 
@@ -1764,6 +1979,96 @@ class TestThePackagesTiedToTheTorchReleaseAreResettled:
         assert "could not re-check xFormers" in out
 
 
+class TestEvictXformersMismatch:
+    def test_a_mismatched_xformers_is_removed_with_its_scope(self, capsys):
+        with (
+            patch.object(
+                stack_mod, "_probe_installed_torch_version", return_value = "2.11.0+rocm7.13.0"
+            ),
+            patch.object(stack_mod, "_resident_xformers_build_torch", return_value = "2.10.0+cu128"),
+            patch.object(stack_mod, "_uninstall_distribution", return_value = True) as uninstall,
+        ):
+            assert (
+                stack_mod._evict_xformers_built_for_another_torch(
+                    scope = "linux torch repair", family_only = True
+                )
+                is True
+            )
+        uninstall.assert_called_once_with("xformers")
+        assert "linux torch repair" in capsys.readouterr().out
+
+    def test_a_matching_xformers_is_not_removed(self):
+        with (
+            patch.object(
+                stack_mod, "_probe_installed_torch_version", return_value = "2.11.0+rocm7.13.0"
+            ),
+            patch.object(
+                stack_mod, "_resident_xformers_build_torch", return_value = "2.11.0+rocm7.13.0"
+            ),
+            patch.object(stack_mod, "_uninstall_distribution") as uninstall,
+        ):
+            assert stack_mod._evict_xformers_built_for_another_torch() is False
+        uninstall.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "resident, removed",
+        [("2.11.0+cu128", False), ("2.10.0+cu126", False), ("2.11.0+cu130", True)],
+    )
+    def test_the_cuda_major_decides_on_the_linux_path(self, resident, removed):
+        with (
+            patch.object(stack_mod, "_probe_installed_torch_version", return_value = resident),
+            patch.object(stack_mod, "_resident_xformers_build_torch", return_value = "2.10.0+cu128"),
+            patch.object(stack_mod, "_uninstall_distribution", return_value = True) as uninstall,
+        ):
+            assert (
+                stack_mod._evict_xformers_built_for_another_torch(
+                    scope = "linux torch repair", family_only = True
+                )
+                is removed
+            )
+        assert uninstall.called is removed
+
+    @pytest.mark.parametrize(
+        "label, family",
+        [
+            ("2.10.0+cu128", "cuda12"),
+            ("2.11.0+cu130", "cuda13"),
+            ("2.11.0+rocm7.13.0", "rocm"),
+            ("2.10.0+xpu", "xpu"),
+            ("2.10.0+cpu", "cpu"),
+            ("2.10.0", ""),
+            ("2.10.0a0+git1234", ""),
+        ],
+    )
+    def test_the_build_family_is_read_from_the_local_tag(self, label, family):
+        assert stack_mod._torch_build_family(label) == family
+
+    def test_a_blocked_removal_is_reported_not_claimed(self, capsys):
+        with (
+            patch.object(
+                stack_mod, "_probe_installed_torch_version", return_value = "2.10.0+rocm7.1"
+            ),
+            patch.object(stack_mod, "_resident_xformers_build_torch", return_value = "2.10.0+cu128"),
+            patch.object(stack_mod, "_uninstall_distribution", return_value = False),
+        ):
+            assert stack_mod._evict_xformers_built_for_another_torch() is False
+        out = capsys.readouterr().out
+        assert "could not be removed" in out
+        assert "-- removed" not in out
+
+    def test_the_final_repair_checks_the_build_even_when_torch_did_not_move(self):
+        source = inspect.getsource(stack_mod.install_python_stack)
+        step = source.split('_progress(_torch_step_label("final"))', 1)[1]
+        step = step.split("# 13w.", 1)[0]
+        guard = "if _torch_after_repair and _torch_after_repair != _torch_before_repair:"
+        after = step.split(guard, 1)[1]
+        call = (
+            '\n        _evict_xformers_built_for_another_torch(scope = "linux torch repair", '
+            "family_only = True)\n"
+        )
+        assert call in after, "the check must sit outside the torch-moved guard"
+
+
 class TestTheResidentXformersBuildIsReadFromDisk:
     def test_the_recorded_torch_is_returned(self, tmp_path):
         pkg = tmp_path / "xformers"
@@ -1799,6 +2104,54 @@ class TestTheResidentXformersBuildIsReadFromDisk:
     def test_a_find_spec_that_raises_reads_as_unknown(self):
         with patch.object(stack_mod.importlib.util, "find_spec", side_effect = ValueError("boom")):
             assert stack_mod._resident_xformers_build_torch() is None
+
+
+class TestTheLinuxRepairRemovesAnXformersItsTorchCannotImport:
+    """Remove incompatible xFormers even when the final repair leaves torch unchanged (#11545)."""
+
+    def _evict(
+        self,
+        mismatch,
+        *,
+        uninstall_ok = True,
+    ):
+        with (
+            patch.object(stack_mod, "xformers_torch_requirement_unmet", return_value = mismatch),
+            patch.object(
+                stack_mod, "_uninstall_distribution", return_value = uninstall_ok
+            ) as uninstall,
+        ):
+            return stack_mod._evict_xformers_requiring_another_torch(), uninstall
+
+    def test_an_xformers_requiring_a_newer_torch_is_removed(self, capsys):
+        removed, uninstall = self._evict(("0.0.35", ">=2.10", "2.6.0+cu124"))
+        assert removed is True
+        uninstall.assert_called_once_with("xformers")
+        out = capsys.readouterr().out
+        assert "xformers 0.0.35 requires torch>=2.10, not 2.6.0+cu124" in out
+
+    def test_an_xformers_whose_requirement_holds_is_kept(self):
+        removed, uninstall = self._evict(None)
+        assert removed is False
+        uninstall.assert_not_called()
+
+    def test_a_blocked_removal_is_reported(self, capsys):
+        removed, _ = self._evict(("0.0.35", ">=2.10", "2.6.0+cu124"), uninstall_ok = False)
+        assert removed is False
+        assert "could not be removed" in capsys.readouterr().out
+
+    def test_the_final_repair_checks_even_when_torch_did_not_move(self):
+        source = inspect.getsource(stack_mod.install_python_stack)
+        step = source.split('_progress(_torch_step_label("final"))', 1)[1]
+        step = step.split("# 13w.", 1)[0]
+        guard = "if _torch_after_repair and _torch_after_repair != _torch_before_repair:"
+        assert guard in step
+        after = step.split(guard, 1)[1]
+        call = "\n        _evict_xformers_requiring_another_torch()\n"
+        assert (
+            call in after
+        ), "the check must sit at the step's indent, outside the torch-moved guard"
+        assert after.index("_install_torchao_for_torch(_torch_after_repair)") < after.index(call)
 
 
 class TestTheResyncNoticesItsOwnFailures:
@@ -2046,10 +2399,10 @@ class TestAFailedGpuPinIsNotADeliberateCpuChoice:
         """One read of the pair, so the precedence cannot be bypassed by a second one."""
         body = inspect.getsource(stack_mod._expected_torch_flavor_was_pinned)
         assert "UNSLOTH_TORCH_INDEX_FAMILY" not in body, (
-            "the family has to come through _explicit_torch_index_url(), which applies "
+            "the family has to come through _explicit_torch_index_family(), which applies "
             "install.sh's precedence; a direct read here reintroduces the bug"
         )
-        assert "_explicit_torch_index_url()" in body
+        assert "_explicit_torch_index_family()" in body
 
     def test_asking_without_a_flavor_answers_as_it_always_did(self, monkeypatch):
         assert self._pinned(monkeypatch, "", url = "https://download.pytorch.org/whl/rocm6.4") is True
@@ -2088,15 +2441,19 @@ class TestTheDelegatedRocmRepairKeepsTheArm64Exception:
 
     def test_the_windows_rocm_install_drops_torchaudio_on_arm64(self):
         source = inspect.getsource(stack_mod._ensure_rocm_torch)
-        block = source[source.index("_WINDOWS_ROCM_TORCH_PKG_SPECS.get") :][:1200]
+        block = source[source.index("_windows_rocm_torch_pkg_specs_for(") :][:1200]
+        # The interpreter's arch, not the machine's: an emulated x64 venv installs win_amd64.
         assert (
-            "_is_windows_arm64()" in block
+            "_is_win_arm64_interpreter()" in block
         ), "the delegated ROCm repair needs the same exception as the flavor repair"
+        assert (
+            "_is_windows_arm64()" not in block
+        ), "the machine predicate would drop torchaudio from x64 venvs"
         assert "*_rocm_trio" in block, "the trio has to be built, not passed positionally"
 
     def test_x64_windows_still_asks_for_all_three(self):
         source = inspect.getsource(stack_mod._ensure_rocm_torch)
-        block = source[source.index("_WINDOWS_ROCM_TORCH_PKG_SPECS.get") :][:1200]
+        block = source[source.index("_windows_rocm_torch_pkg_specs_for(") :][:1200]
         assert "_rocm_trio = [_torch_pkg, _vision_pkg, _audio_pkg]" in block
 
 
@@ -2328,7 +2685,7 @@ class TestACpuHandoverDoesNotDisarmTheInvariant:
             stack_mod._nvidia_smi_usable_candidates
         )
         assert "_nvidia_smi_usable_candidates()" in inspect.getsource(
-            stack_mod._detect_cuda_torch_index_url
+            stack_mod._detect_cuda_torch_index_family
         )
 
     def test_a_which_result_is_trusted_without_an_isfile_check(self, monkeypatch):
@@ -2421,7 +2778,7 @@ class TestACpuHandoverDoesNotDisarmTheInvariant:
         # about the host, which is how the family came off the wrong driver twice.
         assert "_nvidia_smi_lists_a_gpu" in inspect.getsource(stack_mod._has_usable_nvidia_gpu)
         assert "_nvidia_smi_lists_a_gpu" in inspect.getsource(
-            stack_mod._detect_cuda_torch_index_url
+            stack_mod._detect_cuda_torch_index_family
         )
 
     def test_an_explicit_cuda_pin_outranks_the_driver_probe(self, monkeypatch):
@@ -2464,19 +2821,10 @@ class TestACpuHandoverDoesNotDisarmTheInvariant:
         assert stack_mod._recordable_torch_flavor_tag(resolved) == "cu118"
 
     def test_the_driver_family_probe_mirrors_the_index_url(self, monkeypatch):
-        # The helper reads _detect_cuda_torch_index_url's leaf, so an ancient-driver "cpu"
-        # URL has to come back as "" rather than as a family named "cpu".
-        monkeypatch.setattr(
-            stack_mod,
-            "_detect_cuda_torch_index_url",
-            lambda: "https://download.pytorch.org/whl/cpu",
-        )
+        # An ancient-driver "cpu" family is "", not a CUDA family.
+        monkeypatch.setattr(stack_mod, "_detect_cuda_torch_index_family", lambda: "cpu")
         assert stack_mod._driver_cuda_torch_flavor_tag() == ""
-        monkeypatch.setattr(
-            stack_mod,
-            "_detect_cuda_torch_index_url",
-            lambda: "https://download.pytorch.org/whl/cu126/",
-        )
+        monkeypatch.setattr(stack_mod, "_detect_cuda_torch_index_family", lambda: "CU126")
         assert stack_mod._driver_cuda_torch_flavor_tag() == "cu126"
 
     def test_a_host_that_lost_its_gpu_records_cpu(self, monkeypatch):
@@ -2533,3 +2881,41 @@ def test_detect_index_url_reads_a_localized_nvidia_smi_banner(monkeypatch, tmp_p
         lambda name, *a, **k: "nvidia-smi" if name == "nvidia-smi" else None,
     )
     assert _detect_cuda_torch_index_url() == f"{stack_mod._PYTORCH_WHL_BASE}/cu130"
+
+
+# setup.sh's fast path skips the dependency pass whole, so the repair above is unreachable on an
+# "up to date" install. --cuda-torch-needs-dependency-pass forces the pass, and answers by asking
+# the repair itself: these assert the two cannot drift apart.
+class TestTheFastPathProbeAgreesWithTheRepair:
+    SCENARIOS = {
+        "cpu wheel on an NVIDIA host": dict(torch_state = "cpu"),
+        "rocm wheel on an NVIDIA host": dict(torch_state = "hip"),
+        "healthy cuda wheel": dict(torch_state = "cuda", cuda_version = "12.8"),
+        "deliberate cpu backend": dict(torch_state = "cpu", backend = "cpu"),
+        "the GPU is masked away": dict(torch_state = "cpu", cvd = ""),
+        "no NVIDIA GPU": dict(torch_state = "cpu", nvidia = False),
+        "a no-torch install": dict(torch_state = "cpu", no_torch = True),
+        "windows, where setup.ps1 owns torch": dict(torch_state = "cpu", is_windows = True),
+        "macos": dict(torch_state = "cpu", is_macos = True),
+        "a deliberate rocm install": dict(torch_state = "hip", rocm_marker = True),
+    }
+
+    @pytest.mark.parametrize("name", sorted(SCENARIOS))
+    def test_the_probe_answers_what_the_repair_would_do(self, name):
+        scenario = self.SCENARIOS[name]
+        repaired = _run_cuda_repair(**scenario).call_count == 1
+        probe = _run_cuda_repair(**scenario, probe = True)
+        assert probe.probe_answer is repaired
+        # A probe that installs would download multi-gigabyte wheels from a fast path.
+        assert probe.call_count == 0
+
+    def test_at_least_one_scenario_answers_each_way(self):
+        answers = {
+            _run_cuda_repair(**scenario, probe = True).probe_answer
+            for scenario in self.SCENARIOS.values()
+        }
+        assert answers == {True, False}
+
+    def test_a_probe_that_cannot_answer_keeps_the_fast_path(self):
+        with patch.object(stack_mod, "_ensure_cuda_torch", side_effect = OSError("no")):
+            assert stack_mod._cuda_torch_needs_dependency_pass() is False

@@ -119,7 +119,7 @@ test("a rollback resends the exact setting the previous load asked for", () => {
   );
   assert.match(
     RUNTIME,
-    /exact_concurrency: stateBeforeUnload\.loadedRequestedExactConcurrency/,
+    /exact_concurrency: rollbackState\.loadedRequestedExactConcurrency/,
   );
 });
 

@@ -4,7 +4,10 @@
 "use client";
 
 import { Button } from "@/components/ui/button";
-import { resolveToolConfirmation } from "@/features/chat/api/chat-api";
+import {
+  resolveToolConfirmation,
+  ToolApprovalGoneError,
+} from "@/features/chat/api/chat-api";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import {
   COMPOSER_INPUT_SELECTOR,
@@ -51,14 +54,21 @@ export function ToolConfirmationControls({
     (s) => s.clearToolConfirmation,
   );
   const autoAllowKey = confirmation?.autoAllowKey ?? "";
+  // Sharing the user's image is asked every time: no Always allow, no keyboard chord.
+  const disclosure = confirmation?.imageDisclosure;
   const autoAllowed = useChatRuntimeStore(
     (s) =>
-      s.alwaysAllowToolsBySession.get(autoAllowKey)?.has(toolName) ?? false,
+      !disclosure &&
+      (s.alwaysAllowToolsBySession.get(autoAllowKey)?.has(toolName) ?? false),
   );
 
   const [decided, setDecided] = useState(false);
   const [pending, setPending] = useState<"allow" | "deny" | null>(null);
-  const [failed, setFailed] = useState(false);
+  // "retry" is a post that failed on the way out and is worth pressing again; "gone" is an approval
+  // the backend is no longer holding, where pressing again can only fail the same way. They were one
+  // flag, and the shared copy told the user to retry something that could never succeed.
+  const [failure, setFailure] = useState<"retry" | "gone" | null>(null);
+  const failed = failure !== null;
 
   // Still awaiting our decision: a gated pending entry exists, the tool has
   // not produced a result, and the card is in its running state.
@@ -69,10 +79,10 @@ export function ToolConfirmationControls({
   const showControls = awaiting && !decided;
 
   const resolve = useCallback(
-    async (decision: "allow" | "deny") => {
+    async (decision: "allow" | "deny", alsoAlways = false) => {
       if (!toolCallId || !confirmation) return;
       setPending(decision);
-      setFailed(false);
+      setFailure(null);
       try {
         const ok = await resolveToolConfirmation(
           confirmation.sessionId,
@@ -80,20 +90,31 @@ export function ToolConfirmationControls({
           decision,
         );
         if (ok) {
+          // The session-wide grant is recorded only once the backend has actually taken the
+          // decision. Granting it up front on the click meant a press that visibly failed still
+          // silently auto-approved this tool for every later call in the session.
+          if (alsoAlways && autoAllowKey) allowToolAlways(autoAllowKey, toolName);
           // Only hide the controls once the backend confirms it matched the pending call --
           // otherwise the generation would stay blocked with no way to retry.
           setDecided(true);
           clearToolConfirmation(toolCallId);
         } else {
-          setFailed(true);
+          setFailure("retry");
         }
-      } catch {
-        setFailed(true);
+      } catch (err) {
+        setFailure(err instanceof ToolApprovalGoneError ? "gone" : "retry");
       } finally {
         setPending(null);
       }
     },
-    [toolCallId, confirmation, clearToolConfirmation],
+    [
+      toolCallId,
+      confirmation,
+      clearToolConfirmation,
+      allowToolAlways,
+      autoAllowKey,
+      toolName,
+    ],
   );
 
   // Tools the user marked "Always allow" (this session) approve themselves.
@@ -119,6 +140,7 @@ export function ToolConfirmationControls({
   // one that takes none.
   const selectionActive = useChatNavigationStore((s) => s.selectionActive);
   const keyboardReady =
+    !disclosure &&
     chatActive &&
     soleRequest &&
     !selectionActive &&
@@ -164,35 +186,43 @@ export function ToolConfirmationControls({
 
   return (
     <div className="flex flex-wrap items-center gap-2 pt-1">
+      {disclosure ? (
+        <p className="w-full text-xs text-muted-foreground">
+          Send your attached image ({Math.ceil(disclosure.size_bytes / 1024)}{" "}
+          KB) to {disclosure.server} ({disclosure.tool}) at{" "}
+          {disclosure.destination}? The server may keep it.
+        </p>
+      ) : null}
       <Button
         size="xs"
-        disabled={pending !== null}
+        disabled={pending !== null || failure === "gone"}
         onClick={() => void resolve("allow")}
       >
-        Allow
+        {disclosure ? "Share image once" : "Allow"}
       </Button>
-      <Button
-        size="xs"
-        variant="outline"
-        disabled={pending !== null}
-        onClick={() => {
-          if (autoAllowKey) allowToolAlways(autoAllowKey, toolName);
-          void resolve("allow");
-        }}
-      >
-        Always allow
-      </Button>
+      {disclosure ? null : (
+        <Button
+          size="xs"
+          variant="outline"
+          disabled={pending !== null || failure === "gone"}
+          onClick={() => void resolve("allow", true)}
+        >
+          Always allow
+        </Button>
+      )}
       <Button
         size="xs"
         variant="destructive"
-        disabled={pending !== null}
+        disabled={pending !== null || failure === "gone"}
         onClick={() => void resolve("deny")}
       >
         Deny
       </Button>
-      {failed ? (
+      {failure !== null ? (
         <span className="text-xs text-destructive">
-          Could not send your decision. Try again.
+          {failure === "gone"
+            ? "This request is no longer waiting for an answer."
+            : "Could not send your decision. Try again."}
         </span>
       ) : null}
     </div>

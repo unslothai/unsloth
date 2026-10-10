@@ -42,6 +42,29 @@ from hub.utils.paths import is_valid_gguf_variant
 FILES = ["model_index.json", "vae/diffusion_pytorch_model.safetensors"]
 
 
+REPO = "black-forest-labs/FLUX.1-dev"
+
+
+@pytest.fixture(autouse = True)
+def _repo_with_no_running_job():
+    """No job of this repo is left running around a test in this file.
+
+    The download registry is a process global and nothing resets it between tests, while a
+    running scoped job deliberately blocks a full snapshot of the same repo. Any test that
+    leaves one running therefore fails a later one here with "no full-snapshot row", and under
+    `--dist load`, which spreads a file across workers, which tests share a process changes
+    from run to run. Retiring the repo's jobs on both sides keeps that out of the assertions.
+    """
+
+    def _retire():
+        for ref in download_lifecycle.active_download_refs(dl._registry, REPO, with_variant = True):
+            dl._registry.set_job(dl._download_job_key(REPO, ref.variant), "complete")
+
+    _retire()
+    yield
+    _retire()
+
+
 def _request(**over) -> DownloadModelRequest:
     body = {
         "repo_id": "black-forest-labs/FLUX.1-dev",

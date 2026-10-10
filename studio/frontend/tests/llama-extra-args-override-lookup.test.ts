@@ -28,6 +28,14 @@ const {
 
 const ARGS = ["--numa", "distribute"];
 
+test("engine choices round trip and returning to Default clears a stale local choice", () => {
+  const config = fromApiOverride({ engine: "sglang" });
+  assert.equal(config.engine, "sglang");
+  assert.equal(toApiOverride(config).engine, "sglang");
+  assert.equal(toApiOverride({ ...config, engine: "auto" }).engine, "auto");
+  assert.equal(fromApiOverride({}, config).engine, "auto");
+});
+
 test("an exact key wins", () => {
   assert.deepEqual(
     resolveStoredExtraArgs(
@@ -326,3 +334,13 @@ test("a cleared extra-arguments box survives a row that carries no arguments", (
   const config = fromApiOverride({ kv_cache_dtype: "q8_0" }, local);
   assert.deepEqual(config.llamaExtraArgs, []);
 });
+
+for (const mode of ["tensor", "pipeline", "data"] as const) {
+  test(`${mode} mode and GPU order round-trip through server overrides`, () => {
+    const config = fromApiOverride({ engine: "vllm", engine_parallelism: mode, gpu_ids: [1, 0] });
+    assert.equal(config.engineParallelism, mode);
+    const saved = toApiOverride(config);
+    assert.equal(saved.engine_parallelism, mode);
+    assert.deepEqual(saved.gpu_ids, [1, 0]);
+  });
+}

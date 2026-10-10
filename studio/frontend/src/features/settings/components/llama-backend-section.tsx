@@ -50,6 +50,7 @@ const UNSUPPORTED_REASONS: Record<string, TranslationKey> = {
   no_install_dir: "settings.resources.llamaBackend.unsupported.notInstalled",
   custom_path: "settings.resources.llamaBackend.unsupported.customPath",
   unresolved: "settings.resources.llamaBackend.unsupported.unresolved",
+  update_checks_disabled: "settings.resources.llamaBackend.unsupported.updateChecksDisabled",
 };
 
 function LlamaCppPathRow({ onChanged }: { onChanged: () => void }) {
@@ -125,8 +126,33 @@ function LlamaCppPathRow({ onChanged }: { onChanged: () => void }) {
         )}
         hint={t("settings.resources.llamaBackend.customPath.hint")}
         className="max-[840px]:flex-col max-[840px]:items-stretch max-[840px]:gap-2"
+        below={
+          detail || settings?.source === "studio" ? (
+            <div className="w-[calc(392px*var(--ui-space-scale,1))] min-w-0 max-[840px]:w-full">
+              <div className="flex min-w-0 items-center justify-between gap-2 pl-3.5 pr-1 text-xs text-muted-foreground">
+                {detail ? (
+                  <span title={detail} className="min-w-0 truncate">
+                    {detail}
+                  </span>
+                ) : null}
+                {settings?.source === "studio" ? (
+                  <Button
+                    variant="link"
+                    size="xs"
+                    className="h-auto shrink-0 px-0 text-xs"
+                    disabled={saving}
+                    onClick={() => void save(null)}
+                    data-testid="llama-cpp-path-reset"
+                  >
+                    {t("settings.resources.llamaBackend.customPath.useBundled")}
+                  </Button>
+                ) : null}
+              </div>
+            </div>
+          ) : null
+        }
       >
-        <div className="grid w-[392px] min-w-0 grid-cols-[minmax(0,1fr)_auto_auto] gap-x-2 gap-y-1.5 max-[840px]:w-full">
+        <div className="grid w-[calc(392px*var(--ui-space-scale,1))] min-w-0 grid-cols-[minmax(0,1fr)_auto_auto] gap-x-2 max-[840px]:w-full">
           <Input
             readOnly={!settings?.editable}
             aria-label={t("settings.resources.llamaBackend.customPath.label")}
@@ -168,27 +194,6 @@ function LlamaCppPathRow({ onChanged }: { onChanged: () => void }) {
               ? t("settings.resources.llamaBackend.customPath.saving")
               : t("settings.resources.llamaBackend.customPath.change")}
           </Button>
-          {detail || settings?.source === "studio" ? (
-            <div className="col-span-3 flex min-w-0 items-center justify-between gap-2 pl-3.5 pr-1 text-xs text-muted-foreground">
-              {detail ? (
-                <span title={detail} className="min-w-0 truncate">
-                  {detail}
-                </span>
-              ) : null}
-              {settings?.source === "studio" ? (
-                <Button
-                  variant="link"
-                  size="xs"
-                  className="h-auto shrink-0 px-0 text-xs"
-                  disabled={saving}
-                  onClick={() => void save(null)}
-                  data-testid="llama-cpp-path-reset"
-                >
-                  {t("settings.resources.llamaBackend.customPath.useBundled")}
-                </Button>
-              ) : null}
-            </div>
-          ) : null}
         </div>
       </SettingsRow>
 

@@ -243,6 +243,15 @@ class TestTheCheckpoint:
         assert convo[-1]["reasoning_content"] == "first half second half"
         assert len(convo) == 2
 
+        from core.inference.chat_template_helpers import trailing_assistant_resume_kind
+
+        # A partial paused inside its thought has no prose and must still be resumed.
+        thought_only = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "", "reasoning_content": "Let me think"},
+        ]
+        assert trailing_assistant_resume_kind(thought_only) == "reasoning_content"
+
 
 # =============================================================================== the stream
 

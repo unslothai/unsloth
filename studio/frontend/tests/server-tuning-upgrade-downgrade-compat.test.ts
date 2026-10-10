@@ -41,16 +41,19 @@ const {
 } = await import(
   "../src/features/model-picker/model-config/per-model-config.ts"
 );
-const { fromApiOverride, resolveStoredOverride, toApiOverride } = await import(
-  "../src/features/model-picker/api/model-overrides.ts"
-);
+const {
+  fromApiOverride,
+  panelOverrideRow,
+  resolveStoredOverride,
+  toApiOverride,
+} = await import("../src/features/model-picker/api/model-overrides.ts");
 const { backfillModelOverrides } = await import(
   "../src/features/model-picker/api/migrate-model-overrides.ts"
 );
 const { setAuthFetchHandler } = await import("./helpers/store-stubs/auth.ts");
 
 const STORAGE_KEY = "unsloth_model_configs";
-const BACKFILL_FLAG = "unsloth_model_overrides_backfilled_v1";
+const BACKFILL_FLAG = "unsloth_model_overrides_backfilled_v3";
 const MODEL = "unsloth/Repo-GGUF";
 const VARIANT = "Q4_K_M";
 
@@ -321,6 +324,73 @@ test("the one-time backfill now uploads a tuning-only config", async () => {
   assert.equal(store.get(BACKFILL_FLAG), "1", "a completed pass must not run again");
 });
 
+test("the backfill offers an Ollama tag's settings even after the v1 pass ran", async () => {
+  // The v1 filter dropped these, so the marker had to move with it, or an install past that pass
+  // would never mirror what it saved for an Ollama model.
+  store.clear();
+  store.set("unsloth_model_overrides_backfilled_v1", "1");
+  const ref = "ollama-manifest:%2Fh%2F.ollama%2Fmanifests%2Fllama3%2Flatest";
+  assert.ok(savePerModelConfig(ref, null, config({ cacheRam: -1 })));
+
+  const puts: unknown[] = [];
+  setAuthFetchHandler((_input, init) => {
+    if (init?.method === "PUT") {
+      puts.push(JSON.parse(String(init.body)).model_id);
+    }
+    return new Response(JSON.stringify({ overrides: {} }), { status: 200 });
+  });
+  try {
+    await backfillModelOverrides();
+  } finally {
+    setAuthFetchHandler(null);
+  }
+  assert.deepEqual(puts, [ref.toLowerCase()]);
+});
+
+test("the backfill offers non-GGUF weights, keyed by repo id, after the v2 pass ran", async () => {
+  // A cached repo loads from its snapshot directory, which an older sidebar keyed it by. Uploaded
+  // under that path, the bare row would outrank the repo's and survive the picker's Forget.
+  store.clear();
+  store.set("unsloth_model_overrides_backfilled_v2", "1");
+  const folder = "/Users/u/.lmstudio/models/mlx-community/Qwen3.5-4B-MLX-4bit";
+  const snapshot = "/hf/models--mlx-community--Model-4bit/snapshots/abc";
+  const template = { chatTemplateOverride: "{{ messages }}" };
+  assert.ok(savePerModelConfig(folder, null, config(template)));
+  assert.ok(savePerModelConfig(snapshot, null, config({ mlxKvQuant: "8" })));
+  // A newer build's record under the repo id makes adoption decline, and the path stays put.
+  const declined = "/hf/models--org--Newer/snapshots/def";
+  assert.ok(savePerModelConfig("org/Newer", null, config({ mlxKvQuant: "4" })));
+  const map = readMap();
+  const newer = Object.keys(map).find((key) => key.includes("org/newer"));
+  assert.ok(newer);
+  map[newer].version = 99;
+  writeMap(map);
+  assert.ok(savePerModelConfig(declined, null, config({ mlxKvQuant: "4" })));
+  // Identities the resolver never keys.
+  const link = "/home/u/.ollama/.studio_links/ab12/model-latest.gguf";
+  assert.ok(savePerModelConfig(link, null, config(template)));
+  assert.ok(savePerModelConfig("Model-Q4_K_M.gguf", null, config(template)));
+
+  const puts: unknown[] = [];
+  setAuthFetchHandler((_input, init) => {
+    if (init?.method === "PUT") {
+      puts.push(JSON.parse(String(init.body)).model_id);
+    }
+    return new Response(JSON.stringify({ overrides: {} }), { status: 200 });
+  });
+  try {
+    await backfillModelOverrides();
+  } finally {
+    setAuthFetchHandler(null);
+  }
+  assert.deepEqual(
+    new Set(puts),
+    new Set([folder, "mlx-community/model-4bit"]),
+  );
+  assert.equal(resolveInitialConfig(declined, null).config.mlxKvQuant, "4");
+  assert.equal(store.get(BACKFILL_FLAG), "1");
+});
+
 test("an all-default config is still filtered out of the backfill", async () => {
   // The gate the case above walks through has to stay shut for everything else, or
   // every model the user ever opened is mirrored on first launch.
@@ -429,6 +499,23 @@ test("eviction takes the readable records and leaves the future ones", () => {
 // ---------------------------------------------------------------------------
 // F. The server row as the authority, and what that costs the local copy.
 // ---------------------------------------------------------------------------
+
+test("a non-GGUF panel reads a row without its llama-server arguments", () => {
+  const row = {
+    // biome-ignore lint/style/useNamingConvention: API schema
+    chat_template_override: "{{ messages }}",
+    // biome-ignore lint/style/useNamingConvention: API schema
+    llama_extra_args: ["--no-mmap"],
+  };
+  assert.deepEqual(panelOverrideRow(row, true), row);
+  assert.deepEqual(panelOverrideRow(row, false), {
+    // biome-ignore lint/style/useNamingConvention: API schema
+    chat_template_override: "{{ messages }}",
+  });
+  // A row holding nothing else is no row at all.
+  // biome-ignore lint/style/useNamingConvention: API schema
+  assert.equal(panelOverrideRow({ llama_extra_args: [] }, false), null);
+});
 
 test("a row that carries no tuning leaves this browser's tuning standing", () => {
   // The mirror is lossy in both directions: a PUT that never landed, a save from a
@@ -637,7 +724,7 @@ test("opening the panel ticks Remember for any model with a resolvable row", () 
   // the entry, so a merge that comes out default is a clear that has to travel.
   assert.match(
     PANEL,
-    /savePerModelConfig\(\s*configId,\s*target\.ggufVariant,\s*rememberedConfig,/,
+    /savePerModelConfig\(\s*configId,\s*target\.ggufVariant,\s*storedSpeculativeAuto\(rememberedConfig, !target\.isGguf\),/,
   );
   // Whatever that write evicted is cleared before the block returns, or a dropped
   // model keeps applying its server row with nothing able to forget it.
@@ -681,4 +768,19 @@ test("a localStorage that throws degrades on every path instead of propagating",
     Object.assign(globalThis, { localStorage: storage });
     asWindow.window.localStorage = storage;
   }
+});
+
+
+test("the MLX drafter mirrors to the server and back", () => {
+  const config = normalizePerModelConfig({ speculativeType: "eagle3", specDraftModel: "o/d" });
+  assert.equal(toApiOverride(config).spec_draft_model, "o/d");
+  // biome-ignore lint/style/useNamingConvention: API schema
+  const row = { speculative_type: "auto", spec_draft_model: "o/d" };
+  assert.equal(fromApiOverride(row).specDraftModel, "o/d");
+  // Without the flag the backend keeps a drafter the save cleared.
+  const overrides = path.join(
+    path.dirname(fileURLToPath(import.meta.url)),
+    "../src/features/model-picker/api/model-overrides.ts",
+  );
+  assert.match(readFileSync(overrides, "utf8"), /mirrors_spec_draft_model: true/);
 });

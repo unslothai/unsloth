@@ -70,6 +70,43 @@ def _split_cuda_version(packed: int) -> tuple[int, int] | None:
     return packed // 1000, (packed % 1000) // 10
 
 
+class _NvmlMemory(ctypes.Structure):
+    # nvmlMemory_t (v1): bytes, in this order.
+    _fields_ = [
+        ("total", ctypes.c_ulonglong),
+        ("free", ctypes.c_ulonglong),
+        ("used", ctypes.c_ulonglong),
+    ]
+
+
+def _mig_children(nvml, handle) -> list:
+    """(handle, uuid, memory) per MIG instance of a device; empty without MIG or on an NVML
+    too old to ask. Unused instance slots answer NOT_FOUND and are skipped."""
+    get_max = getattr(nvml, "nvmlDeviceGetMaxMigDeviceCount", None)
+    get_mig = getattr(nvml, "nvmlDeviceGetMigDeviceHandleByIndex", None)
+    if get_max is None or get_mig is None:
+        return []
+    children = []
+    try:
+        count = ctypes.c_uint(0)
+        if get_max(handle, ctypes.byref(count)) != 0:
+            return []
+        for index in range(count.value):
+            mig = ctypes.c_void_p()
+            if get_mig(handle, index, ctypes.byref(mig)) != 0:
+                continue
+            uuid = ctypes.create_string_buffer(96)
+            if nvml.nvmlDeviceGetUUID(mig, uuid, 96) != 0:
+                continue
+            memory = _NvmlMemory()
+            if nvml.nvmlDeviceGetMemoryInfo(mig, ctypes.byref(memory)) != 0:
+                memory.total = memory.free = 0
+            children.append((mig, uuid.value.decode("ascii", "replace"), memory))
+    except Exception:
+        return children
+    return children
+
+
 def _probe_nvml() -> dict | None:
     nvml = _load("nvml")
     if nvml is None:
@@ -100,7 +137,7 @@ def _probe_nvml() -> dict | None:
         for index in range(count.value):
             handle = ctypes.c_void_p()
             if get_handle(index, ctypes.byref(handle)) != 0:
-                continue
+                return None  # a GPU this reader cannot see is a GPU the selectors would miss
             name = ctypes.create_string_buffer(96)
             uuid = ctypes.create_string_buffer(96)
             major, minor = ctypes.c_int(0), ctypes.c_int(0)
@@ -114,14 +151,33 @@ def _probe_nvml() -> dict | None:
                 == 0
             ):
                 cap = f"{major.value}.{minor.value}"
+            memory = _NvmlMemory()
+            if nvml.nvmlDeviceGetMemoryInfo(handle, ctypes.byref(memory)) != 0:
+                memory.total = memory.free = 0
             devices.append(
                 {
                     "index": str(index),
                     "uuid": uuid.value.decode("ascii", "replace"),
                     "name": name.value.decode("utf-8", "replace"),
                     "compute_cap": cap,
+                    "memory_total_mib": str(memory.total // (1024 * 1024)),
+                    "memory_free_mib": str(memory.free // (1024 * 1024)),
                 }
             )
+            # MIG slices, so a CUDA_VISIBLE_DEVICES=MIG-... assignment can be named: same
+            # parent index and capability, their own uuid and memory, marked "mig".
+            for mig, mig_uuid, mig_memory in _mig_children(nvml, handle):
+                devices.append(
+                    {
+                        "index": str(index),
+                        "uuid": mig_uuid,
+                        "name": name.value.decode("utf-8", "replace") + " MIG",
+                        "compute_cap": cap,
+                        "memory_total_mib": str(mig_memory.total // (1024 * 1024)),
+                        "memory_free_mib": str(mig_memory.free // (1024 * 1024)),
+                        "mig": "1",
+                    }
+                )
         return {
             "source": "nvml",
             "cuda_driver_version": list(cuda) if cuda else None,
@@ -163,6 +219,9 @@ def _probe_cuda_driver() -> dict | None:
                 "uuid": "",
                 "name": name.value.decode("utf-8", "replace"),
                 "compute_cap": f"{major.value}.{minor.value}" if ok else "",
+                # Memory needs a context, which this probe never creates.
+                "memory_total_mib": "0",
+                "memory_free_mib": "0",
             }
         )
     return {
@@ -190,9 +249,11 @@ def _from_payload(payload: object) -> NvidiaLibraryInventory | None:
         return None
     version = payload.get("cuda_driver_version")
     cuda = tuple(int(part) for part in version[:2]) if isinstance(version, list) else None
+    keys = ("index", "uuid", "name", "compute_cap", "memory_total_mib", "memory_free_mib")
     devices = [
-        {key: str(row.get(key, "")) for key in ("index", "uuid", "name", "compute_cap")}
+        {key: str(row.get(key, "")) for key in keys}
         for row in payload.get("devices") or []
+        if not row.get("mig")
         if isinstance(row, dict)
     ]
     return NvidiaLibraryInventory(

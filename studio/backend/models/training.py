@@ -7,7 +7,7 @@ import math
 import re
 from pathlib import Path, PureWindowsPath
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from typing import Any, Optional, List, Dict, Literal, Union
+from typing import Annotated, Any, Optional, List, Dict, Literal, Union
 
 from hub.schemas.inventory import ModelFormat
 from utils.hf_dataset_options import (
@@ -97,12 +97,34 @@ def _parse_lr(v: Any) -> float:
     return lr
 
 
+def _resolve_inventory_handles(values):
+    """Resume replays a referenced history payload, so the entries come back as handles."""
+    if not isinstance(values, (list, tuple)):
+        return values
+    return [_resolve_inventory_handle(item) if isinstance(item, str) else item for item in values]
+
+
+def _resolve_inventory_handle(value: str) -> str:
+    """Lazy: `models.inference` is large and the CLI imports this module without needing it."""
+    try:
+        from models.inference import resolve_inventory_handle
+    except Exception:  # noqa: BLE001 -- a resolver that cannot import must not fail a run
+        return value
+    return resolve_inventory_handle(value)
+
+
+# The strings trainer.normalize_gradient_checkpointing turns into False.
+_CHECKPOINTING_OFF = ("false", "0", "no", "none", "off")
+
+
 class TrainingStartRequest(BaseModel):
     """Request schema for starting training"""
 
     model_name: str = Field(
         ..., description = "Model identifier (e.g., 'unsloth/llama-3-8b-bnb-4bit')"
     )
+    # The same identity the picker was shown; see `resolve_inventory_handle`.
+    _resolve_the_handle = field_validator("model_name")(_resolve_inventory_handle)
     project_name: Optional[str] = Field(
         None,
         max_length = 80,
@@ -169,6 +191,10 @@ class TrainingStartRequest(BaseModel):
     )
     local_eval_datasets: List[str] = Field(
         default_factory = list, description = "List of local eval dataset paths"
+    )
+    # The history detail references these, and Resume replays that payload.
+    _resolve_the_dataset_handles = field_validator("local_datasets", "local_eval_datasets")(
+        _resolve_inventory_handles
     )
     format_type: str = Field(..., description = "Dataset format type")
     subset: Optional[str] = None
@@ -278,7 +304,9 @@ class TrainingStartRequest(BaseModel):
     def _check_cache_local_path(cls, v: Optional[str]) -> Optional[str]:
         if v is None:
             return v
-        v = v.strip()
+        # Resolved FIRST, so the checks below run on the path rather than on its handle: the
+        # snapshot pins come back referenced, and Resume replays this payload verbatim.
+        v = _resolve_inventory_handle(v.strip())
         if not v:
             return None
         if len(v) > 4096:
@@ -547,6 +575,29 @@ class TrainingStartRequest(BaseModel):
     lora_dropout: float = Field(0.0, description = "LoRA dropout")
     target_modules: List[str] = Field(default_factory = list, description = "Target modules for LoRA")
     gradient_checkpointing: str = Field("", description = "Gradient checkpointing setting")
+    offload_layers: Union[Literal["auto"], Annotated[int, Field(ge = 0, le = 1024)]] = Field(
+        0,
+        description = "Decoder layers kept in host RAM and streamed to the GPU during training "
+        "(0 = off, 'auto' = as few as fit)",
+    )
+    offload_vram_gb: Optional[float] = Field(
+        None,
+        gt = 0,
+        le = 4096,
+        description = "VRAM this run may use, in GiB; offload_layers = 'auto' sizes to it",
+    )
+    offload_vram_gb_per_device: Optional[List[Optional[Annotated[float, Field(gt = 0, le = 4096)]]]] = (
+        Field(
+            None,
+            max_length = 64,
+            description = "Per-GPU VRAM budget in GiB, entry i for the GPU /api/system lists as index i "
+            "(null = no cap); replaces offload_vram_gb when given",
+        )
+    )
+    prefetch_depth: Union[Literal["auto"], Annotated[int, Field(ge = 1, le = 8)]] = Field(
+        2,
+        description = "Offloaded layers fetched ahead of the one running ('auto' = measured)",
+    )
     use_rslora: bool = Field(False, description = "Use RSLoRA")
     use_loftq: bool = Field(False, description = "Use LoftQ")
     use_dora: bool = Field(False, description = "Use DoRA")
@@ -561,6 +612,17 @@ class TrainingStartRequest(BaseModel):
     is_embedding: bool = Field(
         False, description = "Whether model is an embedding/sentence-transformer model"
     )
+    is_decision: bool = Field(
+        False,
+        description = "Train a decision model: a Laya or Clef checkpoint, or an LLM with a new Clef head",
+    )
+    model_subfolder: Optional[str] = Field(
+        None, description = "Checkpoint subfolder of a decision model repo"
+    )
+    decision_layout: Optional[Literal["laya", "clef", "llm"]] = Field(
+        None,
+        description = "Set by the server from the checkpoint files; a caller's value is replaced",
+    )
 
     enable_wandb: bool = Field(False, description = "Enable Weights & Biases logging")
     wandb_token: Optional[str] = Field(None, description = "W&B token")
@@ -570,6 +632,10 @@ class TrainingStartRequest(BaseModel):
     resume_from_checkpoint: Optional[str] = Field(
         None, description = "Saved training output directory to resume from"
     )
+    # The history detail hands out a handle for the resumable directory; Resume sends it back.
+    _resolve_the_resume_handle = field_validator("resume_from_checkpoint")(
+        _resolve_inventory_handle
+    )
 
     gpu_ids: Optional[List[int]] = Field(
         None,
@@ -577,8 +643,8 @@ class TrainingStartRequest(BaseModel):
             "Physical GPU indices to use, for example [0, 1]. Omit or pass "
             "[] to use automatic selection. Explicit gpu_ids are unsupported "
             "when the parent visibility mask uses non-numeric or subdevice "
-            "entries -- this includes CUDA_VISIBLE_DEVICES with UUID/MIG "
-            "entries on NVIDIA, and ZE_AFFINITY_MASK with subdevice tokens "
+            "entries -- this includes CUDA_VISIBLE_DEVICES with MIG or "
+            "unresolvable UUID entries on NVIDIA, and ZE_AFFINITY_MASK with subdevice tokens "
             "(e.g. '0.0,0.1') or FLAT-hierarchy (default) tile handles on "
             "Intel XPU."
         ),
@@ -616,6 +682,20 @@ class TrainingStartRequest(BaseModel):
         # Each accepts 0 as "use the other"; both 0 means nothing to train.
         if (self.max_steps is None or self.max_steps == 0) and self.num_epochs == 0:
             raise ValueError("Either num_epochs or max_steps must be > 0; both cannot be 0.")
+        return self
+
+    @model_validator(mode = "after")
+    def _check_offload_has_checkpointing(self) -> "TrainingStartRequest":
+        # install_block_swap refuses swapped layers without checkpointing; say so before loading.
+        if (
+            self.offload_layers
+            and self.training_type != "Full Finetuning"
+            and self.gradient_checkpointing.strip().lower() in _CHECKPOINTING_OFF
+        ):
+            raise ValueError(
+                "offload_layers needs gradient checkpointing: set gradient_checkpointing to "
+                "'unsloth' or 'true', or offload_layers to 0."
+            )
         return self
 
     @model_validator(mode = "after")
@@ -721,6 +801,9 @@ class TrainingProgress(BaseModel):
         None, description = "Time elapsed since training started"
     )
     eta_seconds: Optional[float] = Field(None, description = "Estimated time remaining")
+    session_start_step: Optional[int] = Field(
+        None, description = "Step this session started from (non-zero on a resumed run)"
+    )
     grad_norm: Optional[float] = Field(
         None, description = "L2 norm of gradients, computed before gradient clipping"
     )
@@ -818,8 +901,12 @@ class DiffusionTrainingStartRequest(BaseModel):
     model_config = ConfigDict(protected_namespaces = ())
 
     base_model: str = Field(..., description = "HF repo id or local path to a trainable base")
+    # Unresolved, family detection and `_assert_trusted_base_model` read `ref:...` as a Hub id.
+    _resolve_the_base_handle = field_validator("base_model")(_resolve_inventory_handle)
     data_dir: str = Field(..., description = "Folder of training images (+ captions)")
     output_dir: str = Field(..., description = "Directory to write the LoRA .safetensors into")
+    # Resume replays the stored config, whose `output_dir` answers as a handle.
+    _resolve_the_output_handle = field_validator("output_dir")(_resolve_inventory_handle)
     model_family: Optional[str] = Field(
         None,
         description = "Explicit trainer family (sdxl / flux.1 / ...); omitted = detect from base_model",
@@ -962,6 +1049,10 @@ class DiffusionTrainingStartRequest(BaseModel):
             "configuration and precision. train_steps is then the TARGET TOTAL, so resuming a "
             "checkpoint at step 11 with train_steps=500 trains steps 12..500."
         ),
+    )
+    # Diffusion Resume replays `checkpoint_path` or the output dir; both answer as references.
+    _resolve_the_resume_handle = field_validator("resume_from_checkpoint")(
+        _resolve_inventory_handle
     )
     resumed_from_job_id: Optional[str] = Field(
         None,
@@ -1135,25 +1226,27 @@ class DiffusionTrainableFamily(BaseModel):
     # When set, a LoRA trained on this family previews on this repo instead of the training base (Krea
     # trains on Raw, runs on Turbo).
     deploy_base: Optional[str] = None
-    # Variant-specific training-base to inference-base pairs, including public mirror ids.
+    # maps each training base, including public mirrors, to its inference base.
     deploy_bases: Dict[str, str] = Field(default_factory = dict)
-    # Per-checkpoint facts that overlay the family-level params/VRAM guidance.
+    # overlays checkpoint-specific parameter and VRAM guidance on family defaults.
     base_specs: Dict[str, dict] = Field(default_factory = dict)
 
 
 class DiffusionTrainingInfoResponse(BaseModel):
-    """Where diffusion training reads/writes on this Unsloth, plus usable datasets and the
-    trainable model families (so the UI can offer a base picker with realistic guidance)."""
+    """lists paths, usable datasets, and UI-facing trainable families for this Unsloth instance."""
 
     datasets_root: str
     outputs_root: str
     datasets: List[DiffusionDatasetSummary]
+    # includes every occupied folder name, even captions-only folders.
+    dataset_names: List[str] = Field(default_factory = list)
+    # occupied, unlisted folders that this upload form may safely continue.
+    continuation_dataset_names: List[str] = Field(default_factory = list)
     families: List[DiffusionTrainableFamily] = Field(default_factory = list)
 
 
 class DiffusionDatasetUploadResponse(BaseModel):
-    """Result of uploading images/clips/captions into a named dataset folder. Counts are
-    for the whole folder after the upload, so repeat uploads show the running total."""
+    """counts cover the whole folder after the upload, including earlier uploads."""
 
     name: str
     path: str

@@ -4,27 +4,31 @@
 import { requestSttDownload } from "@/features/settings/stores/stt-download-prompt-store";
 import {
   type DictationEngine,
+  sttModelVariant,
   useVoiceSettingsStore,
 } from "@/features/settings/stores/voice-settings-store";
 import { toast } from "@/lib/toast";
 import type { DictationAdapter } from "@assistant-ui/react";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
 import {
+  currentDictationEntryMode,
+  insecureDictationGuidance,
+} from "../utils/dictation-entry";
+import {
   StudioModelDictationAdapter,
   fetchSttStatus,
   sttEngineStatusFor,
+  sttQuantDownloaded,
 } from "./studio-model-dictation-adapter";
 import {
   type StudioDictationSession,
   StudioWebSpeechDictationAdapter,
 } from "./studio-web-speech-dictation-adapter";
 
-// The one live dictation session, so Escape can discard it without going through assistant-ui,
-// which only exposes stop. Cancelling emits no transcript, so composer text is untouched.
-// assistant-ui exposes only stop, i.e. transcribe, which is why Escape needs its own path.
+// one live session lets Escape cancel because assistant-ui only exposes stop, which transcribes.
 let activeSession: StudioDictationSession | null = null;
 
-/** Discard the current dictation without transcribing. Safe to call when idle. */
+/** discards the active dictation without transcribing; safe when idle. */
 export function cancelActiveStudioDictation(): void {
   const session = activeSession;
   activeSession = null;
@@ -45,9 +49,9 @@ function customSttConfigured(): boolean {
   const providerId = sttProviderId.trim();
   return Boolean(
     connectionsEnabled &&
-      providerId &&
-      sttProviderModel.trim() &&
-      providers.some((provider) => provider.id === providerId),
+    providerId &&
+    sttProviderModel.trim() &&
+    providers.some((provider) => provider.id === providerId),
   );
 }
 
@@ -98,7 +102,9 @@ export class StudioDictationAdapter implements DictationAdapter {
         );
       }
       if (StudioModelDictationAdapter.isSupported()) {
-        return new StudioModelDictationAdapter({ chatId: this.chatId }).listen();
+        return new StudioModelDictationAdapter({
+          chatId: this.chatId,
+        }).listen();
       }
       throw new Error(
         dictationEngine === "custom"
@@ -107,7 +113,9 @@ export class StudioDictationAdapter implements DictationAdapter {
       );
     }
     if (StudioWebSpeechDictationAdapter.isSupported()) {
-      return new StudioWebSpeechDictationAdapter({ chatId: this.chatId }).listen();
+      return new StudioWebSpeechDictationAdapter({
+        chatId: this.chatId,
+      }).listen();
     }
     throw new Error("Browser dictation is not supported in this browser.");
   }
@@ -129,8 +137,7 @@ export function notifyStudioDictationUnavailable(
   // Both engines need a secure context (localhost or HTTPS).
   if (typeof window !== "undefined" && !window.isSecureContext) {
     toast.error("Voice typing needs a secure connection.", {
-      description:
-        "Open Unsloth at http://127.0.0.1 (localhost) or over HTTPS to dictate.",
+      description: insecureDictationGuidance(currentDictationEntryMode()),
     });
     return;
   }
@@ -141,25 +148,22 @@ export function notifyStudioDictationUnavailable(
     return;
   }
   if (usesRecordedAudio(dictationEngine)) {
-    // defensive: media recording is effectively always present here.
     toast.error("Voice recording isn't available in this browser.");
     return;
   }
-  // Browser Web Speech is missing (e.g. Firefox). Local dictation is the only way to type by
-  // voice here, so offer it rather than describing it.
+  // Firefox lacks Web Speech, so offer local dictation.
   void offerLocalDictation();
 }
 
-/** Move a browser with no speech service onto local dictation. Already downloaded means one
- *  switch; otherwise the same confirmation the mic raises, which flips the engine only if
- *  accepted. */
+/** offers local dictation when Web Speech is missing, prompting before a needed download. */
 async function offerLocalDictation(): Promise<void> {
-  const { sttModel, setDictationEngine } = useVoiceSettingsStore.getState();
+  const { sttModel, sttGgufVariant, setDictationEngine } =
+    useVoiceSettingsStore.getState();
+  const ggufVariant = sttModelVariant(sttModel, sttGgufVariant);
   try {
     const status = await fetchSttStatus(undefined, sttModel);
     const engine = sttEngineStatusFor(status, sttModel);
-    // An engine with no runtime installed cannot load what it downloads, so say what is missing
-    // rather than asking for gigabytes first.
+    // avoid offering a large download when the runtime cannot load it.
     if (engine && !engine.available) {
       toast.error("Local transcription isn't installed on this server.", {
         description:
@@ -167,7 +171,10 @@ async function offerLocalDictation(): Promise<void> {
       });
       return;
     }
-    if (engine?.downloaded_models.includes(sttModel)) {
+    if (
+      engine?.downloaded_models.includes(sttModel) &&
+      (await sttQuantDownloaded(sttModel, ggufVariant))
+    ) {
       setDictationEngine("model");
       toast.success("Switched to local transcription.", {
         description:
@@ -176,7 +183,7 @@ async function offerLocalDictation(): Promise<void> {
       return;
     }
   } catch {
-    // Status is unreachable; the download path reports its own failure.
+    // the download path reports status or quant lookup failures.
   }
-  requestSttDownload(sttModel, { selectLocalEngine: true });
+  requestSttDownload(sttModel, { selectLocalEngine: true, ggufVariant });
 }

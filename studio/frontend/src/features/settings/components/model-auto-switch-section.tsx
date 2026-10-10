@@ -50,42 +50,42 @@ function MediaIdleUnloadRow({
       description={t(
         "settings.general.modelAutoSwitch.mediaIdleUnloadDescription",
       )}
-    >
-      <div className="flex flex-col items-end gap-1">
-        <div className="flex items-center gap-2">
-          <div className="flex items-center gap-1.5">
-            <Input
-              type="number"
-              min={0}
-              step={1}
-              value={draftSeconds}
-              aria-label={t(
-                "settings.general.modelAutoSwitch.mediaIdleSecondsAriaLabel",
-              )}
-              disabled={disabled}
-              onChange={(event) => onDraftChange(event.target.value)}
-              className="h-8 w-24"
-            />
-            <span className="text-xs font-medium text-muted-foreground">s</span>
-          </div>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={disabled}
-            onClick={onSave}
-          >
-            {isSaving ? t("common.saving") : t("common.save")}
-          </Button>
-        </div>
-        {error ? (
-          <span className="max-w-[260px] text-right text-xs text-destructive">
+      below={
+        error ? (
+          <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
             {error}
           </span>
         ) : paused ? (
-          <span className="max-w-[260px] text-right text-xs text-muted-foreground">
+          <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-muted-foreground">
             {t("settings.general.modelAutoSwitch.mediaIdlePaused")}
           </span>
-        ) : null}
+        ) : null
+      }
+    >
+      <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5">
+          <Input
+            type="number"
+            min={0}
+            step={1}
+            value={draftSeconds}
+            aria-label={t(
+              "settings.general.modelAutoSwitch.mediaIdleSecondsAriaLabel",
+            )}
+            disabled={disabled}
+            onChange={(event) => onDraftChange(event.target.value)}
+            className="h-8 w-24"
+          />
+          <span className="text-xs font-medium text-muted-foreground">s</span>
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={disabled}
+          onClick={onSave}
+        >
+          {isSaving ? t("common.saving") : t("common.save")}
+        </Button>
       </div>
     </SettingsRow>
   );
@@ -271,48 +271,46 @@ export function ModelAutoSwitchSection() {
         description={t(
           "settings.general.modelAutoSwitch.idleUnloadDescription",
         )}
-      >
-        <div className="flex flex-col items-end gap-1">
-          <div className="flex items-center gap-2">
-            <div className="flex items-center gap-1.5">
-              <Input
-                type="number"
-                min={0}
-                step={1}
-                value={draftIdleSeconds}
-                aria-label={t(
-                  "settings.general.modelAutoSwitch.idleSecondsAriaLabel",
-                )}
-                disabled={!settings?.enabled || isSaving}
-                onChange={(event) => setDraftIdleSeconds(event.target.value)}
-                className="h-8 w-24"
-              />
-              <span className="text-xs font-medium text-muted-foreground">
-                s
-              </span>
-            </div>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={!settings?.enabled || isSaving}
-              onClick={handleSaveIdle}
-            >
-              {isSaving ? t("common.saving") : t("common.save")}
-            </Button>
-          </div>
-          {error ? (
-            <span className="max-w-[260px] text-right text-xs text-destructive">
+        below={
+          error ? (
+            <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
               {error}
             </span>
           ) : settings && !settings.enabled && settings.idleUnloadActive ? (
-            <span className="max-w-[260px] text-right text-xs text-muted-foreground">
+            <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-muted-foreground">
               {t("settings.general.modelAutoSwitch.idleActiveViaEnv")}
             </span>
           ) : settings && !settings.enabled ? (
-            <span className="max-w-[260px] text-right text-xs text-muted-foreground">
+            <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-muted-foreground">
               {t("settings.general.modelAutoSwitch.idleNeedsEnable")}
             </span>
-          ) : null}
+          ) : null
+        }
+      >
+        <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5">
+            <Input
+              type="number"
+              min={0}
+              step={1}
+              value={draftIdleSeconds}
+              aria-label={t(
+                "settings.general.modelAutoSwitch.idleSecondsAriaLabel",
+              )}
+              disabled={!settings?.enabled || isSaving}
+              onChange={(event) => setDraftIdleSeconds(event.target.value)}
+              className="h-8 w-24"
+            />
+            <span className="text-xs font-medium text-muted-foreground">s</span>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={!settings?.enabled || isSaving}
+            onClick={handleSaveIdle}
+          >
+            {isSaving ? t("common.saving") : t("common.save")}
+          </Button>
         </div>
       </SettingsRow>
       <SettingsRow
