@@ -371,6 +371,18 @@ def _optional_float(value: Any) -> Optional[float]:
         return None
 
 
+def _flow_shift_key(value: Any) -> str:
+    """flow_shift as text: "auto" and the number it resolves to are different runs. The model's own
+    schedule (None) keeps the "1.0" earlier builds recorded for it; a number is now the effective
+    shift on the unshifted schedule rather than a factor on the model's own, so it gets a new
+    token and a checkpoint from before that change is refused instead of continuing at a new shift."""
+    if value is None:
+        return "1.0"
+    if isinstance(value, str):
+        return value
+    return f"effective:{float(value)}"
+
+
 def _snr_gamma_key(value: Any) -> str:
     """min-SNR as a comparable token. None DISABLES the weighting, so it gets its own value rather
     than the unknown the optional-field rule skips."""
@@ -549,11 +561,14 @@ def identity_for_config(
         lora_alpha = int(cfg.lora_alpha if cfg.lora_alpha is not None else cfg.lora_rank),
         lora_dropout = round(float(getattr(cfg, "lora_dropout", 0.0) or 0.0), 6),
         cfg_dropout = round(float(getattr(cfg, "cfg_dropout", 0.0) or 0.0), 6),
-        # flow_shift is float | "auto" | None, so it is recorded as text: "auto" and the number it resolves to are
-        # different runs, and comparing them as floats would lose that.
-        flow_shift = str(getattr(cfg, "flow_shift", None)),
+        flow_shift = _flow_shift_key(getattr(cfg, "flow_shift", None)),
         weighting_scheme = str(getattr(cfg, "weighting_scheme", "") or "none"),
-        snr_gamma = _snr_gamma_key(getattr(cfg, "snr_gamma", None)),
+        # Only the SDXL loop applies min-SNR, so a flow-matching run records "cannot tell" rather than the unused default.
+        snr_gamma = (
+            _snr_gamma_key(getattr(cfg, "snr_gamma", None))
+            if str(getattr(cfg, "resolved_family", "") or "sdxl") == "sdxl"
+            else None
+        ),
         lr_scheduler = str(getattr(cfg, "lr_scheduler", "") or "constant"),
         lr_warmup_steps = int(getattr(cfg, "lr_warmup_steps", 0) or 0),
         seed = int(getattr(cfg, "seed", 0) or 0),

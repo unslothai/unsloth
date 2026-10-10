@@ -1318,14 +1318,21 @@ def test_the_persisted_h3_recipe_is_the_one_the_loop_runs():
         "cache_latents": True,
         "cache_variants": 1,
     }
-    # Config-only, and no other family's loop disagrees with its request.
+    # Config-only: the other flow-matching loops disagree only on min-SNR, and SDXL on nothing.
     other = DiffusionLoraConfig(
         base_model = "black-forest-labs/FLUX.1-dev",
         data_dir = "/tmp/d",
         output_dir = "/tmp/o",
         instance_prompt = "p",
     ).normalized()
-    assert train_recipe_overrides(other) == {}
+    assert train_recipe_overrides(other) == {"snr_gamma": None}
+    sdxl = DiffusionLoraConfig(
+        base_model = "stabilityai/stable-diffusion-xl-base-1.0",
+        data_dir = "/tmp/d",
+        output_dir = "/tmp/o",
+        instance_prompt = "p",
+    ).normalized()
+    assert train_recipe_overrides(sdxl) == {}
 
     # The two appliers: the trainer for what runs, the service for what is recorded.
     from core.training import diffusion_h3_trainer
