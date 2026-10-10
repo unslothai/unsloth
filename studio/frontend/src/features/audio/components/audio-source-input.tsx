@@ -12,12 +12,12 @@ import {
 import { cn } from "@/lib/utils";
 import {
   Alert02Icon,
-  AudioWave01Icon,
   Cancel01Icon,
   Mic01Icon,
   StopIcon,
   Upload04Icon,
 } from "@hugeicons/core-free-icons";
+import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type ReactNode,
@@ -269,7 +269,7 @@ export function AudioSourceInput({
         <div className="grid gap-2">
           <div className="flex min-w-0 items-center gap-2 text-ui-12">
             <HugeiconsIcon
-              icon={AudioWave01Icon}
+              icon={AiSpeechIcon}
               className="size-3.5 shrink-0 text-muted-foreground"
             />
             <span

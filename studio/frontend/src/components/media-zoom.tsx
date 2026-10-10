@@ -231,7 +231,15 @@ export function MediaZoomStage({
                     : (stage.height - box.height) / 2,
                 transform: translate(pan),
               }
-            : { inset: 0 }
+            : // Until measured, the clear area: a contained picture there already sits where fit
+              // puts it, so nothing moves once it loads. Longhands, not `inset`: React clears a
+              // removed shorthand after setting `left`, which put the picture at the left edge.
+              {
+                left: inset.left,
+                top: inset.top,
+                width: `calc(100% - ${inset.left + inset.right}px)`,
+                height: `calc(100% - ${inset.top + inset.bottom}px)`,
+              }
         }
       >
         {children}

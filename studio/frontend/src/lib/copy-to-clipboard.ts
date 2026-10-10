@@ -127,3 +127,17 @@ export async function copyToClipboardFrom(
     return false;
   }
 }
+
+/** As PNG: the one image type every browser's clipboard takes. */
+export async function asPng(blob: Blob): Promise<Blob> {
+  if (blob.type === "image/png") return blob;
+  const bitmap = await createImageBitmap(blob);
+  const canvas = document.createElement("canvas");
+  canvas.width = bitmap.width;
+  canvas.height = bitmap.height;
+  canvas.getContext("2d")?.drawImage(bitmap, 0, 0);
+  bitmap.close();
+  return new Promise((resolve, reject) =>
+    canvas.toBlob((png) => (png ? resolve(png) : reject(new Error("PNG encoding failed"))), "image/png"),
+  );
+}

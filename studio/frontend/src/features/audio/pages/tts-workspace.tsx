@@ -19,12 +19,12 @@ import { PillTabs } from "@/features/model-picker/components/model-selector/pill
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
-  AudioWave01Icon,
   Copy01Icon,
   FloppyDiskIcon,
   SparklesIcon,
   StopIcon,
 } from "@hugeicons/core-free-icons";
+import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { addAudioClipToProject, type AudioGalleryClip } from "../api";
 import { AudioOptionFields } from "../audio-options-fields";
@@ -732,7 +732,7 @@ export function TtsOutput({
                     className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left text-ui-13"
                   >
                     <HugeiconsIcon
-                      icon={AudioWave01Icon}
+                      icon={AiSpeechIcon}
                       className="size-3.5 shrink-0 text-muted-foreground"
                     />
                     <span className="min-w-0 flex-1 truncate">

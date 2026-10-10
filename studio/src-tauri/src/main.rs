@@ -6,6 +6,7 @@ mod browser_capture;
 #[cfg(target_os = "macos")]
 mod browser_context_downloads;
 mod browser_downloads;
+mod browser_open_with;
 mod browser_proxy;
 mod browser_webview;
 mod commands;
@@ -2267,6 +2268,10 @@ fn main() {
             browser_downloads::browser_download_folder,
             browser_downloads::browser_download_folder_pick,
             browser_downloads::browser_download_folder_reset,
+            browser_open_with::browser_file_local_copy,
+            browser_open_with::browser_file_apps,
+            browser_open_with::browser_file_open,
+            browser_open_with::browser_file_reveal,
             browser_capture::browser_view_print,
             set_training_active,
             set_renderer_activity,

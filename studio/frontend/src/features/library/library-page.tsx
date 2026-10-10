@@ -23,7 +23,6 @@ import { type TranslationKey, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { toast } from "@/lib/toast";
 import {
-  AudioWave01Icon,
   Cancel01Icon,
   FlimSlateIcon,
   Delete02Icon,
@@ -36,7 +35,7 @@ import {
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { ChevronRightStandardIcon } from "@/lib/chevron-icons";
-import { MessageCircleIcon, StarPointedIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
+import { AiSpeechIcon, MessageCircleIcon, StarPointedIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouter, useSearch } from "@tanstack/react-router";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -109,7 +108,7 @@ const EMPTY_COPY: Record<LibraryTab, EmptyCopy> = {
   folders: [Folder01Icon, "library.empty.foldersTitle", "library.empty.foldersDescription"],
   images: [Image02Icon, "library.empty.imagesTitle", "library.empty.imagesDescription"],
   videos: [FlimSlateIcon, "library.empty.videosTitle", "library.empty.videosDescription"],
-  audio: [AudioWave01Icon, "library.empty.audioTitle", "library.empty.audioDescription"],
+  audio: [AiSpeechIcon, "library.empty.audioTitle", "library.empty.audioDescription"],
   models: [TestTubeOutlineIcon, "library.empty.modelsTitle", "library.empty.modelsDescription"],
   all: [Upload01Icon, "library.empty.suggestedTitle", "library.empty.suggestedDescription"],
   chats: [MessageCircleIcon, "library.chats.empty.chatsTitle", "library.chats.empty.chatsDescription"],

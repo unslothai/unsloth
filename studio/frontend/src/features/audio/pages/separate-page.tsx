@@ -9,7 +9,8 @@ import { Button } from "@/components/ui/button";
 import type { ModelOption } from "@/features/model-picker/components/model-selector/types";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { AudioWave01Icon, Download01Icon } from "@hugeicons/core-free-icons";
+import { Download01Icon } from "@hugeicons/core-free-icons";
+import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ComponentProps, useEffect, useMemo, useState } from "react";
 import {
@@ -606,7 +607,7 @@ export function SeparateOutput({
                     className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left text-ui-13"
                   >
                     <HugeiconsIcon
-                      icon={AudioWave01Icon}
+                      icon={AiSpeechIcon}
                       className="size-3.5 shrink-0 text-muted-foreground"
                     />
                     <span className="min-w-0 flex-1 truncate">
