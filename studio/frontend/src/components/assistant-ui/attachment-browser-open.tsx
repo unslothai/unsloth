@@ -25,14 +25,25 @@ import { FileContextMenu } from "./link-context-menu";
 
 type Opened = { blob: Blob; plainText?: boolean };
 
-// Documents and text open as tabs; media keeps the lightbox.
-const OPENS_IN_BROWSER: ReadonlySet<AttachmentSource["kind"]> = new Set(["document", "text"]);
+// Documents, text and videos open as tabs; images and audio keep the lightbox.
+const OPENS_IN_BROWSER: ReadonlySet<AttachmentSource["kind"]> = new Set(["document", "text", "video"]);
 
 function localLoader(source: AttachmentSource): (() => Promise<Opened>) | null {
   const { file, text } = source;
   // Copied: the tab can outlive the composer's File.
   if (file) return () => file.arrayBuffer().then((data) => ({ blob: new Blob([data], { type: file.type }) }));
   switch (source.kind) {
+    case "video": {
+      // A sent clip is only its base64 part until someone opens it.
+      const { video, src } = source;
+      const url = video ? (video.data.startsWith("data:") ? video.data : `data:${video.mimeType};base64,${video.data}`) : src;
+      if (!url) return null;
+      return () =>
+        fetch(url).then(async (response) => {
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          return { blob: await response.blob() };
+        });
+    }
     case "document":
       return !source.hasOriginal && text !== undefined
         ? () => Promise.resolve({ blob: new Blob([attachmentBodyText(text)], { type: "text/plain" }), plainText: true })

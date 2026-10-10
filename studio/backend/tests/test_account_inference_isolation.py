@@ -284,6 +284,16 @@ def test_a_resolved_adapter_base_needs_its_own_grant(monkeypatch, base, expected
     inference._require_resolved_base_access(config)
 
 
+def test_a_named_mlx_drafter_needs_its_own_grant(monkeypatch):
+    monkeypatch.setattr(access, "repo_is_public", lambda repo, *a, **k: repo == "org/public")
+    monkeypatch.setattr(inference, "_mlx_cached_drafters", lambda path: [{"repo_id": "org/d"}])
+    assert run_as(BOB, inference._discoverable_drafters, "org/public") == ["org/d"]
+    assert inference._discoverable_drafters("org/public") is None
+    body = {"model_path": "org/public", "spec_draft_model": "org/private"}
+    with client_for(BOB) as client:
+        assert client.post("/api/inference/estimate-memory", json = body).status_code == 404
+
+
 def test_preview_load_refuses_private_foreign_target_before_gpu_work():
     with pytest.raises(HTTPException) as exc:
         asyncio.run(

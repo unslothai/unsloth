@@ -510,6 +510,7 @@ export const es = {
     },
   },
   common: {
+    duplicate: "Duplicar",
     cancel: "Cancelar",
     close: "Cerrar",
     delete: "Eliminar",
@@ -1165,6 +1166,8 @@ export const es = {
     sandbox: {
       title: "Sandbox",
       description: "Si las llamadas a herramientas de Python y Terminal se ejecutan dentro de un sandbox del sistema en este equipo.",
+      docs: "Documentación",
+      docsLabel: "Abrir la documentación del sandbox",
       toolsSection: "Este equipo",
       refresh: "Actualizar",
       python: "Python",
@@ -2285,6 +2288,7 @@ export const es = {
         "No se pudieron cargar todas las cuantizaciones. El comando usará el valor de modelo que esté disponible.",
       generatedCommand: "Comando generado",
       docs: "Documentación",
+      docsLabel: "Abrir la documentación de unsloth start",
       agentDocs: "Abrir la documentación de configuración de {agent}",
       copyGeneratedCommand: "Copiar el comando generado",
       // English is the baseline until translated: the three-part sentence is assembled around an
@@ -2826,6 +2830,8 @@ export const es = {
       revoking: "Revocando...",
       decisionApi: {
         title: "API de decisiones",
+        docs: "Documentación",
+        docsLabel: "Abrir la documentación de la API de decisiones",
         description: "Responde preguntas de sí/no, de opción múltiple y de puntuación sobre texto con un modelo en este equipo o un modelo de decisiones de Conexiones. Funciona con el SDK de TypeSafe.",
         enable: "Atender solicitudes",
         enableDescription: "Atiende /v1/systemone. Al activarlo se descarga el modelo.",
@@ -2847,6 +2853,8 @@ export const es = {
         backendAuto: "Automático",
         backendDescription:
           "Automático sirve Clef mediante llama.cpp cuando el modelo tiene una versión GGUF y recurre a PyTorch en caso contrario. llama.cpp también lee imágenes.",
+        backendDescriptionMlx:
+          "Automático sirve Clef mediante MLX en Apple Silicon y mediante llama.cpp cuando solo la versión GGUF del modelo está cargada o descargada. MLX solo lee imágenes con modelos Clef; llama.cpp también lee imágenes.",
         backendStatus: "Entorno de ejecución: {backend}",
         backendNone: "no disponible",
         mediaImages: "Lee texto e imágenes.",
@@ -3439,6 +3447,31 @@ export const es = {
         "Fracción del total de pasos de entrenamiento entre evaluaciones (0-1). Pon 0 para desactivar la evaluación. P. ej. 0.01 = evaluar cada 1 % de los pasos.",
       seed: "Semilla",
       seedTooltip: "Semilla aleatoria para reproducibilidad.",
+      offloadLayers: "Descargar capas",
+      offloadLayersTooltip: "Mantiene capas del decodificador en la RAM del sistema y transfiere cada una a la GPU justo antes de ejecutarla, para entrenar con LoRA un modelo más grande que tu VRAM. Auto descarga las mínimas que hagan falta; un número descarga exactamente esas. Requiere gradient checkpointing.",
+      offloadOff: "Desactivado",
+      offloadAuto: "Auto",
+      offloadCount: "Número",
+      offloadVramBudget: "Presupuesto de VRAM (GiB)",
+      offloadVramBudgetTooltip: "La VRAM máxima que puede usar este entrenamiento. Auto descarga las capas necesarias para caber, y dos entrenamientos pueden compartir una tarjeta. Vacío usa toda la tarjeta.",
+      offloadWholeCard: "toda la tarjeta",
+      offloadVramBudgetGpu: "Presupuesto de VRAM GPU {index} (GiB)",
+      prefetchDepth: "Profundidad de precarga",
+      prefetchDepthTooltip: "Cuántas capas descargadas se copian antes de la que se ejecuta. Auto empieza en 1 y solo mantiene más si reduce de forma medible la espera de copias.",
+      offloadPanelTitle: "Capas descargadas",
+      offloadPanelGpu: "En la GPU",
+      offloadPanelHost: "En la RAM del sistema",
+      offloadPanelCopying: "Copiando",
+      offloadPanelSwapped: "descargadas",
+      offloadPanelStall: "esperando copias",
+      offloadPanelCopy: "copia por capa",
+      offloadPanelCompute: "cálculo por capa",
+      offloadPanelVram: "VRAM",
+      offloadPanelDepth: "profundidad de precarga",
+      offloadPanelPinned: "fijada",
+      offloadPanelSweepNote: "La ventana móvil muestra el orden en que se traen las capas, ralentizado para que se vea; los números se miden en el último paso.",
+      offloadPanelCard: "GPU {index}",
+      offloadPanelCardUnknown: "Tarjeta desconocida",
       gradCheckpoint: "Checkpoint de gradiente",
       gradCheckpointTooltip:
         "Intercambia cómputo por memoria recalculando las activaciones.",
@@ -3449,6 +3482,11 @@ export const es = {
       readMore: "Leer más",
     },
     training: {
+      duplicateFailed: "No se pudo duplicar la ejecución",
+      duplicateDraftChanged:
+        "La configuración del entrenamiento cambió durante la carga. Vuelve a intentar duplicarla.",
+      duplicateNoModel:
+        "Esta ejecución no tiene una configuración de modelo guardada.",
       startTraining: "Iniciar entrenamiento",
       starting: "Iniciando...",
       loadingModel: "Cargando modelo...",

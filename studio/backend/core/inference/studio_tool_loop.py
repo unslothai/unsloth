@@ -133,6 +133,11 @@ _TOOL_TRUNCATED = (
     "output limit."
 )
 
+_TOOL_CHOICE_NONE = (
+    "Unsloth did not execute this tool call because tool calls are turned off for this request "
+    '(tool_choice is "none").'
+)
+
 # Card text for a call the controller skipped. The client already painted a card from the provider's own tool_calls
 # delta, so it needs a short result; the long model-facing nudge stays in the conversation.
 _TOOL_SKIPPED = {
@@ -559,6 +564,58 @@ class _Turn:
     # result twice
     hosted_results: dict[str, dict[str, Any]] = field(default_factory = dict)
     provider_compaction: dict[str, Any] | None = None
+
+    def note_reasoning_extra(self, extra: Any) -> None:
+        """Accumulate Gemini's per-part replay envelopes across one provider turn."""
+        if not isinstance(extra, dict):
+            return
+        previous = self.reasoning_extra if isinstance(self.reasoning_extra, dict) else {}
+        merged = {**previous, **extra}
+        previous_google = previous.get("google")
+        incoming_google = extra.get("google")
+        if isinstance(previous_google, dict) or isinstance(incoming_google, dict):
+            old_google = previous_google if isinstance(previous_google, dict) else {}
+            new_google = incoming_google if isinstance(incoming_google, dict) else {}
+            google = {**old_google, **new_google}
+            for singular, plural in (
+                ("thought_part", "thought_parts"),
+                ("answer_part", "answer_parts"),
+            ):
+                accumulated: list[dict[str, Any]] = []
+                for source in (old_google, new_google):
+                    many = source.get(plural)
+                    if isinstance(many, list):
+                        accumulated.extend(dict(part) for part in many if isinstance(part, dict))
+                    one = source.get(singular)
+                    if isinstance(one, dict):
+                        accumulated.append(dict(one))
+                if accumulated:
+                    compacted: list[dict[str, Any]] = []
+                    for part in accumulated:
+                        signature = part.get("thought_signature") or part.get("thoughtSignature")
+                        if (
+                            compacted
+                            and not signature
+                            and not (
+                                compacted[-1].get("thought_signature")
+                                or compacted[-1].get("thoughtSignature")
+                            )
+                            and isinstance(part.get("text"), str)
+                            and isinstance(compacted[-1].get("text"), str)
+                        ):
+                            compacted[-1]["text"] += part["text"]
+                        else:
+                            compacted.append(part)
+                    google[plural] = compacted
+                google.pop(singular, None)
+            if google.get("thought_parts") or google.get("answer_parts"):
+                # Native ledgers already pin every signature to its original part. Retaining the legacy scalar
+                # would let the translator move an earlier thought signature onto later unsigned text.
+                google.pop("thought_signature", None)
+                google.pop("thoughtSignature", None)
+                google.pop("thought", None)
+            merged["google"] = google
+        self.reasoning_extra = merged
 
     def compaction_replay_message(self) -> dict[str, Any] | None:
         """Build one replay turn and remove Anthropic's native block from later metadata."""
@@ -1540,8 +1597,7 @@ async def stream_with_studio_tools(
                 content = delta.get("content")
                 raw_calls = delta.get("tool_calls")
                 extra = delta.get("extra_content")
-                if isinstance(extra, dict):
-                    turn.reasoning_extra = extra
+                turn.note_reasoning_extra(extra)
                 turn.note_hosted_tool_event(payload.get("_toolEvent"))
                 compaction = _openai_compaction_item(payload.get("_toolEvent"))
                 if compaction:
@@ -1693,27 +1749,23 @@ async def stream_with_studio_tools(
                     continue
                 turn.text.append(span)
                 yield _sse({"choices": [{"index": 0, "delta": {"content": span}}]})
+        # Truncation wins: half-written arguments are never shown.
+        unrun_reason = None
         if truncated:
-            # The other half of the same problem. A call the provider streamed as a tool_calls delta was relayed as it
-            # arrived, so the client already has a card for it, and refusing to run it leaves that card open for the
-            # rest of the response. Close it the way every other unrun call is closed. Structured only: a healed call
-            # was never streamed, and the span released just above is what tells the user about that one. Through
-            # `calls`, which never executes anything: it is what mints the card id for a call the provider gave none,
-            # and the client drew its card under that same spelling. Reading the slots directly left every id-less
-            # call out, so the card the deltas painted spun for the rest of the response. Calls it drops -- nameless,
-            # or a fork whose object never closed -- have no card of ours to close either.
+            unrun_reason = _TOOL_TRUNCATED
+        elif tool_choice == "none":
+            unrun_reason = _TOOL_CHOICE_NONE
+        if unrun_reason is not None:
+            # The relayed delta already drew a card: close it like any unrun call, via `calls` (executes nothing), which
+            # mints the id the client drew for an id-less call.
             for raw_call in turn.calls(used_call_ids, painted_card_ids):
-                truncated_id = (
-                    raw_call.get("card_id") or raw_call.get("stream_id") or raw_call["id"]
-                )
+                unrun_id = raw_call.get("card_id") or raw_call.get("stream_id") or raw_call["id"]
                 name = raw_call["function"]["name"]
                 for card_line in _unrun_call_card(
                     tool_name = name,
-                    tool_call_id = truncated_id,
-                    # The arguments are cut off mid-write, so there is nothing well formed to show; the result says
-                    # what happened.
-                    arguments = {},
-                    result = _TOOL_TRUNCATED,
+                    tool_call_id = unrun_id,
+                    arguments = {} if truncated else raw_call.get("arguments"),
+                    result = unrun_reason,
                     provenance = _unrun_provenance(name, round_id + 1),
                 ):
                     yield card_line
@@ -1721,11 +1773,7 @@ async def stream_with_studio_tools(
         # one. Withdrawing the catalog on the way out is not enough on its own: Deep Research sets "none" exactly so
         # the scraped web text in its prompts cannot reach python or terminal, so a naive or compromised endpoint
         # echoing a call back must not be able to execute it here.
-        calls = (
-            []
-            if (truncated or tool_choice == "none")
-            else turn.calls(used_call_ids, painted_card_ids)
-        )
+        calls = [] if unrun_reason is not None else turn.calls(used_call_ids, painted_card_ids)
         if not calls:
             # The badge clears between iterations, and this turn is over too. Without it a turn whose only call was
             # refused never reaches the empty status below, so the client keeps the card it drew for that call open

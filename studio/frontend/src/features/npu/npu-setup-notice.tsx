@@ -53,7 +53,9 @@ export function NpuSetupNotice({ catalog }: { catalog: NpuCatalog }) {
           </Button>
         </div>
       ) : null}
-      {listError ? <p className="text-destructive">{listError}</p> : null}
+      {listError && listError !== status.error ? (
+        <p className="text-destructive">{listError}</p>
+      ) : null}
       {ready && status.runtime_installed && !models && !listError ? (
         <div className="flex justify-center py-2">
           <Spinner className="size-3.5 text-muted-foreground" />

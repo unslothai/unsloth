@@ -151,6 +151,31 @@ export function mapBackendModelConfigToTrainingPatch(
   const randomSeed = toNumber(training?.random_seed);
   if (randomSeed !== undefined) patch.randomSeed = randomSeed;
 
+  if (training?.offload_layers === "auto") patch.offloadLayers = "auto";
+  else {
+    const offloadLayers = toNumber(training?.offload_layers);
+    if (offloadLayers !== undefined) patch.offloadLayers = offloadLayers;
+  }
+  if (Object.hasOwn(training ?? {}, "offload_vram_gb")) {
+    const budget = toNumber(training?.offload_vram_gb);
+    patch.offloadVramGb = budget !== undefined && budget > 0 ? budget : null;
+  }
+  if (Object.hasOwn(training ?? {}, "offload_vram_gb_per_device")) {
+    // Exported keyed by GPU index; the request's list form is indexed the same way.
+    const raw = training?.offload_vram_gb_per_device;
+    const perDevice: Record<string, number | null> = {};
+    for (const [index, value] of Object.entries(raw ?? {})) {
+      const gb = toNumber(value);
+      if (/^\d+$/.test(index) && gb !== undefined && gb > 0 && gb <= 4096) perDevice[index] = gb;
+    }
+    patch.offloadVramGbPerDevice = perDevice;
+  }
+  if (training?.prefetch_depth === "auto") patch.prefetchDepth = "auto";
+  else {
+    const depth = toNumber(training?.prefetch_depth);
+    if (depth !== undefined && depth >= 1) patch.prefetchDepth = Math.min(8, Math.floor(depth));
+  }
+
   // Only patch when the config carries the key; model-switch reset lives in setSelectedModel.
   if (Object.hasOwn(training ?? {}, "vision_image_size")) {
     const raw = training?.vision_image_size;

@@ -377,17 +377,46 @@ def _windows_routes_multiarch(gfx_arch: "str | None") -> bool:
 
 
 def _multiarch_device_pack_installed(gfx_arch: "str | None") -> bool:
-    """Whether the venv carries AMD's torch and torchvision kernel packs for this card."""
+    """Whether the selected device extra is fully installed, family kernel packs included.
+    Names come from wheel metadata: family names differ between AMD releases."""
     try:
         from importlib import metadata
-        names = {
-            (d.metadata["Name"] or "").strip().lower().replace("_", "-")
-            for d in metadata.distributions()
-        }
+        from packaging.requirements import Requirement
+        from packaging.utils import canonicalize_name
+
+        gfx = _bare_gfx(gfx_arch)
+        extra = f"device-{gfx}"
+        for package in ("torch", "torchvision"):
+            root = metadata.distribution(package)
+            pending = [(root, extra)]
+            visited = set()
+            found_leaf = False
+            while pending:
+                dist, selected_extra = pending.pop()
+                key = (canonicalize_name(dist.metadata["Name"]), selected_extra)
+                if key in visited:
+                    continue
+                visited.add(key)
+                for raw in dist.requires or ():
+                    req = Requirement(raw)
+                    name = canonicalize_name(req.name)
+                    if not name.startswith(("amd-torch-device-", "amd-torchvision-device-")):
+                        continue
+                    if req.marker is not None and not req.marker.evaluate(
+                        {"extra": selected_extra}
+                    ):
+                        continue
+                    child = metadata.distribution(name)
+                    if not req.specifier.contains(child.version, prereleases = True):
+                        return False
+                    found_leaf |= name == f"amd-{package}-device-{gfx}"
+                    pending.append((child, ""))
+                    pending.extend((child, e) for e in req.extras)
+            if not found_leaf:
+                return False
+        return True
     except Exception:
         return False
-    gfx = _bare_gfx(gfx_arch)
-    return {f"amd-torch-device-{gfx}", f"amd-torchvision-device-{gfx}"} <= names
 
 
 def _windows_multiarch_torch_pkg_specs(gfx_arch: str) -> tuple[str, str, str]:
@@ -6009,6 +6038,34 @@ def _rocm_torch_family_needs_repair(
     ) or _generic_only_target_below_floor(runtime_gfx, _installed_tag)
 
 
+def _windows_rocm_device_packs_need_dependency_pass() -> bool:
+    """For setup.ps1's fast path: would _ensure_rocm_torch repair this multi-arch ROCm torch?
+
+    Same gates as that repair, read from wheel metadata only; fails closed and never installs.
+    """
+    if not IS_WINDOWS or NO_TORCH or _TORCH_BACKEND in ("cuda", "cpu", "xpu"):
+        return False
+    try:
+        if (
+            _explicit_unknown_family_torch_index_url() is not None
+            or _explicit_torch_index_is_unusable()
+            or _explicit_rocm_torch_index_url() is not None
+            or _has_usable_nvidia_gpu()
+        ):
+            return False
+        gfx_arch = _detect_windows_gfx_arch()
+        if not gfx_arch or not _windows_routes_multiarch(gfx_arch):
+            return False
+        from importlib import metadata
+
+        tag = metadata.version("torch").lower().rpartition("+")[2]
+    except Exception:  # noqa: BLE001 - an unreadable host keeps the fast path
+        return False
+    if not tag.startswith("rocm"):
+        return False
+    return tag in _ROCM_MULTIARCH_BROKEN_TAGS or not _multiarch_device_pack_installed(gfx_arch)
+
+
 def _ensure_rocm_torch() -> "bool | None":
     """Reinstall torch with ROCm wheels when the venv received CPU-only torch.
 
@@ -6035,17 +6092,24 @@ def _ensure_rocm_torch() -> "bool | None":
     )
     if _explicit_torch_index_is_unusable() and (IS_WINDOWS or not _rocm_pin_unusable):
         return
-    # setup.ps1's marker; trust it only when torch imports as ROCm (a wiped venv leaves it stale).
+    # setup.ps1's marker cannot prove that the device extra is still complete.
     if os.environ.get("UNSLOTH_ROCM_TORCH_INSTALLED") == "1":
         _ran, _importable, _version, _hip, _cuda = _probe_torch_runtime()
         _torch_ok = _ran and _importable and (bool(_hip) or "rocm" in (_version or "").lower())
+        if _torch_ok and IS_WINDOWS and _explicit_rocm_torch_index_url() is None:
+            _marker_gfx = _detect_windows_gfx_arch()
+            if _windows_routes_multiarch(_marker_gfx):
+                _torch_ok = (
+                    _multiarch_device_pack_installed(_marker_gfx)
+                    and (_version or "").lower().rpartition("+")[2]
+                    not in _ROCM_MULTIARCH_BROKEN_TAGS
+                )
         if _torch_ok:
             _rocm_windows_torch_installed = True
             # ROCm torch is already installed, but bnb still needs the ROCm build
             # (pre-release wheel, else PyPI >=0.50.0).
             _install_bnb_windows_rocm()
             return
-        # torch was wiped between runs; fall through to the full install path
     if IS_MACOS:
         return
 
@@ -6077,7 +6141,7 @@ def _ensure_rocm_torch() -> "bool | None":
             and not _multiarch_device_pack_installed(gfx_arch)
         ):
             _safe_print(
-                f"   installed ROCm torch has no {gfx_arch} device pack -- reinstalling from "
+                f"   installed ROCm torch has incomplete or mismatched {gfx_arch} device packs -- reinstalling from "
                 "AMD's multi-arch index"
             )
             _torch_already_rocm = False
@@ -11230,6 +11294,54 @@ def _diffusers_main_supersedes_release() -> bool:
     return _diffusers_main_requested() and _diffusers_main_resident()
 
 
+def _diffusers_main_active(req: "Path | None" = None) -> bool:
+    """Whether diffusers-main.txt has an uncommented line; an all-comment file is not "build missing"."""
+    if req is None:
+        req = REQ_ROOT / "diffusers-main.txt"
+    return _direct_reference_in_requirements(req) is not None
+
+
+def _diffusers_release_target() -> "str | None":
+    try:
+        from packaging.requirements import Requirement
+        text = (REQ_ROOT / "diffusers-pin.txt").read_text(encoding = "utf-8-sig")
+    except (ImportError, OSError, ValueError):
+        return None
+    for line in text.splitlines():
+        line = line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        try:
+            requirement = Requirement(line)
+        except Exception:  # noqa: BLE001
+            continue
+        if requirement.name.lower() != "diffusers":
+            continue
+        if requirement.marker is not None and not requirement.marker.evaluate():
+            continue
+        for spec in requirement.specifier:
+            if spec.operator == "==":
+                return spec.version
+    return None
+
+
+def _diffusers_release_behind() -> bool:
+    """Resident diffusers older than diffusers-pin.txt's ``==``; a git / zip / checkout build is judged on
+    release numbers (the main build's 0.41.0.dev0 is current), an index prerelease is not."""
+    target = _diffusers_release_target()
+    installed = _installed_distribution_version("diffusers")
+    if target is None or installed is None:
+        return False
+    direct = _recorded_direct_url("diffusers") or {}
+    built = any(k in direct for k in ("vcs_info", "archive_info", "dir_info"))
+    try:
+        from packaging.version import Version
+        have = Version(installed)
+        return (Version(have.base_version) if built else have) < Version(target)
+    except Exception:  # noqa: BLE001 - no packaging, or a version it cannot parse
+        return False
+
+
 _ARCHIVE_SHA256_RE = re.compile(r"#\s*archive-sha256:\s*([0-9a-fA-F]{64})")
 
 
@@ -11272,8 +11384,9 @@ def _diffusers_main_needs_dependency_pass() -> bool:
     github.com would repeat the whole dependency pass on every update.
     """
     req = REQ_ROOT / "diffusers-main.txt"
-    if not req.is_file():
-        return False
+    if not req.is_file() or not _diffusers_main_active(req):
+        # Not same-version damage: 11b's version check would skip it and force the pass on every update.
+        return _diffusers_release_behind() or _installed_distribution_version("diffusers") is None
     if not _diffusers_main_requested():
         # Opted out while the build is still resident: 11b puts the release back.
         return _diffusers_main_resident(req)
@@ -11305,6 +11418,41 @@ def _startup_repair_failed() -> bool:
 
 _REPAIR_LOCK_POLL_S = 5
 
+# Apart from the git key, so an old github.com failure cannot block the PyPI release.
+_DIFFUSERS_RELEASE_REPAIR_KEY = "diffusers_release_repair"
+
+
+def _release_repair_failed() -> bool:
+    try:
+        manifest = install_manifest.read_manifest() or {}
+        return manifest.get(_DIFFUSERS_RELEASE_REPAIR_KEY) == "failed"
+    except Exception:  # noqa: BLE001 - an unreadable manifest is no record of a failed try
+        return False
+
+
+def _repair_diffusers_release() -> int:
+    """11b alone for the startup self-heal, pass lock held: 0 installed, 1 nothing to do, 2 failed."""
+    global USE_UV, _STEP, _TOTAL
+    direct = _recorded_direct_url("diffusers") or {}
+    # A checkout, git or zip build is the user's: also reached by a backend that waited out a peer.
+    if any(k in direct for k in ("vcs_info", "archive_info", "dir_info")):
+        return 1
+    if not _diffusers_release_behind() or _release_repair_failed():
+        return 1
+    USE_UV = _bootstrap_uv()
+    _STEP, _TOTAL = 0, 1
+    _progress("diffusers pin")
+    installed = pip_install_try(
+        "Installing the pinned Diffusers release",
+        "--no-cache-dir",
+        req = REQ_ROOT / "diffusers-pin.txt",
+    )
+    importlib.invalidate_caches()
+    if installed and not _diffusers_release_behind():
+        return 0
+    install_manifest.update_manifest(**{_DIFFUSERS_RELEASE_REPAIR_KEY: "failed"})
+    return 2
+
 
 def _repair_diffusers_main() -> int:
     """11c on its own, for the backend's startup self-heal: 0 installed, 1 nothing to do, 2 failed.
@@ -11321,6 +11469,8 @@ def _repair_diffusers_main() -> int:
             # update leaves the pass it may be rewriting diffusers, and returning would let the backend
             # that started this import it.
             if uncontended:
+                if not _diffusers_main_active():
+                    return _repair_diffusers_release()
                 if (
                     not _diffusers_main_requested()
                     or not _diffusers_main_needs_dependency_pass()
@@ -11353,7 +11503,12 @@ def _prefetch_diffusers_main() -> int:
 
     global USE_UV
     req = REQ_ROOT / "diffusers-main.txt"
-    if (
+    release = not _diffusers_main_active(req)
+    if release:
+        # A timeout here is recorded and survivable; one inside the install refuses every start.
+        if not _diffusers_release_behind() or _release_repair_failed():
+            return 1
+    elif (
         not req.is_file()
         or not _diffusers_main_requested()
         or not _diffusers_main_needs_dependency_pass()
@@ -11371,16 +11526,22 @@ def _prefetch_diffusers_main() -> int:
         except OSError:
             pass
     # The same source _diffusers_main_step will install from, so the install hits this cache entry.
-    archive = None if _has_working_git() else _diffusers_main_archive(req)
+    archive = None if release or _has_working_git() else _diffusers_main_archive(req)
     scratch = Path(tempfile.mkdtemp(prefix = _PREFETCH_SCRATCH_PREFIX))
     temp_reqs: list[Path] = []
     try:
-        args = ("--no-deps", "--target", str(scratch))
+        args = ("--target", str(scratch)) if release else ("--no-deps", "--target", str(scratch))
+        if release:
+            req = REQ_ROOT / "diffusers-pin.txt"
         if archive is not None:
             cmd = _build_uv_cmd((*args, f"diffusers @ {archive}"))
         else:
             actual_req, temp_reqs = _effective_requirements(req)
-            cmd = _build_uv_cmd(args) + ["-r", _uv_safe_path(actual_req)]
+            # Same constraints as the install, or its resolve misses the cache.
+            constraints = (
+                ["-c", _uv_safe_path(CONSTRAINTS)] if release and CONSTRAINTS.is_file() else []
+            )
+            cmd = _build_uv_cmd(args) + constraints + ["-r", _uv_safe_path(actual_req)]
         cmd, env = _pinned_cmd_and_env(cmd)
         result = subprocess.run(
             cmd,
@@ -11423,6 +11584,10 @@ def _diffusers_main_step() -> None:
     fixed before any of this is known. An early return without a _progress leaves the bar short of
     its own total for precisely the users who opted out.
     """
+    if not _diffusers_main_active():
+        _progress("diffusers main (none pinned, skipped)")
+        _record_step("diffusers-main.txt", "skipped")
+        return
     if not _diffusers_main_requested():
         _progress("diffusers main (opted out, skipped)")
         return
@@ -12719,6 +12884,9 @@ if __name__ == "__main__":
             f"probe={_TORCH_RUNTIME_PROBE!r}"
         )
         sys.exit(0 if _needs_pass else 1)
+    if sys.argv[1:] == ["--windows-rocm-device-packs-need-dependency-pass"]:
+        # Exit 0 forces the dependency pass; exit 1 keeps the fast path.
+        sys.exit(0 if _windows_rocm_device_packs_need_dependency_pass() else 1)
     if sys.argv[1:] == ["--cuda-torch-needs-dependency-pass"]:
         # Exit 0 forces the dependency pass; exit 1 keeps the fast path.
         sys.exit(0 if _cuda_torch_needs_dependency_pass() else 1)

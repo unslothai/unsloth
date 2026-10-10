@@ -5047,6 +5047,68 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	display: none;
 }
 
+/* Video tabs: the clip sits on a soft brand-tinted band. */
+.browser-video-band {
+	background:
+		radial-gradient(55% 90% at 18% 30%, color-mix(in oklab, var(--primary) 30%, transparent), transparent 70%),
+		radial-gradient(50% 80% at 85% 75%, color-mix(in oklab, var(--primary) 24%, transparent), transparent 70%),
+		color-mix(in oklab, var(--primary) 9%, var(--background));
+}
+
+/* Thin track filled up to --range-fill, with a round thumb. */
+.browser-video-range {
+	appearance: none;
+	height: 1.25rem;
+	background: transparent;
+	cursor: pointer;
+}
+
+.browser-video-range:disabled {
+	cursor: default;
+}
+
+.browser-video-range::-webkit-slider-runnable-track {
+	height: 4px;
+	border-radius: 9999px;
+	background: linear-gradient(
+		to right,
+		var(--foreground) var(--range-fill, 0%),
+		color-mix(in oklab, var(--foreground) 16%, transparent) var(--range-fill, 0%)
+	);
+}
+
+.browser-video-range::-moz-range-track {
+	height: 4px;
+	border-radius: 9999px;
+	background: color-mix(in oklab, var(--foreground) 16%, transparent);
+}
+
+.browser-video-range::-moz-range-progress {
+	height: 4px;
+	border-radius: 9999px;
+	background: var(--foreground);
+}
+
+.browser-video-range::-webkit-slider-thumb {
+	appearance: none;
+	width: 14px;
+	height: 14px;
+	margin-top: -5px;
+	border-radius: 9999px;
+	background: var(--background);
+	border: 1px solid color-mix(in oklab, var(--foreground) 22%, transparent);
+	box-shadow: 0 1px 4px rgb(0 0 0 / 0.25);
+}
+
+.browser-video-range::-moz-range-thumb {
+	width: 14px;
+	height: 14px;
+	border-radius: 9999px;
+	background: var(--background);
+	border: 1px solid color-mix(in oklab, var(--foreground) 22%, transparent);
+	box-shadow: 0 1px 4px rgb(0 0 0 / 0.25);
+}
+
 /* The browser's tabs scroll sideways once they're at their narrowest, with no bar. */
 .browser-tablist {
 	scrollbar-width: none;

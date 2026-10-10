@@ -689,6 +689,8 @@ class SystemOneSettingsResponse(BaseModel):
     mcp_url: str
     # Runtime setting, what a text request to the configured model uses now, and why Auto chose PyTorch.
     backend: str = "auto"
+    # Whether "mlx" can be chosen as the runtime on this machine.
+    mlx_available: bool = False
     native_ctx: int = 16384
     effective_backend: Optional[str] = None
     loaded_backend: Optional[str] = None
@@ -996,6 +998,7 @@ class ModelOverridePayload(BaseModel):
 
     speculative_type: Optional[str] = Field(default = None, max_length = 32)
     spec_draft_n_max: Optional[int] = Field(default = None, ge = 1, le = 16)
+    spec_draft_model: Optional[str] = Field(default = None, max_length = 1024)
     # Parallel decode slots (llama-server --parallel), GGUF-only; None follows the server default.
     n_parallel: Optional[int] = Field(default = None, ge = PARALLEL_SLOTS_MIN, le = PARALLEL_SLOTS_MAX)
     reasoning_budget: Optional[int] = Field(default = None, ge = -1, le = 2_147_483_647)
@@ -1018,6 +1021,7 @@ class ModelOverridePayload(BaseModel):
     # The reasoning pair came later than the four, so a build that mirrors them can still
     # predate it: its own flag, same contract.
     mirrors_reasoning_budget: bool = False
+    mirrors_spec_draft_model: bool = False
     tensor_parallel: bool = False
     disable_vision: bool = False
     mlx_int8_prefill: bool = False
@@ -1506,6 +1510,17 @@ def update_helper_precache(
     return _helper_precache_response(enabled)
 
 
+def _decision_description(checkpoint, mlx: bool) -> str:
+    from core.systemone import catalog
+    if (
+        mlx
+        and catalog.MLX_COMPANIONS.get(checkpoint.name)
+        and catalog.CHECKPOINTS.get(checkpoint.name) == checkpoint
+    ):
+        return checkpoint.description.replace("llama.cpp only", "llama.cpp or MLX")
+    return checkpoint.description
+
+
 def _clef_availability(checkpoint, reason: Optional[str]) -> dict:
     from core.systemone import laya_runtime
 
@@ -1518,8 +1533,8 @@ def _clef_availability(checkpoint, reason: Optional[str]) -> dict:
         return {"llama_cpp_only": True}
     if reason is None or getattr(checkpoint, "layout", "laya") != "clef":
         return {}
-    # llama.cpp serves Clef without CUDA or ROCm.
-    if laya_runtime.native_ready(checkpoint):
+    # llama.cpp serves Clef without CUDA or ROCm, and so does the MLX engine on Apple Silicon.
+    if laya_runtime.native_ready(checkpoint) or laya_runtime.mlx_ready(checkpoint):
         return {}
     return {"available": False, "unavailable_reason": reason}
 
@@ -1548,7 +1563,10 @@ def _systemone_response(request: Request) -> SystemOneSettingsResponse:
     if runtime["error_model"] not in (None, model):
         error = None
     port = getattr(request.app.state, "server_port", None) or request.scope["server"][1]
+    # First: it waits for device detection, which the MLX answers below read without waiting.
+    gpu_available = systemone_settings.gpu_available()
     effective, fallback = laya_runtime.effective_backend(configured)
+    mlx_available = laya_runtime.mlx_available()
     if runtime["loaded_model"] == model and runtime["fallback_reason"]:
         fallback = runtime["fallback_reason"]
     return SystemOneSettingsResponse(
@@ -1556,16 +1574,16 @@ def _systemone_response(request: Request) -> SystemOneSettingsResponse:
         enabled_locked = systemone_settings.enabled_locked(),
         model = model,
         model_locked = systemone_settings.model_locked(),
-        # llama.cpp defaults to the GPU when no device is stored; report where it actually runs.
+        # llama.cpp and MLX default to the GPU when no device is stored; report where they actually run.
         device = systemone_settings.clef_device()
-        if effective == "llama.cpp"
+        if effective in ("llama.cpp", "mlx")
         else systemone_settings.get_device(),
         device_locked = systemone_settings.device_locked(),
-        gpu_available = systemone_settings.gpu_available(),
+        gpu_available = gpu_available,
         models = [
             SystemOneModelOption(
                 name = c.name,
-                description = c.description,
+                description = _decision_description(c, mlx_available),
                 download_bytes = c.download_bytes,
                 label = c.label,
                 **_clef_availability(c, clef_reason),
@@ -1590,6 +1608,7 @@ def _systemone_response(request: Request) -> SystemOneSettingsResponse:
         error = error,
         mcp_url = f"http://127.0.0.1:{port}{MCP_PATH}/",
         backend = systemone_settings.get_backend(),
+        mlx_available = mlx_available,
         native_ctx = systemone_settings.get_native_ctx(),
         effective_backend = effective,
         loaded_backend = runtime["loaded_backend"] if runtime["loaded_model"] else None,
@@ -2479,6 +2498,7 @@ def update_openai_auto_switch_override(
                 "fill_absent_fields",
                 "mirrors_server_tuning",
                 "mirrors_reasoning_budget",
+                "mirrors_spec_draft_model",
             },
             exclude_none = True,
         )
@@ -2554,10 +2574,16 @@ def update_openai_auto_switch_override(
         # legacy contract is a payload carrying only model_id, which leaves remove None.
         _tuning_fields = ("load_mode", "spec_draft_cache_type", "ctx_checkpoints", "cache_ram")
         _reasoning_fields = ("reasoning_budget", "reasoning_budget_message")
-        _kept_tuning = {name: getattr(payload, name) for name in _tuning_fields + _reasoning_fields}
+        _drafter_fields = ("spec_draft_model",)
+        _kept_tuning = {
+            name: getattr(payload, name)
+            for name in _tuning_fields + _reasoning_fields + _drafter_fields
+        }
         # Each group is carried only for a client that does not mirror it.
-        _carried_fields = (() if payload.mirrors_server_tuning else _tuning_fields) + (
-            () if payload.mirrors_reasoning_budget else _reasoning_fields
+        _carried_fields = (
+            (() if payload.mirrors_server_tuning else _tuning_fields)
+            + (() if payload.mirrors_reasoning_budget else _reasoning_fields)
+            + (() if payload.mirrors_spec_draft_model else _drafter_fields)
         )
         if _carried_fields and not is_removal:
             # The same spellings the extra-args carry-over walks: a cached repo is not an ordinary folded match,
@@ -2688,6 +2714,7 @@ def update_openai_auto_switch_override(
                 mlx_kv_quant = payload.mlx_kv_quant,
                 speculative_type = payload.speculative_type,
                 spec_draft_n_max = payload.spec_draft_n_max,
+                spec_draft_model = _kept_tuning["spec_draft_model"],
                 n_parallel = payload.n_parallel,
                 reasoning_budget = (
                     None

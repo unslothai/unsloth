@@ -159,6 +159,37 @@ def _markdown_incomplete(markdown: str, plain: str) -> bool:
     return markdown_letters < _PDF_INCOMPLETE_RATIO * plain_letters
 
 
+# JPEG2000 decodes at ~45 ms per megapixel; a logo stays far below this, a 300 dpi scan far above.
+_SCAN_IMAGE_MIN_PIXELS = 1_000_000
+
+
+def _image_covers_a_corner(doc, number: int) -> bool:
+    """True when a scan-sized raster image overlaps one of the 10pt page corners pymupdf4llm
+    renders to guess the background colour. That render decodes the whole image in one C call
+    holding the GIL (~2 s per JPEG2000 scan page), starving the server's event loop until the
+    desktop watchdog kills it (#13094)."""
+    try:
+        import fitz
+
+        page = doc[number]
+        r = page.rect
+        # 1pt slack: the render clip rounds outward to whole pixels.
+        corners = [
+            fitz.Rect(x - 1, y - 1, x + 11, y + 11)
+            for x in (r.x0, r.x1 - 10)
+            for y in (r.y0, r.y1 - 10)
+        ]
+        # Image boxes are unrotated; the probe clips page.rect, which is rotated.
+        boxes = [
+            fitz.Rect(info["bbox"]) * page.rotation_matrix
+            for info in page.get_image_info()
+            if info["width"] * info["height"] >= _SCAN_IMAGE_MIN_PIXELS
+        ]
+    except Exception:
+        return False
+    return any(box.intersects(corner) for box in boxes for corner in corners)
+
+
 def _pdf_markdown(doc, pages: range | None = None) -> list[str] | None:
     """Per-page layout-aware Markdown (tables, headings, lists) via pymupdf4llm; index
     i maps to page i+1. Returns None when the lib is missing, extraction fails, or the
@@ -169,9 +200,27 @@ def _pdf_markdown(doc, pages: range | None = None) -> list[str] | None:
         return None
     try:
         kwargs = {"page_chunks": True, "show_progress": False, "ignore_images": True}
-        if pages is not None:
-            kwargs["pages"] = list(pages)
-        chunks = pymupdf4llm.to_markdown(doc, **kwargs)
+        indices = list(range(doc.page_count) if pages is None else pages)
+        scans = {i for i in indices if _image_covers_a_corner(doc, i)}
+        if not scans:
+            if pages is not None:
+                kwargs["pages"] = indices
+            chunks = pymupdf4llm.to_markdown(doc, **kwargs)
+        else:
+            # Background detection only where it is cheap. Each call still builds its header
+            # table from the whole (baked) document, so both halves agree on heading levels.
+            by_page = {}
+            for group, detect in (
+                ([i for i in indices if i not in scans], True),
+                ([i for i in indices if i in scans], False),
+            ):
+                if not group:
+                    continue
+                part = pymupdf4llm.to_markdown(doc, pages = group, detect_bg_color = detect, **kwargs)
+                if not isinstance(part, list) or len(part) != len(group):
+                    return None
+                by_page.update(zip(group, part))
+            chunks = [by_page[i] for i in indices]
     except Exception:  # noqa: BLE001 - never let Markdown extraction break ingestion
         logger.warning("pymupdf4llm extraction failed; using plain text", exc_info = True)
         return None

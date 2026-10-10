@@ -7317,6 +7317,17 @@ def test_spec_draft_n_max_only_stored_for_mtp_modes():
     assert "spec_draft_n_max" not in ngram
 
 
+def test_mlx_speculative_modes_and_drafter_survive_to_the_load():
+    stored = {"spec_draft_n_max": 4, "spec_draft_model": " d "}
+    for mode, is_gguf, kept in (
+        ("eagle3", False, {"spec_draft_n_max": 4, "spec_draft_model": "d"}),
+        ("eagle3", True, {}),
+    ):
+        entry = settings.normalize_model_override({"speculative_type": mode, **stored})
+        kwargs = settings.model_override_load_kwargs(entry, is_gguf = is_gguf)
+        assert kwargs == kept | ({} if is_gguf else {"speculative_type": mode})
+
+
 def test_resolve_fit_max_seq_length_hands_sizing_to_fit_under_manual_auto_layers():
     # Manual GPU memory with Auto layers hands the context to llama.cpp --fit, so
     # the load sends the context pin (or 0), not the stored max seq length.

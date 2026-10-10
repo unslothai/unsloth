@@ -44,7 +44,10 @@ import {
 import { NonModalDropdownMenu } from "@/components/ui/non-modal-dropdown-menu";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import { FIND_SKIP_ATTRIBUTE } from "@/features/find-in-page";
-import { DRAFT_N_MAX_SPEC_TYPES } from "@/lib/speculative-modes";
+import {
+  DRAFT_N_MAX_SPEC_TYPES,
+  resolveSpeculativeType,
+} from "@/lib/speculative-modes";
 import {
   StudioDictationAdapter,
   isStudioDictationAvailable,
@@ -1622,8 +1625,16 @@ export function SharedComposer({
         const effectiveChatTemplateOverride = cleanCompareChatTemplate(
           ownConfig.chatTemplateOverride,
         );
-        const effectiveSpeculativeType =
-          ownConfig.speculativeType ?? specSettings.speculativeType;
+        const targetIsMlx = isServedByMlx(
+          targetIsGguf,
+          platform.deviceType,
+          platform.chatOnlyReason,
+        );
+        const effectiveSpeculativeType = resolveSpeculativeType(
+          ownConfig.speculativeType,
+          specSettings.speculativeType ?? "auto",
+          targetIsMlx,
+        );
         const effectiveSpecDraftNMax = ownRemembered
           ? resolveCompareSpecDraftNMax(
               effectiveSpeculativeType,
@@ -1823,6 +1834,7 @@ export function SharedComposer({
           mlx_int8_prefill: ownConfig.mlxInt8Prefill ?? false,
           speculative_type: effectiveSpeculativeType,
           spec_draft_n_max: effectiveSpecDraftNMax,
+          ...(targetIsMlx ? { spec_draft_model: ownConfig.specDraftModel ?? null } : {}),
           reasoning_budget:
             targetIsGguf && !resolvedIsDiffusion
               ? ownConfig.reasoningBudget
@@ -1868,8 +1880,8 @@ export function SharedComposer({
         compareRunsRef.current.setLoadingModel(run, null);
         throwIfCompareCancelled(compareSignal);
         // Keep a compare pane's per-model speculative choice load-local: persist the global preference
-        // only when it came from global settings.
-        if (ownConfig.speculativeType == null) {
+        // only when it came from global settings, and never from MLX, which only reads it.
+        if (ownConfig.speculativeType == null && !targetIsMlx) {
           saveSpeculativeType(effectiveSpeculativeType);
         }
         // Persist the GPU Memory mode on a non-diffusion GGUF compare-load too, so an applied manual
