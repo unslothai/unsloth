@@ -46734,6 +46734,11 @@ _GENERATE_FAILURE_CLASSES: tuple[tuple[tuple[str, ...], str], ...] = (
         "The device ran out of memory. Try a smaller size, fewer steps, or a smaller batch.",
     ),
     (
+        ("decoded image contains nan",),
+        "The model or VAE overflowed at this resolution and precision. Try a smaller resolution or another "
+        "quant of this model.",
+    ),
+    (
         ("sd-server connection lost", "sd-cli exited", "process exited", "ggml_abort", "signal"),
         "The native image renderer stopped unexpectedly. Switch the engine to diffusers, or see "
         "the server log for its output.",
