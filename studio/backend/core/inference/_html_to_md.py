@@ -17,6 +17,7 @@ error placeholders, session banners, cookie prompts) from the result.
 from __future__ import annotations
 
 import html
+import itertools
 import re
 import secrets
 from html.parser import HTMLParser
@@ -212,6 +213,10 @@ _ORDINAL_SUFFIXES = frozenset({"st", "nd", "rd", "th"})
 # French ordinals after a digit (1er, 2e, 3ème); after a letter "e" can be Euler's number
 _DIGIT_ORDINAL_SUFFIXES = frozenset({"e", "er", "re", "ère", "ème", "eme", "nd", "nde"})
 _MD_DELIMITERS = "*_`"
+# SiteLinks wraps same-site links in invisible \x00 markers; the base is the text before them
+_SITE_LINK_MARKER_TAIL = re.compile(r"\x00[0-9a-f]+:\d+:[se]\x00$")
+# parts a base lookup reads back: enough for delimiters and link markers, bounded on hostile pages
+_SUP_BASE_SCAN_PARTS = 8
 _GROUPED_EXPONENT = re.compile(r"\s|\S[-+−/=×·⋅]")
 # deeper <sup> nests render as plain text: each tracked level rescans its whole suffix on close
 _MAX_SUP_DEPTH = 8
@@ -573,9 +578,13 @@ class _MarkdownRenderer(HTMLParser):
         """The visible character a <sup> raises, or "" when it has none: after whitespace or
         sentence punctuation it is a footnote marker (``fact.<sup>1</sup>``,
         ``<a href="#fn1"><sup>1</sup></a>``) or a fraction numerator (``<sup>1</sup>&frasl;``)."""
-        for part in reversed(target):
+        for part in itertools.islice(reversed(target), _SUP_BASE_SCAN_PARTS):
             # an emphasis or code delimiter the renderer just opened is not visible text
-            part = part.rstrip(_MD_DELIMITERS)
+            while True:
+                trimmed = _SITE_LINK_MARKER_TAIL.sub("", part.rstrip(_MD_DELIMITERS))
+                if trimmed == part:
+                    break
+                part = trimmed
             if part:
                 base = part[-1]
                 return base if base.isalnum() or base in ")]}|" else ""

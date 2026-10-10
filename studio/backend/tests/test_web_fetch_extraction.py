@@ -799,6 +799,19 @@ def test_exponent_headings_do_not_read_as_body_prose():
     assert "Real document body" in html_to_markdown(html, main_content = True)
 
 
+def test_same_site_linked_base_keeps_its_exponent():
+    site_links = SiteLinks("https://e.com/page")
+    html = '<p>5 <a href="/metre">m</a><sup>2</sup> and <a href="https://x.org/m">m</a><sup>3</sup></p>'
+    out = site_links.clean(html_to_markdown(html, site_links = site_links))
+    assert out == "5 [m](/metre)^2 and [m](https://x.org/m)^3"
+
+
+def test_empty_superscripts_do_not_rescan_the_page():
+    start = time.perf_counter()
+    html_to_markdown("<p>" + "<i></i><sup></sup>" * 8000 + "</p>")
+    assert time.perf_counter() - start < 2
+
+
 def test_footnote_superscripts_render_unchanged():
     html = (
         '<p>mass<sup class="reference"><a href="#cite_note-12">[12]</a></sup> and '
