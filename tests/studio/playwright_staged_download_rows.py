@@ -96,7 +96,9 @@ def main():
             assert predicate(), state
 
         try:
-            _open_quant(page, navigate=True)
+            page.goto(BASE_URL + "/images", wait_until="domcontentloaded")
+            expect(page.locator(".hub-download-panel")).to_have_count(0)
+            _open_quant(page, navigate=False)
             wait_for(lambda: state["starts"] == [ENCODER])
             panel = page.locator(".hub-download-panel")
             expect(panel).to_be_visible()
@@ -104,9 +106,14 @@ def main():
             expect(panel.locator("li")).to_have_count(expected_rows)
             expect(panel).to_contain_text(f"Downloading {expected_rows} item")
             expect(panel).to_contain_text("Text encoder")
+            expect(panel).to_contain_text("1.0 GB / 4.0 GB")
             if not before:
                 expect(panel).to_contain_text("Decoder & configuration")
                 expect(panel).to_contain_text("Queued")
+            page.evaluate("""async () => {
+                await document.fonts.load('12px "Inter Variable"');
+                await document.fonts.ready;
+            }""")
             facts["initial"] = {"rows": panel.locator("li").count(), "text": panel.inner_text(), "starts": list(state["starts"])}
             panel.screenshot(path=str(art / "panel.png"))
             page.screenshot(path=str(art / "page.png"))
@@ -126,6 +133,9 @@ def main():
             wait_for(lambda: state["loads"] == 1)
             expect(panel).not_to_contain_text("Downloading")
             assert state["starts"] == [ENCODER, ENCODER, DECODER]
+            for _ in range(panel.get_by_role("button", name="Dismiss", exact=True).count()):
+                panel.get_by_role("button", name="Dismiss", exact=True).first.click()
+            expect(panel).to_have_count(0)
             assert not errors, errors
             facts["lifecycle"] = "cancel removes pending row; retry restores it; stages advance once; load runs once"
         finally:
