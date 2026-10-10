@@ -69,7 +69,7 @@ def _fix_torch_cuda_ld_path():
         torch_lib = os.path.join(torch_dir, "lib")
         if os.path.isdir(torch_lib):
             lib_dirs.append(torch_lib)
-        # Jetson: JetPack's CUDA must stay ahead of generic pip CUDA builds (#4862).
+        # Jetson: JetPack's CUDA stays first (#4862).
         if os.path.isdir(nvidia_dir) and not _is_tegra():
             for sub in sorted(os.listdir(nvidia_dir)):
                 lib = os.path.join(nvidia_dir, sub, "lib")

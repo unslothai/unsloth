@@ -8,7 +8,6 @@ import os
 
 _TEGRA_RELEASE = "/etc/nv_tegra_release"
 _DEVICE_TREE_COMPATIBLE = "/proc/device-tree/compatible"
-# JetPack's own driver libraries, besides /usr/local/cuda.
 TEGRA_LIB_DIR = "/usr/lib/aarch64-linux-gnu/tegra"
 
 

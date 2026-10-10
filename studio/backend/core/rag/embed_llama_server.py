@@ -896,7 +896,6 @@ class LlamaServerBackend:
         from utils.tegra import TEGRA_LIB_DIR, is_tegra
 
         if is_tegra():
-            # Jetson: JetPack's CUDA first, as in LlamaCppBackend (#4862).
             tegra = [TEGRA_LIB_DIR] if os.path.isdir(TEGRA_LIB_DIR) else []
             lib_dirs.extend(tegra + system_dirs + pip_dirs)
         else:
