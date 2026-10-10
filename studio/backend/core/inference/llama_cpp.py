@@ -6411,6 +6411,65 @@ def _subsequence_index(tokens: List[str], run: List[str], hint: int) -> int:
 _CPU_DEVICE_VALUES = frozenset({"cpu", "none"})
 
 
+def _pass_through_overrides_placement(
+    extra_args: Optional[Iterable[str]],
+    source_env: Mapping[str, str],
+    credited: int,
+    *,
+    is_vulkan_backend: bool = False,
+    gpu_indices: Optional[Iterable[int]] = None,
+) -> bool:
+    """Whether pass-through args or env run a placement other than the one a fit priced.
+
+    ``extra_args`` / ``source_env`` are what the child really gets (a ``gpu_ids`` pin
+    strips its device flags and env twins first); ``credited`` is how many devices the
+    fit charged. See ``LlamaCppBackend._fit_derived_load_mode`` for each term.
+    """
+    # A --device naming FEWER devices than this fit charges leaves the credit
+    # paying for cards the child never opens. llama.cpp REPLACES the list on every
+    # occurrence (parse_device_list) and reads LLAMA_ARG_DEVICE before argv, so the
+    # last of the two wins. Counted, not name-matched: CUDA/ROCm ordinals are
+    # assigned after a visibility mask this launch has not written yet.
+    _dev_value = _extra_args_main_device(extra_args)
+    if _dev_value is None:
+        _dev_value = source_env.get("LLAMA_ARG_DEVICE")
+    _dev_names = [d.strip() for d in str(_dev_value or "").split(",") if d.strip()]
+    _credited = credited
+    gpu_indices = list(gpu_indices) if gpu_indices is not None else None
+    # DISTINCT names: llama.cpp appends every entry without deduplicating and
+    # keeps the list verbatim, so "CUDA0,CUDA0" is ONE physical pool listed twice,
+    # and counting it as two leaves the credit paying for a card that is not there.
+    _device_narrows = bool(_dev_names) and len(set(_dev_names)) < _credited
+    # Vulkan is the one backend where names ARE comparable (_vulkan_device_pin ->
+    # "Vulkan<i>"), so hold a surviving --device to an exact match. That catches
+    # what a count cannot: a same-sized list naming DIFFERENT cards, and a longer
+    # one adding devices this footprint never charged for.
+    _vulkan_pin_replaced = bool(
+        is_vulkan_backend
+        and gpu_indices is not None
+        and _dev_names
+        and {name.strip().lower() for name in _dev_names} != {f"vulkan{idx}" for idx in gpu_indices}
+    )
+    return bool(
+        _extra_args_set_any_flag(extra_args, _GPU_LAYER_FLAGS)
+        # And its env twin, the ONLY layer count the fitting path leaves: it
+        # emits no -ngl, only Manual mode clears LLAMA_ARG_N_GPU_LAYERS, and the
+        # fitter will not lower a count it did not set, so an inherited one stands
+        # and loads a prefix out of host RAM.
+        or _env_fixes_gpu_layers(source_env)
+        # With the env twin: only an explicit gpu_ids pin clears LLAMA_ARG_DEVICE,
+        # so an inherited "none" puts the whole load in host RAM.
+        or _device_selection_is_cpu(extra_args, source_env)
+        or _device_narrows
+        or _vulkan_pin_replaced
+        # Pass-through and last-wins: --split-mode none, or a --tensor-split that
+        # zeroes a device, leaves the pooled credit paying for cards held empty.
+        or split_policy_starves_devices(extra_args, _credited, source_env)
+        or _args_place_tensors_on_cpu(extra_args)
+        or _env_places_tensors_on_cpu(source_env)
+    )
+
+
 def _device_selection_is_cpu(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> bool:
@@ -15567,48 +15626,13 @@ class LlamaCppBackend:
             return None
         rows = list(gpus or ())
         source_env = os.environ if env is None else env
-        # A --device naming FEWER devices than this fit charges leaves the credit
-        # paying for cards the child never opens. llama.cpp REPLACES the list on every
-        # occurrence (parse_device_list) and reads LLAMA_ARG_DEVICE before argv, so the
-        # last of the two wins. Counted, not name-matched: CUDA/ROCm ordinals are
-        # assigned after a visibility mask this launch has not written yet.
-        _dev_value = _extra_args_main_device(extra_args)
-        if _dev_value is None:
-            _dev_value = source_env.get("LLAMA_ARG_DEVICE")
-        _dev_names = [d.strip() for d in str(_dev_value or "").split(",") if d.strip()]
         _credited = len(list(gpu_indices)) if gpu_indices is not None else len(rows)
-        # DISTINCT names: llama.cpp appends every entry without deduplicating and
-        # keeps the list verbatim, so "CUDA0,CUDA0" is ONE physical pool listed twice,
-        # and counting it as two leaves the credit paying for a card that is not there.
-        _device_narrows = bool(_dev_names) and len(set(_dev_names)) < _credited
-        # Vulkan is the one backend where names ARE comparable (_vulkan_device_pin ->
-        # "Vulkan<i>"), so hold a surviving --device to an exact match. That catches
-        # what a count cannot: a same-sized list naming DIFFERENT cards, and a longer
-        # one adding devices this footprint never charged for.
-        _vulkan_pin_replaced = bool(
-            is_vulkan_backend
-            and gpu_indices is not None
-            and _dev_names
-            and {name.strip().lower() for name in _dev_names}
-            != {f"vulkan{idx}" for idx in gpu_indices}
-        )
-        if (
-            _extra_args_set_any_flag(extra_args, _GPU_LAYER_FLAGS)
-            # And its env twin, the ONLY layer count the fitting path leaves: it
-            # emits no -ngl, only Manual mode clears LLAMA_ARG_N_GPU_LAYERS, and the
-            # fitter will not lower a count it did not set, so an inherited one stands
-            # and loads a prefix out of host RAM.
-            or _env_fixes_gpu_layers(source_env)
-            # With the env twin: only an explicit gpu_ids pin clears LLAMA_ARG_DEVICE,
-            # so an inherited "none" puts the whole load in host RAM.
-            or _device_selection_is_cpu(extra_args, source_env)
-            or _device_narrows
-            or _vulkan_pin_replaced
-            # Pass-through and last-wins: --split-mode none, or a --tensor-split that
-            # zeroes a device, leaves the pooled credit paying for cards held empty.
-            or split_policy_starves_devices(extra_args, _credited, source_env)
-            or _args_place_tensors_on_cpu(extra_args)
-            or _env_places_tensors_on_cpu(source_env)
+        if _pass_through_overrides_placement(
+            extra_args,
+            source_env,
+            _credited,
+            is_vulkan_backend = is_vulkan_backend,
+            gpu_indices = gpu_indices,
         ):
             logger.info(
                 "Load mode: pass-through arguments override the placement this fit "
@@ -30663,24 +30687,33 @@ class LlamaCppBackend:
                 self._max_context_length = (
                     max_available_ctx if max_available_ctx > 0 else self._effective_context_length
                 )
-                # The fit priced Unsloth's own placement and the base weights alone; a user
-                # device, layer or tensor override, or a resident adapter, is one it never saw.
-                _user_device_args = (
-                    self._strip_device_extra_args(extra_args)
-                    if _gpu_ids_own_device_flags
-                    else extra_args
-                )
-                self._vram_fit_context_length = (
-                    None
-                    if _extra_args_main_device(_user_device_args) is not None
-                    or os.environ.get("LLAMA_ARG_DEVICE")
-                    or _sidecar_adapter_bytes(extra_args) != 0
-                    or _args_place_tensors_on_cpu(extra_args)
-                    or _env_places_tensors_on_cpu()
-                    or _extra_args_set_any_flag(extra_args, _GPU_LAYER_FLAGS)
-                    or _env_fixes_gpu_layers()
-                    else _vram_fit_ctx
-                )
+                # The fit priced Unsloth's own placement and the base weights alone: a
+                # pass-through placement override, adapter or inherited projector is not.
+                if _vram_fit_ctx is not None:
+                    _child_extras = (
+                        self._strip_device_extra_args(extra_args)
+                        if _gpu_ids_own_device_flags
+                        else extra_args
+                    )
+                    _child_env = dict(os.environ)
+                    if gpu_memory_mode == "manual":
+                        self._clear_manual_placement_env(_child_env)
+                    if _gpu_ids_own_device_flags:
+                        self._clear_device_placement_env(_child_env)
+                    if (
+                        _pass_through_overrides_placement(
+                            _child_extras,
+                            _child_env,
+                            len(gpu_indices) if gpu_indices is not None else len(gpus),
+                            is_vulkan_backend = is_vulkan_backend,
+                            gpu_indices = gpu_indices,
+                        )
+                        or _sidecar_adapter_bytes(extra_args) != 0
+                        or _child_env.get("LLAMA_ARG_MMPROJ")
+                        or _child_env.get("LLAMA_ARG_MMPROJ_URL")
+                    ):
+                        _vram_fit_ctx = None
+                self._vram_fit_context_length = _vram_fit_ctx
 
                 # Past the host-RAM and offload advisories, so it can say the ceiling is
                 # the request without costing the user a memory warning it does not

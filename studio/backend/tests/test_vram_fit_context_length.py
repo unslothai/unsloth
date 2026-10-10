@@ -190,14 +190,8 @@ def test_a_placement_that_raises_claims_no_fit(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize(
     "extra_args",
-    [
-        ["--device", "none"],
-        ["--device", "CUDA0"],
-        ["-ngl", "8"],
-        ["-ot", "exps=CPU"],
-        ["--lora", "adapter.gguf"],
-    ],
-    ids = ["cpu-device", "narrower-device", "user-layers", "tensors-on-cpu", "lora-adapter"],
+    [["--device", "none"], ["-ngl", "8"], ["-ot", "exps=CPU"], ["--lora", "adapter.gguf"]],
+    ids = ["cpu-device", "user-layers", "tensors-on-cpu", "lora-adapter"],
 )
 def test_a_user_placement_override_claims_no_fit(tmp_path, monkeypatch, extra_args):
     (tmp_path / "metal").mkdir()
@@ -222,3 +216,41 @@ def test_a_user_placement_override_claims_no_fit(tmp_path, monkeypatch, extra_ar
     )
     _matrix._launch(backend, gguf, n_ctx = 0, extra_args = tuple(extra_args))
     assert backend.vram_fit_context_length is None
+
+
+# Needs both cards, so a selection or split that leaves one empty strands half the credit.
+_TWO_CARD_FRACTION = 0.7
+
+
+def _two_card_load(tmp_path, monkeypatch, **load_kwargs):
+    accelerator = next(a for a in _matrix.ACCELERATORS if a.label == "nvidia-multi")
+    backend, gguf = _matrix.cell_backend(
+        tmp_path, monkeypatch, _matrix.PLATFORMS[0], accelerator, model_fraction = _TWO_CARD_FRACTION
+    )
+    _matrix._launch(backend, gguf, n_ctx = 0, **load_kwargs)
+    return backend
+
+
+def test_a_two_card_fit_is_published(tmp_path, monkeypatch):
+    assert _two_card_load(tmp_path, monkeypatch).vram_fit_context_length is not None
+
+
+@pytest.mark.parametrize(
+    "extra_args",
+    [["--device", "CUDA0"], ["--split-mode", "none"]],
+    ids = ["narrower-device", "split-mode-none"],
+)
+def test_a_placement_narrower_than_the_fit_claims_no_fit(tmp_path, monkeypatch, extra_args):
+    backend = _two_card_load(tmp_path, monkeypatch, extra_args = tuple(extra_args))
+    assert backend.vram_fit_context_length is None
+
+
+def test_an_inherited_projector_claims_no_fit(tmp_path, monkeypatch):
+    monkeypatch.setenv("LLAMA_ARG_MMPROJ_URL", "https://example.invalid/mmproj.gguf")
+    assert _two_card_load(tmp_path, monkeypatch).vram_fit_context_length is None
+
+
+def test_a_gpu_ids_pin_ignores_the_device_env_it_clears(tmp_path, monkeypatch):
+    monkeypatch.setenv("LLAMA_ARG_DEVICE", "CUDA0")
+    backend = _two_card_load(tmp_path, monkeypatch, gpu_ids = [0, 1])
+    assert backend.vram_fit_context_length is not None
