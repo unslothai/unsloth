@@ -186,3 +186,33 @@ def test_a_placement_that_raises_claims_no_fit(tmp_path, monkeypatch):
     captured = _matrix._launch(backend, gguf, n_ctx = 4096)
     assert ("--fit", "on") in zip(captured["cmd"], captured["cmd"][1:])
     assert backend.vram_fit_context_length is None
+
+
+@pytest.mark.parametrize(
+    "extra_args",
+    [["--device", "none"], ["-ngl", "8"], ["-ot", "exps=CPU"]],
+    ids = ["cpu-device", "user-layers", "tensors-on-cpu"],
+)
+def test_a_user_placement_override_claims_no_fit(tmp_path, monkeypatch, extra_args):
+    (tmp_path / "metal").mkdir()
+    (tmp_path / "cuda").mkdir()
+    metal = _metal._launch(
+        tmp_path / "metal",
+        monkeypatch,
+        n_ctx = 0,
+        metal = True,
+        real_fit = True,
+        extra_args = extra_args,
+    )["backend"]
+    assert metal.vram_fit_context_length is None
+
+    accelerator = next(a for a in _matrix.ACCELERATORS if a.label == "nvidia-single")
+    backend, gguf = _matrix.cell_backend(
+        tmp_path / "cuda",
+        monkeypatch,
+        _matrix.PLATFORMS[0],
+        accelerator,
+        model_fraction = _matrix.FITS,
+    )
+    _matrix._launch(backend, gguf, n_ctx = 0, extra_args = tuple(extra_args))
+    assert backend.vram_fit_context_length is None

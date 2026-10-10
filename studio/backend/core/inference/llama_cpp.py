@@ -30663,7 +30663,17 @@ class LlamaCppBackend:
                 self._max_context_length = (
                     max_available_ctx if max_available_ctx > 0 else self._effective_context_length
                 )
-                self._vram_fit_context_length = _vram_fit_ctx
+                # The fit priced Unsloth's own placement; a user device, layer or tensor
+                # override runs one it never saw.
+                self._vram_fit_context_length = (
+                    None
+                    if _device_selection_is_cpu(extra_args, os.environ)
+                    or _args_place_tensors_on_cpu(extra_args)
+                    or _env_places_tensors_on_cpu()
+                    or _extra_args_set_any_flag(extra_args, _GPU_LAYER_FLAGS)
+                    or _env_fixes_gpu_layers()
+                    else _vram_fit_ctx
+                )
 
                 # Past the host-RAM and offload advisories, so it can say the ceiling is
                 # the request without costing the user a memory warning it does not
