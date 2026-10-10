@@ -3,6 +3,7 @@
 
 """Chat template utilities for dataset processing: apply chat templates to datasets and generate dataset info summaries."""
 
+import json
 import warnings as python_warnings
 
 from .cells import cell_text
@@ -173,7 +174,29 @@ def _drop_none_values(value):
     return value
 
 
-def _render_conversation(tokenizer, conversation):
+def _json_cell(value):
+    if not isinstance(value, str):
+        return value
+    try:
+        return json.loads(value)
+    except ValueError:
+        return None
+
+
+def _row_tools(tools):
+    tools = _json_cell(tools)
+    if not isinstance(tools, list):
+        return None
+    tools = [_drop_none_values(_json_cell(tool)) for tool in tools]
+    if not tools or not all(isinstance(tool, dict) for tool in tools):
+        return None
+    return [
+        {"type": "function", "function": tool} if "function" not in tool and "name" in tool else tool
+        for tool in tools
+    ]
+
+
+def _render_conversation(tokenizer, conversation, tools = None):
     from core.inference.chat_template_helpers import _normalize_tool_call_arguments
 
     attempts = []
@@ -181,17 +204,20 @@ def _render_conversation(tokenizer, conversation):
         for attempt in (_normalize_tool_call_arguments(messages), messages):
             if not any(attempt is seen for seen in attempts):
                 attempts.append(attempt)
+    tools_kwargs = {"tools": tools} if tools else {}
     first_error = None
     for attempt in attempts:
         try:
             return tokenizer.apply_chat_template(
-                attempt, tokenize = False, add_generation_prompt = False
+                attempt, tokenize = False, add_generation_prompt = False, **tools_kwargs
             )
         except Exception as error:
             # The row as loaded is kept for templates that need a None content (DeepSeek V3), but its
             # error is usually a key the loader filled with None, so report the cleaned row's.
             if first_error is None:
                 first_error = error
+    if tools:
+        return _render_conversation(tokenizer, conversation)
     raise first_error
 
 
@@ -529,19 +555,21 @@ def apply_chat_template_to_dataset(
         def _format_chatml(examples):
             convos = examples[chat_column]
             systems = examples.get("system") or [None] * len(convos)
+            row_tools = examples.get("tools") or [None] * len(convos)
             texts = []
             row_errors = []
 
-            for convo, system in zip(convos, systems):
+            for convo, system, tools in zip(convos, systems, row_tools):
                 try:
                     with_system = _with_system_turn(convo, system)
+                    tools = _row_tools(tools)
                     try:
-                        text = _render_conversation(tokenizer, with_system)
+                        text = _render_conversation(tokenizer, with_system, tools)
                     except Exception:
                         # A template without a system role still trains the conversation.
                         if with_system is convo:
                             raise
-                        text = _render_conversation(tokenizer, convo)
+                        text = _render_conversation(tokenizer, convo, tools)
 
                     if remove_bos_prefix:
                         text = text.removeprefix('<bos>')
