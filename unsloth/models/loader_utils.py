@@ -154,6 +154,29 @@ def fsdp_will_wrap():
     return False
 
 
+def fsdp2_requested():
+    """True when this process runs under FSDP2: `accelerate launch` exports FSDP_VERSION=2, an
+    Accelerator built already records its fsdp_plugin."""
+    if os.environ.get("FSDP_VERSION", "").strip() == "2":
+        return True
+    try:
+        from accelerate.state import AcceleratorState
+        plugin = AcceleratorState._shared_state.get("fsdp_plugin", None)
+        return getattr(plugin, "fsdp_version", None) == 2
+    except Exception:
+        return False
+
+
+def raise_if_fast_inference_under_fsdp2(fast_inference):
+    """Unsupported combination: refuse it before vLLM loads instead of failing mid-run (unsloth#3551)."""
+    if fast_inference and fsdp2_requested():
+        raise NotImplementedError(
+            "Unsloth: `fast_inference = True` (vLLM) is not supported with FSDP2.\n"
+            "Load the model with `fast_inference = False` to train with FSDP2, "
+            "or launch without FSDP2 to use vLLM."
+        )
+
+
 def prepare_device_map():
     rank, world_size = _infer_distributed_ranks()
     distributed = (world_size or 1) > 1 or (rank is not None and rank > 0)

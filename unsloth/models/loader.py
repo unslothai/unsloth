@@ -59,6 +59,7 @@ from .loader_utils import (
     _restore_load_scoped_env,
     _resolve_checkpoint_tokenizer_name,
     _is_offline_related_error,
+    raise_if_fast_inference_under_fsdp2,
 )
 import os, contextlib, sys
 
@@ -1055,6 +1056,7 @@ class FastLanguageModel(FastLlamaModel):
         if fast_inference and DEVICE_TYPE == "cuda" and torch.cuda.get_device_capability()[0] < 7:
             print("Unsloth: vLLM does not work on older GPUs - will switch to Unsloth inference!")
             fast_inference = False
+        raise_if_fast_inference_under_fsdp2(fast_inference)
         if fast_inference:
             if importlib.util.find_spec("vllm") is None:
                 raise _vllm_unavailable_error()
@@ -1944,6 +1946,7 @@ class FastModel(FastBaseModel):
         if fast_inference and DEVICE_TYPE == "cuda" and torch.cuda.get_device_capability()[0] < 7:
             print("Unsloth: vLLM does not work on older GPUs - will switch to Unsloth inference!")
             fast_inference = False
+        raise_if_fast_inference_under_fsdp2(fast_inference)
         if fast_inference:
             if importlib.util.find_spec("vllm") is None:
                 raise _vllm_unavailable_error()
