@@ -144,6 +144,7 @@ import numpy as np
 import ast
 import contextlib
 import copy
+import json
 import re
 from dataclasses import dataclass, field
 import functools
@@ -458,9 +459,49 @@ def _unsloth_reset_stray_compile_cache(self):
         _m["seen"] = False
 
 
+def _accelerate_deepspeed_zero_stage():
+    """Return the ZeRO stage selected by an Accelerate DeepSpeed launch.
+
+    Accelerate exports these values before the training script starts, so this
+    remains available while the model is loaded, before ``Trainer`` creates its
+    ``Accelerator``. A launch may export the stage directly or only export a
+    path to the DeepSpeed JSON config.
+    """
+    enabled = os.environ.get("ACCELERATE_USE_DEEPSPEED", "").strip().lower()
+    if enabled not in ("1", "true", "yes", "on"):
+        return None
+    value = os.environ.get("ACCELERATE_DEEPSPEED_ZERO_STAGE")
+    if value is not None:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    config_file = os.environ.get("ACCELERATE_DEEPSPEED_CONFIG_FILE")
+    if not config_file:
+        return None
+    config_file = os.path.expanduser(config_file)
+    if not os.path.isfile(config_file):
+        return None
+    try:
+        with open(config_file, encoding = "utf-8") as file:
+            config = json.load(file)
+        return int(config["zero_optimization"]["stage"])
+    except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+        return None
+
+
 def apply_unsloth_gradient_checkpointing(use_gradient_checkpointing, max_seq_length, dtype):
     """Apply gradient checkpointing with smart heuristics, returning the effective ``use_gradient_checkpointing`` (which may change from "unsloth" to True). Below seq 512 the "unsloth" offloading overhead is not worth it and standard gc is faster."""
     if use_gradient_checkpointing == "unsloth":
+        zero_stage = _accelerate_deepspeed_zero_stage()
+        if zero_stage in (1, 2):
+            unpatch_unsloth_smart_gradient_checkpointing()
+            logger.warning_once(
+                f"Unsloth: smart gradient offloading is incompatible with DeepSpeed ZeRO-{zero_stage}, "
+                "which owns gradient reduction. Falling back to standard gradient checkpointing."
+            )
+            return True
         # Offloading is not worth it below ~512; standard gc is faster (crossover ~384-512).
         if max_seq_length < 512:
             unpatch_unsloth_smart_gradient_checkpointing()
