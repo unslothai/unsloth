@@ -816,9 +816,7 @@ def _is_bnb_8bit_optimizer_key(name: Optional[str]) -> bool:
 
 
 def recorded_optimizer_class(cfg: Any, identity: Any) -> Optional[str]:
-    """The ``optimizer_class`` recorded by the bundle ``cfg`` resumes from (resolved the same way
-    restore_resume_state resolves it), or None: no resume, or a bundle that fails preflight. Never
-    raises: restore_resume_state makes the real decision and reports it."""
+    """Optimizer class of the bundle being resumed, else None; never raises (restore_resume_state reports errors)."""
     if not getattr(cfg, "resume_from_checkpoint", None):
         return None
     try:
@@ -837,14 +835,10 @@ GC_SKIP_EVERY_ENV = "UNSLOTH_DIFFUSION_GC_SKIP_EVERY"
 
 
 def enable_diffusion_gradient_checkpointing(model: Any, mode: Optional[str] = None) -> str:
-    """Turn on non-reentrant activation checkpointing for a diffusers model; returns the mode applied.
+    """Mode "plain" checkpoints every block; "partial" skips every Nth repeated block (more VRAM, fewer recomputes).
 
-    "plain" (default) checkpoints every block. "partial" leaves every Nth repeated block
-    (UNSLOTH_DIFFUSION_GC_SKIP_EVERY, default 2) un-checkpointed: fewer recomputes for more VRAM
-    (measured 1.17-1.3x at +2.5-4 GB with N=2). Selective (op-policy) checkpointing and CPU-offloaded
-    checkpointing were measured slower or numerically different under the regional compile, so
-    neither is offered. Non-reentrant because reentrant recompute of a bnb 4-bit LoRA linear can
-    trip an illegal memory access on the larger FLUX transformer."""
+    Selective / CPU-offloaded checkpointing were slower or numerically different under regional compile.
+    Non-reentrant: reentrant recompute of a bnb 4-bit LoRA linear can hit an illegal memory access on FLUX."""
     import functools
 
     import torch.utils.checkpoint as _ckpt
@@ -876,17 +870,10 @@ def make_lora_optimizer(
     lr: float,
     resume_optimizer_class: Optional[str] = None,
 ) -> Any:
-    """torch AdamW, fused on CUDA, for both diffusion trainers.
+    """torch AdamW, fused on CUDA. Not AdamW8bit: its step() syncs the device once per parameter.
 
-    bitsandbytes AdamW8bit used to be the default, but its step() syncs the device once per
-    parameter (Optimizer8bit.step -> sync_gpu), ~1100 syncs per SDXL step: fused AdamW measured
-    1.15-1.3x faster per step for ~0.1 GB more state on LoRA-sized params. AdamW8bit is still
-    built when resuming a bundle whose moments it wrote (state1/state2 do not load into torch
-    AdamW), so runs started on an older build continue unchanged.
-
-    UNSLOTH_DIFFUSION_FP32_OPTIM forces plain (non-fused) AdamW: the accuracy guard wants the
-    reference optimizer. bitsandbytes is checked before construction because on XPU it builds
-    fine and only dies at the first step()."""
+    AdamW8bit only to resume a bundle it wrote (state1/state2 do not load into torch AdamW).
+    bitsandbytes is checked first: on XPU it builds fine and dies at the first step()."""
     import torch
 
     if os.environ.get("UNSLOTH_DIFFUSION_FP32_OPTIM", "") in ("1", "true"):
@@ -2104,9 +2091,7 @@ def restore_resume_state(
     load_trainable_state_dict(model, ckpt.tensors("adapter"))
     optimizer_state = ckpt.torch_state("optimizer")
     if optimizer_state is not None:
-        # The optimizer depends on the host and the build (older builds wrote AdamW8bit, bnb may be absent,
-        # UNSLOTH_DIFFUSION_FP32_OPTIM), so foreign moments arrive legitimately (state1/state2 versus
-        # exp_avg/exp_avg_sq): shapes match, load_state_dict accepts them, and the first step dies on a bare KeyError.
+        # Foreign moments (AdamW8bit vs torch AdamW) load cleanly, then the first step dies on a bare KeyError.
         saved_optimizer = ckpt.optimizer_class
         live_optimizer = optimizer_key(optimizer)
         if not saved_optimizer:
@@ -2133,9 +2118,7 @@ def restore_resume_state(
                 "than this build produces, so its moments cannot be matched to this run's "
                 "tensors. Start a new run, or resume on the version that wrote it."
             )
-        # load_state_dict replaces the param groups too, so the checkpoint's learning rate wins over a changed cfg,
-        # the same semantics as HF Trainer's resume. The kernel choice is this host's, not the bundle's: a fused bundle
-        # resumed under UNSLOTH_DIFFUSION_FP32_OPTIM must still run the reference (non-fused) AdamW.
+        # Checkpoint lr wins (HF Trainer semantics); the fused/foreach kernel choice stays this host's.
         kernels = [
             {k: g[k] for k in _OPTIMIZER_KERNEL_KEYS if k in g} for g in optimizer.param_groups
         ]

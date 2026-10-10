@@ -1778,15 +1778,12 @@ def _should_compile(
     return base_precision in ("bf16", "fp8", "mxfp8")
 
 
-# Measured on Z-Image nf4 (torch 2.10 + bnb 0.46.1, torch 2.13 + bnb 0.50.2): 0 graph breaks, loss matches eager,
-# 1.6x steady step. bnb registers its 4-bit ops as torch custom ops there; older stacks and ROCm (unmeasured) stay eager.
+# Lowest stack where bnb 4-bit ops are torch custom ops (0 graph breaks, loss matches eager); ROCm unmeasured, stays eager.
 NF4_COMPILE_MIN_TORCH = "2.10"
 NF4_COMPILE_MIN_BNB = "0.46.1"
 
 
 def _nf4_compile_supported() -> bool:
-    """Whether compile_transformer="auto" compiles a bitsandbytes nf4 base: CUDA (not ROCm) torch and
-    bitsandbytes at or above the floors measured loss-identical with zero graph breaks."""
     try:
         import importlib.metadata
 
@@ -1795,7 +1792,6 @@ def _nf4_compile_supported() -> bool:
 
         if torch_is_rocm():
             return False
-        # PEP 440 ordering: a pre-release or dev build of the floor (2.10.0rc1, 0.46.1rc1) sorts below it.
         if Version(torch.__version__) < Version(NF4_COMPILE_MIN_TORCH):
             return False
         return Version(importlib.metadata.version("bitsandbytes")) >= Version(NF4_COMPILE_MIN_BNB)

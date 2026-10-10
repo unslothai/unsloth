@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Speed defaults of the diffusion LoRA trainers: the optimizer factory (fused torch AdamW, with
-bitsandbytes AdamW8bit kept for resuming bundles it wrote), the nf4 compile gate, and the
-gradient checkpointing modes. CPU-only except the real-bitsandbytes resume case."""
+"""Diffusion trainer speed defaults: optimizer factory, nf4 compile gate, checkpointing modes."""
 
 from __future__ import annotations
 
@@ -55,7 +53,6 @@ def _params():
     return [p]
 
 
-# ── optimizer factory ─────────────────────────────────────────────────────────
 @pytest.mark.parametrize("factory", [dit._make_optimizer, sdxl._make_lora_optimizer])
 def test_fresh_run_builds_torch_adamw_even_with_bitsandbytes(fake_bnb, factory):
     opt = factory(_params(), 1e-4)
@@ -67,14 +64,12 @@ def test_fresh_run_builds_torch_adamw_even_with_bitsandbytes(fake_bnb, factory):
 def test_resuming_an_8bit_bundle_rebuilds_adamw8bit(fake_bnb, factory):
     opt = factory(_params(), 1e-4, BNB_KEY)
     assert isinstance(opt, _Fake8bit)
-    # A torch-AdamW bundle (or one with no class recorded) keeps the new default.
     assert type(factory(_params(), 1e-4, "torch.optim.adamw.AdamW")) is torch.optim.AdamW
     assert type(factory(_params(), 1e-4, None)) is torch.optim.AdamW
 
 
 def test_8bit_resume_on_xpu_falls_back_to_torch_adamw(fake_bnb, monkeypatch):
-    # bitsandbytes optimizers die at the first step on XPU, so the resume is refused later by
-    # restore_resume_state with a readable message instead of building a broken optimizer.
+    # XPU: refused later by restore_resume_state with a readable message.
     monkeypatch.setattr(dtc, "bitsandbytes_optimizer_supported", lambda: False)
     opt = make_lora_optimizer(_params(), 1e-4, BNB_KEY)
     assert type(opt) is torch.optim.AdamW
@@ -97,7 +92,6 @@ def test_cuda_default_is_fused(monkeypatch):
     assert type(opt) is torch.optim.AdamW and opt.defaults.get("fused") is True
 
 
-# ── resume of a bundle written by an older (8-bit) build ──────────────────────
 def _identity() -> dc.CheckpointIdentity:
     return dc.CheckpointIdentity(
         family = "sdxl",
@@ -125,7 +119,6 @@ def _cfg(out: Path, **kw) -> DiffusionLoraConfig:
 
 @pytest.fixture
 def run_dir():
-    # The resume resolver refuses paths outside the (per-test) Unsloth outputs root.
     from utils.paths import outputs_root
 
     d = outputs_root() / "speed-run"
@@ -165,7 +158,6 @@ def test_recorded_optimizer_class_reads_the_bundle_being_resumed(run_dir):
     manifest["optimizer_class"] = BNB_KEY
     manifest_path.write_text(json.dumps(manifest), encoding = "utf-8")
     assert recorded_optimizer_class(cfg, _identity()) == BNB_KEY
-    # No resume, or a path that is not a bundle: None, never an exception.
     assert recorded_optimizer_class(_cfg(tmp_path), _identity()) is None
     bogus = _cfg(tmp_path, resume_from_checkpoint = str(tmp_path / "nope"))
     assert recorded_optimizer_class(bogus, _identity()) is None
@@ -173,8 +165,7 @@ def test_recorded_optimizer_class_reads_the_bundle_being_resumed(run_dir):
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "fused AdamW needs CUDA")
 def test_a_fused_bundle_resumed_under_the_fp32_override_stays_non_fused(run_dir, monkeypatch):
-    # load_state_dict restores the saved param groups, fused flag included, so without care the reference-optimizer
-    # override is silently dropped on resume.
+    # load_state_dict restores the saved fused flag; the reference-optimizer override must survive it.
     model = torch.nn.Linear(4, 4, bias = False).cuda()
     fused = torch.optim.AdamW(model.parameters(), lr = 1e-3, fused = True)
     model.weight.grad = torch.ones_like(model.weight)
@@ -214,14 +205,12 @@ def test_old_8bit_bundle_resumes_and_continues_identically(run_dir, monkeypatch)
         model.weight.grad = torch.full_like(model.weight, 0.01 * (i + 1))
         opt.step()
 
-    # What an older build wrote: AdamW8bit moments after 3 steps.
     ref = _model()
     ref_opt = bnb.optim.AdamW8bit(ref.parameters(), lr = 1e-3)
     for i in range(3):
         _step(ref, ref_opt, i)
     _write(tmp_path, ref, ref_opt)
 
-    # This build resuming it.
     cfg = _cfg(tmp_path, resume_from_checkpoint = str(tmp_path / "checkpoint-3"))
     live = _model()
     opt = make_lora_optimizer(
@@ -242,7 +231,6 @@ def test_old_8bit_bundle_resumes_and_continues_identically(run_dir, monkeypatch)
         assert torch.equal(live.weight, ref.weight)
 
 
-# ── nf4 compile gate ──────────────────────────────────────────────────────────
 def _ccfg(mode = "auto"):
     return DiffusionLoraConfig(
         base_model = "Tongyi-MAI/Z-Image",
@@ -257,7 +245,6 @@ def test_auto_compiles_nf4_only_when_the_versions_are_supported(monkeypatch):
     assert dit._should_compile(_ccfg(), True, "cuda", "nf4") is True
     monkeypatch.setattr(dit, "_nf4_compile_supported", lambda: False)
     assert dit._should_compile(_ccfg(), True, "cuda", "nf4") is False
-    # Explicit modes and other devices are unchanged.
     assert dit._should_compile(_ccfg("on"), True, "cuda", "nf4") is True
     assert dit._should_compile(_ccfg("off"), True, "cuda", "nf4") is False
     monkeypatch.setattr(dit, "_nf4_compile_supported", lambda: True)
@@ -275,7 +262,6 @@ def test_auto_compiles_nf4_only_when_the_versions_are_supported(monkeypatch):
         ("2.13.0", "0.46.0", False, False),
         ("2.13.0+rocm7.0", "0.50.2", True, False),
         ("2.11.0.dev20260101+cu130", "0.49.0.dev0", False, True),
-        # Pre-releases of the floors are below them.
         ("2.10.0rc1", "0.50.2", False, False),
         ("2.13.0", "0.46.1rc1", False, False),
         ("2.10.0.dev20250901+cu128", "0.50.2", False, False),
@@ -305,7 +291,6 @@ def test_nf4_compile_gate_fails_closed_without_bitsandbytes(monkeypatch):
     assert dit._nf4_compile_supported() is False
 
 
-# ── gradient checkpointing modes ──────────────────────────────────────────────
 def _tiny_zimage():
     diffusers = pytest.importorskip("diffusers")
     peft = pytest.importorskip("peft")
@@ -377,7 +362,6 @@ def test_checkpoint_mode_comes_from_the_env_and_defaults_to_plain(monkeypatch):
         monkeypatch.setenv(dtc.GC_MODE_ENV, value)
         assert dtc.enable_diffusion_gradient_checkpointing(_Model()) == expected
         assert callable(seen["func"])
-    # A model without repeated blocks has nothing to skip.
     monkeypatch.setattr(_Model, "_repeated_blocks", [])
     monkeypatch.setenv(dtc.GC_MODE_ENV, "partial")
     assert dtc.enable_diffusion_gradient_checkpointing(_Model()) == "plain"
