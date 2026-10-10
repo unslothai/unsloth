@@ -30278,6 +30278,7 @@ class LlamaCppBackend:
                                 run_cmd = _reverted
                                 self._record_memory_state(run_cmd, env)
                                 _did_fit_retry = True
+                                self._vram_fit_context_length = None
                                 continue
                         if (
                             not _did_fit_retry
@@ -30353,6 +30354,8 @@ class LlamaCppBackend:
                             run_cmd = _run
                             self._record_memory_state(_run, env)
                             _did_fit_retry = True
+                            # The fit that vouched for the ceiling is what just failed.
+                            self._vram_fit_context_length = None
                             continue
                         if (
                             not _did_fit_retry
@@ -30758,6 +30761,9 @@ class LlamaCppBackend:
                 healthy = False
                 try:
                     healthy = _spawn_and_wait(cmd)
+                    if not healthy:
+                        # Every recovery below relaunches a plan the fit never priced.
+                        self._vram_fit_context_length = None
                 finally:
                     # Only once a child is up, where is_active takes over. An
                     # unconditional clear undid the re-arm and left the outer rungs (arch

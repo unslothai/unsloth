@@ -39,6 +39,7 @@ _metal = _load("_metal_for_vram_fit_ctx", "test_metal_explicit_context_guard.py"
 from core.inference.llama_cpp import _AUTO_OFFLOAD_CTX, _FIT_MIN_CTX  # noqa: E402
 
 GB = 1024**3
+_REAL_POPEN = __import__("subprocess").Popen
 
 
 def _loaded(tmp_path, monkeypatch, platform, accelerator, **kwargs):
@@ -107,4 +108,47 @@ def test_a_child_on_cpu_claims_no_fit(state):
     assert backend.vram_fit_context_length == 65536
     for name, value in state.items():
         setattr(backend, name, value)
+    assert backend.vram_fit_context_length is None
+
+
+def test_a_recovered_crash_drops_the_ceiling_its_plan_priced(tmp_path, monkeypatch):
+    import subprocess
+
+    accelerator = next(a for a in _matrix.ACCELERATORS if a.label == "nvidia-single")
+    backend, gguf = _matrix.cell_backend(
+        tmp_path, monkeypatch, _matrix.PLATFORMS[0], accelerator, model_fraction = _matrix.FITS
+    )
+    healthy = iter([False, True])
+    backend._wait_for_health = lambda timeout, **_kw: next(healthy)
+    launches = []
+
+    def fake_popen(cmd, **kwargs):
+        if not cmd or str(cmd[0]) != "/fake/llama-server":
+            return _REAL_POPEN(cmd, **kwargs)
+        launches.append(list(cmd))
+        code = 1 if len(launches) == 1 else None
+        return type(
+            "Process",
+            (),
+            {
+                "pid": 123,
+                "stdout": (),
+                "returncode": code,
+                "poll": lambda self: code,
+                "terminate": lambda self: None,
+                "wait": lambda self, timeout = None: 0,
+                "kill": lambda self: None,
+            },
+        )()
+
+    from unittest.mock import patch
+
+    from core.inference.llama_cpp import GgufLoadIntent
+
+    with patch.object(subprocess, "Popen", side_effect = fake_popen):
+        assert backend.load_model(
+            GgufLoadIntent(gguf_path = str(gguf), model_identifier = "test", n_ctx = 0)
+        )
+    assert len(launches) == 2, launches
+    assert backend.max_context_length > _AUTO_OFFLOAD_CTX
     assert backend.vram_fit_context_length is None
