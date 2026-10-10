@@ -198,11 +198,20 @@ test("a resident server matches only when it ran with the file exactly when aske
   // The file's -ctk is the echo; the structured setting stays what the load sent.
   assert.equal(
     residentRuntimeMatchesConfig(
-      { model_ini_applied: true, cache_type_kv: "q8_0" },
+      { model_ini_applied: true, model_ini_cache_type: true, cache_type_kv: "q8_0" },
       on,
       standing,
     ),
     true,
+  );
+  // An INI that does not set the cache type leaves the structured setting in charge.
+  assert.equal(
+    residentRuntimeMatchesConfig(
+      { model_ini_applied: true, model_ini_cache_type: false, cache_type_kv: "q8_0" },
+      on,
+      standing,
+    ),
+    false,
   );
   assert.equal(
     residentRuntimeMatchesConfig({ model_ini_applied: false, cache_type_kv: "q8_0" }, off, standing),

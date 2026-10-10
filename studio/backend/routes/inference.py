@@ -8638,6 +8638,10 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
         model_ini_applied = _model_ini_resident(llama_backend),
         model_ini_sampling_keys = _model_ini_sampling_keys(llama_backend),
         model_ini_sampling = bool(_model_ini_sampling_keys(llama_backend)),
+        model_ini_cache_type = any(
+            flag in ("--cache-type-k", "--cache-type-v")
+            for flag in _model_ini_prefix(llama_backend)
+        ),
     )
     unresolved = (
         set(_InferenceRuntimeFields.model_fields) - fields.keys() - {"requires_trust_remote_code"}

@@ -1209,6 +1209,7 @@ class TestLoadHubDownloadExclusion:
             "model_ini_applied",
             "model_ini_sampling",
             "model_ini_sampling_keys",
+            "model_ini_cache_type",
             # Constant None: llama-server never serves an audio GGUF.
             "audio_family",
             "audio_options",

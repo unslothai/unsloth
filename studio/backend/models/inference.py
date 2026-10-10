@@ -1986,6 +1986,10 @@ class _InferenceRuntimeFields(BaseModel):
         default_factory = list,
         description = "The ``inference`` keys that unsloth.ini set, e.g. ['temperature'].",
     )
+    model_ini_cache_type: bool = Field(
+        False,
+        description = "Whether that unsloth.ini set the KV cache type (so cache_type_kv echoes it).",
+    )
 
 
 class LoadResponse(_InferenceRuntimeFields):

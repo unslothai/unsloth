@@ -46,6 +46,7 @@ type ResidentRuntime = Pick<
   | "tensor_parallel"
   | "disable_vision"
   | "model_ini_applied"
+  | "model_ini_cache_type"
   | "chat_template_override"
   | "requested_llama_extra_args"
   | "gpu_memory_mode"
@@ -274,10 +275,10 @@ const SETTING_CHECKS: SettingCheck[] = [
   },
   {
     pinned: () => true,
-    // Under an applied unsloth.ini the echo may be the file's -ctk, which no structured value matches.
+    // When the applied unsloth.ini set the cache type, the echo is the file's, which no structured value matches.
     agrees: (c, s) =>
       (c.kvCacheDtype ?? null) === (s.cache_type_kv ?? null) ||
-      (c.useModelIni === true && s.model_ini_applied === true),
+      (c.useModelIni === true && s.model_ini_cache_type === true),
   },
   {
     mlxComparable: true,
