@@ -22,7 +22,7 @@ def mps_score_budget() -> int:
     if raw:
         try:
             return max(0, int(float(raw) * 2**20))
-        except ValueError:
+        except (ValueError, OverflowError):
             pass
     try:
         import torch

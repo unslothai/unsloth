@@ -240,9 +240,10 @@ def test_batched_2048_stays_under_the_mps_element_cap():
 def test_mps_score_budget_reads_the_override(monkeypatch):
     monkeypatch.setenv(bounded.SCORE_BUDGET_ENV, "256")
     assert bounded.mps_score_budget() == 256 * 2**20
-    monkeypatch.setenv(bounded.SCORE_BUDGET_ENV, "")
     monkeypatch.setattr(torch.mps, "recommended_max_memory", lambda: 16 * 2**30, raising = False)
-    assert bounded.mps_score_budget() == 2 * 2**30
+    for unusable in ("", "inf", "1e309", "nan", "x"):
+        monkeypatch.setenv(bounded.SCORE_BUDGET_ENV, unusable)
+        assert bounded.mps_score_budget() == 2 * 2**30
 
 
 def test_qwen_image_21_1024_splits_below_the_mps_element_cap():
