@@ -2066,6 +2066,10 @@ export const ru = {
           "PyTorch собран только для CPU ({version}), поэтому GPU ниже использовать нельзя. Восстановите установку, чтобы вернуть поддержку GPU.",
         mismatchUnavailable:
           "PyTorch ({version}) не может инициализировать GPU ниже, поэтому использовать их нельзя. Проверьте драйвер видеокарты или восстановите установку.",
+        driverIdleEvict:
+          "В драйвере AMD {version} есть известная ошибка, из-за которой Windows может зависнуть, когда GPU AMD простаивает, чаще всего при нескольких GPU. Обновитесь до Adrenalin 26.9.2 или новее.",
+        driverIdleEvictDetails: "Подробнее",
+        dismissNotice: "Скрыть",
         unusableDevice: "недоступен",
         unknownDevice: "Неизвестный GPU",
         deviceWithIndex: "GPU {index}",

@@ -2059,6 +2059,10 @@ export const ar = {
           "PyTorch إصدار للـ CPU فقط ({version})، لذا لا يمكن استخدام وحدات GPU أدناه. أصلح التثبيت لاستعادة دعم GPU.",
         mismatchUnavailable:
           "لا يستطيع PyTorch ({version}) تهيئة وحدات GPU أدناه، لذا لا يمكن استخدامها. تحقق من تعريف كرت الشاشة أو أصلح التثبيت.",
+        driverIdleEvict:
+          "يحتوي برنامج تشغيل AMD {version} على خلل معروف قد يؤدي إلى تجمّد Windows عندما تكون وحدة GPU من AMD خاملة، وغالبًا مع وجود أكثر من GPU. حدّث إلى Adrenalin 26.9.2 أو أحدث.",
+        driverIdleEvictDetails: "التفاصيل",
+        dismissNotice: "إغلاق",
         unusableDevice: "غير قابل للاستخدام",
         unknownDevice: "GPU غير معروف",
         deviceWithIndex: "GPU {index}",

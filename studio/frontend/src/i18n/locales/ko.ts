@@ -2055,6 +2055,10 @@ export const ko = {
           "PyTorch가 CPU 전용 빌드({version})이므로 아래 GPU를 사용할 수 없습니다. 설치를 복구하면 GPU 지원이 복원됩니다.",
         mismatchUnavailable:
           "PyTorch({version})가 아래 GPU를 초기화하지 못해 사용할 수 없습니다. GPU 드라이버를 확인하거나 설치를 복구하세요.",
+        driverIdleEvict:
+          "AMD 드라이버 {version}에는 AMD GPU가 유휴 상태일 때 Windows가 멈출 수 있는 알려진 버그가 있으며, GPU가 두 개 이상일 때 주로 발생합니다. Adrenalin 26.9.2 이상으로 업데이트하세요.",
+        driverIdleEvictDetails: "자세히",
+        dismissNotice: "닫기",
         unusableDevice: "사용 불가",
         unknownDevice: "알 수 없는 GPU",
         deviceWithIndex: "GPU {index}",

@@ -2071,6 +2071,10 @@ export const ptBR = {
           "O PyTorch é uma compilação somente CPU ({version}), então as GPUs abaixo não podem ser usadas. Repare a instalação para restaurar o suporte a GPU.",
         mismatchUnavailable:
           "O PyTorch ({version}) não consegue inicializar as GPUs abaixo, então elas não podem ser usadas. Verifique o driver da GPU ou repare a instalação.",
+        driverIdleEvict:
+          "O driver AMD {version} tem um bug conhecido que pode congelar o Windows quando uma GPU AMD fica ociosa, principalmente com mais de uma GPU. Atualize para o Adrenalin 26.9.2 ou posterior.",
+        driverIdleEvictDetails: "Detalhes",
+        dismissNotice: "Dispensar",
         unusableDevice: "inutilizável",
         unknownDevice: "GPU desconhecida",
         deviceWithIndex: "GPU {index}",

@@ -2039,6 +2039,10 @@ export const ja = {
           "PyTorch は CPU 専用ビルド ({version}) のため、下の GPU は利用できません。インストールを修復すると GPU サポートが復元されます。",
         mismatchUnavailable:
           "PyTorch ({version}) は下の GPU を初期化できないため、利用できません。GPU ドライバーを確認するか、インストールを修復してください。",
+        driverIdleEvict:
+          "AMD ドライバー {version} には、AMD GPU がアイドル状態のときに Windows がフリーズすることがある既知の不具合があります。特に GPU が複数ある環境で発生しやすくなります。Adrenalin 26.9.2 以降に更新してください。",
+        driverIdleEvictDetails: "詳細",
+        dismissNotice: "閉じる",
         unusableDevice: "利用不可",
         unknownDevice: "不明な GPU",
         deviceWithIndex: "GPU {index}",
