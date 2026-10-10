@@ -176,6 +176,7 @@ def test_initial_noise_never_touches_global_stream(tmp_path):
 
 
 def test_flow_sigmas_leave_training_scheduler_untouched():
+    pytest.importorskip("diffusers")
     from diffusers import FlowMatchEulerDiscreteScheduler
 
     sched = FlowMatchEulerDiscreteScheduler(shift = 3.0)
@@ -191,6 +192,7 @@ def test_flow_sigmas_leave_training_scheduler_untouched():
 def test_euler_flow_sample_recovers_target_with_exact_velocity(tmp_path):
     """The training target is v = noise - latents; an oracle velocity must land exactly on x0,
     with and without CFG (identical cond/uncond predictions make CFG a no-op)."""
+    pytest.importorskip("diffusers")
     from diffusers import FlowMatchEulerDiscreteScheduler
 
     x0 = torch.randn(1, 4, 8, 8, generator = torch.Generator().manual_seed(0))
@@ -422,6 +424,7 @@ def test_cfg_combination_matches_each_pipeline():
     # pipeline_z_image.py:547, pipeline_krea2.py:666: c + g(c - u)
     assert torch.allclose(ds.combine_cfg("cond", g, c, u), c + g * (c - u))
     # pipeline_qwenimage.py:668-672 on the PACKED sequence, rescaled to the conditional norm per token.
+    pytest.importorskip("diffusers")
     from diffusers import QwenImagePipeline
 
     pack = lambda t: QwenImagePipeline._pack_latents(t, 1, 16, 8, 8)  # noqa: E731
@@ -457,6 +460,7 @@ def test_family_sample_settings(family, base, steps, guidance, uses_cfg, mode, m
 
 
 def test_fixed_mu_reaches_the_schedule():
+    pytest.importorskip("diffusers")
     from diffusers import FlowMatchEulerDiscreteScheduler
 
     sched = FlowMatchEulerDiscreteScheduler(use_dynamic_shifting = True)
@@ -488,6 +492,7 @@ def test_stop_between_prompts_ends_the_round_keeping_finished_images(tmp_path):
 
 
 def test_stop_mid_denoise_aborts_the_image(tmp_path):
+    pytest.importorskip("diffusers")
     from diffusers import FlowMatchEulerDiscreteScheduler
 
     plan = ds.plan_samples(
