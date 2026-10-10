@@ -24,7 +24,11 @@ HELPER=$(awk '
 
 # A fake installer that leaves a marker when it runs, served by a stubbed downloader.
 printf 'touch "%s/ran"\n' "$WORK" > "$WORK/installer.sh"
-GOOD_SUM=$(sha256sum "$WORK/installer.sh" 2>/dev/null | awk '{print $1}' || shasum -a 256 "$WORK/installer.sh" | awk '{print $1}')
+if command -v sha256sum >/dev/null 2>&1; then
+    GOOD_SUM=$(sha256sum "$WORK/installer.sh" | awk '{print $1}')
+else
+    GOOD_SUM=$(shasum -a 256 "$WORK/installer.sh" | awk '{print $1}')
+fi
 
 _run_fallback() {
     # $1 = pinned sha256, $2 = 1 to hide every sha256 tool
@@ -37,6 +41,10 @@ _run_fallback() {
         _SETUP_UV_INSTALLER_SH_SHA256="$1"
         if [ "$2" = 1 ]; then
             _setup_uv_sha256() { :; }
+        elif [ "$2" = 2 ]; then
+            # sha256sum present but awk missing: the pipeline fails, under set -e as setup.sh runs.
+            set -e
+            _setup_uv_sha256() { return 127; }
         fi
         _setup_uv_fallback_run
     ) 2>"$WORK/err"
@@ -59,6 +67,12 @@ if _run_fallback "00000000000000000000000000000000000000000000000000000000000000
     ok "a host with no sha256 tool runs it as before"
 else
     bad "a host with no sha256 tool runs it as before"
+fi
+
+if _run_fallback "0000000000000000000000000000000000000000000000000000000000000000" 2 && [ -f "$WORK/ran" ]; then
+    ok "a hasher that fails counts as no hasher instead of aborting under set -e"
+else
+    bad "a hasher that fails counts as no hasher instead of aborting under set -e"
 fi
 
 _setup_pin=$(sed -n 's/^_SETUP_UV_INSTALLER_SH_SHA256="\([0-9a-f]*\)"$/\1/p' "$SETUP_SH")

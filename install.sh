@@ -4126,7 +4126,8 @@ if ! command -v uv >/dev/null 2>&1 || ! _uv_version_ok uv; then
             _uv_tmp=$(mktemp)
             if download "https://astral.sh/uv/$UV_PINNED_VERSION/install.sh" "$_uv_tmp"; then
                 # A host with no sha256 tool runs it as before; anything else must be the exact pinned script.
-                _uv_inst_sum=$(_uv_sha256 "$_uv_tmp")
+                # A hasher that fails (sha256sum without awk) counts as no hasher, not as an exit under set -e.
+                _uv_inst_sum=$(_uv_sha256 "$_uv_tmp" 2>/dev/null) || _uv_inst_sum=""
                 if [ -n "$_uv_inst_sum" ] && [ "$_uv_inst_sum" != "$UV_INSTALLER_SH_SHA256" ]; then
                     substep "uv installer script failed its sha256 check; not running it"
                     _uv_refreshed=false

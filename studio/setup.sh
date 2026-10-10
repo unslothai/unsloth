@@ -2853,7 +2853,7 @@ _setup_uv_fallback_run() {
         rm -f "$_suf_tmp"
         return 1
     fi
-    _suf_sum=$(_setup_uv_sha256 "$_suf_tmp")
+    _suf_sum=$(_setup_uv_sha256 "$_suf_tmp" 2>/dev/null) || _suf_sum=""
     if [ -n "$_suf_sum" ] && [ "$_suf_sum" != "$_SETUP_UV_INSTALLER_SH_SHA256" ]; then
         echo "uv installer script failed its sha256 check; not running it" >&2
         rm -f "$_suf_tmp"
