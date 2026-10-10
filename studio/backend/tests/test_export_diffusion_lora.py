@@ -50,6 +50,20 @@ def test_export_into_the_catalog_itself_keeps_the_file(loras):
     assert json.loads(out.with_suffix(".json").read_text())["family"] == "sdxl"
 
 
+def test_export_never_overwrites_other_files(loras, tmp_path):
+    out_dir = tmp_path / "shared"
+    out_dir.mkdir()
+    (out_dir / "mystyle.safetensors").write_bytes(b"another install")
+    (out_dir / "mystyle.json").write_text(json.dumps({"kind": "diffusion-lora"}))
+    (out_dir / "bare.json").write_text('{"model_type": "llama"}')
+    assert dl.export_local_lora("mystyle", out_dir) == out_dir / "mystyle-2.safetensors"
+    assert (out_dir / "mystyle.safetensors").read_bytes() == b"another install"
+    assert dl.export_local_lora("bare", out_dir) == out_dir / "bare-2.safetensors"
+    assert json.loads((out_dir / "bare.json").read_text()) == {"model_type": "llama"}
+    # Re-exporting the same bytes reuses its slot instead of piling up copies.
+    assert dl.export_local_lora("mystyle", out_dir) == out_dir / "mystyle-2.safetensors"
+
+
 def test_export_refuses_ids_outside_the_local_catalog(loras, tmp_path):
     secret = tmp_path / "secret.safetensors"
     secret.write_bytes(b"secret")

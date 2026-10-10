@@ -261,9 +261,10 @@ def _catalog_by_id() -> dict[str, LoraCatalogEntry]:
 def export_local_lora(lora_id: str, dest_dir: Path) -> Path:
     """Copy a local adapter into ``dest_dir`` with a ``<stem>.json`` sidecar carrying the image LoRA marker.
 
-    Takes a catalog id, never a path, so only files already in ``loras_dir()`` can be read.
-    Returns the copied weight file.
+    Takes a catalog id, never a path, so only listed image LoRAs can be read.
+    Returns the copied weight file; a name already taken by other bytes or a foreign ``.json`` gets a suffix.
     """
+    import filecmp
     import shutil
 
     entry = next((e for e in _scan_local() if e.id == lora_id), None)
@@ -271,7 +272,19 @@ def export_local_lora(lora_id: str, dest_dir: Path) -> Path:
         raise FileNotFoundError(f"no local image LoRA named '{lora_id}'")
     src = Path(entry.local_path)
     dest_dir.mkdir(parents = True, exist_ok = True)
-    out = dest_dir / src.name
+
+    def _free(out: Path) -> bool:
+        if out.exists():
+            if os.path.samefile(src, out):
+                return True
+            if not filecmp.cmp(src, out, shallow = False):
+                return False
+        return not out.with_suffix(".json").exists() or is_image_lora_file(out)
+
+    out, n = dest_dir / src.name, 2
+    while not _free(out):
+        out = dest_dir / f"{src.stem}-{n}{src.suffix}"
+        n += 1
     # Exporting into the folder it already sits in would copy a file onto itself.
     if not (out.exists() and os.path.samefile(src, out)):
         shutil.copy2(src, out)
