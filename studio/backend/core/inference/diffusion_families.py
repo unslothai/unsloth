@@ -1355,6 +1355,7 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("qwen-image-2.1-turbo", 8, 1.0),
     ("qwen-image-21-turbo", 8, 1.0),
     ("qwenimage21-turbo", 8, 1.0),
+    ("qwenimage21turbo", 8, 1.0),
     ("qwen-image-2.1", 25, 1.0),
     ("qwen-image-21", 25, 1.0),
     ("qwen_image_21", 25, 1.0),

@@ -199,6 +199,8 @@ test("every Qwen-Image-2.1 spelling gets Turbo's 8 / 1 recipe when it names Turb
     "/models/qwen-image-21_turbo",
     "/models/qwenimage21-turbo",
     "/models/qwenimage21_turbo",
+    "/models/qwenimage21turbo",
+    "/models/qwenimage21turbo-Q4_K_M.gguf",
     "/models/qwen_image_2.1_turbo_Q4_K_M.gguf",
   ]) {
     assert.deepEqual(defaultsFor(id), { steps: 8, guidance: 1 }, id);

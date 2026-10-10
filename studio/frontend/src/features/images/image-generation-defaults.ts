@@ -28,6 +28,7 @@ const MODEL_DEFAULTS: Array<{
   { match: "qwen-image-2.1-turbo", steps: 8, guidance: 1 },
   { match: "qwen-image-21-turbo", steps: 8, guidance: 1 },
   { match: "qwenimage21-turbo", steps: 8, guidance: 1 },
+  { match: "qwenimage21turbo", steps: 8, guidance: 1 },
   { match: "qwen-image-2.1", steps: 25, guidance: 1 },
   { match: "qwen-image-21", steps: 25, guidance: 1 },
   { match: "qwen_image_21", steps: 25, guidance: 1 },

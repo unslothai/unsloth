@@ -705,6 +705,8 @@ def test_qwen_image_21_turbo_loads_as_its_own_checkpoint_of_the_family():
         "/models/qwen-image-21_turbo",
         "/models/qwenimage21-turbo",
         "/models/qwenimage21_turbo",
+        "/models/qwenimage21turbo",
+        "qwenimage21turbo-Q4_K_M.gguf",
     ):
         assert default_generation_params(identifier) == (8, 1.0), identifier
     for identifier in ("Qwen/Qwen-Image-2.1", "/models/qwen_image_21", "/models/qwenimage21"):
