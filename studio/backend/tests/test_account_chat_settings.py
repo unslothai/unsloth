@@ -381,6 +381,7 @@ OWNER_PATHS = [
         "/lan-access/stop": ("POST",),
         "/lan-access/auto-start": ("PUT",),
         "/lan-access/port": ("PUT",),
+        "/lan-access/addresses": ("PUT",),
         "/preview-sharing": ("GET", "PUT"),
         "/keyless-api-access": ("GET", "PUT"),
         "/debug/logs/sources": ("GET",),

@@ -30,6 +30,10 @@ import utils.host_policy as host_policy  # noqa: E402
 import utils.lan_access_settings as lan_settings  # noqa: E402
 from storage import studio_db  # noqa: E402
 
+# captured before the autouse fixture swaps in the dict stand-in
+_REAL_GET_APP_SETTING = studio_db.get_app_setting
+_REAL_UPSERT_APP_SETTINGS = studio_db.upsert_app_settings
+
 
 def _app(**over):
     state = SimpleNamespace(
@@ -120,6 +124,254 @@ def test_saving_a_new_port_policy_clears_the_previous_bind_error():
     status = lan_settings.save_lan_access_port(app, None)
     assert status["error"] is None
     assert status["configured_port"] is None
+
+
+# a public NIC address, a home Wi-Fi address and a Tailscale (CGNAT) address, as a VPS on a tailnet reports them
+_DETECTED = ["64.227.100.5", "192.168.1.24", "100.101.102.103"]
+
+
+def test_address_persistence_defaults_to_automatic_and_validates(stored_settings):
+    assert lan_settings.get_lan_access_addresses() is None
+
+    saved = lan_settings.set_lan_access_addresses(
+        [" 100.101.102.103", "192.168.1.24", "100.101.102.103"]
+    )
+    assert saved == ("100.101.102.103", "192.168.1.24")
+    assert lan_settings.get_lan_access_addresses() == saved
+    assert stored_settings[lan_settings.LAN_ACCESS_ADDRESSES_KEY] == [
+        "100.101.102.103",
+        "192.168.1.24",
+    ]
+
+    assert lan_settings.set_lan_access_addresses(None) is None
+    assert lan_settings.get_lan_access_addresses() is None
+
+    for invalid in (
+        [],
+        "192.168.1.24",
+        [7],
+        ["not-an-ip"],
+        # leading zeros read as octal by some resolvers, so the literal is ambiguous
+        ["192.168.001.024"],
+        ["fd00::24"],
+        ["127.0.0.1"],
+        ["169.254.10.1"],
+        ["0.0.0.0"],
+        ["224.0.0.1"],
+        ["240.0.0.1"],
+        [f"10.0.{n // 256}.{n % 256}" for n in range(65)],
+    ):
+        with pytest.raises(ValueError):
+            lan_settings.set_lan_access_addresses(invalid)
+        with pytest.raises(ValueError):
+            routes.LanAccessAddressesPayload(addresses = invalid)
+
+    assert routes.LanAccessAddressesPayload(addresses = None).addresses is None
+    with pytest.raises(ValueError):
+        routes.LanAccessAddressesPayload()
+
+
+def test_a_corrupt_saved_selection_reads_as_automatic_but_refuses_to_start(
+    monkeypatch, stored_settings
+):
+    stored_settings[lan_settings.LAN_ACCESS_ADDRESSES_KEY] = ["192.168.1.24", "nonsense"]
+    assert lan_settings.get_lan_access_addresses() is None
+    calls = []
+    monkeypatch.setattr(
+        lan_access, "start_lan_listener", lambda *args: calls.append(args) or ("10.0.0.7",)
+    )
+    app = _app(lan_access_loop = SimpleNamespace(is_closed = lambda: False, is_running = lambda: True))
+
+    with pytest.raises(RuntimeError, match = "lan_access_addresses_invalid"):
+        lan_settings.start_lan_access(app)
+    real_get = studio_db.get_app_setting
+
+    def _addresses_unreadable(key, fallback):
+        if key == lan_settings.LAN_ACCESS_ADDRESSES_KEY:
+            raise OSError("database unavailable")
+        return real_get(key, fallback)
+
+    monkeypatch.setattr(studio_db, "get_app_setting", _addresses_unreadable)
+    with pytest.raises(RuntimeError, match = "lan_access_addresses_unavailable"):
+        lan_settings.start_lan_access(app)
+    assert calls == []
+
+
+def test_an_undecodable_saved_selection_refuses_to_start(monkeypatch):
+    monkeypatch.setattr(studio_db, "get_app_setting", _REAL_GET_APP_SETTING)
+    key = lan_settings.LAN_ACCESS_ADDRESSES_KEY
+    assert lan_settings._read_lan_access_addresses(strict = True) is None
+    _REAL_UPSERT_APP_SETTINGS({key: None})
+    assert lan_settings._read_lan_access_addresses(strict = True) is None
+    calls = []
+    monkeypatch.setattr(
+        lan_access, "start_lan_listener", lambda *args: calls.append(args) or ("10.0.0.7",)
+    )
+    app = _app(lan_access_loop = SimpleNamespace(is_closed = lambda: False, is_running = lambda: True))
+    for corrupt in ('["192.168.1.24"', ""):
+        conn = studio_db.get_connection()
+        try:
+            conn.execute("UPDATE app_settings SET value_json = ? WHERE key = ?", (corrupt, key))
+            conn.commit()
+        finally:
+            conn.close()
+        assert lan_settings.get_lan_access_addresses() is None
+        with pytest.raises(RuntimeError, match = "lan_access_addresses_invalid"):
+            lan_settings.start_lan_access(app)
+    assert calls == []
+
+
+def test_start_hands_the_saved_selection_to_the_listener(monkeypatch, stored_settings):
+    calls = []
+    monkeypatch.setattr(
+        lan_access, "start_lan_listener", lambda *args: calls.append(args) or ("10.0.0.7",)
+    )
+    app = _app(lan_access_loop = SimpleNamespace(is_closed = lambda: False, is_running = lambda: True))
+
+    lan_settings.start_lan_access(app)
+    assert calls[-1][4] is None
+
+    lan_settings.set_lan_access_addresses(["100.101.102.103"])
+    lan_settings.start_lan_access(app)
+    assert calls[-1][4] == ("100.101.102.103",)
+
+
+def test_saving_a_selection_clears_the_previous_error_and_refuses_while_online():
+    app = _app()
+    lan_access._error = "selected_address_unavailable"
+
+    status = lan_settings.save_lan_access_addresses(app, ["192.168.1.24"])
+    assert status["error"] is None
+    assert status["configured_addresses"] == ["192.168.1.24"]
+
+    status = lan_settings.save_lan_access_addresses(app, None)
+    assert status["configured_addresses"] is None
+
+    with pytest.raises(RuntimeError, match = "lan_access_running"):
+        lan_settings.save_lan_access_addresses(
+            _app(lan_access_launch_managed = True), ["192.168.1.24"]
+        )
+    with pytest.raises(RuntimeError, match = "colab"):
+        lan_settings.save_lan_access_addresses(_app(lan_access_is_colab = True), ["192.168.1.24"])
+    with pytest.raises(ValueError):
+        lan_settings.save_lan_access_addresses(_app(lan_access_launch_managed = True), ["nonsense"])
+
+
+def test_status_offers_every_detected_address_and_flags_the_public_ones(monkeypatch):
+    monkeypatch.setattr(lan_access, "detect_lan_addresses", lambda _ip_version = 4: list(_DETECTED))
+    status = lan_settings.lan_access_status(_app())
+    assert status["available_addresses"] == [
+        {"address": "64.227.100.5", "public": True},
+        {"address": "192.168.1.24", "public": False},
+        {"address": "100.101.102.103", "public": False},
+    ]
+    assert status["configured_addresses"] is None
+    response = routes.LanAccessResponse(**status)
+    assert [entry.address for entry in response.available_addresses] == _DETECTED
+    assert response.available_addresses[0].public is True
+    assert (
+        lan_settings.lan_access_status(_app(lan_access_launch_managed = True))["available_addresses"]
+        == []
+    )
+
+
+def test_status_flags_saved_public_addresses_even_when_they_are_down(monkeypatch, stored_settings):
+    monkeypatch.setattr(lan_access, "detect_lan_addresses", lambda _ip_version = 4: [])
+    stored_settings[lan_settings.LAN_ACCESS_ADDRESSES_KEY] = ["64.227.100.5", "192.168.1.24"]
+    status = lan_settings.lan_access_status(_app())
+    assert status["configured_public_addresses"] == ["64.227.100.5"]
+    assert routes.LanAccessResponse(**status).configured_public_addresses == ["64.227.100.5"]
+    stored_settings.pop(lan_settings.LAN_ACCESS_ADDRESSES_KEY)
+    assert lan_settings.lan_access_status(_app())["configured_public_addresses"] == []
+
+
+def test_status_survives_a_failing_address_detection(monkeypatch):
+    def _broken(_ip_version = 4):
+        raise RuntimeError("psutil exploded")
+
+    monkeypatch.setattr(lan_access, "detect_lan_addresses", _broken)
+    assert lan_settings.lan_access_status(_app())["available_addresses"] == []
+
+
+def test_the_addresses_route_validates_saves_and_refuses_while_online():
+    from fastapi.testclient import TestClient
+
+    from auth.authentication import authenticated_via_api_key, get_current_subject
+
+    app = FastAPI()
+    app.include_router(routes.router, prefix = "/settings")
+    app.dependency_overrides[get_current_subject] = lambda: "owner"
+    app.dependency_overrides[authenticated_via_api_key] = lambda: False
+    app.dependency_overrides[routes._require_installation_owner] = lambda: None
+    for key, value in vars(_app().state).items():
+        setattr(app.state, key, value)
+
+    with TestClient(app) as client:
+        for invalid in ({"addresses": ["nonsense"]}, {"addresses": []}, {"addresses": [7]}, {}):
+            response = client.put("/settings/lan-access/addresses", json = invalid)
+            assert response.status_code == 422, (invalid, response.text)
+
+        response = client.put(
+            "/settings/lan-access/addresses", json = {"addresses": ["100.101.102.103"]}
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["configured_addresses"] == ["100.101.102.103"]
+        assert client.get("/settings/lan-access").json()["configured_addresses"] == [
+            "100.101.102.103"
+        ]
+
+        response = client.put("/settings/lan-access/addresses", json = {"addresses": None})
+        assert response.status_code == 200 and response.json()["configured_addresses"] is None
+
+        app.state.lan_access_launch_managed = True
+        response = client.put(
+            "/settings/lan-access/addresses", json = {"addresses": ["192.168.1.24"]}
+        )
+        assert response.status_code == 409 and response.json()["detail"] == "lan_access_running"
+
+
+def _record_binds(monkeypatch):
+    attempted = []
+
+    def _refuse(address, _port):
+        attempted.append(address)
+        raise OSError("address in use")
+
+    monkeypatch.setattr(lan_access, "detect_lan_addresses", lambda: list(_DETECTED))
+    monkeypatch.setattr(lan_access, "_bind_listener", _refuse)
+    return attempted
+
+
+def test_a_selection_binds_only_the_chosen_addresses(monkeypatch):
+    attempted = _record_binds(monkeypatch)
+    with pytest.raises(RuntimeError, match = "bind_failed"):
+        lan_access.start_lan_listener(object(), object(), 8888, (), ("100.101.102.103",))
+    assert attempted == ["100.101.102.103"]
+
+    attempted.clear()
+    with pytest.raises(RuntimeError, match = "bind_failed"):
+        lan_access.start_lan_listener(
+            object(), object(), 8888, (), ("10.9.9.9", "100.101.102.103", "192.168.1.24")
+        )
+    assert attempted == ["192.168.1.24", "100.101.102.103"]
+
+
+def test_automatic_still_binds_every_detected_address(monkeypatch):
+    attempted = _record_binds(monkeypatch)
+    with pytest.raises(RuntimeError, match = "bind_failed"):
+        lan_access.start_lan_listener(object(), object(), 8888)
+    assert attempted == _DETECTED
+
+
+def test_a_selection_with_nothing_detected_fails_closed(monkeypatch):
+    attempted = _record_binds(monkeypatch)
+    with pytest.raises(RuntimeError, match = "selected_address_unavailable"):
+        lan_access.start_lan_listener(object(), object(), 8888, (8889,), ("10.9.9.9",))
+    assert (
+        attempted == []
+    ), "an unavailable selection must never fall back to the detected addresses"
+    status = lan_access.lan_listener_status()
+    assert status["running"] is False and status["error"] == "selected_address_unavailable"
 
 
 # ── launch policy ──
@@ -1305,7 +1557,8 @@ def test_start_uses_the_saved_port_policy(monkeypatch):
     monkeypatch.setattr(
         lan_access,
         "start_lan_listener",
-        lambda _app, _loop, port, fallback: calls.append((port, fallback)) or ("10.0.0.7",),
+        lambda _app, _loop, port, fallback, _selected: calls.append((port, fallback))
+        or ("10.0.0.7",),
     )
 
     lan_settings.start_lan_access(app)
@@ -1476,7 +1729,7 @@ def test_management_rejects_api_keys():
             continue
         args = node.args.args + node.args.kwonlyargs
         gated[node.name] = any(a.arg == "_ui_session" for a in args)
-    assert len(gated) == 5, f"expected 5 lan-access handlers, found {sorted(gated)}"
+    assert len(gated) == 6, f"expected 6 lan-access handlers, found {sorted(gated)}"
     assert all(
         gated.values()
     ), f"ungated lan-access handlers: {sorted(k for k, v in gated.items() if not v)}"

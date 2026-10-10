@@ -23,6 +23,7 @@ from pydantic import (
     Field,
     StrictBool,
     StrictInt,
+    StrictStr,
     StringConstraints,
     ValidationError,
     field_validator,
@@ -181,6 +182,8 @@ from utils.current_date_prompt_settings import (
 )
 from utils.lan_access_settings import (
     lan_access_status,
+    normalize_lan_access_addresses,
+    save_lan_access_addresses,
     save_lan_access_port,
     set_lan_access_auto_start,
     start_lan_access,
@@ -3924,6 +3927,22 @@ class LanAccessPortPayload(BaseModel):
     port: Optional[StrictInt] = Field(ge = 1, le = 65535)
 
 
+class LanAccessAddressesPayload(BaseModel):
+    # required, so a body that forgets the field cannot silently reset the choice to Automatic
+    addresses: Optional[list[StrictStr]]
+
+    @field_validator("addresses")
+    @classmethod
+    def _bindable(cls, value: Optional[list[str]]) -> Optional[list[str]]:
+        normalized = normalize_lan_access_addresses(value)
+        return list(normalized) if normalized is not None else None
+
+
+class LanAccessAddress(BaseModel):
+    address: str
+    public: bool = False
+
+
 class LanAccessResponse(BaseModel):
     state: Literal["off", "online", "error"]
     urls: list[str] = []
@@ -3933,6 +3952,9 @@ class LanAccessResponse(BaseModel):
 
     configured_port: Optional[int] = None
     active_port: Optional[int] = None
+    configured_addresses: Optional[list[str]] = None
+    available_addresses: list[LanAccessAddress] = []
+    configured_public_addresses: list[str] = []
     managed_by: Optional[Literal["launch", "settings"]] = None
     can_start: bool
     can_stop: bool
@@ -4019,6 +4041,25 @@ def update_lan_access_port(
         "settings.lan_access_port_updated subject=%s port=%s",
         current_subject,
         payload.port if payload.port is not None else "automatic",
+    )
+    return response
+
+
+@_owner_settings_router.put("/lan-access/addresses", response_model = LanAccessResponse)
+def update_lan_access_addresses(
+    request: Request,
+    payload: LanAccessAddressesPayload,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> LanAccessResponse:
+    try:
+        response = LanAccessResponse(**save_lan_access_addresses(request.app, payload.addresses))
+    except RuntimeError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    logger.info(
+        "settings.lan_access_addresses_updated subject=%s addresses=%s",
+        current_subject,
+        ",".join(payload.addresses) if payload.addresses is not None else "automatic",
     )
     return response
 

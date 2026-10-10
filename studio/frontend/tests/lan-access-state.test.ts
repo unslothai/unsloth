@@ -8,7 +8,10 @@ import test from "node:test";
 import {
   type ApiLanAccessStatus,
   type LanAccessStatus,
+  defaultLanAccessAddressSelection,
   keylessLanAccessDescription,
+  lanAccessAddressChoices,
+  lanAccessAddressesReadOnly,
   lanAccessAutoStartReadOnly,
   lanAccessBlockMessage,
   lanAccessErrorMessage,
@@ -16,6 +19,7 @@ import {
   lanAccessStopDisconnectsOrigin,
   lanApiUrls,
   normalizeLanAccessStatus,
+  sameLanAccessAddresses,
   validLanAccessPort,
 } from "../src/features/settings/api/lan-access-state.ts";
 
@@ -24,7 +28,9 @@ import { readSrc } from "./helpers/kit.ts";
 const LAN = "http://192.168.1.24:8888";
 const SECOND = "http://10.0.0.7:8888";
 const PUBLIC = "http://64.227.100.5:8888";
-const SECTION_SOURCE = readSrc("features/settings/components/lan-access-section.tsx");
+const SECTION_SOURCE = readSrc(
+  "features/settings/components/lan-access-section.tsx",
+);
 
 function apiStatus(over: Partial<ApiLanAccessStatus> = {}): ApiLanAccessStatus {
   return {
@@ -53,6 +59,13 @@ test("normalize maps every snake_case field onto its camelCase name", () => {
       configured_port: 43210,
       active_port: 43210,
       // biome-ignore lint/style/useNamingConvention: API schema
+      configured_addresses: ["100.101.102.103"],
+      // biome-ignore lint/style/useNamingConvention: API schema
+      available_addresses: [
+        { address: "64.227.100.5", public: true },
+        { address: "100.101.102.103", public: false },
+      ],
+      // biome-ignore lint/style/useNamingConvention: API schema
       managed_by: "settings",
       // biome-ignore lint/style/useNamingConvention: API schema
       can_start: false,
@@ -80,6 +93,13 @@ test("normalize maps every snake_case field onto its camelCase name", () => {
     portConfigurationSupported: true,
     configuredPort: 43210,
     activePort: 43210,
+    addressConfigurationSupported: true,
+    configuredAddresses: ["100.101.102.103"],
+    availableAddresses: [
+      { address: "64.227.100.5", public: true },
+      { address: "100.101.102.103", public: false },
+    ],
+    configuredPublicAddresses: [],
     managedBy: "settings",
     canStart: false,
     canStop: true,
@@ -103,6 +123,10 @@ test("normalize defaults the optional fields an older backend may omit", () => {
   assert.equal(s.activePort, null);
   assert.equal(s.portConfigurationSupported, false);
   assert.equal(lanAccessPortReadOnly(s), true);
+  assert.equal(s.addressConfigurationSupported, false);
+  assert.equal(s.configuredAddresses, null);
+  assert.deepEqual(s.availableAddresses, []);
+  assert.equal(lanAccessAddressesReadOnly(s), true);
   assert.equal(s.managedBy, null);
   assert.equal(s.blockReason, null);
   assert.equal(s.bindHost, null);
@@ -123,10 +147,7 @@ test("an explicit automatic port remains distinct from an old backend", () => {
 });
 
 test("the port form is capability-gated and keeps its live error region mounted", () => {
-  assert.equal(
-    SECTION_SOURCE.match(/["'`]Port["'`]/g)?.length,
-    1,
-  );
+  assert.equal(SECTION_SOURCE.match(/["'`]Port["'`]/g)?.length, 1);
   assert.match(
     SECTION_SOURCE,
     /\{status\?\.portConfigurationSupported\s*\?\s*\(\s*<SettingsRow\s+label="Port"/,
@@ -286,6 +307,128 @@ test("port editing is limited to stopped, non-Colab LAN access", () => {
       normalizeLanAccessStatus(apiStatus({ configured_port: null })),
     ),
     false,
+  );
+});
+
+const TAILSCALE = "100.101.102.103";
+const WIFI = "192.168.1.24";
+const PUBLIC_IP = "64.227.100.5";
+
+function withAddresses(
+  configured: string[] | null,
+  over: Partial<ApiLanAccessStatus> = {},
+): LanAccessStatus {
+  return normalizeLanAccessStatus(
+    apiStatus({
+      // biome-ignore lint/style/useNamingConvention: API schema
+      configured_addresses: configured,
+      // biome-ignore lint/style/useNamingConvention: API schema
+      available_addresses: [
+        { address: PUBLIC_IP, public: true },
+        { address: WIFI, public: false },
+        { address: TAILSCALE, public: false },
+      ],
+      ...over,
+    }),
+  );
+}
+
+test("an explicit automatic selection remains distinct from an old backend", () => {
+  const s = withAddresses(null);
+  assert.equal(s.addressConfigurationSupported, true);
+  assert.equal(s.configuredAddresses, null);
+  assert.equal(lanAccessAddressesReadOnly(s), false);
+});
+
+test("address editing is limited to stopped, non-Colab LAN access", () => {
+  assert.equal(lanAccessAddressesReadOnly(null), true);
+  assert.equal(
+    lanAccessAddressesReadOnly(withAddresses(null, { state: "online" })),
+    true,
+  );
+  assert.equal(
+    lanAccessAddressesReadOnly(withAddresses(null, { block_reason: "colab" })),
+    true,
+  );
+});
+
+test("malformed address entries are dropped instead of rendered", () => {
+  const s = normalizeLanAccessStatus(
+    apiStatus({
+      // biome-ignore lint/style/useNamingConvention: API schema
+      configured_addresses: [WIFI, 7 as unknown as string],
+      // biome-ignore lint/style/useNamingConvention: API schema
+      available_addresses: [
+        { address: WIFI, public: false },
+        null as unknown as { address: string; public: boolean },
+        { address: PUBLIC_IP, public: "yes" as unknown as boolean },
+      ],
+    }),
+  );
+  assert.deepEqual(s.configuredAddresses, [WIFI]);
+  assert.deepEqual(s.availableAddresses, [
+    { address: WIFI, public: false },
+    { address: PUBLIC_IP, public: false },
+  ]);
+});
+
+test("Choose starts from the private addresses, never a public one", () => {
+  assert.deepEqual(defaultLanAccessAddressSelection(withAddresses(null)), [
+    WIFI,
+    TAILSCALE,
+  ]);
+  assert.deepEqual(defaultLanAccessAddressSelection(null), []);
+});
+
+test("a saved address that is not up right now is still offered", () => {
+  const s = withAddresses(["10.9.9.9", TAILSCALE]);
+  assert.deepEqual(lanAccessAddressChoices(s, [TAILSCALE]), [
+    { address: PUBLIC_IP, public: true, detected: true },
+    { address: WIFI, public: false, detected: true },
+    { address: TAILSCALE, public: false, detected: true },
+    { address: "10.9.9.9", public: false, detected: false },
+  ]);
+});
+
+test("a saved public address that is down keeps its public warning", () => {
+  const s = withAddresses(["203.0.114.7"], {
+    // biome-ignore lint/style/useNamingConvention: API schema
+    configured_public_addresses: ["203.0.114.7"],
+  });
+  assert.deepEqual(lanAccessAddressChoices(s, []).at(-1), {
+    address: "203.0.114.7",
+    public: true,
+    detected: false,
+  });
+  assert.deepEqual(withAddresses(null).configuredPublicAddresses, []);
+});
+
+test("address selections compare as sets, with Automatic distinct from any list", () => {
+  assert.equal(sameLanAccessAddresses(null, null), true);
+  assert.equal(
+    sameLanAccessAddresses([WIFI, TAILSCALE], [TAILSCALE, WIFI]),
+    true,
+  );
+  assert.equal(sameLanAccessAddresses([WIFI], [WIFI, TAILSCALE]), false);
+  assert.equal(sameLanAccessAddresses(null, [WIFI]), false);
+  assert.equal(sameLanAccessAddresses([], null), false);
+});
+
+test("an unavailable selection explains itself", () => {
+  assert.match(
+    lanAccessErrorMessage("selected_address_unavailable") ?? "",
+    /None of the chosen addresses/,
+  );
+});
+
+test("the address form is capability-gated and keeps its live error region mounted", () => {
+  assert.match(
+    SECTION_SOURCE,
+    /\{status\?\.addressConfigurationSupported\s*\?\s*\(\s*<>\s*<SettingsRow\s+label="Addresses"/,
+  );
+  assert.match(
+    SECTION_SOURCE,
+    /below=\{\s*<span\s+id=\{addressErrorId\}\s+role="status"\s+aria-live="polite"/,
   );
 });
 
@@ -462,7 +605,6 @@ test("every listener failure the backend can raise has a message", () => {
     assert.ok(msg && msg.length > 0, `no message for ${error}`);
   }
 });
-
 
 test("bind failures distinguish automatic from an occupied custom port", () => {
   assert.ok(lanAccessErrorMessage("bind_failed")?.includes("8888 to 8908"));
