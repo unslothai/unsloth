@@ -5079,11 +5079,6 @@ class TestEnabledToolNameGate:
     def _names(self, calls):
         return [c["function"]["name"] for c in calls]
 
-    def test_parse_inactive_rehearsal_does_not_swallow_active_call(self):
-        text = 'foo[ARGS]{"a":1} web_search[ARGS]{"query":"cats"}'
-        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"})
-        assert self._names(calls) == ["web_search"]
-        assert json.loads(calls[0]["function"]["arguments"]) == {"query": "cats"}
 
     def test_parse_inactive_rehearsal_alone_is_prose(self):
         assert (

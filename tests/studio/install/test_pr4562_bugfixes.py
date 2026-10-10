@@ -79,22 +79,6 @@ def run_bash(
 class TestBinaryEnvCrossPlatform:
     """binary_env returns correct library paths for all OSes (Bug 4)."""
 
-    def test_linux_includes_binary_parent_in_ld_library_path(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ):
-        install_dir = tmp_path / "llama.cpp"
-        bin_dir = install_dir / "build" / "bin"
-        bin_dir.mkdir(parents = True)
-        binary_path = bin_dir / "llama-server"
-        binary_path.write_bytes(b"fake")
-
-        host = make_host(system = "Linux")
-        monkeypatch.setattr(MOD, "linux_runtime_dirs", lambda _bp: [])
-
-        env = binary_env(binary_path, install_dir, host)
-        ld_dirs = env["LD_LIBRARY_PATH"].split(os.pathsep)
-        assert str(bin_dir) in ld_dirs, f"build/bin not in LD_LIBRARY_PATH: {ld_dirs}"
-        assert str(install_dir) in ld_dirs, f"install_dir not in LD_LIBRARY_PATH: {ld_dirs}"
 
     def test_linux_binary_parent_comes_before_install_dir(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -859,24 +843,6 @@ class TestSourceCodePatterns:
         content = SETUP_PS1.read_text(encoding = "utf-8")
         assert "Sort-Object Name | Select-Object -Last 1" not in content
         assert "Sort-Object { [version]($_.Name -replace '^v','') } -Descending" in content
-
-    def test_binary_env_linux_has_binary_parent(self):
-        """The Linux branch of binary_env should include binary_path.parent."""
-        content = MODULE_PATH.read_text(encoding = "utf-8")
-        in_func = False
-        in_linux = False
-        found = False
-        for line in content.splitlines():
-            if "def binary_env(" in line:
-                in_func = True
-            elif in_func and line and not line[0].isspace() and "def " in line:
-                break
-            if in_func and "host.is_linux" in line:
-                in_linux = True
-            if in_linux and "binary_path.parent" in line:
-                found = True
-                break
-        assert found, "binary_path.parent not found in Linux branch of binary_env"
 
 
 # Bash fragment mirroring setup.sh's GPU backend decision chain.

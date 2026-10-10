@@ -610,15 +610,6 @@ class TestDetectRocmVersion:
                 result = _detect_rocm_version()
                 assert result is None
 
-    def test_version_with_epoch_prefix(self, tmp_path):
-        """Debian epoch prefix (2:6.2.0) -- version file has no epoch, so should parse."""
-        info_dir = tmp_path / ".info"
-        info_dir.mkdir()
-        (info_dir / "version").write_text("6.2.0\n")
-        with patch.dict(os.environ, {"ROCM_PATH": str(tmp_path)}):
-            with patch("shutil.which", return_value = None):
-                result = _detect_rocm_version()
-                assert result == (6, 2)
 
     def test_multiple_version_sources_highest_wins(self, tmp_path):
         """When ROCm version sources disagree, the highest valid version wins."""

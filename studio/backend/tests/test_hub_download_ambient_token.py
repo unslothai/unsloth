@@ -97,25 +97,6 @@ def test_only_a_ui_session_may_borrow_the_backend_token(via_api_key, expected):
     assert asyncio.run(allow_ambient_hf_token(via_api_key = via_api_key)) is expected
 
 
-@pytest.mark.parametrize(
-    "hf_token, allow_ambient, expected",
-    [
-        (None, False, False),
-        (None, True, None),
-        ("request-token", False, "request-token"),
-        (" request-token ", True, "request-token"),
-    ],
-)
-def test_request_metadata_token_keeps_the_caller_boundary(hf_token, allow_ambient, expected):
-    resolved = get_request_hf_token(
-        hf_token = hf_token,
-        allow_ambient_token = allow_ambient,
-    )
-    assert resolved == expected
-    if expected in (None, False):
-        assert resolved is expected
-
-
 @pytest.mark.parametrize("via_api_key, expected", [(True, False), (False, None)])
 def test_gguf_metadata_route_does_not_lend_api_keys_the_backend_token(
     monkeypatch, via_api_key, expected

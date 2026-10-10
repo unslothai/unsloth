@@ -978,7 +978,8 @@ def test_a_legacy_fat_install_is_pre_flighted_too(monkeypatch):
 
     monkeypatch.setattr(wupd, "run_chained_phase", must_not_install)
 
-    # No install_kind at all: the legacy fat marker.
+    # No install_kind at all: the legacy fat marker, read because llama moved backends.
+    _llama_installed_as(monkeypatch, "vulkan", "vulkan.zip", whisper_kind = None)
     assert wupd.run_chained_phase_after_llama(_slim_phase(), lambda _f: None) == {
         "skipped": True,
         "skip_reason": "paired_llama_unavailable",

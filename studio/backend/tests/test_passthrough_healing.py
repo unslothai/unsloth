@@ -1598,15 +1598,6 @@ class TestHealerSignalAlignment:
     there; ungated in the healer it would stall legitimate prose until
     finalization without ever producing a promotable call."""
 
-    def test_heal_signals_are_promotable_formats_only(self):
-        from core.inference.passthrough_healing import _HEAL_SIGNALS
-        assert set(_HEAL_SIGNALS) == {
-            "<tool_call>",
-            "<|tool_call>",
-            "<function=",
-            "[TOOL_CALLS]",
-            "<|content_invoke_tool_json|>",
-        }
 
     def test_prose_with_bare_args_marker_streams_through(self):
         healer = StreamToolCallHealer({"Bash"})

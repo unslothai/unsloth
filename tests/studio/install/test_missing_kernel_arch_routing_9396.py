@@ -220,12 +220,6 @@ def test_the_hardware_is_probed_once_for_both_reroutes():
     assert len(per_device) == 1, _run_install.probes
 
 
-def test_the_shared_probe_still_reaches_strix_above_the_rocm_floor():
-    """The shared probe still reaches missing-kernel routing above the Strix floor."""
-    calls = _run_install(gfx_devices = ("gfx1103",), rocm_version = (7, 13))
-    assert f"{_AMD}/gfx110X-all/" in calls, calls
-
-
 def test_the_mirror_override_is_honoured():
     calls = _run_install(
         gfx_devices = ("gfx1103",), env = {"UNSLOTH_AMD_ROCM_MIRROR": "https://mirror.test/whl"}

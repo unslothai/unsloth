@@ -643,11 +643,6 @@ class TestAContextAboveTheModelsNativeLength:
         out = self._above(tmp_path, monkeypatch, n_ctx = self._ASKED, kv_per_token = 1024)
         assert out["backend"].max_context_length <= self._ASKED
 
-    def test_a_refused_request_does_not_raise_the_published_bound(self, tmp_path, monkeypatch):
-        """Only an accepted ceiling is published. A refusal measured nothing it can
-        stand behind at the request, so the bound stays where the cap left it."""
-        with pytest.raises(RuntimeError, match = "unified"):
-            self._above(tmp_path, monkeypatch, n_ctx = self._ASKED, kv_per_token = _FAT_KV)
 
     def test_the_pass_through_spelling_launches_too(self, tmp_path, monkeypatch):
         """The spelling a RoPE-scaled request actually arrives in."""

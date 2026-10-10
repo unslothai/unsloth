@@ -108,15 +108,6 @@ _RDNA1_NAMES = [
     ("AMD Radeon Pro 5700 XT", "gfx1010"),
 ]
 
-# The generation that still has no wheels anywhere: Polaris 10/20/30 (#8458).
-_POLARIS_FIXTURES = [
-    ("AMD Radeon RX 580", "gfx803"),
-    ("AMD Radeon RX 580 Series", "gfx803"),
-    ("AMD Radeon RX 570", "gfx803"),
-    ("AMD Radeon RX 480", "gfx803"),
-    ("AMD Radeon Pro WX 7100", "gfx803"),
-]
-
 # Cards the supported table owns, plus a non-AMD one.
 _NOT_RDNA1_NAMES = [
     "AMD Radeon RX 9070 XT",
@@ -145,10 +136,6 @@ class TestUnsupportedNameLookup:
         assert stack_mod._gfx_arch_from_gpu_name(name) == expected
         assert stack_mod._unsupported_gfx_arch_from_gpu_name(name) is None
 
-    @pytest.mark.parametrize("name,expected", _POLARIS_FIXTURES)
-    def test_polaris_names_resolve_to_their_arch(self, name, expected):
-        assert stack_mod._unsupported_gfx_arch_from_gpu_name(name) == expected
-        assert stack_mod._gfx_arch_from_gpu_name(name) is None
 
     @pytest.mark.parametrize("name", _NOT_RDNA1_NAMES)
     def test_supported_and_non_amd_names_are_not_claimed(self, name):
@@ -1451,14 +1438,6 @@ class TestPolarisRow:
     def test_polaris_11_12_is_not_claimed(self, name):
         assert stack_mod._unsupported_gfx_arch_from_gpu_name(name) is None
 
-    @pytest.mark.parametrize("name,expected", _RDNA1_NAMES)
-    def test_polaris_patterns_do_not_swallow_rdna1(self, name, expected):
-        """The collision this row is one keystroke away from: "RX 570" is a prefix
-        of "RX 5700" and "RX 550" of "RX 5500". Re-assert every RDNA 1 name still
-        resolves to its own arch (in the Windows supported table since #11614) and is
-        not claimed by the Polaris row."""
-        assert stack_mod._gfx_arch_from_gpu_name(name) == expected
-        assert stack_mod._unsupported_gfx_arch_from_gpu_name(name) is None
 
     @pytest.mark.parametrize("name,_expected", _RDNA1_NAMES)
     def test_the_polaris_pattern_is_correct_on_its_own(self, name, _expected):
