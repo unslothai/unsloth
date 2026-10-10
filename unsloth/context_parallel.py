@@ -143,7 +143,10 @@ def _refuse_iterable_datasets(*datasets) -> None:
     # accelerate's batch dispatcher (dispatch_batches, the default for iterable datasets) ignores cp.
     for dataset in datasets:
         for d in dataset.values() if isinstance(dataset, dict) else [dataset]:
-            if isinstance(d, torch.utils.data.IterableDataset) or "IterableDataset" in type(d).__name__:
+            if (
+                isinstance(d, torch.utils.data.IterableDataset)
+                or "IterableDataset" in type(d).__name__
+            ):
                 raise NotImplementedError(
                     "Unsloth: context parallelism does not support iterable datasets."
                 )
@@ -262,7 +265,9 @@ def patch_sft_trainer() -> None:
             raise NotImplementedError(
                 "Unsloth: context parallelism does not support dispatch_batches."
             )
-        _refuse_iterable_datasets(getattr(self, "train_dataset", None), getattr(self, "eval_dataset", None))
+        _refuse_iterable_datasets(
+            getattr(self, "train_dataset", None), getattr(self, "eval_dataset", None)
+        )
         manager = ContextParallelManager(size)
         self._context_parallel_manager = manager
         manager.attach_attention_hooks(self.model)
