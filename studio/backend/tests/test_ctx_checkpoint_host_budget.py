@@ -476,9 +476,7 @@ class TestCheckpointsNeverReachAVramFigure:
 
         source = inspect.getsource(LlamaCppBackend.load_model)
         assert "0 if self._rollback_state_bytes(1) > 0 else _requested_ctx_checkpoints" in source
-        # Only the Apple unified-memory fit.
         assert source.count("ctx_checkpoints = _fit_ctx_checkpoints,") == 1
-        # Discrete placement charges them only on a unified-memory GPU.
         assert source.count("ctx_checkpoints = _placement_ctx_checkpoints,") == 6
         assert source.count("_kv_bytes(effective_ctx, _effective_ctx_checkpoints)") == 1
 

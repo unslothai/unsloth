@@ -24728,9 +24728,7 @@ class LlamaCppBackend:
                     if server_caps.get("ctx_checkpoints_flag")
                     else 0
                 )
-                # Snapshots are host memory (llama-server copies them device-to-host into a
-                # std::vector). Only a fit whose GPU pool IS host RAM charges SWA ones:
-                # Apple below, and unified-memory GPUs via _placement_ctx_checkpoints.
+                # Snapshots are host RAM (copied device-to-host): only a host-RAM pool pays.
                 _fit_ctx_checkpoints = (
                     0 if self._rollback_state_bytes(1) > 0 else _requested_ctx_checkpoints
                 )
