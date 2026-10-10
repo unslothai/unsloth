@@ -251,7 +251,7 @@ def test_sharegpt_function_call_and_observation_train_as_tool_turns():
     assert result["success"] is True, result["errors"]
     text = result["dataset"][0]["text"]
     assert (
-        '<|start_header_id|>assistant<|end_header_id|>\n\n'
+        "<|start_header_id|>assistant<|end_header_id|>\n\n"
         '{"name": "get_weather", "parameters": {"city": "Paris"}}' in text
     )
     assert '<|start_header_id|>ipython<|end_header_id|>\n\n{"temp": 18}' in text
