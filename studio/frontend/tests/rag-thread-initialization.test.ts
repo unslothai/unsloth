@@ -143,6 +143,7 @@ function harness(
       "@/components/assistant-ui/attachment": {},
       "@/components/assistant-ui/attachment-card-preview": {},
       "@/components/assistant-ui/attachment-document-dialog": {},
+      "@/components/file-viewer": {},
       "@/components/ui/tooltip": {},
       "@/components/ui/spinner": {},
       "./preview-store": { useDocumentPreviewStore: () => undefined },

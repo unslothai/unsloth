@@ -87,6 +87,12 @@ const { ThreadDocumentsBar } = loadWithStubs<typeof BarModule>(
       chatHistoryClearBoundary: { capture: () => 0 },
       attachmentFileKind: (name: string) =>
         name.endsWith(".pdf") ? "pdf" : "word",
+      isTextAttachment: (name: string) => name.endsWith(".txt"),
+    },
+    "@/components/file-viewer": {
+      documentKind: (name: string) =>
+        name.endsWith(".pdf") ? "pdf" : name.endsWith(".docx") ? "docx" : null,
+      isMarkdown: () => false,
     },
     "@/features/native-intents": {
       useNativeAttachmentTargetKey: () => null,
@@ -218,18 +224,22 @@ test("a linked folder's files collapse into one folder card", () => {
   }
 });
 
-// The source preview has text only for PDFs when opened without a chunk; other files wait for
-// their bytes and open in the attachment viewer instead of an empty sheet.
-test("a non-PDF card is not openable before its file has loaded", () => {
-  extraProjectDocs = [{ id: "doc-2", filename: "notes.docx", status: "completed" }];
+// The source preview has text only for PDFs when opened without a chunk; other files open in the
+// attachment viewer, whatever their size, and a type it cannot draw is not offered at all.
+test("non-PDF cards open only when the attachment viewer can show them", () => {
+  extraProjectDocs = [
+    { id: "doc-2", filename: "notes.docx", status: "completed" },
+    { id: "doc-3", filename: "book.epub", status: "completed" },
+  ];
   try {
     const html = renderProjectChat(
       { checkpoint: "unsloth/Qwen3-4B-GGUF", supportsTools: true },
       true,
     );
     assert.match(html, /aria-label="Preview handbook\.pdf/);
-    assert.doesNotMatch(html, /aria-label="Preview notes\.docx/);
-    assert.match(html, /<button[^>]*disabled=""[^>]*aria-label="notes\.docx/);
+    assert.match(html, /aria-label="Preview notes\.docx/);
+    assert.doesNotMatch(html, /aria-label="Preview book\.epub/);
+    assert.match(html, /<button[^>]*disabled=""[^>]*aria-label="book\.epub/);
   } finally {
     extraProjectDocs = [];
   }

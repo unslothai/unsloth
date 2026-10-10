@@ -835,7 +835,8 @@ def epub(path: str, html_text) -> list[Section]:
         rootfile = next(container.iter(_q("container", "rootfile")), None)
         if rootfile is None or not rootfile.get("full-path"):
             raise ValueError("epub has no package document")
-        opf_path = rootfile.get("full-path")
+        # A URL like the manifest hrefs (EPUB 3.3 4.2.6.3.1), so "My%20Book.opf" names "My Book.opf".
+        opf_path = posixpath.normpath(unquote(rootfile.get("full-path")).lstrip("/"))
         opf = zf.xml(opf_path)
         folder = posixpath.dirname(opf_path)
         # DRM encrypted resources; obfuscated fonts are listed too but are never in the spine.
