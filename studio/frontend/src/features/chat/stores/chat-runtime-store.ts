@@ -59,11 +59,13 @@ import {
 import {
   PERSISTED_INFERENCE_PARAM_KEYS,
   REMEMBERED_INFERENCE_PARAM_KEYS,
+  REMEMBERED_MAX_TOKENS_MAX,
   type PersistedInferenceParamKey,
   getRememberedParamsPatch,
   getReplayedParams,
   pickRememberedChanges,
   pickRememberedParams,
+  recordMaxTokensAsMax,
   setInferenceParam,
 } from "../lib/per-model-params";
 import {
@@ -3102,7 +3104,10 @@ function getParamsByModelAfterEdit(
       changedParams,
       // Same filter as the outgoing snapshot: an edit to a key the memory keeps but the chat does
       // not still records the WHOLE snapshot, riding the chat's sampling into the entry.
-      pickRememberedParams(withoutActiveThreadParams(state, nextParams)),
+      recordMaxTokensAsMax(
+        pickRememberedParams(withoutActiveThreadParams(state, nextParams)),
+        rememberedWindow(nextParams.checkpoint),
+      ),
     ),
     nextParams.checkpoint,
   );
@@ -3117,8 +3122,12 @@ function rememberOutgoingModel(
   if (!state.settingsHydrated && outgoing.checkpoint) {
     modelLeftBeforeHydration = outgoing.checkpoint;
   }
-  const snapshot = pickRememberedParams(
+  const picked = pickRememberedParams(
     withoutActiveThreadParams(state, outgoing),
+  );
+  const snapshot = recordMaxTokensAsMax(
+    picked,
+    rememberedWindow(outgoing.checkpoint),
   );
   // Only to seed a model with no entry: later changes are written key by key, and a full
   // snapshot would put this browser's copy of untouched keys over another tab's.
@@ -3154,7 +3163,10 @@ function persistParamEdit(
   }
   // Only what moved: the server merges per key, so sending the rest would overwrite another
   // tab's copy of every other key.
-  const rememberedChanges = pickRememberedChanges(changedParams);
+  const rememberedChanges = recordMaxTokensAsMax(
+    pickRememberedChanges(changedParams),
+    modelId ? rememberedWindow(modelId) : null,
+  );
   saveSettingsPatch({
     inferenceParams: changedParams,
     ...(paramsByModel && modelId && hasKeys(rememberedChanges)
@@ -3240,6 +3252,13 @@ function noteLoadedContext(checkpoint: string, cap: number | undefined): void {
 
 function loadedContextFor(checkpoint: string): number | null {
   return loadedContext?.checkpoint === checkpoint ? loadedContext.cap : null;
+}
+
+/** The window a memory entry's "Max" is measured against. Keyed by checkpoint, never
+ *  loadedContextLength: a switch records the outgoing model after the incoming one may have
+ *  published its own. An external model's cap is the provider's, not a window. */
+function rememberedWindow(checkpoint: string): number | null {
+  return isExternalModelId(checkpoint) ? null : loadedContextFor(checkpoint);
 }
 
 function capParamsToLoadedContext(
@@ -3382,7 +3401,10 @@ function getHydratedSettingsState(
     // The entry arriving for this model predates the fenced edit, so lay the edit over it or the
     // next defaults update replays the stale one.
     if (checkpoint) {
-      const edited = pickLocallyEditedParams(params, versions);
+      const edited = recordMaxTokensAsMax(
+        pickLocallyEditedParams(params, versions),
+        rememberedWindow(checkpoint),
+      );
       if (hasKeys(edited)) {
         hydrated[checkpoint] = { ...hydrated[checkpoint], ...edited };
       }
@@ -3391,7 +3413,10 @@ function getHydratedSettingsState(
   } else if (checkpoint) {
     // No map in the response: an install upgraded from before this feature. With no entry the
     // next defaults update puts the recommendation back over the fenced edit.
-    const edited = pickLocallyEditedParams(params, versions);
+    const edited = recordMaxTokensAsMax(
+      pickLocallyEditedParams(params, versions),
+      rememberedWindow(checkpoint),
+    );
     if (hasKeys(edited)) {
       nextState.paramsByModel = {
         ...state.paramsByModel,
@@ -3512,6 +3537,15 @@ function getHydratedSettingsState(
       ) {
         setInferenceParam(replayed, key, value);
       }
+    }
+    // "Max" is the window this model is on; with none known, what is on screen stands.
+    if (replayed.maxTokens === REMEMBERED_MAX_TOKENS_MAX) {
+      replayed.maxTokens =
+        rememberedWindow(params.checkpoint) ??
+        (isExternalModelId(params.checkpoint)
+          ? null
+          : state.loadedContextLength) ??
+        params.maxTokens;
     }
     // The same cap the load and status replays apply.
     nextState.params = replayed;

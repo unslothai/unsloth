@@ -28,6 +28,9 @@ const { mergeBackendRecommendedInference } = await import(
 const { DEFAULT_INFERENCE_PARAMS } = await import(
   "../src/features/chat/types/runtime.ts"
 );
+const { REMEMBERED_MAX_TOKENS_MAX } = await import(
+  "../src/features/chat/lib/per-model-params.ts"
+);
 
 const QWEN = "unsloth/Qwen3.5-9B-GGUF";
 const LLAMA = "unsloth/Llama-4-8B";
@@ -960,4 +963,129 @@ test("a resident GGUF context does not cap an external model", async () => {
   settingsHttp.settings = { inferenceParams: { maxTokens: 32768 } };
   await useChatRuntimeStore.getState().hydratePersistedSettings();
   assert.equal(useChatRuntimeStore.getState().params.maxTokens, 8192);
+});
+
+/** Loads `checkpoint` the way the load and status paths do: defaults, then the replay, capped. */
+function loadAt(checkpoint: string, context: number) {
+  const store = useChatRuntimeStore.getState();
+  store.setParams(
+    { ...store.params, checkpoint, maxTokens: context },
+    { fromModelDefaults: true, maxTokensCap: context },
+  );
+}
+
+/** What the settings writer sent for one model, merged across PUTs. */
+function writtenFor(modelId: string): Record<string, unknown> {
+  const written: Record<string, unknown> = {};
+  for (const put of settingsHttp.puts) {
+    Object.assign(
+      written,
+      (put.inferenceParamsByModel as Record<string, Record<string, unknown>>)?.[
+        modelId
+      ] ?? {},
+    );
+  }
+  return written;
+}
+
+// #10671: "Max" was remembered as the window it was loaded with, so a reload at a
+// larger context replayed a cap one token short of nothing, admission charged it in
+// full, and every other chat queued behind it.
+test("Max Tokens left on Max stays Max at a larger context", async () => {
+  useChatRuntimeStore.setState({
+    settingsHydrated: true,
+    rememberParamsPerModel: true,
+    paramsByModel: {},
+    params: { ...useChatRuntimeStore.getState().params, checkpoint: QWEN },
+  });
+  await settled();
+  settingsHttp.puts.length = 0;
+  loadAt(QWEN, 30000);
+  useChatRuntimeStore.getState().clearCheckpoint();
+  await settled();
+
+  loadAt(QWEN, 35000);
+  assert.equal(useChatRuntimeStore.getState().params.maxTokens, 35000);
+  // And what survives a restart: the row the server keeps.
+  assert.equal(writtenFor(QWEN).maxTokens, REMEMBERED_MAX_TOKENS_MAX);
+
+  // An edit recorded while on Max says the same.
+  const store = useChatRuntimeStore.getState();
+  store.setParams({ ...store.params, temperature: 0.33 });
+  assert.equal(
+    useChatRuntimeStore.getState().paramsByModel[QWEN]?.maxTokens,
+    REMEMBERED_MAX_TOKENS_MAX,
+  );
+  loadAt(QWEN, 8192);
+  assert.equal(useChatRuntimeStore.getState().params.maxTokens, 8192);
+});
+
+test("a remembered Max is the window after a restart", async () => {
+  useChatRuntimeStore.setState({
+    settingsHydrated: false,
+    rememberParamsPerModel: true,
+    loadedContextLength: null,
+    paramsByModel: {},
+    params: { ...useChatRuntimeStore.getState().params, checkpoint: QWEN },
+  });
+  settingsHttp.settings = {
+    inferenceParams: { maxTokens: 30000 },
+    inferenceParamsByModel: {
+      [QWEN]: { maxTokens: REMEMBERED_MAX_TOKENS_MAX },
+    },
+  };
+  settingsHttp.hold();
+  const hydrating = useChatRuntimeStore.getState().hydratePersistedSettings();
+  loadAt(QWEN, 35000);
+  settingsHttp.release?.();
+  await hydrating;
+  assert.equal(useChatRuntimeStore.getState().params.maxTokens, 35000);
+
+  // With nothing loaded to size it, the marker never reaches a request.
+  useChatRuntimeStore.setState({
+    settingsHydrated: false,
+    loadedContextLength: null,
+    paramsByModel: {},
+    params: { ...useChatRuntimeStore.getState().params, checkpoint: LLAMA },
+  });
+  settingsHttp.settings = {
+    inferenceParams: { maxTokens: 30000 },
+    inferenceParamsByModel: {
+      [LLAMA]: { maxTokens: REMEMBERED_MAX_TOKENS_MAX },
+    },
+  };
+  await useChatRuntimeStore.getState().hydratePersistedSettings();
+  assert.equal(useChatRuntimeStore.getState().params.maxTokens, 30000);
+});
+
+test("a Max Tokens chosen below Max still replays as chosen", async () => {
+  useChatRuntimeStore.setState({
+    settingsHydrated: true,
+    rememberParamsPerModel: true,
+    paramsByModel: {},
+    params: { ...useChatRuntimeStore.getState().params, checkpoint: QWEN },
+  });
+  loadAt(QWEN, 30000);
+  const store = useChatRuntimeStore.getState();
+  store.setParams({ ...store.params, maxTokens: 4096 });
+  useChatRuntimeStore.getState().clearCheckpoint();
+
+  loadAt(QWEN, 35000);
+  assert.equal(useChatRuntimeStore.getState().params.maxTokens, 4096);
+});
+
+// An external model's cap is the provider's output limit, not a window to follow.
+test("an external model's cap is remembered as a number", () => {
+  useChatRuntimeStore.setState({
+    settingsHydrated: true,
+    rememberParamsPerModel: true,
+    paramsByModel: {},
+    params: { ...useChatRuntimeStore.getState().params, checkpoint: EXTERNAL },
+  });
+  loadAt(EXTERNAL, 8192);
+  useChatRuntimeStore.getState().clearCheckpoint();
+  assert.equal(
+    useChatRuntimeStore.getState().paramsByModel[EXTERNAL]?.maxTokens,
+    8192,
+  );
 });
