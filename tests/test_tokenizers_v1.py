@@ -258,6 +258,121 @@ def test_copy_pickle_save_and_idempotence(rc_on, tmp_path):
     ).read_text()
 
 
+@needs_rc
+def test_positional_arguments_follow_0x(rc_on):
+    plain, fast = _pair(_byte_level)
+    for args in ((False,), (False, False)):
+        want = plain._tokenizer.encode_batch(TEXTS, *args)
+        got = fast._tokenizer.encode_batch(TEXTS, *args)
+        assert [e.ids for e in got] == [e.ids for e in want]
+    assert (
+        fast._tokenizer.encode(TEXTS[0], None, False, False).ids
+        == plain._tokenizer.encode(TEXTS[0], None, False, False).ids
+    )
+    fast_out = fast._tokenizer.encode_batch_fast(TEXTS)
+    assert not any(isinstance(e, tv1._CompatEncoding) for e in fast_out)
+
+
+@needs_rc
+def test_encoding_mutation_and_padded_overflow_match_0x(rc_on):
+    plain, fast = _pair(_byte_level)
+    want, got = plain._tokenizer.encode(TEXTS[3]), fast._tokenizer.encode(TEXTS[3])
+    assert isinstance(got, tv1._CompatEncoding)
+    for e in (want, got):
+        e.pad(32, pad_id = 3, pad_token = "<pad>")
+    assert (got.ids, got.attention_mask, len(got)) == (want.ids, want.attention_mask, len(want))
+    kwargs = {
+        "padding": True,
+        "truncation": True,
+        "max_length": 6,
+        "stride": 1,
+        "return_overflowing_tokens": True,
+    }
+    for kw in (kwargs, dict(kwargs, padding = "max_length", pad_to_multiple_of = 3)):
+        assert dict(fast(TEXTS, **kw)) == dict(plain(TEXTS, **kw))
+
+
+@needs_rc
+def test_mutations_outside_the_wrapper_are_seen(rc_on):
+    plain, fast = _pair(_byte_level)
+    raw = fast._tokenizer._unsloth_base
+    fast(TEXTS)
+    new = processors.TemplateProcessing(single = "$A </s>", special_tokens = [("</s>", 2)])
+    raw.post_processor = new
+    plain._tokenizer.post_processor = new
+    got = fast(TEXTS)
+    assert got["input_ids"] == plain(TEXTS)["input_ids"]
+    assert all(isinstance(e, tv1._CompatEncoding) for e in got.encodings)
+
+
+@needs_rc
+def test_custom_component_and_rc_failure_fall_back(rc_on):
+    plain, fast = _pair(_byte_level)
+    fast(TEXTS)
+    snapshot = fast._tokenizer._unsloth_state.snapshot
+
+    class _Raises:
+        def encode_batch(self, *args, **kwargs):
+            raise RuntimeError("rc failure")
+
+    snapshot_v1, snapshot.v1 = snapshot.v1, _Raises()
+    try:
+        got = fast(TEXTS)
+    finally:
+        snapshot.v1 = snapshot_v1
+    assert got["input_ids"] == plain(TEXTS)["input_ids"]
+    assert not any(isinstance(e, tv1._CompatEncoding) for e in got.encodings)
+
+    class _Split:
+        def pre_tokenize(self, pretok):
+            pretok.split(lambda i, s: [s])
+
+    custom = _hf(_byte_level())
+    custom._tokenizer.pre_tokenizer = pre_tokenizers.PreTokenizer.custom(_Split())
+    reference = custom(TEXTS)["input_ids"]
+    tv1.enable_tokenizers_v1(custom)
+    assert custom(TEXTS)["input_ids"] == reference
+    assert custom._tokenizer._unsloth_state.disabled
+
+
+@needs_rc
+def test_fork_while_another_thread_holds_a_lock(rc_on, monkeypatch):
+    import threading
+    import time
+
+    # Verify mode would materialize in the parent, so the child would never touch the lock.
+    monkeypatch.delenv(tv1._VERIFY_ENV)
+    plain, fast = _pair(_byte_level)
+    got = fast(TEXTS)
+    want_offsets = plain(TEXTS).encodings[0].offsets
+    snapshot = fast._tokenizer._unsloth_state.snapshot
+    held, release = threading.Event(), threading.Event()
+
+    def hold():
+        with snapshot.lock:
+            held.set()
+            release.wait()
+
+    thread = threading.Thread(target = hold)
+    thread.start()
+    held.wait()
+    pid = os.fork()
+    if pid == 0:
+        os._exit(0 if got.encodings[0].offsets == want_offsets else 1)
+    release.set()
+    thread.join()
+    deadline = time.time() + 60
+    while True:
+        done, status = os.waitpid(pid, os.WNOHANG)
+        if done:
+            break
+        if time.time() > deadline:
+            os.kill(pid, 9)
+            pytest.fail("child hung on a lock inherited from another thread")
+        time.sleep(0.1)
+    assert os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0
+
+
 def _map(
     ds,
     tok,

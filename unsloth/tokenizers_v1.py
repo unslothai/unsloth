@@ -41,20 +41,8 @@ _VERIFY_ENV = "UNSLOTH_TOKENIZERS_V1_VERIFY"
 _DEFAULT_DIR = os.path.join(os.path.expanduser("~"), ".cache", "unsloth", "tokenizers_v1")
 # The last component must stay "tokenizers": CPython calls PyInit_<last component>.
 _MODULE_NAME = "unsloth_tokenizers_v1.tokenizers"
-# Reading these can mutate the backend in place (component setters, added vocab).
-_MUTATING = frozenset(
-    (
-        "model",
-        "normalizer",
-        "pre_tokenizer",
-        "post_processor",
-        "decoder",
-        "add_tokens",
-        "add_special_tokens",
-        "train",
-        "train_from_iterator",
-    )
-)
+# Mutations the per-encode fingerprint (vocab size + component states) cannot see.
+_MUTATING = frozenset(("model", "add_tokens", "add_special_tokens", "train", "train_from_iterator"))
 # A backend whose JSON keeps changing between encodes would pay a rebuild per call.
 _MAX_REBUILDS = 16
 _PROBES = (
@@ -79,7 +67,13 @@ _snapshots_lock = threading.Lock()
 _built_here = False
 _no_build = False
 _live = weakref.WeakSet()
+_all_snapshots = weakref.WeakSet()
 _fork_hooks = False
+
+
+def _fatal(error):
+    # PyO3 panics derive from BaseException; only these must propagate.
+    return isinstance(error, (KeyboardInterrupt, SystemExit, GeneratorExit))
 
 
 def tokenizers_v1_enabled():
@@ -102,9 +96,8 @@ def _load_v1():
         ]
         module = None
         loaded = sys.modules.get(_MODULE_NAME)
-        if loaded is not None and any(
-            os.path.samefile(loaded.__file__, path) for path in candidates
-        ):
+        loaded_file = os.path.realpath(getattr(loaded, "__file__", None) or "")
+        if loaded is not None and any(os.path.realpath(path) == loaded_file for path in candidates):
             # An extension initialises once per process; only tests reset the cache.
             candidates = []
             module = loaded
@@ -126,7 +119,9 @@ def _load_v1():
                 if major < 1:
                     raise ImportError(f"found tokenizers {module.__version__}, need >= 1.0")
                 sys.modules[_MODULE_NAME] = module
-            except Exception as error:
+            except BaseException as error:
+                if _fatal(error):
+                    raise
                 logger.warning_once(
                     f"Unsloth: could not load the tokenizers release candidate from {candidates[0]}: {error}. "
                     "Using tokenizers 0.x."
@@ -144,7 +139,7 @@ def _same(a, b):
 class _Snapshot:
     """An RC tokenizer and a 0.x twin, both built from one backend JSON (no padding / truncation)."""
 
-    __slots__ = ("v1", "reference", "lock", "option_cache", "n_special")
+    __slots__ = ("v1", "reference", "lock", "option_cache", "n_special", "__weakref__")
 
     def __init__(self, v1, reference):
         self.v1 = v1
@@ -152,6 +147,7 @@ class _Snapshot:
         self.lock = threading.Lock()
         self.option_cache = {}
         self.n_special = reference.num_special_tokens_to_add(False)
+        _all_snapshots.add(self)
 
     @contextlib.contextmanager
     def configured(
@@ -162,16 +158,17 @@ class _Snapshot:
     ):
         with self.lock:
             reference = self.reference
-            reference.encode_special_tokens = encode_special_tokens
-            if truncation is not None:
-                reference.enable_truncation(**truncation)
-            if padding is not None:
-                reference.enable_padding(**padding)
             try:
+                reference.encode_special_tokens = encode_special_tokens
+                if truncation is not None:
+                    reference.enable_truncation(**truncation)
+                if padding is not None:
+                    reference.enable_padding(**padding)
                 yield reference
             finally:
                 reference.no_padding()
                 reference.no_truncation()
+                reference.encode_special_tokens = False
 
     def reference_encode(
         self,
@@ -226,10 +223,21 @@ class _Snapshot:
 
 
 class _State:
-    __slots__ = ("dirty", "digest", "snapshot", "disabled", "rebuilds", "lock")
+    __slots__ = (
+        "dirty",
+        "generation",
+        "fingerprint",
+        "digest",
+        "snapshot",
+        "disabled",
+        "rebuilds",
+        "lock",
+    )
 
     def __init__(self):
         self.dirty = True
+        self.generation = 0
+        self.fingerprint = None
         self.digest = None
         self.snapshot = None
         self.disabled = False
@@ -309,32 +317,33 @@ class _CompatEncoding:
         self._truncation = truncation
         self._real = None
 
+    # Once materialized the 0.x encoding answers everything: Encoding.pad / truncate mutate it.
     @property
     def ids(self):
-        return self._v1.ids
+        return (self._v1 if self._real is None else self._real).ids
 
     @property
     def type_ids(self):
-        return self._v1.type_ids
+        return (self._v1 if self._real is None else self._real).type_ids
 
     @property
     def attention_mask(self):
-        return self._v1.attention_mask
+        return (self._v1 if self._real is None else self._real).attention_mask
 
     @property
     def n_sequences(self):
         # Only single sequences are routed here; BatchEncoding reads this on every call.
-        return 1
+        return 1 if self._real is None else self._real.n_sequences
 
     def __len__(self):
-        return len(self._v1)
+        return len(self._v1 if self._real is None else self._real)
 
     def _materialize(self):
         if self._real is None:
             padding = self._padding
             if padding is not None:
                 # Pad-to-longest depends on the batch: replay the length this row got.
-                padding = dict(padding, length = len(self._v1))
+                padding = dict(padding, length = len(self._v1), pad_to_multiple_of = None)
             self._real = self._snapshot.reference_encode(
                 self._text, self._add, self._split, padding, self._truncation
             )
@@ -367,13 +376,25 @@ class TokenizersV1Backend:
 
     def __getattr__(self, name):
         if name in _MUTATING:
-            self._unsloth_state.dirty = True
+            self._unsloth_mark()
         return getattr(self._unsloth_base, name)
 
     def __setattr__(self, name, value):
         setattr(self._unsloth_base, name, value)
         if name != "encode_special_tokens":
-            self._unsloth_state.dirty = True
+            self._unsloth_mark()
+
+    def _unsloth_mark(self):
+        state = self._unsloth_state
+        state.generation += 1
+        state.dirty = True
+
+    def _unsloth_fingerprint(self):
+        base = self._unsloth_base
+        return (base.get_vocab_size(True),) + tuple(
+            None if part is None else part.__getstate__()
+            for part in (base.normalizer, base.pre_tokenizer, base.post_processor, base.decoder)
+        )
 
     def __dir__(self):
         return dir(self._unsloth_base)
@@ -392,19 +413,40 @@ class TokenizersV1Backend:
 
     def _unsloth_refresh(self):
         state = self._unsloth_state
-        if state.disabled or not state.dirty:
+        if state.disabled:
+            return None
+        # Catches in-place component edits and edits through other references to the backend.
+        try:
+            fingerprint = self._unsloth_fingerprint()
+        except BaseException as error:
+            if _fatal(error):
+                raise
+            # Custom Python components cannot be serialized, so the RC cannot copy them either.
+            state.disabled = True
+            state.snapshot = None
+            return None
+        if not state.dirty and fingerprint == state.fingerprint:
             return state.snapshot
         with state.lock:
-            if state.disabled or not state.dirty:
-                return state.snapshot
+            if state.disabled:
+                return None
+            generation = state.generation
             base = self._unsloth_base
-            text = base.to_str()
-            if base.padding is not None or base.truncation is not None:
-                # Padding / truncation change per call and are passed per encode instead.
-                clone = type(base).from_str(text)
-                clone.no_padding()
-                clone.no_truncation()
-                text = clone.to_str()
+            try:
+                text = base.to_str()
+                if base.padding is not None or base.truncation is not None:
+                    # Padding / truncation change per call and are passed per encode instead.
+                    clone = type(base).from_str(text)
+                    clone.no_padding()
+                    clone.no_truncation()
+                    text = clone.to_str()
+            except BaseException as error:
+                if _fatal(error):
+                    raise
+                # e.g. custom Python components, which 0.x cannot serialize either.
+                state.disabled = True
+                state.snapshot = None
+                return None
             digest = hashlib.blake2b(text.encode("utf-8"), digest_size = 16).digest()
             if digest != state.digest:
                 snapshot = self._unsloth_lookup_or_build(state, base, text, digest)
@@ -414,7 +456,9 @@ class TokenizersV1Backend:
                     return None
                 state.snapshot = snapshot
                 state.digest = digest
-            state.dirty = False
+            state.fingerprint = fingerprint
+            if state.generation == generation:
+                state.dirty = False
             return state.snapshot
 
     @staticmethod
@@ -436,7 +480,9 @@ class TokenizersV1Backend:
             return None
         try:
             snapshot = _build_snapshot(base, text)
-        except Exception as error:
+        except BaseException as error:
+            if _fatal(error):
+                raise
             logger.warning_once(
                 f"Unsloth: this tokenizer stays on tokenizers 0.x, the release candidate cannot match it: {error}"
             )
@@ -461,13 +507,18 @@ class TokenizersV1Backend:
         options = snapshot.options(padding, truncation)
         if options is None:
             return None
-        encodings = snapshot.v1.encode_batch(
-            texts,
-            add_special_tokens = add_special_tokens,
-            encode_special_tokens = split,
-            padding = options[0],
-            truncation = options[1],
-        )
+        try:
+            encodings = snapshot.v1.encode_batch(
+                texts,
+                add_special_tokens = add_special_tokens,
+                encode_special_tokens = split,
+                padding = options[0],
+                truncation = options[1],
+            )
+        except BaseException as error:
+            if _fatal(error):
+                raise
+            return None
         out = [
             _CompatEncoding(
                 encoding, text, add_special_tokens, split, snapshot, padding, truncation
@@ -494,32 +545,19 @@ class TokenizersV1Backend:
             else self._unsloth_encode(snapshot, list(texts), add_special_tokens)
         )
 
+    # Signatures match tokenizers 0.x. encode_batch_fast is not routed: 0.x returns zero offsets there.
     def encode_batch(
         self,
         input,
-        add_special_tokens = True,
         is_pretokenized = False,
+        add_special_tokens = True,
         **kwargs,
     ):
         out = self._unsloth_try(input, add_special_tokens, is_pretokenized, kwargs)
         if out is not None:
             return out
         return self._unsloth_base.encode_batch(
-            input, add_special_tokens = add_special_tokens, is_pretokenized = is_pretokenized, **kwargs
-        )
-
-    def encode_batch_fast(
-        self,
-        input,
-        add_special_tokens = True,
-        is_pretokenized = False,
-        **kwargs,
-    ):
-        out = self._unsloth_try(input, add_special_tokens, is_pretokenized, kwargs)
-        if out is not None:
-            return out
-        return self._unsloth_base.encode_batch_fast(
-            input, add_special_tokens = add_special_tokens, is_pretokenized = is_pretokenized, **kwargs
+            input, is_pretokenized = is_pretokenized, add_special_tokens = add_special_tokens, **kwargs
         )
 
     def encode(
@@ -548,14 +586,25 @@ def _refresh_before_fork():
         return
     for proxy in list(_live):
         try:
-            proxy._unsloth_refresh()
-        except Exception:
-            pass
+            snapshot = proxy._unsloth_refresh()
+            if snapshot is not None:
+                with _snapshots_lock:
+                    _snapshots.setdefault(proxy._unsloth_state.digest, snapshot)
+        except BaseException as error:
+            if _fatal(error):
+                raise
 
 
 def _after_fork_in_child():
-    global _no_build
+    global _no_build, _v1_lock, _snapshots_lock
     _no_build = _no_build or _built_here
+    # A lock another thread held at fork time stays locked forever in the child.
+    _v1_lock = threading.Lock()
+    _snapshots_lock = threading.Lock()
+    for proxy in list(_live):
+        proxy._unsloth_state.lock = threading.Lock()
+    for snapshot in list(_all_snapshots):
+        snapshot.lock = threading.Lock()
 
 
 def _register_fork_hooks():
