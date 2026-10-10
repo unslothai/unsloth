@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Whole-document context mode: a thread-attached file small enough to fit is
-injected in full (every chunk, in order) instead of top-K retrieval. Covers the
-new store query, the tool-level renderer, and the auto-inject wiring + fallback.
-No embedder is needed - the whole-doc path does no query embedding."""
+"""whole-document mode injects fitting thread files in full and in order without query embedding."""
 
 import json
 import re
@@ -270,9 +267,6 @@ def test_whole_document_context_keeps_indentation_after_overlap(rag_conn):
     )
     _text, sources = tool.whole_document_context(scope_thread_id = "t1", max_tokens = 6000)
     assert sources[1]["text"] == "    indented code"
-
-
-# ── build_rag_autoinject wiring ──────────────────────────────────────
 
 
 def _convo(text = "summarize the whole document"):

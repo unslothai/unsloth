@@ -328,23 +328,16 @@ def _drop_chunk_overlap(prev: str, text: str) -> str:
 def whole_document_context(
     *, scope_thread_id: str | None = None, max_tokens: int
 ) -> tuple[str, list[dict]] | None:
-    """Render EVERY chunk of the THREAD's attached documents (in order) as the same
-    ``<chunk>`` blocks + citation source-map as retrieval, so the model reads the whole
-    file rather than top-K passages. Thread-attached files only: KB and project corpora
-    are search corpora, never whole-document, so this resolves the thread scope alone.
-    ``None`` (caller falls back to retrieval) when there is no thread scope, no completed
-    chunks, or the total exceeds ``max_tokens``."""
+    """render ordered thread attachment chunks with citation blocks; KB and project corpora stay search-only; return None when absent or over max_tokens."""
     if not scope_thread_id:
         return None
-    # A non-positive budget means "never inject" (disable whole-doc via RAG_THREAD_WHOLE_DOC=0), not
-    # "inject the whole corpus unbounded".
+    # a non-positive budget disables whole-document injection rather than removing the limit
     if max_tokens <= 0:
         return None
     scope = thread_scope(scope_thread_id)
     conn = rag_db.get_connection()
     try:
-        # Cheap SUM pre-check so an oversized attachment is rejected before the whole corpus is hydrated;
-        # all_chunks_for_scope runs only once it fits.
+        # reject oversized attachments before all_chunks_for_scope hydrates the corpus
         if scope_token_estimate(conn, scope) > max_tokens:
             return None
         rows = all_chunks_for_scope(conn, scope)
