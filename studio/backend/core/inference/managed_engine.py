@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import hashlib
 import os
+import re
 import secrets
 import socket
 import subprocess
@@ -246,6 +247,21 @@ def _deep_gemm_unloadable(environment: str) -> bool:
 STARTUP_STALL_S = 900
 STARTUP_LIMIT_S = 4 * 3600
 
+# vLLM 0.30 on hybrid models when its default max_num_seqs outruns the KV budget (Qwen3.8 NVFP4 on 32 GB, #8861).
+_MAMBA_SEQ_LIMIT = re.compile(
+    r"max_num_seqs \((\d+)\) exceeds available Mamba cache blocks \((\d+)\)"
+)
+
+
+# Per launch config, so a reload skips the failing first launch.
+_SEQ_LIMITS: dict[tuple, int] = {}
+
+
+class _MambaSeqLimit(RuntimeError):
+    def __init__(self, message: str, blocks: int):
+        super().__init__(message)
+        self.blocks = blocks
+
 
 def _token_file_token(env) -> str | None:
     """The `hf auth login` token a local engine would read from its inherited HF_HOME; the WSL
@@ -280,6 +296,7 @@ class ManagedEngine:
         self._lease = None
         self._reader = None
         self._tail = deque(maxlen = 200)
+        self._mamba_blocks = None
         self._last_output = time.monotonic()
         self.base_url = ""
         self._guest_environment = None
@@ -301,6 +318,44 @@ class ManagedEngine:
         model_path = None,
     ):
         """``model`` is the served name; ``model_path`` is what the engine loads when they differ."""
+        args = (model, context, gpu_ids, env, cancel_event)
+        options = dict(options or {})
+        key = (
+            self.engine,
+            model_path or model,
+            context,
+            tuple(gpu_ids or ()),
+            repr(sorted(options.items())),
+        )
+        if key in _SEQ_LIMITS and "max_num_seqs" not in options:
+            options["max_num_seqs"] = _SEQ_LIMITS[key]
+        try:
+            return self._start_once(*args, options or None, trust_remote_code, model_path)
+        except _MambaSeqLimit as exc:
+            if cancel_event is not None and cancel_event.is_set():
+                raise RuntimeError("Model load cancelled") from exc
+            if exc.blocks >= options.get("max_num_seqs", exc.blocks + 1):
+                raise
+            # Once, at the count vLLM measured: fewer sequences only shrink its CUDA graphs.
+            _SEQ_LIMITS[key] = exc.blocks
+            self._tail.clear()
+            self._mamba_blocks = None
+            self.phase = "starting"
+            return self._start_once(
+                *args, {**options, "max_num_seqs": exc.blocks}, trust_remote_code, model_path
+            )
+
+    def _start_once(
+        self,
+        model: str,
+        context: int,
+        gpu_ids,
+        env: dict,
+        cancel_event,
+        options,
+        trust_remote_code,
+        model_path,
+    ):
         from utils.process_lifetime import (
             adopt_pid,
             child_popen_kwargs,
@@ -446,7 +501,12 @@ class ManagedEngine:
                     ):
                         raise RuntimeError("Model load cancelled")
                     if not self.alive():
-                        raise RuntimeError("Engine failed to start. " + "\n".join(self._tail))
+                        if self._reader is not None:
+                            self._reader.join(timeout = 2)
+                        message = "Engine failed to start. " + "\n".join(self._tail)
+                        if self._mamba_blocks:
+                            raise _MambaSeqLimit(message, self._mamba_blocks)
+                        raise RuntimeError(message)
                     try:
                         response = client.get(self.base_url + "/health", headers = self.headers)
                         if response.status_code == 200:
@@ -458,6 +518,10 @@ class ManagedEngine:
                 raise RuntimeError(
                     "Engine startup timed out. Try a smaller model or context length."
                 )
+        except _MambaSeqLimit:
+            # Not a stop request: an external stop() meanwhile must still cancel the relaunch.
+            self._teardown()
+            raise
         except Exception:
             self.stop()
             raise
@@ -567,6 +631,9 @@ class ManagedEngine:
         from utils.native_path_leases import redact_native_paths
         for line in proc.stdout:
             self._last_output = time.monotonic()
+            if self.engine == "vllm" and (limit := _MAMBA_SEQ_LIMIT.search(line)):
+                # Data-parallel ranks each report their own count; the tightest binds all.
+                self._mamba_blocks = min(int(limit.group(2)), self._mamba_blocks or 1 << 30)
             stage = self.adapter.progress(line)
             if stage and self.phase != "ready":
                 self.phase = stage
@@ -577,9 +644,11 @@ class ManagedEngine:
             )
 
     def stop(self) -> bool:
-        from utils.process_lifetime import terminate_pid, forget_pid
-
         self._cancel.set()
+        return self._teardown()
+
+    def _teardown(self) -> bool:
+        from utils.process_lifetime import terminate_pid, forget_pid
         with self._lock:
             if self.process is not None:
                 graceful = False
