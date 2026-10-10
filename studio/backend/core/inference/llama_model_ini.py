@@ -667,7 +667,6 @@ def locate_model_ini(
 
 
 def describe(located: Optional[LocatedModelIni], compiled: Optional[ModelIni]) -> dict:
-    """Body of ``GET /api/models/model-ini``."""
     if located is None or compiled is None:
         return {
             "found": False,

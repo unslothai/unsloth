@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A GGUF launched with its unsloth.ini reports the INI's sampling in `inference`. The Qwen3
-// thinking table laid over every load and status merge replaced it (0.6 / 0.95 / 20), so on the
-// Default preset the sliders never showed what the server ran with.
+// The Qwen3 thinking table must not replace the sampling a server launched with its unsloth.ini reports.
 
 import assert from "node:assert/strict";
 import test from "node:test";

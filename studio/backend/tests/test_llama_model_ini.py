@@ -192,9 +192,6 @@ def test_size_cap():
         parse_model_ini("; " + "x" * MAX_MODEL_INI_BYTES)
 
 
-# ── locate ─────────────────────────────────────────────────────────────
-
-
 def test_local_ini_beside_the_selected_variant_wins_over_root(tmp_path):
     sub = tmp_path / "UD-Q4_K_XL"
     sub.mkdir()
@@ -273,9 +270,6 @@ def test_hf_root_variant_only_checks_root_and_non_gguf_repo_raises(tmp_path):
     lv, dl, _ = _hf({}, [])
     with pytest.raises(NotGgufModel):
         mi._locate_hf("u/model", None, None, False, lv, dl)
-
-
-# ── load integration ───────────────────────────────────────────────────
 
 
 def _load_request(**kw):
@@ -429,9 +423,6 @@ def test_runtime_fields_echo_model_ini_applied():
 
     assert "model_ini_applied" in LoadResponse.model_fields
     assert "model_ini_applied" in InferenceStatusResponse.model_fields
-
-
-# ── GET /api/models/model-ini ──────────────────────────────────────────
 
 
 def _call_route(monkeypatch, **kw):

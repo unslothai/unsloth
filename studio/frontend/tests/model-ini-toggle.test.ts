@@ -249,7 +249,6 @@ test("every load path sends use_model_ini only when on", () => {
     for (const send of sends) {
       assert.equal(send, "use_model_ini: true", "never an unconditional false");
     }
-    // Every send sits behind a conditional spread.
     const spreads =
       src.match(/\? (?:\/\/[^\n]*\n\s*)?\{ use_model_ini: true \}\s*: \{\}/g) ??
       [];
