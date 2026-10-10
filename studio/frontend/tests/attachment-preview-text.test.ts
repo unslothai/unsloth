@@ -1855,6 +1855,36 @@ test("Word list counters follow Word's sharing, restart and bullet rules", async
   );
   // A section break restarts only the lists that opt in.
   const plain = '<w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num>';
+  // Only the mc:Fallback copy of compatibility content is read, so only it counts.
+  const boxed = await (async () => {
+    const globals = globalThis as { DOMParser?: unknown; XMLSerializer?: unknown };
+    const original = { DOMParser: globals.DOMParser, XMLSerializer: globals.XMLSerializer };
+    globals.DOMParser = XmlDomParser;
+    globals.XMLSerializer = XmlSerializer;
+    const ns =
+      'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"';
+    const item = (text: string) =>
+      `<w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>${text}</w:t></w:r></w:p>`;
+    try {
+      const bytes = zipSync({
+        "[Content_Types].xml": strToU8("<Types/>"),
+        "_rels/.rels": relationships([["officeDocument", "word/document.xml"]]),
+        "word/_rels/document.xml.rels": relationships([["numbering", "numbering.xml"]]),
+        "word/document.xml": strToU8(
+          `<w:document ${ns}><w:body>${item("a")}<w:p><w:r><mc:AlternateContent><mc:Choice Requires="wps">${item("box")}</mc:Choice>` +
+            `<mc:Fallback>${item("box")}</mc:Fallback></mc:AlternateContent></w:r></w:p>${item("b")}</w:body></w:document>`,
+        ),
+        "word/numbering.xml": strToU8(
+          `<w:numbering ${ns}><w:abstractNum w:abstractNumId="1">${levels}</w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num></w:numbering>`,
+        ),
+      });
+      const { default: mammoth } = await import("mammoth");
+      return (await mammoth.extractRawText({ buffer: Buffer.from(writeDocxListNumbers(bytes)) })).value.trim().split(/\n+/).join(" | ");
+    } finally {
+      Object.assign(globals, original);
+    }
+  })();
+  assert.equal(boxed, "1. a | 2. box | 3. b");
   const sections: [string, number, number, boolean?][] = [["a", 1, 0], ["b", 1, 0, true], ["c", 1, 0]];
   assert.equal(await docxListText(levels, plain, sections, ' w15:restartNumberingAfterBreak="1"'), "1. a | 2. b | 1. c");
   assert.equal(await docxListText(levels, plain, sections, ' w15:restartNumberingAfterBreak="0"'), "1. a | 2. b | 3. c");
@@ -1872,6 +1902,9 @@ test("list counters past the alphabet or out of range stay bounded", async () =>
   const word = await docxListText(letters, '<w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num>', many);
   assert.ok(word.endsWith("z) i26 | aa) i27 | bb) i28"), word);
   const long = wordLevel(0, "decimal", `%1.${"x".repeat(300)}`);
+  const repeated = wordLevel(0, "upperLetter", "%1".repeat(100));
+  const letters300 = Array.from({ length: 300 }, (_, i): [string, number, number] => [`r${i + 1}`, 1, 0]);
+  assert.ok((await docxListText(repeated, '<w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num>', letters300)).endsWith("| r300"));
   assert.equal(await docxListText(long, '<w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num>', [["plain", 1, 0]]), "plain");
   const huge = '<w:lvl w:ilvl="999999999"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl>';
   assert.equal(await docxListText(huge, '<w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num>', [["deep", 1, 999999999]]), "deep");

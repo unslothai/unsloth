@@ -1125,6 +1125,7 @@ function injectDocxListNumbers(archive: Uint8Array): Uint8Array {
     }
     return byLevel;
   };
+  const definedLevels = new Map<string, Map<string, Element>>();
   // Each instance's nine levels are resolved once, not per paragraph.
   type Instance = { abstractId: string; levels: Level[]; restarts: number[] };
   const instances = new Map<string, Instance | undefined>();
@@ -1136,7 +1137,8 @@ function injectDocxListNumbers(archive: Uint8Array): Uint8Array {
     let resolved: Instance | undefined;
     if (num && abstract) {
       const overrides = firstByLevel(childElements(num, n, "lvlOverride"));
-      const defined = firstByLevel(childElements(abstract, n, "lvl"));
+      const defined = definedLevels.get(abstractId) ?? firstByLevel(childElements(abstract, n, "lvl"));
+      definedLevels.set(abstractId, defined);
       const levels = Array.from({ length: 9 }, (_, index): Level => {
         const override = overrides.get(String(index));
         const lvl = (override && childElements(override, n, "lvl")[0]) ?? defined.get(String(index));
@@ -1205,7 +1207,7 @@ function injectDocxListNumbers(archive: Uint8Array): Uint8Array {
       const { start, format } = levels[Number(digit) - 1];
       return listNumber(counts[Number(digit) - 1] ?? start, legal && format !== "none" && !format?.startsWith("decimal") ? "decimal" : format);
     });
-    if (!value.trim()) return;
+    if (!value.trim() || value.length > 256) return;
     const run = doc.createElementNS(w, tag("r"));
     const t = doc.createElementNS(w, tag("t"));
     t.setAttributeNS("http://www.w3.org/XML/1998/namespace", "xml:space", "preserve");
@@ -1214,9 +1216,17 @@ function injectDocxListNumbers(archive: Uint8Array): Uint8Array {
     p.insertBefore(run, pPr ? pPr.nextSibling : p.firstChild);
     found = true;
   };
+  // Mammoth reads only mc:Fallback, so paragraphs under mc:Choice must not count twice.
+  const MC = "http://schemas.openxmlformats.org/markup-compatibility/2006";
+  const inChoice = (node: Node) => {
+    for (let at = node.parentNode; at; at = at.parentNode) {
+      if ((at as Element).localName === "Choice" && (at as Element).namespaceURI === MC) return true;
+    }
+    return false;
+  };
   for (const p of Array.from(doc.getElementsByTagNameNS(w, "p"))) {
     const pPr = childElements(p, w, "pPr")[0];
-    label(p, pPr);
+    if (!inChoice(p)) label(p, pPr);
     // A section break restarts the lists that opt in (Word's "restart numbering after break").
     if (pPr && childElements(pPr, w, "sectPr").length) for (const id of restartsAfterBreak) counters.delete(id);
   }
