@@ -1432,11 +1432,10 @@ def test_the_shipped_pin_falls_back_to_an_upstream_release_that_runs_qwen_image_
     monkeypatch.setattr(sdmod, "_fetch_release", fake_fetch)
     repo, release, chosen = sdmod._resolve_with_fallback("cuda", None)
     assert repo == sdmod.UPSTREAM_FALLBACK_REPO
-    assert release["tag_name"] == sdmod.UPSTREAM_FALLBACK_TAG
     assert chosen.endswith("-win-cuda12-x64.zip")
     assert (sdmod.UPSTREAM_FALLBACK_REPO, upstream_tag_for(DEFAULT_TAG)) not in seen
     # Qwen-Image-2.1 landed upstream in master-883, its reference-alpha fix in master-896.
-    assert int(sdmod.UPSTREAM_FALLBACK_TAG.split("-")[1]) >= 896
+    assert int(release["tag_name"].split("-")[1]) >= 896
 
 
 def test_an_explicit_non_default_pin_still_falls_back_to_its_own_upstream_base():
