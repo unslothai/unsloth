@@ -182,6 +182,19 @@ def test_an_exported_gguf_lora_is_not_an_exported_chat_model(loras, tmp_path):
     (run / "style.json").unlink()
     assert "image-loras" in [r[0] for r in scan_exported_models()]
 
+    nested = exports_root() / "run" / "image-loras"
+    nested.mkdir(parents = True, exist_ok = True)
+    (nested / "style.gguf").write_bytes(b"GGUF" + b"\0" * 60)
+    (nested / "style.json").write_text(json.dumps({"kind": "diffusion-lora"}))
+    assert not [r for r in scan_exported_models() if "run" in r[1]]
+
+
+def test_a_sibling_differing_only_in_case_keeps_its_stem(loras, tmp_path):
+    out_dir = tmp_path / "shared"
+    out_dir.mkdir()
+    (out_dir / "MYSTYLE.gguf").write_bytes(b"model")
+    assert dl.export_local_lora("mystyle", out_dir).name == "mystyle-2.safetensors"
+
 
 def test_export_refuses_ids_outside_the_local_catalog(loras, tmp_path):
     secret = tmp_path / "secret.safetensors"

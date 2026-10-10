@@ -211,3 +211,24 @@ def test_a_managed_account_cannot_reach_out_through_a_catalog_symlink(
     assert list(_local()) == ["own"]
     with pytest.raises(FileNotFoundError):
         dl.export_local_lora("link", tmp_path / "out")
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX byte filenames")
+def test_a_non_utf8_filename_does_not_break_the_scan(catalog, tmp_path):
+    folder = tmp_path / "my-models"
+    folder.mkdir()
+    name = os.fsdecode(b"st\xffyle.safetensors")
+    _safetensors(folder / name, sidecar = _MARK)
+    register(folder)
+    assert [e.local_path for e in _local().values()] == [str(folder / name)]
+
+
+def test_generation_rechecks_access_on_resolve(catalog, monkeypatch):
+    from hub.services.models import account_access
+
+    (catalog / "own.safetensors").write_bytes(b"w")
+    catalog_snapshot = dl._catalog_by_id()
+    monkeypatch.setattr(account_access, "managed_account", lambda: True)
+    monkeypatch.setattr(account_access, "model_visible", lambda reference, **_: False)
+    with pytest.raises(FileNotFoundError):
+        dl.resolve_one("own", 1.0, catalog = catalog_snapshot)

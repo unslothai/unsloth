@@ -218,7 +218,7 @@ def _scan_local() -> list[LoraCatalogEntry]:
             seen.add(key)
             # Keyed on the file's own path, never on scan order: saved recipes must not drift onto
             # another folder's same-named adapter when folders are added or removed.
-            entry_id = f"{p.stem}-{hashlib.sha1(key.encode()).hexdigest()[:8]}"
+            entry_id = f"{p.stem}-{hashlib.sha1(os.fsencode(key)).hexdigest()[:8]}"
             if entry_id in used:
                 continue
             used.add(entry_id)
@@ -333,9 +333,11 @@ def export_local_lora(lora_id: str, dest_dir: Path) -> Path:
             return False
         if out.exists() and os.path.samefile(src, out):
             return True
-        # The sidecar is per stem, so a sibling weight of another format (any extension case) would share it.
+        # The sidecar is per stem, so a sibling weight of another format would share it (case-insensitive FS too).
         if any(
-            c.name != out.name and c.stem == out.stem and c.suffix.lower() in _ALL_EXTS
+            c.name != out.name
+            and c.stem.casefold() == out.stem.casefold()
+            and c.suffix.lower() in _ALL_EXTS
             for c in dest_dir.iterdir()
         ):
             return False
@@ -412,6 +414,9 @@ def resolve_one(
         if entry.source == "local":
             path = entry.local_path or ""
             if not path or not os.path.exists(path):
+                raise FileNotFoundError(f"LoRA '{spec_id}' is no longer present on disk")
+            # Re-checked here: a catalog can be built well before an earlier stacked LoRA finishes downloading.
+            if not _account_allows()(Path(path)):
                 raise FileNotFoundError(f"LoRA '{spec_id}' is no longer present on disk")
             return ResolvedLora(spec_id, sanitize_alias(spec_id), path, entry.fmt, weight)
         if not entry.repo_id or not entry.weight_name:
