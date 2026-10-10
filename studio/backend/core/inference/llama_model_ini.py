@@ -95,8 +95,7 @@ _OPTIONS: tuple[_Option, ...] = (
         ("sm", "split-mode"),
         "LLAMA_ARG_SPLIT_MODE",
         "choice",
-        # No "tensor": Studio's tensor-parallel switch owns it, and its layer fallback rewrites the args.
-        choices = frozenset({"none", "layer", "row"}),
+        choices = frozenset({"none", "layer", "row", "tensor"}),
     ),
     _opt("--tensor-split", ("ts", "tensor-split"), "LLAMA_ARG_TENSOR_SPLIT", "float_list"),
     _opt("--main-gpu", ("mg", "main-gpu"), "LLAMA_ARG_MAIN_GPU", "int", lo = 0, hi = 256),
@@ -392,7 +391,8 @@ def _compile_value(opt: _Option, value: str, inverted: bool) -> list[str]:
             raise ValueError(f"must be between {opt.lo:g} and {opt.hi:g}")
         return [opt.flag, str(number) if opt.kind == "int" else v]
     if opt.kind == "choice":
-        if opt.flag == "--split-mode" and v.lower() == "tensor":
+        if opt.flag == "--split-mode":
+            # Studio's tensor-parallel switch owns the split mode; an INI value would overwrite it.
             raise ValueError("use Studio's tensor parallel setting instead")
         if v.lower() not in opt.choices:
             raise ValueError("expected one of " + ", ".join(sorted(opt.choices)))
@@ -457,7 +457,11 @@ def parse_model_ini(
         raise ValueError(f"{MODEL_INI_FILENAME} is larger than {MAX_MODEL_INI_BYTES // 1024} KiB")
     parsed = _parse_sections(text)
     result = ModelIni(sections = [name for name, _ in parsed])
-    wanted = {n.lower() for n in (quant, _gguf_stem(gguf_filename)) if n}
+    # A qualified variant (``distilled/...-Q6_K``) still matches its bare ``[Q6_K]`` section.
+    from utils.models.model_config import _gguf_variant_token
+
+    token = _gguf_variant_token(gguf_filename) if gguf_filename else None
+    wanted = {n.lower() for n in (quant, _gguf_stem(gguf_filename), token) if n}
     chosen = [name for name, _ in parsed if name in ("default", "*")]
     chosen += [name for name, _ in parsed if name.lower() in wanted and name not in chosen]
     result.applied_sections = chosen

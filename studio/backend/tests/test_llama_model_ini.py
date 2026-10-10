@@ -567,14 +567,24 @@ def test_sampling_flag_tracks_whether_the_ini_set_a_sampler(monkeypatch):
     assert "model_ini_sampling" in InferenceStatusResponse.model_fields
 
 
-def test_split_mode_tensor_is_left_to_studio():
+def test_split_mode_is_left_to_studio():
     compiled = parse_model_ini(
         "[*]\nsm = tensor\n[Q8_0]\nsplit-mode = row\n", quant = "Q8_0", gguf_filename = None
     )
-    assert compiled.args == ["--split-mode", "row"]
+    assert compiled.args == []
     assert [(i["key"], "tensor parallel" in i["reason"]) for i in compiled.ignored] == [
-        ("sm", True)
+        ("sm", True),
+        ("split-mode", True),
     ]
+
+
+def test_qualified_variant_matches_its_bare_quant_section():
+    compiled = parse_model_ini(
+        "[Q6_K]\ntemp = 0.5\n",
+        quant = "distilled/ltx-2.3-22b-distilled-Q6_K",
+        gguf_filename = "distilled/ltx-2.3-22b-distilled-Q6_K.gguf",
+    )
+    assert compiled.applied_sections == ["Q6_K"] and compiled.args == ["--temp", "0.5"]
 
 
 def test_route_passes_offline_through(monkeypatch):
