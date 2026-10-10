@@ -64,7 +64,11 @@ def _backend(
 
 
 class TestARawSurfaceKeepsTheShare:
-    """`STREAMING_RAW` is counted and never chosen, so nothing reclaims what it overruns."""
+    """`STREAMING_RAW` is counted and never chosen, so nothing reclaims what it overruns.
+
+    The flag is spelled `pausable`, and a backend whose server parks slots itself turns it
+    back on for these surfaces; the fixture is a server that does not.
+    """
 
     def test_preemption_must_actually_apply_for_the_whole_window_to_be_offered(self):
         backend = _backend()
@@ -79,7 +83,7 @@ class TestARawSurfaceKeepsTheShare:
             payload, request = None, llama_backend = backend
         )
         raw = inference_route._openai_llama_admission_enforced_max_tokens(
-            payload, request = None, llama_backend = backend, preemptable = False
+            payload, request = None, llama_backend = backend, pausable = False
         )
         assert armed is not None and raw is not None
         # Armed: the window, because the controller polices it. Raw: a share, because
@@ -101,7 +105,7 @@ class TestARawSurfaceKeepsTheShare:
             admission_output_allowance = 8000,
             request = None,
             llama_backend = backend,
-            preemptable = False,
+            pausable = False,
         )
         assert armed is not None and raw is not None
         assert raw < armed
@@ -130,8 +134,10 @@ class TestARawSurfaceKeepsTheShare:
         source = ROUTES.read_text(encoding = "utf-8")
         body = source[source.index("def _openai_llama_admission_reserve(") :]
         body = body[: body.index("\ndef _openai_llama_admission_recost(")]
+        flat = " ".join(body.split())
         assert (
-            "preemptable and _openai_llama_preemption_will_apply(llama_backend, budget)" in body
+            "preemption_active = pausable and _openai_llama_preemption_will_apply("
+            "llama_backend, budget)" in flat
         ), "the flag has to reach the charge, not just the signature"
 
     @pytest.mark.parametrize(
@@ -148,8 +154,8 @@ class TestARawSurfaceKeepsTheShare:
         source = ROUTES.read_text(encoding = "utf-8")
         window = source[source.index(anchor) - 1200 : source.index(anchor) + 1200]
         assert (
-            "preemptable = False" in window
-        ), "a raw surface priced as preemptable takes the whole window and gives nothing back"
+            "pausable = False" in window
+        ), "a raw surface priced as pausable takes the whole window and gives nothing back"
 
     def test_the_overflow_retry_keeps_the_raw_flag(self):
         # The first bound on both OpenAI passthroughs is raw; the bound priced again after a
@@ -163,13 +169,13 @@ class TestARawSurfaceKeepsTheShare:
             at = source.find(needle, at + 1)
         assert len(starts) == 2, "the streaming and the non-streaming passthrough"
         for start in starts:
-            assert "preemptable = False" in source[start : start + 700]
+            assert "pausable = False" in source[start : start + 700]
 
     def test_the_anthropic_reserve_follows_its_own_raw_flag(self):
         source = ROUTES.read_text(encoding = "utf-8")
         body = source[source.index("async def _admitted_anthropic(") :]
         body = body[: body.index("if payload.stream:")]
-        assert "preemptable = not raw," in body, (
+        assert "pausable = not raw," in body, (
             "the client-tool branch registers STREAMING_RAW, so it may not be priced as "
             "though it would be paused"
         )

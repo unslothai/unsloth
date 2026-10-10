@@ -1616,10 +1616,9 @@ export async function estimateKvCache(
 }
 
 /**
- * Split one SSE block into its data lines and its admission signal, if it carries one.
- *
- * These blocks carry no `data:` line at all, so the caller must handle the signal BEFORE its
- * empty-block early exit. Every other comment still falls through untouched.
+ * Split one SSE block into its data lines and its admission signal, if it carries one. Those
+ * comments arrive in blocks with no `data:` line at all, so the caller must handle the signal
+ * BEFORE its empty-block early exit.
  */
 function parseSseEvent(rawEvent: string): {
   dataLines: string[];
@@ -1783,8 +1782,8 @@ export async function* streamChatCompletions(
 
         const { dataLines, admission } = parseSseEvent(rawEvent);
         if (admission) {
-          // Before the empty-block exit below: an admission block is precisely a block
-          // with no data lines, so testing it after would drop every one of them.
+          // Before the empty-block exit below: an admission block is precisely a block with
+          // no data lines, so testing it after would drop every one of them.
           yield {
             _admissionStatus: admission,
           } as unknown as OpenAIChatChunk;

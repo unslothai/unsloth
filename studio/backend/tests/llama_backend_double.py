@@ -57,6 +57,7 @@ class FakeLlamaCppBackend:
     n_moe_layers = 0
     gpu_backend_unavailable = False
     offload_overridden = False
+    exact_concurrency = "off"
     # Private: the only name the real backend has for these, so the one production falls back to.
     _is_audio = False
     _has_audio_input = False

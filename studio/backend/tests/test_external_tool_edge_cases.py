@@ -501,9 +501,9 @@ def test_two_distinct_calls_at_the_same_index_are_not_merged(executed):
     )
     _run(transport)
 
-    # Sorted: a round's calls run together now, so which thread reaches the tool first is
-    # not fixed. This is about argument ROUTING; the order the model sees is the transcript
-    # order, which `_settle_call` still builds in call order.
+    # Sorted: a round's calls run together now, so which thread records first is not
+    # fixed. This is about argument ROUTING; the order the model sees is asserted on
+    # the transcript, which `_settle_call` still builds in call order.
     assert sorted(call["arguments"]["query"] for call in executed) == ["one", "two"]
 
 
@@ -540,9 +540,9 @@ def test_negative_index_does_not_reorder_calls(executed):
     )
     _run(transport)
 
-    # Sorted: a round's calls run together now, so which thread reaches the tool first is
-    # not fixed. This is about argument ROUTING; the order the model sees is the transcript
-    # order, which `_settle_call` still builds in call order.
+    # Sorted: a round's calls run together now, so which thread records first is not
+    # fixed. This is about argument ROUTING; the order the model sees is asserted on
+    # the transcript, which `_settle_call` still builds in call order.
     assert sorted(call["arguments"]["query"] for call in executed) == ["first", "second"]
 
 

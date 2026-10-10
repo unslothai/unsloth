@@ -7568,12 +7568,14 @@ function useContinuation() {
   const stamped = readIncompleteInfo(metadata);
   const cancelled =
     status?.type === "incomplete" && status?.reason === "cancelled";
+  // `paused` has no assistant-ui status of its own, so `restoredAssistantStatus` maps it to
+  // `cancelled` and a reload would relabel a backend pause as "Response stopped".
   const reason =
     cancelled && !isProviderReportedReason(stamped?.reason)
       ? ("cancelled" as const)
       : stamped?.reason;
-  // A turn the backend gave up on can be empty, and both content gates below assume text,
-  // so together they hid the bar on exactly the turn that most needed it.
+  // A turn the backend gave up on can be empty: the chat was evicted while still prefilling, and
+  // both content gates below are written for a turn that has text.
   const noTextIsExpected = resumesWithoutText(reason);
   const carriedReasoning = thoughtResumable ? reasoning : "";
 

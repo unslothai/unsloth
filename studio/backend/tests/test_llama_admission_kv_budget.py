@@ -33,7 +33,6 @@ from core.inference.llama_admission import (
 
 @pytest.fixture(autouse = True)
 def _isolate_process_wide_admission_state():
-    """The park budget and the queue registry are process-wide, not per test."""
     from core.inference.llama_admission import reset_llama_admission_queues
 
     reset_llama_admission_queues()

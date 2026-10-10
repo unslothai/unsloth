@@ -70,7 +70,8 @@ function harness(response: ReturnType<typeof jsonResponse>) {
         notifyChatHistoryUpdated: () => {},
         isCoalescedHistoryEvent: () => false,
       },
-      // The real module, not a double: it is pure and cannot drift the way a stub would.
+      // The real module, not a double: it is pure, imports nothing, and is only reached from
+      // the SSE reader these tests never enter.
       "../utils/admission-status": admissionStatus,
       "../utils/load-warning-toast": { showLoadWarning: () => {} },
       "./generation-length.ts": {},
