@@ -91,6 +91,14 @@ DRAFTER_CASES = [
     ("quants/eagle3-gpt-oss-20b-Q8_0.gguf", True),
     ("Llama-3.1-8B-Eagle3-Q4_K_M.gguf", False),
     ("eagle3/Llama-3.1-8B-Eagle3-Q4_K_M.gguf", False),
+    # DSpark drafters named <model>-dspark-<quant>.gguf (prism-ml Bonsai, and the
+    # third-party DSpark GGUFs such as Anbeeld/Qwen3.6-27B-DSpark-GGUF). Only a quant
+    # may follow the kind: a family name that carries it goes on, and is the model.
+    ("Ternary-Bonsai-27B-dspark-Q4_1.gguf", True),
+    ("Bonsai-27B-dspark-bf16.gguf", True),
+    ("Qwen3.6-27B-DSpark-Q4_K_M.gguf", True),
+    ("model-dspark-Q8_0-00001-of-00002.gguf", True),
+    ("DeepSeek-V4-Flash-Dspark-Abliterated-MXFP4-BF16-00001-of-00004.gguf", False),
 ]
 
 
@@ -178,6 +186,25 @@ def test_eagle3_draft_head_is_not_a_variant_or_the_default():
     )
     assert set(plans) == {"mxfp4"}
     assert plans["mxfp4"].target_filenames == ("gpt-oss-20b-MXFP4.gguf",)
+
+
+BONSAI_FILES = [
+    "Bonsai-27B-F16.gguf",
+    "Bonsai-27B-Q1_0.gguf",
+    "Bonsai-27B-dspark-Q4_1.gguf",
+    "Bonsai-27B-dspark-bf16.gguf",
+    "Bonsai-27B-mmproj-BF16.gguf",
+]
+
+
+def test_bonsai_dspark_drafter_is_not_a_variant():
+    # prism-ml/Bonsai-27B-gguf ships its DSpark drafter beside the model. Offered as
+    # a Q4_1 quant it was the smallest row, and llama-server cannot load it as a model.
+    plans = build_gguf_variant_plans(
+        [_sib(name, 1_000, f"sha-{i}") for i, name in enumerate(BONSAI_FILES)]
+    )
+    assert set(plans) == {"f16", "q1_0"}
+    assert plans["q1_0"].main_filenames == frozenset({"Bonsai-27B-Q1_0.gguf"})
 
 
 def test_baked_in_repo_plans_unchanged():
@@ -2790,6 +2817,8 @@ def test_dflash_stays_unreclaimable_even_though_auto_now_launches_it(tmp_path):
 
     assert is_reclaimable_drafter_path("dflash-kquant.gguf") is False
     assert is_reclaimable_drafter_path("dspark-model-Q8_0.gguf") is True
+    assert is_reclaimable_drafter_path("Ternary-Bonsai-27B-dspark-Q4_1.gguf") is True
+    assert is_reclaimable_drafter_path("DeepSeek-V4-Flash-Dspark-Abliterated-MXFP4.gguf") is False
 
     repo, snap = _cache_repo(
         tmp_path,
@@ -2801,6 +2830,22 @@ def test_dflash_stays_unreclaimable_even_though_auto_now_launches_it(tmp_path):
     assert not (snap / "model-Q4_K_M.gguf").is_symlink()
     assert (snap / "dflash-kquant.gguf").is_symlink()
     assert not (snap / "dspark-model-Q8_0.gguf").is_symlink()
+
+
+def test_deleting_the_last_bonsai_variant_reclaims_its_dspark_drafter(tmp_path):
+    """The menu hides <model>-dspark-<quant>.gguf as a companion, so once the last real
+    variant is deleted nothing could ever launch it; its blob must go too."""
+    from hub.services.models.deletion import _delete_gguf_variant_from_repos
+
+    repo, snap = _cache_repo(
+        tmp_path,
+        "prism-ml/Bonsai-27B-gguf",
+        ["Bonsai-27B-Q1_0.gguf", "Bonsai-27B-dspark-Q4_1.gguf"],
+    )
+    _delete_gguf_variant_from_repos("prism-ml/Bonsai-27B-gguf", "Q1_0", [repo], None, root = tmp_path)
+
+    assert not (snap / "Bonsai-27B-Q1_0.gguf").is_symlink()
+    assert not (snap / "Bonsai-27B-dspark-Q4_1.gguf").is_symlink()
 
 
 def test_detect_dflash_file_skips_a_sidecar_named_for_another_weight(tmp_path):
