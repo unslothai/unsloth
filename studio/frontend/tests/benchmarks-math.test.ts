@@ -354,3 +354,15 @@ test("offload rows are skipped on a virtualised Mac GPU, where every load runs o
   assert.equal(servedMismatch(manual, { gpu_placement_paravirtual: false }), null);
   assert.equal(servedMismatch(auto, { gpu_placement_paravirtual: true }), null);
 });
+
+test("a context row served with a smaller window is skipped, not charted at its label", () => {
+  const ctx128k: Variant = { label: "128K", load: { max_seq_length: 131072 } };
+  assert.equal(
+    servedMismatch(ctx128k, { context_length: 65536 }),
+    "Studio served a 65536-token context instead of 131072",
+  );
+  assert.equal(servedMismatch(ctx128k, { context_length: 131072 }), null);
+  assert.equal(servedMismatch(ctx128k, {}), null);
+  // 0 asks Studio to pick, so whatever it serves is the row.
+  assert.equal(servedMismatch({ label: "auto", load: { max_seq_length: 0 } }, { context_length: 8192 }), null);
+});
