@@ -547,6 +547,7 @@ function replayMaxTokensCap(loadedContextLength: number | null | undefined) {
 }
 function unreportedWindowMaxTokens(g: boolean, held: number) { return g ? held : 4096; }
 function resolveManualAutoCtxPin(..._a: any[]) { return null; }
+function structuredKvCacheDtypeAfterLoad(echoed: any, sent: any, iniCacheType: any) { return (iniCacheType === true ? sent : echoed) ?? null; }
 async function ensureGpuDeviceCache() {}
 function reconcilePersistedGpuIds(ids: any) { return ids; }
 function saveSpeculativeType(_x: any) {}

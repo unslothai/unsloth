@@ -229,6 +229,7 @@ def _install_lightweight_backend_stubs(monkeypatch):
         "ExportSizeResponse",
         "GgufVariantDetail",
         "GgufVariantsResponse",
+        "ModelIniResponse",
         "ScanFolderInfo",
         "AddScanFolderRequest",
     ):
