@@ -39,6 +39,7 @@ class CompoundFile:
         if len(data) < 512 or not data.startswith(SIGNATURE):
             raise CompoundFileError("not an OLE compound file")
         self._data = data
+        self._children_cache: dict[int, dict[str, int]] = {}
         major = struct.unpack_from("<H", data, 0x1A)[0]
         shift = struct.unpack_from("<H", data, 0x1E)[0]
         mini_shift = struct.unpack_from("<H", data, 0x20)[0]
@@ -123,7 +124,12 @@ class CompoundFile:
 
     def _children(self, index: int) -> dict[str, int]:
         """Children of a storage, keyed by lowercased name (the red-black tree flattened)."""
+        # Cached: a .msg looks up properties per attachment, each walking the root again.
+        cached = self._children_cache.get(index)
+        if cached is not None:
+            return cached
         found: dict[str, int] = {}
+        self._children_cache[index] = found
         stack, seen = [self._entries[index].child], set()
         while stack:
             i = stack.pop()
