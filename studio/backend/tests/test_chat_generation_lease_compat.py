@@ -733,8 +733,11 @@ def test_only_admission_comments_renew_the_lease_from_the_stream():
     for marker in ("_ADMISSION_DONE_MARKER in text", "_ADMISSION_WAIT_MARKER in text"):
         guard = source.index(marker)
         renew = source.index("_try_touch_progress", guard)
-        # The renewal must sit inside the marker guard, not beside it.
-        assert source[guard:renew].count("\n") < 8, f"the renewal drifted outside {marker}"
+        # The renewal must sit inside the marker guard, not beside it. Counted from the end of
+        # the condition, which grows a line with each progress marker it accepts.
+        body = source.index(":\n", guard)
+        assert body < renew, f"the renewal drifted outside {marker}"
+        assert source[body:renew].count("\n") < 6, f"the renewal drifted outside {marker}"
 
 
 def test_leaving_the_queue_renews_without_waiting_for_the_rate_limit():
