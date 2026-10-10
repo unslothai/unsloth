@@ -282,3 +282,16 @@ def test_sharegpt_function_call_that_is_not_json_is_kept_as_written():
 
     assert result["success"] is True, result["errors"]
     assert "<|im_start|>function_call\nget_weather(Paris)" in result["dataset"][0]["text"]
+
+
+def test_sharegpt_function_call_is_kept_when_the_template_ignores_tool_calls():
+    plain_chatml = (
+        "{% for message in messages %}{{'<|im_start|>' + message['role'] + '\\n'"
+        " + message['content'] + '<|im_end|>\\n'}}{% endfor %}"
+    )
+    call = json.dumps({"name": "get_weather", "arguments": {"city": "Paris"}})
+
+    result = _format_sharegpt([_sharegpt_tool_row(call)], plain_chatml)
+
+    assert result["success"] is True, result["errors"]
+    assert f"<|im_start|>function_call\n{call}" in result["dataset"][0]["text"]

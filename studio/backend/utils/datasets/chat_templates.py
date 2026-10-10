@@ -175,6 +175,11 @@ def _drop_none_values(value):
 
 
 def _sharegpt_tool_turns(conversation):
+    if not any(
+        isinstance(message, dict) and message.get("role") in ("observation", "function_call")
+        for message in conversation
+    ):
+        return conversation
     turns = []
     for message in conversation:
         role = message.get("role") if isinstance(message, dict) else None
@@ -206,9 +211,27 @@ def _sharegpt_tool_turns(conversation):
 
 
 def _render_conversation(tokenizer, conversation):
+    tool_turns = _sharegpt_tool_turns(conversation)
+    if tool_turns is not conversation:
+        try:
+            text = _render_messages(tokenizer, tool_turns)
+        except Exception:
+            text = None
+        names = [
+            call["function"]["name"]
+            for message, original in zip(tool_turns, conversation)
+            if message is not original and "tool_calls" in message
+            for call in message["tool_calls"]
+        ]
+        # A template that ignores tool_calls (plain ChatML, SmolLM2) would drop the call: keep the row as written.
+        if text is not None and all(name in text for name in names):
+            return text
+    return _render_messages(tokenizer, conversation)
+
+
+def _render_messages(tokenizer, conversation):
     from core.inference.chat_template_helpers import _normalize_tool_call_arguments
 
-    conversation = _sharegpt_tool_turns(conversation)
     attempts = []
     for messages in (_drop_none_values(conversation), conversation):
         for attempt in (_normalize_tool_call_arguments(messages), messages):
