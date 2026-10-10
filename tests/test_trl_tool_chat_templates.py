@@ -192,3 +192,20 @@ def test_named_template_sets_are_left_to_trl(patched):
     tokenizer.chat_template = {"default": UNSLOTH_QWEN3, "tool_use": PLAIN}
     with pytest.raises(ValueError, match = "Unrecognized chat template"):
         trl_utils.add_response_schema(tokenizer)
+    # A lone entry is what transformers uses for every call, so it is matched like a plain template.
+    tokenizer.chat_template = {"tool_use": UNSLOTH_QWEN3}
+    trl_utils.add_response_schema(tokenizer)
+    assert any(value is not None for value in _parser(tokenizer))
+
+
+def test_typed_tool_arguments_pick_the_right_training_family(patched):
+    # Qwen3.6 writes JSON true / null where Qwen3.5 writes Python True / None; integer-only probes
+    # cannot tell their training templates apart.
+    if not (hasattr(trl_utils, "qwen3_6_chat_template") and hasattr(trl_utils, "qwen3_5_think_chat_template")):
+        pytest.skip("this TRL lacks the Qwen3.5 / 3.6 templates")
+    module, _ = patched
+    tokenizer = _tokenizer(PLAIN)
+    for name in ("qwen3_6_chat_template", "qwen3_5_think_chat_template"):
+        edited = "{#- Chat template fixes by Unsloth #}\n" + getattr(trl_utils, name)
+        found = [n for n, _ in module._matching_families(trl_utils, tokenizer, edited, "conversation")]
+        assert found == [name]

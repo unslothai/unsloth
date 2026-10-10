@@ -48,6 +48,15 @@ def _call(a, b):
 
 
 _USER = {"role": "user", "content": "What is 3 times 4?"}
+# Families differ in how they write non-integer arguments (JSON true / null vs Python True / None) in
+# the history a training template re-renders.
+_TYPED_CALL = {
+    "type": "function",
+    "function": {
+        "name": "multiply",
+        "arguments": {"a": 3, "b": 4.5, "exact": True, "note": None, "unit": "m"},
+    },
+}
 _TOOL_TURN = {"role": "assistant", "content": "", "tool_calls": [_call(3, 4)]}
 _TOOL_RESULT = {"role": "tool", "name": "multiply", "content": "12"}
 
@@ -65,6 +74,7 @@ _COMPLETION_PROBES = (
 _CONVERSATION_PROBES = (
     ([_USER], True, True),
     ([_USER, _TOOL_TURN], False, True),
+    ([_USER, {"role": "assistant", "content": "", "tool_calls": [_TYPED_CALL]}], False, True),
     ([_USER, _TOOL_TURN, _TOOL_RESULT], True, True),
     (
         [_USER, _TOOL_TURN, _TOOL_RESULT, {"role": "assistant", "content": "The answer is 12."}],
@@ -105,7 +115,7 @@ def _template_of(processing_class):
         template = getattr(_tokenizer_of(processing_class), "chat_template", None)
     if isinstance(template, dict):
         # A named set (e.g. "tool_use") is picked per call by transformers; one family cannot stand in for it.
-        template = template.get("default") if len(template) == 1 else None
+        template = next(iter(template.values())) if len(template) == 1 else None
     return template if isinstance(template, str) else None
 
 
