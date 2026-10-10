@@ -18,6 +18,8 @@ import triton.language as tl
 from torch.nn import functional as F
 import math
 from unsloth_zoo.utils import Version
+
+from .indexing import long_indexing
 from unsloth_zoo.log import logger
 from unsloth_zoo.temporary_patches.common import torch_compile
 
@@ -212,11 +214,6 @@ def weight_dequant(
         )
 
 
-def _needs_int64_offsets(*tensors):
-    # int32 offsets wrap past 2**31 elements (illegal memory access, #3921); smaller launches keep the int32 kernel.
-    return max(t.numel() for t in tensors) >= 2**31
-
-
 # Copied from huggingface.co/deepseek-ai/DeepSeek-V3 inference/kernel.py
 @triton.jit
 def act_quant_kernel(
@@ -260,9 +257,7 @@ def act_quant(x: torch.Tensor, block_size: int = 128) -> tuple[torch.Tensor, tor
         return (triton.cdiv(x.numel(), meta["BLOCK_SIZE"]),)
 
     with _fp8_triton_device_context(x):
-        act_quant_kernel[grid](
-            x, y, s, BLOCK_SIZE = block_size, LONG_INDEXING = _needs_int64_offsets(x)
-        )
+        act_quant_kernel[grid](x, y, s, BLOCK_SIZE = block_size, LONG_INDEXING = long_indexing(x))
     return y, s
 
 
@@ -422,7 +417,7 @@ def w8a8_block_fp8_matmul_triton(
             BLOCK_SIZE_N = BLOCK_SIZE_N,
             BLOCK_SIZE_K = BLOCK_SIZE_K,
             GROUP_SIZE_M = 8,
-            LONG_INDEXING = _needs_int64_offsets(A, B, C),
+            LONG_INDEXING = long_indexing(A, B, C),
             # Default 4 warps starve 128x128 tiles (8 is 1.3-2.1x faster from M >= 128); smaller decode tiles gain nothing.
             num_warps = 8 if BLOCK_SIZE_M == 128 else 4,
         )
@@ -444,7 +439,7 @@ def torchao_block_matmul(
     output_dtype: torch.dtype = torch.bfloat16,
 ) -> torch.Tensor:
     # torchao's kernel indexes in int32 too, so route launches past 2**31 elements to the int64 one.
-    if _needs_int64_offsets(act_q, weight_q) or (
+    if long_indexing(act_q, weight_q) or (
         act_q.numel() // act_q.shape[-1] * weight_q.shape[0] >= 2**31
     ):
         return w8a8_block_fp8_matmul_triton(
