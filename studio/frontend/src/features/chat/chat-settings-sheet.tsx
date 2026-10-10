@@ -86,6 +86,7 @@ import {
   parseExternalModelId,
   promptCacheTtlAppliesToModel,
   promptCachingAppliesToModel,
+  providerModelSupportsStudioTools,
 } from "./external-providers";
 import {
   BUILTIN_PRESETS,
@@ -825,6 +826,17 @@ export function ChatSettingsPanel({
   const externalSelection = currentCheckpoint
     ? parseExternalModelId(currentCheckpoint)
     : null;
+  // The tool-call budget is a knob of Unsloth's own tool loop, which the backend runs for local
+  // models and for external providers whose wire format carries a tool schema out and a tool
+  // result back (providers.py `provider_runs_local_tools`). `null` means the provider was never
+  // described, so show the slider rather than undercount, exactly as the sampling flags do.
+  const showToolCallBudget =
+    !isExternalModel ||
+    providerModelSupportsStudioTools(
+      externalProviderType,
+      externalSelection?.modelId,
+    ) !== false;
+
   const showPromptCacheTtlControl = Boolean(
     activeExternalProvider &&
       promptCacheTtlAppliesToModel(
@@ -1697,19 +1709,21 @@ export function ChatSettingsPanel({
           </div>
         </CollapsibleSection>
 
-            {isExternalModel ? null : (
           <CollapsibleSection label="Tools">
             <div className="flex flex-col gap-5">
-              <AutoHealToolCallsToggle />
-              <NudgeToolCallsToggle />
-              <DeduplicateToolCallsToggle />
-              <ConfirmToolCallsToggle />
-              <BypassPermissionsToggle />
-              <MaxToolCallsSlider />
-              <ToolCallTimeoutSlider />
+              {isExternalModel ? null : (
+                <>
+                  <AutoHealToolCallsToggle />
+                  <NudgeToolCallsToggle />
+                  <DeduplicateToolCallsToggle />
+                  <ConfirmToolCallsToggle />
+                  <BypassPermissionsToggle />
+                </>
+              )}
+              {showToolCallBudget ? <MaxToolCallsSlider /> : null}
+              {isExternalModel ? null : <ToolCallTimeoutSlider />}
             </div>
           </CollapsibleSection>
-            )}
 
             {isExternalModel ? null : (
           <CollapsibleSection label="Retrieval">
