@@ -130,6 +130,10 @@ const qwen21Turbo = groupForRepoId("Qwen/Qwen-Image-2.1-Turbo", IMAGE_CATALOG);
 assert.ok(qwen21Turbo);
 assert.equal(qwen21Turbo.canonicalId, "Qwen/Qwen-Image-2.1-Turbo");
 assert.equal(groupForRepoId("unsloth/Qwen-Image-2.1-Turbo-FP8", IMAGE_CATALOG), qwen21Turbo);
+// Turbo's own GGUF ladder, never 2.1's.
+assert.equal(groupForRepoId("unsloth/Qwen-Image-2.1-Turbo-GGUF", IMAGE_CATALOG), qwen21Turbo);
+assert.equal(loadSpecFor("unsloth/Qwen-Image-2.1-Turbo-GGUF", IMAGE_CATALOG)?.kind, "gguf");
+assert.equal(groupForRepoId("unsloth/Qwen-Image-2.1-GGUF", IMAGE_CATALOG)?.canonicalId, "unsloth/Qwen-Image-2.1");
 assert.notEqual(groupForRepoId("Qwen/Qwen-Image", IMAGE_CATALOG), qwen21);
 assert.equal(
   groupForRepoId("Qwen/Qwen-Image", IMAGE_CATALOG)?.canonicalId,
