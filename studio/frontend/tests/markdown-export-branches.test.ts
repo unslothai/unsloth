@@ -118,6 +118,7 @@ function loadExporters(
     canMergeConversationExport,
     planChatItemSources,
     ...liveThreadHead,
+    savedBranchHead: () => undefined,
     orderByParentChain,
     createConversationMarkdownBuilder,
     createConversationMarkdownExporter,

@@ -27,6 +27,7 @@ const QUEUED_SETTING_KEYS = [
   "webFetchToolsEnabled",
   "deepResearchEnabled",
   "researchWebsitePolicy",
+  "researchMcpSources",
   "researchModelTimeoutSeconds",
   "ragEnabled",
   "ragSource",

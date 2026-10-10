@@ -160,6 +160,7 @@ function loadExporters(
     threadScopedDefault: (key: string) => INSTALLATION_DEFAULTS[key],
     composerProjectByPendingThread: new Map(),
     ...liveThreadHead,
+    savedBranchHead: () => undefined,
     orderByParentChain,
     unwrapPastedTextContent,
     toolResultModelText: (result: unknown) => result,

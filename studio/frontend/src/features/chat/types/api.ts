@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { TransformersUpgradeInfo } from "@/features/transformers-upgrade";
+import type { ManagedEngineOffer } from "@/features/model-picker";
 import type { CustomReasoningConfig } from "../custom-reasoning";
 
 export type CpuFallbackReason = "vulkan_startup_crash";
@@ -81,6 +82,8 @@ export interface LoadModelRequest {
   /** Override --spec-draft-n-max for drafter speculative decoding. Applied only when speculative_type
    *  resolves to "mtp", "mtp+ngram", "dspark" or "dflash". */
   spec_draft_n_max?: number | null;
+  /** MLX only: a companion drafter, a local directory or an already-cached repo id. */
+  spec_draft_model?: string | null;
   /** Parallel decode slots for llama-server (--parallel), 1..64. Omit/null = the launch default. The
    *  VRAM fitter may launch fewer to stay on GPU. */
   n_parallel?: number | null;
@@ -165,6 +168,8 @@ export interface ValidateModelResponse {
   transformers_upgrade?: TransformersUpgradeInfo | null;
   /** Replacement repository for an MLX BNB model or adapter base. */
   mlx_loads_base_model?: string | null;
+  /** The Default engine cannot run this quantization; these optional engines can on this host. */
+  managed_engine_offer?: ManagedEngineOffer | null;
 }
 
 export interface GgufVariantDetail {
@@ -289,6 +294,7 @@ export interface LoadModelResponse {
   /** Canonical UI-facing mode the load request resolved to. See LoadModelRequest. */
   speculative_type?: string | null;
   spec_draft_n_max?: number | null;
+  spec_draft_model?: string | null;
   /** Whether tensor-parallel split (--split-mode tensor) is active. */
   tensor_parallel?: boolean;
   /** The load ran with the vision projector deliberately left unloaded. Echoes the request, so it
@@ -434,6 +440,7 @@ export interface InferenceStatusResponse {
   /** Canonical UI-facing mode currently active. See LoadModelRequest. */
   speculative_type?: string | null;
   spec_draft_n_max?: number | null;
+  spec_draft_model?: string | null;
   /** Whether tensor-parallel split (--split-mode tensor) is active. */
   tensor_parallel?: boolean;
   /** The load ran with the vision projector deliberately left unloaded. Echoes the request, so it

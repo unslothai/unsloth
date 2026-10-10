@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .catalog import CHECKPOINTS, GGUF_COMPANIONS, LOCAL_NAME, Checkpoint
+from .catalog import CHECKPOINTS, GGUF_COMPANIONS, LOCAL_NAME, MLX_COMPANIONS, Checkpoint
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +36,7 @@ _loaded: Checkpoint | None = None
 _device_name: str | None = None
 _loader: threading.Thread | None = None
 _loading: Checkpoint | None = None
-# A llama.cpp load that holds (or is taking) the GPU claim, until its agent is published or dropped.
+# A llama.cpp or MLX engine load that holds (or is taking) the GPU claim, until its agent is published or dropped.
 _gpu_load = False
 _failure: tuple[Checkpoint, str, float] | None = None
 _import_lock = threading.Lock()
@@ -118,11 +118,180 @@ def _wanted(path: str, subfolder: str | None) -> bool:
 
 
 LLAMA_CPP = "llama.cpp"
+MLX = "mlx"
 GGUF = "gguf"
 
 
 def _is_native(checkpoint) -> bool:
     return getattr(checkpoint, "backend", "pytorch") == LLAMA_CPP
+
+
+def _is_mlx(checkpoint) -> bool:
+    return getattr(checkpoint, "backend", None) == MLX
+
+
+def _arbitrated(served) -> bool:
+    """A llama.cpp server or an MLX engine model: the GPU arbiter can end it, and it unloads when idle."""
+    return getattr(served, "backend", None) in (LLAMA_CPP, MLX)
+
+
+def _engine_available() -> bool:
+    """Apple Silicon with an unsloth-zoo that serves every decision family, and the GPU as where decoders run."""
+    try:
+        from utils.hardware import hardware
+
+        # Only a finished detection, as clef_unsupported_reason(wait = False): a settings read never waits on it.
+        if not hardware.DETECTION_COMPLETE.is_set() or hardware.DEVICE != hardware.DeviceType.MLX:
+            return False
+        if not _native_gpu():
+            return False
+        from unsloth_zoo.mlx.decision import DecisionRequestError  # noqa: F401
+    except Exception:
+        return False
+    return True
+
+
+def _mlx_target(checkpoint: Checkpoint) -> Checkpoint | None:
+    """What unsloth-zoo's MLX engine serves in process on Apple Silicon: a merged Clef's own folder, or the source repo of a GGUF entry."""
+    if _is_mlx(checkpoint) or not _engine_available():
+        return None
+    if checkpoint.layout == "clef":
+        if checkpoint.is_local:
+            from utils.models.model_config import clef_folder_kind
+            if clef_folder_kind(Path(checkpoint.source).expanduser()) != "merged":
+                return None
+        return dataclasses.replace(checkpoint, backend = MLX)
+    companion = MLX_COMPANIONS.get(checkpoint.name)
+    if companion is None or CHECKPOINTS.get(checkpoint.name) != checkpoint:
+        return None
+    return dataclasses.replace(
+        checkpoint,
+        source = companion.repo,
+        download_bytes = sum(repo.download_bytes for repo in _mlx_repos(companion)),
+        backend = MLX,
+        revision = companion.revision,
+    )
+
+
+def _mlx_reads_images(checkpoint: Checkpoint) -> bool:
+    """Whether the MLX form of an entry reads images: a Clef with its vision tower and processor, on an unsloth-zoo that reads them."""
+    if checkpoint.layout != "clef" or _mlx_target(checkpoint) is None:
+        return False
+    try:
+        from unsloth_zoo.mlx.decision import ClefModel
+    except Exception:
+        return False
+    if not getattr(ClefModel, "takes_images", False):
+        return False
+    if not checkpoint.is_local:
+        return True
+    import json
+
+    folder = Path(checkpoint.source).expanduser()
+    try:
+        config = json.loads((folder / "config.json").read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        return False
+    return (
+        isinstance(config, dict)
+        and config.get("vision_config") is not None
+        and any(
+            (folder / name).is_file()
+            for name in ("processor_config.json", "preprocessor_config.json")
+        )
+    )
+
+
+def _mlx_repos(companion) -> tuple:
+    return (companion.base, companion) if companion.base else (companion,)
+
+
+def _mlx_family(checkpoint: Checkpoint) -> str:
+    return "clef" if checkpoint.layout == "clef" else MLX_COMPANIONS[checkpoint.name].family
+
+
+def _wants_gpu(checkpoint) -> bool:
+    """Whether loading this takes the GPU through the arbiter; an MLX encoder sits beside a chat model, as Laya does."""
+    if _is_mlx(checkpoint):
+        return _mlx_family(checkpoint) != "laya"
+    return _is_native(checkpoint) and _native_gpu()
+
+
+def _repo_dir(repo, local_only: bool) -> Path:
+    from huggingface_hub import snapshot_download
+
+    from utils.hf_cache_settings import active_hf_hub_cache
+    from utils.utils import hf_env_offline
+
+    def fetch(revision, local: bool) -> Path | None:
+        try:
+            folder = Path(
+                snapshot_download(
+                    repo.repo,
+                    revision = revision,
+                    cache_dir = active_hf_hub_cache(),
+                    local_files_only = local,
+                    allow_patterns = list(repo.files),
+                )
+            )
+        except Exception:
+            if not local:
+                raise
+            return None
+        return folder if all((folder / name).is_file() for name in repo.files) else None
+
+    # A settings download fetches the repo's main, which serves where the pinned revision is not complete.
+    folder = fetch(repo.revision, True) or fetch(None, True)
+    if folder is None and not (local_only or hf_env_offline()):
+        folder = fetch(repo.revision, False)
+    if folder is None:
+        raise FileNotFoundError(f"{repo.repo} is not downloaded")
+    return folder
+
+
+def _repo_cached(repo) -> bool:
+    try:
+        _repo_dir(repo, local_only = True)
+    except Exception:
+        return False
+    return True
+
+
+def _mlx_dirs(checkpoint: Checkpoint, local_only: bool) -> tuple[Path, Path | None]:
+    """(model folder, base folder) of an MLX target."""
+    if checkpoint.layout == "clef":
+        return _clef_dir(checkpoint, local_only), None
+    folders = [_repo_dir(repo, local_only) for repo in _mlx_repos(MLX_COMPANIONS[checkpoint.name])]
+    return folders[-1], (folders[0] if len(folders) > 1 else None)
+
+
+def _mlx_choice(
+    checkpoint: Checkpoint,
+    unread,
+    questions,
+    preference: str,
+    seen: bool = False,
+) -> Checkpoint | None:
+    """Auto on Apple Silicon prefers MLX unless only llama.cpp is at hand or MLX cannot read the images (`unread`); `seen` = it can."""
+    from .native_worker import request_gap
+
+    if preference != "auto" or unread or request_gap(questions or {}) is not None:
+        return None
+    if (target := _mlx_target(checkpoint)) is None:
+        return None
+    if _loaded == target and _agent is not None:
+        return target
+    native = _native_target(checkpoint)
+    if seen and native is not None and not _native_reads_images(native):
+        # Without a vision projector the llama.cpp form would refuse the images MLX reads.
+        return target
+    if native is not None and _native_unavailable(checkpoint, native) is None:
+        # A resident llama.cpp server keeps answering, and a downloaded GGUF serves before the MLX form is fetched.
+        if _loaded == native and _agent is not None:
+            return None
+        if not native.is_local and is_cached(native) and not is_cached(target):
+            return None
+    return target
 
 
 def _native_target(checkpoint: Checkpoint) -> Checkpoint | None:
@@ -246,16 +415,27 @@ def select(
     images = None,
     questions = None,
     preference: str | None = None,
+    state_images: bool = False,
 ) -> tuple[Checkpoint, str | None]:
     """(what serves this request, why Auto did not pick llama.cpp); raises for what nothing here can serve.
 
-    Auto takes llama.cpp when the entry has a GGUF and Studio's llama-server serves decisions, else PyTorch.
-    Images are llama.cpp only. Laya is always served by PyTorch, a GGUF entry always by llama.cpp.
+    Auto takes llama.cpp when the entry has a GGUF and Studio's llama-server serves decisions, else PyTorch;
+    on Apple Silicon it answers through unsloth-zoo's MLX engine first.
+    Images are read by llama.cpp, and by MLX for a Clef. Laya is always served by PyTorch, a GGUF entry otherwise by llama.cpp.
     """
     from utils.systemone_settings import get_backend
 
     from .native_worker import request_gap
 
+    # Only route-checked images reach MLX: state images would be decoded unvalidated in this process.
+    unread = bool(state_images or (images and not _mlx_reads_images(checkpoint)))
+    if (preference or get_backend()) == MLX and checkpoint.layout in ("clef", GGUF):
+        return _select_mlx(checkpoint, unread), None
+    mlx = _mlx_choice(
+        checkpoint, unread, questions, preference or get_backend(), bool(images) and not unread
+    )
+    if mlx is not None:
+        return mlx, None
     if checkpoint.layout == GGUF:
         return _select_gguf(checkpoint, questions, preference or get_backend()), None
     if checkpoint.layout != "clef":
@@ -298,6 +478,23 @@ def select(
     if images:
         raise Unavailable(400, "api_usage_error", f"Images are served only by llama.cpp: {reason}")
     return checkpoint, reason
+
+
+def _select_mlx(checkpoint: Checkpoint, unread) -> Checkpoint:
+    """The MLX runtime answers through the engine or not at all, whatever llama.cpp has loaded or downloaded."""
+    if unread:
+        raise Unavailable(
+            400,
+            "api_usage_error",
+            f"The MLX runtime does not read these images for {checkpoint.name}; set the Decision API runtime to Auto or llama.cpp.",
+        )
+    if not _engine_available():
+        reason = "The MLX runtime needs Apple Silicon with the Decision API on the GPU."
+    elif (target := _mlx_target(checkpoint)) is not None:
+        return target
+    else:
+        reason = f"{checkpoint.name} has no MLX form."
+    raise Unavailable(400, "api_usage_error", f"{reason} Set the Decision API runtime to Auto.")
 
 
 def _select_gguf(checkpoint: Checkpoint, questions, preference: str) -> Checkpoint:
@@ -345,6 +542,21 @@ def effective_backend(checkpoint) -> tuple[str | None, str | None]:
     return target.backend, reason
 
 
+def mlx_available() -> bool:
+    """Whether the MLX runtime can be chosen here."""
+    return _engine_available()
+
+
+def mlx_ready(checkpoint) -> bool:
+    """Whether the MLX engine could serve this entry here under the runtime setting."""
+    from utils.systemone_settings import get_backend
+    return (
+        isinstance(checkpoint, Checkpoint)
+        and get_backend() in ("auto", MLX)
+        and _mlx_target(checkpoint) is not None
+    )
+
+
 def native_ready(checkpoint) -> bool:
     """Whether llama.cpp could serve this Clef or GGUF entry here under the runtime setting."""
     if not isinstance(checkpoint, Checkpoint) or checkpoint.layout == "laya":
@@ -352,19 +564,24 @@ def native_ready(checkpoint) -> bool:
     from utils.systemone_settings import get_backend
 
     native = _native_target(checkpoint)
-    return get_backend() != "pytorch" and _native_unavailable(checkpoint, native) is None
+    return get_backend() in ("auto", LLAMA_CPP) and _native_unavailable(checkpoint, native) is None
 
 
 def input_modalities(checkpoint) -> list[str]:
-    """What this entry reads here: images too when llama.cpp serves it with a vision projector."""
+    """What this entry reads here: images too when llama.cpp serves it with a vision projector, or MLX a Clef that has its tower."""
+    if mlx_ready(checkpoint) and _mlx_reads_images(checkpoint):
+        return ["text", "image"]
     if not native_ready(checkpoint):
         return ["text"]
-    native = _native_target(checkpoint)
+    return ["text", "image"] if _native_reads_images(_native_target(checkpoint)) else ["text"]
+
+
+def _native_reads_images(native: Checkpoint) -> bool:
     if native.is_local:
         from .gguf_export_contract import served_files
         files = served_files(Path(native.source).expanduser(), "clef")
-        return ["text", "image"] if files is not None and files[2] is not None else ["text"]
-    return ["text", "image"] if GGUF_COMPANIONS[native.name].mmproj else ["text"]
+        return files is not None and files[2] is not None
+    return bool(GGUF_COMPANIONS[native.name].mmproj)
 
 
 def _native_gpu() -> bool:
@@ -511,6 +728,12 @@ def _utf8_open(
 
 
 def is_cached(checkpoint: Checkpoint) -> bool:
+    if _is_mlx(checkpoint):
+        try:
+            _mlx_dirs(checkpoint, local_only = True)
+        except Exception:
+            return False
+        return True
     if _is_native(checkpoint):
         try:
             _native_files(checkpoint, local_only = True)
@@ -527,12 +750,39 @@ def is_cached(checkpoint: Checkpoint) -> bool:
     return all((folder / name).is_file() for name in _WEIGHT_FILES)
 
 
+def _mlx_plan(checkpoint: Checkpoint) -> dict[str, Any]:
+    # One repo per plan, the base first; the settings page asks again once that download is done.
+    cached = is_cached(checkpoint)
+    repos = _mlx_repos(MLX_COMPANIONS[checkpoint.name])
+    repo = repos[-1] if cached else next((r for r in repos if not _repo_cached(r)), repos[-1])
+    return {
+        "repo": repo.repo,
+        "revision": repo.revision,
+        "files": sorted(repo.files),
+        "size_bytes": repo.download_bytes,
+        "cached": cached,
+        "error": None,
+    }
+
+
 def download_plan(checkpoint: Checkpoint, preference: str | None = None) -> dict[str, Any]:
-    if checkpoint.layout == "clef" and not _is_native(checkpoint):
+    if not _is_mlx(checkpoint) and (checkpoint.layout == GGUF or not _is_native(checkpoint)):
         try:
             checkpoint = select(checkpoint, preference = preference)[0]
-        except Unavailable:
-            pass
+        except Unavailable as exc:
+            from utils.systemone_settings import get_backend
+
+            # The MLX runtime has no other form to fall back to, so nothing is offered for download.
+            if (preference or get_backend()) == MLX:
+                return {
+                    "repo": None,
+                    "files": [],
+                    "size_bytes": 0,
+                    "cached": False,
+                    "error": exc.message,
+                }
+    if _is_mlx(checkpoint) and checkpoint.layout == GGUF:
+        return _mlx_plan(checkpoint)
     cached = is_cached(checkpoint)
     plan = {"repo": None, "files": [], "size_bytes": 0, "cached": cached, "error": None}
     if checkpoint.name == LOCAL_NAME or checkpoint.is_local:
@@ -592,12 +842,14 @@ def _close(agent, release_gpu: bool = True) -> None:
     # A Clef agent is a worker process; ending it returns its GPU memory.
     if agent is not None and hasattr(agent, "close"):
         agent.close()
-    if release_gpu and _is_native(agent) and getattr(agent, "gpu", False):
+    if release_gpu and _arbitrated(agent) and getattr(agent, "gpu", False):
         from core.inference import gpu_arbiter
         def unclaimed() -> bool:
             # A newer server loading or resident while this one closed keeps the claim.
             with _state_lock:
-                return not _gpu_load and not (_is_native(_loaded) and getattr(_agent, "gpu", False))
+                return not _gpu_load and not (
+                    _arbitrated(_loaded) and getattr(_agent, "gpu", False)
+                )
 
         gpu_arbiter.release_if(gpu_arbiter.DECISIONS, unclaimed)
 
@@ -648,9 +900,122 @@ class _MLXAgent:
         self.model = load_decision_model(folder, **({"compute_dtype": self.dtype} if mixed else {}))
 
 
+_ENGINE_TOKENS = 16384
+
+
+class _EngineAgent:
+    """An unsloth-zoo MLX decision model that builds its own prompts from the request."""
+
+    device = backend = MLX
+
+    def __init__(self, folder: Path, family: str, base: Path | None):
+        from unsloth_zoo.mlx.decision import load_decision_model
+
+        self.gpu = family != "laya"
+        self.model = load_decision_model(folder, family = family, base_model = base)
+        # An encoder reads one question at a time, and its window is the encoder's (Julia-1: 8192).
+        self.positions = None
+        encoder = folder / "encoder" / "config.json"
+        if family == "laya" and encoder.is_file():
+            import json
+            self.positions = json.loads(encoder.read_text(encoding = "utf-8")).get(
+                "max_position_embeddings"
+            )
+
+    def close(self) -> None:
+        # A request that still holds this agent must not keep the weights on the GPU another owner now has.
+        self.model = None
+        _release_memory()
+
+    def decide(
+        self,
+        state,
+        questions: dict[str, dict[str, Any]],
+        images = None,
+    ) -> dict[str, Any]:
+        from unsloth_zoo.mlx.decision import DecisionRequestError, DecisionUnsupportedError
+
+        # As on llama.cpp, a question without instructions is asked by its id.
+        questions = {
+            name: {**q, "instructions": str(name)} if q.get("instructions") in (None, "") else q
+            for name, q in questions.items()
+        }
+        import json
+
+        # The engine has no length limit of its own. This bounds its memory by the request as sent: each family lays the
+        # state and questions out its own way, so what the model reads can differ from this count by the layout's overhead.
+        text = state if isinstance(state, str) else json.dumps(state, ensure_ascii = False)
+        text += json.dumps(questions, ensure_ascii = False)
+        tokenizer = getattr(self.model, "tokenizer", None)
+        if tokenizer is not None:
+            ids = tokenizer.encode(text, add_special_tokens = False)
+            if len(getattr(ids, "ids", ids)) > _ENGINE_TOKENS:
+                raise Unavailable(
+                    422,
+                    "invalid_request_error",
+                    f"State and questions are longer than {_ENGINE_TOKENS} tokens. Shorten them.",
+                )
+            if self.positions:
+                # [cls] question [sep] options (with the question, at most max_head) [sep] state [sep], as unsloth-zoo lays it out.
+                state_text = (
+                    state if isinstance(state, str) else json.dumps(state, ensure_ascii = False)
+                )
+                read = tokenizer.encode(state_text, add_special_tokens = False)
+                limit = int(self.positions) - int(getattr(self.model, "max_head", 0)) - 4
+                if len(getattr(read, "ids", read)) > limit:
+                    raise Unavailable(
+                        422,
+                        "invalid_request_error",
+                        f"The state is longer than the {limit} tokens this model reads beside a question. Shorten it.",
+                    )
+        try:
+            return (
+                self.model.answer(state, questions, images)
+                if images
+                else self.model.answer(state, questions)
+            )
+        except DecisionUnsupportedError as exc:
+            raise Unavailable(501, "not_supported_error", str(exc)) from None
+        except DecisionRequestError as exc:
+            raise Unavailable(422, "invalid_request_error", str(exc)) from None
+
+
+def _load_mlx(checkpoint: Checkpoint):
+    global _gpu_load
+    from core.inference import gpu_arbiter
+
+    # Fetched before the eviction, so a failed download leaves the resident model serving.
+    folder, base = _mlx_dirs(checkpoint, local_only = False)
+    _evict()
+    gpu = _wants_gpu(checkpoint)
+    if gpu:
+        with _state_lock:
+            _gpu_load = True
+        try:
+            gpu_arbiter.acquire_for(gpu_arbiter.DECISIONS, allow_evict = False)
+        except gpu_arbiter.GpuOwnerBusyError:
+            raise RuntimeError(_GPU_BUSY.format(checkpoint.name)) from None
+    agent = None
+    try:
+        agent = _EngineAgent(folder, _mlx_family(checkpoint), base)
+        if _training_active():
+            raise RuntimeError(
+                f"{checkpoint.name} needs the GPU, which a training run took while it loaded."
+            )
+    except BaseException:
+        if agent is not None:
+            agent.close()
+        if gpu:
+            gpu_arbiter.release(gpu_arbiter.DECISIONS)
+        raise
+    return agent, MLX
+
+
 def _load_checkpoint(checkpoint: Checkpoint):
     from utils.systemone_settings import get_device as preferred_device
 
+    if _is_mlx(checkpoint):
+        return _load_mlx(checkpoint)
     if _is_native(checkpoint):
         return _load_native(checkpoint)
     root = _checkpoint_dir(checkpoint)
@@ -711,7 +1076,7 @@ def _load_native(checkpoint: Checkpoint):
         try:
             gpu_arbiter.acquire_for(gpu_arbiter.DECISIONS, allow_evict = False)
         except gpu_arbiter.GpuOwnerBusyError:
-            raise NativeError(_GPU_BUSY) from None
+            raise NativeError(_GPU_BUSY.format("a decision model through llama.cpp")) from None
     try:
         agent = NativeClefAgent(
             model,
@@ -736,7 +1101,7 @@ def _load_native(checkpoint: Checkpoint):
     return agent, agent.device
 
 
-_GPU_BUSY = "Unload the resident chat, image or video model before serving a decision model through llama.cpp on the GPU."
+_GPU_BUSY = "Unload the resident chat, image or video model before serving {} on the GPU."
 
 
 _build_lock = threading.Lock()
@@ -945,17 +1310,25 @@ def _hub_download_active(checkpoint: Checkpoint) -> bool:
         return False
     try:
         from hub.utils.download_registry import get_models_registry
-        if not get_models_registry().active_job_refs(checkpoint.source):
+        registry = get_models_registry()
+        if not any(registry.active_job_refs(repo) for repo in _sources(checkpoint)):
             return False
     except Exception:
         return False
     return not is_cached(checkpoint)
 
 
+def _sources(checkpoint: Checkpoint) -> tuple[str, ...]:
+    """The repos a load reads: an MLX adapter's base as well as its own."""
+    if _is_mlx(checkpoint) and checkpoint.layout == GGUF:
+        return tuple(repo.repo for repo in _mlx_repos(MLX_COMPANIONS[checkpoint.name]))
+    return (checkpoint.source,)
+
+
 def loading_repo_ids() -> tuple[str, ...]:
     with _state_lock:
         if _loading is not None and not _loading.is_local:
-            return (_loading.source,)
+            return _sources(_loading)
     return ()
 
 
@@ -986,7 +1359,7 @@ def _load(checkpoint: Checkpoint) -> None:
         logger.info("System One dropped %s: it was unloaded while it loaded", checkpoint.name)
         _close(agent)
         return
-    if _is_native(checkpoint):
+    if _arbitrated(checkpoint):
         _schedule_idle_unload(generation)
     logger.info(
         "System One loaded %s on %s in %.1fs",
@@ -1016,7 +1389,7 @@ def _idle_unload(generation: int) -> None:
         _schedule_idle_unload(generation)
         return
     try:
-        if _generation != generation or not _is_native(_loaded):
+        if _generation != generation or not _arbitrated(_loaded):
             return
         idle = time.monotonic() - _last_used
         if idle < IDLE_UNLOAD_S:
@@ -1027,22 +1400,22 @@ def _idle_unload(generation: int) -> None:
         _unloads += 1
     finally:
         _run_lock.release()
-    logger.info("System One unloaded the idle llama.cpp decision server")
+    logger.info("System One unloaded the idle decision model")
     _close(agent)
 
 
 def evict_for_gpu() -> None:
-    """GPU arbiter evictor: ends an idle llama.cpp decision server; refuses while it loads or decides."""
+    """GPU arbiter evictor: ends an idle llama.cpp server or MLX engine model; refuses while it loads or decides."""
     global _agent, _loaded, _device_name, _generation, _unloads
     from core.inference.gpu_arbiter import DECISIONS, GpuOwnerBusyError
 
     with _state_lock:
-        if _is_native(_loading):
+        if _arbitrated(_loading):
             raise GpuOwnerBusyError(DECISIONS)
     if not _run_lock.acquire(blocking = False):
         raise GpuOwnerBusyError(DECISIONS)
     try:
-        if not _is_native(_loaded):
+        if not _arbitrated(_loaded):
             return
         agent, _agent, _loaded, _device_name = _agent, None, None, None
         _generation += 1
@@ -1065,11 +1438,11 @@ def _clef_blocked_by_training(checkpoint: Checkpoint) -> None:
         return
     from .catalog import clef_unsupported_reason
 
-    native = _is_native(checkpoint)
-    # llama.cpp also serves Clef on CPU, Metal or Vulkan; the PyTorch worker needs CUDA or ROCm.
+    native = _arbitrated(checkpoint)
+    # llama.cpp also serves Clef on CPU, Metal or Vulkan, and MLX on Apple Silicon; the PyTorch worker needs CUDA or ROCm.
     if not native and (reason := clef_unsupported_reason()) is not None:
         raise Unavailable(400, "api_usage_error", reason)
-    if (native and not _native_gpu()) or not _training_active():
+    if (_is_native(checkpoint) and not _native_gpu()) or not _training_active():
         return
     # Clef has no CPU fallback: it waits for the GPU instead of taking it from the run.
     # Only a resident on the GPU: a llama.cpp server on CPU keeps serving during the run.
@@ -1091,10 +1464,13 @@ def _ensure_loading(checkpoint: Checkpoint) -> threading.Thread | None:
     with _state_lock:
         if _loaded == checkpoint and _agent is not None and not misplaced:
             return None
-        if _is_native(checkpoint) and _native_gpu():
+        if _wants_gpu(checkpoint):
             from core.inference.gpu_arbiter import DECISIONS, current_owner
             if current_owner() not in (None, DECISIONS):
-                raise Unavailable(409, "gpu_busy", _GPU_BUSY, retry_after = 1)
+                busy = _GPU_BUSY.format(
+                    checkpoint.name if _is_mlx(checkpoint) else "a decision model through llama.cpp"
+                )
+                raise Unavailable(409, "gpu_busy", busy, retry_after = 1)
         if _failure and _failure[0] == checkpoint and time.monotonic() < _failure[2]:
             raise Unavailable(
                 503,
@@ -1734,7 +2110,13 @@ def _route(checkpoint: Checkpoint, state, questions, images) -> dict[str, Any]:
     from .clef_runtime import MAX_LENGTH
     from .native_worker import NativeContextOverflow
 
-    target, reason = select(checkpoint, images, questions)
+    from utils.hardware import hardware
+
+    if checkpoint.layout != "laya" and hardware.is_apple_silicon():
+        # A request, unlike a settings read, waits for device detection, so the first one already knows of MLX.
+        hardware.get_device()
+    state_images = _state_has_images(state)
+    target, reason = select(checkpoint, images, questions, state_images = state_images)
     if checkpoint.layout != "laya":
         _fallback_reason = reason
     try:
@@ -1757,11 +2139,22 @@ def _route(checkpoint: Checkpoint, state, questions, images) -> dict[str, Any]:
         # A llama-server that turned out not to serve decisions: Auto answers this request on PyTorch.
         if not _is_native(target) or get_backend() != "auto" or images:
             raise
-        retry, reason = select(checkpoint, images, questions)
+        retry, reason = select(checkpoint, images, questions, state_images = state_images)
         if retry == target:
             raise
         _fallback_reason = reason
         return _decide(retry, state, questions, None)
+
+
+def _state_has_images(state) -> bool:
+    """Image parts of a chat-message state, which llama.cpp reads; they keep a request off the MLX engine (as unsloth-zoo scans them)."""
+    messages = state.get("messages") if isinstance(state, dict) else state
+    for message in messages if isinstance(messages, list) else []:
+        content = message.get("content") if isinstance(message, dict) else None
+        for part in content if isinstance(content, list) else []:
+            if isinstance(part, dict) and part.get("type") == "image_url":
+                return True
+    return False
 
 
 def _decide(
@@ -1783,6 +2176,16 @@ def _decide(
             result = _decide_native(checkpoint, agent, state, questions, images)
             _last_used = time.monotonic()
             return result
+        if _is_mlx(checkpoint):
+            result = agent.decide(state, questions, images)
+            _last_used = time.monotonic()
+            return {
+                "model": checkpoint.name,
+                "answers": {name: _wire_answer(result["answers"][name]) for name in questions},
+                "usage": {"input_tokens": int(result["usage"]["input_tokens"]), "output_tokens": 0},
+                "truncated": False,
+                "_backend": MLX,
+            }
         if checkpoint.layout == "clef":
             return _decide_clef(checkpoint, agent, state, questions)
         laya_questions = {name: _to_laya(q) for name, q in questions.items()}

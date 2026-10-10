@@ -233,3 +233,51 @@ def test_a_normal_model_still_gets_its_hook():
     model = _tiny(Normal)
     model.enable_input_require_grads()
     assert model.embed._forward_hooks, "the input-gradient hook must be registered"
+
+
+class _Routed(Exception):
+    pass
+
+
+def _route(tmp_path, monkeypatch, config):
+    import json
+    import unsloth.models.loader as loader
+
+    (tmp_path / "config.json").write_text(json.dumps(config.to_dict()))
+
+    def capture(*args, **kwargs):
+        raise _Routed(kwargs.get("auto_model"))
+
+    monkeypatch.setattr(loader.FastBaseModel, "from_pretrained", staticmethod(capture))
+    # Its pinned host buffer needs an accelerator; CPU CI has none.
+    monkeypatch.setattr(loader, "apply_unsloth_gradient_checkpointing", lambda value, *args: value)
+    # The load repoints transformers' LOSS_MAPPING at Unsloth's Triton loss for the whole process
+    # before the route is captured. Routing needs none of it, and left behind it sends every later
+    # CPU forward with labels in this worker into Triton (test_omni_text_only_load failed that way).
+    monkeypatch.setattr(loader, "patch_loss_functions", lambda *args, **kwargs: None)
+    with pytest.raises(_Routed) as routed:
+        loader.FastModel.from_pretrained(str(tmp_path), load_in_4bit = False)
+    return routed.value.args[0]
+
+
+@pytest.mark.parametrize(
+    "architecture", ["Qwen2_5OmniModel", "Qwen2_5OmniForConditionalGeneration"]
+)
+def test_qwen2_5_omni_routes_to_a_multimodal_class(tmp_path, monkeypatch, architecture):
+    """Qwen/Qwen2.5-Omni-3B / -7B name `Qwen2_5OmniModel` and nest vision under thinker_config (#2325)."""
+    config_class = getattr(transformers, "Qwen2_5OmniConfig", None)
+    if config_class is None:
+        pytest.skip("this transformers has no Qwen2.5-Omni")
+    config = config_class()
+    config.architectures = [architecture]
+    auto_model = _route(tmp_path, monkeypatch, config)
+    assert auto_model is not transformers.AutoModelForCausalLM
+    assert resolve_model_class(auto_model, config) is not None
+
+
+def test_a_text_checkpoint_still_routes_to_causal_lm(tmp_path, monkeypatch):
+    config = transformers.Qwen2Config(
+        hidden_size = 8, num_hidden_layers = 1, num_attention_heads = 1, intermediate_size = 8
+    )
+    config.architectures = ["Qwen2ForCausalLM"]
+    assert _route(tmp_path, monkeypatch, config) is transformers.AutoModelForCausalLM

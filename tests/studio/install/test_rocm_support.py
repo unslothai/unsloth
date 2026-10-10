@@ -1014,6 +1014,21 @@ class TestEnsureRocmTorch:
         pip_install_try mock so callers can assert on the reinstall."""
         probe = MagicMock(returncode = 0, stdout = _MARK + "2.10.0+rocm7.1|7.1|\n")
         pip_try = MagicMock(return_value = True)
+        from importlib.metadata import PackageNotFoundError
+        from types import SimpleNamespace
+
+        packages = {d.metadata["Name"].lower().replace("_", "-"): d for d in dists}
+        for package in ("torch", "torchvision"):
+            packages[package] = SimpleNamespace(
+                metadata = {"Name": package},
+                requires = [f'amd-{package}-device-{gfx}==2.11.0; extra == "device-{gfx}"'],
+            )
+
+        def distribution(name):
+            if name not in packages:
+                raise PackageNotFoundError(name)
+            return packages[name]
+
         with patch.dict(os.environ, {}, clear = False):
             os.environ.pop("UNSLOTH_ROCM_TORCH_INSTALLED", None)
             with (
@@ -1033,6 +1048,7 @@ class TestEnsureRocmTorch:
                 patch.object(stack_mod, "pip_install_try", pip_try),
                 patch("subprocess.run", return_value = probe),
                 patch("importlib.metadata.distributions", return_value = list(dists)),
+                patch("importlib.metadata.distribution", side_effect = distribution),
             ):
                 _ensure_rocm_torch()
         return pip_try
@@ -1076,6 +1092,8 @@ class TestEnsureRocmTorch:
         for n in names:
             d = MagicMock()
             d.metadata = {"Name": n}
+            d.version = "2.11.0"
+            d.requires = []
             out.append(d)
         return out
 

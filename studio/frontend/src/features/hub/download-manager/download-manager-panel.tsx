@@ -86,22 +86,31 @@ function repoLabel(repoId: string): string {
   return isAudioCppFolderId(repoId) ? audioCppDisplayName(repoId) : repoId;
 }
 
+function isRequiredAssetJob(job: ManagedDownload): boolean {
+  if (!job.variant?.startsWith("@")) return false;
+  // The staging page tagged the entry it picked, which is the only reliable answer: a checkpoint
+  // can be a curated single .safetensors and companion repos carry .safetensors too, so the
+  // extension decides nothing. The old guess stays for jobs persisted before the flag existed,
+  // which would otherwise change label mid-download after a restart.
+  const isModelFile =
+    job.checkpoint ??
+    job.scopedFiles?.some((file) => file.toLowerCase().endsWith(".gguf"));
+  return !isModelFile;
+}
+
+// Only staged media picks set checkpoint=false; other scoped jobs (Decision API model) carry no flag.
+const REQUIRED_ASSET_NOTE =
+  "Required to run this model. Downloaded once, shared across compatible variants.";
+
 function variantSuffix(job: ManagedDownload): string {
   if (job.variant?.startsWith("@")) {
-    // The staging page tagged the entry it picked, which is the only reliable answer: a checkpoint
-    // can be a curated single .safetensors and companion repos carry .safetensors too, so the
-    // extension decides nothing. The old guess stays for jobs persisted before the flag existed,
-    // which would otherwise change label mid-download after a restart.
-    const isModelFile =
-      job.checkpoint ??
-      job.scopedFiles?.some((file) => file.toLowerCase().endsWith(".gguf"));
     return ` · ${
-      isModelFile
-        ? "Model file"
-        : assetLabel(
+      isRequiredAssetJob(job)
+        ? assetLabel(
             { repoId: job.repoId, files: job.scopedFiles, bytes: 0 },
             "Required assets",
           )
+        : "Model file"
     }`;
   }
   return job.variant ? ` · ${job.variant}` : "";
@@ -193,6 +202,10 @@ function DownloadRow({ jobKey }: { jobKey: string }) {
       {job.presentation ? (
         <div className="truncate text-ui-10p5 text-muted-foreground">
           {job.presentation.filename}
+        </div>
+      ) : isRequiredAssetJob(job) && job.checkpoint === false ? (
+        <div className="text-ui-10p5 text-muted-foreground">
+          {REQUIRED_ASSET_NOTE}
         </div>
       ) : null}
       {active ? (
@@ -306,7 +319,7 @@ export function DownloadManagerPanel({
             ))}
             {queued.map((entry, i) => <li key={`${entry.planId}:${i}`} className="flex flex-col gap-1.5 py-2.5 pl-4 pr-3">
               <span className="truncate text-ui-12p5 font-medium">{entry.repoId}<span className="text-muted-foreground"> · {entry.checkpoint !== false ? "Model file" : assetLabel(entry, "Required assets")}</span></span>
-              <span className="text-ui-11 text-muted-foreground">Queued</span>
+              <span className="text-ui-11 text-muted-foreground">{entry.checkpoint !== false ? "Queued" : `Queued · ${REQUIRED_ASSET_NOTE}`}</span>
             </li>)}
           </ul>
         </div>

@@ -284,7 +284,9 @@ import {
   createAnnotationsFile,
 } from "./utils/document-annotations";
 import { requestTemporaryPromptQueueStop } from "./utils/prompt-queue-boundary";
+import { savedBranchHead } from "./utils/branch-head";
 import { estimateContextUsage } from "./utils/estimate-chat-tokens";
+import { orderBySelectedBranch } from "./utils/message-order";
 import { isAssistantLocalThreadId } from "./utils/thread-ids";
 import {
   consumeProjectSourcesPending,
@@ -4236,10 +4238,9 @@ export function ChatPage({
   }, [currentProjectId, navigate, search]);
 
   const exitCompare = useCallback(() => {
-    // Prefer the explicit save; fall back to the last non-compare view so the composer + menu path
-    // also returns where the user started.
+    // the composer and menu exit paths rely on the last non-compare view.
     const saved = viewBeforeCompareRef.current ?? lastNonCompareViewRef.current;
-    // No saved view (compare opened by direct URL); fall back to a fresh chat.
+    // direct compare URLs have no saved view, so return to a fresh chat.
     if (!saved) {
       navigate({ to: "/chat" });
       return;
@@ -4252,10 +4253,13 @@ export function ChatPage({
       void listStoredChatMessages(threadId)
         .then((messages) => {
           const store = useChatRuntimeStore.getState();
-          const usage = savedUsageFor(messages, store) ?? estimateContextUsage(messages);
+          const branch = orderBySelectedBranch(
+            messages,
+            savedBranchHead(threadId, messages),
+          );
+          const usage = savedUsageFor(branch, store) ?? estimateContextUsage(branch);
           if (!usage) return;
-          // Key by the thread this restore read, like the history loader: the await above can outlast a
-          // switch away, and an unkeyed write would file this usage under the incoming thread.
+          // key usage by the restored thread because this read can outlast a thread switch.
           store.setThreadContextUsage(threadId, usage);
           if (store.activeThreadId === threadId) {
             store.setContextUsage(usage);
@@ -4765,7 +4769,8 @@ export function ChatPage({
           </div>
           <div className="pointer-events-auto ml-auto flex min-w-min max-w-max grow basis-0 items-center gap-1 *:shrink-0">
             {showContextWindowUsage &&
-            view.mode === "single" &&
+            (view.mode === "single" ||
+              (view.mode === "project" && activeThreadId != null)) &&
             (contextUsage || contextWindowKnown) ? (
               <ContextUsageBar
                 used={contextUsage?.contextTokens ?? contextUsage?.totalTokens ?? null}
