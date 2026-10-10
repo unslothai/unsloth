@@ -209,7 +209,7 @@ _MAX_REPEATED_CELL_CHARS = 200
 _MIN_SCOPE_SPAN_CHARS = 256
 _INLINE_EMPHASIS = {"strong": "**", "b": "**", "em": "*", "i": "*"}
 
-_ORDINAL_SUFFIXES = frozenset({"st", "nd", "rd", "th"})
+_PLAIN_SUFFIXES = frozenset({"st", "nd", "rd", "th", "tm", "sm"})
 # French ordinals after a digit (1er, 2e, 3ème); after a letter "e" can be Euler's number
 _DIGIT_ORDINAL_SUFFIXES = frozenset({"e", "er", "re", "ère", "ème", "eme", "nd", "nde"})
 _MD_DELIMITERS = "*_`"
@@ -601,7 +601,9 @@ class _MarkdownRenderer(HTMLParser):
             if part:
                 base = part[-1]
                 if base.isdigit() and _PRICE_TAIL.search(
-                    _visible_tail("".join(p[-40:] for p in target[-4:])[-40:])
+                    _visible_tail("".join(p[-40:] for p in target[-4:])[-40:]).translate(
+                        _STRIP_MD_DELIMITERS
+                    )
                 ):
                     return ""
                 return base if base.isalnum() or base in ")]}|" else ""
@@ -627,7 +629,7 @@ class _MarkdownRenderer(HTMLParser):
             or "\n" in visible
             or visible[0] in "[."
             or not any(c.isalnum() for c in visible)
-            or visible.lower() in _ORDINAL_SUFFIXES
+            or visible.lower() in _PLAIN_SUFFIXES
             or (base.isdigit() and visible.lower() in _DIGIT_ORDINAL_SUFFIXES)
         ):
             return

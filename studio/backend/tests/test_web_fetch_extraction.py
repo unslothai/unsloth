@@ -753,6 +753,8 @@ def test_page_that_fits_keeps_its_links(monkeypatch):
         ("e<sup>i&pi;</sup> + 1 = 0", "e^(iπ) + 1 = 0"),
         ("now $19<sup>99</sup> or &euro; 1,299<sup>95</sup>", "now $1999 or € 1,29995"),
         ("<b>$19</b><sup>99</sup>", "**$19**99"),
+        ("$<b>19</b><sup>99</sup>", "$**19**99"),
+        ("Brand<sup>TM</sup> and Service<sup>SM</sup>", "BrandTM and ServiceSM"),
         ("&euro;1.299<sup>95</sup> or &euro;1 299<sup>95</sup>", "€1.29995 or €1 29995"),
         (
             'claim<sup role="doc-noteref">1</sup> and fact<sup class="footnote">2</sup>',
