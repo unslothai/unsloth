@@ -71,16 +71,22 @@ def validate_load(engine: str, request) -> list[int]:
         raise ValueError(
             f"On Windows, {ENGINE_NAMES[engine]} runs on one AMD GPU. Select a single GPU."
         )
-    # HIP renumbers devices after GPU_DEVICE_ORDINAL, so the engine's mask could name another card.
-    if (
-        os.environ.get("GPU_DEVICE_ORDINAL", "").strip()
-        and not wsl_host.active()
-        and profile(engine)["platform"] == "rocm"
-    ):
-        raise ValueError(
-            f"{ENGINE_NAMES[engine]} cannot select AMD GPUs while Studio runs with "
-            "GPU_DEVICE_ORDINAL set. Use HIP_VISIBLE_DEVICES or ROCR_VISIBLE_DEVICES instead."
-        )
+    if not wsl_host.active() and profile(engine)["platform"] == "rocm":
+        from utils.hardware.hardware import _rocm_visibility_masks_are_stacked
+
+        # HIP renumbers devices after GPU_DEVICE_ORDINAL, and a HIP mask over a ROCr mask indexes
+        # what ROCr left: either way the engine's own mask could name another card.
+        if os.environ.get("GPU_DEVICE_ORDINAL", "").strip():
+            mask = "GPU_DEVICE_ORDINAL set"
+        elif _rocm_visibility_masks_are_stacked():
+            mask = "both ROCR_VISIBLE_DEVICES and HIP_VISIBLE_DEVICES (or CUDA_VISIBLE_DEVICES) set"
+        else:
+            mask = None
+        if mask:
+            raise ValueError(
+                f"{ENGINE_NAMES[engine]} cannot select AMD GPUs while Studio runs with {mask}. "
+                "Use only HIP_VISIBLE_DEVICES or only ROCR_VISIBLE_DEVICES instead."
+            )
     for gpu_id in gpu_ids:
         reason = support_reason(engine, gpu_id)
         if reason:

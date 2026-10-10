@@ -392,6 +392,16 @@ def test_amd_refuses_a_gpu_device_ordinal_mask(rocm, monkeypatch):
     monkeypatch.setenv("GPU_DEVICE_ORDINAL", "1,0")
     with pytest.raises(ValueError, match = "GPU_DEVICE_ORDINAL"):
         managed_engine.validate_load("vllm", request)
+    monkeypatch.delenv("GPU_DEVICE_ORDINAL")
+    # ROCR_VISIBLE_DEVICES=2,0 under HIP_VISIBLE_DEVICES=1 is physical GPU 0 to Studio's torch.
+    from utils.hardware import hardware
+
+    monkeypatch.setattr(hardware, "_rocm_visibility_masks_are_stacked", lambda: True)
+    with pytest.raises(ValueError, match = "ROCR_VISIBLE_DEVICES and HIP_VISIBLE_DEVICES"):
+        managed_engine.validate_load("vllm", request)
+    monkeypatch.setattr(hardware, "_rocm_visibility_masks_are_stacked", lambda: False)
+    assert managed_engine.validate_load("vllm", request) == [1]
+    monkeypatch.setattr(hardware, "_rocm_visibility_masks_are_stacked", lambda: True)
     # The NVIDIA profile never reads it.
     monkeypatch.setattr(install, "gpu_platform", lambda: "cuda")
     monkeypatch.setattr(install, "_studio_packages", lambda: {})
