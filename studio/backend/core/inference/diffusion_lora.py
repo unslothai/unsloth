@@ -312,22 +312,24 @@ def export_local_lora(lora_id: str, dest_dir: Path) -> Path:
         # Exporting into the folder it already sits in would copy a file onto itself.
         copy = not (out.exists() and os.path.samefile(src, out))
         # Both files are staged under names no scanner reads, so a failed export leaves nothing behind.
+        sidecar = out.with_suffix(".json")
         staged: list[str] = []
-        created = copy and not out.exists()
+        new_sidecar = not sidecar.exists()
         try:
             if copy:
                 staged.append(_staging_name(dest_dir, src.stem))
                 shutil.copy2(src, staged[-1])
             staged.append(_staging_name(dest_dir, src.stem))
             Path(staged[-1]).write_text(meta, encoding = "utf-8")
+            # Marker first: a scanner must never see the weight unmarked.
+            os.replace(staged[-1], sidecar)
             if copy:
                 os.replace(staged[0], out)
-            os.replace(staged[-1], out.with_suffix(".json"))
         except BaseException:
             for tmp in staged:
                 Path(tmp).unlink(missing_ok = True)
-            if created and not out.with_suffix(".json").exists():
-                out.unlink(missing_ok = True)
+            if new_sidecar and not out.exists():
+                sidecar.unlink(missing_ok = True)
             raise
     return out
 
@@ -339,6 +341,7 @@ def resolve_one(
     family: Optional[str] = None,
     hf_token: Optional[str] = None,
     cancel_event: Optional[threading.Event] = None,
+    catalog: Optional[dict[str, LoraCatalogEntry]] = None,
 ) -> ResolvedLora:
     """Resolve a request LoRA id + weight to a concrete local file.
 
@@ -352,7 +355,7 @@ def resolve_one(
     """
     # An empty token triggers an auth error instead of anonymous access; normalise to None.
     hf_token = hf_token.strip() if hf_token and hf_token.strip() else None
-    entry = _catalog_by_id().get(spec_id)
+    entry = (_catalog_by_id() if catalog is None else catalog).get(spec_id)
     if entry is not None:
         req_fam = (family or "").strip().lower()
         if entry.families and req_fam and req_fam not in {f.lower() for f in entry.families}:
@@ -456,13 +459,20 @@ def resolve_specs(
     )
 
     out: list[ResolvedLora] = []
+    # One custom-folder scan per request, not one per stacked LoRA.
+    catalog = _catalog_by_id() if any(weight != 0 for _, weight in specs) else {}
     try:
         for spec_id, weight in specs:
             if weight == 0:
                 continue
             out.append(
                 resolve_one(
-                    spec_id, weight, family = family, hf_token = hf_token, cancel_event = cancel_event
+                    spec_id,
+                    weight,
+                    family = family,
+                    hf_token = hf_token,
+                    cancel_event = cancel_event,
+                    catalog = catalog,
                 )
             )
     except (

@@ -101,6 +101,19 @@ def test_a_failed_sidecar_write_leaves_nothing_behind(loras, tmp_path, monkeypat
     assert list((tmp_path / "out").iterdir()) == []
 
 
+def test_the_marker_is_published_before_the_weight(loras, tmp_path, monkeypatch):
+    real_replace = os.replace
+
+    def checked(src, dst):
+        if str(dst).endswith(".safetensors"):
+            assert Path(dst).with_suffix(".json").is_file()
+        real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", checked)
+    out = dl.export_local_lora("mystyle", tmp_path / "out")
+    assert dl.is_image_lora_file(out)
+
+
 def test_export_refuses_ids_outside_the_local_catalog(loras, tmp_path):
     secret = tmp_path / "secret.safetensors"
     secret.write_bytes(b"secret")

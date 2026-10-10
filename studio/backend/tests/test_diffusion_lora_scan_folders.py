@@ -178,3 +178,14 @@ def test_the_lmstudio_fallback_skips_marked_loras(tmp_path, scanner):
         gguf.with_suffix(".json").write_text(json.dumps(_MARK))
     (tmp_path / "real.gguf").write_bytes(b"GGUF" + b"\0" * 60)
     assert [row.display_name for row in _scan_lmstudio_dir(tmp_path)] == ["real"]
+
+
+def test_stacked_loras_share_one_custom_folder_scan(catalog, tmp_path, monkeypatch):
+    for name in ("a", "b", "c"):
+        (catalog / f"{name}.safetensors").write_bytes(b"w")
+    calls = []
+    real = dl._scan_folder_roots
+    monkeypatch.setattr(dl, "_scan_folder_roots", lambda: calls.append(1) or real())
+    resolved = dl.resolve_specs([("a", 1.0), ("b", 0.5), ("c", 0.8)])
+    assert [r.path for r in resolved] == [str(catalog / f"{n}.safetensors") for n in "abc"]
+    assert len(calls) == 1
