@@ -21,6 +21,7 @@ import {
   isSilencedDesktopUpdateFailure,
 } from "@/lib/desktop-update-activity";
 import { subscribeModelLifecycle } from "@/lib/model-lifecycle-events";
+import { resolveSpeculativeType } from "@/lib/speculative-modes";
 import {
   type TransferSample,
   appendSample,
@@ -166,6 +167,7 @@ import {
   DEFAULT_MAX_SEQ_LENGTH,
   DEFAULT_PER_MODEL_CONFIG,
   applyPerModelConfigToRuntime,
+  confirmManagedEngineIfNeeded,
   currentRuntimePerModelConfig,
   isServedByMlx,
   normalizeMaxSeqLength,
@@ -1808,9 +1810,9 @@ export function useChatModelRuntime() {
       const { keepModelsLoaded, loadedModels: loadedNow, params: paramsNow } =
         useChatRuntimeStore.getState();
       // vLLM and SGLang always replace the loaded models, so they keep the running-chat prompt.
-      const keepsOthers =
+      let keepsOthers =
         keepModelsLoaded && !forceReload && (paramsNow.engine ?? "auto") === "auto";
-      const switchingNote = keepsOthers ? "Keeping the loaded models." : "Switching models.";
+      let switchingNote = keepsOthers ? "Keeping the loaded models." : "Switching models.";
       // Reloading one of several touches only its own slot, so only its chats stop.
       const touchesOnlySelected =
         forceReload && !isExternalModelId(paramsNow.checkpoint) && loadedNow.length > 1;
@@ -1861,7 +1863,7 @@ export function useChatModelRuntime() {
         releasePreflightLifecycleLease();
         throw error;
       }
-      const forceCancelActive = stopDecision.forceCancelActive;
+      let forceCancelActive = stopDecision.forceCancelActive;
 
       const explicitIsLora =
         typeof selection === "string" ? undefined : selection.isLora;
@@ -2008,6 +2010,8 @@ export function useChatModelRuntime() {
         (typeof selection !== "string" ? selection.config?.engine : undefined) ??
         useChatRuntimeStore.getState().params.engine ?? "auto";
       const managedLoad = !isGguf && requestedEngine !== "auto";
+      // Set when the Default engine cannot run the checkpoint and the user picked vLLM / SGLang (#11728).
+      let engineSwitched = false;
       let downloadComplete = isDownloaded || isCachedLora || managedLoad;
       let cpuFallbackReason: CpuFallbackReason | null = null;
       let mmprojFallbackReason: MmprojFallbackReason | null = null;
@@ -2245,6 +2249,7 @@ export function useChatModelRuntime() {
               : stateBeforeUnload.speculativeType;
           let loadSpecDraftNMax =
             pendingLoadConfig?.specDraftNMax ?? stateBeforeUnload.specDraftNMax;
+          let loadSpecDraftModel = stateBeforeUnload.specDraftModel;
           let loadNParallel =
             pendingLoadConfig?.nParallel ?? stateBeforeUnload.nParallel;
           let loadReasoningBudget =
@@ -2270,6 +2275,11 @@ export function useChatModelRuntime() {
               pendingLoadConfig?.ctxCheckpoints ??
               stateBeforeUnload.ctxCheckpoints,
             cacheRam: pendingLoadConfig?.cacheRam ?? stateBeforeUnload.cacheRam,
+          };
+          let loadEngineFields = {
+            engine: stateBeforeUnload.params.engine ?? "auto",
+            engine_precision: stateBeforeUnload.params.enginePrecision ?? "auto",
+            engine_parallelism: stateBeforeUnload.params.engineParallelism ?? "tensor",
           };
           try {
             // Lightweight pre-flight validation: avoid unloading a working model if the new identifier is
@@ -2396,6 +2406,78 @@ export function useChatModelRuntime() {
             // validateModel cannot be aborted either, and everything below writes shared
             // state, so stop here if a replacement superseded this load meanwhile.
             if (abortCtrl.signal.aborted) throw new Error("Cancelled");
+            const engineOffer =
+              !isGguf && loadEngineFields.engine === "auto"
+                ? validation.managed_engine_offer
+                : null;
+            if (engineOffer) {
+              const engine = await confirmManagedEngineIfNeeded(
+                modelId,
+                engineOffer,
+                abortCtrl.signal,
+              );
+              if (abortCtrl.signal.aborted) throw new Error("Cancelled");
+              if (!engine) {
+                throw new Error(
+                  `${displayName} is quantized with ${engineOffer.quantization}, which the default engine cannot run. Set Inference engine to ${engineOffer.engines[0] === "sglang" ? "SGLang" : "vLLM"} in its run settings to load it.`,
+                );
+              }
+              loadEngineFields = {
+                engine,
+                engine_precision: "auto",
+                engine_parallelism: "tensor",
+              };
+              engineSwitched = true;
+              downloadComplete = true;
+              if (keepsOthers) {
+                // vLLM and SGLang replace every loaded model, so ask as any replacing load does.
+                stopDecision = await confirmStopRunningChatsIfNeeded(
+                  "Loading a different model",
+                  "reload",
+                );
+                if (abortCtrl.signal.aborted) throw new Error("Cancelled");
+                if (!stopDecision.proceed) {
+                  // Declined before anything was unloaded: exit as a cancellation, not a failed load.
+                  if (
+                    modelSelectionIntentEpoch === loadIntentId &&
+                    pendingReplacementRollback?.residentUnloaded === false
+                  ) {
+                    pendingReplacementRollback = null;
+                  }
+                  resetLoadingUiForRun(loadRun);
+                  abortCtrl.abort();
+                  throw new Error("Cancelled");
+                }
+                keepsOthers = false;
+                forceCancelActive = stopDecision.forceCancelActive;
+                loadRun.forceCancelActive = forceCancelActive;
+                loadingDescription = loadingDescription.replace(switchingNote, "Switching models.");
+                switchingNote = "Switching models.";
+              }
+              // Re-validate as that engine before unloading; a spent Desktop path lease relies on /load.
+              if (!nativePathToken) {
+                Object.assign(
+                  validation,
+                  await validateModel(
+                    {
+                      model_path: loadPath,
+                      ...loadEngineFields,
+                      hf_token: hfToken,
+                      max_seq_length: validateMaxSeqLength,
+                      load_in_4bit: false,
+                      is_lora: isLora,
+                      gguf_variant: ggufVariant ?? null,
+                      cache_type_kv: loadKvCacheDtype,
+                      tensor_parallel: loadTensorParallel,
+                      disable_vision: loadDisableVision,
+                      gpu_ids: validateGpuIds ?? undefined,
+                    },
+                    { signal: abortCtrl.signal },
+                  ),
+                );
+                if (abortCtrl.signal.aborted) throw new Error("Cancelled");
+              }
+            }
             if (validation.mlx_loads_base_model) {
               mlxLoadProgress = true;
               const mlxBaseDescription = isLora
@@ -2506,6 +2588,8 @@ export function useChatModelRuntime() {
                 loadedSpeculativeType: persistedSpeculativeType,
                 specDraftNMax: null,
                 loadedSpecDraftNMax: null,
+                specDraftModel: null,
+                loadedSpecDraftModel: null,
                 // Per-model too: a different model follows the server default unless its staged config overrides it.
                 nParallel: null,
                 loadedNParallel: null,
@@ -2577,6 +2661,14 @@ export function useChatModelRuntime() {
               platform.deviceType,
               platform.chatOnlyReason,
             );
+            // Only a same-model reload without a staged config reuses the resident's settings; otherwise the
+            // drafter is this model's own and a standing mode goes through the resolver.
+            if (targetIsMlx && (pendingLoadConfig != null || switchingModelOrVariant)) {
+              loadSpecDraftModel = pendingLoadConfig?.specDraftModel ?? null;
+              if (loadSpeculativeType && pendingLoadConfig?.speculativeType == null) {
+                loadSpeculativeType = resolveSpeculativeType(null, loadSpeculativeType, true);
+              }
+            }
             const explicitCtxPin = loadRequestContextPin(
               loadCustomContextLength,
               targetIsMlx,
@@ -2635,9 +2727,8 @@ export function useChatModelRuntime() {
 
             const loadResponse = await loadModel({
               model_path: loadPath,
-              engine_precision: stateBeforeUnload.params.enginePrecision ?? "auto",
-              engine_parallelism: stateBeforeUnload.params.engineParallelism ?? "tensor",
-              engine: isGguf ? "auto" : (stateBeforeUnload.params.engine ?? "auto"),
+              ...loadEngineFields,
+              engine: isGguf ? "auto" : loadEngineFields.engine,
               load_request_id: loadRun.requestId,
               nativePathLease: loadNativePathLease,
               hf_token: hfToken,
@@ -2647,7 +2738,7 @@ export function useChatModelRuntime() {
                 loadCustomContextLength,
                 loadMaxSeqLength,
               ),
-              load_in_4bit: (stateBeforeUnload.params.engine ?? "auto") === "auto",
+              load_in_4bit: loadEngineFields.engine === "auto",
               is_lora: isLora,
               gguf_variant: ggufVariant ?? null,
               trust_remote_code: trustRemoteCode,
@@ -2658,6 +2749,7 @@ export function useChatModelRuntime() {
               mlx_int8_prefill: loadMlxInt8Prefill,
               speculative_type: loadSpeculativeType,
               spec_draft_n_max: loadSpecDraftNMax,
+              ...(targetIsMlx ? { spec_draft_model: loadSpecDraftModel } : {}),
               n_parallel: loadNParallel,
               reasoning_budget:
                 isGguf && !targetIsDiffusion ? loadReasoningBudget : -1,
@@ -2707,8 +2799,9 @@ export function useChatModelRuntime() {
 
             // The load applied this spec mode, so persist the user's standing preference now: the requested
             // intent, not the resolved echo, since saveSpeculativeType keeps only the universal auto/ngram/off.
-            // Skipped for a per-model config (keepSpeculative), whose choice must not overwrite the global.
-            if (!keepSpeculative) {
+            // Skipped for a per-model config (keepSpeculative), whose choice must not overwrite the global,
+            // and for MLX, which only reads it.
+            if (!(keepSpeculative || targetIsMlx)) {
               saveSpeculativeType(loadSpeculativeType);
             }
             // Persist the GPU Memory mode only on a successful load, so an abandoned selection does not stick.
@@ -2884,6 +2977,8 @@ export function useChatModelRuntime() {
               loadedSpeculativeType: loadedSpec,
               specDraftNMax: loadResponse.spec_draft_n_max ?? null,
               loadedSpecDraftNMax: loadResponse.spec_draft_n_max ?? null,
+              specDraftModel: loadResponse.spec_draft_model ?? null,
+              loadedSpecDraftModel: loadResponse.spec_draft_model ?? null,
               // Keep the click-time value: the echo is the resolved count, and adopting it would pin a blank
               // "server default" control.
               nParallel: committedSlots,
@@ -3053,6 +3148,7 @@ export function useChatModelRuntime() {
                     rollbackState.loadedSpeculativeType,
                   spec_draft_n_max:
                     rollbackState.loadedSpecDraftNMax,
+                  spec_draft_model: rollbackState.loadedSpecDraftModel,
                   n_parallel: rollbackState.loadedNParallel,
                   reasoning_budget:
                     rollbackState.loadedReasoningBudgetRequested ?? -1,
@@ -3112,6 +3208,7 @@ export function useChatModelRuntime() {
                   // from its reload echo.
                   speculativeType: rollbackState.loadedSpeculativeType ?? null,
                   specDraftNMax: rollbackState.loadedSpecDraftNMax ?? null,
+                  specDraftModel: rollbackState.loadedSpecDraftModel ?? null,
                   // Control keeps its intent; only the baseline takes the echo.
                   nParallel: previousNParallel,
                   loadedNParallel: rollbackState.loadedNParallel ?? null,
@@ -3149,6 +3246,7 @@ export function useChatModelRuntime() {
                   loadedSpeculativeType: rollbackSpeculativeType,
                   loadedSpecDraftNMax:
                     rollbackResponse.spec_draft_n_max ?? null,
+                  loadedSpecDraftModel: rollbackResponse.spec_draft_model ?? null,
                   loadedKvCacheDtype: rollbackResponse.cache_type_kv ?? null,
                   ...mlxRuntimeStateFrom(rollbackResponse),
                   // After the spread, which seeds the control from the echo; the control keeps its intent, like
@@ -3446,7 +3544,7 @@ export function useChatModelRuntime() {
               if (progressInterval) clearInterval(progressInterval);
               return;
             }
-            if (managedLoad && prog.bytes_total <= 0) {
+            if ((managedLoad || engineSwitched) && prog.bytes_total <= 0) {
               const label = prog.phase === "warming_up"
                 ? "Warming up inference kernels. The first load can take several minutes."
                 : prog.phase === "loading_weights"
