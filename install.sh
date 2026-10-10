@@ -3824,6 +3824,9 @@ _uv_version_ok() {  # uv command, floor (defaults to UV_MIN_VERSION)
 # ── uv from a pinned release ──
 # Mirrors Install-UvFromRelease in install.ps1; bumping the version means bumping every hash (<asset>.sha256) and every _uv_pinned_wheel entry.
 UV_PINNED_VERSION="0.12.1"
+# sha256 of astral's versioned install.sh for UV_PINNED_VERSION (the release's uv-installer.sh asset), checked before the
+# unpinned-host fallback runs it.
+UV_INSTALLER_SH_SHA256="d3f5412d38c99f9d024901843bf98206f0d2c6dbe64df40d0b740e2751ca62c1"
 
 # Echoes the glibc minor version (the N in 2.N), or nothing when this is not a glibc host or the version cannot be read. "not musl" is not the same as "a glibc new enough to run the GNU build": astral's installer checks a minimum and drops to its musl-static archive below it, so a host we cannot positively confirm has to reach the fallback rather than take a binary that will not exec.
 _uv_glibc_minor() {
@@ -4122,7 +4125,14 @@ if ! command -v uv >/dev/null 2>&1 || ! _uv_version_ok uv; then
             # The versioned installer installs the same pinned release (and checks its per-asset sha256), not whatever is latest.
             _uv_tmp=$(mktemp)
             if download "https://astral.sh/uv/$UV_PINNED_VERSION/install.sh" "$_uv_tmp"; then
-                run_maybe_quiet sh "$_uv_tmp" </dev/null || _uv_refreshed=false
+                # A host with no sha256 tool runs it as before; anything else must be the exact pinned script.
+                _uv_inst_sum=$(_uv_sha256 "$_uv_tmp")
+                if [ -n "$_uv_inst_sum" ] && [ "$_uv_inst_sum" != "$UV_INSTALLER_SH_SHA256" ]; then
+                    substep "uv installer script failed its sha256 check; not running it"
+                    _uv_refreshed=false
+                else
+                    run_maybe_quiet sh "$_uv_tmp" </dev/null || _uv_refreshed=false
+                fi
             else
                 _uv_refreshed=false
             fi
