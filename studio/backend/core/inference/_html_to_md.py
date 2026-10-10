@@ -729,7 +729,9 @@ class _MarkdownRenderer(HTMLParser):
         self._bq_stack: list[list[str]] = []
 
         # per open <sup>: (output list, start) and the (copy, start) pairs that tee the same text
-        self._sup_starts: list[tuple[list[str], int, list[tuple[list[str], int]], str] | None] = []
+        self._sup_starts: list[
+            tuple[list[str], int, list[tuple[list[str], int]], str, bool] | None
+        ] = []
 
     def _nested_buffer_open(self, frame: _HeaderFrame) -> bool:
         """True when a side buffer opened *inside* *frame* still holds content.
@@ -802,18 +804,20 @@ class _MarkdownRenderer(HTMLParser):
             part = _visible_tail(part)
             if part:
                 base = part[-1]
-                if base.isdigit():
-                    context = _visible_tail("".join(p[-40:] for p in target[-8:])[-40:])
-                    context = context.translate(_STRIP_MD_DELIMITERS)
-                    price = _PRICE_TAIL.search(context)
-                    # any Unicode currency sign (Sc): $, €, ₺, ₱, ...; or an ISO code: CHF 19
-                    if (price and unicodedata.category(price.group(1)) == "Sc") or (
-                        (code := _CODE_PRICE_TAIL.search(context))
-                        and code.group(1) in _CURRENCY_CODES
-                    ):
-                        return ""
                 return part if base.isalnum() or base in ")]}|" else ""
         return ""
+
+    @staticmethod
+    def _after_price(target: list[str]) -> bool:
+        """True when *target* ends in a currency amount ($19, CHF 19), so two-digit cents follow."""
+        context = _visible_tail("".join(p[-40:] for p in target[-8:])[-40:])
+        context = context.translate(_STRIP_MD_DELIMITERS)
+        price = _PRICE_TAIL.search(context)
+        # any Unicode currency sign (Sc): $, €, ₺, ₱, ...; or an ISO code: CHF 19
+        if price and unicodedata.category(price.group(1)) == "Sc":
+            return True
+        code = _CODE_PRICE_TAIL.search(context)
+        return bool(code and code.group(1) in _CURRENCY_CODES)
 
     def _sup_copies(self) -> list[tuple[list[str], int]]:
         copies = [self._link_heading_parts, self._seg_heading_texts]
@@ -825,7 +829,7 @@ class _MarkdownRenderer(HTMLParser):
         opened = self._sup_starts.pop()
         if opened is None or opened[0] is not self._emit_target():
             return
-        target, start, copies, base = opened
+        target, start, copies, base, after_price = opened
         joined = "".join(target[start:])
         raw = joined.strip()
         shown = self._site_links.clean(raw) if self._site_links is not None else raw
@@ -841,6 +845,8 @@ class _MarkdownRenderer(HTMLParser):
                 and visible.lower() in _DIGIT_ORDINAL_SUFFIXES
             )
             or visible in _SUPERIOR_ABBREVIATIONS.get(_last_word(base), ())
+            # split cents are two digits; $2<sup>n</sup> or USD 10<sup>6</sup> stays an exponent
+            or (after_price and len(visible) == 2 and visible.isdigit())
         ):
             return
         # only the emphasis wrapping a whole exponent is renderer syntax; an inner * is an operator
@@ -1320,7 +1326,13 @@ class _MarkdownRenderer(HTMLParser):
                 if reference
                 or len(self._sup_starts) >= _MAX_SUP_DEPTH
                 or not (base := self._sup_base(target))
-                else (target, len(target), self._sup_copies(), base)
+                else (
+                    target,
+                    len(target),
+                    self._sup_copies(),
+                    base,
+                    base[-1].isdigit() and self._after_price(target),
+                )
             )
 
         elif tag in _BLOCK_TAGS:

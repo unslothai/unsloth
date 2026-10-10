@@ -778,6 +778,7 @@ def test_page_that_fits_keeps_its_links(monkeypatch):
             "ZWG 19<sup>99</sup>, les 1<sup>ers</sup> et 1<sup>res</sup>",
             "ZWG 1999, les 1ers et 1res",
         ),
+        ("$2<sup>n</sup> and USD 10<sup>6</sup>, $19<sup>99</sup>", "$2^n and USD 10^6, $1999"),
         (
             "M<sup>me</sup> Dupont, D<sup>r</sup> Martin, n<sup>o</sup> 5, Om<sup>e</sup>",
             "Mme Dupont, Dr Martin, no 5, Om^e",
