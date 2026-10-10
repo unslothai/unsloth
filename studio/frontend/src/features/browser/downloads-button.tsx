@@ -26,7 +26,7 @@ import {
   ArrowUpRight01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { type FinishedDownload, mountDownloadsButton, useDownloadActivity } from "./download-activity";
 import { formatSize, revealLabelKey } from "./download-format";
 import { type Target, openTarget, revealTarget } from "./download-open";
@@ -323,6 +323,7 @@ export function DownloadsButton({
     visible && finished ? "finished" : "closed",
   );
   const [hovered, setHovered] = useState(false);
+  const anchorRef = useRef<HTMLSpanElement>(null);
   // Only finishes after mount pop the notice. An open list shows recorded ones itself; the rest still need it.
   const [seen, setSeen] = useState(finishedSequence);
   if (finishedSequence !== seen) {
@@ -363,6 +364,7 @@ export function DownloadsButton({
     <Popover open={mode !== "closed"} onOpenChange={(open) => (open ? setMode("list") : close())}>
       <PopoverAnchor asChild={true}>
         <span
+          ref={anchorRef}
           className={cn(
             "relative flex shrink-0",
             idleHidden && !active && !finished && mode === "closed" && "hidden",
@@ -394,6 +396,10 @@ export function DownloadsButton({
         align="end"
         sideOffset={8}
         onOpenAutoFocus={(event) => mode === "finished" && event.preventDefault()}
+        // The button is only the anchor: a press on it would dismiss here, then its click reopen.
+        onInteractOutside={(event) => {
+          if (anchorRef.current?.contains(event.target as Node)) event.preventDefault();
+        }}
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
         className={cn(
