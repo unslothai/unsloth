@@ -50,11 +50,17 @@ from core.inference.diffusion_families import (
     legacy_source_repo,
     prefer_cached_legacy_source,
     prefer_ungated_mirror,
+    canonical_base,
     resolve_base_repo,
     resolve_local_gguf_child,
     sd_cpp_text_encoders_for,
     supported_family_names,
     _family_override_resolved,
+)
+from core.inference.diffusion_flow_shift import (
+    SAMPLE_SIGMAS_KEY,
+    sd_cpp_sample_sigmas,
+    valid_sample_sigmas,
 )
 from core.inference.diffusion_memory import (
     OFFLOAD_GROUP,
@@ -187,6 +193,55 @@ def _tree_reader(
 
 # Max images per img_gen job; larger Unsloth batches (up to 32) are split into these chunks
 _MAX_SERVER_BATCH = 8
+
+
+# Families whose bases ship a model_index.json ``sample_sigmas`` grid; every other load skips the card and index reads.
+_SAMPLE_SIGMAS_FAMILIES = frozenset({"qwen-image-2.1"})
+
+
+def _base_sample_sigmas(
+    repo_id: str,
+    base: str,
+    hf_token: Optional[str],
+    *,
+    family: str,
+    explicit_base: bool,
+    local_files_only: bool,
+) -> Optional[tuple[float, ...]]:
+    """The sampling grid the base ships in model_index.json (Qwen-Image-2.1-Turbo), or None. Without an explicit
+    base the pick's card ``base_model`` names it, as on the diffusers route: the native route otherwise holds only
+    the family default, so a community Turbo GGUF would read 2.1's grid-less index. Best-effort: any miss keeps
+    sd.cpp's own schedule."""
+    if family not in _SAMPLE_SIGMAS_FAMILIES:
+        return None
+    try:
+        from core.inference.diffusion import (
+            _hf_base_model,
+            _is_trusted_diffusion_repo,
+            hub_cache_dir,
+        )
+        from core.inference.diffusion_comfy_components import read_model_index
+
+        if not explicit_base and not local_files_only:
+            tag = _hf_base_model(repo_id, hf_token)
+            # Same trust bar as the diffusers resolver: the tag is repo-author metadata.
+            if tag and _is_trusted_diffusion_repo(tag):
+                base = canonical_base(tag)
+        index = read_model_index(
+            base,
+            hf_token = hf_token,
+            local_files_only = local_files_only,
+            cache_dir = hub_cache_dir(),
+        )
+    except Exception as exc:  # noqa: BLE001 - no grid is the pre-grid behaviour
+        logger.debug("sd_cpp.sample_sigmas_unavailable: %s", exc)
+        return None
+    grid = valid_sample_sigmas(index.get(SAMPLE_SIGMAS_KEY) if isinstance(index, dict) else None)
+    if grid is not None:
+        logger.info(
+            "sd_cpp: %s ships a %d-step sampling grid; passing it as custom sigmas", base, len(grid)
+        )
+    return grid
 
 
 def _default_threads() -> int:
@@ -2147,6 +2202,9 @@ class _SdState:
     threads: Optional[int] = None
     sampling_method: Optional[str] = None
     flow_shift: Optional[float] = None
+    # The base's shipped sampling grid (Qwen-Image-2.1-Turbo's model_index.json ``sample_sigmas``), passed as custom
+    # sigmas so a distill samples the schedule it was tuned on; None keeps sd.cpp's own schedule.
+    sample_sigmas: Optional[tuple[float, ...]] = None
     server: Optional[SdCppServer] = None
     mode: str = "server"
     # Token kept so LoRA adapters selected at generate time can be fetched from the Hub.
@@ -2765,6 +2823,7 @@ class SdCppDiffusionBackend:
                 local_files_only = local_files_only,
                 gguf_filename = gguf_filename,
                 base = base,
+                explicit_base = bool((base_repo or "").strip()),
                 fam = fam,
                 family_override = family_override,
                 hf_token = hf_token,
@@ -2788,6 +2847,7 @@ class SdCppDiffusionBackend:
         display_repo_id: Optional[str] = None,
         gguf_filename: str,
         base: str,
+        explicit_base: bool = False,
         fam: DiffusionFamily,
         family_override: Optional[str] = None,
         hf_token: Optional[str],
@@ -2914,6 +2974,14 @@ class SdCppDiffusionBackend:
                 cancel_event = cancel_event,
                 local_files_only = local_files_only,
                 vision_optional = not getattr(fam, "edit", False),
+            )
+            sample_sigmas = _base_sample_sigmas(
+                repo_id,
+                base,
+                hf_token,
+                family = fam.name,
+                explicit_base = explicit_base,
+                local_files_only = local_files_only,
             )
 
             files = SdCppModelFiles(
@@ -3142,6 +3210,7 @@ class SdCppDiffusionBackend:
                     threads = _default_threads(),
                     sampling_method = fam.sd_cpp_sampling_method,
                     flow_shift = fam.sd_cpp_flow_shift,
+                    sample_sigmas = sample_sigmas,
                     server = server,
                     mode = mode,
                     hf_token = hf_token,
@@ -4044,6 +4113,11 @@ class SdCppDiffusionBackend:
                     batch_count = count,
                     sample_method = state.sampling_method,
                     flow_shift = state.flow_shift,
+                    custom_sigmas = (
+                        sd_cpp_sample_sigmas(state.sample_sigmas, int(steps))
+                        if state.sample_sigmas
+                        else None
+                    ),
                     cfg_scale = cfg_scale,
                     distilled_guidance = flux_guidance,
                     lora = lora_payload,
@@ -4191,6 +4265,9 @@ class SdCppDiffusionBackend:
             extra_args += ["--vae-format", state.vae_format]
         if state.flow_shift is not None:
             extra_args += ["--flow-shift", repr(float(state.flow_shift))]
+        if state.sample_sigmas:
+            sigmas = sd_cpp_sample_sigmas(state.sample_sigmas, int(steps))
+            extra_args += ["--sigmas", ",".join(repr(float(x)) for x in sigmas)]
 
         images = []
         seeds: list[int] = []
