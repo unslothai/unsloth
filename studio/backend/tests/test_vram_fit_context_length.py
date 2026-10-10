@@ -278,3 +278,8 @@ def test_a_one_card_device_pin_under_a_two_card_cap_claims_no_fit(tmp_path, monk
 def test_an_inherited_rpc_claims_no_fit(tmp_path, monkeypatch):
     monkeypatch.setenv("LLAMA_ARG_RPC", "192.168.1.2:50052")
     assert _two_card_load(tmp_path, monkeypatch).vram_fit_context_length is None
+
+
+def test_an_auto_discovered_projector_claims_no_fit(tmp_path, monkeypatch):
+    backend = _two_card_load(tmp_path, monkeypatch, extra_args = ("--mmproj-auto",))
+    assert backend.vram_fit_context_length is None

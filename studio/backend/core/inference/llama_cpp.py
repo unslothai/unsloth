@@ -30726,6 +30726,10 @@ class LlamaCppBackend:
                         or _sidecar_adapter_bytes(extra_args) != 0
                         or _child_env.get("LLAMA_ARG_MMPROJ")
                         or _child_env.get("LLAMA_ARG_MMPROJ_URL")
+                        or (
+                            not launch_mmproj_path
+                            and extra_args_mmproj_auto(_child_extras, _child_env)
+                        )
                         # A hand-set fitter or split ratio re-places what the fit priced.
                         or _extra_args_set_any_flag(_child_extras, _VRAM_FIT_VOIDING_FLAGS)
                         or any(_child_env.get(name) for name in _VRAM_FIT_VOIDING_ENV_VARS)
