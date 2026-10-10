@@ -32,6 +32,7 @@ from .engine_install import (
     installed,
     profile,
     profile_digest,
+    rocm_loads_quantization,
     stale,
     support_reason,
 )
@@ -190,6 +191,11 @@ def validate_model(
         raise ValueError(
             f"{ENGINE_NAMES[engine]} on this GPU cannot load BitsAndBytes checkpoints. Choose an unquantized "
             "or AWQ checkpoint."
+        )
+    if profile(engine)["platform"] == "rocm" and not rocm_loads_quantization(quant):
+        raise ValueError(
+            f"{ENGINE_NAMES[engine]} on AMD GPUs cannot load this checkpoint's quantization. Choose an "
+            "unquantized, AWQ, or INT8 / INT4 compressed-tensors checkpoint."
         )
     if (
         quant.get("quant_method") == "bitsandbytes"

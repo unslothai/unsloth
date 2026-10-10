@@ -449,6 +449,44 @@ def test_amd_refuses_bitsandbytes_checkpoints_and_skips_nvidia_smi(rocm, monkeyp
     assert not options["disable_cuda_graph"]
 
 
+def test_amd_refuses_quantizations_vllms_rocm_build_cannot_load(rocm, monkeypatch, tmp_path):
+    # Measured on gfx1151: these fail at engine start, after the resident model was released.
+    config = SimpleNamespace(is_local = True, path = str(tmp_path))
+
+    def scheme(
+        kind,
+        bits,
+        activations = True,
+    ):
+        spec = {"type": kind, "num_bits": bits}
+        group = {"weights": spec, "input_activations": spec if activations else None}
+        return {"quant_method": "compressed-tensors", "config_groups": {"group_0": group}}
+
+    monkeypatch.setattr(managed_engine.subprocess, "run", lambda *a, **k: None)
+    refused = [
+        {"quant_method": "gptq", "bits": 4},
+        {"quant_method": "fp8"},
+        scheme("float", 8),
+        scheme("float", 4),
+    ]
+    for quant in refused:
+        (tmp_path / "config.json").write_text(json.dumps({"quantization_config": quant}))
+        with pytest.raises(ValueError, match = "^vLLM on AMD GPUs cannot load this checkpoint"):
+            managed_engine.validate_model(config, engine = "vllm")
+    for quant in ({"quant_method": "awq"}, scheme("int", 8), scheme("int", 4, activations = False)):
+        (tmp_path / "config.json").write_text(json.dumps({"quantization_config": quant}))
+        managed_engine.validate_model(config, engine = "vllm")
+    # NVIDIA keeps every format.
+    monkeypatch.setattr(install, "gpu_platform", lambda: "cuda")
+    monkeypatch.setattr(install, "_studio_packages", lambda: {})
+    for quant in refused:
+        (tmp_path / "config.json").write_text(json.dumps({"quantization_config": quant}))
+        try:
+            managed_engine.validate_model(config, engine = "vllm")
+        except ValueError as error:
+            assert "AMD" not in str(error)
+
+
 @_LINUX
 def test_device_memory_is_read_by_the_engines_torch(tmp_path):
     python = tmp_path / "bin" / "python"

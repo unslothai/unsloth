@@ -16903,25 +16903,6 @@ def _managed_engine_offer(
     return {"quantization": method, "engines": engines} if engines else None
 
 
-def _integer_compressed_tensors(metadata) -> bool:
-    """Whether every compressed-tensors scheme in the config quantizes to integers."""
-    text_config = metadata.get("text_config")
-    quant = metadata.get("quantization_config") or (
-        text_config.get("quantization_config") if isinstance(text_config, dict) else None
-    )
-    groups = quant.get("config_groups") if isinstance(quant, dict) else None
-    if not isinstance(groups, dict) or not groups:
-        return False
-    for group in groups.values():
-        if not isinstance(group, dict) or not isinstance(group.get("weights"), dict):
-            return False
-        for key in ("weights", "input_activations"):
-            spec = group.get(key)
-            if isinstance(spec, dict) and spec.get("type") != "int":
-                return False
-    return True
-
-
 def _managed_engine_offer_for(config, hf_token) -> Optional[dict]:
     """``_managed_engine_offer`` from the checkpoint's own config.json; None on any failure."""
     try:
@@ -16938,16 +16919,25 @@ def _managed_engine_offer_for(config, hf_token) -> Optional[dict]:
                 else hf_hub_download(config.identifier, "config.json", token = hf_token)
             )
         metadata = json.loads(path.read_text(encoding = "utf-8"))
-        from core.inference.engine_install import _driver_rows, gpu_platform, support_reason
+        from core.inference.engine_install import (
+            _driver_rows,
+            gpu_platform,
+            rocm_loads_quantization,
+            support_reason,
+        )
 
         def supported(name, method):
             if support_reason(name) is not None:
                 return False
             if gpu_platform() == "rocm":
-                # Measured on gfx1151 with vLLM 0.30.0: AWQ and integer compressed-tensors
-                # (W8A8, W4A16) load; GPTQ, FP8 and NVFP4 checkpoints fail at engine start.
-                return method == "awq" or (
-                    method == "compressed-tensors" and _integer_compressed_tensors(metadata)
+                text_config = metadata.get("text_config")
+                return rocm_loads_quantization(
+                    metadata.get("quantization_config")
+                    or (
+                        text_config.get("quantization_config")
+                        if isinstance(text_config, dict)
+                        else None
+                    )
                 )
             if name != "sglang" or method != "compressed-tensors":
                 return True
