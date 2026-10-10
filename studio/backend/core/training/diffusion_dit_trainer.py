@@ -78,6 +78,13 @@ from core.training.diffusion_checkpoint import (
     with_resolved_revision,
     preflight_resume,
 )
+from core.training.diffusion_samples import (
+    discard_samples,
+    euler_flow_sample,
+    isolated_sampling,
+    plan_samples,
+    run_sample_round,
+)
 from core.training.diffusion_train_extras import (
     LoRAEMA,
     PersistentConditioningCache,
@@ -163,6 +170,10 @@ class _FamilySpec:
     forward: Callable[..., Any]
     # Save the LoRA in diffusers format via the family pipeline's save_lora_weights.
     save: Callable[..., None]
+    # (vae, h, w) -> (latent shape, packed seq len for the shift), and latents -> pixels. None = no sampling path.
+    latent_shape: Optional[Callable[..., tuple]] = None
+    decode_latents: Optional[Callable[..., Any]] = None
+    sample_forward_kwargs: Optional[dict] = None
 
 
 def _gather_sigmas(sigma_table, indices, device, dtype, n_dim):
@@ -686,28 +697,45 @@ def _flux_collate(
 _FLUX_STATIC: dict[tuple, tuple] = {}
 
 
-def _flux_static_inputs(bsz, h, w, device):
+def _flux_static_inputs(
+    bsz,
+    h,
+    w,
+    device,
+    guidance_value = 1.0,
+):
     import torch
     from diffusers import FluxPipeline
 
-    key = (bsz, h, w, str(device))
+    key = (bsz, h, w, str(device), float(guidance_value))
     hit = _FLUX_STATIC.get(key)
     if hit is None:
         # Position ids drive RoPE and are indices, not activations, so keep them float32 regardless of the training
         # dtype.
         img_ids = FluxPipeline._prepare_latent_image_ids(bsz, h // 2, w // 2, device, torch.float32)
-        guidance = torch.full((bsz,), 1.0, device = device, dtype = torch.float32)
+        guidance = torch.full((bsz,), float(guidance_value), device = device, dtype = torch.float32)
         hit = _FLUX_STATIC[key] = (img_ids, guidance)
     return hit
 
 
-def _flux_forward(transformer, noisy, timesteps, sigmas, embeds_batch, cfg, device, weight_dtype):
+def _flux_forward(
+    transformer,
+    noisy,
+    timesteps,
+    sigmas,
+    embeds_batch,
+    cfg,
+    device,
+    weight_dtype,
+    guidance = 1.0,
+):
     from diffusers import FluxPipeline
 
     pe, pooled, text_ids = embeds_batch
     bsz, c, h, w = noisy.shape
     packed = FluxPipeline._pack_latents(noisy, bsz, c, h, w)
-    img_ids, guidance = _flux_static_inputs(bsz, h, w, device)
+    # Training feeds guidance 1.0 (diffusers dreambooth convention); sampling feeds the inference 3.5.
+    img_ids, guidance = _flux_static_inputs(bsz, h, w, device, guidance)
     model_pred = transformer(
         hidden_states = packed,
         timestep = timesteps / 1000,
@@ -1381,6 +1409,40 @@ def _ltx2_save(pipe_cls, out_dir, transformer_lora_layers):
     )
 
 
+def _vae8_latent_shape(vae, height, width):
+    return (1, vae.config.latent_channels, height // 8, width // 8), (height // 16) * (width // 16)
+
+
+def _flux_decode_latents(vae, latents):
+    lat = latents / vae.config.scaling_factor + vae.config.shift_factor
+    return vae.decode(lat.to(vae.dtype)).sample
+
+
+def _qwen_latent_shape(vae, height, width):
+    return (1, vae.config.z_dim, 1, height // 8, width // 8), (height // 16) * (width // 16)
+
+
+def _qwen_decode_latents(vae, latents):
+    mean, std = _qwen_latent_affine(vae, latents)
+    return vae.decode((latents * std + mean).to(vae.dtype)).sample[:, :, 0]
+
+
+def _flux2_latent_shape(vae, height, width):
+    return (1, vae.config.latent_channels * 4, height // 16, width // 16), (height // 16) * (
+        width // 16
+    )
+
+
+def _flux2_decode_latents(vae, latents):
+    import torch
+    from diffusers import Flux2Pipeline
+
+    mean = vae.bn.running_mean.view(1, -1, 1, 1).to(latents)
+    std = torch.sqrt(vae.bn.running_var.view(1, -1, 1, 1) + vae.config.batch_norm_eps).to(latents)
+    lat = Flux2Pipeline._unpatchify_latents(latents * std + mean)
+    return vae.decode(lat.to(vae.dtype)).sample
+
+
 _SPECS: dict[str, _FamilySpec] = {
     "flux.1": _FamilySpec(
         family = "flux.1",
@@ -1395,6 +1457,9 @@ _SPECS: dict[str, _FamilySpec] = {
         collate = _flux_collate,
         forward = _flux_forward,
         save = _flux_save,
+        latent_shape = _vae8_latent_shape,
+        decode_latents = _flux_decode_latents,
+        sample_forward_kwargs = {"guidance": 3.5},
     ),
     "qwen-image": _FamilySpec(
         family = "qwen-image",
@@ -1409,6 +1474,8 @@ _SPECS: dict[str, _FamilySpec] = {
         collate = _qwen_collate,
         forward = _qwen_forward,
         save = _qwen_save,
+        latent_shape = _qwen_latent_shape,
+        decode_latents = _qwen_decode_latents,
     ),
     "z-image": _FamilySpec(
         family = "z-image",
@@ -1423,6 +1490,8 @@ _SPECS: dict[str, _FamilySpec] = {
         collate = _zimage_collate,
         forward = _zimage_forward,
         save = _zimage_save,
+        latent_shape = _vae8_latent_shape,
+        decode_latents = _flux_decode_latents,
     ),
     "krea-2": _FamilySpec(
         family = "krea-2",
@@ -1437,6 +1506,8 @@ _SPECS: dict[str, _FamilySpec] = {
         collate = _krea2_collate,
         forward = _krea2_forward,
         save = _krea2_save,
+        latent_shape = _qwen_latent_shape,
+        decode_latents = _qwen_decode_latents,
     ),
     "flux.2-klein": _FamilySpec(
         family = "flux.2-klein",
@@ -1452,6 +1523,8 @@ _SPECS: dict[str, _FamilySpec] = {
         collate = _flux2_collate,
         forward = _flux2_forward,
         save = _flux2_klein_save,
+        latent_shape = _flux2_latent_shape,
+        decode_latents = _flux2_decode_latents,
     ),
     "flux.2-dev": _FamilySpec(
         family = "flux.2-dev",
@@ -1468,6 +1541,8 @@ _SPECS: dict[str, _FamilySpec] = {
         collate = _flux2_collate,
         forward = _flux2_forward,
         save = _flux2_save,
+        latent_shape = _flux2_latent_shape,
+        decode_latents = _flux2_decode_latents,
     ),
     "ltx-2": _FamilySpec(
         family = "ltx-2",
@@ -1977,6 +2052,12 @@ def _train_dit(
     # the captions (the encoders are freed right after).
     cfg_dropout = float(getattr(cfg, "cfg_dropout", 0.0) or 0.0)
     to_encode = uniq + ([""] if cfg_dropout > 0 and "" not in uniq else [])
+    # Own dict: caption_embeds sizes the qwen compile pad bucket, which a long preview prompt must not grow.
+    sample_plan = plan_samples(cfg, spec.family, captions) if spec.decode_latents else None
+    sample_texts = sample_plan.encode_texts if sample_plan is not None else []
+    sample_embeds: dict = {}
+    # Kept past a failed round (which drops sample_plan) so a discard still removes what was written.
+    sample_owner = sample_plan
     use_cache = cfg.cache_latents and os.environ.get(
         "UNSLOTH_DIFFUSION_NO_LATENT_CACHE", ""
     ) not in ("1", "true")
@@ -2014,11 +2095,20 @@ def _train_dit(
                 done = len(image_paths),
                 total = len(image_paths),
             )
+    if caption_embeds is not None and sample_texts:
+        # Warm conditioning skips the VAE and encoders, but previews need the VAE and their own embeddings.
+        pipe, vae = spec.load_conditioners(fetch_cfg, device, weight_dtype)
+        encoded = _encode_prompts_cached(spec, pipe, sample_texts, device, pcache)
+        sample_embeds = dict(zip(sample_texts, encoded))
+        _free_text_encoders(pipe)
     if caption_embeds is None:
         latent_cache = None
         pipe, vae = spec.load_conditioners(fetch_cfg, device, weight_dtype)
-        encoded = _encode_prompts_cached(spec, pipe, to_encode, device, pcache)
+        extra = [t for t in sample_texts if t not in to_encode]
+        encoded = _encode_prompts_cached(spec, pipe, to_encode + extra, device, pcache)
         caption_embeds = {cap: emb for cap, emb in zip(to_encode, encoded)}
+        all_embeds = dict(zip(to_encode + extra, encoded))
+        sample_embeds = {t: all_embeds[t] for t in sample_texts}
         _free_text_encoders(pipe)
         gc.collect()
         if device == "cuda":
@@ -2056,6 +2146,10 @@ def _train_dit(
                     discarded = not _save_on_stop(),
                 )
                 return str(out_dir)
+    # VAE parked on the host between rounds when the latent cache would have freed it: training VRAM unchanged.
+    sample_vae = vae if sample_plan is not None else None
+    if sample_vae is not None and latent_cache is not None:
+        sample_vae.to("cpu")
     if latent_cache is not None and vae is not None:
         try:
             pipe.vae = None
@@ -2204,6 +2298,7 @@ def _train_dit(
     peak_gb = 0.0
     t_start = time.time()
     t_steady = None
+    t_rate = t_start
     # Starts at the resumed step so a no-op resume still reports the real step.
     done = resumed
 
@@ -2238,7 +2333,88 @@ def _train_dit(
         if device in ("cuda", "xpu")
         else nullcontext()
     )
+
+    def _render_dit(index, prompt):
+        shape, seq_len = spec.latent_shape(
+            sample_vae, sample_plan.resolution, sample_plan.resolution
+        )
+        extra = spec.sample_forward_kwargs or {}
+
+        def velocity(x, t, sig, embeds):
+            with autocast:
+                return spec.forward(
+                    transformer, x, t, sig, embeds, cfg, device, weight_dtype, **extra
+                )
+
+        cond = spec.collate([sample_embeds[prompt]], device, weight_dtype)
+        uncond = (
+            spec.collate([sample_embeds[""]], device, weight_dtype)
+            if sample_plan.uses_cfg
+            else None
+        )
+        latents = euler_flow_sample(
+            plan = sample_plan,
+            index = index,
+            latent_shape = shape,
+            image_seq_len = seq_len,
+            family = spec.family,
+            scheduler_config = scheduler.config,
+            velocity = velocity,
+            cond = cond,
+            uncond = uncond,
+            device = device,
+            weight_dtype = weight_dtype,
+            stop_requested = _stop_during_sample,
+        )
+        return spec.decode_latents(sample_vae, latents.to(next(sample_vae.parameters()).device))
+
+    # The stop poll drains the request, so one seen mid-round is latched here for the loop to act on.
+    stop_latched = False
+
+    def _stop_during_sample() -> bool:
+        nonlocal stop_latched
+        if not stop_latched and _check_stop():
+            stop_latched = True
+        return stop_latched
+
+    def _sample(step: int) -> None:
+        nonlocal sample_plan, t_rate, t_steady
+        if sample_plan is None:
+            return
+        t_round = time.time()
+        parked = next(sample_vae.parameters()).device.type == "cpu"
+        try:
+            with isolated_sampling(device, compiled):
+                transformer.eval()
+                if parked:
+                    sample_vae.to(device)
+                run_sample_round(
+                    sample_plan, step, _render_dit, on_event, _emit, _stop_during_sample
+                )
+        except Exception as exc:  # noqa: BLE001 -- previews are diagnostics, never a reason to lose the run
+            _emit(on_event, "warning", message = f"Sample images disabled after an error: {exc}")
+            sample_plan = None
+        finally:
+            transformer.train()
+            if parked:
+                sample_vae.to("cpu")
+                if device == "cuda":
+                    torch.cuda.empty_cache()
+                elif device == "xpu":
+                    torch.xpu.empty_cache()
+            spent = time.time() - t_round
+            t_rate += spent
+            if t_steady is not None:
+                t_steady += spent
+
+    if sample_plan is not None and resumed < cfg.train_steps:
+        # Baseline: step 0, or the step a resume restored.
+        _sample(resumed)
+
     for opt_step in range(resumed, cfg.train_steps):
+        if stop_latched:
+            stopped = True
+            break
         optimizer.zero_grad(set_to_none = True)
         step_loss = 0.0
         for _ in range(cfg.gradient_accumulation_steps):
@@ -2323,7 +2499,7 @@ def _train_dit(
             if t_steady is not None and ran_here > 1:
                 sps = round((ran_here - 1) * per_step / max(now - t_steady, 1e-6), 3)
             else:
-                sps = round(ran_here * per_step / max(now - t_start, 1e-6), 3)
+                sps = round(ran_here * per_step / max(now - t_rate, 1e-6), 3)
             _emit(
                 on_event,
                 "progress",
@@ -2337,6 +2513,9 @@ def _train_dit(
                 peak_memory_gb = peak_gb or None,
             )
         stop_now = _check_stop()
+        if not stop_now and sample_plan is not None and sample_plan.due(done, cfg.train_steps):
+            _sample(done)
+            stop_now = stop_latched
         # Skipped on the final step and when stopping, since the stop path writes one at the exact step.
         if (
             not stop_now
@@ -2383,6 +2562,7 @@ def _train_dit(
         # the optimizer state in a directory the user got no artifact from: invisible to every scanner, unresumable,
         # with no delete path in the UI.
         clear_own_checkpoints(out_dir, preexisting_checkpoints)
+        discard_samples(sample_owner)
         try:
             out_dir.rmdir()
         except OSError:

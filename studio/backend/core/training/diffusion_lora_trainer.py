@@ -65,6 +65,15 @@ from core.training.diffusion_train_common import (  # noqa: F401
     restore_resume_state,
     write_resume_checkpoint,
 )
+from core.training.diffusion_samples import (
+    discard_samples,
+    initial_noise,
+    isolated_sampling,
+    plan_samples,
+    run_sample_round,
+    sample_seed,
+    SampleRoundStopped,
+)
 from core.training.diffusion_checkpoint import (
     clear_own_checkpoints,
     discard_preexisting_checkpoints,
@@ -429,6 +438,14 @@ def run_diffusion_lora_training(
         # CLIP encoders are freed afterwards.
         precompute = os.environ.get("UNSLOTH_DIFFUSION_NO_PRECOMPUTE", "") not in ("1", "true")
         caption_embeds: dict[str, tuple] = {}
+        sample_plan = plan_samples(cfg, "sdxl", [c for _, c in pairs])
+        # Kept past a failed round (which drops sample_plan) so a discard still removes what was written.
+        sample_owner = sample_plan
+        sample_embeds: dict[str, tuple] = {}
+        if sample_plan is not None:
+            for text in sample_plan.encode_texts:
+                pe, pooled_c = _encode_sdxl_prompts([text], tokenizers, text_encoders, device)
+                sample_embeds[text] = (pe.cpu(), pooled_c.cpu())
         if precompute:
             for cap in sorted({c for _, c in pairs}):
                 pe, pooled_c = _encode_sdxl_prompts([cap], tokenizers, text_encoders, device)
@@ -473,6 +490,8 @@ def run_diffusion_lora_training(
                 )
                 return str(out_dir)
             else:
+                if sample_plan is not None:
+                    sample_vae = vae.to("cpu")
                 try:
                     pipe.vae = None
                 except Exception:  # noqa: BLE001 -- a pipeline without a settable vae keeps it
@@ -482,6 +501,8 @@ def run_diffusion_lora_training(
                 gc.collect()
                 if device == "cuda":
                     torch.cuda.empty_cache()
+        if sample_plan is not None and vae is not None:
+            sample_vae = vae
         # Variant picks use their own stream so the loop index/noise draws stay seed-deterministic whether
         # or not the cache is enabled.
         variant_rng = random.Random(cfg.seed + 1)
@@ -536,6 +557,7 @@ def run_diffusion_lora_training(
         peak_gb = 0.0
         t_start = time.time()
         t_steady = None
+        t_rate = t_start
         # Starts at the resumed step so a no-op resume (nothing left to train) still reports the real step.
         done = resumed
 
@@ -561,7 +583,90 @@ def run_diffusion_lora_training(
                 preexisting = preexisting_checkpoints,
             )
 
+        def _interrupt_on_stop(p, _i, _t, _kwargs):
+            # The pipeline skips its remaining steps once _interrupt is set (pipeline_stable_diffusion_xl.py).
+            if _stop_during_sample():
+                p._interrupt = True
+            return {}
+
+        def _render_sdxl(index, prompt):
+            res = sample_plan.resolution
+            pe, pooled_c = (t.to(device, dtype = weight_dtype) for t in sample_embeds[prompt])
+            npe = npooled = None
+            if sample_plan.uses_cfg:
+                npe, npooled = (t.to(device, dtype = weight_dtype) for t in sample_embeds[""])
+            noise = initial_noise(sample_plan, index, (1, 4, res // 8, res // 8), device)
+            latents = pipe(
+                prompt_embeds = pe,
+                pooled_prompt_embeds = pooled_c,
+                negative_prompt_embeds = npe,
+                negative_pooled_prompt_embeds = npooled,
+                num_inference_steps = sample_plan.steps,
+                guidance_scale = sample_plan.guidance,
+                height = res,
+                width = res,
+                latents = noise.to(weight_dtype),
+                generator = torch.Generator(device = "cpu").manual_seed(
+                    sample_seed(sample_plan, index)
+                ),
+                output_type = "latent",
+                return_dict = False,
+                callback_on_step_end = _interrupt_on_stop,
+            )[0]
+            if stop_latched:
+                raise SampleRoundStopped()
+            return sample_vae.decode(latents.float() / vae_scale).sample
+
+        # The stop poll drains the request, so one seen mid-round is latched here for the loop to act on.
+        stop_latched = False
+
+        def _stop_during_sample() -> bool:
+            nonlocal stop_latched
+            if not stop_latched and _check_stop():
+                stop_latched = True
+            return stop_latched
+
+        def _sample(step: int) -> None:
+            nonlocal sample_plan, t_rate, t_steady
+            if sample_plan is None:
+                return
+            t_round = time.time()
+            parked = next(sample_vae.parameters()).device.type == "cpu"
+            try:
+                with isolated_sampling(device, compiled):
+                    unet.eval()
+                    if parked:
+                        sample_vae.to(device)
+                    run_sample_round(
+                        sample_plan, step, _render_sdxl, on_event, _emit, _stop_during_sample
+                    )
+            except Exception as exc:  # noqa: BLE001 -- previews never cost the run
+                _emit(on_event, "warning", message = f"Sample images disabled after an error: {exc}")
+                sample_plan = None
+            finally:
+                unet.train()
+                if parked:
+                    sample_vae.to("cpu")
+                    if device == "cuda":
+                        torch.cuda.empty_cache()
+                spent = time.time() - t_round
+                t_rate += spent
+                if t_steady is not None:
+                    t_steady += spent
+
+        if sample_plan is not None:
+            try:
+                pipe.set_progress_bar_config(disable = True)
+            except Exception:  # noqa: BLE001
+                pass
+            if resumed < cfg.train_steps:
+                # Baseline: step 0, or the step a resume restored.
+                _sample(resumed)
+
         for opt_step in range(resumed, cfg.train_steps):
+            if stop_latched:
+                stopped = True
+                break
             optimizer.zero_grad(set_to_none = True)
             step_loss = 0.0
             for _ in range(cfg.gradient_accumulation_steps):
@@ -659,7 +764,7 @@ def run_diffusion_lora_training(
                         (ran_here - 1) * per_step / max(now - t_steady, 1e-6), 3
                     )
                 else:
-                    samples_per_second = round(ran_here * per_step / max(now - t_start, 1e-6), 3)
+                    samples_per_second = round(ran_here * per_step / max(now - t_rate, 1e-6), 3)
                 _emit(
                     on_event,
                     "progress",
@@ -674,6 +779,9 @@ def run_diffusion_lora_training(
                 )
 
             stop_now = _check_stop()
+            if not stop_now and sample_plan is not None and sample_plan.due(done, cfg.train_steps):
+                _sample(done)
+                stop_now = stop_latched
             # Skipped on the final step and when stopping, since the stop path writes one at the exact step.
             if (
                 not stop_now
@@ -719,6 +827,7 @@ def run_diffusion_lora_training(
             # save_total_limit copies of the optimizer state in a directory the user got no artifact from:
             # invisible to every scanner, unresumable, with no delete path in the UI.
             clear_own_checkpoints(out_dir, preexisting_checkpoints)
+            discard_samples(sample_owner)
             try:
                 out_dir.rmdir()
             except OSError:

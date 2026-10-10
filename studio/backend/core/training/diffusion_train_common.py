@@ -37,6 +37,8 @@ from core.inference.diffusion_torchao_patches import install_torchao_int_mm_patc
 from core.inference.video_families import detect_video_family, supported_video_family_names
 from utils.paths.path_utils import drop_appledouble_metadata
 
+from core.training.diffusion_samples import SAMPLE_FAMILIES, validate_sample_settings
+
 # The trainers run in a spawned child that imports diffusers itself, so the inference-side install does not carry
 # over. Both import this module first.
 install_xformers_windows_rocm_stub()
@@ -952,6 +954,8 @@ def family_train_infos() -> list[dict[str, Any]]:
                 # save_steps is REFUSED for a checkpointless family, not ignored, so a panel that keeps offering
                 # "Checkpoint every" turns a nonzero value into a rejected Start with no way to see why.
                 "supports_checkpoints": name not in CHECKPOINTLESS_FAMILIES,
+                # sample_every is refused elsewhere, so the panel offers "Sample every" only where it runs.
+                "supports_samples": name in SAMPLE_FAMILIES,
                 # A batch > 1 is REFUSED for a family whose forward covers one packed sequence, so leaving the control
                 # unrestricted turns a reasonable 2 into a rejected Start with nothing to say why.
                 "max_train_batch_size": 1 if name in SINGLE_SEQUENCE_FAMILIES else None,
@@ -1039,6 +1043,10 @@ class DiffusionLoraConfig:
     save_steps: int = 0
     # How many checkpoint-<N> bundles to keep in the output dir; 0 keeps every one.
     save_total_limit: int = 2
+    # 0 disables. Not part of the resume identity: previews never touch the training math.
+    sample_every: int = 0
+    # Empty uses the instance prompt, else the first caption.
+    sample_prompts: tuple[str, ...] = ()
     # The run's output_dir, or one of its checkpoint-<N> directories; the start route resolves and validates it before
     # the trainer spawns.
     resume_from_checkpoint: Optional[str] = None
@@ -1150,6 +1158,9 @@ class DiffusionLoraConfig:
         # so valid decays live in [0, 1).
         if not 0.0 <= ema_decay < 1.0:
             raise ValueError("ema_decay must be in [0, 1); 0 disables the EMA adapter")
+        sample_every, sample_prompts = validate_sample_settings(
+            self.sample_every, self.sample_prompts, resolved_family
+        )
         # A blank cond_cache_dir (the Unsloth default when unset) means "off", not cwd.
         cond_cache_dir = (
             str(self.cond_cache_dir).strip() if self.cond_cache_dir is not None else ""
@@ -1284,6 +1295,8 @@ class DiffusionLoraConfig:
             cache_variants = int(self.cache_variants),
             save_steps = save_steps,
             save_total_limit = save_total_limit,
+            sample_every = sample_every,
+            sample_prompts = sample_prompts,
             resume_from_checkpoint = resume_from_checkpoint,
             cond_cache_dir = cond_cache_dir,
             ema_decay = ema_decay,
@@ -2228,6 +2241,8 @@ def _config_from_dict(config: dict) -> DiffusionLoraConfig:
         kwargs.pop("train_steps", None)
     if kwargs.get("lora_target_modules"):
         kwargs["lora_target_modules"] = tuple(kwargs["lora_target_modules"])
+    if isinstance(kwargs.get("sample_prompts"), (list, tuple)):
+        kwargs["sample_prompts"] = tuple(kwargs["sample_prompts"])
     if "gradient_checkpointing" in kwargs:
         kwargs["gradient_checkpointing"] = _coerce_gradient_checkpointing(
             kwargs["gradient_checkpointing"]
