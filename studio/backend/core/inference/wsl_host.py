@@ -91,6 +91,15 @@ ROCM_ENVIRONMENT = {
     "LD_LIBRARY_PATH": "/opt/rocm-wsl/lib",
     "ROCPROFILER_REGISTER_ENABLED": "0",
 }
+
+
+def rocm_environment() -> dict[str, str]:
+    """ROCM_ENVIRONMENT, plus Studio's HSA_OVERRIDE_GFX_VERSION: Studio's torch already reported the
+    overridden target, so the guest's check and the engine have to see that same target."""
+    override = os.environ.get("HSA_OVERRIDE_GFX_VERSION", "").strip()
+    return {**ROCM_ENVIRONMENT, **({"HSA_OVERRIDE_GFX_VERSION": override} if override else {})}
+
+
 _PREPARE_LOCK = threading.Lock()
 MIN_BUILD = 19044  # Windows 10 21H2: first build with CUDA in WSL2.
 GUEST_ROOT = "/opt/unsloth"

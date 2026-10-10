@@ -851,13 +851,15 @@ def test_amd_wsl_install_sets_up_rocm_before_the_engine(
         input = None,
     ):
         if argv == ["/opt/rocm/bin/rocminfo"]:
-            assert env == wsl_host.ROCM_ENVIRONMENT
+            assert env == {**wsl_host.ROCM_ENVIRONMENT, "HSA_OVERRIDE_GFX_VERSION": "11.5.1"}
             return f"  Name:                    {agents}\n  Name:   amdgcn-amd-amdhsa--{agents}\n"
         if argv[-2].endswith("finalize.py"):
             return json.dumps({"cuda_environment": {}, "deep_gemm_unloadable": False})
         return ""
 
     monkeypatch.setattr(wsl_host, "guest", guest)
+    # Studio's torch reported the overridden target, so the guest has to see the same one.
+    monkeypatch.setenv("HSA_OVERRIDE_GFX_VERSION", "11.5.1")
     monkeypatch.setattr(
         install,
         "_run",
@@ -888,6 +890,7 @@ def test_amd_wsl_install_sets_up_rocm_before_the_engine(
     ]
     sync = next(c for c in commands if "sync" in c)
     assert sync[sync.index("--extra-index-url") + 1] == install.profile("vllm")["index"]
+    assert "HSA_OVERRIDE_GFX_VERSION=11.5.1" in sync
     info = json.loads((install.engine_root() / "vllm" / "active.json").read_text())
     assert info["platform"] == "rocm" and info["host"] == "wsl"
     # Recorded, so the next install no longer prices the ROCm download.
@@ -929,7 +932,13 @@ def test_amd_wsl_launch_uses_one_hip_device_and_the_dxg_bridge(amd, monkeypatch)
     engine = managed_engine.ManagedEngine("vllm")
     engine.context = 2048
     info = {"path": str(guest.parent), "host": "wsl", "platform": "rocm", "profile_digest": "d"}
+    monkeypatch.delenv("HSA_OVERRIDE_GFX_VERSION", raising = False)
     command, _ = engine._wsl_command(info, {}, [0], None, False, "unsloth/Qwen3-0.6B", None, 8123)
+    assert not any(part.startswith("HSA_OVERRIDE_GFX_VERSION=") for part in command)
+    # Eligibility accepted the target Studio's override presents; the engine must present it too.
+    monkeypatch.setenv("HSA_OVERRIDE_GFX_VERSION", "11.5.1")
+    command, _ = engine._wsl_command(info, {}, [0], None, False, "unsloth/Qwen3-0.6B", None, 8123)
+    assert "HSA_OVERRIDE_GFX_VERSION=11.5.1" in command
     assert "CUDA_VISIBLE_DEVICES=0" in command and "HIP_VISIBLE_DEVICES=0" in command
     assert (
         "HSA_ENABLE_DXG_DETECTION=1" in command and "LD_LIBRARY_PATH=/opt/rocm-wsl/lib" in command

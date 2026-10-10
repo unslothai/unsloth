@@ -830,7 +830,9 @@ def _rocm_reason(
     missing = {
         soname: package
         for soname, package in ROCM_SYSTEM_LIBRARIES.items()
-        if not (ROCM_HOME / "lib" / soname).exists() and not _a_bare_soname_resolves(soname)
+        # The install and the engine both run without the caller's LD_LIBRARY_PATH.
+        if not (ROCM_HOME / "lib" / soname).exists()
+        and not _a_bare_soname_resolves(soname, with_ld_library_path = False)
     }
     if missing:
         return (
@@ -1509,7 +1511,7 @@ def _install_wsl(engine: str, cancel: threading.Event) -> None:
         # Cache and environments share the distro's ext4 disk.
         "UV_LINK_MODE": "hardlink",
         "DEBIAN_FRONTEND": "noninteractive",
-        **(wsl_host.ROCM_ENVIRONMENT if rocm else {}),
+        **(wsl_host.rocm_environment() if rocm else {}),
     }
     secrets = {key: os.environ[key] for key in _PROXIES if os.environ.get(key)}
 
@@ -1646,7 +1648,7 @@ def _install_wsl_rocm(engine: str, guest_run, progress, cancel: threading.Event)
             re.findall(
                 r"\bgfx[0-9a-f]+\b",
                 wsl_host.guest(
-                    ["/opt/rocm/bin/rocminfo"], env = wsl_host.ROCM_ENVIRONMENT, timeout = 300
+                    ["/opt/rocm/bin/rocminfo"], env = wsl_host.rocm_environment(), timeout = 300
                 ),
             )
         )

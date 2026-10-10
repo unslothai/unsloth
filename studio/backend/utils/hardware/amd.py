@@ -824,7 +824,12 @@ def _dynamic_loader_search_dirs() -> "list[str]":
         for entry in (os.environ.get("LD_LIBRARY_PATH") or "").split(os.pathsep)
         if entry.strip()
     ]
-    dirs.extend(_ld_so_conf_dirs())
+    return list(dict.fromkeys(dirs + _system_library_dirs()))
+
+
+def _system_library_dirs() -> "list[str]":
+    """The loader's search directories that do not come from LD_LIBRARY_PATH."""
+    dirs = list(_ld_so_conf_dirs())
     dirs.extend(_DEFAULT_LIBRARY_DIRS)
     for pattern in ("/usr/lib/*-linux-gnu*", "/lib/*-linux-gnu*"):
         dirs.extend(sorted(glob.glob(pattern)))
@@ -885,7 +890,7 @@ def _ld_cache_sonames() -> "frozenset[str] | None":
     return _ld_cache_sonames_cached
 
 
-def _a_bare_soname_resolves(soname: str) -> bool:
+def _a_bare_soname_resolves(soname: str, *, with_ld_library_path: bool = True) -> bool:
     """Whether a manifest's bare library name still resolves to something on this host.
 
     A manifest may name its library by soname alone and leave the loader to find it, which
@@ -898,8 +903,12 @@ def _a_bare_soname_resolves(soname: str) -> bool:
     question only when the cache could actually be read; a host whose loader configuration
     this cannot enumerate answers True, because calling a live driver stale would demote
     the node hint on a host whose other vendor really does have a path.
+
+    ``with_ld_library_path = False`` asks for a child that does not inherit LD_LIBRARY_PATH.
     """
-    for _directory in _dynamic_loader_search_dirs():
+    for _directory in (
+        _dynamic_loader_search_dirs() if with_ld_library_path else _system_library_dirs()
+    ):
         try:
             if os.path.isfile(os.path.join(_directory, soname)):
                 return True

@@ -45,7 +45,7 @@ def amd_host(rocm, monkeypatch, tmp_path):
     arches = {}
     monkeypatch.setattr(install, "_rocm_gpu_arches", lambda: dict(arches))
     libraries = set(install.ROCM_SYSTEM_LIBRARIES)
-    monkeypatch.setattr(amd, "_a_bare_soname_resolves", lambda soname: soname in libraries)
+    monkeypatch.setattr(amd, "_a_bare_soname_resolves", lambda soname, **_: soname in libraries)
     monkeypatch.setattr(amd, "amd_closed_nodes_block_the_runtime", lambda **_: False)
     return SimpleNamespace(rocm = tmp_path, targets = targets, libraries = libraries, arches = arches)
 
@@ -170,6 +170,24 @@ def test_amd_support_names_the_libraries_vllms_torch_links(amd_host):
     (amd_host.rocm / "lib" / "libnuma.so.1").touch()
     amd_host.libraries.update(("libmpi.so.40", "libmpi_cxx.so.40"))
     assert install.support_reason("vllm", wait = False) is None
+
+
+def test_amd_support_ignores_libraries_only_ld_library_path_provides(monkeypatch, tmp_path):
+    # The engine starts without the caller's LD_LIBRARY_PATH, so only the system loader counts.
+    from utils.hardware import amd
+
+    custom = tmp_path / "openmpi"
+    custom.mkdir()
+    for soname in install.ROCM_SYSTEM_LIBRARIES:
+        (custom / soname).touch()
+    monkeypatch.setenv("LD_LIBRARY_PATH", str(custom))
+    monkeypatch.setattr(amd, "_ld_cache_sonames", lambda: frozenset())
+    monkeypatch.setattr(amd, "_system_library_dirs", lambda: [])
+    for soname in install.ROCM_SYSTEM_LIBRARIES:
+        assert amd._a_bare_soname_resolves(soname)
+        assert not amd._a_bare_soname_resolves(soname, with_ld_library_path = False)
+    monkeypatch.setattr(amd, "_system_library_dirs", lambda: [str(custom)])
+    assert amd._a_bare_soname_resolves("libnuma.so.1", with_ld_library_path = False)
 
 
 def test_amd_support_needs_a_c_compiler(amd_host, monkeypatch):

@@ -657,7 +657,7 @@ class ManagedEngine:
             + "/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/lib/wsl/lib",
             "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
             "CUDA_VISIBLE_DEVICES": devices,
-            **({"HIP_VISIBLE_DEVICES": devices, **wsl_host.ROCM_ENVIRONMENT} if rocm else {}),
+            **({"HIP_VISIBLE_DEVICES": devices, **wsl_host.rocm_environment()} if rocm else {}),
             "PYTHONNOUSERSITE": "1",
             # C++ links FlashInfer JIT kernels against WSL's driver, outside the usual linker paths.
             "LIBRARY_PATH": "/usr/lib/wsl/lib",
