@@ -64,6 +64,10 @@ def _embed_paths(tmp_path):
     return env["LD_LIBRARY_PATH"].split(":")
 
 
+# LD_LIBRARY_PATH is ":"-joined; a Windows tmp path ("C:\\...") would split apart.
+_posix_paths = pytest.mark.skipif(os.name == "nt", reason = "LD_LIBRARY_PATH builders are Linux-only")
+
+
 def _run_paths(monkeypatch):
     monkeypatch.setenv("LD_LIBRARY_PATH", "/usr/local/cuda/lib64")
     run._fix_torch_cuda_ld_path()
@@ -86,6 +90,7 @@ def test_jetson_puts_jetpack_cuda_ahead_of_pip_cuda_for_the_embedding_server(hos
     assert paths.index(tegra.TEGRA_LIB_DIR) < sys_pos
 
 
+@_posix_paths
 def test_jetson_backend_does_not_hoist_pip_cuda_over_jetpack(host, monkeypatch):
     set_tegra, state = host
     monkeypatch.setattr(
@@ -107,6 +112,7 @@ def test_other_hosts_keep_pip_cuda_first(host, monkeypatch, tmp_path, machine):
     assert tegra.TEGRA_LIB_DIR not in _embed_paths(tmp_path)
 
 
+@_posix_paths
 def test_other_hosts_still_hoist_torch_cuda_in_the_backend(host, monkeypatch):
     _, state = host
     monkeypatch.setattr(
