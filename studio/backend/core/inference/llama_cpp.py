@@ -24876,6 +24876,7 @@ class LlamaCppBackend:
                 _cuda_ctx_notice: Optional[str] = None
                 _ctx_cap_fits = False
                 _vram_fit_ctx: Optional[int] = None
+                _flat_mtp_engages = False
                 total_by_idx: dict[int, int] = {}
                 _gpu_mem: list[tuple[int, int, int]] = []
                 model_size = None  # set in the fit try; used by the APU RAM guard
@@ -26940,14 +26941,16 @@ class LlamaCppBackend:
                         )
                         if (
                             _fit_wired_mib > 0
-                            and _apple_footprint_mib(_vram_fit_ctx) > _fit_wired_mib
+                            and _apple_footprint_mib(_vram_fit_ctx, _fit_ctx_checkpoints)
+                            > _fit_wired_mib
                         ):
                             _wired_cap = _apple_ctx_fit(
                                 _vram_fit_ctx, _FIT_FLOOR_MIN_CTX, _fit_wired_mib
                             )
                             _vram_fit_ctx = (
                                 _wired_cap
-                                if _apple_footprint_mib(_wired_cap) <= _fit_wired_mib
+                                if _apple_footprint_mib(_wired_cap, _fit_ctx_checkpoints)
+                                <= _fit_wired_mib
                                 else None
                             )
                         # Unmeasured floors still rely on llama.cpp's fitter.
@@ -30746,6 +30749,8 @@ class LlamaCppBackend:
                             gpu_indices = gpu_indices,
                         )
                         or _sidecar_adapter_bytes(extra_args) != 0
+                        # A drafter the planner could only cover with a flat cushion.
+                        or _flat_mtp_engages
                         or _child_env.get("LLAMA_ARG_MMPROJ")
                         or _child_env.get("LLAMA_ARG_MMPROJ_URL")
                         or (
