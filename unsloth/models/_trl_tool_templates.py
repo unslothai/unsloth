@@ -14,6 +14,7 @@ __all__ = [
 
 import copy
 import functools
+import itertools
 import logging
 import sys
 
@@ -99,24 +100,30 @@ def _template_of(processing_class):
     return template if isinstance(template, str) else None
 
 
-def _render(tokenizer, template, messages, add_generation_prompt, tools):
+# Users pass these through chat_template_kwargs; a match must hold for each, or a template that
+# ignores enable_thinking=False would borrow one that writes an empty <think> into every prompt.
+_TEMPLATE_KWARGS = ({}, {"enable_thinking": False})
+
+
+def _render(tokenizer, template, messages, add_generation_prompt, tools, template_kwargs):
     return tokenizer.apply_chat_template(
         messages,
         tools = _TOOLS if tools else None,
         tokenize = False,
         add_generation_prompt = add_generation_prompt,
         chat_template = template,
+        **template_kwargs,
     )
 
 
 def _completion_signature(tokenizer, template):
     signature = []
     rendered = 0
-    for history, turn in _COMPLETION_PROBES:
+    for (history, turn), kwargs in itertools.product(_COMPLETION_PROBES, _TEMPLATE_KWARGS):
         try:
-            bare = _render(tokenizer, template, history, False, True)
-            prompt = _render(tokenizer, template, history, True, True)
-            full = _render(tokenizer, template, history + [turn], False, True)
+            bare = _render(tokenizer, template, history, False, True, kwargs)
+            prompt = _render(tokenizer, template, history, True, True, kwargs)
+            full = _render(tokenizer, template, history + [turn], False, True, kwargs)
         except Exception as error:
             # Some templates refuse a probe (Llama 3.1 raises on parallel tool calls): match the refusal too.
             signature.append(("error", type(error).__name__))
@@ -131,8 +138,10 @@ def _completion_signature(tokenizer, template):
 def _conversation_signature(tokenizer, template):
     try:
         return tuple(
-            _render(tokenizer, template, messages, add_generation_prompt, tools)
-            for messages, add_generation_prompt, tools in _CONVERSATION_PROBES
+            _render(tokenizer, template, messages, add_generation_prompt, tools, kwargs)
+            for (messages, add_generation_prompt, tools), kwargs in itertools.product(
+                _CONVERSATION_PROBES, _TEMPLATE_KWARGS
+            )
         )
     except Exception:
         return None

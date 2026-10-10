@@ -159,3 +159,15 @@ def test_template_refusing_parallel_tool_calls_still_matches(patched):
     reference = originals["add_response_schema"](reference)
     trl_utils.add_response_schema(tokenizer)
     assert _parser(tokenizer) == _parser(reference)
+
+
+def test_template_ignoring_enable_thinking_does_not_borrow_qwen3(patched):
+    # unsloth/Qwen3-4B-Instruct-2507 renders like qwen3 by default but never writes the empty
+    # <think> block qwen3 adds for enable_thinking=False; borrowing qwen3 would add it to prompts.
+    branch = "{%- if enable_thinking is defined and enable_thinking is false %}"
+    assert branch in UNSLOTH_QWEN3
+    ignores = UNSLOTH_QWEN3.replace(branch, "{%- if false %}", 1)
+    with pytest.raises(ValueError):
+        trl_utils.get_training_chat_template(_tokenizer(ignores))
+    with pytest.raises(ValueError, match = "Unrecognized chat template"):
+        trl_utils.add_response_schema(_tokenizer(ignores))
