@@ -3509,7 +3509,6 @@ html[data-chat-font] .aui-root {
 
 	/* Animate the frame so the textarea stays mounted and keeps selection/undo. */
 	.unsloth-composer-editor {
-		position: relative;
 		order: 1;
 		flex-basis: 100%;
 		width: 100%;
@@ -3526,6 +3525,12 @@ html[data-chat-font] .aui-root {
 		max-height: 100% !important;
 		/* Reserved before typing, or the toggle appearing would reflow the text. */
 		padding-right: calc(2.25rem * var(--ui-space-scale, 1));
+	}
+
+	/* Pinned to the surface's top right, so attachments above the editor don't push it down. */
+	.unsloth-composer-expand {
+		top: 0.625rem;
+		right: 0.625rem;
 	}
 
 	/* max(): at 480px tall the clamp is 192px, under the twelve-row compact
@@ -3584,6 +3589,11 @@ html[data-chat-font] .aui-root {
 			padding-right: 0;
 			/* One gap for every control, so the row spaces evenly. */
 			--composer-tight-gap: calc(0.125rem * var(--ui-space-scale, 1));
+		}
+
+		/* The line's gutter is gone here, so the toggle sits that much closer to the edge. */
+		.unsloth-composer-expand {
+			right: 0.375rem;
 		}
 
 		.unsloth-composer-left,
@@ -5125,6 +5135,15 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	padding-inline: 1rem;
 	scroll-padding-inline: 1rem;
 	clip-path: inset(-0.625rem 0 0 0 round 28px 28px 0 0);
+}
+
+/* Keep attachment cards clear of the expand toggle in the top right corner. */
+.aui-composer-root[data-writing-toggle="true"] .unsloth-composer-surface .aui-composer-attachment-cards {
+	padding-right: 2.25rem;
+}
+
+.aui-composer-root[data-writing-toggle="true"] .unsloth-composer-surface .aui-composer-attachment-cards[data-layout="strip"] {
+	padding-right: 3rem;
 }
 
 /* Avoid iOS Safari focus zoom. Important in the base layer, because an important
