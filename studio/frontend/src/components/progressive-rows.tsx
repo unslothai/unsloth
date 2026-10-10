@@ -3,10 +3,10 @@
 
 import { memo, type ReactNode, useEffect, useRef, useState } from "react";
 
-/** How far below the sidebar's visible edge the next page mounts. */
+/** mounts the next page this far below the sidebar's visible edge. */
 const PRELOAD_PX = 800;
 
-/** Lets a new page skip the rows already mounted: growing the list leaves `render` as it was. */
+/** preserves mounted rows when the list grows because `render` remains stable. */
 const Row = memo(function Row<T>({
   item,
   render,
@@ -14,13 +14,7 @@ const Row = memo(function Row<T>({
   return render(item);
 }) as <T>(props: { item: T; render: (item: T) => ReactNode }) => ReactNode;
 
-/**
- * Mounts a long sidebar list a page at a time: each mounted chat row's Radix menus add a
- * `document` keydown listener, so every keystroke in the app cost time in proportion to the rows.
- * Only the DOM is paged; callers keep the full list for selection, ranges and drag order. `end`
- * renders only once every row is mounted, since it claims to be the list's end. The count lives
- * here so a new page re-renders this list alone.
- */
+/** pages mounted rows to bound Radix keydown listeners while callers retain the full list state. */
 export function ProgressiveRows<T extends { id: string }>({
   items,
   pageSize,
@@ -35,8 +29,7 @@ export function ProgressiveRows<T extends { id: string }>({
   const [limit, setLimit] = useState(pageSize);
   const sentinelRef = useRef<HTMLLIElement>(null);
   const hasMore = items.length > limit;
-  // Re-observes after each page: an observer reports a change of intersection, not a steady
-  // one, so a sentinel still in range after a page would never ask for the next.
+  // re-observe because IntersectionObserver does not repeat while the sentinel stays intersecting
   // biome-ignore lint/correctness/useExhaustiveDependencies: `limit` is the re-observe trigger
   useEffect(() => {
     const sentinel = sentinelRef.current;
@@ -48,7 +41,7 @@ export function ProgressiveRows<T extends { id: string }>({
         }
       },
       {
-        // The sidebar scrolls itself: against the viewport the sentinel is clipped until shown.
+        // use the sidebar scroller because the viewport sees its clipped sentinel only when visible
         root: sentinel.closest<HTMLElement>("[data-sidebar='content']"),
         rootMargin: `0px 0px ${PRELOAD_PX}px 0px`,
       },

@@ -1,16 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""ProgressiveRows paging, against a real IntersectionObserver and the real component.
-
-The node suite renders ProgressiveRows to static markup, where no effect runs, so whether the
-observer pages, stops, cleans up and leaves mounted rows alone is only answerable here.
-
-Run: python tests/studio/playwright_progressive_rows.py
-     SMOKE_ENGINES=chromium,webkit python tests/studio/playwright_progressive_rows.py
-Requires frontend npm dependencies and Python Playwright. No backend is needed.
-PW_CHROMIUM_EXECUTABLE or PW_WEBKIT_EXECUTABLE may select an installed browser.
-"""
+"""exercise ProgressiveRows paging, cleanup, remounting, and observer rearming in browsers."""
 
 from __future__ import annotations
 
@@ -28,7 +19,7 @@ from playwright.async_api import async_playwright
 FRONTEND = Path(__file__).resolve().parents[2] / "studio" / "frontend"
 ENGINES = [e for e in os.environ.get("SMOKE_ENGINES", "chromium").split(",") if e]
 
-# Counts the observers alive on the page, so a list that is done or gone can be shown to hold none.
+# track live observers to verify that completed or unmounted lists release them
 COUNT_OBSERVERS = """
   window.liveObservers = 0;
   const Original = window.IntersectionObserver;
@@ -53,7 +44,7 @@ STATE = """() => {
 
 
 async def settle(page):
-    """Waits until the row count has held for half a second."""
+    """wait until the row count has held for half a second."""
     last, stable = None, 0
     for _ in range(200):
         state = await page.evaluate(STATE)
@@ -84,21 +75,19 @@ async def check(browser, url, engine):
     assert state["rows"] == 50 and state["sentinelLast"] and not state["end"], state
     assert state["renders"] == 50 and state["observers"] == 1, state
 
-    # Each page mounts 50 rows and renders only those: the rows above it are left alone.
+    # prior rows must remain mounted without rerendering as each page adds 50 rows
     for expected in (100, 150, 200):
         state = await scroll_to_bottom(page)
         assert state["rows"] == expected, state
         assert state["renders"] == expected, state
         assert state["observers"] == 1, state
 
-    # A refetch hands over new objects and a new renderItem: every mounted row redraws once, and
-    # the list keeps the depth it was scrolled to.
+    # refetching preserves page depth but rerenders each mounted row once
     await page.evaluate("window.fixture.refresh()")
     state = await settle(page)
     assert state["rows"] == 200 and state["renders"] == 400, state
 
-    # Collapsing mid-way, with rows still to page and an observer armed, disconnects it; mounting
-    # again starts from the first page, as reopening Recents does.
+    # unmounting disconnects the observer, and remounting restarts from the first page
     assert await page.evaluate("window.liveObservers") == 1
     await page.evaluate("window.fixture.setMounted(false)")
     await page.wait_for_timeout(200)
@@ -107,7 +96,7 @@ async def check(browser, url, engine):
     state = await settle(page)
     assert state["rows"] == 50 and state["observers"] == 1, state
 
-    # A list that shrinks inside the page ends and lets its observer go; grown again, it pages again.
+    # shrinking within a page releases the observer, while regrowth restarts paging
     await page.evaluate("window.fixture.setCount(30)")
     state = await settle(page)
     assert state["rows"] == 30 and state["end"] and state["observers"] == 0, state
@@ -115,7 +104,7 @@ async def check(browser, url, engine):
     state = await settle(page)
     assert state["rows"] == 50 and state["sentinelLast"] and state["observers"] == 1, state
 
-    # The last page: every row, then `end`, and no sentinel or observer left behind.
+    # the final page leaves only rows and the end marker, with no sentinel or observer
     for _ in range(40):
         state = await scroll_to_bottom(page)
         if state["end"]:
@@ -123,9 +112,7 @@ async def check(browser, url, engine):
     assert state["rows"] == 1000 and state["end"] and not state["sentinelLast"], state
     assert state["observers"] == 0, state
 
-    # A sentinel still in range after a page asks for the next one without any scroll: the observer
-    # reports a change of intersection, so this holds only if it is re-armed after each page. Rows
-    # are 30 px and the range is 3000 + 800 px: 100 rows (3000 px) are in range, 150 (4500 px) are not.
+    # a sentinel in range must rearm each page; 100 rows fit in the 3000 px viewport plus 800 px margin, but 150 do not
     await page.goto(url + "?count=1000&height=3000")
     await page.locator("[data-row]").first.wait_for()
     state = await settle(page)

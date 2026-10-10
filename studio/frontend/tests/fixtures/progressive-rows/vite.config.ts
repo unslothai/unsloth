@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// ProgressiveRows in a scroller shaped like the sidebar; no backend required.
+// ProgressiveRows runs in a sidebar-shaped scroller without a backend.
 
 // biome-ignore lint/correctness/noNodejsModules: Vite configs execute in Node.
 import path from "node:path";
@@ -25,8 +25,7 @@ export default defineConfig({
     fs: { allow: [frontendRoot, sourceFrontend] },
   },
   resolve: {
-    // Source files live in a second worktree during the negative control. Keep
-    // one React runtime even when that checkout has its own dependency tree.
+    // dedupe React because the negative-control worktree has its own dependency tree.
     dedupe: ["react", "react-dom"],
     alias: {
       "@": path.resolve(sourceFrontend, "src"),

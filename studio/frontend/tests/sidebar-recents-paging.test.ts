@@ -39,7 +39,6 @@ test("a list longer than a page mounts one page, then the sentinel, and no end",
   assert.match(html, /data-row="chat-49"/);
   assert.doesNotMatch(html, /data-row="chat-50"/);
   assert.doesNotMatch(html, /data-end/);
-  // Last of all, the sentinel: a hidden row that is neither a chat nor the end.
   const last = html.slice(html.lastIndexOf("<li"));
   assert.match(last, /^<li aria-hidden="true"/);
   assert.doesNotMatch(last, /data-row/);
@@ -53,7 +52,6 @@ test("a list that fits in a page mounts every row and then the end", () => {
   }
 });
 
-/** The text of a JSX attribute's value, or undefined when the tag does not set it. */
 function attrText(
   tag: ts.JsxOpeningLikeElement,
   name: string,
@@ -65,7 +63,6 @@ function attrText(
   return prop?.initializer?.getText();
 }
 
-/** `{ scope: SIDEBAR_TAIL_SCOPE, id: "recents" }`, however it is formatted. */
 function isRecentsTail(node: ts.Node): boolean {
   if (!ts.isObjectLiteralExpression(node)) return false;
   const value = (name: string) =>
@@ -103,8 +100,7 @@ test("Recents pages its rows and draws its end strip only after the last one", (
   visit(file);
   assert.ok(recents, "Recents is not a ProgressiveRows");
   assert.match(attrText(recents, "renderItem") ?? "", /RECENTS_ORDER_SCOPE/);
-  // The strip's drop lands after the LAST chat in Recents (sidebar-drag.ts), so it may only be
-  // drawn once that chat is: inside `end`, and nowhere else.
+  // sidebar-drag.ts drops the strip after Recents' last chat, so it belongs only in end.
   const end = recents.attributes.properties.find(
     (p) => ts.isJsxAttribute(p) && p.name.getText() === "end",
   );

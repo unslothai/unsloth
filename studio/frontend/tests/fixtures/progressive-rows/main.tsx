@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The real ProgressiveRows inside a scroller tagged as the sidebar's, so the observer roots where it
-// does in the app. `renderItem` is a new function on every render, as AppSidebar's is.
+// matches AppSidebar's scroller root and unstable renderItem identity.
 import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { ProgressiveRows } from "@/components/progressive-rows";
@@ -21,13 +20,13 @@ declare global {
     fixture: {
       setCount: (count: number) => void;
       setMounted: (mounted: boolean) => void;
-      // New item objects with the same ids, as a chat-list refetch delivers them.
+      // uses new item objects with stable ids, matching a chat-list refetch.
       refresh: () => void;
     };
   }
 }
 window.rowRenders = 0;
-// Counts calls of renderItem: how many rows a change actually redrew.
+// tracks renderItem calls to detect unnecessary row redraws.
 const countRowRender = () => {
   window.rowRenders += 1;
 };

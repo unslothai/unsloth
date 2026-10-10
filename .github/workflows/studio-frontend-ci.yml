@@ -496,8 +496,7 @@ jobs:
         timeout-minutes: 5
         run: python3 tests/studio/playwright_user_message_time.py
 
-      # The node suite renders ProgressiveRows statically, where no effect runs, so the paging
-      # itself (observer, re-arming, cleanup) is only checked here.
+      # the node suite runs no effects, so only this browser check covers the observer, re-arming, and cleanup.
       - name: Browser check for paged sidebar lists
         working-directory: ${{ github.workspace }}
         timeout-minutes: 5
