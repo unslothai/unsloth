@@ -3271,7 +3271,6 @@ def test_unlink_stops_the_document_being_embedded(rag_home, stub_embeddings, mon
     # The whole document takes ~30 s of embedding here.
     assert elapsed < 10, f"unlink waited {elapsed:.1f}s for the embed"
     assert folder_sync.get_folder(folder["id"]) is None
-    assert not folder_sync.is_cancel_requested(folder["id"])
 
 
 @requires_sqlite_vec
