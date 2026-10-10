@@ -199,7 +199,7 @@ export function KeylessApiAccessSection({
             />
           </div>
           <div className="flex min-w-0 flex-col gap-0.5">
-            <h2 className="text-base font-semibold font-heading text-foreground">
+            <h2 className="settings-heading text-base font-semibold font-heading">
               Keyless API access
             </h2>
             <p className="text-xs text-muted-foreground leading-relaxed">
@@ -220,7 +220,6 @@ export function KeylessApiAccessSection({
         <SettingsRow
           label="Chat and inference"
           description="Serve the approved OpenAI and Anthropic inference endpoints on localhost and an active private LAN."
-          alignTop={true}
         >
           <Switch
             checked={scope !== "off"}
@@ -235,7 +234,6 @@ export function KeylessApiAccessSection({
         <SettingsRow
           label="Everything else"
           description="Also serve training, files and settings, but only to local loopback callers."
-          alignTop={true}
         >
           <Switch
             checked={scope === "full"}
@@ -248,7 +246,6 @@ export function KeylessApiAccessSection({
         <SettingsRow
           label="Allow tools"
           description="Let keyless callers use the built-in Python, terminal and web search tools. Off unless you turn it on."
-          alignTop={true}
         >
           <Switch
             checked={tools}

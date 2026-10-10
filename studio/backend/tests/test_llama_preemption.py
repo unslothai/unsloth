@@ -610,8 +610,16 @@ class TestTheWireCarriesAThoughtPartial:
 
         from core.inference import llama_cpp
 
+        from core.inference.chat_template_helpers import trailing_assistant_resume_kind
+
         source = Path(llama_cpp.__file__).read_text()
-        assert "if continue_final_message and trailing_assistant_resumable(conversation):" in source
+        assert "trailing_assistant_resume_kind(conversation) if continue_final_message else None" in source
+        # A partial paused inside its thought has no prose and must still be resumed.
+        thought_only = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "", "reasoning_content": "Let me think"},
+        ]
+        assert trailing_assistant_resume_kind(thought_only) == "reasoning_content"
 
     def test_the_splice_path_still_uses_visible_text_only(self):
         """The manual splice appends its result as VISIBLE text."""

@@ -5,6 +5,7 @@ import {
   CPT_LORA_HYPERPARAMS,
   DEFAULT_HYPERPARAMS,
   LR_DEFAULT_CPT,
+  LR_DEFAULT_DECISION_FULL,
   LR_DEFAULT_FULL,
   LR_DEFAULT_LORA,
   TARGET_MODULES,
@@ -70,6 +71,7 @@ function resolveTrainingMethodLearningRate(
   nextMethod: TrainingMethod,
   learningRateManuallySet: boolean,
   modelAdapterLearningRate: number | null,
+  isDecision: boolean,
 ): number | undefined {
   if (learningRateManuallySet) {
     return undefined;
@@ -88,9 +90,30 @@ function resolveTrainingMethodLearningRate(
   if (wasAdapter && nowAdapter) {
     return undefined;
   }
-  return nowAdapter
-    ? (modelAdapterLearningRate ?? LR_DEFAULT_LORA)
-    : LR_DEFAULT_FULL;
+  if (nowAdapter) {
+    return modelAdapterLearningRate ?? LR_DEFAULT_LORA;
+  }
+  return isDecision ? LR_DEFAULT_DECISION_FULL : LR_DEFAULT_FULL;
+}
+
+// Re-checked at exit: modality or streaming learned inside CPT still vetoes a saved true.
+function completionsAllowedOnExit(
+  state: Pick<
+    TrainingConfigState,
+    | "datasetStreaming"
+    | "isEmbeddingModel"
+    | "isVisionModel"
+    | "isAudioModel"
+    | "isDatasetImage"
+    | "isDatasetAudio"
+  >,
+): boolean {
+  if (state.datasetStreaming || state.isEmbeddingModel) return false;
+  if (state.isVisionModel && state.isDatasetImage === true) return false;
+  if (state.isAudioModel && (!state.isVisionModel || state.isDatasetAudio)) {
+    return false;
+  }
+  return true;
 }
 
 export function buildTrainingMethodPatch(
@@ -103,6 +126,16 @@ export function buildTrainingMethodPatch(
     | "loraRank"
     | "loraAlpha"
     | "loraVariant"
+    | "trainOnCompletions"
+    | "datasetStreaming"
+    | "selectedModel"
+    | "modelDefaultsAppliedFor"
+    | "modelType"
+    | "isEmbeddingModel"
+    | "isVisionModel"
+    | "isAudioModel"
+    | "isDatasetImage"
+    | "isDatasetAudio"
   >,
   nextMethod: TrainingMethod,
 ): TrainingMethodStatePatch {
@@ -120,18 +153,29 @@ export function buildTrainingMethodPatch(
     provenance.loraRankBeforeCpt = state.loraRank;
     provenance.loraAlphaBeforeCpt = state.loraAlpha;
     provenance.loraVariantBeforeCpt = state.loraVariant;
+    provenance.trainOnCompletionsBeforeCpt =
+      state.modelDefaultsAppliedFor === state.selectedModel
+        ? state.trainOnCompletions
+        : null;
     Object.assign(patch, getCptTrainingPatch(state.targetModules));
   }
   if (prevMethod === "cpt" && nextMethod !== "cpt") {
     Object.assign(patch, getRestoreFromCptPatch(provenance));
     if (provenance.datasetFormatBeforeCpt !== null) {
       patch.datasetFormat = provenance.datasetFormatBeforeCpt;
+      if (
+        provenance.trainOnCompletionsBeforeCpt &&
+        completionsAllowedOnExit(state)
+      ) {
+        patch.trainOnCompletions = true;
+      }
     }
     provenance.datasetFormatBeforeCpt = null;
     provenance.targetModulesBeforeCpt = null;
     provenance.loraRankBeforeCpt = null;
     provenance.loraAlphaBeforeCpt = null;
     provenance.loraVariantBeforeCpt = null;
+    provenance.trainOnCompletionsBeforeCpt = null;
   }
 
   const learningRate = resolveTrainingMethodLearningRate(
@@ -139,6 +183,7 @@ export function buildTrainingMethodPatch(
     nextMethod,
     provenance.learningRateManuallySet,
     provenance.modelAdapterLearningRate,
+    state.modelType === "decision",
   );
   if (learningRate !== undefined) {
     patch.learningRate = learningRate;

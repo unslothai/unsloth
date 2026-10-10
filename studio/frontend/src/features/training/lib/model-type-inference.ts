@@ -9,8 +9,13 @@ import {
 import type { ModelTypeCapabilityFlags } from "./model-type-capabilities";
 
 const TEXT_MODEL_TAGS = new Set(["text-generation"]);
+const DECISION_MODEL_TAGS = new Set(["laya"]);
 
 export type TrainingModelTypeMetadata = TrainingModelModalityMetadata;
+
+function hasDecisionHint({ tags }: TrainingModelTypeMetadata): boolean {
+  return (tags ?? []).some((tag) => DECISION_MODEL_TAGS.has(tag.toLowerCase()));
+}
 
 function hasEmbeddingHint({
   tags,
@@ -37,12 +42,15 @@ export function trainingModelTypeFlagsFromMetadata(
 ): ModelTypeCapabilityFlags {
   const capabilities = inferTrainingModelModalityFlags(metadata);
   const isEmbedding = hasEmbeddingHint(metadata);
+  const isDecision = hasDecisionHint(metadata);
   const hasModelTypeSignal =
+    isDecision ||
     isEmbedding ||
     capabilities.isAudio ||
     capabilities.isVision ||
     hasTextModelHint(metadata);
   return {
+    isDecision: hasModelTypeSignal ? isDecision : undefined,
     isEmbedding: hasModelTypeSignal ? isEmbedding : undefined,
     isAudio: hasModelTypeSignal ? capabilities.isAudio : undefined,
     isVision: hasModelTypeSignal ? capabilities.isVision : undefined,

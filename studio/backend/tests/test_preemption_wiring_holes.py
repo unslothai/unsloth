@@ -124,11 +124,8 @@ class TestTheRespawnRetryKeepsItsControls:
 
     def test_the_connect_error_retry_forwards_the_preemption_arguments(self):
         source = LLAMA_CPP.read_text(encoding = "utf-8")
-        retry = source[
-            source.index(
-                "yield from self.generate_chat_completion(\n                    retry_messages,"
-            ) :
-        ]
+        # main hoisted the respawn call into one helper the connect and stream retries share.
+        retry = source[source.index("def _replay_on_replacement_server(") :]
         retry = retry[: retry.index("_allow_respawn_retry = False")]
         for kwarg in (
             "admission_output_allowance = admission_output_allowance,",

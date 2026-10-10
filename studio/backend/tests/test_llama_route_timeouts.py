@@ -2,12 +2,15 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
 import asyncio
+import json
 import math
 import os
 import sys
 import time
 import threading
 from types import SimpleNamespace
+
+import pytest
 
 _backend = os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, _backend)
@@ -509,3 +512,107 @@ def test_stream_stall_timeout_disabled_clears_read_timeout():
         assert seen == [None, None], seen
 
     asyncio.run(_run())
+
+
+@pytest.mark.parametrize("wire_format", ["lines", "bytes"])
+def test_prompt_progress_does_not_start_the_decode_timeout(wire_format):
+    async def run():
+        progress = "data: " + json.dumps(
+            {
+                "choices": [{"index": 0, "delta": {"role": "assistant", "content": None}}],
+                "prompt_progress": {"processed": 512, "total": 2048},
+            }
+        )
+        output = 'data: {"choices":[{"index":0,"delta":{"content":"ok"}}]}'
+        response = SimpleNamespace(request = SimpleNamespace(extensions = {"timeout": {}}))
+
+        async def items():
+            if wire_format == "bytes":
+                data = (progress + "\n\n").encode()
+                yield data[:40]
+                yield data[40:]
+            else:
+                yield progress
+                yield ""
+            await asyncio.sleep(0.08)
+            yield (output + "\n\n").encode() if wire_format == "bytes" else output
+            await asyncio.Future()
+
+        received = []
+        with pytest.raises(inf_mod.httpx.ReadTimeout, match = "mid-response"):
+            async for item in inf_mod._aiter_llama_stream_items(
+                items(),
+                response = response,
+                first_token_deadline = time.monotonic() + 1,
+                post_first_item_read_timeout_s = 0.02,
+                track_prefill_progress = True,
+            ):
+                received.append(item)
+                if "ok" not in str(item):
+                    assert response.request.extensions["timeout"]["read"] is None
+        assert any("ok" in str(item) for item in received)
+        assert response.request.extensions["timeout"]["read"] == 0.02
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("advancing", [True, False])
+def test_only_advancing_prefill_progress_renews_the_deadline(monkeypatch, advancing):
+    monkeypatch.setattr(inf_mod, "_first_token_timeout_s", lambda: 0.12)
+
+    async def run():
+        async def items():
+            for index in range(6):
+                yield "data: " + json.dumps(
+                    {
+                        "choices": [{"delta": {"role": "assistant", "content": None}}],
+                        "prompt_progress": {"processed": index if advancing else 0},
+                    }
+                )
+                await asyncio.sleep(0.04)
+            yield 'data: {"choices":[{"delta":{"content":"ok"}}]}'
+
+        received = []
+
+        async def drain():
+            async for item in inf_mod._aiter_llama_stream_items(
+                items(),
+                first_token_deadline = time.monotonic() + 0.12,
+                post_first_item_read_timeout_s = 0.02,
+                track_prefill_progress = True,
+            ):
+                received.append(item)
+
+        if advancing:
+            await drain()
+            assert '"ok"' in received[-1]
+        else:
+            with pytest.raises(inf_mod.httpx.ReadTimeout, match = "first token"):
+                await drain()
+            assert len(received) < 6
+
+    asyncio.run(run())
+
+
+def test_prefill_tracking_preserves_terminal_grace_without_output():
+    async def run():
+        response = SimpleNamespace(request = SimpleNamespace(extensions = {"timeout": {}}))
+        armed = []
+
+        async def items():
+            armed.append(response.request.extensions["timeout"]["read"])
+            yield 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}'
+            await asyncio.Future()
+
+        with pytest.raises(inf_mod.httpx.ReadTimeout, match = "mid-response"):
+            async for _ in inf_mod._aiter_llama_stream_items(
+                items(),
+                response = response,
+                first_token_deadline = time.monotonic() + 1,
+                post_first_item_read_timeout_s = lambda: 0.02,
+                track_prefill_progress = True,
+            ):
+                pass
+        assert armed == [None]
+
+    asyncio.run(run())

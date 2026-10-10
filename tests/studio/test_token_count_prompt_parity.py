@@ -39,14 +39,6 @@ TEMP = WORKDIR / "temp" / "token_count_prompt_parity"
 SOURCES = (ADAPTER, CAPABILITIES, MODEL_SIZE)
 
 
-def _canvas_constants() -> str:
-    return slice_between(
-        read(ADAPTER),
-        "export const CANVAS_TOOL_INSTRUCTION =",
-        "export async function buildLocalTokenCountHistory(",
-    )
-
-
 def _prune_helpers() -> str:
     """isAbandonedAssistantTurn + pruneOutboundHistory, which the outbound builder calls."""
     return slice_between(
@@ -108,20 +100,12 @@ def _reasoning_builder() -> str:
     return clamp + "\n" + builder
 
 
-def _instruction(name: str) -> str:
-    """The JS string literal assigned to ``name``, as Python text."""
-    text = read(ADAPTER)
-    start = text.index(f"export const {name} =")
-    opening = text.index('"', start)
-    closing = text.index('";', opening + 1)
-    return text[opening + 1 : closing]
-
-
 HARNESS = """
 // @ts-nocheck
 // Fixtures the sliced builder reads through. Everything below the PRELUDE marker is
 // copied verbatim out of studio/frontend/src/features/chat/api/chat-adapter.ts.
 const state: any = {
+  models: [],
   params: { systemPrompt: "", systemVariables: "" },
   artifactsEnabled: false,
   supportsTools: false,
@@ -197,12 +181,7 @@ def _estimate(contents: list[str]) -> int:
 
 def _harness_source() -> str:
     return (
-        HARNESS
-        + _canvas_constants()
-        + _prune_helpers()
-        + _outbound_builder()
-        + _reasoning_builder()
-        + _extras_builder()
+        HARNESS + _prune_helpers() + _outbound_builder() + _reasoning_builder() + _extras_builder()
     )
 
 
@@ -236,50 +215,32 @@ def _count_script(seed_patch: str) -> str:
 USER_TURN = "draw me a bar chart"
 SYSTEM_PROMPT = "You are a helpful assistant."
 WITH_PROMPT = (
-    '{ artifactsEnabled: true, supportsTools: true, params: { systemPrompt: "'
+    '{ supportsTools: true, params: { systemPrompt: "'
     + SYSTEM_PROMPT
     + '", systemVariables: "" } }'
 )
 
 
 @pytest.mark.parametrize(
-    ("seed_patch", "constant", "prompt"),
+    ("seed_patch", "prompt"),
     [
-        # Canvas on, tool-capable: the request appends the render_html wording to the prompt.
-        pytest.param(WITH_PROMPT, "CANVAS_TOOL_INSTRUCTION", SYSTEM_PROMPT, id = "render_html"),
-        # No tool support: the fenced-HTML fallback, and with no prompt to append to it leads.
-        pytest.param(
-            "{ artifactsEnabled: true, supportsTools: false }",
-            "CANVAS_FALLBACK_INSTRUCTION",
-            "",
-            id = "fenced_html_fallback",
-        ),
-        # The pill is off by default; the count must not invent a prompt.
-        pytest.param("{ artifactsEnabled: false, supportsTools: true }", None, "", id = "canvas_off"),
+        pytest.param(WITH_PROMPT, SYSTEM_PROMPT, id = "own_prompt"),
+        # A chat saved with Canvas on restores without it: nothing is appended.
+        pytest.param("{ artifactsEnabled: true, supportsTools: true }", "", id = "legacy_canvas_on"),
     ],
 )
-def test_the_recount_prices_the_canvas_instruction(seed_patch, constant, prompt):
-    """#7450's bar answers "does this chat still fit", so it must price every part of the next
-    prompt -- including the Canvas instruction, which no tool flag can add back server-side."""
-    instruction = _instruction(constant) if constant else ""
-    expected_system = "\n\n".join(part for part in (prompt, instruction) if part)
+def test_the_recount_prices_only_the_prompt_the_completion_sends(seed_patch, prompt):
+    """#7450's bar answers "does this chat still fit": it prices the user's own system prompt
+    and nothing else now that Canvas is gone."""
     out = _run(_count_script(seed_patch))
-    assert out.get("system") == (expected_system or None)
-    assert out.get("inputTokens") == _estimate(
-        ([expected_system] if expected_system else []) + [USER_TURN]
-    ), "the recount must price the Canvas instruction the completion sends"
+    assert out.get("system") == (prompt or None)
+    assert out.get("inputTokens") == _estimate(([prompt] if prompt else []) + [USER_TURN])
 
 
-def test_the_request_path_sends_the_same_constants():
-    """The adapter and the recount must read one source of truth, or the count drifts on edit."""
+def test_no_canvas_instruction_is_left_in_the_request_path():
     src = read(ADAPTER)
-    assert "? CANVAS_TOOL_INSTRUCTION\n          : CANVAS_FALLBACK_INSTRUCTION" in src, (
-        "createOpenAIStreamAdapter must build artifactInstruction from the shared "
-        "constants the token recount prices"
-    )
-    for name in ("CANVAS_TOOL_INSTRUCTION", "CANVAS_FALLBACK_INSTRUCTION"):
-        assert src.count(f"export const {name} =") == 1
-        assert src.count(name) == 3, f"{name} must have exactly one declaration and two uses"
+    for name in ("CANVAS_TOOL_INSTRUCTION", "CANVAS_FALLBACK_INSTRUCTION", "render_html"):
+        assert name not in src, f"{name} is still sent or priced"
 
 
 @pytest.mark.parametrize(

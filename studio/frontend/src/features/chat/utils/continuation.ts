@@ -1,23 +1,52 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  type GeminiAnswerReplayPart,
+  type GeminiContinuationReplayTurn,
+  type GeminiThoughtReplayPart,
+  parseGeminiAnswerReplayParts,
+  parseGeminiContinuationReplayTurns,
+  parseGeminiThoughtReplayParts,
+} from "../gemini-thought-replay.ts";
+import type { ProviderCompactionContentPart } from "../types/api";
+import { providerCompactionPart } from "./provider-compaction.ts";
+
 /** Resuming a response that stopped early (`length`, `cancelled`, `interrupted`): the conversation is re-sent
  *  with the partial as the final assistant turn plus `continue_final_message`, so the prompt ends mid-sentence
  *  and the new text is appended to the partial. */
 
 /** Why a turn ended before the model was done. `context_window` is a `length` cut the same
- *  request can never fit into, hence its own reason. */
+ *  request can never fit into, hence its own reason. `empty` is a clean finish that produced
+ *  nothing, which is a failure to report rather than an answer. `quote_cut` flags a
+ *  possible mid-quote stop. */
 export type IncompleteReason =
   | "length"
   | "cancelled"
   | "interrupted"
   | "context_window"
-  | "paused";
+  | "paused"
+  | "empty"
+  | "quote_cut";
 
 /** Metadata stamped on an assistant message that stopped early. */
 export type IncompleteInfo = {
   reason: IncompleteReason;
 };
+
+/** Whether a finished turn left anything on screen, which is what separates `empty` from a
+ *  real answer. Structured parts (tool calls, images, sources) always count; text and
+ *  reasoning have to contain more than whitespace. */
+export function hasRenderableContent(
+  content: readonly { type: string; text?: string }[],
+): boolean {
+  return content.some((part) => {
+    if (part.type === "text" || part.type === "reasoning") {
+      return (part.text ?? "").trim().length > 0;
+    }
+    return true;
+  });
+}
 
 const INCOMPLETE_REASONS: readonly IncompleteReason[] = [
   "length",
@@ -25,6 +54,8 @@ const INCOMPLETE_REASONS: readonly IncompleteReason[] = [
   "interrupted",
   "context_window",
   "paused",
+  "empty",
+  "quote_cut",
 ];
 
 /** Below this a shared boundary is likely coincidence, and trimming would eat output. */
@@ -44,6 +75,17 @@ export function resolveIncompleteReason<T extends IncompleteReason | null>(
   contextWindowExceeded: boolean,
 ): T | "context_window" {
   return contextWindowExceeded ? "context_window" : reason;
+}
+
+/** Let a context-window error refine a latched length stop; preserve other latched reasons. */
+export function incompleteReasonAfterError(
+  latched: IncompleteReason | null,
+  fromError: IncompleteReason,
+): IncompleteReason {
+  if (latched === "length" && fromError === "context_window") {
+    return fromError;
+  }
+  return latched ?? fromError;
 }
 
 /** Whether the provider reported this reason rather than the client inferring it; the provider
@@ -84,6 +126,11 @@ const STATUS_REASON: Record<
   interrupted: "error",
   context_window: "length",
   paused: "cancelled",
+  // Not `cancelled`: the bar reads that status as a real Stop and drops the stamped
+  // reason, losing the explanation on reload. `context_window` maps here for the same
+  // reason. Not `error` either, which would paint a red box over the bar.
+  empty: "length",
+  quote_cut: "length",
 };
 
 /** Restore assistant-ui's status without losing the product-specific stop reason. */
@@ -105,6 +152,8 @@ const INCOMPLETE_LABELS: Record<IncompleteReason, string> = {
   // No failure vocabulary: nothing went wrong, the model was shared out. Deliberately does
   // not promise text, since the backend can give up before the first token.
   paused: "Response paused while another chat used the model, and did not get it back",
+  empty: "The model returned an empty response",
+  quote_cut: "This response may have ended early",
 };
 
 /** The user-facing explanation of why a turn stopped. */
@@ -116,6 +165,11 @@ export function incompleteLabel(reason: IncompleteReason): string {
  *  levers are a shorter conversation or a new one. */
 const INCOMPLETE_REMEDIES: Partial<Record<IncompleteReason, string>> = {
   context_window: "Start a new chat, or shorten this one, to keep going",
+  // There is no partial to resume from, so the way out is another attempt.
+  empty: "Try again, or pick a different model",
+  // Detection is heuristic, and continuation may repeat the cut.
+  quote_cut:
+    "The model may have emitted a special token while quoting it. Write special tokens with a space inside, like < |im_end|> or < end_of_turn>, ask the model to do the same, and try again",
 };
 
 /** What to do about a turn that stopped early, or `null` when resuming is the answer. */
@@ -210,35 +264,72 @@ export function budgetImpliesTruncation({
   );
 }
 
-/** Whether an assistant turn can be resumed at all. A turn that called a tool cannot: the
- *  continuation runs as a sibling, so the call and its result are absent from the outbound
- *  history. Matches the backend guard.
+/** Mirrors the backend guard: tool calls block; reasoning-only needs `thought`.
  *
- *  `allowEmpty` drops the requirement that there BE text and nothing else. Its one caller is
- *  the Continue bar on a turn the backend gave up on, which can be empty -- a chat evicted
- *  while still prefilling never produced a token -- and must not render as a blank bubble
- *  with nothing to do about it. Continuing an empty partial runs as a regeneration. */
+ *  `allowEmpty` drops the requirement that there BE text. Its one caller is the Continue bar
+ *  on a turn the backend gave up on, which can be empty: a chat evicted while still
+ *  prefilling never produced a token. Continuing an empty partial runs as a regeneration. */
 export function isContinuableContent(
   content: readonly unknown[] | undefined,
-  { allowEmpty = false }: { allowEmpty?: boolean } = {},
+  {
+    thought = false,
+    replay = false,
+    allowEmpty = false,
+  }: { thought?: boolean; replay?: boolean; allowEmpty?: boolean } = {},
 ): boolean {
   if (!content) {
-    return false;
+    return replay;
   }
   let hasText = false;
+  let hasReasoning = false;
   for (const part of content) {
     const type = (part as { type?: string })?.type;
     if (type === "text") {
       hasText = hasText || ((part as { text?: string }).text ?? "").length > 0;
       continue;
     }
-    // Reasoning and citations are never replayed, so they neither block nor enable.
-    if (type === "reasoning" || type === "source") {
+    if (type === "reasoning") {
+      hasReasoning =
+        hasReasoning || ((part as { text?: string }).text ?? "").trim().length > 0;
+      continue;
+    }
+    // Citations are never replayed, so they neither block nor enable.
+    if (type === "source") {
       continue;
     }
     return false;
   }
-  return hasText || allowEmpty;
+  return hasText || (thought && hasReasoning) || replay || allowEmpty;
+}
+
+/** Reasoning is kept only when it all precedes the answer, as reasoning_content does. */
+export function readContinuationSource(
+  content: readonly unknown[] | undefined,
+): { partial: string; reasoning: string } {
+  let partial = "";
+  const thoughts: string[] = [];
+  let ordered = true;
+  for (const part of content ?? []) {
+    const { type, text } = (part ?? {}) as { type?: string; text?: unknown };
+    if (typeof text !== "string") {
+      continue;
+    }
+    if (type === "text") {
+      partial += text;
+    } else if (type === "reasoning") {
+      ordered = ordered && partial.length === 0;
+      thoughts.push(text);
+    }
+  }
+  return { partial, reasoning: ordered ? thoughts.join("\n") : "" };
+}
+
+/** Seed the adapter buffer, leaving <think> open when there is no answer yet. */
+export function continuationSeed(partial: string, thought: string): string {
+  if (!thought) {
+    return partial;
+  }
+  return partial ? `<think>${thought}</think>${partial}` : `<think>${thought}`;
 }
 
 /** The `reason` the backend stamps on a `context_truncated` event when it stopped waiting for
@@ -341,12 +432,82 @@ export const CONTINUE_INSTRUCTION =
 export const CONTINUATION_RUN_CONFIG_KEY = "unslothContinuation";
 
 export type ContinuationRequest = {
-  /** The partial answer to resume, exactly as it was rendered. */
+  /** The partial answer exactly as rendered; empty when stopped mid-thought. */
   partial: string;
+  /** Carried only to a backend that resumes a thought. */
+  reasoning?: string;
+  /** Seconds, so the resumed turn keeps its timer. */
+  reasoningDuration?: number;
   /** Gemini text-part thoughtSignature from the turn being resumed: the sibling run drops the
    *  original assistant message, so replaying it here keeps the history signed. */
   thoughtSignature?: string;
+  /** Signed Gemini thought-summary parts from the turn being resumed. */
+  thoughtParts?: GeminiThoughtReplayPart[];
+  /** Exact Gemini answer-part boundaries from the turn being resumed. */
+  answerParts?: GeminiAnswerReplayPart[];
+  /** Gemini responses hidden behind the merged continuation bubble, in provider order. */
+  geminiReplayTurns?: GeminiContinuationReplayTurn[];
+  providerCompaction?: ProviderCompactionContentPart;
+  providerCompactionAfterToolCalls?: number;
+  providerCompactionProviderType?: string;
+  providerCompactionModelId?: string;
+  providerCompactionConnectionKey?: string;
 };
+
+type ProviderCompactionContinuationFields = Pick<
+  Required<ContinuationRequest>,
+  | "providerCompaction"
+  | "providerCompactionAfterToolCalls"
+  | "providerCompactionProviderType"
+  | "providerCompactionModelId"
+  | "providerCompactionConnectionKey"
+>;
+
+function providerCompactionFields(
+  value: unknown,
+): ProviderCompactionContinuationFields | Record<string, never> {
+  const fields = value as
+    | {
+        providerCompaction?: unknown;
+        providerCompactionAfterToolCalls?: unknown;
+        providerCompactionProviderType?: unknown;
+        providerCompactionModelId?: unknown;
+        providerCompactionConnectionKey?: unknown;
+      }
+    | undefined;
+  const compaction = providerCompactionPart(fields?.providerCompaction);
+  const boundary = fields?.providerCompactionAfterToolCalls;
+  const providerType = fields?.providerCompactionProviderType;
+  const modelId = fields?.providerCompactionModelId;
+  const connectionKey = fields?.providerCompactionConnectionKey;
+  if (
+    !compaction ||
+    !Number.isInteger(boundary) ||
+    (boundary as number) < 0 ||
+    typeof providerType !== "string" ||
+    !providerType ||
+    typeof modelId !== "string" ||
+    !modelId ||
+    typeof connectionKey !== "string" ||
+    !connectionKey
+  ) {
+    return {};
+  }
+  return {
+    providerCompaction: compaction,
+    providerCompactionAfterToolCalls: boundary as number,
+    providerCompactionProviderType: providerType,
+    providerCompactionModelId: modelId,
+    providerCompactionConnectionKey: connectionKey,
+  };
+}
+
+export function providerCompactionContinuationFields(
+  metadata: unknown,
+): ProviderCompactionContinuationFields | Record<string, never> {
+  const custom = (metadata as { custom?: unknown } | undefined)?.custom;
+  return providerCompactionFields(custom);
+}
 
 /** Read a continuation request out of a run's `runConfig`, if it is one. */
 export function readContinuationRequest(
@@ -355,16 +516,59 @@ export function readContinuationRequest(
   const custom = (runConfig as { custom?: Record<string, unknown> } | undefined)
     ?.custom;
   const request = custom?.[CONTINUATION_RUN_CONFIG_KEY] as
-    | { partial?: unknown; thoughtSignature?: unknown }
+    | {
+        partial?: unknown;
+        reasoning?: unknown;
+        reasoningDuration?: unknown;
+        thoughtSignature?: unknown;
+        thoughtParts?: unknown;
+        answerParts?: unknown;
+        geminiReplayTurns?: unknown;
+        providerCompaction?: unknown;
+        providerCompactionAfterToolCalls?: unknown;
+        providerCompactionProviderType?: unknown;
+        providerCompactionModelId?: unknown;
+        providerCompactionConnectionKey?: unknown;
+      }
     | undefined;
-  const partial = request?.partial;
-  if (typeof partial === "string" && partial.length > 0) {
-    const signature = request?.thoughtSignature;
-    return typeof signature === "string" && signature
-      ? { partial, thoughtSignature: signature }
-      : { partial };
+  const partial = typeof request?.partial === "string" ? request.partial : "";
+  const reasoning =
+    typeof request?.reasoning === "string" && request.reasoning.trim()
+      ? request.reasoning
+      : "";
+  const signature = request?.thoughtSignature;
+  const thoughtParts = parseGeminiThoughtReplayParts(request?.thoughtParts);
+  const answerParts = parseGeminiAnswerReplayParts(request?.answerParts);
+  const geminiReplayTurns = parseGeminiContinuationReplayTurns(
+    request?.geminiReplayTurns,
+  );
+  const hasGeminiReplay = Boolean(
+    (typeof signature === "string" && signature) ||
+      thoughtParts.length > 0 ||
+      answerParts.length > 0 ||
+      geminiReplayTurns.length > 0,
+  );
+  if (!partial && !reasoning && !hasGeminiReplay) {
+    return null;
   }
-  return null;
+  const duration = request?.reasoningDuration;
+  return {
+    partial,
+    ...(reasoning ? { reasoning } : {}),
+    ...(reasoning &&
+    typeof duration === "number" &&
+    Number.isFinite(duration) &&
+    duration >= 0
+      ? { reasoningDuration: duration }
+      : {}),
+    ...(typeof signature === "string" && signature
+      ? { thoughtSignature: signature }
+      : {}),
+    ...(thoughtParts.length > 0 ? { thoughtParts } : {}),
+    ...(answerParts.length > 0 ? { answerParts } : {}),
+    ...(geminiReplayTurns.length > 0 ? { geminiReplayTurns } : {}),
+    ...providerCompactionFields(request),
+  };
 }
 
 /** Resuming a Max Tokens cut WITHOUT asking: hitting the cap is not a decision the user made.
@@ -893,12 +1097,21 @@ export type AutoContinueRunSignal = {
   subscribe(onChange: () => void): () => void;
 };
 
+/** The run a hold was taken for. `AutoContinueRunSignal` answers off the STREAM, so it is silent
+ *  for a preflight the user STOPPED; this is pending for the whole preflight, so a merely slow run
+ *  settles nothing. It must be the run's OWN promise: the next round is claimed while the previous
+ *  is still winding down, so a thread-wide notice would lapse the successor's lease mid-preflight. */
+export type AutoContinueIssuedRun = {
+  whenSettled(onSettled: () => void): void;
+};
+
 /** Holds the lease of each continuation this tab is running, for as long as its own run runs. A
  *  hold is (message, thread) and arms when THAT thread starts generating; a hold taken while
  *  the thread is busy waits to see it idle first, or it would arm on its predecessor's run. A
  *  hold whose run has not appeared yet is renewed, never timed out: the preflight has no bound
  *  (settings pairing, then waiting while a large local GGUF loads), and a fixed arming timeout
- *  dropped the hold under a run that had since started streaming. */
+ *  dropped the hold under a run that had since started streaming. An unarmed hold is discarded
+ *  when its own run settles or preflight fails; a pending run keeps its renewals. */
 export function createAutoContinueLeaseKeeper({
   signal,
   renew = (messageId, holder, now) => tab.renew(messageId, holder, { now }),
@@ -911,6 +1124,11 @@ export function createAutoContinueLeaseKeeper({
   now?: () => number;
 }): {
   hold: (messageId: string, threadId: string) => void;
+  settleOn: (
+    messageId: string,
+    threadId: string,
+    issued: AutoContinueIssuedRun | undefined,
+  ) => void;
   observe: () => void;
   failed: (threadId: string) => void;
   tick: () => void;
@@ -922,8 +1140,13 @@ export function createAutoContinueLeaseKeeper({
     threadId: string;
     /** Seen idle since the hold was taken, so the next run to start is this hold's own. */
     idle: boolean;
+    /** The key was free when the hold was taken, so a true reading of it is this hold's own
+     *  run and never somebody else's. Never reassigned, unlike `idle`. */
+    ownsTheKey: boolean;
     /** That run has started. Only an armed hold is ever released. */
     armed: boolean;
+    /** That run has ended, per its own promise. Nothing running after it is that run. */
+    settled: boolean;
   };
   const holds = new Map<string, Hold>();
   let unsubscribe: (() => void) | null = null;
@@ -935,6 +1158,17 @@ export function createAutoContinueLeaseKeeper({
   function observe(): void {
     const at = now();
     for (const [id, hold] of [...holds]) {
+      if (hold.settled && !hold.armed && hold.ownsTheKey) {
+        // Its own run is over and the stream never began: Stop during preflight. Discarded, not
+        // released, so the lease lapses on its own TTL and no `done` marker claims a message that
+        // produced not one token. Ahead of the running check so nothing on the thread now can arm
+        // it, and only while UNARMED, since the key carries a LIST of owners and dropping an armed
+        // hold costs a continuation that did stream its marker. `ownsTheKey` likewise: a hold taken
+        // on an already-busy key cannot arm off its own run, so one that streamed throughout is
+        // indistinguishable from one that was stopped. Undecidable, so renewed.
+        holds.delete(id);
+        continue;
+      }
       if (signal.isRunning(hold.threadId)) {
         // Only a run that started after this hold was taken can be its own.
         hold.armed ||= hold.idle;
@@ -947,7 +1181,7 @@ export function createAutoContinueLeaseKeeper({
         release(hold.messageId, hold.threadId, at);
         continue;
       }
-      // Not armed yet, so its run is still in preflight, which has no upper bound. Kept and renewed
+      // Not armed and not settled, so its run is still in preflight, which has no upper bound. Kept and renewed
       // rather than timed out: dropping it stopped the renewals while the run was on its way, and
       // the lease then lapsed under a live continuation.
     }
@@ -970,12 +1204,31 @@ export function createAutoContinueLeaseKeeper({
         threadId,
         // Claimed while the thread is between runs, the ordinary case: the bar only fires on a reply that has finished.
         idle: !signal.isRunning(threadId),
+        ownsTheKey: !signal.isRunning(threadId),
         armed: false,
+        settled: false,
       });
       unsubscribe ??= signal.subscribe(observe);
     },
+    /** Tie an existing hold to the run just issued for it. Separate from `hold` because the hold
+     *  is taken on the line BEFORE the run starts, so the promise does not exist yet. */
+    settleOn(messageId, threadId, issued) {
+      if (!issued || !messageId || !threadId) {
+        return;
+      }
+      const hold = holds.get(key(messageId, threadId));
+      if (!hold) {
+        return;
+      }
+      issued.whenSettled(() => {
+        // The captured hold, never a fresh lookup: the same key is claimed again as soon as
+        // the next round hits Max Tokens, and this run must not settle that round's preflight.
+        hold.settled = true;
+        observe();
+      });
+    },
     observe,
-    /** `threadId`'s run failed on its way out, before it ever reached the run signal. The one thing
+    /** `threadId`'s run failed on its way out, before it ever reached the run signal. A signal
      *  that can end a hold which never armed, and a fact rather than a deadline: the adapter
      *  threw, so the run is over. Armed holds are left alone, since the thread going idle settles
      *  them with the `done` marker. This one only discards, so the lease lapses on its own TTL. */
@@ -1012,6 +1265,26 @@ export function createAutoContinueLeaseKeeper({
   };
 }
 
+/** Assistant messages whose run this page started. Only these auto-continue: `spent` resets on
+ *  reload, so a saved cut would otherwise re-run every time its chat is opened. */
+const startedThisSession = new Set<string>();
+
+/** Called by the chat adapter as each run starts, continuations included. */
+export function noteRunStartedThisSession(
+  messageId: string | null | undefined,
+): void {
+  if (messageId) {
+    startedThisSession.add(messageId);
+  }
+}
+
+/** Whether this page started the run that produced `messageId`. */
+export function runStartedThisSession(
+  messageId: string | null | undefined,
+): boolean {
+  return Boolean(messageId) && startedThisSession.has(messageId as string);
+}
+
 /** Whether THIS message is the one to continue automatically. `shouldAutoContinue` answers about
  *  the turn and keeps saying yes after a message has been claimed, since the budget is per
  *  turn while the claim is per message, so rendering off the turn's answer alone showed a
@@ -1022,7 +1295,7 @@ export function shouldAutoContinueMessage(
   key: string | null | undefined,
   options: Parameters<typeof shouldAutoContinue>[2] = {},
 ): boolean {
-  if (wasAutoContinued(messageId)) {
+  if (!runStartedThisSession(messageId) || wasAutoContinued(messageId)) {
     return false;
   }
   return shouldAutoContinue(reason, key, options);
@@ -1034,6 +1307,7 @@ export function shouldAutoContinueMessage(
 export function resetAutoContinue(key?: string): void {
   if (key === undefined) {
     spent.clear();
+    startedThisSession.clear();
     tab.reset();
   } else {
     spent.delete(key);

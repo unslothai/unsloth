@@ -14,8 +14,11 @@ from core.inference.diffusion_families import (
     default_generation_params,
     detect_family,
     excluded_model_reason,
+    family_sd_cpp_supported,
+    sd_cpp_companion_only_repo_ids,
     sd_cpp_text_encoders_for,
 )
+from core.inference.sd_cpp_args import text_encoder_flags_for_family
 from core.inference.diffusion_lora import _CURATED, list_loras
 
 
@@ -78,15 +81,34 @@ def test_flux1_krea_dev_is_trusted_non_gguf():
 
 def test_flux1_krea_dev_generation_defaults():
     # Model-card recipe: 28 steps at guidance 4.5. The generic "krea" key (Turbo's 8-step no-CFG shape) must NOT swallow it, and the krea-2 defaults must stay intact.
-    assert default_generation_params("black-forest-labs/FLUX.1-Krea-dev") == (28, 4.5)
-    assert default_generation_params("QuantStack/FLUX.1-Krea-dev-GGUF") == (28, 4.5)
+    assert default_generation_params("black-forest-labs/FLUX.1-Krea-dev") == (20, 3.5)
+    assert default_generation_params("QuantStack/FLUX.1-Krea-dev-GGUF") == (20, 3.5)
     assert default_generation_params("krea/Krea-2-Turbo") == (8, 0.0)
     assert default_generation_params("krea/Krea-2-Raw") == (52, 3.5)
 
 
+def test_flux_dev_and_krea_do_not_inherit_the_schnell_nvfp4_checkpoint():
+    # The NVFP4 artifact is schnell-only: dev and Krea-dev inheriting it failed validation with no dense fallback.
+    from core.inference.diffusion_families import family_prequant_repo
+
+    fam = detect_family("black-forest-labs/FLUX.1-schnell")
+    assert fam is not None and fam.name == "flux.1"
+    assert (
+        family_prequant_repo(fam, "nvfp4", base_repo = "black-forest-labs/FLUX.1-schnell")
+        == "unsloth/FLUX.1-schnell-NVFP4"
+    )
+    for base, fp8_repo in (
+        ("black-forest-labs/FLUX.1-dev", "unsloth/FLUX.1-dev-FP8"),
+        ("black-forest-labs/FLUX.1-Krea-dev", "unsloth/FLUX.1-Krea-dev-FP8"),
+    ):
+        assert family_prequant_repo(fam, "nvfp4", base_repo = base) is None
+        assert family_prequant_repo(fam, "fp8", base_repo = base) == fp8_repo
+        assert family_prequant_repo(fam, "int8", base_repo = base) == fp8_repo
+
+
 def test_flux2_klein_generation_defaults_distinguish_base_from_distilled():
     for size in ("4B", "9B"):
-        assert default_generation_params(f"unsloth/FLUX.2-klein-base-{size}") == (50, 4.0)
+        assert default_generation_params(f"unsloth/FLUX.2-klein-base-{size}") == (20, 5.0)
         assert default_generation_params(f"unsloth/FLUX.2-klein-{size}") == (4, 1.0)
 
 
@@ -145,10 +167,10 @@ def test_prequant_exclusion_does_not_break_a_family_type_that_lacks_the_field():
 def test_zimage_base_generation_defaults_are_not_the_distilled_recipe():
     # The base is undistilled: 20 steps at guidance 4. The more specific "z-image-turbo" key sits
     # ahead of "z-image", so the 9-step CFG-free Turbo recipe must not swallow it.
-    assert default_generation_params("Tongyi-MAI/Z-Image") == (20, 4.0)
-    assert default_generation_params("unsloth/Z-Image-GGUF") == (20, 4.0)
-    assert default_generation_params("Tongyi-MAI/Z-Image-Turbo") == (9, 0.0)
-    assert default_generation_params("unsloth/Z-Image-Turbo-GGUF") == (9, 0.0)
+    assert default_generation_params("Tongyi-MAI/Z-Image") == (25, 3.0)
+    assert default_generation_params("unsloth/Z-Image-GGUF") == (25, 3.0)
+    assert default_generation_params("Tongyi-MAI/Z-Image-Turbo") == (8, 0.0)
+    assert default_generation_params("unsloth/Z-Image-Turbo-GGUF") == (8, 0.0)
 
 
 # ── lumina-2 family ──────────────────────────────────────────────────────────
@@ -324,8 +346,8 @@ def test_hidream_bf16_component_table_present():
 
 
 def test_ideogram4_generation_defaults():
-    # Model-card settings: 48 steps, guidance 7 (an exact match keeps the pipeline's recommended tapered schedule).
-    assert default_generation_params("ideogram-ai/ideogram-4-fp8") == (48, 7.0)
+    # ComfyUI's template: 20 steps at constant guidance 7 (an explicit 48 / 7 still keeps the card's tapered schedule).
+    assert default_generation_params("ideogram-ai/ideogram-4-fp8") == (20, 7.0)
 
 
 def test_ideogram4_bf16_reservation_table_present():
@@ -353,6 +375,77 @@ def test_hidream_prequant_wiring():
     fam = detect_family("HiDream-ai/HiDream-I1-Full")
     for scheme in ("int8", "fp8"):
         assert family_prequant_repo(fam, scheme) == "unsloth/HiDream-I1-Full-FP8"
+
+
+def test_hidream_distilled_variants_have_no_hosted_prequant_to_inherit():
+    # Dev and Fast are distillations of Full, so the hosted Full checkpoint is baked from other
+    # weights. Inheriting it made a Dev / Fast pick plan the Full artifact, drop its own shards,
+    # download several GB and only then hit the base_model_id refusal.
+    from core.inference.diffusion_families import family_prequant_repo
+    for repo_id in ("HiDream-ai/HiDream-I1-Dev", "HiDream-ai/HiDream-I1-Fast"):
+        fam = detect_family(repo_id)
+        for scheme in ("int8", "fp8"):
+            assert family_prequant_repo(fam, scheme, base_repo = repo_id) is None
+            # However the id was typed, and through the mirror the loader actually fetches.
+            assert family_prequant_repo(fam, scheme, base_repo = f"  {repo_id.upper()} ") is None
+            assert (
+                family_prequant_repo(
+                    fam, scheme, base_repo = repo_id.replace("HiDream-ai", "unsloth")
+                )
+                is None
+            )
+
+
+def test_qwen_image_2512_routes_to_its_own_hosted_prequant():
+    # 2512 is a different checkpoint with its own baked artifacts. Falling back to the Qwen-Image ones
+    # made a 2512 pick plan an artifact base_model_id refuses, after its shards had been dropped.
+    from core.inference.diffusion_families import family_prequant_repo
+
+    fam = detect_family("Qwen/Qwen-Image-2512")
+    assert fam is not None and fam.name == "qwen-image"
+    for scheme in ("int8", "fp8"):
+        assert family_prequant_repo(fam, scheme) == "unsloth/Qwen-Image-FP8"
+        assert (
+            family_prequant_repo(fam, scheme, base_repo = "Qwen/Qwen-Image")
+            == "unsloth/Qwen-Image-FP8"
+        )
+        for base_repo in (
+            "Qwen/Qwen-Image-2512",
+            "unsloth/Qwen-Image-2512",
+            " QWEN/QWEN-IMAGE-2512 ",
+        ):
+            assert (
+                family_prequant_repo(fam, scheme, base_repo = base_repo)
+                == "unsloth/Qwen-Image-2512-FP8"
+            )
+
+
+def test_qwen_image_2512_prequant_filenames_match_its_repo():
+    # The names derive from the repo name, so the variant repo must be asked for <Model>-<SCHEME>
+    # in both containers. The .pt is what that repo actually serves today and is asserted to stay
+    # in the chain: preferring safetensors is only allowed to ADD a name in front of it, never to
+    # replace it, or every checkpoint already published would stop resolving.
+    from core.inference.diffusion_prequant import candidate_filenames_of, resolve_prequant_source
+    fam = detect_family("Qwen/Qwen-Image-2512")
+    for scheme, safetensors_name, pickle_name in (
+        ("int8", "Qwen-Image-2512-INT8.safetensors", "Qwen-Image-2512-INT8.pt"),
+        ("fp8", "Qwen-Image-2512-FP8.safetensors", "Qwen-Image-2512-FP8.pt"),
+    ):
+        source = resolve_prequant_source(fam, scheme, base_repo = "Qwen/Qwen-Image-2512")
+        assert source is not None
+        assert source.location == "unsloth/Qwen-Image-2512-FP8"
+        names = list(candidate_filenames_of(source))
+        # the int8 ComfyUI twin (Studio's int8 codes bit for bit) leads; Studio's own containers follow unchanged
+        own = [n for n in names if not n.endswith("-ComfyUI.safetensors")]
+        assert own[0] == safetensors_name, names
+        assert names[0] == (
+            safetensors_name.replace(".safetensors", "-ComfyUI.safetensors")
+            if scheme == "int8"
+            else safetensors_name
+        ), names
+        assert pickle_name in names[1:], names
+        # And the legacy repo-agnostic spelling stays last, for a repo predating the model-named one.
+        assert names[-1] == f"transformer_{scheme}.pt", names
 
 
 def test_hidream_quant_schemes_not_denied_and_no_extra_excludes():
@@ -553,3 +646,378 @@ def test_flux2_gguf_base_mismatch_check_fails_open(tmp_path):
     assert_flux2_gguf_matches_base(
         detect_family("unsloth/FLUX.1-dev-GGUF"), "black-forest-labs/FLUX.2-klein-4B", empty
     )
+
+
+def test_qwen_image_21_is_reachable_end_to_end_not_just_detectable():
+    """A family whose base repo is not trusted is not a family at all.
+
+    Detection resolving is the easy half and was never the problem: the load is refused several
+    layers later, by a check that reads a different list, so the entry shipped looking complete and
+    every non-GGUF pick of it died with "restricted to unsloth/* repos". This asserts the whole
+    chain the picker actually walks, which is why it is one test rather than four.
+    """
+    from core.inference.diffusion_families import (
+        _PIPELINE_MIN_DIFFUSERS,
+        detect_family,
+        detect_family_by_pipeline_class,
+    )
+
+    fam = detect_family("Qwen/Qwen-Image-2.1")
+    assert fam is not None and fam.name == "qwen-image-2.1"
+    # Not swallowed by the generic family, and not swallowing it either.
+    assert detect_family("Qwen/Qwen-Image").name == "qwen-image"
+    assert detect_family("Qwen/Qwen-Image-2512").name == "qwen-image"
+    for alias in ("qwen_image_21", "qwenimage21", "qwen-image-21"):
+        assert detect_family("", override = alias) is fam, alias
+    # The class really is what the published model_index.json names.
+    assert detect_family_by_pipeline_class("QwenImage21Pipeline") is fam
+    assert fam.pipeline_class in _PIPELINE_MIN_DIFFUSERS
+
+    # The gate that made the entry inert. _is_trusted_diffusion_repo is asked of the base repo by
+    # validate_load_request BEFORE anything is built, so a family base missing from that list is
+    # unloadable however correct the rest of the entry is.
+    assert _is_trusted_diffusion_repo(fam.base_repo), (
+        f"{fam.base_repo} is the family's own base and is not in _TRUSTED_NON_GGUF_REPOS, so "
+        "every non-GGUF pick of this family is refused before the pipeline is built"
+    )
+
+
+def test_qwen_image_21_turbo_loads_as_its_own_checkpoint_of_the_family():
+    """The official 8-step distill is trusted, gets its card's defaults, loads its own hosted denoisers (never 2.1's),
+    and shares 2.1's text encoder."""
+    from core.inference.diffusion_families import (
+        default_generation_params,
+        detect_family,
+        family_prequant_repo,
+    )
+    from core.inference.diffusion_te_prequant import te_base_equivalent
+
+    turbo = "Qwen/Qwen-Image-2.1-Turbo"
+    fam = detect_family(turbo)
+    assert fam is not None and fam.name == "qwen-image-2.1"
+    assert _is_trusted_diffusion_repo(turbo)
+    # The card's recipe, for the repo, its GGUFs and a renamed local copy alike; the base keeps its own.
+    for identifier in (
+        turbo,
+        "qwen_image_2.1_turbo_Q4_K_M.gguf",
+        "/models/qwen-image-21-turbo",
+        "/models/qwen_image_21_turbo",
+        "/models/qwen-image-21_turbo",
+        "/models/qwenimage21-turbo",
+        "/models/qwenimage21_turbo",
+        "/models/qwenimage21turbo",
+        "qwenimage21turbo-Q4_K_M.gguf",
+    ):
+        assert default_generation_params(identifier) == (8, 1.0), identifier
+    for identifier in ("Qwen/Qwen-Image-2.1", "/models/qwen_image_21", "/models/qwenimage21"):
+        assert default_generation_params(identifier) == (25, 1.0), identifier
+    # Turbo's own int8 / fp8 denoisers, never 2.1's; nvfp4 (not hosted for Turbo) quantizes at load.
+    for scheme in ("int8", "fp8"):
+        assert (
+            family_prequant_repo(fam, scheme, base_repo = turbo) == "unsloth/Qwen-Image-2.1-Turbo-FP8"
+        )
+        assert (
+            family_prequant_repo(fam, scheme, base_repo = "Qwen/Qwen-Image-2.1")
+            == "unsloth/Qwen-Image-2.1-FP8"
+        )
+    assert family_prequant_repo(fam, "nvfp4", base_repo = turbo) is None
+    # Its Qwen3-VL encoder is byte-identical to 2.1's, so the hosted int8 ConvRot encoder serves both.
+    assert te_base_equivalent("Qwen/Qwen-Image-2.1", turbo)
+    assert not te_base_equivalent("Qwen/Qwen-Image", turbo)
+
+
+def test_qwen_image_21_turbo_resolves_its_own_artifact_names(monkeypatch):
+    """Turbo's repo is asked for Turbo's files, in the same order 2.1's repo is asked for 2.1's, and declares only
+    files it hosts. 2.1's chain is unchanged."""
+    from core.inference.diffusion_families import detect_family
+    from core.inference.diffusion_prequant import resolve_prequant_source
+
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_INT8_CONVROT", raising = False)
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_PREQUANT_COMFY", "0")
+    fam = detect_family("Qwen/Qwen-Image-2.1")
+    expected = {
+        ("Qwen/Qwen-Image-2.1", "int8"): (
+            "unsloth/Qwen-Image-2.1-FP8",
+            ("Qwen-Image-2.1-INT8-ConvRot.safetensors", "Qwen-Image-2.1-INT8.safetensors"),
+        ),
+        ("Qwen/Qwen-Image-2.1", "fp8"): (
+            "unsloth/Qwen-Image-2.1-FP8",
+            ("Qwen-Image-2.1-FP8.safetensors",),
+        ),
+        ("Qwen/Qwen-Image-2.1-Turbo", "int8"): (
+            "unsloth/Qwen-Image-2.1-Turbo-FP8",
+            (
+                "Qwen-Image-2.1-Turbo-INT8-ConvRot.safetensors",
+                "Qwen-Image-2.1-Turbo-INT8.safetensors",
+            ),
+        ),
+        ("Qwen/Qwen-Image-2.1-Turbo", "fp8"): (
+            "unsloth/Qwen-Image-2.1-Turbo-FP8",
+            ("Qwen-Image-2.1-Turbo-FP8.safetensors",),
+        ),
+    }
+    for (base, scheme), (repo, declared) in expected.items():
+        source = resolve_prequant_source(fam, scheme, base_repo = base)
+        assert source.location == repo, (base, scheme)
+        assert source.declared_filenames == declared, (base, scheme)
+        assert source.filename == declared[0], (base, scheme)
+        names = [
+            n
+            for n in (source.filename, *source.fallback_filenames)
+            if not n.startswith("transformer_")
+        ]
+        assert all(("-Turbo-" in n) == ("Turbo" in base) for n in names), names
+    # The ConvRot kill switch drops the rotated name for both repos alike.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_INT8_CONVROT", "0")
+    for base in ("Qwen/Qwen-Image-2.1", "Qwen/Qwen-Image-2.1-Turbo"):
+        source = resolve_prequant_source(fam, "int8", base_repo = base)
+        assert not any("ConvRot" in n for n in (source.filename, *source.fallback_filenames))
+
+
+def test_every_image_family_base_repo_is_loadable():
+    """The general form of the above, so the next family cannot ship inert the same way."""
+    from core.inference.diffusion_families import _FAMILIES
+
+    unreachable = [
+        f.name for f in _FAMILIES if f.base_repo and not _is_trusted_diffusion_repo(f.base_repo)
+    ]
+    assert (
+        not unreachable
+    ), f"these families declare a base repo that validate_load_request refuses: {unreachable}"
+
+
+def test_qwen_image_21_gguf_reaches_sd_cpp_with_its_own_vae_and_a_qwen3vl_encoder():
+    """The no-GPU route for unsloth/Qwen-Image-2.1-GGUF.
+
+    Every assertion here is a way the route was observed to fail quietly rather than loudly:
+    a family without both sd.cpp assets silently falls back to diffusers, the qwen-image VAE
+    decodes 2.1 latents to noise instead of erroring, and a fixed flow shift overrides the
+    resolution-dependent schedule upstream picks for this architecture.
+    """
+    fam = detect_family("unsloth/Qwen-Image-2.1-GGUF")
+    assert fam is not None and fam.name == "qwen-image-2.1"
+    assert family_sd_cpp_supported(fam)
+
+    assert fam.sd_cpp_vae == (
+        "unsloth/Qwen-Image-2.1-FP8",
+        "vae/qwen_image_2.1_vae_bf16.safetensors",
+    )
+    # Not the qwen-image VAE: a different class for a different latent space, which decodes to
+    # noise rather than raising if it is ever substituted here.
+    assert "2.1" in fam.sd_cpp_vae[1]
+
+    encoders = sd_cpp_text_encoders_for(fam, "unsloth/Qwen-Image-2.1-GGUF", None)
+    # The encoder, then the vision projector native editing reads through --llm_vision.
+    assert len(encoders) == 2
+    assert encoders[1] == ("unsloth/Qwen3-VL-8B-Instruct-GGUF", "mmproj-F16.gguf", "llm_vision")
+    repo, filename, kind = encoders[0]
+    assert repo == "unsloth/Qwen3-VL-8B-Instruct-GGUF"
+    # Which rung is the family's call, pinned by exact name in
+    # test_diffusion_compat_preflight.py::test_qwen_image_2_1_takes_the_dynamic_4bit_text_encoder.
+    # Restating it here broke when #11542 moved it to UD-Q4_K_XL. What this route needs is that
+    # the declared file is what reaches sd.cpp, and that it stays a 4-bit GGUF: the CPU RAM win
+    # is the reason the no-GPU route exists (bf16 is 16.4 GB).
+    assert filename == fam.sd_cpp_text_encoders[0][1]
+    assert filename.endswith(".gguf") and "Q4_K" in filename, filename
+    assert kind == "llm"
+    assert text_encoder_flags_for_family(fam.name) == ("--llm",)
+
+    assert fam.sd_cpp_sampling_method == "euler"
+    assert fam.sd_cpp_flow_shift is None
+
+    # The encoder repo is fetch-only and must not be offered as a loadable model. The VAE repo is
+    # the base itself, so it must NOT be classified that way.
+    companions = sd_cpp_companion_only_repo_ids()
+    assert "unsloth/qwen3-vl-8b-instruct-gguf" in companions
+    # The VAE ships inside a repo that is itself loadable, so it must NOT be classified fetch-only.
+    # Putting it in the GGUF repo instead WOULD be: that repo appears in no family field, so
+    # companions-minus-loadable would mark the home of every denoiser as a companion and hide it.
+    assert "unsloth/qwen-image-2.1-fp8" not in companions
+    assert "qwen/qwen-image-2.1" not in companions
+
+
+def test_the_pinned_prebuilt_is_one_that_can_load_qwen_image_21():
+    """The route is only real if the binary the installer pins understands the architecture.
+
+    The tag STRING cannot answer this: every mirror build resolves to the same master-813 base, so
+    the August build and the current one are indistinguishable by name. What is asserted here is the
+    pin itself, against the release verified to render this family (26.9s at 1024 on one B200,
+    Q4_K_M denoiser, bf16 VAE, Q4_K_M Qwen3-VL encoder). Bump both together or not at all.
+    """
+    import importlib.util
+    from pathlib import Path
+
+    script = Path(__file__).resolve().parents[2] / "install_sd_cpp_prebuilt.py"
+    spec = importlib.util.spec_from_file_location("install_sd_cpp_prebuilt_pin", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert module.DEFAULT_TAG == "master-813-bfbef5b-u1d02858", (
+        "the pinned prebuilt must be one built from a tree carrying Qwen-Image-2.1; "
+        f"{module.DEFAULT_TAG} is not"
+    )
+
+
+def test_a_minimum_that_has_not_shipped_does_not_prescribe_an_impossible_upgrade(
+    monkeypatch, tmp_path
+):
+    """``pip install -U 'diffusers>=0.41.0'`` has no candidate while 0.41.0 is unreleased, so the
+    refusal has to name the pinned main build Studio actually installs for this class.
+
+    And it has to name a remedy that WORKS for the cause that produces this refusal. Measured on a
+    host whose git exits non-zero: the install keeps diffusers 0.40.0, and the old text sent the
+    reader to `pip install -r diffusers-main.txt`, which resolves the same git+https requirement
+    and fails identically. The quoted zip URL needs no git, so it is the one line here that has to
+    stay true, hence the check that it names the commit the pin file actually carries.
+
+    0.41.0 has since shipped, so this runs as the next unreleased pin would: the minimum marked
+    unreleased and diffusers-main.txt with its commit line uncommented."""
+    import pathlib
+    import re as _re
+
+    from core.inference import diffusion_families as families
+    from core.inference.diffusion_families import _PIPELINE_MIN_DIFFUSERS, _too_old_message
+
+    shipped = pathlib.Path(__file__).resolve().parents[1] / "requirements" / "diffusers-main.txt"
+    pin = tmp_path / "diffusers-main.txt"
+    pin.write_text(
+        shipped.read_text(encoding = "utf-8").replace("\n# diffusers @ git+", "\ndiffusers @ git+"),
+        encoding = "utf-8",
+    )
+    monkeypatch.setattr(families, "_DIFFUSERS_MAIN_PIN", pin)
+    monkeypatch.setattr(families, "_UNRELEASED_MIN_DIFFUSERS", frozenset({"0.41.0"}))
+
+    message = _too_old_message("QwenImage21Pipeline", "qwen-image-2.1", "0.40.0")
+    assert "pip install -U 'diffusers>=0.41.0'" not in message
+    assert "has not been released yet" in message
+    assert "git --version" in message, "the likely cause has to be checkable by the reader"
+
+    commit = _re.search(r"@([0-9a-fA-F]{40})\b", pin.read_text(encoding = "utf-8"))
+    assert commit is not None, "the main pin must carry a full commit for the zip route to exist"
+    assert (
+        f"https://github.com/huggingface/diffusers/archive/{commit.group(1).lower()}.zip" in message
+    ), message
+
+    # A released minimum keeps the ordinary remedy.
+    released = _too_old_message("Krea2Pipeline", "krea-2", "0.38.0")
+    assert "pip install -U 'diffusers>=0.39.0'" in released
+
+    # Every unreleased entry must still be a minimum some class actually declares, so a stale one
+    # cannot sit here unnoticed after its release ships.
+    declared = set(_PIPELINE_MIN_DIFFUSERS.values())
+    monkeypatch.undo()
+    unreleased = families._UNRELEASED_MIN_DIFFUSERS
+    assert unreleased <= declared, sorted(unreleased - declared)
+
+
+def test_qwen_image_21_on_0_40_points_at_the_released_0_41():
+    """0.41.0 is on PyPI: a 0.40.0 install is told to update, not sent to a git build."""
+    from core.inference.diffusion_families import _UNRELEASED_MIN_DIFFUSERS, _too_old_message
+
+    assert "0.41.0" not in _UNRELEASED_MIN_DIFFUSERS
+    message = _too_old_message("QwenImage21Pipeline", "qwen-image-2.1", "0.40.0")
+    assert "pip install -U 'diffusers>=0.41.0'" in message
+    assert "Settings, Check for updates" in message
+    assert "has not been released yet" not in message and "git" not in message, message
+
+
+def test_qwen_image_21_takes_reference_images_but_is_not_an_edit_only_family():
+    """2.1 is unified, so it is the FLUX.2 shape and not the Qwen-Image-Edit one.
+
+    ``QwenImage21Pipeline.__call__`` takes ``image`` as optional condition images beside the prompt,
+    with no ``strength`` and the size from width/height, which is what the reference workflow passes.
+    ``edit`` would mean the pipeline IS the edit pipeline with no plain text-to-image, which is
+    Qwen-Image-Edit, a different model with a different pipeline class. Getting this wrong in either
+    direction is silent: False refuses reference images outright, True would demand an input image
+    for every generation.
+    """
+    from core.inference.diffusion_families import detect_family
+
+    fam = detect_family("Qwen/Qwen-Image-2.1")
+    assert fam is not None and fam.name == "qwen-image-2.1"
+    assert fam.reference is True
+    assert fam.edit is False
+    assert fam.pipeline_class == "QwenImage21Pipeline"
+    # It also has no separate img2img or inpaint pipeline upstream: the one class covers both jobs.
+    assert fam.img2img_pipeline_class is None
+    assert fam.inpaint_pipeline_class is None
+
+    # The edit family is a different model entirely, and must not have been merged into this one.
+    edit = detect_family("Qwen/Qwen-Image-Edit-2511")
+    assert edit is not None and edit.name == "qwen-image-edit" and edit.edit is True
+    assert edit.pipeline_class != fam.pipeline_class
+
+
+@pytest.mark.parametrize(
+    "name, card, expected",
+    [
+        ("qwen_image_2.1_turbo-Q4_K_M.gguf", None, "Qwen/Qwen-Image-2.1-Turbo"),
+        ("qwen-image-2.1-Q4_K_M.gguf", None, "Qwen/Qwen-Image-2.1"),
+        # A card tag decides when there is one, even an untrusted one that falls back to the default.
+        ("qwen_image_2.1_turbo-Q4_K_M.gguf", "someone/else", "Qwen/Qwen-Image-2.1"),
+    ],
+)
+def test_a_local_turbo_gguf_resolves_the_turbo_base_by_name(
+    monkeypatch, tmp_path, name, card, expected
+):
+    from core.inference import diffusion as dmod
+    from core.inference.diffusion_families import detect_family_for_pick
+
+    monkeypatch.setattr(dmod, "_hf_base_model", lambda repo_id, token: card)
+    monkeypatch.setattr(dmod, "_remember_companion_base", lambda repo_id, base: None)
+    fam = detect_family_for_pick(str(tmp_path), name, "qwen-image-2.1")
+    assert dmod._resolve_base_repo(str(tmp_path), None, fam, None, name) == expected
+
+
+@pytest.mark.parametrize(
+    "repo, gguf, expected",
+    [
+        (
+            "someone/Qwen-Image-2.1-GGUF",
+            "qwen-image-2.1-turbo-Q4_K_M.gguf",
+            "Qwen/Qwen-Image-2.1-Turbo",
+        ),
+        ("someone/Qwen-Image-2.1-Turbo-GGUF", "model-Q4_K_M.gguf", "Qwen/Qwen-Image-2.1-Turbo"),
+        # The selected file decides: a plain 2.1 file in a Turbo-named repo or folder keeps 2.1.
+        ("someone/Qwen-Image-2.1-Turbo-GGUF", "qwen_image_2.1_Q4_K_M.gguf", None),
+        ("/models/qwen-image-2.1-turbo", "qwenimage21-Q8_0.gguf", None),
+        ("someone/Qwen-Image-2.1-GGUF", "qwen-image-2.1-Q4_K_M.gguf", None),
+    ],
+)
+def test_the_selected_file_decides_the_named_variant(repo, gguf, expected):
+    from core.inference.diffusion_families import named_variant_base
+    assert named_variant_base(detect_family("Qwen/Qwen-Image-2.1"), repo, gguf) == expected
+
+
+@pytest.mark.parametrize(
+    "base, expected",
+    [
+        ("Qwen/Qwen-Image-2.1-Turbo", "unsloth/Qwen-Image-2.1-Turbo-FP8"),
+        # A local Turbo pipeline: the Turbo artifact when the loader's tail compare accepts it, else none at all.
+        ("/models/Qwen-Image-2.1-Turbo", "unsloth/Qwen-Image-2.1-Turbo-FP8"),
+        ("/models/qwen_image_21_turbo", None),
+        ("/models/Qwen-Image-2.1", "unsloth/Qwen-Image-2.1-FP8"),
+        ("Qwen/Qwen-Image-2.1", "unsloth/Qwen-Image-2.1-FP8"),
+    ],
+)
+def test_a_local_turbo_pipeline_never_plans_the_2_1_artifact(base, expected):
+    from core.inference.diffusion_families import family_prequant_repo
+    fam = detect_family("Qwen/Qwen-Image-2.1")
+    for scheme in ("int8", "fp8"):
+        assert family_prequant_repo(fam, scheme, base_repo = base) == expected, (base, scheme)
+
+
+def test_an_opaque_local_load_with_a_shipped_grid_runs_its_step_count():
+    from core.inference.diffusion import _generation_defaults_for
+    from core.inference.diffusion_families import generation_params_with_grid
+
+    grid = (1.0, 0.978453, 0.95418, 0.926626, 0.89508, 0.845148, 0.704534, 0.414568)
+    # No name matches: the grid's own count, not the fallback's 9 (which would resample it).
+    assert generation_params_with_grid(grid, "/models/opaque", "/models/opaque") == (8, 0.0)
+    assert _generation_defaults_for("/models/opaque", None, "/models/opaque", grid) == {
+        "steps": 8,
+        "guidance": 0.0,
+    }
+    # A name still decides first, and no grid keeps the fallback.
+    assert generation_params_with_grid(grid, "Qwen/Qwen-Image-2.1-Turbo") == (8, 1.0)
+    assert generation_params_with_grid(None, "/models/opaque") == (9, 0.0)

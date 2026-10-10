@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { normalizeTensorSplit } from "@/hooks/gpu-tensor-split";
 import type { GpuIndexKind } from "@/hooks/use-gpu-info";
 import {
+  cachedRepoConfigId,
   ggufVariantFromStorageKey,
+  isStandaloneGgufPath,
   modelIdFromStorageKey,
   modelStorageKey,
   normalizeGgufVariantIdentity,
@@ -13,21 +16,31 @@ import {
 import { isExternalModelId } from "@/features/chat/external-providers";
 import {
   DRAFT_N_MAX_SPEC_TYPES,
+  DRAFTER_MODEL_SPEC_TYPES,
+  MLX_ONLY_SPEC_TYPES,
   SEPARATE_DRAFT_MODEL_SPEC_TYPES,
 } from "@/lib/speculative-modes";
 
 export interface PerModelConfig {
+  engineParallelism?: "tensor" | "pipeline" | "data";
+  enginePrecision?: "auto" | "bf16" | "fp16" | "int4" | "int8" | "fp8";
+  engine?: "auto" | "vllm" | "sglang";
   customContextLength: number | null;
   maxSeqLength: number | null;
   kvCacheDtype: string | null;
-  /** MLX KV cache quantization width. Optional so older blobs still parse. */
-  mlxKvBits?: number | null;
+  mlxKvQuant?: MlxKvQuant | null;
+  /** MLX only: run quantized projections with int8 activations, where the model supports it. */
+  mlxInt8Prefill?: boolean;
   speculativeType: string | null;
   specDraftNMax: number | null;
   /** KV cache dtype for the DRAFT context, sized and quantized independently of kvCacheDtype.
    *  Optional so older blobs parse. */
   specDraftCacheDtype?: string | null;
+  /** MLX companion drafter, a repo id or local path. Optional so older blobs parse. */
+  specDraftModel?: string | null;
   nParallel: number | null;
+  reasoningBudget: number;
+  reasoningBudgetMessage: string;
   nBatch: number | null;
   nUbatch: number | null;
   /** --load-mode; null lets the fit decide (`none` when the load fits, else no flag).
@@ -47,23 +60,32 @@ export interface PerModelConfig {
      *  to launch with. */
   llamaExtraArgs?: string[] | null;
   // GPU Memory controls (per-model, GGUF-only), optional so older blobs parse. Absent or null
-  // selectedGpuIds means automatic. --tensor-split is not remembered: it follows the GPU set.
+  // selectedGpuIds means automatic.
   gpuMemoryMode?: "auto" | "manual";
   gpuLayers?: number;
   nCpuMoe?: number;
   selectedGpuIds?: number[] | null;
   selectedGpuIndexKind?: GpuIndexKind | null;
+  /** --tensor-split bound to selectedGpuIds in picker order. `undefined` defers to the store, `null` = default. */
+  tensorSplit?: number[] | null;
 }
 
 export const DEFAULT_PER_MODEL_CONFIG: PerModelConfig = {
+  engine: "auto",
+  enginePrecision: "auto",
+  engineParallelism: "tensor",
   customContextLength: null,
   maxSeqLength: null,
   kvCacheDtype: null,
-  mlxKvBits: null,
+  mlxKvQuant: null,
+  mlxInt8Prefill: false,
   speculativeType: null,
   specDraftNMax: null,
   specDraftCacheDtype: null,
+  specDraftModel: null,
   nParallel: null,
+  reasoningBudget: -1,
+  reasoningBudgetMessage: "",
   nBatch: null,
   nUbatch: null,
   loadMode: null,
@@ -145,7 +167,9 @@ export function residentIsServedByMlx(
   chatOnlyReason: string | null | undefined,
   loadedIsMlx: boolean | null | undefined,
 ): boolean {
-  return isServedByMlx(isGguf, deviceType, chatOnlyReason) && loadedIsMlx !== false;
+  return (
+    isServedByMlx(isGguf, deviceType, chatOnlyReason) && loadedIsMlx !== false
+  );
 }
 
 export function presetLoadSettingNames(
@@ -183,6 +207,20 @@ export function isServedByLlamaCpp(x: {
   );
 }
 
+/** Whether the backend can resume a reply stopped mid-thought: llama-server or reported MLX. */
+export function resumesThought(x: {
+  loadedIsGguf?: boolean | null;
+  loadedIsMlx?: boolean | null;
+  activeGgufVariant?: string | null;
+  activeNativePathToken?: string | null;
+  checkpoint?: string | null;
+}): boolean {
+  return (
+    isServedByLlamaCpp(x) ||
+    (!isExternalModelId(x.checkpoint) && x.loadedIsMlx === true)
+  );
+}
+
 /** The store's record of the context window a load left behind.
  *
  *  A window counts when the backend that reported it sized one. MLX always does, so its `context_length` stands
@@ -197,6 +235,9 @@ export function loadedContextFields(resp: {
   native_context_length?: number | null;
   max_context_length?: number | null;
   context_length_enforced?: boolean | null;
+  context_unbounded_when_batched?: boolean;
+  parallel_slots?: number | null;
+  mlx_context_budget?: number | null;
 } | null): {
   loadedContextLength: number | null;
   maxContextLength: number | null;
@@ -204,6 +245,9 @@ export function loadedContextFields(resp: {
   loadedIsGguf: boolean | null;
   loadedIsMlx: boolean | null;
   loadedContextEnforced: boolean | null;
+  loadedContextUnboundedWhenBatched: boolean;
+  loadedParallelSlots: number | null;
+  loadedContextBudget: number | null;
 } {
   if (!resp) {
     return {
@@ -213,6 +257,9 @@ export function loadedContextFields(resp: {
       loadedIsGguf: null,
       loadedIsMlx: null,
       loadedContextEnforced: null,
+      loadedContextUnboundedWhenBatched: false,
+      loadedParallelSlots: null,
+      loadedContextBudget: null,
     };
   }
   const isGguf = resp.is_gguf ?? false;
@@ -226,6 +273,9 @@ export function loadedContextFields(resp: {
       loadedIsGguf: false,
       loadedIsMlx: resp.is_mlx ?? null,
       loadedContextEnforced: null,
+      loadedContextUnboundedWhenBatched: false,
+      loadedParallelSlots: null,
+      loadedContextBudget: null,
     };
   }
   return {
@@ -239,6 +289,12 @@ export function loadedContextFields(resp: {
     // llama.cpp allocates what it reports, so GGUF is enforced by construction.
     // Everything else answers for itself, or says nothing.
     loadedContextEnforced: isGguf ? true : (resp.context_length_enforced ?? null),
+    // Read from the same response as the other two so the three never mix across loads.
+    loadedContextUnboundedWhenBatched: isGguf
+      ? false
+      : (resp.context_unbounded_when_batched ?? false),
+    loadedParallelSlots: resp.parallel_slots ?? null,
+    loadedContextBudget: isGguf ? null : (resp.mlx_context_budget ?? null),
   };
 }
 
@@ -254,8 +310,50 @@ export const KV_CACHE_DTYPES = [
   "f32",
 ] as const;
 
-// Every width mx.quantize supports. By bit width, not a dtype name, hence separate from KV_CACHE_DTYPES.
-export const MLX_KV_BITS: readonly number[] = [8, 6, 5, 4, 3, 2];
+/** Menu entries for a llama.cpp backend. CUDA, ROCm and Metal have no iq4_nl FlashAttention kernel, so attention
+ *  runs on the CPU there; Vulkan and CPU builds run it. A selected value stays listed so the trigger can show it. */
+export function kvCacheDtypeOptions(
+  backend: string | null,
+  selected: string | null | undefined,
+): readonly string[] {
+  if (backend === "vulkan" || backend === "cpu") return KV_CACHE_DTYPES;
+  return KV_CACHE_DTYPES.filter((dtype) => dtype !== "iq4_nl" || dtype === selected);
+}
+
+export const MLX_KV_QUANTS = [
+  "8",
+  "6",
+  "5",
+  "4",
+  "3",
+  "2",
+  "tq-4",
+  "tq-3.5",
+  "tq-3",
+  "tq-2",
+] as const;
+export type MlxKvQuant = (typeof MLX_KV_QUANTS)[number];
+const VALID_MLX_KV_QUANTS = new Set<string>(MLX_KV_QUANTS);
+
+export function mlxKvQuantLabel(quant: string): string {
+  return quant.startsWith("tq-") ? `TurboQuant ${quant.slice(3)}-bit` : `${quant}-bit`;
+}
+
+/** A bare width only ever meant mx.quantize; null is how a saved Auto spells itself. */
+export function normalizeMlxKvQuant(
+  value: unknown,
+  supersededBits?: unknown,
+): MlxKvQuant | null {
+  if (typeof value === "string") {
+    // Trimmed and lower-cased to match the backend's reader, or one row means two settings.
+    const named = value.trim().toLowerCase();
+    return VALID_MLX_KV_QUANTS.has(named) ? (named as MlxKvQuant) : null;
+  }
+  if (value !== undefined) return null;
+  if (typeof supersededBits !== "number" || !Number.isFinite(supersededBits)) return null;
+  const name = String(supersededBits);
+  return VALID_MLX_KV_QUANTS.has(name) ? (name as MlxKvQuant) : null;
+}
 const VALID_KV_CACHE_DTYPES = new Set<string>(KV_CACHE_DTYPES);
 
 // llama-server's --load-mode enum in --help order. "auto" is the default: the UI shows it, storage keeps null and
@@ -296,8 +394,15 @@ const LEGACY_STORAGE_KEY = "unsloth_load_settings";
 const LEGACY_MIGRATION_FLAG = "unsloth_model_configs_migrated";
 // would normalize the unknown field straight back out of the record.
 // v2 added nBatch/nUbatch, v3 llamaExtraArgs, v4 disableVision, v5 the llama-server tuning group
-// (loadMode / specDraftCacheDtype / ctxCheckpoints / cacheRam); a client from before any of them
-const STORAGE_SCHEMA_VERSION = 5;
+// (loadMode / specDraftCacheDtype / ctxCheckpoints / cacheRam), v6 the reasoning budget pair,
+// v7 mlxKvQuant, v9 mlxInt8Prefill, v10 the per-GPU split, v11 the MLX drafter. v8 is skipped: nightly builds stamped it for the reverted custom
+// llama.cpp config (#12725), so a v8 client must not claim to understand an int8 prefill record.
+const STORAGE_SCHEMA_VERSION = 11;
+const PRE_MLX_DRAFTER_SCHEMA_VERSION = 10;
+const PRE_TENSOR_SPLIT_SCHEMA_VERSION = 9;
+const PRE_MLX_INT8_PREFILL_SCHEMA_VERSION = 7;
+const PRE_MLX_KV_QUANT_SCHEMA_VERSION = 6;
+const PRE_REASONING_BUDGET_SCHEMA_VERSION = 5;
 const PRE_SERVER_TUNING_SCHEMA_VERSION = 4;
 const PRE_VISION_SCHEMA_VERSION = 3;
 const PRE_EXTRA_ARGS_SCHEMA_VERSION = 2;
@@ -305,23 +410,46 @@ const PRE_BATCH_SCHEMA_VERSION = 1;
 const MAX_ENTRIES = 500;
 const MAX_PER_MODEL_CONFIG_STORAGE_BYTES = 1024 * 1024;
 export const MAX_CHAT_TEMPLATE_BYTES = 65_536;
+export const MAX_REASONING_BUDGET_MESSAGE_BYTES = 8_192;
+
+export function isReasoningBudgetMessageValid(value: string): boolean {
+  if (value.includes("\0")) return false;
+  for (let i = 0; i < value.length; i += 1) {
+    const code = value.charCodeAt(i);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(i + 1);
+      if (next < 0xdc00 || next > 0xdfff) return false;
+      i += 1;
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      return false;
+    }
+  }
+  return (
+    new TextEncoder().encode(value).byteLength <=
+    MAX_REASONING_BUDGET_MESSAGE_BYTES
+  );
+}
 
 type StoredPerModelConfig = PerModelConfig & {
   version: number;
 };
 type StoredMap = Record<string, PerModelConfig | StoredPerModelConfig>;
-type RawConfig = Partial<PerModelConfig> & { version?: unknown };
+type RawConfig = Partial<PerModelConfig> & { version?: unknown; mlxKvBits?: unknown };
 
 const STORED_CONFIG_FIELDS = new Set([
   "version",
   "customContextLength",
   "maxSeqLength",
   "kvCacheDtype",
-  "mlxKvBits",
+  "mlxKvQuant",
+  "mlxInt8Prefill",
   "speculativeType",
   "specDraftNMax",
   "specDraftCacheDtype",
+  "specDraftModel",
   "nParallel",
+  "reasoningBudget",
+  "reasoningBudgetMessage",
   "nBatch",
   "nUbatch",
   "loadMode",
@@ -336,6 +464,7 @@ const STORED_CONFIG_FIELDS = new Set([
   "nCpuMoe",
   "selectedGpuIds",
   "selectedGpuIndexKind",
+  "tensorSplit",
 ]);
 
 /** Keep only a list of strings, preserving the three states above. Anything that is not an array is "not loaded"
@@ -408,9 +537,9 @@ function canonicalizeSpeculativeType(value: string): string | null {
   if (!s) {
     return null;
   }
-  // "auto"/"default" is the follow-global sentinel; store as null so it is never an override.
+  // Kept: an MLX model's explicit Auto beats a standing "off". GGUF saves fold it via storedSpeculativeAuto.
   if (s === "auto" || s === "default") {
-    return null;
+    return "auto";
   }
   // _LEGACY_SPEC_MODE_MAP's four. A stored override arrives raw, and the null below
   // is "follow the global preference", which would enable a drafter under Auto.
@@ -429,10 +558,33 @@ function canonicalizeSpeculativeType(value: string): string | null {
   if (s === "ngram" || s === "ngram-mod" || s === "ngram-simple") {
     return "ngram";
   }
-  if (s === "mtp+ngram") {
-    return "mtp+ngram";
+  if (s === "mtp+ngram" || (MLX_ONLY_SPEC_TYPES as readonly string[]).includes(s)) {
+    return s;
   }
   return null;
+}
+
+/** The config as storage keeps it: GGUF reads Auto as "follow the standing preference", spelled null,
+ *  while an MLX model stores its explicit Auto. */
+export function storedSpeculativeAuto<T extends Pick<PerModelConfig, "speculativeType">>(
+  config: T,
+  isMlx: boolean,
+): T {
+  return !isMlx && config.speculativeType === "auto"
+    ? { ...config, speculativeType: null }
+    : config;
+}
+
+/** An edit to draft tokens or the drafter. Made while the mode is unset, it pins the shown mode:
+ *  storage keeps either value only beside a mode that reads it. */
+export function pinSpeculativeMode(
+  config: Pick<PerModelConfig, "speculativeType">,
+  shownMode: string,
+  patch: Partial<PerModelConfig>,
+): Partial<PerModelConfig> {
+  return config.speculativeType == null
+    ? { ...patch, speculativeType: shownMode }
+    : patch;
 }
 
 /** Canonicalize a stored --load-mode, or null to follow the llama.cpp default. "auto" folds
@@ -489,7 +641,10 @@ export function savedContextPin(config: {
   customContextLength?: number | null;
   maxSeqLength?: number | null;
 }): number | null {
-  return config.customContextLength ?? normalizeMaxSeqLength(config.maxSeqLength ?? null);
+  return (
+    config.customContextLength ??
+    normalizeMaxSeqLength(config.maxSeqLength ?? null)
+  );
 }
 
 /** The patch that pins a context for a non-GGUF target, on the backend serving it. An edit leaves a pin in
@@ -710,7 +865,8 @@ function parseLegacyModelKey(
 }
 
 function legacyEntryToConfig(raw: Record<string, unknown>): PerModelConfig {
-  return normalizeV1({
+  // Written before any MLX control, so its Auto is GGUF's.
+  return storedSpeculativeAuto(normalizeV1({
     customContextLength:
       typeof raw.contextLength === "number" ? raw.contextLength : null,
     maxSeqLength: null,
@@ -722,6 +878,8 @@ function legacyEntryToConfig(raw: Record<string, unknown>): PerModelConfig {
       typeof raw.specDraftNMax === "number" ? raw.specDraftNMax : null,
     // Legacy blobs predate the parallel-slots knob.
     nParallel: null,
+    reasoningBudget: -1,
+    reasoningBudgetMessage: "",
     tensorParallel:
       typeof raw.tensorParallel === "boolean" ? raw.tensorParallel : false,
     disableVision:
@@ -743,7 +901,7 @@ function legacyEntryToConfig(raw: Record<string, unknown>): PerModelConfig {
         : Array.isArray(raw.selectedGpuIds)
           ? (raw.selectedGpuIds as number[])
           : undefined,
-  });
+  }), false);
 }
 
 function mergeLegacyEntries(
@@ -901,7 +1059,26 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
     VALID_KV_CACHE_DTYPES.has(partial.specDraftCacheDtype)
       ? partial.specDraftCacheDtype
       : null;
+  const specDraftModel =
+    speculativeType != null &&
+    DRAFTER_MODEL_SPEC_TYPES.has(speculativeType) &&
+    typeof partial.specDraftModel === "string" &&
+    partial.specDraftModel.trim().length > 0 &&
+    partial.specDraftModel.trim().length <= 1024
+      ? partial.specDraftModel.trim()
+      : null;
   return {
+    engineParallelism: partial.engineParallelism === "pipeline" || partial.engineParallelism === "data"
+      ? partial.engineParallelism : "tensor",
+    enginePrecision: ["bf16", "fp16", "int4", "int8", "fp8"].includes(
+      partial.enginePrecision ?? "",
+    )
+      ? partial.enginePrecision
+      : "auto",
+    engine:
+      partial.engine === "vllm" || partial.engine === "sglang"
+        ? partial.engine
+        : "auto",
     customContextLength:
       typeof partial.customContextLength === "number" &&
       Number.isFinite(partial.customContextLength) &&
@@ -909,11 +1086,8 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
         ? Math.max(CONTEXT_LENGTH_MIN, Math.floor(partial.customContextLength))
         : null,
     maxSeqLength: normalizeMaxSeqLength(partial.maxSeqLength),
-    mlxKvBits:
-      typeof partial.mlxKvBits === "number" &&
-      MLX_KV_BITS.includes(partial.mlxKvBits)
-        ? partial.mlxKvBits
-        : null,
+    mlxKvQuant: normalizeMlxKvQuant(partial.mlxKvQuant, partial.mlxKvBits),
+    mlxInt8Prefill: partial.mlxInt8Prefill === true,
     kvCacheDtype:
       typeof partial.kvCacheDtype === "string" &&
       VALID_KV_CACHE_DTYPES.has(partial.kvCacheDtype)
@@ -922,6 +1096,7 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
     speculativeType,
     specDraftNMax,
     specDraftCacheDtype,
+    specDraftModel,
     loadMode: canonicalizeLoadMode(partial.loadMode),
     ctxCheckpoints: normalizeCtxCheckpoints(partial.ctxCheckpoints),
     cacheRam: normalizeCacheRam(partial.cacheRam),
@@ -941,6 +1116,19 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
       typeof partial.nUbatch === "number" && Number.isFinite(partial.nUbatch)
         ? Math.max(N_BATCH_MIN, Math.min(N_BATCH_MAX, Math.round(partial.nUbatch)))
         : null,
+    reasoningBudget:
+      typeof partial.reasoningBudget === "number" &&
+      Number.isFinite(partial.reasoningBudget)
+        ? Math.max(
+            -1,
+            Math.min(2_147_483_647, Math.trunc(partial.reasoningBudget)),
+          )
+        : DEFAULT_PER_MODEL_CONFIG.reasoningBudget,
+    reasoningBudgetMessage:
+      typeof partial.reasoningBudgetMessage === "string" &&
+      isReasoningBudgetMessageValid(partial.reasoningBudgetMessage)
+        ? partial.reasoningBudgetMessage
+        : DEFAULT_PER_MODEL_CONFIG.reasoningBudgetMessage,
     tensorParallel:
       typeof partial.tensorParallel === "boolean"
         ? partial.tensorParallel
@@ -956,11 +1144,11 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
         : null,
     llamaExtraArgs: normalizeLlamaExtraArgs(partial.llamaExtraArgs),
     ...normalizeGpuFields(partial),
+    tensorSplit: normalizeTensorSplit(partial.tensorSplit, partial.selectedGpuIds),
   };
 }
 
-/** A config in the exact shape storage keeps: the UI carries sentinels storage does not
- *  (Speculative Decoding "auto" canonicalizes to null), which would read as non-default. */
+/** A config in the exact shape storage keeps, so a UI value storage drops cannot read as non-default. */
 export function normalizePerModelConfig(raw: unknown): PerModelConfig {
   return normalize(raw);
 }
@@ -978,28 +1166,55 @@ function normalize(raw: unknown): PerModelConfig {
   return normalizeV1(partial);
 }
 
-function toStoredConfig(config: PerModelConfig): StoredPerModelConfig {
-  const normalized = normalize(config);
-  // Stamped with the OLDEST version that still understands every field present, so a record an older client can
-  // safely rewrite stays in its reach. Only a TRUE disableVision needs v4: false is what a pre-vision client
-  // reconstructs anyway, and stamping every record v4 would put the whole store out of reach. The tuning group
-  // follows the same rule.
+/** The OLDEST version that still understands every field present, so a record an older client can
+ *  safely rewrite stays in its reach. Only a TRUE disableVision needs v4: false is what a pre-vision
+ *  client reconstructs anyway, and stamping every record v4 would put the whole store out of reach.
+ *  The tuning group and the reasoning pair follow the same rule. */
+function storedSchemaVersion(normalized: PerModelConfig): number {
+  const mode = normalized.speculativeType;
+  // A kept Auto and the MLX-only modes are values an older client folds back to unset.
+  const mlxMode = mode === "auto" || (MLX_ONLY_SPEC_TYPES as readonly string[]).includes(mode ?? "");
+  if (normalized.specDraftModel != null || mlxMode) {
+    return STORAGE_SCHEMA_VERSION;
+  }
+  if (normalized.tensorSplit != null) {
+    return PRE_MLX_DRAFTER_SCHEMA_VERSION;
+  }
+  if (normalized.mlxInt8Prefill) {
+    return PRE_TENSOR_SPLIT_SCHEMA_VERSION;
+  }
+  if (normalized.mlxKvQuant != null) {
+    return PRE_MLX_INT8_PREFILL_SCHEMA_VERSION;
+  }
+  const hasReasoningBudget =
+    normalized.reasoningBudget !== -1 || normalized.reasoningBudgetMessage !== "";
+  if (hasReasoningBudget) {
+    return PRE_MLX_KV_QUANT_SCHEMA_VERSION;
+  }
   const hasServerTuning =
     normalized.loadMode != null ||
     normalized.specDraftCacheDtype != null ||
     normalized.ctxCheckpoints != null ||
     normalized.cacheRam != null;
-  const version = hasServerTuning
-    ? STORAGE_SCHEMA_VERSION
-    : normalized.disableVision
-      ? PRE_SERVER_TUNING_SCHEMA_VERSION
-      : normalized.llamaExtraArgs != null && normalized.llamaExtraArgs.length > 0
-        ? PRE_VISION_SCHEMA_VERSION
-        : normalized.nBatch != null || normalized.nUbatch != null
-          ? PRE_EXTRA_ARGS_SCHEMA_VERSION
-          : PRE_BATCH_SCHEMA_VERSION;
+  if (hasServerTuning) {
+    return PRE_REASONING_BUDGET_SCHEMA_VERSION;
+  }
+  if (normalized.disableVision) {
+    return PRE_SERVER_TUNING_SCHEMA_VERSION;
+  }
+  if (normalized.llamaExtraArgs != null && normalized.llamaExtraArgs.length > 0) {
+    return PRE_VISION_SCHEMA_VERSION;
+  }
+  if (normalized.nBatch != null || normalized.nUbatch != null) {
+    return PRE_EXTRA_ARGS_SCHEMA_VERSION;
+  }
+  return PRE_BATCH_SCHEMA_VERSION;
+}
+
+function toStoredConfig(config: PerModelConfig): StoredPerModelConfig {
+  const normalized = normalize(config);
   return {
-    version,
+    version: storedSchemaVersion(normalized),
     ...normalized,
   };
 }
@@ -1139,19 +1354,27 @@ export function resolveOnlyRememberedGgufVariant(
 
 export function isDefaultConfig(config: PerModelConfig): boolean {
   return (
+    (config.engine ?? "auto") === "auto" &&
+    (config.enginePrecision ?? "auto") === "auto" &&
+    (config.engineParallelism ?? "tensor") === "tensor" &&
     config.customContextLength == null &&
     config.maxSeqLength == null &&
     (config.kvCacheDtype ?? null) === DEFAULT_PER_MODEL_CONFIG.kvCacheDtype &&
-    (config.mlxKvBits ?? null) === DEFAULT_PER_MODEL_CONFIG.mlxKvBits &&
+    (config.mlxKvQuant ?? null) === DEFAULT_PER_MODEL_CONFIG.mlxKvQuant &&
+    !config.mlxInt8Prefill &&
     config.speculativeType === DEFAULT_PER_MODEL_CONFIG.speculativeType &&
     config.specDraftNMax == null &&
     config.nParallel == null &&
+    config.reasoningBudget === DEFAULT_PER_MODEL_CONFIG.reasoningBudget &&
+    config.reasoningBudgetMessage ===
+      DEFAULT_PER_MODEL_CONFIG.reasoningBudgetMessage &&
     config.nBatch == null &&
     config.nUbatch == null &&
     // The tuning group, for the same reason as the arguments below: savePerModelConfig deletes an entry it judges
     // default, so a config changing only these was dropped on the way to storage. Compared against null, not truth:
     // 0 checkpoints and a 0 or -1 cache are values.
     (config.specDraftCacheDtype ?? null) === null &&
+    (config.specDraftModel ?? null) === null &&
     (config.loadMode ?? null) === null &&
     config.ctxCheckpoints == null &&
     config.cacheRam == null &&
@@ -1174,7 +1397,8 @@ function gpuFieldsAtDefault(config: PerModelConfig): boolean {
     (config.gpuMemoryMode ?? "auto") === "auto" &&
     (config.gpuLayers == null || config.gpuLayers < 0) &&
     (config.nCpuMoe == null || config.nCpuMoe === 0) &&
-    config.selectedGpuIds == null
+    config.selectedGpuIds == null &&
+    config.tensorSplit == null
   );
 }
 
@@ -1408,6 +1632,19 @@ export function resolveInitialConfig(
   return { config: { ...DEFAULT_PER_MODEL_CONFIG }, remembered: false };
 }
 
+/** Moves a record an older build saved under a cached repo's snapshot path to the repo id the
+ *  settings panel keys it by. Returns that repo id, or null when the model is not one. */
+export function adoptCachedRepoConfig(
+  modelId: string,
+  ggufVariant?: string | null,
+): string | null {
+  const repoId = cachedRepoConfigId(modelId, ggufVariant);
+  if (repoId) {
+    adoptLegacyConfigKey(repoId, modelId, null);
+  }
+  return repoId;
+}
+
 /** Remembered settings for the identifier /api/inference/status reports as loaded. An API auto-switch hands the
  *  loader a concrete snapshot path while settings are keyed by repo id, so reading the raw identifier reports the
  *  resident model as unremembered and blanks a control it is running with. Only a namespaced collapse is adopted,
@@ -1416,9 +1653,23 @@ export function resolveResidentInitialConfig(
   modelId: string,
   ggufVariant?: string | null,
 ): ResolvedPerModelConfig {
-  const direct = resolveInitialConfig(modelId, ggufVariant);
+  const repoId = adoptCachedRepoConfig(modelId, ggufVariant);
+  if (repoId) {
+    return resolveInitialConfig(repoId, null);
+  }
+  // a standalone file's reported quant is a label; its settings are saved without a variant.
+  const standalone = isStandaloneGgufPath(modelId);
+  const direct = resolveInitialConfig(modelId, standalone ? null : ggufVariant);
   if (direct.remembered) {
     return direct;
+  }
+  // A loose .gguf load names no variant, so override_lookup_candidates reads the bare path
+  // then the label; a picker before #7473 keyed the label, and those records still exist.
+  if (standalone && ggufVariant) {
+    const labelled = resolveInitialConfig(modelId, ggufVariant);
+    if (labelled.remembered) {
+      return labelled;
+    }
   }
   const alias = publicModelId(modelId);
   if (alias === modelId || !alias.includes("/")) {

@@ -40,15 +40,15 @@ export function DictationDictionaryView({ onBack }: { onBack: () => void }) {
   };
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="settings-page">
       <header className="flex items-center gap-2">
         <button
           type="button"
           onClick={onBack}
           aria-label={t("settings.voice.dictionary.backToVoice")}
-          className="inline-flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="settings-back-button inline-flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          <ChevronLeftIcon className="size-4" />
+          <ChevronLeftIcon className="size-4 rtl:rotate-180" />
         </button>
         <h1 className="font-heading text-xl font-semibold">
           {t("settings.voice.title")}
@@ -56,7 +56,7 @@ export function DictationDictionaryView({ onBack }: { onBack: () => void }) {
       </header>
 
       <div className="flex flex-col gap-1">
-        <h2 className="text-sm font-semibold">
+        <h2 className="settings-heading text-sm font-semibold">
           {t("settings.voice.dictionary.sectionTitle")}
         </h2>
         <p className="text-xs text-muted-foreground">

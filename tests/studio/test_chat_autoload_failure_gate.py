@@ -258,6 +258,10 @@ function isExternalModelId(value: unknown) {
 function resolvePreserveThinkingOnLoad(resp: any) {
   return Boolean(resp?.supports_preserve_thinking && resp?.preserve_thinking_default);
 }
+// Verbatim from lib/speculative-modes.ts, so a load asks for the mode production would.
+function resolveSpeculativeType(chosen: string | null, standing: string, isMlx: boolean) {
+  return chosen ?? (isMlx && standing === "ngram" ? "auto" : standing);
+}
 
 function resolveInferenceCheckpointId(status: any) {
   return status.active_model
@@ -353,20 +357,20 @@ let STORE: any = makeStore();
 // rather than complete-by-luck.
 // Imported by chat-adapter.ts from ../lib/mlx-runtime-state. Mirrors the real
 // one rather than returning {}: a non-MLX response retires the verdict but
-// leaves mlxKvBits absent, and a scenario that saw an empty object would keep
+// leaves mlxKvQuant absent, and a scenario that saw an empty object would keep
 // a stale width alive and pass for the wrong reason.
 function mlxRuntimeStateFrom(resp: any) {
   if (resp?.is_mlx !== true) {
     return {
-      loadedMlxKvBitsRequested: null,
+      loadedMlxKvQuantRequested: null,
       mlxKvQuantReason: null,
       chatTemplateOverrideReason: null,
       mlxKvQuantNote: null,
     };
   }
   return {
-    mlxKvBits: resp.mlx_kv_bits_requested ?? null,
-    loadedMlxKvBitsRequested: resp.mlx_kv_bits_requested ?? null,
+    mlxKvQuant: resp.mlx_kv_quant_requested ?? null,
+    loadedMlxKvQuantRequested: resp.mlx_kv_quant_requested ?? null,
     mlxKvQuantReason: resp.mlx_kv_quant_reason ?? null,
     chatTemplateOverrideReason: resp.chat_template_override_reason ?? null,
     mlxKvQuantNote: resp.mlx_kv_quant_note ?? null,
@@ -387,15 +391,28 @@ function loadFallbackNotice(
   baseTitle: string,
   cpuFallbackReason: any,
   mmprojFallbackReason: any,
+  offloadNotice?: any,
 ) {
   const parts: string[] = [];
   if (cpuFallbackReason) parts.push(`cpu:${cpuFallbackReason}`);
+  else if (offloadNotice) parts.push(`offload:${offloadNotice.titleSuffix}`);
   if (mmprojFallbackReason) parts.push(`mmproj:${mmprojFallbackReason}`);
   return {
     title: parts.length > 0 ? `${baseTitle} (${parts.join(", ")})` : baseTitle,
     description: parts.length > 0 ? parts.join(" ") : undefined,
     degraded: parts.length > 0,
   };
+}
+// From ../lib/partial-offload: the auto-load success toast reports a layer split through them.
+// Real semantics are tested in studio/frontend/tests/partial-offload.test.ts.
+function offloadCountsFrom(response: any) {
+  return { offloaded: response?.offloaded_layers, total: response?.offload_total_layers };
+}
+function offloadWarning(counts: any) {
+  const { offloaded, total } = counts ?? {};
+  if (typeof offloaded !== "number" || typeof total !== "number") return null;
+  if (total <= 0 || offloaded >= total) return null;
+  return { titleSuffix: ", partly on CPU", description: `${offloaded} of ${total}` };
 }
 async function prepareHfTokenForUse(token: any) {
   EVENTS.push({ kind: "prepareHfToken" });

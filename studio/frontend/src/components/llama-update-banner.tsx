@@ -8,10 +8,19 @@ import {
   llamaUpdateOffered,
   useLlamaUpdateCheck,
 } from "@/hooks/use-llama-update-check";
-import { useShowLlamaUpdateBanner } from "@/hooks/use-llama-update-pref";
 import {
+  type NotificationChannel,
+  markNotificationShown,
+  useDocumentVisible,
+  useNotificationDue,
+  useNotificationFrequency,
+} from "@/hooks/use-notification-frequency";
+import {
+  heldUpdateBannerPref,
   llamaReleaseChanged,
   llamaUpdateToastMessage,
+  updateBannerComponent,
+  updateToastTag,
 } from "@/lib/llama-job-lifecycle";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -107,7 +116,27 @@ export function LlamaUpdateBanner({
   enabled = true,
   positioned = true,
 }: LlamaUpdateBannerProps): ReactElement | null {
-  const showBannerPref = useShowLlamaUpdateBanner();
+  // The open card stays allowed after it records itself as shown.
+  const [shownChannel, setShownChannel] = useState<NotificationChannel | null>(
+    null,
+  );
+  const allowed = (channel: NotificationChannel, due: boolean, off: boolean) =>
+    !off && (due || shownChannel === channel);
+  const showLlamaBannerPref = allowed(
+    "llama",
+    useNotificationDue("llama"),
+    useNotificationFrequency("llama") === "off",
+  );
+  const showWhisperBannerPref = allowed(
+    "whisper",
+    useNotificationDue("whisper"),
+    useNotificationFrequency("whisper") === "off",
+  );
+  const showAudioCppBannerPref = allowed(
+    "audio",
+    useNotificationDue("audio"),
+    useNotificationFrequency("audio") === "off",
+  );
   const [changelogVersion, setChangelogVersion] = useState<string | null>(null);
   // Not gated on showBannerPref: this hook instance is the app-wide listener
   // for a cross-tab reload_required resync (the settings-sheet's own instance
@@ -119,13 +148,42 @@ export function LlamaUpdateBanner({
       onReloadRequired: resyncInferenceStatusAfterServerModelChange,
     });
 
+  // The card names one component and the switches answer per component, so the
+  // shown one is picked here, before the version line and the toast read it.
+  const migrationPending = Boolean(status?.backend_migration_available);
+  const component = updateBannerComponent(
+    status?.component ?? "llama.cpp",
+    {
+      llama: Boolean(status?.llama.update_available) || migrationPending,
+      whisper: Boolean(status?.whisper?.update_available),
+      audio: Boolean(status?.audio?.update_available),
+    },
+    {
+      llama: showLlamaBannerPref,
+      whisper: showWhisperBannerPref,
+      audio: showAudioCppBannerPref,
+    },
+  );
+  // Its own release pair and download size, not the ones the backend put at the
+  // top level: those are llama's whatever the card shows.
+  const offer =
+    component === "whisper.cpp"
+      ? status?.whisper
+      : component === "audio.cpp"
+        ? status?.audio
+        : status?.llama;
+  const sizeBytes = offer?.update_size_bytes ?? null;
+  const latestTag = offer?.latest_tag ?? null;
+  const installedTag = offer?.installed_tag ?? null;
+
   async function handleUpdate() {
-    const component = status?.component ?? "llama.cpp";
-    // Read before applying: the status refreshes as the job runs.
-    const migrating = Boolean(status?.backend_migration_available);
+    // Read before applying (the status refreshes mid-job). An audio.cpp update may keep
+    // the old runtime, so only the job's message says what happened, as for a migration.
+    const migrating = migrationPending || component === "audio.cpp";
     const result = await apply();
     if (result?.ok) {
-      const updatedTag = result.tag ?? status?.latest_tag ?? "the latest build";
+      const updatedTag =
+        updateToastTag(component, result.tag, latestTag) ?? "the latest build";
       toast.success(
         llamaUpdateToastMessage({
           component,
@@ -136,21 +194,49 @@ export function LlamaUpdateBanner({
         }),
       );
     } else if (result) {
-      toast.error(
-        `${component} update failed: ${result.error ?? "unknown error"}`,
-      );
+      // The failing phase need not be the component the card names.
+      toast.error(`Update failed: ${result.error ?? "unknown error"}`);
     }
   }
 
+  // Muted by the component the card shows.
+  const livePref =
+    component === "whisper.cpp"
+      ? showWhisperBannerPref
+      : component === "audio.cpp"
+        ? showAudioCppBannerPref
+        : showLlamaBannerPref;
+  // Held across a chained apply, which renames the card mid-job. An error counts
+  // as in flight so a failed phase keeps its retry on screen.
+  const jobState = status?.job.state;
+  const [heldPref, setHeldPref] = useState<boolean | null>(null);
+  useEffect(() => {
+    setHeldPref((prev) =>
+      heldUpdateBannerPref(prev, applying || jobState === "error", livePref),
+    );
+  }, [applying, jobState, livePref]);
+  const showBannerPref = heldPref ?? livePref;
   const show =
     showBannerPref &&
     visible &&
     status != null &&
     (llamaUpdateOffered(status) || applying);
-  const sizeBytes = status?.update_size_bytes ?? null;
-  const component = status?.component ?? "llama.cpp";
-  const latestTag = status?.latest_tag ?? null;
-  const installedTag = status?.installed_tag ?? null;
+  const channel: NotificationChannel =
+    component === "whisper.cpp"
+      ? "whisper"
+      : component === "audio.cpp"
+        ? "audio"
+        : "llama";
+  const tabVisible = useDocumentVisible();
+  useEffect(() => {
+    // livePref: a chained apply can rename the held card to a muted component.
+    if (show && tabVisible && livePref && shownChannel !== channel) {
+      markNotificationShown(channel);
+      setShownChannel(channel);
+    } else if (!show && shownChannel !== null) {
+      setShownChannel(null);
+    }
+  }, [show, tabVisible, livePref, channel, shownChannel]);
   // A migration re-applies the install's own automatic choice, so it can be offered at a
   // release the machine already has, where the backend pair replaces the version line.
   const backendChange =
@@ -158,7 +244,7 @@ export function LlamaUpdateBanner({
       ? `${backendLabel(status.from_backend)} \u2192 ${backendLabel(status.to_backend)}`
       : null;
   const versionChanged = llamaReleaseChanged(
-    Boolean(status?.update_available),
+    Boolean(offer?.update_available),
     installedTag,
     latestTag,
   );
@@ -204,9 +290,9 @@ export function LlamaUpdateBanner({
     <div
       className={cn(
         positioned
-          ? "fixed bottom-4 right-4 z-[9998] w-[calc(100vw-2rem)] max-w-[448px]"
+          ? "fixed bottom-4 right-4 z-[9998] w-[calc(100vw-2rem)] max-w-[calc(448px*var(--ui-space-scale,1))]"
           : cn(
-              "pointer-events-auto flex w-[calc(100vw-2rem)] max-w-[448px] flex-col",
+              "pointer-events-auto flex w-[calc(100vw-2rem)] max-w-[calc(448px*var(--ui-space-scale,1))] flex-col",
               // Only an open changelog needs a shrinkable height floor.
               changelogPanelOpen
                 ? "min-h-[calc(117px+93px*var(--ui-font-scale,1))] max-[383px]:min-h-[calc(24px+224px*var(--ui-font-scale,1))]"
@@ -216,7 +302,7 @@ export function LlamaUpdateBanner({
       data-testid="llama-update-banner"
     >
       {/* Paint the full floor even when the changelog content is short. */}
-      <div className="relative flex max-h-[calc(100dvh_-_2rem)] min-h-0 grow flex-col overflow-hidden rounded-[24px] bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_rgba(0,0,0,0.28)]">
+      <div className="relative flex max-h-[calc(100dvh_-_2rem_-_var(--studio-window-chrome-top,0px))] min-h-0 grow flex-col overflow-hidden rounded-[24px] bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_var(--background)]">
         {applying ? null : (
           <button
             type="button"

@@ -18,6 +18,8 @@ from core.inference.external_tool_transport import OAICompatTransport
 class _StallingClient:
     """One chunk, then silence: an upstream mid-answer or still in prefill."""
 
+    provider_type = "custom"
+
     def __init__(self) -> None:
         self.torn_down = False
         self.released = asyncio.Event()
@@ -96,5 +98,61 @@ def test_an_uncancelled_stream_relays_every_line():
         assert lines[-1] == "data: [DONE]"
         assert len(lines) == 2
         assert client.torn_down
+
+    asyncio.run(scenario())
+
+
+def test_each_transport_turn_is_refitted_before_the_provider_call():
+    class RecordingClient:
+        provider_type = "custom"
+
+        def __init__(self) -> None:
+            self.requests: list[dict] = []
+
+        async def stream_chat_completion(self, **kwargs):
+            self.requests.append(kwargs)
+            yield "data: [DONE]"
+
+    async def scenario():
+        client = RecordingClient()
+        fitted_inputs: list[list[dict]] = []
+
+        async def fitter(messages):
+            fitted_inputs.append(messages)
+            return messages[-2:], 17, 'data: {"choices":[],"context_truncated":{}}'
+
+        transport = OAICompatTransport(
+            client,
+            model = "local-model",
+            max_tokens = 99,
+            message_fitter = fitter,
+        )
+        histories = [
+            [{"role": "user", "content": "first"}],
+            [
+                {"role": "user", "content": "first"},
+                {"role": "assistant", "content": "call"},
+                {"role": "tool", "content": "large result"},
+            ],
+        ]
+        relayed = []
+        for messages in histories:
+            relayed.append(
+                [
+                    line
+                    async for line in transport.stream(
+                        messages = messages,
+                        tools = None,
+                        tool_choice = "auto",
+                        cancel_event = threading.Event(),
+                    )
+                ]
+            )
+
+        assert fitted_inputs == histories
+        assert client.requests[0]["messages"] == histories[0]
+        assert client.requests[1]["messages"] == histories[1][-2:]
+        assert [request["max_tokens"] for request in client.requests] == [17, 17]
+        assert all("context_truncated" in lines[0] for lines in relayed)
 
     asyncio.run(scenario())

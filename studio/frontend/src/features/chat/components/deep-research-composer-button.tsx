@@ -13,18 +13,33 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { XIcon } from "lucide-react";
-import { type KeyboardEvent, useState } from "react";
+import {
+  type Dispatch,
+  type KeyboardEvent,
+  type SetStateAction,
+  useEffect,
+  useState,
+} from "react";
+import {
+  listResearchMcpTools,
+  type ResearchMcpTool,
+} from "../api/mcp-servers-api";
 import {
   DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS,
+  MAX_RESEARCH_MCP_SOURCES,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
 import { MAX_RESEARCH_MODEL_TIMEOUT_SECONDS } from "../utils/mirrored-chat-settings";
-import type { ResearchWebsitePolicy } from "../types/research";
+import type {
+  ResearchMcpSource,
+  ResearchWebsitePolicy,
+} from "../types/research";
 
-// The field is in minutes; its ceiling is the seconds cap the backend enforces.
+// the backend caps seconds; this field takes minutes.
 const MAX_RESEARCH_MODEL_TIMEOUT_MINUTES = Math.floor(
   MAX_RESEARCH_MODEL_TIMEOUT_SECONDS / 60,
 );
@@ -98,21 +113,23 @@ function DomainList({
           {description}
         </p>
       </div>
+      {/* One Input-styled field with the domains as chips. A click anywhere focuses it. */}
       <div
+        onClick={(event) => event.currentTarget.querySelector("input")?.focus()}
         className={cn(
-          "flex min-h-10 flex-wrap items-center gap-1.5 rounded-2xl border border-input bg-input/20 p-1.5 transition-colors focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50",
-          error && "border-destructive/70",
+          "flex min-h-9 cursor-text flex-wrap items-center gap-1 rounded-[18px] border border-border bg-background px-1.5 py-[3px] transition-colors focus-within:border-ring dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:focus-within:bg-[rgb(255_255_255_/_calc(0.12*var(--contrast-wash-gain,1)))]",
+          error && "border-destructive ring-[3px] ring-destructive/20 dark:border-destructive/50",
         )}
       >
         {values.map((domain) => (
           <span
             key={domain}
-            className="flex h-6 items-center gap-1 rounded-full bg-muted px-2 text-xs font-medium"
+            className="flex h-7 items-center gap-1 rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] pl-2.5 pr-1.5 text-xs font-medium"
           >
             {domain}
             <button
               type="button"
-              className="text-muted-foreground transition-colors hover:text-foreground"
+              className="flex size-4 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground"
               aria-label={`Remove ${domain}`}
               onClick={() =>
                 onChange(values.filter((value) => value !== domain))
@@ -122,7 +139,7 @@ function DomainList({
             </button>
           </span>
         ))}
-        <Input
+        <input
           value={draft}
           onChange={(event) => {
             setDraft(event.target.value);
@@ -131,11 +148,126 @@ function DomainList({
           onBlur={addDraft}
           onKeyDown={handleKeyDown}
           placeholder={values.length ? "Add another domain" : "example.com"}
+          aria-label={label}
           aria-invalid={Boolean(error)}
-          className="h-7 min-w-36 flex-1 border-0 bg-transparent px-1 shadow-none focus-visible:ring-0"
+          className="h-7 min-w-32 flex-1 bg-transparent px-2 text-base outline-none placeholder:text-muted-foreground md:text-sm"
         />
       </div>
       {error ? <p className="text-xs text-destructive">{error}</p> : null}
+    </div>
+  );
+}
+
+const matches = (tool: ResearchMcpTool, value: ResearchMcpSource) =>
+  value.serverId === tool.serverId && value.tool === tool.tool;
+
+function McpSourceList({
+  values,
+  onChange,
+}: {
+  values: ResearchMcpSource[];
+  onChange: Dispatch<SetStateAction<ResearchMcpSource[]>>;
+}) {
+  const [tools, setTools] = useState<ResearchMcpTool[] | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    listResearchMcpTools().then(
+      (found) => {
+        if (cancelled) return;
+        setTools(found);
+      },
+      () => {
+        if (!cancelled) setTools([]);
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const unavailableValues = values.filter(
+    (value) => tools !== null && !tools.some((tool) => matches(tool, value)),
+  );
+
+  return (
+    <div className="space-y-2">
+      <div>
+        <div className="text-sm font-medium">MCP search sources</div>
+        <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
+          Every research search also sends its query to the tools turned on
+          here. Choose up to {MAX_RESEARCH_MCP_SOURCES}.
+        </p>
+      </div>
+      {tools === null ? (
+        <p className="text-xs text-muted-foreground">Loading MCP tools…</p>
+      ) : tools.length === 0 ? (
+        <p className="text-xs text-muted-foreground">
+          No enabled MCP server has a search tool that takes a single query.
+        </p>
+      ) : (
+        tools.map((tool) => (
+          <label
+            key={`${tool.serverId}:${tool.tool}`}
+            className="flex cursor-pointer items-start justify-between gap-6"
+          >
+            <span className="min-w-0">
+              <span className="block break-words text-sm">
+                {tool.serverName} · {tool.tool}
+              </span>
+              {tool.description ? (
+                <span className="block line-clamp-2 text-xs text-muted-foreground">
+                  {tool.description}
+                </span>
+              ) : null}
+            </span>
+            <Switch
+              checked={values.some((value) => matches(tool, value))}
+              disabled={
+                !values.some((value) => matches(tool, value)) &&
+                values.length >= MAX_RESEARCH_MCP_SOURCES
+              }
+              onCheckedChange={(checked) =>
+                onChange(
+                  checked
+                    ? [
+                        ...values,
+                        { serverId: tool.serverId, tool: tool.tool },
+                      ].slice(0, MAX_RESEARCH_MCP_SOURCES)
+                    : values.filter(
+                        (value) => !matches(tool, value),
+                      ),
+                )
+              }
+              aria-label={`Search with ${tool.serverName} ${tool.tool}`}
+            />
+          </label>
+        ))
+      )}
+      {unavailableValues.map((value) => (
+        <div
+          key={`${value.serverId}:${value.tool}`}
+          className="flex items-start justify-between gap-6"
+        >
+          <span className="min-w-0 break-words text-sm">
+            {value.serverId} · {value.tool}
+            <span className="block text-xs text-muted-foreground">
+              Currently unavailable. Selection kept until you remove it.
+            </span>
+          </span>
+          <button
+            type="button"
+            className="text-sm text-muted-foreground hover:text-foreground"
+            aria-label={`Remove unavailable source ${value.serverId} ${value.tool}`}
+            onClick={() =>
+              onChange(values.filter((item) =>
+                item.serverId !== value.serverId || item.tool !== value.tool,
+              ))
+            }
+          >
+            Remove
+          </button>
+        </div>
+      ))}
     </div>
   );
 }
@@ -173,7 +305,7 @@ export function DeepResearchComposerButton({
         }}
         className="composer-pill-glyph cursor-pointer"
       >
-        <HugeiconsIcon icon={Telescope02Icon} className="size-[15px]" />
+        <HugeiconsIcon icon={Telescope02Icon} className="size-[calc(15px*var(--ui-space-scale,1))]" />
         <XIcon className="composer-pill-x" />
       </span>
       <span>Deep research</span>
@@ -181,7 +313,7 @@ export function DeepResearchComposerButton({
       <HugeiconsIcon
         icon={ChevronDownStandardIcon}
         strokeWidth={1.5}
-        className="composer-pill-caret size-[15px] text-primary/70"
+        className="composer-pill-caret size-[calc(15px*var(--ui-space-scale,1))] text-primary/70"
       />
     </button>
   );
@@ -204,6 +336,10 @@ export function DeepResearchWebsiteAccessDialog({
   const setModelTimeoutSeconds = useChatRuntimeStore(
     (state) => state.setResearchModelTimeoutSeconds,
   );
+  const mcpSources = useChatRuntimeStore((state) => state.researchMcpSources);
+  const setMcpSources = useChatRuntimeStore(
+    (state) => state.setResearchMcpSources,
+  );
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -213,6 +349,8 @@ export function DeepResearchWebsiteAccessDialog({
           setPolicy={setPolicy}
           modelTimeoutSeconds={modelTimeoutSeconds}
           setModelTimeoutSeconds={setModelTimeoutSeconds}
+          mcpSources={mcpSources}
+          setMcpSources={setMcpSources}
           onClose={() => onOpenChange(false)}
         />
       ) : null}
@@ -225,17 +363,22 @@ function DeepResearchWebsiteAccessContent({
   setPolicy,
   modelTimeoutSeconds,
   setModelTimeoutSeconds,
+  mcpSources,
+  setMcpSources,
   onClose,
 }: {
   policy: ResearchWebsitePolicy;
   setPolicy: (policy: ResearchWebsitePolicy) => void;
   modelTimeoutSeconds: number;
   setModelTimeoutSeconds: (seconds: number) => void;
+  mcpSources: ResearchMcpSource[];
+  setMcpSources: (sources: ResearchMcpSource[]) => void;
   onClose: () => void;
 }) {
   const [draft, setDraft] = useState<ResearchWebsitePolicy>(policy);
+  const [mcpDraft, setMcpDraft] = useState<ResearchMcpSource[]>(mcpSources);
   const [unlimited, setUnlimited] = useState(modelTimeoutSeconds === 0);
-  // Unlimited has no minutes of its own, so turning the limit back on offers the default.
+  // re-enabling the limit from unlimited starts at the default.
   const [timeoutMinutes, setTimeoutMinutes] = useState(
     String(
       Math.ceil(
@@ -243,59 +386,68 @@ function DeepResearchWebsiteAccessContent({
       ),
     ),
   );
-  // The API accepts second-level values the minutes field cannot spell, so saving an untouched
-  // control must replay the stored seconds rather than the rounded minutes.
+  // preserve stored seconds when the rounded minutes field is untouched.
   const [timeoutEdited, setTimeoutEdited] = useState(false);
 
   return (
     <DialogContent className="sm:max-w-lg">
       <DialogHeader>
-        <DialogTitle>Deep research</DialogTitle>
+        {/* Icon and title, as in the Skills dialog. */}
+        <div className="flex items-center gap-2">
+          <HugeiconsIcon icon={Telescope02Icon} strokeWidth={1.75} className="size-5 text-primary" />
+          <DialogTitle>Deep research</DialogTitle>
+        </div>
         <DialogDescription>
           Control website access and model request time for the next Deep
           Research run.
         </DialogDescription>
       </DialogHeader>
       <div className="space-y-6">
-        <div className="space-y-2">
-          <div>
-            {/* A run makes many model requests, so this bounds each one, not the run. */}
-            <div className="text-sm font-medium">Time per model request</div>
-            <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
-              {unlimited
-                ? "No limit on a single model request. Slow models can continue while they keep producing output."
-                : "Maximum time for each model request, so a run of many requests can take longer. Output stall safeguards stay active."}
-            </p>
-          </div>
-          <div className="flex gap-2">
-            <Input
-              type="number"
-              min="1"
-              max={MAX_RESEARCH_MODEL_TIMEOUT_MINUTES}
-              step="1"
-              value={timeoutMinutes}
-              disabled={unlimited}
-              onChange={(event) => {
-                setTimeoutEdited(true);
-                setTimeoutMinutes(event.target.value);
-              }}
-              aria-label="Deep Research time per model request in minutes"
-              className="w-28"
-            />
-            <span className="self-center text-sm text-muted-foreground">
-              minutes
-            </span>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => {
-                setTimeoutEdited(true);
-                setUnlimited((value) => !value);
-              }}
+        <div className="space-y-2.5">
+          <div className="flex items-start justify-between gap-6">
+            <div>
+              {/* A run makes many model requests, so this bounds each one, not the run. */}
+              <div className="text-sm font-medium">Time per model request</div>
+              <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
+                {unlimited
+                  ? "No limit on a single model request. Slow models can continue while they keep producing output."
+                  : "Maximum time for each model request, so a run of many requests can take longer. Output stall safeguards stay active."}
+              </p>
+            </div>
+            {/* A switch: it is a state, so its label never flips. */}
+            <label
+              htmlFor="research-no-time-limit"
+              className="flex shrink-0 cursor-pointer items-center gap-2 pt-0.5 text-sm text-muted-foreground"
             >
-              {unlimited ? "Use a limit" : "No limit"}
-            </Button>
+              No limit
+              <Switch
+                id="research-no-time-limit"
+                checked={unlimited}
+                onCheckedChange={(checked) => {
+                  setTimeoutEdited(true);
+                  setUnlimited(checked);
+                }}
+              />
+            </label>
           </div>
+          {unlimited ? null : (
+            <div className="flex items-center gap-2.5">
+              <Input
+                type="number"
+                min="1"
+                max={MAX_RESEARCH_MODEL_TIMEOUT_MINUTES}
+                step="1"
+                value={timeoutMinutes}
+                onChange={(event) => {
+                  setTimeoutEdited(true);
+                  setTimeoutMinutes(event.target.value);
+                }}
+                aria-label="Deep Research time per model request in minutes"
+                className="w-24"
+              />
+              <span className="text-sm text-muted-foreground">minutes</span>
+            </div>
+          )}
         </div>
         <DomainList
           label="Allow only"
@@ -309,6 +461,7 @@ function DeepResearchWebsiteAccessContent({
           values={draft.blockedDomains}
           onChange={(blockedDomains) => setDraft({ ...draft, blockedDomains })}
         />
+        <McpSourceList values={mcpDraft} onChange={setMcpDraft} />
       </div>
       <DialogFooter>
         <Button variant="ghost" onClick={onClose}>
@@ -317,9 +470,9 @@ function DeepResearchWebsiteAccessContent({
         <Button
           onClick={() => {
             setPolicy(draft);
+            setMcpSources(mcpDraft);
             const minutes = Number(timeoutMinutes);
-            // The max attribute does not stop a typed value reaching here, and falling through to the default
-            // would hand someone asking for a long run a short one.
+            // typed values bypass max; clamp to avoid a short default timeout.
             setModelTimeoutSeconds(
               unlimited
                 ? 0

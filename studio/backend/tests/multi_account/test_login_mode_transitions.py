@@ -34,10 +34,10 @@ def status(
     assert body["default_username"] == "unsloth"
     assert body["login_mode"] == ("multi" if count > 1 else "single")
     assert "alice" not in response.text and "bob" not in response.text
-    # Full access needs the install to itself: no managed account, active or not.
+    # Preserve the public pre-login hint for older clients.
     if full_access is None:
         full_access = count <= 1
-    assert policy.full_access_permitted() == full_access
+    assert (not policy.installation_has_managed_accounts()) == full_access
     assert body["full_access"] == full_access
 
 

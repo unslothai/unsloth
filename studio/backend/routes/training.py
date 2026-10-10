@@ -52,6 +52,7 @@ try:
     from core.training.training import (
         TrainingStartCancellationCapacityError,
         TrainingStatusIdentitySnapshot,
+        normalize_training_optimizer_for_device,
     )
     from core.training.resume import (
         can_resume_run,
@@ -61,7 +62,11 @@ try:
         training_run_config,
     )
     from storage.studio_db import get_resumable_run_by_output_dir
-    from utils.models.model_config import detect_gguf_model, load_model_defaults
+    from utils.models.model_config import (
+        detect_gguf_model,
+        is_decision_model,
+        load_model_defaults,
+    )
     from utils.paths import is_local_path, normalize_path, resolve_dataset_path
 except ImportError:
     parent_backend = backend_path.parent / "backend"
@@ -73,6 +78,7 @@ except ImportError:
     from core.training.training import (
         TrainingStartCancellationCapacityError,
         TrainingStatusIdentitySnapshot,
+        normalize_training_optimizer_for_device,
     )
     from core.training.resume import (
         can_resume_run,
@@ -82,10 +88,15 @@ except ImportError:
         training_run_config,
     )
     from storage.studio_db import get_resumable_run_by_output_dir
-    from utils.models.model_config import detect_gguf_model, load_model_defaults
+    from utils.models.model_config import (
+        detect_gguf_model,
+        is_decision_model,
+        load_model_defaults,
+    )
     from utils.paths import is_local_path, normalize_path, resolve_dataset_path
 
 from auth.authentication import authenticated_via_api_key, get_current_subject
+from hub.utils.host_paths import redact_host_paths
 from hub.utils.hf_tokens import HfTokenArg, cached_read_refused, hf_token_arg
 
 from utils.utils import (
@@ -461,9 +472,21 @@ def _has_adapter_metadata(path: Path) -> bool:
     return path.is_dir() and (path / "adapter_config.json").is_file()
 
 
-def _remote_untrainable_model_format(model_name: str, hf_token: HfTokenArg) -> Optional[str]:
+_HF_MODEL_ACCESS_DENIED = (
+    "Hugging Face denied access to this model. Add a valid Hugging Face "
+    "token with repository access and accept any required access terms, "
+    "then try again."
+)
+
+
+def _remote_untrainable_model_format(
+    model_name: str,
+    hf_token: HfTokenArg,
+    is_embedding: bool = False,
+) -> Optional[str]:
     from huggingface_hub import model_info as hf_model_info
     from hub.utils.hf_errors import hf_error_status
+    from utils.models.unsloth_mirror import unsloth_public_mirror
     from utils.security import load_scan_target
 
     # Registry aliases such as "Spark-TTS-0.5B/LLM" are not repos; probe the repo the trainer
@@ -498,11 +521,7 @@ def _remote_untrainable_model_format(model_name: str, hf_token: HfTokenArg) -> O
                 raise _hf_preflight_error(
                     422,
                     "hf_model_access_denied",
-                    (
-                        "Hugging Face denied access to this model. Add a valid Hugging Face "
-                        "token with repository access and accept any required access terms, "
-                        "then try again."
-                    ),
+                    _HF_MODEL_ACCESS_DENIED,
                 ) from error
             retry_available = attempt + 1 < len(timeouts)
             if transient_status:
@@ -538,6 +557,78 @@ def _remote_untrainable_model_format(model_name: str, hf_token: HfTokenArg) -> O
                     "Retry before starting training."
                 ),
             ) from error
+
+    # Which mirror a run fetches depends on the mode the WORKER ends up in, and this process
+    # cannot know it. A full finetune forces 16-bit, the latest-transformers sidecar forces
+    # 16-bit, and from_pretrained silently clears load_in_4bit wherever bitsandbytes is
+    # unusable - which is not "not installed": unsloth/device_type.py decides it with a guarded
+    # import plus native_kernels_ready(bnb, DEVICE_TYPE), because from 0.46 a dead native
+    # library still imports and only raises when called. Reading that here would import
+    # bitsandbytes and torch into the backend parent, which this whole helper exists to avoid.
+    #
+    # So do not guess. A mirror in EITHER mode admits the model. The two directions are not
+    # symmetric in cost: a wrong refusal blocks a model the worker would have trained, which is
+    # a regression against main, while a wrong admission only lets the run reach the worker and
+    # fail there exactly as it does on main today. 36 of the 1617 mapper keys map in one mode
+    # only, so the widened set is small either way.
+    #
+    # This deliberately supersedes the earlier narrowing to "bitsandbytes is not installed at
+    # all": find_spec answers a different question from the one the loader asks.
+    # "Could not read the tables" is not "no public copy": they live in the installed unsloth
+    # package and find_spec can land on a directory with no models/mapper.py under it, in which
+    # case every lookup answers None and every gated model is refused, the trainable ones
+    # included. Unknown admits, exactly as an unanswered auth-check does.
+    #
+    # And only where the TORCH loader runs. _run_mlx_training hands model_load_name straight to
+    # FastMLXModel.from_pretrained, and that loader never consults the upstream-to-Unsloth
+    # mapper (unsloth_zoo/mlx/loader.py only strips bnb suffixes off ids already under
+    # unsloth/), so on Apple Silicon the worker really does fetch the gated upstream.
+    # Embedding runs take _run_embedding_training, whose primary path is
+    # `SentenceTransformer(model_name, ...)` with the name as given: same reasoning, separate
+    # backend. Both are platform/route tests rather than device probes, so the parent may ask.
+    from core.training.training import should_use_mlx_training_backend
+    from utils.models.unsloth_mirror import mirror_lookup_available
+
+    # Fail open only INSIDE the Torch path. MLX and embedding runs fetch the picked repo
+    # directly, so an unreadable mapper tells us nothing about them and the auth-check is the
+    # only thing standing between an inaccessible gated model and a worker-side failure.
+    # Written the other way round, an unreadable mapper admitted those runs too.
+    torch_loader_path = not should_use_mlx_training_backend() and not is_embedding
+    has_public_copy = torch_loader_path and (
+        not mirror_lookup_available()
+        or any(unsloth_public_mirror(repo_id, mode) is not None for mode in (True, False))
+    )
+
+    # Gated model metadata is public, so verify access to its files separately.
+    if getattr(info, "gated", False) and not has_public_copy:
+        from urllib.parse import quote
+        from huggingface_hub import constants
+        from huggingface_hub.utils import build_hf_headers, get_session, hf_raise_for_status
+
+        url = f"{constants.ENDPOINT}/api/models/{quote(repo_id, safe = '/')}/auth-check"
+        headers = build_hf_headers(token = account_hf_token(hf_token))
+        # Same two timeouts as the model_info probe above: a transient failure here admits a
+        # run that then dies in the worker with the raw Hub error, which is the whole point of
+        # asking. Retry it, then fail open, since only a definite denial may block a start.
+        for attempt, timeout in enumerate(timeouts):
+            try:
+                hf_raise_for_status(get_session().get(url, headers = headers, timeout = timeout))
+                break
+            except Exception as error:
+                status_code = hf_error_status(error)
+                if status_code in (401, 403):
+                    raise _hf_preflight_error(
+                        422,
+                        "hf_model_access_denied",
+                        _HF_MODEL_ACCESS_DENIED,
+                    ) from error
+                if attempt + 1 < len(timeouts):
+                    continue
+                logger.warning(
+                    "Could not verify access to gated %s (%s); starting anyway",
+                    repo_id,
+                    type(error).__name__,
+                )
 
     load_roots = ("", *(f"{subdir.strip('/')}/" for subdir in load_subdirs if subdir))
     root_files: set[str] = set()
@@ -828,6 +919,11 @@ def _authorize_cache_fallback(model_name: str, repo_type: str = "model") -> None
         account_access.require_model_access(reference, repo_type)
 
 
+def _is_decision_checkpoint(request: TrainingStartRequest) -> bool:
+    # A Laya or Clef checkpoint, not an LLM that is trained with a new decision head.
+    return bool(request.is_decision) and request.decision_layout != "llm"
+
+
 def _reject_untrainable_model_request(
     request: TrainingStartRequest,
     actual_model_repo_id: Optional[str] = None,
@@ -952,6 +1048,22 @@ def _reject_untrainable_model_request(
                 )
 
         refuse_unauthorized_cache(has_cached_model)
+        if _is_decision_checkpoint(request):
+            from core.systemone import laya_runtime
+            from core.systemone.catalog import Checkpoint
+
+            # Laya caches only the files a checkpoint loads, which the snapshot lookup above misses.
+            if laya_runtime.is_cached(
+                Checkpoint(
+                    "base",
+                    request.model_name,
+                    request.model_subfolder,
+                    "",
+                    layout = request.decision_layout or "laya",
+                )
+            ):
+                refuse_unauthorized_cache(lambda: True)
+                return _ModelPreflightResult(model_name, model_local_path, None)
     if path is None and offline_mode:
         raise _hf_preflight_error(
             409,
@@ -976,7 +1088,16 @@ def _reject_untrainable_model_request(
                         "Retry before starting training."
                     ),
                 )
-            remote_format = _remote_untrainable_model_format(request.model_name, hf_token)
+            # A decision checkpoint is checked at its subfolder below, whatever the repo root holds.
+            remote_format = (
+                None
+                if _is_decision_checkpoint(request)
+                else _remote_untrainable_model_format(
+                    request.model_name,
+                    hf_token,
+                    is_embedding = bool(getattr(request, "is_embedding", False)),
+                )
+            )
         except HTTPException as error:
             metadata_error = error
             from core.training.training import _resolve_model_snapshot
@@ -999,6 +1120,14 @@ def _reject_untrainable_model_request(
             )
         else:
             if remote_format is None:
+                if _is_decision_checkpoint(request) and not is_decision_model(
+                    request.model_name, hf_token, subfolder = request.model_subfolder
+                ):
+                    raise _training_start_error(
+                        400,
+                        "training_remote_model_not_decision",
+                        f"{request.model_name} is not a decision model (Laya or Clef).",
+                    )
                 return _ModelPreflightResult(model_name, model_local_path, cached_model_pin)
             if remote_format == "gguf":
                 raise _training_start_error(
@@ -1011,6 +1140,18 @@ def _reject_untrainable_model_request(
                 "training_remote_model_adapter_only",
                 "Adapter models are inference-only and cannot be trained as base models.",
             )
+    if _is_decision_checkpoint(request):
+        folder = path / request.model_subfolder if request.model_subfolder else path
+        if not is_decision_model(str(folder)):
+            raise _training_start_error(
+                400,
+                "training_local_model_not_decision",
+                "The selected model is not a decision checkpoint: Laya needs "
+                "rl_agent_config.json, model.safetensors, encoder/ and tokenizer/, and Clef "
+                "needs joint_head.safetensors and joint_head_config.json beside config.json "
+                "(or LoRA adapters).",
+            )
+        return _ModelPreflightResult(model_name, model_local_path, None)
     has_trainable_weights = _has_trainable_local_weights(path, request.model_name)
     if has_trainable_weights:
         return _ModelPreflightResult(model_name, model_local_path, cached_model_pin)
@@ -1071,6 +1212,138 @@ def _validate_training_platform(request: TrainingStartRequest) -> None:
             status_code = 400,
             detail = "LoftQ is not supported for MLX training yet.",
         )
+
+
+# A plain folder name: no separators, globs, drive letters or dot segments.
+_CHECKPOINT_SUBFOLDER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+# The frontend's LR_DEFAULT_DECISION_FULL; the model defaults hold the LoRA rate.
+_DECISION_FULL_FINETUNING_LR = "2.5e-5"
+
+
+def _validate_decision_request(request: TrainingStartRequest, via_api_key: bool = False) -> None:
+    request.decision_layout = None
+    if not request.is_decision:
+        return
+    # Decision models train on one GPU, so admission and chat coexistence are sized for that one.
+    if request.gpu_ids and len(request.gpu_ids) > 1:
+        request.gpu_ids = request.gpu_ids[:1]
+    from core.systemone.catalog import CHECKPOINTS, CLEF_DEFAULTS_REPO, LAYA_REPO
+    from utils.account_context import is_owner_context
+    from utils.models.model_config import decision_layout
+
+    if not is_owner_context():
+        raise HTTPException(
+            status_code = 403,
+            detail = "Only the Studio owner can fine-tune decision models, since only the "
+            "owner's fine-tunes can be served by the Decision API.",
+        )
+    if sys.version_info < (3, 10):
+        raise HTTPException(
+            status_code = 400,
+            detail = "Decision model training needs Python 3.10 or newer, like the Decision "
+            "API that serves the fine-tunes.",
+        )
+    if request.training_type == "Continued Pretraining":
+        raise HTTPException(
+            status_code = 400,
+            detail = "Decision models train with LoRA or full fine-tuning; continued "
+            "pretraining is not available for them.",
+        )
+    if request.resume_from_checkpoint:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Decision model runs cannot be resumed; start a new run instead.",
+        )
+    if request.dataset_streaming:
+        raise HTTPException(
+            status_code = 400,
+            detail = "dataset_streaming is not supported for decision model training.",
+        )
+    unset = TrainingStartRequest.model_fields.keys() - request.model_fields_set
+    # Unknown (offline, no access) stays Laya: the preflight then names what is missing.
+    layout = decision_layout(
+        request.model_name,
+        hf_token_arg(request.hf_token, allow_ambient_token = via_api_key is not True),
+        subfolder = request.model_subfolder,
+    )
+    # A subfolder or a catalog repo still means Laya, so an uncached Laya checkpoint is not loaded as an LLM.
+    llm = (
+        layout is None
+        and request.model_subfolder is None
+        and request.model_name not in {c.source for c in CHECKPOINTS.values()}
+    )
+    if layout == "clef" or llm:
+        from core.systemone.catalog import clef_unsupported_reason
+        from utils.hardware import hardware
+
+        # Apple Silicon trains Clef with MLX; elsewhere it needs the GPU the torch path runs on.
+        mlx = hardware.get_device() == hardware.DeviceType.MLX
+        if not mlx and (reason := clef_unsupported_reason()) is not None:
+            raise HTTPException(status_code = 400, detail = reason)
+        request.decision_layout = "llm" if llm else "clef"
+        if request.model_subfolder is not None:
+            raise HTTPException(
+                status_code = 400,
+                detail = "Clef repos hold one checkpoint, so model_subfolder must be left out.",
+            )
+        if request.use_dora or request.use_loftq:
+            raise HTTPException(
+                status_code = 400,
+                detail = "Decision models train with plain LoRA, so DoRA and LoftQ are not "
+                "available for them.",
+            )
+        if llm:
+            from utils.models.model_config import load_llm_decision_defaults
+            defaults = load_llm_decision_defaults()
+        else:
+            defaults = load_model_defaults(request.model_name)
+            if defaults == load_model_defaults("default"):
+                defaults = load_model_defaults(CLEF_DEFAULTS_REPO)
+        for section in ("training", "lora", "logging"):
+            for key, value in (defaults.get(section) or {}).items():
+                if key in unset:
+                    setattr(request, key, value)
+        if "learning_rate" in unset and request.training_type == "Full Finetuning":
+            request.learning_rate = _DECISION_FULL_FINETUNING_LR
+        return
+    request.decision_layout = "laya"
+    if (
+        request.training_type == "LoRA/QLoRA"
+        and request.load_in_4bit
+        and "load_in_4bit" not in unset
+    ):
+        raise HTTPException(
+            status_code = 400,
+            detail = "Decision models train in 16-bit, so QLoRA is not available for them. "
+            "Set load_in_4bit to false to train with LoRA.",
+        )
+    subfolder = request.model_subfolder
+    if subfolder is not None and (
+        not _CHECKPOINT_SUBFOLDER.fullmatch(subfolder)
+        or (
+            request.model_name == LAYA_REPO
+            and subfolder not in {c.subfolder for c in CHECKPOINTS.values()}
+        )
+    ):
+        raise HTTPException(
+            status_code = 400,
+            detail = f"Invalid checkpoint subfolder {subfolder!r} for {request.model_name}.",
+        )
+    if request.use_dora or request.use_loftq:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Decision models train with plain LoRA, so DoRA and LoftQ are not "
+            "available for them.",
+        )
+    request.load_in_4bit = False
+    # Fields an API or MCP caller left out take the Laya recipe the UI starts from.
+    defaults = load_model_defaults(LAYA_REPO)
+    for section in ("training", "lora", "logging"):
+        for key, value in (defaults.get(section) or {}).items():
+            if key in unset:
+                setattr(request, key, value)
+    if "learning_rate" in unset and request.training_type == "Full Finetuning":
+        request.learning_rate = _DECISION_FULL_FINETUNING_LR
 
 
 _RESUME_DATASET_DEFAULTS = {
@@ -1229,19 +1502,33 @@ async def get_hardware_utilization(current_subject: str = Depends(get_current_su
 
     Polled by the frontend during training.
     """
-    from utils.hardware import get_gpu_utilization
+    from utils.hardware import get_gpu_utilization, gpu_query
 
     # Off-loop: the first call blocks on detection while the warm is importing torch.
-    return await asyncio.to_thread(get_gpu_utilization)
+    with gpu_query.display_reads():
+        return await asyncio.to_thread(get_gpu_utilization)
+
+
+@router.get("/offload")
+async def get_offload_state(current_subject: str = Depends(get_current_subject)):
+    """Offload layers state from the last logged step: which decoder layers sit on the GPU or in
+    host RAM, prefetch depth, copy / stall / compute time, VRAM. ``{"active": false}`` when the run
+    does not offload. Polled by the live training view."""
+    progress = get_training_backend().trainer.get_training_progress()
+    offload = getattr(progress, "offload", None)
+    if not offload:
+        return {"active": False}
+    return {"active": True, **offload}
 
 
 @router.get("/hardware/visible")
 async def get_visible_hardware_utilization(current_subject: str = Depends(get_current_subject)):
-    from utils.hardware import get_visible_gpu_utilization
+    from utils.hardware import get_visible_gpu_utilization, gpu_query
 
     # Off the event loop: the ROCm fallbacks shell out (Windows perf counters, sysfs) and the System view polls this
     # route.
-    return await asyncio.to_thread(get_visible_gpu_utilization)
+    with gpu_query.display_reads():
+        return await asyncio.to_thread(get_visible_gpu_utilization)
 
 
 @router.get("/start-requests/{start_request_id}", response_model = TrainingStartRequestStatus)
@@ -1345,6 +1632,7 @@ async def start_training(
     Initiates training in the background and returns immediately. Use /status
     to check progress.
     """
+    await asyncio.to_thread(_validate_decision_request, request, via_api_key)
     if managed_account():
         from utils.paths import tensorboard_root
 
@@ -1635,6 +1923,12 @@ async def start_training(
             if not request.dataset_streaming and _hf_dataset_is_the_source(request):
                 await asyncio.to_thread(_refuse_unauthorized_cached_dataset, request, hf_token)
 
+        device_backend = getattr(_hw.DEVICE, "value", "") or ""
+        training_optimizer = normalize_training_optimizer_for_device(
+            request.optim,
+            device_backend = device_backend,
+        )
+
         training_kwargs = {
             "model_name": model_preflight.model_name,
             "project_name": request.project_name,
@@ -1681,7 +1975,7 @@ async def start_training(
             "cast_norm_output_to_input_dtype": request.cast_norm_output_to_input_dtype,
             "random_seed": request.random_seed,
             "packing": request.packing,
-            "optim": request.optim,
+            "optim": training_optimizer,
             "lr_scheduler_type": request.lr_scheduler_type,
             "use_lora": request.use_lora,
             "lora_r": request.lora_r,
@@ -1691,6 +1985,10 @@ async def start_training(
             "gradient_checkpointing": request.gradient_checkpointing.strip()
             if request.gradient_checkpointing and request.gradient_checkpointing.strip()
             else "unsloth",
+            "offload_layers": request.offload_layers,
+            "offload_vram_gb": request.offload_vram_gb,
+            "offload_vram_gb_per_device": request.offload_vram_gb_per_device,
+            "prefetch_depth": request.prefetch_depth,
             "use_rslora": request.use_rslora,
             "use_loftq": request.use_loftq,
             "use_dora": request.use_dora,
@@ -1702,6 +2000,9 @@ async def start_training(
             "is_dataset_image": request.is_dataset_image,
             "is_dataset_audio": request.is_dataset_audio,
             "is_embedding": request.is_embedding,
+            "is_decision": request.is_decision,
+            "model_subfolder": request.model_subfolder,
+            "decision_layout": request.decision_layout,
             "enable_wandb": request.enable_wandb,
             "wandb_token": request.wandb_token or "",
             "wandb_project": request.wandb_project or "",
@@ -1797,12 +2098,15 @@ async def start_training(
                 # The ACTIVE engine, not the diffusers singleton: on a native (sd_cpp) selection the diffusers backend
                 # reports unloaded while the native engine still holds state.
                 diffusion = get_active_diffusion_engine()
-                if diffusion.is_loaded:
-                    logger.info(
-                        "Unloading diffusion (Images) model to free GPU memory for training"
-                    )
-                diffusion.unload()
-                gpu_arbiter.release(gpu_arbiter.DIFFUSION)
+                if getattr(diffusion, "runs_off_torch_device", False) is True:
+                    logger.info("Keeping the Images model: it runs outside torch's GPUs")
+                else:
+                    if diffusion.is_loaded:
+                        logger.info(
+                            "Unloading diffusion (Images) model to free GPU memory for training"
+                        )
+                    diffusion.unload()
+                    gpu_arbiter.release(gpu_arbiter.DIFFUSION)
             except Exception as e:
                 logger.warning("Could not unload diffusion model for training: %s", e)
 
@@ -1819,6 +2123,14 @@ async def start_training(
                 gpu_arbiter.release(gpu_arbiter.VIDEO)
             except Exception as e:
                 logger.warning("Could not unload video model for training: %s", e)
+
+            try:
+                from core.systemone import laya_runtime
+                if laya_runtime.status()["device"] not in (None, "cpu"):
+                    logger.info("Unloading the Decision API model to free GPU memory for training")
+                    laya_runtime.unload()
+            except Exception as e:
+                logger.warning("Could not unload the Decision API model for training: %s", e)
 
             try:
                 from routes.training_vram import (
@@ -1845,9 +2157,12 @@ async def start_training(
                 if freed:
                     logger.info("Freed models for training: %s", freed)
             except Exception as e:
+                if getattr(e, "blocks_training", False):
+                    raise
                 logger.warning("Inference/training memory coordination failed; proceeding: %s", e)
 
         # The hook runs only once start guards pass -> VRAM freed iff training starts.
+        from routes.training_vram import ManagedEngineStillRunning
         from utils.transformers_version import SidecarSwapInProgress
 
         def _run_backend_start_without_admission() -> bool:
@@ -1859,7 +2174,11 @@ async def start_training(
                     resume_source_run_id = resume_run["id"] if resume_run else None,
                     **training_kwargs,
                 )
-            except (SidecarSwapInProgress, ExactResumeResourcesUnavailable) as exc:
+            except (
+                SidecarSwapInProgress,
+                ExactResumeResourcesUnavailable,
+                ManagedEngineStillRunning,
+            ) as exc:
                 _reject_start_request(backend, reserved_start_request_id, str(exc))
                 raise
             except ValueError as exc:
@@ -1916,7 +2235,7 @@ async def start_training(
         except SidecarSwapInProgress as exc:
             # Expected loss of the race against a sidecar install: a retryable 409, not an internal error.
             raise HTTPException(status_code = 409, detail = str(exc))
-        except ExactResumeResourcesUnavailable as exc:
+        except (ExactResumeResourcesUnavailable, ManagedEngineStillRunning) as exc:
             raise HTTPException(status_code = 409, detail = str(exc))
 
         if not success:
@@ -2187,6 +2506,9 @@ def _build_training_status(
             "loss": getattr(progress, "loss", None),
             "learning_rate": getattr(progress, "learning_rate", None),
             "output_dir": getattr(backend, "_output_dir", None) or None,
+            "model_download_repo_id": (
+                getattr(backend, "_model_download_repo_id", None) if is_active else None
+            ),
         }
 
     metric_history = None
@@ -2217,9 +2539,16 @@ def _build_training_status(
 
 
 @router.get("/status")
-async def get_training_status(current_subject: str = Depends(get_current_subject)):
+async def get_training_status(
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
     """
     Get the current training status.
+
+    Redacted for an API-key caller like every other route that can name a host path: the
+    worker's own progress line quotes the model it is loading, and for a local model that is
+    an absolute path, which would hand back what the inventory took the trouble to hide.
     """
     try:
         backend = get_training_backend()
@@ -2231,7 +2560,7 @@ async def get_training_status(current_subject: str = Depends(get_current_subject
                 continue
             status = _build_training_status(backend, identity, is_active)
             if _training_status_identity(backend) == identity:
-                return status
+                return redact_host_paths(status, via_api_key = via_api_key)
         raise HTTPException(status_code = 409, detail = "Training state changed during status read")
     except HTTPException:
         raise
@@ -2373,6 +2702,7 @@ async def stream_training_progress(
 
             elapsed_seconds = getattr(progress, "elapsed_seconds", None) if progress else None
             eta_seconds = getattr(progress, "eta_seconds", None) if progress else None
+            session_start_step = getattr(progress, "session_start_step", None) if progress else None
             grad_norm = grad_norm_override
             if grad_norm is None and progress:
                 grad_norm = getattr(progress, "grad_norm", None)
@@ -2391,6 +2721,7 @@ async def stream_training_progress(
                 epoch = epoch,
                 elapsed_seconds = elapsed_seconds,
                 eta_seconds = eta_seconds,
+                session_start_step = session_start_step,
                 grad_norm = grad_norm,
                 num_tokens = num_tokens,
                 eval_loss = eval_loss,
@@ -2803,10 +3134,13 @@ def _free_gpu_for_diffusion_training() -> None:
         # The ACTIVE engine, not the diffusers singleton: on a native (sd_cpp) selection the resident sd-server still
         # holds the GPU, so unloading only the singleton is a no-op.
         diffusion = get_active_diffusion_engine()
-        if diffusion.is_loaded:
-            logger.info("Unloading resident Images pipeline to free GPU memory for training")
-        diffusion.unload()
-        gpu_arbiter.release(gpu_arbiter.DIFFUSION)
+        if getattr(diffusion, "runs_off_torch_device", False) is True:
+            logger.info("Keeping the Images model: it runs outside torch's GPUs")
+        else:
+            if diffusion.is_loaded:
+                logger.info("Unloading resident Images pipeline to free GPU memory for training")
+            diffusion.unload()
+            gpu_arbiter.release(gpu_arbiter.DIFFUSION)
     except Exception as e:  # noqa: BLE001
         logger.warning("Could not unload Images pipeline for diffusion training: %s", e)
 
@@ -2830,6 +3164,8 @@ def _free_gpu_for_diffusion_training() -> None:
             freed = free_chat_models_for_training(reason = "diffusion training starting")
             logger.info("Freed chat model(s) for diffusion training: %s", freed)
     except Exception as e:  # noqa: BLE001
+        if getattr(e, "blocks_training", False):
+            raise
         logger.warning("Could not free chat models for diffusion training: %s", e)
 
 
@@ -2856,12 +3192,14 @@ def _preflight_gated_base(base_model: str, hf_token: Optional[str]) -> None:
     ):
         return
     from utils.hf_endpoint import get_hf_endpoint
+    from utils.utils import auth_safe_open
 
     url = f"{get_hf_endpoint()}/{repo}/resolve/main/model_index.json"
     headers = {"Authorization": f"Bearer {hf_token}"} if hf_token else {}
     req = urllib.request.Request(url, method = "HEAD", headers = headers)
+    # Not urlopen: a mirror's cross-host 302 would carry this token off-origin.
     try:
-        urllib.request.urlopen(req, timeout = 5)
+        auth_safe_open(req, timeout = 5)
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):
             raise HTTPException(
@@ -3301,6 +3639,25 @@ _DIFFUSION_DATASET_MEDIA_EXTS = _DIFFUSION_DATASET_IMAGE_EXTS | _DIFFUSION_DATAS
 _DIFFUSION_DATASET_TEXT_EXTS = {".txt", ".caption", ".jsonl"}
 
 
+def _reserved_diffusion_dataset_names() -> frozenset[str]:
+    """Names below the dataset root owned by other Studio dataset workflows."""
+    from utils.paths import (
+        dataset_uploads_root,
+        recipe_datasets_root,
+        seed_uploads_root,
+        unstructured_uploads_root,
+    )
+    return frozenset(
+        path.name.casefold()
+        for path in (
+            dataset_uploads_root(),
+            recipe_datasets_root(),
+            seed_uploads_root(),
+            unstructured_uploads_root(),
+        )
+    )
+
+
 def _resolve_dataset_caption(
     folder: Path, image_path: Path, meta_captions: dict[str, str]
 ) -> Optional[str]:
@@ -3338,11 +3695,8 @@ _DATASET_IMPORT_LOCKS_GUARD = threading.Lock()
 
 
 def _dataset_import_lock(folder: Path) -> "threading.Lock":
-    """One lock per dataset folder, so two imports cannot fill the same empty name at once. Keyed by
-    the resolved path (one folder can be reached by different names) and kept for the process
-    lifetime: there are a handful of folders and a Lock is tiny, while dropping one while another
-    thread holds it would defeat the point."""
-    key = str(folder.resolve(strict = False))
+    """serialize imports by case-folded resolved path; process-lifetime locks cannot disappear while held."""
+    key = str(folder.resolve(strict = False)).casefold()
     with _DATASET_IMPORT_LOCKS_GUARD:
         lock = _DATASET_IMPORT_LOCKS.get(key)
         if lock is None:
@@ -3508,6 +3862,8 @@ async def diffusion_training_info(current_subject: str = Depends(get_current_sub
     def scan() -> DiffusionTrainingInfoResponse:
         root = datasets_root()
         found: list[DiffusionDatasetSummary] = []
+        continuations: list[str] = []
+        reserved_names = _reserved_diffusion_dataset_names()
         try:
             # Skip hidden dirs: never user datasets, and an in-progress example import stages into a dot-prefixed
             # sibling.
@@ -3525,14 +3881,28 @@ async def diffusion_training_info(current_subject: str = Depends(get_current_sub
                 summary = _diffusion_dataset_summary(child)
             except OSError:
                 continue
-            # A clip-only folder is a real dataset for the video families, so admit on either count.
+            # clip-only folders are valid for video families.
             if summary.image_count > 0 or summary.clip_count > 0:
                 found.append(summary)
+            elif child.name.casefold() not in reserved_names:
+                # captions-only, or emptied by deleting its last item (hidden .thumbs may remain).
+                try:
+                    visible = [e for e in child.iterdir() if not e.name.startswith(".")]
+                    continuable = not visible or any(
+                        e.is_file() and e.suffix.lower() in _DIFFUSION_DATASET_TEXT_EXTS
+                        for e in visible
+                    )
+                except OSError:
+                    continuable = False
+                if continuable:
+                    continuations.append(child.name)
         families = [DiffusionTrainableFamily(**info) for info in _ui_trainable_families(found)]
         return DiffusionTrainingInfoResponse(
             datasets_root = str(root),
             outputs_root = str(outputs_root()),
             datasets = found,
+            dataset_names = [p.name for p in children],
+            continuation_dataset_names = continuations,
             families = families,
         )
 
@@ -3542,8 +3912,7 @@ async def diffusion_training_info(current_subject: str = Depends(get_current_sub
 _DATASET_NAME_RE = None
 
 
-# Reserved in EVERY directory on Windows, with or without an extension (NUL.txt is NUL). The superscript COM/LPT digits
-# count as digits to Win32 and are reserved too.
+# Windows reserves these names with any extension; superscript COM/LPT digits also count as digits in Win32.
 _WINDOWS_RESERVED_NAMES = frozenset(
     {"con", "prn", "aux", "nul"}
     | {f"com{d}" for d in "123456789¹²³"}
@@ -3616,13 +3985,11 @@ def _clean_diffusion_dataset_name(name: str) -> str:
 async def upload_diffusion_dataset(
     name: str = Form(...),
     files: list[UploadFile] = File(...),
+    create_only: bool = Form(False),
     current_subject: str = Depends(get_current_subject),
     _interlock: None = Depends(diffusion_dataset_interlock),
 ):
-    """Upload training images (and optional caption .txt / metadata.jsonl files) into a
-    named folder under the Unsloth datasets root, creating it if needed. Repeat uploads
-    into the same name accumulate, so large datasets can arrive in batches. The returned
-    name can be passed directly as ``data_dir`` to /diffusion/start."""
+    """repeat uploads accumulate in one Unsloth dataset folder; pass its name as ``data_dir`` to /diffusion/start."""
     import os
     import tempfile
 
@@ -3630,12 +3997,13 @@ async def upload_diffusion_dataset(
 
     _require_diffusion_dataset_mutable()
     cleaned = _clean_diffusion_dataset_name(name)
-    # Run the same symlink + root-containment check as the read/caption/delete endpoints before any write, so a
-    # symlinked name cannot make the upload write outside root.
+    if cleaned.casefold() in _reserved_diffusion_dataset_names():
+        raise HTTPException(
+            status_code = 400,
+            detail = f"'{cleaned}' is reserved for Studio's internal dataset storage.",
+        )
     folder = _resolve_dataset_folder(name, must_exist = False)
-    folder.mkdir(parents = True, exist_ok = True)
-    # Serialize against a concurrent import into the SAME folder: the training interlock counts
-    # mutations rather than excluding them. The duplicate-stem check below is inside the lock.
+    # serialize same-folder imports because the training interlock permits mutations; duplicate checks run here
     _lock = _dataset_import_lock(folder)
     if not _lock.acquire(blocking = False):
         raise HTTPException(
@@ -3645,17 +4013,49 @@ async def upload_diffusion_dataset(
                 "then upload again."
             ),
         )
+    created_folder = False
     try:
+        if create_only:
+            occupied = (
+                next(
+                    (
+                        p
+                        for p in folder.parent.iterdir()
+                        if p.is_dir()
+                        and not p.is_symlink()
+                        and p.name.casefold() == cleaned.casefold()
+                    ),
+                    None,
+                )
+                if folder.parent.is_dir()
+                else None
+            )
+            if occupied is not None:
+                raise HTTPException(
+                    status_code = 409,
+                    detail = (
+                        f"Dataset '{occupied.name}' already exists. Pick it in the dataset list "
+                        "to add files, or choose another name."
+                    ),
+                )
+        try:
+            folder.mkdir(parents = True, exist_ok = not create_only)
+            created_folder = create_only
+        except FileExistsError:
+            raise HTTPException(
+                status_code = 409,
+                detail = (
+                    f"Dataset '{cleaned}' already exists. Pick it in the dataset list to add "
+                    "files, or choose another name."
+                ),
+            )
         limit_bytes = get_upload_limit_bytes()
         total_bytes = 0
         uploaded = 0
         allowed = _DIFFUSION_DATASET_MEDIA_EXTS | _DIFFUSION_DATASET_TEXT_EXTS
-        # Validate every filename up front so a valid file ahead of a bad one is not left on disk when the 400 fires;
-        # the upload is all-or-nothing.
+        # validate all filenames first so an invalid name cannot leave earlier files on disk
         names: list[str] = []
-        # Indexes over `names` so the three batch-local duplicate checks below are hash
-        # lookups, not scans over every earlier filename (O(N^2) at the 1000-file cap). First
-        # / insertion order is kept, so each error still names the filename the scans picked.
+        # use insertion-ordered indexes to avoid O(N^2) scans while preserving the filename reported in errors
         seen_names: set = set()
         first_name_by_casefold: dict = {}
         media_names_by_stem_cf: dict = {}
@@ -3828,6 +4228,13 @@ async def upload_diffusion_dataset(
             caption_count = summary.caption_count,
             uploaded = uploaded,
         )
+    except BaseException:
+        if created_folder:
+            try:
+                folder.rmdir()
+            except OSError:
+                pass
+        raise
     finally:
         _lock.release()
 
@@ -4062,16 +4469,17 @@ async def get_diffusion_dataset_image(
     def make_thumb() -> Path:
         from PIL import Image
 
+        from core.inference.mcp_images import flattened_rgb
+
         thumbs_dir = folder / _THUMBS_DIRNAME
         thumbs_dir.mkdir(exist_ok = True)
-        # Key on the full filename, not the stem: two images sharing a stem would collide on one cache file and the
-        # mtime-newer entry would be served for both.
-        thumb_path = thumbs_dir / f"{image_path.name}_{size}.jpg"
+        # use the full filename because same-stem images would otherwise share a cache entry
+        thumb_path = thumbs_dir / f"{image_path.name}_{size}_w.jpg"
         src_mtime = image_path.stat().st_mtime
         if thumb_path.is_file() and thumb_path.stat().st_mtime >= src_mtime:
             return thumb_path
         with Image.open(image_path) as im:
-            im = im.convert("RGB")
+            im = flattened_rgb(im, background = (255, 255, 255))
             im.thumbnail((size, size), Image.LANCZOS)
             im.save(thumb_path, format = "JPEG", quality = 85)
         return thumb_path
@@ -4504,6 +4912,35 @@ async def import_diffusion_dataset_example(
                         # Best effort: one unrestorable entry must not mask the original failure.
                         pass
 
+            # Hold the datasets registry for this repo across the fetch.
+            #
+            # Both loaders call load_dataset / snapshot_download directly rather than going
+            # through a managed download, so nothing here claimed the registry and a Clear of
+            # hf_hub, hf_xet or hf_datasets passed every guard: begin_cache_purge asks about
+            # jobs, owners and deletes, and this import was none of the three. The snapshot then
+            # went out from under the copy and the import failed in front of the user.
+            #
+            # claim_repository_owner is the same reservation a managed download takes, and it
+            # excludes a purge in both directions: it refuses while one is running, and
+            # begin_cache_purge refuses while an owner is held.
+            _import_registry = None
+            _import_owner = object()
+            try:
+                from hub.utils.download_registry import get_datasets_registry
+                _import_registry = get_datasets_registry()
+            except Exception as exc:  # noqa: BLE001 - a broken registry must not kill an import
+                logger.debug(f"Could not reach the datasets registry for the import: {exc}")
+            if _import_registry is not None:
+                granted, reason = _import_registry.claim_repository_owner(
+                    entry["repo"], _import_owner
+                )
+                if not granted:
+                    if reason == "deleting":
+                        raise HTTPException(
+                            status_code = 409,
+                            detail = "A cache clear is running. Try the import again in a moment.",
+                        )
+                    _import_registry = None  # already busy with this repo; do not release it
             try:
                 try:
                     if entry["loader"] == "imagefolder_jsonl":
@@ -4547,6 +4984,11 @@ async def import_diffusion_dataset_example(
                         ),
                     )
             finally:
+                if _import_registry is not None:
+                    try:
+                        _import_registry.release_repository_owner(entry["repo"], _import_owner)
+                    except Exception as exc:  # noqa: BLE001 - a held claim must not mask the error
+                        logger.debug(f"Could not release the import claim: {exc}")
                 shutil.rmtree(staging, ignore_errors = True)
                 shutil.rmtree(rescue, ignore_errors = True)
         return _import_response(entry, folder, imported = imported)

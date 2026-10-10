@@ -56,11 +56,34 @@ from core.inference.tool_call_parser import (
     reprompt_to_act_message,
     strip_tool_markup,
 )
+from core.inference.mcp_images import append_image_turn as append_mcp_image_turn
+from core.inference.mcp_image import note_attached_image
+
+
+def _append_mcp_images_owned(
+    conversation,
+    results,
+    owned,
+    lead = None,
+):
+    """reserve caller images because remote providers apply the image cap in document order."""
+    append_mcp_image_turn(
+        conversation,
+        results,
+        per_result = True,
+        owned = owned,
+        reserve_caller_images = True,
+        **({"lead": lead} if lead else {}),
+    )
+
+
 from core.inference.tool_loop_controller import (
     ToolLoopController,
+    _reject_json_constant,
     awaiting_approval_status,
     canonical_arguments_text,
     mcp_display_parts,
+    provisional_tool_provenance,
     strip_result_for_model,
 )
 from core.inference.tool_stream_exec import (
@@ -70,11 +93,21 @@ from core.inference.tool_stream_exec import (
     search_images_kwargs,
     stream_tool_execution,
 )
-from core.inference.tools import build_rag_autoinject, execute_tool, is_high_risk_tool_call
+from core.inference.tools import (
+    build_rag_autoinject,
+    execute_tool,
+    is_high_risk_tool_call,
+    mcp_image_share,
+    mcp_image_targets,
+    never_needs_approval,
+)
 from state.tool_approvals import (
+    DECISION_EXPIRED,
+    TOOL_APPROVAL_EXPIRED_MESSAGE,
     TOOL_REJECTED_MESSAGE,
     abort_tool_decision,
     begin_tool_decision,
+    decision_reason,
     new_approval_id,
     wait_tool_decision,
 )
@@ -95,6 +128,11 @@ _TOOL_CANCELLED = (
 _TOOL_TRUNCATED = (
     "Unsloth did not execute this tool call because the provider stopped mid-call at its "
     "output limit."
+)
+
+_TOOL_CHOICE_NONE = (
+    "Unsloth did not execute this tool call because tool calls are turned off for this request "
+    '(tool_choice is "none").'
 )
 
 # Card text for a call the controller skipped. The client already painted a card from the provider's own tool_calls
@@ -265,6 +303,25 @@ def _normalized_call(call: dict[str, Any], fallback_id: str = "") -> dict[str, A
     return normalized
 
 
+def _signed_provider_call_for_replay(call: dict[str, Any]) -> dict[str, Any] | None:
+    extra = call.get("extra_content")
+    google = extra.get("google") if isinstance(extra, dict) else None
+    if not isinstance(google, dict) or not google.get("thought_signature"):
+        return None
+    function = call.get("function")
+    if not isinstance(function, dict):
+        return None
+    return {
+        "id": call["id"],
+        "type": "function",
+        "function": {
+            "name": function["name"],
+            "arguments": function.get("arguments", ""),
+        },
+        "extra_content": extra,
+    }
+
+
 def _argument_fragment(value: Any) -> Any:
     """A decoded-object ``arguments`` delta as the text it would have streamed as. llama-server has
     shipped a decoded object where a string fragment belongs (ggml-org/llama.cpp#20198).
@@ -340,6 +397,11 @@ class ToolLoopRun:
     model: str | None = None
     tool_choice: Any = None
     continue_final_message: bool = False
+    supports_vision: bool = False
+    # Image parts an earlier promotion already put in `messages`. The loop's cap
+    # counts these too: starting from zero lets a resumed image-heavy chat carry a
+    # full history through and then add a whole batch on top.
+    promoted_image_parts: tuple = ()
 
 
 @dataclass(frozen = True)
@@ -361,11 +423,9 @@ class ToolLoopPolicy:
     # Called when a provider turn ends, however it ended. Headerless only: clears the stripper's withheld-call flag,
     # which the wire cannot always close because a turn may end on [DONE] alone.
     on_provider_turn_end: Callable[[], None] | None = None
-
-
-def _reject_json_constant(name: str) -> Any:
-    """Refuse ``NaN`` / ``Infinity``: ``json.loads`` takes them, ``JSON.parse`` does not."""
-    raise ValueError(f"{name} is not JSON")
+    # None keeps the request default (on); explicit booleans win.
+    deduplicate_tool_calls: bool | None = None
+    sandbox_level: str = "high"
 
 
 def _split_top_level_json_objects(text: str) -> tuple[list[str], str]:
@@ -515,11 +575,104 @@ class _Turn:
     round: int = 0
     healed: list[dict[str, Any]] = field(default_factory = list)
     text: list[str] = field(default_factory = list)
+    reasoning: list[str] = field(default_factory = list)
     reasoning_extra: dict[str, Any] | None = None
     finish_reason: str | None = None
     # Results from tools the PROVIDER ran this turn, keyed by call id so a repeated end event cannot record the same
     # result twice
     hosted_results: dict[str, dict[str, Any]] = field(default_factory = dict)
+    provider_compaction: dict[str, Any] | None = None
+
+    def note_reasoning_extra(self, extra: Any) -> None:
+        """Accumulate Gemini's per-part replay envelopes across one provider turn."""
+        if not isinstance(extra, dict):
+            return
+        previous = self.reasoning_extra if isinstance(self.reasoning_extra, dict) else {}
+        merged = {**previous, **extra}
+        previous_google = previous.get("google")
+        incoming_google = extra.get("google")
+        if isinstance(previous_google, dict) or isinstance(incoming_google, dict):
+            old_google = previous_google if isinstance(previous_google, dict) else {}
+            new_google = incoming_google if isinstance(incoming_google, dict) else {}
+            google = {**old_google, **new_google}
+            for singular, plural in (
+                ("thought_part", "thought_parts"),
+                ("answer_part", "answer_parts"),
+            ):
+                accumulated: list[dict[str, Any]] = []
+                for source in (old_google, new_google):
+                    many = source.get(plural)
+                    if isinstance(many, list):
+                        accumulated.extend(dict(part) for part in many if isinstance(part, dict))
+                    one = source.get(singular)
+                    if isinstance(one, dict):
+                        accumulated.append(dict(one))
+                if accumulated:
+                    compacted: list[dict[str, Any]] = []
+                    for part in accumulated:
+                        signature = part.get("thought_signature") or part.get("thoughtSignature")
+                        if (
+                            compacted
+                            and not signature
+                            and not (
+                                compacted[-1].get("thought_signature")
+                                or compacted[-1].get("thoughtSignature")
+                            )
+                            and isinstance(part.get("text"), str)
+                            and isinstance(compacted[-1].get("text"), str)
+                        ):
+                            compacted[-1]["text"] += part["text"]
+                        else:
+                            compacted.append(part)
+                    google[plural] = compacted
+                google.pop(singular, None)
+            if google.get("thought_parts") or google.get("answer_parts"):
+                # Native ledgers already pin every signature to its original part. Retaining the legacy scalar
+                # would let the translator move an earlier thought signature onto later unsigned text.
+                google.pop("thought_signature", None)
+                google.pop("thoughtSignature", None)
+                google.pop("thought", None)
+            merged["google"] = google
+        self.reasoning_extra = merged
+
+    def compaction_replay_message(self) -> dict[str, Any] | None:
+        """Build one replay turn and remove Anthropic's native block from later metadata."""
+        replay = self.provider_compaction
+        extra = self.reasoning_extra
+        if replay is None or not isinstance(extra, dict):
+            return None if replay is None else {"role": "assistant", "content": [replay]}
+        anthropic = extra.get("anthropic")
+        native_content = anthropic.get("content") if isinstance(anthropic, dict) else None
+        if not isinstance(native_content, list):
+            return {"role": "assistant", "content": [replay]}
+        native_compactions = [
+            block
+            for block in native_content
+            if isinstance(block, dict) and block.get("type") == "compaction"
+        ]
+        if not native_compactions:
+            return {"role": "assistant", "content": [replay]}
+        self.reasoning_extra = {
+            **extra,
+            "anthropic": {
+                **anthropic,
+                "content": [
+                    block
+                    for block in native_content
+                    if not (isinstance(block, dict) and block.get("type") == "compaction")
+                ],
+            },
+        }
+        return {
+            "role": "assistant",
+            "content": "",
+            "extra_content": {
+                "anthropic": {
+                    **anthropic,
+                    "content": [dict(native_compactions[-1])],
+                }
+            },
+        }
 
     def note_hosted_tool_event(self, event: Any) -> None:
         """Record a provider-side tool call carried on ``_toolEvent``. These reach the client as
@@ -531,10 +684,21 @@ class _Turn:
         unlabelled."""
         if not isinstance(event, dict):
             return
+        kind = event.get("type")
+        if kind == "compaction_block":
+            encrypted = event.get("encrypted_content")
+            content = event.get("content")
+            if isinstance(encrypted, str) and encrypted:
+                self.provider_compaction = {
+                    "type": "compaction",
+                    "encrypted_content": encrypted,
+                }
+            elif isinstance(content, str) and content:
+                self.provider_compaction = {"type": "compaction", "content": content}
+            return
         call_id = event.get("tool_call_id")
         if not isinstance(call_id, str) or not call_id:
             return
-        kind = event.get("type")
         if kind not in ("tool_start", "tool_end"):
             return
 
@@ -1008,12 +1172,13 @@ def _split_turn_end(
 
 
 def _unrun_provenance(tool_name: str, round_id: int) -> dict[str, Any]:
-    """Provenance for a hand-built unrun card; carries the MCP display name so a budget-exhausted or
-    truncated MCP call never shows the internal server id."""
+    """Provenance for a hand-built unrun card; carries the MCP display names so a budget-exhausted
+    or truncated MCP call never shows the internal server id or an alias."""
     provenance: dict[str, Any] = {"source": "local", "round_id": round_id}
     mcp = mcp_display_parts(tool_name)
     if mcp:
         provenance["mcp_server"] = mcp[0]
+        provenance["mcp_tool"] = mcp[1]
     return provenance
 
 
@@ -1051,6 +1216,36 @@ def _unrun_call_card(
     ]
 
 
+def _is_strict_prefix_of_declared(name: str, declared_names: set[str]) -> bool:
+    return any(other != name and other.startswith(name) for other in declared_names)
+
+
+def _mcp_provenance_by_id(
+    turn: "_Turn", declared_names: set[str], stamped: set[str]
+) -> dict[str, Any]:
+    """MCP provenance per call id once its whole name has streamed, once per id.
+
+    Declared catalog decides completeness (``mcp__srv__cre`` is well formed too); strict-prefix names wait for tool_start.
+    """
+    stamps: dict[str, Any] = {}
+    for call in turn.by_index.values():
+        call_id = call.get("id")
+        if not isinstance(call_id, str) or not call_id or call_id in stamped:
+            continue
+        function = call.get("function")
+        name = function.get("name") if isinstance(function, dict) else None
+        if not isinstance(name, str) or name not in declared_names:
+            continue
+        if _is_strict_prefix_of_declared(name, declared_names):
+            continue
+        # Mark before the lookup: mcp_display_parts hits SQLite and is falsy without a display_name.
+        stamped.add(call_id)
+        if not mcp_display_parts(name):
+            continue
+        stamps[call_id] = provisional_tool_provenance(name)
+    return stamps
+
+
 def _status_sse(text: str) -> str:
     """Tool badge text, in the shape the chat client already parses."""
     return _sse({"type": "tool_status", "content": text})
@@ -1080,18 +1275,22 @@ def _merge_usage(totals: dict[str, Any], usage: Any) -> None:
                 bucket[detail] = bucket.get(detail, 0) + count
 
 
-def _usage_chunk_line(model: str, totals: dict[str, Any]) -> str | None:
+def _usage_chunk_line(
+    model: str, totals: dict[str, Any], timings: dict[str, Any] | None
+) -> str | None:
     if not totals:
         return None
-    return _sse(
-        {
-            "id": "chatcmpl-external-tools",
-            "object": "chat.completion.chunk",
-            "model": model,
-            "choices": [],
-            "usage": totals,
-        }
-    )
+    chunk: dict[str, Any] = {
+        "id": "chatcmpl-external-tools",
+        "object": "chat.completion.chunk",
+        "model": model,
+        "choices": [],
+        "usage": totals,
+    }
+    if timings is not None:
+        # Report the last turn's timings; speeds cannot be summed.
+        chunk["timings"] = timings
+    return _sse(chunk)
 
 
 def _is_usage_only(payload: dict[str, Any]) -> bool:
@@ -1115,6 +1314,34 @@ def _replayed_call_ids(conversation: list[dict[str, Any]]) -> set[str]:
         if isinstance(result_id, str) and result_id:
             taken.add(result_id)
     return taken
+
+
+def _openai_compaction_item(event: Any) -> str | None:
+    if not isinstance(event, dict) or event.get("type") != "compaction_block":
+        return None
+    encrypted = event.get("encrypted_content")
+    return encrypted if isinstance(encrypted, str) and encrypted else None
+
+
+def _with_openai_compaction(
+    conversation: list[dict[str, Any]], compaction: tuple[list[dict[str, Any]], str] | None
+) -> list[dict[str, Any]]:
+    """Later rounds replay an OpenAI Responses compaction item after the messages it covers, or the provider compacts
+    the same history again."""
+    if compaction is None:
+        return conversation
+    sent, encrypted = compaction
+    # A continuation merges into the last message sent rather than appending, and that message is no longer covered.
+    covered = next(
+        (index for index, message in enumerate(sent) if conversation[index] is not message),
+        len(sent),
+    )
+    carrier = {
+        "role": "assistant",
+        "content": "",
+        "extra_content": {"openai_responses_compaction": encrypted},
+    }
+    return [*conversation[:covered], carrier, *conversation[covered:]]
 
 
 def _append_user_turn(conversation: list[dict[str, Any]], content: str) -> None:
@@ -1216,6 +1443,34 @@ async def _pump_tool_stream(
         await queue.put(_STEP_DONE)
 
 
+async def _drain_step_task(task: Any, cancel_event: threading.Event) -> None:
+    """Join a pending ``next(gen)`` worker before its generator is closed. Cancelling the awaiting
+    task does not stop the worker thread, and calling close() while next() is still running
+    raises "generator already executing" and skips the generator's own cleanup. Setting the
+    cancel flag lets a cancel-observing tool return, then the task is shielded until it finishes."""
+    if task is None:
+        return
+    if task.done():
+        try:
+            task.exception()
+        except (asyncio.CancelledError, Exception):
+            pass
+        return
+    cancel_event.set()
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancel_event.set()
+            continue
+        except Exception:
+            break
+    try:
+        task.exception()
+    except (asyncio.CancelledError, Exception):
+        pass
+
+
 async def stream_with_studio_tools(
     transport: ToolLoopTransport,
     *,
@@ -1223,6 +1478,7 @@ async def stream_with_studio_tools(
     policy: ToolLoopPolicy,
     cancel_event: threading.Event,
     preempt_signal = None,
+    mcp_image = None,
 ) -> AsyncIterator[str]:
     """Stream a provider, execute requested Unsloth tools, continue to a final answer.
 
@@ -1232,7 +1488,14 @@ async def stream_with_studio_tools(
     is held off for that stretch and honoured at the next round's stream.
     """
     conversation = [dict(message) for message in run.messages]
-    # Kept before the loop appends anything: this is the branch the request is on.
+    if mcp_image is not None:
+        targets = await asyncio.to_thread(mcp_image_targets, sorted(_tool_names(policy.tools)))
+        conversation = note_attached_image(conversation, targets)
+    openai_compaction: tuple[list[dict[str, Any]], str] | None = None
+    resumes_partial = run.continue_final_message
+    # cap run-owned image parts across the full loop without counting caller attachments.
+    loop_mcp_image_parts: list = list(run.promoted_image_parts)
+    # preserve the request branch for tools that search conversation history.
     request_branch = list(run.messages)
     remaining = policy.max_calls
     unlimited = remaining >= 9999
@@ -1242,7 +1505,14 @@ async def stream_with_studio_tools(
     tool_choice = run.tool_choice if run.tool_choice is not None else "auto"
     allowed_tool_names = _tool_names(tools)
     tool_call_timeout = policy.timeout
-    from state.tool_policy import account_tool_stream, normalize_tool_permissions
+    from state.tool_policy import (
+        account_tool_stream,
+        needs_tool_confirmation,
+        normalize_sandbox_level,
+        normalize_tool_permissions,
+        requires_os_isolation,
+        runs_without_os_sandbox,
+    )
 
     permission_mode, bypass_permissions = normalize_tool_permissions(
         policy.permission_mode, policy.bypass_permissions
@@ -1250,7 +1520,41 @@ async def stream_with_studio_tools(
     scoped_tool_stream = account_tool_stream(stream_tool_execution)
     confirm_tool_calls = policy.confirm_calls
     rag_scope = policy.rag_scope
+    sandbox_level = normalize_sandbox_level(policy.sandbox_level)
 
+    from core.inference.skill_mentions import load_mentioned_skills
+
+    skill_loads = load_mentioned_skills(
+        conversation,
+        # "none" / a zero budget withdraw read_skill, so they withdraw the preload too.
+        tools if tool_choice != "none" and (unlimited or remaining > 0) else [],
+        permission_mode = permission_mode,
+        bypass_permissions = bypass_permissions,
+        confirm_tool_calls = confirm_tool_calls,
+        session_id = session_id,
+        cancel_event = cancel_event,
+        continue_final_message = run.continue_final_message,
+    )
+    load_task = None
+    flush_approval = False
+    try:
+        while True:
+            load_task = asyncio.ensure_future(asyncio.to_thread(next, skill_loads, _STEP_DONE))
+            # Same handshake as a gated tool card: early separate keepalive, then heartbeats while Ask waits.
+            timeout = _TOOL_APPROVAL_FLUSH_DELAY_S if flush_approval else TOOL_HEARTBEAT_INTERVAL_S
+            done, _pending = await asyncio.wait({load_task}, timeout = timeout)
+            while not done:
+                yield _SSE_KEEPALIVE
+                done, _pending = await asyncio.wait({load_task}, timeout = TOOL_HEARTBEAT_INTERVAL_S)
+            event = load_task.result()
+            load_task = None
+            if event is _STEP_DONE:
+                break
+            flush_approval = event.get("status") == "awaiting_approval"
+            yield _sse(event)
+    finally:
+        await _drain_step_task(load_task, cancel_event)
+        skill_loads.close()
     # The promotion allowlist is the selected catalog, never None: an unrestricted parse re-opens markerless tool-call
     # promotion.
     heal_names = (
@@ -1275,11 +1579,15 @@ async def stream_with_studio_tools(
     executed_any = False
     model_name = run.model or "external"
     usage_totals: dict[str, Any] = {}
+    last_timings: dict[str, Any] | None = None
     # Dedup, one-shot tracking and the force-final-answer transition are the same ledger the local loops keep, so an
     # external model cannot spend the budget repeating one call and a terminal no-op still ends the loop.
     controller = ToolLoopController(
         tools = tools,
         auto_heal_tool_calls = policy.auto_heal is not False,
+        deduplicate_tool_calls = policy.deduplicate_tool_calls is not False,
+        session_id = session_id,
+        thread_id = thread_id,
     )
     tool_hint = ", ".join(sorted(allowed_tool_names))
     reprompts = 0
@@ -1325,6 +1633,10 @@ async def stream_with_studio_tools(
             break
         provider_turns += 1
         turn = _Turn(round = provider_turns)
+        # Clear stale timings even if this turn sends no usage chunk.
+        last_timings = None
+        # Per turn: ids restart each turn, so a later call_0 is a new card.
+        mcp_stamped_ids: set[str] = set()
         healer = StreamToolCallHealer(heal_names, tools) if heal_names else None
         # A healed text-form call never reaches the wire as a tool_calls key, so a headerless caller's stripper cannot
         # tell this turn ends in a call the loop is about to run rather than in an answer. Hold the turn-ending chunk
@@ -1346,8 +1658,9 @@ async def stream_with_studio_tools(
         if executed_any and turn_tool_choice not in ("auto", "none"):
             turn_tool_choice = "auto"
 
+        sent_messages = list(conversation)
         generator = transport.stream(
-            messages = conversation,
+            messages = _with_openai_compaction(conversation, openai_compaction),
             tools = active_tools if tools_available else None,
             tool_choice = turn_tool_choice,
             cancel_event = cancel_event,
@@ -1379,14 +1692,15 @@ async def stream_with_studio_tools(
                     model_name = upstream_model
                 if "usage" in payload:
                     _merge_usage(usage_totals, payload.get("usage"))
+                    if isinstance(payload.get("timings"), dict):
+                        last_timings = payload["timings"]
                     if _is_usage_only(payload):
                         # Withheld: one summed chunk is sent once the loop ends, so a multi-turn answer does not
                         # report a burst of partial counts.
                         continue
-                    # Some providers hang usage off a chunk that also carries a choice, which cannot be withheld
-                    # wholesale without losing the content. Drop just the usage: it is already in the totals, and
-                    # leaving it here makes a client that sums chunks count this turn twice.
+                    # Preserve content, but emit usage and timings only in the final summary chunk.
                     payload.pop("usage", None)
+                    payload.pop("timings", None)
                     line = "data: " + json.dumps(payload, separators = (",", ":"))
                 choices = payload.get("choices")
                 choice = choices[0] if isinstance(choices, list) and choices else {}
@@ -1396,12 +1710,17 @@ async def stream_with_studio_tools(
 
                 delta = choice.get("delta")
                 delta = delta if isinstance(delta, dict) else {}
+                reasoning = delta.get("reasoning_content")
+                if getattr(transport, "preserves_reasoning", False) and isinstance(reasoning, str):
+                    turn.reasoning.append(reasoning)
                 content = delta.get("content")
                 raw_calls = delta.get("tool_calls")
                 extra = delta.get("extra_content")
-                if isinstance(extra, dict):
-                    turn.reasoning_extra = extra
+                turn.note_reasoning_extra(extra)
                 turn.note_hosted_tool_event(payload.get("_toolEvent"))
+                compaction = _openai_compaction_item(payload.get("_toolEvent"))
+                if compaction:
+                    openai_compaction = (sent_messages, compaction)
                 if isinstance(choice.get("finish_reason"), str):
                     turn.finish_reason = choice["finish_reason"]
                 # Only a live healer can still promote a call this turn; once dormant, the wire already carries the
@@ -1421,6 +1740,10 @@ async def stream_with_studio_tools(
                                 turn.text.append(value)
                                 yield _sse({"choices": [{"index": 0, "delta": {"content": value}}]})
                     turn.merge_structured(raw_calls)
+                    stamps = _mcp_provenance_by_id(turn, allowed_tool_names, mcp_stamped_ids)
+                    if stamps:
+                        payload["_mcp_provenance"] = stamps
+                        line = "data: " + json.dumps(payload, separators = (",", ":"))
 
                 if healer is None or healer.dormant or not isinstance(content, str) or not content:
                     plain = _delta_text(content)
@@ -1508,6 +1831,21 @@ async def stream_with_studio_tools(
         if policy.on_provider_turn_end is not None:
             policy.on_provider_turn_end()
 
+        if turn.provider_compaction is not None:
+            compaction_message = turn.compaction_replay_message()
+            assert compaction_message is not None
+            system_messages = [
+                message
+                for message in conversation
+                if isinstance(message, dict) and message.get("role") == "system"
+            ]
+            conversation[:] = [
+                *system_messages,
+                compaction_message,
+            ]
+            # The partial this run resumed is inside the compaction now, and merging over the item would discard it.
+            resumes_partial = False
+
         # Both of these mean the turn ended before the model finished saying what it wanted: "length" hit the token
         # ceiling, "content_filter" had the output cut by the provider's own filter. Either way a call collected so
         # far may be half-written, so it is described rather than run. "stop" is not in this set: llama.cpp and vLLM
@@ -1530,27 +1868,23 @@ async def stream_with_studio_tools(
                     continue
                 turn.text.append(span)
                 yield _sse({"choices": [{"index": 0, "delta": {"content": span}}]})
+        # Truncation wins: half-written arguments are never shown.
+        unrun_reason = None
         if truncated:
-            # The other half of the same problem. A call the provider streamed as a tool_calls delta was relayed as it
-            # arrived, so the client already has a card for it, and refusing to run it leaves that card open for the
-            # rest of the response. Close it the way every other unrun call is closed. Structured only: a healed call
-            # was never streamed, and the span released just above is what tells the user about that one. Through
-            # `calls`, which never executes anything: it is what mints the card id for a call the provider gave none,
-            # and the client drew its card under that same spelling. Reading the slots directly left every id-less
-            # call out, so the card the deltas painted spun for the rest of the response. Calls it drops -- nameless,
-            # or a fork whose object never closed -- have no card of ours to close either.
+            unrun_reason = _TOOL_TRUNCATED
+        elif tool_choice == "none":
+            unrun_reason = _TOOL_CHOICE_NONE
+        if unrun_reason is not None:
+            # The relayed delta already drew a card: close it like any unrun call, via `calls` (executes nothing), which
+            # mints the id the client drew for an id-less call.
             for raw_call in turn.calls(used_call_ids, painted_card_ids):
-                truncated_id = (
-                    raw_call.get("card_id") or raw_call.get("stream_id") or raw_call["id"]
-                )
+                unrun_id = raw_call.get("card_id") or raw_call.get("stream_id") or raw_call["id"]
                 name = raw_call["function"]["name"]
                 for card_line in _unrun_call_card(
                     tool_name = name,
-                    tool_call_id = truncated_id,
-                    # The arguments are cut off mid-write, so there is nothing well formed to show; the result says
-                    # what happened.
-                    arguments = {},
-                    result = _TOOL_TRUNCATED,
+                    tool_call_id = unrun_id,
+                    arguments = {} if truncated else raw_call.get("arguments"),
+                    result = unrun_reason,
                     provenance = _unrun_provenance(name, round_id + 1),
                 ):
                     yield card_line
@@ -1558,11 +1892,7 @@ async def stream_with_studio_tools(
         # one. Withdrawing the catalog on the way out is not enough on its own: Deep Research sets "none" exactly so
         # the scraped web text in its prompts cannot reach python or terminal, so a naive or compromised endpoint
         # echoing a call back must not be able to execute it here.
-        calls = (
-            []
-            if (truncated or tool_choice == "none")
-            else turn.calls(used_call_ids, painted_card_ids)
-        )
+        calls = [] if unrun_reason is not None else turn.calls(used_call_ids, painted_card_ids)
         if calls:
             # From here until the next round's stream, results are produced and appended,
             # and a pause would discard or re-run the tools that already ran.
@@ -1610,7 +1940,7 @@ async def stream_with_studio_tools(
                         stalled_message,
                         # A resumed partial is the same turn as what the model just added, so merge rather than
                         # append: appending puts a turn boundary mid-sentence.
-                        continue_final_message = run.continue_final_message,
+                        continue_final_message = resumes_partial,
                     )
                 _append_user_turn(conversation, reprompt_to_act_message(tool_hint))
                 continue
@@ -1620,6 +1950,9 @@ async def stream_with_studio_tools(
         assistant_tool_calls: list[dict[str, Any]] = []
         tool_messages: list[dict[str, Any]] = []
         noop_messages: list[dict[str, Any]] = []
+        # One entry per tool result, not flattened: the per-result image quota
+        # would otherwise be spent entirely on the first call of a parallel batch.
+        turn_mcp_images: list[list[dict[str, Any]]] = []
         turn_executed_real_tool = False
 
         # Whether this round's calls may overlap, decided BEFORE any is prepared: finding
@@ -1659,6 +1992,7 @@ async def stream_with_studio_tools(
             # Bounded: this round's length is the model's choice, not the user's.
             and len(calls) <= _MAX_PARALLEL_TOOL_CALLS_PER_ROUND
             and not _approval_gate
+            and mcp_image is None
             and len(set(_round_keys)) == len(_round_keys)
             and len(set(_round_one_shot)) == len(_round_one_shot)
         )
@@ -1736,10 +2070,20 @@ async def stream_with_studio_tools(
             last_reprompt_text = ""
             yield _sse(completion.tool_end_event())
             tool_messages.append(completion.tool_message())
+            # Only for a target that reads them, and off the loop: the envelope is
+            # a 12 MB json-load, and a text-only run discards the result anyway.
+            _completion_images = (
+                await asyncio.to_thread(completion.mcp_images) if run.supports_vision else []
+            )
+            if _completion_images:
+                turn_mcp_images.append(_completion_images)
 
         for call in calls:
             if cancel_event.is_set():
                 break
+            # Before the gate: an exhausted call is replayed too, and only the decision's replay is guaranteed to parse.
+            decision = controller.prepare_call(call)
+            signed_provider_call = _signed_provider_call_for_replay(call)
             # Only the LAUNCHED entries spend one when they settle. Counting the whole list
             # counted the `"lines"` entries too -- no-ops, denials, calls the budget already
             # refused -- none of which decrement `remaining`, so a round of {duplicate, new,
@@ -1751,7 +2095,7 @@ async def stream_with_studio_tools(
                     _unrun_call_card(
                         tool_name = call["function"]["name"],
                         tool_call_id = call.get("card_id") or call.get("stream_id") or call["id"],
-                        arguments = call.get("arguments"),
+                        arguments = decision.tool_start_payload()["arguments"],
                         result = _TOOL_BUDGET_EXHAUSTED,
                         provenance = _unrun_provenance(call["function"]["name"], round_id),
                     )
@@ -1762,15 +2106,13 @@ async def stream_with_studio_tools(
                 # The result below has to be replayed with its call: only the call that spent the last slot reaches
                 # assistant_tool_calls further down, so this one would arrive as an orphan role="tool" message and
                 # OpenAI, Anthropic and Gemini all reject that history instead of answering.
-                exhausted_call: dict[str, Any] = {
-                    "id": call["id"],
-                    "type": "function",
-                    # Copied: the normalized call also carries a parsed arguments dict that must not reach the
-                    # provider
-                    "function": dict(call["function"]),
-                }
+                exhausted_call = signed_provider_call or decision.as_assistant_tool_call()
                 exhausted_extra = call.get("extra_content")
-                if isinstance(exhausted_extra, dict) and exhausted_extra:
+                if (
+                    signed_provider_call is None
+                    and isinstance(exhausted_extra, dict)
+                    and exhausted_extra
+                ):
                     exhausted_call["extra_content"] = exhausted_extra
                 assistant_tool_calls.append(exhausted_call)
                 _exhausted_message = {
@@ -1785,13 +2127,31 @@ async def stream_with_studio_tools(
                 else:
                     tool_messages.append(_exhausted_message)
                 continue
-            decision = controller.prepare_call(call)
             # The frontend groups a round's reasoning by this id (codexLocalToolRoundId), so every tool card the loop
-            # emits has to carry it, not just the budget-exhausted one built by hand above.
+            # emits has to carry it, including the budget-exhausted card above.
             decision.provenance["round_id"] = round_id
+            image_share = None
+            if decision.should_execute and mcp_image is not None:
+                image_share = await asyncio.to_thread(
+                    mcp_image_share, decision.tool_name, decision.arguments, mcp_image
+                )
+                if image_share is not None:
+                    decision = controller.reprepare_call(decision)
             if not decision.should_execute:
                 completion = controller.record_noop(decision)
-                noop_messages.append(completion.model_message())
+                if getattr(transport, "tool_result_only_continuation", False):
+                    assistant_tool_calls.append(
+                        signed_provider_call or decision.as_assistant_tool_call()
+                    )
+                    tool_messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": decision.tool_call_id,
+                            "content": completion.model_message()["content"],
+                        }
+                    )
+                else:
+                    noop_messages.append(completion.model_message())
                 # The provider's own tool_calls delta for this call was relayed verbatim while it streamed and the
                 # client painted a card from it. Nothing else closes that card, so without a terminal event it spins
                 # for the rest of the answer and then reads as a tool that ran and returned nothing. Keyed on the
@@ -1818,10 +2178,9 @@ async def stream_with_studio_tools(
                     for card_line in _noop_lines:
                         yield card_line
                 continue
-            assistant_call = decision.as_assistant_tool_call()
+            assistant_call = signed_provider_call or decision.as_assistant_tool_call()
             call_extra = call.get("extra_content")
-            if isinstance(call_extra, dict) and call_extra:
-                # Replayed verbatim: Gemini 3 validates the signature that came back with this exact call
+            if signed_provider_call is None and isinstance(call_extra, dict) and call_extra:
                 assistant_call["extra_content"] = call_extra
             assistant_tool_calls.append(assistant_call)
 
@@ -1830,11 +2189,28 @@ async def stream_with_studio_tools(
             call_id = decision.tool_call_id
             # Same id for a call the provider named; for one it did not, the card answers to the id the client minted
             card_id = decision.card_id
-            needs_confirmation = (
-                confirm_tool_calls and not bypass_permissions and permission_mode != "off"
+            needs_confirmation = needs_tool_confirmation(
+                confirm_tool_calls = confirm_tool_calls,
+                bypass_permissions = bypass_permissions,
+                permission_mode = permission_mode,
+                name = name,
+                arguments = arguments,
+                is_high_risk = is_high_risk_tool_call,
+                never_needs = never_needs_approval,
+                sandbox_level = sandbox_level,
             )
-            if needs_confirmation and permission_mode == "auto":
-                needs_confirmation = is_high_risk_tool_call(name, arguments)
+            # Sending the user's image always asks, whatever the permission mode.
+            needs_confirmation = needs_confirmation or image_share is not None
+            strict_isolation = requires_os_isolation(
+                confirm_tool_calls = confirm_tool_calls,
+                bypass_permissions = bypass_permissions,
+                permission_mode = permission_mode,
+                name = name,
+                arguments = arguments,
+                prompted = needs_confirmation,
+                is_high_risk = is_high_risk_tool_call,
+                sandbox_level = sandbox_level,
+            )
             approval_id = new_approval_id() if needs_confirmation else ""
             decision_slot = (
                 begin_tool_decision(session_id, approval_id) if needs_confirmation else None
@@ -1843,6 +2219,8 @@ async def stream_with_studio_tools(
             start_event = decision.tool_start_event()
             start_event["approval_id"] = approval_id
             start_event["awaiting_confirmation"] = needs_confirmation
+            if image_share is not None:
+                start_event["image_disclosure"] = image_share["disclosure"]
             denied = False
             try:
                 # A gated call has not started, so it must not read as running.
@@ -1851,6 +2229,7 @@ async def stream_with_studio_tools(
                 )
                 yield _sse(start_event)
                 verdict = None
+                denied_reason = None
                 if decision_slot is not None:
                     waiter = asyncio.ensure_future(
                         asyncio.to_thread(
@@ -1873,6 +2252,9 @@ async def stream_with_studio_tools(
                             waiter.cancel()
                     verdict = waiter.result() if waiter.done() else None
                 if verdict == "deny":
+                    # Read before decision_slot is dropped below: the slot is where the waiter says
+                    # whether this was the user's refusal or an approval nobody answered.
+                    denied_reason = decision_reason(decision_slot)
                     decision_slot = None
                     denied = True
                 elif verdict is not None:
@@ -1884,19 +2266,27 @@ async def stream_with_studio_tools(
                     abort_tool_decision(decision_slot, approval_id)
 
             if denied:
+                # An approval nobody answered is not the user's decision, and this string is the only
+                # account of the call both the model and the reopened card get: the buttons are gone
+                # by the time it lands. Saying "the user declined" there is simply false.
+                denied_text = (
+                    TOOL_APPROVAL_EXPIRED_MESSAGE
+                    if denied_reason == DECISION_EXPIRED
+                    else TOOL_REJECTED_MESSAGE
+                )
                 _denied_line = _sse(
                     {
                         "type": "tool_end",
                         "tool_name": name,
                         "tool_call_id": card_id,
-                        "result": TOOL_REJECTED_MESSAGE,
+                        "result": denied_text,
                         "provenance": decision.provenance,
                     }
                 )
                 denied_message: dict[str, Any] = {
                     "role": "tool",
                     "name": name,
-                    "content": TOOL_REJECTED_MESSAGE,
+                    "content": denied_text,
                 }
                 if call_id:
                     denied_message["tool_call_id"] = call_id
@@ -1912,7 +2302,16 @@ async def stream_with_studio_tools(
                 reprompts = max_reprompts
                 continue
 
-            def _invoke(output_callback: Any, call = decision) -> str:
+            # Only a call the user answered: the executor lets it reach the host paths it names.
+            host_access_approved = verdict not in (None, "deny")
+
+            def _invoke(
+                output_callback: Any,
+                call = decision,
+                approved = host_access_approved,
+                strict = strict_isolation,
+                share = image_share,
+            ) -> str:
                 kwargs: dict[str, Any] = {
                     "cancel_event": cancel_event,
                     "timeout": None if tool_call_timeout >= 9999 else tool_call_timeout,
@@ -1921,11 +2320,20 @@ async def stream_with_studio_tools(
                     "rag_scope": rag_scope,
                     "disable_sandbox": bypass_permissions,
                 }
+                # Run unasked only because the OS sandbox was on: refuse if it is not any more.
+                if strict and accepts_kwarg(execute_tool, "tool_execution_mode"):
+                    kwargs["tool_execution_mode"] = "required"
+                elif runs_without_os_sandbox(call.tool_name, sandbox_level) and accepts_kwarg(
+                    execute_tool, "tool_execution_mode"
+                ):
+                    kwargs["tool_execution_mode"] = "software"
                 # Provider loops share the local catalogue selector, so search_conversation is advertised here too
                 # once a thread has an archive and needs the same branch: the stored rows are the whole DAG, and Retry
                 # leaves the replaced response in them.
                 if accepts_kwarg(execute_tool, "conversation_branch"):
                     kwargs["conversation_branch"] = request_branch
+                if approved and accepts_kwarg(execute_tool, "host_access_approved"):
+                    kwargs["host_access_approved"] = True
                 # And a budget, so the tool's clamp is not skipped. Unsloth cannot measure an external model's window,
                 # and a custom OpenAI-compatible endpoint can be a small local server, so a model-chosen 8 chunks is
                 # roughly 4K tokens replayed on every later call. Unmeasurable means one recall's worth. Explicitly
@@ -1944,6 +2352,8 @@ async def stream_with_studio_tools(
                 if accepts_output_callback(execute_tool):
                     kwargs["output_callback"] = output_callback
                 kwargs.update(search_images_kwargs(execute_tool, call.tool_name))
+                if share is not None:
+                    kwargs["mcp_image"] = share["image"]
                 return execute_tool(call.tool_name, call.arguments, **kwargs)
 
             # The same wrapper the local loops run tools through: live stdout for the card, and a heartbeat so a long
@@ -1996,6 +2406,8 @@ async def stream_with_studio_tools(
                 if assistant_message["content"]
                 else hosted_text
             )
+        if turn.reasoning:
+            assistant_message["reasoning_content"] = "".join(turn.reasoning)
         if turn.reasoning_extra:
             assistant_message["extra_content"] = turn.reasoning_extra
         if assistant_tool_calls:
@@ -2004,7 +2416,7 @@ async def stream_with_studio_tools(
             append_assistant_turn(
                 conversation,
                 assistant_message,
-                continue_final_message = run.continue_final_message,
+                continue_final_message = resumes_partial,
             )
         conversation.extend(tool_messages)
         # Deferred to after the results so a no-op never splits a call from them, and merged into a trailing user turn
@@ -2013,6 +2425,20 @@ async def stream_with_studio_tools(
             conversation,
             "\n\n".join(dict.fromkeys(message["content"] for message in noop_messages)),
         )
+        if turn_mcp_images and run.supports_vision:
+            # One block after the whole batch. With a single result "the tool call
+            # above" is exact; with several it names whichever ran last, which may
+            # have returned no picture at all, so the block says so instead.
+            from core.inference.mcp_images import DETACHED_IMAGE_TURN_TEXT
+            _lead = DETACHED_IMAGE_TURN_TEXT if len(tool_messages) != 1 else None
+            # Off the event loop: each image is decoded and re-encoded.
+            await asyncio.to_thread(
+                _append_mcp_images_owned,
+                conversation,
+                turn_mcp_images,
+                loop_mcp_image_parts,
+                _lead,
+            )
 
         if turn_executed_real_tool:
             max_reprompts = _MAX_POST_TOOL_REPROMPTS
@@ -2032,9 +2458,10 @@ async def stream_with_studio_tools(
             spent_budget_passes += 1
             # The catalog is gone from here on, so say why rather than letting the next pass ask for a tool no longer
             # offered
-            _append_user_turn(conversation, _BUDGET_EXHAUSTED_NUDGE)
+            if not getattr(transport, "tool_result_only_continuation", False):
+                _append_user_turn(conversation, _BUDGET_EXHAUSTED_NUDGE)
 
     _close_unsafe_window()
-    usage_line = _usage_chunk_line(model_name, usage_totals)
+    usage_line = _usage_chunk_line(model_name, usage_totals, last_timings)
     if usage_line is not None:
         yield usage_line

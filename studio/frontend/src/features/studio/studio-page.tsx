@@ -4,7 +4,6 @@
 import { useAppShellReadySignal } from "@/components/app-readiness";
 import { usePlatformStore } from "@/config/env";
 import { Button } from "@/components/ui/button";
-import { useSidebar } from "@/components/ui/sidebar";
 import { Spinner } from "@/components/ui/spinner";
 import { Tabs, TabsContent } from "@/components/ui/tabs";
 import { useHfTokenStore } from "@/features/hub";
@@ -17,9 +16,8 @@ import {
 } from "@/features/training";
 import { useT } from "@/i18n";
 import { MediaPageLink } from "@/components/media-page-link";
-import { useImageWorkflowStore } from "@/features/images/stores/image-workflow-store";
 import {
-  Image03Icon,
+  LibrariesIcon,
 } from "@hugeicons/core-free-icons";
 import {
   ChevronLeftIcon,
@@ -27,9 +25,7 @@ import {
 import { useNavigate } from "@tanstack/react-router";
 import {
   type ReactElement,
-  useCallback,
   useEffect,
-  useMemo,
   useRef,
 } from "react";
 import { useShallow } from "zustand/react/shallow";
@@ -39,7 +35,11 @@ import { useTrainingCacheReconciliation } from "./hooks/use-training-cache-recon
 import { LiveTrainingView } from "./live-training-view";
 import { DatasetPreviewDialog } from "./sections/dataset-preview-dialog";
 import { TrainSubNav } from "./studio-navigation";
-import { studioTourSteps, studioTrainingTourSteps } from "./tour";
+import {
+  studioHistoryTourSteps,
+  studioTourSteps,
+  studioTrainingTourSteps,
+} from "./tour";
 import {
   type TrainSubTab,
   getStudioSubtitle,
@@ -112,20 +112,15 @@ export function StudioPage(): ReactElement {
     showTrainingView,
   } = useStudioNavigation();
 
-  const { setPinned } = useSidebar();
-  const pinSidebar = useCallback(() => setPinned(true), [setPinned]);
-
   const tourEnabled = hasHydratedRuntime && !isHydratingRuntime;
   const isConfigTour = activeTab === "configure";
-  const baseTourSteps =
-    activeTab === "current-run" ? studioTrainingTourSteps : studioTourSteps;
-  const tourSteps = useMemo(
-    () =>
-      baseTourSteps.map((step) =>
-        step.target === "navbar" ? { ...step, onEnter: pinSidebar } : step,
-      ),
-    [baseTourSteps, pinSidebar],
-  );
+  // Each tab unmounts the others, so each gets the steps whose anchors are actually on screen.
+  const tourSteps =
+    activeTab === "current-run"
+      ? studioTrainingTourSteps
+      : activeTab === "history"
+        ? studioHistoryTourSteps
+        : studioTourSteps;
   const tour = useGuidedTourController({
     id: "studio",
     steps: tourSteps,
@@ -191,7 +186,7 @@ export function StudioPage(): ReactElement {
         onValueChange={(value) => handleTabChange(value as TrainSubTab)}
         className="contents"
       >
-        <div className="mx-auto flex w-full max-w-[1180px] flex-col gap-7 px-5 pb-20 pt-8 sm:px-9 sm:pt-10">
+        <div className="mx-auto flex w-full max-w-[calc(1180px*var(--ui-space-scale,1))] 3xl:max-w-[calc(1440px*var(--ui-space-scale,1))] 4xl:max-w-[calc(1760px*var(--ui-space-scale,1))] flex-col gap-7 px-5 pb-20 pt-8 max-sm:px-4 sm:px-9">
           <header className="font-heading flex flex-col gap-5">
             <div className="flex flex-col gap-0.5">
               <h1 className="page-title-halo text-ui-30 font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-ui-34">
@@ -219,17 +214,14 @@ export function StudioPage(): ReactElement {
                   trainingRunActive={trainingRunActive}
                   showTrainingView={showTrainingView}
                 />
-                {/* Image training is a mode of the Images page, not a route, so it sits
-                    beside the sub-nav rather than in it. */}
-                <div className="ml-auto flex items-center gap-2 pb-2">
+                {/* Finished runs land in the Library's Fine-tunes tab. */}
+                <div className="ml-auto flex items-center gap-2">
                   <MediaPageLink
-                    to="/images"
-                    label={t("studio.imageTraining")}
-                    tooltip={t("studio.goToImageTraining")}
-                    icon={Image03Icon}
-                    onNavigate={() =>
-                      useImageWorkflowStore.getState().setPageMode("train")
-                    }
+                    to="/library"
+                    libraryTab="models"
+                    label={t("shell.navigation.library")}
+                    tooltip={t("studio.goToLibrary")}
+                    icon={LibrariesIcon}
                   />
                 </div>
               </div>
@@ -268,7 +260,11 @@ export function StudioPage(): ReactElement {
                 <TabsContent value="current-run" className="mt-0">
                   <LiveTrainingView />
                 </TabsContent>
-                <TabsContent value="history" className="mt-0">
+                <TabsContent
+                  value="history"
+                  className="mt-0"
+                  data-tour="studio-history"
+                >
                   {selectedHistoryRunId ? (
                     <HistoricalTrainingView
                       runId={selectedHistoryRunId}

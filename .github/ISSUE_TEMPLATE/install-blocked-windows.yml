@@ -1,0 +1,241 @@
+name: "Windows: antivirus or security software blocked the installer"
+description: The installer, updater or Unsloth Studio was blocked, quarantined or deleted by security software on Windows
+title: "[Blocked] "
+# Every one of these must exist in the repository. GitHub does not error on an unknown label, it
+# silently drops it -- so a typo here costs the triage label the form exists to attach, and nothing
+# reports it. All three were created for this form; `test_the_labels_the_form_declares_are_real`
+# keeps the list and the repository in step.
+labels: [bug, windows, antivirus-false-positive]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Unsloth is not malware, and a block here is a false positive. To get it cleared we have to
+        tell the vendor **which product** flagged **which file** with **which detection name** -- per-hash
+        clearance is what vendors act on, and a report without those three cannot be submitted to anyone.
+
+        Every previous report of this (#8523, #6326, #6588, #6648, #10540, #10805) named none of them,
+        which is why none of them could be proven fixed. The fields below are marked required for that
+        reason. The last one is a script that collects them for you.
+
+        Please do not turn off your antivirus to work around this. If it is wrong, it should be
+        corrected, and that needs the evidence below.
+
+  - type: input
+    id: av-product
+    attributes:
+      label: Antivirus / security product and version
+      description: >
+        The product that blocked it, with a version if you can see one. If it was Windows Defender
+        itself, say so. "Not sure" is a valid answer only if the collection script below also fails.
+      placeholder: "Bitdefender Total Security 27.0.20"
+    validations:
+      required: true
+
+  - type: input
+    id: detection-name
+    attributes:
+      label: The detection name, exactly as displayed
+      description: >
+        Copy it character for character, including any prefix and suffix. This is the single most
+        useful field: it tells the vendor which rule fired. Examples of the shape:
+        `Gen:Variant.MSILHeracles.272113`, `Trojan:Script/Wacatac.B!ml`, `BehavesLike.PS.Suspicious.gr`,
+        `HEUR:Trojan.VBS.Agent.gen`.
+      placeholder: "Gen:Variant.MSILHeracles.272113"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: stage
+    attributes:
+      label: What was blocked
+      description: These are different problems with different fixes, so please pick the closest.
+      options:
+        - The install script would not run at all (blocked while starting)
+        - The installer started, then something it downloaded or created was blocked
+        - The desktop app was blocked or would not start
+        - An update was blocked
+        - A model would not load, or the app said a file was missing
+        - Something else / not sure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: entry-point
+    attributes:
+      label: How were you installing or updating
+      options:
+        - "Windows one-liner: irm https://unsloth.ai/install.ps1 | iex"
+        - Unsloth Desktop installer (the .exe)
+        - Unsloth Desktop, first run or "Get started"
+        - "unsloth studio update, or the CLI"
+        - A cloned repository (.\install.ps1)
+        - WSL
+        - Something else
+    validations:
+      required: true
+
+  - type: textarea
+    id: error-text
+    attributes:
+      label: The complete error, including the FullyQualifiedErrorId line
+      description: >
+        Paste the whole red block, not a summary. `FullyQualifiedErrorId` is the part that tells us
+        whether this was an AMSI content block, an execution-policy refusal or something else, and it
+        is usually the last line. If the failure was a dialog rather than text, leave this as "dialog
+        only" and use the screenshot field below.
+
+
+        This issue is public, and a PowerShell error usually quotes the script's location, so on a
+        cloned checkout it will contain your user name. Replace it if you would rather not publish
+        it; `C:\Users\<me>\...` tells us everything we need from that part of the path.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: screenshot
+    attributes:
+      label: A screenshot, if the failure was a dialog rather than text
+      description: >
+        Drag the image in here. Deliberately NOT a `render:` field: GitHub wraps everything in a
+        rendered textarea in a code fence, so an attachment pasted into one shows up as literal
+        markup instead of an image. That is why this is separate from the error field above rather
+        than part of it.
+    validations:
+      required: false
+
+  - type: textarea
+    id: probe
+    attributes:
+      label: Output of the collection script
+      description: |
+        Open PowerShell (no administrator rights needed) and paste the block below. It only reads:
+        registered antivirus products, the AMSI providers loaded into PowerShell, Defender's status,
+        and recent Defender events. It downloads nothing and changes nothing.
+
+        It does print file paths. Your user name and profile directory are replaced with
+        placeholders before anything is written, but a detection that happened to fire in the last
+        two hours is still listed even if it has nothing to do with Unsloth, and a path outside your
+        profile is printed as it is. **Read the output before you paste it, and delete any line you
+        would rather not publish** -- this issue is public. Removing a line we needed only costs us
+        one round trip asking for it.
+
+
+        ```powershell
+        & {
+        # Everything runs inside this block so the preference below is scoped to it. Setting
+        # $ErrorActionPreference at the prompt would change it for the rest of the session, and the
+        # field above promises this probe changes nothing.
+        $ErrorActionPreference = 'Continue'
+
+        # Replaces the two things in a Windows path that identify a person: the profile directory
+        # and the account name. Applied to every line below that can carry a path.
+        function Hide-Personal([string]$s) {
+          if (-not $s) { return $s }
+          if ($env:USERPROFILE) { $s = $s -replace ('(?i)' + [regex]::Escape($env:USERPROFILE)), '%USERPROFILE%' }
+          # Only where the account name is a whole path component or the account half of DOMAIN\user:
+          # it must be preceded by a separator and not run into more word characters. A bare
+          # substring replace corrupts the evidence this form exists to collect -- an account named
+          # "win" rewrites "Windows Defender", and one named "cat" rewrites "Wacatac".
+          if ($env:USERNAME) {
+            $s = $s -replace ('(?i)(?<=[\\/])' + [regex]::Escape($env:USERNAME) + '(?![\w-])'), '<user>'
+          }
+          return $s
+        }
+
+        "=== OS and host ==="
+        $ci = $null
+        try { $ci = Get-ComputerInfo -ErrorAction Stop } catch { "Get-ComputerInfo failed: $($_.Exception.Message)" }
+        if ($ci) { "{0} {1} build {2}.{3}" -f $ci.WindowsProductName, $ci.WindowsVersion, $ci.OsBuildNumber, $ci.WindowsUBR }
+        "PowerShell $($PSVersionTable.PSVersion) ($($PSVersionTable.PSEdition)), 64-bit process: $([Environment]::Is64BitProcess)"
+        "language mode: $($ExecutionContext.SessionState.LanguageMode)"
+        "execution policy: $(Get-ExecutionPolicy)"
+
+        "`n=== registered antivirus products ==="
+        try {
+          Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntiVirusProduct -ErrorAction Stop |
+            ForEach-Object { Hide-Personal ("{0}   state=0x{1:X}   {2}" -f $_.displayName, $_.productState, $_.pathToSignedProductExe) }
+        } catch { "SecurityCenter2 unavailable: $($_.Exception.Message)" }
+
+        "`n=== AMSI providers (the ones that can block a script) ==="
+        foreach ($view in @('HKLM:\SOFTWARE\Microsoft\AMSI\Providers','HKLM:\SOFTWARE\WOW6432Node\Microsoft\AMSI\Providers')) {
+          if (-not (Test-Path $view)) { continue }
+          foreach ($key in (Get-ChildItem $view -ErrorAction SilentlyContinue)) {
+            $clsid = Split-Path $key.Name -Leaf
+            $dll = $null
+            foreach ($root in @('HKLM:\SOFTWARE\Classes\CLSID','HKLM:\SOFTWARE\Classes\WOW6432Node\CLSID')) {
+              $p = Join-Path (Join-Path $root $clsid) 'InprocServer32'
+              if (Test-Path $p) {
+                $dll = (Get-ItemProperty -LiteralPath $p -ErrorAction SilentlyContinue).'(default)'
+                if ($dll) { break }
+              }
+            }
+            if (-not $dll) { "$clsid   (no InprocServer32 registered)"; continue }
+            $dll = $dll.Trim('"')
+            $vi = $null
+            try { $vi = (Get-Item -LiteralPath $dll -ErrorAction Stop).VersionInfo } catch { }
+            if ($vi) { Hide-Personal "$clsid   $dll   company='$($vi.CompanyName)'   product='$($vi.ProductName)'   version=$($vi.FileVersion)" }
+            else     { Hide-Personal "$clsid   $dll   (file not readable)" }
+          }
+        }
+
+        "`n=== Windows Defender status ==="
+        try {
+          $s = Get-MpComputerStatus -ErrorAction Stop
+          "AMRunningMode=$($s.AMRunningMode)   RealTimeProtectionEnabled=$($s.RealTimeProtectionEnabled)   IsTamperProtected=$($s.IsTamperProtected)"
+          "AMProductVersion=$($s.AMProductVersion)   AMEngineVersion=$($s.AMEngineVersion)"
+          "signatures=$($s.AntivirusSignatureVersion) updated $($s.AntivirusSignatureLastUpdated)"
+        } catch { "Defender cmdlets unavailable: $($_.Exception.Message)" }
+
+        "`n=== Defender events in the last 2 hours ==="
+        try {
+          Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-Windows Defender/Operational'; Id=1006,1007,1015,1116,1117,1121,1122; StartTime=(Get-Date).AddHours(-2)} -ErrorAction Stop |
+            Select-Object -First 15 |
+            ForEach-Object {
+              $lines = $_.Message -split "`r?`n"
+              $matched = @($lines | Where-Object { $_ -match '^\s*(Name|Severity|Path|Process Name|Detection Source|Action)\s*:' })
+              # Defender LOCALISES these labels, so on a non-English Windows most or all of them miss
+              # and the entry would be a timestamp and an id. Counting rather than testing for empty,
+              # because some labels coincide across languages -- German renders 'Name:' identically
+              # and 'Pfad:' for Path -- so a partial match is the common case and is worse than none:
+              # it looks like a successful extraction. An English event yields five or six.
+              if ($matched.Count -ge 2) {
+                $fields = $matched -join ' | '
+              } else {
+                $fields = '(labels are localised, full message) ' + (($lines | Where-Object { $_.Trim() }) -join ' | ')
+              }
+              if ($fields.Length -gt 600) { $fields = $fields.Substring(0, 600) + ' ...' }
+              Hide-Personal ("$($_.TimeCreated)  id=$($_.Id)  " + $fields)
+            }
+        } catch { "no matching events, or the log could not be read: $($_.Exception.Message)" }
+        }
+        ```
+
+
+        `AMRunningMode` matters more than it looks: anything other than `Normal` means another product
+        is the primary scanner, which on its own often answers "which product".
+      render: text
+    validations:
+      required: true
+
+  - type: input
+    id: file-path
+    attributes:
+      label: The full path of the file that was blocked or removed, if one was named
+      description: >
+        This issue is public. If the path runs through your profile, replace the user name with
+        `<me>`; what we need is which file and which directory, not who you are.
+      placeholder: 'C:\Program Files\Unsloth\install.ps1'
+    validations:
+      required: false
+
+  - type: textarea
+    id: anything-else
+    attributes:
+      label: Anything else
+      description: >
+        Whether it worked before, whether turning the product off changes it, whether a reboot changes
+        it, and anything you have already tried.
+    validations:
+      required: false

@@ -1,11 +1,13 @@
 """Contracts for the Hugging Face token validation indicator."""
 
+import re
 from pathlib import Path
 
 
 REPO = Path(__file__).resolve().parents[2]
 GENERAL_TAB = REPO / "studio/frontend/src/features/settings/tabs/general-tab.tsx"
 VALIDATION_HOOK = REPO / "studio/frontend/src/hooks/use-hf-token-validation.ts"
+HF_TOKEN_SHAPE = REPO / "studio/frontend/src/lib/hf-token-shape.ts"
 TOKEN_INDICATOR = REPO / "studio/frontend/src/features/hub/components/hf-token-indicator.tsx"
 EN_LOCALE = REPO / "studio/frontend/src/i18n/locales/en.ts"
 RUN_PREVIEW = REPO / "studio/frontend/src/features/studio/wizard/run-preview-card.tsx"
@@ -52,7 +54,18 @@ def test_validation_result_must_belong_to_the_current_normalized_token():
     assert "useDebouncedValue(normalizedToken, 500)" in source
     assert 'normalizedToken && !normalizedToken.startsWith("hf_")' in source
     assert 'error: "Token must start with hf_."' in source
-    assert "if (!COMPLETE_HF_TOKEN.test(normalizedToken)) return INITIAL" in source
+    # #12159 moved the shape check into lib/hf-token-shape.ts and widened it to OAuth tokens.
+    assert "if (!isCompleteHfTokenShape(normalizedToken)) return INITIAL" in source
+    shape = re.search(
+        r"const COMPLETE_HF_TOKEN = /(.+)/;", HF_TOKEN_SHAPE.read_text(encoding = "utf-8")
+    )
+    assert shape is not None
+    complete = re.compile(shape.group(1))
+    assert complete.fullmatch("hf_" + "a" * 34)
+    assert complete.fullmatch("hf_oauth_" + "a" * 30)
+    assert not complete.fullmatch("hf_oauth_" + "a" * 29)
+    assert not complete.fullmatch("hf_" + "a" * 33)
+    assert not complete.fullmatch("hf_" + "a" * 34 + "-")
     assert "if (completed.token !== normalizedToken)" in source
     assert "if (completed.token !== debouncedToken)" not in source
 
@@ -148,7 +161,10 @@ def test_training_start_prepares_token_once_before_transport():
         "async function checkSelectedDataset", 1
     )[0]
     assert "await prepareHfTokenForUse(attempt.hfToken)" in prepare_attempt
-    assert "buildTrainingStartPayload(attempt.config, hfToken)" in submit_attempt
+    assert (
+        "buildTrainingStartPayload(attempt.config, hfToken, getCachedSystemInfo())"
+        in submit_attempt
+    )
     assert "payload.hf_token = hfToken" not in submit_attempt
     assert submit_attempt.index("attempt.enterTransport()") < submit_attempt.index(
         "await startTraining(payload, attempt.startRequestId)"
@@ -177,7 +193,7 @@ def test_training_start_claims_runtime_before_first_await():
         "setStarting:", 1
     )[0]
     assert "!startRequestId || isTrainingStartPending(state)" in claim
-    assert "return { isStarting: true, startRequestId }" in claim
+    assert "return { isStarting: true, startRequestId," in claim
     assert "runtime.tryBeginStarting(startRequestId)" in start_runtime
     acquire = start_runtime.split("export function tryAcquireTrainingStart", 1)[1].split(
         "export function isTrainingStartLeaseActive", 1

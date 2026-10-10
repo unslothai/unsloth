@@ -353,11 +353,17 @@ export function makeValidatorConfig(
 ): ValidatorConfig {
   const isSql = validatorType === "code" && codeLang.startsWith("sql:");
   const isOxc = validatorType === "oxc";
+  const isJson = validatorType === "json";
+  const isMarkdown = validatorType === "markdown";
   let namePrefix = "validator_python";
   if (isSql) {
     namePrefix = "validator_sql";
   } else if (isOxc) {
     namePrefix = "validator_oxc";
+  } else if (isJson) {
+    namePrefix = "validator_json";
+  } else if (isMarkdown) {
+    namePrefix = "validator_markdown";
   }
   return {
     id,

@@ -3,6 +3,7 @@
 
 import { isExternalModelId, useChatRuntimeStore } from "@/features/chat";
 import { usePlatformStore } from "@/config/env";
+import { isNpuModelId } from "@/features/npu";
 import { useMemo } from "react";
 import {
   type PerModelConfig,
@@ -19,6 +20,9 @@ export interface ActiveModelConfigState {
 export function useActiveModelConfig(): ActiveModelConfigState {
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint) || null;
   const maxSeqLength = useChatRuntimeStore((s) => s.params.maxSeqLength);
+  const engine = useChatRuntimeStore((s) => s.params.engine ?? "auto");
+  const engineParallelism = useChatRuntimeStore((s) => s.params.engineParallelism ?? "tensor");
+  const enginePrecision = useChatRuntimeStore((s) => s.params.enginePrecision ?? "auto");
   const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   const loadedIsGguf = useChatRuntimeStore((s) => s.loadedIsGguf);
   const loadedIsMlx = useChatRuntimeStore((s) => s.loadedIsMlx);
@@ -27,10 +31,23 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   );
   const customContextLength = useChatRuntimeStore((s) => s.customContextLength);
   const kvCacheDtype = useChatRuntimeStore((s) => s.kvCacheDtype);
-  const mlxKvBits = useChatRuntimeStore((s) => s.mlxKvBits);
+  const mlxKvQuant = useChatRuntimeStore((s) => s.mlxKvQuant);
+  const mlxInt8Prefill = useChatRuntimeStore((s) => s.mlxInt8Prefill);
   const speculativeType = useChatRuntimeStore((s) => s.speculativeType);
   const specDraftNMax = useChatRuntimeStore((s) => s.specDraftNMax);
   const nParallel = useChatRuntimeStore((s) => s.nParallel);
+  // preserve inherited launch intent until the corresponding control changes.
+  const reasoningBudget = useChatRuntimeStore((s) =>
+    s.reasoningBudget === s.loadedReasoningBudget
+      ? (s.loadedReasoningBudgetRequested ?? s.reasoningBudget)
+      : s.reasoningBudget,
+  );
+  const reasoningBudgetMessage = useChatRuntimeStore(
+    (s) =>
+      s.reasoningBudgetMessage === s.loadedReasoningBudgetMessage
+        ? (s.loadedReasoningBudgetMessageRequested ?? s.reasoningBudgetMessage)
+        : s.reasoningBudgetMessage,
+  );
   const nBatch = useChatRuntimeStore((s) => s.nBatch);
   const nUbatch = useChatRuntimeStore((s) => s.nUbatch);
   const specDraftCacheDtype = useChatRuntimeStore(
@@ -44,6 +61,9 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   const chatTemplateOverride = useChatRuntimeStore(
     (s) => s.chatTemplateOverride,
   );
+  const loadedLlamaExtraArgs = useChatRuntimeStore(
+    (s) => s.loadedLlamaExtraArgs,
+  );
   const gpuMemoryMode = useChatRuntimeStore((s) => s.gpuMemoryMode);
   const gpuLayers = useChatRuntimeStore((s) => s.gpuLayers);
   const nCpuMoe = useChatRuntimeStore((s) => s.nCpuMoe);
@@ -51,6 +71,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   const selectedGpuIndexKind = useChatRuntimeStore(
     (s) => s.selectedGpuIndexKind,
   );
+  const splitRatio = useChatRuntimeStore((s) => s.splitRatio);
 
   const isGguf = isServedByLlamaCpp({
     loadedIsGguf,
@@ -68,23 +89,30 @@ export function useActiveModelConfig(): ActiveModelConfigState {
 
   // Off-backend this stays null, or the model compares unequal to its own defaults
   // over a field it cannot show.
-  const effectiveMlxKvBits = isMlx ? (mlxKvBits ?? null) : null;
+  const effectiveMlxKvQuant = isMlx ? (mlxKvQuant ?? null) : null;
+  const effectiveMlxInt8Prefill = isMlx && mlxInt8Prefill;
 
   const config = useMemo<PerModelConfig | null>(() => {
     if (!checkpoint || isExternalModelId(checkpoint)) {
       return null;
     }
     const base: PerModelConfig = {
+      engine,
+      enginePrecision,
+      engineParallelism,
       customContextLength: customContextLength ?? null,
       // A self-sizing backend carries no pin here, exactly as the GGUF path does: this
       // is the runtime's resolved length, and reading it back as the user's choice would
       // pin every reload to whatever the first load happened to get.
-      maxSeqLength: isGguf || isMlx ? null : maxSeqLength,
+      maxSeqLength: isGguf || isMlx || isNpuModelId(checkpoint) ? null : maxSeqLength,
       kvCacheDtype: kvCacheDtype ?? null,
-      mlxKvBits: effectiveMlxKvBits,
+      mlxKvQuant: effectiveMlxKvQuant,
+      mlxInt8Prefill: effectiveMlxInt8Prefill,
       speculativeType: speculativeType ?? "auto",
       specDraftNMax: specDraftNMax ?? null,
       nParallel: nParallel ?? null,
+      reasoningBudget: isGguf ? reasoningBudget : -1,
+      reasoningBudgetMessage: isGguf ? reasoningBudgetMessage : "",
       nBatch: nBatch ?? null,
       nUbatch: nUbatch ?? null,
       specDraftCacheDtype: specDraftCacheDtype ?? null,
@@ -96,7 +124,9 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       chatTemplateOverride: chatTemplateOverride ?? null,
     };
     if (!isGguf) {
-      return base;
+      return engine === "vllm" || engine === "sglang"
+        ? { ...base, selectedGpuIds, selectedGpuIndexKind }
+        : base;
     }
     return {
       ...base,
@@ -105,18 +135,29 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       nCpuMoe,
       selectedGpuIds,
       selectedGpuIndexKind,
+      tensorSplit: splitRatio,
+      // Absent until the runtime reports a list: undefined is what lets the editor hydrate the stored row.
+      ...(loadedLlamaExtraArgs != null
+        ? { llamaExtraArgs: [...loadedLlamaExtraArgs] }
+        : {}),
     };
   }, [
     checkpoint,
     isGguf,
     isMlx,
     maxSeqLength,
+    engine,
+    enginePrecision,
+    engineParallelism,
     customContextLength,
     kvCacheDtype,
-    effectiveMlxKvBits,
+    effectiveMlxKvQuant,
+    effectiveMlxInt8Prefill,
     speculativeType,
     specDraftNMax,
     nParallel,
+    reasoningBudget,
+    reasoningBudgetMessage,
     nBatch,
     nUbatch,
     specDraftCacheDtype,
@@ -126,11 +167,13 @@ export function useActiveModelConfig(): ActiveModelConfigState {
     tensorParallel,
     disableVision,
     chatTemplateOverride,
+    loadedLlamaExtraArgs,
     gpuMemoryMode,
     gpuLayers,
     nCpuMoe,
     selectedGpuIds,
     selectedGpuIndexKind,
+    splitRatio,
   ]);
 
   return { checkpoint, isGguf, config };

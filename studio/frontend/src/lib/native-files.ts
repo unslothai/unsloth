@@ -4,7 +4,9 @@
 import { isTauri } from "@/lib/api-base";
 import { decodeDataUri, isDataUri } from "@/lib/data-uri";
 
-const NATIVE_FILE_NAME_HEADER = "x-unsloth-default-name";
+export const NATIVE_FILE_NAME_HEADER = "x-unsloth-default-name";
+const NATIVE_FILE_SAVE_TOKEN_HEADER = "x-unsloth-save-token";
+const NATIVE_FILE_CHUNK_BYTES = 8 * 1024 * 1024;
 export class DownloadCancelledError extends Error {
   constructor() {
     super("Save cancelled.");
@@ -16,7 +18,7 @@ export function isDownloadCancelled(error: unknown): boolean {
   return error instanceof DownloadCancelledError;
 }
 
-function encodeNativeFilename(filename: string): string {
+export function encodeNativeFilename(filename: string): string {
   const bytes = new TextEncoder().encode(filename);
   let binary = "";
   for (const byte of bytes) {
@@ -60,7 +62,7 @@ export function browserDownload(blob: Blob, filename: string): void {
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();
-  URL.revokeObjectURL(url);
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 function browserUrlDownload(url: string, filename: string): void {
@@ -115,6 +117,46 @@ export async function downloadFile(
 
   browserDownload(blob, filename);
   return;
+}
+
+/** Save a Blob through bounded IPC chunks in Tauri and retain normal downloads on web. */
+export async function downloadBlobStreaming(
+  content: Blob,
+  filename: string,
+): Promise<void> {
+  if (!isTauri) {
+    browserDownload(content, filename);
+    return;
+  }
+  const { invoke } = await import("@tauri-apps/api/core");
+  const token = await invoke<string | null>("begin_native_file_save", {
+    fileName: filename,
+  });
+  if (token === null) {
+    throw new DownloadCancelledError();
+  }
+  try {
+    for (
+      let offset = 0;
+      offset < content.size;
+      offset += NATIVE_FILE_CHUNK_BYTES
+    ) {
+      const bytes = new Uint8Array(
+        await content
+          .slice(offset, offset + NATIVE_FILE_CHUNK_BYTES)
+          .arrayBuffer(),
+      );
+      await invoke<void>("append_native_file_save_chunk", bytes, {
+        headers: { [NATIVE_FILE_SAVE_TOKEN_HEADER]: token },
+      });
+    }
+    await invoke<string>("finish_native_file_save", { token });
+  } catch (error) {
+    await invoke<void>("cancel_native_file_save", { token }).catch(
+      () => undefined,
+    );
+    throw error;
+  }
 }
 
 export async function urlToBlob(url: string): Promise<Blob> {

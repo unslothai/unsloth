@@ -33,6 +33,7 @@ export interface TrainingStatusResponse {
     learning_rate?: number;
     // null = explicit clear (run stopped without saving); absent = unchanged.
     output_dir?: string | null;
+    model_download_repo_id?: string | null;
   } | null;
   metric_history?: {
     steps?: number[];
@@ -67,6 +68,7 @@ export interface TrainingProgressPayload {
   epoch: number | null;
   elapsed_seconds: number | null;
   eta_seconds: number | null;
+  session_start_step?: number | null;
   grad_norm: number | null;
   num_tokens: number | null;
   eval_loss: number | null;
@@ -91,6 +93,7 @@ export interface TrainingRuntimeState {
   startRequestId: string | null;
   startError: string | null;
   startModelName: string | null;
+  modelDownloadRepoId: string | null;
   startDatasetName: string | null;
   startHfToken: string | null;
   startProjectName: string | null;
@@ -107,6 +110,7 @@ export interface TrainingRuntimeState {
   progressPercent: number;
   elapsedSeconds: number | null;
   etaSeconds: number | null;
+  sessionStartStep: number;
   currentGradNorm: number | null;
   currentNumTokens: number | null;
   outputDir: string | null;
@@ -116,6 +120,7 @@ export interface TrainingRuntimeState {
   evalLossHistory: TrainingSeriesPoint[];
   resetGeneration: number;
   stopRequested: boolean;
+  configureRequest: number;
   selectedHistoryRunId: string | null;
   // True while the studio "Current Run" tab is the active view, so the sidebar can highlight it.
   currentRunViewActive: boolean;
@@ -169,6 +174,7 @@ export interface TrainingViewData {
   progressPercent: number;
   elapsedSeconds: number | null;
   etaSeconds: number | null;
+  sessionStartStep?: number;
   evalEnabled: boolean;
   message: string;
   error: string | null;
@@ -178,6 +184,7 @@ export interface TrainingViewData {
   modelName: string;
   projectName: string | null;
   trainingMethod: string;
+  isDecision?: boolean;
 
   lossHistory: TrainingSeriesPoint[];
   lrHistory: TrainingSeriesPoint[];

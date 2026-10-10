@@ -185,11 +185,7 @@ class TestNothingChangesWhenTheBudgetIsUnknown:
 
 
 # In the order they were added, so older positional callers keep their meaning.
-_TOOL_LOOP_HOOKS = (
-    "on_conversation_grew",
-    "on_decode_slot",
-    "admission_output_allowance",
-)
+_TOOL_LOOP_HOOKS = ("on_conversation_grew", "on_decode_slot", "thinking_budget_tokens")
 
 
 class TestOldCallers:
@@ -241,26 +237,42 @@ class TestOldCallers:
         names = list(
             inspect.signature(LlamaCppBackend.generate_chat_completion_with_tools).parameters
         )
-        # The property is that nothing was INSERTED, not that one name is last: pinning the
-        # literal tail fails the moment a second hook is appended, which is the safe move.
-        assert "on_conversation_grew" in names
-        hook_at = names.index("on_conversation_grew")
-        assert names[hook_at - 1] == "tool_choice", (
+        # Later parameters may only be appended after the hooks, never inserted before them.
+        start = names.index(_TOOL_LOOP_HOOKS[0])
+        hooks = names[start : start + len(_TOOL_LOOP_HOOKS)]
+        assert hooks == list(
+            _TOOL_LOOP_HOOKS
+        ), f"the hooks must stay together in order, got {hooks}"
+        assert names[start - 1] == "tool_choice", (
             f"a parameter was inserted before the hook, rebinding positional callers: "
-            f"{names[hook_at - 2:hook_at + 1]}"
+            f"{names[start - 2:start + 1]}"
         )
-        for later in names[hook_at + 1 :]:
-            assert (
-                inspect.signature(LlamaCppBackend.generate_chat_completion_with_tools)
-                .parameters[later]
-                .default
-                is None
-            ), f"{later} was appended without an optional default"
-        plain = list(inspect.signature(LlamaCppBackend.generate_chat_completion).parameters)
-        assert plain[-2:] == [
+        plain_signature = inspect.signature(LlamaCppBackend.generate_chat_completion)
+        plain = list(plain_signature.parameters)
+        at = plain.index("admission_output_allowance")
+        assert plain[at - 1 : at + 2] == [
+            "_allow_respawn_retry",
             "admission_output_allowance",
             "on_prompt_fitted",
-        ], f"a parameter was inserted rather than appended; signature ends {plain[-4:]}"
+        ], f"a parameter was inserted rather than appended; around it: {plain[at - 2 : at + 3]}"
+        # The preemption hooks come after, appended with defaults.
+        for later in plain[at + 2 :]:
+            assert plain_signature.parameters[later].default is not inspect.Parameter.empty, later
+
+    def test_the_sandbox_level_was_appended_rather_than_inserted(self):
+        import inspect
+
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        names = list(
+            inspect.signature(LlamaCppBackend.generate_chat_completion_with_tools).parameters
+        )
+        assert names.index("sandbox_level") == names.index("instruction_anchor_ids") + 1
+        # Only optional hooks follow it: the wire-cap allowance and the preemption observer.
+        signature = inspect.signature(LlamaCppBackend.generate_chat_completion_with_tools)
+        for later in names[names.index("sandbox_level") + 1 :]:
+            assert signature.parameters[later].default is None, f"{later} was not appended"
+        assert names.index("promote_reasoning_only") == names.index("permission_mode") + 1
 
     def test_the_wait_timeout_has_a_sane_default(self):
         import inspect

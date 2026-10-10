@@ -21,6 +21,11 @@ from typing import Any, Collection, Literal, Mapping, Sequence
 from urllib.parse import urlparse
 
 from core.inference.llama_tool_schema import unrelaxed
+from core.inference.mcp_images import is_image_tool, split_images as split_mcp_images
+
+# Stamped by mcp_client on every tool it registers; the provenance the envelope
+# is trusted on.
+MCP_TOOL_PREFIX = "mcp__"
 from core.inference.tool_call_parser import TOOL_ERROR_NUDGE, TOOL_ERROR_PREFIXES
 
 
@@ -43,6 +48,15 @@ UNPARSED_ARGUMENTS_KEY = "__unsloth_unparsed_arguments__"
 _JSON_STRUCTURAL = frozenset(',:{}[]" \t\n\r')
 
 
+def _reject_json_constant(name: str) -> Any:
+    """Refuse ``NaN`` / ``Infinity``: ``json.loads`` takes them, ``JSON.parse`` does not."""
+    raise ValueError(f"{name} is not JSON")
+
+
+# Built once: `json.loads` with any keyword constructs a fresh decoder per call.
+_STRICT_JSON_DECODER = json.JSONDecoder(parse_constant = _reject_json_constant)
+
+
 def _looks_like_broken_json(raw: str) -> bool:
     """Whether this text was MEANT to be a JSON object and stopped before finishing.
 
@@ -59,7 +73,7 @@ def _looks_like_broken_json(raw: str) -> bool:
     if not text.startswith(("{", "[")):
         return False
     try:
-        json.loads(text)
+        _STRICT_JSON_DECODER.decode(text)
     except json.JSONDecodeError as error:
         if error.msg.startswith("Unterminated string") or error.pos >= len(text):
             return True
@@ -76,6 +90,9 @@ def _looks_like_broken_json(raw: str) -> bool:
             return False
         remainder = text[error.pos :]
         return bool(remainder) and not any(ch in _JSON_STRUCTURAL for ch in remainder)
+    except (ValueError, RecursionError):
+        # Digit cap, recursion limit or NaN/Infinity: unreadable is as broken as cut off.
+        return True
     return False
 
 
@@ -290,10 +307,13 @@ class ToolCallCompletion:
     executed: bool = False
 
     def tool_end_payload(self) -> dict[str, Any]:
+        # Not only in model_message(): the frontend PERSISTS this payload and serializes it back
+        # into a role="tool" message on the next turn, so an unmasked key is replayed then.
+        result = self.result
         return {
             "tool_name": self.decision.tool_name,
             "tool_call_id": self.decision.card_id,
-            "result": self.result,
+            "result": redact_studio_credentials(result) if isinstance(result, str) else result,
             "provenance": self.decision.provenance,
         }
 
@@ -328,6 +348,17 @@ class ToolCallCompletion:
         if self.decision.tool_call_id:
             message["tool_call_id"] = self.decision.tool_call_id
         return message
+
+    def mcp_images(self) -> list[dict]:
+        """Images returned by an MCP server or the sandbox image viewer.
+
+        The envelope is a plain suffix, so any tool whose output happens to end in
+        one -- terminal output, a fetched page -- would otherwise have its bytes
+        decoded and attached as model image input.
+        """
+        if not self.executed or not is_image_tool(self.decision.tool_name):
+            return []
+        return split_mcp_images(self.result)[1]
 
 
 @dataclass(frozen = True)
@@ -649,9 +680,20 @@ def _declared_properties(tool_name: str, tool_schemas) -> Any:
         function = tool.get("function") if isinstance(tool, Mapping) else None
         if not isinstance(function, Mapping) or function.get("name") != tool_name:
             continue
-        parameters = function.get("parameters")
+        parameters = _mcp_full_parameters(tool_name) or function.get("parameters")
         return parameters.get("properties") if isinstance(parameters, Mapping) else None
     return None
+
+
+def _mcp_full_parameters(tool_name: str) -> Any:
+    # A large MCP tool is listed with only its top-level parameters; type its arguments by the full schema.
+    if not tool_name.startswith("mcp__"):
+        return None
+    try:
+        from core.inference.tools import mcp_tool_input_schema  # noqa: PLC0415 -- cycle at import time
+        return mcp_tool_input_schema(tool_name)
+    except Exception:  # noqa: BLE001 -- typing must never break a chat
+        return None
 
 
 def coerce_tool_arguments(
@@ -673,12 +715,14 @@ def coerce_tool_arguments(
         )
     if isinstance(raw_args, str):
         try:
-            parsed = json.loads(raw_args)
+            # NaN/Infinity would replay as JSON no provider parses.
+            parsed = _STRICT_JSON_DECODER.decode(raw_args)
             if isinstance(parsed, Mapping):
                 return CoercedArguments(
                     coerce_arguments_by_schema(parsed, properties, repair = heal), False
                 )
-        except (json.JSONDecodeError, ValueError):
+        except (ValueError, RecursionError):
+            # Must not raise: this runs before the budget gate, so a raise aborts the whole turn.
             pass
         if heal:
             # Healing exists for a model that sends its ONE argument as a bare string instead of an object. Text that
@@ -721,12 +765,14 @@ def mcp_display_parts(tool_name: str) -> "tuple[str, str] | None":
     if len(parts) < 3 or not parts[1] or not parts[2]:
         return None
     try:
+        from core.inference.tools import _mcp_raw_tool_name
         from storage import mcp_servers_db
+
         server = mcp_servers_db.get_server_for_tool(parts[1])
+        display = (server or {}).get("display_name")
+        return (str(display), _mcp_raw_tool_name(tool_name)) if display else None
     except Exception:  # noqa: BLE001
         return None
-    display = (server or {}).get("display_name")
-    return (str(display), parts[2]) if display else None
 
 
 def provisional_tool_provenance(tool_name: str) -> dict[str, object]:
@@ -736,6 +782,7 @@ def provisional_tool_provenance(tool_name: str) -> dict[str, object]:
     return tool_event_provenance(
         provisional = True,
         mcp_server = mcp[0] if mcp else None,
+        mcp_tool = mcp[1] if mcp else None,
     )
 
 
@@ -778,6 +825,8 @@ def status_for_tool(tool_name: str, arguments: Mapping[str, Any]) -> str:
     if tool_name == "terminal":
         preview = str(arguments.get("command") or "")[:60]
         return f"Running: {preview}" if preview else "Running command..."
+    if tool_name == "view_image":
+        return "Viewing image: " + str(arguments.get("path") or "")[:80]
     if tool_name == "edit_file":
         # The name, not the patch: the tool card below already shows the edit.
         path = str(arguments.get("path") or "").strip()
@@ -811,27 +860,23 @@ def is_tool_error(result: str) -> bool:
     return isinstance(result, str) and result.lstrip().startswith(TOOL_ERROR_PREFIXES)
 
 
-def _strip_mcp_image_suffix(result: str) -> str:
-    """Drop a trailing __MCP_IMAGES__ envelope only when it is the valid JSON
-    image array appended by _flatten_result, so legit tool text that merely
-    mentions the marker is not truncated."""
-    head, sep, payload = result.rpartition("\n__MCP_IMAGES__:")
-    if not sep:
+def _strip_mcp_ui_suffix(result: str) -> str:
+    """The payload is one JSON line, so the scan stops there; images may follow."""
+    marker = "\n__MCP_UI__:"
+    start = result.rfind(marker)
+    if start == -1:
         return result
+    payload_start = start + len(marker)
+    end = result.find("\n", payload_start)
+    if end == -1:
+        end = len(result)
     try:
-        images = json.loads(payload)
+        payload = json.loads(result[payload_start:end])
     except (ValueError, RecursionError):
         return result
-    if not isinstance(images, list) or not images:
+    if not isinstance(payload, dict) or not isinstance(payload.get("resourceUri"), str):
         return result
-    if not all(
-        isinstance(img, dict)
-        and isinstance(img.get("data"), str)
-        and isinstance(img.get("mimeType"), str)
-        for img in images
-    ):
-        return result
-    return head.rstrip()
+    return (result[:start] + result[end:]).rstrip()
 
 
 def _strip_files_sentinel(result: str) -> str:
@@ -934,6 +979,9 @@ def _strip_rag_sources_sentinel(result: str) -> str:
 # well-formed __FILES__ line is content, not an envelope, and stripping it would take that line away from the model.
 _SANDBOX_TOOLS = frozenset({"python", "terminal"})
 
+# Only an MCP result can carry the UI envelope; mcp_client defuses tool-written ones.
+_MCP_TOOL_PREFIX = "mcp__"
+
 # Same rule for the other two envelopes. The image one is emitted by the sandbox tools
 # through `_created_file_sentinels` and by Gemini's hosted code_execution through the
 # provider; the source map by the retrieval tools that append `RAG_SOURCES_SENTINEL`. A
@@ -942,23 +990,64 @@ _SANDBOX_TOOLS = frozenset({"python", "terminal"})
 # than the card the user is looking at.
 _IMAGE_SENTINEL_TOOLS = _SANDBOX_TOOLS | {"code_execution"}
 _SOURCE_MAP_TOOLS = frozenset({"search_knowledge_base", "search_conversation"})
-_WORKSPACE_TOOLS = _SANDBOX_TOOLS | {"edit_file"}
+# Invalidated by workspace writes, but reading an image is not new work that licenses a rerun.
+_WORKSPACE_READ_TOOLS = frozenset({"view_image"})
+_WORKSPACE_TOOLS = _SANDBOX_TOOLS | {"edit_file"} | _WORKSPACE_READ_TOOLS
 
 
-def strip_result_for_model(result: str, tool_name: "str | None" = None) -> str:
-    """Remove frontend-only sentinels (image paths, RAG source map) before
-    feeding the result back to the model."""
+# `sk-unsloth-` + 32 hex (auth/storage.py), cached in the clear so the CLI can reuse it. Masked on
+# the way to the model, which is where it would leave the machine. The mask carries neither prefix,
+# so re-running is a no-op.
+_STUDIO_API_KEY_RE = re.compile(
+    # 8, not 32: a result cut to fit the window ends mid-key, and half a key is still one. Bare
+    # `sk-unsloth-` (prose about the format) still reads through.
+    # Hex, not alphanumeric: the token is `token_hex`, and the wider alphabet rewrote this repo's
+    # own `sk-unsloth-internal-workflow` to `[redacted]-workflow`.
+    r"sk-unsloth-[0-9a-fA-F]{8,}"
+    # `desktop-` + token_urlsafe(48); the floor keeps "desktop-app" out of it.
+    r"|desktop-[A-Za-z0-9_-]{40,}"
+)
+_STUDIO_SECRET_MASK = "[redacted]"
+
+
+def redact_studio_credentials(text: str) -> str:
+    """Mask any Unsloth Studio credential in text bound for the model/provider."""
+    # Two substring scans first: the alternation has no literal to anchor on and costs ~20x per MB.
+    if "sk-unsloth-" not in text and "desktop-" not in text:
+        return text
+    return _STUDIO_API_KEY_RE.sub(_STUDIO_SECRET_MASK, text)
+
+
+def strip_result_for_model(
+    result: str,
+    tool_name: "str | None" = None,
+    *,
+    redact: bool = True,
+) -> str:
+    """Remove frontend-only sentinels (image paths, RAG source map) and mask Studio credentials
+    before feeding the result back to the model.
+
+    ``redact = False`` is for the one caller that needs the strip to stay suffix-only
+    (`tools._split_frontend_suffix` re-derives the removed envelope from `startswith`); masking
+    rewrites bytes inside the body, which that comparison cannot survive. That path feeds the model
+    through `model_message` afterwards, so the mask is applied either way."""
     if tool_name is None or tool_name == "web_search":
         from .search_images import strip_images_suffix
         result = strip_images_suffix(result)
-    result = _strip_mcp_image_suffix(result)
+    # Always, whoever produced it: these bytes run to megabytes and the model must
+    # never be shown them as text. Provenance decides whether they become IMAGE
+    # input, which is a separate question answered in mcp_images._promote.
+    result = split_mcp_images(result)[0]
+    # After the image strip, which leaves the UI envelope as the tail.
+    if tool_name is None or tool_name.startswith(_MCP_TOOL_PREFIX):
+        result = _strip_mcp_ui_suffix(result)
     if tool_name is None or tool_name in _SANDBOX_TOOLS:
         result = _strip_files_sentinel(result)
     if tool_name is None or tool_name in _IMAGE_SENTINEL_TOOLS:
         result = _strip_images_sentinel(result)
     if tool_name is None or tool_name in _SOURCE_MAP_TOOLS:
         result = _strip_rag_sources_sentinel(result)
-    return result
+    return redact_studio_credentials(result) if redact else result
 
 
 def deferred_nudge_text(msgs: Sequence[dict]) -> str:
@@ -978,6 +1067,50 @@ def append_deferred_nudges(conversation: list, msgs: Sequence[dict]) -> None:
     """
     if msgs:
         conversation.append({"role": "user", "content": deferred_nudge_text(msgs)})
+
+
+def tool_call_limit_nudge(
+    tool_calls: Sequence[Mapping[str, Any]],
+    limit: int,
+    *,
+    final: bool = False,
+    unavailable_tools: Collection[str] = (),
+) -> dict:
+    described = []
+    for tool_call in tool_calls:
+        function = tool_call.get("function") or {}
+        arguments = function.get("arguments", {})
+        if not isinstance(arguments, str):
+            arguments = canonical_arguments_text(arguments)
+        described.append(f"{function.get('name', '')} {arguments}")
+    follow_up = (
+        "Do not describe results you did not receive."
+        if final
+        else "Call them again if you still need their results, and do not describe results "
+        "you did not receive."
+    )
+    if not final and unavailable_tools:
+        retryable_names = sorted(
+            {(call.get("function") or {}).get("name", "") for call in tool_calls}
+            - set(unavailable_tools)
+        )
+        follow_up = (
+            f"Do not retry {', '.join(sorted(unavailable_tools))}; "
+            "these tools are no longer available."
+        )
+        if retryable_names:
+            follow_up += (
+                f" You may retry the skipped calls for {', '.join(retryable_names)} "
+                "if you still need their results."
+            )
+        follow_up += " Do not describe results you did not receive."
+    return {
+        "role": "user",
+        "content": (
+            f"{len(tool_calls)} more tool call(s) in this batch were not executed because "
+            f"at most {limit} tool calls run per turn: {'; '.join(described)}. {follow_up}"
+        ),
+    }
 
 
 def _tool_name_from_schema(tool: Mapping[str, Any]) -> str:
@@ -1026,15 +1159,21 @@ class ToolLoopController:
         *,
         tools: Sequence[Mapping[str, Any]] | None,
         auto_heal_tool_calls: bool = True,
+        deduplicate_tool_calls: bool = True,
         one_shot_tools: frozenset[str] = _ONE_SHOT_TOOLS,
         duplicate_noop_limit: int = 2,
+        session_id: str | None = None,
+        thread_id: str | None = None,
     ) -> None:
+        self._session_id = session_id
+        self._thread_id = thread_id
         self._restrict_to_allowed = tools is not None
         self._tools = [copy.deepcopy(dict(tool)) for tool in (tools or [])]
         self._allowed_tool_names = {
             name for name in (_tool_name_from_schema(tool) for tool in self._tools) if name
         }
         self._auto_heal_tool_calls = auto_heal_tool_calls
+        self._deduplicate_tool_calls = deduplicate_tool_calls
         self._one_shot_tools = one_shot_tools
         self._completed_one_shot_tools: set[str] = set()
         self._successful_keys: set[str] = set()
@@ -1086,13 +1225,18 @@ class ToolLoopController:
             tool_name = tool_name,
             tool_schemas = self._tools,
         )
-        key = canonical_tool_call_key(tool_name, coerced.arguments)
+        arguments = coerced.arguments
+        if tool_name == "web_search" and UNPARSED_ARGUMENTS_KEY not in arguments:
+            from core.inference.tools import canonicalize_web_search_arguments
+            arguments = canonicalize_web_search_arguments(arguments)
+        key = canonical_tool_call_key(tool_name, arguments)
         mcp = mcp_display_parts(tool_name)
         provenance = tool_event_provenance(
             healed = coerced.healed,
             forced = forced,
             provisional = provisional,
             mcp_server = mcp[0] if mcp else None,
+            mcp_tool = mcp[1] if mcp else None,
         )
         action: ToolAction = "execute"
         noop = ""
@@ -1105,26 +1249,54 @@ class ToolLoopController:
         elif self._restrict_to_allowed and tool_name not in self._allowed_tool_names:
             action = "disabled"
             noop = _noop_result("disabled", tool_name)
-        elif key in self._successful_keys:
+        elif self._deduplicate_tool_calls and key in self._successful_keys:
             action = "duplicate"
             noop = _noop_result("duplicate", tool_name)
 
         return ToolCallDecision(
             action = action,
             tool_name = tool_name,
-            arguments = coerced.arguments,
+            arguments = arguments,
             tool_call_id = str(tool_call.get("id") or ""),
             card_call_id = str(tool_call.get("card_id") or ""),
             key = key,
             provenance = provenance,
-            status_text = status_for_tool(tool_name, coerced.arguments),
+            status_text = status_for_tool(tool_name, arguments),
             noop_result = noop,
         )
+
+    def reprepare_call(
+        self,
+        decision: ToolCallDecision,
+        *,
+        forced: bool = False,
+        provisional: bool = False,
+        allowed_tool_names: Collection[str] | None = None,
+    ) -> ToolCallDecision:
+        """Reclassify a call after a pre-execution normalizer changed its arguments.
+
+        The decision's replay, status and duplicate key must all describe the arguments that
+        execute. A second preparation keeps the ordinary controller rules as the source of truth.
+        """
+        tool_call = decision.as_assistant_tool_call()
+        if decision.card_call_id:
+            tool_call["card_id"] = decision.card_call_id
+        refreshed = self.prepare_call(
+            tool_call,
+            forced = forced,
+            provisional = provisional,
+            allowed_tool_names = allowed_tool_names,
+        )
+        # The second pass receives an argument mapping, so retain provenance from the first parse,
+        # notably whether a local model's bare argument was healed.
+        refreshed.provenance.update(decision.provenance)
+        return refreshed
 
     def record_result(self, decision: ToolCallDecision, result: Any) -> ToolCallCompletion:
         """Record a real tool execution and return model/frontend payload helpers."""
         result_text = result if isinstance(result, str) else str(result)
         failed = is_tool_error(result_text)
+        result_text = self._cap_result(result_text, decision.tool_name)
         self._history.append(
             _ToolCallRecord(
                 key = decision.key,
@@ -1137,7 +1309,10 @@ class ToolLoopController:
         # otherwise apply the edit twice. Here as well as in the prefilters, which a
         # structured batch skips. A failed command can still have written, so it counts too.
         if decision.tool_name in _WORKSPACE_TOOLS:
-            if decision.key not in self._workspace_ran:
+            if (
+                decision.tool_name not in _WORKSPACE_READ_TOOLS
+                and decision.key not in self._workspace_ran
+            ):
                 self._workspace_ran.add(decision.key)
                 self._workspace_novel += 1
             stale = {
@@ -1160,6 +1335,25 @@ class ToolLoopController:
             is_error = failed,
             executed = True,
         )
+
+    def _cap_result(self, text: str, tool_name: str | None) -> str:
+        """The card and the model get the same capped body; the frontend envelope stays whole."""
+        from core.inference.tools import (  # noqa: PLC0415 -- import cycle
+            _hard_cap_chars,
+            _split_frontend_suffix,
+            cap_tool_text,
+        )
+
+        if len(text) <= _hard_cap_chars():
+            return text
+        body, suffix = _split_frontend_suffix(text, tool_name)
+        capped = cap_tool_text(
+            body,
+            session_id = self._session_id,
+            thread_id = self._thread_id,
+            readers = frozenset(self._allowed_tool_names),
+        )
+        return text if capped is body else capped + suffix
 
     def record_noop(self, decision: ToolCallDecision) -> ToolCallCompletion:
         """Record a controller no-op without creating visible tool output."""

@@ -5,7 +5,9 @@ from __future__ import annotations
 
 from core.training.account_jobs import account_path, managed_account, validate_recipe_access
 import base64
+import functools
 import io
+import math
 import os
 from pathlib import Path
 from typing import Any
@@ -18,6 +20,10 @@ from .jsonable import to_jsonable
 from .local_callable_validators import (
     register_oxc_local_callable_validators,
     split_oxc_local_callable_validators,
+)
+from .text_format_validators import (
+    register_text_format_local_callable_validators,
+    split_text_format_local_callable_validators,
 )
 
 _IMAGE_CONTEXT_PATCHED = False
@@ -45,6 +51,11 @@ def _load_image_file_to_base64(path_value: str, *, base_path: str | None = None)
 
         for candidate in candidates:
             if not candidate.exists() or not candidate.is_file():
+                continue
+            # The cwd fallback is a different file from the one checked above.
+            try:
+                account_path(candidate)
+            except HTTPException:
                 continue
             with candidate.open("rb") as f:
                 return _encode_bytes_to_base64(f.read())
@@ -136,20 +147,115 @@ def _apply_data_designer_image_context_patch() -> None:
     _IMAGE_CONTEXT_PATCHED = True
 
 
+def _blank_missing_prompt_value(value: Any) -> Any:
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return ""
+    return value
+
+
+def _allow_empty_prompt(_rendered_text: str) -> None:
+    return None
+
+
+# Filters that stringify their input before finalize runs, so a missing cell would still render "None" / "nan".
+_STRINGIFYING_FILTERS = (
+    "capitalize",
+    "escape",
+    "forceescape",
+    "lower",
+    "replace",
+    "string",
+    "title",
+    "trim",
+    "truncate",
+    "urlencode",
+)
+
+
+def _blank_missing_filter_input(filter_func: Any) -> Any:
+    value_index = 1 if hasattr(filter_func, "jinja_pass_arg") else 0
+
+    @functools.wraps(filter_func)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        if len(args) > value_index:
+            args = (
+                *args[:value_index],
+                _blank_missing_prompt_value(args[value_index]),
+                *args[value_index + 1 :],
+            )
+        return filter_func(*args, **kwargs)
+
+    return wrapper
+
+
+def _apply_data_designer_prompt_blank_patch() -> None:
+    try:
+        from data_designer.engine.column_generators.utils.prompt_renderer import (  # pyright: ignore[reportMissingImports]
+            RecordBasedPromptRenderer,
+        )
+    except ImportError:
+        return
+
+    if getattr(RecordBasedPromptRenderer, "_unsloth_prompt_blank_patch_applied", False):
+        return
+
+    original_prepare = RecordBasedPromptRenderer.prepare_jinja2_multi_template_renderer
+
+    def _patched_prepare(self: Any, template_name: str, *args: Any, **kwargs: Any) -> None:
+        # render() prepares on every record; only patch the env this call creates, else filter wrappers nest per row.
+        already_prepared = self._template_prepared_in_multi_template_renderer(template_name)
+        original_prepare(self, template_name, *args, **kwargs)
+        if already_prepared:
+            return
+        env = self._render_func_registry[template_name].func.__self__
+        env.finalize = _blank_missing_prompt_value
+        env._assert_rendered_text_not_empty = _allow_empty_prompt
+        for name in _STRINGIFYING_FILTERS:
+            if name in env.filters:
+                env.filters[name] = _blank_missing_filter_input(env.filters[name])
+
+    RecordBasedPromptRenderer.prepare_jinja2_multi_template_renderer = _patched_prepare
+    setattr(RecordBasedPromptRenderer, "_unsloth_prompt_blank_patch_applied", True)
+
+
 def _require_public_provider_endpoint(endpoint: str) -> None:
     """The recipe engine dials providers itself, so a managed account's endpoint cannot use the pinned
     transport: require HTTPS, which binds the peer to its certificate rather than to a DNS answer that
-    may rebind to loopback or the LAN after this public-address check."""
+    may rebind to loopback or the LAN after this public-address check.
+
+    With the switch on, the HTTPS and public-address rules stand down so a saved connection is one
+    a recipe can run on. The metadata rule does not: this path has no validator behind it."""
     if not managed_account():
         return
     from urllib.parse import urlsplit
 
-    from core.inference.providers import public_provider_address
+    from core.inference.providers import (
+        managed_private_url_hint,
+        provider_address_excluding_metadata,
+        public_provider_address,
+    )
+    from utils.managed_provider_url_settings import get_managed_private_provider_urls_allowed
 
     url = str(endpoint or "")
+    if get_managed_private_provider_urls_allowed():
+        try:
+            # The switch lifts HTTPS-only and public-only, not http(s)-only: everywhere else a
+            # provider URL is one of those two schemes, and this gate has no validator behind it.
+            if urlsplit(url).scheme not in ("http", "https"):
+                raise ValueError("Provider endpoints must use http or https.")
+            provider_address_excluding_metadata(url)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code = 403, detail = f"Recipe provider endpoint refused: {exc}"
+            ) from exc
+        return
+
     try:
         if urlsplit(url).scheme != "https":
-            raise ValueError("Managed accounts may only use HTTPS provider endpoints.")
+            raise ValueError(
+                "Managed accounts may only use HTTPS provider endpoints."
+                + managed_private_url_hint()
+            )
         public_provider_address(url)
     except ValueError as exc:
         raise HTTPException(
@@ -160,18 +266,32 @@ def _require_public_provider_endpoint(endpoint: str) -> None:
 def install_public_egress_guard() -> None:
     """Managed recipe workers: the engine dials providers itself, so every name resolves through this
     guard and a host that rebinds to loopback or the LAN after the endpoint check is refused at connect
-    time rather than dialled. Process-wide, so it is installed only in the job subprocess."""
+    time rather than dialled. Process-wide, so it is installed only in the job subprocess.
+
+    With the switch on the guard narrows to the metadata services rather than standing down: a
+    worker whose engine dials for itself has nothing else between it and that address."""
     if not managed_account():
         return
+    from utils.managed_provider_url_settings import get_managed_private_provider_urls_allowed
+
     import ipaddress
     import socket
+
+    from core.inference.providers import _metadata_address
 
     resolve = socket.getaddrinfo
 
     def guarded_getaddrinfo(host, port, *args, **kwargs):
+        # Per lookup, not captured at install: a worker outlives the switch it started under.
+        private_allowed = get_managed_private_provider_urls_allowed()
         infos = resolve(host, port, *args, **kwargs)
         for info in infos:
-            if not ipaddress.ip_address(str(info[4][0]).split("%", 1)[0]).is_global:
+            address = str(info[4][0]).split("%", 1)[0]
+            if _metadata_address(address):
+                raise socket.gaierror(
+                    f"Managed accounts may not reach cloud metadata services: {host!r}"
+                )
+            if not private_allowed and not ipaddress.ip_address(address).is_global:
                 raise socket.gaierror(
                     f"Managed accounts may only reach public-network addresses: {host!r}"
                 )
@@ -336,10 +456,15 @@ def build_config_builder(recipe: dict[str, Any]):
     }
     recipe_core = _strip_frontend_model_config_metadata(recipe_core)
     recipe_core, oxc_local_callable_specs = split_oxc_local_callable_validators(recipe_core)
+    recipe_core, text_format_specs = split_text_format_local_callable_validators(recipe_core)
     builder = DataDesignerConfigBuilder.from_config({"data_designer": recipe_core})
     register_oxc_local_callable_validators(
         builder = builder,
         specs = oxc_local_callable_specs,
+    )
+    register_text_format_local_callable_validators(
+        builder = builder,
+        specs = text_format_specs,
     )
 
     # DataDesignerConfigBuilder.from_config skips processors; re-attach so drop_columns/schema_transform
@@ -363,6 +488,7 @@ def create_data_designer(recipe: dict[str, Any], *, artifact_path: str | None = 
     validate_recipe_access(recipe)
     account_path(artifact_path)
     _apply_data_designer_image_context_patch()
+    _apply_data_designer_prompt_blank_patch()
     from data_designer.interface.data_designer import DataDesigner  # pyright: ignore[reportMissingImports]
 
     if artifact_path is None:

@@ -129,10 +129,22 @@ class TestEveryLeaseIsAccountedFor:
                 if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == name
             )
 
-        reserves = count("_openai_llama_admission_reserve")
+        # Every way a surface takes a lease, less the calls the entry points make to each other.
+        entries = (
+            "_openai_llama_admission_reserve",
+            "_openai_llama_admission_reserve_async",
+            "_reserve_counted_gguf_chat",
+        )
+        internal = sum(
+            1
+            for fn in ast.walk(tree)
+            if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) and fn.name in entries
+            for n in ast.walk(fn)
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id in entries
+        )
+        reserves = sum(count(name) for name in entries) - internal
         arms = count("_openai_llama_preemption_arm")
         counted = count("_openai_llama_count_raw_holder")
-        # The reserve call inside the helper's own definition is not a surface.
         assert reserves >= 7
         assert arms + counted >= reserves, (
             f"{reserves} admission reserve(s), but only {arms} armed and {counted} counted. "

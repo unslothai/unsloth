@@ -179,7 +179,7 @@ export function ReferenceMediaPicker({
         compact ? "h-8" : "h-11",
         dragging
           ? "border-primary/60 bg-primary/5 text-foreground"
-          : "border-border text-muted-foreground hover:border-foreground/30 hover:text-foreground",
+          : "border-border text-muted-foreground hover:border-[color-mix(in_oklab,var(--foreground)_calc(30%*var(--contrast-edge-gain,1)),transparent)] hover:text-foreground",
       )}
     >
       <HugeiconsIcon icon={icon} className="size-3.5" />

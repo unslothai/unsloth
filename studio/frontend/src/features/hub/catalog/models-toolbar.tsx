@@ -10,6 +10,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import type { HfSortKey } from "@/features/hub/hooks/use-hub-model-search";
+import { useHubSource } from "@/lib/hf-endpoint";
 import { cn } from "@/lib/utils";
 import {
   AiChipIcon,
@@ -75,6 +76,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
   onManageLocalFolders,
   onFreeUpSpace,
   onOpenFineTune,
+  npuAvailable = false,
 }: {
   tab: ModelsTab;
   onTabChange: (tab: ModelsTab) => void;
@@ -97,6 +99,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
   /** Opens the curated "Fine-tune ready" channel (discover only). Exposed as a
    *  format-dropdown option rather than a standalone feed section. */
   onOpenFineTune: () => void;
+  npuAvailable?: boolean;
 }) {
   // Recent searches surface while the empty search field is focused, only on
   // Discover (on-device search is a local filter and isn't recorded).
@@ -135,6 +138,8 @@ export const ModelsToolbar = memo(function ModelsToolbar({
   }, [showRecentSearches]);
 
   const isDataset = resourceType === "datasets";
+  // The NPU catalog is short and has no Hub metadata to filter or sort by.
+  const npuList = formatFilter === "npu" && !isDataset;
   const hasTrailing = Boolean(query) || (isDiscover && isLoading);
   const formatOptions = useMemo<HubOption<FormatMenuValue>[]>(() => {
     const options: HubOption<FormatMenuValue>[] = FORMAT_FILTER_OPTIONS.filter(
@@ -159,6 +164,20 @@ export const ModelsToolbar = memo(function ModelsToolbar({
         </>
       ),
     }));
+    if (npuAvailable) {
+      options.push({
+        value: "npu",
+        triggerLabel: "NPU",
+        label: (
+          <>
+            <span className="flex size-3.5 shrink-0 items-center justify-center">
+              <span className="size-1.5 rounded-full bg-format-npu" />
+            </span>
+            NPU
+          </>
+        ),
+      });
+    }
     // "Fine-tune ready" is a curated channel (bnb-4bit checkpoints), not a
     // format: it opens the channel rather than setting the filter (onValueChange).
     if (tab === "discover") {
@@ -178,7 +197,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
       });
     }
     return options;
-  }, [tab]);
+  }, [tab, npuAvailable]);
   const capabilityOptions = useMemo<HubOption<CapabilityFilter>[]>(
     () =>
       CAPABILITY_FILTER_OPTIONS.map((option) => ({
@@ -187,13 +206,16 @@ export const ModelsToolbar = memo(function ModelsToolbar({
       })),
     [],
   );
+  const hubSource = useHubSource();
   const sortOptions = useMemo<HubOption<HfSortKey>[]>(
     () =>
-      SORT_OPTIONS.map((option) => ({
+      SORT_OPTIONS.filter(
+        (option) => hubSource !== "modelscope" || option.value !== "createdAt",
+      ).map((option) => ({
         value: option.value,
         label: option.label,
       })),
-    [],
+    [hubSource],
   );
   const triggerBase = cn(
     "field-trigger hub-menu-trigger field-soft transition-colors",
@@ -205,8 +227,9 @@ export const ModelsToolbar = memo(function ModelsToolbar({
       className="flex min-w-0 flex-col gap-2 lg:flex-row lg:flex-wrap lg:items-center"
     >
       <div
+        data-tour="hub-tabs"
         className={cn(
-          "hub-menu-trigger hub-tab-toggle relative inline-flex h-9 w-full shrink-0 items-center rounded-full lg:w-[280px]",
+          "hub-menu-trigger hub-tab-toggle relative inline-flex h-9 w-full shrink-0 items-center rounded-full lg:w-[calc(280px*var(--ui-space-scale,1))]",
         )}
         role="radiogroup"
         aria-label="View"
@@ -251,7 +274,8 @@ export const ModelsToolbar = memo(function ModelsToolbar({
 
       <div
         ref={searchWrapRef}
-        className="relative min-w-0 flex-1 lg:min-w-[220px] lg:flex-[1_1_220px]"
+        data-tour="hub-search"
+        className="relative min-w-0 flex-1 lg:min-w-[calc(220px*var(--ui-space-scale,1))] lg:flex-[1_1_220px]"
       >
         <HugeiconsIcon
           icon={Search01Icon}
@@ -312,7 +336,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
             <HugeiconsIcon
               icon={CancelCircleIcon}
               strokeWidth={1.75}
-              className="size-[18px]"
+              className="size-[calc(18px*var(--ui-space-scale,1))]"
             />
           </button>
         ) : isDiscover && isLoading ? (
@@ -396,27 +420,27 @@ export const ModelsToolbar = memo(function ModelsToolbar({
               }
             }}
             ariaLabel="Format filter"
-            className={cn(triggerBase, "w-[128px]")}
+            className={cn(triggerBase, "w-[calc(128px*var(--ui-space-scale,1))]")}
           />
         )}
 
-        {tab === "discover" && !isDataset && (
+        {tab === "discover" && !isDataset && !npuList && (
           <HubOptionMenu
             value={capabilityFilter}
             options={capabilityOptions}
             onValueChange={onCapabilityFilterChange}
             ariaLabel="Capability filter"
-            className={cn(triggerBase, "w-[128px]")}
+            className={cn(triggerBase, "w-[calc(128px*var(--ui-space-scale,1))]")}
           />
         )}
 
-        {tab === "discover" && (
+        {tab === "discover" && !npuList && (
           <HubOptionMenu
             value={sortBy}
             options={sortOptions}
             onValueChange={onSortChange}
             ariaLabel="Sort models"
-            className={cn(triggerBase, "w-[128px]")}
+            className={cn(triggerBase, "w-[calc(128px*var(--ui-space-scale,1))]")}
             footer={
               isDataset ? undefined : (
                 <Tooltip>
