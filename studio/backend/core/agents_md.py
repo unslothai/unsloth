@@ -28,14 +28,12 @@ def agents_md_enabled() -> bool:
 
 
 def _owner_home() -> Path:
-    # Seam for tests, as in core.inference.skills.
     return Path.home()
 
 
 def _read(path: Path, confine: Optional[Path] = None) -> bytes:
-    # The model writes in the sandbox and the server reads unsandboxed, so a link planted there must not
-    # pull a host file into the prompt. Project and global files may be links (CLAUDE.md -> AGENTS.md).
-    # Non-blocking so a FIFO named AGENTS.md cannot hang the request; regular files ignore it.
+    # The model writes in the sandbox but this read is unsandboxed: no link there may pull in a host file
+    # (project and global files may be links, CLAUDE.md -> AGENTS.md). Non-blocking so a FIFO cannot hang.
     flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
     if confine is not None:
         if os.path.islink(path):
@@ -87,7 +85,6 @@ def _label(path: Path) -> str:
 
 
 def _sources(project: Optional[dict]) -> list[tuple[tuple[Path, ...], Optional[Path]]]:
-    """(candidate files, confining directory) per section, broadest first."""
     # Studio's own file for every account: another tool's ~/.claude or ~/.codex rules would change existing chats.
     sources = [((workspace_root() / "AGENTS.md",), None)]
     # Host project folders are single-user only (see tools._get_project_workdir).
