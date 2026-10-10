@@ -348,7 +348,10 @@ class _Backend:
         self.extra_args = list(stored)
         self.requested_extra_args = list(stored)
         self.extra_args_source = source
-        self._studio_model_ini_record = (tuple(prefix), source) if prefix else None
+        sampling = any(
+            t in ("--temp", "--top-p", "--top-k", "--min-p", "--repeat-penalty") for t in prefix
+        )
+        self._studio_model_ini_record = (tuple(prefix), source, sampling) if prefix else None
 
 
 def test_stored_ini_prefix_is_never_inherited():
@@ -435,6 +438,8 @@ def _call_route(monkeypatch, **kw):
         gguf_variant = "Q8_0",
         local_path = None,
         hf_token = None,
+        offline = False,
+        native_path_lease = None,
         hf_token_header = None,
         current_subject = "owner",
         via_api_key = False,
@@ -477,7 +482,7 @@ def test_already_loaded_dedupe_sees_the_ini_both_ways():
     backend._hf_variant = "Q4_K_M"
     backend._extra_args = ["--ctx-size", "8192", "--top-k", "20"]
     backend._extra_args_source = ("owner/repo", "Q4_K_M")
-    backend._studio_model_ini_record = (("--ctx-size", "8192"), backend._extra_args_source)
+    backend._studio_model_ini_record = (("--ctx-size", "8192"), backend._extra_args_source, False)
     kwargs = dict(
         model_identifier = "owner/repo",
         chat_template_override = None,
@@ -513,3 +518,125 @@ def test_ini_sampling_becomes_the_chat_defaults():
     }
     assert base["temperature"] == 0.6
     assert _with_model_ini_sampling(base, _Backend(["--temp", "0.42"], [])) is base
+
+
+def test_typed_sampler_after_the_ini_wins_in_the_reported_defaults():
+    from routes.inference import _with_model_ini_sampling
+
+    backend = _Backend(
+        ["--temp", "0.6", "--repeat-penalty", "1.1", "--temp=0.2"],
+        ["--temp", "0.6", "--repeat-penalty", "1.1"],
+    )
+    base = {"temperature": 0.7, "top_p": 0.95}
+    assert _with_model_ini_sampling(base, backend) == {
+        "temperature": 0.2,
+        "top_p": 0.95,
+        "repetition_penalty": 1.1,
+    }
+    # A typed sampler the INI never set stays out: only what the file supplied is promoted.
+    backend = _Backend(["--temp", "0.6", "--top-k", "5"], ["--temp", "0.6"])
+    assert "top_k" not in _with_model_ini_sampling(base, backend)
+
+
+def test_parallel_only_ini_still_counts_as_applied(monkeypatch):
+    import routes.inference as routes
+
+    _patch_locate(monkeypatch, "np = 2\n")
+    request = routes._apply_model_ini_to_request(_load_request(use_model_ini = True), "u/M-GGUF", "M")
+    assert request.n_parallel == 2 and request._model_ini_args == ()
+    assert request._model_ini_applied is True and request._model_ini_sampling is False
+    backend = _Backend([], [])
+    backend._studio_model_ini_record = routes._model_ini_record_for(
+        request, backend.extra_args_source
+    )
+    assert routes._model_ini_resident(backend) and routes._model_ini_prefix(backend) == ()
+
+
+def test_sampling_flag_tracks_whether_the_ini_set_a_sampler(monkeypatch):
+    import routes.inference as routes
+
+    _patch_locate(monkeypatch, "c = 4096\nfit = off\n")
+    perf = routes._apply_model_ini_to_request(_load_request(use_model_ini = True), "u/M-GGUF", "M")
+    assert perf._model_ini_applied and perf._model_ini_sampling is False
+    _patch_locate(monkeypatch, "c = 4096\nmin-p = 0.05\n")
+    samp = routes._apply_model_ini_to_request(_load_request(use_model_ini = True), "u/M-GGUF", "M")
+    assert samp._model_ini_sampling is True
+    from models.inference import InferenceStatusResponse, LoadResponse
+
+    assert "model_ini_sampling" in LoadResponse.model_fields
+    assert "model_ini_sampling" in InferenceStatusResponse.model_fields
+
+
+def test_split_mode_tensor_is_left_to_studio():
+    compiled = parse_model_ini(
+        "[*]\nsm = tensor\n[Q8_0]\nsplit-mode = row\n", quant = "Q8_0", gguf_filename = None
+    )
+    assert compiled.args == ["--split-mode", "row"]
+    assert [(i["key"], "tensor parallel" in i["reason"]) for i in compiled.ignored] == [
+        ("sm", True)
+    ]
+
+
+def test_route_passes_offline_through(monkeypatch):
+    seen = {}
+
+    def locate(path, variant, **kw):
+        seen.update(kw)
+        return None
+
+    monkeypatch.setattr(mi, "locate_model_ini", locate)
+    _call_route(monkeypatch, offline = True)
+    assert seen.get("offline") is True
+
+
+def test_offline_hf_lookup_lists_variants_from_the_cache_only(monkeypatch):
+    import utils.models.model_config as mc
+
+    monkeypatch.setattr(mc, "list_gguf_variants", lambda *a, **k: pytest.fail("network listing"))
+    monkeypatch.setattr(
+        mc,
+        "_list_gguf_variants_from_hf_cache",
+        lambda repo: ([SimpleNamespace(filename = "Q8_0/M-Q8_0.gguf", quant = "Q8_0")], False),
+    )
+    asked = []
+    mi._locate_hf("u/M-GGUF", "Q8_0", None, True, None, lambda r, f, t, off: asked.append((f, off)))
+    assert asked == [("Q8_0/unsloth.ini", True), ("unsloth.ini", True)]
+
+
+def test_route_reads_beside_a_native_lease(monkeypatch, tmp_path):
+    import routes.models as models_routes
+
+    gguf = tmp_path / "M-Q8_0.gguf"
+    gguf.write_bytes(b"GGUF")
+    (tmp_path / "unsloth.ini").write_text("c = 2048\n")
+    grants = []
+
+    def verify(lease, **kw):
+        grants.append((lease, kw))
+        return SimpleNamespace(canonical_path = gguf)
+
+    monkeypatch.setattr(models_routes, "verify_native_path_lease", verify, raising = False)
+    body = _call_route(monkeypatch, repo_id = "M-Q8_0.gguf", native_path_lease = "lease-1")
+    assert body.found and body.args == ["--ctx-size", "2048"]
+    assert grants == [
+        (
+            "lease-1",
+            dict(
+                operation = "validate-model",
+                expected_kind = "model",
+                expected_path_type = "file",
+                allowed_suffixes = (".gguf",),
+            ),
+        )
+    ]
+
+    from fastapi import HTTPException
+    from utils.native_path_leases import NativePathLeaseError
+
+    def refuse(lease, **kw):
+        raise NativePathLeaseError("Native path grant expired; re-select the file.")
+
+    monkeypatch.setattr(models_routes, "verify_native_path_lease", refuse, raising = False)
+    with pytest.raises(HTTPException) as exc:
+        _call_route(monkeypatch, repo_id = "M-Q8_0.gguf", native_path_lease = "stale")
+    assert exc.value.status_code == 400 and "re-select" in exc.value.detail

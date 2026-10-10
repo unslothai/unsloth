@@ -1207,6 +1207,7 @@ class TestLoadHubDownloadExclusion:
             "requested_llama_extra_args",
             # From the route's unsloth.ini record, not a backend attribute.
             "model_ini_applied",
+            "model_ini_sampling",
             # Constant None: llama-server never serves an audio GGUF.
             "audio_family",
             "audio_options",

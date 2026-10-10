@@ -73,6 +73,11 @@ SPEECH_GGUF_ARCHS = _gguf_archs.SPEECH_GGUF_ARCHS
 is_speech_gguf_architecture = _gguf_archs.is_speech_gguf_architecture
 from utils.account_context import account_thread
 from utils.utils import canonical_model_repo_id, log_and_http_error
+from utils.native_path_leases import (
+    NativePathLeaseError,
+    redact_native_paths,
+    verify_native_path_lease,
+)
 
 import re as _re
 
@@ -4849,6 +4854,10 @@ async def get_model_ini(
     gguf_variant: Optional[str] = Query(None, description = "Quant the INI sections are matched to"),
     local_path: Optional[str] = None,
     hf_token: Optional[str] = Query(None, description = "HuggingFace token for private repos"),
+    offline: bool = False,
+    native_path_lease: Optional[str] = Query(
+        None, description = "Grant for a GGUF picked in the native file dialog"
+    ),
     hf_token_header: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
@@ -4864,6 +4873,19 @@ async def get_model_ini(
 
     repo_id = resolve_host_path_reference(repo_id) or repo_id
     local_path = resolve_host_path_reference(local_path) or local_path
+    if native_path_lease:
+        # A native pick sends only its label; the grant names the file, as /validate reads it.
+        try:
+            grant = verify_native_path_lease(
+                native_path_lease,
+                operation = "validate-model",
+                expected_kind = "model",
+                expected_path_type = "file",
+                allowed_suffixes = (".gguf",),
+            )
+        except NativePathLeaseError as exc:
+            raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc))) from exc
+        repo_id, local_path = str(grant.canonical_path), None
     if account_access.managed_account():
         await asyncio.to_thread(account_access.require_model_access, repo_id)
         # The listing authorizes its own local copies; this route reads only what the grant names.
@@ -4872,7 +4894,9 @@ async def get_model_ini(
 
     def _read():
         try:
-            located = locate_model_ini(local_path or repo_id, gguf_variant, hf_token = hf_token)
+            located = locate_model_ini(
+                local_path or repo_id, gguf_variant, hf_token = hf_token, offline = offline
+            )
         except NotGgufModel:
             return describe(None, None)
         if located is None:

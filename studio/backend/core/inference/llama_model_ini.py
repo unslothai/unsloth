@@ -95,7 +95,8 @@ _OPTIONS: tuple[_Option, ...] = (
         ("sm", "split-mode"),
         "LLAMA_ARG_SPLIT_MODE",
         "choice",
-        choices = frozenset({"none", "layer", "row", "tensor"}),
+        # No "tensor": Studio's tensor-parallel switch owns it, and its layer fallback rewrites the args.
+        choices = frozenset({"none", "layer", "row"}),
     ),
     _opt("--tensor-split", ("ts", "tensor-split"), "LLAMA_ARG_TENSOR_SPLIT", "float_list"),
     _opt("--main-gpu", ("mg", "main-gpu"), "LLAMA_ARG_MAIN_GPU", "int", lo = 0, hi = 256),
@@ -386,6 +387,8 @@ def _compile_value(opt: _Option, value: str, inverted: bool) -> list[str]:
             raise ValueError(f"must be between {opt.lo:g} and {opt.hi:g}")
         return [opt.flag, str(number) if opt.kind == "int" else v]
     if opt.kind == "choice":
+        if opt.flag == "--split-mode" and v.lower() == "tensor":
+            raise ValueError("use Studio's tensor parallel setting instead")
         if v.lower() not in opt.choices:
             raise ValueError("expected one of " + ", ".join(sorted(opt.choices)))
         return [opt.flag, v.lower()]
@@ -576,7 +579,16 @@ def _locate_hf(
     download: Optional[Callable] = None,
 ) -> Optional[LocatedModelIni]:
     if list_variants is None:
-        from utils.models.model_config import list_gguf_variants as list_variants
+        from utils.models import model_config
+        if offline:
+            # The listing would still ask the Hub; offline reads only what the cache holds.
+            def list_variants(repo, hf_token = None):
+                cached = model_config._list_gguf_variants_from_hf_cache(repo)
+                if cached is None:
+                    raise LookupError(repo)
+                return cached
+        else:
+            list_variants = model_config.list_gguf_variants
     try:
         variants, _ = list_variants(repo_id, hf_token = hf_token)
     except Exception:

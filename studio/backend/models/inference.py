@@ -76,6 +76,8 @@ class LoadRequest(BaseModel):
     _override_alias_id: Optional[str] = PrivateAttr(default = None)
     # Tokens compiled from the model's unsloth.ini when use_model_ini resolved one.
     _model_ini_args: tuple[str, ...] = PrivateAttr(default = ())
+    _model_ini_applied: bool = PrivateAttr(default = False)
+    _model_ini_sampling: bool = PrivateAttr(default = False)
     load_request_id: Optional[str] = Field(
         None,
         min_length = 1,
@@ -630,6 +632,8 @@ class ValidateModelRequest(BaseModel):
         description = "Same as LoadRequest.use_model_ini, so the check judges the same command.",
     )
     _model_ini_args: tuple[str, ...] = PrivateAttr(default = ())
+    _model_ini_applied: bool = PrivateAttr(default = False)
+    _model_ini_sampling: bool = PrivateAttr(default = False)
     gguf_variant: Optional[str] = Field(
         None, description = "GGUF quantization variant (e.g. 'Q4_K_M')"
     )
@@ -1973,6 +1977,10 @@ class _InferenceRuntimeFields(BaseModel):
     model_ini_applied: bool = Field(
         False,
         description = "Whether the running GGUF load applied the model's unsloth.ini.",
+    )
+    model_ini_sampling: bool = Field(
+        False,
+        description = "Whether that unsloth.ini set any sampling value (temp, top-p, top-k, ...).",
     )
 
 

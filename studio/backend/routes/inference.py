@@ -8384,16 +8384,34 @@ def _unsloth_serving_fields(model_info: dict) -> dict:
     }
 
 
-def _model_ini_prefix(llama_backend) -> tuple[str, ...]:
-    """The unsloth.ini tokens the resident load put ahead of its extras, while the stored
-    extras are still that load's."""
+def _model_ini_record_for(request, source) -> Optional[tuple]:
+    """``(prefix, source, sets_sampling)`` for a load that applied its unsloth.ini, else None.
+    Kept even with no tokens: an INI holding only ``np`` still shaped the load."""
+    if not getattr(request, "_model_ini_applied", False):
+        return None
+    return (
+        tuple(_model_ini_tokens(request)),
+        source,
+        bool(getattr(request, "_model_ini_sampling", False)),
+    )
+
+
+def _resident_model_ini_record(llama_backend) -> Optional[tuple]:
+    """The resident load's INI record, while the stored extras are still that load's."""
     record = getattr(llama_backend, "_studio_model_ini_record", None)
-    if not record:
-        return ()
-    prefix, source = record
-    if source != getattr(llama_backend, "extra_args_source", None):
-        return ()
-    return prefix
+    if not record or record[1] != getattr(llama_backend, "extra_args_source", None):
+        return None
+    return record
+
+
+def _model_ini_resident(llama_backend) -> bool:
+    return bool(not llama_backend.is_diffusion and _resident_model_ini_record(llama_backend))
+
+
+def _model_ini_prefix(llama_backend) -> tuple[str, ...]:
+    """The unsloth.ini tokens the resident load put ahead of its extras."""
+    record = _resident_model_ini_record(llama_backend)
+    return record[0] if record else ()
 
 
 def _without_model_ini(llama_backend, args: Optional[list[str]]) -> Optional[list[str]]:
@@ -8486,11 +8504,14 @@ def _apply_model_ini_to_request(request, model_identifier: str, label: str):
     if compiled.n_parallel is not None:
         request = request.model_copy(update = {"n_parallel": compiled.n_parallel})
     request._model_ini_args = tuple(args)
+    request._model_ini_applied = True
+    request._model_ini_sampling = any(token in _MODEL_INI_SAMPLING for token in args)
     return request
 
 
 _MODEL_INI_SAMPLING = {
     "--temp": "temperature",
+    "--temperature": "temperature",
     "--top-p": "top_p",
     "--top-k": "top_k",
     "--min-p": "min_p",
@@ -8502,17 +8523,24 @@ _MODEL_INI_SAMPLING = {
 def _with_model_ini_sampling(inference: Optional[dict], llama_backend) -> Optional[dict]:
     """``inference`` with the resident unsloth.ini's sampling values on top: the chat sends its
     sliders on every request, so a server default alone would never reach the user."""
-    prefix = _model_ini_prefix(llama_backend)
-    if not inference or not prefix:
+    record = _resident_model_ini_record(llama_backend)
+    if not inference or not record or not record[2]:
         return inference
+    supplied = {_MODEL_INI_SAMPLING[t] for t in record[0] if t in _MODEL_INI_SAMPLING}
+    # Values from the whole launched list, last wins as in llama.cpp, so a typed --temp after
+    # the INI's is the one reported; only samplers the INI supplied are promoted.
+    tokens = [str(t) for t in getattr(llama_backend, "extra_args", None) or record[0]]
     merged = dict(inference)
-    for flag, value in zip(prefix, prefix[1:]):
+    for i, token in enumerate(tokens):
+        flag, eq, inline = token.partition("=")
         key = _MODEL_INI_SAMPLING.get(flag)
-        if key:
-            try:
-                merged[key] = int(value) if key == "top_k" else float(value)
-            except ValueError:
-                continue
+        if key not in supplied:
+            continue
+        value = inline if eq else (tokens[i + 1] if i + 1 < len(tokens) else None)
+        try:
+            merged[key] = int(value) if key == "top_k" else float(value)
+        except (TypeError, ValueError):
+            continue
     return merged
 
 
@@ -8588,7 +8616,10 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
                 else _without_model_ini(llama_backend, list(llama_backend.requested_extra_args))
             )
         ),
-        model_ini_applied = bool(not llama_backend.is_diffusion and _model_ini_prefix(llama_backend)),
+        model_ini_applied = _model_ini_resident(llama_backend),
+        model_ini_sampling = bool(
+            _model_ini_resident(llama_backend) and _resident_model_ini_record(llama_backend)[2]
+        ),
     )
     unresolved = (
         set(_InferenceRuntimeFields.model_fields) - fields.keys() - {"requires_trust_remote_code"}
@@ -19379,9 +19410,8 @@ async def _load_model_impl(
 
             llama_backend._openai_gguf_companion_roots = tuple(request._gguf_companion_roots)
             llama_backend._openai_gguf_companion_state = gguf_companion_state
-            _ini_prefix = tuple(_model_ini_tokens(request))
-            llama_backend._studio_model_ini_record = (
-                (_ini_prefix, llama_backend.extra_args_source) if _ini_prefix else None
+            llama_backend._studio_model_ini_record = _model_ini_record_for(
+                request, llama_backend.extra_args_source
             )
             if replacing:
                 await asyncio.to_thread(note_model_loaded, llama_backend)
