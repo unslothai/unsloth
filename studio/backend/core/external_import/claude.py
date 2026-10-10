@@ -80,14 +80,14 @@ def _parts(record: dict, message_id: str) -> tuple[list[dict], dict[str, str]]:
         elif kind == "tool_use" and not user:
             parts.append(tool_call(str(block.get("id") or f"{message_id}-{position}"), block))
         elif kind == "tool_result" and user and block.get("tool_use_id"):
-            # An empty output is still a finished call; Studio replays "" differently from none.
+            # empty output still marks a finished call; Studio replays "" differently from none
             results[str(block["tool_use_id"])] = _result_text(block.get("content"))
     return parts, results
 
 
 def read_transcript(path: Path, thread_id: str, session_id: str) -> Transcript:
     file_created, file_updated = file_times_ms(path)
-    # File order, not a tree walk: the import ledger relies on append-only order.
+    # file order preserves the append-only import ledger
     lines = list(read_jsonl(path))
     records = [
         r
@@ -96,8 +96,7 @@ def read_transcript(path: Path, thread_id: str, session_id: str) -> Transcript:
         and not r.get("isSidechain")
         and not r.get("isMeta")
     ]
-    # Attachment and system lines are links in the chain too. A compaction's logicalParentUuid can be
-    # unwritten or later in the file, so it continues from the line before it.
+    # attachments and system lines link ancestry; compact_boundary inherits prior if logicalParentUuid is absent or forward.
     links: dict[str, Any] = {}
     previous = None
     for line in lines:
@@ -106,7 +105,7 @@ def read_transcript(path: Path, thread_id: str, session_id: str) -> Transcript:
             links[str(line["uuid"])] = previous if compacted else line.get("parentUuid")
             previous = str(line["uuid"])
     imported: dict[str, str] = {}
-    # Parallel tool results hang off their own call; continue from the reply's last block, not a fork.
+    # parallel tool results hang off their own call; continue from the reply's last block, not a fork.
     reply_of: dict[str, str] = {}
     last_block: dict[str, str] = {}
     open_calls: dict[str, dict] = {}
@@ -121,7 +120,7 @@ def read_transcript(path: Path, thread_id: str, session_id: str) -> Transcript:
         if not parts:
             continue
         open_calls.update((p["toolCallId"], p) for p in parts if p["type"] == "tool-call")
-        # Nearest ancestor that became a message; rewinds keep their branch this way.
+        # use the nearest imported ancestor so rewinds stay on their original branch.
         parent, seen = record.get("parentUuid"), set()
         while parent and parent not in imported and parent not in seen:
             seen.add(parent)
