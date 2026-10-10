@@ -302,8 +302,9 @@ def _memory_line(output: str) -> list:
     raise ValueError("The GPU memory probe printed no measurement")
 
 
-def _wsl_amd_usable_mib(gpu_ids) -> list[float] | None:
-    """MiB each selected AMD GPU can allocate through WSL, or None when Windows cannot say.
+def _wsl_amd_usable_mib(gpu_ids) -> list[tuple[float, bool]] | None:
+    """(MiB, is an APU) for what each selected AMD GPU can allocate through WSL, or None when
+    Windows cannot say.
 
     Through DXG the pool HIP reports is the dedicated memory plus a share of the host's RAM, and an
     allocation past what the host can back hangs instead of failing. So a discrete card keeps its
@@ -335,9 +336,10 @@ def _wsl_amd_usable_mib(gpu_ids) -> list[float] | None:
             if len(matches) != 1 or "dedicated_memory_bytes" not in matches[0]:
                 return None
             usable = matches[0]["dedicated_memory_bytes"]
-            if _rocm_props_are_positively_unified(props):
+            unified = bool(_rocm_props_are_positively_unified(props))
+            if unified:
                 usable += 0.8 * available
-            caps.append(usable / 2**20)
+            caps.append((usable / 2**20, unified))
         return caps
     except Exception:
         return None
@@ -373,8 +375,13 @@ def _engine_memory_rows(
             match = re.search(r"^MemAvailable:\s+(\d+) kB", meminfo, re.M)
             if not match:
                 raise ValueError("Could not read the memory of the WSL environment")
-            caps = [int(match.group(1)) / 1024] * len(rows)
-        rows = [(total, min(free, cap)) for (total, free), cap in zip(rows, caps)]
+            caps = [(int(match.group(1)) / 1024, True)] * len(rows)
+        # A discrete card's cap is its whole dedicated memory; what is already allocated in HIP's
+        # pool comes off it. An APU's cap is read from what the host has available now.
+        rows = [
+            (total, max(0.0, min(free, cap if unified else cap - (total - free))))
+            for (total, free), (cap, unified) in zip(rows, caps)
+        ]
     return rows
 
 

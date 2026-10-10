@@ -1009,8 +1009,17 @@ def test_amd_wsl_budget_stays_inside_what_the_host_can_back(monkeypatch):
     monkeypatch.setattr(wsl_host, "guest", guest)
     info = {"path": "/env", "host": "wsl"}
     # Windows' figure first: dedicated memory, plus 80% of the host's available RAM on an APU.
-    monkeypatch.setattr(managed_engine, "_wsl_amd_usable_mib", lambda ids: [80 * 1024.0])
+    monkeypatch.setattr(managed_engine, "_wsl_amd_usable_mib", lambda ids: [(80 * 1024.0, True)])
     assert managed_engine._engine_memory_rows(info, {}, [0]) == [(102 * 1024, 80 * 1024.0)]
+    # A discrete card: 8 GiB already allocated in a 40 GiB pool leaves 8 of its 16 GiB.
+    monkeypatch.setattr(
+        wsl_host,
+        "guest",
+        lambda argv, **k: json.dumps([[32 * 2**30, 40 * 2**30]]),
+    )
+    monkeypatch.setattr(managed_engine, "_wsl_amd_usable_mib", lambda ids: [(16 * 1024.0, False)])
+    assert managed_engine._engine_memory_rows(info, {}, [0]) == [(40 * 1024, 8 * 1024.0)]
+    monkeypatch.setattr(wsl_host, "guest", guest)
     # Windows cannot say: the VM's available memory is the bound.
     monkeypatch.setattr(managed_engine, "_wsl_amd_usable_mib", lambda ids: None)
     assert managed_engine._engine_memory_rows(info, {}, [0]) == [(102 * 1024, 61440.0)]
@@ -1039,9 +1048,9 @@ def test_amd_wsl_capacity_follows_the_windows_adapter(monkeypatch):
     )
     # An APU adds 80% of the RAM Windows has available to its dedicated memory.
     monkeypatch.setattr(hardware, "_rocm_props_are_positively_unified", lambda p: True)
-    assert managed_engine._wsl_amd_usable_mib([0]) == [512 + 0.8 * 100 * 1024]
+    assert managed_engine._wsl_amd_usable_mib([0]) == [(512 + 0.8 * 100 * 1024, True)]
     monkeypatch.setattr(hardware, "_rocm_props_are_positively_unified", lambda p: False)
-    assert managed_engine._wsl_amd_usable_mib([0]) == [512.0]
+    assert managed_engine._wsl_amd_usable_mib([0]) == [(512.0, False)]
     # No registry record that names this GPU: Windows cannot say.
     monkeypatch.setattr(hardware, "_windows_amd_adapter_records_or_none", lambda: None)
     assert managed_engine._wsl_amd_usable_mib([0]) is None
