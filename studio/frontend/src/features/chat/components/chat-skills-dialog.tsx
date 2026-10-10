@@ -484,7 +484,7 @@ export function ChatSkillsDialog({
                         <SkillRow
                           key={keyOf(skill)}
                           skill={skill}
-                          changing={changing === skill.name || changing === ALL_SKILLS}
+                          changing={changing !== null}
                           onOpen={() => openSkill(skill)}
                           onToggle={(enabled) => void toggle(skill.name, enabled)}
                         />
@@ -634,8 +634,7 @@ export function ChatSkillsDialog({
                     disabled={
                       !selected.valid ||
                       selected.shadowed ||
-                      changing === selected.name ||
-                      changing === ALL_SKILLS
+                      changing !== null
                     }
                     aria-label={t(selected.enabled ? "skills.disable" : "skills.enable", {
                       name: selected.name,

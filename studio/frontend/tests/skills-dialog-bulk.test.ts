@@ -48,8 +48,9 @@ test("reset discards custom choices, so it asks first", () => {
     DIALOG,
     /variant="destructive"\s*onClick=\{\(\) => \{\s*setConfirmingReset\(false\);/,
   );
-  // Every row's switch waits while a bulk change is in flight.
-  assert.match(DIALOG, /changing=\{changing === skill\.name \|\| changing === ALL_SKILLS\}/);
-  // So does the switch in a skill's own view, or flipping it would clear the bulk busy state early.
-  assert.match(DIALOG, /changing === selected\.name \|\|\s*changing === ALL_SKILLS/);
+  // Every row waits for every change: overlapping a single toggle and a bulk write could
+  // otherwise let their responses publish in an order different from the server writes.
+  assert.match(DIALOG, /<SkillRow[\s\S]*?changing=\{changing !== null\}/);
+  // The detail switch follows the same gate, so it cannot race a change started in the library.
+  assert.match(DIALOG, /<Switch[\s\S]*?disabled=\{[\s\S]*?changing !== null[\s\S]*?\}/);
 });
