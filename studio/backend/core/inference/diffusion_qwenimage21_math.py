@@ -36,10 +36,9 @@ def _query_rows(query, key, budget: Optional[int]) -> int:
     if budget is None:
         return QUERY_CHUNK_SIZE
     per_row = max(query.shape[0] * query.shape[2] * key.shape[1], 1)
-    return max(
-        QUERY_CHUNK_SIZE,
-        min(budget // (per_row * query.element_size()), MPS_SCORE_ELEMENTS // per_row),
-    )
+    # The element cap is a correctness bound, so it also wins over the 512-row floor (batched 2048x2048).
+    rows = max(QUERY_CHUNK_SIZE, budget // (per_row * query.element_size()))
+    return max(1, min(rows, MPS_SCORE_ELEMENTS // per_row))
 
 
 def _bounded_attention(

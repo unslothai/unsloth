@@ -231,6 +231,12 @@ def test_query_rows_follow_the_score_budget(budget, rows):
     assert bounded._query_rows(q, k, budget) == rows
 
 
+def test_batched_2048_stays_under_the_mps_element_cap():
+    q, k = torch.empty(2, 16384, 32, 1, dtype = torch.bfloat16), torch.empty(2, 16640, 32, 1, dtype = torch.bfloat16)
+    rows = bounded._query_rows(q, k, 2**34)
+    assert 1 <= rows < bounded.QUERY_CHUNK_SIZE and rows * 2 * 32 * 16640 <= bounded.MPS_SCORE_ELEMENTS
+
+
 def test_mps_score_budget_reads_the_override(monkeypatch):
     monkeypatch.setenv(bounded.SCORE_BUDGET_ENV, "256")
     assert bounded.mps_score_budget() == 256 * 2**20
