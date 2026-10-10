@@ -2917,9 +2917,9 @@ export const ptBR = {
       },
       mcp: {
         title: "Acesso de agentes (MCP)",
-        description: "Permita que agentes de código como Claude Code e Codex usem o Unsloth Studio via MCP. Os agentes entram com um token de acesso desta página.",
+        description: "Permita que agentes de código como Claude Code e Codex usem o Unsloth via MCP. Os agentes entram com um token de acesso desta página.",
         enable: "Permitir conexões de agentes",
-        enableDescription: "Atende /mcp/ para solicitações que trazem um token de acesso do Unsloth Studio.",
+        enableDescription: "Atende /mcp/ para solicitações que trazem um token de acesso do Unsloth.",
         lockedByEnv: "Definido por {name}.",
         loadError: "Não foi possível carregar as configurações de acesso de agentes.",
         saveError: "Não foi possível salvar a configuração de acesso de agentes.",

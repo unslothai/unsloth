@@ -2945,9 +2945,9 @@ export const de = {
       },
       mcp: {
         title: "Agentenzugriff (MCP)",
-        description: "Lass Coding-Agenten wie Claude Code und Codex Unsloth Studio über MCP nutzen. Agenten melden sich mit einem Zugriffstoken von dieser Seite an.",
+        description: "Lass Coding-Agenten wie Claude Code und Codex Unsloth über MCP nutzen. Agenten melden sich mit einem Zugriffstoken von dieser Seite an.",
         enable: "Agentenverbindungen erlauben",
-        enableDescription: "Stellt /mcp/ für Anfragen mit einem Unsloth Studio-Zugriffstoken bereit.",
+        enableDescription: "Stellt /mcp/ für Anfragen mit einem Unsloth-Zugriffstoken bereit.",
         lockedByEnv: "Festgelegt durch {name}.",
         loadError: "Die Einstellungen für den Agentenzugriff konnten nicht geladen werden.",
         saveError: "Die Einstellung für den Agentenzugriff konnte nicht gespeichert werden.",
