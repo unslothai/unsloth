@@ -4,7 +4,6 @@
 """Chat template utilities for dataset processing: apply chat templates to datasets and generate dataset info summaries."""
 
 import json
-import re
 import warnings as python_warnings
 
 from .cells import cell_text
@@ -175,20 +174,28 @@ def _drop_none_values(value):
     return value
 
 
-def _sharegpt_tool_turns(conversation, content = ""):
+def _sharegpt_tool_turns(conversation, content = "", probe = False):
     """Map ShareGPT ``function_call`` / ``observation`` turns to OpenAI tool turns, and the
-    names and argument values of the calls made; the conversation itself when it has neither role."""
+    markers ``probe`` put in place of each call's arguments and each result; the conversation
+    itself when it has neither role."""
     if not any(
         isinstance(message, dict) and message.get("role") in ("observation", "function_call")
         for message in conversation
     ):
         return conversation, []
     turns = []
-    needles = []
-    for message in conversation:
+    markers = []
+    result_ids = []
+    calls_made = 0
+    for index, message in enumerate(conversation):
         role = message.get("role") if isinstance(message, dict) else None
         if role == "observation":
             message = {**message, "role": "tool"}
+            if result_ids:
+                message["tool_call_id"] = result_ids.pop(0)
+            if probe:
+                markers.append(f"unslothresult{len(markers)}end")
+                message["content"] = markers[-1]
         elif role == "function_call":
             try:
                 calls = json.loads(message.get("content"))
@@ -202,51 +209,28 @@ def _sharegpt_tool_turns(conversation, content = ""):
                     # A JSON string keeps explicit nulls through _drop_none_values.
                     if not isinstance(arguments, str):
                         arguments = json.dumps(arguments, ensure_ascii = False)
+                    if probe:
+                        markers.append(f"unslothcall{len(markers)}end")
+                        arguments = json.dumps({"probe": markers[-1]})
+                    calls_made += 1
                     tool_calls.append(
                         {
+                            # Nine alphanumerics, as Mistral requires.
+                            "id": f"call{calls_made:05d}",
                             "type": "function",
                             "function": {"name": call["name"], "arguments": arguments},
                         }
                     )
-                    needles.append(call["name"])
-                    _collect_values(arguments, needles)
                 message = {"role": "assistant", "content": content, "tool_calls": tool_calls}
+                results = 0
+                for later in conversation[index + 1 :]:
+                    if not (isinstance(later, dict) and later.get("role") == "observation"):
+                        break
+                    results += 1
+                # Results pair with calls by position only when there is one per call.
+                result_ids = [call["id"] for call in tool_calls] if results == len(calls) else []
         turns.append(message)
-    return turns, needles
-
-
-_PLAIN_VALUE = re.compile(r"[A-Za-z0-9_.,:/ -]+")
-
-
-def _collect_values(arguments, needles):
-    if isinstance(arguments, str):
-        try:
-            arguments = json.loads(arguments)
-        except (ValueError, RecursionError):
-            arguments = arguments.strip()
-    if isinstance(arguments, dict):
-        arguments = list(arguments.values())
-    if isinstance(arguments, list):
-        for value in arguments:
-            _collect_values(value, needles)
-    elif isinstance(arguments, str) and _PLAIN_VALUE.fullmatch(arguments):
-        # Values tojson would escape (quotes, <, &, newlines, non-ASCII) cannot be counted verbatim.
-        needles.append(arguments)
-    elif isinstance(arguments, int) and not isinstance(arguments, bool):
-        needles.append(str(arguments))
-
-
-def _renders_calls(conversation, needles):
-    # Each call must add its name and argument values beyond what the other turns already say,
-    # else the template ignored tool_calls or rendered only some of them (gpt-oss takes the first).
-    said = "".join(
-        message["content"]
-        for message in conversation
-        if isinstance(message, dict) and isinstance(message.get("content"), str)
-    )
-    return lambda text: all(
-        text.count(needle) >= said.count(needle) + needles.count(needle) for needle in set(needles)
-    )
+    return turns, markers
 
 
 def _each_call_has_a_result(turns):
@@ -267,25 +251,32 @@ def _each_call_has_a_result(turns):
 def _render_conversation(tokenizer, conversation):
     from core.inference.chat_template_helpers import _split_parallel_tool_calls
 
-    tool_turns, needles = _sharegpt_tool_turns(conversation)
-    if tool_turns is not conversation:
-        accept = _renders_calls(tool_turns, needles)
-        # None content for templates that render calls only then (DeepSeek); split parallel
-        # calls for templates taking one per message (Llama 3.x), only when each call has its
-        # own result, as one shared result would land after the first call alone.
-        candidates = [tool_turns, _sharegpt_tool_turns(conversation, content = None)[0]]
-        if _each_call_has_a_result(tool_turns):
-            candidates += [_split_parallel_tool_calls(turns) for turns in candidates]
-        for turns in candidates:
-            try:
-                return _render_messages(tokenizer, turns, accept)
-            except Exception:
-                pass
-        # A template that ignores tool_calls (plain ChatML, SmolLM2) keeps the row as written.
+    candidates = []
+    # None content for templates that render calls only then (DeepSeek); parallel calls split
+    # for templates taking one per message (Llama 3.x), only when each call has its own result,
+    # as one shared result would land after the first call alone.
+    for content in ("", None):
+        turns, _ = _sharegpt_tool_turns(conversation, content)
+        if turns is conversation:
+            break
+        probe, markers = _sharegpt_tool_turns(conversation, content, probe = True)
+        candidates.append((turns, probe, markers))
+        split = _split_parallel_tool_calls(turns)
+        if split is not turns and _each_call_has_a_result(turns):
+            candidates.append((split, _split_parallel_tool_calls(probe), markers))
+    for turns, probe, markers in candidates:
+        # The markers show every call and result survived: templates may ignore tool_calls
+        # (plain ChatML), drop tool turns, or render only the first call (gpt-oss).
+        try:
+            shown = _render_messages(tokenizer, probe)
+            if all(marker in shown for marker in markers):
+                return _render_messages(tokenizer, turns)
+        except Exception:
+            pass
     return _render_messages(tokenizer, conversation)
 
 
-def _render_messages(tokenizer, conversation, accept = None):
+def _render_messages(tokenizer, conversation):
     from core.inference.chat_template_helpers import _normalize_tool_call_arguments
 
     attempts = []
@@ -296,7 +287,7 @@ def _render_messages(tokenizer, conversation, accept = None):
     first_error = None
     for attempt in attempts:
         try:
-            text = tokenizer.apply_chat_template(
+            return tokenizer.apply_chat_template(
                 attempt, tokenize = False, add_generation_prompt = False
             )
         except Exception as error:
@@ -304,10 +295,7 @@ def _render_messages(tokenizer, conversation, accept = None):
             # error is usually a key the loader filled with None, so report the cleaned row's.
             if first_error is None:
                 first_error = error
-            continue
-        if accept is None or accept(text):
-            return text
-    raise first_error or ValueError("The chat template did not render the tool calls")
+    raise first_error
 
 
 def _count_renderable(tokenizer, conversations):

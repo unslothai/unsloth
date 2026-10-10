@@ -388,3 +388,60 @@ def test_sharegpt_repeated_call_name_is_not_lost_on_a_first_call_only_template()
 
     assert result["success"] is True, result["errors"]
     assert "Rome" in result["dataset"][0]["text"]
+
+
+def test_sharegpt_results_are_kept_when_the_template_drops_tool_turns():
+    no_tool_turns = (
+        "{%- for message in messages %}"
+        "{%- if message.tool_calls %}{%- set call = message.tool_calls[0].function %}"
+        "{{- '<call>' + call.name + call.arguments }}"
+        "{%- elif message.role != 'tool' %}{{- '<' + message.role + '>' + message.content }}"
+        "{%- endif %}{%- endfor %}"
+    )
+    call = json.dumps({"name": "get_weather", "arguments": {"city": "Paris"}})
+
+    result = _format_sharegpt([_sharegpt_tool_row(call)], no_tool_turns)
+
+    assert '{"temp": 18}' in result["dataset"][0]["text"]
+
+
+def test_sharegpt_parallel_results_are_labelled_with_their_own_call():
+    call = json.dumps(
+        [
+            {"name": "get_weather", "arguments": {"city": "Paris"}},
+            {"name": "get_time", "arguments": {"city": "Rome"}},
+        ]
+    )
+    row = _sharegpt_tool_row(call)
+    row["conversations"].insert(3, {"from": "observation", "value": '{"time": "noon"}'})
+
+    result = _format_sharegpt([row], _GEMMA4_TEMPLATE.read_text(encoding = "utf-8"))
+
+    assert result["success"] is True, result["errors"]
+    text = result["dataset"][0]["text"]
+    assert "response:get_weather{" in text
+    assert "response:get_time{" in text
+
+
+def test_sharegpt_repeated_call_with_only_boolean_arguments_is_not_lost():
+    first_call_only = (
+        "{%- for message in messages %}"
+        "{%- if message.tool_calls %}{%- set call = message.tool_calls[0].function %}"
+        "{{- '<call ' + call.name + '>' + call.arguments + '</call>' }}"
+        "{%- elif message.role == 'tool' %}{{- '<result from=set_light>' + message.content }}"
+        "{%- else %}{{- '<' + message.role + '>' + message.content }}{%- endif %}"
+        "{%- endfor %}"
+    )
+    call = json.dumps(
+        [
+            {"name": "set_light", "arguments": {"on": True}},
+            {"name": "set_light", "arguments": {"on": False}},
+        ]
+    )
+    row = _sharegpt_tool_row(call)
+    row["conversations"].insert(3, {"from": "observation", "value": '{"ok": 1}'})
+
+    result = _format_sharegpt([row], first_call_only)
+
+    text = result["dataset"][0]["text"]
+    assert '{"on": true}' in text and '{"on": false}' in text
