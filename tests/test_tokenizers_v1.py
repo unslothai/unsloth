@@ -166,6 +166,17 @@ def test_padding_and_truncation_take_rc_and_match(rc_on, side):
 
 
 @needs_rc
+def test_max_length_below_special_tokens_matches_0x(rc_on):
+    # 0.x leaves such a row untruncated; the RC would keep only the special tokens.
+    plain, fast = _pair(_byte_level)
+    for kwargs in (
+        {"truncation": True, "max_length": 0},
+        {"truncation": True, "max_length": 0, "add_special_tokens": False},
+    ):
+        assert dict(fast(TEXTS, **kwargs)) == dict(plain(TEXTS, **kwargs))
+
+
+@needs_rc
 def test_overflow_and_fields_the_rc_lacks_come_from_0x(rc_on):
     plain, fast = _pair(_byte_level)
     for kwargs in (

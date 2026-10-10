@@ -16,7 +16,9 @@ match 0.x on a probe set first, else the backend stays on 0.x. Fields the RC's `
 (offsets, tokens, word ids, special tokens mask, ...) are recomputed by 0.x on first access.
 """
 
+import contextlib
 import copy
+import functools
 import glob
 import hashlib
 import importlib.machinery
@@ -69,16 +71,15 @@ _PROBES = (
 _v1_module = None
 _v1_tried = False
 _v1_lock = threading.Lock()
-# The RC deadlocks building a tokenizer in a child forked after any RC tokenizer was built (12/12
-# in a fork test; encoding with an inherited one never hung). So snapshots are keyed by backend
-# JSON and inherited across fork, wrappers are refreshed before each fork, and a child forked after
-# a build only reuses inherited snapshots.
+# RC from_file deadlocks in a child forked after any RC build (encoding inherited ones is fine):
+# snapshots are keyed by JSON, refreshed before fork, and such children only reuse them.
 _MAX_SNAPSHOTS = 8
 _snapshots = {}
 _snapshots_lock = threading.Lock()
 _built_here = False
 _no_build = False
 _live = weakref.WeakSet()
+_fork_hooks = False
 
 
 def tokenizers_v1_enabled():
@@ -104,7 +105,7 @@ def _load_v1():
         if loaded is not None and any(
             os.path.samefile(loaded.__file__, path) for path in candidates
         ):
-            # Initialising the same extension twice in one process hangs forked children.
+            # An extension initialises once per process; only tests reset the cache.
             candidates = []
             module = loaded
         elif not candidates:
@@ -143,21 +144,21 @@ def _same(a, b):
 class _Snapshot:
     """An RC tokenizer and a 0.x twin, both built from one backend JSON (no padding / truncation)."""
 
-    __slots__ = ("v1", "reference", "lock", "option_cache")
+    __slots__ = ("v1", "reference", "lock", "option_cache", "n_special")
 
     def __init__(self, v1, reference):
         self.v1 = v1
         self.reference = reference
         self.lock = threading.Lock()
         self.option_cache = {}
+        self.n_special = reference.num_special_tokens_to_add(False)
 
-    def reference_encode(
+    @contextlib.contextmanager
+    def configured(
         self,
-        text,
-        add_special_tokens,
-        encode_special_tokens,
-        padding = None,
-        truncation = None,
+        padding,
+        truncation,
+        encode_special_tokens = False,
     ):
         with self.lock:
             reference = self.reference
@@ -167,10 +168,21 @@ class _Snapshot:
             if padding is not None:
                 reference.enable_padding(**padding)
             try:
-                return reference.encode(text, add_special_tokens = add_special_tokens)
+                yield reference
             finally:
                 reference.no_padding()
                 reference.no_truncation()
+
+    def reference_encode(
+        self,
+        text,
+        add_special_tokens,
+        encode_special_tokens,
+        padding = None,
+        truncation = None,
+    ):
+        with self.configured(padding, truncation, encode_special_tokens) as reference:
+            return reference.encode(text, add_special_tokens = add_special_tokens)
 
     def options(self, padding, truncation):
         """0.x padding / truncation dicts -> RC objects; None if the RC cannot express them."""
@@ -227,8 +239,6 @@ class _State:
 
 def _build_snapshot(base, text):
     v1_module = _load_v1()
-    if v1_module is None:
-        return None
     # The RC loads only from a file or the Hub.
     fd, path = tempfile.mkstemp(suffix = ".json", prefix = "unsloth_tokenizers_v1_")
     try:
@@ -256,14 +266,13 @@ def _build_snapshot(base, text):
             )
             if len(want) != len(got) or not all(_same(a, b) for a, b in zip(want, got)):
                 raise ValueError("token ids differ from tokenizers 0.x on the probe set")
-    reference.encode_special_tokens = False
     snapshot = _Snapshot(v1, reference)
-    pad_id = base.token_to_id(added[0]) if added else 0
+    pad_id = (base.token_to_id(added[0]) if added else None) or 0
     for direction in ("right", "left"):
         padding = dict(
             length = None,
             pad_to_multiple_of = None,
-            pad_id = pad_id or 0,
+            pad_id = pad_id,
             pad_type_id = 0,
             pad_token = added[0] if added else "[PAD]",
             direction = direction,
@@ -271,16 +280,8 @@ def _build_snapshot(base, text):
         truncation = dict(max_length = 5, stride = 0, strategy = "longest_first", direction = direction)
         for pad, trunc in ((padding, None), (None, truncation), (padding, truncation)):
             v1_padding, v1_truncation = snapshot.options(pad, trunc)
-            with snapshot.lock:
-                if trunc is not None:
-                    reference.enable_truncation(**trunc)
-                if pad is not None:
-                    reference.enable_padding(**pad)
-                try:
-                    want = reference.encode_batch(probes)
-                finally:
-                    reference.no_padding()
-                    reference.no_truncation()
+            with snapshot.configured(pad, trunc) as configured:
+                want = configured.encode_batch(probes)
             got = v1.encode_batch(probes, padding = v1_padding, truncation = v1_truncation)
             if len(want) != len(got) or not all(_same(a, b) for a, b in zip(want, got)):
                 raise ValueError(f"padded / truncated ids differ from tokenizers 0.x ({direction})")
@@ -362,6 +363,7 @@ class TokenizersV1Backend:
         object.__setattr__(self, "_unsloth_base", base)
         object.__setattr__(self, "_unsloth_state", _State())
         _live.add(self)
+        _register_fork_hooks()
 
     def __getattr__(self, name):
         if name in _MUTATING:
@@ -387,11 +389,6 @@ class TokenizersV1Backend:
 
     def __deepcopy__(self, memo):
         return _rewrap(copy.deepcopy(self._unsloth_base, memo))
-
-    def _unsloth_snapshot(self):
-        if self._unsloth_state.disabled:
-            return None
-        return self._unsloth_refresh()
 
     def _unsloth_refresh(self):
         state = self._unsloth_state
@@ -444,17 +441,23 @@ class TokenizersV1Backend:
                 f"Unsloth: this tokenizer stays on tokenizers 0.x, the release candidate cannot match it: {error}"
             )
             return None
-        if snapshot is not None:
-            with _snapshots_lock:
-                _snapshots[digest] = snapshot
-                while len(_snapshots) > _MAX_SNAPSHOTS:
-                    _snapshots.pop(next(iter(_snapshots)))
+        with _snapshots_lock:
+            _snapshots[digest] = snapshot
+            while len(_snapshots) > _MAX_SNAPSHOTS:
+                _snapshots.pop(next(iter(_snapshots)))
         return snapshot
 
     def _unsloth_encode(self, snapshot, texts, add_special_tokens):
         base = self._unsloth_base
         split = base.encode_special_tokens
         padding, truncation = base.padding, base.truncation
+        # 0.x skips truncation when max_length cannot fit the added special tokens; the RC drops content.
+        if (
+            truncation is not None
+            and add_special_tokens
+            and truncation["max_length"] < snapshot.n_special
+        ):
+            return None
         options = snapshot.options(padding, truncation)
         if options is None:
             return None
@@ -479,6 +482,18 @@ class TokenizersV1Backend:
                     )
         return out
 
+    def _unsloth_try(self, texts, add_special_tokens, is_pretokenized, kwargs):
+        if kwargs or is_pretokenized or not isinstance(texts, (list, tuple)):
+            return None
+        if not all(type(text) is str for text in texts):
+            return None
+        snapshot = self._unsloth_refresh()
+        return (
+            None
+            if snapshot is None
+            else self._unsloth_encode(snapshot, list(texts), add_special_tokens)
+        )
+
     def encode_batch(
         self,
         input,
@@ -486,16 +501,9 @@ class TokenizersV1Backend:
         is_pretokenized = False,
         **kwargs,
     ):
-        if not kwargs and not is_pretokenized and isinstance(input, (list, tuple)):
-            if all(type(text) is str for text in input):
-                snapshot = self._unsloth_snapshot()
-                out = (
-                    None
-                    if snapshot is None
-                    else self._unsloth_encode(snapshot, list(input), add_special_tokens)
-                )
-                if out is not None:
-                    return out
+        out = self._unsloth_try(input, add_special_tokens, is_pretokenized, kwargs)
+        if out is not None:
+            return out
         return self._unsloth_base.encode_batch(
             input, add_special_tokens = add_special_tokens, is_pretokenized = is_pretokenized, **kwargs
         )
@@ -507,16 +515,9 @@ class TokenizersV1Backend:
         is_pretokenized = False,
         **kwargs,
     ):
-        if not kwargs and not is_pretokenized and isinstance(input, (list, tuple)):
-            if all(type(text) is str for text in input):
-                snapshot = self._unsloth_snapshot()
-                out = (
-                    None
-                    if snapshot is None
-                    else self._unsloth_encode(snapshot, list(input), add_special_tokens)
-                )
-                if out is not None:
-                    return out
+        out = self._unsloth_try(input, add_special_tokens, is_pretokenized, kwargs)
+        if out is not None:
+            return out
         return self._unsloth_base.encode_batch_fast(
             input, add_special_tokens = add_special_tokens, is_pretokenized = is_pretokenized, **kwargs
         )
@@ -529,13 +530,8 @@ class TokenizersV1Backend:
         add_special_tokens = True,
         **kwargs,
     ):
-        if not kwargs and pair is None and not is_pretokenized and type(sequence) is str:
-            snapshot = self._unsloth_snapshot()
-            out = (
-                None
-                if snapshot is None
-                else self._unsloth_encode(snapshot, [sequence], add_special_tokens)
-            )
+        if pair is None and type(sequence) is str:
+            out = self._unsloth_try([sequence], add_special_tokens, is_pretokenized, kwargs)
             if out is not None:
                 return out[0]
         return self._unsloth_base.encode(
@@ -562,8 +558,11 @@ def _after_fork_in_child():
     _no_build = _no_build or _built_here
 
 
-if hasattr(os, "register_at_fork"):
-    os.register_at_fork(before = _refresh_before_fork, after_in_child = _after_fork_in_child)
+def _register_fork_hooks():
+    global _fork_hooks
+    if not _fork_hooks and hasattr(os, "register_at_fork"):
+        _fork_hooks = True
+        os.register_at_fork(before = _refresh_before_fork, after_in_child = _after_fork_in_child)
 
 
 def _is_tokenizers_0x(backend):
@@ -571,6 +570,7 @@ def _is_tokenizers_0x(backend):
         import tokenizers
     except ImportError:
         return False
+    # Under tokenizers >= 1.0 the backend is already the fast engine.
     return isinstance(backend, tokenizers.Tokenizer) and str(tokenizers.__version__).startswith(
         "0."
     )
@@ -598,16 +598,12 @@ def enable_tokenizers_v1(tokenizer):
             continue
         if _load_v1() is None:
             break
-        try:
-            obj._tokenizer = TokenizersV1Backend(backend)
-        except Exception:
-            pass
+        obj._tokenizer = TokenizersV1Backend(backend)
     return tokenizer
 
 
 def tokenizers_v1_on_return(fn):
     """Decorate a ``from_pretrained`` returning ``(model, tokenizer)``."""
-    import functools
 
     @functools.wraps(fn)
     def _wrapper(*args, **kwargs):
