@@ -555,7 +555,7 @@ def _hook_no_placement_ancestors(model):
 def _attach_bnb_multidevice_hooks(
     model, load_in_4bit, load_in_8bit, offload_embedding, fast_inference
 ):
-    """Attach accelerate AlignDevicesHook on a bnb model loaded across multiple devices (or a non-default device). No-op for single-GPU cuda:0, non-bnb, vLLM, or already-dispatched models."""
+    """Attach accelerate AlignDevicesHook on a bnb model loaded across multiple devices (or a non-default device). No-op for single-GPU cuda:0, a distributed rank on its own device, non-bnb, vLLM, or already-dispatched models."""
     if fast_inference:
         return
     # Before the bnb gate: the rebuild happens whatever the quantization. Not under offload, where _embedding_dispatch_device READS this hook to place the ids.
@@ -603,6 +603,9 @@ def _attach_bnb_multidevice_hooks(
 
     default_cuda = torch.device("cuda", 0)
     if all_devs == {default_cuda}:
+        return
+    # A distributed rank holds its whole model on its own card, and the trainer already moves batches there. The hooks would only graph-break the compiled forward on ranks >= 1, so the non-reentrant checkpoint recompute stops matching the forward (#3459).
+    if len(all_devs) == 1 and is_distributed():
         return
 
     try:
