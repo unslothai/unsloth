@@ -556,6 +556,136 @@ class TestEnsureFlashAttn:
         assert ("warning", "No published flash-attn prebuilt wheel found") not in step_messages
         assert any("could not" in message.lower() for _kind, message in step_messages)
 
+    def _run_with_resident_copy(
+        self,
+        *,
+        resident: str | None = "2.8.1",
+        env: dict[str, str] | None = None,
+        torch_imports: bool = True,
+        url_available: bool | None = False,
+        install_returncode: int = 0,
+        fake_run = None,
+    ) -> tuple[list[tuple[str, str]], list[list[str]], mock.Mock]:
+        """The #13244 venv: a cu13torch2.10 wheel left behind under torch 2.9+cu126 on cp313,
+        a combination flash-attn v2.8.3 publishes no wheel for."""
+        step_messages: list[tuple[str, str]] = []
+        removals: list[list[str]] = []
+
+        def default_run(cmd, **kwargs):
+            if "uninstall" in cmd:
+                removals.append(list(cmd))
+                return subprocess.CompletedProcess(cmd, 0)
+            return self._import_check()
+
+        if env is None:
+            env = {
+                "python_tag": "cp313",
+                "torch_mm": "2.9",
+                "cuda_major": "12",
+                "cxx11abi": "TRUE",
+                "platform_tag": "linux_x86_64",
+            }
+        with (
+            mock.patch.object(ips, "NO_TORCH", False),
+            mock.patch.object(ips, "IS_WINDOWS", False),
+            mock.patch.object(ips, "IS_MACOS", False),
+            # probe_torch_wheel_env returns None when `import torch` fails.
+            mock.patch.object(
+                ips, "probe_torch_wheel_env", return_value = env if torch_imports else None
+            ),
+            mock.patch.object(ips, "_installed_distribution_version", return_value = resident),
+            mock.patch.object(ips, "url_exists", return_value = url_available),
+            mock.patch.object(
+                ips,
+                "install_wheel",
+                return_value = [("uv", subprocess.CompletedProcess(["uv"], install_returncode, ""))],
+            ) as mock_install_wheel,
+            mock.patch.object(
+                ips,
+                "_step",
+                side_effect = lambda label, value, color_fn = None: step_messages.append(
+                    (label, value)
+                ),
+            ),
+            mock.patch("subprocess.run", side_effect = fake_run or default_run),
+        ):
+            ips._ensure_flash_attn()
+        return step_messages, removals, mock_install_wheel
+
+    def test_stale_copy_is_removed_when_no_wheel_is_published(self):
+        """Left in place, xformers imports it and every diffusers pipeline fails (#13244)."""
+        step_messages, removals, mock_install_wheel = self._run_with_resident_copy()
+
+        mock_install_wheel.assert_not_called()
+        assert any("flash-attn" in cmd for cmd in removals), removals
+        assert ("warning", "No published flash-attn prebuilt wheel found") in step_messages
+        assert (
+            "warning",
+            "flash-attn was built for another torch or CUDA and does not import; removed it",
+        ) in step_messages
+
+    def test_stale_copy_is_removed_when_no_wheel_matches(self):
+        step_messages, removals, _ = self._run_with_resident_copy(
+            env = {
+                "python_tag": "cp313",
+                "torch_mm": "2.3",
+                "cuda_major": "12",
+                "cxx11abi": "TRUE",
+                "platform_tag": "linux_x86_64",
+            },
+        )
+
+        assert any("flash-attn" in cmd for cmd in removals), removals
+        assert ("warning", "No compatible flash-attn prebuilt wheel found") in step_messages
+
+    def test_stale_copy_is_removed_when_the_replacement_fails_to_install(self):
+        step_messages, removals, _ = self._run_with_resident_copy(
+            url_available = True, install_returncode = 1
+        )
+
+        assert any("flash-attn" in cmd for cmd in removals), removals
+        assert ("warning", "Continuing without flash-attn") in step_messages
+
+    def test_stale_copy_is_force_replaced(self):
+        """A same-version build for another CUDA counts as installed unless forced."""
+        imports: list[int] = []
+
+        def fake_run(cmd, **kwargs):
+            imports.append(1)
+            return self._import_check(1 if len(imports) == 1 else 0)
+
+        step_messages, _, mock_install_wheel = self._run_with_resident_copy(
+            url_available = True, fake_run = fake_run
+        )
+
+        assert mock_install_wheel.call_args.kwargs["reinstall"] is True
+        assert step_messages == []
+
+    def test_a_failed_stale_removal_is_reported(self):
+        def fake_run(cmd, **kwargs):
+            if "uninstall" in cmd:
+                return subprocess.CompletedProcess(cmd, 1)
+            return self._import_check()
+
+        step_messages, _, _ = self._run_with_resident_copy(fake_run = fake_run)
+
+        warnings = [value for _, value in step_messages]
+        assert any("could not be removed" in value for value in warnings), warnings
+        assert not any("removed it" in value for value in warnings), warnings
+
+    def test_resident_copy_is_kept_when_torch_does_not_import(self):
+        """The import probe loads torch first, so a broken torch says nothing about flash-attn."""
+        _, removals, mock_install_wheel = self._run_with_resident_copy(torch_imports = False)
+
+        assert removals == []
+        mock_install_wheel.assert_not_called()
+
+    def test_nothing_is_uninstalled_when_flash_attn_is_absent(self):
+        step_messages, removals, _ = self._run_with_resident_copy(resident = None)
+
+        assert removals == []
+        assert ("warning", "No published flash-attn prebuilt wheel found") in step_messages
+
     def test_skip_env_disables_setup_install(self):
         with (
             mock.patch.object(ips, "NO_TORCH", False),
@@ -631,3 +761,15 @@ class TestInstallPythonStackFlashAttnIntegration:
 
     def test_windows_install_skips_flash_attn_step(self):
         assert self._run_install(no_torch = False, is_macos = False, is_windows = True) == 0
+
+    def test_flash_attn_is_rechecked_after_the_linux_torch_repair(self):
+        """The flash-attn step runs before step 13, which can move torch from 2.12+cu130 to
+        2.9+cu126 under the cu13torch2.10 wheel it just installed (#13244)."""
+        source = (STUDIO_DIR / "install_python_stack.py").read_text(encoding = "utf-8")
+        step = source.split('_progress(_torch_step_label("final"))', 1)[1]
+        step = step.split("# 13w.", 1)[0]
+        moved = step.split(
+            "if _torch_after_repair and _torch_after_repair != _torch_before_repair:", 1
+        )[1]
+        moved = moved.split("_evict_xformers_built_for_another_torch(", 1)[0]
+        assert "_ensure_flash_attn()" in moved

@@ -290,16 +290,18 @@ class TestStepThirteenWiring:
             assert calls[:2] == ["_progress", "_torch_step_label"]
         # str() is the label coercion around the probe, not a step.
         step13 = [c for c in _calls_in(guards[1]) if c != "str"]
-        # Step 13 also re-selects torchao when a repair moved the torch label, which both the
-        # spec and the leaf are read from, then removes an xFormers the final torch cannot
+        # Step 13 also re-selects torchao and flash-attn when a repair moved the torch label,
+        # which both are matched to (#13244), then removes an xFormers the final torch cannot
         # import (#11545). Nothing else may join the set.
         assert step13 == (
             ["_progress", "_torch_step_label", "_probe_installed_torch_version"]
             + repairs
             + ["_probe_installed_torch_version", "_note", "_install_torchao_for_torch"]
+            + ["_ensure_flash_attn"]
             + ["_evict_xformers_built_for_another_torch", "_evict_xformers_requiring_another_torch"]
         ), step13
         assert "_install_torchao_for_torch" not in _calls_in(guards[0])
+        assert "_ensure_flash_attn" not in _calls_in(guards[0])
 
     def test_the_invariant_is_wired_in_exactly_once(self):
         body = ast.unparse(_install_stack_ast())

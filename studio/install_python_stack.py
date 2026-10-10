@@ -8382,6 +8382,29 @@ def _remove_rejected_flash_attn() -> bool:
     return _uninstall_distribution("flash-attn")
 
 
+def _remove_stale_flash_attn() -> None:
+    """Uninstall a resident flash-attn that does not import and that no wheel replaced.
+
+    It was built for a torch or CUDA that is no longer installed: the torch repair can move
+    torch from 2.12+cu130 to 2.9+cu126 underneath a cu13torch2.10 wheel (#13244). Left in
+    place, xformers imports it whenever find_spec sees it, so every diffusers pipeline fails
+    to import, not only training.
+    """
+    if _remove_rejected_flash_attn():
+        _step(
+            "warning",
+            "flash-attn was built for another torch or CUDA and does not import; removed it",
+            _cyan,
+        )
+    else:
+        _step(
+            "warning",
+            "flash-attn was built for another torch or CUDA and could not be removed; "
+            "uninstall flash-attn manually",
+            _cyan,
+        )
+
+
 def _ensure_flash_attn() -> None:
     if _flash_attn_install_disabled():
         return
@@ -8393,6 +8416,9 @@ def _ensure_flash_attn() -> None:
         return
 
     env = probe_torch_wheel_env()
+    # None also means torch itself would not import, and then the failed probe says nothing
+    # about flash-attn, so only a working torch makes a resident copy stale.
+    stale = env is not None and _installed_distribution_version("flash-attn") is not None
     wheel_url = _build_flash_attn_wheel_url(env) if env else None
     wheel_available = url_exists(wheel_url) if wheel_url else False
     if wheel_available:
@@ -8408,6 +8434,7 @@ def _ensure_flash_attn() -> None:
             ),
             use_uv = USE_UV,
             uv_needs_system = UV_NEEDS_SYSTEM,
+            reinstall = stale,
         )
         if outcome == "installed":
             return
@@ -8429,6 +8456,8 @@ def _ensure_flash_attn() -> None:
                     "removed; uninstall flash-attn manually before training",
                     _cyan,
                 )
+        elif stale:
+            _remove_stale_flash_attn()
         _step("warning", "Continuing without flash-attn", _cyan)
         return
 
@@ -8442,6 +8471,8 @@ def _ensure_flash_attn() -> None:
         )
     else:
         _step("warning", "No published flash-attn prebuilt wheel found", _cyan)
+    if stale:
+        _remove_stale_flash_attn()
 
 
 # -- uv bootstrap ------------------------------------------------------
@@ -12723,9 +12754,13 @@ def install_python_stack() -> int:
         if _torch_after_repair and _torch_after_repair != _torch_before_repair:
             _note(
                 f"torch moved from {_torch_before_repair or 'unknown'} to "
-                f"{_torch_after_repair} during the repair -- re-selecting torchao"
+                f"{_torch_after_repair} during the repair -- re-selecting torchao and "
+                "flash-attn"
             )
             _install_torchao_for_torch(_torch_after_repair)
+            # flash-attn is just as tied to the torch build, and its step ran before this
+            # repair, so the wheel it chose may no longer import (#13244).
+            _ensure_flash_attn()
         # Unguarded: torch==2.10.0 accepts 2.10.0+rocm7.1, and an earlier run may have moved it.
         _evict_xformers_built_for_another_torch(scope = "linux torch repair", family_only = True)
         _evict_xformers_requiring_another_torch()
