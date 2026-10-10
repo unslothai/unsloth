@@ -455,8 +455,30 @@ let sentInput = "";
 function sendInput(input: Input): void {
   const key = JSON.stringify(input);
   if (key === sentInput) return;
+  const wasBlocked = sentInput !== "" && (JSON.parse(sentInput) as Input).blocked;
   sentInput = key;
   void call("browser_view_input", input).catch(() => undefined);
+  if (input.blocked !== wasBlocked) lendKeys(input.blocked);
+}
+
+// A menu or dialog over a page that holds the keys (one the site raised, or a chord) takes them, so
+// Escape and Enter reach it; they go back when it closes unless focus moved on meanwhile.
+let lentFrom: { tabId: string; active: Element | null } | null = null;
+
+function lendKeys(blocked: boolean): void {
+  if (blocked) {
+    if (!shownView || document.hasFocus()) return;
+    lentFrom = { tabId: shownView, active: document.activeElement };
+    void focusPanel(shownView);
+    return;
+  }
+  const lent = lentFrom;
+  lentFrom = null;
+  if (!lent) return;
+  requestAnimationFrame(() => {
+    const active = document.activeElement;
+    if (active === null || active === document.body || active === lent.active) focusPage(lent.tabId);
+  });
 }
 
 // Backgrounds around the page skip its rect so the page shows through.

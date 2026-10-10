@@ -51,11 +51,14 @@ const placeholder = node("placeholder", "oklch(1 0 0 / 1)", wrapper);
 
 const noop = () => undefined;
 const listeners = new Map<string, (event: { target: unknown }) => void>();
+let panelFocused = true;
 Object.assign(globalThis, {
   window: Object.assign(globalThis, { innerWidth: 1000, addEventListener: noop, removeEventListener: noop }),
   document: {
     documentElement: Object.assign(html, { dataset: {} }),
     body: {},
+    activeElement: null,
+    hasFocus: () => panelFocused,
     addEventListener: (type: string, listener: (event: { target: unknown }) => void) => listeners.set(type, listener),
     removeEventListener: (type: string) => listeners.delete(type),
     querySelector: (selector: string) => (selector.startsWith("[data-native-page") ? placeholder : null),
@@ -157,6 +160,20 @@ test("a menu over a layered page neither captures nor hides it, and owns its inp
     blocking.push({ ...overlay(rect(0, 600, 200, 100)), querySelector: () => ({}) });
     await frame();
     assert.deepEqual(lastInput(), { blocked: false, exclude: [] });
+
+    // a dialog the site raised while its page had the keys takes them, and gives them back on close
+    blocking.length = 0;
+    await frame();
+    panelFocused = false;
+    blocking.push(overlay(rect(600, 200, 300, 200)));
+    await frame();
+    const actions = () => calls.filter(({ command }) => command === "browser_view_action").map(({ args }) => args?.action);
+    assert.deepEqual(actions().slice(-1), ["blur"]);
+    panelFocused = true;
+    blocking.length = 0;
+    await frame();
+    await frame();
+    assert.deepEqual(actions().slice(-1), ["focus"]);
 
     // a toast over the page takes input only where it is
     blocking.length = 0;
