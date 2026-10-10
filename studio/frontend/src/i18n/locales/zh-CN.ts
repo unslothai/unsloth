@@ -2018,6 +2018,12 @@ export const zhCN = {
           on: "开",
           off: "关",
         },
+        mascots: {
+          label: "装饰性吉祥物",
+          description: "在整个应用中显示装饰性树懒插画。头像和品牌标识始终保留。",
+          keywords: "吉祥物 树懒 装饰 插画 隐藏 显示",
+          greetingDisabled: "请先在外观设置中开启装饰性吉祥物，以显示聊天问候树懒。",
+        },
         pointerCursors: {
           label: "使用指针光标",
           description: "悬停在可交互元素上时将光标变为指针。",

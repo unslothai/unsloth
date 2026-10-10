@@ -2020,6 +2020,12 @@ export const it = {
           on: "Attivo",
           off: "Disattivo",
         },
+        mascots: {
+          label: "Mascotte decorative",
+          description: "Mostra le illustrazioni decorative dei bradipi in tutta l’app. Gli avatar e i loghi rimangono visibili.",
+          keywords: "mascotte bradipo decorazione illustrazione nascondere mostrare",
+          greetingDisabled: "Attiva le mascotte decorative in Aspetto per mostrare il bradipo nel saluto della chat.",
+        },
         pointerCursors: {
           label: "Usa il cursore a mano",
           description:

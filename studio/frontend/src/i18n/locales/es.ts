@@ -2056,6 +2056,12 @@ export const es = {
           on: "Activado",
           off: "Desactivado",
         },
+        mascots: {
+          label: "Mascotas decorativas",
+          description: "Mostrar ilustraciones decorativas de perezosos en toda la aplicación. Los avatares y logotipos siguen visibles.",
+          keywords: "mascota perezoso decoración ilustración ocultar mostrar",
+          greetingDisabled: "Activa las mascotas decorativas en Apariencia para mostrar el perezoso en el saludo del chat.",
+        },
         pointerCursors: {
           label: "Usar cursores de puntero",
           description:

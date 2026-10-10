@@ -2046,6 +2046,12 @@ export const ptBR = {
           on: "Ativado",
           off: "Desativado",
         },
+        mascots: {
+          label: "Mascotes decorativos",
+          description: "Mostrar ilustrações decorativas de preguiças em todo o aplicativo. Avatares e logotipos continuam visíveis.",
+          keywords: "mascote preguiça decoração ilustração ocultar mostrar",
+          greetingDisabled: "Ative os mascotes decorativos em Aparência para mostrar a preguiça na saudação do chat.",
+        },
         pointerCursors: {
           label: "Usar cursor de ponteiro",
           description:

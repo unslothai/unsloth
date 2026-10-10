@@ -2031,6 +2031,12 @@ export const ko = {
           on: "켜기",
           off: "끄기",
         },
+        mascots: {
+          label: "장식용 마스코트",
+          description: "앱 전체에 장식용 나무늘보 그림을 표시합니다. 아바타와 브랜드 로고는 계속 표시됩니다.",
+          keywords: "마스코트 나무늘보 장식 그림 숨기기 표시",
+          greetingDisabled: "채팅 인사말에 나무늘보를 표시하려면 모양 설정에서 장식용 마스코트를 켜세요.",
+        },
         pointerCursors: {
           label: "포인터 커서 사용",
           description:

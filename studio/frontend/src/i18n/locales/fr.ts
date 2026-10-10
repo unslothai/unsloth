@@ -2060,6 +2060,12 @@ export const fr = {
           on: "Activé",
           off: "Désactivé",
         },
+        mascots: {
+          label: "Mascottes décoratives",
+          description: "Afficher les illustrations décoratives de paresseux dans toute l’application. Les avatars et logos restent visibles.",
+          keywords: "mascotte paresseux décoration illustration masquer afficher",
+          greetingDisabled: "Activez les mascottes décoratives dans Apparence pour afficher le paresseux dans l’accueil du chat.",
+        },
         pointerCursors: {
           label: "Utiliser un curseur en forme de main",
           description:

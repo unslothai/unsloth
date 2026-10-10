@@ -2014,6 +2014,12 @@ export const ja = {
           on: "オン",
           off: "オフ",
         },
+        mascots: {
+          label: "装飾用マスコット",
+          description: "アプリ全体に装飾用のナマケモノを表示します。アバターとブランドロゴは常に表示されます。",
+          keywords: "マスコット ナマケモノ 装飾 イラスト 非表示 表示",
+          greetingDisabled: "チャットの挨拶にナマケモノを表示するには、外観設定で装飾用マスコットを有効にしてください。",
+        },
         pointerCursors: {
           label: "ポインターカーソルを使用",
           description:

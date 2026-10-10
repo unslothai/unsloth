@@ -4385,6 +4385,7 @@ class PersonalizationCustomization(BaseModel):
     chatWidth: Literal["standard", "wide", "full"] = "standard"
     sentAttachments: Literal["auto", "list", "chips"] = "auto"
     contrast: int = Field(50, ge = 0, le = 100)
+    showMascots: bool = True
     pointerCursors: bool = False
     reduceMotion: Literal["system", "on", "off"] = "system"
     fontSmoothing: bool = True
@@ -4495,6 +4496,7 @@ class PersonalizationResponse(PersonalizationPayload):
     customizationSaved: bool = False
     chatWidthSaved: bool = False
     sentAttachmentsSaved: bool = False
+    mascotsSaved: bool = False
     paletteSaved: bool = False
     greetingSlothSaved: bool = False
 
@@ -4514,6 +4516,7 @@ def get_personalization_settings(
     response.sentAttachmentsSaved = (
         isinstance(customization, dict) and "sentAttachments" in customization
     )
+    response.mascotsSaved = isinstance(customization, dict) and "showMascots" in customization
     response.paletteSaved = isinstance(appearance, dict) and "palette" in appearance
     response.greetingSlothSaved = isinstance(profile, dict) and "showGreetingSloth" in profile
     return response
