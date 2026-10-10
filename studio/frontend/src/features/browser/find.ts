@@ -40,7 +40,6 @@ function nativeStep(tabId: string, backwards: boolean): void {
   void nativeFind(tabId, asked, backwards).then((found) => {
     // The native view walks matches without counting them: null keeps the walk open.
     if (asked === query && searchedTabId === tabId) setResult({ count: found ? null : 0, active: found ? 0 : -1 });
-    // Show the new match on a covered page's snapshot.
     refreshCoveredPage(tabId);
   });
 }
@@ -82,7 +81,7 @@ export function registerBrowserFind(contains: (node: Node) => boolean): () => vo
       else sendFrameCommand(searchedTabId, { command: "findStep", delta });
     },
     result: () => result,
-    // The chord from the app menu while the native page has keys: this document isn't focused.
+    // The app menu's chord while the native page has the keys.
     takeFocus: () => {
       const tab = activeTab();
       if (!searchable(tab) || !hasNativeView(tab.id) || document.hasFocus()) return false;

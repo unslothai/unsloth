@@ -331,7 +331,7 @@ export function nativeAction(tabId: string, action: "back" | "forward" | "reload
   void call("browser_view_action", { tabId, action }).catch(() => undefined);
 }
 
-/** Gives key focus to the page, e.g. as the find bar it was lent to closes. */
+/** Gives key focus to the page. */
 export function focusPage(tabId: string): void {
   if (!views.has(tabId)) return;
   void call("browser_view_action", { tabId, action: "focus" }).catch(() => undefined);
@@ -377,9 +377,8 @@ const OVERLAY_SELECTOR =
 const BLOCKING_SELECTOR =
   '[data-radix-popper-content-wrapper], [role="dialog"], [role="alertdialog"], [data-slot$="-overlay"], [data-native-cover]';
 const MENU_SELECTOR = "[data-radix-popper-content-wrapper]";
-// Layered mode: these take input only within their own rect. `data-native-clickable`: lasting panels
-// (monitors); `data-native-rail`: a rail of lasting cards (update, downloads), each its own rect. Both
-// stay out of snapshot mode, which would freeze the page while they show.
+// Layered mode: these take input only within their own rect. Lasting panels and rail cards stay out of
+// snapshot mode, which would freeze the page while they show.
 const CLICKABLE_SELECTOR =
   "[data-sonner-toast], .find-bar-surface, [data-native-clickable], [data-native-rail] > *";
 
@@ -463,8 +462,7 @@ function sendInput(input: Input): void {
   if (input.blocked !== wasBlocked) lendKeys(input.blocked);
 }
 
-// A menu or dialog over a page that holds the keys (one the site raised, or a chord) takes them, so
-// Escape and Enter reach it; they go back when it closes unless focus moved on meanwhile.
+// A menu or dialog opened while the page holds the keys takes them, and returns them on close.
 let lentFrom: { tabId: string; active: Element | null } | null = null;
 
 function lendKeys(blocked: boolean): void {
@@ -483,7 +481,6 @@ function lendKeys(blocked: boolean): void {
   });
 }
 
-// Backgrounds around the page skip its rect so the page shows through.
 const HOLE_ATTRIBUTE = "data-native-hole";
 const HOLE_VARS = ["--native-hole-x", "--native-hole-y", "--native-hole-w", "--native-hole-h"] as const;
 let holed: HTMLElement[] = [];
@@ -504,8 +501,7 @@ function openHole(tabId: string, bounds: Bounds): void {
   if (!markHole() && moved) placeHole();
 }
 
-// Set on each holed node, not the root: the vars don't inherit (index.css), so a move restyles
-// only those nodes instead of the whole document.
+// Per holed node, not the root: the vars don't inherit, so a move restyles only those nodes.
 function placeHole(): void {
   if (!holeBounds) return;
   const values = [holeBounds.x, holeBounds.y, holeBounds.width, holeBounds.height];
@@ -599,7 +595,6 @@ function insetToasts(rect: DOMRect | null): void {
 
 function desiredView(): Desired {
   const page = pageRect();
-  // Layered mode needs no toast column.
   if (layered) sendInput(page ? panelInput(page.rect) : NO_INPUT);
   else insetToasts(page?.rect ?? null);
   if (!page) return null;
@@ -686,8 +681,7 @@ function clearSnapshot(): void {
 
 let paintToken = 0;
 
-/** Paints a fresh snapshot; true when the placeholder shows one for `tabId` (a fresh one if `fresh`).
- *  Only the newest call paints. */
+/** True when the placeholder shows a snapshot of `tabId` (a fresh one if `fresh`); only the newest call paints. */
 async function paintSnapshot(tabId: string, fresh = false): Promise<boolean> {
   const shows = () => !fresh && snapshot?.tabId === tabId;
   const bounds = shownBounds;
@@ -769,7 +763,6 @@ async function coverView(tabId: string, zoom: number): Promise<void> {
 /** Re-snapshots a covered page after it changes, e.g. a find step. */
 export function refreshCoveredPage(tabId: string): void {
   if (parkedView !== tabId) return;
-  // Stale until a fresh capture lands; a miss retries through the sync like a zoom.
   staleSnapshot = tabId;
   void paintSnapshot(tabId, true).then((painted) => {
     if (!painted) retryCover();
@@ -926,8 +919,7 @@ export function startNativeViews(): () => void {
   // Theme switches recolor the backgrounds around the hole.
   overlays.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "style", "data-palette"] });
   window.addEventListener("resize", schedule);
-  // Toasts and the find bar mount without a body mutation and slide in: measure them every frame
-  // while they move, so a click on a moving toast doesn't fall through to the page.
+  // Clickable overlays slide in without a body mutation: measure them every frame while they move.
   const moved = (event: Event) => {
     if (!(event.target as Element | null)?.closest?.(CLICKABLE_SELECTOR)) return;
     motionUntil = performance.now() + MOTION_MS;
