@@ -24,7 +24,12 @@ BROKEN = "32.0.31041.1004"  # Adrenalin 26.8.1
 FIXED = "32.0.32015.2008"  # Adrenalin 26.9.2
 
 
-def _amd(name = "AMD Radeon AI PRO R9700", gfx = "gfx1201", driver = BROKEN, **extra):
+def _amd(
+    name = "AMD Radeon AI PRO R9700",
+    gfx = "gfx1201",
+    driver = BROKEN,
+    **extra,
+):
     device = {"vendor": "amd", "name": name, "driver_version": driver, **extra}
     if gfx:
         device["gfx"] = gfx
@@ -175,7 +180,12 @@ def test_no_devices_is_no_notice():
 
 
 class _InlineThread:
-    def __init__(self, target, name = None, daemon = None):
+    def __init__(
+        self,
+        target,
+        name = None,
+        daemon = None,
+    ):
         self._target = target
 
     def start(self):
@@ -349,7 +359,9 @@ def test_an_unreadable_driver_version_does_not_decline_the_map(monkeypatch, driv
     monkeypatch.setitem(
         sys.modules,
         "winreg",
-        _fake_winreg({"{cd12ca95-0000-0000-0000-000000000000}": {**R9700_RECORD, "DriverVersion": driver}}),
+        _fake_winreg(
+            {"{cd12ca95-0000-0000-0000-000000000000}": {**R9700_RECORD, "DriverVersion": driver}}
+        ),
     )
     assert hw._windows_amd_adapter_records_by_luid() == {
         82776: {"name": "AMD Radeon AI PRO R9700", "gfx": "gfx1201"}
