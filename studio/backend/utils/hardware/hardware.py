@@ -328,11 +328,6 @@ def _probe_physical_gpu_inventory() -> Dict[str, Any]:
                         "name": record.get("name"),
                         "memory_total_gb": (round(dedicated / 1024**3, 2) if dedicated else None),
                         **({"gfx": record["gfx"]} if record.get("gfx") else {}),
-                        **(
-                            {"driver_version": record["driver_version"]}
-                            if record.get("driver_version")
-                            else {}
-                        ),
                         "source": "directx-registry",
                     }
                 )
@@ -3384,14 +3379,57 @@ def amd_driver_idle_evict_notice(devices: list[Dict[str, Any]]) -> Optional[Dict
     }
 
 
+def _windows_live_amd_driver_versions() -> Optional[Dict[str, str]]:
+    """DriverVersion of each present AMD display adapter, by name, or None when WMI could not say. Read live because the DirectX registry keeps records of removed cards, and the inventory pairs same-named records with live cards in LUID order."""
+    if platform.system() != "Windows":
+        return None
+    try:
+        ps = (
+            "$ErrorActionPreference='Stop';"
+            "(Get-CimInstance Win32_VideoController"
+            " | Where-Object { $_.PNPDeviceID -like 'PCI\\VEN_1002*' }"
+            ' | ForEach-Object { $_.Name + "`t" + $_.DriverVersion }) -join "`n"'
+        )
+        r = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 10,
+            **_hidden_console_kwargs(),
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        logger.debug("Live AMD driver version scan failed: %s", e)
+        return None
+    if r.returncode != 0:
+        return None
+    versions = {}
+    for line in (r.stdout or "").splitlines():
+        name, _, version = line.partition("\t")
+        if name.strip() and version.strip():
+            versions[name.strip()] = version.strip()
+    return versions
+
+
 def _check_amd_driver_idle_evict() -> None:
     global _amd_driver_notice
     try:
-        # The registry alone first: a host with no affected record never pays for the live WMI scan.
+        # The registry alone first: a host with no affected record never pays for the live WMI scans.
         records = [{"vendor": "amd", **r} for r in _windows_amd_adapter_records_by_luid().values()]
         if amd_driver_idle_evict_notice(records) is None:
             return
-        notice = amd_driver_idle_evict_notice(get_physical_gpu_inventory().get("devices") or [])
+        live = _windows_live_amd_driver_versions()
+        if live is None:
+            return
+        notice = amd_driver_idle_evict_notice(
+            [
+                {**d, "driver_version": live.get(str(d.get("name") or ""))}
+                if d.get("vendor") == "amd"
+                else d
+                for d in get_physical_gpu_inventory().get("devices") or []
+            ]
+        )
     except Exception as e:
         logger.debug("AMD driver idle-eviction check failed: %s", e)
         return

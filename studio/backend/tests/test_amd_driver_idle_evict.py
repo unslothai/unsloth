@@ -183,6 +183,10 @@ class _InlineThread:
         self._target()
 
 
+def _live(monkeypatch, versions):
+    monkeypatch.setattr(hw, "_windows_live_amd_driver_versions", lambda: versions)
+
+
 def test_non_windows_is_a_no_op(monkeypatch):
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
 
@@ -208,6 +212,7 @@ def test_windows_check_logs_once_and_publishes(monkeypatch):
 
     monkeypatch.setattr(hw, "get_physical_gpu_inventory", _inventory)
     _registry(monkeypatch, _amd())
+    _live(monkeypatch, {"AMD Radeon AI PRO R9700": BROKEN})
     warnings = []
     monkeypatch.setattr(hw.logger, "warning", lambda msg, *args: warnings.append(msg % args))
 
@@ -225,9 +230,36 @@ def test_a_fixed_driver_publishes_nothing(monkeypatch):
     monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
     monkeypatch.setattr(hw.threading, "Thread", _InlineThread)
     _registry(monkeypatch, _amd())
+    _live(monkeypatch, {"AMD Radeon AI PRO R9700": FIXED})
+    monkeypatch.setattr(hw, "get_physical_gpu_inventory", lambda **k: {"devices": [_amd()]})
+    hw.start_amd_driver_check()
+    assert hw.amd_driver_warning_report() == {}
+
+
+@pytest.mark.parametrize(
+    "live,flagged",
+    [({"AMD Radeon AI PRO R9700": FIXED}, False), ({"AMD Radeon AI PRO R9700": BROKEN}, True)],
+)
+def test_the_live_adapter_decides_over_a_stale_same_named_record(monkeypatch, live, flagged):
+    # One of two identical R9700s was replaced: the registry holds both an old and a current
+    # record under one name, and only WMI knows which version is installed.
+    monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(hw.threading, "Thread", _InlineThread)
+    _registry(monkeypatch, _amd(driver = BROKEN), _amd(driver = FIXED))
+    _live(monkeypatch, live)
     monkeypatch.setattr(
-        hw, "get_physical_gpu_inventory", lambda **k: {"devices": [_amd(driver = FIXED)]}
+        hw, "get_physical_gpu_inventory", lambda **k: {"devices": [_amd(driver = BROKEN)]}
     )
+    hw.start_amd_driver_check()
+    assert bool(hw.amd_driver_warning_report()) is flagged
+
+
+def test_an_unanswered_live_scan_publishes_nothing(monkeypatch):
+    monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(hw.threading, "Thread", _InlineThread)
+    _registry(monkeypatch, _amd())
+    _live(monkeypatch, None)
+    monkeypatch.setattr(hw, "get_physical_gpu_inventory", lambda **k: {"devices": [_amd()]})
     hw.start_amd_driver_check()
     assert hw.amd_driver_warning_report() == {}
 
@@ -247,6 +279,9 @@ def test_no_affected_registry_record_skips_the_live_scan(monkeypatch, records):
     monkeypatch.setattr(
         hw, "get_physical_gpu_inventory", lambda **k: pytest.fail("no WMI scan without a lead")
     )
+    monkeypatch.setattr(
+        hw, "_windows_live_amd_driver_versions", lambda: pytest.fail("no WMI scan without a lead")
+    )
     hw.start_amd_driver_check()
     assert hw.amd_driver_warning_report() == {}
 
@@ -256,6 +291,7 @@ def test_a_stale_registry_record_the_live_scan_drops_publishes_nothing(monkeypat
     monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
     monkeypatch.setattr(hw.threading, "Thread", _InlineThread)
     _registry(monkeypatch, _amd())
+    _live(monkeypatch, {"AMD Radeon RX 7900 XTX": BROKEN})
     monkeypatch.setattr(
         hw,
         "get_physical_gpu_inventory",
@@ -274,6 +310,7 @@ def test_a_failing_inventory_never_raises(monkeypatch):
 
     monkeypatch.setattr(hw, "get_physical_gpu_inventory", _boom)
     _registry(monkeypatch, _amd())
+    _live(monkeypatch, {"AMD Radeon AI PRO R9700": BROKEN})
     hw.start_amd_driver_check()
     assert hw.amd_driver_warning_report() == {}
 
@@ -356,26 +393,28 @@ def test_an_unreadable_driver_version_does_not_decline_the_map(monkeypatch, driv
     }
 
 
-def test_inventory_rows_carry_the_driver_version(monkeypatch):
+def test_live_scan_reads_amd_adapters_by_name(monkeypatch):
+    monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
+    seen = {}
+
+    def _run(argv, **kw):
+        seen["ps"] = argv[-1]
+        return types.SimpleNamespace(
+            returncode = 0,
+            stdout = f"AMD Radeon AI PRO R9700\t{BROKEN}\r\nAMD Radeon RX 9070 XT\t{BROKEN}\n\n",
+        )
+
+    monkeypatch.setattr(hw.subprocess, "run", _run)
+    assert hw._windows_live_amd_driver_versions() == {
+        "AMD Radeon AI PRO R9700": BROKEN,
+        "AMD Radeon RX 9070 XT": BROKEN,
+    }
+    assert "PCI\\VEN_1002*" in seen["ps"]
+
+
+def test_a_failed_live_scan_is_none(monkeypatch):
     monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
     monkeypatch.setattr(
-        nvidia, "get_physical_gpu_inventory", lambda: {"devices": [], "absent": True}
+        hw.subprocess, "run", lambda *a, **k: types.SimpleNamespace(returncode = 1, stdout = "")
     )
-    monkeypatch.setattr(hw, "_windows_live_adapter_names", lambda: ["AMD Radeon AI PRO R9700"])
-    records = {
-        hw._AMD_PCI_VENDOR_ID: {
-            82776: {"name": "AMD Radeon AI PRO R9700", "gfx": "gfx1201", "driver_version": BROKEN}
-        }
-    }
-    monkeypatch.setattr(
-        hw,
-        "_windows_amd_adapter_records_by_luid",
-        lambda vendor_id = hw._AMD_PCI_VENDOR_ID, **kw: records.get(vendor_id, {}),
-    )
-
-    devices = hw.get_physical_gpu_inventory()["devices"]
-
-    assert [(d["vendor"], d["name"], d.get("driver_version")) for d in devices] == [
-        ("amd", "AMD Radeon AI PRO R9700", BROKEN)
-    ]
-    assert hw.amd_driver_idle_evict_notice(devices)["severity"] == "warning"
+    assert hw._windows_live_amd_driver_versions() is None

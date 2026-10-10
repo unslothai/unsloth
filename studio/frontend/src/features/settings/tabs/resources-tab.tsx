@@ -29,6 +29,7 @@ import {
 } from "@/hooks/use-system";
 import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { openLink } from "@/lib/open-link";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { useT } from "@/i18n";
@@ -689,6 +690,11 @@ export function ResourcesTab() {
                   href={driverWarning.link}
                   target="_blank"
                   rel="noopener noreferrer"
+                  // target="_blank" has nowhere to go in the Tauri webview.
+                  onClick={(event) => {
+                    if (openLink(event.currentTarget.href))
+                      event.preventDefault();
+                  }}
                   className="inline-flex items-center gap-0.5 font-medium underline underline-offset-2"
                 >
                   {t("settings.resources.gpu.driverIdleEvictDetails")}
