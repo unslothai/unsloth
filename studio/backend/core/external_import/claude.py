@@ -102,7 +102,11 @@ def read_transcript(path: Path, thread_id: str, session_id: str) -> Transcript:
     for line in lines:
         if line.get("uuid"):
             compacted = line.get("subtype") == "compact_boundary" and not line.get("parentUuid")
-            links[str(line["uuid"])] = previous if compacted else line.get("parentUuid")
+            parent = line.get("parentUuid")
+            if compacted:
+                logical = line.get("logicalParentUuid")
+                parent = logical if logical in links else previous
+            links[str(line["uuid"])] = parent
             previous = str(line["uuid"])
     imported: dict[str, str] = {}
     # parallel tool results hang off their own call; continue from the reply's last block, not a fork.

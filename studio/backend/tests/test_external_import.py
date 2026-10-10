@@ -314,6 +314,31 @@ def test_claude_harness_records_and_compaction_keep_one_conversation(claude_home
     assert [m["parentId"] for m in messages] == [None, *ids[:-1]]
 
 
+def test_claude_rewind_compaction_uses_its_logical_parent(claude_home):
+    path = _session(
+        claude_home,
+        records = [
+            c_user("u1", "one"),
+            c_asst("a1", [{"type": "text", "text": "A"}], parent = "u1"),
+            c_user("u2", "abandoned", parent = "a1"),
+            c_asst("a2", [{"type": "text", "text": "B"}], parent = "u2"),
+            {
+                "type": "system",
+                "subtype": "compact_boundary",
+                "uuid": "cb",
+                "parentUuid": None,
+                "logicalParentUuid": "a1",
+            },
+            c_user("sum", "summary", parent = "cb", isCompactSummary = True),
+            c_user("u3", "three", parent = "sum"),
+            c_asst("a3", [{"type": "text", "text": "C"}], parent = "u3"),
+        ],
+    )
+    messages = claude.read_transcript(path, "t", "s1").messages
+    ids = [m["id"] for m in messages]
+    assert [m["parentId"] for m in messages] == [None, ids[0], ids[1], ids[2], ids[1], ids[4], ids[5]]
+
+
 @pytest.mark.parametrize("logical", ["never-written", "at2"])
 def test_claude_parallel_tool_calls_and_compaction_keep_one_conversation(claude_home, logical):
     def block(uuid, reply, content, parent):
