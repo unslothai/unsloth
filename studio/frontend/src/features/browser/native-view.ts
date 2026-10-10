@@ -329,6 +329,12 @@ export function nativeAction(tabId: string, action: "back" | "forward" | "reload
   void call("browser_view_action", { tabId, action }).catch(() => undefined);
 }
 
+/** Gives key focus to the page, e.g. as the find bar it was lent to closes. */
+export function focusPage(tabId: string): void {
+  if (!views.has(tabId)) return;
+  void call("browser_view_action", { tabId, action: "focus" }).catch(() => undefined);
+}
+
 /** Gives key focus back to the panel's webview. */
 export function focusPanel(tabId: string): Promise<void> {
   if (!views.has(tabId)) return Promise.resolve();
@@ -369,8 +375,9 @@ const OVERLAY_SELECTOR =
 const BLOCKING_SELECTOR =
   '[data-radix-popper-content-wrapper], [role="dialog"], [role="alertdialog"], [data-slot$="-overlay"], [data-native-cover]';
 const MENU_SELECTOR = "[data-radix-popper-content-wrapper]";
-// Layered mode: these take input only within their own rect.
-const CLICKABLE_SELECTOR = "[data-sonner-toast], .find-bar-surface";
+// Layered mode: these take input only within their own rect. `data-native-clickable`: a rail of
+// lasting cards (update, downloads), each its own rect; kept out of snapshot mode, which would freeze the page.
+const CLICKABLE_SELECTOR = "[data-sonner-toast], .find-bar-surface, [data-native-clickable] > *";
 
 // Whether pages sit under the app's webview (macOS); null until the backend answers.
 let layered: boolean | null = null;
@@ -653,23 +660,29 @@ function clearSnapshot(): void {
   snapshot = null;
 }
 
-async function paintSnapshot(tabId: string): Promise<void> {
+let paintToken = 0;
+
+/** Paints a fresh snapshot; true when the placeholder shows one for `tabId`. Only the newest call paints. */
+async function paintSnapshot(tabId: string): Promise<boolean> {
+  const shows = () => snapshot?.tabId === tabId;
   const bounds = shownBounds;
   const element = placeholder(tabId);
-  if ((shownView !== tabId && parkedView !== tabId) || !bounds || !element) return;
+  if ((shownView !== tabId && parkedView !== tabId) || !bounds || !element) return shows();
   const started = generation;
+  const token = ++paintToken;
+  const current = () => element.isConnected && started === generation && token === paintToken;
   const png = await Promise.race([
     call<ArrayBuffer>("browser_capture", { tabId }).catch(() => null),
     new Promise<null>((resolve) => setTimeout(() => resolve(null), SNAPSHOT_WAIT_MS)),
   ]);
-  if (!png?.byteLength || !element.isConnected || started !== generation) return;
+  if (!png?.byteLength || !current()) return shows();
   const url = URL.createObjectURL(new Blob([png], { type: "image/png" }));
   // Decode before hiding the view, or the placeholder flashes blank.
   const image = new Image();
   image.src = url;
-  if (!(await image.decode().then(() => true, () => false)) || !element.isConnected || started !== generation) {
+  if (!(await image.decode().then(() => true, () => false)) || !current()) {
     URL.revokeObjectURL(url);
-    return;
+    return shows();
   }
   // align snapshots to the visible native bounds because the chat dock can shorten the view.
   const box = element.getBoundingClientRect();
@@ -679,6 +692,7 @@ async function paintSnapshot(tabId: string): Promise<void> {
   element.style.backgroundRepeat = "no-repeat";
   if (snapshot && snapshot.url !== url) URL.revokeObjectURL(snapshot.url);
   snapshot = { tabId, element, url };
+  return true;
 }
 
 // Covered views are parked off-window instead of hidden: a hidden view stops painting and returns blank.
@@ -688,11 +702,24 @@ function parkable(tabId: string): boolean {
   return views.has(tabId) && shownBounds !== null && (shownView === tabId || parkedView === tabId);
 }
 
+// A failed capture keeps the page on screen and asks the next sync to try again, a few times.
+const COVER_TRIES = 3;
+let coverFails = 0;
+let coverRetry = 0;
+
 async function coverView(tabId: string, zoom: number): Promise<void> {
   if (parkedView !== tabId) {
-    await paintSnapshot(tabId);
+    // Parked without a snapshot, the placeholder would show blank.
+    if (!(await paintSnapshot(tabId))) {
+      if (coverFails < COVER_TRIES) {
+        coverFails += 1;
+        coverRetry += 1;
+      }
+      return;
+    }
     await call("browser_view_show", { tabId, bounds: shownBounds, parked: true });
     parkedView = tabId;
+    coverFails = 0;
     setShownView(null);
   }
   if ((zooms.get(tabId) ?? 1) !== zoom) {
@@ -737,6 +764,7 @@ async function applyView(desired: Desired): Promise<void> {
     await call("browser_view_show", { tabId, url: resumed?.entry === entry ? resumed.url : url, bounds });
     if (stale()) return;
     parkedView = null;
+    coverFails = 0;
     clearSnapshot();
     // After the move, so hole and page update together.
     if (layered) openHole(tabId, bounds);
@@ -808,6 +836,9 @@ onNativeViewsClosed(() => {
 });
 
 const MOTION_EVENTS = ["transitionrun", "transitionend", "animationstart", "animationend"] as const;
+// Past Sonner's 400 ms slide.
+const MOTION_MS = 500;
+let motionUntil = 0;
 
 export function startNativeViews(): () => void {
   listenOnce();
@@ -828,7 +859,8 @@ export function startNativeViews(): () => void {
       if (element) resizeObserver.observe(element);
       resized = element;
     }
-    const key = JSON.stringify([epoch, desired]);
+    if (performance.now() < motionUntil) schedule();
+    const key = JSON.stringify([epoch, coverRetry, desired]);
     if (key === sent) return;
     sent = key;
     apply(desired);
@@ -843,9 +875,12 @@ export function startNativeViews(): () => void {
   // Theme switches recolor the backgrounds around the hole.
   overlays.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "style", "data-palette"] });
   window.addEventListener("resize", schedule);
-  // Toasts and the find bar mount without a body mutation and slide in: measure them as they move.
+  // Toasts and the find bar mount without a body mutation and slide in: measure them every frame
+  // while they move, so a click on a moving toast doesn't fall through to the page.
   const moved = (event: Event) => {
-    if ((event.target as Element | null)?.closest?.(CLICKABLE_SELECTOR)) schedule();
+    if (!(event.target as Element | null)?.closest?.(CLICKABLE_SELECTOR)) return;
+    motionUntil = performance.now() + MOTION_MS;
+    schedule();
   };
   for (const type of MOTION_EVENTS) document.addEventListener(type, moved, true);
   const reachedPage = (event: Event) => {

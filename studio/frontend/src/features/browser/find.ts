@@ -9,7 +9,7 @@ import {
   notifyFindTargets,
   registerFindTarget,
 } from "@/features/find-in-page";
-import { focusPanel, hasNativeView, nativeFind, refreshCoveredPage } from "./native-view";
+import { focusPage, focusPanel, hasNativeView, nativeFind, refreshCoveredPage } from "./native-view";
 import { sendFrameCommand } from "./page-frame";
 import { type BrowserTab, currentEntry, useBrowserStore } from "./store";
 
@@ -88,6 +88,10 @@ export function registerBrowserFind(contains: (node: Node) => boolean): () => vo
       if (!searchable(tab) || !hasNativeView(tab.id) || document.hasFocus()) return false;
       void focusPanel(tab.id);
       return true;
+    },
+    returnFocus: () => {
+      const tab = activeTab();
+      if (tab) focusPage(tab.id);
     },
   });
   // Another tab, or a page turning into a document, moves or drops the search.

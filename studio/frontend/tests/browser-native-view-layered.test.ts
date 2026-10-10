@@ -172,6 +172,7 @@ test("a menu over a layered page neither captures nor hides it, and owns its inp
     for (const callback of frames.splice(0)) callback();
     await settle();
     assert.equal((lastInput()?.exclude as { y: number }[])[0].y, 560);
+    assert.ok(frames.length > 0, "and again next frame while it moves");
     clickable.length = 0;
     await frame();
     assert.deepEqual(lastInput(), { blocked: false, exclude: [] });

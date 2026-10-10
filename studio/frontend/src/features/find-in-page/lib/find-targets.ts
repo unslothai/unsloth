@@ -17,6 +17,8 @@ export type FindTarget = {
   result: () => FindTargetResult;
   /** When keys are inside it but outside this document (a native page), moves them here: true. */
   takeFocus?: () => boolean;
+  /** Gives keys back after `takeFocus`, as the bar closes. */
+  returnFocus?: () => void;
 };
 
 export const EMPTY_FIND_RESULT: FindTargetResult = { count: 0, active: -1 };

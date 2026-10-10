@@ -233,6 +233,32 @@ test("tooltips along the toolbar capture the page once, and it returns when the 
   }
 });
 
+test("a capture that never lands keeps the page on screen instead of parking it blank, and tries again", async () => {
+  const stop = startNativeViews();
+  try {
+    useBrowserStore.getState().openUrl("https://example.edu/", { newTab: true });
+    await frame();
+    await frame();
+    const tabId = useBrowserStore.getState().activeTabId;
+    const captures = () => calls.filter(({ command }) => command === "browser_capture").length;
+    const parked = () =>
+      calls.some(({ command, args }) => command === "browser_view_show" && args?.tabId === tabId && args?.parked);
+    const before = captures();
+    overlays.push(menu);
+    await frame();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(parked(), false, "no snapshot, so the page stays where it is");
+    await frame();
+    assert.equal(captures(), before + 2, "the next sync captures again");
+    captureDone?.(new Uint8Array([137, 80, 78, 71]).buffer);
+    await settle();
+    assert.equal(parked(), true, "parked once a snapshot shows");
+  } finally {
+    stop();
+    overlays.length = 0;
+  }
+});
+
 test("toasts move left of a page that sits beside the Run settings panel", async () => {
   const stop = startNativeViews();
   try {
