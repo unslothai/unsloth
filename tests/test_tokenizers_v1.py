@@ -253,9 +253,9 @@ def test_copy_pickle_save_and_idempotence(rc_on, tmp_path):
     ]
     fast.save_pretrained(tmp_path / "fast")
     plain.save_pretrained(tmp_path / "plain")
-    assert (tmp_path / "fast" / "tokenizer.json").read_text() == (
+    assert (tmp_path / "fast" / "tokenizer.json").read_text(encoding = "utf-8") == (
         tmp_path / "plain" / "tokenizer.json"
-    ).read_text()
+    ).read_text(encoding = "utf-8")
 
 
 @needs_rc
