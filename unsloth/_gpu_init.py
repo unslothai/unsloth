@@ -530,11 +530,17 @@ if DEVICE_TYPE == "cuda" and not torch.cuda.is_available():
 elif DEVICE_TYPE == "cuda":
     major_version, minor_version = torch.cuda.get_device_capability()
     SUPPORTS_BFLOAT16 = major_version >= 8
+    # DDP children see only their local rank's card. The coordinator determines
+    # a common dtype for the selected devices and passes it to every child.
+    if os.environ.get("UNSLOTH_DDP_COMMON_DTYPE") in ("bf16", "fp16"):
+        SUPPORTS_BFLOAT16 = os.environ["UNSLOTH_DDP_COMMON_DTYPE"] == "bf16"
 
     old_is_bf16_supported = torch.cuda.is_bf16_supported
     if "including_emulation" in str(inspect.signature(old_is_bf16_supported)):
 
         def is_bf16_supported(including_emulation = False):
+            if os.environ.get("UNSLOTH_DDP_COMMON_DTYPE") in ("bf16", "fp16"):
+                return SUPPORTS_BFLOAT16
             return old_is_bf16_supported(including_emulation)
 
         torch.cuda.is_bf16_supported = is_bf16_supported

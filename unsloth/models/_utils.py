@@ -3721,6 +3721,10 @@ elif DEVICE_TYPE == "cuda":
             HAS_FLASH_ATTENTION = False
     else:
         HAS_FLASH_ATTENTION = False
+    # _gpu_init patches the CUDA probe for DDP, but this module also derives
+    # dtypes from its own constant. Keep both consumers on the coordinator's dtype.
+    if os.environ.get("UNSLOTH_DDP_COMMON_DTYPE") in ("bf16", "fp16"):
+        SUPPORTS_BFLOAT16 = os.environ["UNSLOTH_DDP_COMMON_DTYPE"] == "bf16"
 elif DEVICE_TYPE == "hip":
     SUPPORTS_BFLOAT16 = torch.cuda.is_bf16_supported()
     if _package_available("flash_attn"):
