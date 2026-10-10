@@ -1040,6 +1040,22 @@ class DiffusionTrainingStartRequest(BaseModel):
     save_total_limit: int = Field(
         2, ge = 0, le = 100, description = "How many checkpoints to keep; 0 keeps every one"
     )
+    sample_every: int = Field(
+        0,
+        ge = 0,
+        le = 100000,
+        description = (
+            "Render fixed-seed preview images every N optimizer steps (plus a step-0 baseline and "
+            "the final step). 0 (the default) renders none. Image families only."
+        ),
+    )
+    sample_prompts: List[str] = Field(
+        default_factory = list,
+        max_length = 4,
+        description = (
+            "Preview prompts, one image each. Empty uses the instance prompt, else the first caption."
+        ),
+    )
     resume_from_checkpoint: Optional[str] = Field(
         None,
         description = (
@@ -1090,6 +1106,16 @@ class DiffusionMetricHistory(BaseModel):
     audio_loss: List[Optional[float]] = Field(default_factory = list)
 
 
+class DiffusionSampleImage(BaseModel):
+    """One preview image a run rendered; ``path`` is relative to the run's output_dir and is served by
+    GET /api/train/diffusion/runs/{job_id}/sample?path=..."""
+
+    step: int
+    path: str
+    prompt: str = ""
+    seed: Optional[int] = None
+
+
 class DiffusionTrainingStatusResponse(BaseModel):
     """A snapshot of the current diffusion training job (or idle)."""
 
@@ -1131,6 +1157,7 @@ class DiffusionTrainingStatusResponse(BaseModel):
     updated_at: Optional[float] = None
     # Bounded step/loss/lr history for the live loss + LR charts.
     metric_history: Optional[DiffusionMetricHistory] = None
+    samples: List[DiffusionSampleImage] = Field(default_factory = list)
 
 
 class DiffusionTrainingRunSummary(BaseModel):
@@ -1179,6 +1206,7 @@ class DiffusionTrainingRunDetail(DiffusionTrainingRunSummary):
     ema_path: Optional[str] = None
     config: Optional[dict] = None
     metric_history: Optional[DiffusionMetricHistory] = None
+    samples: List[DiffusionSampleImage] = Field(default_factory = list)
 
 
 class DiffusionTrainingRunsResponse(BaseModel):
@@ -1220,6 +1248,8 @@ class DiffusionTrainableFamily(BaseModel):
     # control: save_steps is refused, not ignored, for a checkpointless family, so offering the control means
     # offering a value that rejects Start; defaults True so an older backend's payload keeps it.
     supports_checkpoints: bool = True
+    # Whether sample_every is accepted (image families); False hides "Sample every".
+    supports_samples: bool = False
     # 1 for a family whose forward covers one packed sequence: a value above the cap is refused rather
     # than clamped, and declaring it here is what stops Pydantic dropping it from the response.
     max_train_batch_size: Optional[int] = None

@@ -625,6 +625,10 @@ export interface DiffusionTrainingStartRequest {
   // stop-and-save always writes one, so Resume stays available either way.
   save_steps?: number;
   save_total_limit?: number;
+  // Render fixed-seed preview images every N steps (plus step 0 and the last step); 0 renders none.
+  sample_every?: number;
+  // Up to 4 preview prompts; empty uses the trigger prompt, else the first caption.
+  sample_prompts?: string[];
   // Continue a previous run: its output_dir, or one explicit checkpoint-<N> directory inside it. train_steps then
   // means the TARGET TOTAL, so a checkpoint at 11 with train_steps 500 runs 12..500.
   resume_from_checkpoint?: string | null;
@@ -642,6 +646,19 @@ export interface DiffusionMetricHistory {
   lr: Array<number | null>;
   // Total pre-clip gradient norm per step (the training health signal the charts show).
   grad_norm?: Array<number | null>;
+}
+
+// One preview image a run rendered; `path` is relative to the run's output dir.
+export interface DiffusionSampleImage {
+  step: number;
+  path: string;
+  prompt?: string;
+  seed?: number | null;
+}
+
+/** Auth-protected URL of one run's preview image; fetch it via fetchGalleryObjectUrl. */
+export function diffusionSampleUrl(jobId: string, path: string): string {
+  return `/api/train/diffusion/runs/${encodeURIComponent(jobId)}/sample?path=${encodeURIComponent(path)}`;
 }
 
 // A snapshot of the current diffusion training job (GET /api/train/diffusion/status).
@@ -679,6 +696,8 @@ export interface DiffusionTrainingStatus {
   resumed_from_step?: number | null;
   // Bounded step/loss/lr history for the live charts.
   metric_history?: DiffusionMetricHistory | null;
+  // Preview images rendered so far. Absent on an older backend.
+  samples?: DiffusionSampleImage[];
 }
 
 export async function startDiffusionTraining(
@@ -744,6 +763,7 @@ export interface DiffusionTrainingRunDetail extends DiffusionTrainingRunSummary 
   ema_path?: string | null;
   config?: Record<string, unknown> | null;
   metric_history?: DiffusionMetricHistory | null;
+  samples?: DiffusionSampleImage[];
 }
 
 export async function listDiffusionTrainingRuns(
@@ -814,6 +834,8 @@ export interface DiffusionTrainableFamily {
   // Whether the family's loop writes checkpoint bundles (gates the "Checkpoint every" field).
   // Undefined on an older backend, which has no checkpointless family, so it reads as true.
   supports_checkpoints?: boolean;
+  // Whether the family renders preview images (gates "Sample every"). Absent on an older backend: hidden.
+  supports_samples?: boolean;
   /** 1 for a family whose forward covers one packed sequence; null/absent means unrestricted. */
   max_train_batch_size?: number | null;
   // When set, deploying a LoRA trained on this family previews it on this repo instead of the
