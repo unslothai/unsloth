@@ -836,6 +836,9 @@ def _create_unsloth_optimizer(
             [len(group["params"]) for group in previous_grouped],
             [group["lr"] for group in previous_grouped],
         )
+        # Sizes alone cannot tell the layouts apart when only embeddings train: mark this one.
+        for group in optimizer_grouped_parameters:
+            group[_EMBEDDING_SPLIT_MARKER] = True
     optimizer = optimizer_cls(optimizer_grouped_parameters, **optimizer_kwargs)
     # Same as Trainer.create_optimizer: keep embedding optimizer state in 32 bits under 8-bit bnb.
     if "bitsandbytes" in str(optimizer_cls) and optimizer_kwargs.get("optim_bits", None) == 8:
@@ -915,6 +918,9 @@ def _migrate_legacy_optimizer_state(
     return {"state": remapped_state, "param_groups": migrated_groups}
 
 
+_EMBEDDING_SPLIT_MARKER = "unsloth_embedding_split"
+
+
 def _migrate_previous_layout_state(
     state_dict, optimizer, previous_params, previous_sizes, previous_lrs
 ):
@@ -926,6 +932,8 @@ def _migrate_previous_layout_state(
     moved embeddings resume at their embedding_learning_rate instead of the base one.
     """
     saved_groups = state_dict.get("param_groups") or []
+    if any(g.get(_EMBEDDING_SPLIT_MARKER) for g in saved_groups):
+        return None
     if [len(g["params"]) for g in saved_groups] != list(previous_sizes):
         return None
     saved_ids = [i for g in saved_groups for i in g["params"]]
@@ -959,6 +967,7 @@ def _migrate_previous_layout_state(
         migrated.update(lr = base_lr * progress, weight_decay = group["weight_decay"])
         if "initial_lr" in migrated:
             migrated["initial_lr"] = base_lr
+        migrated[_EMBEDDING_SPLIT_MARKER] = True
         migrated["params"] = list(range(cursor, cursor + len(group["params"])))
         migrated_groups.append(migrated)
         cursor += len(group["params"])

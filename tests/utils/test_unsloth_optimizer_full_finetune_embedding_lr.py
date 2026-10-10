@@ -168,3 +168,20 @@ def test_a_plateau_reduction_survives_the_same_resume():
     scheduler.step(3.0)
     lr_of = {named[id(p)]: g["lr"] for g in new.param_groups for p in g["params"]}
     assert lr_of["lm_head.weight"] == pytest.approx(EMBEDDING_LR * 0.25), lr_of
+
+
+def test_a_checkpoint_from_this_layout_is_not_migrated_again():
+    # Only the embeddings train: both layouts are one group of the same size, so the
+    # marker, not the sizes, keeps a current checkpoint from being rescaled on resume.
+    torch = pytest.importorskip("torch")
+
+    model = _model(torch.nn, tied = True)
+    model.model.proj.requires_grad_(False)
+    first, _ = _optimizer(model)
+    first.param_groups[0]["lr"] = EMBEDDING_LR * 0.5
+    saved = first.state_dict()
+
+    second, _ = _optimizer(model)
+    second.load_state_dict(saved)
+    assert second.param_groups[0]["lr"] == pytest.approx(EMBEDDING_LR * 0.5)
+    assert second.state_dict()["param_groups"][0].get("unsloth_embedding_split")
