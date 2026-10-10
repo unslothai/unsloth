@@ -127,7 +127,6 @@ def _prequant(steps, seed, res):
         t = diffusers.ZImageTransformer2DModel.from_config(cfg)
     sd = torch.load(CKPT, weights_only = False, map_location = "cpu")
     missing, unexpected = t.load_state_dict(sd, strict = False, assign = True)
-    # any param/buffer still on meta (e.g. non-persistent buffers) -> materialise on cuda
     leftover = [n for n, p in t.named_parameters() if p.is_meta] + [
         n for n, b in t.named_buffers() if b.is_meta
     ]
@@ -136,7 +135,7 @@ def _prequant(steps, seed, res):
             f"[prequant] {len(leftover)} meta leftovers (non-persistent buffers): {leftover[:4]}",
             flush = True,
         )
-        t = t.to_empty(device = "cuda")  # fallback path; re-loads sd below
+        t = t.to_empty(device = "cuda")
         t.load_state_dict(sd, strict = False, assign = True)
     t = t.to(torch.bfloat16).to("cuda")
     load_peak = torch.cuda.max_memory_allocated() / 1e9

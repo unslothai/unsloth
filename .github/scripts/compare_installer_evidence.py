@@ -38,13 +38,6 @@ import sys
 from pathlib import Path
 
 
-# ---------------------------------------------------------------------------
-# Normalisation
-# ---------------------------------------------------------------------------
-
-# Each entry is (pattern, replacement, why). The `why` is not decoration: the next person to widen
-# one of these needs to know what it was for, and a rule with no recorded cause is a rule nobody can
-# argue with.
 _NORMALISERS: tuple[tuple[re.Pattern[str], str, str, bool], ...] = (
     (re.compile(r"\b\d+\.\d+s\b"), "<duration>", "elapsed times, printed by every step", False),
     (re.compile(r"\b\d{1,3}(?:\.\d+)?\s?%"), "<percent>", "download progress", False),
@@ -94,8 +87,6 @@ _NORMALISERS: tuple[tuple[re.Pattern[str], str, str, bool], ...] = (
     (re.compile(r"[\r\x08]"), "", "carriage returns and backspaces from progress redraws", False),
 )
 
-# Volatile only because the two jobs ran minutes apart. A version drift is not a behaviour change,
-# but it IS worth printing, so these are normalised and separately reported.
 _VERSION_PATTERN = re.compile(
     r"\b(uv|python|Python|CPython|git|cmake|torch|node|npm)[\s/-]+v?(\d+\.\d+(?:\.\d+)?)",
 )
@@ -141,9 +132,7 @@ def normalise_line(line: str) -> str:
     for pattern, replacement, _why, _in_scripts in _NORMALISERS:
         out = pattern.sub(replacement, out)
     out = _VERSION_PATTERN.sub(lambda m: f"{m.group(1)}/<version>", out)
-    # Trailing whitespace only. Leading whitespace is load-bearing: `step` pads its label to exactly
-    # 15 columns and REQUIRED_OUTPUT pins the indent, so stripping the left side would hide the one
-    # regression class most likely to slip through a prose review.
+    # Only trailing whitespace: leading indent is part of the pinned REQUIRED_OUTPUT.
     return out.rstrip()
 
 
@@ -175,10 +164,6 @@ def normalise_script(text: str) -> list[str]:
     and both sides would still compare equal.
     """
     return [
-        # The scratch names, the embedded install ID, temp directories, timestamps and version
-        # strings still have to go: they differ between the two sides for reasons that are not
-        # behaviour. Nothing else is touched -- see `_apply_value_normalisers` -- and the line is
-        # kept exactly as it is otherwise, trailing spaces and all.
         _VERSION_PATTERN.sub(
             lambda m: f"{m.group(1)}/<version>",
             _apply_value_normalisers(raw),
@@ -228,30 +213,11 @@ def normalise_transcript(text: str) -> list[str]:
             or _PARTIAL_PROGRESS_FRAME.fullmatch(line.strip())
         ):
             continue
-        # Runner-injected noise, and ONLY what the runner injects. These carry the workflow's own
-        # group names and the side's SHA, so they differ between sides for nothing to do with the
-        # installer.
-        #
-        # `Run `, `shell: ` and `env:` were in this list and are now gone, because they were never in
-        # the file. The workflow tees the child powershell.exe stream into transcript.txt
-        # (windows-installer-differential-ci.yml:273-274), so GitHub's step headers never reach it,
-        # while the installers print at least six lines that begin with `Run ` once indentation is
-        # stripped: install.ps1:1518 and studio/setup.ps1:2245, :2526, :3073, :3526, :4506. Every one
-        # of those is user-visible guidance on an exercised path, and this rule deleted them from
-        # both sides, so changing or dropping one of them compared equal. Matching a prose prefix is
-        # the wrong shape for this job; if the capture ever widens to include the step's own output,
-        # the honest fix is to narrow the capture, not to delete lines that might be ours.
-        #
-        # Left anchored at column 0: nothing the installers print starts in column 0 with these.
+        # Strip only runner-injected lines. Do not add prose prefixes like `Run `: installers print those.
         if line.startswith(("##[group]", "##[endgroup]", "::group::", "::endgroup::", "##[debug]")):
             continue
         lines.append(line)
     return lines
-
-
-# ---------------------------------------------------------------------------
-# Comparison
-# ---------------------------------------------------------------------------
 
 
 class Verdict:
@@ -271,8 +237,7 @@ class Verdict:
         return not self.void and not self.differences
 
     def exit_code(self) -> int:
-        # VOID and DIFFERENT are both non-zero, and deliberately distinct: 2 means "measured, and it
-        # changed"; 3 means "could not measure", which must never read as a pass.
+        # 2 means measured and changed; 3 means could not measure and must never read as a pass.
         if self.void:
             return 3
         if self.differences:
@@ -339,26 +304,18 @@ def _shortcut_key(entry: dict) -> str:
     return f"{root}/{name}" if root else name
 
 
-# Read back from the shell, and every one of them is a contract. Arguments especially: it carries
-# -WindowStyle and -ExecutionPolicy, which is the pair this whole effort is about, and a change
-# there is completely invisible in the transcript.
 _SHORTCUT_FIELDS = (
     "targetPath",
     "arguments",
     "workingDirectory",
     "windowStyle",
     "iconLocation",
-    # The tooltip. It is user-visible, the collector records it, and install.ps1 reads it back at
-    # :3455 as part of deciding whether a shortcut is already correct, so a change to it is both a
-    # behaviour change and invisible in the transcript. Leaving it out made those compare equal.
+    # install.ps1 reads the tooltip back when deciding whether a shortcut is already correct.
     "description",
 )
 
 
-# The two files this lane treats as contracts by their TEXT, kept in step with the collector's
-# $contentFiles (.github/scripts/Collect-InstallerEvidence.ps1). A name here without captured content
-# is VOID rather than skipped, and the list is explicit so adding a third place to the collector
-# without adding it here is visible rather than silent.
+# Must stay in sync with $contentFiles in Collect-InstallerEvidence.ps1.
 _CONTENT_CONTRACTS = ("launch-studio.ps1", "unsloth.cmd")
 
 
@@ -413,10 +370,7 @@ def compare_shortcuts(base, head, verdict: Verdict) -> None:
             "entry, so zero on both sides means the evidence was not collected, not that they agree."
         )
         return
-    # A collection error on both sides compares equal to itself. Observed while wiring this up: two
-    # runs that both failed to read any shortcut reported "1 compared, every field equal" and exited
-    # zero. Failures are symmetric far more often than behaviour changes are -- they usually come
-    # from the host, which both sides share -- so the symmetry is no comfort at all.
+    # A collection error on both sides would otherwise compare equal to itself.
     for side, entries in (("base", base), ("head", head)):
         for entry in entries:
             if entry.get("error"):
@@ -426,11 +380,7 @@ def compare_shortcuts(base, head, verdict: Verdict) -> None:
                     f"prove nothing."
                 )
                 continue
-            # An entry with no identity and no launch contract is not a shortcut. `{}` survives
-            # `_shape_problem` (it IS an object), `_as_list` counts it as one, and `_shortcut_key`
-            # names it `<unnamed>`, so two empty objects compared equal and the run reported "1
-            # compared, every field equal". The same collector writes both sides, so a schema
-            # regression is symmetric and this is the shape it takes.
+            # An entry with no identity is not a shortcut; two empty objects would otherwise compare equal.
             if not (entry.get("name") or entry.get("path")):
                 verdict.void.append(
                     f"{side} reported a shortcut with no name and no path, so there is nothing to "
@@ -467,21 +417,13 @@ def compare_shortcuts(base, head, verdict: Verdict) -> None:
                 verdict.differences.append(
                     f"shortcut {name!r} field {field!r} changed:\n  base: {before}\n  head: {after}"
                 )
-    # Scoped to this comparison. Reading the whole verdict here meant a transcript difference
-    # suppressed the shortcut note, so a run that reported a changed line also stopped saying
-    # whether the launch contract had been looked at.
     if len(verdict.differences) == before_differences:
         verdict.notes.append(f"shortcuts: {len(base_map)} compared, every field equal")
 
 
 def compare_artifacts(base: dict, head: dict, verdict: Verdict) -> None:
     """The installed files. Paths on both sides, content only where content is a contract."""
-    # The same reasoning as for shortcuts, which this did not have. The collector records a
-    # collection failure as an `error` field rather than a red step, and an error read as data is a
-    # green run: two sides that both failed to enumerate the install root list no files, compare
-    # equal, and report agreement. A per-file error is worse, because the entry still exists with
-    # the same key and only the `content` is gone, so the content check below skips it silently and
-    # the file that was never compared is the one whose text is the contract.
+    # Collection errors are recorded as data, so symmetric failures would otherwise compare equal.
     for side, data in (("base", base), ("head", head)):
         if not isinstance(data, dict):
             verdict.void.append(
@@ -528,10 +470,7 @@ def compare_artifacts(base: dict, head: dict, verdict: Verdict) -> None:
     for name in sorted(set(base_files) & set(head_files)):
         before, after = base_files[name], head_files[name]
         if not isinstance(before, dict) or not isinstance(after, dict):
-            # VOID, not skipped. The SAME collector runs on both legs, so a malformed entry is
-            # malformed identically on both and skipping it left the maps non-empty, the key sets
-            # matching and nothing compared, which the run then reported as agreement. The shortcut
-            # manifest and the top-level manifests are already validated this way.
+            # VOID, not skipped: the same collector writes both sides, so malformed entries match.
             sides = [
                 side
                 for side, value in (("base", before), ("head", after))
@@ -542,10 +481,6 @@ def compare_artifacts(base: dict, head: dict, verdict: Verdict) -> None:
                 f" and not an object on {' and '.join(sides)}, so its evidence could not be read"
             )
             continue
-        # The two entries whose CONTENT is the contract. An empty object on both sides made the
-        # asymmetry check below false and the comparison below that false too, so the loop compared
-        # nothing and the run passed. Symmetric malformed evidence is the likely failure mode here,
-        # because the candidate collector writes both manifests.
         if name in _CONTENT_CONTRACTS and not before.get("error") and not after.get("error"):
             absent = [
                 side
@@ -561,9 +496,6 @@ def compare_artifacts(base: dict, head: dict, verdict: Verdict) -> None:
                 )
                 continue
         if ("content" in before) != ("content" in after):
-            # One side captured the text and the other did not. Skipping quietly, which is what
-            # happened before, means the file whose content is the whole reason it is in the
-            # manifest goes uncompared while the run still reports agreement.
             side = "head" if "content" in before else "base"
             verdict.void.append(
                 f"{name!r} has captured content on one side only, so {side} never contributed the "
@@ -571,10 +503,7 @@ def compare_artifacts(base: dict, head: dict, verdict: Verdict) -> None:
             )
             continue
         if "content" in before and "content" in after:
-            # The drift note first, on the RAW text, exactly as the transcript and shortcut
-            # comparisons do it. Without this a launcher retargeted from python-3.11.9 to
-            # python-3.13.0 was normalised away and the lane returned PASS with no note at all,
-            # which is the one thing normalisation is supposed to buy back.
+            # Report drift on the RAW text before normalisation hides a retargeted version.
             report_version_drift(before["content"], after["content"], f"generated {name}", verdict)
             b = normalise_script(before["content"])
             a = normalise_script(after["content"])
@@ -582,15 +511,9 @@ def compare_artifacts(base: dict, head: dict, verdict: Verdict) -> None:
                 verdict.differences.append(
                     f"the generated {name} changed:\n" + "\n".join(_unified(b, a, name))
                 )
-        # Encoding is part of the contract and is invisible in the decoded text. Windows PowerShell
-        # 5.1 reads a BOM-less file as ANSI, so a launcher that silently stops carrying its UTF-8
-        # BOM breaks every install whose paths contain non-ASCII characters while comparing equal.
+        # Windows PowerShell 5.1 reads a BOM-less file as ANSI, so a dropped UTF-8 BOM breaks non-ASCII paths.
         bom_before, bom_after = before.get("bom"), after.get("bom")
         if name in _CONTENT_CONTRACTS and not (bom_before and bom_after):
-            # VOID, not skipped. The same collector writes both manifests, so a regression that drops
-            # the field drops it on both sides, and skipping quietly reported a pass for an encoding
-            # contract that was never measured. This is the field whose absence in the FILE breaks
-            # every install with a non-ASCII path, so unmeasured is not a pass.
             missing = [
                 side for side, value in (("base", bom_before), ("head", bom_after)) if not value
             ]
@@ -603,11 +526,7 @@ def compare_artifacts(base: dict, head: dict, verdict: Verdict) -> None:
                 f"{name!r} changed encoding: base wrote {bom_before} and head wrote {bom_after}. "
                 f"Windows PowerShell 5.1 reads a file with no BOM as ANSI."
             )
-        # Where it landed, not only what is in it. The collector probes each contract at several
-        # supported locations and records the one it found, so a candidate that moves studio.conf
-        # between `share\studio.conf` and `studio.conf` without touching a byte keeps the same key
-        # and the same content. Comparing content alone reports that as agreement, while everything
-        # that has to open the file now looks in the wrong place.
+        # Compare where the file landed, not only its content: a moved studio.conf breaks readers.
         found_before, found_after = before.get("foundAt"), after.get("foundAt")
         if found_before and found_after and found_before != found_after:
             verdict.differences.append(
@@ -615,11 +534,7 @@ def compare_artifacts(base: dict, head: dict, verdict: Verdict) -> None:
                 f"{found_after}. The bytes may match, but consumers must now look elsewhere."
             )
 
-    # The install ID, checked WITHIN each side rather than across them. The launcher embeds the ID
-    # it will accept from the backend, and the backend reads the persisted one, so if those two
-    # disagree Studio refuses its own server and never starts. They are expected to differ between
-    # base and head, which is precisely why a cross-side comparison cannot see this and why the
-    # transcript normaliser rewriting every 64-hex token hides it completely.
+    # Checked within each side: launcher and backend install IDs must agree or Studio refuses its server.
     for side, data in (("base", base), ("head", head)):
         persisted, embedded = data.get("installId"), data.get("embeddedId")
         if persisted and embedded and persisted != embedded:
@@ -633,17 +548,10 @@ def compare_artifacts(base: dict, head: dict, verdict: Verdict) -> None:
                 f"studio_install_id was found, so the pair could not be checked"
             )
 
-    # Idempotency is reported by the Windows side, which is the only place it can be observed: it
-    # runs the installer twice and records whether the second run rewrote anything.
     for side, data in (("base", base), ("head", head)):
         rewritten = data.get("rewrittenOnSecondRun")
         if rewritten is None:
-            # VOID, not a note. `None` and `[]` mean different things here and the collector is
-            # careful to keep them apart: `[]` is "measured, nothing was rewritten" and `None` is
-            # "not measured". Treating the second as optional evidence let the lane report equality
-            # while one of the four contracts it advertises had never been checked, which happens
-            # whenever the first collector or the non-terminating Copy-Item ahead of the second
-            # install fails while everything after it succeeds.
+            # None means not measured and is VOID; [] means measured with nothing rewritten.
             verdict.void.append(
                 f"{side}: idempotency was never measured, so there is no evidence that a reinstall "
                 f"writes nothing. That is one of this lane's four contracts, and an unmeasured "
@@ -658,8 +566,6 @@ def compare_artifacts(base: dict, head: dict, verdict: Verdict) -> None:
             verdict.notes.append(f"{side}: the second run rewrote nothing")
 
 
-# The installer's own exit status, which the transcript does not carry. Recorded by the workflow,
-# which is the only thing that sees it.
 _RUN_CODES = (
     ("installExit", "the installer"),
     ("secondInstallExit", "the second, idempotency install"),
@@ -704,8 +610,7 @@ def _load(path: Path, verdict: Verdict, what: str):
         verdict.void.append(f"{what} is missing at {path}, so this side produced no evidence")
         return None
     try:
-        # utf-8-sig, not utf-8: Windows PowerShell 5.1 writes a BOM for `Set-Content -Encoding
-        # utf8`, and a BOM makes json.loads fail on a file that is otherwise perfectly good.
+        # utf-8-sig: Windows PowerShell 5.1 writes a BOM that json.loads rejects.
         if path.suffix == ".json":
             return json.loads(path.read_text(encoding = "utf-8-sig", errors = "replace"))
         return path.read_text(encoding = "utf-8-sig", errors = "replace")
@@ -731,12 +636,7 @@ def compare_directories(
 
     base_transcript = _load(base_dir / "transcript.txt", verdict, "the base transcript")
     head_transcript = _load(head_dir / "transcript.txt", verdict, "the head transcript")
-    # The reinstall output, which the workflow has always captured and this comparer never read. A
-    # candidate that changes what the installer prints only when an installation already exists --
-    # a reinstall warning added or dropped, a "nothing to do" line reworded -- leaves the first-run
-    # transcripts identical and the artifacts untouched, so without this the lane reported PASS on
-    # a user-visible change. Required rather than optional: the step that writes it runs under
-    # `if: always()`, so a side that does not have one did not produce the evidence.
+    # Required: the step that writes it runs under `if: always()`, so absence means missing evidence.
     base_second = _load(
         base_dir / "transcript-second-run.txt",
         verdict,
@@ -763,23 +663,13 @@ def compare_directories(
 
     compare_transcripts(base_transcript, head_transcript, verdict, "first-run transcript")
     compare_transcripts(base_second, head_second, verdict, "second-run transcript")
-    # Passed through as loaded, not coerced with `or []` / `or {}`. The coercion turned a manifest
-    # of the wrong shape into an empty one of the right shape, and an empty manifest against a
-    # populated one reads as "every file disappeared" -- a behaviour difference, reported about
-    # evidence that was never parsed.
+    # Not coerced with `or []`: a wrong-shaped manifest must not become an empty valid one.
     compare_shortcuts(base_shortcuts, head_shortcuts, verdict)
     compare_artifacts(base_artifacts, head_artifacts, verdict)
     return verdict
 
 
-# ---------------------------------------------------------------------------
-# The positive control
-# ---------------------------------------------------------------------------
-
-# A differ that reports no differences looks exactly the same whether it is working or broken. So
-# before the real comparison is trusted, it is handed a pair it MUST call different, and a pair it
-# MUST call equal. Both directions matter: a differ that flags everything is as useless as one that
-# flags nothing, it just fails more loudly.
+# Positive control: the differ must call one pair different and one pair equal before it is trusted.
 _CONTROL_TRANSCRIPT = "\n".join(
     [
         "  python         3.13.14 ready",
@@ -859,9 +749,7 @@ def self_test() -> list[str]:
     if not v.is_void or v.exit_code() != 3:
         failures.append("missing evidence did not produce VOID with exit code 3")
 
-    # The normaliser that erased a renamed launcher marker. `unsloth-studio-managed-launcher` is
-    # written into unsloth.cmd and is how the installer recognises its own shim, so a rename is a
-    # behaviour change; the rule meant for `unsloth-uv-<hex8>` swallowed it.
+    # `unsloth-studio-managed-launcher` is how the installer recognises its shim, so a rename must differ.
     v = Verdict()
     compare_transcripts(
         "  cmd            rem unsloth-studio-managed-launcher",
@@ -917,9 +805,6 @@ def self_test() -> list[str]:
         failures.append(f"two successful installs were not accepted: {v.void} {v.differences}")
 
     return failures
-
-
-# ---------------------------------------------------------------------------
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -1,20 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# Builds the PyPI wheel from the PR branch, then verifies the built wheel
-# actually contains what we expect to ship and does NOT contain the broken
-# Unsloth bundle that 2026.5.1 published. This is the single workflow that
-# would have blocked the 2026.5.1 release before twine upload.
-#
-# Verified locally end-to-end against this branch:
-#   - python -m build produces unsloth-<version>-py3-none-any.whl in 13s
-#   - wheel content sanity passes:
-#       frontend dist shipped, and none of the pre-build tree with it:
-#       no package-lock, no frontend public, no frontend src,
-#       no node_modules in wheel, no bun.lock in wheel,
-#       main bundle has unstable_Provider hits=1 (assistant-ui internals only).
-#   - Unsloth backend imports cleanly from the installed wheel with the
-#     lightweight dep set below.
+# Builds the PyPI wheel and checks it ships the frontend dist without the pre-build tree,
+# and that the backend imports from the installed wheel.
 
 name: Wheel CI
 
@@ -23,15 +11,12 @@ on:
     paths:
       - 'pyproject.toml'
       - 'MANIFEST.in'
-      # Required: the publish guard reads build.sh, so a PR reverting the upload
-      # glob must not skip this workflow.
+      # The publish guard reads build.sh.
       - 'build.sh'
       - 'studio/**'
       - 'unsloth/**'
       - 'unsloth_cli/**'
       - '.github/workflows/wheel-smoke.yml'
-      # The first gating step runs this auditor, so an edit to it changes what this
-      # workflow runs.
       - 'scripts/lockfile_supply_chain_audit.py'
   push:
     branches: [main]
@@ -43,16 +28,11 @@ on:
       - 'unsloth/**'
       - 'unsloth_cli/**'
       - '.github/workflows/wheel-smoke.yml'
-      # The first gating step runs this auditor, so an edit to it changes what this
-      # workflow runs.
       - 'scripts/lockfile_supply_chain_audit.py'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
-  # Latest-only on a PR branch. On main this does less than it reads like: it stops
-  # a RUNNING main job being killed, but GitHub cancels any PENDING run in the group
-  # the moment a newer one is queued, so a merge burst still leaves only the tip.
-  # See studio-backend-ci.yml, which is grouped per commit on main for that reason.
+  # On main GitHub still cancels PENDING runs when a newer one queues.
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
@@ -80,12 +60,7 @@ jobs:
         run: python3 scripts/lockfile_supply_chain_audit.py
 
       - name: Build frontend
-        # Lifecycle scripts (esbuild native-binary postinstall, etc.) are
-        # required for `vite build`. The pre-install lockfile structural
-        # audit (lockfile_supply_chain_audit.py) is the practical defence
-        # against the npm postinstall-dropper class -- it fires BEFORE any
-        # tarball runs, on the injection pattern itself rather than an
-        # advisory-DB lookup.
+        # Lifecycle scripts are required for `vite build`; the lockfile audit runs first.
         run: |
           cd studio/frontend
           npm ci --no-fund --no-audit
@@ -145,9 +120,7 @@ jobs:
           PY
 
       - name: Publishing path uploads the wheel only
-        # #10202 set the publish glob to dist/*.whl; 2026.9.2 shipped an 86.6MB
-        # sdist anyway. build.sh must still BUILD the sdist for --verify-dist, so
-        # only the upload glob is asserted here.
+        # Only the upload glob is asserted: build.sh must still build the sdist for --verify-dist.
         run: |
           python - <<'PY'
           import re, shlex, sys
@@ -282,11 +255,8 @@ jobs:
           PY
 
       - name: No test suites in wheel or sdist
-        # tests/security/fixtures embeds a real supply-chain IOC literal, which got
-        # the published sdist flagged by antivirus vendors (discussion #9577).
-        #
-        # Both artifacts: `python -m build` builds the wheel FROM the sdist, so a
-        # test suite reaching one reaches the other.
+        # tests/security/fixtures embeds a real IOC literal that got the sdist flagged by AV.
+        # Check both artifacts: the wheel is built from the sdist.
         run: |
           python - <<'PY'
           import glob, sys, tarfile, zipfile
@@ -325,10 +295,7 @@ jobs:
           PY
 
       - name: Unsloth backend import smoke
-        # Imports `studio.backend.main:app` from the freshly-installed wheel in
-        # a clean venv. This catches the class of bug that 2026.5.1 shipped with:
-        # frontend dist missing, package-lock.json missing, or the wheel's Python
-        # source tree broken in a way that surfaces only at app construction time.
+        # Import studio.backend.main:app from the installed wheel in a clean venv.
         run: |
           python -m venv /tmp/v
           /tmp/v/bin/pip install --upgrade pip
@@ -343,9 +310,7 @@ jobs:
           /tmp/v/bin/python -c "from studio.backend.main import app; print('Unsloth backend OK:', app.title)"
 
       - name: CLI without the Unsloth stack guides instead of tracebacking
-        # The smoke above installs studio.txt first, so it cannot catch a wheel
-        # that ships studio/ without declaring what it imports (#4701, #5260,
-        # #7147). Drop only structlog to reuse that venv without a re-download.
+        # Catches a wheel that ships studio/ without declaring what it imports.
         run: |
           set -eu
           /tmp/v/bin/pip uninstall -y structlog >/dev/null

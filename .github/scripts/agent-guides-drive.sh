@@ -1,25 +1,9 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-# Drive one coding agent against the running `unsloth run` server for the
-# Local Agent Guides CI. All failures from here are failure class (c)
-# "guide drift": the server preflight already passed and the agent CLI
-# already installed, so a failure here means the documented recipe in
-# unsloth_cli/commands/start.py no longer produces a working flow.
-# Self-updating: for all eight agents (claude, codex, hermes, openclaw,
-# opencode, pi, dsh, vibe) we obtain the exact env + command from
-# `unsloth start <agent> --no-launch` and run THAT, so a recipe change is
-# exercised automatically.
-# Every agent invocation is wrapped in `timeout` so a headless-TTY prompt
-# can never hang the runner -- a timeout is reported as guide drift with a
-# distinct message.
-# Usage:
-#   agent-guides-drive.sh connection     <agent>
-#   agent-guides-drive.sh file-edit      <agent>
-#   agent-guides-drive.sh attribution-ab claude
-# Required env (exported by serve-unsloth-run.sh):
-#   UNSLOTH_BASE_URL UNSLOTH_API_KEY UNSLOTH_MODEL_ID
-#   UNSLOTH_LLAMA_LOG_DIR  AGENT_INVOKE_TIMEOUT  UNSLOTH_SEED
+# Drive one coding agent against the running `unsloth run` server. Failures here are guide drift:
+# the recipe comes from `unsloth start <agent> --no-launch`.
+# Usage: agent-guides-drive.sh connection|file-edit <agent> | attribution-ab claude
 set -uo pipefail
 
 MODE="${1:?usage: agent-guides-drive.sh <mode> <agent>}"
@@ -28,20 +12,11 @@ AGENT="${2:?usage: agent-guides-drive.sh <mode> <agent>}"
 : "${UNSLOTH_BASE_URL:?serve step did not export UNSLOTH_BASE_URL}"
 : "${UNSLOTH_API_KEY:?serve step did not export UNSLOTH_API_KEY}"
 : "${UNSLOTH_MODEL_ID:?serve step did not export UNSLOTH_MODEL_ID}"
-# Determinism (seed/temp) is applied at the server level by
-# serve-unsloth-run.sh --extra; agents inherit it through the API.
 TIMEOUT="${AGENT_INVOKE_TIMEOUT:-180}"
-# opencode is the slow outlier. Unlike the print-mode agents (claude -p, codex
-# exec) it runs a full turn AND a separate small_model call to name the session,
-# so one connection reply takes ~8 min on a CPU-served 4B -- right at the shared
-# 600s cap, so the cell flaked when a run drifted past a ~480s success. Give it
-# headroom (still well under the 40-min job budget); the fast agents keep the
-# tight cap that still catches a real headless-TTY hang.
+# opencode makes an extra session-naming call, so it needs a longer timeout than the others.
 case "$AGENT" in
   opencode)
-    # Double it, but only for a bare-integer seconds value. A GNU timeout(1)
-    # duration suffix (s/m/h/d, including floats like 0.5s) is left unchanged so
-    # the arithmetic never sees a non-number; timeout(1) parses it directly.
+    # Double only a bare-integer value; timeout(1) suffixes are left unchanged.
     case "$TIMEOUT" in
       *[!0-9]*) ;;
       *) TIMEOUT=$(( TIMEOUT * 2 )) ;;
@@ -49,15 +24,9 @@ case "$AGENT" in
     ;;
 esac
 
-# Claude refuses --dangerously-skip-permissions outside a sandbox; the CI runner
-# IS the sandbox, so declare it (mirrors unslothai/scripts launcher.sh). Harmless
-# to the other agents, which ignore it.
+# Claude refuses --dangerously-skip-permissions outside a sandbox; the CI runner is one.
 export IS_SANDBOX=1
 
-# Absolute paths anchored at the repo root (this script lives in
-# .github/scripts/). Everything writes here regardless of the current working
-# directory, so the file-edit mode can `cd` into a scratch work dir without
-# breaking log/redaction writes.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 LOGS_DIR="$REPO_ROOT/logs"
@@ -67,29 +36,12 @@ CACHE_HELPER="$SCRIPT_DIR/assert-prompt-cache.sh"
 mkdir -p "$LOGS_DIR" "$REDACTED_DIR"
 CONNECT_REF="unsloth_cli/commands/start.py"
 
-# Prefill-shrinking flags for Claude Code. The heavyweight agents send
-# multi-thousand-token system prompts + full tool schemas, which on a CPU-only
-# runner is minutes of prefill per model round-trip (~16 tok/s for a 4B model).
-# Replacing the ~5.7k default system prompt with a tiny one (--system-prompt-file)
-# and restricting tools cuts the prefill to a few hundred tokens so it completes
-# quickly on CPU. These only shape the request size; the start.py recipe
-# (endpoint, auth, model) is still exercised end to end.
-# The bulk of Claude Code's prompt is the built-in tool JSON schemas: measured
-# via `claude -p /context`, the default prompt is ~28k tokens of which ~18k is
-# "System tools" alone. --allowedTools/--disallowedTools only gate PERMISSION to
-# call a tool; they do NOT remove its schema from what is sent to the model, so
-# the earlier whitelist left the full ~18k in the prompt and CPU prefill
-# (~16 tok/s) overran claude's own request timeout into a retry loop. --tools is
-# the flag that restricts which schemas are sent. (The ~8k "Memory files" chunk
-# is auto-loaded CLAUDE.md; the unsloth repo ships none, so it is 0 in CI.)
-# Connection probe: --tools "" sends ZERO tool schemas, leaving ~20 tokens total
-# (a one-line --system-prompt-file + the user turn), which prefills instantly.
+# Shrink Claude's prefill for CPU serving. --tools limits which schemas are sent;
+# --allowedTools only gates permission.
 CLAUDE_CONNECT_FLAGS=(
   --system-prompt-file "$SCRIPT_DIR/ci-connect-prompt.txt"
   --tools ""
 )
-# File-edit: the task needs the file/shell tools, so send only those schemas
-# (~2.3k tokens vs ~18k for the full set).
 CLAUDE_EDIT_FLAGS=(
   --system-prompt-file "$SCRIPT_DIR/ci-min-system-prompt.txt"
   --tools "Bash,Edit,Write,Read"
@@ -100,9 +52,7 @@ guide_fail() {
   exit 1
 }
 
-# Redact the API key from any file we are about to keep as an artifact.
-# Portable across GNU sed (Linux runners) and BSD sed (macOS), so the
-# redaction is never silently skipped.
+# Portable across GNU and BSD sed so redaction is never skipped.
 redact() {
   local f
   for f in "$@"; do
@@ -115,14 +65,11 @@ redact() {
   done
 }
 
-# Print a file to the log with the key scrubbed, without mutating it (the raw file is
-# still needed to parse the real env). Use this instead of `cat` for any transcript that
-# carries an `export UNSLOTH_API_KEY=...` line, so a live key never reaches Actions logs.
+# Print with the key scrubbed, leaving the file intact for env parsing.
 cat_redacted() {
   sed "s#${UNSLOTH_API_KEY}#<REDACTED>#g" "$1"
 }
 
-# A reply must be non-empty and free of connection/auth errors.
 assert_reply() {
   local out="$1"
   if [ ! -s "$out" ]; then
@@ -135,28 +82,9 @@ assert_reply() {
   head -20 "$out"
 }
 
-# Run a command under a hard timeout. Two unrelated things hit the cap and only
-# one of them is guide drift:
-#   * nothing was ever printed -> the recipe blocked on a headless TTY prompt,
-#     which is exactly the class-(c) failure this script exists to catch.
-#   * a transcript was printed -> the CLI did the work and then failed to exit.
-#     opencode did this on 2026-08-03: it ran the tool, printed 'Hello', and sat
-#     there for the remaining 18 min with llama-server serving nothing. It is
-#     intermittent, not a one-way regression -- the same two turns took 635s the
-#     week before and 633s the day after.
-# Blaming start.py for the second is wrong, so flag it and let the caller judge
-# the turn on its assertions. TIMED_OUT is global: callers with no assertion that
-# can rescue a partial turn (connection, resume, attribution-ab) treat it as fatal.
-# Deciding that the cap was hit needs care. timeout(1) reports 124 when the
-# command dies on the TERM it sends, but a CLI that catches or ignores TERM is
-# not bounded at all without --kill-after (measured: a TERM-ignoring loop under
-# `timeout 2` was still alive 8s later). --kill-after makes that case exit 137
-# -- and so does an unrelated SIGKILL, e.g. the OOM killer, which must NOT be
-# waived as a timeout. The two are indistinguishable by status, so read the wall
-# clock instead of the exit code: only a 137 that arrives at or after the
-# deadline is an expiry (measured: kill-after fired at 5s on a 3s cap, an
-# external kill -9 landed at 1s on a 30s cap).
-run_timed() {  # $1=outfile, rest=command
+# Run under a hard timeout. Sets TIMED_OUT when the cap was hit; a 137 counts only at the
+# deadline, since an unrelated SIGKILL (OOM) also returns 137.
+run_timed() {
   local out="$1"; shift
   TIMED_OUT=0
   TURN_DONE=0
@@ -166,15 +94,7 @@ run_timed() {  # $1=outfile, rest=command
     timeout --kill-after=30 "$TIMEOUT" "$@" > "$out" 2>&1
     rc=$?
   else
-    # An agent that prints an end-of-run marker does not have to exit before its
-    # turn can be judged. openclaw finishes and then holds its session write lock
-    # for the rest of the cap: on 2026-09-06 it answered `pong` and logged
-    # `ended with stopReason=stop` 39ms after the model replied, then sat there
-    # for the remaining 1200s, costing a 20 minute job and a "never completed a
-    # turn" verdict its own transcript contradicted. Give the CLI EXIT_GRACE
-    # seconds to leave on its own once the marker lands, then take it down, so
-    # the caller judges a finished turn instead of a cap. Only agents with such a
-    # marker opt in; for everyone else this is the same blocking call as before.
+    # Agents with an end-of-run marker (TURN_DONE_RE) get EXIT_GRACE seconds to exit, then are killed.
     : > "$out"
     timeout --kill-after=30 "$TIMEOUT" "$@" > "$out" 2>&1 &
     local tpid=$! seen=""
@@ -183,11 +103,7 @@ run_timed() {  # $1=outfile, rest=command
         grep -qF -- "$TURN_DONE_RE" "$out" 2>/dev/null && seen=$SECONDS
       elif [ $(( SECONDS - seen )) -ge "${EXIT_GRACE:-30}" ]; then
         TURN_DONE=1
-        # The whole group, not timeout(1) and not its direct child. The command
-        # is a bash wrapper that runs the agent, so signalling either one leaves
-        # the CLI orphaned and unbounded -- the state this is here to end.
-        # timeout(1) gives its child a group of its own, so that group is exactly
-        # the invocation; refuse to fire if it ever resolves to ours.
+        # Kill the whole process group of timeout's child, never our own group.
         local kid pg
         kid="$(pgrep -P "$tpid" 2>/dev/null | head -1)"
         pg="$(ps -o pgid= -p "${kid:-0}" 2>/dev/null | tr -d ' ')"
@@ -208,17 +124,9 @@ run_timed() {  # $1=outfile, rest=command
     rc=$?
   fi
   local elapsed=$(( SECONDS - t0 ))
-  # Neither status proves expiry on its own. 137 is also an unrelated SIGKILL,
-  # and 124 is also whatever the CLI itself chose to exit with -- timeout(1)
-  # otherwise returns "the exit status of COMMAND", and an agent that hit its
-  # own internal request timeout can exit 124 early, after leaving hello.py
-  # behind. So both statuses have to agree with the clock. SECONDS is
-  # truncated to whole seconds at both ends, so allow one second of slack;
-  # a CLI-originated 124 returns nowhere near the cap.
+  # Both 124 and 137 must agree with the clock; allow one second of slack for SECONDS truncation.
   local expired=0
   case "$TIMEOUT" in
-    # A timeout(1) duration suffix (600s / 10m) is not a number we can compare,
-    # so fall back to trusting 124 alone rather than parsing it.
     *[!0-9]*) [ "$rc" -eq 124 ] && expired=1 ;;
     *)
       if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
@@ -231,46 +139,27 @@ run_timed() {  # $1=outfile, rest=command
     echo "[$AGENT] last 40 lines before timeout:"; tail -40 "$out" 2>/dev/null || true
     [ -s "$out" ] || guide_fail "invoke timed out after ${TIMEOUT}s having printed nothing (headless-TTY hang -- the recipe likely needs a non-interactive/print flag)"
     TIMED_OUT=1
-    # State the fact, not the verdict. Three callers (connection, resume,
-    # attribution-ab) have no assertion that can rescue a partial turn and treat
-    # a cap as fatal on purpose, so promising that the turn will be judged on its
-    # assertions was wrong for exactly the cases most likely to hit it -- and it
-    # is what a reader sees immediately above the error that contradicts it.
     echo "::warning::[$AGENT] the CLI printed a transcript but did not exit within ${TIMEOUT}s; whether that is fatal is the caller's call."
-    # The marker can land inside the last poll interval, or after a cap reached
-    # without the watcher. Either way the turn is over, and the caller may say so.
     if [ -n "${TURN_DONE_RE:-}" ] && grep -qF -- "$TURN_DONE_RE" "$out" 2>/dev/null; then
       TURN_DONE=1
     fi
   fi
   if [ "${TURN_DONE:-0}" = 1 ]; then
-    # The fact, not the verdict, for the same reason the cap warning states one:
-    # what a finished-but-hung run means is the caller's to say, and a promise
-    # made here is read directly above whatever the caller decides.
     echo "::warning::[$AGENT] the CLI logged the end of its run (${TURN_DONE_RE}) and then would not exit."
   fi
   return "$rc"
 }
 
-# Read a value from an `export VAR=...` line in the connect --no-launch output.
-# `unsloth start` writes each agent's session config off the user's ~ and points
-# at it through a relocation env var (CODEX_HOME / OPENCODE_CONFIG /
-# OPENCLAW_CONFIG_PATH), so the contract checks read the path from here.
+# Read a value from an `export VAR=...` line in the --no-launch output.
 raw_env() {  # $1 = var name -> value (one shlex-quote layer stripped)
   local raw="$LOGS_DIR/connect-${AGENT}.txt"
   local v; v="$(sed -n "s/^export $1=//p" "$raw" | tail -1)"
   v="${v#\'}"; v="${v%\'}"; printf '%s' "$v"
 }
 
-# ── 5-agent start.py path: parse env + command from --no-launch ─────────
-# Populates globals CONNECT_ENV (export/unset lines) and CONNECT_CMD (the
-# launch command on the last printed line), and runs start.py's config
-# writers as a side effect (it writes each agent's relocated session config).
+# Sets CONNECT_ENV and CONNECT_CMD; also runs start.py's config writers as a side effect.
 parse_connect() {
   local raw="$LOGS_DIR/connect-${AGENT}.txt"
-  # CONNECT_YOLO=1 adds --yolo. opencode/openclaw gate tool approval through their
-  # config (which now prompts by default), so the file-edit test opts into auto-approval
-  # here, the same intent as claude/codex's per-call bypass flags.
   local yolo=()
   [ -n "${CONNECT_YOLO:-}" ] && yolo=(--yolo)
   # dsh's `--profile headless`: its default recipe opens the browser UI instead.
@@ -283,16 +172,13 @@ parse_connect() {
   fi
   echo "[$AGENT] connect --no-launch printed:"; cat_redacted "$raw"
   CONNECT_ENV="$(grep -E '^(export |unset )' "$raw" || true)"
-  # The launch command is the last non-export, non-status line. start.py
-  # prints "Unsloth <url> · model <id>" and "Updated ..." status lines first.
+  # The launch command is the last line that is not an export or status line.
   CONNECT_CMD="$(grep -vE '^(export |unset |Unsloth |Updated |Disabled |Warning|Loading)' "$raw" \
     | grep -E '[^[:space:]]' | tail -1)"
   [ -n "$CONNECT_CMD" ] || guide_fail "could not parse a launch command from connect --no-launch output"
   redact "$raw"
 }
 
-# Cross-check the documented contract knobs so silent start.py changes
-# (env-var rename, wire_api flip, attribution setting drop) also fail/flag.
 crosscheck_contract() {
   local raw="$LOGS_DIR/connect-${AGENT}.txt"
   local cfg home
@@ -301,8 +187,6 @@ crosscheck_contract() {
       grep -q 'UNSLOTH_STUDIO_AUTH_TOKEN' "$raw" \
         || guide_fail "Codex env key is no longer UNSLOTH_STUDIO_AUTH_TOKEN (start.py _CODEX_ENV_KEY)"
       home="$(raw_env CODEX_HOME)"
-      # An empty relocation var would make cfg "/config.toml" and silently
-      # skip the [ -f ] contract check below; fail loudly instead.
       [ -n "$home" ] || guide_fail "CODEX_HOME missing from connect output (start.py codex())"
       cfg="$home/config.toml"
       if [ -f "$cfg" ]; then
@@ -340,8 +224,6 @@ crosscheck_contract() {
       [ -n "$cfg" ] && [ -f "$cfg" ] && cp "$cfg" "$REDACTED_DIR/opencode.json"
       ;;
     pi)
-      # Pi has no config-dir env var; the session is HOME-relocated, and the
-      # provider config lives at $HOME/.pi/agent/models.json.
       cfg="$(raw_env HOME)/.pi/agent/models.json"
       if [ -f "$cfg" ]; then
         grep -q '"openai-completions"' "$cfg" \
@@ -366,7 +248,6 @@ crosscheck_contract() {
     vibe)
       grep -q 'UNSLOTH_API_KEY' "$raw" \
         || guide_fail "Vibe env key is no longer UNSLOTH_API_KEY (start.py _VIBE_ENV_KEY)"
-      # Provider and model ride in the env layer (start.py _vibe_env), not a config file.
       cfg="$(raw_env VIBE_PROVIDERS)"
       [ -n "$cfg" ] || guide_fail "VIBE_PROVIDERS missing from connect output (start.py _vibe_env)"
       grep -q '"api_style": "openai"' <<<"$cfg" \
@@ -377,32 +258,15 @@ crosscheck_contract() {
   redact "$REDACTED_DIR"/* 2>/dev/null || true
 }
 
-# Heavyweight agents (hermes, openclaw) bake a large system prompt + tool JSON
-# schemas into every request, which a CPU runner cannot prefill before the invoke
-# timeout. As with claude's --tools, we shrink the request from the agent's own
-# config: zero tools for the connection probe collapses the prompt to a few
-# hundred tokens, since both CLIs gate the bulk of their prompt on having tools.
+# Heavyweight agents: shrink the request via their own config so CPU prefill fits the timeout.
 
-# Hermes: an explicit empty cli toolset disables all tools (and drops the
-# tool-gated guidance blocks), so -z sends ~300 tokens instead of thousands.
-# Hermes enables its default cli toolset when the session config does not pin one,
-# so we must set platform_toolsets.cli explicitly to [] (not just append) to get
-# zero tools. That needs a YAML parser, and the runner's bare python3 has no
-# PyYAML -- but the venv that ships `unsloth` does (start.py imports yaml), so run
-# the patch with that interpreter. We patch the relocated $HERMES_HOME/config.yaml
-# that `unsloth start` printed, not the user's ~/.hermes.
-# (-z reads platform_toolsets.cli; --ignore-rules is a no-op under -z.)
+# platform_toolsets.cli must be set to [] explicitly to get zero tools. Needs PyYAML, so use
+# the interpreter from the `unsloth` venv.
 patch_hermes_tools() {  # $1 = none|default
-  # Check the raw var BEFORE appending /config.yaml: the joined path is never
-  # empty, so the old guard could not fire and the patcher would die on
-  # "/config.yaml" with a bare traceback instead of this clear failure.
+  # Check the raw var before appending /config.yaml; the joined path is never empty.
   local home; home="$(raw_env HERMES_HOME)"
   [ -n "$home" ] || guide_fail "Hermes HERMES_HOME missing from connect output (start.py hermes())"
   local cfg; cfg="$home/config.yaml"
-  # Find a python that can import yaml. The runner's bare python3 cannot, but the
-  # interpreter in the `unsloth` console-script shebang provably can (it runs
-  # start.py's write_hermes_config, which imports yaml). Try that first, then
-  # any python on PATH, then the venv sibling, picking the first with PyYAML.
   local cand py="" shebang
   shebang="$(head -1 "$(command -v unsloth)" 2>/dev/null | sed -n 's/^#![[:space:]]*//p' | awk '{print $1}')"
   for cand in "$shebang" python3 python "$(dirname "$(command -v unsloth)")/python"; do
@@ -431,14 +295,8 @@ print(f"[hermes] platform_toolsets.cli = {ts.get('cli', 'default')}")
 PY
 }
 
-# OpenClaw: 'openclaw agent' has no tool/prompt flags, so we define a 'ci' agent
-# in openclaw.json. tools.deny ["*"] sends zero tool schemas (deny always wins)
-# for the connection probe; contextInjection "never" + defaults.skipBootstrap
-# drop the auto-injected AGENTS.md/SOUL.md bootstrap (the bulk of the prompt) for
-# both modes. --agent must reference a defined agent, so write it before invoking.
+# openclaw has no tool/prompt flags, so define a 'ci' agent in openclaw.json before invoking.
 patch_openclaw_agent() {  # $1 = notools|tools
-  # OpenClaw reads its config from the relocated OPENCLAW_CONFIG_PATH that
-  # `unsloth start` printed, so patch THAT file (not the user's ~/.openclaw).
   local cfg; cfg="$(raw_env OPENCLAW_CONFIG_PATH)"
   [ -n "$cfg" ] || guide_fail "OpenClaw OPENCLAW_CONFIG_PATH missing from connect output (start.py openclaw())"
   python3 - "$1" "$cfg" <<'PY'
@@ -460,20 +318,13 @@ print(f"[openclaw] agent ci tools = {agent.get('tools', 'default')}")
 PY
 }
 
-# Build an invoke script that applies start.py's env then runs the launch
-# command (with extra args appended) under bash. We do NOT eval connect's env
-# into this shell; we write it into a one-shot script so the export/unset
-# semantics are exactly what start.py printed. The script path is absolute
-# so it is valid even when the caller has cd'd into a scratch work dir.
+# Write start.py's env into a one-shot script instead of eval-ing it here.
 invoke_via_connect() {  # $1=outfile, rest=extra args appended to the command
   local out="$1"; shift
   local script="$LOGS_DIR/invoke-${AGENT}.sh"
   local real; real="$(mktemp)"
-  # CONNECT_ENV_EXTRA / CONNECT_CMD_OVERRIDE let a caller (attribution-ab) flip a
-  # session knob without editing the user's config; empty -> use what start.py emitted.
   local cmd="${CONNECT_CMD_OVERRIDE:-$CONNECT_CMD}"
-  # A bare V2 recipe ends in --standalone for the TUI. Once this driver adds the
-  # run subcommand, V2 requires that option after run instead of before it.
+  # V2 requires --standalone after the run subcommand, not before it.
   if [ "$AGENT" = opencode ] && [[ "$cmd" == *" --standalone" ]] && [ "${1:-}" = run ]; then
     cmd="${cmd% --standalone}"
     set -- run --standalone "${@:2}"
@@ -482,21 +333,13 @@ invoke_via_connect() {  # $1=outfile, rest=extra args appended to the command
     echo "set -uo pipefail"
     echo "$CONNECT_ENV"
     [ -n "${CONNECT_ENV_EXTRA:-}" ] && echo "$CONNECT_ENV_EXTRA"
-    # Append extra args (the prompt / flags) to the launch command verbatim.
     printf '%s' "$cmd"
     local a
     for a in "$@"; do printf ' %q' "$a"; done
     printf '\n'
   } > "$real"
-  # Upload a REDACTED copy of the script, but EXECUTE the un-redacted one from a
-  # temp path outside the artifact dir. Redacting the script we run would turn
-  # the real `export TOKEN=sk-...` line into `export TOKEN=<REDACTED>`, which is
-  # invalid bash (the `<`/`>` are redirections) and silently breaks every agent.
-  # Writing the redacted copy up front keeps the key out of the artifact even if
-  # the run times out (run_timed exits before returning here).
+  # Upload a redacted copy but run the original: `<REDACTED>` is invalid bash.
   cp "$real" "$script"; redact "$script"
-  # The connect one-liner now carries the key as an inline env assignment; scrub it on
-  # the way to the log (the executed $real keeps the live value).
   echo "[$AGENT] invoking (timeout ${TIMEOUT}s): ${cmd//${UNSLOTH_API_KEY}/<REDACTED>} $*"
   run_timed "$out" bash "$real"
   local rc=$?
@@ -506,62 +349,35 @@ invoke_via_connect() {  # $1=outfile, rest=extra args appended to the command
 }
 
 case "$MODE" in
-  # ── connection: trivial prompt, assert a non-empty, error-free reply ────
   connection)
     PROMPT='Reply with exactly the single word: pong'
     OUT="$LOGS_DIR/${AGENT}-connection.txt"
     case "$AGENT" in dsh) CONNECT_START_ARGS='--profile headless' ;; esac
     parse_connect
     crosscheck_contract
-    # claude/codex run in print mode via the flags start.py emits
-    # (claude -p / codex exec). For agents whose default subcommand prints
-    # to stdout we pass the prompt through ctx.args.
     case "$AGENT" in
       claude)   invoke_via_connect "$OUT" "${CLAUDE_CONNECT_FLAGS[@]}" -p "$PROMPT" ;;
       codex)    invoke_via_connect "$OUT" exec --dangerously-bypass-approvals-and-sandbox "$PROMPT" ;;
       opencode) invoke_via_connect "$OUT" run "$PROMPT" ;;
       pi)       invoke_via_connect "$OUT" -p "$PROMPT" ;;
-      # Zero tool schemas, as for claude/hermes: only the endpoint, auth and model are under test.
       vibe)     invoke_via_connect "$OUT" --disabled-tools '*' -p "$PROMPT" ;;
       hermes)   patch_hermes_tools none
                 invoke_via_connect "$OUT" -z "$PROMPT" ;;
       openclaw) patch_openclaw_agent notools
-                # openclaw logs this once per run, and only when the run is over
-                # ("run <uuid> ended with stopReason=stop"). It is the one signal
-                # here that a banner cannot forge, so it is what lets a hung exit
-                # be told apart from a turn that never came back.
+                # Logged only when an openclaw run is over, so a banner cannot fake it.
                 TURN_DONE_RE='ended with stopReason='
                 CONNECT_CMD_OVERRIDE=openclaw invoke_via_connect "$OUT" agent --local --agent ci \
                   --model "unsloth/${UNSLOTH_MODEL_ID}" --message "$PROMPT" ;;
       *)        invoke_via_connect "$OUT" "$PROMPT" ;;
     esac
-    # A non-zero exit from the documented launch command is drift even if it
-    # printed something: a benign-looking "command not found" / usage dump would
-    # otherwise slip past assert_reply (which only flags empty/error-keyword text).
-    # A timeout is no exception here. assert_reply cannot tell a completed reply
-    # from a startup banner (it checks for non-empty text without the connection
-    # /auth error strings, not for the requested "pong"), so waiving a cap would
-    # report "connection OK" for a recipe that printed a banner and then blocked
-    # on a headless prompt -- the exact failure this job exists to catch.
+    # Non-zero exit is drift even with output. A timeout is fatal: assert_reply cannot tell a reply from a banner.
     rc=$?
-    # Two different failures, and pointing both at start.py costs an
-    # investigation. A cap means the launch command was fine and the turn never
-    # came back: on 2026-08-19 codex printed a correct banner (right provider,
-    # right model) and then sat on `ERROR: Reconnecting... 1/5` for the whole
-    # 600s. Nothing about the documented flow had drifted, and guide_fail said it
-    # had. It is still fatal -- see the note above on why a cap cannot be waived
-    # here -- but it is reported as what it is.
+    # A cap is reported separately from drift; it is still fatal.
     if [ "${TIMED_OUT:-0}" = 1 ] && [ "${TURN_DONE:-0}" != 1 ]; then
       echo "::error::[$AGENT] the documented launch command started but never completed a turn within ${TIMEOUT}s. The recipe in ${CONNECT_REF} is not implicated: the transcript above shows what the CLI was doing when the cap hit. A connection or model-server failure looks like this; so does a headless prompt, which prints nothing at all." >&2
       exit 1
     fi
-    # TURN_DONE is not a waiver of the cap, it is the assertion the cap was
-    # missing. The reason connection could never rescue a hang is that
-    # assert_reply cannot tell a completed reply from a startup banner; an
-    # end-of-run line the agent prints only when a run terminates can. A banner
-    # still carries no marker and still fails above. The rc check is skipped only
-    # here, because the non-zero status is the one run_timed produced itself when
-    # it stopped a CLI that had already finished.
+    # TURN_DONE proves the turn finished, so the rc from run_timed's own kill is skipped only then.
     if [ "${TURN_DONE:-0}" != 1 ]; then
       [ "$rc" -eq 0 ] || guide_fail "the documented launch command exited non-zero (rc=$rc) -- see the transcript above"
     fi
@@ -569,66 +385,47 @@ case "$MODE" in
     echo "[$AGENT] connection OK"
     ;;
 
-  # ── file-edit: deterministic 2-turn hello.py test (gemma-4-E4B-it) ──────
   file-edit)
     WORK="$WORKDIR_BASE/${AGENT}"
     rm -rf "$WORK"; mkdir -p "$WORK"
     OUT1="$LOGS_DIR/${AGENT}-fileedit-turn1.txt"
     OUT2="$LOGS_DIR/${AGENT}-fileedit-turn2.txt"
     T1='Create a file named hello.py in the current directory whose entire contents are a single line: print("Hello"). Do not run it.'
-    # One instruction only. Also asking for a ran.txt copy (#7838) made opencode
-    # narrate the tool call and create no file, where the one-part prompt had run
-    # for real in ~90s every time.
+    # Keep a single instruction; a two-part prompt made opencode narrate instead of acting.
     T2='Run hello.py with python and show me the exact output.'
 
-    # The start.py recipe writers + crosscheck must see the repo; run them
-    # from the repo root BEFORE cd-ing into the scratch work dir. opencode/openclaw
-    # gate tool approval through their config (prompting by default), so file-edit
-    # opts them into auto-approval to run edits/commands headlessly.
+    # Run the recipe writers from the repo root before entering the scratch work dir.
     case "$AGENT" in
       opencode|openclaw|vibe) CONNECT_YOLO=1 ;;
-      # A headless run has nobody to answer dsh's approval asks.
       dsh) CONNECT_YOLO=1; CONNECT_START_ARGS='--profile headless' ;;
     esac
     parse_connect
     crosscheck_contract
-    # File-edit needs real tools, so we cannot zero them as in connection.
-    # hermes keeps default tools; openclaw still strips its AGENTS.md/SOUL.md
-    # bootstrap (the largest prompt chunk) via the 'ci' agent. The scratch work
-    # dir is empty, so no project context files are auto-loaded either.
     case "$AGENT" in
       hermes)   patch_hermes_tools default ;;
       openclaw) patch_openclaw_agent tools ;;
     esac
 
-    # Drive from inside the work dir so the agent edits files there. All log
-    # writes use absolute $LOGS_DIR, so cwd does not matter for them.
     cd "$WORK" || guide_fail "could not enter work dir $WORK"
 
     invoke_turn() {  # $1=outfile $2=continue? $3=prompt
       local out="$1" cont="$2" prompt="$3"
       case "$AGENT" in
         pi)
-          # Pi continues the previous session with -c; provider/model come from
-          # the parsed `unsloth start pi` recipe (CONNECT_CMD), not hardcoded here.
           if [ "$cont" = "continue" ]; then
             invoke_via_connect "$out" -p --continue "$prompt"
           else
             invoke_via_connect "$out" -p "$prompt"
           fi ;;
         claude)
-          # --dangerously-skip-permissions lets headless claude actually use the
-          # Write/Bash tools (otherwise it blocks on an approval prompt and emits
-          # nothing). IS_SANDBOX=1 (exported above) authorizes it.
+          # IS_SANDBOX=1 (exported above) authorizes --dangerously-skip-permissions.
           if [ "$cont" = "continue" ]; then
             invoke_via_connect "$out" "${CLAUDE_EDIT_FLAGS[@]}" --dangerously-skip-permissions -p --continue "$prompt"
           else
             invoke_via_connect "$out" "${CLAUDE_EDIT_FLAGS[@]}" --dangerously-skip-permissions -p "$prompt"
           fi ;;
         codex)
-          # --dangerously-bypass-approvals-and-sandbox gives codex exec
-          # workspace-write (default is read-only -> cannot create hello.py) and
-          # skips the bubblewrap sandbox that the runner lacks.
+          # Needed for workspace-write, and the runner lacks bubblewrap.
           if [ "$cont" = "continue" ]; then
             invoke_via_connect "$out" exec --dangerously-bypass-approvals-and-sandbox resume --last "$prompt"
           else
@@ -637,7 +434,6 @@ case "$MODE" in
         opencode) invoke_via_connect "$out" run "$prompt" ;;
         hermes)   invoke_via_connect "$out" -z "$prompt" ;;
         vibe)
-          # Only the schemas the task needs, as for claude; -c continues the session under VIBE_HOME.
           local tools=(--enabled-tools bash --enabled-tools read_file --enabled-tools write_file)
           if [ "$cont" = "continue" ]; then
             invoke_via_connect "$out" "${tools[@]}" -c -p "$prompt"
@@ -650,17 +446,13 @@ case "$MODE" in
       esac
     }
 
-    # Turn 1: create hello.py.
     invoke_turn "$OUT1" fresh "$T1"
-    # Fail on a non-zero agent exit before trusting side effects: an agent can
-    # error out (API/tool failure) yet leave a plausible file/transcript behind,
-    # which would otherwise slip past the assertions below (mirrors connection).
+    # Fail on non-zero exit before trusting side effects.
     rc=$?
     [ "$rc" -eq 0 ] || [ "${TIMED_OUT:-0}" = 1 ] \
       || { echo "[$AGENT] turn-1 transcript:"; tail -40 "$OUT1" 2>/dev/null || true; \
       guide_fail "turn 1 (create hello.py) exited non-zero (rc=$rc)"; }
 
-    # Hard assertions on the side effect (the real test): file + content + run.
     if [ ! -f hello.py ]; then
       echo "[$AGENT] turn-1 transcript:"; tail -40 "$OUT1" 2>/dev/null || true
       guide_fail "turn 1 did not create hello.py"
@@ -670,12 +462,7 @@ case "$MODE" in
     [ "$RUN_OUT" = "Hello" ] || guide_fail "python3 hello.py printed '$RUN_OUT', expected exactly 'Hello'"
     echo "[$AGENT] turn 1 OK (file created, prints 'Hello')"
 
-    # Turn 2: same cwd + session continuation; assert the agent's run output
-    # contains Hello. Narration drift is WARN-only, missing output is a hard fail.
-    # No cap waiver here, unlike turn 1, whose side effect the harness re-runs
-    # itself: turn 1's assertions all ran before this started, so a cap leaves
-    # only the transcript, and 'Hello' is hello.py's source, its stdout and a
-    # narration of it alike. Fatal, as for connection, resume, attribution-ab.
+    # A cap is fatal for turn 2: 'Hello' appears in source, output and narration alike.
     invoke_turn "$OUT2" continue "$T2"
     rc=$?
     [ "$rc" -eq 0 ] \
@@ -691,44 +478,30 @@ case "$MODE" in
     echo "[$AGENT] file-edit OK"
     ;;
 
-  # ── attribution-ab: Claude Code KV-cache HIT vs MISS ────────────────────
   attribution-ab)
     [ "$AGENT" = "claude" ] || guide_fail "attribution-ab only applies to claude"
-    # The llama-server log filename uses the INTERNAL random llama.cpp port,
-    # not STUDIO_PORT, so we never glob by port: assert-prompt-cache.sh picks
-    # the newest llama-*.log and we slice it by a byte offset (`mark`) captured
-    # right before the measured turn, so an earlier turn's reuse can't leak in.
+    # The log name uses llama.cpp's random internal port, so slice the newest log by byte offset.
     LLAMA_LOG_DIR="${UNSLOTH_LLAMA_LOG_DIR:-$HOME/.unsloth/studio/logs/llama-server}"
     export LLAMA_LOG_DIR
-    parse_connect          # prints session env + suppression flags (no ~/.claude write)
+    parse_connect
     crosscheck_contract
     PROMPT='Reply with exactly the single word: pong'
 
-    # The four invokes below never check rc, so run_timed's cap was their only
-    # hang guard. Nothing here can adjudicate a partial turn either -- the
-    # verdict is a llama-server log slice -- so a cap stays fatal, as it does
-    # for connection and resume.
-    # --tools "" and nothing else: gemma-3-270m declares no tools, so /v1/messages now 400s
-    # the default 25 schemas. The system prompt stays -- the attribution line lives in it.
+    # A cap is fatal here. Only --tools "": gemma-3-270m rejects tool schemas, and the
+    # system prompt must stay because it carries the attribution line.
     ab_invoke() {
       invoke_via_connect "$1" --tools "" "${@:2}"
       [ "${TIMED_OUT:-0}" = 1 ] && guide_fail "attribution-ab invoke timed out after ${TIMEOUT}s; the A/B cannot be judged from a partial turn"
       return 0
     }
 
-    # Phase A: the suppression start.py ships (CLAUDE_CODE_ATTRIBUTION_HEADER=0 +
-    # --exclude-dynamic-system-prompt-sections + --settings overlay) -> expect a
-    # HIT on the continued turn, since the system-prompt prefix is stable.
-    ab_invoke "$LOGS_DIR/claude-ab-hit-1.txt" -p "$PROMPT"        # turn 1 primes
-    FROM_HIT="$(bash "$CACHE_HELPER" mark)"                                # offset before turn 2
+    # Phase A: start.py's suppression, expect a cache HIT on the continued turn.
+    ab_invoke "$LOGS_DIR/claude-ab-hit-1.txt" -p "$PROMPT"
+    FROM_HIT="$(bash "$CACHE_HELPER" mark)"
     ab_invoke "$LOGS_DIR/claude-ab-hit-2.txt" -p --continue "$PROMPT again"
     CACHE_LOG_FROM="$FROM_HIT" bash "$CACHE_HELPER" log HIT
 
-    # Phase B: vanilla Claude with the header ENABLED -> expect a MISS. We flip
-    # the env var to 1 and strip the suppression flags from the launch command
-    # (without them the dynamic attribution line is included and changes every
-    # turn, so the shared prefix moves and the KV cache is invalidated, ~90%
-    # slower). This is session-only: nothing is written to ~/.claude.
+    # Phase B: header enabled and suppression flags stripped, expect a MISS. Session-only.
     CONNECT_ENV_EXTRA='export CLAUDE_CODE_ATTRIBUTION_HEADER=1'
     CONNECT_CMD_OVERRIDE="$(printf '%s' "$CONNECT_CMD" \
       | sed -E "s/ --exclude-dynamic-system-prompt-sections//; s/ --settings '[^']*'//")"
@@ -740,25 +513,14 @@ case "$MODE" in
     echo "[claude] attribution A/B OK (suppressed HIT, header=1 MISS)"
     ;;
 
-  # ── resume: does a launched agent's session survive exit and resume? ────
-  # Unlike the other modes, this drives the real LAUNCH path (`unsloth start
-  # <agent> ...`, the interactive default), not the --no-launch recipe. That
-  # path relocates each agent's home to a throwaway temp dir wiped on exit, so
-  # a session cannot be resumed -- unless --persist routes it to the stable
-  # Unsloth agents dir instead. We run one headless turn per pass and check
-  # whether the turn left a session in a persistent store (deterministic, no
-  # reliance on the model recalling anything), for a baseline pass and a
-  # --persist pass, and assert the expected split for this agent.
+  # resume: drives the real launch path and checks whether a session persists, with and without --persist.
   resume)
     CODEWORD="PLATYPUS7"
     T1="Remember this codeword for later: ${CODEWORD}. Reply with just the word OK."
     T2="What codeword did I ask you to remember? Reply with just that word."
     WORK="$WORKDIR_BASE/${AGENT}-resume"
 
-    # STABLE_HOME: the stable dir that --no-launch (and --persist) relocate to.
-    # Read it from a --no-launch probe (which also writes the agent's config
-    # there). codex/pi relocate their whole home/HOME here; opencode/claude keep
-    # their session data in a fixed user dir, so STABLE_HOME stays empty for them.
+    # opencode/claude keep sessions in a fixed user dir, so STABLE_HOME stays empty for them.
     parse_connect
     case "$AGENT" in
       codex)    STABLE_HOME="$(raw_env CODEX_HOME)" ;;
@@ -766,9 +528,7 @@ case "$MODE" in
       *)        STABLE_HOME="" ;;
     esac
 
-    # The persistent stores a session would land in if it were NOT wiped. We
-    # count files here before/after each turn; a positive delta means the
-    # session persisted (is resumable), zero means it went to a wiped temp dir.
+    # A positive file-count delta here means the session persisted.
     resume_tracked_dirs() {
       case "$AGENT" in
         codex)    printf '%s\n' "$HOME/.codex" ;;
@@ -788,8 +548,6 @@ case "$MODE" in
       echo "$total"
     }
 
-    # The headless first-turn subcommand per agent (mirrors file-edit's map),
-    # forwarded verbatim through the launch path as passthrough args.
     set_t1_cmd() {
       case "$AGENT" in
         claude)   T1_CMD=("${CLAUDE_CONNECT_FLAGS[@]}" -p "$T1") ;;
@@ -800,9 +558,6 @@ case "$MODE" in
       esac
     }
 
-    # Run one headless turn through the launch path. $1=outfile, $2="" or
-    # "--persist", rest = the agent subcommand. --yolo auto-approves so no tool
-    # prompt can hang; --api-key attaches to the already-served CI model.
     launch_turn() {
       local out="$1" rflag="$2"; shift 2
       local flag=(); [ -n "$rflag" ] && flag=("$rflag")
@@ -810,17 +565,12 @@ case "$MODE" in
         --api-key "$UNSLOTH_API_KEY" "$@"
       local rc=$?
       redact "$out"
-      # Unlike connection/file-edit there is no assertion that can rescue a
-      # partial turn here: RESULT is a session-store delta, and a half-written
-      # store would read as a bogus PERSISTED/WIPED. Keep a hang fatal.
+      # A partial turn cannot be judged from a session-store delta, so a hang is fatal.
       [ "${TIMED_OUT:-0}" = 1 ] && guide_fail "invoke timed out after ${TIMEOUT}s; a resume pass cannot be judged from a partial turn"
       return "$rc"
     }
 
-    # One pass: fresh work dir, one planting turn, set RESULT to PERSISTED/WIPED
-    # from the session-store delta. Runs in the main shell (not a command
-    # substitution) so a hang's guide_fail actually fails the job and the
-    # progress lines reach the CI log. $1 = "" (baseline) or "--persist".
+    # Runs in the main shell, not a substitution, so guide_fail actually fails the job.
     RESULT=""
     run_pass() {
       local rflag="$1" label="baseline"
@@ -835,27 +585,19 @@ case "$MODE" in
       popd >/dev/null || true
       after="$(count_session_files)"
       echo "[$AGENT] ${label}: session files ${before} -> ${after} (rc=${rc})"
-      # The turn must succeed for the delta to mean anything: an agent that writes a
-      # session file then errors would otherwise be misread as PERSISTED. Mirror the
-      # file-edit mode and fail the pass on a non-zero launch (the flagship codex recall
-      # below stays WARN-only, driven by its own launch_turn calls).
+      # The turn must succeed, or a written-then-errored session reads as PERSISTED.
       [ "$rc" -eq 0 ] || { echo "[$AGENT] ${label} transcript (tail):"; tail -30 "$out" 2>/dev/null || true; \
         guide_fail "resume ${label} turn for ${AGENT} exited non-zero (rc=${rc})"; }
       if [ "$after" -gt "$before" ]; then RESULT="PERSISTED"; else RESULT="WIPED"; fi
     }
 
     run_pass ""; BASELINE="$RESULT"
-    # Only the temp-dir agents (codex/pi) need the --persist pass to prove the fix.
-    # opencode/claude persist either way, so the baseline already proves it and a
-    # second full CPU turn only risks a timeout; skip it for them.
     case "$AGENT" in
       codex|pi) run_pass "--persist"; RESUME="$RESULT" ;;
       *)        RESUME="n/a (persists either way)" ;;
     esac
 
-    # Expected: codex/pi relocate their whole home to the temp dir, so a plain
-    # launch is WIPED and only --persist PERSISTS. opencode/claude keep their
-    # session data in a fixed user dir, so the baseline already PERSISTS.
+    # codex/pi: plain launch is WIPED, only --persist persists. opencode/claude persist either way.
     case "$AGENT" in
       codex|pi)        EXPECT_BASELINE="WIPED" ;;
       opencode|claude) EXPECT_BASELINE="PERSISTED" ;;
@@ -875,10 +617,7 @@ case "$MODE" in
           || guide_fail "--persist did not persist ${AGENT}'s session (got ${RESUME}); the session dir is still not stable" ;;
     esac
 
-    # Flagship behavioral proof (codex only, WARN-only): after a --persist plant,
-    # resume the session and check the model actually recalls the codeword. A
-    # miss is not a failure (the CI model is small); the mechanism gate above is
-    # the real assertion.
+    # codex recall check is WARN-only; the mechanism gate above is the real assertion.
     if [ "$AGENT" = "codex" ]; then
       rm -rf "$WORK"; mkdir -p "$WORK"
       ( cd "$WORK" && launch_turn "$LOGS_DIR/codex-resume-plant.txt" "--persist" exec "$T1" ) || true

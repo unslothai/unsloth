@@ -118,7 +118,7 @@ def main(argv = None) -> int:
                 print(
                     f"    [{tag}] compile failed: {type(exc).__name__}: {str(exc)[:90]}", flush = True
                 )
-        _gen(pipe, steps, seed, res)  # warmup / compile
+        _gen(pipe, steps, seed, res)
         dts, img = [], None
         for _ in range(args.iters):
             img, dt = _gen(pipe, steps, seed, res)

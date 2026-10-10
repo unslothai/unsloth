@@ -27,7 +27,6 @@ PROMPT = "A cinematic photograph of a red fox in a snowy forest at dawn, highly 
 OUT = Path(__file__).resolve().parent.parent / "outputs" / "quant_research" / "nvfp4_t211_images"
 
 
-# ----------------------------------------------------------------------------- diag
 def diagnostics() -> None:
     import torch
     import torchao
@@ -55,7 +54,6 @@ def diagnostics() -> None:
     )
 
 
-# ----------------------------------------------------------------------------- micro
 def _configs():
     from torchao.quantization import Float8DynamicActivationFloat8WeightConfig as FP8
     from torchao.prototype.mx_formats import NVFP4DynamicActivationNVFP4WeightConfig as NV
@@ -80,7 +78,7 @@ def _bench_linear(K, N, M, cfg, iters, compile_):
     fn = torch.compile(m, fullgraph = True, dynamic = False) if compile_ else m
     x = torch.randn(M, K, device = "cuda", dtype = torch.bfloat16)
     with torch.no_grad():
-        for _ in range(3):  # warmup / compile
+        for _ in range(3):
             fn(x)
         torch.cuda.synchronize()
         dts = []
@@ -123,7 +121,6 @@ def micro(M, iters, compile_):
                 print(f"    {name:16s} FAILED: {type(exc).__name__}: {str(exc)[:120]}", flush = True)
 
 
-# ----------------------------------------------------------------------------- e2e
 def _psnr(a, b):
     mse = float(np.mean((a.astype(np.float64) - b.astype(np.float64)) ** 2))
     return float("inf") if mse == 0 else float(10 * np.log10(255.0**2 / mse))
@@ -213,7 +210,7 @@ def e2e(steps, res, seed, iters, mf):
                 print(
                     f"    [{tag}] compile failed: {type(exc).__name__}: {str(exc)[:90]}", flush = True
                 )
-        _gen(pipe, steps, seed, res)  # warmup / compile
+        _gen(pipe, steps, seed, res)
         dts, img = [], None
         for _ in range(iters):
             img, dt = _gen(pipe, steps, seed, res)

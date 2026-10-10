@@ -23,13 +23,7 @@ on:
       - 'tests/studio/test_uninstall_prebuilt_parity.ps1'
       - 'tests/studio/test_uninstall_reparse_stop_roots.ps1'
       - '.github/workflows/windows-arm64-ci.yml'
-      # Imported or read by the ARM64 tests above: woa_ps_harness.py and
-      # tests/_shared/unsloth_pwsh_runner.py, the fixtures in
-      # tests/studio/install/conftest.py and the root conftest chain, woa-wheelhouse.yml
-      # (whose release_tag test_woa_wheelhouse_prefers_pypi.py checks against
-      # install.ps1), and the installer modules the tests load by path
-      # (install_manifest.py, install_llama_prebuilt.py, and the backend utils
-      # install_python_stack.py imports at module scope).
+      # Imported or read by the ARM64 tests above.
       - 'tests/studio/install/woa_ps_harness.py'
       - 'tests/studio/install/conftest.py'
       - 'tests/conftest.py'
@@ -61,13 +55,7 @@ on:
       - 'tests/studio/test_uninstall_prebuilt_parity.ps1'
       - 'tests/studio/test_uninstall_reparse_stop_roots.ps1'
       - '.github/workflows/windows-arm64-ci.yml'
-      # Imported or read by the ARM64 tests above: woa_ps_harness.py and
-      # tests/_shared/unsloth_pwsh_runner.py, the fixtures in
-      # tests/studio/install/conftest.py and the root conftest chain, woa-wheelhouse.yml
-      # (whose release_tag test_woa_wheelhouse_prefers_pypi.py checks against
-      # install.ps1), and the installer modules the tests load by path
-      # (install_manifest.py, install_llama_prebuilt.py, and the backend utils
-      # install_python_stack.py imports at module scope).
+      # Imported or read by the ARM64 tests above.
       - 'tests/studio/install/woa_ps_harness.py'
       - 'tests/studio/install/conftest.py'
       - 'tests/conftest.py'

@@ -2,20 +2,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 # Assert the clean-machine contract after an install attempt.
-#   absent   The toolchain really was absent for the whole run. Catches a leg that
-#            "passed" because masking silently failed, or because the installer
-#            quietly installed Xcode CLT behind our back.
-#   notools       The trace recorded no compiler/git/brew invocation (trace mode),
-#                 except uv's exact optional libpython self-ID operation, and git
-#                 fetching only the git+ remotes of $UNSLOTH_ALLOW_GIT_FROM.
-#   nodylibtool   No install_name_tool invocation escaped the CLT-absent guard.
-#   dylibpatch    A CLT-present control observed only exact libpython self-ID patches.
-#   nobuild  Wheels-only: no "Building wheel" from pip, no "Building <pkg>==<ver>"
-#            from uv. Needs UNSLOTH_VERBOSE=1, or run_install_cmd
-#            (install.sh:193-243) discards uv's output on success.
-#   macho    Every Mach-O under $MACHO_ROOT is the host architecture, and every
-#            Mach-O MAIN EXECUTABLE is signed. Closes the Rosetta 2 gap, the one
-#            divergence masking cannot reproduce.
+#   absent       the toolchain really was absent for the whole run
+#   notools      the trace shows no compiler/git/brew use beyond the allowed uv operations
+#   nodylibtool  no install_name_tool call escaped the CLT-absent guard
+#   dylibpatch   a CLT-present control saw only exact libpython self-ID patches
+#   nobuild      no source builds; needs UNSLOTH_VERBOSE=1 or uv output is discarded
+#   macho        every Mach-O is the host arch and every main executable is signed
 # Usage: bash .github/scripts/clean-machine-assert.sh absent nodylibtool notools dylibpatch nobuild macho
 set -uo pipefail
 
@@ -26,7 +18,7 @@ rc=0
 fail() { echo "::error::$*"; rc=1; }
 ok()   { echo "[assert] OK  $*"; }
 
-_decode_trace_arg() { # encoded, destination variable
+_decode_trace_arg() {
   _encoded=$1
   case "$_encoded" in h*) _hex=${_encoded#h} ;; *) return 1 ;; esac
   case "$_hex" in *[!0123456789abcdef]* ) return 1 ;; esac
@@ -42,12 +34,11 @@ _decode_trace_arg() { # encoded, destination variable
   printf -v "$2" '%s' "$_decoded"
 }
 
-# The git+ remotes named by the requirement files in $UNSLOTH_ALLOW_GIT_FROM, one per line,
-# without a trailing .git. The files are the source of truth, so a re-pinned remote follows.
+# Allowed git+ remotes from the requirement files in $UNSLOTH_ALLOW_GIT_FROM.
 _allowed_git_remotes() {
   for _req in ${UNSLOTH_ALLOW_GIT_FROM:-}; do
     [ -f "$_req" ] || { echo "::error::UNSLOTH_ALLOW_GIT_FROM names a missing file: $_req" >&2; continue; }
-    # The revision is what follows the LAST @, so ssh://git@host/repo.git@SHA keeps its user.
+    # The revision follows the LAST @, so ssh://git@host/repo.git@SHA keeps its user.
     sed -n \
       -e 's/^[^#]*git+\([a-z][a-z0-9+.-]*:\/\/[^#[:space:]]*\)@[^@\/#[:space:]]*\([#[:space:]].*\)\{0,1\}$/\1/p' \
       -e 't' \
@@ -55,7 +46,6 @@ _allowed_git_remotes() {
   done | sed 's/\.git$//' | sort -u
 }
 
-# The commits those requirement files pin (the 40-hex revision after the last @).
 _allowed_git_pins() {
   for _req in ${UNSLOTH_ALLOW_GIT_FROM:-}; do
     [ -f "$_req" ] || continue
@@ -63,22 +53,17 @@ _allowed_git_pins() {
   done | sort -u
 }
 
-# Every remote a traced git command line names: URLs, including `-c remote.origin.url=URL`.
 _git_line_remotes() {
   printf '%s\n' "$1" | grep -oE '[a-z][a-z0-9+.-]*://[^[:space:]]+|[[:alnum:]_.-]+@[[:alnum:].-]+:[^[:space:]]+' \
     | sed 's/\.git$//'
 }
 
-# Every `submodule update` with these arguments ran inside one of uv's checkouts, read from
-# the working directories the git wrapper records beside the trace. It fetches what that
-# checkout's .gitmodules names, which is the pinned requirement's own content only there.
-# No record, or any run elsewhere, is a no.
-_ran_in_uv_checkout() { # the traced argument string
+# True only if every run of these args was inside one of uv's checkouts.
+_ran_in_uv_checkout() {
   _ran_under "$1" "${UV_CACHE_DIR%/}/git-v0/checkouts/"
 }
 
-# Every run of these arguments (at least one) had its working directory under $2.
-_ran_under() { # the traced argument string, a directory prefix ending in /
+_ran_under() {
   [ -n "${UV_CACHE_DIR:-}" ] && [ -f "$TRACE.git-cwd" ] || return 1
   _seen=false
   while IFS=$'\t' read -r _cwd _args; do
@@ -90,8 +75,7 @@ _ran_under() { # the traced argument string, a directory prefix ending in /
   [ "$_seen" = true ]
 }
 
-# Every run of these arguments was in a uv checkout named after a prefix of $2.
-_in_checkout_of() { # the traced argument string, a full commit
+_in_checkout_of() {
   _ran_in_uv_checkout "$1" || return 1
   while IFS=$'\t' read -r _cwd _args; do
     [ "$_args" = "$1" ] || continue
@@ -102,20 +86,13 @@ _in_checkout_of() { # the traced argument string, a full commit
   done < "$TRACE.git-cwd"
 }
 
-# A git line naming no remote is allowed only in the exact shapes uv's git source uses to
-# check out a pinned commit from its own cache: nothing that can reach the network (a bare
-# `fetch origin` reads its URL from config) and nothing outside $UV_CACHE_DIR.
-_is_uv_git_cache_op() { # the traced argument string
+# A remoteless git line is allowed only in uv's own cache-checkout shapes, with no network access.
+_is_uv_git_cache_op() {
   _cache="${UV_CACHE_DIR%/}/git-v0"
   case "$1" in
-    # uv initialises its database and resolves the pin in its own cache; the same commands
-    # anywhere else (the project directory, say) are not uv's.
     init|rev-parse|"rev-parse "*) _ran_under "$1" "$_cache/" ; return ;;
     "submodule update --recursive --init") _ran_in_uv_checkout "$1"; return ;;
     "reset --hard "*)
-      # The commit the requirement files pin (the workflow passes the INSTALLED package's,
-      # which on an overlay-free leg can trail this checkout's), run in the uv checkout
-      # named after it.
       _commit=${1#reset --hard }
       case "$_commit" in *[!0-9a-f]*|"") return 1 ;; esac
       [ ${#_commit} -eq 40 ] || return 1
@@ -134,19 +111,13 @@ _is_uv_git_cache_op() { # the traced argument string
   return 1
 }
 
-# Whether $1 is one of the allowed remotes in $2, ignoring a trailing .git.
 _is_allowed_git_remote() {
   [ -n "$1" ] && printf '%s\n' "$2" | grep -qxF -- "${1%.git}"
 }
 
-# A git line that names a remote must be one of the two argv shapes uv's git source emits,
-# parsed as git would read them rather than by URL-looking substrings (an option VALUE such
-# as --server-option=URL is not the repository):
-#   fetch [--tags|--force|--update-head-ok|--no-tags|--quiet|--depth=N]... URL REFSPEC...
-#   -c remote.origin.url=URL submodule update [--init|--recursive]...
-# The repository must be an allowed remote and every refspec a `src:refs/...` mapping, so no
-# other option (--all, --upload-pack, a second -c) and no other subcommand (push) passes.
-_is_allowed_remote_git_line() { # the traced argument string, the allowed remotes
+# A git line naming a remote must match uv's exact fetch or submodule argv shapes against
+# an allowed remote, parsed as git would read it.
+_is_allowed_remote_git_line() {
   _line=$1
   _allowed=$2
   set -f
@@ -202,14 +173,11 @@ _is_uv_libpython_self_id_patch() { # argc, operation, source, destination, extra
   if [ -n "${UV_PYTHON_INSTALL_DIR:-}" ]; then
     _patch_root=${UV_PYTHON_INSTALL_DIR%/}
   else
-    # Default uv data locations end in uv/python; this fallback keeps the assertion
-    # useful outside CI, where UV_PYTHON_INSTALL_DIR is normally unset.
     case "$3" in */uv/python/*) ;; *) return 1 ;; esac
     _patch_root=${3%%/uv/python/*}/uv/python
   fi
 
-  # Resolve both directories physically before comparing them. A lexical shell glob
-  # would accept "$root/x/../../outside/..." (and symlink escapes) because * spans '/'.
+  # Resolve physically: a lexical glob would accept ../ and symlink escapes.
   _patch_root=$(CDPATH= cd "$_patch_root" 2>/dev/null && pwd -P) || return 1
   _patch_dir=$(CDPATH= cd "$_patch_dir" 2>/dev/null && pwd -P) || return 1
   case "$_patch_dir" in "$_patch_root"/*/lib) ;; *) return 1 ;; esac
@@ -224,21 +192,17 @@ for check in "$@"; do
   case "$check" in
 
     absent)
-      # NOT `command -v`: on a virgin Mac /usr/bin/{git,cc} EXIST as CLT stubs, so it
-      # succeeds and only RUNNING them fails. The invariant is: must not WORK.
+      # NOT `command -v`: on a virgin Mac /usr/bin/{git,cc} exist as CLT stubs that fail when run.
       if xcode-select -p >/dev/null 2>&1; then
         fail "xcode-select -p still resolves to $(xcode-select -p 2>/dev/null); not a clean Mac"
       else
         ok "xcode-select -p fails (the gate a virgin Mac hits)"
       fi
-      # The whole set clean-machine-env.sh moves aside, not the four it used to check: that
-      # helper warns and carries on when a move fails, so a surviving gcc -- which
-      # install.sh probes to decide build-essential is available -- passed unnoticed.
+      # Check the full set clean-machine-env.sh moves aside; it only warns on a failed move.
       for tool in git cc clang cmake gcc g++ make ninja cargo rustc; do
         command -v "$tool" >/dev/null 2>&1 || { ok "$tool not on PATH"; continue; }
         if "$tool" --version >/dev/null 2>&1; then
-          # Intel runners' /usr/bin/git is not CLT-provided, so masking cannot take it
-          # away; cc/clang do become stubs and macOS needs no git, so report, not fail.
+          # Intel's /usr/bin/git is not CLT-provided, so report it rather than fail.
           case " ${UNSLOTH_CLEAN_ALLOW_WORKING:-} " in
             *" $tool "*)
               echo "[assert] NOTE $tool still works ($(command -v "$tool")); allowed on this runner"
@@ -250,7 +214,6 @@ for check in "$@"; do
           ok "$tool present but non-functional (CLT stub), as on a clean Mac"
         fi
       done
-      # brew is a plain binary with no stub, so absence from PATH is the right test.
       if command -v brew >/dev/null 2>&1; then
         fail "Homebrew still on PATH at $(command -v brew); masking failed"
       else
@@ -308,18 +271,8 @@ for check in "$@"; do
       if [ -z "$TRACE" ] || [ ! -f "$TRACE" ]; then
         fail "notools requested but no trace file (\$UNSLOTH_TOOL_TRACE=$TRACE)"
       else
-        # git is legitimate under --local (unsloth-zoo comes from a git URL), so that
-        # leg allow-lists it via UNSLOTH_ALLOW_TOOLS.
         allow="${UNSLOTH_ALLOW_TOOLS:-}"
-        # A default install with a working git fetches its pinned git+ requirements with it
-        # (the Diffusers main build: a clone records a ref, the archive fallback does not).
-        # That is git, but only for those remotes, so it is allowed structurally: a git line
-        # that names a remote must be uv's fetch or submodule shape against one of the
-        # requirement files' remotes (_is_allowed_remote_git_line), and one naming none must
-        # be one of uv's own cache operations (_is_uv_git_cache_op), counted only when some
-        # line did fetch an allowed remote. `--version` is the installer's probe.
-        # Any other remote, any other remoteless git, or git that fetched nothing allowed is
-        # still a hit.
+        # Git is allowed only for uv fetching the requirement files' pinned git+ remotes.
         allowed_remotes=$(_allowed_git_remotes)
         git_fetched_allowed=false
         if [ -n "$allowed_remotes" ]; then
@@ -334,8 +287,7 @@ for check in "$@"; do
         hits=""
         while IFS=$'\t' read -r tool argc_or_rest arg1 arg2 arg3 extra; do
           [ -n "$tool" ] || continue
-          # This optional uv operation is the only permitted developer-tool use. Keep it
-          # structural rather than name-only: arbitrary install_name_tool calls still fail.
+          # The only permitted developer-tool use; keep it structural.
           if [ "$tool" = "install_name_tool" ]; then
             operation=""; source=""; destination=""
             if _decode_trace_arg "$arg1" operation \
@@ -362,8 +314,7 @@ for check in "$@"; do
               continue
             fi
           fi
-          # `xcode-select -p` only ASKS whether a toolchain is selected and the fix is
-          # carrying on without one, so it is not USE. `--install` stays a hit.
+          # `xcode-select -p` only asks; `--install` is still a hit.
           if [ "$tool" = "xcode-select" ]; then
             case "$argc_or_rest" in
               -p|--print-path|-v|--version|"") continue ;;
@@ -381,29 +332,13 @@ for check in "$@"; do
       ;;
 
     nobuild)
-      # "Built an sdist" is NOT "needed a compiler". Every name was verified against its
-      # own sdist: setuptools.build_meta, no ext_modules, no .c/.cpp/.pyx/.rs, so the
-      # PEP 517 build is a pure-Python copy step.
-      #   openai-whisper, argbind, randomname  -- no version ever ships a wheel
-      #   antlr4-python3-runtime==4.9.3        -- pinned below the 4.13.2 wheel
-      #   triton-kernels  -- a git URL under the triton repo's python/triton_kernels
-      #     subdir: 75 Python files, no setup.py, kernels compiled at runtime. Named by
-      #     the installer, not chosen by resolution, and only the Linux legs reach it.
-      #   diffusers  -- overlay:false releases still pin a pure-Python source archive.
-      #     Remove this once a published Unsloth release carries the wheel pin.
-      # UNSLOTH_ALLOW_SDIST extends it. Lowercased and underscore-folded on both sides:
-      # the distribution name and the name uv prints can differ on the separator.
+      # Pure-Python sdists (no compiled extensions); keep in sync with assert-nobuild.ps1.
+      # Drop diffusers once a release has the wheel pin. UNSLOTH_ALLOW_SDIST extends the list.
       _allow="$(printf '%s' "openai-whisper argbind randomname antlr4-python3-runtime triton-kernels diffusers ${UNSLOTH_ALLOW_SDIST:-}" | tr 'A-Z_' 'a-z-')"
       if [ ! -f "$LOG" ]; then
         fail "nobuild requested but $LOG is missing"
       else
-        # uv prints `Building <name>==<ver>`, pip `Building wheel for <name>`
-        # (astral-sh/uv#11165), so match both; the `==` / ` @ ` keeps this off the
-        # installer's own "building frontend..." text, and ANSI is stripped so a
-        # coloured run parses. `Building <name> @ file://` is dropped -- a local-path
-        # build is one the caller pointed at (--local, the overlay), never one
-        # resolution chose, while index deps always print `<name>==<ver>`, so a genuine
-        # PyPI sdist is still caught, including one named unsloth.
+        # Match both pip and uv build lines; `==`/` @ ` skips frontend text. Local file:// builds are ignored.
         _esc=$(printf '\033')
         _built="$(sed -E "s/${_esc}\[[0-9;]*[A-Za-z]//g" "$LOG" 2>/dev/null \
                   | grep -viE "building [a-z0-9._-]+ @ file://" \
@@ -423,7 +358,6 @@ for check in "$@"; do
           [ -n "$_built" ] && say_built="$(echo "$_built" | tr '\n' ' ')" || say_built="none"
           ok "no non-allowlisted source build (built: $say_built)"
         fi
-        # Independent of package names: a compiler error means a toolchain was needed.
         if grep -qiE "error: command '(cc|gcc|clang|cl)' failed|no such file or directory: 'cc'|clang: error|cargo: not found|error: linker \`cc\` not found" "$LOG"; then
           fail "compiler invocation appears in the install log"
           grep -iE "error: command '(cc|gcc|clang|cl)' failed|clang: error" "$LOG" | head -10
@@ -432,28 +366,15 @@ for check in "$@"; do
       ;;
 
     macho)
-      # The one thing masking cannot reproduce: Rosetta 2 ships on hosted runners and
-      # not on a factory-fresh Mac, so an x86_64-only payload runs green here and dies
-      # with "bad CPU type in executable" for the user. `lipo` is an xcrun shim and gone
-      # after masking, so read `file -Lb`, keyed off `uname -m` (macos-15-intel is x86_64).
-      # SCOPE: all of $MACHO_ROOT, .venv_t5_510/_530/_550 sidecars included -- payload,
-      # not scratch (setup.sh:579-581 creates them, transformers_version.py:338-348 puts
-      # them on sys.path). Any exclusion must be a named path rule, never a narrowed find.
+      # Rosetta 2 hides x86_64-only payloads on runners. Scan all of $MACHO_ROOT; any exclusion
+      # must be a named path rule, never a narrowed find.
       root="${MACHO_ROOT:-${UNSLOTH_STUDIO_HOME:-$HOME/.unsloth}}"
       want="$(uname -m)"
       [ "$want" = "aarch64" ] && want=arm64
       if [ ! -d "$root" ]; then
         fail "macho requested but $root does not exist"
       else
-        # SCOPE, part 2: the two payloads the install RUNS ON live outside $root. `uv
-        # venv` links <venv>/bin/python at its base interpreter and the find below has no
-        # -L, so the interpreter that ran every step is invisible to it; the uv that
-        # fetched it lands in $HOME/.local/bin. Both are what Rosetta 2 hides: an x86_64
-        # one runs green here and dies on the factory-fresh Mac this stands in for.
-        # -L follows that symlink; -maxdepth keeps this a bin/ lookup, not a second walk
-        # of site-packages through the venv's lib64 link -- depth 4 covers
-        # <root>/unsloth_studio, the .venv_t5_* sidecars and <root>/studio/unsloth_studio.
-        # In a variable so it can be counted separately: uv alone would satisfy $nout.
+        # The venv's base interpreter and uv live outside $root, so check them separately.
         base_py="$(find -L "$root" -maxdepth 4 -type f -path '*/bin/python' 2>/dev/null)"
         _macho_targets() {
           find "$root" -type f \( -perm -u+x -o -name '*.dylib' -o -name '*.so' -o -name '*.node' \) 2>/dev/null
@@ -464,50 +385,34 @@ for check in "$@"; do
         }
         n=0 nexe=0 nout=0 nbase=0 bad_arch="" unsigned="" broken=""
         while IFS= read -r f; do
-          # -L: find printed the SYMLINK path for <venv>/bin/python, and plain `file` does
-          # not dereference, so it answered "symbolic link to ..." and the Mach-O test
-          # below dropped the very interpreter this scan exists to check.
+          # -L: plain `file` reports the symlink, not the Mach-O.
           desc="$(file -Lb "$f" 2>/dev/null || true)"
           case "$desc" in *Mach-O*) ;; *) continue ;; esac
           n=$((n + 1))
           case "$f" in "$root"/*) ;; *) nout=$((nout + 1)) ;; esac
-          # Classified, not merely found: an entry `file` could not read is invisible here.
           case "
 $base_py
 " in *"
 $f
 "*) nbase=$((nbase + 1)) ;; esac
-          # Substring, not equality: a universal binary lists every slice it carries,
-          # and one that includes the host arch is fine.
+          # Substring: a universal binary lists every slice.
           case "$desc" in
             *"$want"*) ;;
             *) bad_arch="$bad_arch $f [$desc]" ;;
           esac
 
-          # Signature: MAIN EXECUTABLES ONLY. Asserting it on every Mach-O failed the
-          # mask/pipe leg on 29 ordinary PyPI extension modules plus libportaudio.dylib:
-          # MH_BUNDLE/MH_DYLIB images dlopen'd without library validation ship unsigned,
-          # and that run had already imported them with the installer exiting 0. macOS
-          # enforces on main executables and gatekept .app bundles. Key off the filetype
-          # `file` reports, not the path (a .so may be either); the library veto is second
-          # so a mixed-type fat file counts as a library, and substring tests are
-          # order-independent (Apple prints `executable arm64`, GNU `arm64 executable`).
+          # Signature check applies to main executables only; dylibs and bundles legitimately ship unsigned.
           _is_exe=0
           case "$desc" in *executable*) _is_exe=1 ;; esac
           case "$desc" in *"shared library"*|*bundle*) _is_exe=0 ;; esac
-          # Named rule so a failure says which path matched; the filetype test covers it.
           case "$f" in *.app/Contents/MacOS/*) _is_exe=1 ;; esac
           [ "$_is_exe" = 1 ] && nexe=$((nexe + 1))
 
-          # arm64 only: the kernel refuses to exec an unsigned arm64 main binary
-          # ("Killed: 9"); x86_64 execs it happily, so it is not the same defect.
+          # arm64 only: the kernel refuses unsigned arm64 main binaries, x86_64 does not.
           if [ "$want" = "arm64" ] && [ "$_is_exe" = 1 ]; then
-            # Ad-hoc counts as signed (arm64 linkers seal ad-hoc by default): the test is
-            # "has a verifying seal", not "has an identity", which spctl/--strict demand.
+            # Ad-hoc counts as signed.
             if ! codesign -v "$f" >/dev/null 2>&1; then
-              # Nothing to verify and a seal that does not match differ. Captured, not
-              # piped: `codesign -dvv` exits non-zero on an unsigned file, and under
-              # pipefail that would be the pipeline's status even on a match.
+              # Captured, not piped: codesign -dvv exits non-zero on unsigned files, breaking pipefail.
               _sig="$(codesign -dvv "$f" 2>&1 || true)"
               case "$_sig" in
                 *"not signed at all"*) unsigned="$unsigned $f" ;;
@@ -517,13 +422,10 @@ $f
           fi
         done < <(_macho_targets | sort -u)
         if [ "$n" = "0" ]; then
-          # An empty scan reads exactly like a clean one, so a wrong root would pass.
           fail "no Mach-O found under $root; the arch/signature assertion proved nothing"
         elif [ "$nbase" = "0" ]; then
           fail "no */bin/python under $root was classified as Mach-O, so the venv's base interpreter went unchecked (found: ${base_py:-none})"
         elif [ "$nout" = "0" ]; then
-          # install.sh always bootstraps uv into $HOME/.local/bin, so zero hits outside
-          # $root means the extra scan matched nothing and uv's arch went unproven.
           fail "no Mach-O outside $root was scanned, so uv and the venv's base interpreter escaped the check"
         elif [ -n "$bad_arch" ]; then
           fail "Mach-O is not $want, so it runs here only under Rosetta 2, which a fresh Mac does not have:$bad_arch"

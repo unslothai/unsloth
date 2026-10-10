@@ -92,13 +92,10 @@ def main() -> int:
             setup_text = setup_text[:setup_start] + wanted + setup_text[setup_end:]
             previous = name
             continue
-        # New helper. Land it where install.ps1 keeps it, after the one before
-        # it, with the comment block that explains it.
+        # New helper: insert it after the one before it in install.ps1, with its comment block.
         if previous is None:
             raise SystemExit(f"{name} is new and has nothing to follow in setup.ps1")
-        # dedented() drops the trailing newline, so the comment would otherwise
-        # run into the function keyword and hide the declaration from every
-        # reader of this file, this script included.
+        # dedented() drops the trailing newline, which would glue the comment to the function keyword.
         comment = dedented(install_text[leading_comment_start(install_text, start) : start])
         comment = comment.rstrip("\n") + "\n" if comment else ""
         _, after = function_span(setup_text, previous)

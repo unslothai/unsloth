@@ -26,13 +26,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-# Backend root on sys.path so `core.inference.diffusion` imports as the server does (deferred into main() so --help never triggers torch).
+# Backend root on sys.path; the diffusion import is deferred into main() so --help never imports torch.
 _BACKEND_ROOT = Path(__file__).resolve().parent.parent / "studio" / "backend"
 if str(_BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(_BACKEND_ROOT))
-
-
-# ── small helpers ──────────────────────────────────────────────────────────
 
 
 def _now_iso() -> str:
@@ -150,15 +147,11 @@ def _psnr(ref_png: Path, cand_png: Path) -> float:
     with Image.open(cand_png) as im_b:
         b = np.asarray(im_b.convert("RGB"), dtype = np.float64)
     if a.shape != b.shape:
-        # Different geometry means the comparison is meaningless; report worst case.
         return 0.0
     mse = float(((a - b) ** 2).mean())
     if mse == 0.0:
         return math.inf
     return 20.0 * math.log10(255.0) - 10.0 * math.log10(mse)
-
-
-# ── load + generate ────────────────────────────────────────────────────────
 
 
 def _wait_for_load(backend: Any, timeout_s: int = 2400) -> None:
@@ -235,13 +228,11 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
 
         rss_after_load = _process_rss_bytes()
 
-        # ── warmup (discarded) ──
         for _ in range(max(0, args.warmup)):
             _generate_once(backend, args)
 
         rss_after_warmup = _process_rss_bytes()
 
-        # ── measured generations (fixed seed -> deterministic) ──
         _cuda_reset_peak()
         latencies: list[float] = []
         rss_after_generations: list[Optional[int]] = []
@@ -283,7 +274,6 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
             },
         }
 
-        # The fixed-seed image is the accuracy anchor.
         args._image_out.parent.mkdir(parents = True, exist_ok = True)
         first_image.save(args._image_out)
         print(f"  saved image -> {args._image_out}", flush = True)
@@ -327,9 +317,6 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
-# ── modes ──────────────────────────────────────────────────────────────────
-
-
 def _write_baseline(args: argparse.Namespace) -> int:
     baseline_path = Path(args.write_baseline).resolve()
     ref_png = baseline_path.parent / "reference.png"
@@ -370,7 +357,7 @@ def _compare(args: argparse.Namespace) -> int:
     baseline = json.loads(baseline_path.read_text())
     out_dir = Path(args.out_dir).resolve()
     args._image_out = out_dir / "compare.png"
-    # --write-baseline takes any path, so a baseline can be sitting on a name this run writes. Refuse before the generation is paid for, not after.
+    # Refuse before the generation runs if the baseline path collides with an output.
     for written in (out_dir / "compare.json", args._image_out):
         if baseline_path == written:
             print(
@@ -380,7 +367,6 @@ def _compare(args: argparse.Namespace) -> int:
             )
             return 2
 
-    # Refuse a noisy cross-hardware / cross-dtype comparison unless forced.
     base_env = baseline.get("env", {})
     base_status = base_env.get("status") or {}
     cur_gpu = _gpu_name()
@@ -401,7 +387,6 @@ def _compare(args: argparse.Namespace) -> int:
             print("   refusing noisy comparison (pass --force-compare to override).", flush = True)
             return 2
 
-    # PSNR against the stored reference; reference_png is absolute, so fall back to reference.png beside the baseline.
     ref_png = Path(baseline.get("accuracy", {}).get("reference_png", ""))
     if not ref_png.is_file():
         ref_png = baseline_path.parent / "reference.png"
@@ -482,9 +467,6 @@ def _compare(args: argparse.Namespace) -> int:
         return 1
     print("\n  PASS: no regression beyond thresholds.", flush = True)
     return 0
-
-
-# ── cli ────────────────────────────────────────────────────────────────────
 
 
 def _build_parser() -> argparse.ArgumentParser:

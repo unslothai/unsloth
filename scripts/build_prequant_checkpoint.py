@@ -101,8 +101,7 @@ def upload_destination(
             )
         return override
     if component and component != DEFAULT_COMPONENT:
-        # A second denoiser (Wan A14B's transformer_2) resolves ONLY its task-specific row, with no
-        # fallback, so any other name would publish an artifact the loader never asks for.
+        # A second denoiser resolves only its task-specific row, so other names would never be loaded.
         from core.inference.diffusion_families import family_prequant_filename
 
         specific = family_prequant_filename(fam, scheme, task = component)
@@ -142,11 +141,7 @@ def upload_destination(
     preferred = rotated_name or family_prequant_filename(fam, scheme)
     why = "a rotated checkpoint" if rotated else "a safetensors checkpoint"
     if not preferred:
-        # A PLAIN safetensors build now has a derived name, and only because
-        # ``derived_prequant_filenames`` asks for ``<Model>-<SCHEME>.safetensors`` FIRST. The
-        # reachability this refusal protects is exactly what that chain supplies, so refusing here
-        # would make every family without a declared entry pass an override it could compute
-        # itself. Rotation keeps needing a declared name: no derived spelling carries the marker.
+        # Plain safetensors builds have a derived name; rotated builds still need a declared one.
         if safetensors and not rotated and upload_repo:
             from core.inference.diffusion_prequant import prequant_repo_filename
             return prequant_repo_filename(upload_repo, scheme, ".safetensors")
@@ -155,12 +150,7 @@ def upload_destination(
             f"{scheme!r}, so {why} has no name the loader would ask for. Add the "
             "entry to the family table, or pass --upload-filename."
         )
-    # Both directions, not just one. The declared name and the container have to agree, and a
-    # family that has moved its entry to a .safetensors artifact makes the REVERSE mismatch the
-    # reachable one: a rotated pickle build then publishes torch.save bytes under a safetensors
-    # name, every loader dispatches on the extension and hands them to safe_open, and the artifact
-    # is unopenable after the hours the quantization took. Same failure as the guarded direction,
-    # so it gets the same refusal.
+    # Check both directions: the declared name's extension must match the container.
     wanted = ".safetensors" if safetensors else ".pt"
     if not preferred.lower().endswith(wanted):
         reads_as = "a pickle" if safetensors else "safetensors"
@@ -274,19 +264,11 @@ def main(argv = None) -> int:
     convrot_group = int(args.convrot_groupsize)
     spec_group, spec_suffixes = convrot_spec_for_scheme(scheme, fam.name)
     convrot_suffixes: tuple = spec_suffixes if convrot_group and convrot_group == spec_group else ()
-    # What the artifact RECORDS as its base, which is not always what this build READ. Weights staged into a local
-    # directory keep that directory's name, and the loader's ``_same_base_model`` compares final path segments: a
-    # checkpoint built from ./temp/qwen_image_21 records a base whose tail is "qwen_image_21", the load asks for
-    # "Qwen/Qwen-Image-2.1", the tails differ and a perfectly good artifact is refused after the dense shards were
-    # already dropped. Pinned to the FAMILY's own base_repo rather than taken on trust, so the override can only ever
-    # name the model this family is for, and cannot relabel one checkpoint as another.
+    # The recorded base may differ from the one read: a local staging dir name would fail the
+    # loader's _same_base_model tail comparison, so --base-model-id (pinned to base_repo) overrides it.
     recorded_base = args.base_model_id or args.base
     if args.base_model_id:
-        # EXACT, not the loader's ``_same_base_model``. That helper compares final path segments on
-        # purpose, so a checkpoint built from ./temp/qwen_image_21 still matches Qwen/Qwen-Image-2.1;
-        # borrowing it here would also accept ``other/Qwen-Image-2.1``, record the artifact under that
-        # namespace, and have the loader's equally tolerant comparison wave it through as the official
-        # base. What gets WRITTEN into a published file has to be the canonical id itself.
+        # Exact match, not _same_base_model, so a published file always records the canonical id.
         if recorded_base.strip() != fam.base_repo:
             print(
                 f"error: --base-model-id {recorded_base!r} is not {fam.name}'s base "
@@ -295,8 +277,6 @@ def main(argv = None) -> int:
             )
             return 2
     transformer_cls = getattr(diffusers, fam.transformer_class)
-    # The CONTAINER is chosen by the --out extension, so one flag picks the on-disk format, the reachable upload name
-    # and the writer, and they cannot be set to disagree.
     is_safetensors_out = str(args.out).lower().endswith(".safetensors")
     if is_safetensors_out:
         from core.inference.prequant_safetensors import (
@@ -312,10 +292,8 @@ def main(argv = None) -> int:
                 flush = True,
             )
             return 2
-        # The helpers importing is not the same question as this scheme producing something they can
-        # flatten, and for int8 the two disagree through torchao 0.17. Probed here, on one tiny CPU
-        # Linear, so the answer arrives in a second instead of after the download and the hours of
-        # GPU quantization. None means the probe could not run, which is not evidence: proceed.
+        # Importable helpers do not mean this scheme flattens (int8 does not through torchao 0.17).
+        # Probe on a tiny CPU Linear before the long download; None means the probe could not run, so proceed.
         from core.inference.diffusion_transformer_quant import _make_quant_config
 
         if scheme_is_flattenable(_make_quant_config(scheme)) is False:
@@ -327,8 +305,7 @@ def main(argv = None) -> int:
                 flush = True,
             )
             return 2
-    # Resolved BEFORE the load, so a rotated build with nowhere resolvable to publish fails in a second rather than
-    # after the quantise and the multi-gigabyte save.
+    # Resolved before the load so a bad upload target fails fast.
     upload_dest = None
     if args.upload_repo:
         try:
@@ -365,8 +342,7 @@ def main(argv = None) -> int:
         require_divisible = filter_settings["require_divisible"],
     )
 
-    # ConvRot, BEFORE quantize_: rotating the weights is only worth anything if the quantizer then sees the rotated
-    # distribution. The fqn list is recorded, never re-derived at load time.
+    # Rotate before quantize_ so the quantizer sees the rotated distribution.
     rotation: dict = {}
     if convrot_group:
         from core.inference.diffusion_convrot import (
@@ -403,7 +379,6 @@ def main(argv = None) -> int:
         "family": fam.name,
         "scheme": scheme,
         "min_features": args.min_features,
-        # Let the loader reject a checkpoint that would not match the runtime path.
         "exclude_name_tokens": list(exclude_name_tokens),
         "require_bf16": require_bf16,
         "require_divisible": filter_settings["require_divisible"],
@@ -411,7 +386,6 @@ def main(argv = None) -> int:
         "torch_dtype": args.dtype,
         "quant_backend": "torchao",
         "transformer_class": fam.transformer_class,
-        # The subfolder built above: the loader refuses it as another denoiser (e.g. transformer_2).
         "component": component,
         "torch_version": torch.__version__,
         "torchao_version": getattr(torchao, "__version__", "?"),
@@ -420,13 +394,12 @@ def main(argv = None) -> int:
     from core.inference.diffusion_prequant import packed_weight_fingerprint
 
     metadata["fingerprint"] = packed_weight_fingerprint(state_dict)
-    # fp8 granularity: lets the loader reject a stale per-tensor checkpoint (runtime needs per-row).
+    # Lets the loader reject a stale per-tensor fp8 checkpoint (runtime needs per-row).
     if scheme == TQ_FP8:
         metadata["fp8_granularity"] = FP8_GRANULARITY
     metadata.update(rotation)
     ckpt = {
-        # v2 when a rotation is baked in, so an Unsloth predating the online half refuses the file rather than running
-        # the rotated weights against unrotated activations.
+        # v2 when rotated, so an older Unsloth refuses the file instead of mismatching activations.
         "format": prequant_format_for(metadata),
         "metadata": metadata,
         "state_dict": state_dict,

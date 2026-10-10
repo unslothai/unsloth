@@ -153,7 +153,7 @@ def main() -> int:
     _out("stand_down", "true" if stand_down else "false")
     _out("reason", reason)
 
-    # The PARSED value, for everything downstream, so the one place that normalises the dispatched string is the one place that validated it. parse_steps deliberately accepts "+10", "010" and surrounding whitespace as the ten they are, and the payload's argparse agrees, so the build step comparing the raw string against the reference's count used to read those as a different run and drop the reference band: a green run with the committed band never applied, announced as a step count that was not actually different. The reference's own count comes from here too, for the same reason.
+    # Use the parsed value everywhere: raw strings like "+10" or "010" would mismatch the reference.
     steps = parse_steps(args.max_steps)
     if steps is not None:
         _out("steps", str(steps))

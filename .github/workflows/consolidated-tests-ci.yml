@@ -1,50 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# CPU-only coverage for every test_* function the existing CI does not already
-# cover from this repo, plus the full unsloth_zoo@main CPU test suite, plus
-# unsloth_zoo.compiler.test_apply_fused_lm_head.
-#
-# Two matrix jobs over the SAME three (transformers, TRL) combos, not one:
-# `consolidated` for this repo's own coverage and `consolidated-zoo` for the
-# unsloth_zoo suite. They were one job until the zoo suite, 418s mean over 24
-# measured jobs, was 7.6 of its 17.2 minutes and every pull request waited
-# through both halves end to end. Nothing was dropped in the split; the two
-# halves now run side by side and the pip install preamble, which is the only
-# thing they duplicate, has one definition in
-# .github/actions/core-cpu-setup.
-#
-# Why a separate workflow:
-#   - studio-backend-ci.yml's "Repo tests (CPU)" job already auto-discovers
-#     tests/ minus tests/qlora, tests/saving, tests/utils, tests/sh. The 24
-#     Bucket-A tests below live inside those --ignore dirs (CPU-runnable but
-#     historically excluded with their GPU siblings); pulling them out into
-#     a sibling job keeps the existing 760-passed baseline stable while we
-#     prove the new pieces are green.
-#   - unsloth_zoo has no CI on main today (.github/workflows/ is empty
-#     upstream as of HEAD 030e4ba). 106 of its 111 test_* functions are
-#     CPU-runnable; the 5 GPU/vLLM ones are deselected here.
-#   - test_apply_fused_lm_head lives at unsloth_zoo/compiler.py:1983, not
-#     under tests/, so it is not picked up by `pytest tests/`. It is a
-#     plain function with no fixtures: pure regex over transformers source
-#     strings, ~5-15 s wall, no GPU.
-#
-# Strict mode: every test step is gating (no `continue-on-error`). The
-# upstream patch fixes that previously caused per-cell red have landed:
-#   - unslothai/unsloth#5319 (patch_fast_lora import, patch_sft_trainer
-#     Union, openenv OSError graceful skip).
-#   - unslothai/unsloth-zoo#628 (MoE coverage canary so old transformers
-#     skips legitimately while real discovery regressions still fail).
-# After those merges every observed cell failure was one of these two
-# things; if they regress we want a red cell, not a green-with-fail-prints
-# cell.
-
-#
-# runs-on: ubuntu-24.04, not ubuntu-latest. Same image, so the jobs are unchanged; different
-# queue, because nearly all of the org's ~871 queued runs ask for ubuntu-latest. Identical
-# no-op jobs in one matrix: ubuntu-latest still queued past 40 min, every other label under
-# 2 min (#10914). Cost: the image no longer tracks the fleet default, so bump it for 26.04.
-#
+# ubuntu-24.04, not ubuntu-latest: same image, much shorter queue. Bump for 26.04.
 
 name: Core
 
@@ -53,14 +10,7 @@ on:
     paths:
       - 'unsloth/**'
       - 'unsloth_cli/**'
-      # studio/** minus the frontend and the Tauri shell. Nothing these jobs run reads a
-      # non-Python file under either: the named tests, the inline scripts,
-      # core-cpu-setup and the editable install were checked against the import and
-      # literal-reference graph of every file there, and the only readers found are
-      # install.sh and install.ps1 (icons), which no Core step runs. Python files come
-      # back in on the last line because test_python39_compatibility.py scans every
-      # studio/**/*.py and test_callback_signature_drift.py every .py outside frontend/.
-      # Order matters: the last matching pattern wins.
+      # Python files are re-included last because tests scan every .py. Last matching pattern wins.
       - 'studio/**'
       - '!studio/frontend/**'
       - '!studio/src-tauri/**'
@@ -68,10 +18,7 @@ on:
       - 'tests/**'
       - 'pyproject.toml'
       - '.github/workflows/consolidated-tests-ci.yml'
-      # tests/test_callback_signature_drift.py (a hard gate in the consolidated job)
-      # parses every .py file in the repo outside dot-directories and frontend/, so a
-      # Python file anywhere can change its verdict, not only the ones under the source
-      # trees above.
+      # test_callback_signature_drift.py parses every .py in the repo.
       - '*.py'
       - 'scripts/**/*.py'
       - 'docker/**/*.py'
@@ -88,14 +35,7 @@ on:
     paths:
       - 'unsloth/**'
       - 'unsloth_cli/**'
-      # studio/** minus the frontend and the Tauri shell. Nothing these jobs run reads a
-      # non-Python file under either: the named tests, the inline scripts,
-      # core-cpu-setup and the editable install were checked against the import and
-      # literal-reference graph of every file there, and the only readers found are
-      # install.sh and install.ps1 (icons), which no Core step runs. Python files come
-      # back in on the last line because test_python39_compatibility.py scans every
-      # studio/**/*.py and test_callback_signature_drift.py every .py outside frontend/.
-      # Order matters: the last matching pattern wins.
+      # Python files are re-included last because tests scan every .py. Last matching pattern wins.
       - 'studio/**'
       - '!studio/frontend/**'
       - '!studio/src-tauri/**'
@@ -103,10 +43,7 @@ on:
       - 'tests/**'
       - 'pyproject.toml'
       - '.github/workflows/consolidated-tests-ci.yml'
-      # tests/test_callback_signature_drift.py (a hard gate in the consolidated job)
-      # parses every .py file in the repo outside dot-directories and frontend/, so a
-      # Python file anywhere can change its verdict, not only the ones under the source
-      # trees above.
+      # test_callback_signature_drift.py parses every .py in the repo.
       - '*.py'
       - 'scripts/**/*.py'
       - 'docker/**/*.py'
@@ -127,10 +64,6 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
-  # Latest-only on a PR branch. On main this does less than it reads like: it stops
-  # a RUNNING main job being killed, but GitHub cancels any PENDING run in the group
-  # the moment a newer one is queued, so a merge burst still leaves only the tip.
-  # See studio-backend-ci.yml, which is grouped per commit on main for that reason.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -138,18 +71,7 @@ permissions:
 
 jobs:
   resolve-zoo-ref:
-    # Both Core halves clone unsloth_zoo. Before the split they shared one checkout per
-    # matrix cell, so the compatibility checks and the suite always saw the same revision.
-    # Cloning a mutable branch twice loses that: a push to unsloth_zoo between the two clones
-    # has `consolidated` check revision A while `consolidated-zoo` runs revision B under one
-    # matrix label, and the run is then not reproducible from anything it recorded.
-    #
-    # Resolving once costs a gating job. That is affordable here and was not while Core sat on
-    # ubuntu-latest: on the pinned label a trivial job waited 11s to 162s across the runs in
-    # #10914, against the roughly seven minutes the split takes off this workflow.
-    #
-    # llama-cpp-smoke still resolves its own ref. It shares no verdict with these two, so a
-    # different revision there cannot make one cell disagree with itself.
+    # Resolve the zoo ref once so both Core halves test the same commit.
     name: Resolve the unsloth_zoo revision
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -162,20 +84,11 @@ jobs:
           REF: ${{ inputs.unsloth_zoo_ref || 'main' }}
         run: |
           set -euo pipefail
-          # A ref that is already a commit has no remote head to look up, so pass it through.
           if printf '%s' "$REF" | grep -Eq '^[0-9a-f]{40}$'; then
             sha="$REF"
           else
-            # Retried like the clone in core-cpu-setup, and for the same reason: github.com
-            # occasionally 500s. This job gates both Core halves, so an unretried blip here
-            # would skip all six matrix jobs rather than fail one step.
-            # `git ls-remote` takes PATTERNS, not one ref, so a bare name can print more than
-            # one record: a name that is both a branch and a tag prints both, and an annotated
-            # tag prints the tag object and the commit it peels to. Taking every record puts a
-            # newline inside `sha`, and `sha=<a>\n<b>` makes the second line of $GITHUB_OUTPUT a
-            # bare value that GitHub rejects, failing this job and skipping all six Core cells.
-            # So ask for the exact refs and pick one, in git's own order: a branch beats a tag,
-            # and an annotated tag resolves to the commit rather than to the tag object.
+            # Retried because github.com occasionally 500s. Query exact refs and pick one (branch over tag,
+            # peeled commit) so sha never contains a newline that breaks GITHUB_OUTPUT.
             resolve_ref() {
               local ref="$1" out want line uniq found
               out="$(git ls-remote https://github.com/unslothai/unsloth-zoo \
@@ -187,12 +100,9 @@ jobs:
                   return 0
                 fi
               done
-              # Not a plain branch or tag name. The trailing pattern above still covers a fully
-              # qualified ref, but only one commit may answer to it.
               uniq="$(printf '%s\n' "$out" | awk 'NF { print $1 }' | sort -u)"
               found="$(printf '%s\n' "$uniq" | grep -c . || true)"
-              # No match is the same shape as a failed lookup and stays retryable; several
-              # matches is a statement about the remote that retrying cannot change.
+              # No match is retryable; multiple matches are not.
               if [ "$found" -eq 0 ]; then
                 return 1
               fi
@@ -206,8 +116,6 @@ jobs:
               if sha="$(resolve_ref "$REF")"; then
                 if [ -n "$sha" ]; then break; fi
               elif [ "$?" -eq 2 ]; then
-                # Retrying cannot disambiguate a name several commits answer to, and warning
-                # about a network blip that did not happen would send the reader the wrong way.
                 echo "::error::unsloth_zoo ref '$REF' matches more than one commit on the remote"
                 exit 1
               fi
@@ -228,21 +136,7 @@ jobs:
 
   consolidated:
     needs: resolve-zoo-ref
-    # Matrix: three (transformers, TRL) combos cover the failure surface the
-    # PR cares about:
-    #   1. transformers==4.57.6 + TRL latest <1.0.0 (the just-before-5.x line)
-    #   2. transformers latest 5.x + TRL latest 1.x (the absolute upstream tip;
-    #      currently 5.8.0 + 1.3.0, both BEYOND the unsloth/unsloth_zoo
-    #      <=5.5.0 / <=0.24.0 caps -- the cell exists explicitly to surface
-    #      drift signal)
-    #   3. transformers + TRL pinned by pyproject.toml's dependency entries
-    #      (resolved dynamically at job time via tomllib)
-    # fail-fast: false so each cell runs independently and a transformers /
-    # TRL drift signal in one cell does not cancel the others. No
-    # job-level or per-step `continue-on-error` -- real test failures now
-    # fail the cell. Patches with legitimate CPU-runner preconditions
-    # (real CUDA dispatcher, runtime args) are explicitly skipped via
-    # NEEDS_PRECONDITION in the runtime check shim below.
+    # Three (transformers, TRL) combos: 4.57.6 + TRL <1.0, latest 5.x + 1.x, and pyproject pins.
     strategy:
       fail-fast: false
       matrix:
@@ -262,30 +156,14 @@ jobs:
     name: "Core (${{ matrix.combo.label }})"
     runs-on: ubuntu-24.04
     timeout-minutes: 35
-    # No job-level or per-step `continue-on-error`. Earlier iterations
-    # masked real test failures behind green check icons; that lie is
-    # gone. A failing test step fails the cell. NEEDS_PRECONDITION in
-    # the runtime check shim handles patches that legitimately cannot
-    # run on a CPU-only runner (real CUDA dispatcher, runtime args).
     env:
       UNSLOTH_ZOO_REF: ${{ needs.resolve-zoo-ref.outputs.sha }}
       MATRIX_COMBO_ID: ${{ matrix.combo.id }}
-      # Hoisted to job-level so every step (Sanity, Bucket-A, the static and
-      # runtime checks) inherits it, and repeated in `consolidated-zoo` for the
-      # same reason. transformers' bundled
-      # *_pb2.py was generated against an older protoc; the C++ protobuf
-      # 4+/5+/6 implementation rejects them with "Descriptors cannot be
-      # created directly". The pure-Python parser bypasses the check; the
-      # speed cost is negligible for these tests.
+      # transformers' bundled *_pb2.py fails under the C++ protobuf implementation.
       PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION: python
       PYTHONPATH: ${{ github.workspace }}/studio
       UNSLOTH_COMPILE_DISABLE: '1'
-      # unsloth_zoo/__init__.py:314 raises ImportError unless UNSLOTH_IS_PRESENT
-      # is set — normally it is set by unsloth.__init__ when unsloth is imported
-      # first. In this job we sometimes import unsloth_zoo.* (e.g.
-      # unsloth_zoo.saving_utils, unsloth_zoo.temporary_patches) without going
-      # through `import unsloth` first; pin the env var to 1 so unsloth_zoo's
-      # bootstrap accepts it. Setting it has no effect on unsloth itself.
+      # unsloth_zoo raises on import unless UNSLOTH_IS_PRESENT is set.
       UNSLOTH_IS_PRESENT: '1'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -305,10 +183,7 @@ jobs:
             pyproject.toml
             studio/backend/requirements/*.txt
 
-      # node + uv + spec resolution + the ~2 GB install + the unsloth_zoo
-      # clone. Shared verbatim with the `consolidated-zoo` job below, which
-      # runs the same three combos against the same stack; see the action for
-      # why it owns these five steps and not the four above it.
+      # Shared with consolidated-zoo via the core-cpu-setup action.
       - name: Core CPU setup
         uses: ./.github/actions/core-cpu-setup
         with:
@@ -317,10 +192,6 @@ jobs:
           unsloth-zoo-ref: ${{ env.UNSLOTH_ZOO_REF }}
 
       - name: Sanity — collection only (both repos)
-        # Catches import-time breakage before we run the suite. Cheap; bails
-        # the job out fast if a transformers/torch resolution went sideways.
-        # Inherits PYTHONPATH / UNSLOTH_COMPILE_DISABLE / PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION
-        # from the job-level env block.
         run: |
           set -euxo pipefail
           python -m pytest --collect-only -q \
@@ -342,126 +213,43 @@ jobs:
             tests/utils/test_trunc_normal_patch.py \
             tests/utils/test_q_galore.py \
             tests/python/test_fast_language_model_text_only.py
-          # Collect from the zoo checkout, not from here: this repo ships a real
-          # tests/ package, so a zoo test doing "from tests.foo import bar" binds
-          # "tests" to OUR package and dies with ModuleNotFoundError. The later
-          # full zoo runs already set working-directory for the same reason.
+          # Run from the zoo checkout: this repo's tests/ package would shadow the zoo's `tests`.
           (cd "$RUNNER_TEMP/unsloth-zoo" && python -m pytest --collect-only -q tests/)
 
       - name: import_fixes drift detectors (18 tests, HARD GATE)
-        # One drift detector per fix_* / patch_* function in
-        # unsloth/import_fixes.py. The detectors assert the *healthy*
-        # upstream shape that the fix expects ABSENT the regression;
-        # ANY DRIFT DETECTED -> pytest.fail (NEVER skip) so the
-        # matrix cell goes red and the maintainer triages on the
-        # next PR, not in a downstream user's crash report.
-        #
-        # Pathologies covered by the suite (each maps to one fix
-        # function with the line range cited in the test docstring):
-        #   * protobuf MessageFactory GetPrototype / GetMessageClass
-        #   * datasets 4.4.x recursion range
-        #   * TRL tuple-vs-bool _*_available caching
-        #   * transformers PreTrainedModel.enable_input_require_grads
-        #     source pattern flip
-        #   * transformers torchcodec / causal_conv1d availability
-        #     flags
-        #   * transformers + accelerate is_wandb_available
-        #   * peft.utils.transformers_weight_conversion importability
-        #     + build_peft_weight_mapping signature
-        #   * triton 3.6+ CompiledKernel num_ctas / cluster_dims
-        #   * torch / torchvision pinned compatibility table
-        #   * vllm guided_decoding_params / structured_outputs +
-        #     aimv2 ovis config version
-        #   * huggingface_hub is_offline_mode / HF_HUB_OFFLINE
-        #   * torch.nn.init.trunc_normal_ presence (patch site for
-        #     patch_trunc_normal_precision_issue)
-        #   * xformers post-num_splits-key fix version
-        # HARD GATE: a red cell here is a real upstream regression
-        # without a corresponding zoo / unsloth-side workaround.
+        # Drift detectors for unsloth/import_fixes.py; a drift must fail, never skip.
         run: |
           python -m pytest -v --tb=short tests/test_import_fixes_drift.py
 
       - name: triton-absent import guard (HARD GATE)
-        # PyPI ships no Windows `triton` wheel, so the unconditional module-level import
-        # in _gpu_init.py killed `import unsloth` on a CPU-only Windows install. Named
-        # here because nothing else in the repo collects this file, so a deleted guard
-        # would leave CI green.
+        # Nothing else collects this file, so name it here.
         run: |
           python -m pytest -v --tb=short tests/test_triton_optional_import.py
 
       - name: public-api surface drift detectors (9 tests, HARD GATE)
-        # Companion to test_import_fixes_drift.py: that file catches
-        # third-party drift; this one catches drift in unsloth's OWN
-        # public surface (FastLanguageModel / FastVisionModel /
-        # FastModel + their classmethods + is_bf16_supported). A
-        # rename here would silently break the unslothai/notebooks tree
-        # one PR cycle later -- this gate catches it BEFORE the
-        # breakage reaches users.
         run: |
           python -m pytest -v --tb=short tests/test_public_api_surface.py
 
       - name: callback signature drift detector (HARD GATE)
-        # Catches the MLX-style bug from PR #5498: a producer in
-        # unsloth_zoo (or unsloth) grows a callback arg, but a consumer
-        # callback def still declares the old arity. The producer's
-        # try/except swallows the resulting TypeError and the symptom is
-        # "callback never fires" -- usually diagnosed downstream as a
-        # confusing assertion several seconds later. This static AST
-        # check fails fast at PR time. UNSLOTH_ZOO_SRC points at the
-        # freshly cloned main so the detector sees platform-specific
-        # submodules (e.g. unsloth_zoo/mlx/) that the released wheel
-        # may strip.
+        # UNSLOTH_ZOO_SRC points at the cloned main so platform submodules the wheel may strip are seen.
         env:
           UNSLOTH_ZOO_SRC: ${{ runner.temp }}/unsloth-zoo
         run: |
           python -m pytest -v --tb=short tests/test_callback_signature_drift.py
 
       - name: python floor compatibility (HARD GATE)
-        # pyproject declares requires-python >=3.9 but every job here pins 3.12,
-        # so nothing ran the floor: registry.py grew a dataclass field annotated
-        # `list[QuantType] | dict[...]`, which evaluates at class creation and is
-        # a TypeError below 3.10. Static AST check, no torch and no network. It
-        # reads the floor from pyproject, so raising requires-python relaxes it
-        # rather than making it lie.
+        # Every job pins 3.12, so this AST check guards the requires-python floor from pyproject.
         run: |
           python -m pytest -v --tb=short tests/test_python39_compatibility.py
 
       - name: generation correctness guards (HARD GATE)
-        # Deterministic CPU guards, each validated to fail on its pre-fix code:
-        # leftpad = batched left-padded generation (#1066/#3699, fixed by
-        # #2216 + #4100; staging proof: unsloth-staging-2 PRs 170/172);
-        # rope_scaling_drift = config.rope_scaling dropped by replaced rotary
-        # classes (#2405). AST checks run first so import breakage cannot mask them.
         run: |
           python -m pytest -v --tb=short \
             tests/utils/test_prepare_inputs_leftpad.py \
             tests/utils/test_rope_scaling_drift.py
 
       - name: dataset_num_proc worker bounds (HARD GATE)
-        # Guards for #2693: Dataset.map() dying with "One of the subprocesses
-        # has abruptly died", which is the OOM killer reaping tokenizer workers
-        # that nothing bounded. These assert the policy that replaced the
-        # unbounded cpu_count + 4 -> 64 heuristic -- the memory clamp, the
-        # 1 -> None normalisation (datasets >= 4.1 builds a Pool(1)), the
-        # non-fork and macOS vetoes, and the UNSLOTH_DATASET_NUM_PROC hatch.
-        #
-        # Their own step rather than Bucket-A: they need no accelerator and no
-        # model, they import the module standalone by path (so they cannot be
-        # masked by unrelated import breakage), and their assertions are pinned
-        # against simulated CPU counts and memory so the result is identical on
-        # a 4-vCPU runner and a 192-core box.
-        #
-        # The drift guard is named explicitly (these jobs collect paths, not
-        # trees): it is the only leg with a transformers past the `>=4.51,<5.5`
-        # pin, and the wording it exists to survive landed in 5.10.
-        #
-        # The Unsloth file runs here rather than in studio-backend-ci, which
-        # installs studio.txt and so has no unsloth_zoo at all. Note the policy
-        # module is not on unsloth_zoo main either until the companion PR lands,
-        # and this job clones UNSLOTH_ZOO_REF (main by default) -- so those cases
-        # reach the policy through _shared_policy, which falls back to this
-        # repo's own copy. Skipping instead would leave the 14 cases that matter
-        # green while the wiring they guard was inert.
+        # The drift guard is named explicitly: these jobs collect paths, not trees.
         run: |
           python -m pytest -v --tb=short \
             tests/utils/test_dataset_num_proc.py \
@@ -471,9 +259,6 @@ jobs:
             studio/backend/tests/test_compressed_tensors_signature_drift.py
 
       - name: unsloth Bucket-A — CPU tests not in Repo tests (CPU)
-        # CPU tests across 6 files under tests/saving/, tests/utils/, tests/python/
-        # that Repo tests (CPU) --ignores. AST/protobuf/regex plus tiny CPU model
-        # loads; run cleanly here (transformers/torch installed).
         run: |
           python -m pytest -q --tb=short \
             tests/saving/test_save_shell_injection.py \
@@ -502,21 +287,11 @@ jobs:
             tests/test_map_eos_token.py \
             tests/test_apertus_instruct_mapping.py \
             tests/test_push_to_ollama_modelfile_args.py
-          # test_run_attention_flash_varlen_receives_window_and_softcap was deselected
-          # until attention_dispatch.py predefined flash_attn_varlen_func as None; it
-          # monkeypatches that name, so it no longer needs flash_attn on this runner.
 
       - name: Static checks — unsloth/trainer.py + unsloth/models/rl.py against latest pip TRL
-        # AST-only sanity: confirm both files parse and that every TRL symbol
-        # they reference still exists in the installed `trl`. Catches API
-        # drift (renamed / removed TRL classes) without running training.
-        # Pre-fetches latest pip transformers in case TRL pinned an older one.
         run: |
           set -euxo pipefail
-          # Use the matrix-resolved transformers + trl versions already
-          # installed by the runtime-deps step (don't upgrade here; that
-          # would defeat the matrix's purpose of testing against the
-          # specific (transformers, trl) combination the cell selected).
+          # Do not upgrade here; the matrix selected these versions.
           python <<'PY'
           import ast, importlib, pathlib, sys
           paths = [pathlib.Path("unsloth/trainer.py"),
@@ -540,10 +315,6 @@ jobs:
           PY
 
       - name: Static checks — unsloth_zoo/tiled_mlp.py against latest pip transformers
-        # AST parse + transformers symbol-resolution. The user flagged tiled
-        # MLP patching as the path that breaks first when transformers ships
-        # an MLP class rename; this step is the canary against whatever
-        # transformers version the matrix cell selected.
         working-directory: ${{ runner.temp }}/unsloth-zoo
         run: |
           set -euxo pipefail
@@ -588,13 +359,7 @@ jobs:
           PY
 
       - name: Runtime checks — invoke every zero-arg patch_* across both repos (via pytest shim)
-        # Routed through pytest so tests/conftest.py's GPU-spoof harness
-        # applies before any unsloth_zoo.temporary_patches.* import.
-        # Locally validated 50/51 zero-arg patches succeed; the lone failure
-        # surfaces a real bug (unsloth.models._utils.patch_fast_lora raises
-        # NameError: name 'fast_lora_forward' is not defined). The shim
-        # reports the full ledger but only fails when one of the two
-        # `required` helpers is absent.
+        # Routed through pytest so tests/conftest.py's GPU spoof applies before zoo imports.
         run: |
           set -euxo pipefail
           cat > tests/_runtime_patch_check_shim.py <<'PY'
@@ -715,9 +480,7 @@ jobs:
           rm -f tests/_runtime_patch_check_shim.py
 
       - name: Runtime checks — patch_tiled_mlp on a synthetic MLP module (via pytest shim)
-        # Same shim pattern: pytest picks up tests/conftest.py before importing
-        # unsloth_zoo.tiled_mlp, so the GPU-spoof harness covers
-        # unsloth_zoo.temporary_patches.gpt_oss's mem_get_info call.
+        # Through pytest for the GPU spoof (gpt_oss calls mem_get_info at import).
         run: |
           set -euxo pipefail
           cat > tests/_tiled_mlp_check_shim.py <<'PY'
@@ -791,22 +554,6 @@ jobs:
           rm -f tests/_tiled_mlp_check_shim.py
 
       - name: Compiler cache hygiene + source-rewriter invariants (synthetic inputs)
-        # Lightweight pipeline coverage for unsloth_zoo.compiler. Pure regex
-        # / tokenize / ast paths driven by tiny synthetic source strings:
-        #   - higher_precision_softmax (basic + idempotent)
-        #   - fix_rotary_embedding_dtype (no-op + active under
-        #     UNSLOTH_FORCE_CUSTOM_DTYPE)
-        #   - fix_attention_dtype_consistency (insert + idempotent)
-        #   - convert_attention_masks_to_bool (rewrite + no-op)
-        #   - create_new_function happy-path (versioning block, license
-        #     header, AST parse, importlib re-import)
-        #   - create_new_function **kwargs collision (exercises
-        #     _rewrite_kwargs_param + _insert_kwargs_alias)
-        #   - UNSLOTH_COMPILE_OVERWRITE=0 forced-recompile on transformers
-        #     version mismatch (compiler.py:947-963)
-        #   - matching short-circuit when versions are equal
-        # No real transformers modeling module is loaded; complements the
-        # heavier real-class round-trip step below. Wall-time ~10-25s.
         run: |
           set -euxo pipefail
           cat > tests/_compiler_cache_invariants_shim.py <<'PY'
@@ -987,26 +734,7 @@ jobs:
           rm -f tests/_compiler_cache_invariants_shim.py
 
       - name: Compiler full-model-sweep (every transformers.models.*) + SFT trainer round-trip
-        # Calls `unsloth_compile_transformers(model_type=...)` against EVERY
-        # `transformers.models.<x>` package the matrix's transformers ships
-        # (pkgutil.iter_modules walk -- 383 packages on 4.57.6, similar on
-        # latest), then ast.parse / importlib-load / introspect the
-        # generated unsloth_compiled_cache/*.py file per model. Catches
-        # regex / source-rewriter drift across the matrix's (transformers,
-        # trl) combination -- the dominant failure mode of
-        # `unsloth_compile_transformers` after a transformers point release.
-        #
-        # 21 model_types currently break the compiler (verified locally on
-        # transformers 4.57.6). They are listed in KNOWN_BROKEN below with
-        # their failure mode so the sweep stays green and any NEW breakage
-        # surfaces as red. Each entry is tracked for an individual fix
-        # PR on unsloth-zoo. The list is split by failure category so
-        # follow-up PRs can target one bug at a time.
-        #
-        # Hermetic cache dir per pytest invocation; we override the
-        # job-level UNSLOTH_COMPILE_DISABLE=1 inside the shim so
-        # compilation actually runs here. Wall-time estimate ~2-3 min
-        # warm (mean ~0.3s/model, 383 models = ~110s on the runner).
+        # KNOWN_BROKEN keeps the sweep green; new breakage goes red. Overrides UNSLOTH_COMPILE_DISABLE.
         run: |
           set -euxo pipefail
           cat > tests/_zoo_compiler_cache_shim.py <<'PY'
@@ -1348,26 +1076,7 @@ jobs:
           rm -f tests/_zoo_compiler_cache_shim.py
 
       - name: TRL trainer + Config auto-discovery + dynamic patch coverage
-        # Mirror unsloth/models/rl.py:patch_trl_rl_trainers AND verify the
-        # dynamic per-version patch surface:
-        #   1. AST-parse every *_trainer / *_config submodule.
-        #   2. Apply the same *Trainer / *Config discovery rules
-        #      _patch_trl_rl_trainers uses (rl.py:553-620).
-        #   3. Orphan check: every <x>_trainer must have a sibling
-        #      <x>_config OR an inline *Config.
-        #   4. Dynamic count: enumerate every canonical trainer that
-        #      imports cleanly, run patch_trl_rl_trainers(), assert
-        #      every one ends up Unsloth-prefixed in-place. Floor matches
-        #      the cohort sizes from the version sweep:
-        #        TRL 0.22-0.23 -> 18 canonical trainers
-        #        TRL 0.24-0.28 -> 15 canonical trainers
-        #        TRL 0.29-1.x  ->  6 canonical (rest are experimental
-        #                          thin-wrappers; covered next)
-        #   5. Experimental coverage (TRL 0.29+): walk trl.experimental.*,
-        #      find every *Trainer class, verify the umbrella patch
-        #      reaches them via the thin-wrapper MRO walk in
-        #      _patch_trl_rl_trainers (rl.py:677-702).
-        # Per-cell wall-time ~30-60s.
+        # Mirrors the *Trainer / *Config discovery rules of unsloth/models/rl.py:_patch_trl_rl_trainers.
         run: |
           set -euxo pipefail
           cat > tests/_trl_trainer_discovery_shim.py <<'PY'
@@ -1842,43 +1551,7 @@ jobs:
           rm -f tests/_trl_trainer_discovery_shim.py
 
       - name: MoE per-family coverage + GRPO patches + grouped_gemm AST
-        # Catches the recurring class of bugs that PR #624 (gemma4 missing
-        # extractor), PR #612 (gemma4 GRPO patch silently dropped), PR #607
-        # (gate_up LoRA dropped from grad graph), PR #601 (qwen MoE shape
-        # mismatch), unsloth#4934 (TRL disable_gradient_checkpointing
-        # corrupts unsloth GC), and unsloth#3598 (gradient_accumulation
-        # double-scale on accepts_loss_kwargs=False) targeted. Coverage:
-        #
-        #   1. Per-MoE-family side-effect contract: for every patch_*_moe
-        #      function in unsloth_zoo.temporary_patches, if its target
-        #      transformers class is importable on this matrix cell, the
-        #      patch must mark the class with `_unsloth_already_patched=True`
-        #      after running. This is exactly what unsloth_zoo's existing
-        #      test_moe_lora_extractor_coverage walks at the registration
-        #      level; here we tie each patch fn to its declared target so a
-        #      silent early-return (PR #612 style) surfaces as red rather
-        #      than a coverage skip.
-        #
-        #   2. PR #4934 (GRPO + TRL 1.0): patch_trl_disable_gradient_checkpointing
-        #      must rebind trl.models.utils.disable_gradient_checkpointing to
-        #      the unsloth no-op AND propagate the rebinding to every trl.*
-        #      module that imported the symbol by reference.
-        #
-        #   3. PR #3598 (gradient_accumulation): patch_gradient_accumulation_fix
-        #      must run cleanly on a synthetic Trainer whose training_step
-        #      signature carries `num_items_in_batch`. The original bug was
-        #      that `accepts_loss_kwargs=False` (Qwen3VL, Gemma3 in t-4.57)
-        #      caused double loss-scaling; here we verify the rewrite path
-        #      itself does not raise on a CPU-resolvable shape.
-        #
-        #   4. unsloth/kernels/moe/grouped_gemm AST smoke: the Triton kernels
-        #      are GPU-only at runtime, but a SyntaxError or stray
-        #      string-literal in the source still surfaces as a test-time
-        #      ImportError on every install. ast.parse the .py files without
-        #      executing.
-        #
-        # Wall-time per cell ~30-60s. Routed through pytest for the spoof
-        # harness so unsloth_zoo.temporary_patches imports are clean.
+        # Routed through pytest for the GPU spoof harness.
         run: |
           set -euxo pipefail
           cat > tests/_moe_coverage_shim.py <<'PY'
@@ -2267,9 +1940,7 @@ jobs:
           python -c "import sys, platform; print(sys.version); print(platform.platform())"
           python -c "import torch; print('torch', torch.__version__, 'cuda?', torch.cuda.is_available())"
           python -c "import transformers; print('transformers', transformers.__version__)"
-          # `pip show` instead of `import unsloth_zoo` — its __init__ raises
-          # without an accelerator and the spoof harness only kicks in under
-          # pytest. Cheap and accurate.
+          # pip show: importing unsloth_zoo raises without an accelerator outside pytest.
           pip show unsloth_zoo
           echo "::endgroup::"
           echo "Consolidated job done. Coverage:"
@@ -2286,35 +1957,10 @@ jobs:
           key: ${{ steps.pip-cache.outputs.key }}
           cache-hit: ${{ steps.pip-cache.outputs.cache-hit }}
 
-  # The unsloth_zoo suite, lifted out of the `consolidated` cell above.
-  #
-  # Measured over 24 real jobs, the "unsloth_zoo @ <ref> - full pytest (CPU)"
-  # step runs 418s mean, 341-464s range, call it 457s at the top of the band.
-  # It used to sit serially inside a cell whose total is ~17.2 min, so it was
-  # ~7.6 min of pure critical path on 100% of pull requests: Core's
-  # `on.pull_request` paths filter matches `unsloth/**`, `studio/**`,
-  # `tests/**` and `pyproject.toml`, which is every source change this repo
-  # makes.
-  #
-  # Moving it into its own job over the SAME three combos removes no work, only
-  # the ordering. Core's critical path goes from ~17.2 min to roughly 10, the
-  # longer of the two halves, and the price is three more runners that each
-  # re-pay the install preamble. That trade is the explicit objective: fewer
-  # minutes of waiting per pull request, not fewer runner-minutes.
-  #
-  # A separate WORKFLOW file was the alternative and is worse on two counts.
-  # The combo list would have to be duplicated across files rather than sitting
-  # beside the job it mirrors, and the two halves would fall into different
-  # concurrency groups, so a force-push would cancel one and leave the other
-  # running against the commit it superseded.
+  # The zoo suite in its own job over the same combos, to shorten the critical path.
   consolidated-zoo:
     needs: resolve-zoo-ref
-    # Byte-identical to `consolidated`'s matrix, deliberately: the coverage
-    # claim for this split is that the same suite still runs under the same
-    # three (transformers, TRL) pins. GitHub Actions supports no YAML anchors
-    # and no way to share a matrix between jobs, so it is a copy, and
-    # tests/studio/test_zoo_suite_parallel_isolation.py fails if the two copies
-    # stop agreeing.
+    # Must match consolidated's matrix; test_zoo_suite_parallel_isolation.py enforces it.
     strategy:
       fail-fast: false
       matrix:
@@ -2333,19 +1979,11 @@ jobs:
             trl_spec: "__from_pyproject__"
     name: "Core zoo (${{ matrix.combo.label }})"
     runs-on: ubuntu-24.04
-    # 25 rather than `consolidated`'s 35. This job runs the ~7.6 min zoo suite
-    # on top of the preamble and nothing else, and the cap is what turns a hung
-    # test into a bounded failure; see PYTEST_TIMEOUT in the step below, which
-    # is the mechanism that actually names the culprit.
     timeout-minutes: 25
-    # Same contract as `consolidated`: no job-level or per-step
-    # `continue-on-error`, so a failing test fails the cell.
     env:
       UNSLOTH_ZOO_REF: ${{ needs.resolve-zoo-ref.outputs.sha }}
       MATRIX_COMBO_ID: ${{ matrix.combo.id }}
-      # Identical to `consolidated`'s env block, and asserted identical by
-      # tests/studio/test_zoo_suite_parallel_isolation.py. The reasoning for
-      # each entry lives there; repeating it here would give it two homes.
+      # Must match consolidated's env; test_zoo_suite_parallel_isolation.py enforces it.
       PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION: python
       PYTHONPATH: ${{ github.workspace }}/studio
       UNSLOTH_COMPILE_DISABLE: '1'
@@ -2361,16 +1999,7 @@ jobs:
 
       - name: Restore the pip cache
         id: pip-cache
-        # Its own `name`, not `consolidated`'s. Two jobs sharing one is the
-        # defect tests/studio/test_pip_cache_naming.py exists to reject: the
-        # save is gated on `cache-hit != 'true'`, so whichever job finished
-        # first on main would write the entry and the other would restore it
-        # and never save its own. The key-files are the same because the
-        # install is the same, which that file also allows for explicitly.
-        #
-        # The first run on a pull request therefore misses and downloads. The
-        # entry is written by the next push to main and warm from then on, the
-        # same lifecycle every other key here has.
+        # Own name: jobs sharing a pip-cache name would only ever save one entry.
         uses: ./.github/actions/pip-cache-restore
         with:
           name: consolidated-zoo
@@ -2378,9 +2007,7 @@ jobs:
             pyproject.toml
             studio/backend/requirements/*.txt
 
-      # The identical preamble `consolidated` runs, from the one definition
-      # both share. Anything added to the install belongs in that action, not
-      # in either caller.
+      # Anything added to the install belongs in the shared action.
       - name: Core CPU setup
         uses: ./.github/actions/core-cpu-setup
         with:
@@ -2389,45 +2016,14 @@ jobs:
           unsloth-zoo-ref: ${{ env.UNSLOTH_ZOO_REF }}
 
       - name: unsloth_zoo @ ${{ env.UNSLOTH_ZOO_REF }} — full pytest (CPU)
-        # 106 of 111 test_* in unsloth_zoo are CPU-only. The two CUDA-skip
-        # cases below auto-skip on a GPU-less runner; deselect them
-        # explicitly so the no-CUDA outcome is "deselected", not "skipped",
-        # making intent visible in the report. Env inherited from job block.
-        #
-        # test_get_peft_model_passes_finetune_last_n_layers_through is
-        # deselected because unsloth_zoo/mlx/loader.py at line 2972 calls
-        # model.trainable_parameters() on the fake-model fixture, which
-        # the test never stubbed; this fails on every platform regardless
-        # of CUDA. Tracked upstream as an unsloth_zoo bug; deselecting
-        # here unblocks unsloth CI until the loader fixture is fixed.
-        #
-        # A test that hangs rather than fails used to consume the whole job
-        # budget and report nothing usable: the job ended as "cancelled", with
-        # no test name, no traceback, and every later step marked skipped. That is
-        # how unsloth_zoo's gather_qmm guard walking a chain forever under the mlx
-        # shim presented. PYTEST_TIMEOUT is read by pytest-timeout on every pytest
-        # invocation in this step, so one setting covers the xdist run and each
-        # serial file below, instead of the same flag on six command lines.
-        #
-        # 5 minutes. The slowest honest test in the suite is about 48s locally
-        # (test_fla_hopper_tile.py), and CI runs roughly 1.65x slower than that
-        # box, measured on the one test long enough to compare, so call it 80s
-        # here. That leaves well over 3x headroom, while a genuine hang is now
-        # named and stack-dumped in 5 minutes rather than silently eating the
-        # job's whole 25 minute cap.
-        #
-        # This only became a sane number once unsloth_zoo stopped rebuilding
-        # dir(transformers.models) on every call (unsloth-zoo#1139): before that,
-        # test_every_shipped_model_type_accepted alone ran past 600s, so any
-        # useful timeout would have failed a passing test.
+        # Deselected tests: CUDA-only ones, and one that fails everywhere on an unstubbed fixture.
+        # PYTEST_TIMEOUT names and dumps a hung test instead of eating the job cap; 300s is >3x the
+        # slowest test in CI (~80s).
         env:
           PYTEST_TIMEOUT: 300
         working-directory: ${{ runner.temp }}/unsloth-zoo
         run: |
-          # Keep tests within each file on one worker. MLX shims contaminate sys.modules,
-          # so exclude that family from xdist and run it separately below. The other
-          # ignores either leak process state or use timing assertions that need a quiet
-          # process.
+          # MLX shims contaminate sys.modules, so that family runs separately below.
           python -m pytest -q --tb=short -n 4 --dist loadfile tests/ \
             --ignore-glob='tests/test_mlx_*.py' \
             --ignore=tests/test_moe_bnb4bit_per_expert_conversions.py \
@@ -2436,13 +2032,10 @@ jobs:
             --deselect tests/test_unsloth_zoo_lora_merge.py::test_active_merge_device_returns_string_on_cuda_host \
             --deselect tests/test_unsloth_zoo_lora_merge.py::test_merge_lora_moves_cpu_inputs_to_active_device
 
-          # Run contamination-sensitive files in separate processes. Keep collecting
-          # results after failures, and treat pytest exit 5 as a module-level skip.
+          # Treat pytest exit 5 as a module-level skip.
           rc=0
           _keep() {
             if [ "$1" = 5 ]; then
-              # Named: an expected module-level skip and a file that stopped collecting
-              # for a new reason both exit 5.
               echo "note: ${2:-that run} collected nothing (module-level skip), not a failure"
             else
               rc=1
@@ -2455,12 +2048,10 @@ jobs:
           python -m pytest -q --tb=short tests/test_mlx_gated_delta_vjp.py || _keep "$?" tests/test_mlx_gated_delta_vjp.py
           python -m pytest -q --tb=short tests/test_gemma3_forced_float32_boundary_dtype.py || _keep "$?" tests/test_gemma3_forced_float32_boundary_dtype.py
 
-          # Run the remaining MLX files serially in alphabetical order. The three isolated
-          # above also contaminate this group, so exclude them from its file list.
+          # The three isolated files above also contaminate this group, so exclude them.
           mlx_group=$(ls tests/test_mlx_*.py |
             grep -vE 'tests/test_mlx_(generate|neftune_quant_map|gated_delta_vjp)\.py$')
-          # Passed unquoted below to word-split into file arguments, so an empty list
-          # would pass none and pytest would collect the whole rootdir instead.
+          # Empty list would make pytest collect the whole rootdir.
           if [ -z "$mlx_group" ]; then
             echo "::error::the mlx group glob matched no files"
             exit 1
@@ -2471,16 +2062,8 @@ jobs:
           exit "$rc"
 
       - name: unsloth_zoo — test_apply_fused_lm_head (lives in compiler.py)
-        # `test_apply_fused_lm_head` lives at unsloth_zoo/compiler.py:1983,
-        # not under tests/, so pytest's default discovery does not pick it up.
-        # We route it through pytest by writing a one-shot shim test file
-        # inside the unsloth checkout's tests/ — pytest then walks UP and
-        # picks up tests/conftest.py, whose GPU-spoof harness (lines 84-141)
-        # patches torch.cuda.is_available, torch.cuda.memory.mem_get_info,
-        # torch.cuda.get_device_capability, and is_bf16_supported. That full
-        # spoof is required because unsloth_zoo/temporary_patches/gpt_oss.py
-        # at module load reads torch.cuda.memory.mem_get_info(0), which
-        # bare `is_available = True` doesn't cover. Env inherited.
+        # test_apply_fused_lm_head lives in unsloth_zoo/compiler.py, so run it via a shim in tests/
+        # to get conftest.py's full GPU spoof (gpt_oss reads mem_get_info at import).
         run: |
           set -euxo pipefail
           cat > tests/_zoo_apply_fused_lm_head_shim.py <<'PY'
@@ -2507,9 +2090,7 @@ jobs:
           python -c "import sys, platform; print(sys.version); print(platform.platform())"
           python -c "import torch; print('torch', torch.__version__, 'cuda?', torch.cuda.is_available())"
           python -c "import transformers; print('transformers', transformers.__version__)"
-          # `pip show` instead of `import unsloth_zoo` — its __init__ raises
-          # without an accelerator and the spoof harness only kicks in under
-          # pytest. Cheap and accurate.
+          # pip show: importing unsloth_zoo raises without an accelerator outside pytest.
           pip show unsloth_zoo
           echo "::endgroup::"
           echo "Core zoo job done. Coverage:"
@@ -2525,22 +2106,12 @@ jobs:
           cache-hit: ${{ steps.pip-cache.outputs.cache-hit }}
 
   llama-cpp-smoke:
-    # Standalone llama.cpp build + smoke. Earlier this lived inside every
-    # consolidated matrix cell and re-cmake'd llama.cpp ~5 min per cell --
-    # 3 cells x 275 s = ~14 min of duplicated CPU on every PR for an
-    # artefact that has nothing to do with the (transformers, TRL) combo.
-    # `install_llama_cpp` clones ggml-org/llama.cpp at a pinned commit and
-    # builds the LLAMA_CPP_TARGETS list; the result is independent of the
-    # HF stack version. Run once, gate the PR.
+    # Built once outside the matrix: the result does not depend on the HF stack version.
     name: llama.cpp build + smoke
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
       UNSLOTH_ZOO_REF: ${{ inputs.unsloth_zoo_ref || 'main' }}
-      # Same env contract the matrix cells use: protobuf python parser
-      # (transformers' bundled *_pb2.py needs it), studio on PYTHONPATH,
-      # compile-disable + UNSLOTH_IS_PRESENT so unsloth_zoo's __init__
-      # bootstrap accepts a pure-import.
       PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION: python
       PYTHONPATH: ${{ github.workspace }}/studio
       UNSLOTH_COMPILE_DISABLE: '1'
@@ -2564,42 +2135,23 @@ jobs:
             studio/backend/requirements/*.txt
 
       - name: Install runtime deps for unsloth_zoo.llama_cpp
-        # unsloth_zoo's `__init__` imports `temporary_patches`, which
-        # in turn pulls per-architecture submodules (gemma3n, gemma4,
-        # qwen3_*_moe, glm4_moe, deepseek_v3_moe, pixtral, ministral,
-        # mxfp4, bitsandbytes, flex_attention_bwd) -- many of those
-        # transitively touch transformers and peft / accelerate. Mirror
-        # the matrix job's install minus the heavy bits that have no
-        # bearing on `install_llama_cpp` itself: studio.txt's FastAPI
-        # stack, bitsandbytes (CUDA-only build dependency), triton,
-        # mammoth/unpdf (PDF tools), datasets, sqlalchemy/cryptography,
-        # pytest (we run no tests). The remaining pin shape matches
-        # studio-backend-ci.yml's "Repo tests (CPU)" baseline.
         run: |
           set -euxo pipefail
           python -m pip install --upgrade pip
-          # Match the matrix job's torch path so unsloth_zoo's
-          # `import torch` resolves to the same CPU build.
           pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
             'torch>=2.4,<2.11' 'torchvision<0.26'
           pip install \
             'numpy<3' protobuf sentencepiece \
             requests tqdm psutil packaging safetensors \
             'peft>=0.18,<0.20' 'accelerate>=0.34,<2'
-          # transformers + trl come from pyproject.toml's pinned line
-          # so this job stays in sync with whatever the consolidated
-          # `__from_pyproject__` matrix cell is using.
           pip install transformers trl
           pip install -e . --no-deps
 
       - name: Clone unsloth_zoo @ ${{ env.UNSLOTH_ZOO_REF }}
-        # Same shallow clone as the matrix job; we install editable so
-        # `unsloth_zoo.llama_cpp` resolves to the cloned tree (and any
-        # main-branch fixes flow into the smoke without a release).
+        # Editable so unsloth_zoo.llama_cpp resolves to the cloned tree.
         run: |
           set -euxo pipefail
-          # github.com occasionally 500s on the git fetch; retry so a
-          # single upstream blip does not fail CI.
+          # github.com occasionally 500s on fetch; retry.
           for attempt in 1 2 3; do
             rm -rf "$RUNNER_TEMP/unsloth-zoo"
             if git clone --depth=1 --branch="$UNSLOTH_ZOO_REF" \
@@ -2619,45 +2171,13 @@ jobs:
           pip show unsloth_zoo
 
       - name: llama.cpp install via unsloth_zoo.llama_cpp + CLI `--help` smoke
-        # Bounds the apt preamble below rather than leaving the job's 25m to do
-        # it: 2 x 300s of attempts plus a lock wait is 12m of the 22, and the
-        # llama.cpp build that follows has the rest.
+        # Bounds the apt preamble: 2 x 300s attempts plus a lock wait, leaving time for the build.
         timeout-minutes: 22
-        # Exercise the canonical `unsloth_zoo.llama_cpp.install_llama_cpp`
-        # flow that GGUF export uses at runtime: clone ggml-org/llama.cpp
-        # into ~/.unsloth/llama.cpp, build the LLAMA_CPP_TARGETS list
-        # (llama-quantize, llama-cli, llama-mtmd-cli, llama-gguf-split,
-        # llama-server) via cmake, then run `--help` on whichever CLI
-        # inference binary the build actually produced.
-        #
-        # This replaces the previous "download upstream prebuilt zip"
-        # approach, which silently exited 0 with the message
-        # "no ubuntu-x64 prebuilt asset" when ggml-org's release-asset
-        # naming drifted (the regex `bin-ubuntu-x64.*\.zip$` no longer
-        # matched their current asset names). The build path is the same
-        # one Unsloth users hit in production via `model.save_pretrained_gguf`.
-        #
-        # We do NOT hard-require `llama-cli` specifically: upstream
-        # ggml-org/llama.cpp moved the cli/server/ui targets behind the
-        # `LLAMA_BUILD_SERVER` cmake option (tools/CMakeLists.txt) and the
-        # set of binaries that survive a given checkout drifts over time
-        # (e.g. a recent build root shipped llama-server + llama-quantize
-        # + llama-diffusion-cli but no llama-cli). The durable contract is
-        # "install_llama_cpp produced a working CLI inference binary AND a
-        # working quantizer", so we --help-probe the first of
-        # llama-cli / llama-mtmd-cli / llama-server that exists. If a
-        # future llama.cpp restores llama-cli it is first in the list and
-        # is preferred, so this stays backwards compatible.
-        #
-        # Wall-time budget: ~3-5 min cold, dominated by cmake build of
-        # 5 targets on the runner's 4 cores. Apt-package install is
-        # handled by `install_llama_cpp` itself via its
-        # `check_build_requirements` -> `install_package` chain.
+        # Runs the real install_llama_cpp flow used by GGUF export, then --help-probes the first of
+        # llama-cli / llama-mtmd-cli / llama-server present (upstream target sets drift).
         run: |
           set -euxo pipefail
-          # libssl-dev / libcurl4-openssl-dev are needed by llama.cpp's
-          # cmake build for HTTPS support; install up-front so the
-          # `install_llama_cpp` requirement-check is a no-op.
+          # Needed for llama.cpp HTTPS support; preinstall so the requirement check is a no-op.
           RETRY_ATTEMPTS=2 RETRY_ATTEMPT_TIMEOUT=300 \
             bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
             'apt-get install -y -qq build-essential cmake git curl libgomp1 libssl-dev libcurl4-openssl-dev || { apt-get update -qq && apt-get install -y -qq build-essential cmake git curl libgomp1 libssl-dev libcurl4-openssl-dev; }'

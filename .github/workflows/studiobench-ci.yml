@@ -1,33 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# Keep `studiobench` working, so that the day someone needs to measure an Unsloth
-# performance regression the tool is not itself the thing that needs fixing.
-#
-# WHAT THIS WORKFLOW DELIBERATELY DOES NOT DO: gate on a timing. A shared
-# two-core GitHub runner cannot resolve the effects studiobench measures. The
-# detection floors this tool derives on a quiet 100-core box are already wider
-# than most of the real effects found in a 40-PR audit, and a floor measured
-# under one contention level does not transfer to another. A workflow that
-# asserted "the message menu opens in under N ms" would be red on a noisy
-# runner and green on a quiet one, everyone would learn to re-run it, and the
-# signal would be worth less than nothing.
-#
-# So this gates on STRUCTURE, which is stable everywhere:
-#
-#   selftests   the package's own 338 tests, ruff, --doctor, and the single-file
-#               zipapp build that external testers actually download
-#   liveness    a real session at the smallest rung, asserting that every
-#               scheduled action RAN
-#
-# The second is the one that matters. Three separate times, in three separate
-# subsystems, this harness produced a confident "no effect" from code that could
-# never fire: four scene actions that recorded NOT RUN on 312 of 312 attempts
-# because their slots opened while a follow-up turn was still streaming; a
-# surface crawler that would have digested the same mounted root 53 times; an
-# overlay walk that could not fire at all. Every one of them exited 0. A gate on
-# the exit code catches none of them, and `--assert-liveness` catches all three
-# shapes.
+# Keeps studiobench working. Gates on STRUCTURE, never timing (a shared runner cannot
+# resolve the effects): selftests, plus a real session with --assert-liveness, since
+# actions that never fire still exit 0.
 
 name: studiobench CI
 
@@ -35,47 +11,31 @@ on:
   pull_request:
     paths:
       - 'tests/studio/studiobench/**'
-      # Reached by the installer this workflow already triggers on, so a commit touching
-      # only one of these changes what the job runs while matching nothing else in the
-      # list. install.sh --local hands off to the checked-out studio/setup.sh
-      # (install.sh:7351), setup.sh runs nvidia_probe.py (setup.sh:266), and setup.ps1
-      # runs install_python_stack.py and install_llama_prebuilt.py (setup.ps1:8127, 8655).
+      # Reached by the installers this workflow triggers on.
       - 'studio/nvidia_probe.py'
       - 'studio/setup.sh'
-      # setup.sh's fresh-install path runs install_python_stack.py (setup.sh:2014) and
-      # install_llama_prebuilt.py, so the chain from install.sh --local reaches these too.
       - 'studio/prebuilt_core.py'
-      # setup.sh runs this at setup.sh:5130 and setup.ps1 at setup.ps1:9025, so it is the
-      # last executed edge of the installer chain that was not listed here.
       - 'studio/install_*.py'
       - 'studio/node_prebuilt_pins.json'
       - '.github/workflows/studiobench-ci.yml'
-      # The liveness job boots Studio through boot-studio-api-only.sh, which runs this
-      # checkout's unsloth CLI (unsloth_cli:app). The selftests run pytest
-      # tests/studio/studiobench from the repo root, which loads tests/conftest.py, the
-      # tests package and the tests/_shared helpers.
+      # Liveness boots this checkout's CLI; selftests load tests/conftest.py and tests/_shared.
       - 'unsloth_cli/*.py'
       - 'unsloth_cli/commands/*.py'
       - 'tests/conftest.py'
       - 'tests/__init__.py'
       - 'tests/_shared/**'
-      # The harness drives the shipped frontend through the real backend, so a
-      # change to either can break it without touching a file under tests/.
+      # The harness drives the shipped frontend through the real backend.
       - 'studio/frontend/**'
       - 'studio/backend/**'
-      # The liveness job installs Unsloth to get an Unsloth to drive.
       - 'install.sh'
       - 'pyproject.toml'
       - '.github/actions/install-unsloth-local/action.yml'
-      # Reached through install-unsloth-local, which uses the dist and uv cache pairs.
       - '.github/actions/frontend-dist-restore/action.yml'
       - '.github/actions/frontend-dist-save/action.yml'
       - '.github/actions/uv-cache-restore/action.yml'
       - '.github/actions/uv-cache-save/action.yml'
       - '.github/scripts/boot-studio-api-only.sh'
       - '.github/scripts/wait-for-health.sh'
-      # The Chromium install step shells out to this, so an edit to it changes what
-      # this workflow actually runs.
       - '.github/scripts/retry-with-apt-lock.sh'
   push:
     branches: [main]
@@ -87,10 +47,7 @@ on:
       - 'studio/install_*.py'
       - 'studio/node_prebuilt_pins.json'
       - '.github/workflows/studiobench-ci.yml'
-      # The liveness job boots Studio through boot-studio-api-only.sh, which runs this
-      # checkout's unsloth CLI (unsloth_cli:app). The selftests run pytest
-      # tests/studio/studiobench from the repo root, which loads tests/conftest.py, the
-      # tests package and the tests/_shared helpers.
+      # Liveness boots this checkout's CLI; selftests load tests/conftest.py and tests/_shared.
       - 'unsloth_cli/*.py'
       - 'unsloth_cli/commands/*.py'
       - 'tests/conftest.py'
@@ -111,8 +68,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  # Unique per commit on main, so a merge burst cannot cancel a pending run
-  # before it starts. Matches studio-ui-smoke.yml, for the reasons documented there.
+  # Unique per commit on main, so a merge burst cannot cancel a pending run.
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
@@ -133,9 +89,7 @@ jobs:
         with:
           python-version: '3.12'
 
-      # No browser engine here, on purpose. This job exists to be the fast one:
-      # it must stay runnable on a machine with no Chromium, because that is
-      # also the machine an external tester first runs `--doctor` on.
+      # No browser engine: --doctor must work on a machine without Chromium.
       - name: Install the test dependencies only
         run: pip install pytest ruff 'playwright<2' psutil
 
@@ -145,10 +99,7 @@ jobs:
       - name: Lint
         run: python -m ruff check tests/studio/studiobench
 
-      # --doctor is the first command in the README and the one an external
-      # tester runs before anything works. Every heavy import in the package is
-      # lazy precisely so this survives a bare machine; if that lazy-import
-      # discipline ever breaks, it breaks here rather than in someone's issue.
+      # Heavy imports are lazy so --doctor survives a bare machine.
       - name: Doctor reports rather than crashes
         run: python -m tests.studio.studiobench --doctor
 
@@ -181,8 +132,7 @@ jobs:
         uses: ./.github/actions/install-unsloth-local
         with:
           gh-token: ${{ secrets.GITHUB_TOKEN }}
-          # Withheld on PR: this step runs checked-out PR code. studiobench needs
-          # no model at all, so nothing here depends on an authenticated fetch.
+          # Withheld on PR: this step runs checked-out PR code; studiobench needs no model.
           hf-token: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
 
       - name: Pin the Playwright version so the browser cache has a key
@@ -199,26 +149,15 @@ jobs:
           path: ~/.cache/ms-playwright
           key: ms-playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-c-v2
 
-      # Chromium alone. The other two engines are 470 MB each and this workflow
-      # never asks for them: studiobench's Linux default is WebKit as a proxy for
-      # WebKitGTK, but CI pins Chromium explicitly because the tracing and CDP
-      # instruments only exist there, and a liveness gate wants the richest
-      # instrumentation, not the most representative engine.
-      #
-      # Bounded and retried through the shared helper, and the CDN download is kept
-      # separate from the apt transaction because they are two different failures.
-      # `--with-deps` is deliberately absent: it makes playwright run its own
-      # `apt-get update`, which is the one apt call in this repo that cannot be
-      # restructured to try the image's lists first.
+      # Chromium only: the tracing and CDP instruments exist only there. No --with-deps: it
+      # runs its own unbounded `apt-get update`; download and apt are separate retries.
       - name: Install the Chromium engine
         id: pw-install
         timeout-minutes: 15
         env:
           RETRY_ATTEMPTS: '2'
           RETRY_ATTEMPT_TIMEOUT: '300'
-          # Zero hands resilience to the helper's own attempt loop, which reports which
-          # way each attempt went. apt's internal retries are invisible and are charged
-          # to the caller's budget.
+          # apt's internal retries are invisible and charged to our budget; the helper retries.
           APT_ACQUIRE_RETRIES: '0'
         run: |
           if [ "${{ steps.pw-cache.outputs.cache-hit }}" != "true" ]; then
@@ -226,10 +165,7 @@ jobs:
               python -m playwright install chromium
           fi
 
-          # Ask whether the system libraries are actually missing rather than assuming
-          # it. ubuntu-latest is a browser-testing image and usually ships them, in
-          # which case install-deps is a full apt transaction to install nothing.
-          # Launching the engine is the honest test, and it is what the run does next.
+          # Probe whether the system libraries are actually missing before running apt.
           probe() {
             python - <<'PY'
           import sys
@@ -251,16 +187,11 @@ jobs:
             echo "system libraries are missing, installing them"
             bash .github/scripts/retry-with-apt-lock.sh \
               python -m playwright install-deps chromium
-            # Fail loudly rather than proceeding into a session that cannot launch a
-            # browser, which would otherwise surface as an opaque timeout later.
             probe
           fi
 
       - name: Save the Playwright browser cache
-        # main only, and only on a SUCCEEDING install. A partial download saved
-        # under an immutable version-pinned key is restored forever afterwards,
-        # reports cache-hit, skips the download, and leaves every later run with
-        # engines that are not there. Same reasoning as studio-ui-smoke.yml.
+        # Main only, and only after a successful install: the key is immutable.
         if: >-
           always() && github.ref == 'refs/heads/main'
           && steps.pw-cache.outputs.cache-hit != 'true'
@@ -271,9 +202,7 @@ jobs:
           path: ~/.cache/ms-playwright
           key: ms-playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-c-v2
 
-      # No --api-only: studiobench drives the real SPA, so the server has to be
-      # serving `studio/frontend/dist`. It needs no model, because the reply it
-      # measures comes from its own pacer over an external provider.
+      # No --api-only: studiobench drives the real SPA. No model needed.
       - name: Boot Unsloth
         run: |
           bash .github/scripts/boot-studio-api-only.sh \
@@ -282,33 +211,8 @@ jobs:
       - name: Wait for health
         run: bash .github/scripts/wait-for-health.sh --port "$STUDIO_PORT" --log logs/studio.log
 
-      # The smallest rung, and quick rather than fast: this job is asking whether
-      # every moving part still moves, not how fast anything is. 1K keeps it
-      # inside a runner's patience while still running the whole film.
-      # The password has to be handed over explicitly. Unsloth mints a bootstrap
-      # password on a boot with no auth directory, which is exactly what the boot
-      # script arranges by wiping rather than resetting. When studiobench installs
-      # its own Unsloth it reads that file itself; when it ATTACHES to one somebody
-      # else booted, it has no way to know where that Unsloth's home is, and the
-      # failure is a 401 that reads like a harness bug.
-      #
-      # It then rotates the password and clears `must_change_password`. That gate
-      # is not cosmetic: with it set, login succeeds, /healthz answers 200, and
-      # every route the harness needs answers 403, so the run reports an empty
-      # thread rather than an error.
-      #
-      # The 100K rung and the fast tier's 57.3 s film, because a liveness gate is
-      # only worth anything at a size that exercises the film.
-      #
-      # This was 1K on the reasoning that the smallest rung is the cheapest, and the
-      # first real run refuted it: NINE actions reported NOT RUN, every one of them
-      # for an honest reason the rung itself caused. The thread was shorter than the
-      # viewport, so neither scroll could travel. No follow-up turns were planned, so
-      # `send_turn` found an exhausted queue. The last assistant message carried no
-      # More, Copy or Delete button. Measured across real payloads afterwards: at 10K
-      # `message_menu` still drops out on some cells, and 100K is the first rung where
-      # everything except `image_upload` runs on every cell. That is the same 100K the
-      # README names as the smallest rung carrying real load, arrived at independently.
+      # Pass the bootstrap password explicitly: an attached studiobench cannot find the home.
+      # 100K is the smallest rung where every action except image_upload runs.
       - name: Run a real-path session
         run: |
           python -m tests.studio.studiobench \
@@ -318,39 +222,9 @@ jobs:
             --engine chromium \
             --out outputs/studiobench-ci
 
-      # THE GATE. Exits non-zero unless every scheduled action reports ran=true
-      # with no missed slot and a passing expect_ok, and refuses a payload with no
-      # cell rows rather than passing over it vacuously.
-      #
-      # expect_ok is in that list because ran is not did-what-it-claimed: an action
-      # whose own assertion failed keeps its timings, and the report already drops
-      # them as "must not be quoted". If the gate did not read it, a selector
-      # regression that fails every cell's assertion would leave this job green with
-      # the surface no longer functional, since --report exits 0 after excluding it.
-      #
-      # `image_upload` is excused, and it is the only one. It reports NOT RUN on
-      # every cell of every 100K run measured, always with the same evidence: the
-      # composer's attachments button is in the DOM with a zero box and
-      # `mounted: false`, alongside `model_loaded_hint: false`. This fixture drives
-      # an external provider and loads no model, so Unsloth does not mount the
-      # control. That is a property of the fixture rather than of any change under
-      # test, which is the only thing this flag is for. Every name here is a hole in
-      # the gate and this one is documented so it can be closed rather than inherited.
-      #
-      # `--allow-slot-misses` is the OTHER category, and it is not a hole in the same
-      # sense. The scene is a fixed-duration film on the wall clock, so a machine too
-      # slow to reach a slot records the miss and the film rolls on BY DESIGN, rather
-      # than quietly taking a different path through a shorter session. A two-core
-      # shared runner does that: `message_menu` at the 32000ms slot was reached at
-      # 32901ms and 33043ms on two consecutive runs, about a second past its 800ms
-      # budget, reproducibly. Failing on it would make this gate a speed test of the
-      # runner instead of a check that every action is reachable.
-      #
-      # 2, against 18 scheduled actions, because one is what this runner actually
-      # misses and the second is headroom. It is deliberately not larger: a run that
-      # misses a third of its film has not exercised the film. The step still PRINTS
-      # every miss and says the payload is not quotable, which is the point. Numbers
-      # are taken on a quiet machine at the default of 0, never from here.
+      # THE GATE: every scheduled action must have ran=true and expect_ok, and an empty payload
+      # fails. image_upload is excused (the fixture loads no model, so the control is not
+      # mounted). --allow-slot-misses 2: a slow runner misses slots by design; keep it small.
       - name: Every scheduled action ran
         run: |
           python -m tests.studio.studiobench \
@@ -358,11 +232,7 @@ jobs:
             --allow-not-run image_upload \
             --allow-slot-misses 2
 
-      # The step the documentation tells a reader to run, which until now CI never ran. That is
-      # exactly why the payload validator could reject the first parity message row, an ordinal
-      # that is legitimately 0, and go unnoticed: the session ran green while --report failed on
-      # every payload it produced. --report exits non-zero when it cannot score a payload, so
-      # running it here keeps the documented path honest.
+      # Run --report, the documented path, which exits non-zero on an unscorable payload.
       - name: The payload renders as a report
         run: |
           python -m tests.studio.studiobench \
@@ -374,9 +244,7 @@ jobs:
         if: always()
         run: kill "${STUDIO_PID:-0}" 2>/dev/null || true
 
-      # Uploaded on failure only. The payload is the whole diagnostic: it carries
-      # each action's reason for not running, which is the first thing anyone
-      # debugging this job wants and the last thing a step log preserves.
+      # The payload records each action's reason for not running.
       - name: Upload the payload and the Unsloth log
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1

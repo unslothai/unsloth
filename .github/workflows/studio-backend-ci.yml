@@ -2,8 +2,6 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
 # Runs studio/backend/tests/ except the live-model / live llama.cpp tests.
-#
-# ubuntu-24.04, not ubuntu-latest: far shorter org queue (#10914).
 
 name: Backend CI
 
@@ -14,8 +12,7 @@ on:
       - 'unsloth/**'
       - 'unsloth_cli/**'
       - 'tests/**'
-      # The validate_studio_features.py step below guards docker/jupyter and the
-      # docker notebook helpers, so a docker-only change must trigger this CI.
+      # validate_studio_features.py guards docker/jupyter and the docker notebook helpers.
       - 'docker/**'
       # tests/sh/*.sh and tests/studio/install/* assert against these two files.
       - 'install.sh'
@@ -24,19 +21,11 @@ on:
       - 'pyproject.toml'
       # tests/studio asserts properties of .github/actions/*/action.yml.
       - '.github/actions/**'
-      # Test inputs, not sources: tests/python/test_docker_publish_tag_scheme.py and
-      # test_docker_publish_ref_freeze.py read docker-publish.yml, and
-      # tests/test_formatter_fixed_point.py plus the pinned-ruff step read
-      # .pre-commit-config.yaml. Editing either changes this job's verdict with no
-      # source change, and docker-publish.yml runs only on tags so it cannot self-check.
+      # Test inputs: tests read docker-publish.yml and .pre-commit-config.yaml.
       - '.github/workflows/docker-publish.yml'
       - '.pre-commit-config.yaml'
       - '.github/workflows/studio-backend-ci.yml'
-      # Tests this workflow collects read these directly (the kaggle harness tests, the
-      # prebuilt-wheel, signing, docker, installer-evidence and WoA tests, the
-      # studiobench parity selftests and others). workflow-trigger-lint.yml runs only
-      # the tests/studio guard modules and tests/security, so without these a change to
-      # one of the files below runs none of the tests that check it.
+      # Tests this workflow collects read these files directly.
       - '.github/scripts/**'
       - '.github/ci/**'
       - '.github/ci-preempt.json'
@@ -74,11 +63,7 @@ on:
       - '.github/workflows/docker-publish.yml'
       - '.pre-commit-config.yaml'
       - '.github/workflows/studio-backend-ci.yml'
-      # Tests this workflow collects read these directly (the kaggle harness tests, the
-      # prebuilt-wheel, signing, docker, installer-evidence and WoA tests, the
-      # studiobench parity selftests and others). workflow-trigger-lint.yml runs only
-      # the tests/studio guard modules and tests/security, so without these a change to
-      # one of the files below runs none of the tests that check it.
+      # Tests this workflow collects read these files directly.
       - '.github/scripts/**'
       - '.github/ci/**'
       - '.github/ci-preempt.json'
@@ -101,8 +86,7 @@ on:
       - '.github/workflows/security-audit.yml'
 
 concurrency:
-  # Unique per commit on main, so a merge burst cannot cancel a pending run
-  # before it starts. See the note below for what this is buying.
+  # Unique per commit on main, so a merge burst cannot cancel a pending run.
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
@@ -110,9 +94,8 @@ permissions:
   contents: read
 
 env:
-  # Oldest supported interpreter; checked statically by scripts/lint_backend_python_floor.py.
-  # 3.10 rather than the 3.9 pyproject.toml declares, because 3.9 is not true today:
-  # unsloth/models/_utils.py uses dataclasses.dataclass(kw_only) and
+  # Oldest supported interpreter; checked by scripts/lint_backend_python_floor.py.
+  # 3.10 rather than pyproject's 3.9 because the code already needs 3.10.
   PYTHON_FLOOR: '3.10'
 
 
@@ -125,10 +108,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 3.13 full run, plus 3.11 for the files with a pre-3.12 sys.version_info branch.
-        #
-        # Shards root at `tests/` and differ only in ignores: `--ignore=FILE` does not filter explicit arguments.
-        # Shard 3 is the remainder, so new files land in exactly one shard (test_ci_backend_pytest_shards.py).
+        # `--ignore=FILE` does not filter explicit arguments, so shards root at `tests/`.
+        # Shard 3 is the remainder (test_ci_backend_pytest_shards.py).
         include:
           - python: '3.13'
             scope: full
@@ -182,8 +163,7 @@ jobs:
         run: |
           bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
             'apt-get install -y --no-install-recommends bubblewrap || { apt-get update && apt-get install -y --no-install-recommends bubblewrap; }'
-          # Ubuntu 24.04 restricts user namespaces. Apply the recommended bwrap
-          # AppArmor profile without disabling the host restriction.
+          # Ubuntu 24.04 restricts user namespaces; load the bwrap AppArmor profile instead.
           if [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || echo 0)" = "1" ]; then
             bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
               'apt-get install -y --no-install-recommends apparmor-profiles || { apt-get update && apt-get install -y --no-install-recommends apparmor-profiles; }'
@@ -191,7 +171,6 @@ jobs:
             [ -f /etc/apparmor.d/bwrap-userns-restrict ] || sudo install -m 644 /usr/share/apparmor/extra-profiles/bwrap-userns-restrict /etc/apparmor.d/ || true
             sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict || true
           fi
-          # Report unavailable isolation so host-dependent skips are explicit.
           if bwrap --ro-bind / / --unshare-user true; then
             echo "bubblewrap can build a sandbox on this runner"
           else
@@ -201,49 +180,28 @@ jobs:
       - name: Install backend test dependencies (CPU only)
         run: |
           python -m pip install --upgrade pip
-          # Unsloth's declared backend deps:
           pip install -r studio/backend/requirements/studio.txt
-          # Extras that studio.txt does not list but the import chain needs
-          # (python-multipart for FastAPI form/file uploads, sqlalchemy/cryptography
-          #  for the auth DB, yaml/jinja2 for utils.models.model_config, psutil for
-          #  the orphan-cleanup process scan, etc.):
           pip install \
             python-multipart aiofiles sqlalchemy cryptography psutil \
             pyyaml jinja2 mammoth unpdf requests \
             'numpy<3' pytest pytest-asyncio pytest-xdist pytest-timeout httpx \
             soundfile librosa
-          # soundfile + librosa: test_audio_dataset_decode importorskips both, so without
-          # them the no-torchcodec decode path is silently untested here.
+          # soundfile + librosa, or the no-torchcodec decode test silently skips.
           pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
             'torch>=2.4,<2.11' 'torchaudio<2.11'
           # Tracks pyproject.toml's cap.
           pip install 'transformers>=4.51,<=5.17.0'
-          # peft: imported at module scope by core/inference/inference.py but listed only in
-          # files this job does not install, so without it every importorskip of that module
-          # SKIPS and stays green. A stub does not work: transformers probes
-          # `importlib.util.find_spec("peft")`, which raises on a stub whose __spec__ is None.
-          # After the CPU torch line: peft depends on torch, so earlier it would pull the CUDA wheel into
-          # this CPU job. Version read from extras-no-deps.txt (pinned: peft 0.19.0 breaks the export subprocess).
+          # peft is needed or importorskips of core/inference silently skip (a stub breaks find_spec).
+          # Install after CPU torch; version from extras-no-deps.txt.
           pip install "$(grep -m1 -E '^peft==' studio/backend/requirements/extras-no-deps.txt)"
-          # torchao: the pre-quant allowlist is built by importing the tensor constructors a
-          # checkpoint names, and registration refuses unless one resolves, so without it
-          # every pre-quant load returns None. CPU-only is fine: it declines its cpp
-          # extensions under torch < 2.11 and the pure-Python constructors still import.
+          # torchao: the pre-quant allowlist imports its tensor constructors; CPU-only is fine.
           pip install torchao
 
       - name: Backend tests
         if: matrix.scope == 'full'
         working-directory: studio/backend
-        # Deselections need a real GPU or a live llama.cpp process.
-        #
-        # -n 4 verified order-independent (same failure set as serial).
-        #
-        # test_streaming_stripper is ignored here and run serially below, for the reason
-        # Wall-clock-bound files run isolated; the isolation guard catches new tight bounds.
-        #
-        # Outer `timeout` catches a wedged xdist controller that per-test --timeout cannot; SIGINT dumps the stuck frame.
-        #
-        # Shared selection lives here so every shard inherits one list; shards differ only in matrix.selection.
+        # Deselections need a real GPU or live llama.cpp. -n 4 is order-independent.
+        # Outer `timeout` catches a wedged xdist controller; SIGINT dumps the stuck frame.
         run: |
           timeout --signal=INT --kill-after=60 1500 \
           python -m pytest ${{ matrix.selection }} -q --tb=short -n 4 --dist loadgroup --timeout=330 \
@@ -264,11 +222,9 @@ jobs:
             -k 'not llama_cpp_load_progress_live and not TestGpuAutoSelection and not TestPreSpawnGpuResolution and not TestPerGpuFitGuardAllCounts and not TestTransformersIntrospection and not test_returns_cuda_when_cuda_available and not test_calls_cuda_cache_when_cuda'
 
       - name: Backend tests that cannot share a worker
-        # The twelve serial files, one process.
         if: matrix.scope == 'full' && matrix.shard == 'a-k'
         working-directory: studio/backend
-        # Relative timing against a reference measured in the same process. Serial, so the
-        # comparison is between two implementations rather than between two schedulings.
+        # Relative timing tests run serially in one process.
         run: |
           python -m pytest -q --tb=short --timeout=330 \
             tests/test_streaming_stripper.py \
@@ -304,10 +260,7 @@ jobs:
             tests/test_hf_cache_settings.py
 
       - name: Why a failure here might already be fixed on the base branch
-        # `if: failure()` so a green job never runs it, and the action itself stays
-        # quiet unless the base branch has actually moved since this run's merge ref
-        # was built. See .github/actions/merge-ref-age for the three pull requests
-        # that were misread this way.
+        # Only on failure; the action reports when the base branch moved since the merge ref.
         if: failure() && github.event_name == 'pull_request'
         uses: ./.github/actions/merge-ref-age
 
@@ -320,104 +273,23 @@ jobs:
           cache-hit: ${{ steps.pip-cache.outputs.cache-hit }}
 
   repo-cpu-tests:
-    # Auto-discovers non-GPU tests; tests/conftest.py mocks torch.cuda.is_available for the import chain.
+    # tests/conftest.py mocks torch.cuda.is_available for the import chain.
     name: Repo tests (CPU, ${{ matrix.shard }})
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
-      # Three shards of one selection, balanced on measured time, not on file count.
-      #
-      # The balance this replaces was predicted, not observed. It claimed the longest shard
-      # was 1.056x an ideal third, from summed test time on a 16-worker box:
-      #
-      #   tests/studio                 1035.8s   271 files   35.2%
-      #   tests/python + tests/kaggle   955.8s   124 files   32.4%
-      #   everything else               954.4s   180 files   32.4%
-      #
-      # What the runner actually does is not that. Measured on the pytest step of this job
-      # over the last ~48 completed runs of each shard, medians:
-      #
-      #   Repo tests (CPU, studio)     18.6 min   (p90 19.1, max 19.9)
-      #   Repo tests (CPU, rest)        8.8 min
-      #   Repo tests (CPU, python)      7.5 min
-      #
-      # so the longest shard is 1.60x an ideal third, not 1.056x, and the job's wall clock
-      # is the studio shard alone: 20.9 min against 9.9 and 10.7. Summed time on a
-      # 16-worker host does not predict a 4-vCPU runner, which is the only shape that
-      # matters here.
-      #
-      # Within tests/studio the weight is almost all in one directory. Profiled locally at
-      # this job's own `-n 4 --dist loadgroup` shape with no GPU visible, tests/studio/install
-      # is 658s of the shard's 1125s of CPU-time (58.5%) across 64 files, studiobench 127s,
-      # and the 100-odd files directly under tests/studio 341s. Splitting on that boundary is
-      # what makes a balance reachable at all: no arrangement of the old three roots gets
-      # below 1.4x, because one of them is half the suite.
-      #
-      # Scaling those proportions onto the measured medians gives the blocks below, in
-      # runner-minutes: install 10.9, studiobench 2.1, the rest of tests/studio 5.6,
-      # tests/python 5.4, tests/kaggle 2.1, everything else 8.8. Total 34.9, ideal third
-      # 11.6, and install alone bounds any three-way split at 10.9.
-      #
-      # The arrangement below was then RUN, not just predicted, at the same local -n 4
-      # CPU-only shape as the numbers above:
-      #
-      #                     old shard            new shard
-      #   longest          362.8s (studio)      279.0s (studio-install)
-      #   middle           208.2s (python)      235.0s (studio)
-      #   shortest         174.1s (rest)        234.9s (rest)
-      #   longest / ideal    1.46x                1.12x
-      #
-      # so the critical path falls 23% locally, and 1.12x matches what the block arithmetic
-      # predicted. Same 12 failures before and after, redistributed across the shards, and
-      # the id partition was diffed directly: 25762 ids collected either way, none dropped,
-      # none doubled.
-      #
-      # On the runner the imbalance is WORSE than locally (1.60x against 1.46x), because the
-      # studio shard is relatively heavier there, so the saving should be at least this
-      # large; 18.6 min becoming roughly 13 to 14 is the expectation, not a measurement.
-      # Re-measure here rather than trusting that, exactly as the old comment should have
-      # been. The shard that lands longest is the one to split next, and 1.12x is close
-      # enough that the next move is probably not another rebalance.
-      #
-      # Why it matters beyond the wall clock: this job's cap is 45 min and its pytest step
-      # has been measured from 852s to 1683s across 40 runs, so the spread, not the mean, is
-      # what cancels a run. A cancelled job loses the shell, CLI and Docker steps silently
-      # (see the note above `timeout-minutes`), and evening the shards takes the worst shard
-      # further from the cap rather than raising the cap again.
-      #
-      # The `rest` shard is still written as "tests/ minus the other roots", never as an
-      # allowlist, so a new file lands in exactly one shard without a workflow edit:
-      # tests/studio/install and tests/studio/studiobench are shard 1's, tests/python and
-      # the rest of tests/studio are shard 2's, and anything else, including tests/kaggle
-      # and a brand-new top-level directory, falls to shard 3 by default.
-      # tests/test_ci_repo_cpu_shards.py fails if that stops being true, and it derives the
-      # partition from this matrix rather than restating it.
-      #
-      # Shard 1's roots are named UNDER tests/studio, which shards 2 and 3 exclude. That
-      # matters: an explicit root and an `--ignore` of its parent in the same selection is
-      # ambiguous (the note on the backend matrix above records that `--ignore=FILE` does
-      # not filter a file passed as an explicit argument), so the partition is arranged to
-      # never need that behaviour.
-      #
-      # Two check names change with this: "Repo tests (CPU, python)" no longer exists and
-      # "Repo tests (CPU, studio-install)" is new. Required status checks have to be updated
-      # in the same change or every pull request blocks on a check that cannot run.
-      #
-      # fail-fast off: three shards of one suite, and cancelling the other two on the first
-      # failure would hide which of them were also red.
+      # Three shards balanced on measured runner time. `rest` is "tests/ minus the other roots"
+      # so new files land in exactly one shard (tests/test_ci_repo_cpu_shards.py). Shard 1's
+      # roots are under tests/studio, which shards 2 and 3 exclude. Renaming a shard changes a
+      # check name: update required checks together. fail-fast off to show every red shard.
       fail-fast: false
       matrix:
         include:
-          # The heavy half of tests/studio: install, plus studiobench to fill it out. Both
-          # are named roots UNDER tests/studio, which the other two shards exclude, so the
-          # partition stays expressible without an explicit root fighting an --ignore.
           - shard: studio-install
             selection: >-
               tests/studio/install
               tests/studio/studiobench
-          # The rest of tests/studio, plus tests/python. Keeps the name `studio` because the
-          # hardware-spoof and load_freeze steps below select on it, and those files live
-          # directly under tests/studio.
+          # Named `studio`: the spoof and load_freeze steps below select on it.
           - shard: studio
             selection: >-
               tests/studio
@@ -429,8 +301,6 @@ jobs:
               --ignore=tests/studio/test_is_mlx_dispatch_gate.py
               --ignore=tests/studio/test_xpu_spoof_pipeline.py
               --ignore=tests/studio/test_mlx_context_platform_matrix.py
-          # The catch-all. tests/kaggle now falls to it by default rather than being named
-          # by the shard that no longer exists.
           - shard: rest
             selection: >-
               tests/
@@ -478,22 +348,14 @@ jobs:
             python-multipart aiofiles sqlalchemy cryptography psutil \
             pyyaml jinja2 mammoth unpdf requests typer \
             'numpy<3' pytest pytest-asyncio pytest-xdist pytest-timeout httpx
-          # pytest-timeout: the --timeout flag on the pytest step below. Same reason as the
-          # backend pytest job -- without it a test that never returns is reported as the
-          # job being "cancelled", naming nothing.
+          # pytest-timeout names a hung test instead of a `cancelled` job.
           # torchvision: unsloth_zoo.vision_utils imports it at module scope.
           pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
             'torch>=2.4,<2.11' 'torchvision<0.26' 'torchaudio<2.11'
-          # Tracks pyproject.toml's cap. sentence-transformers rides the transformers pin rather than a separate install, so
-          # resolving it cannot bump transformers past the ceiling. It is an extra, not a core
-          # dependency, and tests/test_st_modules_json_trust_gate.py skips without it, so
-          # installing it here is what makes that gate run in this shard instead of skipping.
-          # version-compat-ci's zoo-imports job runs the same file against the pinned
-          # transformers matrix; this shard adds the core dependency set, where discovery
-          # picks the file up and the importorskip would otherwise skip it for good.
+          # sentence-transformers rides the transformers pin so it cannot raise the ceiling, and
+          # makes tests/test_st_modules_json_trust_gate.py run instead of skip.
           pip install 'transformers>=4.51,<=5.17.0' sentence-transformers
-          # bitsandbytes: hard import in unsloth/models/_utils.py. Recent
-          # versions ship a CPU build that imports cleanly on Linux.
+          # bitsandbytes: hard import in unsloth/models/_utils.py; recent versions import on CPU.
           pip install 'bitsandbytes>=0.45'
           # zoo from git main (needed by the conftest preload), with deps so triton is installed.
           for attempt in 1 2 3; do
@@ -519,22 +381,15 @@ jobs:
         env:
           # tests/python/* import install_python_stack from studio/.
           PYTHONPATH: ${{ github.workspace }}/studio
-          # Skip lazy compilation work the unsloth import chain wants to
-          # do at import time on a real GPU.
           UNSLOTH_COMPILE_DISABLE: '1'
-        # --ignore: GPU-bound dirs, tests/sh, tests/utils, and the version-compat canaries (own workflow).
-        # Spoofing and load_freeze files run isolated in later steps.
-        #
-        # The pytest steps below stay serial: hardware-spoof files mutate module globals.
-        #
-        # Timeouts mirror the backend pytest job; the outer one must fire before the job cap.
+        # Spoofing and load_freeze files run isolated below: hardware-spoof files mutate module
+        # globals. The outer timeout must fire before the job cap.
         run: |
           timeout --signal=INT --kill-after=60 2100 \
           python -m pytest ${{ matrix.selection }} -q --tb=short -n 4 --dist loadgroup --timeout=330 \
             -m 'not server and not e2e'
 
       - name: Hardware-spoof tests (state-sensitive, run in isolation)
-        # The four spoof files live under tests/studio, so they belong to that shard.
         if: matrix.shard == 'studio'
         env:
           PYTHONPATH: ${{ github.workspace }}/studio
@@ -547,8 +402,6 @@ jobs:
             tests/studio/test_mlx_context_platform_matrix.py
 
       - name: Event-loop latency tests (wall clock, run without CPU contention)
-        # tests/studio/load_freeze, so the studio shard, and it still runs alone in its own
-        # invocation: two shards on two runners do not contend with each other.
         if: matrix.shard == 'studio'
         env:
           PYTHONPATH: ${{ github.workspace }}/studio
@@ -557,30 +410,18 @@ jobs:
         run: python -m pytest tests/studio/load_freeze -q --tb=short
 
       - name: CLI tests (unsloth_cli)
-        # Not under tests/, so no shard owns it by discovery; it rides the shortest shard,
-        # which after the rebalance above is `rest` at a projected 10.9 runner-minutes. It
-        # was on `python`, which no longer exists.
+        # Not under tests/, so no shard discovers it; it rides `rest`.
         if: matrix.shard == 'rest'
-        # unsloth_cli/tests had no CI at all: `unsloth_cli/**` was only a paths
-        # trigger and a ruff target, so 673 tests covering the studio launcher,
-        # the pre-exposure gate and the auth secret writers ran nowhere, and
-        # four of them had been failing on main unnoticed.
-        # Own step, not folded into the tests/ discovery above: pyproject's
-        # testpaths is tests/, and this suite needs no PYTHONPATH or CUDA spoof
-        # (it self-bootstraps sys.path and imports neither unsloth nor torch).
+        # Own step: pyproject's testpaths is tests/, and this suite self-bootstraps sys.path.
         run: python -m pytest unsloth_cli/tests -q --tb=short
 
       - name: Docker JupyterLab/notebook feature validation
-        # Named validate_studio_features.py (not test_*.py) so pytest skips it;
-        # run explicitly so notebook/Colab/branding regressions fail CI.
+        # Not test_*.py so pytest skips it; run explicitly.
         if: matrix.shard == 'rest'
         run: python tests/validate_studio_features.py
 
       - name: Why a failure here might already be fixed on the base branch
-        # `if: failure()` so a green job never runs it, and the action itself stays
-        # quiet unless the base branch has actually moved since this run's merge ref
-        # was built. See .github/actions/merge-ref-age for the three pull requests
-        # that were misread this way.
+        # Only on failure; the action reports when the base branch moved since the merge ref.
         if: failure() && github.event_name == 'pull_request'
         uses: ./.github/actions/merge-ref-age
 
@@ -593,10 +434,8 @@ jobs:
           cache-hit: ${{ steps.pip-cache.outputs.cache-hit }}
 
   shell-installer-tests:
-    # Hermetic bash suites in their own job, off the Python install's critical path (#10849, #10861).
     name: Shell installer tests
     runs-on: ubuntu-24.04
-    # 165s measured, and a hung mock would otherwise sit here until the workflow's own limit.
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -608,10 +447,8 @@ jobs:
           python-version: '3.12'
 
       - name: Shell installer tests
-        # Auto-discovered; tests/studio/test_ci_shell_suite_coverage.py guards discovery and skip reasons.
-        #
-        # Skipped:
-        #   test_install_rollback_lifecycle.sh: covered by cross-platform-parity-ci.yml.
+        # Auto-discovered; tests/studio/test_ci_shell_suite_coverage.py guards discovery and skips.
+        # Skipped: test_install_rollback_lifecycle.sh (covered by cross-platform-parity-ci.yml).
         run: |
           set -euo pipefail
           shopt -s nullglob

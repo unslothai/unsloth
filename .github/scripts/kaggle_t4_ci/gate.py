@@ -30,53 +30,51 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 
-# Ceiling on any single network call, set globally before the first one. The Kaggle client takes no timeout of its own and Python's default is to block FOREVER, so without this a stalled connection returns to nobody: the `try` around each call never sees an exception, --soft-fail has nothing to convert into a skip, and the job's own timeout-minutes kills the runner and reports red on a workflow whose contract is that only a failed assertion on a T4 is red.
+# The Kaggle client has no timeout and Python's default blocks forever.
 SOCKET_TIMEOUT_SEC = 60
 
-# Wall clock the in-flight survey may spend, whatever the account holds. The survey status-checks every kernel in a 13h window and pages up to MAX_KERNEL_PAGES x KERNELS_PAGE_SIZE of them, so slow responses multiply. Running out of budget is NOT read as an idle account: the walk stops with complete=False, which concurrency_verdict turns into a skip.
+# Running out of budget yields complete=False, which stands down rather than reading as idle.
 SURVEY_BUDGET_SEC = 180
 
-# Kaggle's cap on simultaneous batch (committed) GPU kernels per account. Measured, not documented: exceeding it fails the push with "Maximum batch GPU session count of 2 reached."
+# Measured, not documented: Kaggle rejects a third concurrent batch GPU session.
 MAX_CONCURRENT_GPU_KERNELS = 2
 
-# How many FOREIGN kernels may be in flight and this job still launch. ZERO IS DELIBERATE, a policy choice rather than a technical limit: the cap is per ACCOUNT and the account is shared with human use, so someone whose push is rejected cannot tell that CI took the slot and CI cannot give it back. Standing down costs a few minutes until the next commit draws again; being wrong costs somebody else's session.
+# Zero is deliberate: the account is shared with humans and CI must not take their slot.
 ALLOWED_IN_FLIGHT_FOREIGN_KERNELS = 0
 
-# How many of Kaggle's slots one invocation takes. ONE, and the default rather than a per-workflow override because it is now true of both callers. This was 2 while the notebook leg ran four legs as two kernels of two, which took BOTH of the account's slots: the account is shared with human use, and kaggle-t4-studio-gpu-ci.yml runs on the same account, so with no slot left it could not push at all and the shared concurrency group meant it did not even try until the notebook job finished (run 32607617804 queued about 40 minutes behind notebook run 32607621452). The legs did not have to be split to fit: they now queue INSIDE one kernel, one worker per card, so four legs fit in one session, which also makes a control/canary split across two images and two hours impossible rather than merely avoided. The residual risk, a foreign kernel starting BETWEEN the survey and the push, is handled where it lands: the launcher recognises Kaggle's capacity rejection (CAPACITY_MARKERS) and reports it as infra, exiting 0.
+# One slot per invocation: all legs queue inside one kernel, leaving the other slot free.
 KERNELS_PER_INVOCATION = 1
 
-# Kernel states that mean a session is occupying one of those slots.
 BUSY_STATES = {"QUEUED", "RUNNING"}
 
-# How this job recognises its own kernels: `launch.py` pushes every kernel as `<user>/<OWN_KERNEL_PREFIX><8 hex>`, a fresh slug per attempt, and nothing else on the account uses that prefix. "The account is busy" and "this workflow is busy" call for opposite answers, so ours is reported separately rather than counted as a human, and still blocks, since it still occupies a slot.
+# Must match launch.py's SLUG_PREFIX; our kernels are reported separately but still block.
 OWN_KERNEL_PREFIX = "unsloth-t4-ci-"
 
-# How far back the in-flight survey looks, and why that bound is COMPLETE rather than merely convenient. Kaggle exposes no "list my running sessions" call, so finding an in-flight kernel means listing kernels and status-checking them; the listing is sorted by last run time descending, and for an unfinished kernel that timestamp is when the run STARTED (measured: a kernel pushed at 10:05:19Z listed as last_run_time 10:05:19.297). Kaggle kills a notebook session at 12 hours, so a kernel still QUEUED or RUNNING cannot have started more than 12 hours ago and once the walk reaches an older entry every remaining one is older still. Stopping there is exhaustive rather than a sample, which the previous fixed bound of "the 12 most recent kernels" was not.
+# Kaggle kills sessions at 12h and the listing is sorted by start time, so this bound is exhaustive.
 MAX_SESSION_HOURS = 12.0
 
-# Slack on top, for clock skew between Kaggle's timestamps and this runner, and for any future raise of the session ceiling.
 CLOCK_SKEW_HOURS = 1.0
 LOOKBACK_HOURS = MAX_SESSION_HOURS + CLOCK_SKEW_HOURS
 
-# Paging for that walk. The page cap stops a pathological account making the gate walk forever; reaching it means the survey did NOT cover the whole window, reported as incomplete and treated as "unknown", never as "idle".
+# Hitting the page cap means the survey is incomplete, never idle.
 KERNELS_PAGE_SIZE = 100
 MAX_KERNEL_PAGES = 5
 
-# The two ways a status lookup can fail, only one of them benign. A deleted kernel stays in the listing for a while and answers its status call with a 404, which is not an unknown state but a kernel definitively not running, and blocking on it would wedge the gate shut since the launcher deletes every kernel it pushes. Anything else (a 5xx, a socket timeout, a client bug) says nothing about the kernel, which may be a human's RUNNING session. So 404 counts as "gone", everything else as "unreadable", and only the second stands the job down.
+# 404 means a deleted kernel (gone); any other error is unreadable and stands the job down.
 GONE_MARKERS = ("404", "not found", "notfound", "does not exist")
 
-# What an exhausted weekly quota says, verbatim, in the log line and in the job summary. It is addressed to whoever opened the pull request, who did not cause it and cannot clear it. The measured numbers are appended rather than replacing it, so the reader can see WHEN it clears; this sentence stays intact.
+# Shown to PR authors; keep this sentence intact and append measured numbers.
 QUOTA_EXHAUSTED_MESSAGE = (
     "GPU capacity exhausted - please wait until next week - you can ignore this CI failure"
 )
 
-# The accounts CI may spend, in order. The env var names are the SECRET names the workflows pass through; the account id is the position, which the concurrency group and the job summary use. Deliberately not carrying each account's weekly hours: they are read from `quota_view()` per run, so a plan changed on Kaggle's side changes the split with nothing here to go stale.
+# Env var names are the secret names; the account id is the position.
 DEFAULT_ACCOUNT_ENVS = ("KAGGLE_API_TOKEN", "KAGGLE_API_TOKEN_2")
 
-# `--reserve-hours` was calibrated against an account of this size. See `scaled_reserve`: the reserve is a FRACTION of the plan, not a fixed number of hours, or the smaller account keeps back proportionally more.
+# The reserve scales as a fraction of the plan; see scaled_reserve.
 DEFAULT_RESERVE_BASIS_HOURS = 60.0
 
-# An account answering with one of these hands over to the next one instead of standing the whole run down: none of them says anything about the code under test. `credential_absent` is here so a repo holding one secret still works, which is also what a fork sees. What is NOT here is every decision made ABOVE the account (not sampled, wrong label, bad input), because those are answers about the run, and trying a second account would be answering a question nobody asked.
+# Account-level answers that hand over to the next account; run-level decisions are excluded.
 FALLBACK_ELIGIBLE = frozenset(
     {
         "credential_absent",
@@ -257,7 +255,7 @@ def probe_account(
         record["detail"] = f"could not authenticate to Kaggle: {type(exc).__name__}"
         return record, None
 
-    # Refused rather than defaulted. The launcher names the kernel's owner, and a run that cannot say who it authenticated as cannot name it correctly, which is exactly the state a hardcoded username hides.
+    # Refused rather than defaulted: the owner must come from the authenticated token.
     username = client_username(api)
     if not username:
         record["outcome"] = "username_unreadable"
@@ -314,7 +312,7 @@ def survey_kernels(
 
     ``busy``/``own``/``foreign`` are every in-flight kernel and its two disjoint halves, a kernel being ours when its slug carries OWN_KERNEL_PREFIX. ``complete`` says the walk ran off the end of the listing or reached an entry outside the window; False means the page cap or ``budget_sec`` stopped it first. ``out_of_budget`` says it stopped on wall clock, since being killed by the job timeout costs the runner and reports red while giving up inside the deadline reports an incomplete survey, which is a skip. ``surveyed``/``unreadable``/``gone`` count how many in-window kernels were status-checked, how many left their state genuinely unknown, and how many answered 404 (a deleted kernel rather than an unknown one); one unreadable status is not evidence of an idle account, so it is counted apart from the benign kind. See GONE_MARKERS.
     """
-    # Naive UTC, matching what Kaggle returns. utcnow() is the same and is deprecated from 3.12.
+    # Naive UTC to match Kaggle; utcnow() is deprecated from 3.12.
     now = now or datetime.now(timezone.utc).replace(tzinfo = None)
     cutoff = now - timedelta(hours = lookback_hours)
     busy: list[str] = []
@@ -342,7 +340,6 @@ def survey_kernels(
                 out_of_budget = True
                 break
             last_run = _as_naive_utc(getattr(kernel, "last_run_time", None))
-            # A missing timestamp says nothing about age, so it cannot end the walk, but it can still be checked.
             if last_run is not None and last_run < cutoff:
                 complete = True
                 break
@@ -350,7 +347,7 @@ def survey_kernels(
             try:
                 status = str(getattr(api.kernels_status(ref), "status", ""))
             except Exception as exc:  # noqa: BLE001
-                # A 404 is a deleted kernel, so the slot is free. Any other error leaves the state unknown, which is not evidence of an idle account. See GONE_MARKERS.
+                # 404 frees the slot; any other error leaves the state unknown. See GONE_MARKERS.
                 if _looks_gone(exc):
                     gone += 1
                     print(f"[gate] status 404 for {ref}: already deleted", flush = True)
@@ -362,13 +359,11 @@ def survey_kernels(
             if state in BUSY_STATES:
                 entry = f"{ref} ({state})"
                 busy.append(entry)
-                # Ownership is read off the SLUG, the part after the username: a foreign kernel belongs to the same user, so the user half says nothing.
                 slug = ref.rsplit("/", 1)[-1]
                 (own if slug.startswith(OWN_KERNEL_PREFIX) else foreign).append(entry)
         if complete or out_of_budget:
             break
         if len(kernels) < page_size:
-            # Ran off the end of the account's kernels, so nothing is left to miss.
             complete = True
             break
 
@@ -385,7 +380,6 @@ def survey_kernels(
         "surveyed": surveyed,
         "unreadable": unreadable,
         "gone": gone,
-        # An abandoned walk is never complete, whatever it saw on the way.
         "complete": complete and not out_of_budget,
         "out_of_budget": out_of_budget,
         "window_hours": lookback_hours,
@@ -432,7 +426,7 @@ def concurrency_verdict(
             f"{survey['window_hours']}h window within {ran_out}, so an older "
             "kernel of this account could still be running unseen"
         )
-    # ANY unreadable candidate, not just all of them: the one in-window kernel that could not be read may be the human session this job yields to, and "the ones we could read were idle" is no answer about it. Deleted kernels answer 404 and count as `gone`, so the routine case does not wedge the gate shut.
+    # Any unreadable candidate stands down: it may be the human session we yield to.
     if survey.get("unreadable"):
         return False, (
             f"{survey['unreadable']} of {survey['surveyed']} in-window kernel "
@@ -525,7 +519,7 @@ def main() -> int:
         "CI yields to it. See "
         "ALLOWED_IN_FLIGHT_FOREIGN_KERNELS before raising it",
     )
-    # THREE states, not two, which is why this is store_const against a default of None rather than store_true. An error in the gate is a skip whether or not anyone asked, but an exhausted quota is a failure UNLESS a caller asked for soft failure, and "the flag defaults to on" would make that request unaskable: every invocation would look like it had been made and the red would never appear. So None means "nobody said", True means "asked", False means "--no-soft-fail".
+    # Tri-state: None (unset), True (--soft-fail), False (--no-soft-fail). Exhaustion is soft only on True.
     ap.add_argument(
         "--soft-fail",
         dest = "soft_fail",
@@ -545,14 +539,12 @@ def main() -> int:
     )
     args = ap.parse_args()
 
-    # An error in the gate says nothing about the code under test, so it stays a skip unless --no-soft-fail was passed.
     errors_are_skips = args.soft_fail is not False
-    # Exhaustion is a fact about the account, and only an explicit request softens it.
     exhaustion_is_soft = args.soft_fail is True
 
     label_name = args.label_name.strip().lower()
 
-    # A LABEL EVENT IS A REQUEST ONLY IF IT IS THE OPT-IN LABEL, checked first because it is what keeps the budget arithmetic true. The workflow subscribes to `labeled` so the opt-in label can start a run, but GitHub fires that action for EVERY label: without this, each unrelated label is a fresh run and a fresh sampling draw while the workflow's estimate counts only pull request opens and pushes, and once the opt-in label is present it stays in the label list so every LATER label arrives as an override and FORCES a session. Every other action (opened, synchronize, reopened, a push, a dispatch) is unaffected.
+    # Only the opt-in label counts as a request: GitHub fires `labeled` for every label.
     action = args.event_action.strip().lower()
     if action == "labeled":
         applied = args.event_label.strip().lower()
@@ -573,7 +565,7 @@ def main() -> int:
         override = True
         print(f"[gate] override: label {args.label_name!r} present", flush = True)
 
-    # Reported even when overridden, so the log shows what the unforced answer would have been. run_attempt is excluded so a re-run cannot reroll.
+    # run_attempt is excluded so a re-run cannot reroll.
     picked, draw = sampled_in(str(args.run_id), args.percent)
     print(
         f"[gate] sampling draw={draw} threshold={args.percent} "
@@ -599,10 +591,10 @@ def main() -> int:
             + ", ".join(account_envs),
         )
 
-    # Before the first network call, and globally: authenticate(), quota_view() and every status call below go through a client with no timeout of its own, and a stalled one would outlive this job's timeout-minutes. With it, a stall raises and the handlers below turn it into a skip. See SOCKET_TIMEOUT_SEC.
+    # Before any network call: the Kaggle client has no timeout of its own.
     socket.setdefaulttimeout(SOCKET_TIMEOUT_SEC)
 
-    # Every account's quota is read BEFORE the draw, because the draw is weighted by what those calls report. Two quota calls, no session, and the weights are then a measurement rather than a number somebody typed.
+    # Quotas are read before the draw, which is weighted by them.
     probes: dict[str, dict] = {}
     clients: dict[str, object] = {}
     for index, env_name in enumerate(account_envs, start = 1):
@@ -632,7 +624,7 @@ def main() -> int:
     print("[gate] accounts " + json.dumps(list(probes.values())), flush = True)
     _out("accounts", json.dumps(list(probes.values())))
 
-    # An unreadable quota means no weight but still a CANDIDATE: it costs the account its share of the traffic, not its place in the queue.
+    # An unreadable quota loses its weight but stays a candidate.
     weights = {i: p["total_hours"] for i, p in probes.items() if p.get("total_hours")}
     account_key = (args.head_sha or "").strip().lower() or str(args.run_id)
     sampled_account, account_draw = weighted_pick(account_key, weights)
@@ -651,11 +643,10 @@ def main() -> int:
             flush = True,
         )
 
-    # Sampled account first, then declaration order. Only an account actually considered pays for a survey, the expensive call here.
     order = [sampled_account] + [i for i in probes if i != sampled_account]
     handovers: list[str] = []
     surveys: dict[str, dict] = {}
-    # ONE survey budget for the whole gate: two bounded surveys back to back outlive the job timeout, and a runner killed mid-question is a red rather than the soft stand-down an incomplete survey gives.
+    # One survey budget for the whole gate so two surveys cannot outlive the job timeout.
     survey_deadline = time.monotonic() + SURVEY_BUDGET_SEC
 
     def _survey(account_id: str) -> dict:
@@ -666,7 +657,7 @@ def main() -> int:
             )
         return surveys[account_id]
 
-    # Ask EVERY usable account about this commit before choosing one: an earlier run may have handed the commit to the other account, and a retry finding the preferred one free again would never look at the kernel still running. Capacity for a NEW launch is beside the point here.
+    # Check every account for an in-flight kernel of this commit before choosing one.
     slot = str(args.slot or "1").strip()
     if args.head_sha and args.kind:
         for account_id in order:
@@ -675,7 +666,7 @@ def main() -> int:
             try:
                 survey = _survey(account_id)
             except Exception:  # noqa: BLE001
-                continue  # reported below, where the account is considered
+                continue
             already = in_flight_for_commit(survey["own"], args.head_sha, args.kind, slot)
             if already:
                 return _decide(
@@ -727,7 +718,7 @@ def main() -> int:
         _out("account", account_id)
         _out("account_env", record["env"])
         _out("account_user", record["user"])
-        # A ONE-ELEMENT matrix, and the token is not in it. The GPU job indexes the secrets context with `secret_name`, which is the only shape that cannot end up holding a different account's token than the metadata beside it claims.
+        # The GPU job indexes secrets by `secret_name`, so the token is never in the matrix.
         _out(
             "matrix",
             json.dumps(
@@ -761,7 +752,7 @@ def main() -> int:
             f"{MAX_CONCURRENT_GPU_KERNELS} kernel slots free{moved}",
         )
 
-    # Nobody could run. WHICH stand-down this is depends on what every account said, and only one of the answers is a failure: an account out of hours is a fact about the week, while an unreadable one is a fact about the minute, so a single unreadable account keeps the whole verdict green. An account with no credential is not a candidate at all, which is what a fork and a repo holding one of the two secrets see, so counting it as "not exhausted" would turn the exhausted RED into a green skip for everyone with a single account configured.
+    # Only all-exhausted candidates are red; unreadable or credential-less accounts stay green.
     candidates = {i: p for i, p in probes.items() if p["outcome"] != "credential_absent"}
     outcomes = {i: p["outcome"] for i, p in candidates.items()}
 
@@ -787,7 +778,6 @@ def main() -> int:
         print("[gate] no account could be authenticated: " + json.dumps(outcomes), flush = True)
         return 1
 
-    # The per-account sentences, not the codes: these are read by whoever opened the pull request, who did not cause any of this and cannot fix it. With one account configured this reads exactly as the single-account gate did.
     details = [
         probes[i].get("detail") or probes[i]["outcome"]
         for i in sorted(probes)

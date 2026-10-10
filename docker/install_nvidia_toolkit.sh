@@ -20,16 +20,10 @@ command -v docker >/dev/null 2>&1 \
        curl -fsSL https://get.docker.com -o get-docker.sh && sh get-docker.sh
        (https://docs.docker.com/engine/install/ covers Docker Desktop and the distro packages), then run this again." 2
 
-# Every grep of a command's output below reads a variable, not a pipe. `grep -q` exits on the first
-# match and closes the pipe; `set -o pipefail` above then promotes the producer's SIGPIPE (141) to the
-# status of the whole pipeline, so a match reads as a miss whenever the producer was still writing.
-# Measured on `docker info` with a 50ms pause mid-output: status 141, the Docker Desktop guard skipped,
-# and the script elevating to install on the one daemon it exists to leave alone.
+# Grep variables, not pipes: under pipefail `grep -q` closing the pipe turns the producer's
+# SIGPIPE into a false miss.
 
-# Mac and Windows shells never need the toolkit (no NVIDIA GPU on a Mac; Docker Desktop's
-# WSL 2 backend brings its own), so answer before the endpoint check, which sent colima and
-# Rancher Desktop users off to configure a socket. Only a remote Linux daemon gets the
-# remote answer; DOCKER_CONTEXT over DOCKER_HOST over the selected context, as below.
+# Mac and Windows never need the toolkit; answer before the endpoint check.
 host_os="$(uname -s)"
 case "$host_os" in
     Darwin|MINGW*|MSYS*|CYGWIN*)
@@ -130,19 +124,12 @@ fi
 NVSMI="$(command -v nvidia-smi 2>/dev/null || true)"
 [[ -z "$NVSMI" && -x "${WSL_LIB_DIR}/nvidia-smi" ]] && NVSMI="${WSL_LIB_DIR}/nvidia-smi"
 
-# sudo strips every LD_* variable unconditionally, -E or not, as an anti-preload
-# measure. A host that keeps the NVIDIA userspace libraries outside ldconfig and
-# reaches them through LD_LIBRARY_PATH therefore loses them the moment this script
-# elevates: nvidia-smi is on PATH, runs, and exits with "couldn't find
-# libnvidia-ml.so", which carries no GPU line and used to be reported here as a
-# missing driver. Measured on Colab (T4, driver 580.82.07): libs in
-# /usr/lib64-nvidia, absent from `ldconfig -p`, LD_LIBRARY_PATH set for the user
-# and UNSET under sudo. Put the directory back when it is the only thing wrong.
+# sudo strips LD_* variables, so restore LD_LIBRARY_PATH for hosts whose NVIDIA libraries
+# are outside ldconfig.
 nvsmi() { LD_LIBRARY_PATH="${NV_LIB_DIR}${NV_LIB_DIR:+${LD_LIBRARY_PATH:+:}}${LD_LIBRARY_PATH:-}" "$NVSMI" "$@"; }
 NV_LIB_DIR=""
 gpu_list=""
-# 2>&1, not 2>/dev/null: the loader's complaint is the evidence that separates a
-# missing driver from a driver this shell cannot reach, and it goes to stderr.
+# 2>&1: the loader's complaint separates a missing driver from an unreachable one.
 [[ -n "$NVSMI" ]] && gpu_list="$(nvsmi -L 2>&1 || true)"
 if [[ -n "$NVSMI" ]] && grep -qi 'libnvidia-ml' <<<"$gpu_list"; then
     for _dir in /usr/lib64-nvidia /usr/local/nvidia/lib64 "$WSL_LIB_DIR"; do
@@ -154,9 +141,7 @@ if [[ -n "$NVSMI" ]] && grep -qi 'libnvidia-ml' <<<"$gpu_list"; then
     done
 fi
 if [[ -z "$NVSMI" ]] || ! grep -q '^GPU' <<<"$gpu_list"; then
-    # Still a library complaint after the search: the driver is there and only the
-    # loader cannot see it, so saying "no driver" would send the reader to install
-    # one they already have.
+    # A library complaint means the driver exists but the loader cannot see it.
     if grep -qi 'libnvidia-ml' <<<"$gpu_list"; then
         fail "nvidia-smi cannot load libnvidia-ml.so, so this script cannot read the driver:
        ${gpu_list%%$'\n'*}
@@ -176,9 +161,7 @@ if [[ -z "$NVSMI" ]] || ! grep -q '^GPU' <<<"$gpu_list"; then
        Unsloth images need driver 570.26 or newer." 2
 fi
 MIN_DRIVER=570.26
-# `sed -n 1p`, not `head -1`: head closes the pipe after one line, and nvidia-smi prints one per GPU,
-# so on a multi-GPU host the SIGPIPE becomes the substitution's status and `set -e` kills the script
-# here with nothing printed. sed reads to the end. (Measured: exit 141, no output, 8 GPUs.)
+# `sed -n 1p`, not `head -1`: head's SIGPIPE kills the script under set -e on multi-GPU hosts.
 DRIVER="$(nvsmi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | sed -n 1p | tr -d '[:space:]')"
 driver_ok() {
     [[ -n "$DRIVER" ]] && [[ "$(printf '%s\n' "$MIN_DRIVER" "$DRIVER" | sort -V | head -1)" == "$MIN_DRIVER" ]]
