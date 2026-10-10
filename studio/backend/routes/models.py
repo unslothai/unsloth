@@ -3194,7 +3194,6 @@ async def scan_diffusion_loras(
     """
     from core.inference import diffusion_lora
 
-    # Custom models folders can sit on slow or network storage.
     entries = await asyncio.to_thread(diffusion_lora.list_loras, family = family)
     if account_access.managed_account():
         entries = await asyncio.to_thread(account_access.filter_model_rows, entries)

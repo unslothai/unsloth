@@ -232,8 +232,7 @@ def _scan_local() -> list[LoraCatalogEntry]:
             if key in seen or not is_image_lora_file(p) or not allows(p):
                 continue
             seen.add(key)
-            # Keyed on the file's own path, never on scan order: saved recipes must not drift onto
-            # another folder's same-named adapter when folders are added or removed.
+            # Keyed on the path, not scan order, so saved recipes never drift to another folder's same-named file.
             entry_id = f"{p.stem}-{hashlib.sha1(os.fsencode(key)).hexdigest()[:8]}"
             if entry_id in used:
                 continue
@@ -326,8 +325,6 @@ def _catalog_by_id() -> dict[str, LoraCatalogEntry]:
 def _staging_name(dest_dir: Path, stem: str) -> str:
     # Not mkstemp: its 0600 file would publish an owner-only marker; a fresh open() honours the umask.
     import secrets
-
-    # Short and stem-free: a near-255-byte stem plus a token would overflow the name limit.
     return str(dest_dir / f".lora-export.{secrets.token_hex(8)}.part")
 
 
@@ -371,7 +368,6 @@ def export_local_lora(lora_id: str, dest_dir: Path) -> Path:
             out = dest_dir / f"{src.stem}-{n}{src.suffix}"
             n += 1
         meta = json.dumps({**(_pinned_sidecar(src) or {}), "kind": LORA_SIDECAR_KIND}, indent = 2)
-        # Exporting into the folder it already sits in would copy a file onto itself.
         copy = not (out.exists() and os.path.samefile(src, out))
         # Both files are staged under names no scanner reads, so a failed export leaves nothing behind.
         sidecar = out.with_suffix(".json")
