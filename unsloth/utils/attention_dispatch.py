@@ -692,8 +692,13 @@ def run_attention(
         kwargs.setdefault("is_causal", is_causal_local)
 
         use_sdpa_gqa = SDPA_HAS_GQA and config.n_groups != 1
-        # Without flash (T4, fp32) enable_gqa falls to math SDPA, which ring attention cannot shard.
-        if use_sdpa_gqa and get_cp_manager() is not None:
+        # CP refuses < sm80 and downcasts fp32 Q/K/V above, so flash takes GQA natively and the ring
+        # gathers and accumulates n_kv_heads, not n_heads (about half the peak). UNSLOTH_CP_GQA=0 expands.
+        if (
+            use_sdpa_gqa
+            and get_cp_manager() is not None
+            and os.environ.get("UNSLOTH_CP_GQA", "1") == "0"
+        ):
             use_sdpa_gqa = False
         if (
             use_sdpa_gqa
@@ -709,7 +714,8 @@ def run_attention(
         if use_sdpa_gqa:
             kwargs.setdefault("enable_gqa", True)
             out = scaled_dot_product_attention(Q, K, V, **kwargs)
-            return out.transpose(1, 2)
+            out = out.transpose(1, 2)
+            return out if cp_out_dtype is None else out.to(cp_out_dtype)
 
         K_mod = K
         V_mod = V

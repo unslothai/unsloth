@@ -171,8 +171,13 @@ def test_shift_labels_is_not_an_eval_label_name():
     assert find_labels(LM) == ["labels"]
 
 
-def test_gqa_is_expanded_under_cp(monkeypatch):
+@pytest.mark.parametrize("opt_out", [False, True])
+def test_gqa_stays_native_under_cp_unless_opted_out(monkeypatch, opt_out):
+    # The ring all-gathers and accumulates K/V: expanding to n_heads multiplies that memory.
+    if opt_out:
+        monkeypatch.setenv("UNSLOTH_CP_GQA", "0")
     monkeypatch.setattr(cp, "context_parallel", _fake_context_parallel([]))
+    monkeypatch.setattr(ad, "SDPA_HAS_GQA", True)
     seen = []
     monkeypatch.setattr(
         ad,
@@ -196,7 +201,7 @@ def test_gqa_is_expanded_under_cp(monkeypatch):
     manager.mesh = None
     with manager.apply({"input_ids": torch.ones(1, 4, dtype = torch.long)}):
         ad.run_attention(config = config, context = context, Q = Q, K = K, V = K)
-    assert seen == [(4, None)]
+    assert seen == ([(4, None)] if opt_out else [(2, True)])
 
 
 def test_every_rank_builds_the_same_global_mesh(monkeypatch):
