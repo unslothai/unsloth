@@ -42,7 +42,10 @@ def _query_rows(query, key, budget: Optional[int]) -> int:
     if budget is None:
         return QUERY_CHUNK_SIZE
     per_row = max(query.shape[0] * query.shape[2] * key.shape[1], 1)
-    return max(QUERY_CHUNK_SIZE, min(budget // (per_row * query.element_size()), MPS_SCORE_ELEMENTS // per_row))
+    return max(
+        QUERY_CHUNK_SIZE,
+        min(budget // (per_row * query.element_size()), MPS_SCORE_ELEMENTS // per_row),
+    )
 
 
 def _bounded_attention(
