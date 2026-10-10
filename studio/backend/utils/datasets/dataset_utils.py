@@ -217,7 +217,10 @@ def _apply_user_mapping(
                             )
                         )
             conversations.append(convo)
-        return {"conversations": conversations}
+        mapped = {"conversations": conversations}
+        if "tools" in examples:
+            mapped["tools"] = examples["tools"]
+        return mapped
 
     return dataset.map(
         _convert,

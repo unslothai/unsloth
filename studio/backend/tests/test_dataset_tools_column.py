@@ -66,12 +66,17 @@ _MESSAGES = [
 ]
 
 
-def _format(rows, tokenizer = None):
+def _format(
+    rows,
+    tokenizer = None,
+    **kwargs,
+):
     result = format_and_template_dataset(
         Dataset.from_list(rows),
         model_name = "stub-model",
         tokenizer = tokenizer or _ToolsTokenizer(),
         num_proc = 1,
+        **kwargs,
     )
     assert result["success"], result["errors"]
     return list(result["dataset"]["text"])
@@ -120,6 +125,15 @@ def test_tools_and_system_column_are_both_trained():
     assert texts == [
         _catalog(_WEATHER) + "<system>Be brief.<user>Weather in Paris?<assistant>It is 21C."
     ]
+
+
+def test_user_mapping_keeps_the_tools_column_for_training():
+    texts = _format(
+        [{"question": "Weather in Paris?", "answer": "It is 21C.", "tools": [_WEATHER]}],
+        custom_format_mapping = {"question": "user", "answer": "assistant"},
+    )
+
+    assert texts == [_catalog(_WEATHER) + "<user>Weather in Paris?<assistant>It is 21C."]
 
 
 def test_rows_still_train_when_the_template_rejects_tools():
