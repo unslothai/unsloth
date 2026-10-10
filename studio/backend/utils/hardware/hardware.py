@@ -3379,8 +3379,8 @@ def amd_driver_idle_evict_notice(devices: list[Dict[str, Any]]) -> Optional[Dict
     }
 
 
-def _windows_live_amd_driver_versions() -> Optional[Dict[str, str]]:
-    """DriverVersion of each present AMD display adapter, by name, or None when WMI could not say. Read live because the DirectX registry keeps records of removed cards, and the inventory pairs same-named records with live cards in LUID order."""
+def _windows_live_amd_driver_versions() -> Optional[list[tuple[str, str]]]:
+    """(Name, DriverVersion) of each present AMD display adapter, or None when WMI could not say. Read live because the DirectX registry keeps records of removed cards, and the inventory pairs same-named records with live cards in LUID order."""
     if platform.system() != "Windows":
         return None
     try:
@@ -3404,11 +3404,11 @@ def _windows_live_amd_driver_versions() -> Optional[Dict[str, str]]:
         return None
     if r.returncode != 0:
         return None
-    versions = {}
+    versions = []
     for line in (r.stdout or "").splitlines():
         name, _, version = line.partition("\t")
         if name.strip() and version.strip():
-            versions[name.strip()] = version.strip()
+            versions.append((name.strip(), version.strip()))
     return versions
 
 
@@ -3422,14 +3422,14 @@ def _check_amd_driver_idle_evict() -> None:
         live = _windows_live_amd_driver_versions()
         if live is None:
             return
-        notice = amd_driver_idle_evict_notice(
-            [
-                {**d, "driver_version": live.get(str(d.get("name") or ""))}
-                if d.get("vendor") == "amd"
-                else d
-                for d in get_physical_gpu_inventory().get("devices") or []
-            ]
-        )
+        rows = []
+        for d in get_physical_gpu_inventory().get("devices") or []:
+            if d.get("vendor") == "amd":
+                # The inventory's own name join: rows carry the registry description, WMI the display name.
+                match = _claim_live_adapter(d.get("name"), [name for name, _ in live])
+                d = {**d, "driver_version": live.pop(match)[1] if match is not None else None}
+            rows.append(d)
+        notice = amd_driver_idle_evict_notice(rows)
     except Exception as e:
         logger.debug("AMD driver idle-eviction check failed: %s", e)
         return
