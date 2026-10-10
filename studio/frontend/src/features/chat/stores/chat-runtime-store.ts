@@ -1957,6 +1957,7 @@ export function normalizeSpeculativeType(
     return "ngram";
   }
   if (s === "mtp+ngram") return "mtp+ngram";
+  if (s === "eagle3") return s;
   // Comma-chained legacy values (e.g. from older backend echoes).
   const parts = s
     .split(",")
@@ -1976,21 +1977,27 @@ export function normalizeSpeculativeType(
 export function resolveLoadedSpeculativeSettings(response: {
   speculative_type?: string | null;
   spec_draft_n_max?: number | null;
+  spec_draft_model?: string | null;
 }): {
   speculativeType: string | null;
   loadedSpeculativeType: string | null;
   specDraftNMax: number | null;
   loadedSpecDraftNMax: number | null;
+  specDraftModel: string | null;
+  loadedSpecDraftModel: string | null;
 } {
   const loadedSpeculativeType = normalizeSpeculativeType(
     response.speculative_type,
   );
   const loadedSpecDraftNMax = response.spec_draft_n_max ?? null;
+  const loadedSpecDraftModel = response.spec_draft_model ?? null;
   return {
     speculativeType: loadedSpeculativeType,
     loadedSpeculativeType,
     specDraftNMax: loadedSpecDraftNMax,
     loadedSpecDraftNMax,
+    specDraftModel: loadedSpecDraftModel,
+    loadedSpecDraftModel,
   };
 }
 
@@ -2437,6 +2444,7 @@ type ChatRuntimeStore = {
   generatingStatus: string | null;
   autoHealToolCalls: boolean;
   nudgeToolCalls: boolean;
+  deduplicateToolCalls: boolean;
   autoCompactEnabled: boolean;
   maxToolCallsPerMessage: number;
   toolCallTimeout: number;
@@ -2462,6 +2470,9 @@ type ChatRuntimeStore = {
   /** User --spec-draft-n-max override (null = platform default). */
   specDraftNMax: number | null;
   loadedSpecDraftNMax: number | null;
+  /** MLX companion drafter, a repo id or local path (null = discovery). */
+  specDraftModel: string | null;
+  loadedSpecDraftModel: string | null;
   /** User reply-width override, for either backend (null = server default). GGUF spends it
    *  on llama-server's --parallel slots; MLX on how many replies decode together.
    *  Never re-seeded from an echo: the resolved count would pin a blank control. */
@@ -2731,6 +2742,7 @@ type ChatRuntimeStore = {
   clearActiveDiffusionCanvasForThread: (threadId: string | null) => void;
   setAutoHealToolCalls: (enabled: boolean) => void;
   setNudgeToolCalls: (enabled: boolean) => void;
+  setDeduplicateToolCalls: (enabled: boolean) => void;
   setAutoCompactEnabled: (enabled: boolean) => void;
   setMaxToolCallsPerMessage: (value: number) => void;
   setToolCallTimeout: (value: number) => void;
@@ -2776,6 +2788,7 @@ type ScalarSettingKey =
   | "searchImages"
   | "autoHealToolCalls"
   | "nudgeToolCalls"
+  | "deduplicateToolCalls"
   | "autoCompactEnabled"
   | "maxToolCallsPerMessage"
   | "toolCallTimeout"
@@ -2827,6 +2840,7 @@ const SCALAR_SETTING_KEYS = [
   "searchImages",
   "autoHealToolCalls",
   "nudgeToolCalls",
+  "deduplicateToolCalls",
   "autoCompactEnabled",
   "maxToolCallsPerMessage",
   "toolCallTimeout",
@@ -4225,6 +4239,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   activeDiffusionCanvasByThreadId: {},
   autoHealToolCalls: true,
   nudgeToolCalls: true,
+  deduplicateToolCalls: true,
   autoCompactEnabled: DEFAULT_AUTO_COMPACT_ENABLED,
   maxToolCallsPerMessage: 25,
   toolCallTimeout: 5,
@@ -4244,6 +4259,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   specDrafterKind: null,
   specDraftNMax: null,
   loadedSpecDraftNMax: null,
+  specDraftModel: null,
+  loadedSpecDraftModel: null,
   nParallel: null,
   loadedNParallel: null,
   reasoningBudget: -1,
@@ -5193,6 +5210,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       specDrafterKind: null,
       specDraftNMax: null,
       loadedSpecDraftNMax: null,
+      specDraftModel: null,
+      loadedSpecDraftModel: null,
       nParallel: null,
       loadedNParallel: null,
       reasoningBudget: -1,
@@ -5859,6 +5878,18 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       );
       return {
         nudgeToolCalls,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
+    }),
+  setDeduplicateToolCalls: (deduplicateToolCalls) =>
+    set((state) => {
+      setScalarSettingVersion(
+        "deduplicateToolCalls",
+        deduplicateToolCalls,
+        state.deduplicateToolCalls,
+      );
+      return {
+        deduplicateToolCalls,
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
     }),

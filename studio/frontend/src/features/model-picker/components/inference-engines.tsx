@@ -30,7 +30,7 @@ import { useEngines } from "../hooks/use-engines";
 
 const names = { vllm: "vLLM", sglang: "SGLang" };
 
-function EngineInstall({
+export function EngineInstall({
   engine,
   management = false,
   onUse,
