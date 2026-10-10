@@ -2014,6 +2014,17 @@ def note_unlaunchable_accelerator_build(
         logger.debug("could not record the sd.cpp launch failure: %s", exc)
 
 
+def _install_kwargs(accelerator: str) -> dict[str, Any]:
+    """``install`` arguments; a CUDA install also names the CUDA line the host runtime provides."""
+    kwargs: dict[str, Any] = {"accelerator": accelerator}
+    if _accelerator_class_of(accelerator) == "cuda":
+        from core.inference.sd_cpp_engine import host_cuda_runtime_major
+        major = host_cuda_runtime_major()
+        if major:
+            kwargs["cuda_major"] = major
+    return kwargs
+
+
 def ensure_sd_cpp_binary(*, allow_install: bool = True, accelerator: str = "cpu") -> Optional[str]:
     """Path to a usable ``sd-cli`` binary, installing the prebuilt once if needed. Returns the
     binary path, or None when it is absent and cannot be installed (install disabled, no network,
@@ -2044,7 +2055,7 @@ def ensure_sd_cpp_binary(*, allow_install: bool = True, accelerator: str = "cpu"
             if not claimed:
                 return fallback  # something is running in there; retry on a later load
             try:
-                path = _install(accelerator = accelerator)
+                path = _install(**_install_kwargs(accelerator))
                 logger.info("sd-cli installed at %s", path)
                 return str(path)
             except Exception as exc:  # noqa: BLE001 -- download/extract failure -> fall back
@@ -2103,7 +2114,7 @@ def ensure_sd_server_binary(
             if not claimed:
                 return fallback  # something is running in there; retry on a later load
             try:
-                _install(accelerator = accelerator)  # extracts sd-cli AND sd-server
+                _install(**_install_kwargs(accelerator))  # extracts sd-cli AND sd-server
             except Exception as exc:  # noqa: BLE001 -- download/extract failure -> fall back
                 logger.warning("sd-server auto-install failed: %s", exc)
                 # Also when only the CLI survives (a legacy server-less tree): the router probes ensure_sd_cpp_binary

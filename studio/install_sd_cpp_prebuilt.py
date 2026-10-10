@@ -214,7 +214,7 @@ def _outdated_upstream_fallback(rec: dict, want: str) -> bool:
 
 _LINUX_ACCEL_TOKEN = {"rocm": "rocm", "vulkan": "vulkan"}
 _WINDOWS_ACCEL_TOKEN = {
-    "cuda": "cuda12",
+    "cuda": "cuda",
     "vulkan": "vulkan",
     "rocm": "rocm",
     "cpu": "avx2",
@@ -235,14 +235,24 @@ def _arch_tokens(machine: str) -> tuple[str, ...]:
     return _ARCH_TOKENS.get(machine.lower(), (machine.lower(),))
 
 
+def _prefer_cuda_major(names: list[str], cuda_major: Optional[str]) -> list[str]:
+    """``names`` with the ``cuda<major>`` builds first. The mirror's CUDA bundles carry no runtime and load the host's (the one llama.cpp uses), so the major has to match it; any other CUDA asset stays as the fallback older self-contained releases need."""
+    if not cuda_major:
+        return names
+    want = f"cuda{cuda_major}"
+    exact = [a for a in names if re.search(rf"{want}(?!\d)", a.lower())]
+    return exact + [a for a in names if a not in exact]
+
+
 def resolve_release_asset(
     asset_names: Sequence[str],
     *,
     system: str,
     machine: str,
     accelerator: str = "auto",
+    cuda_major: Optional[str] = None,
 ) -> Optional[str]:
-    """Pick the best release asset for a host, or None if none matches. ``system`` / ``machine`` are ``platform.system()`` / ``platform.machine()`` values; ``accelerator`` is ``auto`` (CPU/Metal default), ``vulkan``, ``rocm``, or ``cuda`` (Windows only). Pure: the caller passes the release's asset name list."""
+    """Pick the best release asset for a host, or None if none matches. ``system`` / ``machine`` are ``platform.system()`` / ``platform.machine()`` values; ``accelerator`` is ``auto`` (CPU/Metal default), ``vulkan``, ``rocm``, or ``cuda``; ``cuda_major`` ("12" / "13") prefers that CUDA line. Pure: the caller passes the release's asset name list."""
     system = system.lower()
     accel = accelerator.lower()
     arch = _arch_tokens(machine)
@@ -265,6 +275,8 @@ def resolve_release_asset(
             pool = [a for a in pool if not any(m in a.lower() for m in _ACCEL_MARKERS)]
         token = _WINDOWS_ACCEL_TOKEN.get(accel, accel)
         sel = [a for a in pool if token in a.lower()]
+        if accel == "cuda":
+            sel = _prefer_cuda_major(sel, cuda_major or "12")
         if sel:
             return sel[0]
         # An explicit GPU accelerator with no asset returns None, so the caller falls back instead of installing a CPU build.
@@ -278,6 +290,8 @@ def resolve_release_asset(
         # Explicit GPU accelerator: require its marker, never hand back a plain CPU build.
         marker = _LINUX_ACCEL_TOKEN.get(accel, accel)
         sel = [a for a in pool if marker in a.lower()]
+        if accel == "cuda":
+            sel = _prefer_cuda_major(sel, cuda_major)
     else:
         sel = [a for a in pool if not any(m in a.lower() for m in _ACCEL_MARKERS)]
     return sel[0] if sel else None
@@ -708,6 +722,7 @@ def _resolve_repo_asset(
     token: Optional[str],
     *,
     allow_latest: bool = True,
+    cuda_major: Optional[str] = None,
 ) -> tuple[Optional[dict], Optional[str]]:
     """Fetch ``repo``'s release and pick the asset for this host. Returns ``(release, asset_name)`` or ``(None, None)`` when the repo has no usable release (fetch failed, or the pinned tag is missing and ``allow_latest`` is False) or no asset for this host, so the caller can fall back. A quota refusal raises ``GitHubRateLimited`` instead: every rung shares that quota."""
     try:
@@ -725,12 +740,15 @@ def _resolve_repo_asset(
         system = platform.system(),
         machine = platform.machine(),
         accelerator = accelerator,
+        cuda_major = cuda_major,
     )
     return release, chosen
 
 
 def _resolve_with_fallback(
-    accelerator: str, token: Optional[str]
+    accelerator: str,
+    token: Optional[str],
+    cuda_major: Optional[str] = None,
 ) -> tuple[str, Optional[dict], Optional[str]]:
     """Resolve ``(used_repo, release, asset_name)`` for this host across the primary repo and, only when the built-in default is in use and the user did not pin a repo, the upstream fallback. Ordering guarantees reproducibility: a pinned tag is tried EXACTLY on every candidate repo before any repo's unpinned latest, so a mirror missing the pinned release prefers the pinned upstream build over an unpinned mirror-latest. Returns ``(primary, None, None)`` when nothing serves this host. Shared by ``install`` and ``--print-asset`` so both honour the same fallback."""
     tag = _pinned_tag()
@@ -759,7 +777,7 @@ def _resolve_with_fallback(
 
     for repo, want_tag, allow_latest in attempts:
         release, chosen = _resolve_repo_asset(
-            repo, want_tag, accelerator, token, allow_latest = allow_latest
+            repo, want_tag, accelerator, token, allow_latest = allow_latest, cuda_major = cuda_major
         )
         if release is not None and chosen:
             if repo != primary:
@@ -788,6 +806,7 @@ def install(
     install_dir: Optional[Path] = None,
     accelerator: str = "auto",
     token: Optional[str] = None,
+    cuda_major: Optional[str] = None,
 ) -> Path:
     """Download and extract the prebuilt for this host, returning the sd-cli path. Resolves against the Unsloth mirror (``DEFAULT_REPO``) first; if the mirror cannot serve this host AND the default repo is in use, falls back to leejet upstream so native install still works. Raises ``RuntimeError`` only when neither source has an asset for the host, or the archive has no ``sd-cli``."""
     target = install_dir or default_install_dir()
@@ -810,7 +829,7 @@ def install(
             f"into your files. Remove or move that directory, or install into a different, empty "
             f"location (pass a different --install-dir / set the Unsloth sd.cpp install dir)."
         )
-    used_repo, release, chosen = _resolve_with_fallback(accelerator, token)
+    used_repo, release, chosen = _resolve_with_fallback(accelerator, token, cuda_major)
 
     if release is None or not chosen:
         raise RuntimeError(
@@ -911,6 +930,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     p.add_argument("--install-dir", default = None)
     p.add_argument(
+        "--cuda-major", default = None, help = "CUDA line the host runtime provides (12 / 13)"
+    )
+    p.add_argument(
         "--print-asset", action = "store_true", help = "resolve + print the asset, don't download"
     )
     args = p.parse_args(argv)
@@ -918,7 +940,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.print_asset:
         # Same primary/fallback resolution as install(), so a host the mirror skips reports the upstream asset, not a false miss.
         try:
-            _used, _release, chosen = _resolve_with_fallback(args.accelerator, None)
+            _used, _release, chosen = _resolve_with_fallback(
+                args.accelerator, None, args.cuda_major
+            )
         except GitHubRateLimited as exc:
             print(f"error: {exc}", file = sys.stderr)
             return 2
@@ -929,6 +953,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         install(
             install_dir = Path(args.install_dir).expanduser() if args.install_dir else None,
             accelerator = args.accelerator,
+            cuda_major = args.cuda_major,
         )
     except RuntimeError as exc:
         print(f"error: {exc}", file = sys.stderr)
