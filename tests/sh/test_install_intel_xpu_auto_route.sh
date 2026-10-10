@@ -97,7 +97,7 @@ make_uname x86_64
 rm -rf "$_PCI"; mkdir -p "$_PCI"
 cell "no GPU -> cpu" cpu ""
 
-for _id in 0x56a0 0xe20b 0x64a0 0x7d51 0x0bd5 0x0bd0 0x0b69 0x0b6e; do
+for _id in 0x56a0 0xe20b 0x64a0 0x7d51 0xb084 0xb087 0x0bd5 0x0bd0 0x0b69 0x0b6e; do
     rm -rf "$_PCI"; add_pci 0000:03:00.0 0x8086 "$_id" 0x030000
     cell "Intel $_id -> xpu" xpu ""
 done
@@ -122,7 +122,8 @@ cell "Arc + NVIDIA -> cu128" cu128 "$_NV"
 cell "Arc + family pin cpu -> cpu" cpu "" UNSLOTH_TORCH_INDEX_FAMILY=cpu
 cell "Arc + opt-out -> cpu" cpu "" UNSLOTH_DISABLE_XPU_AUTO=1
 cell "Arc + declared AMD arch -> cpu" cpu "" UNSLOTH_ROCM_GFX_ARCH=gfx1100
-cell "Arc + emptied ZE_AFFINITY_MASK -> cpu" cpu "" ZE_AFFINITY_MASK=
+cell "Arc + emptied ZE_AFFINITY_MASK -> xpu (Level Zero reads it as unset)" xpu "" ZE_AFFINITY_MASK=
+cell "Arc + ZE_AFFINITY_MASK=default -> xpu" xpu "" ZE_AFFINITY_MASK=default
 cell "Arc + ZE_AFFINITY_MASK=-1 -> cpu" cpu "" ZE_AFFINITY_MASK=-1
 cell "Arc + ZE_AFFINITY_MASK=0 -> cpu (indices need not follow PCI order)" cpu "" ZE_AFFINITY_MASK=0
 cell "Arc + ZE_AFFINITY_MASK=0 + xpu pin -> xpu" xpu "" ZE_AFFINITY_MASK=0 UNSLOTH_TORCH_INDEX_FAMILY=xpu

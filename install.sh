@@ -4828,7 +4828,7 @@ _intel_xpu_gpu_id() {
         read -r _ix_d < "${_ix_dir}device" 2>/dev/null || continue
         _ix_d=$(printf '%s' "$_ix_d" | tr '[:upper:]' '[:lower:]')
         case "$_ix_d" in
-            0x7d55|0x7d51|0x64a0|0xb080|0xb081|0xb082|0xb083) printf '%s' "$_ix_d"; return 0 ;;
+            0x7d55|0x7d51|0x64a0|0xb080|0xb081|0xb082|0xb083|0xb084|0xb085|0xb086|0xb087) printf '%s' "$_ix_d"; return 0 ;;
             # PVC (Data Center GPU Max) by exact id: 0x0BE0-0x0BE5 nearby is Cedar Trail (gma500).
             0x0bd0|0x0bd4|0x0bd5|0x0bd6|0x0bd7|0x0bd8|0x0bd9|0x0bda|0x0bdb|0x0b69|0x0b6e) printf '%s' "$_ix_d"; return 0 ;;
         esac
@@ -4850,7 +4850,8 @@ _intel_xpu_auto_gpu_id() {
     _ix_var=""
     [ -n "${SYCL_DEVICE_FILTER+x}" ] && _ix_var=SYCL_DEVICE_FILTER
     [ -n "${ONEAPI_DEVICE_SELECTOR+x}" ] && _ix_var=ONEAPI_DEVICE_SELECTOR
-    [ -n "${ZE_AFFINITY_MASK+x}" ] && _ix_var=ZE_AFFINITY_MASK
+    # Level Zero reads an empty or "default" mask as unset (compute-runtime isAffinityMaskSet).
+    case "${ZE_AFFINITY_MASK-default}" in ""|default) ;; *) _ix_var=ZE_AFFINITY_MASK ;; esac
     if [ -n "$_ix_var" ]; then
         echo "[INFO] $_ix_var is set -- skipping the Intel XPU auto route; set UNSLOTH_TORCH_INDEX_FAMILY=xpu to install XPU PyTorch." >&2
         return 1

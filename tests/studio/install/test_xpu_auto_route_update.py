@@ -163,7 +163,6 @@ def test_setup_sh_forces_the_pass_on_a_stale_xpu_wheel():
         "Cedar Trail 0x0be5",
         "AMD beside Arc",
         "mask set",
-        "emptied mask",
         "oneAPI selector",
         "SYCL filter",
         "opt-out",
@@ -189,8 +188,6 @@ def test_the_unpinned_route_is_revalidated(monkeypatch, tmp_path, backend, recor
         )
     elif case == "mask set":
         monkeypatch.setenv("ZE_AFFINITY_MASK", "0")
-    elif case == "emptied mask":
-        monkeypatch.setenv("ZE_AFFINITY_MASK", "")
     else:
         monkeypatch.setenv("UNSLOTH_DISABLE_XPU_AUTO", "1")
     assert not _run(backend, recorded).called
@@ -221,9 +218,17 @@ def test_the_allowlist_matches_hardware_py():
     assert len(hardware) == 2
 
 
-@pytest.mark.parametrize("device", ["0x0bd0", "0x0bd5", "0x0b69", "0x0b6e"])
-def test_pvc_ids_still_route(monkeypatch, tmp_path, device):
+@pytest.mark.parametrize("device", ["0x0bd0", "0x0bd5", "0x0b69", "0x0b6e", "0xb084", "0xb087"])
+def test_pvc_and_ptl_arc_pro_ids_route(monkeypatch, tmp_path, device):
     _pci(monkeypatch, tmp_path, ("0x8086", device, "0x030000"))
+    assert stack._intel_xpu_auto_route_holds()
+
+
+@pytest.mark.parametrize("mask", ["", "default"])
+def test_an_unset_equivalent_mask_keeps_the_route(monkeypatch, tmp_path, mask):
+    # Level Zero reads these as no mask, so every Intel GPU stays visible.
+    _pci(monkeypatch, tmp_path, ("0x8086", "0x56a0", "0x030000"))
+    monkeypatch.setenv("ZE_AFFINITY_MASK", mask)
     assert stack._intel_xpu_auto_route_holds()
 
 
