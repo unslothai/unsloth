@@ -136,6 +136,25 @@ def test_user_mapping_keeps_the_tools_column_for_training():
     assert texts == [_catalog(_WEATHER) + "<user>Weather in Paris?<assistant>It is 21C."]
 
 
+@pytest.mark.parametrize(
+    ("metadata", "system"),
+    [
+        ({"__system_prompt": "Be brief."}, "<system>Be brief."),
+        ({"__label_mapping": {}}, ""),
+    ],
+    ids = ["system_prompt", "label_mapping"],
+)
+def test_user_mapping_metadata_keeps_the_tools_column_for_training(metadata, system):
+    mapping = {"question": "user", "answer": "assistant", **metadata}
+
+    texts = _format(
+        [{"question": "Weather in Paris?", "answer": "It is 21C.", "tools": [_WEATHER]}],
+        custom_format_mapping = mapping,
+    )
+
+    assert texts == [_catalog(_WEATHER) + system + "<user>Weather in Paris?<assistant>It is 21C."]
+
+
 def test_rows_still_train_when_the_template_rejects_tools():
     texts = _format([{"messages": _MESSAGES, "tools": [_WEATHER]}], _NoToolsTokenizer())
 

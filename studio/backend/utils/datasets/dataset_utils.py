@@ -292,7 +292,10 @@ def _apply_template_mapping(
                 convo.append({"role": "assistant", "content": "\n".join(asst_parts)})
 
             conversations.append(convo)
-        return {"conversations": conversations}
+        mapped = {"conversations": conversations}
+        if "tools" in examples:
+            mapped["tools"] = examples["tools"]
+        return mapped
 
     return dataset.map(
         _convert,
