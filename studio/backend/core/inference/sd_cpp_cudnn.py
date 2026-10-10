@@ -62,7 +62,7 @@ class CudnnRuntime:
         ]
 
 
-# cuDNN's runtime-compiled engines find NVRTC via RUNPATH ($ORIGIN/../../cuda_nvrtc/lib); cuBLAS is the prebuilt's own.
+# cuDNN's runtime-compiled engines find NVRTC via RUNPATH ($ORIGIN/../../cuda_nvrtc/lib).
 CUDNN_RUNTIMES: dict[int, CudnnRuntime] = {
     12: CudnnRuntime(12, "nvidia-cudnn-cu12", "9.27.0.42", "nvidia-cuda-nvrtc-cu12", "12.8.93"),
 }
@@ -470,18 +470,16 @@ def _install_locked(
             shutil.rmtree(staging, ignore_errors = True)
 
 
-# The fork prints these once per process / shape.
-
 _LOADED_RE = re.compile(r"cuDNN (\d+) loaded from \S+ for attention")
 _PLAN_RE = re.compile(r"cuDNN SDPA plan b=\d+ hq=\d+ hk=\d+ sq=(\d+) skv=(\d+) d=(\d+)")
 _NO_PLAN_RE = re.compile(r"no cuDNN SDPA plan for")
 _EXEC_FAIL_RE = re.compile(r"cuDNN SDPA execute failed")
 _TOO_OLD_RE = re.compile(r"reports cuDNN \d+, need 9\.0 or newer")
 
-STATE_READY = "ready"  # library named to the child, no render seen yet
+STATE_READY = "ready"
 STATE_ENGAGED = "engaged"
 STATE_FALLBACK = "fallback"
-STATE_UNAVAILABLE = "unavailable"  # eligible, but no CUDA 12 cuDNN could be provided
+STATE_UNAVAILABLE = "unavailable"
 STATE_OFF = "off"
 
 

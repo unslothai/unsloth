@@ -24,11 +24,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-_BACKEND_DIR = Path(__file__).resolve().parent.parent  # studio/backend
+_BACKEND_DIR = Path(__file__).resolve().parent.parent
 
-# Mirrors run_training_process's imports that run BEFORE _activate_transformers_version (worker.py);
-# keep in sync. torch-dependent imports are optional (a no-torch CI shard skips them) but must still
-# not drag in transformers.
+# Mirrors run_training_process's imports before _activate_transformers_version
+# (worker.py); keep in sync. Must not pull in transformers.
 _PREFLIGHT_SNIPPET = r"""
 import sys
 

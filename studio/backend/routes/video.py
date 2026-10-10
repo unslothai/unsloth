@@ -116,7 +116,7 @@ def _guard_video_load_against_training() -> None:
     try:
         llm_active = get_training_backend().is_training_active()
     except Exception as e:  # noqa: BLE001
-        # Independent probes: an unreadable LLM backend must not disable the diffusion interlock below.
+        # Independent probes: an unreadable LLM backend must not disable the diffusion interlock.
         logger.warning("Could not check training state for video-load guard: %s", e)
         llm_active = False
     diffusion_active = False
@@ -125,7 +125,6 @@ def _guard_video_load_against_training() -> None:
         diffusion_active = get_diffusion_training_service().is_active()
     except Exception:  # noqa: BLE001
         diffusion_active = False
-    # An SDXL LoRA trainer runs in its own subprocess on the same GPU, so refuse a video load while one is active.
     if not llm_active and not diffusion_active:
         return
     raise HTTPException(
@@ -195,16 +194,11 @@ async def video_download_plan(
             model_kind = kind,
             base_repo = request.base_repo,
             transformer_quant = request.transformer_quant,
-            # And the partition, because one of those quant-keyed refusals is task-keyed. Without it here the plan below
-            # staged the 66 GB dense transformer_ref/ AND the incompatible fl2va quant first: the hosted pre-quantized
-            # H3 checkpoints are fl2va denoisers, so a quantized ref2va is rejected.
+            # The H3 partition matters: hosted pre-quantized H3 checkpoints are fl2va only.
             h3_task = request.h3_task,
         )
-        # BEFORE the plan is staged, as on the images side: /video/load refuses a precision this host cannot honour,
-        # but the UI plans and downloads first, so an explicit FP8 on an unsupported host paid for tens of GB of
-        # weights to be told afterwards. Network-free. Skipped while a trainer holds the GPU: an uncached scheme takes
-        # this into a quantise-and-matmul smoke probe that initialises CUDA. RANKING opens a CUDA context per
-        # candidate, so it waits until training is known idle. ONE resolution, reused by preflight and plan.
+        # Precision preflight BEFORE staging the plan so unsupported FP8 fails before downloading.
+        # Skipped while training holds the GPU (probe initialises CUDA). One resolution, reused below.
         gpu_ordinal = None
         training = fam is not None and await asyncio.to_thread(_training_is_active)
         if fam is not None:
@@ -222,7 +216,6 @@ async def video_download_plan(
                 transformer_quant = request.transformer_quant,
                 text_encoder_quant = request.text_encoder_quant,
                 memory_mode = request.memory_mode,
-                # Judged on the card this pick would load on, as the loader does.
                 gpu_ordinal = gpu_ordinal,
                 checkpoint_filename = request.gguf_filename,
                 checkpoint_repo = request.model_path,
@@ -237,16 +230,13 @@ async def video_download_plan(
             display_repo_id = request.display_repo_id,
             model_kind = kind,
             hf_token = request.hf_token,
-            # The plan must see the encoder policy the load will use: an fp8 request takes a hosted pre-cast encoder, so
-            # staging the dense one wastes ~49 GB on LTX-2.
+            # fp8 takes a hosted pre-cast encoder; staging the dense one wastes ~49 GB on LTX-2.
             text_encoder_quant = request.text_encoder_quant,
-            # And the denoiser policy: a scheme with a hosted pre-quantized checkpoint replaces the dense DiT, so without
-            # this the plan stages 66.3 GB of shards the load never opens.
+            # A hosted pre-quantized DiT replaces the dense one; avoids staging 66.3 GB unused shards.
             transformer_quant = request.transformer_quant,
-            # And the MiniMax-H3 partition: the two denoisers live in separate 66.28 GB subfolders, so a ref2va load opens
-            # transformer_ref/, which the plan would otherwise miss while staging the fl2va transformer/.
+            # H3 denoisers live in separate subfolders (transformer_ref/ vs transformer/).
             h3_task = request.h3_task,
-            # Forward the memory / speed policy: an fp8 LTX-2.3 pick under balanced / low_vram loads bf16 and must not stage the FP8 DiT.
+            # fp8 LTX-2.3 under balanced / low_vram loads bf16 and must not stage the FP8 DiT.
             memory_mode = request.memory_mode,
             speed_mode = request.speed_mode,
             allow_device_probe = not training,
@@ -255,8 +245,6 @@ async def video_download_plan(
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc)))
     except RuntimeError as exc:
-        # Mirrors /video/load and /images/download-plan: the precision gate above raises
-        # RuntimeError, and that refusal is a 409, not a server fault.
         raise HTTPException(status_code = 409, detail = redact_native_paths(str(exc)))
 
 
@@ -267,9 +255,7 @@ async def load_video_model(
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    # The status describes whatever is resident, which on a second load is the PREVIOUS model,
-    # resolved by an earlier request this context has no handle for. In the route rather than the
-    # gated body, whose internal callers serve no API-key request.
+    # The status may describe a PREVIOUS model resolved by an earlier request.
     from hub.utils.host_paths import (
         raised_inventory_detail,
         redact_host_paths,
@@ -278,8 +264,6 @@ async def load_video_model(
     try:
         loaded = await load_video_model_gated(request, current_subject, user_initiated = True)
     except HTTPException as exc:
-        # A load that RAISES skips both wrappers below, and the inner loader redacted only
-        # native paths, which do not know inventory handles.
         exc.detail = raised_inventory_detail(exc.detail, via_api_key = via_api_key)
         raise
     return redact_host_paths(
@@ -316,9 +300,7 @@ async def load_video_model_gated(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}
         )
     await _refuse_disabled_nvfp4_checkpoint(request)
-    # Same as the image load: tested at entry, because `begin_load` returns before the worker
-    # moves a byte, and written at the launch below, because the validation in between 400s
-    # without starting one and the record would be permanent.
+    # Tested at entry (begin_load returns early) and written at launch (validation may 400 first).
     from routes.inference import (
         _note_load_fetched_with_a_request_token,
         _repo_is_in_the_hub_cache,
@@ -351,11 +333,8 @@ async def load_video_model_gated(
 
     backend = get_video_backend()
     try:
-        # Resolve the load kind once (gguf / single_file / pipeline) so validation and the load agree; a bad kind raises
-        # here, so a 400.
         kind = resolve_video_model_kind(request.gguf_filename, request.model_kind)
-        # A local On-Device pick can be a bare single-file .safetensors dir the picker starts as a pipeline; if it holds
-        # exactly one checkpoint, load it as single_file. Mirrors images.
+        # A bare single-file .safetensors dir holding one checkpoint loads as single_file.
         if kind == "pipeline" and not request.gguf_filename:
             split = await asyncio.to_thread(split_local_checkpoint_path, request.model_path)
             if split is not None:
@@ -369,7 +348,7 @@ async def load_video_model_gated(
             if sole is not None:
                 request.gguf_filename = sole
                 kind = resolve_video_model_kind(sole, None)
-        # Validate cheaply BEFORE touching the GPU so an unloadable pick can't evict chat then 400.
+        # Validate BEFORE touching the GPU so an unloadable pick can't evict chat then 400.
         fam = await asyncio.to_thread(
             backend.validate_load_request,
             request.model_path,
@@ -382,13 +361,9 @@ async def load_video_model_gated(
             text_encoder_quant = request.text_encoder_quant,
             h3_task = request.h3_task,
         )
-        # Refuse while training is running BEFORE the precision check, which runs a GPU probe that would initialise a
-        # CUDA context alongside the training subprocess for a load about to be rejected.
+        # Before the precision check, whose GPU probe would open a CUDA context beside training.
         _guard_video_load_against_training()
-        # Same bar for an EXPLICIT precision this host can never honor. begin_load makes the identical network-free
-        # check, but it runs inside acquire_for, which evicts chat under the arbiter lock BEFORE the register callback,
-        # so a refusal raised there arrives having already taken the GPU away from the model it was meant to preserve.
-        # `auto` is never refused.
+        # begin_load repeats this check, but inside acquire_for after chat is evicted. `auto` never refused.
         gpu_ordinal = await _selected_gpu_ordinal(request.gpu_ids)
         await asyncio.to_thread(
             assert_video_precision_available,
@@ -396,16 +371,12 @@ async def load_video_model_gated(
             model_kind = kind,
             transformer_quant = request.transformer_quant,
             text_encoder_quant = request.text_encoder_quant,
-            # The memory request settles the offload policy for balanced/low_vram before
-            # anything is measured, and an offloaded DiT or encoder skips the torchao build.
             memory_mode = request.memory_mode,
             gpu_ordinal = gpu_ordinal,
             checkpoint_filename = request.gguf_filename,
             checkpoint_repo = request.model_path,
         )
-        # Same bar again, for a speech GGUF picked out of a mixed video repo. The backend's own assertion runs on the
-        # load worker, INSIDE acquire_for, so a refusal there arrives having already evicted the chat model.
-        # Off-thread because the probe reads a header, and cache-only when the load is not user-initiated.
+        # Speech GGUF check here, since the backend's runs after acquire_for evicts chat.
         from core.inference.diffusion_compat import assert_pick_is_not_speech
 
         await asyncio.to_thread(
@@ -415,24 +386,16 @@ async def load_video_model_gated(
             request.hf_token,
             user_initiated,
         )
-        # Take the GPU from chat only for a non-CPU load. Release stale VIDEO ownership on a CPU load (owner-guarded
-        # no-op).
         device = await asyncio.to_thread(lambda: resolve_diffusion_device_target().device)
 
         def _start_load():
-            # Recorded HERE, inside the admitted callback: every cheap refusal (the busy guard
-            # above, the arbiter, the retirement check inside admit_media_load) has already let
-            # this load through, and the worker below has not been handed the credential yet. A
-            # record left by a load that was refused withholds a repo nobody fetched.
+            # Recorded only after every cheap refusal, before the worker gets the credential.
             for _ref in _media_repos_to_record:
                 _note_load_fetched_with_a_request_token(_ref, request.hf_token)
-            # Kicks the (slow) load onto a background thread and returns at once; begin_load itself validates
-            # network-free.
             return backend.begin_load(
                 request.model_path,
                 display_repo_id = request.display_repo_id,
-                # a load nobody asked for may not reach the hub: the switch verified locality
-                # from the outside, and this makes that promise the loader's own rule
+                # A load nobody asked for may not reach the hub.
                 local_files_only = not user_initiated,
                 gguf_filename = request.gguf_filename,
                 base_repo = request.base_repo,
@@ -448,8 +411,7 @@ async def load_video_model_gated(
                 model_kind = kind,
                 h3_task = request.h3_task,
                 gpu_ids = request.gpu_ids,
-                # The winner this route already ranked and preflighted, so the load cannot pick a
-                # different card from free VRAM that has moved since.
+                # The already-ranked card, so free VRAM drift cannot change the pick.
                 gpu_ordinal = gpu_ordinal,
             )
 
@@ -467,9 +429,7 @@ async def load_video_model_gated(
                 # No arbiter owner evicts it, yet it holds the one managed sd.cpp tree H3 installs into.
                 await asyncio.to_thread(images.unload)
         if device != "cpu":
-            # Register the in-flight load UNDER the arbiter lock: otherwise a competing acquire in that gap evicts VIDEO
-            # before the load is marked, finds nothing to cancel, and both allocate at once. The training admission wraps
-            # the same span.
+            # Register UNDER the arbiter lock, or a competing acquire evicts VIDEO before it is marked.
             from routes.inference import _diffusion_training_admission
             def _acquire_and_begin():
                 with _diffusion_training_admission():
@@ -479,12 +439,10 @@ async def load_video_model_gated(
         else:
             await asyncio.to_thread(release, VIDEO)
             status_dict = await asyncio.to_thread(_begin_load)
-        # Keyed to the target: this load can still fail with the previous model resident
         note_load_origin(
             VIDEO,
             request.model_path,
             extract_quant_token(request.gguf_filename) if kind == "gguf" else None,
-            # Derived when the caller left it unset, since that is what the backend publishes.
             request.h3_task or _derived_h3_task(request.gguf_filename, kind),
             user_action = user_initiated,
         )
@@ -501,7 +459,6 @@ async def load_video_model_gated(
     except account_access.GpuBusyForAnotherAccountError as exc:
         raise account_access.gpu_busy_error() from exc
     except RuntimeError as exc:
-        # A video load is already in progress.
         raise HTTPException(status_code = 409, detail = str(exc))
 
 
@@ -633,7 +590,6 @@ async def generate_video(
         validate_video_keyframe_conditioning(
             fam, h3_task, has_keyframes = bool(request.first_frame or request.last_frame)
         )
-        # the engine is only knowable up front where the pick decides it, as an h3 gguf does
         kind = resolve_video_model_kind(pick.gguf_filename, pick.model_kind)
         engine = "sd_cpp" if is_h3_native(fam, kind) else None
         validate_video_reference_conditioning(
@@ -662,7 +618,6 @@ async def generate_video(
     except VideoShapeError as exc:
         raise HTTPException(status_code = 422, detail = str(exc))
     except ValueError as exc:
-        # the conditioning rules, which begin_generate reports the same way below
         raise HTTPException(status_code = 400, detail = str(exc))
 
     backend = get_video_backend()
@@ -687,10 +642,7 @@ async def generate_video(
         audio_flow_shift = request.audio_flow_shift,
         live_preview = request.live_preview,
     )
-    # Authorize the exact resident token from generation_snapshot and pin it to the reservation,
-    # so a load committing in the gap cannot render another account's weights here; on a mismatch,
-    # re-authorize once and retry. begin_generate judges shape against the LOADED family under the
-    # same lock that reserves the state, so a concurrent load cannot judge and denoise against two.
+    # Authorize the resident token pinned to the reservation; on mismatch re-authorize once and retry.
     for attempt in range(2):
         expected_state = None
         if account_access.managed_account():
@@ -706,11 +658,9 @@ async def generate_video(
             # Must stay before the 400 below: VideoShapeError IS a ValueError.
             raise HTTPException(status_code = 422, detail = str(exc))
         except ValueError as exc:
-            # Bad client input: 400 with the reason, not a generic 500.
             raise HTTPException(status_code = 400, detail = str(exc))
         except RuntimeError as exc:
-            # Only the not-loaded / busy / replaced sentinels are 409; match exactly so
-            # an unrelated failure cannot leak its message.
+            # Match the sentinels exactly so an unrelated failure cannot leak its message.
             msg = str(exc)
             if msg == VIDEO_MODEL_CHANGED_MSG and attempt == 0:
                 continue
@@ -734,8 +684,7 @@ async def video_generate_progress(current_subject: str = Depends(get_current_sub
     from core.inference.video import get_video_backend
 
     backend = get_video_backend()
-    # One reservation read serves the visibility check; the backend rechecks the owner under
-    # its lock, since begin_generate runs on a worker thread and a successor can reserve mid-poll.
+    # The backend rechecks the owner under its lock; a successor can reserve mid-poll.
     reserved = _reserved_generation_account(backend)
     if reserved is not None:
         started_by = reserved
@@ -746,7 +695,6 @@ async def video_generate_progress(current_subject: str = Depends(get_current_sub
         return account_access.hidden_generate_progress_response(VideoGenerateProgressResponse)
     progress = _read_generate_progress(backend, reserved)
     if progress is None:
-        # The reservation changed hands mid-poll; the successor's progress is not ours to see.
         return account_access.hidden_generate_progress_response(VideoGenerateProgressResponse)
     log_media_generation_progress("video", progress)
     return VideoGenerateProgressResponse(**progress)
@@ -757,8 +705,7 @@ async def cancel_video_generation(current_subject: str = Depends(get_current_sub
     from core.inference.video import get_video_backend
 
     backend = get_video_backend()
-    # One read serves check and recheck: a second read could name a successor and hand it back
-    # as expected_account.
+    # One read: a second could name a successor and hand it back as expected_account.
     reserved = _reserved_generation_account(backend)
     if reserved is not None:
         started_by = reserved
@@ -770,8 +717,7 @@ async def cancel_video_generation(current_subject: str = Depends(get_current_sub
     if started_by is None and account_access.foreign_work_active():
         return {"cancelled": False}
     if reserved is None:
-        # No reservation yet: bind the cancel to the caller, else an account reserving before the
-        # executor runs would receive it.
+        # No reservation yet: bind to the caller, else an account reserving first would receive it.
         from utils.account_context import current_account
         expected = current_account().account_id
     else:
@@ -794,8 +740,7 @@ async def video_status(
     status_dict = await asyncio.to_thread(backend.status)
     if account_access.resident_hidden("video", status_dict.get("repo_id")):
         return account_access.hidden_resident_response()
-    # Step-skip counters trace a clip as it runs, which generate-progress hides from other accounts:
-    # shown only to the account whose clip produced them, from one owner-then-stats read.
+    # Step-skip counters are shown only to the clip's own account.
     if (
         status_dict.get("transformer_cache_stats") is not None
         and account_access.account_scope() is not None
@@ -804,8 +749,6 @@ async def video_status(
         owner, stats = view() if callable(view) else (None, status_dict["transformer_cache_stats"])
         visible = owner is None or owner == current_account_id()
         status_dict = {**status_dict, "transformer_cache_stats": stats if visible else None}
-    # This route answers long after the request that resolved the reference ended, so there is
-    # no handle in context to put back.
     return redact_host_paths(VideoStatusResponse(**status_dict), via_api_key = via_api_key)
 
 
@@ -826,14 +769,12 @@ async def unload_video_model(
     if account_access.account_scope() is not None:
         unload_kwargs["expected_account"] = current_account_id()
     status_dict = await asyncio.to_thread(backend.unload, **unload_kwargs)
-    # Drop VIDEO ownership only if nothing is resident AND no load is in flight; the check and release must be ATOMIC
-    # (release_if). Mirrors images.
+    # Check-and-release must be ATOMIC (release_if).
     await asyncio.to_thread(
         release_if,
         VIDEO,
         lambda: not backend.loading_repo_ids() and not backend.status()["loaded"],
     )
-    # An unload answers with the state it left behind, which still names the model it dropped.
     from hub.utils.host_paths import redact_host_paths, restore_inventory_handles
 
     return redact_host_paths(
@@ -854,8 +795,7 @@ async def list_gallery_videos(
     limit = max(1, min(limit, 200))
     offset = max(0, offset)
 
-    # Validate inside the pager so offset / limit / has_more count over the accepted domain: dropping bad records only
-    # after slicing stalled infinite scroll at offset 0.
+    # Validate inside the pager so offset / limit / has_more count over valid records.
     def _valid_gallery_video(record: dict) -> bool:
         try:
             GalleryVideo(**record)
@@ -863,7 +803,6 @@ async def list_gallery_videos(
             return False
         return True
 
-    # Fetch one extra to learn whether more remain, without a second scan.
     records = await asyncio.to_thread(
         video_gallery.list_videos,
         limit + 1,
@@ -882,8 +821,7 @@ async def get_gallery_video_file(
 ):
     from core.inference import video_gallery
 
-    # Ownership-gate the serve like delete/clear: resolve only an Unsloth-owned MP4, so a guessed stem cannot stream out
-    # a foreign clip.
+    # Resolve only an Unsloth-owned MP4 so a guessed stem cannot stream a foreign clip.
     path = await asyncio.to_thread(video_gallery.owned_video_path, video_id)
     if path is None:
         raise HTTPException(status_code = 404, detail = "Video not found.")
@@ -896,9 +834,7 @@ async def get_gallery_video_file(
     )
 
 
-# A clip is tens to hundreds of MB, so the gallery cannot fetch it into a blob like a PNG: that buffers the whole
-# MP4, defeats seeking and pins the bytes in the webview. The /file route streams ranges but is bearer-gated, so
-# mint a 12-hour HMAC link (<video> re-requests on seek).
+# Clips are too large for blob fetch; /file is bearer-gated, so mint a 12-hour HMAC link.
 _VIDEO_LINK_TTL = 12 * 3600
 _VIDEO_LINK_SECRET = _secrets.token_bytes(32)
 
@@ -1005,7 +941,6 @@ async def export_gallery_video(
         except OSError as e:  # noqa: BLE001 -- a leaked temp file must not fail the download
             logger.debug(f"Could not remove the export temp file {path}: {e}")
 
-    # FileResponse streams from disk, so a large VP9 export is never fully resident. The temp file is deleted once sent.
     return FileResponse(
         path,
         media_type = "video/webm" if fmt == "webm" else "image/gif",
@@ -1039,7 +974,6 @@ async def move_gallery_video(
     try:
         record = await asyncio.to_thread(video_gallery.move, video_id, body.after_id)
     except KeyError:
-        # The neighbour left the shelf; the client resyncs.
         raise HTTPException(status_code = 409, detail = "The gallery changed; try the move again.")
     except OSError as exc:
         logger.warning("video_gallery.move_failed: %s", exc)
@@ -1086,13 +1020,11 @@ async def update_gallery_video_flags(
             video_gallery.set_flags, video_id, pinned = patch.pinned, archived = patch.archived
         )
     except OSError as exc:
-        # The client already applied this optimistically, so a silent miss would look like it stuck
-        # and then quietly undo on reload.
+        # The client applied this optimistically; a silent miss would undo on reload.
         logger.warning("video_gallery.set_flags_failed: %s", exc)
         raise HTTPException(status_code = 500, detail = "Could not save the change to this video.")
     if record is None:
         raise HTTPException(status_code = 404, detail = "Video not found.")
-    # Archiving takes the clip off the strip.
     if patch.archived:
         _forget_terminal_video(video_id)
     return GalleryVideo(**record)
@@ -1119,14 +1051,12 @@ async def clear_gallery_videos(current_subject: str = Depends(get_current_subjec
     try:
         cleared = await asyncio.to_thread(video_gallery.clear, return_ids = True)
     except FlagsUnavailable as exc:
-        # Refuse rather than delete the archive we cannot prove is archived.
         logger.warning("video_gallery.clear_blocked: %s", exc)
         raise HTTPException(
             status_code = 503,
             detail = "Could not read the gallery's pin/archive data, so clearing was stopped to "
             "avoid deleting archived videos.",
         )
-    # Clear-all takes the terminal record's clip with it whatever its id.
     _forget_terminal_video(None)
     failed = await asyncio.to_thread(_forget_openai_jobs, cleared)
     if failed:
@@ -1142,7 +1072,6 @@ _VIDEO_POLL_AFTER_MS = "2000"
 _NO_VIDEO_MODEL_MSG = "No video model loaded. Load a video model first."
 _VIDEO_FAILED_CODE = "video_generation_failed"
 _VIDEO_CREATE_FIELDS = ("prompt", "model", "seconds", "size")
-# Upper bound on how long DELETE waits for a cancelled run to stop writing.
 _DELETE_SETTLE_TIMEOUT_S = 10.0
 
 
@@ -1620,8 +1549,7 @@ async def openai_create_video(
     current_subject: str = Depends(get_current_subject),
     hf_token: Optional[str] = Depends(get_hf_token),
 ):
-    # The body has to be read before the row can name a model and prompt, so the parse
-    # sits out here and the rest of the handler runs inside the monitor context.
+    # The body must be parsed before the monitor row can name the model.
     from routes.inference import _monitored_media_request
 
     fields, raw_reference = await _read_video_create_body(request)
@@ -1640,8 +1568,6 @@ async def openai_create_video(
         return job
 
 
-# Split out so the API monitor row can wrap the whole handler without reindenting it,
-# exactly as the OpenAI image route does.
 async def _create_openai_video(
     body: VideoJobCreateRequest,
     reference: Optional[str],
@@ -1672,8 +1598,7 @@ async def _create_openai_video(
         raise _openai_video_error(400, str(exc), param = "seconds")
     width, height = size if size is not None else (None, None)
     if reference is not None:
-        # Check readability before a model switch. The conditioning path applies its own
-        # keyframe or Ref2VA limit later, so this uses the broadest bounded source policy.
+        # Check readability before a model switch, with the broadest bounded source policy.
         from core.inference.diffusion import decode_b64_image
         from core.inference.video_minimax_h3 import (
             H3_REF_IMAGE_SOURCE_MAX_PIXELS,
@@ -1705,9 +1630,7 @@ async def _create_openai_video(
         fam = _detect_load_family(pick.model_path, pick.gguf_filename, None)
         if fam is None:
             return
-        # Judge the duration against the family being switched TO, using its own lattice. Passing None here accepted any
-        # seconds and only refused it in begin_generate, after the resident pipeline had been evicted and the target
-        # fully loaded.
+        # Judge duration against the TARGET family before evicting the resident pipeline.
         want_frames = (
             _frames_for_seconds(
                 seconds,
@@ -1753,8 +1676,6 @@ async def _create_openai_video(
 
     backend = get_video_backend()
     video_id = _VIDEO_JOB_ID_PREFIX + uuid.uuid4().hex
-    # Managed callers are authorized against the exact resident state, pinned to the reservation;
-    # on a mismatch, re-authorize once and retry, as /video/generate does.
     pin_state = pin_requested_model or account_access.managed_account()
     for attempt in range(2):
         expected_state = None
@@ -1814,18 +1735,14 @@ async def _create_openai_video(
     _note_generation_account()
     reset_media_generation_progress("video")
 
-    # begin_generate hands back the canvas it resolved. Without it a reference-image
-    # request reported the family's first preset while the clip rendered at the source
-    # aspect, so the job advertised one size and the finished record another.
+    # Use begin_generate's resolved canvas; reference-image requests render at source aspect.
     if isinstance(resolved, dict) and resolved.get("width") and resolved.get("height"):
         width, height = int(resolved["width"]), int(resolved["height"])
     else:
         presets = defaults.get("resolution_presets") or []
         if size is None and presets:
             width, height = int(presets[0][0]), int(presets[0][1])
-    # Describe the job from what begin_generate reserved, falling back to the status() snapshot only where it said
-    # nothing: a load committing in between swaps the family, and the snapshot's fps would then date a frame count
-    # the new model never used.
+    # Prefer what begin_generate reserved: a concurrent load can swap the family under status().
     reserved = resolved if isinstance(resolved, dict) else {}
     run_frames = reserved.get("num_frames") or num_frames
     fps = reserved.get("fps") or defaults.get("fps")

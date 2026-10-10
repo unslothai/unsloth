@@ -36,8 +36,7 @@ _structlog_stub = _types.ModuleType("structlog")
 _structlog_stub.get_logger = lambda *a, **k: __import__("logging").getLogger("stub")
 sys.modules.setdefault("structlog", _structlog_stub)
 
-# Real httpx: a stub would poison a combined run (routes/inference reads its
-# attrs at def time).
+# Real httpx: a stub would poison a combined run (routes/inference reads attrs at def time).
 import httpx  # noqa: F401
 
 from core.inference import llama_cpp as llama_cpp_module
@@ -65,9 +64,6 @@ class _FakeProcess:
         return 0
 
 
-# ── Pydantic contract ────────────────────────────────────────────────
-
-
 def test_load_request_defaults_n_parallel_none():
     assert LoadRequest(model_path = "owner/repo").n_parallel is None
 
@@ -90,7 +86,6 @@ def test_load_request_round_trips_json_key():
 
 
 def test_validate_request_n_parallel_contract():
-    # /validate sizes like /load, so it carries the same field and bounds.
     assert ValidateModelRequest(model_path = "owner/repo").n_parallel is None
     assert (
         ValidateModelRequest(model_path = "owner/repo", n_parallel = PARALLEL_MAX).n_parallel
@@ -125,9 +120,6 @@ def test_response_models_emit_runtime_fields(model_cls):
     assert dumped["requested_gpu_ids"] == [1, 2]
 
 
-# ── Shared bounds and their deliberate mirrors ───────────────────────
-
-
 def _mirrored_bounds(source_path: Path) -> tuple[int, int]:
     src = source_path.read_text(encoding = "utf-8")
     low = re.search(r"^_PARALLEL_MIN\s*=\s*(\d+)$", src, re.MULTILINE)
@@ -146,8 +138,7 @@ def test_cli_mirror_matches_shared_bounds():
 
 
 def test_frontend_mirror_matches_shared_bounds():
-    # The UI clamps with its own copy; a bumped PARALLEL_MAX that skips it would
-    # leave the UI silently capping lower.
+    # The UI clamps with its own copy of PARALLEL_MAX; keep them in sync.
     src = (
         Path(_BACKEND_DIR).parent
         / "frontend"
@@ -170,16 +161,12 @@ def test_override_mirror_matches_shared_bounds():
 
 
 def test_preset_model_reuses_shared_bounds():
-    # Bounds drifting from PARALLEL_MIN/MAX would 422 valid presets on every sync.
     from routes.chat_history import ChatPresetLoadConfig
 
     field = ChatPresetLoadConfig.model_fields["nParallel"]
     bounds = {type(m).__name__: getattr(m, "ge", getattr(m, "le", None)) for m in field.metadata}
     assert bounds.get("Ge") == PARALLEL_MIN
     assert bounds.get("Le") == PARALLEL_MAX
-
-
-# ── requested_parallel_slots lifecycle ───────────────────────────────
 
 
 @pytest.fixture
@@ -224,22 +211,15 @@ def test_unload_resets_requested_parallel_slots(backend):
 
 
 def test_load_model_commits_requested_from_intent():
-    # n_parallel may be reduced before the commit, so the requested value must
-    # come from the immutable pre-reduction intent.
+    # n_parallel may be reduced before commit; read the immutable pre-reduction intent.
     src = inspect.getsource(LlamaCppBackend.load_model)
     commit = src.find("self._requested_n_parallel = max(1, int(intent.n_parallel))")
-    # The commit goes through _publish_healthy(), which sets _healthy under the
-    # spawn lock so a teardown cannot land between the successful probe and the
-    # commit. The invariant this test guards is unchanged: health is published
-    # first, so a failed start cannot poison the next inheritance check.
-    # Matched without the argument list, so adding one does not break this again.
+    # Health must be published first so a failed start cannot poison the next inheritance check.
+    # Matched without the argument list on purpose.
     healthy = src.find("self._publish_healthy(", 0, commit if commit != -1 else None)
     snapshot = src.find("self._last_load_intent = replace(intent")
     assert commit != -1, "load_model must commit the requested slot count"
     assert healthy != -1 and healthy < commit < snapshot
-
-
-# ── _already_in_target_state requested-vs-requested branch ───────────
 
 
 def _loaded_backend() -> LlamaCppBackend:
@@ -288,7 +268,6 @@ def test_already_in_target_state_reloads_on_slots_change():
 
 
 def test_already_in_target_state_compares_requested_not_effective():
-    # An identical re-Apply must dedupe even after the fitter reduced the slots.
     backend = _loaded_backend()
     backend._requested_n_parallel = 8
     backend._commit_effective_parallel_slots(4)
@@ -301,9 +280,6 @@ def test_already_in_target_state_ignores_slots_for_diffusion():
     backend._is_diffusion = True
     backend._requested_n_parallel = 1
     assert _target_state(backend, 8) is True
-
-
-# ── Route wiring (source contract, mirroring test_gpu_memory_mode) ───
 
 
 def _route_source() -> str:
@@ -346,14 +322,12 @@ def test_route_resolves_slots_once_before_dedupe_guard_and_load():
     assert resolve < fast_dedupe < active_intent
     assert active_intent < resolved_intent < resolved_dedupe
     assert resolved_dedupe < guard < load_call
-    # Both immutable intents and the guard share the value; resolution runs once.
     assert load_impl.count("n_parallel = _n_parallel") == 4
     assert load_impl.count("_resolve_parallel_slots(request, fastapi_request)") == 1
     assert "fastapi_request.app.state" not in load_impl
 
 
 def test_parallel_slot_echo_reports_none_for_diffusion():
-    # Diffusion never commits a count, so echoing the reset placeholder 1 would lie.
     from routes.inference import _llama_runtime_fields
 
     backend = _loaded_backend()
@@ -380,8 +354,7 @@ def _load_model_source() -> str:
 
 
 def test_slots_fall_back_to_one_without_kv_unified():
-    # Without --kv-unified llama-server gives each slot -c/N, so an explicit
-    # --parallel N shrinks every context window.
+    # Without --kv-unified each slot gets -c/N, so --parallel N shrinks every context.
     src = _load_model_source()
     clamp = src.find("supports_kv_unified")
     assert clamp != -1, "load_model must check for --kv-unified before honouring the slots"
@@ -393,8 +366,6 @@ def test_slots_fall_back_to_one_without_kv_unified():
 
 
 def test_clamp_sits_between_the_echo_and_the_fit():
-    # The echo reports the ask and the fit uses what launches, so the clamp
-    # belongs between the two.
     src = _load_model_source()
     pending = src.index("n_parallel = intent.n_parallel")
     clamp = src.index("supports_kv_unified")
@@ -403,9 +374,6 @@ def test_clamp_sits_between_the_echo_and_the_fit():
     assert pending < clamp, "the requested count is captured before the clamp"
     assert clamp < estimate, "the fit must be estimated from the effective slot count"
     assert clamp < commit, "the committed effective count is the clamped one"
-
-
-# ── Training-guard sizing ────────────────────────────────────────────
 
 
 def _write_swa_gguf(path: Path) -> str:
@@ -473,8 +441,7 @@ def _guard_required_gb(
     monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda *a, **k: False))
     monkeypatch.setattr(LlamaCppBackend, "_effective_gpu_count", staticmethod(lambda *a, **k: 1))
     monkeypatch.setattr(LlamaCppBackend, "_diffusion_gpu_arg", staticmethod(lambda *a, **k: "0"))
-    # Pin the --kv-unified probe so the estimate cannot depend on a locally
-    # installed llama-server. Default "no binary found" leaves the count alone.
+    # Pin the --kv-unified probe so the estimate does not depend on a local llama-server.
     monkeypatch.setattr(
         LlamaCppBackend,
         "probe_server_capabilities",
@@ -503,8 +470,7 @@ def _guard_required_gb(
 
 
 def test_training_guard_sizes_a_diffusion_gguf_at_one_slot(monkeypatch, tmp_path):
-    # Diffusion ignores --parallel, so slots must not inflate the estimate and 409
-    # a load that would have fitted beside training.
+    # Diffusion ignores --parallel, so slots must not inflate the estimate.
     gguf = _write_swa_gguf(tmp_path / "diffusion.gguf")
     one = _guard_required_gb(monkeypatch, gguf, n_parallel = 1, diffusion = True)
     many = _guard_required_gb(monkeypatch, gguf, n_parallel = 8, diffusion = True)
@@ -512,8 +478,6 @@ def test_training_guard_sizes_a_diffusion_gguf_at_one_slot(monkeypatch, tmp_path
 
 
 def test_training_guard_still_sizes_slots_for_an_ordinary_gguf(monkeypatch, tmp_path):
-    # llama-server does allocate per-slot SWA cells, so the reduction above must
-    # be scoped to diffusion and not flatten every GGUF to one slot.
     gguf = _write_swa_gguf(tmp_path / "chat.gguf")
     one = _guard_required_gb(monkeypatch, gguf, n_parallel = 1, diffusion = False)
     many = _guard_required_gb(monkeypatch, gguf, n_parallel = 8, diffusion = False)
@@ -521,8 +485,7 @@ def test_training_guard_still_sizes_slots_for_an_ordinary_gguf(monkeypatch, tmp_
 
 
 def test_training_guard_sizes_one_slot_when_the_binary_has_no_kv_unified(monkeypatch, tmp_path):
-    # load_model clamps a multi-slot request to 1 on such a build, where each slot
-    # carries its own SWA stream, so sizing the asked count would 409 a load that fits.
+    # load_model clamps multi-slot to 1 on such builds, so size for 1.
     gguf = _write_swa_gguf(tmp_path / "chat.gguf")
     old = {"found": True, "supports_kv_unified": False}
     one = _guard_required_gb(monkeypatch, gguf, n_parallel = 1, diffusion = False, caps = old)
@@ -531,8 +494,6 @@ def test_training_guard_sizes_one_slot_when_the_binary_has_no_kv_unified(monkeyp
 
 
 def test_training_guard_sizes_every_slot_when_kv_unified_exists(monkeypatch, tmp_path):
-    # The clamp is scoped to binaries that cannot serve the slots; a capable one
-    # really does allocate the SWA window per slot.
     gguf = _write_swa_gguf(tmp_path / "chat.gguf")
     new = {"found": True, "supports_kv_unified": True}
     one = _guard_required_gb(monkeypatch, gguf, n_parallel = 1, diffusion = False, caps = new)
@@ -541,8 +502,7 @@ def test_training_guard_sizes_every_slot_when_kv_unified_exists(monkeypatch, tmp
 
 
 def test_training_guard_keeps_the_asked_slots_for_an_explicit_mtp_load(monkeypatch, tmp_path):
-    # MTP launches at the slots asked for, and this estimate under-counts it (no draft KV, no MLA
-    # duplication, no compute reserve), so under-sizing here evicts the training run it protects.
+    # MTP launches at the asked slots and this estimate under-counts it; do not under-size.
     gguf = _write_swa_gguf(tmp_path / "chat.gguf")
     mtp = ["--spec-type", "draft-mtp"]
     new = {"found": True, "supports_kv_unified": True}
@@ -556,10 +516,7 @@ def test_training_guard_keeps_the_asked_slots_for_an_explicit_mtp_load(monkeypat
 
 
 def test_training_guard_keeps_slots_when_the_launch_scrubs_the_mtp_env(monkeypatch, tmp_path):
-    # An inherited LLAMA_ARG_SPEC_TYPE=draft-mtp really would launch MTP, since llama.cpp
-    # appends spec types rather than replacing them. But the extras do not own
-    # --spec-type here, so the launch scrubs the env and the server runs the slots asked
-    # for; flattening the budget to one would under-size and let a load past the guard.
+    # llama.cpp appends spec types, but the launch scrubs LLAMA_ARG_SPEC_TYPE: size for the slots asked.
     monkeypatch.setenv("LLAMA_ARG_SPEC_TYPE", "draft-mtp")
     gguf = _write_swa_gguf(tmp_path / "chat.gguf")
     new = {"found": True, "supports_kv_unified": True}
@@ -569,8 +526,7 @@ def test_training_guard_keeps_slots_when_the_launch_scrubs_the_mtp_env(monkeypat
 
 
 def test_training_guard_keeps_slots_for_an_unclassified_gguf(monkeypatch, tmp_path):
-    # None = inconclusive header, so keep the larger estimate rather than
-    # under-size against training.
+    # None = inconclusive header: keep the larger estimate.
     gguf = _write_swa_gguf(tmp_path / "unknown.gguf")
     one = _guard_required_gb(monkeypatch, gguf, n_parallel = 1, diffusion = None)
     many = _guard_required_gb(monkeypatch, gguf, n_parallel = 8, diffusion = None)

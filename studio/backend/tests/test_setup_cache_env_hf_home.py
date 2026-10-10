@@ -35,7 +35,6 @@ _STORAGE_ROOTS_PATH = Path(__file__).resolve().parent.parent / "utils/paths/stor
 
 @pytest.fixture(autouse = True)
 def _isolate_studio_home(monkeypatch, tmp_path):
-    # Keep _setup_cache_env's UV/VLLM mkdirs out of the real ~/.unsloth/studio.
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
     # _setup_cache_env writes os.environ directly, so a portable test would leak these forward.
     for key in ("UNSLOTH_HOME", "UNSLOTH_PORTABLE", "TORCH_HOME"):
@@ -44,8 +43,7 @@ def _isolate_studio_home(monkeypatch, tmp_path):
 
 @pytest.fixture(autouse = True)
 def _restore_hf_cache_settings_module():
-    # _load_storage_roots pops utils.hf_cache_settings so each test gets a fresh resolver. Left popped, the next import builds a SECOND module object
-    # and rebinds it on the utils package, so a later test writes its setting into one object while the code under test reads the other. Restore both.
+    # Restore utils.hf_cache_settings, or a second module object splits settings from the code under test.
     import utils
 
     name = "utils.hf_cache_settings"
@@ -66,8 +64,7 @@ def _restore_hf_cache_settings_module():
 
 
 def _load_storage_roots():
-    # Each test models a fresh backend process. The cache resolver intentionally
-    # snapshots explicit environment variables once per process.
+    # The cache resolver snapshots explicit env vars once per process.
     sys.modules.pop("utils.hf_cache_settings", None)
     spec = importlib.util.spec_from_file_location("storage_roots_under_test", _STORAGE_ROOTS_PATH)
     module = importlib.util.module_from_spec(spec)
@@ -137,7 +134,6 @@ def test_legacy_huggingface_hub_cache_alias_is_honored(monkeypatch, tmp_path):
 
 
 def test_whitespace_hf_home_falls_back_to_default(monkeypatch, tmp_path):
-    # A blank/whitespace HF_HOME must not become " /hub"; fall back to default.
     _clear_hf_env(monkeypatch)
     monkeypatch.setenv("HF_HOME", "   ")
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg"))
@@ -148,8 +144,7 @@ def test_whitespace_hf_home_falls_back_to_default(monkeypatch, tmp_path):
 
 
 def test_explicit_hf_home_keeps_the_datasets_and_assets_caches(monkeypatch, tmp_path):
-    # A user who names one HF_HOME gets one Hugging Face cache: assets and datasets derive
-    # from it, so pinning either under the portable root splits it across two volumes.
+    # One user-named HF_HOME means one cache: assets and datasets must derive from it.
     _clear_hf_env(monkeypatch)
     master = _portable_install(monkeypatch, tmp_path)
     chosen = tmp_path / "bigdisk" / "huggingface"
@@ -165,7 +160,6 @@ def test_explicit_hf_home_keeps_the_datasets_and_assets_caches(monkeypatch, tmp_
     assert "HF_DATASETS_CACHE" not in os.environ
     assert "HF_ASSETS_CACHE" not in os.environ
     assert "HF_MODULES_CACHE" not in os.environ
-    # Containment is only given up for the root the user named.
     assert os.environ["TORCH_HOME"].startswith(str(master))
 
 
@@ -185,8 +179,6 @@ def test_a_dedicated_cache_var_still_outranks_an_explicit_hf_home(monkeypatch, t
 
 
 def test_portable_mode_without_an_explicit_hf_home_still_contains_them(monkeypatch, tmp_path):
-    # The other side: with no HF_HOME of the user's own, both derive from the host copy
-    # Unsloth leaves behind and would still write outside the volume.
     _clear_hf_env(monkeypatch)
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     master = _portable_install(monkeypatch, tmp_path)
@@ -198,8 +190,7 @@ def test_portable_mode_without_an_explicit_hf_home_still_contains_them(monkeypat
 
     assert os.environ["HF_DATASETS_CACHE"].startswith(str(master))
     assert os.environ["HF_ASSETS_CACHE"].startswith(str(master))
-    # transformers derives this from HF_HOME, which stays on the host, and appends it to
-    # sys.path, so a trust_remote_code load would leave generated modules outside the volume.
+    # transformers derives HF_MODULES_CACHE from HF_HOME and adds it to sys.path.
     assert os.environ["HF_MODULES_CACHE"].startswith(str(master))
 
 
@@ -234,8 +225,7 @@ def test_an_explicit_modules_cache_outranks_the_portable_default(monkeypatch, tm
 
 @pytest.mark.parametrize("hub_variable", ["HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE"])
 def test_a_hub_only_override_still_contains_the_xet_cache(monkeypatch, tmp_path, hub_variable):
-    # huggingface_hub derives HF_XET_CACHE from HF_HOME, never from HF_HUB_CACHE, so a hub-only
-    # override would keep a portable install writing Xet data outside the volume.
+    # huggingface_hub derives HF_XET_CACHE from HF_HOME, never from HF_HUB_CACHE.
     _clear_hf_env(monkeypatch)
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "home" / ".cache"))
@@ -253,7 +243,6 @@ def test_a_hub_only_override_still_contains_the_xet_cache(monkeypatch, tmp_path,
 
 
 def test_an_explicit_xet_cache_outranks_the_portable_default(monkeypatch, tmp_path):
-    # Containment must not collapse into "always redirect": a named Xet cache is what was asked.
     _clear_hf_env(monkeypatch)
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     _portable_install(monkeypatch, tmp_path)
@@ -270,8 +259,6 @@ def test_an_explicit_xet_cache_outranks_the_portable_default(monkeypatch, tmp_pa
 
 
 def test_a_normal_install_leaves_the_xet_cache_in_the_host_home(monkeypatch, tmp_path):
-    # Portable mode's promise alone: a normal install keeps the platform default so chunks
-    # shared with plain huggingface_hub still hit.
     _clear_hf_env(monkeypatch)
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg"))
     monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "bigdisk" / "hub"))
@@ -285,8 +272,7 @@ def test_a_normal_install_leaves_the_xet_cache_in_the_host_home(monkeypatch, tmp
 
 
 def test_the_libraries_really_derive_these_caches_from_hf_home(monkeypatch, tmp_path):
-    # Leaving them unset is only correct if huggingface_hub and datasets derive them from
-    # HF_HOME. Asked of a fresh interpreter: both snapshot their constants at import.
+    # Ask a fresh interpreter: huggingface_hub and datasets snapshot their constants at import.
     pytest.importorskip("datasets")
     _clear_hf_env(monkeypatch)
     _portable_install(monkeypatch, tmp_path)
@@ -321,8 +307,7 @@ def test_the_libraries_really_derive_these_caches_from_hf_home(monkeypatch, tmp_
 
 
 def test_unwritable_hf_home_does_not_crash(monkeypatch, tmp_path):
-    # HF_HOME under a regular file -> mkdir fails; startup must not crash and the
-    # env var is still set (HF surfaces a clear error later, at download time).
+    # HF_HOME under a regular file: mkdir fails but startup must not crash.
     blocker = tmp_path / "blocker"
     blocker.write_text("not a dir")
     unwritable = blocker / "hf"
@@ -330,7 +315,7 @@ def test_unwritable_hf_home_does_not_crash(monkeypatch, tmp_path):
     monkeypatch.setenv("HF_HOME", str(unwritable))
     sr = _load_storage_roots()
 
-    sr._setup_cache_env()  # must not raise
+    sr._setup_cache_env()
 
     import os
 

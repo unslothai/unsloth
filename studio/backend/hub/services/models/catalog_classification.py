@@ -33,12 +33,9 @@ _PLACEHOLDER_DIFFUSION_GGUF_ARCHS = frozenset({"pig", "cow"})
 _VIDEO_GGUF_ARCHS = frozenset({"ltxv", "wan"})
 _VIDEO_GEN_TASK = "text-to-video"
 
-# TTS-only GGUF archs llama.cpp cannot load, tagged speech so the chat picker keeps them out of
-# llama-server. One shared definition rather than a copy per layer: the chat gate, this classifier
-# and the media preflight all have to agree.
+# Shared definition: chat gate, this classifier and media preflight must agree.
 _SPEECH_GGUF_ARCHS = SPEECH_GGUF_ARCHS
 _SPEECH_TASK = "text-to-speech"
-# An audio.cpp GGUF of a kind Studio has no page for (separation, diarization, ...): not chat either.
 _AUDIO_CPP_UNSUPPORTED_TASK = "audio-to-audio"
 _UNSUPPORTED_DIFFUSION_TASK = "image-diffusion-unsupported"
 _H3_DENOISER_GGUF_PREFIXES = ("minimax_h3_fl2va", "minimax_h3_ref2va")
@@ -46,7 +43,7 @@ _LOADABLE_MEDIA_GGUF_TASKS = frozenset({"text-to-image", _VIDEO_GEN_TASK})
 _MAX_TASK_CLASSIFY_GGUFS = 64
 _TASK_CLASSIFY_WALK_SECONDS = 0.75
 _TASK_CLASSIFY_READ_SECONDS = 1.5
-# ":" separates an Ollama size tag ("qwen3-asr:0.6b"), where a filename would use "-".
+# ":" separates an Ollama size tag ("qwen3-asr:0.6b").
 _QWEN3_ASR_HINT = re.compile(
     r"(?<![a-z0-9])qwen3[-_. ]*asr[-_. :]*(?:0[._]6|1[._]7)b(?![a-z0-9])",
     re.IGNORECASE,
@@ -91,9 +88,7 @@ def _is_h3_bundle_gguf_hint(hint: Optional[str]) -> bool:
 
 
 def _gguf_architecture(path: str) -> Optional[str]:
-    # Every read inventory classification makes goes through here, so this is where "never open a
-    # cloud placeholder" holds: opening one recalls its whole payload. Load-time inspection calls
-    # read_gguf_architecture directly and still hydrates, on purpose.
+    # Never open a cloud placeholder here: it recalls the whole payload.
     if not file_contents_available_locally(path):
         return None
     from utils.models.gguf_metadata import read_gguf_architecture
@@ -173,10 +168,8 @@ def _unhydrated_gguf_task(name_hints: tuple[Optional[str], ...]) -> Optional[str
         return _VIDEO_GEN_TASK
     from core.inference.video_families import detect_video_family
 
-    # Leaves only: family detection matches a keyword in ANY path segment, so a chat GGUF under
-    # .../FLUX.1-dev-GGUF/extra/ read as text-to-image.
+    # Leaves only: family keywords in parent segments misclassified chat GGUFs.
     leaves = tuple(_hint_leaf(hint) for hint in name_hints if hint)
-    # H3 denoisers matched by prefix above; any other H3 name (qwen3vl_32b_minimax_h3-*) is the conditioner.
     if any(getattr(detect_video_family(leaf), "name", None) == "minimax-h3" for leaf in leaves):
         return None
     return _name_hint_media_task(leaves, None)
@@ -281,7 +274,7 @@ def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = (
     if any(_is_h3_bundle_gguf_hint(hint) for hint in name_hints):
         return _VIDEO_GEN_TASK
     if arch is None:
-        # Qwen-Image-2.1 GGUFs have kv_count 0, so the name is the only evidence, as for a cloud placeholder.
+        # Qwen-Image-2.1 GGUFs have kv_count 0; the name is the only evidence.
         return _unhydrated_gguf_task(name_hints)
     normalized = arch.lower()
     if is_audio_cpp_gguf_architecture(normalized):
@@ -384,8 +377,7 @@ def _gguf_folder_task(
     fallback: Optional[str] = None
     try:
         scored: list[tuple[tuple[str, str], Path]] = []
-        # Recorded as the tail is dropped, never inferred from scored afterwards: trimming cuts back to the
-        # cap, so an overflowing folder would be indistinguishable from one that fit.
+        # Recorded as the tail is dropped; trimming hides overflow afterwards.
         overflowed = False
         for path in _iter_gguf_paths(root, deadline):
             name = path.name
@@ -398,7 +390,6 @@ def _gguf_folder_task(
                 overflowed = True
         scored.sort(key = lambda item: item[0])
         paths = [path for _, path in scored[:_MAX_TASK_CLASSIFY_GGUFS]]
-        # The walk gives up at its own deadline and the cap drops the tail, so either can leave a sibling unseen.
         complete = (
             not overflowed
             and len(scored) <= _MAX_TASK_CLASSIFY_GGUFS
@@ -418,21 +409,16 @@ def _gguf_folder_task(
             if file_contents_available_locally(path):
                 task = _gguf_file_task(path, hints)
             else:
-                # Its header stays unread, so a name that says nothing leaves the candidate unclassified rather than
-                # voting text-generation for the whole folder.
                 task = _unhydrated_gguf_task(hints)
         except Exception:
-            # Unread, so unranked: this file might have been the runnable sibling.
             complete = False
             continue
         if task is None:
-            # No architecture and a name that says nothing: unclassified.
             complete = False
             continue
         if task in _LOADABLE_MEDIA_GGUF_TASKS:
             return task
-        # Speech is last resort: nothing here runs a llama-csm GGUF, so answering speech while a sibling is
-        # loadable hides that sibling.
+        # Speech is last resort: answering speech hides a loadable sibling.
         if task == _SPEECH_TASK:
             if speech is None:
                 speech = task
@@ -440,7 +426,7 @@ def _gguf_folder_task(
             unsupported = unsupported or task
         elif task is not None and fallback is None:
             fallback = task
-    # Speech only on a whole folder: it is the one answer that HIDES a row rather than filing it.
+    # Speech only on a whole folder: it hides a row.
     return unsupported or fallback or (speech if complete else None)
 
 
@@ -457,7 +443,7 @@ def _gguf_path_audio_type(
 ) -> Optional[str]:
     model_path = Path(path)
     try:
-        # No extension check: an Ollama model is a blob named by its digest.
+        # No extension check: Ollama blobs are named by digest.
         paths = [model_path] if model_path.is_file() else _iter_gguf_paths(model_path)
         for gguf_path in paths:
             hints = id_hints + (gguf_path.name,)
@@ -609,7 +595,6 @@ def _local_model_classification_for_task(
     """Add decoder provenance to an already classified local-row task."""
     probe = task is None or task in (_SPEECH_TASK, "audio-to-audio")
     audio_type = _local_model_audio_type(model) if probe else None
-    # As for cached rows: only a separation GGUF is an audio-to-audio row Studio has a page for.
     if task == "audio-to-audio" and audio_type != "audiocpp_sep":
         audio_type = None
     if task is None and audio_type is not None:
@@ -673,9 +658,7 @@ def _repo_is_diffusers(repo_info, selected: Optional[Path] = None) -> bool:
             return True
     except Exception:
         pass
-    # _cached_repo_task returns None for an unbuildable video repo, so a single-file video checkpoint
-    # with no pipeline index carried no task and no diffusers flag, and an inconclusive config leaves
-    # can_chat set: the video weights reach the text loader.
+    # Unbuildable video repos get no task, so guard against reaching the text loader.
     try:
         from core.inference.video_families import detect_video_family
         return detect_video_family(repo_id) is not None

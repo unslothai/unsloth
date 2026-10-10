@@ -61,5 +61,4 @@ def test_derived_name_resolves_under_outputs_root(tmp_path, monkeypatch):
     name = sr.default_run_dir_name(r"G:\modelsAI\gguf\test\gemma-4-12B-it")
     resolved = sr.resolve_output_dir(f"{name}_1781327234")
     assert resolved == outputs / "gemma-4-12B-it_1781327234"
-    # No escape: the absolute G: source no longer leaks into the output path.
     assert "modelsAI" not in str(resolved)

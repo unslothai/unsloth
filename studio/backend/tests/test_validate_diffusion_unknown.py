@@ -31,8 +31,7 @@ _BACKEND_ROOT = Path(__file__).resolve().parent.parent
 
 
 def _load_route_module(name: str):
-    # Some direct llama_cpp tests install a tiny httpx stub during collection.
-    # Latest inference.py imports llama_http, which needs the real package.
+    # Some llama_cpp tests install a tiny httpx stub; inference.py needs the real one.
     sys.modules.pop("httpx", None)
     sys.modules["httpx"] = importlib.import_module("httpx")
     spec = importlib.util.spec_from_file_location(name, _BACKEND_ROOT / "routes/inference.py")

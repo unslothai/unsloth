@@ -98,7 +98,7 @@ def test_llama_server_gets_repeat_penalty_not_repetition_penalty():
 
 
 def test_a_zero_value_is_forwarded_rather_than_read_as_unset():
-    # 0 means "disabled" here, so a truthiness gate would restore the server's default.
+    # 0 means "disabled", so a truthiness gate would restore the server default
     body = _capture_body("vllm", top_k = 0, min_p = 0.0)
     assert body["top_k"] == 0
     assert body["min_p"] == 0.0
@@ -117,7 +117,7 @@ def test_the_schema_defaults_are_not_none_so_the_route_cannot_test_for_none():
         min_p = 0.0,
         repetition_penalty = 1.0,
     )
-    # Both equal a default, so only model_fields_set can tell them from an omission.
+    # both equal a default, so only model_fields_set tells them from an omission
     assert {"min_p", "repetition_penalty"} <= asked.model_fields_set
 
 
@@ -150,7 +150,7 @@ def test_the_proxy_hands_the_client_explicit_values_not_schema_defaults():
 
 @pytest.mark.parametrize("provider_type", ["ollama", "custom"])
 def test_the_registry_strips_the_three_for_providers_that_cannot_take_them(provider_type):
-    # Ollama ignores them; a gateway behind a Custom base URL rejects the whole turn.
+    # Ollama ignores them; a gateway behind a Custom base URL rejects the whole turn
     body = _capture_body(
         provider_type,
         temperature = 0.31,

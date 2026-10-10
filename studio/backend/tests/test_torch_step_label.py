@@ -99,12 +99,12 @@ def _prepare(
     return mod, probe_calls
 
 
-# UNSLOTH_TORCH_BACKEND unset. Only Windows consults torch's own build, which is what
-# keeps Linux, WSL and macOS on their pre-existing answers.
+# UNSLOTH_TORCH_BACKEND unset. Only Windows consults torch's own build; other OSes
+# keep their answers.
 _MATRIX = {
     ("windows", "nvidia"): "cuda",
     ("windows", "amd_tooling"): "rocm",
-    ("windows", "amd_bundled"): "rocm",  # the regression this PR fixes
+    ("windows", "amd_bundled"): "rocm",
     ("windows", "xpu"): "cpu",
     ("windows", "cpu"): "cpu",
     ("windows", "no_torch"): "cpu",
@@ -233,7 +233,7 @@ def test_the_label_reuses_a_warm_probe_instead_of_the_disk(monkeypatch):
     mod, probe_calls = _prepare(
         monkeypatch,
         platform_name = "windows",
-        hardware_name = "cpu",  # disk says CPU
+        hardware_name = "cpu",
         warm_probe = warm,
     )
     disk_reads = []
@@ -245,7 +245,7 @@ def test_the_label_reuses_a_warm_probe_instead_of_the_disk(monkeypatch):
     )
     assert mod._torch_step_label("check") == "torch check (rocm)"
     assert probe_calls == []  # a warm memo is reused, never re-probed
-    assert disk_reads == []  # and the disk is not consulted behind it
+    assert disk_reads == []
 
 
 def test_a_warm_negative_probe_is_believed(monkeypatch):
@@ -287,8 +287,6 @@ def test_non_windows_never_touches_the_torch_build(monkeypatch, platform_name):
     monkeypatch.setattr(
         mod, "_installed_torch_version_label", lambda: touched.append("label") or ""
     )
-    # Not whether the helper is called off Windows (free either way), but that nothing
-    # happens behind it.
     assert mod._torch_step_label("check") == "torch check (cpu)"
     assert touched == []
     assert probe_calls == []
@@ -366,7 +364,7 @@ cuda = None
         (_VERSION_PY_ROCM_UNANNOTATED, "6.3.42131"),
         (_VERSION_PY_CUDA, ""),  # hip = None must not read as a HIP string
         ("", ""),
-        ('hip = "6.9.0"\n', "6.9.0"),  # double-quoted
+        ('hip = "6.9.0"\n', "6.9.0"),
         ("__version__ = '2.9.1'\n", ""),
         ("# hip = '1.0'\n", ""),  # not at the start of a line after ^ anchoring
     ],

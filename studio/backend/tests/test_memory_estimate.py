@@ -34,29 +34,20 @@ from pathlib import Path
 
 import pytest
 
-# Stub heavy / unavailable deps before importing the module under test.
-# Copied verbatim from tests/test_kv_cache_estimation.py -- same reasons.
-
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# loggers
 _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
 
-# structlog. Carries get_logger because this stub is process-wide: whichever test
-# module is imported first wins the setdefault, and utils/prebuilt/freshness_flow
-# calls structlog.get_logger at import time. A bare module here fails that import
-# for every later module on a runner without the real package.
+# Stub needs get_logger: process-wide setdefault, and freshness_flow calls it at import.
 _structlog_stub = _types.ModuleType("structlog")
 _structlog_stub.get_logger = lambda *a, **k: __import__("logging").getLogger("stub")
 sys.modules.setdefault("structlog", _structlog_stub)
 
-# httpx -- only stub when the real library is missing. Unconditional stubbing
-# shadows HTTPError/Response that huggingface_hub.errors imports at load time,
-# silently breaking the transformers introspection tier.
+# Only stub httpx when missing; otherwise huggingface_hub.errors imports break.
 try:
     import httpx as _httpx_real  # noqa: F401
 except ImportError:
@@ -97,10 +88,7 @@ import routes.inference as ri  # noqa: E402
 from models.inference import EstimateMemoryRequest  # noqa: E402
 from utils.models.model_config import ModelConfig  # noqa: E402
 
-# Reuse the GGUF blob builder rather than copying it: these tests are only worth
-# anything if the bytes they parse are the bytes the real parser was written for,
-# and a second copy of the writer would drift from the first. Loaded by path
-# because `tests` is not importable as a package name from every runner layout.
+# Load the real GGUF builder by path; `tests` is not importable on every runner.
 import importlib.util as _ilu  # noqa: E402
 
 _kv_spec = _ilu.spec_from_file_location(
@@ -129,12 +117,7 @@ def _clear_estimate_caches():
     ri._estimate_config_cache.clear()
 
 
-# Fixtures: synthetic GGUF headers
-
-
-# Pure-GQA geometry with no sliding window, so the estimator takes the standard
-# Path-4 branch and -- more importantly -- the dynamic SWA resolver never fires,
-# which is the only thing in this code path that could reach Hugging Face.
+# No sliding window, so the SWA resolver (which can reach HF) never fires.
 _GQA_FIELDS = {
     "context_length": 8192,
     "block_count": 12,
@@ -200,66 +183,43 @@ def dimless_gguf(tmp_path) -> str:
     return _write_gguf(tmp_path, "qwen3", {"block_count": 12}, name = "dimless.gguf")
 
 
-# A. _gguf_offloaded_layer_fraction
-
-
 class TestOffloadedLayerFraction:
     """Share of the weights the requested offload keeps on the GPU."""
 
     def test_auto_is_full(self):
-        # Auto asks llama.cpp to fit everything and only spills when it cannot,
-        # so 1.0 is the cost of the load succeeding -- not an approximation.
         assert ri._gguf_offloaded_layer_fraction("auto", None, 12) == 1.0
         assert ri._gguf_offloaded_layer_fraction(None, 4, 12) == 1.0
 
     @pytest.mark.parametrize("gpu_layers", [None, -1])
     def test_manual_without_a_layer_count_is_full(self, gpu_layers):
-        # "manual" with no usable -ngl is the slider's own unset state; it must
-        # read like Auto rather than dividing by a number nobody chose.
         assert ri._gguf_offloaded_layer_fraction("manual", gpu_layers, 12) == 1.0
 
     @pytest.mark.parametrize("layer_count", [None, 0])
     def test_unknown_layer_count_is_full(self, layer_count):
-        # Remote / unreadable header: there is no denominator, and inventing one
-        # would put a fabricated split in front of the user.
         assert ri._gguf_offloaded_layer_fraction("manual", 20, layer_count) == 1.0
 
     def test_manual_split_uses_block_count_plus_one(self):
-        # +1 is the output layer, matching the ceiling the UI slider uses; a bare
-        # gpu_layers/layer_count would read 100% one layer early.
+        # +1 is the output layer, matching the UI slider ceiling.
         assert ri._gguf_offloaded_layer_fraction("manual", 20, 65) == pytest.approx(20 / 66)
 
     def test_over_large_gpu_layers_clamps(self):
-        # -ngl 999 is the idiomatic "all of it"; it must not exceed the weights.
         assert ri._gguf_offloaded_layer_fraction("manual", 999, 65) == 1.0
 
     def test_zero_layers_is_cpu_only(self):
         assert ri._gguf_offloaded_layer_fraction("manual", 0, 65) == 0.0
 
     def test_a_layer_count_in_the_extras_wins_in_either_mode(self):
-        # Auto emits -ngl -1 and the extras are appended after it, so a user count
-        # last-wins at the child; the loader reads it back with the same parser
-        # (llama_cpp.py:6841, the non-manual arm). Treating Auto as always fully
-        # resident put a GPU-exceeds warning on a load running on the CPU.
+        # Auto emits -ngl -1 then extras, so a user count last-wins at the child.
         assert ri._gguf_offloaded_layer_fraction("auto", None, 12, ["-ngl", "0"]) == 0.0
         assert ri._gguf_offloaded_layer_fraction(
             "auto", None, 12, ["--gpu-layers", "6"]
         ) == pytest.approx(6 / 13)
-        # -1 is "all layers", and above the count clamps rather than exceeding.
         assert ri._gguf_offloaded_layer_fraction("auto", None, 12, ["-ngl", "-1"]) == 1.0
         assert ri._gguf_offloaded_layer_fraction("auto", None, 12, ["-ngl", "999"]) == 1.0
-        # Malformed is llama-server's to reject; it names it better than a guess here.
         assert ri._gguf_offloaded_layer_fraction("auto", None, 12, ["-ngl", "abc"]) == 1.0
-        # Manual does strip the flag, but only after translating its last-wins value
-        # into the load field (routes/inference.py, the manual branch of /load and of
-        # the validate path), so the extras count is what the child runs there too.
         assert ri._gguf_offloaded_layer_fraction("manual", 0, 12, ["-ngl", "999"]) == 1.0
         assert ri._gguf_offloaded_layer_fraction("manual", 12, 12, ["-ngl", "0"]) == 0.0
-        # And with nothing in the extras the field still owns it.
         assert ri._gguf_offloaded_layer_fraction("manual", 0, 12, ["--top-k", "40"]) == 0.0
-
-
-# B. _gguf_runtime_bytes against real GGUF headers
 
 
 class TestGgufRuntimeBytes:
@@ -271,16 +231,12 @@ class TestGgufRuntimeBytes:
         assert sizes[0] > 0
 
     def test_quantized_cache_is_smaller_than_f16(self, gqa_gguf):
-        # 4x on the cache dtype alone at the same context is the single biggest
-        # lever the panel exposes, so the estimate has to actually follow it.
         f16 = ri._gguf_runtime_bytes(gqa_gguf, 8192, cache_type_kv = "f16")
         q4 = ri._gguf_runtime_bytes(gqa_gguf, 8192, cache_type_kv = "q4_0")
         assert q4.kv_bytes < f16.kv_bytes
         assert q4.n_ctx == f16.n_ctx == 8192
 
     def test_reports_what_it_priced(self, gqa_gguf):
-        # These fields exist so a reader can judge the estimate instead of
-        # trusting it; they must describe the arithmetic that actually ran.
         runtime = ri._gguf_runtime_bytes(gqa_gguf, 4096, cache_type_kv = "q8_0", n_parallel = 1)
         assert runtime.kv_estimable is True
         assert runtime.n_ctx == 4096
@@ -289,8 +245,6 @@ class TestGgufRuntimeBytes:
         assert runtime.layer_count == _GQA_FIELDS["block_count"]
 
     def test_zero_context_prices_the_native_one(self, gqa_gguf):
-        # n_ctx = 0 is the panel's "Auto"; it prices the header's context_length,
-        # which is what an Auto load would ask llama-server for.
         runtime = ri._gguf_runtime_bytes(gqa_gguf, 0)
         assert runtime.n_ctx == _GQA_FIELDS["context_length"]
         assert runtime.kv_bytes > 0
@@ -301,22 +255,16 @@ class TestGgufRuntimeBytes:
         assert ri._gguf_runtime_bytes(gguf, 2048).n_ubatch == priced_ubatch
 
     def test_undeclared_embedding_pooling_keeps_the_default_micro_batch(self, tmp_path):
-        # llama.cpp runs a header without pooling_type as NONE, which /v1/embeddings refuses.
         gguf = _write_gguf(tmp_path, "nomic-bert", _GQA_FIELDS)
         assert ri._gguf_runtime_bytes(gguf, 2048).n_ubatch is None
 
     def test_missing_dims_are_unknown_not_zero(self, dimless_gguf):
-        # THE case this NamedTuple exists for. kv_bytes == 0 here means "could not
-        # size", and the only thing separating it from a genuine zero is the flag.
+        # kv_bytes == 0 means could not size; only the flag separates it from a real zero.
         runtime = ri._gguf_runtime_bytes(dimless_gguf, 32768)
         assert runtime.kv_estimable is False
         assert runtime.kv_bytes == 0
         assert runtime.compute_bytes == 0
-        # It also stops describing a priced load, since none was priced.
         assert runtime.n_ctx == 0
-        # block_count is a separate key and survives: a caller sizing a manual offload
-        # split needs it, and without it _gguf_offloaded_layer_fraction answers 1.0 and
-        # calls --gpu-layers 0 a fully GPU-resident load.
         assert runtime.layer_count == 12
         assert ri._gguf_offloaded_layer_fraction("manual", 0, runtime.layer_count) == 0.0
 
@@ -349,14 +297,9 @@ class TestGgufRuntimeBytes:
         assert ri._gguf_offloaded_layer_fraction("manual", 0, runtime.layer_count) == 0.0
 
     def test_unreadable_file_is_unknown(self, tmp_path):
-        # Not a GGUF at all: the header walk raises and the caller must still get
-        # a well-formed "unknown", never a partial number.
         junk = tmp_path / "not-a-gguf.gguf"
         junk.write_bytes(b"not a gguf header")
         assert ri._gguf_runtime_bytes(str(junk), 4096) == ri._GGUF_RUNTIME_UNKNOWN
-
-
-# C. Training-guard compatibility
 
 
 class TestKvGbWrapperCompatibility:
@@ -387,8 +330,6 @@ class TestKvGbWrapperCompatibility:
         )
 
     def test_unsizable_header_is_zero_gb(self, dimless_gguf):
-        # Unchanged legacy behaviour: a cache the guard cannot size must not
-        # become a refusal on its own, so it contributes nothing.
         assert ri._estimate_gguf_kv_gb(dimless_gguf, 32768) == 0.0
 
     def test_the_guard_keeps_the_larger_context_the_panel_does_not(self, gqa_gguf):
@@ -404,12 +345,9 @@ class TestKvGbWrapperCompatibility:
         assert guard.n_ctx == 131072
         assert panel.n_ctx == 8192
         assert panel.kv_bytes < guard.kv_bytes
-        # The wrapper the guard calls must still be the maximum arm, unchanged.
         assert ri._estimate_gguf_kv_gb(gqa_gguf, 131072, llama_extra_args = smaller) == pytest.approx(
             (guard.kv_bytes + guard.compute_bytes) / _GIB
         )
-        # A larger override is the same either way, and -c 0 means the model's own
-        # trained context in llama.cpp rather than the panel's number.
         larger = ["-c", "262144"]
         assert (
             ri._gguf_runtime_bytes(gqa_gguf, 131072, larger, ctx_last_wins = True).n_ctx
@@ -422,17 +360,10 @@ class TestKvGbWrapperCompatibility:
         )
 
 
-# D. _gguf_resident_file_gb and _gguf_memory_breakdown
-
-
 class TestResidentFileGb:
     """The weights term, obtained by subtracting the context term back out."""
 
     def test_subtracts_the_local_arm_context_term(self, gqa_gguf, monkeypatch):
-        # Prove the pairing rather than the plumbing: a config with a local
-        # gguf_file takes the _estimate_gguf_kv_gb arm, so feeding
-        # _estimate_gguf_required_gb a known "files + that term" must leave
-        # exactly the files behind.
         ctx_term = ri._estimate_gguf_kv_gb(gqa_gguf, 0, None)
         assert ctx_term > 0, "fixture must have a non-trivial context term to subtract"
         config = SimpleNamespace(identifier = "local/model", gguf_file = gqa_gguf, is_gguf = True)
@@ -440,9 +371,7 @@ class TestResidentFileGb:
         assert ri._gguf_resident_file_gb(config) == pytest.approx(3.0)
 
     def test_unresolvable_size_is_not_cached(self, gqa_gguf, monkeypatch):
-        # A None is usually a download still in flight, so the next slider tick
-        # is precisely when the answer changes; caching it would freeze the panel
-        # on "unsizable" for the whole TTL.
+        # None is usually an in-flight download, so it must not be cached.
         config = SimpleNamespace(identifier = "local/model", gguf_file = gqa_gguf, is_gguf = True)
         monkeypatch.setattr(ri, "_estimate_gguf_required_gb", lambda cfg, **kw: None)
         assert ri._gguf_resident_file_gb(config) is None
@@ -453,9 +382,7 @@ class TestMemoryBreakdown:
     """Composition of files + runtime into the panel's itemization."""
 
     WEIGHTS_GB = 4.0
-    # Of that files total, the main weight and everything beside it. Pinned because
-    # the synthetic header on tmp_path is a few hundred bytes, which would leave the
-    # whole 4 GB looking like companions and make the offload split meaningless.
+    # Pinned: the synthetic header is tiny and would make the whole files total companions.
     MAIN_BYTES = 3 * 1024**3
     COMPANION_BYTES = int(WEIGHTS_GB * 1024**3) - MAIN_BYTES
 
@@ -470,8 +397,6 @@ class TestMemoryBreakdown:
 
     @pytest.fixture(autouse = True)
     def _fixed_files(self, monkeypatch):
-        # Pin the files term so every assertion below is about the composition,
-        # not about repository listing (which would want the network).
         monkeypatch.setattr(ri, "_gguf_resident_file_gb", lambda cfg, **kw: self.WEIGHTS_GB)
         real_size = ri.LlamaCppBackend._get_gguf_size_bytes
 
@@ -482,9 +407,6 @@ class TestMemoryBreakdown:
         monkeypatch.setattr(ri.LlamaCppBackend, "_get_gguf_size_bytes", staticmethod(_size))
 
     def test_weights_do_not_move_with_context(self, config, gqa_gguf):
-        # THE invariant the subtraction approach exists to keep. If the context
-        # term ever leaked into the files term, this is where it shows up -- and
-        # the runtime terms must still be moving, or the test proves nothing.
         small = ri._gguf_memory_breakdown(config, gqa_gguf, n_ctx = 2048)
         large = ri._gguf_memory_breakdown(config, gqa_gguf, n_ctx = 32768)
         assert small.weights_bytes == large.weights_bytes
@@ -497,16 +419,12 @@ class TestMemoryBreakdown:
         assert b.total_bytes == b.weights_bytes + b.kv_bytes + b.compute_bytes
 
     def test_auto_placement_puts_everything_on_the_gpu(self, config, gqa_gguf):
-        # Auto's estimate is the cost of the load succeeding, so nothing is
-        # attributed to host RAM and gpu_layers is reported as unset.
         b = ri._gguf_memory_breakdown(config, gqa_gguf, n_ctx = 8192, gpu_memory_mode = "auto")
         assert b.gpu_bytes == b.total_bytes
         assert b.kv_on_gpu is True
         assert b.gpu_layers is None
 
     def test_an_auto_load_with_an_extras_ngl_is_not_fully_resident(self, config, gqa_gguf):
-        # The one thing that overrides Auto: the child takes the last -ngl, so
-        # -ngl 0 runs on the CPU however the panel's own mode reads.
         full = ri._gguf_memory_breakdown(config, gqa_gguf, n_ctx = 8192, gpu_memory_mode = "auto")
         on_cpu = ri._gguf_memory_breakdown(
             config,
@@ -517,15 +435,11 @@ class TestMemoryBreakdown:
         )
         assert on_cpu.total_bytes == full.total_bytes
         assert on_cpu.kv_on_gpu is False
-        # The main weight, its cache and its compute all leave the GPU; whatever is
-        # placed by its own flag (a projector here would be) does not.
         assert on_cpu.gpu_bytes == full.gpu_bytes - (
             self.MAIN_BYTES + full.kv_bytes + full.compute_bytes
         )
 
     def test_a_smaller_ctx_override_is_the_context_priced(self, config, gqa_gguf):
-        # The panel reports what the launch runs, so a -c below the Context Length
-        # control prices the smaller cache and says so in n_ctx.
         b = ri._gguf_memory_breakdown(
             config, gqa_gguf, n_ctx = 131072, llama_extra_args = ["-c", "8192"]
         )
@@ -534,8 +448,6 @@ class TestMemoryBreakdown:
         assert b.kv_bytes < bigger.kv_bytes
 
     def test_a_manual_layer_count_in_the_extras_is_priced(self, config, gqa_gguf):
-        # /load translates the last -ngl into the manual field before stripping the
-        # flag, so the field alone was the wrong thing to price.
         manual = dict(gpu_memory_mode = "manual", gpu_layers = 0, n_ctx = 8192)
         field_only = ri._gguf_memory_breakdown(config, gqa_gguf, **manual)
         overridden = ri._gguf_memory_breakdown(
@@ -545,9 +457,6 @@ class TestMemoryBreakdown:
         assert overridden.gpu_bytes == overridden.total_bytes
 
     def test_an_extras_split_mode_decides_the_priced_mode(self, config, gqa_gguf):
-        # A --split-mode in the extras last-wins over the toggle at launch, and the
-        # compute buffers differ by mode, so pricing the toggle priced a launch that
-        # does not happen. Two devices, since one device splits nothing.
         def priced(extras, toggle):
             return ri._gguf_memory_breakdown(
                 config,
@@ -561,16 +470,10 @@ class TestMemoryBreakdown:
         layer, tensor = priced(None, False), priced(None, True)
         assert layer != tensor, "fixture must separate the two modes for this to prove anything"
         assert priced(["--split-mode", "tensor"], False) == tensor
-        # And the reverse: the extras can turn it off as well as on.
         assert priced(["--split-mode", "layer"], True) == layer
 
     def test_manual_split_divides_the_cache_with_the_weights(self, config, gqa_gguf):
-        # A cache buffer is allocated on model.dev_layer(il) whenever offload_kqv is
-        # on (llama-kv-cache.cpp), so a layer left on the CPU keeps its cache in host
-        # RAM: --no-kv-offload moves ALL of it, and a partial --gpu-layers moves the
-        # rest with the layers. Charging the whole cache to VRAM here contradicted the
-        # weights term beside it, and at a long context the cache is the larger of the
-        # two, so a small Manual offload read as exceeding a card it fits on.
+        # KV for CPU-resident layers lives in host RAM (offload_kqv per layer).
         b = ri._gguf_memory_breakdown(
             config, gqa_gguf, n_ctx = 8192, gpu_memory_mode = "manual", gpu_layers = 6
         )
@@ -583,20 +486,15 @@ class TestMemoryBreakdown:
             + int(b.kv_bytes * fraction)
             + b.compute_bytes
         )
-        # The cache is still counted in full in the aggregate figure: the host holds
-        # the other share, it does not vanish.
         assert b.gpu_bytes < b.total_bytes
         assert b.kv_bytes > int(b.kv_bytes * fraction)
 
     def test_a_partial_offload_splits_only_the_main_weight(self, config, gqa_gguf):
-        # --gpu-layers splits the model, not the companions beside it: a projector
-        # and a drafter are placed by their own flags. Scaling the whole files term
-        # let --gpu-layers 0 report an empty GPU while both sat in VRAM.
+        # --gpu-layers moves the model only; projector and drafter follow their own flags.
         zero = ri._gguf_memory_breakdown(
             config, gqa_gguf, n_ctx = 8192, gpu_memory_mode = "manual", gpu_layers = 0
         )
         assert zero.gpu_bytes == self.COMPANION_BYTES
-        # KV and compute do follow the layers, so nothing else survives ngl 0.
         assert zero.kv_on_gpu is False
         full = ri._gguf_memory_breakdown(
             config,
@@ -608,8 +506,6 @@ class TestMemoryBreakdown:
         assert full.gpu_bytes == full.total_bytes
 
     def test_no_mmproj_offload_moves_the_projector_and_only_it(self, config, gqa_gguf, tmp_path):
-        # The drafter is the other companion, and it is only ever charged when it
-        # lands on the GPU, so this flag must not sweep it off with the projector.
         projector = tmp_path / "mmproj-model.gguf"
         projector.write_bytes(b"\0" * 1024)
         config.gguf_mmproj_file = str(projector)
@@ -622,28 +518,20 @@ class TestMemoryBreakdown:
             gpu_layers = 0,
             llama_extra_args = ["--no-mmproj-offload"],
         )
-        # Exactly the projector leaves; the rest of the companion bytes stay.
         assert pinned.gpu_bytes == expected
 
     def test_no_kv_offload_moves_the_cache_off_the_gpu(self, config, gqa_gguf):
-        # At a long context the cache is most of the footprint, so ignoring
-        # -nkvo would report VRAM pressure the load does not create.
         b = ri._gguf_memory_breakdown(
             config, gqa_gguf, n_ctx = 8192, llama_extra_args = ["--no-kv-offload"]
         )
         assert b.kv_on_gpu is False
-        assert b.kv_bytes > 0  # still counted in the total, just not in VRAM
+        assert b.kv_bytes > 0
         assert b.gpu_bytes == b.weights_bytes + b.compute_bytes
         assert b.total_bytes == b.weights_bytes + b.kv_bytes + b.compute_bytes
 
     def test_unsizable_files_produce_no_breakdown(self, config, gqa_gguf, monkeypatch):
-        # None here means the caller default-denies with "unsizable" rather than
-        # rendering a total whose largest term is missing.
         monkeypatch.setattr(ri, "_gguf_resident_file_gb", lambda cfg, **kw: None)
         assert ri._gguf_memory_breakdown(config, gqa_gguf, n_ctx = 8192) is None
-
-
-# E. _localized_estimate_config
 
 
 def _repo_config(**overrides) -> ModelConfig:
@@ -691,14 +579,11 @@ class TestLocalizedEstimateConfig:
     """Point a repository-shaped config at the weights already on this disk."""
 
     def test_config_naming_a_real_file_is_returned_unchanged(self, gqa_gguf):
-        # Identity, not equality: a config that already names a file has been
-        # through the local-folder or native-pick path, and re-running companion
-        # detection on it would scan outside a native grant's directory boundary.
+        # Identity: re-running companion detection could scan outside a native grant's directory.
         config = _local_config(gqa_gguf)
         assert ri._localized_estimate_config(config, gqa_gguf) is config
 
     def test_a_hand_added_projector_above_the_snapshot_is_priced(self, gqa_gguf, tmp_path):
-        # #9286: the projector sits in models--<repo>/, past the localizer's search root.
         projector = tmp_path / "mmproj-F16.gguf"
         projector.write_bytes(b"x")
         config = _repo_config(is_vision = True, gguf_local_mmproj_file = str(projector))
@@ -706,46 +591,32 @@ class TestLocalizedEstimateConfig:
         assert local.gguf_mmproj_file == str(projector)
 
     def test_repo_config_is_copied_never_mutated(self, gqa_gguf):
-        # The original is sitting in _estimate_config_cache for the TTL, shared by
-        # every later tick of the slider. A half-localized config escaping into
-        # that cache is the genuinely nasty version of this bug.
+        # The original config is shared via _estimate_config_cache and must not be mutated.
         config = _repo_config()
         localized = ri._localized_estimate_config(config, gqa_gguf)
         assert localized is not config
         assert localized.gguf_file == gqa_gguf
         assert config.gguf_file is None
-        # Everything else carries over, so the files arithmetic still knows which
-        # repository and variant it is pricing.
         assert localized.identifier == config.identifier
         assert localized.gguf_hf_repo == config.gguf_hf_repo
         assert localized.gguf_variant == config.gguf_variant
 
     def test_real_sibling_projector_is_detected(self, tmp_path):
-        # Real files, real detection: this is the test that proves search_root is
-        # wired to the weight's own directory rather than to the repo id.
         weight = _write_gguf(tmp_path, "qwen3", _GQA_FIELDS, name = "model-Q4_K_M.gguf")
         projector = _write_gguf(tmp_path, "clip", {"block_count": 2}, name = "mmproj-model.gguf")
         localized = ri._localized_estimate_config(_repo_config(is_vision = True), weight)
         assert localized.gguf_mmproj_file == projector
-        # No mtp-/dspark-/dflash- siblings exist, so those stay unset rather than
-        # latching onto the weight or the projector.
         assert localized.gguf_mtp_file is None
         assert localized.gguf_dspark_file is None
         assert localized.gguf_dflash_file is None
 
     def test_non_vision_config_skips_the_projector(self, tmp_path):
-        # A projector sitting in the directory must not be charged to a config the
-        # loader will not open one for; that is bytes billed to nobody's load.
         weight = _write_gguf(tmp_path, "qwen3", _GQA_FIELDS, name = "model-Q4_K_M.gguf")
         _write_gguf(tmp_path, "clip", {"block_count": 2}, name = "mmproj-model.gguf")
         localized = ri._localized_estimate_config(_repo_config(is_vision = False), weight)
         assert localized.gguf_mmproj_file is None
 
     def test_drafter_detectors_receive_the_weight_and_its_directory(self, gqa_gguf, monkeypatch):
-        # The three sidecar kinds, stubbed: real dspark/dflash detection wants a
-        # family-name match against the target, which is a lot of fixture for what
-        # is being checked here -- that each detector is called with the resolved
-        # weight and the directory holding it.
         from utils.models import model_config as mc
 
         seen = {}
@@ -774,8 +645,6 @@ class TestLocalizedEstimateConfig:
         assert seen == {"mtp": expected, "dspark": expected, "dflash": expected}
 
     def test_a_raising_detector_still_yields_a_usable_config(self, gqa_gguf, monkeypatch):
-        # A companion scan that fails leaves the sidecar uncounted, which is a much
-        # smaller error than the endpoint returning no estimate at all.
         from utils.models import model_config as mc
 
         monkeypatch.setattr(mc, "detect_mtp_file", lambda *a, **kw: "/tmp/mtp.gguf")
@@ -786,15 +655,12 @@ class TestLocalizedEstimateConfig:
         monkeypatch.setattr(mc, "detect_dspark_file", _boom)
 
         localized = ri._localized_estimate_config(_repo_config(), gqa_gguf)
-        assert localized.gguf_file == gqa_gguf  # the main weight is still priced
-        assert localized.gguf_mtp_file == "/tmp/mtp.gguf"  # detected before the raise
+        assert localized.gguf_file == gqa_gguf
+        assert localized.gguf_mtp_file == "/tmp/mtp.gguf"
         assert localized.gguf_dspark_file is None
 
     def test_localized_config_takes_the_local_files_arm(self, gqa_gguf, monkeypatch):
-        # THE regression. Pre-fix, a repo-shaped config sent _gguf_resident_file_gb
-        # down the repository arm, which prices from a paths-info listing and
-        # subtracts _remote_gguf_compute_reserve_gb. Making that reserve raise turns
-        # "took the remote arm" from a silent numeric difference into a failure.
+        # Making the remote reserve raise turns taking the repository arm into a failure.
         def _remote_arm_taken(*a, **kw):
             raise AssertionError("a localized config must not be priced as a repository")
 
@@ -806,14 +672,9 @@ class TestLocalizedEstimateConfig:
         localized = ri._localized_estimate_config(raw, gqa_gguf)
         assert ri._gguf_resident_file_gb(localized) == pytest.approx(5.0)
 
-        # And the un-localized original still goes the other way, so the assertion
-        # above is about the localization rather than about the patched arm.
         ri._estimate_files_cache.clear()
         with pytest.raises(AssertionError, match = "must not be priced as a repository"):
             ri._gguf_resident_file_gb(raw)
-
-
-# F. Token-scoped caches
 
 
 class TestTokenFingerprint:
@@ -829,16 +690,12 @@ class TestTokenFingerprint:
         assert a != ri._estimate_token_fingerprint("hf_bbbbbbbbbbbbbbbbbbbb")
 
     def test_does_not_carry_the_token(self):
-        # The keys live in memory for the TTL and are never logged, but a token is
-        # a credential and the literal string has no business in a dict key.
         token = "hf_supersecretvalue123"
         fingerprint = ri._estimate_token_fingerprint(token)
         assert token not in fingerprint
         assert fingerprint and len(fingerprint) == 16
 
     def test_config_cache_is_not_shared_across_tokens(self, monkeypatch):
-        # One subject's gated-repo resolution must not be served to another within
-        # the 30s TTL. Distinguishable return values make a shared entry visible.
         calls = []
 
         def _from_identifier(
@@ -850,10 +707,7 @@ class TestTokenFingerprint:
             return SimpleNamespace(identifier = model_id, resolved_with = hf_token)
 
         monkeypatch.setattr(ri.ModelConfig, "from_identifier", staticmethod(_from_identifier))
-        # "org/gated" is in no cache root on this box, so the on-disk gate would refuse
-        # it before from_identifier is reached and this test would be asserting the
-        # gate rather than the token scoping. Answer the gate; the scoping is the
-        # subject here, and it has its own test above.
+        # Answer the on-disk gate so this tests token scoping, not the gate.
         monkeypatch.setattr(ri, "_estimate_target_is_on_this_disk", lambda _id: True)
 
         first = ri._cached_estimate_config("org/gated", "Q4_K_M", "token-a", False)
@@ -862,8 +716,6 @@ class TestTokenFingerprint:
         assert second.resolved_with == "token-b"
         assert calls == ["token-a", "token-b"]
 
-        # Same token still hits the cache -- the scoping must not defeat it, or the
-        # endpoint resolves a config on every tick of the slider.
         assert ri._cached_estimate_config("org/gated", "Q4_K_M", "token-a", False) is first
         assert calls == ["token-a", "token-b"]
 
@@ -882,12 +734,8 @@ class TestTokenFingerprint:
         assert ri._gguf_resident_file_gb(config, hf_token = "token-a") == pytest.approx(1.0)
         assert ri._gguf_resident_file_gb(config, hf_token = "token-b") == pytest.approx(7.0)
         assert calls == ["token-a", "token-b"]
-        # ...and the first token is still cached rather than re-listed.
         assert ri._gguf_resident_file_gb(config, hf_token = "token-a") == pytest.approx(1.0)
         assert calls == ["token-a", "token-b"]
-
-
-# G. The route
 
 
 def _estimate(fastapi_request = None, **kwargs):
@@ -916,9 +764,7 @@ class TestEstimateMemoryRoute:
     """The three "cannot size this" answers, and what they must not do first."""
 
     def test_ollama_manifest_ref_is_refused_before_materializing(self, monkeypatch):
-        # Resolving one writes a .gguf link to disk. This endpoint fires on every
-        # slider tick, so it must bail on the prefix alone -- no filesystem write,
-        # and not even a config resolution.
+        # Fires every slider tick: must bail on the prefix with no disk write or resolution.
         def boom(*a, **kw):
             raise AssertionError("estimate-memory must not materialize an Ollama ref")
 
@@ -931,8 +777,6 @@ class TestEstimateMemoryRoute:
         assert resp.reason == "unsupported_source"
 
     def test_managed_caller_cannot_size_an_owner_only_path(self, monkeypatch):
-        # Sizing reads the file a draft/projector/adapter flag names, so a path the
-        # load would refuse is answered "unsizable" before anything is opened.
         from utils import openai_auto_switch_settings as settings
 
         def boom(*a, **kw):
@@ -1195,8 +1039,6 @@ class TestEstimateMemoryRoute:
     def test_a_full_finetune_output_is_priced_at_the_16_bit_it_loads_at(
         self, monkeypatch, tmp_path
     ):
-        # The load route resolves a Studio full-finetune output to 16-bit; pricing it 4-bit
-        # advertised a fitted window the real load could not hold.
         self._mlx_target(monkeypatch, "/models/thing", is_lora = False, path = str(tmp_path))
         seen = self._record_breakdown(
             monkeypatch,
@@ -1361,7 +1203,6 @@ class TestEstimateMemoryRoute:
             lambda *a: widths.append(a) or refuses["answer"],
         )
 
-        # The width the cache takes is priced into the fit, and the fitted window is a budget.
         resp = _estimate(model_path = "org/model", n_ctx = 32_768, mlx_kv_bits = 4)
         assert (seen["n_ctx"], seen["kv_bits"], resp.context_fitted) == (24_576, 4, 24_576)
         assert widths == [(str(tmp_path), 4)]
@@ -1373,8 +1214,6 @@ class TestEstimateMemoryRoute:
             "load_in_4bit": seen["load_in_4bit"],
         }
 
-        # /load's own vocabulary prices the same width; TurboQuant is priced at full width,
-        # the width the load fits it at, and never asks the mx.quantize probe.
         widths.clear()
         resp = _estimate(model_path = "org/model", n_ctx = 32_768, mlx_kv_quant = "4")
         assert (seen["kv_bits"], resp.context_fitted, widths) == (4, 24_576, [(str(tmp_path), 4)])
@@ -1382,14 +1221,12 @@ class TestEstimateMemoryRoute:
         resp = _estimate(model_path = "org/model", mlx_kv_quant = "tq-4", mlx_kv_bits = 4)
         assert (asked["kv_bits"], seen["kv_bits"], widths) == (None, None, [])
 
-        # A width the load would refuse is priced at full width, fitted or pinned.
         refuses["answer"] = True
         resp = _estimate(model_path = "org/model", mlx_kv_bits = 4)
         assert (asked["kv_bits"], seen["kv_bits"], resp.context_fitted) == (None, None, 24_576)
         resp = _estimate(model_path = "org/model", max_seq_length = 8192, mlx_kv_bits = 4)
         assert (seen["n_ctx"], seen["kv_bits"], resp.context_fitted) == (8192, None, None)
 
-        # A pin never displaces an accepted width; it is not fitted either.
         refuses["answer"] = False
         asked.clear()
         resp = _estimate(model_path = "org/model", max_seq_length = 8192, mlx_kv_bits = 4)
@@ -1419,7 +1256,6 @@ class TestEstimateMemoryRoute:
             assert asked["retains_history"] is available
 
     def test_gguf_not_on_disk_is_not_downloaded(self, monkeypatch):
-        # No header to read and no reaching for the network on a slider drag.
         monkeypatch.setattr(
             ri,
             "_cached_estimate_config",
@@ -1431,11 +1267,7 @@ class TestEstimateMemoryRoute:
         assert resp.reason == "not_downloaded"
 
     def test_a_repo_not_on_this_disk_is_refused_before_it_is_resolved(self, monkeypatch):
-        # The route promises "nothing is downloaded", and every other test in this class
-        # asserts that while monkeypatching _cached_estimate_config -- the one function
-        # that can break it. Driven for real, an uncached remote id walked to the Hub:
-        # four model_info attempts, an hf_hub_download of config.json, and 12 new paths /
-        # 1828 bytes of cache, for a request whose answer is "not on this disk".
+        # Driven for real: an uncached remote id must not reach the Hub.
         def boom(*a, **kw):
             raise AssertionError("must not resolve a model that is not on this disk")
 
@@ -1443,15 +1275,10 @@ class TestEstimateMemoryRoute:
         monkeypatch.setattr(ri, "_estimate_hf_cache_roots", lambda: [Path(os.devnull).parent])
         resp = _estimate(model_path = "org/definitely-not-cached")
         assert resp.available is False
-        # not_downloaded, not unsizable: the sentinel keeps the two apart, because
-        # "absent" and "resolution failed" are different answers about the same model.
         assert resp.reason == "not_downloaded"
 
     def test_the_on_disk_check_reads_every_cache_root(self, tmp_path, monkeypatch):
-        # The fix's own worst case, and worse than the bug it fixes: a row that
-        # vanishes for a model sitting on the disk. Studio scans configured, legacy and
-        # default roots, while the snapshot helper the load path uses takes only the
-        # configured one, so the check has to iterate all of them.
+        # Must iterate all cache roots (configured, legacy, default), not just the configured one.
         primary, secondary = tmp_path / "a", tmp_path / "b"
         for d in (primary, secondary):
             d.mkdir()
@@ -1460,13 +1287,10 @@ class TestEstimateMemoryRoute:
         (snap / "model.gguf").write_bytes(b"\0" * 8)
         monkeypatch.setattr(ri, "_estimate_hf_cache_roots", lambda: [primary, secondary])
         assert ri._estimate_target_is_on_this_disk("org/Model-GGUF") is True
-        # Casing drifts between download and lookup; the helper is case-insensitive.
         assert ri._estimate_target_is_on_this_disk("ORG/model-gguf") is True
         assert ri._estimate_target_is_on_this_disk("org/Other-GGUF") is False
 
     def test_the_on_disk_check_fails_open(self, monkeypatch, gqa_gguf):
-        # An unanswerable question must not become a blanket refusal. A local path is
-        # read off disk and never consults the cache at all.
         def boom(*a, **kw):
             raise OSError("cache root unreadable")
 
@@ -1477,11 +1301,7 @@ class TestEstimateMemoryRoute:
         assert ri._estimate_target_is_on_this_disk(gqa_gguf) is True
 
     def test_the_cache_evictions_are_serialised(self):
-        # The route body runs in an asyncio.to_thread worker, so two panel requests are
-        # two real threads in the eviction. min() walks the dict through a Python key
-        # function the interpreter can switch out of: a concurrent pop makes it raise
-        # KeyError, a concurrent insert RuntimeError, and neither is caught between
-        # there and the worker, so it surfaces as a 500 on a slider drag.
+        # Runs in to_thread workers: concurrent eviction must not raise during min().
         for source in (
             inspect.getsource(ri._gguf_resident_file_gb),
             inspect.getsource(ri._cached_estimate_config),
@@ -1497,15 +1317,7 @@ class TestEstimateMemoryRoute:
     def test_the_route_never_reaps_processes_or_leaks_an_atexit_handler(
         self, monkeypatch, gqa_gguf
     ):
-        # The sizing helpers build a LlamaCppBackend just to read a header, and its
-        # __init__ reaps orphaned llama-servers -- walking /proc, resolving each
-        # candidate's exe and SIGNALLING the ones it recognises -- then registers an
-        # atexit handler holding the instance for the life of the process. Both are
-        # right for a backend that owns a child, neither for a settings panel.
-        #
-        # Measured before the probes were made inert: five constructions per request,
-        # so 50 estimates were 250 /proc scans and 250 retained atexit handlers at
-        # 120 ms each. Pricing a load must not be able to kill a server.
+        # Sizing backends must not reap llama-servers or register atexit handlers.
         import atexit
 
         from core.inference.llama_cpp import LlamaCppBackend
@@ -1543,9 +1355,6 @@ class TestEstimateMemoryRoute:
         )
 
     def test_the_inert_probe_mode_is_opt_in(self):
-        # Default True, so every existing caller -- above all the real backend that
-        # owns the llama-server child -- keeps exactly the behaviour it has today.
-
         from core.inference.llama_cpp import LlamaCppBackend
 
         sig = inspect.signature(LlamaCppBackend.__init__)
@@ -1554,10 +1363,6 @@ class TestEstimateMemoryRoute:
         assert param.kind is inspect.Parameter.KEYWORD_ONLY
 
     def test_expert_offload_from_the_extras_is_declared_unmodelled(self, monkeypatch, gqa_gguf):
-        # --n-cpu-moe moves individual expert tensors, which the layer fraction
-        # cannot express, so the row has to say so. /load strips those flags only on
-        # the Manual branch, where the field owns them; anywhere else they reach the
-        # child and the estimate reads high without qualification.
         config = SimpleNamespace(identifier = "local/model", gguf_file = gqa_gguf, is_gguf = True)
         monkeypatch.setattr(ri, "_cached_estimate_config", lambda *a, **kw: config)
         monkeypatch.setattr(ri, "_gguf_resident_file_gb", lambda cfg, **kw: 2.0)
@@ -1568,17 +1373,12 @@ class TestEstimateMemoryRoute:
         assert flagged(gpu_memory_mode = "auto", llama_extra_args = ["--n-cpu-moe", "8"]) is True
         assert flagged(gpu_memory_mode = "auto", llama_extra_args = ["-cmoe"]) is True
         assert flagged(gpu_memory_mode = "auto", llama_extra_args = ["-ot", "exps=CPU"]) is True
-        # Zero places nothing, and an unrelated flag is not an offload.
         assert flagged(gpu_memory_mode = "auto", llama_extra_args = ["-ncmoe", "0"]) is False
         assert flagged(gpu_memory_mode = "auto", llama_extra_args = ["--top-k", "40"]) is False
-        # Manual strips them, so only its own field speaks there.
         assert flagged(gpu_memory_mode = "manual", llama_extra_args = ["-ncmoe", "8"]) is False
         assert flagged(gpu_memory_mode = "manual", n_cpu_moe = 8) is True
 
     def test_the_device_count_uses_the_effective_split_mode(self, monkeypatch, gqa_gguf):
-        # A layer split across pinned cards is counted differently from a tensor
-        # split, so the device count has to be asked the same question the pricing
-        # is: the toggle alone is not the mode the launch runs.
         config = SimpleNamespace(identifier = "local/model", gguf_file = gqa_gguf, is_gguf = True)
         monkeypatch.setattr(ri, "_cached_estimate_config", lambda *a, **kw: config)
         monkeypatch.setattr(ri, "_gguf_resident_file_gb", lambda cfg, **kw: 2.0)
@@ -1602,8 +1402,6 @@ class TestEstimateMemoryRoute:
             selected_gpu_ids = [0, 1],
         )
         assert asked == [True]
-        # And one card cannot take a tensor split, whatever the extras ask for, so
-        # the count is asked the question load_model will answer.
         _estimate(
             model_path = gqa_gguf,
             n_ctx = 8192,
@@ -1620,8 +1418,6 @@ class TestEstimateMemoryRoute:
         assert resp.reason == "unsizable"
 
     def test_local_gguf_is_priced_end_to_end(self, monkeypatch, gqa_gguf):
-        # The success path, with only the two network-capable steps replaced:
-        # config resolution and the repository-listing half of the files term.
         config = SimpleNamespace(identifier = "local/model", gguf_file = gqa_gguf, is_gguf = True)
         monkeypatch.setattr(ri, "_cached_estimate_config", lambda *a, **kw: config)
         monkeypatch.setattr(ri, "_gguf_resident_file_gb", lambda cfg, **kw: 2.0)
@@ -1643,15 +1439,10 @@ class TestEstimateMemoryRoute:
         assert resp.cache_type_kv == "q8_0"
         assert resp.layer_count == _GQA_FIELDS["block_count"]
         assert resp.gpu_layers == 6
-        # --n-cpu-moe moves individual expert tensors, which no layer-count
-        # arithmetic models; the panel is told to say so rather than guess.
         assert resp.moe_offload_unmodelled is True
 
     def test_cached_repo_is_priced_from_disk_not_from_a_listing(self, monkeypatch, gqa_gguf):
-        # The glue for the localization: a repo-shaped config whose weights ARE on
-        # this disk must be priced locally. _remote_gguf_compute_reserve_gb only
-        # runs on the repository arm, and list_gguf_variants is the paths-info call
-        # that arm makes -- both raise here, so either one being reached fails.
+        # Both remote-arm helpers raise, so reaching either fails the test.
         def _network(*a, **kw):
             raise AssertionError("estimate-memory must not price a cached repo remotely")
 
@@ -1661,7 +1452,6 @@ class TestEstimateMemoryRoute:
 
         resp = _estimate(model_path = "org/model-GGUF", gguf_variant = "Q4_K_M", n_ctx = 4096)
         assert resp.available is True
-        # Priced off the real header on disk, which is the whole point of localizing.
         assert resp.kv_estimable is True
         assert resp.layer_count == _GQA_FIELDS["block_count"]
         assert resp.weights_bytes > 0
@@ -1747,17 +1537,12 @@ class TestParallelSlotResolution:
             n_ctx = 8192,
             fastapi_request = _request_with_slots(4),
         )
-        # The compute buffer takes an output buffer per extra slot, so it always
-        # grows. The cache only does on architectures whose slots get their own
-        # cells: under unified KV a plain GQA model shares one set, which is why
-        # this asserts >= there rather than pretending otherwise.
+        # Under unified KV a GQA model shares cells, so the cache assertion is >=.
         assert four.compute_bytes > one.compute_bytes
         assert four.kv_bytes >= one.kv_bytes
         assert four.total_bytes > one.total_bytes
 
     def test_a_missing_app_state_falls_back_to_one(self):
-        # No FastAPI request at all (the shape older test doubles pass) must not
-        # raise; it just loses the default, as _resolve_parallel_slots specifies.
         resp = _estimate(model_path = "local/model", n_ctx = 8192)
         assert resp.n_parallel == 1
 
@@ -1789,9 +1574,6 @@ class TestNativeLeaseOperation:
         assert seen["operation"] == "validate-model"
 
     def test_the_operation_is_one_the_client_can_mint(self):
-        # Guards the pairing rather than the string: the frontend mints through
-        # consumeNativePathToken(token, "validate-model"), and this is the list
-        # that call is typed against.
         types_ts = (
             Path(__file__).resolve().parents[2] / "frontend/src/features/native-intents/types.ts"
         ).read_text(encoding = "utf-8")
@@ -1836,10 +1618,7 @@ class TestDrafterAccounting:
 
     def test_the_charged_drafter_is_found_by_the_bytes_it_added(self, config, tmp_path):
         size = os.path.getsize(config.gguf_mtp_file)
-        # The kind rides along with the path: it decides which target-side terms the
-        # reserve carries, and deriving it separately could name another mode.
         assert ri._charged_drafter_path(config, size) == (config.gguf_mtp_file, "mtp")
-        # A figure matching no candidate must not pick one at random.
         assert ri._charged_drafter_path(config, size + 1) is None
         assert ri._charged_drafter_path(config, 0) is None
 
@@ -1847,7 +1626,6 @@ class TestDrafterAccounting:
         drafter_bytes = os.path.getsize(config.gguf_mtp_file)
         main_gb = 1.0
 
-        # Mimic the files term: the drafter is charged unless the probe forces it off.
         def _files(
             cfg,
             *,
@@ -1860,7 +1638,6 @@ class TestDrafterAccounting:
         monkeypatch.setattr(ri, "_gguf_resident_file_gb", _files)
         small = ri._gguf_memory_breakdown(config, gqa_gguf, n_ctx = 2048)
         large = ri._gguf_memory_breakdown(config, gqa_gguf, n_ctx = 32768)
-        # Weights are the same files at both contexts; only the drafter's cache moved.
         assert small.weights_bytes == large.weights_bytes
         drafter_runtime_small = small.total_bytes - small.weights_bytes - small.kv_bytes
         drafter_runtime_large = large.total_bytes - large.weights_bytes - large.kv_bytes
@@ -1884,18 +1661,11 @@ class TestDrafterAccounting:
         on_cpu = ri._gguf_memory_breakdown(
             config, gqa_gguf, n_ctx = 8192, llama_extra_args = ["--spec-draft-ngl", "0"]
         )
-        # _estimate_gguf_required_gb drops a CPU-pinned drafter because it is a VRAM
-        # admission figure. This panel reports host RAM too, so the bytes stay in the
-        # total and leave only the GPU column.
         assert on_cpu.total_bytes == on_gpu.total_bytes
         assert on_cpu.weights_bytes == on_gpu.weights_bytes
         assert on_cpu.gpu_bytes < on_gpu.gpu_bytes
 
     def test_the_drafter_runtime_reports_its_own_gpu_share(self, config, gqa_gguf, monkeypatch):
-        # The panel used to label this line from kv_on_gpu, the TARGET cache's
-        # placement, which is set by a different flag. Wrong in both directions: silent
-        # about a genuinely host-resident draft cache, and claiming host RAM for one
-        # this same call had just charged to gpu_bytes. So the share is reported.
         drafter_bytes = os.path.getsize(config.gguf_mtp_file)
 
         def _files(
@@ -1914,26 +1684,19 @@ class TestDrafterAccounting:
         )
         on_gpu = ri._gguf_memory_breakdown(config, gqa_gguf, n_ctx = 8192)
         assert on_gpu.drafter_runtime_bytes > 0
-        # Default placement: all of it, so the row says nothing rather than guessing.
         assert on_gpu.drafter_runtime_gpu_bytes == on_gpu.drafter_runtime_bytes
 
         on_cpu = ri._gguf_memory_breakdown(
             config, gqa_gguf, n_ctx = 8192, llama_extra_args = ["--spec-draft-ngl", "0"]
         )
-        # Only the target's verification rows stay with the GPU target.
         assert on_cpu.drafter_runtime_gpu_bytes == verify_rows
 
-        # --no-kv-offload moves the TARGET cache and leaves the drafter alone. A
-        # boolean read off kv_on_gpu would call the whole term host-resident here,
-        # while gpu_bytes still carries the draft cache.
         nkvo = ri._gguf_memory_breakdown(
             config, gqa_gguf, n_ctx = 8192, llama_extra_args = ["--no-kv-offload"]
         )
         assert nkvo.kv_on_gpu is False
         assert nkvo.drafter_runtime_gpu_bytes > 0
 
-        # Whatever the placement, the share is never more than the term it is a share
-        # of, and never negative.
         for b in (on_gpu, on_cpu, nkvo):
             assert 0 <= b.drafter_runtime_gpu_bytes <= b.drafter_runtime_bytes
 
@@ -1942,16 +1705,11 @@ class TestDeviceCount:
     """A pinned layer split pays per-device overhead, not just tensor mode."""
 
     def test_a_pinned_layer_split_counts_its_cards(self):
-        # _gguf_runtime_bytes adds pipeline overhead per extra device and replicates
-        # the context-linear compute term, so forcing 1 here underestimated both.
         assert ri._guard_device_count([0, 1], None, tensor_parallel = False) == 2
         assert ri._guard_device_count([0, 1, 2], None, tensor_parallel = False) == 3
-        # Automatic placement lands on one card until the fit says otherwise.
         assert ri._guard_device_count(None, None, tensor_parallel = False) == 1
 
 
-# A hybrid-Mamba target: the recurrent state the verification rollback copies, and the
-# only shape where the draft depth changes the number the panel prints.
 _HYBRID_FIELDS = {
     **_GQA_FIELDS,
     "block_count": 24,
@@ -2016,18 +1774,14 @@ class TestBlankDraftDepth:
         return ri._gguf_memory_breakdown(config, hybrid, n_ctx = 8192, n_parallel = 4, **kw)
 
     def test_blank_prices_the_launch_default_not_zero(self, config, hybrid):
-        # THE regression: the UI sends null for a blank field, which used to reach
-        # _estimate_mtp_overhead_bytes as a depth of 0 and cost the rollback copies.
         zero = self._priced(config, hybrid, spec_draft_n_max = 0)
         one = self._priced(config, hybrid, spec_draft_n_max = 1)
         blank = self._priced(config, hybrid, spec_draft_n_max = None)
         per_copy = one.total_bytes - zero.total_bytes
         assert per_copy > 0, "fixture is not hybrid-Mamba; the test would prove nothing"
         assert blank.total_bytes > zero.total_bytes
-        # 2 on a GPU box, 3 without: the two platform defaults _build_speculative_flags
-        # emits. Not pinned to one, so this passes on a runner with or without a card.
+        # 2 on a GPU box, 3 without; not pinned so it passes with or without a card.
         assert (blank.total_bytes - zero.total_bytes) // per_copy in (2, 3)
-        # The drafter sits on the GPU here, so the fit verdict moves with it too.
         assert blank.gpu_bytes > zero.gpu_bytes
 
     def test_an_explicit_depth_still_wins(self, config, hybrid):
@@ -2038,7 +1792,6 @@ class TestBlankDraftDepth:
         assert five.total_bytes - zero.total_bytes == 5 * per_copy
 
     def test_an_extras_depth_wins_over_a_blank_field(self, config, hybrid):
-        # Last-wins at launch, so the extras flag is what the child really drafts at.
         zero = self._priced(config, hybrid, spec_draft_n_max = 0)
         one = self._priced(config, hybrid, spec_draft_n_max = 1)
         per_copy = one.total_bytes - zero.total_bytes
@@ -2053,13 +1806,11 @@ class TestBlankDraftDepth:
     def test_depth_resolution_follows_the_launch_precedence(self, config):
         drafter = config.gguf_mtp_file
         assert ri._estimate_draft_n_max(config, drafter, requested = 7, extras = []) == 7
-        # Extras beat the field, and an explicit zero is honoured as "draft nothing".
         assert (
             ri._estimate_draft_n_max(config, drafter, requested = 7, extras = ["--draft-max", "4"]) == 4
         )
         assert ri._estimate_draft_n_max(config, drafter, requested = 0, extras = []) == 0
         assert ri._estimate_draft_n_max(config, drafter, requested = None, extras = []) in (2, 3)
-        # DSpark launches at 3 regardless of the card, so it is priced at 3.
         dspark = SimpleNamespace(gguf_dspark_file = "/tmp/dspark-model.gguf")
         assert (
             ri._estimate_draft_n_max(dspark, "/tmp/dspark-model.gguf", requested = None, extras = [])
@@ -2095,8 +1846,6 @@ class TestQuantSubdirCompanions:
         assert localized.gguf_mtp_file == drafter
 
     def test_a_flat_layout_still_scans_only_the_weights_directory(self, tmp_path):
-        # The widened root must not reach a sibling model's projector: the quant check
-        # is what keeps a non-quant directory name from being walked out of.
         model_dir = tmp_path / "some-model"
         model_dir.mkdir()
         weight = _write_gguf(model_dir, "qwen3", _GQA_FIELDS, name = "model-Q4_K_M.gguf")
@@ -2122,8 +1871,6 @@ class TestDrafterEdgeCases:
         )
 
     def test_a_cpu_pin_without_a_drafter_does_not_crash(self, bare_config, gqa_gguf, monkeypatch):
-        # Only the else branch bound gpu_drafter_bytes, so a CPU pin on a model with
-        # nothing to pin raised UnboundLocalError and answered 500 for an ordinary load.
         monkeypatch.setattr(ri, "_gguf_resident_file_gb", lambda cfg, **kw: 1.0)
         breakdown = ri._gguf_memory_breakdown(
             bare_config, gqa_gguf, n_ctx = 4096, llama_extra_args = ["--spec-draft-ngl", "0"]
@@ -2135,33 +1882,24 @@ class TestDrafterEdgeCases:
     def test_a_custom_model_draft_is_carried_into_runtime_sizing(
         self, bare_config, gqa_gguf, tmp_path
     ):
-        # The launch opens whatever --model-draft names, which need not be one of the
-        # discovered sidecars; matching only those dropped its cache entirely.
         custom = tmp_path / "my-drafter.gguf"
         custom.write_bytes(Path(gqa_gguf).read_bytes())
         found = ri._charged_drafter_path(bare_config, 4096, extras = ["--model-draft", str(custom)])
         assert found == (str(custom), "extras")
-        # A remote repo is not a local file, so it stays unsized rather than guessed.
         assert (
             ri._charged_drafter_path(
                 bare_config, 4096, extras = ["--spec-draft-hf", "org/drafter-GGUF"]
             )
             is None
         )
-        # And nothing is resolved when no drafter was charged in the first place.
         assert (
             ri._charged_drafter_path(bare_config, 0, extras = ["--model-draft", str(custom)]) is None
         )
 
     def test_draft_cache_overrides_come_from_the_extras(self):
-        # K and V are independent at launch, so passing the panel field for both
-        # priced a cache the load will not allocate.
         from core.inference.llama_cpp import _extra_args_draft_cache_types
         assert _extra_args_draft_cache_types(["--cache-type-k-draft", "f32"]) == ("f32", None)
         assert _extra_args_draft_cache_types(["--cache-type-v-draft", "q8_0"]) == (None, "q8_0")
-        # Asserted on the source before, which meant it could only ever restate the
-        # implementation. The precedence itself is checked by behaviour below, where a
-        # wrong order changes the number instead of the spelling.
 
 
 class TestSpeculativeModeTerms:
@@ -2175,7 +1913,6 @@ class TestSpeculativeModeTerms:
 
     @pytest.fixture
     def mla(self, tmp_path) -> str:
-        # kv_lora_rank is what makes the duplicated target context real.
         return _write_gguf(
             tmp_path,
             "deepseek2",
@@ -2220,14 +1957,10 @@ class TestSpeculativeModeTerms:
     def test_a_dspark_drafter_is_not_charged_the_targets_context(
         self, mla, tmp_path, priced_files, monkeypatch
     ):
-        # The two drafters' compute buffers differ with their own headers; this pins
-        # the cache terms.
         monkeypatch.setattr(ri.LlamaCppBackend, "_mtp_draft_compute_bytes", lambda *a, **k: 0)
         ctx = 131072
         mtp = ri._gguf_memory_breakdown(self._config(mla, tmp_path, "mtp"), mla, n_ctx = ctx)
         dspark = ri._gguf_memory_breakdown(self._config(mla, tmp_path, "dspark"), mla, n_ctx = ctx)
-        # DSpark loads its own drafter with its own cache and keeps no copy of the
-        # target's, so the difference is exactly that copy, priced at f16.
         assert mtp.drafter_runtime_bytes - dspark.drafter_runtime_bytes == self._target_ctx_copy(
             mla, ctx
         )
@@ -2236,10 +1969,7 @@ class TestSpeculativeModeTerms:
     def test_a_gpu_drafter_is_charged_when_the_target_keeps_no_layers(
         self, mla, tmp_path, priced_files, monkeypatch
     ):
-        # A separate drafter does not inherit --gpu-layers: llama.cpp overwrites it
-        # with the draft placement, whose default is auto. At --gpu-layers 0 the
-        # drafter is still on the GPU and still holds its cache there. Verification
-        # rows follow the target and are pinned in their own test.
+        # A separate drafter ignores --gpu-layers (draft placement defaults to auto).
         monkeypatch.setattr(ri.LlamaCppBackend, "_spec_verify_rows_bytes", lambda *a, **k: 0)
         config = self._config(mla, tmp_path, "dspark")
         manual = dict(gpu_memory_mode = "manual", gpu_layers = 0, n_ctx = 131072)
@@ -2248,8 +1978,6 @@ class TestSpeculativeModeTerms:
             config, mla, llama_extra_args = ["--spec-draft-ngl", "0"], **manual
         )
         assert on_gpu.drafter_runtime_bytes > 0
-        # The drafter's file and its cache both leave the GPU when it is pinned, and
-        # DSpark on this target keeps nothing in the target's context.
         assert (
             on_gpu.gpu_bytes - pinned.gpu_bytes
             == on_gpu.drafter_runtime_bytes + os.path.getsize(mla)
@@ -2262,21 +1990,15 @@ class TestSpeculativeModeTerms:
         ctx = 131072
         config = self._config(mla, tmp_path, "mtp")
         copy_bytes = self._target_ctx_copy(mla, ctx)
-        # Target on the CPU, drafter on the GPU: the draft cache is charged, the
-        # duplicated target context is not.
         manual = dict(gpu_memory_mode = "manual", gpu_layers = 0, n_ctx = ctx)
         no_layers = ri._gguf_memory_breakdown(config, mla, **manual)
         no_layers_pinned = ri._gguf_memory_breakdown(
             config, mla, llama_extra_args = ["--spec-draft-ngl", "0"], **manual
         )
         assert copy_bytes > 0
-        # What pinning the drafter takes off the GPU is its own cache and file, never
-        # the target's copy, which was not on the GPU here in the first place.
         assert no_layers.gpu_bytes - no_layers_pinned.gpu_bytes == (
             no_layers.drafter_runtime_bytes - copy_bytes + os.path.getsize(mla)
         )
-        # The mirror image: drafter pinned to the CPU, target fully offloaded. The
-        # copy lives in the target's context, so pinning does not move it.
         pinned = ri._gguf_memory_breakdown(
             config, mla, n_ctx = ctx, llama_extra_args = ["--spec-draft-ngl", "0"]
         )
@@ -2284,8 +2006,6 @@ class TestSpeculativeModeTerms:
         assert unpinned.gpu_bytes - pinned.gpu_bytes == (
             unpinned.drafter_runtime_bytes - copy_bytes + os.path.getsize(mla)
         )
-        # And the copy is still charged with the drafter pinned away, which is what
-        # the loader reserves for the same launch.
         assert pinned.gpu_bytes - no_layers_pinned.gpu_bytes > copy_bytes
 
     def test_verification_rows_follow_the_targets_layers(
@@ -2308,14 +2028,11 @@ class TestSpeculativeModeTerms:
         )
 
     def test_extras_owning_the_spec_block_price_the_builds_depth(self, mla):
-        # _build_speculative_flags returns without emitting a depth once the extras
-        # name --spec-type, so neither the panel field nor Studio's 2/3 platform
-        # default reaches the child: it drafts at the build's own number.
+        # Once extras name --spec-type no depth is emitted; the build default applies.
         config = SimpleNamespace(gguf_dspark_file = None)
         owned = ["--spec-type", "draft-mtp"]
         assert ri._estimate_draft_n_max(config, mla, requested = None, extras = owned) == 16
         assert ri._estimate_draft_n_max(config, mla, requested = 2, extras = owned) == 16
-        # An explicit depth still wins, and without --spec-type the field does.
         assert (
             ri._estimate_draft_n_max(
                 config, mla, requested = 2, extras = [*owned, "--spec-draft-n-max", "5"]
@@ -2325,20 +2042,11 @@ class TestSpeculativeModeTerms:
         assert ri._estimate_draft_n_max(config, mla, requested = 2, extras = []) == 2
 
     def test_each_mode_charges_only_the_terms_it_allocates(self):
-        # Studio's own sidecars: only MTP duplicates the target context, and all three
-        # pay rollback. Extras that name a type own the answer, and a bare
-        # --model-draft is draft-simple, which allocates neither.
         assert ri._estimate_spec_mode_terms("mtp", []) == (True, True)
         assert ri._estimate_spec_mode_terms("dspark", []) == (False, True)
         assert ri._estimate_spec_mode_terms("dflash", []) == (False, True)
-        # A bare --model-draft on a target Studio does not recognise as MTP really is
-        # draft-simple, llama.cpp's default, and allocates neither.
         assert ri._estimate_spec_mode_terms("extras", []) == (False, False)
-        # But on a target Studio DOES recognise, it still emits --spec-type draft-mtp
-        # and the extras path merely last-wins as the drafter, so the duplicated MLA
-        # context and the rollback state are both really allocated.
         assert ri._estimate_spec_mode_terms("extras", [], studio_emits_mtp = True) == (True, True)
-        # A --spec-type in the extras still owns the answer outright either way.
         assert ri._estimate_spec_mode_terms(
             "extras", ["--spec-type", "draft-simple"], studio_emits_mtp = True
         ) == (False, False)
@@ -2362,8 +2070,6 @@ class TestLaunchShapedPricing:
 
     @pytest.fixture
     def swa(self, tmp_path) -> str:
-        # Sliding-window attention, so --swa-full has something to change: without it
-        # the cache holds the window, with it the whole context.
         return _write_gguf(
             tmp_path,
             "gemma3",
@@ -2398,23 +2104,16 @@ class TestLaunchShapedPricing:
         )
 
     def test_the_drafter_cache_is_priced_at_the_targets_layout(self, spec_config, swa):
-        # --swa-full reached the target cache and stopped there, so a drafter with the
-        # same geometry was priced holding a window while the launch gives it the whole
-        # context. The loader passes all four layout settings; so does this now.
         windowed = ri._gguf_memory_breakdown(spec_config, swa, n_ctx = 131072)
         full = ri._gguf_memory_breakdown(
             spec_config, swa, n_ctx = 131072, llama_extra_args = ["--swa-full"]
         )
-        # Compare GPU cache bytes; checkpoints are host-only and absent under --swa-full.
         assert full.kv_bytes - full.kv_checkpoint_bytes > (
             windowed.kv_bytes - windowed.kv_checkpoint_bytes
         )
         assert full.kv_checkpoint_bytes == 0
         assert windowed.kv_checkpoint_bytes > 0
-        # Same header on both sides, so the drafter's cache moves exactly as the target's
-        # GPU cache does. By DIFFERENCE, not equality: the draft decode graph's floor
-        # (_MTP_DRAFT_COMPUTE_BYTES) now rides on top of this figure and does not follow
-        # --swa-full, so the two sides no longer match outright.
+        # Compared by difference: the draft compute floor does not follow --swa-full.
         assert full.drafter_runtime_bytes - windowed.drafter_runtime_bytes == (
             (full.kv_bytes - full.kv_checkpoint_bytes)
             - (windowed.kv_bytes - windowed.kv_checkpoint_bytes)
@@ -2434,7 +2133,6 @@ class TestLaunchShapedPricing:
         for flag in (["--device", "none"], ["--device", "cpu"], ["-dev", "none"]):
             cpu_only = ri._gguf_memory_breakdown(spec_config, swa, llama_extra_args = flag, **priced)
             assert cpu_only.gpu_bytes == 0, flag
-            # The memory is still spent, just not on the card.
             assert cpu_only.total_bytes > 0
         assert on_gpu.gpu_bytes > 0
 
@@ -2452,11 +2150,8 @@ class TestLaunchShapedPricing:
         none = ri._gguf_memory_breakdown(spec_config, swa, ctx_checkpoints = 0, **priced)
         many = ri._gguf_memory_breakdown(spec_config, swa, ctx_checkpoints = 8, **priced)
 
-        # The snapshots are real and substantial, or the rest of this proves nothing.
         assert many.kv_bytes > none.kv_bytes
-        # ... and they are in the aggregate total, which is what the host pays.
         assert many.total_bytes > none.total_bytes
-        # But the GPU figure does not move: that is the whole finding.
         assert many.gpu_bytes == none.gpu_bytes
 
     def test_the_panel_route_reports_the_checkpoint_share(self, swa, monkeypatch):
@@ -2483,14 +2178,7 @@ class TestLaunchShapedPricing:
         ) == many.kv_checkpoint_bytes
 
     def test_one_card_is_priced_as_the_layer_load_it_launches(self, spec_config, swa):
-        # Tensor mode needs two usable GPUs. Below that load_model drops it, so the
-        # panel prices the layer load. A tensor device holds the single-device compute
-        # buffer, so on one card the two price the same.
-        #
-        # The cache type is no longer part of this: #8939 removed the gate that rewrote
-        # both axes to f16 on a tensor split, so a quantized KV now survives one and the
-        # downgrade cannot move it. Asserted equal rather than dropped, since a
-        # reintroduced gate would put an f16 cache back on the tensor side.
+        # One card launches a layer load. KV stays q4_0: equality catches a reintroduced f16 gate.
         priced = dict(n_ctx = 32768, cache_type_kv = "q4_0", tensor_parallel = True, n_devices = 1)
         downgraded = ri._gguf_memory_breakdown(
             spec_config, swa, tensor_split_possible = False, **priced
@@ -2505,11 +2193,7 @@ class TestLaunchShapedPricing:
         assert downgraded.total_bytes == as_tensor.total_bytes
 
     def test_manual_auto_layers_is_priced_as_the_layer_load_it_launches(self, spec_config, swa):
-        # Manual with Auto layers hands the budget to llama.cpp --fit, which load_model
-        # says outright is incompatible with tensor parallelism and drops the split for.
-        # Two cards are visible and pinned, so nothing else downgrades it: only the
-        # layer count does. Priced as tensor, the per-device buffers are charged for a
-        # launch that runs a layer split.
+        # Auto layers use --fit, which drops tensor parallelism, so this prices a layer split.
         priced = dict(
             n_ctx = 32768,
             cache_type_kv = "q4_0",
@@ -2521,16 +2205,12 @@ class TestLaunchShapedPricing:
         auto_layers = ri._gguf_memory_breakdown(spec_config, swa, gpu_layers = None, **priced)
         explicit = ri._gguf_memory_breakdown(spec_config, swa, gpu_layers = 40, **priced)
         assert auto_layers.compute_bytes != explicit.compute_bytes
-        # The layer-split arm, which is what /load runs here.
         as_layers = ri._gguf_memory_breakdown(
             spec_config, swa, gpu_layers = None, **{**priced, "tensor_parallel": False}
         )
         assert auto_layers.compute_bytes == as_layers.compute_bytes
 
     def test_manual_zero_layers_is_priced_as_the_cpu_load_it_launches(self, spec_config, swa):
-        # gpu_layers=0 leaves nothing on the GPU to split. load_model drops the split
-        # rather than let --split-mode tensor abort the server under the CPU-only mask,
-        # so a tensor price here is per-device buffers for a load that takes no VRAM.
         priced = dict(
             n_ctx = 32768,
             cache_type_kv = "q4_0",
@@ -2545,25 +2225,16 @@ class TestLaunchShapedPricing:
         assert as_tensor.total_bytes == as_layers.total_bytes
 
     def test_an_ngl_in_the_extras_keeps_the_manual_split(self, spec_config, swa):
-        # /load translates the last -ngl into the field before deciding, so a slider at
-        # 0 with -ngl 40 in the extras is a 40-layer load and does reach a tensor
-        # launch. Dropping on the field alone would price it as a layer split.
         assert ri._manual_keeps_tensor_split("manual", 0, ["-ngl", "40"]) is True
         assert ri._manual_keeps_tensor_split("manual", 40, ["-ngl", "0"]) is False
         assert ri._manual_keeps_tensor_split("manual", None, None) is False
         assert ri._manual_keeps_tensor_split("manual", 0, None) is False
         assert ri._manual_keeps_tensor_split("manual", 1, None) is True
-        # Auto is the planner's call, not ours, whatever the count says.
         assert ri._manual_keeps_tensor_split("auto", 0, None) is True
         assert ri._manual_keeps_tensor_split(None, None, None) is True
-        # A malformed override is shrugged off rather than raised, same as the layer
-        # fraction does with it.
         assert ri._manual_keeps_tensor_split("manual", 8, ["-ngl", "banana"]) is True
 
     def test_a_one_card_pin_cannot_tensor_split(self):
-        # A pin answers for itself and needs no probe, which is the deterministic half
-        # of the rule. Without a pin the host answers, and that must not raise here
-        # whatever this machine has.
         assert ri._tensor_split_possible([0]) is False
         assert ri._tensor_split_possible([0, 1]) is True
         assert ri._tensor_split_possible([2, 3, 5]) is True
@@ -2572,9 +2243,7 @@ class TestLaunchShapedPricing:
     def test_the_vision_encoder_costs_more_than_its_projector_file(
         self, swa, tmp_path, monkeypatch
     ):
-        # The encoder's buffers run about 1.3x the file, which the placement path
-        # budgets as _MMPROJ_VRAM_SAFETY - 1. Counting only the file called a
-        # near-capacity multimodal load a fit.
+        # Encoder buffers run ~1.3x the projector file (_MMPROJ_VRAM_SAFETY - 1).
         projector = tmp_path / "mmproj-swa.gguf"
         projector.write_bytes(b"\0" * 1024)
         config = SimpleNamespace(
@@ -2603,8 +2272,6 @@ class TestLaunchShapedPricing:
         assert resident.total_bytes == (
             resident.weights_bytes + resident.kv_bytes + resident.compute_bytes + expected
         )
-        # The buffers sit with the projector, so pinning it takes them off the GPU
-        # while leaving them in the total.
         pinned = ri._gguf_memory_breakdown(
             config, swa, n_ctx = 8192, llama_extra_args = ["--no-mmproj-offload"]
         )
@@ -2625,7 +2292,6 @@ class TestInheritedEnvironment:
 
     @pytest.fixture
     def bare(self, gqa_gguf):
-        # No sidecars: anything charged here arrived through the environment.
         return SimpleNamespace(
             identifier = "local/bare",
             gguf_file = gqa_gguf,
@@ -2645,15 +2311,11 @@ class TestInheritedEnvironment:
     ):
         drafter = _write_gguf(tmp_path, "qwen3", _GQA_FIELDS, name = "inherited-draft.gguf")
         monkeypatch.setenv("LLAMA_ARG_SPEC_DRAFT_MODEL", drafter)
-        # The files term resolves --model-draft against an empty env, so this drafter
-        # is in neither its bytes nor, before this, the cache priced on top of them.
         owned = ri._gguf_memory_breakdown(
             bare, gqa_gguf, n_ctx = 32768, llama_extra_args = ["--spec-type", "draft-mtp"]
         )
         assert owned.drafter_runtime_bytes > 0
         assert owned.weights_bytes == _GIB + os.path.getsize(drafter)
-        # Without an extras --spec-type the launch scrubs LLAMA_ARG_SPEC_*, so the
-        # child never sees it and neither does the estimate.
         scrubbed = ri._gguf_memory_breakdown(bare, gqa_gguf, n_ctx = 32768)
         assert scrubbed.drafter_runtime_bytes == 0
         assert scrubbed.weights_bytes == _GIB
@@ -2663,11 +2325,8 @@ class TestInheritedEnvironment:
     ):
         monkeypatch.setenv("LLAMA_ARG_SPEC_DRAFT_N_MAX", "7")
         owned = ["--spec-type", "draft-mtp"]
-        # The loader reads the env twin before falling back to the build's default.
         assert ri._estimate_draft_n_max(bare, gqa_gguf, requested = None, extras = owned) == 7
-        # Scrubbed when Unsloth owns the block, so the platform default stands.
         assert ri._estimate_draft_n_max(bare, gqa_gguf, requested = None, extras = []) in (2, 3)
-        # A flag still beats the environment, as it does at launch.
         assert (
             ri._estimate_draft_n_max(
                 bare, gqa_gguf, requested = None, extras = [*owned, "--spec-draft-n-max", "5"]
@@ -2695,8 +2354,6 @@ class TestInheritedEnvironment:
         expected = int(4096 * (ri.LlamaCppBackend._MMPROJ_VRAM_SAFETY - 1.0))
         resident = ri._gguf_memory_breakdown(bare, gqa_gguf, n_ctx = 8192)
         assert resident.projector_runtime_bytes == expected
-        # Placement too: the flag and the inherited variable move file and buffers
-        # alike, since _resolved_mmproj_offload reads both.
         by_flag = ri._gguf_memory_breakdown(
             bare, gqa_gguf, n_ctx = 8192, llama_extra_args = ["--no-mmproj-offload"]
         )
@@ -2705,10 +2362,7 @@ class TestInheritedEnvironment:
         assert ri._gguf_memory_breakdown(bare, gqa_gguf, n_ctx = 8192).gpu_bytes == by_flag.gpu_bytes
 
     def test_the_vulkan_pool_comes_from_the_probed_snapshot(self, monkeypatch):
-        # _effective_gpu_count counts CUDA devices, so on a Vulkan build it sees none
-        # and a multi-GPU tensor launch was priced with one device's buffers. The
-        # inventory /api/system already probed answers instead, read and never
-        # refreshed: probing it costs a subprocess and this runs on every keystroke.
+        # Vulkan: CUDA count sees no devices; use the cached /api/system inventory, never re-probe.
         fake_main = _types.ModuleType("main")
         monkeypatch.setitem(sys.modules, "main", fake_main)
         monkeypatch.setattr(ri.LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda *a: True))
@@ -2729,9 +2383,7 @@ class TestInheritedEnvironment:
         assert (
             ri._guard_device_count(None, ri._cached_inference_devices(), tensor_parallel = True) == 1
         )
-        # One Vulkan device is a downgrade at launch, so it is one here too.
         assert ri._tensor_split_possible(None) is False
-        # Nothing probed yet: unknown, and unknown must not become a downgrade.
         fake_main._system_gpu_cache = None
         assert ri._cached_inference_devices() is None
         assert ri._tensor_split_possible(None) is True
@@ -2753,10 +2405,7 @@ class TestManualNormalizationAndRemoteDrafters:
         )
 
     def test_manual_prices_the_stripped_extras(self, bare, gqa_gguf, monkeypatch):
-        # -ncmoe pushes into tensor_buft_overrides, which turns pipeline parallelism
-        # off and drops the context-buffer multiplier. Manual strips the flag before
-        # launch, so the multiplier survives and the panel has to say so; Auto keeps
-        # the flag, so there it does not.
+        # -ncmoe disables pipeline parallelism; Manual strips it pre-launch, Auto keeps it.
         monkeypatch.setattr(ri, "_gguf_resident_file_gb", lambda cfg, **kw: 1.0)
         priced = dict(n_ctx = 32768, gpu_layers = 99, n_devices = 2)
 
@@ -2772,10 +2421,6 @@ class TestManualNormalizationAndRemoteDrafters:
     def test_a_remote_drafter_is_declared_unsized_rather_than_priced_at_zero(
         self, bare, gqa_gguf, monkeypatch
     ):
-        # --spec-draft-hf names a repository. Its weights are charged by the files term,
-        # but its cache cannot be read off a header that is not on this disk, and a
-        # confident total missing a context-scaled cache is the one answer this row
-        # must never give.
         from core.inference.llama_cpp import _extra_args_draft_offloaded_to_cpu as pinned
 
         def _files(
@@ -2793,10 +2438,8 @@ class TestManualNormalizationAndRemoteDrafters:
             bare, gqa_gguf, n_ctx = 32768, llama_extra_args = ["--spec-draft-hf", "org/drafter-GGUF"]
         )
         assert remote.drafter_kv_unsized is True
-        # The weights are still counted, so the floor is as high as it can be made.
         assert remote.weights_bytes == 3 * _GIB
         assert remote.drafter_runtime_bytes == 0
-        # And a load with no drafter at all is not flagged.
         assert ri._gguf_memory_breakdown(bare, gqa_gguf, n_ctx = 32768).drafter_kv_unsized is False
 
     def test_the_route_carries_the_unsized_flag(self, bare, gqa_gguf, monkeypatch):
@@ -2810,8 +2453,6 @@ class TestManualNormalizationAndRemoteDrafters:
             llama_extra_args = None,
             **kw,
         ):
-            # Mirrors the real term, including that a CPU-pinned drafter is dropped:
-            # the breakdown identifies the drafter's bytes by re-pricing with that pin.
             args = list(llama_extra_args or ())
             return 1.0 + (2.0 if "--spec-draft-hf" in args and not pinned(args) else 0.0)
 
@@ -2822,7 +2463,6 @@ class TestManualNormalizationAndRemoteDrafters:
             llama_extra_args = ["--spec-draft-hf", "org/drafter-GGUF"],
         )
         assert resp.available is True
-        # available, but not silent about what is missing from the total.
         assert resp.drafter_kv_unsized is True
 
 
@@ -2858,7 +2498,6 @@ class TestSpeculationOffChargesNoDrafter:
         charged = ri._gguf_resident_file_gb(config_with_a_sidecar, speculative_type = "mtp")
         quiet = ri._gguf_resident_file_gb(config_with_a_sidecar, speculative_type = mode)
         assert charged is not None and quiet is not None
-        # The sidecar is a copy of the target, so its absence is unmissable.
         assert quiet < charged
         assert quiet == pytest.approx(charged / 2, rel = 0.05)
 
@@ -2880,8 +2519,6 @@ class TestAnUnloadableSidecarIsNotCharged:
     """
 
     def _config(self, tmp_path, sidecar):
-        # A target per case: the files cache keys on the main weight's path, not the
-        # sidecar's, so one directory would serve the first answer twice.
         home = tmp_path / sidecar.stem
         home.mkdir()
         return SimpleNamespace(
@@ -2959,7 +2596,6 @@ class TestAProjectorOverrideIsTheOneCharged:
         configured = ri._gguf_resident_file_gb(config)
         overridden = ri._gguf_resident_file_gb(config, llama_extra_args = ["--mmproj", big])
         assert configured is not None and overridden is not None
-        # The override is 8x the configured one, so the total has to move with it.
         assert overridden > configured
         delta = (overridden - configured) * 1024**3
         assert delta == pytest.approx(Path(big).stat().st_size - Path(small).stat().st_size, abs = 8)
@@ -3012,7 +2648,6 @@ class TestAnEmbeddedMtpHeadIsPriced:
         priced = ri._gguf_memory_breakdown(config, gguf, n_ctx = 131072)
         assert priced is not None
         assert priced.drafter_runtime_bytes > 0
-        # And it is inside the total, which is the figure the fit verdict reads.
         assert priced.total_bytes > priced.weights_bytes + priced.kv_bytes
 
     def test_turning_speculation_off_charges_no_head(self, nextn_model):
@@ -3057,7 +2692,6 @@ class TestAnEmbeddedMtpHeadIsPriced:
             pinned = ri._gguf_memory_breakdown(config, gguf, n_ctx = 131072, llama_extra_args = pin)
             assert pinned is not None, pin
             assert pinned.drafter_runtime_bytes > 0, pin
-            # Unmoved: the same bytes on the same device as with no pin at all.
             assert pinned.drafter_runtime_gpu_bytes == unpinned.drafter_runtime_gpu_bytes, pin
             assert pinned.drafter_runtime_bytes == unpinned.drafter_runtime_bytes, pin
 
@@ -3075,7 +2709,6 @@ class TestAnEmbeddedMtpHeadIsPriced:
             config, gguf, n_ctx = 131072, gpu_memory_mode = "manual", gpu_layers = 0
         )
         assert on_cpu is not None
-        # Still allocated, and still in the aggregate figure -- just not on the card.
         assert on_cpu.drafter_runtime_bytes > 0
         assert on_cpu.drafter_runtime_gpu_bytes == 0
 
@@ -3111,7 +2744,6 @@ class TestACpuOnlyHostShowsNoGpuFootprint:
         out = ri._gguf_memory_breakdown(config, gguf, n_ctx = 32768)
         assert out is not None
         assert out.gpu_bytes == 0
-        # Still a real load, just not on a card.
         assert out.total_bytes > 0
         assert out.kv_on_gpu is False
 
@@ -3246,12 +2878,9 @@ class TestAnAutoContextIsMarkedShrinkable:
         [
             ({}, True, 8192),
             ({"gpu_memory_mode": "auto"}, True, 8192),
-            # Manual with Auto layers: load_model emits --fit-ctx 8192 where the build takes it.
             ({"gpu_memory_mode": "manual"}, True, 8192),
             ({"gpu_memory_mode": "manual"}, False, 4096),
-            # A pass-through --fit-ctx comes last, so it is the floor.
             ({"gpu_memory_mode": "manual", "llama_extra_args": ["-fitc", "16384"]}, True, 16384),
-            # /load strips Manual's --fit flags, so the fitter still runs.
             ({"gpu_memory_mode": "manual", "llama_extra_args": ["--fit", "off"]}, True, 8192),
         ],
     )
@@ -3289,10 +2918,8 @@ class TestAnAutoContextIsMarkedShrinkable:
             ({"llama_extra_args": ["-nkvo"]}, None, True),
             ({"gpu_memory_mode": "manual", "gpu_layers": 0}, None, True),
             ({"gpu_memory_mode": "manual", "gpu_layers": 99}, None, True),
-            # /load folds a Manual -ngl into the layer field, which fixes the placement.
             ({"gpu_memory_mode": "manual", "llama_extra_args": ["-ngl", "99"]}, None, True),
             ({}, "4096", True),
-            # Without -c or --fit-ctx, inherited zero preserves native context.
             ({"gpu_memory_mode": "manual"}, "0", False),
             # llama.cpp stores --fit-ctx unsigned, so -1 disables the reduction.
             ({"gpu_memory_mode": "manual", "llama_extra_args": ["--fit-ctx", "-1"]}, None, True),
@@ -3313,7 +2940,6 @@ class TestAnAutoContextIsMarkedShrinkable:
     def test_manual_ignores_the_fit_variables_its_launch_clears(
         self, wide, monkeypatch, fit_ctx_supported, floor_ctx
     ):
-        # _MANUAL_PLACEMENT_ENV_VARS: the child never sees LLAMA_ARG_FIT_CTX or the layers.
         monkeypatch.setenv("LLAMA_ARG_FIT_CTX", "16384")
         monkeypatch.setenv("LLAMA_ARG_N_GPU_LAYERS", "20")
         self.fit_ctx_supported(monkeypatch, fit_ctx_supported)
@@ -3327,7 +2953,6 @@ class TestAnAutoContextIsMarkedShrinkable:
 
     @pytest.mark.parametrize("request_fields", [{}, {"gpu_memory_mode": "manual"}])
     def test_an_inherited_zero_is_overruled_by_the_launch(self, wide, monkeypatch, request_fields):
-        # Auto placement emits its own -c, and Manual its --fit-ctx, after the environment.
         monkeypatch.setenv("LLAMA_ARG_CTX_SIZE", "0")
         assert _estimate(model_path = wide, **request_fields).context_is_pinned is False
 
@@ -3336,15 +2961,12 @@ class TestAnAutoContextIsMarkedShrinkable:
         [
             ({}, {}, True),
             ({"gpu_memory_mode": "manual"}, {}, True),
-            # Context can shrink even when these settings prevent layer offload.
             ({"llama_extra_args": ["--fit", "off"]}, {}, False),
             ({"llama_extra_args": ["-ngl", "99"]}, {}, False),
             ({}, {"LLAMA_ARG_N_GPU_LAYERS": "20"}, False),
-            # The final -ngl -1 enables offload, overriding earlier arguments and env.
             ({"llama_extra_args": ["-ngl", "-1"]}, {}, True),
             ({"llama_extra_args": ["-ngl", "99", "-ngl", "-1"]}, {}, True),
             ({"llama_extra_args": ["-ngl", "-1"]}, {"LLAMA_ARG_N_GPU_LAYERS": "20"}, True),
-            # llama.cpp's spellings: auto is its default, all a count that stands.
             ({"llama_extra_args": ["-ngl", "auto"]}, {}, True),
             ({"llama_extra_args": ["-ngl", "all"]}, {}, False),
         ],
@@ -3367,14 +2989,12 @@ class TestAnAutoContextIsMarkedShrinkable:
         ],
     )
     def test_a_half_typed_fit_flag_still_prices(self, wide, request_fields):
-        # The panel prices every keystroke of the extras field.
         resp = _estimate(model_path = wide, **request_fields)
         assert resp.available is True
         assert resp.context_is_pinned is True
         assert resp.gpu_floor_bytes is None
 
     def test_a_zero_fit_ctx_can_land_on_the_native_length(self, wide):
-        # The fitter may settle on n_ctx 0, which llama.cpp reads as native.
         resp = _estimate(model_path = wide, gpu_memory_mode = "manual", llama_extra_args = ["-fitc", "0"])
         assert resp.context_is_pinned is True
 
@@ -3402,7 +3022,6 @@ class TestAnAutoContextIsMarkedShrinkable:
             llama_extra_args = ["--split-mode", "layer"],
             **common,
         )
-        # The case under test: tensor alone would read as fitting a budget the fallback misses.
         assert as_tensor.gpu_bytes < as_layer.gpu_bytes
         resp = _estimate(model_path = wide, tensor_parallel = True, selected_gpu_ids = selected_gpu_ids)
         assert resp.context_is_pinned is False
@@ -3691,9 +3310,7 @@ class TestDraftCacheTypePrecedence:
         drafter.write_bytes(Path(target).read_bytes())
         drafter_bytes = drafter.stat().st_size
 
-        # Varies with the draft pin, like the real one: the breakdown recovers the
-        # drafter's size by re-pricing with the pin flipped, so a constant stub charges
-        # no drafter at all and every assertion below would compare 0 with 0.
+        # Must vary with the draft pin or every drafter assertion compares 0 with 0.
         def _files(
             cfg,
             *,
@@ -3741,7 +3358,6 @@ class TestDraftCacheTypePrecedence:
         return out.drafter_runtime_bytes
 
     def test_the_panel_field_beats_an_inherited_value(self, spec, monkeypatch):
-        # q4_0 is a quarter of f16, so the wrong precedence is unmissable.
         inherited_only = self._bytes(spec, monkeypatch, env = "q4_0")
         field_wins = self._bytes(spec, monkeypatch, env = "q4_0", field = "f16")
         assert field_wins > inherited_only
@@ -3892,7 +3508,6 @@ class TestInheritedRemoteFilesAreMarkedUnsized:
             config, gguf, n_ctx = 8192, llama_extra_args = ["--spec-type", "draft-mtp"]
         )
         assert out.drafter_kv_unsized is True
-        # Still an answer, not a refusal: a floor beats a blank row.
         assert out.total_bytes > 0
 
     def test_an_inherited_projector_url_is_marked(self, plain, monkeypatch):
@@ -3955,7 +3570,6 @@ class TestFourMoreLaunchNormalizations:
             llama_extra_args = ["--spec-draft-hf", "org/drafter-GGUF"],
         )
         assert called == [], "the Hub listing ran behind the panel"
-        # Uncharged, but not unmentioned.
         assert out.drafter_kv_unsized is True
 
     @pytest.mark.parametrize(
@@ -4029,7 +3643,6 @@ class TestFourMoreLaunchNormalizations:
             config, target, n_ctx = 131072, spec_draft_cache_type = "q4_0"
         )
         default = ri._gguf_memory_breakdown(config, target, n_ctx = 131072)
-        # q4_0 is a quarter of the default f16, so "managed" is visible in the bytes.
         if managed:
             assert priced.drafter_runtime_bytes < default.drafter_runtime_bytes
         else:
@@ -4078,7 +3691,6 @@ class TestMlxEstimateKvBits:
         ],
     )
     def test_kv_bits_resolution(self, quant, bits, expected):
-        # An explicit mlx_kv_quant wins over the superseded width, as on /load.
         assert ri._mlx_estimate_kv_bits(quant, bits) == expected
 
 
@@ -4090,7 +3702,6 @@ from core.inference import mlx_memory as mm  # noqa: E402
 
 @pytest.fixture(autouse = True)
 def _fresh_sizing_cache():
-    # Tests re-price one checkpoint under different patched internals.
     from core.inference import mlx_inference
 
     mm._clear_sizing_cache()
@@ -4280,7 +3891,6 @@ class TestKvBytes:
         full, ring, window = _entry(), _entry(max_size = 512), _entry(window_size = 512)
         quantized = ("converted", {"group_size": MLX_KV_GROUP_SIZE, "bits": 4})
         assert mm._quantize_like_runtime([full, ring], 4) == [quantized, ring]
-        # Past two entries the last full-attention one stays float, as the load keeps it.
         last = _entry()
         assert mm._quantize_like_runtime([full, last, ring, window], 4) == [
             quantized,
@@ -4913,7 +4523,6 @@ class TestShardsTheLoaderReads:
         ],
     )
     def test_an_index_naming_a_shard_outside_the_snapshot_is_refused(self, tmp_path, shard):
-        # A cached repo's index must not steer sizing at files beside or above its snapshot.
         (tmp_path / "secret.safetensors").write_bytes(b"x" * 100)
         snapshot = tmp_path / "snap"
         snapshot.mkdir()

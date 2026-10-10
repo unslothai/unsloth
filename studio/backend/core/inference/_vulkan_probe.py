@@ -22,7 +22,7 @@ import ctypes
 import os
 import sys
 
-# ggml_backend_dev_type enum (ggml-backend.h): CPU=0, GPU=1, IGPU=2, ...
+# ggml_backend_dev_type enum (ggml-backend.h): CPU=0, GPU=1, IGPU=2.
 _GGML_BACKEND_DEVICE_TYPE_IGPU = 2
 # winbase.h
 _SEM_FAILCRITICALERRORS = 0x0001
@@ -59,13 +59,9 @@ def _igpu_flags_and_names(base, lib, count: int) -> tuple[list[bool], list[str],
             return flags, names, known
         dev_count = base.ggml_backend_reg_dev_count(reg)
     except Exception:
-        # Best-effort: any failure degrades to "discrete"/"unnamed" so the memory readings still get through instead of
-        # crashing the probe.
         return flags, names, known
 
-    # Bound outside the type-detection try above: a ggml-base without the description symbol (older/custom build) must
-    # degrade to unnamed devices, not abort before the iGPU flags are read (which would count an iGPU's shared RAM as
-    # VRAM).
+    # Outside the try above: a ggml-base without the description symbol must still read iGPU flags.
     name_functions = []
     for symbol in ("ggml_backend_dev_description", "ggml_backend_dev_name"):
         try:
@@ -94,7 +90,6 @@ def _igpu_flags_and_names(base, lib, count: int) -> tuple[list[bool], list[str],
             except Exception:
                 continue
             if raw_name:
-                # Tabs/newlines would corrupt the line protocol; spaces are safe.
                 name = raw_name.decode("utf-8", errors = "replace")
                 names[i] = name.replace("\t", " ").replace("\r", " ").replace("\n", " ").strip()
                 break
@@ -106,15 +101,13 @@ def main() -> int:
         return 0
     bindir = sys.argv[1]
 
-    # Device names can be non-ASCII (localized drivers); the platform-default stdout encoding (e.g. cp1252) would raise
-    # on them and lose the whole inventory. The reader decodes UTF-8 with the same error mode.
+    # Localized device names would raise under cp1252 stdout and lose the inventory.
     try:
         sys.stdout.reconfigure(encoding = "utf-8", errors = "replace")
     except Exception:
         pass
 
-    # Hold add_dll_directory's handle for the rest of main() (the documented idiom) so bindir stays on the search path
-    # while the sibling ggml DLLs resolve below.
+    # Hold add_dll_directory's handle so bindir stays on the search path.
     _dll_dir = None
     if sys.platform == "win32":
         base_name, vk_name = "ggml-base.dll", "ggml-vulkan.dll"
@@ -122,7 +115,7 @@ def main() -> int:
             _dll_dir = os.add_dll_directory(bindir)
         except Exception:
             pass
-        # Else a pre-1.1 vulkan-1.dll pops a modal "Entry point not found" box instead of failing CDLL (as ggml's dl_load_library).
+        # Else a pre-1.1 vulkan-1.dll pops a modal "Entry point not found" box.
         try:
             kernel32 = ctypes.WinDLL("kernel32")
             kernel32.SetErrorMode(kernel32.GetErrorMode() | _SEM_FAILCRITICALERRORS)
@@ -141,8 +134,7 @@ def main() -> int:
                 return os.path.join(directory, entry)
         return None
 
-    # RTLD_GLOBAL exposes ggml-base's symbols to ggml-vulkan on POSIX. getattr falls back to 0 where the flag doesn't
-    # exist (Windows CDLL ignores mode).
+    # RTLD_GLOBAL exposes ggml-base's symbols to ggml-vulkan on POSIX.
     _rtld_global = getattr(ctypes, "RTLD_GLOBAL", 0)
     base_path = _find_lib(bindir, base_name)
     vk_path = _find_lib(bindir, vk_name)

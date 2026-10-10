@@ -49,11 +49,8 @@ _httpx_stub.Client = type(
         "__exit__": lambda s, *a: None,
     },
 )
-# Only when the real library is absent. sys.modules holds what has been IMPORTED, not
-# what is installed, so setdefault does not defer to a real httpx that nothing in this
-# process has touched yet: the stub wins and shadows it for the whole session. This stub
-# has no Response, and starlette.testclient reads httpx.Response at import, so every
-# module collected afterwards that reaches fastapi.testclient or routes.inference dies.
+# Stub only when httpx is not installed: setdefault ignores an un-imported real httpx, and this
+# stub lacks Response, breaking starlette.testclient for every later module.
 try:
     import httpx  # noqa: F401
 except ImportError:
@@ -86,7 +83,7 @@ class _FakeProcess:
 
 def _loaded_backend(**overrides):
     backend = LlamaCppBackend()
-    backend._process = _FakeProcess()  # is_loaded only checks "is not None"
+    backend._process = _FakeProcess()  # is_loaded only checks is not None
     backend._healthy = True
     backend._model_identifier = "owner/repo"
     backend._hf_variant = "Q4_K_M"
@@ -108,9 +105,6 @@ def _loaded_backend(**overrides):
 
 def _matches(backend: LlamaCppBackend, **kwargs) -> bool:
     return backend.adopt_load_intent_if_matched(GgufLoadIntent(**kwargs))
-
-
-# ── Local-file identity via gguf_path ────────────────────────────────
 
 
 def test_already_in_target_state_uses_gguf_path_when_present(tmp_path):
@@ -181,9 +175,6 @@ def test_already_in_target_state_rejects_different_gguf_path(tmp_path):
     )
 
 
-# ── HF mode falls back to hf_variant comparison ──────────────────────
-
-
 def test_already_in_target_state_falls_back_to_hf_variant_for_hf_loads():
     backend = _loaded_backend(_hf_variant = "Q4_K_M", _gguf_path = None)
     assert (
@@ -220,9 +211,6 @@ def test_already_in_target_state_hf_same_variant_matches():
         )
         is True
     )
-
-
-# ── extra_args: None inherits, [] forces reload, list enforces ───────
 
 
 def test_already_in_target_state_none_extras_inherits_stored():
@@ -360,7 +348,6 @@ def test_reasoning_budget_state_resets_on_unload():
 def test_load_wires_reasoning_args_and_respawn_snapshot():
     source = inspect.getsource(LlamaCppBackend.load_model)
     assert "_build_reasoning_budget_flags(" in source
-    # The respawn snapshot is the intent itself, so the fields have to come off it.
     assert "reasoning_budget = intent.reasoning_budget" in source
     assert "reasoning_budget_message = intent.reasoning_budget_message" in source
     assert source.index("validate_reasoning_budget_capabilities") < source.index(
@@ -409,10 +396,10 @@ class TestRepeatLoadMatchesTheEffectiveCache:
     @pytest.mark.parametrize(
         "extras,managed",
         [
-            (["--cache-type-k", "q8_0", "--cache-type-v", "q8_0"], None),  # extras only
-            (["--cache-type-k", "q4_0", "--cache-type-v", "f16"], None),  # asymmetric
-            ([], "q8_0"),  # managed only
-            ([], None),  # nothing set
+            (["--cache-type-k", "q8_0", "--cache-type-v", "q8_0"], None),
+            (["--cache-type-k", "q4_0", "--cache-type-v", "f16"], None),
+            ([], "q8_0"),
+            ([], None),
         ],
     )
     def test_the_same_request_resolves_to_the_running_pair(self, extras, managed):
@@ -421,7 +408,6 @@ class TestRepeatLoadMatchesTheEffectiveCache:
         planned = _planned_main_cache_types(managed, extras)
         running = self._backend_running(planned)
 
-        # The comparison the matcher makes, isolated: same request in, same pair out.
         assert running._effective_cache_types == _planned_main_cache_types(managed, extras)
 
     def test_a_changed_cache_still_reloads(self):
@@ -472,7 +458,6 @@ class TestRepeatLoadMatchesTheEffectiveCache:
 
         assert asked == ("q8_0", "q8_0")
         assert launched == ("q8_0", "f16"), launched
-        # The matcher reads the first, not the second.
         b._requested_cache_types = asked
         assert b._requested_cache_types == _planned_main_cache_types(None, extras)
 
@@ -489,7 +474,7 @@ class TestRepeatLoadMatchesTheEffectiveCache:
 
 @pytest.mark.parametrize("model", [LoadRequest, ValidateModelRequest])
 def test_reasoning_budget_rejects_booleans(model):
-    # bool subclasses int and pydantic parses lax, so `true` would launch a one-token budget.
+    # bool subclasses int and pydantic is lax, so `true` would launch a one-token budget.
     with pytest.raises(ValueError, match = "Expected a number, got a boolean"):
         model(model_path = "unsloth/x", reasoning_budget = True)
     assert model(model_path = "unsloth/x", reasoning_budget = 1).reasoning_budget == 1
@@ -506,8 +491,7 @@ def test_the_reuse_check_compares_the_request_not_the_environment():
 
     launch = inspect.getsource(LlamaCppBackend.load_model)
     assert "self._requested_reasoning_budget = reasoning_budget" in launch
-    # A probe that could not be read says nothing about the flag, and the child still applies
-    # the environment, so only a conclusive "unsupported" may drop it.
+    # Only a conclusive 'unsupported' probe may drop the flag; the child still applies the env.
     assert "reasoning_budget_probe_inconclusive" in launch
 
 
@@ -525,10 +509,8 @@ def test_an_inherited_env_budget_does_not_force_a_reload():
     """The live EFFECTIVE value carries LLAMA_ARG_THINK_BUDGET*, which no request can send or
     clear. Comparing against it tore down a healthy server on every load and never converged."""
     backend = _loaded_backend(
-        # What the environment gave the child...
         _reasoning_budget = 512,
         _reasoning_budget_message = "from env",
-        # ...against a load that asked for nothing.
         _requested_reasoning_budget = -1,
         _requested_reasoning_budget_message = "",
     )
@@ -548,9 +530,6 @@ def test_an_inherited_env_budget_does_not_force_a_reload():
         )
         is True
     )
-
-
-# ── Canonical identity normalization ────────────────────────────
 
 
 def test_canonical_model_identity_resolves_snapshot_to_repo():
@@ -579,11 +558,7 @@ def test_canonical_model_identity_empty_and_none():
 def test_canonical_model_identity_keeps_other_local_paths():
     from routes.inference import _canonical_model_identity
     assert _canonical_model_identity("/models/my-model.gguf") == "/models/my-model.gguf"
-    # A models-- folder outside the cache layout is not a repo id.
     assert _canonical_model_identity("/models--org--name/x.gguf") == "/models--org--name/x.gguf"
-
-
-# ── _resolve_inherited_extra_args: snapshot vs repo id ──────────
 
 
 def test_inheritance_works_when_stored_is_snapshot_and_load_is_repo():
@@ -752,7 +727,7 @@ def test_explicit_empty_extras_still_clears():
         result = _resolve_inherited_extra_args(
             FakeRequest(), FakeConfig(), "unsloth/Qwen3.8-27B-GGUF", None
         )
-        assert result is None  # early return because llama_extra_args is not None (it's [])
+        assert result is None
     finally:
         _routes.get_llama_cpp_backend = _get_llama_cpp_backend_orig
 

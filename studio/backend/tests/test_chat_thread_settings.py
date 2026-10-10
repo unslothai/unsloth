@@ -74,12 +74,10 @@ def test_thread_settings_round_trip():
 @pytest.mark.parametrize(
     "field, value",
     [
-        # full access disables the sandbox, so it stays session-only per thread too.
         ("permissionMode", "full"),
         ("ragTopK", 51),
         ("ragAutoInjectMinScore", 1.5),
         ("ragMode", "vector"),
-        # global-only settings must not reach a thread and silently become per-chat.
         ("gpuMemoryMode", "manual"),
         ("showCanvasMenuItem", True),
     ],
@@ -93,7 +91,6 @@ def test_thread_settings_survive_a_record_rewrite(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread(_thread(settings = SETTINGS))
 
-    # the title autosave and every other writer rebuild the record without the snapshot.
     studio_db.upsert_chat_thread(_thread(title = "Renamed"))
 
     stored = studio_db.get_chat_thread("thread-1")
@@ -105,7 +102,6 @@ def test_thread_settings_patch_replaces_the_snapshot(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread(_thread(settings = SETTINGS))
 
-    # ragSource is a discriminated union, so the write replaces: no kb id survives the switch.
     replacement = {"toolsEnabled": False, "ragSource": {"type": "thread"}}
     updated = studio_db.update_chat_thread("thread-1", {"settings": replacement})
 
@@ -204,24 +200,18 @@ def test_settings_column_is_added_to_an_existing_database(tmp_path, monkeypatch)
     assert studio_db.get_chat_thread("thread-1")["settings"] == SETTINGS
 
 
-# A snapshot on disk outlives the build that wrote it. A newer Unsloth adding a
-# setting, widening an enum or raising a bound writes a blob this build has never
-# seen, and it reaches the response model rather than the request one, so refusing
-# it 500s the chat on open and takes the whole history export with it. The wire
-# contract stays strict; only the read is forgiving.
+# Stored snapshots may come from a newer build; the read is lenient, the wire stays strict.
 @pytest.mark.parametrize(
     "stored, expected",
     [
         ({"toolsEnabled": True, "voiceModeEnabled": True}, {"toolsEnabled": True}),
         ({"reasoningEffort": "ultra", "toolsEnabled": True}, {"toolsEnabled": True}),
         ({"ragTopK": 999, "toolsEnabled": True}, {"toolsEnabled": True}),
-        # several at once, which is what a version gap actually looks like
         (
             {"ragTopK": 999, "reasoningEffort": "ultra", "futureThing": 1, "toolsEnabled": True},
             {"toolsEnabled": True},
         ),
         ({"ragSource": {"type": "web", "url": "x"}, "toolsEnabled": True}, {"toolsEnabled": True}),
-        # nothing salvageable, and non-objects
         ({"quantumMode": True}, {}),
         ("hello", None),
         ([1, 2, 3], None),
@@ -239,8 +229,6 @@ def test_a_snapshot_from_a_newer_build_still_reads(stored, expected):
 
 
 def test_the_wire_contract_stays_strict():
-    # Only rows off disk are forgiven. A client may not invent a setting on either
-    # the patch or the full-record POST, which shares the ChatThread model.
     with pytest.raises(ValidationError):
         ChatThreadPatch(settings = {"toolsEnabled": True, "voiceModeEnabled": True})
     with pytest.raises(ValidationError):
@@ -264,7 +252,6 @@ def test_the_wire_contract_stays_strict():
 
 
 def test_an_unreadable_key_does_not_disturb_the_stored_row(tmp_path, monkeypatch):
-    # the row keeps what it had, so upgrading again gets the setting back.
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread(_thread())
     studio_db.update_chat_thread("thread-1", {"settings": {"toolsEnabled": True}})
@@ -312,18 +299,14 @@ def _store_raw(payload: str, thread_id: str = "thread-1") -> None:
 
 
 def test_a_downgraded_client_cannot_delete_what_it_could_not_read(tmp_path, monkeypatch):
-    # The whole point of the lenient read is that upgrading gets the setting back, which
-    # only holds if writing in the meantime leaves the unreadable part alone.
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread(_thread())
     _store_raw('{"toolsEnabled": true, "voiceModeEnabled": true, "ragTopK": 999}')
 
-    # what this build serves the client: neither the unknown key nor the out-of-range one
     served = thread_from_row(studio_db.get_chat_thread("thread-1")).settings
     assert served.toolsEnabled is True
     assert served.ragTopK is None
 
-    # the client writes back everything it knows about
     patch = {"settings": {"toolsEnabled": False}}
     settings_write = _settings_write_from_patch(patch)
     studio_db.update_chat_thread("thread-1", patch, settings_write = settings_write)
@@ -335,7 +318,6 @@ def test_a_downgraded_client_cannot_delete_what_it_could_not_read(tmp_path, monk
 
 
 def test_a_merge_touches_only_the_fields_it_names(tmp_path, monkeypatch):
-    # The unload path knows one pill changed and nothing about the rest of the row.
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread(_thread())
     studio_db.update_chat_thread(
@@ -368,7 +350,6 @@ def test_a_merge_also_spares_an_unreadable_key(tmp_path, monkeypatch):
 
 
 def test_clearing_still_clears_the_whole_column(tmp_path, monkeypatch):
-    # An explicit null is the one instruction that means all of it, unreadable part included.
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread(_thread())
     _store_raw('{"toolsEnabled": true, "voiceModeEnabled": true}')
@@ -405,15 +386,13 @@ def test_a_merge_is_still_held_to_the_contract():
 
 
 def test_an_older_write_cannot_overtake_a_newer_one(tmp_path, monkeypatch):
-    # The tab-close beacon can pass a PATCH the server has already accepted, and no
-    # client-side abort reaches a handler that is already running.
+    # The tab-close beacon can deliver a PATCH after a newer one; no abort reaches it.
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread(_thread())
 
     studio_db.write_chat_thread_settings(
         "thread-1", replace = {"toolsEnabled": True}, seq = 200, writer = "tab-a"
     )
-    # the straggler, carrying what the user had moved away from
     studio_db.write_chat_thread_settings(
         "thread-1", replace = {"toolsEnabled": False}, seq = 100, writer = "tab-a"
     )
@@ -423,7 +402,6 @@ def test_an_older_write_cannot_overtake_a_newer_one(tmp_path, monkeypatch):
 
 
 def test_the_same_seq_is_not_applied_twice(tmp_path, monkeypatch):
-    # keepalive retries can duplicate a request; the second must be a no-op, not a revert.
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread(_thread())
 
@@ -438,7 +416,6 @@ def test_the_same_seq_is_not_applied_twice(tmp_path, monkeypatch):
 
 
 def test_a_write_without_a_seq_still_applies(tmp_path, monkeypatch):
-    # Old clients send none, and an unordered write is still better than a dropped one.
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread(_thread())
 
@@ -465,7 +442,6 @@ def test_two_merges_of_different_fields_both_survive(tmp_path, monkeypatch):
 
 
 def test_the_watermark_column_is_added_to_an_existing_database(tmp_path, monkeypatch):
-    # Same upgrade path as settings_json: an install that predates the column.
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread(_thread())
     conn = sqlite3.connect(studio_db_path())
@@ -483,16 +459,13 @@ def test_the_watermark_column_is_added_to_an_existing_database(tmp_path, monkeyp
 
 
 def test_two_browsers_are_never_ordered_against_each_other(tmp_path, monkeypatch):
-    # The seq is a client's own counter. Comparing one machine's against another's means
-    # the browser whose clock or counter is behind has every edit silently refused, while
-    # the server still answers 200 and the user believes it saved.
+    # seq is per client; comparing across machines would silently refuse edits.
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread(_thread())
 
     studio_db.write_chat_thread_settings(
         "thread-1", replace = {"toolsEnabled": True}, seq = 9_000, writer = "laptop"
     )
-    # a second machine, far behind on the same counter, still gets its edit
     studio_db.write_chat_thread_settings(
         "thread-1", replace = {"toolsEnabled": False}, seq = 12, writer = "desktop"
     )
@@ -501,7 +474,6 @@ def test_two_browsers_are_never_ordered_against_each_other(tmp_path, monkeypatch
 
 
 def test_a_failed_precondition_does_not_commit_the_settings(tmp_path, monkeypatch):
-    # PATCH allows settings and a guarded rename together; a 409 must leave neither.
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread(_thread())
     studio_db.update_chat_thread("thread-1", {"settings": {"toolsEnabled": True}})
@@ -536,9 +508,7 @@ def test_settings_and_a_passing_guard_both_land(tmp_path, monkeypatch):
 
 
 def test_another_tab_writing_does_not_clear_a_writer_watermark(tmp_path, monkeypatch):
-    # The race the ordering exists for: A's newer keepalive lands, B writes, then A's
-    # older request finally arrives. With one writer column, B's write has replaced the
-    # watermark and A's straggler is no longer compared against its own.
+    # A's older request after B's write must still be compared against A's own watermark.
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread(_thread())
 
@@ -548,7 +518,6 @@ def test_another_tab_writing_does_not_clear_a_writer_watermark(tmp_path, monkeyp
     studio_db.write_chat_thread_settings(
         "thread-1", merge = {"codeToolsEnabled": True}, seq = 1, writer = "tab-b"
     )
-    # tab A's straggler, older than what A already had stored
     studio_db.write_chat_thread_settings(
         "thread-1", merge = {"toolsEnabled": False}, seq = 2, writer = "tab-a"
     )
@@ -579,20 +548,16 @@ def test_watermarks_do_not_grow_without_bound(tmp_path, monkeypatch):
 
 
 def test_the_newest_writer_is_not_the_first_evicted(tmp_path, monkeypatch):
-    # Every session starts its counter at 1, so evicting by counter throws out the tab
-    # that just arrived and keeps long-dead ones, leaving the active writer with no
-    # watermark for its own stragglers to be refused by.
+    # Counters start at 1 per session, so evicting by counter drops the newest tab.
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread(_thread())
     for i in range(studio_db._MAX_SETTINGS_WRITERS):
         studio_db.write_chat_thread_settings(
             "thread-1", merge = {"toolsEnabled": True}, seq = 500 + i, writer = f"old-{i}"
         )
-    # a brand new tab, counter starting at 1
     studio_db.write_chat_thread_settings(
         "thread-1", merge = {"toolsEnabled": False}, seq = 1, writer = "fresh"
     )
-    # its own straggler must still be refused
     studio_db.write_chat_thread_settings(
         "thread-1", merge = {"toolsEnabled": True}, seq = 1, writer = "fresh"
     )
@@ -712,9 +677,7 @@ def _thread_row(settings):
 @pytest.mark.parametrize(
     "stored, expected",
     [
-        # Written before the seed existed. Absent, so the chat takes the pin it inherits.
         ({"temperature": 0.3}, {"temperature": 0.3}),
-        # Written by a build that has it, with the pin cleared. null is the chat's choice.
         ({"temperature": 0.3, "seed": None}, {"temperature": 0.3, "seed": None}),
         ({"temperature": 0.3, "seed": 3407}, {"temperature": 0.3, "seed": 3407}),
     ],

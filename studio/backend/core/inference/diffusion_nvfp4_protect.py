@@ -84,7 +84,7 @@ class NVFP4StepController:
     def register_layer(self, layer: Any) -> None:
         try:
             self._layers.add(layer)
-        except TypeError:  # an unweakrefable layer simply is not counted
+        except TypeError:
             pass
 
     def capable_layers(self) -> int:
@@ -121,7 +121,7 @@ class NVFP4StepController:
             return ()
         try:
             self.steps = parse_protect_steps(self.spec, total_steps)
-        except ValueError as exc:  # a typo must not cost a multi-minute render
+        except ValueError as exc:
             self.steps = ()
             if logger is not None:
                 logger.warning("[nvfp4] protect schedule ignored: %s", exc)

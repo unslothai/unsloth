@@ -47,7 +47,6 @@ def _stub_dataset_info(monkeypatch, *, private: bool, calls: list):
 
         def _dataset_info(repo_id, **_kw):
             if private and not isinstance(token, str):
-                # Anonymous or ambient-less: the Hub 404s a private repo.
                 raise RuntimeError("401 Unauthorized")
             return SimpleNamespace(
                 siblings = [_sibling("data/train.parquet", 4096, "sha-private")],
@@ -91,7 +90,6 @@ def test_an_ambient_ui_entry_is_not_served_to_an_anonymous_caller(monkeypatch):
         calls.append(token)
 
         def _dataset_info(repo_id, **_kw):
-            # `None` carries the ambient HF_TOKEN and succeeds; `False` sends none.
             if token is False:
                 raise RuntimeError("401 Unauthorized")
             return SimpleNamespace(

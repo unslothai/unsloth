@@ -503,7 +503,6 @@ class ManagedEngine:
             "TRITON_CACHE_DIR": cache + "/triton",
             "FLASHINFER_WORKSPACE_BASE": environment,
             **({"HF_ENDPOINT": env["HF_ENDPOINT"]} if env.get("HF_ENDPOINT") else {}),
-            # Cache-only mode must hold in the guest too.
             **({"HF_HUB_OFFLINE": "1"} if _offline(env) else {}),
         }
         from .engine_install import cuda_environment
@@ -533,7 +532,6 @@ class ManagedEngine:
             ),
             **({"served_model_name": model} if model_path and model_path != model else {}),
         )
-        # The engine launchers are Studio source files; the guest reads them through /mnt.
         server = str(Path(__file__).with_name(f"{self.engine}_server.py"))
         command = [wsl_host.to_guest_path(arg) if arg == server else arg for arg in command]
         secrets = {

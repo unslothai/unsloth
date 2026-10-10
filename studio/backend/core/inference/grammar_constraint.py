@@ -149,7 +149,6 @@ def constraint_spec_from_response_format(
                 "response_format type 'json_object' requires a 'schema' member to be a "
                 "JSON Schema object",
             )
-        # Absent, null and empty mean this format's own object promise, not llguidance's any-JSON `{}`.
         schema_json = _JSON_OBJECT_SCHEMA if not supplied else _canonical_schema_json(supplied)
     else:
         schema_json = _canonical_schema_json(_json_schema_from_response_format(response_format))
@@ -392,7 +391,7 @@ def _compile_grammar(schema_json: str, prelude_close: Optional[str]) -> str:
         if prelude_close is None:
             grammar = _llg.LLMatcher.grammar_from_json_schema(schema_json)
         else:
-            # No textual closer in reasoning (the route splits there); a {0,N} bound here exhausts llguidance's lexer.
+            # No textual closer in reasoning; a {0,N} bound here exhausts llguidance's lexer.
             closer_rx = re.escape(prelude_close).replace("/", "\\/")
             grammar = (
                 "%llguidance {}\n"
@@ -444,7 +443,6 @@ def _stripped_special_ids(
             )
         except Exception:
             return ()
-    # llguidance ends on the runtime stops, or on the tokenizer's own end token when there are none.
     keep = set(stop_ids) if stop_ids else {getattr(inner, "eos_token_id", None)}
     return tuple(sorted({int(i) for i in ids if 0 <= int(i) < int(n_vocab)} - keep))
 

@@ -36,7 +36,7 @@ class _EncodePipe:
         value = float(sum(map(ord, str(prompt))))
         return (
             torch.full((num_images_per_prompt, 4), value),
-            None,  # mask-less returns must round-trip (None slots)
+            None,
         )
 
 
@@ -56,7 +56,7 @@ def test_off_by_default(monkeypatch):
     monkeypatch.delenv("UNSLOTH_DIFFUSION_COND_CACHE_DIR", raising = False)
     pipe = _EncodePipe()
     assert _install(pipe) is False
-    assert pipe.encode_prompt.__func__ is _EncodePipe.encode_prompt  # untouched
+    assert pipe.encode_prompt.__func__ is _EncodePipe.encode_prompt
 
 
 def test_blank_dir_means_off(monkeypatch):
@@ -71,9 +71,9 @@ def test_repeated_prompt_skips_the_encode_forward(cache_env):
     assert _install(pipe) is True
     first = pipe.encode_prompt("a sloth", device = "cpu")
     second = pipe.encode_prompt("a sloth", device = "cpu")
-    assert pipe.calls == 1  # warm repeat never ran the text encoder
+    assert pipe.calls == 1
     assert torch.equal(first[0], second[0])
-    assert first[1] is None and second[1] is None  # None slot round-trips
+    assert first[1] is None and second[1] is None
     assert pipe._unsloth_cond_cache_stats == {"hits": 1, "misses": 1}
 
 
@@ -82,7 +82,7 @@ def test_distinct_prompts_and_arguments_key_separately(cache_env):
     _install(pipe)
     pipe.encode_prompt("a sloth")
     pipe.encode_prompt("a fox")
-    pipe.encode_prompt("a sloth", num_images_per_prompt = 4)  # shape-changing arg
+    pipe.encode_prompt("a sloth", num_images_per_prompt = 4)
     assert pipe.calls == 3
 
 
@@ -91,7 +91,7 @@ def test_device_argument_excluded_from_the_key(cache_env):
     _install(pipe)
     pipe.encode_prompt("a sloth", device = "cpu")
     out = pipe.encode_prompt("a sloth", device = torch.device("cpu"))
-    assert pipe.calls == 1  # placement detail: still a hit, moved to the target
+    assert pipe.calls == 1
     assert out[0].device.type == "cpu"
 
 
@@ -108,7 +108,6 @@ def test_warm_reuse_across_installs(cache_env):
 
 
 def test_load_fingerprint_keys_apart(cache_env):
-    # A different repo / TE quant produces different embeddings: never cross-hit.
     a = _EncodePipe()
     _install(a)
     a.encode_prompt("a sloth")
@@ -122,8 +121,7 @@ def test_load_fingerprint_keys_apart(cache_env):
 
 
 def test_companion_base_keys_apart(cache_env):
-    # A GGUF / single-file checkpoint takes its TEXT ENCODERS from the companion base, so the same checkpoint reloaded
-    # against a different base must re-encode rather than reuse the previous base's embeddings.
+    # GGUF checkpoints take text encoders from the companion base, so a new base must re-encode.
     first = _EncodePipe()
     _install(first, repo_id = "org/model-GGUF", base_repo = "base/one")
     first.encode_prompt("a sloth")
@@ -131,7 +129,6 @@ def test_companion_base_keys_apart(cache_env):
     _install(second, repo_id = "org/model-GGUF", base_repo = "base/two")
     second.encode_prompt("a sloth")
     assert (first.calls, second.calls) == (1, 1)
-    # The same base is still a warm hit (the whole point of the cache).
     third = _EncodePipe()
     _install(third, repo_id = "org/model-GGUF", base_repo = "base/one")
     third.encode_prompt("a sloth")
@@ -139,7 +136,7 @@ def test_companion_base_keys_apart(cache_env):
 
 
 def test_a_local_base_updated_in_place_keys_apart(cache_env, tmp_path):
-    # A directory path is not a version: editing the text encoder in place must MISS, or the run conditions on the old encoder's embeddings.
+    # A directory path is not a version: editing the encoder in place must MISS.
     base = tmp_path / "base"
     (base / "text_encoder").mkdir(parents = True)
     weights = base / "text_encoder" / "model.safetensors"
@@ -147,12 +144,10 @@ def test_a_local_base_updated_in_place_keys_apart(cache_env, tmp_path):
     first = _EncodePipe()
     _install(first, repo_id = "org/model-GGUF", base_repo = str(base))
     first.encode_prompt("a sloth")
-    # Unchanged base -> warm hit (the cache still has to work).
     warm = _EncodePipe()
     _install(warm, repo_id = "org/model-GGUF", base_repo = str(base))
     warm.encode_prompt("a sloth")
     assert (first.calls, warm.calls) == (1, 0)
-    # Same path, new contents -> re-encode.
     weights.write_bytes(b"v2-different-length")
     updated = _EncodePipe()
     _install(updated, repo_id = "org/model-GGUF", base_repo = str(base))
@@ -161,7 +156,6 @@ def test_a_local_base_updated_in_place_keys_apart(cache_env, tmp_path):
 
 
 def test_source_revision_never_raises():
-    # Best-effort by contract: a missing path, a bare name and junk all resolve to a marker instead of blocking the load.
     for ref in (None, "", "no/such/repo-xyz", "/does/not/exist", 1234):
         assert isinstance(cond_cache._source_revision(ref), str)
 
@@ -169,7 +163,7 @@ def test_source_revision_never_raises():
 def test_lora_attached_bypasses_the_cache(cache_env):
     pipe = _EncodePipe()
     _install(pipe)
-    pipe._unsloth_loras = ("style",)  # adapters may target the text encoders
+    pipe._unsloth_loras = ("style",)
     pipe.encode_prompt("a sloth")
     pipe.encode_prompt("a sloth")
     assert pipe.calls == 2

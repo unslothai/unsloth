@@ -62,7 +62,7 @@ _HTML_TYPES = frozenset({"text/html", "application/xhtml+xml"})
 _FETCH_POOL = ThreadPoolExecutor(max_workers = 8, thread_name_prefix = "browser-fetch")
 _DISCONNECT_POLL_S = 0.25
 
-# Quoted values are bounded and a bare "<" ends a tag, so stripping stays linear on hostile pages.
+# Bounded quoted values keep tag stripping linear on hostile pages.
 _TAG_BODY = r"""(?:[^<>"']|"[^"]{0,4096}"|'[^']{0,4096}')*>"""
 _BASE_TAG_RE = re.compile(r"<base\b" + _TAG_BODY, re.IGNORECASE)
 _ATTR_HREF_RE = re.compile(r"""\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))""", re.IGNORECASE)
@@ -128,8 +128,8 @@ _MODULE_CACHE_ENTRIES = 128
 _MODULE_CACHE_CHARS = 16 * 1024 * 1024
 _module_cache_chars = 0
 
-# https only (http could hit local services; WebKit lacks local network protection). The sandbox
-# (no allow-same-origin) isolates pages; the injected script submits forms.
+# https only: http could hit local services (WebKit lacks local network protection).
+# The sandbox (no allow-same-origin) isolates pages.
 _FRAME_CSP = (
     "default-src https: data: blob:; "
     "script-src 'unsafe-inline' 'unsafe-eval' https: data: blob:; "
@@ -150,9 +150,7 @@ _FRAME_CSP = (
     "treat-as-public-address"
 )
 
-# Page shell: injects <base> and a script turning navigations into panel messages. The page is a
-# srcdoc child; the shell then sets frame-src 'none' on itself so the child can't be navigated
-# (it keeps its own policy copy, so embeds still load), independent of the embedder's policy.
+# Shell sets frame-src 'none' on itself so the srcdoc child can't be navigated away.
 _FRAME_HTML = r"""<!doctype html>
 <html>
   <head>
@@ -716,9 +714,7 @@ _FRAME_HTML = r"""<!doctype html>
   </body>
 </html>"""
 
-# Annotate, the body of a function of `post` that the page shell's `install` runs on the panel's
-# request: while it is on, pointer input is the panel's, and the page only reports the block under
-# the pointer, what a click or drag marks, and where the marks sit as it scrolls.
+# Annotate mode: pointer input belongs to the panel; the page only reports blocks and marks.
 _ANNOTATE_JS = r"""
           // Clicks mark these whole; anything else marks the nearest element that holds text itself.
           const BLOCK = "p, li, h1, h2, h3, h4, h5, h6, pre, blockquote, td, th, dt, dd, figcaption, caption, img, picture, video, svg, button, label, a[href], input, textarea, select";
@@ -1055,9 +1051,7 @@ _ANNOTATE_JS = r"""
 """
 
 
-# Print shell: the panel posts it a copy of the page (`snapshot` above), which it shows without
-# scripts and prints. Its own sandbox allows the print dialog, which the page's does not; its CSP
-# runs only this script, so nothing in the copy can.
+# Print shell: its own sandbox allows the print dialog; its CSP runs only this script.
 _PRINT_SCRIPT = r"""
 (() => {
   let started = false;

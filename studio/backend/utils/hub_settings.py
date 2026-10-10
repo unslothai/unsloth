@@ -86,7 +86,7 @@ def _read_stored() -> dict | None:
     try:
         from utils.account_context import OWNER, run_as
 
-        # get_app_settings creates and migrates studio.db; the startup read must leave it untouched.
+        # get_app_settings creates studio.db; the startup read must leave it untouched.
         if "storage.studio_db" not in sys.modules:
             from utils.paths.storage_roots import studio_db_path
 
@@ -166,7 +166,7 @@ def claim_automatic_source() -> bool:
         return False
     from storage.studio_db import compare_and_set_app_setting
 
-    # An endpoint saved since the read above is a choice too: the claim must not override it.
+    # A since-saved endpoint is a choice too: the claim must not override it.
     return compare_and_set_app_setting(SOURCE_KEY, None, MODELSCOPE, absent = (HF_ENDPOINT_KEY,))
 
 
@@ -248,7 +248,7 @@ def saved_only_endpoints() -> frozenset[str]:
 
 def _bypass_proxy_for(url: str) -> None:
     """Keep the loopback adapter off a configured proxy: httpx proxies 127.0.0.1 too unless NO_PROXY lists it."""
-    # Environment proxies only: on macOS / Windows an env no_proxy makes getproxies() skip the system proxy.
+    # Env proxies only: on macOS/Windows env no_proxy makes getproxies() skip system proxy.
     from urllib.request import getproxies_environment
 
     host = urlsplit(url).hostname
@@ -265,14 +265,12 @@ def _bypass_proxy_for(url: str) -> None:
     http = sys.modules.get("huggingface_hub.utils._http")
     lock = getattr(http, "_CLIENT_LOCK", None)
     if changed and lock is not None and hasattr(http, "_GLOBAL_CLIENT"):
-        # The 1.x shared client read proxies once: drop it, never close it (aborts live downloads).
+        # Drop the shared client, never close it (closing aborts live downloads).
         with lock:
             http._GLOBAL_CLIENT = None
 
 
-# huggingface_hub closes its shared client in every forked child, so any preexec_fn child (tools,
-# sidecar servers) can block before exec on httpx locks another thread held at the fork. Child
-# hooks run in registration order, which import order decides, so the parent disarms the client.
+# huggingface_hub closes its client in forked children, which can deadlock on httpx locks.
 _inherited_hub_clients: list = []
 
 
@@ -290,7 +288,6 @@ def _keep_hub_client_open_in_forks() -> None:
     http = sys.modules.get("huggingface_hub.utils._http")
     client = getattr(http, "_GLOBAL_CLIENT", None)
     if client is not None and "close" not in vars(client):
-        # A weak reference, so the client is still freed by refcount once dropped.
         client.close = partial(_close_if_owner, weakref.ref(client), os.getpid())
 
 
@@ -314,7 +311,7 @@ def _refresh_imported_hub_libraries() -> None:
         hf_api.api.endpoint = endpoint
     hf_file_system = sys.modules.get("huggingface_hub.hf_file_system")
     if hf_file_system is not None:
-        # fsspec hands back the cached instance, which kept the old endpoint.
+        # fsspec returns the cached instance, which kept the old endpoint.
         hf_file_system.HfFileSystem.clear_instance_cache()
     datasets_config = sys.modules.get("datasets.config")
     if datasets_config is not None:

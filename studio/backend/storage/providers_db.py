@@ -60,8 +60,7 @@ def _migrate_legacy_custom_provider_types(conn: sqlite3.Connection) -> None:
         except ValueError:
             host = ""
 
-        # A display name is user-editable metadata. Never let it turn an OpenAI-managed
-        # endpoint into a custom connection, even if it happens to equal a preset label.
+        # Display name is user-editable; never let it turn an OpenAI endpoint into a custom one.
         if host == "api.openai.com" or host.endswith(
             (".openai.azure.com", ".services.ai.azure.com")
         ):
@@ -186,8 +185,7 @@ def provider_bundle_transaction() -> Iterator[sqlite3.Connection]:
     share ``studio.db``, so a single SQLite write transaction prevents other processes from observing a new
     endpoint with the previous key (or the inverse) while a provider edit is in progress.
     """
-    # Ensure both tables exist before opening the transaction. The credential module commits schema
-    # initialization on its own connection.
+    # Both tables must exist before the transaction; credential_secrets commits its own schema.
     from storage import credential_secrets
 
     credential_secrets.ensure_schema()

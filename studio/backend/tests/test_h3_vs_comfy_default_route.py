@@ -43,7 +43,6 @@ def test_the_route_reader_is_torch_free_and_keyed_by_lowercased_repo(monkeypatch
     for tier in tiers["minimaxai/minimax-h3"]:
         assert set(tier) == {"gpu_gb", "system_ram_gb", "requires_quantised_streaming"}
         assert tier["requires_quantised_streaming"] is True
-    # Strictly wider than the catalog's static 30 GiB / 80 GiB streamed tier somewhere.
     assert any(
         t["gpu_gb"] < 30.0 or t["system_ram_gb"] < 80.0 for t in tiers["minimaxai/minimax-h3"]
     )
@@ -157,8 +156,7 @@ _STREAMED_SET_TIER_GIB = _streamed_set_tier_gib()
 def test_each_widening_follows_the_kill_switch_of_the_behaviour_it_relies_on(
     monkeypatch, te_stream, arena, expected
 ):
-    # The 14 GiB tier is only true while the conditioner streams, the 61 GiB RAM tier only while the streamed denoiser
-    # holds one host copy; turning either behaviour off must withdraw exactly the widening it made possible.
+    # Each wide tier depends on its streaming behaviour; disabling one must withdraw only its widening.
     monkeypatch.delenv("UNSLOTH_H3_DIFFUSERS_WIDE_TIERS", raising = False)
     for name, value in (
         ("UNSLOTH_H3_TE_STREAM", te_stream),
@@ -247,5 +245,5 @@ def test_the_vram_tier_admits_only_cards_that_render_the_default_request(monkeyp
     )
     (tier,) = h3_diffusers_fit_tiers()
     assert floor_gib <= tier["gpu_gb"] < floor_gib + 0.5
-    assert tier["gpu_gb"] > 12.0  # a 12 GB card keeps GGUF
-    assert tier["gpu_gb"] <= 15.99  # a 16 GB card still routes to the Diffusers row
+    assert tier["gpu_gb"] > 12.0
+    assert tier["gpu_gb"] <= 15.99

@@ -18,7 +18,7 @@ _BACKEND = Path(__file__).resolve().parent.parent
 _DOCS_UI = _BACKEND / "assets" / "docs_ui"
 _MANIFEST = json.loads((_DOCS_UI / "docs_ui_manifest.json").read_text(encoding = "utf-8"))
 
-# Ours, not upstream's: prose we may reword, and the manifest cannot hash itself.
+# ours, not upstream's: prose we may reword, and the manifest cannot hash itself
 _UNPINNED = {"README.md", "docs_ui_manifest.json"}
 
 
@@ -62,8 +62,7 @@ def test_every_package_ships_its_licence():
     assert names == {"swagger-ui-dist", "redoc"}
     assert (_DOCS_UI / "LICENSE.swagger-ui").exists()
     assert (_DOCS_UI / "LICENSE.redoc").exists()
-    # Apache-2.0 section 4(d): redistributing a work that carries a NOTICE means shipping it.
-    # The bundle also names its own extracted third-party banners; ship those with it.
+    # Apache-2.0 section 4(d): redistributing a work with a NOTICE means shipping it
     assert (_DOCS_UI / "NOTICE.swagger-ui").exists()
     assert (_DOCS_UI / "swagger-ui-bundle.js.LICENSE.txt").exists()
     for entry in _MANIFEST["packages"]:

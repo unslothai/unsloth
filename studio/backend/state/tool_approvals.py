@@ -17,13 +17,10 @@ from typing import Optional
 
 from state import run_subscribers
 
-# Generous ceiling so a user can deliberate; the stop button or a disconnect still breaks the wait early via cancel_event.
+# The stop button or a disconnect breaks the wait early via cancel_event.
 _DECISION_TIMEOUT = 3600.0
 
-# How long a durable (parked) approval waits for a human before denying and letting the agent continue.
-# Default is generous enough for "grab your phone" but short enough that an unattended agentic loop
-# doesn't stall for the full lease window. 0 denies at the first poll, so a decision that lands inside
-# that first 500ms still wins; it is "autonomous", not "instant".
+# Durable approval wait before auto-deny. 0 denies at the first 500ms poll, not instantly.
 _PARK_TIMEOUT_DEFAULT_S = 300.0
 
 
@@ -57,23 +54,18 @@ def _park_timeout_from_env() -> float:
 
 _PARK_TIMEOUT_S = _park_timeout_from_env()
 
-# Far under the lease timeout (1200s), far over the 0.5s poll: one small write every half minute.
+# Far under the 1200s lease timeout, far over the 0.5s poll.
 _LEASE_RENEW_EVERY_S = 30.0
 
-# Fed to the model as the tool result when the user denies a call, so it can adapt instead of the turn ending abruptly.
 TOOL_REJECTED_MESSAGE = "The user declined to run this tool call."
 
-# The same, for a call that hit its park ceiling unanswered. Distinct from TOOL_REJECTED_MESSAGE
-# because the model and the card read the result verbatim, and by then it is the only account of the
-# call the returning user gets: telling them they declined something they never saw is false.
+# Distinct from TOOL_REJECTED_MESSAGE: the user never declined it.
 TOOL_APPROVAL_EXPIRED_MESSAGE = (
     "This tool call was not run: nobody answered the approval request in time."
 )
 
-# Why wait_tool_decision returned, on the slot rather than in the return value, so the verdict stays
-# a bare "allow"/"deny": the three tool loops patch it by name in tests
-# (core.inference.llama_cpp.wait_tool_decision and friends), and a fake that knows nothing about
-# reasons leaves slot["reason"] untouched, which reads as the old behaviour.
+# On the slot, not the return value: tests patch wait_tool_decision with fakes returning bare
+# "allow"/"deny".
 DECISION_ANSWERED = "answered"
 DECISION_CANCELLED = "cancelled"
 DECISION_EXPIRED = "expired"
@@ -106,7 +98,6 @@ def begin_tool_decision(session_id, approval_id) -> dict:
         "event": threading.Event(),
         "decision": None,
         "session": session_id or "",
-        # Filled in by wait_tool_decision; read back with decision_reason().
         "reason": None,
     }
     with _lock:
@@ -126,8 +117,7 @@ def wait_tool_decision(
     """
     park = bool(getattr(cancel_event, "durable", False))
     run_id = getattr(cancel_event, "durable_run_id", "") or ""
-    # Run ids are account-local (per-account studio.db, client-chosen id), so attendance has to be
-    # asked for under the same account or one tenant's follower answers for another's run.
+    # Run ids are account-local, so ask attendance under the same account.
     account_id = getattr(cancel_event, "durable_account_id", "") or ""
     renew_lease = getattr(cancel_event, "renew_lease", None)
 
@@ -137,8 +127,7 @@ def wait_tool_decision(
         return verdict
 
     try:
-        # `waited` is time with nobody watching and resets when a follower is seen; `total` is the
-        # whole wait and never resets. A park is bounded by both.
+        # `waited` resets when a follower is seen; `total` never does. Both bound a park.
         waited = 0.0
         total = 0.0
         last_renew: Optional[float] = None
@@ -148,20 +137,15 @@ def wait_tool_decision(
             waited += 0.5
             total += 0.5
             if not park:
-                # Unchanged: the caller's ceiling is the only one a browser-owned run has ever had.
                 if total >= timeout:
                     return _settle("deny", DECISION_EXPIRED)
                 continue
-            # A durable park ignores the caller's timeout by design, so the attended backstop is this
-            # module's own ceiling, the same hour a browser-owned run gets.
+            # Durable parks ignore the caller's timeout; this is the attended backstop.
             if total >= _DECISION_TIMEOUT:
                 return _settle("deny", DECISION_EXPIRED)
             if run_subscribers.is_attended(run_id, account_id):
-                # Someone is watching, so this is deliberation, not abandonment.
                 waited = 0.0
-                # The RUN's lease too, not just this counter: parking makes no progress, so the
-                # sweeper would otherwise settle the run at its lease timeout (1200s) and cancel the
-                # wait, capping an attended deliberation near 20 minutes rather than the ceiling.
+                # Renew the RUN lease too, or the sweeper settles it at 1200s and cancels the wait.
                 if renew_lease is not None and (
                     last_renew is None or total - last_renew >= _LEASE_RENEW_EVERY_S
                 ):
@@ -169,8 +153,7 @@ def wait_tool_decision(
                     try:
                         renew_lease()
                     except Exception:
-                        # A lease we could not renew is the sweeper's problem, not a reason to drop
-                        # the decision this wait exists to collect.
+                        # A failed renewal is the sweeper's problem; keep collecting the decision.
                         pass
             elif waited >= _PARK_TIMEOUT_S:
                 return _settle("deny", DECISION_EXPIRED)

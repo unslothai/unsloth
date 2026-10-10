@@ -87,7 +87,6 @@ def test_desktop_login_while_the_first_account_is_created_is_not_granted(auth_db
     raw = storage.create_desktop_secret()
     client = _auth_client()
 
-    # A single-user install answers desktop-login from the cached owner-only count.
     granted = client.post("/api/auth/desktop-login", json = {"secret": raw})
     assert granted.status_code == 200 and granted.json().get("access_token")
 

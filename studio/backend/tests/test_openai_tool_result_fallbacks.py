@@ -95,9 +95,6 @@ def _drive_stream(sse_events, enabled_tools, monkeypatch):
     return _drive(run())
 
 
-# ── web_search per-card result ─────────────────────────────────────────
-
-
 def test_web_search_each_call_carries_its_own_query_as_result(monkeypatch):
     """Each card carries its own `Searching: <query>` text; no empties."""
     sse_events = [
@@ -173,9 +170,7 @@ def test_web_search_last_call_overwritten_with_citations(monkeypatch):
     # Keep the LAST tool_end per id (citation overwrite for ws_2).
     for e in ends:
         by_id[e["tool_call_id"]] = e
-    # First call keeps its own query.
     assert by_id["ws_1"]["result"] == "Searching: first query"
-    # Last call overwritten with the citation block.
     assert "Title: Example A" in by_id["ws_2"]["result"]
     assert "URL: https://example.com/a" in by_id["ws_2"]["result"]
 
@@ -198,9 +193,6 @@ def test_web_search_empty_query_falls_back_to_empty_result(monkeypatch):
     ends = [e for e in events if e["type"] == "tool_end"]
     assert len(ends) == 1
     assert ends[0]["result"] == ""
-
-
-# ── shell_call output fallbacks ────────────────────────────────────────
 
 
 def test_shell_call_emits_tool_end_when_output_bundled_on_done(monkeypatch):
@@ -372,9 +364,6 @@ def test_shell_call_incomplete_does_not_double_emit(monkeypatch):
     assert "done" in ends[0]["result"]
 
 
-# ── agentic search action variants ─────────────────────────────────────
-
-
 def test_open_page_action_reaches_the_card_as_a_url(monkeypatch):
     """`open_page` carries a url and no query; reading only `action.query`
     rendered these as an empty `Searching ""`."""
@@ -397,7 +386,6 @@ def test_open_page_action_reaches_the_card_as_a_url(monkeypatch):
         for e in _tool_events(_drive_stream(sse_events, ["web_search"], monkeypatch))
         if e["type"] == "tool_start"
     ]
-    # `_server_tool` is stamped on every server-side call by _emit_tool_event.
     arguments = {k: v for k, v in starts[0]["arguments"].items() if k != "_server_tool"}
     assert arguments == {
         "url": "https://en.wikipedia.org/wiki/Tiger",
@@ -530,8 +518,7 @@ def test_the_done_event_wins_where_it_has_a_value(monkeypatch):
 
 
 def test_every_query_in_the_call_reaches_the_card(monkeypatch):
-    # `queries` is an array in the spec: one search action can run several. Only
-    # showing the first silently drops the rest.
+    # `queries` is an array in the spec; do not drop all but the first.
     sse_events = [
         {
             "type": "response.output_item.done",
@@ -555,8 +542,7 @@ def test_every_query_in_the_call_reaches_the_card(monkeypatch):
 
 
 def test_queries_wins_over_the_deprecated_query(monkeypatch):
-    # The spec marks `query` deprecated in favour of `queries`, so a stream
-    # carrying both must be read from the current field.
+    # The spec deprecates `query` for `queries`; read the current field.
     sse_events = [
         {
             "type": "response.output_item.done",
@@ -581,7 +567,6 @@ def test_queries_wins_over_the_deprecated_query(monkeypatch):
 
 
 def test_a_search_action_with_no_query_at_all_is_tolerated(monkeypatch):
-    # Neither field is required by the spec.
     sse_events = [
         {
             "type": "response.output_item.done",

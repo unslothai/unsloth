@@ -19,7 +19,6 @@ from test_llama_cpp_placement import _backend, _launch  # noqa: E402
 
 from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
 
-# One roomier card and one smaller one, so a weighted split is the interesting case.
 _TWO_GPUS = [(0, 15_000, 16_000), (1, 11_000, 12_000)]
 
 
@@ -57,7 +56,6 @@ def test_an_explicit_pick_outranks_the_inherited_mask(monkeypatch, tmp_path):
     """Both name an order. The picker is the more explicit and more recent one."""
     backend, result = _run(monkeypatch, tmp_path, mask = "1,0", gpu_ids = [0, 1])
     assert result["env"]["CUDA_VISIBLE_DEVICES"] == "0,1"
-    # The ordinal -> physical map the buffer parser reads has to match what we emitted.
     assert backend._child_gpu_physical_ids == (0, 1)
 
 
@@ -139,8 +137,6 @@ def test_a_split_scrubbed_from_the_child_does_not_veto(monkeypatch, tmp_path):
     backend, gguf = _backend(tmp_path, vulkan = False, memory = _TWO_GPUS)
     backend._get_gguf_size_bytes = lambda _path: 14 * 1024**3
     backend._select_gpus = lambda *args, **kwargs: ([0, 1], False)
-    # No explicit pick: here the picker outranks the inherited mask, so only an
-    # unpicked load reaches the mask reorder this cell is about.
     result = _launch(backend, gguf, n_ctx = 4096, tensor_parallel = True)
     assert result["env"].get("LLAMA_ARG_TENSOR_SPLIT") is None
     assert result["env"]["CUDA_VISIBLE_DEVICES"] == "1,0"
@@ -191,8 +187,6 @@ def test_the_reported_split_follows_the_reorder(monkeypatch, tmp_path):
     backend, gguf = _backend(tmp_path, vulkan = False, memory = _TWO_GPUS)
     backend._get_gguf_size_bytes = lambda _path: 14 * 1024**3
     backend._select_gpus = lambda *args, **kwargs: ([0, 1], False)
-    # No explicit pick: in this branch an explicit pick outranks the inherited
-    # mask, so only an unpicked load reaches the mask reorder at all.
     result = _launch(backend, gguf, n_ctx = 4096, tensor_parallel = True)
     cmd = result["cmd"]
     assert result["env"]["CUDA_VISIBLE_DEVICES"] == "1,0"

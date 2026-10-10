@@ -29,8 +29,8 @@ import routes.training as training_routes
 from auth.authentication import authenticated_via_api_key, get_current_subject
 from utils.hardware import hardware as hw
 
-# Clears every streaming precondition but the MLX guard, so only that can reject it.
-# load_in_4bit is off so the latest-sidecar probe stays offline.
+# Clears every streaming precondition but the MLX guard; load_in_4bit off keeps the
+# sidecar probe offline.
 _STREAMING_START = {
     "model_name": "unsloth/Llama-3.2-1B-Instruct",
     "training_type": "LoRA/QLoRA",

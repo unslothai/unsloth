@@ -90,7 +90,7 @@ def _repo_siblings(repo_type: str, repo_id: str, hf_token: HfTokenArg) -> tuple:
     with _repo_siblings_lock:
         cached = _REPO_SIBLINGS.pop(key, None)
         if cached is not None:
-            # Re-insert so the dict stays in least-recently-used order for eviction.
+            # Re-insert to keep LRU order.
             _REPO_SIBLINGS[key] = cached
             if (now - cached[1]) < _REPO_SIBLINGS_TTL_SECONDS:
                 return cached[0]
@@ -113,8 +113,7 @@ def _repo_siblings(repo_type: str, repo_id: str, hf_token: HfTokenArg) -> tuple:
         return cached[0] if cached is not None else ()
     with _repo_siblings_lock:
         if key not in _REPO_SIBLINGS and len(_REPO_SIBLINGS) >= _REPO_SIBLINGS_MAX:
-            # Evict least-recently-used, not everything: a clear drops the listings that in-flight
-            # downloads still depend on.
+            # Evict LRU only: in-flight downloads depend on the listings.
             _REPO_SIBLINGS.pop(next(iter(_REPO_SIBLINGS)), None)
         _REPO_SIBLINGS[key] = (siblings, now)
     return siblings
@@ -158,7 +157,6 @@ def largest_download_file_bytes(
     elif variant:
         plan = plan_for_variant(build_gguf_variant_plans(siblings), variant)
         if plan is None:
-            # An unresolvable variant is the worker's error to report, not a transport verdict.
             return None
         chosen = None
         candidates = list(plan.expected_files)
@@ -272,7 +270,6 @@ def resolve_auto_use_xet(*, largest_file_bytes: Optional[int] = None) -> tuple[b
         return (False, "hf_xet is not installed")
     http_ceiling_reason = download_registry.http_size_ceiling_reason(largest_file_bytes)
     if http_ceiling_reason is not None:
-        # Health and RAM preferences cannot select HTTP when the file exceeds its limit.
         return (True, "Xet (HTTPS cannot fetch a file this large)")
     try:
         from utils.hf_xet_fallback import xet_health
@@ -281,14 +278,12 @@ def resolve_auto_use_xet(*, largest_file_bytes: Optional[int] = None) -> tuple[b
         logger.debug("Xet health probe failed, defaulting to Xet: %s", exc)
         health, reason = None, "Xet (health check unavailable)"
     else:
-        # Older unsloth_zoo without the health module: no opinion, keep the existing default.
         reason = "Xet" if health is None else str(health.reason)
     if health is not None and not health.use_xet:
         return (False, reason)
     if _health_is_forced(health):
-        # UNSLOTH_FORCE_XET=1 has to win here, since the zoo's off switches already win above and the pair would otherwise be asymmetric; buffers are still clamped to free RAM.
+        # UNSLOTH_FORCE_XET=1 must win, symmetric with the zoo's off switches.
         return (True, reason)
-    # Free RAM is separate evidence, read from a different zoo module: a missing health module says nothing about whether this machine can afford Xet right now.
     pressure = _memory_pressure_reason()
     if pressure is not None:
         return (False, pressure)
@@ -332,7 +327,6 @@ def resolve_transport(use_xet: bool, *, largest_file_bytes: Optional[int] = None
     )
     if unavailable_reason is not None:
         if transport == download_registry.TRANSPORT_HTTP:
-            # Include both failures when the required Xet transport is also unavailable.
             xet_reason = download_registry.download_transport_unavailable_reason(
                 download_registry.TRANSPORT_XET
             )
@@ -396,13 +390,14 @@ def spawn_worker(
     env["HF_HUB_DISABLE_TELEMETRY"] = "1"
     env["HF_HUB_DISABLE_XET"] = "0" if use_xet else "1"
     if use_xet:
-        # hf_xet sizes its buffers from constants and reads its config natively at import, so the worker's env is sized here, and by unsloth_zoo so there is one rule and not two (UNSLOTH_XET_FORCE_CAPS=1 bounds the machine regardless): the hand-rolled copies drifted, and on a 2TB host the worker got a laptop's 24GB buffer and ran 3.4x slower.
+        # hf_xet reads config at import; size the worker env via unsloth_zoo (one rule, not two).
         from utils import hf_xet_fallback
 
-        # The worker's own cache, which the sizing measures: this backend's env may still name the one it started with, since moving the cache in Settings does not rewrite the live process.
+        # Use the worker's cache: the live env may name the pre-Settings-move cache.
         sized = hf_xet_fallback.apply_xet_env(env, env.get("HF_HUB_CACHE"))
         if sized is None and not _allow_high_performance():
-            # No tuning module: that unsloth_zoo is also the one setting HF_XET_HIGH_PERFORMANCE=1 at import, and the inherited "1" would hand the worker a 64GB ceiling, since xet-core applies the preset AFTER reading the environment.
+            # Inherited HF_XET_HIGH_PERFORMANCE=1 would give the worker a 64GB ceiling (xet-core
+            # applies the preset AFTER reading the env).
             for key in ("HF_XET_HIGH_PERFORMANCE", "HF_XET_HP"):
                 env[key] = "0"
     if not hf_token and allow_ambient_token:
@@ -410,15 +405,14 @@ def spawn_worker(
         try:
             hf_token = get_token_to_send(None)
         except Exception as e:  # noqa: BLE001
-            # Best effort, like the env lookup this replaced: do not narrow this catch. An OIDCError
-            # or httpx error from hub's OIDC rung would 500 a public download and strand a reservation.
+            # Do not narrow: OIDC/httpx errors would 500 a public download and strand a reservation.
             detail = download_registry.scrub_secrets(f"{type(e).__name__}: {e}")
             logger.warning(
                 f"Could not resolve a saved Hugging Face login ({detail}); downloading anonymously"
             )
             hf_token = None
     env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "0" if hf_token else "1"
-    # hf_transfer's parallel Range chunks can leave sparse partials even in "http" mode, so disable it and keep the worker's writer sequential.
+    # hf_transfer's parallel ranges leave sparse partials; keep writes sequential.
     env["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
     for token_key in (
         "HF_TOKEN",
@@ -469,7 +463,7 @@ def spawn_worker(
             except OSError:
                 logger.warning("Could not remove the unconsumed download files manifest")
         if use_xet:
-            # Tie the sizing's RAM reservation to the worker so it frees when the worker exits and a sibling sizes against the remainder; a spawn that raised passes None, dropping the reservation.
+            # Tie the RAM reservation to the worker so it frees on exit.
             from utils import hf_xet_fallback
             hf_xet_fallback.bind_worker_budget(proc.pid if proc is not None else None)
 
@@ -601,7 +595,7 @@ def finalize_worker_exit(
             account_access.record_model_grant(repo_id, repo_type)
         hf_cache_scan.invalidate_hf_cache_scans()
         registry.set_job(key, "complete")
-        # Where /v1 learns a new model exists: its resolver answers from a cached scan with no watcher, so it would report the model absent and serve whatever is resident. Models only, since noting a dataset id as a local model would refuse a bare request naming it instead of letting a foreign id fall through.
+        # /v1's resolver has no watcher; note new models (models only, not datasets).
         if repo_type == "model":
             try:
                 from core.inference.local_model_resolver import (
@@ -625,7 +619,6 @@ def finalize_worker_exit(
             else:
                 logger.info(f"{log_prefix} worker diagnostics for {label}: {stderr_text}")
         logger.info(f"{log_prefix} complete: {label}")
-        # Defensive cleanup: the canonical clear is at download-start; this catches the rare case where that failed but the download succeeded.
         if repo_type and repo_id:
             try:
                 download_manifest.clear_cancel_marker(
@@ -637,7 +630,7 @@ def finalize_worker_exit(
             except Exception as exc:
                 logger.debug(f"clear_cancel_marker failed for {repo_id} (rc=0): {exc}")
     elif state == "cancelled":
-        # Read metadata before the terminal set_job so a concurrent eviction cannot drop it; the job key is the fallback variant label.
+        # Read metadata before the terminal set_job so eviction cannot drop it.
         registry.set_job(key, "cancelled")
         logger.info(f"{log_prefix} cancelled: {label} (rc={rc})")
         download_registry.persist_cancel_marker(
@@ -651,7 +644,6 @@ def finalize_worker_exit(
             logger = logger,
         )
     else:
-        # Rewrite the misleading >50GB dependency error for the UI; logs retain raw stderr.
         error_text = download_registry.humanize_worker_error(
             stderr_text or f"worker exited with code {rc}",
             largest_file_bytes = largest_file_bytes,
@@ -692,7 +684,7 @@ def _set_retry_failure_state(
     return state
 
 
-# "no byte baseline was handed to us, sample one" -- distinct from a sampled None (unmeasurable).
+# "No baseline handed in, sample one"; distinct from a sampled None (unmeasurable).
 _UNSAMPLED = object()
 
 
@@ -792,7 +784,7 @@ def _try_transport_retry(
     registry.release_active_slot(key)
     while True:
         if registry.cancel_requested(key):
-            # A user cancel is not evidence against Xet: a held-back stall is dropped, not charged.
+            # A user cancel is not evidence against Xet.
             _set_retry_failure_state(
                 registry,
                 key,
@@ -807,7 +799,7 @@ def _try_transport_retry(
 
         claimed, conflict_state = registry.claim(
             key,
-            # A XET retry re-claims the SAME transport, the permissive case in claim(): only a cross-transport claim can mix an HTTP resume with a XET rewrite over one shared blob.
+            # Same-transport reclaim is safe; only cross-transport mixes HTTP resume with Xet rewrite.
             retry_transport,
             repo_type = repo_type,
             repo_id = repo_id,
@@ -820,12 +812,12 @@ def _try_transport_retry(
             cancel_marker_transport = original_metadata.transport,
             hub_cache = original_metadata.hub_cache,
             xet_cache = original_metadata.xet_cache,
-            # Carry the scoped file list across the reclaim: the record it overwrites is what a later start is compared against, so dropping it makes an identical start 409 instead of adopting.
+            # Carry scoped files across the reclaim, else an identical start 409s.
             scoped_files = original_metadata.scoped_files or None,
         )
         if claimed:
             break
-        # An STT owner is not an active job, so mark_pending_cancel cannot reach this loop and waiting it out would be an uninterruptible spin.
+        # An STT owner is not an active job; waiting would spin uninterruptibly.
         if conflict_state in ("deleting", "repository_owned"):
             logger.debug(
                 "%s XET retry claim rejected for %s; blocked by %s",
@@ -907,7 +899,6 @@ def _try_transport_retry(
             scrubbed,
         )
         registry.update_job_transport(key, original_metadata.transport)
-        # A failed Xet respawn may fall back only when HTTP can fetch the remaining files.
         rung_reason = (
             http_rung_reason(
                 repo_type,
@@ -921,7 +912,7 @@ def _try_transport_retry(
             else None
         )
         if retry_over_xet and rung_reason is None:
-            # A failed EXTRA worker spawn is a local failure, not a verdict on the download, so drop to the rung this job would have taken without the retry instead of stranding it in "error".
+            # A failed extra spawn is local; drop to the original rung instead of "error".
             logger.warning(
                 "%s XET retry could not be spawned for %s; falling back to HTTP",
                 log_prefix,
@@ -1053,7 +1044,7 @@ def _job_bytes_on_disk(repo_type, repo_id: str, cache_dir, blob_hashes) -> "Opti
     if blob_hashes is None:
         return _repo_bytes_on_disk(repo_type, repo_id, cache_dir)
     if not blob_hashes:
-        return None  # variant job with no resolved hashes: unmeasurable, so never clear the streak
+        return None  # unmeasurable, so never clear the streak
     try:
         return download_registry.completed_blob_bytes(
             repo_type,
@@ -1166,7 +1157,7 @@ def _start_stall_watchdog(
         )
         on_stall(message)
         try:
-            # Kill only: the _watch thread is already reaping this process, so a wait() here would race it for the exit status.
+            # Kill only: the _watch thread is reaping, a wait() would race it.
             proc.kill()
         except ProcessLookupError:
             pass
@@ -1181,9 +1172,9 @@ def _start_stall_watchdog(
                 cache_dir = cache_dir,
                 on_stall = _on_stall,
                 child_pid = proc.pid,
-                # Scope the measurement to partials this worker holds open; otherwise the shared helper stays repo-wide, child_pid does nothing, and two concurrent same-transport GGUF variants of one repo reset each other's stall timer. The DATA clock only: before its first byte a variant is still covered by the repo-wide peer-progress check.
+                # Scope to this worker's partials so concurrent variants don't reset each other's stall timer.
                 watch_new_partials_only = True,
-                # The shared 90s zero-byte default assumes a single-file download whose pre-byte phase is one HEAD; snapshot_download(max_workers=1) does a model_info lookup plus one sequential HEAD per file, which for an already-cached repo is the entire job with no byte written.
+                # snapshot_download does a HEAD per file before any byte; 90s is too short.
                 connect_timeout = 600.0,
                 xet_disabled = False,
             )
@@ -1227,19 +1218,17 @@ def register_worker(
     _get_metadata = getattr(registry, "get_job_metadata", None)
     _metadata = _get_metadata(key) if callable(_get_metadata) else None
     _cache_dir = getattr(_metadata, "hub_cache", None) if _metadata is not None else None
-    # The variant's own blobs, so a sibling variant writing into the same repo is not counted as this job's progress.
     _own_blob_hashes = (
         getattr(_metadata, "blob_hashes", frozenset())
         if getattr(_metadata, "variant", None)
         else None
     )
-    # Companions such as a shared mmproj live only in the progress set, and this worker was writing one as much as it was writing the main quant.
     _owned_for_sweep = (
         getattr(_metadata, "progress_blob_hashes", None) or _own_blob_hashes
         if _own_blob_hashes is not None
         else None
     )
-    # Sampled before the worker can write, as launch_worker samples BEFORE spawn(): sampling later would race a fast child that already finalized its blobs, making a real transfer look like a no-op and leaving the streak uncleared.
+    # Sample before the worker writes, else a fast transfer looks like a no-op.
     _bytes_before = (
         _job_bytes_on_disk(repo_type, repo_id, _cache_dir, _own_blob_hashes)
         if bytes_before is _UNSAMPLED
@@ -1252,7 +1241,6 @@ def register_worker(
         deferred_error: list[str] = []
         try:
             started_on_xet = transport == download_registry.TRANSPORT_XET
-            # Keep the pre-run size for error reporting. Retry eligibility is measured after exit.
             measured_before_run = _largest_file_bytes_for_job(
                 repo_type,
                 repo_id,
@@ -1260,11 +1248,9 @@ def register_worker(
                 hf_token = worker_token,
                 allow_ambient_token = allow_ambient_token,
             )
-            # An earlier rung's measurement stands until this one takes its own.
             known_largest_file_bytes = (
                 largest_file_bytes if measured_before_run is None else measured_before_run
             )
-            # Watch every Xet attempt so even a final hung worker becomes terminal.
             if started_on_xet:
                 watchdog_stop = _start_stall_watchdog(
                     registry,
@@ -1289,15 +1275,13 @@ def register_worker(
                 repo_id = repo_id,
                 transport = transport,
                 cancel_marker_transport = cancel_marker_transport,
-                # Retry eligibility is known only after the worker leaves its final cache state.
                 defer_error = started_on_xet,
                 deferred_error_out = deferred_error,
                 largest_file_bytes = known_largest_file_bytes,
             )
             if watchdog_stop is not None:
-                # Stop measuring once the worker is reaped: post-download symlinking and verification make no byte-level progress and must not read as a stall.
+                # Stop after reaping: post-download verification makes no byte progress.
                 watchdog_stop.set()
-            # Recheck after exit because this worker may have finalized the oversized shard.
             rung_reason = (
                 http_rung_reason(
                     repo_type,
@@ -1311,19 +1295,17 @@ def register_worker(
                 else None
             )
             can_retry_http = started_on_xet and rung_reason is None
-            # HTTP availability and the Xet attempt budget are independent.
             can_retry_xet = started_on_xet and xet_attempt < _xet_attempt_budget()
-            # Spend one more XET worker only on a DATA-phase verdict: retrying a pre-byte trip would buy a second full 600s connect window, and that trip is as likely slow metadata as a broken Xet.
+            # Retry Xet only on a DATA-phase stall; a pre-byte trip is likely slow metadata.
             retry_xet = (
                 can_retry_xet
                 and state == "error"
                 and bool(stalled)
                 and _is_data_phase_stall(stalled[0])
             )
-            # Evidence for the WHOLE Xet phase, reported once when the phase ends.
             xet_failure = pending_xet_failure
             if stalled:
-                # Exclude only the PRE-BYTE trip: "did not start" is as likely slow metadata, a queue of HEADs or a cache lock as a broken Xet, and two recorded failures pin this machine to HTTP for 24h. state == "error" is the other half: the watchdog appends its verdict before the kill lands, so a worker that completed or was cancelled in that instant would be charged a failure it did not earn.
+                # Pre-byte trips are excluded (two failures pin HTTP for 24h); state=="error" avoids a kill race.
                 if state == "error" and _is_data_phase_stall(stalled[0]):
                     xet_failure = stalled[0]
                 else:
@@ -1336,13 +1318,13 @@ def register_worker(
             if state == "cancelled" or (
                 state == "complete" and transport == download_registry.TRANSPORT_XET
             ):
-                # A XET completion proved Xet works here and a cancel was never evidence against it; an HTTP completion proves nothing about Xet, so a verdict carried onto that rung is still charged.
+                # Only a Xet completion clears; an HTTP completion proves nothing about Xet.
                 xet_failure = None
             if xet_failure is not None and not retry_xet:
                 _record_xet_failure(xet_failure, logger)
                 xet_failure = None
             if not stalled and transport == download_registry.TRANSPORT_XET and state == "complete":
-                # Clear the streak so "two failures in a row" means in a row, but only for a job that moved bytes: a fully cached repo exits 0 without touching the network, and clearing an earned demotion on that puts a bad machine back on Xet.
+                # Clear the streak only if bytes moved: a fully cached repo proves nothing.
                 bytes_after = _job_bytes_on_disk(repo_type, repo_id, _cache_dir, _own_blob_hashes)
                 if (
                     _bytes_before is not None
@@ -1369,13 +1351,11 @@ def register_worker(
                         ),
                         xet_attempt = xet_attempt + 1 if retry_xet else xet_attempt,
                         pending_xet_failure = xet_failure,
-                        # Preserve the pre-Xet baseline across retries.
                         bytes_before = _bytes_before,
                         allow_ambient_token = allow_ambient_token,
                         largest_file_bytes = known_largest_file_bytes,
                     )
                 else:
-                    # No retry remains, so publish the deferred worker error.
                     failure = (deferred_error[0] if deferred_error else "") or "download failed"
                     if rung_reason and rung_reason not in failure:
                         failure = f"{failure}\n{rung_reason}"
@@ -1392,9 +1372,10 @@ def register_worker(
         except Exception:
             if watchdog_stop is not None:
                 watchdog_stop.set()
-            # finalize_worker_exit is the only thing that clears running/cancelling, so if it raises, force a terminal state or claim() is blocked until restart.
+            # Only finalize_worker_exit clears running state; force terminal or claim() blocks until restart.
             logger.exception("download watcher crashed for %s", key)
-            # finalize may have raised before reaping the worker, so terminate the still-registered Popen first: the terminal set_job clears the repo guard and a live worker would race a retry.
+            # Terminate the Popen first: the terminal set_job clears the repo guard, and a live
+            # worker would race a retry.
             try:
                 kill_and_reap_process(proc, label = label, logger = logger)
             except Exception:
@@ -1418,7 +1399,7 @@ def register_worker(
             except Exception:
                 logger.exception("post-finalize marker cleanup failed for %s", key)
             try:
-                # The second look for anything prepare_cache_for_transport spared as too recently written. This job's own blobs skip the abandonment wait, but ONLY once the job is genuinely finished: a cancelled worker's partial was written seconds ago, and a retry relaunched above leaves the job active, so it is not ours to assume.
+                # Own blobs skip the abandonment wait only once the job is genuinely terminal.
                 terminal = registry.get_job(key).state not in ("running", "cancelling")
                 _owned, _owns_all = (
                     _sweep_ownership(
@@ -1431,10 +1412,9 @@ def register_worker(
                     repo_type,
                     repo_id,
                     protected_blob_hashes = registry.peer_blob_hashes(key),
-                    # A companion a sibling is writing right now is still held back by peer_blob_hashes above, whatever this job believes it owns.
                     owned_blob_hashes = _owned,
                     owns_all_blobs = _owns_all,
-                    # The cache this worker actually wrote to: resolving the live one would miss the orphan whenever the download location changed mid-run, and sweep a cache this job never touched.
+                    # The cache this worker wrote to; the live one may have moved mid-run.
                     root = _cache_dir,
                 )
                 if swept:
@@ -1466,8 +1446,6 @@ def launch_worker(
     watch_name: str,
     allow_ambient_token: bool = True,
 ) -> str:
-    # Only the Xet success-recording consumes this, and sampling lazy-loads unsloth_zoo, so torch and
-    # transformers, on the request path.
     if account_access.account_scope() is not None:
         record_download_account(registry, key)
         require_live_account(registry, key)
@@ -1476,9 +1454,10 @@ def launch_worker(
         except HTTPException:
             registry.set_job(key, "error", "Repository not found")
             raise
+    # Xet only: sampling lazy-loads unsloth_zoo (torch) on the request path.
     _baseline: Optional[int] = None
     if transport == download_registry.TRANSPORT_XET:
-        # Before spawn(), deliberately: a small download can finalize its blobs while we are still registering the process, and a later baseline would show no growth for a real transfer.
+        # Before spawn(): a small download can finalize before a later baseline.
         _get_metadata = getattr(registry, "get_job_metadata", None)
         _metadata = _get_metadata(key) if callable(_get_metadata) else None
         _baseline = _job_bytes_on_disk(
@@ -1491,9 +1470,8 @@ def launch_worker(
                 else None
             ),
         )
-    # The one-off `X-Unsloth-HF-Token` is kept nowhere, so a repo fetched with it can sit in the
-    # cache of a host whose credential set is empty. Recorded HERE, after the in-flight check and
-    # the registry claim, so a rejected request cannot mark a repo it never fetched.
+    # A one-off `X-Unsloth-HF-Token` is stored nowhere, so record the repo. After the in-flight
+    # check and claim, so a rejected request marks nothing.
     from hub.utils import hf_tokens as _hf_tokens
 
     _hf_tokens.note_repo_fetched_with_a_request_token(hf_token, repo_id, repo_type)
@@ -1549,16 +1527,14 @@ def cancel_worker(
 ) -> str:
     require_download_account(registry, key)
     proc = registry.get_process(key)
-    # No worker process yet: arm a pending cancel so register_process kills it on arrival during the claim-to-register window.
+    # No process yet: arm a pending cancel for the claim-to-register window.
     if proc is None:
         if not registry.mark_pending_cancel(key, generation):
             return registry.get_job(key).state
-        # Registration can race the first lookup now that launch runs in a thread: if it got
-        # past the pending-cancel check, kill that process below.
+        # Registration can race the lookup; kill below if it slipped past.
         proc = registry.get_process(key)
         if proc is None:
             return "cancelling"
-    # Worker already exited; let its watcher classify the real return code.
     if proc.poll() is not None:
         get_metadata = getattr(registry, "get_job_metadata", None)
         metadata = get_metadata(key) if get_metadata is not None else None
@@ -1576,7 +1552,7 @@ def cancel_worker(
 
     if not registry.request_cancel(key, proc, generation):
         return registry.get_job(key).state
-    # No eager marker: finalize_worker_exit writes it on a "cancelled" exit, and persisting before the kill races a clean completion and strands a stale marker.
+    # No eager marker: persisting before the kill races a clean completion.
     try:
         proc.kill()
     except ProcessLookupError:
@@ -1597,7 +1573,7 @@ def idle_status(
 ) -> tuple[DownloadJobState, Optional[str], int]:
     state = registry.get_job(key)
     generation = registry.current_generation(key)
-    # A repo with no job has no recorded owner; a 404 there strands a client hydrating a download.
+    # A repo with no job has no recorded owner; a 404 there strands a hydrating client.
     if state.state != "idle":
         require_download_account(registry, key)
     if (
@@ -1631,7 +1607,7 @@ def active_download_refs(
         else:
             ref_repo_id = metadata.repo_id if metadata is not None else ref.key
             variant = None
-        # Scoped jobs share one slot per repo, so publish the file list an adopting client needs; absent metadata reports null, which the client reads as unprovable.
+        # Absent metadata reports null, which the client reads as unprovable.
         scoped_files = list(metadata.scoped_files) if metadata is not None else []
         downloads.append(
             ActiveDownload(

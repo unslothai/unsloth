@@ -88,12 +88,10 @@ def test_a_loaded_repo_gguf_reports_its_public_id(status_route):
     assert status.is_gguf is True
     assert status.active_model == "org/A-GGUF"
     assert status.model_identifier == "org/A-GGUF"
-    # Not a path, so provenance falls through to the filesystem check and stays False.
     assert status.is_local_model is False
 
 
 def test_a_backend_without_the_flag_still_reports(status_route):
-    # A server started before the flag existed: read through a default, do not assume it.
     backend = _StatusBackend("org/A-GGUF")
     assert not hasattr(backend, "__dict__") or "_native_grant_backed" not in backend.__dict__
     status = status_route(backend)
@@ -102,7 +100,6 @@ def test_a_backend_without_the_flag_still_reports(status_route):
 
 
 def test_a_native_lease_load_reports_the_label_not_the_leased_path(status_route):
-    # The leased on-disk path is exactly what /status must not hand back.
     leased = os.path.join(os.sep, "models", "private", "A-Q4_K_M.gguf")
     status = status_route(_StatusBackend(leased, native_grant_backed = True))
     assert status.model_identifier is None, "the leased path must not be published"
@@ -111,7 +108,6 @@ def test_a_native_lease_load_reports_the_label_not_the_leased_path(status_route)
 
 
 def test_a_local_path_load_without_a_lease_is_still_local(status_route):
-    # is_local_model is provenance, not lease bookkeeping: a plain local path counts.
     local = os.path.join(os.sep, "models", "local", "A-Q4_K_M.gguf")
     status = status_route(_StatusBackend(local, native_grant_backed = False))
     assert status.is_gguf is True
@@ -119,9 +115,7 @@ def test_a_local_path_load_without_a_lease_is_still_local(status_route):
 
 
 def test_a_model_cached_behind_the_gguf_is_still_reported(status_route, monkeypatch):
-    # Loading a GGUF unloads only the ACTIVE Unsloth model, so a Transformers
-    # model cached behind it keeps its weights. Reporting only the GGUF left
-    # that memory invisible to every client, and unreleasable from the UI.
+    # Loading a GGUF unloads only the active model; a cached Transformers model keeps its memory.
     monkeypatch.setattr(
         inference_route,
         "_peek_inference_backend",
@@ -143,15 +137,13 @@ def test_the_gguf_is_not_listed_twice_when_the_registry_names_it(status_route, m
 
 
 def test_no_orchestrator_leaves_the_gguf_alone(status_route, monkeypatch):
-    # Peek returns None before anything built one; the branch must not construct it.
     monkeypatch.setattr(inference_route, "_peek_inference_backend", lambda: None)
     status = status_route(_StatusBackend("org/A-GGUF", native_grant_backed = False))
     assert status.loaded == ["org/A-GGUF"]
 
 
 def test_the_users_chat_template_override_wins_over_the_runtime_projection(status_route):
-    # The field is on the shared runtime fields, so the projection carries it too.
-    # It must be overridden, not passed alongside, or the call is a TypeError.
+    # The field is on shared runtime fields; override it, not pass alongside (TypeError).
     backend = _StatusBackend("org/A-GGUF")
     backend.chat_template_override = "user-template"
     status = status_route(backend)
@@ -159,8 +151,7 @@ def test_the_users_chat_template_override_wins_over_the_runtime_projection(statu
 
 
 def test_an_auto_applied_chat_template_is_not_reported_as_the_users(status_route, monkeypatch):
-    # A bundled family template is not a user override; re-sending it would pin
-    # it onto the next, unrelated model.
+    # A bundled family template is not a user override; re-sending pins it on the next model.
     monkeypatch.setattr(
         inference_route,
         "resolve_effective_chat_template_override",
@@ -190,11 +181,8 @@ def test_a_bundled_template_on_a_snapshot_path_load_is_not_reported_as_the_users
 
 
 def test_status_publishes_the_running_pass_through_arguments(status_route):
-    # A tab opened while a model is already running never saw the load, so the only
-    # place it can learn what the server was invoked with is here. Without it, a
-    # rollback after a failed switch restores the previous model without them, and
-    # the omitted field cannot inherit either: the failed target is left resident,
-    # and the route refuses to carry arguments across models.
+    # A tab opened mid-run never saw the load; it learns the server's args only here,
+    # which a rollback after a failed switch needs.
     backend = _StatusBackend("org/A-GGUF")
     backend.requested_extra_args = ["--numa", "distribute"]
     status = status_route(backend)
@@ -202,13 +190,10 @@ def test_status_publishes_the_running_pass_through_arguments(status_route):
 
 
 def test_an_explicit_empty_list_is_not_a_missing_one(status_route):
-    # A rollback resends this field only when it has one, and omitting it is what
-    # makes /load inherit. A model that was running with no extras must come back
-    # with none, not with the arguments of the load that just failed.
+    # A model run with no extras must roll back with none, not the failed load's args.
     backend = _StatusBackend("org/A-GGUF")
     backend.requested_extra_args = []
     assert status_route(backend).requested_llama_extra_args == []
-    # None is the one case where nothing was ever set, and inheriting is right.
     backend.requested_extra_args = None
     assert status_route(backend).requested_llama_extra_args is None
 
@@ -248,8 +233,6 @@ def test_status_publishes_an_explicit_text_only_mmproj_fallback(status_route):
 
 
 def test_the_diffusion_runner_reports_none(status_route):
-    # It appends none of them, so publishing a list would describe a command that
-    # does not exist.
     backend = _StatusBackend("org/A-GGUF")
     backend.is_diffusion = True
     backend.requested_extra_args = ["--numa", "distribute"]

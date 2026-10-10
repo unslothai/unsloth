@@ -44,8 +44,7 @@ def _thinking_default_off(model_identifier: str) -> bool:
     ],
 )
 def test_moe_total_params_win_over_active_params(model_id):
-    # extract_model_size_b() prefers A3B and reads 35B-A3B as 3B, which turned thinking off
-    # on a medium-tier model.
+    # extract_model_size_b() prefers A3B and reads 35B-A3B as 3B.
     assert _thinking_default_off(model_id) is False
 
 
@@ -54,9 +53,7 @@ def test_moe_total_params_win_over_active_params(model_id):
     [
         "unsloth/Qwen3.5-4B-GGUF",
         "unsloth/Qwen3.5-0.8B-GGUF",
-        # 9B is a small-tier model: unsloth ships it with reasoning off by default.
         "unsloth/Qwen3.5-9B-GGUF",
-        # Directory identifiers: auto-switch passes a snapshot dir, scan folders a quant subdir.
         "/models/Qwen3.5-4B-GGUF/UD-Q4_K_XL",
         "/c/models--unsloth--Qwen3.5-4B-GGUF/snapshots/bfc15c3",
         "C:\\models\\Qwen3.5-4B.gguf",
@@ -73,8 +70,6 @@ def test_sub_9b_turns_thinking_off(model_id):
     [
         "/models/8bit/qwen3.6-27b.gguf",
         "/models/8b/qwen3.6-27b.gguf",
-        # Directory identifier, so there is no file name to prefer: the segment nearest
-        # the leaf has to win instead.
         "/models/8b/Qwen3.5-35B-A3B/UD-Q4_K_XL",
         "/models/4b/Qwen3.6-27B-GGUF/snapshots/bfc15c3",
     ],
@@ -95,9 +90,7 @@ def test_other_models_are_never_gated(model_id):
     "model_id", ["Qwen3.5-4 B-GGUF", "unsloth/Qwen3.5-800M-GGUF", "unsloth/Qwen3.5-4 B"]
 )
 def test_spacing_and_millions_match_extract_model_size_b(model_id):
-    # extract_model_size_b allows \s* before the unit and converts an M suffix to billions.
-    # The inline matcher replaces it only for the MoE total-vs-active fix, so it has to keep
-    # reading the same spellings.
+    # extract_model_size_b allows \s* before the unit and M suffixes; the inline matcher must too.
     assert _thinking_default_off(model_id) is True
 
 

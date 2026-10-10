@@ -65,8 +65,6 @@ def client_for(account):
 
     app.dependency_overrides[get_current_subject] = subject
     app.dependency_overrides[allow_ambient_hf_token] = lambda: False
-    # A browser session: the isolation these tests check is between ACCOUNTS, not between
-    # caller classes.
     app.dependency_overrides[authenticated_via_api_key] = lambda: False
     app.include_router(inference.router, prefix = "/api/inference")
     app.include_router(inference.studio_router, prefix = "/api/inference")
@@ -94,7 +92,6 @@ def test_resident_identity_and_progress_are_hidden_from_other_accounts(
             assert response.status_code == 200
             body = response.json()
             assert body.get("yours") is False, body
-            # The chat status shape lists resident models, so its hidden answer lists none.
             assert body["loaded"] == ([] if path == "status" and modality == "chat" else True)
     assert not run_as(ALICE, access.resident_hidden, modality)
     assert not run_as(OWNER, access.resident_hidden, modality)
@@ -566,7 +563,6 @@ def test_private_cpu_media_residents_hide_progress_and_refuse_generation_and_unl
             "loaded": True,
             "yours": False,
         }
-        # Hidden, but still the declared shape: `active` reads false, not KeyError.
         hidden = client.get(f"/api/inference/{kind}/generate-progress").json()
         assert hidden["yours"] is False and hidden["active"] is False, hidden
         response = client.post(f"/api/inference/{kind}/generate", json = {"prompt": "hello"})

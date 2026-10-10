@@ -31,26 +31,19 @@ from .parsers import Page
 
 logger = logging.getLogger(__name__)
 
-# Instructions, not conversation. An archived system prompt could come back quoted as an "earlier turn" and read as
-# user-authored text.
+# An archived system prompt could be recalled as user-authored text.
 _SKIP_ROLES = frozenset({"system", "developer"})
 
-# Tool call ids this feature and the RAG auto-inject generate. Their results are retrieved passages, so archiving them
-# would feed retrieved text back into its own index.
+# Auto-inject/recall call ids: their results are retrieved passages, so archiving them would self-feed the index.
 _INJECTED_CALL_PREFIXES = ("rag_auto_", "conv_recall_")
 
-# What render_turn appends where it cut something short. Named because the branch check has to recognise it: a probe
-# carrying it can only be a PREFIX of the live text.
+# A probe carrying this marker can only be a PREFIX of the live text.
 _TRUNCATION_MARKER = " ..."
 _MAX_TOOL_RESULT_CHARS = 4000
-# Tool arguments are usually short; the cap only stops a pathological blob dominating.
 _MAX_TOOL_ARGS_CHARS = 1000
-# Over-fetch multiple ahead of the live-branch filter. Filtering after a k-sized fetch lets stale turns from an
-# abandoned branch fill the result and starve live matches just below, so recall returns nothing while the answer is
-# in the archive.
+# Over-fetch before the branch filter so stale abandoned-branch turns cannot starve live hits.
 _BRANCH_FILTER_OVERFETCH = 4
-# One over-fetch is not always enough: rewinding a long compacted continuation leaves an abandoned branch big enough
-# to fill any fixed candidate window, so widen and re-ask. Bounded because this is a chat request, not a crawl.
+# Long abandoned branches can fill any fixed window, so widen up to this bound.
 _BRANCH_FILTER_MAX_CANDIDATES = 256
 
 
@@ -128,12 +121,7 @@ def _probe_text(message: dict) -> str:
                 if result not in (None, "", {}, []):
                     results.extend(rendered(result))
             elif part.get("type") == "reasoning":
-                # A thinking model's stored reply is [reasoning, text], but the wire copy the probe is matched against
-                # has the text only (the client sends the thought in the `reasoning_content` FIELD). Folding it in, as
-                # the `"text" in part` arm below would, makes the stored probe longer than the branch, so
-                # `content_on_branch` fails for every assistant turn of every reasoning thread and
-                # `_sticky_compaction_boundary` returns 0 forever -- which under the checkpoint fit turns every
-                # overflowing turn into a fresh reset. Skipped on both sides: the wire shape has no reasoning part.
+                # Wire copy has no reasoning part (sent in reasoning_content), so skip it or probes never match.
                 continue
             elif part.get("type") in ("text", "input_text") or "text" in part:
                 if calls:
@@ -172,9 +160,6 @@ def render_turn(group: list[dict]) -> str:
         text = _text_of(message.get("content")).strip()
         calls = message.get("tool_calls") or []
         if calls:
-            # The arguments, bounded, not just the name: the searchable substance is the command or query that ran,
-            # and "assistant called terminal" cannot answer "what did you run earlier?". Assistant text on the same
-            # message likewise.
             for call in calls:
                 function = (call or {}).get("function") or {}
                 name = str(function.get("name") or "tool")
@@ -192,8 +177,6 @@ def render_turn(group: list[dict]) -> str:
         if not text:
             continue
         if role == "tool":
-            # Tool results are huge and the least useful thing to quote back verbatim: keep enough to be searchable
-            # without bloating the index.
             if len(text) > _MAX_TOOL_RESULT_CHARS:
                 text = text[:_MAX_TOOL_RESULT_CHARS] + _TRUNCATION_MARKER
             lines.append(f"tool result: {text}")
@@ -251,7 +234,6 @@ def _without_retrieval(group: list[dict]) -> list[dict]:
                     keep_calls.append(call)
             if len(keep_calls) != len(calls):
                 if not keep_calls and not _text_of(message.get("content")).strip():
-                    # Nothing left of it but the search.
                     continue
                 message = {**message, "tool_calls": keep_calls}
         if str(message.get("role") or "") == "tool":
@@ -376,21 +358,14 @@ def archive_turns(
     """
     if not thread_id or not evicted or not enabled():
         return 0
-    # Incognito and API-only threads are excluded; see can_archive. By the time a chat is long enough to compact, its
-    # earlier turns are always persisted.
     if not can_archive(thread_id):
         logger.debug("conversation_archive.skipped_unpersisted_thread thread_id=%s", thread_id)
         return 0
 
-    # The evictor's own grouper, so an archived unit is exactly the unit the window drops. Imported lazily because the
-    # inference layer imports this module.
+    # Evictor's own grouper so archived units match dropped units; lazy import avoids a cycle.
     from core.inference.context_window import group_turns
 
-    # Each entry is the archivable messages AND the span of the turn they came from. The two differ whenever
-    # `_archivable` drops something: an assistant batch that called `search_conversation` alongside an ordinary tool
-    # archives three messages while the live transcript still holds four, and `archive_messages` bounds the branch
-    # check's run. Bounded by the shorter figure, a perfectly valid ordinary-tool exchange and its answer were
-    # rejected as off-branch and could never be recalled.
+    # Track the turn's span separately: _archivable may drop messages, and the branch check needs it.
     groups = [
         (archivable, len(group))
         for group, archivable in ((group, _archivable(group)) for group in group_turns(evicted))
@@ -401,7 +376,6 @@ def archive_turns(
 
     model = config.effective_embedding_model()
     scope = store.conversation_archive_scope(thread_id)
-    # Conversation order from the persisted thread, not arrival order (`_transcript_positions`).
     positions = _transcript_positions(thread_id, branch or live)
     live_positions = _live_positions(live)
     written = 0
@@ -409,12 +383,10 @@ def archive_turns(
     try:
         count = embeddings.token_counter(model)
         conn = rag_db.get_connection()
-        # What the query side will ask for. Only a prediction until the encode reports what it actually used, so the
-        # authoritative check happens under the write lock.
+        # Only a prediction; the authoritative identity check happens under the write lock.
         expected_identity = embeddings.embedding_identity(model)
 
-        # Chunk everything first, then embed it in ONE pass. Per group, a first compaction of a long chat ran dozens
-        # of one-item embedding jobs back to back before the reply could start, and both backends serialise them.
+        # Embed in ONE pass: per-group jobs serialise and delay the reply.
         pending = []
         for group, span in groups:
             text = render_turn(group)
@@ -424,14 +396,8 @@ def archive_turns(
             seats = _occurrences(positions, group)
             budget = _write_budget(positions, seats, live_positions, group)
             if _archived_under(conn, scope, digest, expected_identity, occurrences = budget):
-                # Commit here: this path holds no transaction of its own and can return before reaching the write
-                # lock, the ordinary case on a re-compacted thread, so it is the only chance an upgraded archive has
-                # to converge.
-                # Bounded by the LIVE-AWARE budget, not by every seat: a rewind or a bigger window can put one
-                # occurrence of a repeated turn back in the prompt, and keeping a copy per seat then left two
-                # byte-identical documents, both passing the branch filter, so a recall slot went on text the model
-                # could already read. At least one survives, since a turn that is momentarily all-live still has an
-                # archive.
+                # Commit here: this path may return before the write lock, its only chance to converge.
+                # Bounded by the live-aware budget so no duplicate copy of in-prompt text takes a recall slot.
                 _restamp(
                     conn,
                     scope,
@@ -452,8 +418,7 @@ def archive_turns(
         if not pending:
             return 0
 
-        # Identity from the encode that produced these vectors: a concurrent embedder swap would otherwise label them
-        # with a space they were never in.
+        # Identity from the encode itself, so a concurrent embedder swap cannot mislabel vectors.
         vectors, identity = embeddings.encode_with_identity(
             [chunk.text for entry in pending for chunk in entry[3]],
             model_name = model,
@@ -466,17 +431,13 @@ def archive_turns(
             roles = " + ".join(
                 dict.fromkeys(str(message.get("role") or "message") for message in group)
             )
-            # commit=False, then commit once the chunks are in: committing the document first leaves an empty row
-            # marked "completed" if the chunk write fails, and `document_by_hash` skips that turn forever after
-            # without retrying. Re-checked here under a write lock, not only before the embedding pass: two
-            # generations compacting one thread both clear that first check, and `(scope, sha256)` is a plain index,
-            # so both insert and the duplicate takes two of the few recall slots.
+            # Commit after chunks, or a failed chunk write leaves a 'completed' empty row skipped forever.
+            # Re-checked under the write lock: concurrent compactions would both insert.
             _write_lock = False
             try:
                 conn.execute("BEGIN IMMEDIATE")
                 _write_lock = True
             except Exception:
-                # Already in a transaction: the insert is still atomic with the re-check.
                 logger.debug("conversation_archive.no_write_lock", exc_info = True)
             copies = store.documents_by_hash(conn, scope, digest)
             stale = _stale_document(conn, scope, digest, identity, occurrences = budget)
@@ -484,36 +445,22 @@ def archive_turns(
                 _restamp(conn, scope, digest, seats, copies = copies)
                 if _write_lock:
                     conn.commit()
-                # Widened here too, not only on the pre-check: both turns can arrive in ONE compaction, the shorter is
-                # written first, and the longer then meets this re-check, so leaving without touching the span left
-                # the window at the shorter figure and the longer occurrence unsearchable. After the commit above,
-                # since the widen carries its own.
+                # Widen here too: both occurrences can arrive in one compaction.
                 _widen_span(conn, scope, digest, span)
                 continue
             ordinal = None
             archived_at = None
             archived_rowid = None
             if stale is not None:
-                # Same turn, vectors from an embedder the query side no longer asks for.
-                # The copy is replaced rather than deduplicated, as ingestion does, since
-                # skipping it would leave the turn invisible to dense search forever.
-                #
-                # It keeps its POSITION and its TIMESTAMP: a re-embed rewrites HOW a turn
-                # is indexed, not WHEN it was said, and renumbering or restamping would
-                # reorder the archive by the order its vectors were rebuilt. NULL stays
-                # NULL, since numbering a pre-column row moves the oldest turn behind every
-                # numbered one and the header would call it the conversation's last word.
-                # And its ROWID: turns archived in one clock tick share a `created_at`, so
-                # insertion order is all that separates them. Reusable because the row is
-                # deleted below in this same transaction.
+                # Replace stale-embedder copy, keeping position, timestamp and rowid: re-embed changes how, not when.
+                # NULL ordinal stays NULL; rowid reuse is safe since the row is deleted in this transaction.
                 previous = store.document_rewrite_identity(conn, stale) or {}
                 ordinal = previous.get("archive_ordinal")
                 archived_at = previous.get("created_at")
                 archived_rowid = previous.get("rowid")
                 store.delete_document(conn, stale, commit = False)
             else:
-                # The nth copy of a repeated turn takes the nth occurrence's position, so a verbatim repeat lands
-                # where it was said, not behind its first saying.
+                # The nth copy of a repeated turn takes the nth occurrence's position.
                 ordinal = (
                     seats[len(copies)]
                     if seats and len(copies) < len(seats)
@@ -527,19 +474,11 @@ def archive_turns(
                 sha256 = digest,
                 status = "completed",
                 embedding_model = identity,
-                # The turn's real size in the TRANSCRIPT, so the branch check can bound its run exactly. Role labels
-                # only approximate it (a pasted transcript writes the same lines) and the archived messages undercount
-                # what `_archivable` dropped.
+                # Real transcript size so the branch check can bound its run exactly.
                 archive_messages = span,
-                # Where this turn sits in the conversation. Allocated inside the write lock in `group_turns` order, so
-                # it holds within and across epochs, which `created_at` cannot: one compaction writes every evicted
-                # turn microseconds apart. Written unconditionally, so switching ordering off punches no permanent
-                # holes in the sequence.
+                # Allocated under the write lock in group_turns order; created_at cannot order one compaction.
                 archive_ordinal = ordinal,
-                # When the turn was archived, not when this row was written. None for a turn seen for the first time,
-                # which takes the clock as before.
                 created_at = archived_at,
-                # Likewise None for a first sighting: SQLite then assigns the next rowid.
                 rowid = archived_rowid,
                 commit = False,
             )
@@ -548,22 +487,14 @@ def archive_turns(
             except Exception:
                 conn.rollback()
                 raise
-            # Surplus only, NOT a restamp: the re-embed path never reaches the already-archived branch that retires
-            # copies, so a repeat archived twice and then rewound kept its extra copy. Restamping here would renumber
-            # a pre-column row. Runs after the new row exists, so the count is what the scope holds.
+            # Surplus only, not a restamp: restamping would renumber a pre-column row.
             _retire_surplus(conn, scope, digest, seats)
-            # A re-embed keeps the ordinal it found, which goes wrong once a copy is retired: twins at 0 and 2 with
-            # the FIRST rewound away left the survivor on 0, so a contradiction at 1 rendered as the later,
-            # superseding statement. Restamped against the seats that remain, skipping NULLs.
+            # Restamp ordinals against the remaining seats once a copy is retired, skipping NULLs.
             if stale is not None:
                 _restamp(conn, scope, digest, seats, skip_null = True)
             conn.commit()
             written += 1
-            # A REPLACEMENT is not an addition: the re-embed branch swaps one copy's vectors and keeps the count, so a
-            # repeat evicted while the embedder identity changed was never written at all. Top the copies up to the
-            # budget here, reusing the vectors already in hand. Only where the budget counts EVICTED occurrences,
-            # which is what `live` buys; otherwise it falls back to every transcript seat, and topping up to that
-            # would write a copy of a turn whose repeat is still in the prompt.
+            # Top copies up to the budget: re-embed replaces, never adds, so evicted repeats were missed.
             while (
                 stale is not None
                 and live_positions is not None
@@ -592,8 +523,6 @@ def archive_turns(
         globals()["_INGEST_FAILED"] = True
         _log_embedder_pending(model, exc)
     except Exception:
-        # A chat that cannot archive still beats one that raises. Whatever was written before the failure stays
-        # searchable.
         globals()["_INGEST_FAILED"] = True
         logger.warning("conversation_archive.ingest_failed thread_id=%s", thread_id, exc_info = True)
     finally:
@@ -603,11 +532,7 @@ def archive_turns(
             except Exception:
                 pass
 
-    # Cancellation is cooperative, and chunking plus embedding is the slowest stretch of this function. A delete
-    # landing in that window sweeps the archive scope BEFORE this commit puts rows back, stranding deleted content in
-    # a scope no later delete reaches. Re-checking after the commit converges either way: the delete route drops
-    # thread rows first and sweeps archives last, so an earlier sweep is caught here and a later one removes these
-    # rows itself.
+    # Re-check after commit: a concurrent delete sweep could otherwise strand deleted content.
     if written and not can_archive(thread_id):
         logger.info("conversation_archive.thread_deleted_mid_ingest thread_id=%s", thread_id)
         delete_for_thread(thread_id)
@@ -615,7 +540,6 @@ def archive_turns(
     return written
 
 
-# A Settings pick whose download has not finished is not a fault; logged once, not per compaction.
 _EMBEDDER_PENDING_LOGGED: set = set()
 
 
@@ -626,8 +550,7 @@ def _log_embedder_pending(model, exc: Exception) -> None:
     logger.info("conversation_archive.embedder_pending: %s", exc)
 
 
-# Set when an archive write fails, cleared by the next one that succeeds. Process-wide on purpose: what fails here is
-# the embedder or the store, not one thread.
+# Process-wide on purpose: failures are in the embedder or store, not one thread.
 _INGEST_FAILED = False
 
 
@@ -639,8 +562,6 @@ def degraded() -> bool:
     return _INGEST_FAILED
 
 
-# Short enough that a store or embedder coming back is noticed within a turn or two, long enough that one request's
-# refits share a single probe.
 def reachable() -> bool:
     """Whether an archive write attempted RIGHT NOW could reach its store and embedder.
 
@@ -673,11 +594,7 @@ def reachable() -> bool:
     conn = None
     try:
         conn = rag_db.get_connection()
-        # WRITABLE, not merely open. `get_connection` succeeds against a database that is read-only, on a full
-        # filesystem, or held by another writer, and the archive write happens after the reset and swallows its own
-        # failure, so the block would promise a searchable history that nothing could store. A real statement, rolled
-        # back: `BEGIN IMMEDIATE` on its own is NOT enough, since sqlite defers the check and it returns cleanly on a
-        # read-only connection that raises the moment anything is written. The rollback leaves the schema untouched.
+        # Check WRITABLE with a real statement: BEGIN IMMEDIATE alone succeeds on a read-only connection.
         conn.execute("BEGIN IMMEDIATE")
         try:
             conn.execute("CREATE TABLE IF NOT EXISTS _archive_write_probe(x)")
@@ -692,9 +609,7 @@ def reachable() -> bool:
         logger.debug("conversation_archive.unreachable", exc_info = True)
         return False
     finally:
-        # The probe runs on every checkpoint-eligible overflow, and a connection left to cyclic collection is a
-        # descriptor held for an unbounded time: measured, 50 calls leaked 50 open handles on rag.db. Every other
-        # connection in this module is closed the same way.
+        # Close explicitly; GC-held connections leak descriptors on rag.db.
         if conn is not None:
             try:
                 conn.close()
@@ -702,13 +617,10 @@ def reachable() -> bool:
                 pass
 
 
-# Returned by ``_stale_document`` for a turn that is already archived under vectors the query side still accepts.
 _ARCHIVED = "archived"
 
 
-# How many leaves a branch seed will try. A thread gains one leaf per abandoned retry and the branch the user went
-# BACK to is older than all of them, so a tight cap excluded the very branch this exists to find. Paid for by
-# rendering each stored message once rather than once per leaf: sibling chains share nearly all their ancestors.
+# High cap: the branch the user went back to is older than every abandoned retry leaf.
 _BRANCH_SEED_MAX_LEAVES = 512
 
 
@@ -752,10 +664,8 @@ def _branch_seed(
     if not branch:
         return None
 
-    # A LIST, in order, not a set: sets lose repetition and ordering, so an abandoned sibling with the same distinct
-    # texts tied with the request's own branch and, being newer, won. A multiset fixes the repeat case but not the
-    # reordered one, so this scores an in-order run. System and developer messages are excluded: Unsloth's prepended
-    # chat and project instructions are not part of the stored chain.
+    # Ordered list, not set: sets let an abandoned sibling with the same texts tie and win.
+    # System/developer messages excluded: prepended instructions are not in the stored chain.
     def _key(message):
         """What a message matches ON. Role-blind let a rewound, unstored "Continue." match an
         ABANDONED assistant reply of the same text and adopt its boundary."""
@@ -775,9 +685,7 @@ def _branch_seed(
     ]
     if not wanted:
         return None
-    # Where each text may be matched, so the scan can SKIP an entry with no stored counterpart. A strict cursor
-    # stalled on the first one, every leaf scored zero, and the fallback to the newest row picked the abandoned branch
-    # this exists to avoid.
+    # Lets the scan SKIP entries with no stored counterpart instead of stalling.
     where: dict = {}
     for index, text in enumerate(wanted):
         where.setdefault(text, []).append(index)
@@ -789,14 +697,11 @@ def _branch_seed(
         reverse = True,
     )
     if require_unique and len(leaves) > _BRANCH_SEED_MAX_LEAVES:
-        # A capped search cannot prove that an unvisited sibling does not tie the winner.
         return None
     best = None
     best_matched = None
     best_score = 0
     best_tied = False
-    # Rendered once per STORED ROW, not per leaf: `_as_wire` expands a row the same way whichever chain it is walked
-    # in.
     rendered: dict = {}
 
     def _texts_of(record: dict) -> list:
@@ -808,8 +713,7 @@ def _branch_seed(
         return rendered[identifier]
 
     for leaf in leaves[:_BRANCH_SEED_MAX_LEAVES]:
-        # Greedy in-order scan with gaps allowed on both sides: the newest branch message is usually unpersisted and
-        # evicted turns have left the fitted conversation, so neither side is a subsequence of the other.
+        # Gaps allowed on both sides: neither side is a subsequence of the other.
         cursor = 0
         score = 0
         last_matched = None
@@ -828,10 +732,8 @@ def _branch_seed(
             best_matched = last_matched
             best_tied = False
         elif require_unique and score == best_score and score > 0:
-            # Tied on the SAME endpoint is not ambiguity: two retries fork past the proof.
             best_tied = best_tied or last_matched != best_matched
         if best_score >= len(wanted) and not require_unique:
-            # Every message the request carries is on this chain; nothing can beat it.
             break
     if require_unique:
         return None if best_tied else best_matched
@@ -869,8 +771,6 @@ def _active_chain(
         return []
     by_id: dict = {}
     parent_of: dict = {}
-    # Rows whose parent is storage order rather than a real link. The root's absent parent is not synthesized: nothing
-    # stood in for it.
     synthesized: set = set()
     previous = None
     for message in messages:
@@ -879,10 +779,7 @@ def _active_chain(
             continue
         by_id[identifier] = message
         parent = message.get("parentId") or message.get("parent_id")
-        # A row that CARRIES the column and holds null is a root the client meant, as editing the first prompt makes.
-        # Only a row written before the column exists has nothing to say, and there storage order stands in. Under the
-        # legacy path the stand-in is unconditional, as it always was: `_transcript_positions` numbers turns off this
-        # chain, and rooting a null there renumbers the whole archive.
+        # A row that has the column with null is an intended root; pre-column rows use storage order.
         stated = require_unique and ("parentId" in message or "parent_id" in message)
         if parent is None and previous is not None and not stated:
             synthesized.add(identifier)
@@ -892,11 +789,7 @@ def _active_chain(
     if not by_id:
         return list(messages) if fallback else []
     if require_unique and synthesized:
-        # Storage order is not ancestry. Where it strung INDISTINGUISHABLE rows into one chain it made the abandoned
-        # twin an ancestor of the live one, and the greedy trim stopped on the twin, replaying ITS deeper boundary
-        # instead of the safe vote across them. The twins need not be adjacent: the abandoned branch's own
-        # continuation sits between them. Threads the text can still tell apart are left alone, since declining on
-        # every invented link would refuse legacy ancestry that storage order does recover.
+        # Storage order is not ancestry: decline invented links between indistinguishable twins only.
         seen: set = set()
         for message in messages:
             if message.get("id") is None:
@@ -905,8 +798,7 @@ def _active_chain(
             if key[1] and key in seen:
                 return []
             seen.add(key)
-    # The request's own branch when it can be found, the newest row when it cannot: empty positions empty every seat
-    # and send every turn to MAX + 1, which is worse than reading the wrong branch.
+    # Fall back to the newest row: empty positions send every turn to MAX + 1.
     seed = _branch_seed(messages, by_id, parent_of, branch, require_unique = require_unique)
     if seed is None:
         if not fallback:
@@ -915,28 +807,23 @@ def _active_chain(
     return _walk_from(by_id, parent_of, seed) or list(messages)
 
 
-# `JSON.stringify({ result: "" })` byte for byte. `json.dumps` puts a space after the colon and `JSON.stringify` does
-# not, so the obvious spelling never equals the archived message: every comparison downstream is exact, and
-# `_normalise` collapses whitespace RUNS, not a single space.
+# JSON.stringify spelling (no space after colon); comparisons downstream are exact.
 _EMPTY_TOOL_RESULT = '{"result":""}'
 
 
-# `SERVER_SIDE_BUILTIN_TOOL_NAMES` in `chat-adapter.ts`. The NAME alone never decides: a user function may
-# legitimately be called `web_search`, so the marker or a Gemini native part has to be there too, as the frontend also
+# Mirrors SERVER_SIDE_BUILTIN_TOOL_NAMES (chat-adapter.ts); name alone never decides, as the frontend also
 # requires.
 _SERVER_BUILTIN_NAMES = frozenset({"web_search", "web_fetch", "code_execution", "image_generation"})
-# `SANDBOX_FILE_TOOLS`, and `tool_loop_controller._SANDBOX_TOOLS`. Only these two wrap.
+# Mirrors SANDBOX_FILE_TOOLS and tool_loop_controller._SANDBOX_TOOLS.
 _SANDBOX_TOOL_NAMES = frozenset({"python", "terminal"})
 
-# `search-images.ts`. `re.ASCII` on the scheme because Python's IGNORECASE folds Unicode, so `http\u017f://` would
-# match where JavaScript's `/i` does not.
+# Mirrors search-images.ts. re.ASCII: Python IGNORECASE folds Unicode, JS /i does not.
 _SEARCH_IMAGE_ID = re.compile(r"[0-9a-f]{12}")
 _SEARCH_IMAGE_SOURCE = re.compile(r"https?://", re.IGNORECASE | re.ASCII)
 _SEARCH_IMAGE_TOKEN = re.compile(
     r"\n\n[ \t]*\[\[img:[0-9a-f]{12}\]\][ \t]*(?=\n\n|\n?\Z)|\[\[img:[0-9a-f]{12}\]\]"
 )
-# `sanitizeAssistantReplayText`. An audio model answers with an `<audio-player src=...>` tag holding the whole wav
-# inline, and the serializer sends `[audio]` in its place.
+# Mirrors sanitizeAssistantReplayText: inline audio data URIs are sent as [audio].
 _REPLAY_AUDIO_DATA_URI = re.compile(r"data:audio/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+")
 
 
@@ -956,8 +843,7 @@ def _server_builtin(part: dict) -> tuple[bool, bool]:
     return bool(args.get("_server_tool") is True or native), native
 
 
-# One predicate per frontend predicate of the same name. `sessionId` and `subject` are tested for ABSENCE, not null,
-# because the frontend tests them against `undefined`.
+# Mirrors frontend predicates; sessionId/subject tested for ABSENCE (frontend checks undefined).
 def _mcp_image_result(result) -> bool:
     if not isinstance(result, dict) or not isinstance(result.get("text"), str):
         return False
@@ -1001,8 +887,7 @@ def _search_images_result(result) -> bool:
 
 
 def _sandbox_wrapper(result, tool_name: str) -> bool:
-    # The name gates it as well as the shape: another tool answering with `{text, sessionId, images}` is someone
-    # else's, and unwrapping it drops its rest.
+    # Name gates it too: another tool with this shape is not ours to unwrap.
     if not isinstance(result, dict) or not isinstance(result.get("text"), str):
         return False
     if tool_name not in _SANDBOX_TOOL_NAMES or not isinstance(result.get("sessionId"), str):
@@ -1081,8 +966,7 @@ def _tool_result_content(result, tool_name: str = "") -> str:
     unwrapped = _unwrapped(result, tool_name)
     if unwrapped is not None:
         return unwrapped if unwrapped else _EMPTY_TOOL_RESULT
-    # `ensure_ascii = False` because `JSON.stringify` does not escape non-ASCII. Otherwise an accented tool result
-    # reconstructs as `Montr\\u00e9al`, loses its transcript seat and is filtered out of recall.
+    # ensure_ascii=False to match JSON.stringify, or non-ASCII results lose their transcript seat.
     return json.dumps(result, ensure_ascii = False, separators = (",", ":"))
 
 
@@ -1157,9 +1041,7 @@ def _as_wire(messages: list[dict], sanitise_assistant: bool = True) -> list[dict
     for message in messages:
         content = message.get("content")
         parts = content if isinstance(content, list) else None
-        # Reasoning is not content: the serializer never puts it in `content`, but `_probe_text` renders any part with
-        # a `text` field, so forwarding the stored list put a model's thinking inline and the turn matched no
-        # transcript seat. Dropped rather than moved, since nothing reads `reasoning_content` on the live side.
+        # Drop reasoning parts: _probe_text would render them inline and the turn matches no seat.
         if parts is not None and any(
             isinstance(part, dict) and part.get("type") == "reasoning" for part in parts
         ):
@@ -1172,9 +1054,7 @@ def _as_wire(messages: list[dict], sanitise_assistant: bool = True) -> list[dict
         if sanitise_assistant and str(message.get("role") or "") == "assistant":
             content = _sanitised_assistant_content(content)
             parts = content if isinstance(content, list) else None
-        # A provider-side builtin with no native part is not replayed, so it is not a call here either: counting it
-        # invented an exchange the request never carried. Any other tool-call part takes the replay loop even when the
-        # serializer drops it, since passthrough would keep it in `content` and render a call never sent.
+        # A builtin with no native part is not replayed, so it is not a call here either.
         calls = [
             part
             for part in (parts or [])
@@ -1189,13 +1069,10 @@ def _as_wire(messages: list[dict], sanitise_assistant: bool = True) -> list[dict
                 }
             )
             continue
-        # Replayed the way `chat-adapter.ts` replays it: parts in order, flushing pending calls whenever text arrives,
-        # so a row holding two rounds goes out as call/result/text+call/result. Collecting every call into one message
-        # rebuilt a different order, and the later calls took an invented ordinal. Text accumulated before a flush
-        # rides ON that flush's call message, as it does live.
+        # Replayed like chat-adapter.ts: parts in order, flushing pending calls whenever text arrives.
         pending_calls: list[dict] = []
         pending_text: list = []
-        # A one-slot box because `_flush` resets it and Python closures cannot rebind.
+        # One-slot box: _flush resets it and closures cannot rebind.
         pending_round: list = [None]
 
         def _flush(role = message.get("role")) -> None:
@@ -1214,13 +1091,10 @@ def _as_wire(messages: list[dict], sanitise_assistant: bool = True) -> list[dict
             wire.append(entry)
             for call in pending_calls:
                 if _server_builtin(call)[0]:
-                    # A builtin WITH a native part replays as a call and no `tool` message: its result travels in the
-                    # provider's own native part.
+                    # A builtin with a native part replays as a call with no tool message.
                     continue
                 if "result" not in call or call.get("result") is None:
-                    # Only an ABSENT result is absent. The serializer skips exactly `undefined` and `null`, so
-                    # treating "" / {} / [] as nothing dropped a message the wire carries and left the run short of
-                    # the archived one.
+                    # Only undefined/null are absent (serializer rule); "" / {} / [] are carried.
                     continue
                 wire.append(
                     {
@@ -1237,7 +1111,6 @@ def _as_wire(messages: list[dict], sanitise_assistant: bool = True) -> list[dict
         for part in parts:
             if isinstance(part, dict) and part.get("type") == "tool-call":
                 if not _replayable(part):
-                    # Dropped whole, call and result, exactly as the serializer does.
                     continue
                 round_id = _local_round_id(part)
                 if (
@@ -1246,7 +1119,7 @@ def _as_wire(messages: list[dict], sanitise_assistant: bool = True) -> list[dict
                     and round_id is not None
                     and pending_round[0] != round_id
                 ):
-                    # `startsNewCodexToolRound`: a new local round is a new group.
+                    # startsNewCodexToolRound: a new local round is a new group.
                     _flush()
                 if round_id is not None:
                     pending_round[0] = round_id
@@ -1306,8 +1179,6 @@ def _transcript_positions(thread_id: str, branch = None) -> Optional[list[str]]:
         return None
     if not messages:
         return None
-    # Grouped with the evictor's own grouper, so a position is a TURN's index, which is what the ordinal is compared
-    # against.
     wire = _as_wire(_active_chain(messages, branch))
     return [
         [_normalise_cased(_probe_text(message)) for message in group]
@@ -1341,13 +1212,8 @@ def _occurrences(positions: Optional[list[list[str]]], group: list[dict]) -> lis
     calls = [bool(message.get("tool_calls")) for message in group]
 
     def _same(stored: str, live: str, is_call: bool) -> bool:
-        # A tool call is compared as needle in haystack, never for equality: the store keeps arguments as an OBJECT
-        # and the request carries the model's raw string, so `_probe_text` offers both JSON spellings for the stored
-        # copy and one for the live one. Every other message is compared exactly.
-        # In two pieces when the whole needle does not fit, since the second spelling is inserted BETWEEN the
-        # arguments and what followed them: a call with a preamble renders live as name/args/text and stored as
-        # name/args/args/text, so the live string is no longer contiguous. One split point, so this tolerates exactly
-        # the one insertion `_probe_text` makes.
+        # Tool calls compared as needle in haystack (stored args are an object, live a raw string);
+        # split once since _probe_text inserts the second spelling mid-string.
         if is_call:
             if not live:
                 return False
@@ -1367,10 +1233,7 @@ def _occurrences(positions: Optional[list[list[str]]], group: list[dict]) -> lis
         index
         for index, position in enumerate(positions)
         if position
-        # A position SHORTER than the turn may only match the trailing one: `zip` stops at the shorter side, so an
-        # orphan user row (a deleted reply, or a reload before the reply was appended) prefix-matched and gave the
-        # answered turn two seats. `>=` rather than `==`, since a position legitimately runs LONGER: `_archivable`
-        # strips our injections and `_as_wire` expands one tool row into several messages.
+        # Shorter positions may only match the trailing one, or an orphan user row takes a second seat.
         and (len(position) >= len(texts) or index == len(positions) - 1)
         and all(
             _same(stored, live, is_call) for stored, live, is_call in zip(position, texts, calls)
@@ -1537,8 +1400,7 @@ def _restamp(
         moved = False
         for seat, copy in zip(seats, rows):
             if skip_null and copy.get("archive_ordinal") is None:
-                # A row archived before the column existed stays unnumbered, or it moves to the end of its own
-                # conversation and the header calls the oldest statement the latest one.
+                # Pre-column rows stay unnumbered, or the oldest statement is shown as the latest.
                 continue
             if copy.get("archive_ordinal") != seat:
                 store.set_archive_ordinal(conn, copy["id"], seat)
@@ -1576,7 +1438,6 @@ def _stale_document(
         return None
     for copy in copies:
         if not config.embedding_identity_matches(copy.get("embedding_model"), identity):
-            # Re-index the stale copy before considering writing a new one.
             return copy["id"]
     return _ARCHIVED if len(copies) >= max(1, occurrences) else None
 
@@ -1691,8 +1552,7 @@ def _live_transcript(thread_id: str) -> Optional[list[str]]:
         return None
     if not messages:
         return None
-    # Through the same reconstruction: a persisted tool call read as ONE message renders in a different order, and the
-    # in-order branch check then rejected every agent turn.
+    # Same reconstruction, or persisted tool calls render in a different order.
     texts = [_normalise(_probe_text(message)) for message in _as_wire(messages)]
     return [text for text in texts if text] or None
 
@@ -1746,18 +1606,11 @@ def content_on_branch(content, transcript: Optional[list[str]]) -> bool:
 _ROLE_PREFIX = re.compile(
     r"^(?:user|assistant|system|developer|tool result|message):\s*", re.IGNORECASE
 )
-# render_turn labels a tool call "assistant called <name>: <args>". The label is ours, not the stored message's, so it
-# comes off before the probe like any role prefix, or every archived tool line misses and the turn looks rolled back.
-# The name goes with it when arguments follow; with none, the bare name is what the transcript has.
+# Strip our 'assistant called <name>:' label before probing (name kept if no args).
 _TOOL_CALL_PREFIX = re.compile(r"^assistant called (?:[^:\n]+:\s*)?", re.IGNORECASE)
-# The same label with the NAME captured, for the probe that has to keep it. Stripping the label whole discarded which
-# tool was called, so a retry that kept the arguments and changed the tool (`terminal` to `python`) left the archived
-# pre-edit turn matching. `_probe_text` renders a live call as "<name> <arguments>", so the name is there to be found;
-# only our own "assistant called " wrapper and the colon are not.
+# Name captured: a retry that changed only the tool must not match.
 _TOOL_CALL_NAME = re.compile(r"^assistant called ([^:\n]+):\s*", re.IGNORECASE)
-# What may sit between two probes of the same message: nothing, or a label the probe had stripped. A pasted transcript
-# carries its own "user:" lines, so the gap is real there and the turn is unedited. Any other text in that gap is
-# content the archive never saw.
+# Between probes of one message only a stripped label may sit; other text is unseen content.
 _GAP_IS_LABEL = re.compile(
     r"^\s*(?:(?:user|assistant|system|developer|tool result|message):"
     r"|assistant called (?:[^:\n]+:)?)?\s*$",
@@ -1776,18 +1629,12 @@ def _probes_for(text: str) -> list[str]:
         without_role = _ROLE_PREFIX.sub("", line)
         named = _TOOL_CALL_NAME.match(without_role.strip())
         if named:
-            # Its own probe, ahead of the arguments, which is the order `_probe_text` renders them in. Without it the
-            # arguments alone decided, and a call to a different tool with the same arguments matched. Except "tool",
-            # which is `render_turn`'s own fallback for a call that arrived without a name: the live text carries no
-            # name there either, so requiring it would reject every one of those turns.
+            # The tool name is its own probe; except 'tool', render_turn's fallback for nameless calls.
             name = _normalise(named.group(1))
             if name and name != "tool":
                 probes.append(name)
         stripped = _normalise(_TOOL_CALL_PREFIX.sub("", without_role))
-        # The WHOLE line, except where render_turn cut something short: a prefix probe cannot see an edit past its
-        # cut-off, leaving a rewritten tail eligible. Keyed off the marker, not a "tool result:" label: a long tool
-        # result is ONE string of many newlines, so only its first line carries the label while the marker is on its
-        # last, and nothing in a real transcript ends in the marker, so every over-cap tool turn was rejected.
+        # Whole line unless truncated; keyed off the marker since long tool results span many lines.
         if stripped.endswith(_TRUNCATION_MARKER.strip()):
             stripped = stripped[: -len(_TRUNCATION_MARKER.strip())].strip()
         probes.append(stripped)
@@ -1805,9 +1652,7 @@ def _probe_entries(text: str) -> list[tuple[str, bool]]:
         is_call = bool(_TOOL_CALL_PREFIX.match(without_role.strip()))
         named = _TOOL_CALL_NAME.match(without_role.strip())
         if named:
-            # See `_probes_for`: the tool's NAME is a probe of its own, or the arguments alone decide and a retry that
-            # swapped the tool still matches. Flagged as a call so it keeps the haystack comparison the rest of the
-            # line gets. "tool" is `render_turn`'s fallback for a nameless call.
+            # See _probes_for: the tool name is a probe; 'tool' is render_turn's nameless fallback.
             name = _normalise(named.group(1))
             if name and name != "tool":
                 entries.append((name, True))
@@ -1818,11 +1663,7 @@ def _probe_entries(text: str) -> list[tuple[str, bool]]:
         if stripped:
             entries.append((stripped, truncated or is_call))
         elif truncated and entries:
-            # The cut landed exactly on a line boundary, so the marker is a line of its own and the line before it is
-            # the one that was cut short. Dropping the empty marker dropped the flag with it, the last real probe was
-            # read as complete, and `_document_matches_one_run` retired an unedited over-cap turn: measured on a
-            # 900-line tool result whose cut fell on a newline, the live turn came back off-branch and no query could
-            # return it.
+            # Cut on a line boundary: the marker is its own line, so flag the previous line as truncated.
             entries[-1] = (entries[-1][0], True)
     return entries
 
@@ -1832,11 +1673,7 @@ def _on_live_branch(text: str, transcript: Optional[list[str]]) -> bool:
     probes = _probes_for(text)
     if not probes or not transcript:
         return False
-    # EVERY line, IN ORDER, WITHIN ONE RUN OF ADJACENT MESSAGES. All of a turn, because it is archived as a unit and
-    # editing only the assistant half leaves the user line matching. In order, because independent membership accepts
-    # rearranged lines. In one bounded run, because a global scan lets any later message supply a missing line, which
-    # is how "Should I deploy? / No" survived its answer becoming "Yes". The window is the probe count; m messages
-    # render at least m lines, so a real turn always fits.
+    # Every line, in order, within one bounded run of adjacent messages, so edits cannot slip past.
     window = len(probes)
     return any(
         _probes_match_from(probes, transcript, start, window) for start in range(len(transcript))
@@ -1870,21 +1707,10 @@ def _scan_probes(
         while index < last:
             found = messages[index].find(probe, cursor)
             if found >= 0:
-                # A message the run stepped INTO has to be accounted for from its first character: an edit that
-                # prepends to it ("no" becoming "correction: no") otherwise leaves every probe matching. A tool call
-                # is exempt, and the exemption then covers the rest of that message: the store keeps a call as a
-                # structured part, so the live text carries the tool name and BOTH spellings of its arguments while
-                # the archived copy has one line of one of them, and nothing there can line up character for
-                # character.
+                # A message stepped into must match from char 0, except tool calls (stored structured).
                 if fresh and found != 0 and not partial_ok:
                     return None
-                # And text inserted BETWEEN two probes of the same message. The two checks around this one cover an
-                # edit that prepends to a message the run stepped into and one that appends to a message it is
-                # leaving; a correction dropped between two archived lines matched both of them with the new line
-                # sitting unexamined in the gap, so the pre-edit turn stayed recallable (measured on "A\\nB" becoming
-                # "A\\ncorrection\\nB"). A gap is only allowed where it is a label `render_turn` wrote and the probe
-                # therefore had stripped: a pasted transcript legitimately carries its own "user:" lines, and anything
-                # else is content the archive never saw.
+                # Reject text inserted between two probes unless it is a render_turn label the probe stripped.
                 if (
                     not fresh
                     and cursor
@@ -1893,20 +1719,13 @@ def _scan_probes(
                 ):
                     return None
                 if opened_at is None:
-                    # Same exemption at the front of the run as inside it.
                     opened_at = 0 if partial_ok else found
                     opened_index = index
                 cursor = found + len(probe)
-                # The exemption belongs to the CALL, not to the rest of the message. It exists because a stored tool
-                # call cannot line up character for character with the live text (the store keeps arguments as an
-                # object and offers both JSON spellings), so the cursor after one is not exact. Once an ordinary text
-                # probe has matched, the cursor IS exact again and the gap and trailing-content checks can be
-                # enforced. Left sticky, an assistant turn carrying both a call and text stayed matched after a
-                # correction was appended to that text, so the pre-edit turn was still recallable.
+                # The exemption belongs to the call only; after a text probe the cursor is exact again.
                 partial = partial_ok
                 fresh = False
                 break
-            # And leaving one it had entered: whatever is left over is text an edit added.
             if cursor and not partial and cursor < len(messages[index]):
                 return None
             index += 1
@@ -1966,13 +1785,11 @@ def _document_on_live_branch(conn, document_id: str, transcript: list[str], cach
             "SELECT text FROM chunks WHERE document_id = ? ORDER BY chunk_index ASC",
             (document_id,),
         ).fetchall()
-        # NULL for archives predating the column, which fall back to counting labels.
         row = conn.execute(
             "SELECT archive_messages FROM documents WHERE id = ?", (document_id,)
         ).fetchone()
         message_count = row["archive_messages"] if row else None
     except Exception:
-        # Never fail a recall on the strictness pass: fall back to what the candidate chunk itself said.
         cache[document_id] = True
         return True
     cache[document_id] = _document_matches_one_run(rows, transcript, message_count)
@@ -1994,9 +1811,7 @@ def _document_matches_one_run(
     probe_lists = [_probe_entries(row["text"]) for row in rows]
     if any(not probes for probes in probe_lists):
         return False
-    # The messages the turn was rendered from, not the lines it produced: bounding by lines let a long answer's tail
-    # be satisfied far outside the turn. Recorded at archive time; the label count is an approximate fallback for
-    # older documents, since a pasted transcript contains lines that look like the renderer's own.
+    # Bound by source messages, not lines; label count is a fallback for older documents.
     window = (
         int(message_count)
         if message_count
@@ -2009,12 +1824,7 @@ def _document_matches_one_run(
         cursor = 0
         opened_at = None
         partial_tail = False
-        # How far back the NEXT chunk may restart. A chunk's leading overlap is the previous chunk's tail, and
-        # `CHUNK_OVERLAP` can carry a whole short message with it -- an assistant tool call sitting just before a long
-        # tool result. Resuming strictly at the message the previous chunk FINISHED in then cannot match that overlap,
-        # and an unedited document was retired as off-branch, which makes the turn unsearchable. Never earlier than
-        # where the previous chunk itself opened, since the overlap cannot predate it, and the forward position is
-        # always tried FIRST, so this only ever rescues a scan that used to fail outright.
+        # Next chunk may restart where the previous opened: its overlap can carry a whole short message.
         floor = start
         for probes in probe_lists:
             found = None
@@ -2025,14 +1835,10 @@ def _document_matches_one_run(
             if found is None:
                 return False
             position, cursor, chunk_opened_at, partial_tail, floor = found
-            # Where the whole run opened, which is the first chunk's answer: an edit that prepends to the turn's FIRST
-            # message shows up here and nowhere else.
+            # Only place that sees an edit prepending to the turn's first message.
             if opened_at is None:
                 opened_at = chunk_opened_at
-        # And the turn has to cover the messages it claims, end to end. An edit that keeps the old text and adds to it
-        # leaves every probe matching, whichever side it adds on and whichever message it touches: "No" becoming "No,
-        # correction: yes" or "Correction: no", or the question itself growing a clause. Either way the pre-edit copy
-        # stayed eligible and could be recalled as the answer.
+        # The turn must cover its messages end to end, or an appended correction leaves it eligible.
         if opened_at:
             return False
         return partial_tail or cursor >= len(transcript[position])
@@ -2112,13 +1918,11 @@ def _ends_first_within_ties(conn, hits: list) -> list:
     separated. Ordering is `_conversation_order`, so legacy NULL ordinals still count as oldest.
     """
     if not config.CONVERSATION_QUERY_FOCUS:
-        # Reordering candidates is selection, not presentation, so it belongs behind the rollback knob that promises
-        # an identical candidate set.
+        # Reordering is selection, so it stays behind the rollback knob.
         return hits
     if len(hits) < 2:
         return hits
     if len({hit.lexical_score for hit in hits}) == len(hits):
-        # Nothing tied: skip the row fetch entirely, which is the common case.
         return hits
     try:
         rows = store.chunks_by_id(conn, [hit.chunk_id for hit in hits])
@@ -2157,8 +1961,6 @@ def _lexical_pass(
     oldest_first: bool = False,
 ) -> list:
     if newest_first or oldest_first:
-        # The archive's lexical legs are always mode "lexical", so this is the same call one layer down, with the
-        # tie-break reversed.
         return _ends_first_within_ties(
             conn,
             retrieval.retrieve_lexical(
@@ -2210,18 +2012,12 @@ def _focused_lexical(conn, scope: str, query: str, model, fetch: int) -> list:
     expressions = (
         store.conversation_match_queries(query) if config.CONVERSATION_QUERY_FOCUS else [None]
     )
-    # Only the kill switch takes the plain path. A query made ONLY of an identifier shapes to a single expression, and
-    # returning here would hand the query most likely to tie on the IDF floor the one-ended fetch the comment below
-    # exists to prevent.
+    # Only the kill switch takes the plain path; a single-identifier query needs two-ended fetch.
     if not expressions or expressions[0] is None:
         return _lexical_pass(conn, scope, query, model, fetch, None)
-    # Fetched from BOTH ENDS of the tied run, not just the front. Every hit on the conversation's own identifier
-    # scores the same on the IDF floor and SQLite returns a tied run in rowid order, so `LIMIT 256` is "the oldest
-    # 256": on a 300-turn archive the window held ordinals 0-255 and the last turn's value was unreachable. Half from
-    # each end keeps "what is it now" and "what was it originally" both answerable.
+    # Fetch both ends of the tied run: SQLite returns ties in rowid order, so LIMIT hides the newest.
     _newest_half = _BRANCH_FILTER_MAX_CANDIDATES // 2
-    # Re-ordered over the MERGED run, not per half: concatenating two ends-first halves leaves the newest end behind a
-    # full window of old turns.
+    # Re-order over the merged run, not per half.
     strict = _ends_first_within_ties(
         conn,
         _both_ends(
@@ -2239,14 +2035,9 @@ def _focused_lexical(conn, scope: str, query: str, model, fetch: int) -> list:
             ),
         ),
     )
-    # One expression means the two passes would run the same query twice: the filter pass already IS the ranking pass,
-    # and it is ends-first over both halves.
     if len(expressions) < 2:
         return strict
-    # The ranking pass is fetched to the same bound as the filter pass, not to `fetch`. It ranks the ELIGIBLE chunks,
-    # and at `fetch` rows its window can be spent entirely on chunks that never name the identifier, since a content
-    # word ("current") is ordinary English: nothing eligible is left to order and the answer is dropped. Two-ended for
-    # the same reason, and it matters MORE here, because the merged order comes from this pass.
+    # Rank pass fetched to the filter bound, not fetch, or it can be filled by ineligible chunks.
     _loose_k = max(fetch, _BRANCH_FILTER_MAX_CANDIDATES)
     _loose_newest = _loose_k // 2
     loose = _ends_first_within_ties(
@@ -2266,17 +2057,13 @@ def _focused_lexical(conn, scope: str, query: str, model, fetch: int) -> list:
             ),
         ),
     )
-    # Eligibility is asked of the index, not read off the strict pass's top rows: that pass is capped and arbitrarily
-    # ordered, so past `_BRANCH_FILTER_MAX_CANDIDATES` chunks on the subject the turn stating the current value can be
-    # the one left out.
+    # Ask the index for eligibility: the strict pass is capped and arbitrarily ordered.
     eligible = {hit.chunk_id for hit in strict}
     try:
         eligible |= store.lexical_matching_ids(
             conn, [hit.chunk_id for hit in loose], expressions[0]
         )
     except Exception:
-        # An exact membership test is an improvement, not a dependency: the strict rows on their own are what this did
-        # before.
         logger.warning("conversation_archive.eligibility_probe_failed", exc_info = True)
     ranked = [hit for hit in loose if hit.chunk_id in eligible]
     already = {hit.chunk_id for hit in ranked}
@@ -2316,8 +2103,6 @@ def _candidates(conn, scope: str, query: str, model, fetch: int, thread_id: str)
         except embeddings.EmbeddingModelDownloadRequiredError as exc:
             _log_embedder_pending(model, exc)
         except Exception:
-            # Dense retrieval raises rather than degrading when no embedder can start. The lexical hits stand on their
-            # own, so this top-up may fail.
             logger.warning(
                 "conversation_archive.dense_unavailable thread_id=%s", thread_id, exc_info = True
             )
@@ -2354,23 +2139,17 @@ def recall(
 
     scope = store.conversation_archive_scope(thread_id)
     limit = top_k or config.CONVERSATION_ARCHIVE_TOP_K
-    # Two queries rather than one concatenated string, which would recreate the defect the shaped query fixes: the
-    # filler's tokens dilute the instruction's identifiers and the conjunctive pass would AND two unrelated intents.
-    # Run separately, each is shaped on its own and spends its own half of the budget; at a limit of one the anchor
-    # wins.
+    # Separate queries: concatenating would dilute identifiers and AND unrelated intents.
     queries = [query] + [q.strip() for q in (extra_queries or []) if (q or "").strip()]
     if len(queries) > 1:
         share = max(1, -(-limit // len(queries)))
         merged: list = []
         seen_ids: set = set()
         for index, one in enumerate(reversed(queries)):
-            # Anchors first: they are the reason the extra query was added at all.
             room = limit - len(merged) if index == len(queries) - 1 else share
             if room <= 0:
                 break
-            # Over-fetched by what is already held, because the cut used to happen BEFORE the dedup: two queries from
-            # the same thread overlap by construction, so every shared chunk cost a slot that was never refilled and
-            # adding the anchor made the recall smaller than leaving it out.
+            # Over-fetch by what is held: overlapping queries otherwise lose slots to dedup.
             found = recall(
                 thread_id,
                 one,
@@ -2381,10 +2160,7 @@ def recall(
             if not found:
                 continue
             fresh = [source for source in found[1] if source["chunkId"] not in seen_ids]
-            # Re-sorted because the inner call orders its OWN slice chronologically, so a widened fetch arrives
-            # oldest-first and its head would spend the refilled slots on the oldest turns. By retrieval rank first,
-            # score second: the score is rounded for display and identical across a tied run, so sorting on it alone
-            # preserved the chronological order. Re-ordered chronologically below.
+            # Sort by retrieval rank first: rounded scores tie and preserve chronological order.
             fresh.sort(
                 key = lambda source: (
                     source.get("rank") if source.get("rank") is not None else 1 << 30,
@@ -2397,9 +2173,7 @@ def recall(
         if not merged:
             return None
         if config.CONVERSATION_RECALL_ORDER == "chronological":
-            # Literally the key `_conversation_order` uses, not a second copy that agrees
-            # today: component order included, or the merged block contradicts the unmerged
-            # one on the same archive.
+            # Must be the exact key _conversation_order uses.
             merged.sort(
                 key = lambda source: _order_key(
                     source.get("turn"),
@@ -2416,8 +2190,6 @@ def recall(
     try:
         conn = rag_db.get_connection()
         model = config.effective_embedding_model()
-        # The request's own branch first: the stored rows are the whole DAG. Falling back to them still beats not
-        # filtering when the caller has no branch to offer.
         transcript = branch_message_texts(branch_messages) or _live_transcript(thread_id)
         fetch = limit * _BRANCH_FILTER_OVERFETCH
         rows: dict = {}
@@ -2427,11 +2199,7 @@ def recall(
             fetched = _candidates(conn, scope, query, model, fetch, thread_id)
             if not fetched:
                 return None
-            # The floor filters CANDIDATES, before the cut to `limit`. After the slice it was a deletion instead: weak
-            # hits took the slots and were then removed, so at a floor of 0.5 with four weak hits on top the forced
-            # recall returned nothing where the unforced one returned 4. `exhausted` is read off the RAW fetch, or the
-            # widening loop would mistake "the floor removed most of this page" for "the index has nothing more" and
-            # stop one page early.
+            # Floor filters candidates before the limit cut; exhausted reads the raw fetch.
             exhausted = len(fetched) < fetch
             candidates = _above_floor(fetched, min_dense_score)
             if not candidates:
@@ -2463,8 +2231,6 @@ def recall(
                     len(hits),
                     len(candidates),
                 )
-            # Enough live hits, or nothing more to widen into: an abandoned branch can outrank the live one, but it
-            # cannot outrank it forever.
             if len(hits) >= limit or exhausted or fetch >= _BRANCH_FILTER_MAX_CANDIDATES:
                 hits = hits[:limit]
                 break
@@ -2472,12 +2238,9 @@ def recall(
         if not hits:
             return None
         if config.CONVERSATION_RECALL_ORDER == "chronological":
-            # Retrieval rank, kept before the chronological sort throws it away. The two-query merge refills its slots
-            # from these sources and score alone cannot order them: it is rounded to four places, so on a tied archive
-            # every candidate carries the SAME score and the refill takes the oldest.
+            # Keep rank: rounded scores tie, so the merge refill would take the oldest.
             rank_of = {hit.chunk_id: rank for rank, hit in enumerate(hits)}
-            # AFTER the top-k slice, never before: sorting first would make the slice take the oldest turns rather
-            # than the most relevant ones.
+            # Sort AFTER the top-k slice, or the slice takes the oldest turns.
             hits.sort(key = lambda hit: _conversation_order(rows.get(hit.chunk_id)))
             text, sources = tool.format_conversation_recall(rows, hits)
             for source in sources:
@@ -2653,7 +2416,6 @@ def _delete_scope(
         try:
             conn = rag_db.get_connection()
         except Exception:
-            # No vec0 here. Delete what can be deleted rather than nothing at all.
             return _delete_scope_without_vec(scope, thread_id, created_before = created_before)
         for row in conn.execute(*_scope_select(scope, created_before)).fetchall():
             store.delete_document(conn, row["id"])

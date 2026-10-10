@@ -136,13 +136,11 @@ _ETC_FILES = (
     "/etc/localtime",
     "/etc/nsswitch.conf",
 )
-# Distro JDKs link their configuration into /etc/java*.
 _ETC_JAVA_GLOB = "/etc/java*"
 # conf/security holds java.security; Fedora's separate lib/security holds default.policy.
 _ETC_JAVA_SECURITY_MARKERS = ("java.security", "default.policy")
 # Files beside security/; exclude management/ and its JMX credentials.
 _ETC_JAVA_FILES = ("*.properties", "*.cfg")
-# Bound only when it passes _trusted_system_file.
 _ETC_FILES_IF_TRUSTED = ("/etc/gitconfig",)
 # PUBLIC halves one by one, never /etc/ssl or /etc/pki whole: both hold private keys.
 _NETWORK_FILES = (
@@ -193,7 +191,6 @@ def _etc_java_binds() -> tuple[str, ...]:
         for root, dirs, files in os.walk(top):
             dirs.sort()
             security = os.path.join(root, "security")
-            # The glob also matches non-JDK trees.
             markers = (os.path.join(security, name) for name in _ETC_JAVA_SECURITY_MARKERS)
             if (
                 "security" in dirs
@@ -208,7 +205,6 @@ def _etc_java_binds() -> tuple[str, ...]:
                     if any(fnmatch.fnmatch(name, pattern) for pattern in _ETC_JAVA_FILES)
                     and stat.S_ISREG(os.lstat(os.path.join(root, name)).st_mode)
                 )
-            # Fedora's conf/ is three levels down.
             if os.path.relpath(root, top).count(os.sep) >= 3:
                 dirs[:] = []
     return tuple(binds)
@@ -277,7 +273,7 @@ def _without_studio_state(roots: tuple[str, ...], depth: int = 4) -> tuple[str, 
     for root in roots:
         real = os.path.realpath(root)
         if any(_within(real, path) for path in state):
-            continue  # the root IS Studio state
+            continue
         if not any(_within(path, real) for path in state):
             kept.append(root)
             continue
@@ -763,7 +759,6 @@ def _model_cache_binds(workdir: str) -> dict[str, str]:
         home = os.path.join(user_home, _MODEL_CACHE_RELPATH)
         resolved = {}
     for name in _MODEL_CACHE_SUBDIRS:
-        # Canonical: the mount table lists real paths.
         path = os.path.realpath(resolved.get(name) or os.path.join(home, name))
         if _within(path, workdir):
             continue

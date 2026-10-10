@@ -70,9 +70,7 @@ def mtp_preference_key(name: str) -> tuple[int, int, str]:
     return mtp_precision_rank(name), borrows, Path(name).name.lower()
 
 
-# DFlash publishes the same precision vocabulary (and the published sidecar
-# carries no precision token at all, which lands in the catch-all rank), so the
-# ordering is shared rather than duplicated.
+# DFlash shares DSpark's precision vocabulary (the sidecar has none, landing in the catch-all).
 dflash_precision_rank = dspark_precision_rank
 
 

@@ -3,8 +3,7 @@
 
 """Shared helpers for raw-text dataset preparation."""
 
-# `Dataset` is annotation-only: a module-scope `datasets` import drags torch in via
-# datasets.formatting.torch_formatter.
+# Annotation-only: importing datasets at module scope pulls in torch.
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -70,13 +69,11 @@ def _string_columns(dataset: Dataset) -> list[str]:
 
 
 def _text_columns(dataset: Dataset, string_cols: list[str]) -> list[str]:
-    # Every column of an uploaded CSV is text; skip one pandas would have typed, like an id.
     typed = typed_csv_columns(dataset)
     return [col for col in string_cols if col not in typed] or string_cols
 
 
-# One unit per CJK / kana / Thai character (scripts written without spaces), else per word, with
-# unspaced runs cut every 16 characters: minified code counts by length, an id or hash stays short.
+# CJK/kana/Thai count per character, else per word; unspaced runs count per 16 chars.
 _UNSPACED = "\u0e00-\u0e7f\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff"
 _TEXT_UNIT = re.compile(f"[{_UNSPACED}]|[^\\s{_UNSPACED}]{{1,16}}")
 
@@ -104,15 +101,11 @@ def _drop_invalid_text_rows(
     split_scope: str,
     allow_empty: bool = False,
 ) -> tuple[Dataset, list[RawTextNotice]]:
-    # Lazy filter — drops rows whose 'text' is null/non-string/blank before they reach
-    # the tokenizer. Works on both Dataset and streaming IterableDataset.
     filtered_dataset = dataset.filter(
         lambda ex: isinstance(ex["text"], str) and bool(ex["text"].strip())
     )
 
-    # Streaming datasets (IterableDataset) have no __len__, so we can't count the
-    # dropped rows or verify the result is non-empty without consuming the whole
-    # stream. Keep the filter, skip only the len()-based diagnostics.
+    # Streaming datasets have no __len__, so skip the len()-based diagnostics.
     if not hasattr(dataset, "__len__"):
         return filtered_dataset, [
             RawTextNotice(
@@ -128,7 +121,6 @@ def _drop_invalid_text_rows(
     if not dropped_rows:
         return filtered_dataset, []
 
-    # An empty eval split falls through to the trainer, which warns and skips evaluation.
     if len(filtered_dataset) == 0 and not allow_empty:
         raise ValueError(
             f"{mode_title} training requires at least one non-blank string 'text' value "
@@ -171,7 +163,6 @@ def prepare_raw_text_dataset(
             )
 
         text_cols = _text_columns(dataset, string_cols)
-        # An eval split reuses the train split's column: per-split word counts can disagree.
         if text_column in string_cols:
             renamed_col = text_column
         else:

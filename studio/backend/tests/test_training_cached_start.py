@@ -345,7 +345,6 @@ def test_hf_dataset_preflight_verifies_an_unpinned_repo_with_a_stray_cache(tmp_p
 
 
 def test_hf_dataset_preflight_accepts_an_unpinned_cached_repo_offline(tmp_path):
-    # Offline there is no Hub to verify against, so a cached copy still starts.
     route = _load_route_module("training_route_unpinned_dataset_offline")
 
     class UnexpectedApi:
@@ -1126,8 +1125,7 @@ def test_remote_format_probe_preserves_root_level_repo_id():
 
 
 def test_remote_format_probe_resolves_the_bicodec_alias():
-    # "Spark-TTS-0.5B/LLM" is a registry alias, not a repo: probing it literally 404s, so preflight
-    # has to probe what the trainer downloads.
+    # "Spark-TTS-0.5B/LLM" is a registry alias; preflight probes what the trainer downloads.
     route = _load_route_module("training_route_remote_bicodec_alias")
     info = SimpleNamespace(
         siblings = [
@@ -1346,8 +1344,7 @@ def test_mlx_start_rejects_unsupported_training_config(request_overrides, expect
 
 
 def test_mlx_start_accepts_dora():
-    # LoftQ is asserted alongside DoRA so a gate that stopped refusing anything at all
-    # cannot pass this test.
+    # LoftQ alongside DoRA so a gate that refuses nothing cannot pass.
     from utils.hardware import hardware
 
     route = _load_route_module("training_route_mlx_accepts_dora")
@@ -1556,13 +1553,10 @@ def test_unscoped_reset_cannot_touch_a_live_run(monkeypatch):
         backend, "force_terminate", lambda **_kw: pytest.fail("unscoped reset terminated a run")
     )
 
-    # A stop was already requested, so this is the pre-rework cancel-then-dismiss flow and
-    # the client may clear its UI. Still no force_terminate: the stub above would fail.
     assert backend.reset_training_state() == "superseded"
     assert backend.reset_training_state(expected_job_id = "job_old") == "superseded"
 
-    # No stop requested, so a bodyless reset of a live run is stale: 409, not a 200 that
-    # would tell an older client a running job had been cleared.
+    # No stop requested: a bodyless reset of a live run is stale, 409.
     backend._cancel_requested = False
     assert backend.reset_training_state() == "active"
 

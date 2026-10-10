@@ -69,7 +69,6 @@ def _write_model(directory):
 
 def _bicodec_snapshot(cache_root):
     snapshot = _snapshot(cache_root, _BICODEC)
-    # The real layout: nothing loadable at the snapshot root.
     (snapshot / "config.yaml").write_text("sample_rate: 16000\n")
     _write_model(snapshot / "LLM")
     return snapshot

@@ -25,10 +25,10 @@ from utils.subprocess_compat import windows_hidden_subprocess_kwargs
 
 logger = get_logger(__name__)
 
-# amd-smi on Windows initialises the full ROCm runtime on first call, which can take 15-25 s on cold hardware. Linux is consistently < 2 s.
+# amd-smi on Windows initialises ROCm on first call, which can take 15-25 s.
 _AMD_SMI_DEFAULT_TIMEOUT = 30 if platform.system() == "Windows" else 10
 
-# Circuit breaker: stop polling amd-smi after this many consecutive failures (each Windows failure may pop a UAC/DiskPart elevation prompt).
+# Each failed Windows call may pop a UAC/DiskPart elevation prompt.
 _AMD_SMI_FAILURE_LIMIT = 3
 _amd_smi_consecutive_failures = 0
 _amd_smi_disabled = False
@@ -37,21 +37,19 @@ _amd_smi_disabled = False
 def _path_inside_venv(path: str) -> bool:
     """True if ``path`` is inside the active venv (sys.prefix). The venv hipInfo.exe (AMD wheel, put on PATH by main.py/worker.py for bitsandbytes) is NOT a HIP SDK (see _hip_sdk_present)."""
     try:
-        # realpath (not abspath): resolve symlinks/8.3 names so an aliased venv matches.
         root = os.path.normcase(os.path.realpath(sys.prefix))
-        # Guard a root-dir prefix (C:\ or /): commonpath would match every path on it. A venv is never at root, so treat that as outside.
+        # A root-dir prefix would make commonpath match every path; a venv is never at root.
         if os.path.dirname(root) == root:
             return False
         return os.path.normcase(os.path.commonpath([os.path.realpath(path), root])) == root
     except (ValueError, OSError):
-        # Different drive / unresolvable -> treat as outside the venv.
         return False
 
 
 def _external_hipinfo_on_path() -> bool:
     """True if a hipinfo OUTSIDE the venv is on PATH. shutil.which returns only the first hit, so the venv hipInfo could shadow a real HIP SDK's; scan every PATH entry and skip the venv copy."""
     for directory in os.environ.get("PATH", "").split(os.pathsep):
-        directory = directory.strip('"')  # PATH entries can be quoted on Windows
+        directory = directory.strip('"')
         if not directory:
             continue
         candidate = os.path.join(directory, "hipinfo.exe")
@@ -96,7 +94,8 @@ def _run_amd_smi(
     if _amd_smi_disabled:
         return None
     if not _amd_smi_allowed():
-        # Permanently skip amd-smi on Windows without a HIP SDK: every call pops a UAC/DiskPart prompt. VRAM polling is then unavailable, which beats the prompt (UNSLOTH_ENABLE_AMD_SMI=1 opts back in).
+        # Skip amd-smi on Windows without a HIP SDK: every call pops a UAC prompt.
+        # UNSLOTH_ENABLE_AMD_SMI=1 opts back in.
         if not _amd_smi_disabled:
             logger.info(
                 "amd-smi disabled on Windows (no HIP SDK detected) to avoid a "
@@ -106,7 +105,7 @@ def _run_amd_smi(
             _amd_smi_disabled = True
         return None
     if shutil.which("amd-smi") is None:
-        # amd-smi does not exist on Windows and can be absent on minimal Linux, so disable the poller in one step instead of burning the 3-strike breaker on guaranteed FileNotFoundError spawns; Unsloth's VRAM display falls back to torch mem_get_info.
+        # Missing amd-smi: disable at once instead of spending the 3-strike breaker.
         if not _amd_smi_disabled:
             logger.info(
                 "amd-smi not found on PATH; GPU utilization polling via "
@@ -116,7 +115,7 @@ def _run_amd_smi(
         return None
     _amd_env = child_env_without_native_path_secret()
     if platform.system() == "Windows":
-        # RunAsInvoker belt-and-suspenders for any manifest-elevating helper; the real guard is _amd_smi_allowed() above. Mirrors install scripts.
+        # Belt-and-suspenders against elevation; the real guard is _amd_smi_allowed().
         _amd_env = {**_amd_env, "__COMPAT_LAYER": "RunAsInvoker"}
     try:
         result = subprocess.run(
@@ -131,7 +130,6 @@ def _run_amd_smi(
         )
     except (OSError, subprocess.TimeoutExpired) as e:
         if isinstance(e, FileNotFoundError):
-            # Raced a PATH change after the which() check above; absence is expected on Windows (no AMD product ships an amd-smi CLI there).
             logger.debug("amd-smi not found (not in PATH): %s", e)
         else:
             logger.warning("amd-smi query failed: %s", e)
@@ -178,7 +176,6 @@ def _parse_numeric(value: Any) -> Optional[float]:
         f = float(value)
         return f if math.isfinite(f) else None
     if isinstance(value, str):
-        # Strip units like "W", "C", "%", "MB", "MiB", "GB", "GiB" etc.
         cleaned = re.sub(r"\s*[A-Za-z/%]+$", "", value.strip())
         if not cleaned or cleaned.lower() in ("n/a", "none", "unknown"):
             return None
@@ -198,7 +195,6 @@ def _parse_memory_mb(value: Any) -> Optional[float]:
         unit = str(value.get("unit", "")).strip().lower()
         raw_value = value.get("value")
     elif isinstance(value, str):
-        # Extract unit suffix from strings like "192 GiB" or "8192 MB"
         m = re.match(r"^\s*([\d.]+)\s*([A-Za-z]+)\s*$", value.strip())
         if m:
             unit = m.group(2).lower()
@@ -207,7 +203,7 @@ def _parse_memory_mb(value: Any) -> Optional[float]:
     if num is None:
         return None
 
-    # GPU tools use binary units even when labeled "GB"/"MB", so treat GB/GiB and MB/MiB the same.
+    # GPU tools use binary units even when labeled GB/MB.
     if "gib" in unit or "gb" in unit:
         return num * 1024
     if "mib" in unit or "mb" in unit:
@@ -217,7 +213,7 @@ def _parse_memory_mb(value: Any) -> Optional[float]:
     if unit in ("b", "byte", "bytes"):
         return num / (1024 * 1024)
 
-    # No explicit unit: default to MB (the amd-smi convention for bare numbers). A bytes-above-~10M heuristic was dropped because it misclassified small VRAM allocations; modern amd-smi always ships explicit units.
+    # No unit: default to MB, the amd-smi convention for bare numbers.
     return num
 
 
@@ -246,7 +242,7 @@ def _extract_gpu_metrics(gpu_data: dict) -> dict[str, Any]:
     else:
         gpu_util = _parse_numeric(usage)
 
-    # Temperature: try keys in priority order, checking each parses to a real number (dict.get() can return "N/A" strings rather than falling through).
+    # Check each key parses: dict.get() can return "N/A" instead of falling through.
     temp_data = gpu_data.get("temperature", {})
     temp = None
     if isinstance(temp_data, dict):
@@ -309,7 +305,6 @@ def get_physical_gpu_count() -> Optional[int]:
         return None
     if isinstance(data, list):
         return len(data)
-    # Some versions return a dict with a "gpu"/"gpus" key; guard with isinstance so a malformed scalar/string response can't raise AttributeError.
     if not isinstance(data, dict):
         return None
     gpus = data.get("gpu", data.get("gpus", []))
@@ -336,7 +331,6 @@ def _gpu_entries(data: Any) -> list[tuple[int, dict]]:
     for fallback_idx, gpu_data in enumerate(gpu_list):
         if not isinstance(gpu_data, dict):
             continue
-        # Use the AMD-reported GPU ID, else the enumeration index. _parse_numeric handles bare ints/floats/strings and the {"value", "unit"} dict shape.
         raw_id = gpu_data.get("gpu", gpu_data.get("gpu_id", gpu_data.get("id", fallback_idx)))
         parsed_id = _parse_numeric(raw_id)
         if parsed_id is None:
@@ -426,7 +420,6 @@ def _first_visible_amd_gpu_id() -> Optional[str]:
         raw = raw.strip()
         if raw == "" or raw == "-1":
             return None
-        # Drop empty tokens, tolerating typos like ``",1"`` while still falling through to the next env var when every token is empty (``,,,``).
         tokens = [t.strip() for t in raw.split(",") if t.strip()]
         if tokens:
             return tokens[0]
@@ -453,7 +446,7 @@ def get_primary_gpu_utilization() -> dict[str, Any]:
 
     metrics = _extract_gpu_metrics(gpu_data)
     if not _has_real_metrics(metrics):
-        # Envelope with no usable fields: surface as unavailable so the UI doesn't render a ghost device.
+        # No usable fields: report unavailable so the UI shows no ghost device.
         return {"available": False}
     metrics["available"] = True
     return metrics
@@ -491,7 +484,6 @@ def get_visible_gpu_utilization(
             continue
         metrics = _extract_gpu_metrics(gpu_data)
         if not _has_real_metrics(metrics):
-            # Skip ghost entries (no usable fields) so the UI doesn't show an all-None device row.
             continue
         metrics["index"] = idx
         metrics["index_kind"] = "physical"
@@ -507,8 +499,7 @@ def get_visible_gpu_utilization(
     }
 
 
-# /dev/kfd is what HIP opens; /dev/dri/renderD* is what BOTH HIP and the Vulkan loader
-# open, so switching backend is no way around a closed render node.
+# Both HIP and the Vulkan loader open renderD*, so switching backend does not help.
 _KFD_NODE = "/dev/kfd"
 _DRI_RENDER_GLOB = "/dev/dri/renderD*"
 
@@ -570,11 +561,7 @@ def _kfd_topology_amd_state() -> "bool | None":
         _read_one = True
         if re.search(r"\bvendor_id\s+4098\b", properties):
             return True
-    # A directory that lists but whose properties will not open says nothing either, and
-    # neither does a PARTIAL read: the CPU node opening while the GPU node does not is one
-    # entry short of "names none", and False there drops /dev/kfd from the closed list, so a
-    # host whose KFD is video and whose render node is render is told to join only render
-    # and left with KFD shut. install.sh's _kfd_gfx_targets states the same rule.
+    # A partial read is unknown, not False; install.sh's _kfd_gfx_targets uses the same rule.
     return None if _missed_one or not _read_one else False
 
 
@@ -624,12 +611,7 @@ def amd_kfd_gpu_node_count() -> Optional[int]:
             with open(os.path.join(nodes, entry, "properties"), encoding = "utf-8") as fh:
                 properties = fh.read()
         except (OSError, UnicodeDecodeError):
-            # Unknown propagates, exactly as _amd_render_node_exists treats an unreadable
-            # vendor. Skipping the entry would answer with a SMALLER count on a multi-GPU
-            # host where one topology entry is momentarily unreadable, and an understated
-            # bound is the thing this function's own contract says calls a valid selector
-            # a blocker: HIP_VISIBLE_DEVICES=1 against a count of 1 reads as hiding every
-            # device, and the user is sent to clear a mask that hides nothing.
+            # Unknown propagates: skipping would understate the count and flag a valid selector.
             return None
         if not re.search(r"\bvendor_id\s+4098\b", properties):
             continue
@@ -654,10 +636,7 @@ def _amd_render_node_exists() -> bool:
         if _vendor == _AMD_PCI_VENDOR_ID:
             return True
         _unreadable = _unreadable or _vendor is None
-    # A node whose vendor could not be READ is not evidence that no AMD node exists, and the
-    # caller turns "does not exist" into "recreate the container with --device /dev/dri" --
-    # advice for a device that shape has already mapped. Unknown reads as present, which
-    # withdraws a sentence rather than inventing one.
+    # An unreadable vendor counts as present, so no wrong --device advice is given.
     return _unreadable
 
 
@@ -682,16 +661,10 @@ def an_amd_render_node_is_open() -> bool:
     return False
 
 
-# RADV radeon_icd.x86_64.json, AMDVLK amd_icd64 / amd_pro_icd64 / amdvlk64, Adrenalin
-# amd-vulkan64.json. install_llama_prebuilt._AMD_VULKAN_ICD_NEEDLES is the same list for
-# the same reason and a test below holds the two together; it is copied rather than
-# imported so the inference path does not pull in the installer.
+# Keep in sync with install_llama_prebuilt._AMD_VULKAN_ICD_NEEDLES (copied, not imported).
 _AMD_VULKAN_ICD_NEEDLES = ("radeon", "radv", "amdvlk", "amd_icd", "amd_pro", "amd_vulkan")
 
-# Mesa and AMDVLK both register a 32-bit manifest beside the 64-bit one, and a 64-bit
-# llama-server cannot load either vendor's. Same rule and same needles as
-# install_llama_prebuilt._is_amd_64_bit, which rejects them for the same reason; a test
-# holds the two lists together.
+# A 64-bit llama-server cannot load 32-bit ICDs; same needles as install_llama_prebuilt.
 _VULKAN_ICD_32_BIT_NEEDLES = ("i686", "i386")
 
 
@@ -738,7 +711,6 @@ def _vulkan_loader_allows(path: str) -> bool:
     return any(_vulkan_glob_matches(pattern, name) for pattern in select) if select else True
 
 
-# ld.so's own defaults, plus the multiarch directories Debian and Ubuntu install into.
 _DEFAULT_LIBRARY_DIRS = (
     "/lib",
     "/lib64",
@@ -819,10 +791,7 @@ def _ld_cache_sonames() -> "frozenset[str] | None":
                 [_exe, "-p"],
                 capture_output = True,
                 text = True,
-                # Named rather than inherited, as every other call here does: the default
-                # is locale.getencoding(), which is ASCII under the C locale a CI runner
-                # or container routinely has, and a library path outside it would then
-                # raise instead of being read.
+                # Explicit utf-8: the default is ASCII under the C locale and would raise on a path.
                 encoding = "utf-8",
                 errors = "replace",
                 timeout = 10,
@@ -832,20 +801,12 @@ def _ld_cache_sonames() -> "frozenset[str] | None":
             continue
         if _out.returncode != 0:
             continue
-        # "\tlibfoo.so.1 (libc6,x86-64) => /usr/lib/libfoo.so.1"
         _names = {
             line.strip().split(" ", 1)[0]
             for line in (_out.stdout or "").splitlines()
             if "=>" in line and line.strip()
         }
-        # Unconditionally, including the empty case: glibc's ldconfig prints
-        # "0 libs found in cache" and exits 0 for a cache that is present and empty, and
-        # exits 1 with nothing on stdout when the cache file is absent. The non-zero arm
-        # above is what separates those, so storing only a non-empty set collapsed the
-        # distinction this function's contract is built on -- a fresh container whose cache
-        # has not been built read as "cannot enumerate", and _a_bare_soname_resolves then
-        # answered True for a soname that is on no search path and in no cache, which
-        # withholds the reinstall half of the repair rather than offering it.
+        # Store even an empty set: an empty cache (exit 0) differs from an absent one (exit 1).
         _ld_cache_sonames_cached = frozenset(_names)
         return _ld_cache_sonames_cached
     return _ld_cache_sonames_cached
@@ -910,7 +871,6 @@ def _icd_manifest_is_usable(path: str) -> bool:
     if not (os.path.isabs(library) or "/" in library or "\\" in library):
         return _a_bare_soname_resolves(library)
     if not os.path.isabs(library):
-        # Relative to the manifest's directory, per the loader's interface document.
         library = os.path.join(os.path.dirname(path), library)
     try:
         return os.path.isfile(library)
@@ -956,10 +916,7 @@ def _icd_library_path(path: str) -> "str | None":
             return library if os.path.isfile(library) else None
         except OSError:
             return None
-    # Every match, not the first: a multilib host carries the same soname in both
-    # bitnesses, ld.so picks the one matching the process, and the search order does not.
-    # sorted(glob) puts /usr/lib/i386-linux-gnu ahead of x86_64, so taking the first hit
-    # handed the 32-bit copy to _an_icd_is_32_bit and discarded a driver the loader loads.
+    # Every match: multilib hosts carry both bitnesses and sorted glob puts i386 first.
     _first: "str | None" = None
     for _directory in _dynamic_loader_search_dirs():
         _candidate = os.path.join(_directory, library)
@@ -972,8 +929,6 @@ def _icd_library_path(path: str) -> "str | None":
             return _candidate
         if _first is None:
             _first = _candidate
-    # No 64-bit copy: hand back whatever is there, so a genuinely 32-bit-only
-    # registration is still read from the object rather than from its filename.
     return _first
 
 
@@ -1146,8 +1101,7 @@ def _loadable_icd_manifests(paths: "list[str] | None" = None) -> "list[str]":
     return [
         path
         for path in (_vulkan_icd_manifest_paths() if paths is None else paths)
-        # A 32-bit manifest is registered beside the 64-bit one and this binary cannot load
-        # it, so it is neither evidence of an AMD driver nor of another vendor's.
+        # A 32-bit manifest is unloadable here, so it is evidence of no vendor.
         if not _an_icd_is_32_bit(path)
         and _vulkan_loader_allows(path)
         and _icd_manifest_is_usable(path)
@@ -1311,14 +1265,7 @@ def amd_nodes_closed_to_this_user() -> list[str]:
         if _amd_in_topology is None:
             _amd_in_topology = _kfd_topology_has_an_amd_gpu()
         if path == _KFD_NODE:
-            # DRM is independent evidence of the same silicon, and it is only consulted
-            # where KFD's own topology could not be read at all -- a readable topology
-            # naming no AMD GPU still excludes the node, which is what keeps an NVIDIA-only
-            # host silent. Without the fallback a host whose sysfs is hidden reported only
-            # the render node, and where the two carry different owning groups (video
-            # against render) the hint named a membership that leaves KFD shut and ROCm
-            # with nothing to open. Vendor-confirmed, never assumed: an unreadable render
-            # vendor is not evidence of AMD either.
+            # DRM is consulted only when KFD topology is unreadable; vendor-confirmed, never assumed.
             if _amd_in_topology or (
                 _kfd_topology_amd_state() is None and _a_confirmed_amd_render_node_exists()
             ):
@@ -1328,12 +1275,7 @@ def amd_nodes_closed_to_this_user() -> list[str]:
         if _vendor == _AMD_PCI_VENDOR_ID:
             closed.append(path)
         elif _vendor is None and _amd_in_topology:
-            # A container can map the node and hide the sysfs entry that names its vendor.
-            # Dropping it there left a host with a shut node reporting nothing closed, while
-            # _amd_render_node_exists reads the same unknown as PRESENT and withdraws the
-            # missing-node sentence too -- so #10466's own shape got no diagnosis at all.
-            # KFD is the independent evidence, and it is what keeps an NVIDIA-only host
-            # silent: its topology reports vendor 0x10DE, so this arm is never reached.
+            # A container can hide the node's vendor sysfs; KFD keeps NVIDIA-only hosts silent.
             closed.append(path)
     return closed
 
@@ -1360,12 +1302,7 @@ def _has_an_access_acl(path: str) -> bool:
     )
 
 
-# Groups whose membership reaches far beyond a device node. Not exhaustive and does not
-# need to be: anything here is reported instead of prescribed, and an unlisted group that
-# turns out to be privileged is the status quo rather than a regression.
-# docker and lxd are here for the same reason as wheel: membership is root by another
-# route, since either can start a container or VM with the host filesystem mounted. A node
-# owned by one is a udev mistake to report rather than a group to join for a GPU.
+# Membership here grants far more than a device node (docker/lxd are root by another route).
 _PRIVILEGED_GROUPS = frozenset(
     {
         "root",
@@ -1382,12 +1319,7 @@ _PRIVILEGED_GROUPS = frozenset(
 )
 
 
-# A name safe to paste into usermod, narrower than one NSS can return: groupadd(8)'s
-# portable set plus the trailing $ of a Samba machine account. Anything else is reported by
-# GID, because two layers below read such a name as STRUCTURE: usermod -G splits on commas
-# inside itself, after the shell has handed it one argument, so "render,sudo" is two groups
-# and _PRIVILEGED_GROUPS never matches; and install.sh's twin parses stat output with
-# awk -F'|'. --group-add takes the GID anyway, so nothing is lost.
+# usermod-safe names only: commas split groups and install.sh parses with awk -F'|'.
 _GROUP_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_.-]*\$?\Z")
 
 
@@ -1433,8 +1365,7 @@ def _groups_that_own(paths: list) -> tuple:
         [],
     )
     try:
-        # The account's own gids, read once. getgroups() is the supplementary list and does
-        # not always include the primary one, so both are needed.
+        # getgroups() does not always include the primary gid, so both are needed.
         _mine = {os.getgid(), *os.getgroups()}
     except (OSError, AttributeError):
         _mine = set()
@@ -1443,36 +1374,22 @@ def _groups_that_own(paths: list) -> tuple:
             _st = os.stat(path)
         except OSError:
             continue
-        # acl(5): once a node carries an access ACL, the group-class bits in st_mode are
-        # the ACL MASK rather than the owning group's grant, so every reading below is of
-        # an upper bound. The mask can allow rw while the group entry denies it, and a
-        # named-group entry can grant what the mode hides. Neither is decidable without
-        # parsing the ACL, so such a node is reported rather than prescribed for.
+        # With an access ACL the group mode bits are the ACL mask, so report instead of prescribe.
         if _has_an_access_acl(path):
             acl.append(path)
             continue
-        # POSIX resolves the owner class EXCLUSIVELY once the uid matches, so on a node
-        # this account owns the group bits are never consulted and joining the group
-        # cannot open it. os.access() already said it is shut; the repair is the mode.
+        # POSIX uses only the owner class once the uid matches, so joining the group cannot help.
         if _st.st_uid == os.getuid():
-            # Unless the owner bits already grant rw: the node is known shut, so the
-            # mode is not what denies it. Same external denial as `already`, by owner class.
             if _st.st_mode & stat.S_IRUSR and _st.st_mode & stat.S_IWUSR:
                 external.append(path)
             else:
                 owned.append(path)
             continue
-        # Neither owner nor group member puts this account in the OTHER class, which POSIX
-        # also resolves exclusively: bits already granting rw mean the mode is not what
-        # denies a node os.access() just called shut. Same rule as the owner and
-        # already-a-member branches, for the third class. Guarded on membership (a member is
-        # in the GROUP class, where `already` names the group more precisely) and above the
-        # group-bits test, which would otherwise prescribe a chmod that cannot help.
+        # Other class also resolves exclusively: rw other bits mean the mode is not the denial.
         if _st.st_gid not in _mine and (_st.st_mode & stat.S_IROTH and _st.st_mode & stat.S_IWOTH):
             external.append(path)
             continue
-        # Group read AND write: HIP and the Vulkan loader both open the node read-write,
-        # which is the same bar amd_nodes_closed_to_this_user() applied to this account.
+        # HIP and the Vulkan loader both open the node read-write.
         if (_st.st_mode & stat.S_IRGRP) == 0 or (_st.st_mode & stat.S_IWGRP) == 0:
             no_group.append(path)
             continue
@@ -1481,35 +1398,21 @@ def _groups_that_own(paths: list) -> tuple:
             name = grp.getgrgid(_st.st_gid).gr_name
         except Exception:  # noqa: BLE001 -- no group database, or no entry for this gid
             name = ""
-        # A name that cannot be pasted on as one group is treated as no name at all, so the
-        # node is reported by its GID rather than prescribed for. Above every branch that
-        # reads the name, including the privileged one, which compares whole strings and so
-        # is exactly what a name carrying a comma walks through.
+        # A name that cannot be pasted as one group is reported by GID instead.
         if name and not _group_name_is_prescribable(name):
             name = ""
-        # Asked of the GID, and BEFORE the name is required, because the lookup above is
-        # exactly what fails in a minimal container: with no entry for gid 0 it raised, the
-        # node was filed as an ordinary unnamed GID, and the repair became `groupadd -g 0`
-        # plus a usermod into the root group -- the grant this branch exists to refuse.
-        # gid 0 is the root group whether or not the database names it.
+        # gid 0 is the root group even when the lookup fails in a minimal container.
         if _st.st_gid == 0:
             _root = name or "root"
             if _root not in privileged:
                 privileged.append(_root)
             continue
-        # Joining one of these would open the node and hand over a great deal else with
-        # it, so a device node owned by one is a udev misconfiguration to report rather
-        # than a membership to prescribe. An unnamed GID cannot match, so this may sit
-        # above the naming branches and keep the shell half's single ordering.
+        # A node owned by a privileged group is a udev misconfiguration to report.
         if name in _PRIVILEGED_GROUPS:
             if name not in privileged:
                 privileged.append(name)
             continue
-        # os.access already said the node is shut, so if this account is in the owning
-        # group the group bits are not what is denying it: a container device cgroup or an
-        # LSM is. usermod would exit 0 and leave the node exactly as closed. ABOVE the
-        # unnamed branch as well, since `groupadd -g` plus `--group-add` is the same empty
-        # promise for a numeric owner this account already carries.
+        # Already a member: a cgroup or LSM denies it, so usermod would not help.
         if _st.st_gid in _mine:
             _held = name or str(_st.st_gid)
             if _held not in already:
@@ -1568,10 +1471,7 @@ def amd_closed_nodes_block_the_runtime(*, needs_kfd: bool = True) -> bool:
     True on a host this cannot read, which keeps the closed node as the stated reason and
     is what the callers said before this existed.
     """
-    # Missing is not open. A node the runtime needs and that does not exist leaves it with
-    # no way in exactly as a shut one does, and amd_node_permission_hint() names the repair
-    # for it -- so answering only about CLOSED nodes suppressed that hint at every caller,
-    # on the two container shapes where it is the whole diagnosis.
+    # Missing nodes block like closed ones, so they must not suppress the hint.
     if _amd_nodes_the_runtime_lacks(needs_kfd = needs_kfd):
         return True
     closed = amd_nodes_closed_to_this_user()
@@ -1579,14 +1479,7 @@ def amd_closed_nodes_block_the_runtime(*, needs_kfd: bool = True) -> bool:
         return False
     if needs_kfd and _KFD_NODE in closed:
         return True
-    # The open sibling only answers for a runtime free to use it. A selector narrowing to
-    # particular GPUs may well have selected the CLOSED one, and this cannot tell which,
-    # so the sibling stops being evidence: fail closed, as this already does for a host it
-    # cannot read, rather than suppressing the repair for the node the run will use.
-    # HIP's selectors only, so only for a caller that goes through HIP. Vulkan reads none
-    # of these -- which is the whole reason needs_kfd exists -- so a Vulkan probe is still
-    # free to use the open sibling, and returning the permission hint as its sole cause
-    # would send a Vulkan failure after a group change that cannot empty-probe it.
+    # A HIP selector may pick the closed GPU, so the open sibling stops counting; not for Vulkan.
     if needs_kfd and _a_per_gpu_mask_narrows_the_runtime():
         return True
     return not an_amd_render_node_is_open()
@@ -1653,10 +1546,7 @@ def _a_per_gpu_mask_narrows_the_runtime() -> bool:
     for _name in (
         "ROCR_VISIBLE_DEVICES",
         _hip_layer,
-        # ROCm's fourth visibility variable, modelled elsewhere in this tree
-        # (tests/test_amd_smi_inventory_matches_hip.py, llama_cpp.py's own selector
-        # check). Omitting it left one of the four selectors crediting a sibling the
-        # runtime had been narrowed away from.
+        # ROCm's fourth visibility variable; see tests/test_amd_smi_inventory_matches_hip.py.
         "GPU_DEVICE_ORDINAL",
     ):
         _value = os.environ.get(_name, "").strip()
@@ -1665,7 +1555,6 @@ def _a_per_gpu_mask_narrows_the_runtime() -> bool:
         if not _selector_exposes_every_gpu(
             _value,
             count,
-            # ROCr terminates its list on a repeat; clr does not.
             repeat_ends_the_list = _name == "ROCR_VISIBLE_DEVICES",
         ):
             return True
@@ -1683,8 +1572,7 @@ def _shell_word(value: str) -> str:
     unchanged; install.sh's _shell_quote is the same safe set for the same reason.
     """
     if value == "$USER":
-        # The placeholder the no-passwd fallback emits on a platform with no pwd module,
-        # and the one value here that is meant to be expanded rather than named.
+        # The no-pwd placeholder is meant to be expanded, not named.
         return value
     return shlex.quote(value)
 
@@ -1707,7 +1595,6 @@ def _repair_account() -> Optional[str]:
     except (KeyError, OSError):
         return None
     except (ImportError, AttributeError):
-        # No pwd module at all, which is Windows, where none of these nodes exist.
         return os.environ.get("USER") or os.environ.get("LOGNAME") or "$USER"
 
 
@@ -1727,20 +1614,12 @@ def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
     closed = amd_nodes_closed_to_this_user()
     if not needs_kfd:
         closed = [path for path in closed if path != _KFD_NODE]
-    # A node the runtime needs and that does not exist blocks exactly as hard as one it
-    # cannot open, and needs saying whether or not anything is closed: a container given
-    # --device /dev/kfd and not --device /dev/dri opens the one node it has and enumerates
-    # nothing, and the mirror image (only /dev/dri) leaves HIP with no /dev/kfd. Both used
-    # to be reachable only after a closed node had already produced a sentence.
+    # A missing node needs reporting even when nothing is closed (partial --device mappings).
     missing = _amd_nodes_the_runtime_lacks(needs_kfd = needs_kfd)
     parts: "list[str]" = []
     trailing_command = ""
     if closed:
-        # Claim only what the closed set actually blocks, and only for the devices it is
-        # about. A render node shut beside an OPEN sibling leaves both runtimes a complete
-        # path to that other GPU, so "no GPU backend can use the AMD card" is false there --
-        # and _explain_empty_gpu_probe reaches exactly that host, appending this sentence
-        # after saying the closed node is not why the probe is empty.
+        # Claim only what the closed set blocks: an open sibling still gives a complete path.
         user = _repair_account()
         joinable, unnamed, no_group, acl, owned, privileged, already, external = _groups_that_own(
             closed
@@ -1755,10 +1634,7 @@ def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
         else:
             _claim = "so no GPU backend can use the AMD card even though the driver is loaded"
         parts.append(f"This account cannot open {', '.join(closed)}, {_claim}.")
-        # Prescribed only where joining a group is the repair. A host whose nodes could not
-        # be stat'd at all still gets the documented pair, since some advice beats none; a
-        # host whose nodes were read and offer no joinable group gets the sentences below
-        # instead of a command that would fail.
+        # Prescribe only where joining a group is the repair; unstat-able hosts get the default pair.
         if joinable or not (
             unnamed or no_group or acl or owned or privileged or already or external
         ):
@@ -1773,42 +1649,25 @@ def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
                     f"as an account this system knows."
                 )
             else:
-                # Held back to the END of the message rather than appended in place. It
-                # is the one sentence that terminates in a command a user pastes, so
-                # anything joined after it ran straight on, rendering as
-                # "-a -G render ada ROCm needs /dev/kfd ...". Ending the message with it
-                # keeps the command copyable as written, where a full stop would be
-                # selected along with the account name.
+                # Kept at the end so the pasteable command is not run into by later text.
                 trailing_command = (
                     f"Add the account to the {joined} {plural} and then log out and back "
                     f"in: sudo usermod -a -G {_shell_word(joined)} {_shell_word(user)}"
                 )
         if unnamed:
             _gids = ", ".join(str(_g) for _g in unnamed)
-            # One flag per GID: docker's --group-add takes a single value, so naming only
-            # the first leaves every other node shut on a host whose nodes differ in group.
+            # docker --group-add takes one value, so one flag per GID.
             _adds = " ".join(f"--group-add {_g}" for _g in unnamed)
             _noun = "GID" if len(unnamed) == 1 else "GIDs"
             _verb = "which has" if len(unnamed) == 1 else "which have"
-            # Creating the group only gives the numeric owner a name; the account is
-            # still outside it and the node is still shut. Both halves of the bare-host
-            # repair, and one per GID: with two unnamed GIDs a singular instruction repairs
-            # at most one of the nodes.
             _each = "it" if len(unnamed) == 1 else "each of them"
             _pairs = "; ".join(
                 f"sudo groupadd -g {_g} amdgpu{_g} && "
                 f"sudo usermod -a -G amdgpu{_g} {_shell_word(user)}"
                 for _g in unnamed
             )
-            # A pair per GID: one groupadd names one numeric owner, so a host whose nodes
-            # differ in group had every node after the first left shut. The name is
-            # generated, not a <name> placeholder, since angle brackets are redirection
-            # operators and these are commands to paste. The && is load bearing: with an
-            # amdgpu<GID> group already at a different GID, an unchained usermod would
-            # SUCCEED against the wrong group and report success on a still-shut node.
+            # One groupadd/usermod pair per GID; && stops usermod hitting a same-named wrong group.
             if user is None:
-                # The bare-host half needs an account to add and there is none, so the
-                # container half is the whole repair for this shape.
                 parts.append(
                     f"Some of those nodes belong to {_noun} {_gids}, {_verb} no group entry "
                     f"on this system, and this uid has no passwd entry either, so neither "
@@ -1842,12 +1701,7 @@ def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
                 f"AppArmor."
             )
         if external:
-            # Worded by the class that APPLIES rather than by the owner one. This bucket
-            # holds two shapes: a node this account owns whose owner bits grant rw, and one
-            # it neither owns nor shares a group with whose other bits do. Naming the owner
-            # for both told the second kind it owns a node it does not, which is a claim the
-            # reader can check and find false, in the one sentence whose job is to say the
-            # mode is not the problem.
+            # Worded by the class that applies: owner or other, not always owner.
             parts.append(
                 f"{', '.join(external)} is already granted read and write by the permission "
                 f"bits that apply to this account, so the mode is not what is shutting it: "
@@ -1862,22 +1716,14 @@ def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
             )
         if acl:
             parts.append(
-                # Every path, not acl[0]: the sentence lists them all, ROCm needs all of
-                # them, and their ACLs need not agree, so checking only the first can leave
-                # the second blocker undiagnosed. getfacl takes several paths.
+                # Every path: their ACLs need not agree; getfacl takes several paths.
                 f"{', '.join(acl)} carries a POSIX ACL, so the group permissions cannot be "
                 f"read from its mode: check the real grant with getfacl {' '.join(acl)} "
                 f"before changing group membership."
             )
-    # Group membership cannot create a device node, so these stand whether or not anything
-    # above was said. install.sh says the same two things; this is the runtime half.
+    # Group membership cannot create a device node; install.sh says the same.
     if _KFD_NODE in missing:
-        # Two wordings, because only one of the two ways in here proves anything about the
-        # driver. A topology that NAMES an AMD GPU is the amdkfd driver's own sysfs, so the
-        # stack is loaded and reinstalling it changes nothing. Reached instead off a
-        # confirmed DRM render node with the topology masked, that claim is unsupported --
-        # the node may be missing because the stack is not loaded -- so the sentence says
-        # what is true of both: the mapping is what to fix first.
+        # Only a topology naming an AMD GPU proves the driver is loaded, hence two wordings.
         if _kfd_topology_amd_state() is True:
             parts.append(
                 "ROCm needs /dev/kfd, which is not present here, but the KFD topology "
@@ -1894,8 +1740,7 @@ def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
                 "No group membership creates it."
             )
     if _RENDER_NODE_GLOB in missing:
-        # The mapping this caller needs, not both nodes always: Vulkan never opens /dev/kfd,
-        # so naming it here hands a container another host device for nothing.
+        # Vulkan never opens /dev/kfd, so only map it when needed.
         _devices = "--device /dev/kfd --device /dev/dri" if needs_kfd else "--device /dev/dri"
         parts.append(
             f"No AMD render node (/dev/dri/renderD*) is present, and ROCm and Vulkan both "

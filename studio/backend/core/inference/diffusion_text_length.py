@@ -8,14 +8,13 @@ from __future__ import annotations
 import math
 from typing import Any, Iterable, Optional
 
-# ComfyUI's Ideogram 4 "Default" preset; plain flow (shift 1), so "last 30%" of the CFG override is sigma <= 0.3.
+# ComfyUI's Ideogram 4 "Default" preset; shift 1, so "last 30%" is sigma <= 0.3.
 IDEOGRAM4_COMFY_STEPS = 20
 IDEOGRAM4_COMFY_MU = 0.0
 IDEOGRAM4_COMFY_STD = 1.75
 IDEOGRAM4_COMFY_GUIDANCE = 7.0
 IDEOGRAM4_COMFY_TAIL_GUIDANCE = 3.0
 IDEOGRAM4_COMFY_TAIL_SIGMA = 0.3
-# ComfyUI's other presets by step count (Quality 48 == the pipeline default); any other count runs "Default".
 _IDEOGRAM4_COMFY_PRESETS = {48: (0.0, 1.5), 12: (0.5, 1.75)}
 _IDEOGRAM4_LOGSNR_MIN = -15.0
 _IDEOGRAM4_LOGSNR_MAX = 18.0
@@ -56,7 +55,6 @@ def ideogram4_comfy_guidance_schedule(steps: int, width: int, height: int) -> li
     ]
 
 
-# FLUX.1 families on a FluxPipeline-style ``max_sequence_length`` whose ComfyUI tokenizer is the FLUX T5 one.
 FLUX_T5_FAMILIES = frozenset({"flux.1", "flux.1-kontext"})
 FLUX_T5_MIN_TOKENS = 256
 FLUX_T5_MAX_TOKENS = 512
@@ -98,7 +96,7 @@ def flux_t5_sequence_length(
         longest = max(t5_token_count(tokenizer, t) for t in texts)
     except Exception:  # noqa: BLE001 - an odd tokenizer only keeps the pipeline default
         return None
-    # Bucketed (not ComfyUI's exact length): each new length recompiles (~14 s) / recaptures CUDA graphs.
+    # Bucketed: each new length recompiles / recaptures CUDA graphs.
     return int(floor) if longest <= int(floor) else int(cap)
 
 

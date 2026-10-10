@@ -144,11 +144,6 @@ def _codex_apply_patch_tool():
     }
 
 
-# =====================================================================
-# Request model — tools / tool_choice / parallel_tool_calls
-# =====================================================================
-
-
 class TestResponsesRequestTools:
     def test_flat_function_tool_accepted(self):
         req = ResponsesRequest(
@@ -212,11 +207,6 @@ class TestResponsesRequestTools:
             ResponsesFunctionTool(type = "web_search", name = "x")
 
 
-# =====================================================================
-# Request model — function_call / function_call_output input items
-# =====================================================================
-
-
 class TestResponsesMultiTurnInput:
     def test_function_call_input_item(self):
         req = ResponsesRequest(
@@ -274,11 +264,6 @@ class TestResponsesMultiTurnInput:
 
         assert isinstance(req.input[0], ResponsesCustomToolCallInputItem)
         assert isinstance(req.input[1], ResponsesCustomToolCallOutputInputItem)
-
-
-# =====================================================================
-# Translators — tools, tool_choice
-# =====================================================================
 
 
 class TestToolsTranslation:
@@ -603,11 +588,6 @@ class TestBuildChatRequest:
         assert chat_req.enable_thinking is False
 
 
-# =====================================================================
-# _normalise_responses_input — multi-turn tool mapping
-# =====================================================================
-
-
 class TestNormaliseResponsesInputWithTools:
     def test_function_call_output_maps_to_tool_role(self):
         payload = ResponsesRequest(
@@ -898,7 +878,6 @@ class TestNormaliseResponsesInputWithTools:
         assert "image_url" in str(exc.value.detail)
 
     def test_input_file_message_part_rejected_clearly(self):
-        # Same shape function_call_output already refuses; dropped here, it answered 200.
         payload = ResponsesRequest(
             input = [
                 {
@@ -937,7 +916,6 @@ class TestNormaliseResponsesInputWithTools:
         assert "file_id" in str(exc.value.detail)
 
     def test_unmodelled_message_part_is_named_not_dropped(self):
-        # Matches _reject_unsupported_content_parts on /chat/completions.
         payload = ResponsesRequest(
             input = [
                 {
@@ -955,7 +933,6 @@ class TestNormaliseResponsesInputWithTools:
         assert "input_something_new" in str(exc.value.detail)
 
     def test_image_message_part_without_any_source_rejected_clearly(self):
-        # Nothing to serve, and the tool-result path already says so in these words.
         payload = ResponsesRequest(
             input = [
                 {
@@ -973,7 +950,6 @@ class TestNormaliseResponsesInputWithTools:
         assert "require an image_url string" in str(exc.value.detail)
 
     def test_image_message_part_with_unknown_detail_rejected_clearly(self):
-        # Fails the Literal, degrades to the catch-all, and loses a servable url with it.
         payload = ResponsesRequest(
             input = [
                 {
@@ -995,7 +971,6 @@ class TestNormaliseResponsesInputWithTools:
         assert "auto, low, high, or original" in str(exc.value.detail)
 
     def test_image_message_part_with_url_and_file_id_is_served_from_the_url(self):
-        # file_id means instead of a url, not as well as: with a url, serve it.
         payload = ResponsesRequest(
             input = [
                 {
@@ -1017,7 +992,6 @@ class TestNormaliseResponsesInputWithTools:
 
     @pytest.mark.parametrize("role", ["system", "developer", "assistant"])
     def test_attachment_refused_on_the_roles_that_exit_early(self, role):
-        # Both return via `continue`, so a refusal in the user parts loop never sees them.
         text_part = (
             {"type": "output_text", "text": "hi"}
             if role == "assistant"
@@ -1038,8 +1012,6 @@ class TestNormaliseResponsesInputWithTools:
         assert "input_file" in str(exc.value.detail)
 
     def test_assistant_replay_keeps_its_lenient_text_flatten(self):
-        # Clients round-trip prior assistant output verbatim, so only attachments are
-        # refused on a replay turn.
         payload = ResponsesRequest(
             input = [
                 {
@@ -1074,7 +1046,6 @@ class TestNormaliseResponsesInputWithTools:
         ]
 
     def test_refusal_body_is_the_openai_unsupported_parameter_shape(self):
-        # Clients branch on error.code / error.param.
         payload = ResponsesRequest(
             input = [{"role": "user", "content": [{"type": "input_file", "filename": "r.pdf"}]}],
         )
@@ -1086,10 +1057,8 @@ class TestNormaliseResponsesInputWithTools:
         assert error["type"] == "invalid_request_error"
 
 
-# Every part shape and the answer it is owed; the failures live in the combinations.
 _IMG = "https://example.com/a.png"
 _RESPONSES_PART_MATRIX = [
-    # (part, refused, needle in the message)
     ({"type": "input_text", "text": "hi"}, False, ""),
     ({"type": "output_text", "text": "hi"}, False, ""),
     ({"type": "input_image", "image_url": _IMG}, False, ""),
@@ -1144,8 +1113,6 @@ class TestResponsesMessagePartMatrix:
     @pytest.mark.parametrize("case", _RESPONSES_PART_MATRIX, ids = _matrix_id)
     @pytest.mark.parametrize("role", ["system", "developer", "assistant"])
     def test_attachments_refused_on_every_role(self, case, role):
-        # These roles flatten to text, so only a text-ish part survives; everything else,
-        # servable image included, is caller content the flatten would drop.
         part, refused, needle = case
         payload = ResponsesRequest(
             input = [
@@ -1172,8 +1139,6 @@ class TestResponsesMessagePartMatrix:
 
     @pytest.mark.parametrize("role", ["system", "developer", "assistant"])
     def test_a_servable_image_is_refused_on_a_role_that_flattens(self, role):
-        # Passed every shape check and vanished in the flatten anyway. Nowhere to forward
-        # it to: Chat Completions wants a plain string on system and assistant.
         text_part = (
             {"type": "output_text", "text": "hi"}
             if role == "assistant"
@@ -1208,7 +1173,6 @@ class TestResponsesMessagePartMatrix:
         ids = ["input_audio", "computer_screenshot", "future"],
     )
     def test_a_non_text_part_is_refused_on_a_role_that_flattens(self, role, part):
-        # Anything the flatten does not keep is caller content that vanishes.
         text_part = (
             {"type": "output_text", "text": "hi"}
             if role == "assistant"
@@ -1238,7 +1202,6 @@ class TestResponsesMessagePartMatrix:
         ids = ["no_text", "null_text", "int_text", "output_no_text"],
     )
     def test_a_text_part_without_text_is_named_for_what_is_wrong(self, role, part):
-        # A known type name on an untyped part: waved through, then dropped by the flatten.
         payload = ResponsesRequest(
             input = [
                 {"role": role, "content": [part]},
@@ -1252,7 +1215,6 @@ class TestResponsesMessagePartMatrix:
         assert part["type"] in str(exc.value.detail)
 
     def test_a_malformed_text_part_does_not_hide_behind_a_good_one(self):
-        # Servable text beside it, so the request succeeded and only the broken part went.
         payload = ResponsesRequest(
             input = [
                 {
@@ -1269,7 +1231,6 @@ class TestResponsesMessagePartMatrix:
     @pytest.mark.parametrize("part_type", ["refusal", "summary_text"])
     @pytest.mark.parametrize("role", ["system", "developer"])
     def test_output_metadata_is_caller_content_on_a_non_assistant_turn(self, role, part_type):
-        # Only the model's own output on a replay turn; elsewhere someone wrote it.
         payload = ResponsesRequest(
             input = [
                 {
@@ -1289,7 +1250,6 @@ class TestResponsesMessagePartMatrix:
 
     @pytest.mark.parametrize("part_type", ["refusal", "summary_text"])
     def test_assistant_output_metadata_survives_the_flatten(self, part_type):
-        # Clients round-trip these, and the prompt needs nothing from them.
         payload = ResponsesRequest(
             input = [
                 {
@@ -1338,7 +1298,6 @@ class TestResponsesMessagePartMatrix:
         ]
 
     def test_top_level_item_types_are_untouched_by_the_refusal(self):
-        # The refusal walks message items only.
         payload = ResponsesRequest(
             input = [
                 {"type": "reasoning", "summary": [], "id": "rs_1"},
@@ -1450,11 +1409,6 @@ class TestResponsesMessagePartMatrix:
         assert _responses_tool_output_content("  done  ") == "  done  "
 
 
-# =====================================================================
-# Response mapping — tool_calls → function_call output items
-# =====================================================================
-
-
 class TestChatToolCallsToResponsesOutput:
     def test_basic_mapping(self):
         items = _chat_tool_calls_to_responses_output(
@@ -1548,11 +1502,6 @@ class TestChatToolCallsToResponsesOutput:
     )
     def test_malformed_custom_arguments_are_not_hidden(self, arguments, expected):
         assert _responses_custom_tool_input(arguments) == expected
-
-
-# =====================================================================
-# Non-streaming Responses adapter
-# =====================================================================
 
 
 class TestResponsesNonStreamingAdapter:
@@ -1790,7 +1739,6 @@ class TestResponsesNonStreamingAdapter:
             current_subject = None,
         ):
             assert request.state.skip_api_monitor is True
-            # monitor_id is None here: this call's own row is the suppressed one.
             if observations is not None:
                 observations["perf_callback"] = inf_mod._monitor_perf_callback(None, 4096)
             inf_mod._monitor_usage(None, usage, 4096, timings = timings)
@@ -1849,7 +1797,6 @@ class TestResponsesNonStreamingAdapter:
         [entry] = monitor.snapshot()
         assert entry["completion_tokens"] == 50
         assert entry["decode_ms"] == 1000
-        # 9s of that request was queue wait and prefill; the model generated at 50 tok/s.
         assert entry["completion_tokens"] / (entry["decode_ms"] / 1000) == 50.0
 
     def test_in_process_engine_timings_update_outer_monitor_live(self, monkeypatch):
@@ -2049,7 +1996,6 @@ class TestResponsesNonStreamingAdapter:
                 is_loaded = True,
                 reasoning_always_on = False,
                 supports_reasoning = True,
-                # gpt-oss offers no "none" level, so it stays on low effort and the markup is real.
                 _request_reasoning_kwargs = (
                     lambda enable_thinking, reasoning_effort = None, preserve_thinking = None: (
                         {"reasoning_effort": "low"}
@@ -2063,8 +2009,7 @@ class TestResponsesNonStreamingAdapter:
         assert body["output"][1]["content"][0]["text"] == "answer"
 
     def test_inkling_numeric_zero_effort_keeps_think_tags_visible(self, monkeypatch):
-        # Real resolver, not a stand-in: for Inkling, _coerce_reasoning_effort rewrites
-        # the "none" sentinel to numeric 0, which a string-only check misreads as still on.
+        # Real resolver: for Inkling, 'none' becomes numeric 0, which a string check misreads.
         from core.inference.llama_cpp import LlamaCppBackend
 
         backend = LlamaCppBackend.__new__(LlamaCppBackend)
@@ -2093,8 +2038,6 @@ class TestResponsesNonStreamingAdapter:
         assert body["output"][0]["content"][0]["text"] == "Use <think>hi</think> in your prompt."
 
     def test_launch_default_thinking_off_keeps_think_tags_visible(self, monkeypatch):
-        # No reasoning field means no override, so the model runs on the default it was
-        # launched with. The Qwen3.5 Small tier launches thinking off.
         body = self._run_with_message(
             monkeypatch,
             {"content": "Use <think>hi</think> in your prompt."},
@@ -2110,7 +2053,6 @@ class TestResponsesNonStreamingAdapter:
         assert body["output"][0]["content"][0]["text"] == "Use <think>hi</think> in your prompt."
 
     def test_launch_default_thinking_on_still_parses_think_tags(self, monkeypatch):
-        # Mirror: a thinking-on launch default still splits, so the fix is not "never parse".
         body = self._run_with_message(
             monkeypatch,
             {"content": "<think>plan</think>answer"},
@@ -2158,11 +2100,6 @@ class TestResponsesNonStreamingAdapter:
 
         assert [item["type"] for item in body["output"]] == ["reasoning"]
         assert body["output"][0]["content"][0]["text"] == "plan"
-
-
-# =====================================================================
-# Streaming Responses adapter
-# =====================================================================
 
 
 class TestResponsesStreamAdapter:
@@ -2809,7 +2746,6 @@ class TestResponsesStreamAdapter:
         )
         assert chat_req.studio_tool_history is True
 
-        # Absent stays absent: a plain client must not be read as Studio's.
         plain = _build_chat_request(
             ResponsesRequest.model_validate({"input": "hi", "model": "org/M-GGUF"}),
             [ChatMessage(role = "user", content = "hi")],
@@ -2952,7 +2888,6 @@ class TestResponsesStreamAdapter:
                 is_vision = False,
                 context_length = 4096,
                 base_url = "http://llama.test",
-                # Non-reasoning template: the real backend returns None here.
                 _request_reasoning_kwargs = (
                     lambda enable_thinking = None, reasoning_effort = None, preserve_thinking = None: None
                 ),
@@ -2990,11 +2925,6 @@ class TestResponsesStreamAdapter:
             "output_tokens": 3,
             "total_tokens": 5,
         }
-
-
-# =====================================================================
-# Response model — ResponsesOutputFunctionCall / mixed output
-# =====================================================================
 
 
 class TestResponsesOutputFunctionCall:
@@ -3063,11 +2993,6 @@ class TestResponsesOutputFunctionCall:
         d = resp.model_dump()
         assert d["output"][0]["type"] == "message"
         assert d["output"][1]["type"] == "function_call"
-
-
-# =====================================================================
-# Regression: ChatMessage validator still accepts mapped tool messages
-# =====================================================================
 
 
 class TestCodexStyleRequestShapes:
@@ -3287,15 +3212,12 @@ class TestCodexStyleRequestShapes:
             ],
         )
         msgs = _normalise_responses_input(payload)
-        # One leading merged system; no mid-conversation system.
         assert msgs[0].role == "system"
         assert sum(1 for m in msgs if m.role == "system") == 1
         assert "Base instructions." in msgs[0].content
         assert "Dev override." in msgs[0].content
 
         roles = [m.role for m in msgs[1:]]
-        # Reasoning dropped. Order: user, assistant(tool_calls), tool,
-        # assistant(text), user.
         assert roles == ["user", "assistant", "tool", "assistant", "user"]
         assert msgs[2].tool_calls is not None
         assert msgs[3].role == "tool"
@@ -3345,8 +3267,6 @@ class TestTranslatedMessagesValidate:
         )
         msgs = _normalise_responses_input(payload)
         for m in msgs:
-            # Building a fresh ChatMessage from the dump round-trips the
-            # role-shape validator — the passthrough's key invariant.
             ChatMessage(**m.model_dump(exclude_none = True))
 
     def test_empty_tool_output_round_trips_through_chat_message_validator(self):
@@ -3364,13 +3284,11 @@ class TestTranslatedMessagesValidate:
             ChatMessage(**m.model_dump(exclude_none = True))
 
 
-# reasoning_prefilled: enable_thinking templates prefill an unclosed <think>, so
-# generation begins inside the block; the extractor must start in reasoning.
+# enable_thinking templates prefill an unclosed <think>, so generation starts in reasoning.
 class TestReasoningPrefilledExtractor:
     @pytest.mark.parametrize(
         "text, parse_think_markers, reasoning_prefilled, expected, expected_visible",
         [
-            # T1: reasoning...</think>answer with a prefilled (unseen) open tag.
             pytest.param(
                 "plan</think>answer",
                 True,
@@ -3379,7 +3297,6 @@ class TestReasoningPrefilledExtractor:
                 "answer",
                 id = "prefilled_single_feed_splits_lone_close",
             ),
-            # T2: truncated mid-thought (no </think>) -> all reasoning (GGUF parity).
             pytest.param(
                 "still thinking with no close",
                 True,
@@ -3388,9 +3305,7 @@ class TestReasoningPrefilledExtractor:
                 "",
                 id = "prefilled_never_closed_is_all_reasoning",
             ),
-            # T5: nothing generated.
             pytest.param("", True, True, "", "", id = "prefilled_empty_generation"),
-            # T6: Qwen commonly emits </think>\n\n before the answer.
             pytest.param(
                 "plan</think>\n\nanswer",
                 True,
@@ -3399,11 +3314,9 @@ class TestReasoningPrefilledExtractor:
                 "\n\nanswer",
                 id = "prefilled_whitespace_after_close_is_visible",
             ),
-            # T8: model closed immediately (empty reasoning) then answered.
             pytest.param(
                 "</think>hi", True, True, "", "hi", id = "prefilled_close_at_start_empty_reasoning"
             ),
-            # T9: without prefilled, a lone close tag keeps the pre-fix behavior (parity guard).
             pytest.param(
                 "reasoning</think>ans",
                 True,
@@ -3412,7 +3325,6 @@ class TestReasoningPrefilledExtractor:
                 "reasoningans",
                 id = "not_prefilled_lone_close_preserves_current_behavior",
             ),
-            # T10: normal explicit <think>..</think> (GGUF / Harmony) unchanged.
             pytest.param(
                 "<think>r</think>v",
                 True,
@@ -3421,7 +3333,6 @@ class TestReasoningPrefilledExtractor:
                 "v",
                 id = "not_prefilled_full_pair_still_splits",
             ),
-            # T11: a non-reasoning model passes text through even with reasoning_prefilled False.
             pytest.param(
                 "just an answer",
                 False,
@@ -3442,7 +3353,6 @@ class TestReasoningPrefilledExtractor:
         assert visible == expected_visible
 
     def test_prefilled_close_split_across_feeds(self):
-        # T3: </think> straddles two feed() calls; holdback resolves it.
         ex = _ResponsesReasoningExtractor(parse_think_markers = True, reasoning_prefilled = True)
         r1, v1 = ex.feed("plan</th")
         r2, v2 = ex.feed("ink>ans")
@@ -3451,7 +3361,6 @@ class TestReasoningPrefilledExtractor:
         assert (v1 + v2 + fv) == "ans"
 
     def test_prefilled_close_split_one_char_per_feed(self):
-        # T4: every char in its own feed still splits correctly.
         ex = _ResponsesReasoningExtractor(parse_think_markers = True, reasoning_prefilled = True)
         reasoning, visible = "", ""
         for ch in "plan</think>x":
@@ -3463,8 +3372,6 @@ class TestReasoningPrefilledExtractor:
         assert (visible + fv) == "x"
 
     def test_prefilled_stray_open_tag_is_suppressed(self):
-        # T7: a re-emitted literal <think> inside prefilled reasoning is dropped,
-        # not leaked into the drawer (covers enable_thinking_effort full-tag output).
         reasoning, visible = _extract_responses_reasoning(
             "a<think>b</think>c",
             parse_think_markers = True,
@@ -3473,11 +3380,6 @@ class TestReasoningPrefilledExtractor:
         assert reasoning == "ab"
         assert visible == "c"
         assert "<think>" not in reasoning
-
-
-# =====================================================================
-# Streaming passthrough healing — text-form calls promoted in order
-# =====================================================================
 
 
 class TestResponsesStreamHealing:
@@ -3539,9 +3441,6 @@ class TestResponsesStreamHealing:
         item_added = [
             (name, payload) for name, payload in events if name == "response.output_item.added"
         ]
-        # The call came first in the model output, so its item is added first
-        # and claims the lower output_index; the trailing text's message item
-        # follows.
         assert [payload["item"]["type"] for _, payload in item_added] == [
             "function_call",
             "message",
@@ -3568,9 +3467,6 @@ class TestResponsesStreamHealing:
         assert text == self._XML
 
     def test_healed_call_splits_message_items(self, monkeypatch):
-        # Text on both sides of a healed call becomes TWO message items: the
-        # healed function_call closes the first, trailing text opens a fresh
-        # one with a later output index (native Responses stream shape).
         events = self._run_stream(monkeypatch, f"before {self._XML} after.")
         added = [
             (payload["output_index"], payload["item"]["type"], payload["item"].get("id"))
@@ -3583,8 +3479,7 @@ class TestResponsesStreamHealing:
             "message",
         ]
         assert [idx for idx, _, _ in added] == sorted(idx for idx, _, _ in added)
-        assert added[0][2] != added[2][2]  # distinct message item ids
-        # Text deltas attribute to their OWN message item.
+        assert added[0][2] != added[2][2]
         deltas = [
             (payload["item_id"], payload["delta"])
             for name, payload in events
@@ -3592,7 +3487,6 @@ class TestResponsesStreamHealing:
         ]
         assert [d for i, d in deltas if i == added[0][2]] == ["before "]
         assert [d for i, d in deltas if i == added[2][2]] == [" after."]
-        # The completed snapshot lists all three items with per-item text.
         completed = [payload for name, payload in events if name == "response.completed"]
         output = completed[0]["response"]["output"]
         assert [item["type"] for item in output] == ["message", "function_call", "message"]
@@ -3600,10 +3494,8 @@ class TestResponsesStreamHealing:
         assert output[2]["content"][0]["text"] == " after."
 
     def test_parallel_cap_drops_native_after_healed(self, monkeypatch):
-        # parallel_tool_calls=false: a healed call consumed the single allowed
-        # slot; a later native structured call (index 0, so it survives
-        # _drop_parallel_tool_call_deltas) must not open a second
-        # function_call item.
+        # parallel_tool_calls=false: the healed call takes the one slot, so a later native call
+        # (index 0 survives _drop_parallel_tool_call_deltas) must not open a second item.
         TestResponsesStreamAdapter._install_stream_mock(
             monkeypatch,
             [
@@ -3650,8 +3542,7 @@ class TestResponsesStreamHealing:
 
 
 def test_healed_responses_tool_call_stamps_first_token(monkeypatch):
-    # Healed output bypasses append_reply, so a text-form tool call would go untimed
-    # until the item closes near end-of-stream.
+    # Healed output bypasses append_reply, so the call went untimed until its item closed.
     api_monitor, tool, xml = _shared_setup_6()
     TestResponsesStreamAdapter._install_stream_mock(
         monkeypatch, [{"choices": [{"delta": {"content": xml}}]}]
@@ -3677,8 +3568,6 @@ def test_healed_responses_tool_call_stamps_first_token(monkeypatch):
 
 
 def test_finalized_healed_tool_call_stamps_first_token(monkeypatch):
-    # A response that is only an unclosed tool block heals in finalize() after the
-    # chunk loop, so nothing before it stamped; the item closes several yields later.
     from core.inference.api_monitor import api_monitor
 
     unclosed = '<tool_call>{"name":"lookup","arguments":{"q":"x"}}'
@@ -3703,14 +3592,12 @@ def test_finalized_healed_tool_call_stamps_first_token(monkeypatch):
 
     lines = asyncio.run(run())
 
-    # The call really was promoted, so the stamp covers a function_call the client saw.
     assert any("response.function_call_arguments.delta" in line for line in lines)
     assert stamped, "a finalized healed call is output the client already received"
 
 
 def test_healed_responses_tool_call_reports_a_tool_call_stop(monkeypatch):
-    # The upstream chunk still says "stop" while this adapter emitted a function_call,
-    # so the monitor would disagree with the chat stream's synthetic finish line.
+    # Upstream still says 'stop' while a function_call was emitted.
     api_monitor, tool, xml = _shared_setup_6()
     TestResponsesStreamAdapter._install_stream_mock(
         monkeypatch,
@@ -3731,7 +3618,6 @@ def test_healed_responses_tool_call_reports_a_tool_call_stop(monkeypatch):
 
 
 def test_unhealed_responses_stream_keeps_the_upstream_stop(monkeypatch):
-    # Nothing was promoted, so the upstream reason still describes the response.
     from core.inference.api_monitor import api_monitor
 
     tool = TestResponsesStreamHealing._TOOL

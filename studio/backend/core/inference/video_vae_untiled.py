@@ -10,20 +10,17 @@ from typing import Any, Optional
 
 UNTILED_ENV = "UNSLOTH_VIDEO_VAE_UNTILED"
 
-# Untiled fp16 decode peak per latent pixel (h x w), measured on a B200; frame count does not enter (Wan's causal cache
-# decodes one latent frame at a time). Scaled by the decoder's element size: fp32 peaked at 21.1 GiB vs fp16 9.6 GiB.
-# A14B: Wan2.1 VAE (8x spatial), measured <= 0.58 MiB per latent pixel at 480p / 720p.
+# Untiled fp16 decode peak per latent pixel (B200); frame count does not enter (causal cache).
 _BYTES_PER_LATENT_PIXEL = {
     "wan2.2-ti2v-5b": 2.5 * 2**20,
     "wan2.2-t2v-a14b": 0.6 * 2**20,
 }
-# (spatial, temporal) upsampling to the RGB output, which Wan's decode holds about twice (per-frame torch.cat, then
-# clamp) and which grows with frames: 1021 frames at 1280x704 is 5.2 GiB per fp16 copy.
+# (spatial, temporal) upsampling to RGB; Wan's decode holds that output about twice.
 _OUTPUT_SCALE = {
     "wan2.2-ti2v-5b": (16, 4),
     "wan2.2-t2v-a14b": (8, 4),
 }
-# LTX-2 / 2.3 holds every frame: peak per output frame x latent pixel, 0.102-0.105 MiB measured bf16 (B200).
+# LTX-2 / 2.3 holds every frame: per output frame x latent pixel, 0.102-0.105 MiB bf16 (B200).
 _BYTES_PER_FRAME_LATENT_PIXEL = {
     "ltx-2": 0.11 * 2**20,
 }
@@ -102,7 +99,6 @@ def install_untiled_decode(
     if getattr(decode, "_unsloth_untiled_decode", False):
         return True
     stats = {"untiled": 0, "tiled": 0, "oom_fallback": 0}
-    # Smallest estimate that ran out of memory; never retried untiled.
     oom_need: list = []
 
     def gated(z: Any, *args: Any, **kwargs: Any) -> Any:

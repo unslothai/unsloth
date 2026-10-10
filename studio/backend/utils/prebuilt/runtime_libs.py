@@ -43,7 +43,6 @@ def dedupe_existing_dirs(paths: Iterable[str | Path]) -> list[str]:
     return unique
 
 
-# Debian multiarch dirs are built into ld.so's default search path, no ldconfig needed.
 _MULTIARCH_LIB_GLOBS: tuple[str, ...] = ("/lib/*-linux-gnu*", "/usr/lib/*-linux-gnu*")
 
 
@@ -209,9 +208,7 @@ def python_runtime_dirs() -> list[str]:
         pass
 
     for root in search_roots:
-        # A sys.path entry this user cannot stat makes is_dir() raise, and the
-        # caller turns that into an empty dir list, dropping every CUDA wheel dir.
-        # Kept in sync with install_llama_prebuilt.py's python_runtime_dirs.
+        # An unstat-able sys.path entry would drop every CUDA dir. Sync with install_llama_prebuilt.py.
         try:
             if not root.is_dir():
                 continue

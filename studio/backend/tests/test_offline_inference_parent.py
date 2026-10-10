@@ -43,7 +43,6 @@ if not _module_available("loggers"):
     sys.modules.setdefault("loggers", _loggers_stub)
 if not _module_available("structlog"):
     sys.modules.setdefault("structlog", _types.ModuleType("structlog"))
-# Prefer real httpx if installed (CI installs it). Stub only as fallback.
 try:
     import httpx  # noqa: F401
 except ImportError:
@@ -122,7 +121,6 @@ class TestTransformersVersionOfflineShortCircuits:
     def test_tokenizer_config_skips_urllib_when_offline(
         self, monkeypatch, clean_offline_env, tmp_path
     ):
-        # No local config + offline env -> must NOT call urlopen.
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")
         unique = f"unsloth/never-cached-{tmp_path.name}"
 
@@ -156,8 +154,7 @@ class TestLoraDetectOffline:
 
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")
 
-        # Unsloth catches Exception broadly; pin that the call still happens
-        # (so cached LoRAs aren't missed) and returns fast via the mock.
+        # Pin that the LoRA-detect call still happens (Exception is caught broadly).
         class _OfflineModeIsEnabled(Exception):
             pass
 
@@ -170,7 +167,7 @@ class TestLoraDetectOffline:
                     gguf_variant = None,
                 )
             except Exception:
-                pass  # registry miss OK; pinning the LoRA-detect call
+                pass
 
         assert mock.call_count >= 1, (
             "LoRA-detect must still consult hf_model_info offline; "
@@ -208,8 +205,6 @@ class TestLoraDetectOffline:
             except Exception:
                 cfg = None
 
-        # cfg may be None (base not resolvable offline); pin the fixture
-        # so the cache-side detect block had a file to find.
         assert (snap / "adapter_config.json").is_file()
 
 
@@ -235,8 +230,7 @@ class TestTrainingWorkerProbeNoGlobalTimeout:
             "training worker still calls socket.setdefaulttimeout; "
             "concurrent sockets would inherit the probe timeout"
         )
-        # The probe now lives in the shared helper (endpoint- and proxy-aware), so the
-        # worker must delegate to it rather than resolve a hardcoded host itself.
+        # The worker must delegate to the shared endpoint/proxy-aware probe.
         assert (
             "hf_env_offline" in block
         ), "training worker must honor TRANSFORMERS_OFFLINE before probing"
@@ -277,8 +271,7 @@ class TestInferenceWorkerProbesForItself:
             encoding = "utf-8",
         )
         start = src.index("# Offline auto-detect")
-        # To the end of the block, not a fixed slice: a gate added ahead of it would
-        # otherwise push the tail out of the window and pass vacuously.
+        # To the block end, not a fixed slice, or a new gate could make this vacuous.
         return src[start : src.index("\n    import warnings", start)]
 
     def test_the_probe_exists_and_runs_before_activation(self):
@@ -287,7 +280,6 @@ class TestInferenceWorkerProbesForItself:
             encoding = "utf-8",
         )
         probe = src.index("# Offline auto-detect")
-        # Both HF-reading steps the parent's verdict was meant to cover.
         assert probe < src.index("_remote_lora_base(model_name")
         assert probe < src.index("_activate_transformers_version(_base")
 
@@ -333,10 +325,8 @@ class TestWorkerProbesOnlyWhenTheHubIsNeeded:
 
         assert w._training_job_is_local({"model_name": local}) is True
         assert w._training_job_is_local({"model_name": local, "hf_dataset": ""}) is True
-        # A remote dataset needs the Hub even with a local model.
         assert w._training_job_is_local({"model_name": local, "hf_dataset": "org/ds"}) is False
         assert w._training_job_is_local({"model_name": "org/model"}) is False
-        # Fail closed on anything unresolvable.
         assert w._training_job_is_local({}) is False
         assert w._training_job_is_local({"model_name": None}) is False
 
@@ -378,7 +368,6 @@ class TestWorkerProbesOnlyWhenTheHubIsNeeded:
         )
         assert "not _hub_targets_are_local(" in inf
         assert "not _training_job_is_local(config)" in trn
-        # The user's own flag still wins in both.
         assert inf.count('if "HF_HUB_OFFLINE" not in os.environ and (') == 1
         assert trn.count('if "HF_HUB_OFFLINE" not in os.environ and not') == 1
 
@@ -520,15 +509,13 @@ class TestFullCheckpointBaseKeepsTheProbe:
             sys.path.insert(0, backend_root)
         from utils.transformers_version import _resolve_base_model, recorded_local_base
 
-        # dir name -> (adapter_config.json, config.json, drop adapter weights in)
         shapes = {
             "adapter": ({"base_model_name_or_path": "org/a"}, None, False),
             "config": (None, {"model_name": "org/c"}, False),
             "name_or_path": (None, {"_name_or_path": "org/n"}, False),
             "both": ({"base_model_name_or_path": "org/a"}, {"model_name": "org/c"}, False),
             "bare": (None, None, False),
-            # Adapter-only LoRAs: no JSON at all, so the resolver falls back to the
-            # unsloth_<model>_<timestamp> dir-name convention.
+            # Adapter-only: no JSON, so the resolver uses the unsloth_<model>_<ts> dir name.
             "unsloth_llama-3_1700000000": (None, None, True),
             "unsloth_a_b_1700000000": (None, None, True),
             "plain_adapter_dir": (None, None, True),
@@ -546,7 +533,6 @@ class TestFullCheckpointBaseKeepsTheProbe:
 
             base, needs_hub = recorded_local_base(str(d))
             resolved = _resolve_base_model(str(d))
-            # The resolver returns the input unchanged when it finds no base.
             assert needs_hub is False, name
             assert (base or str(d)) == resolved, name
 
@@ -597,7 +583,6 @@ class TestLoadRouteResolvesConfigOffTheLoop:
             "_resolve_config" in threaded
         ), "the load guard must be awaited off the event loop, as /validate does"
 
-        # And nothing in that function may enter the guard inline any more.
         bad = [
             n.lineno
             for n in ast.walk(impl)

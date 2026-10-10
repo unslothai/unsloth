@@ -57,10 +57,10 @@ def test_an_xpu_box_resolves_to_xpu_not_cpu(host):
 @pytest.mark.parametrize(
     "xpu",
     [
-        None,  # a torch build with no xpu module at all
-        _fake_xpu(),  # present, but predates is_available()
-        _fake_xpu(is_available = True),  # present, non-callable
-        _fake_xpu(is_available = lambda: False),  # present, no device
+        None,
+        _fake_xpu(),
+        _fake_xpu(is_available = True),
+        _fake_xpu(is_available = lambda: False),
     ],
     ids = ["absent", "no-probe", "non-callable", "unavailable"],
 )
@@ -90,8 +90,8 @@ def test_an_emulation_only_xpu_is_refused(host):
             is_bf16_supported = lambda including_emulation = True: bool(including_emulation),
         ),
     )
-    assert torch.xpu.is_bf16_supported() is True  # what the bare call claims
-    assert native_bf16_supported_xpu() is False  # what the hardware can actually do
+    assert torch.xpu.is_bf16_supported() is True
+    assert native_bf16_supported_xpu() is False
 
 
 def test_a_native_bf16_xpu_is_accepted(host):
@@ -159,8 +159,7 @@ def _decide(monkeypatch, module, entry, cfg):
         raise _Cut()
 
     monkeypatch.setattr(module, "_assert_trusted_base_model", _cut)
-    # manual_seed fans out into torch.xpu.manual_seed_all, which the bare fake lacks; it runs
-    # before the decision and cannot influence it.
+    # manual_seed fans out to torch.xpu.manual_seed_all, which the fake lacks
     monkeypatch.setattr(torch, "manual_seed", lambda *_a, **_k: None)
 
     try:
@@ -263,8 +262,8 @@ def test_an_unprobeable_xpu_is_left_to_the_child_not_refused_up_front(host):
 
     host(cuda = False, xpu = _fake_xpu(is_available = lambda: True, is_bf16_supported = _unprobeable))
     assert xpu_native_bf16_probe() is None
-    assert bf16_unsupported_reason("krea-2") is None  # route proceeds
-    assert native_bf16_supported_xpu() is False  # child still refuses, on the device itself
+    assert bf16_unsupported_reason("krea-2") is None
+    assert native_bf16_supported_xpu() is False
 
 
 def test_an_xpu_run_captures_and_restores_its_own_noise_generator(host, monkeypatch):
@@ -312,17 +311,15 @@ def test_a_checkpoint_cannot_silently_resume_across_accelerator_backends(host, t
     ]
     assert written_here["accelerator"] in ("cuda", "xpu", "cpu")
 
-    # Same host: accepted.
     _assert_required_state(Path("ckpt"), {**complete, "rng": written_here})
 
-    # Written on the other backend: refused, and the message says which.
     other = "xpu" if written_here["accelerator"] != "xpu" else "cuda"
     with pytest.raises(ResumeError, match = "this accelerator"):
         _assert_required_state(
             Path("ckpt"), {**complete, "rng": {**written_here, "accelerator": other}}
         )
 
-    # A bundle predating the field must still resume: unknown is not a mismatch.
+    # a bundle predating the field must still resume: unknown is not a mismatch
     legacy = {k: v for k, v in written_here.items() if k != "accelerator"}
     _assert_required_state(Path("ckpt"), {**complete, "rng": legacy})
 

@@ -31,12 +31,10 @@ import types as _types
 import os
 from pathlib import Path
 
-# The backend uses "from utils..." imports; ensure the backend dir is on sys.path.
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# Stub the custom logger before importing the module under test, as the sibling tests do.
 _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
@@ -192,7 +190,6 @@ def test_a_rebuild_records_the_optional_install_it_could_not_do(tmp_path, monkey
     optional = next(p for p in tv._VENV_T5_550_PACKAGES if p.startswith("tiktoken"))
     assert tv._top_up_failed_recently(str(root), optional) is True
     assert (os.path.normcase(os.path.abspath(str(root))), optional) in tv._OPTIONAL_TOP_UP_ATTEMPTED
-    # A later attempt that succeeds clears it again.
     tv._record_top_up_outcome(str(root), optional, True)
     assert tv._top_up_failed_recently(str(root), optional) is False
 
@@ -254,12 +251,10 @@ def test_a_present_tiktoken_is_held_to_its_record_like_any_other(tmp_path, monke
     monkeypatch.delenv(tv._SIDECAR_FILE_CHECK_ENV, raising = False)
     assert tv._sidecar_damaged_files(str(root)) != []
     assert tv._venv_dir_is_valid_and_undamaged(str(root), tv._VENV_T5_550_PACKAGES) is False
-    # With the payload the RECORD names in place, the sidecar is whole.
     (root / "tiktoken").mkdir()
     (root / "tiktoken" / "__init__.py").write_bytes(b"x" * 1234)
     assert tv._sidecar_damaged_files(str(root)) == []
     assert tv._venv_dir_is_valid_and_undamaged(str(root), tv._VENV_T5_550_PACKAGES) is True
-    # A required package's RECORD is held to the disk too.
     hub = root / "huggingface_hub-1.8.0.dist-info"
     (hub / "RECORD").write_text("huggingface_hub/gone.py,sha256=abc,12\n", encoding = "utf-8")
     assert tv._sidecar_damaged_files(str(root)) != []
@@ -283,7 +278,6 @@ def test_a_valid_sidecar_missing_tiktoken_is_topped_up_once(tmp_path, monkeypatc
     assert root.is_dir(), "the top-up must not wipe the sidecar"
     assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "test sidecar") is True
     assert len(installed) == 1, "an unavailable wheel is asked for once per process"
-    # A tiktoken that is there is left alone.
     tv._OPTIONAL_TOP_UP_ATTEMPTED.clear()
     (root / tv._OPTIONAL_TOP_UP_FAILED).unlink()
     (root / "tiktoken").mkdir()
@@ -310,14 +304,12 @@ def test_a_failed_top_up_is_remembered_across_processes_and_retried_later(tmp_pa
     tv._OPTIONAL_TOP_UP_ATTEMPTED.clear()
     tv._top_up_optional_packages(str(root), packages)
     assert installed == ["tiktoken"]
-    # Old enough to try again.
     failures = tv._read_top_up_failures(str(root))
     failures["tiktoken"] -= tv._OPTIONAL_TOP_UP_RETRY_SECONDS + 1
     tv._write_top_up_failures(str(root), failures)
     tv._OPTIONAL_TOP_UP_ATTEMPTED.clear()
     tv._top_up_optional_packages(str(root), packages)
     assert installed == ["tiktoken", "tiktoken"]
-    # A success clears the record.
     monkeypatch.setattr(tv, "_install_to_dir", lambda pkg, target: installed.append(pkg) or True)
     failures = tv._read_top_up_failures(str(root))
     failures["tiktoken"] -= tv._OPTIONAL_TOP_UP_RETRY_SECONDS + 1
@@ -365,7 +357,6 @@ def test_offline_still_clears_a_partial_optional_payload(tmp_path, monkeypatch):
     assert tv._top_up_optional_packages(str(root), tv._VENV_T5_550_PACKAGES) is True
     assert installs == []
     assert not (root / "tiktoken").exists() and not (root / "tiktoken_ext").exists()
-    # And through the sidecar check that activation runs.
     _partial_tiktoken(root)
     monkeypatch.setattr(tv, "_venv_dir_is_valid_and_undamaged", lambda *a, **k: True)
     assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "test sidecar") is True
@@ -422,7 +413,6 @@ def test_a_sidecar_whose_top_up_remnants_will_not_go_is_not_activated(tmp_path, 
     tv._OPTIONAL_TOP_UP_ATTEMPTED.clear()
     assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "test sidecar") is False
     assert (root / "tiktoken").is_dir()
-    # Once the remnants can go, the same failed top-up leaves a usable sidecar.
     monkeypatch.setattr(tv.shutil, "rmtree", real_rmtree)
     tv._OPTIONAL_TOP_UP_ATTEMPTED.clear()
     (root / tv._OPTIONAL_TOP_UP_FAILED).unlink(missing_ok = True)
@@ -613,7 +603,6 @@ def test_an_offline_session_does_not_wipe_a_sidecar_it_cannot_rebuild(tmp_path, 
     root = tmp_path / ".venv_t5_550"
     root.mkdir()
     (root / "keep.txt").write_text("", encoding = "utf-8")
-    # Valid only once every package landed in it: the live tree never does here.
     built = {}
     monkeypatch.setattr(
         tv,
@@ -631,10 +620,8 @@ def test_an_offline_session_does_not_wipe_a_sidecar_it_cannot_rebuild(tmp_path, 
         installed.clear()
         assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "test sidecar") is False
         assert (root / "keep.txt").is_file()
-        # The cache was asked, beside the tree, never in it.
         assert installed == [tv._VENV_T5_550_PACKAGES[0]]
         assert siblings() == []
-    # A warm cache: every package installs into the staging tree and the swap is whole.
     staged_into = []
 
     def warm_install(pkg, target):
@@ -650,7 +637,6 @@ def test_an_offline_session_does_not_wipe_a_sidecar_it_cannot_rebuild(tmp_path, 
     assert not (root / "keep.txt").exists()
     assert (root / tv._STUDIO_OWNED_MARKER).is_file()
     assert siblings() == []
-    # A staging tree that installed every package but does not validate never swaps in.
     (root / "keep.txt").write_text("", encoding = "utf-8")
     built.clear()
     monkeypatch.setattr(tv, "_install_to_dir", lambda pkg, target: True)
@@ -662,8 +648,7 @@ def test_an_offline_session_does_not_wipe_a_sidecar_it_cannot_rebuild(tmp_path, 
     (root / "keep.txt").write_text("", encoding = "utf-8")
     installed.clear()
     monkeypatch.setattr(tv, "_install_to_dir", lambda pkg, target: installed.append(pkg) or True)
-    # The HF offline switches turn off Hub access, not the package index: a damaged tier
-    # is still rebuilt under them, or the tier stays unusable while PyPI answers.
+    # HF offline switches disable the Hub, not the package index; a damaged tier still rebuilds.
     monkeypatch.setenv("UV_OFFLINE", "0")
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     assert tv._runtime_repair_is_offline() is False
@@ -683,7 +668,6 @@ def test_an_empty_directory_is_still_built_offline_from_the_cache(tmp_path, monk
     monkeypatch.setenv("UV_OFFLINE", "1")
     assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "latest staging") is True
     assert installed == list(tv._VENV_T5_550_PACKAGES)
-    # A missing directory is a first install, not a repair.
     installed.clear()
     assert tv._ensure_venv_dir(str(tmp_path / "fresh"), tv._VENV_T5_550_PACKAGES, "fresh") is True
     assert installed == list(tv._VENV_T5_550_PACKAGES)
@@ -709,7 +693,6 @@ def test_the_pip_fallback_stays_out_offline(tmp_path, monkeypatch):
     monkeypatch.delenv("PIP_NO_INDEX", raising = False)
     assert tv._install_to_dir("tiktoken", str(tmp_path)) is False
     assert len(calls) == 1 and calls[0][0] == "uv"
-    # Without uv there is no cache to answer from, and pip is still not asked.
     calls.clear()
     monkeypatch.setattr(tv.shutil, "which", lambda name: None)
     assert tv._install_to_dir("tiktoken", str(tmp_path)) is False
@@ -784,13 +767,11 @@ def test_a_sidecar_stranded_by_an_interrupted_swap_is_restored_first(tmp_path, m
     assert (root / "keep.txt").is_file()
     assert not retired.exists()
     assert installed == []
-    # With the live tree in place, a retired copy is a leftover and goes...
     leftover = tmp_path / ".venv_t5_550.offline-old-99"
     leftover.mkdir()
     (leftover / "x").write_text("", encoding = "utf-8")
     (leftover / tv._STUDIO_OWNED_MARKER).write_text("", encoding = "utf-8")
-    # ...but only a tree this code made, under exactly its name: an unmarked or differently named
-    # directory is the user's.
+    # A retired copy is removed only if this code made it, under exactly its name.
     users = tmp_path / ".venv_t5_550.offline-old-backup"
     users.mkdir()
     (users / "precious").write_text("", encoding = "utf-8")
@@ -801,7 +782,6 @@ def test_a_sidecar_stranded_by_an_interrupted_swap_is_restored_first(tmp_path, m
     assert (root / "keep.txt").is_file()
     assert not leftover.exists()
     assert (users / "precious").is_file() and (unowned / "precious").is_file()
-    # And with the live path empty, only an owned, exactly named tree is put back.
     import shutil as _shutil
 
     _shutil.rmtree(root)
@@ -838,7 +818,6 @@ def test_a_rebuild_takes_the_tiers_lock_and_keeps_a_tree_finished_under_it(tmp_p
     assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "test sidecar") is True
     assert installed == [] and (root / "half").is_file()
     assert locked == [tv._rebuild_lock_path(str(root))]
-    # Still incomplete under the lock: the rebuild runs, in this process, once.
     monkeypatch.setattr(tv, "_venv_dir_is_valid_and_undamaged", lambda *a, **k: False)
     assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "test sidecar") is True
     assert installed == list(tv._VENV_T5_550_PACKAGES)
@@ -901,7 +880,6 @@ def test_a_wheelhouse_pip_is_allowed_offline(tmp_path, monkeypatch):
         returncode = 0
 
     monkeypatch.setattr(tv.subprocess, "run", lambda cmd, **k: calls.append(cmd) or _Done())
-    # Without a pip to ask, the environment is what there is.
     monkeypatch.setattr(tv, "_pip_effective_settings", lambda: None)
     monkeypatch.delenv("PIP_NO_INDEX", raising = False)
     monkeypatch.delenv("PIP_FIND_LINKS", raising = False)
@@ -1012,12 +990,10 @@ def test_a_failed_first_install_leaves_nothing_the_offline_guard_would_keep(tmp_
     monkeypatch.setenv("UV_OFFLINE", "1")
     assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "test sidecar") is False
     assert not root.exists()
-    # The cache is populated now: the next call asks again instead of keeping a husk.
     installed = []
     monkeypatch.setattr(tv, "_install_to_dir", lambda pkg, target: installed.append(pkg) or True)
     assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "test sidecar") is True
     assert installed == list(tv._VENV_T5_550_PACKAGES)
-    # A marker-only directory is not content either.
     root2 = tmp_path / "marker-only"
     root2.mkdir()
     (root2 / tv._STUDIO_OWNED_MARKER).write_text("", encoding = "utf-8")

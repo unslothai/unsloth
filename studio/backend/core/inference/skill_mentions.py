@@ -200,7 +200,6 @@ def load_mentioned_skills(
                 continue
         yield {**event, "status": "loading"}
         try:
-            # Re-validates enabled/account-scoped discovery; never a cached or paged read.
             content = read_skill_instructions(name)
             size = len(content.encode("utf-8"))
             existing = next(

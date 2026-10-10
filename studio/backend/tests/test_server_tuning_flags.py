@@ -55,9 +55,6 @@ from utils.openai_auto_switch_settings import (
 )
 
 
-# --------------------------------------------------------------------------- request
-
-
 def test_load_request_defaults_are_unset():
     request = LoadRequest(model_path = "owner/repo")
     assert request.load_mode is None
@@ -97,14 +94,10 @@ def test_ctx_checkpoints_and_cache_ram_bounds():
 
 @pytest.mark.parametrize("field", ["ctx_checkpoints", "cache_ram"])
 def test_integer_fields_reject_json_booleans(field):
-    # bool subclasses int, so lax pydantic would turn `true` into 1 and launch the
-    # child with a number nobody typed. Same guard the batch pair carries.
+    # bool subclasses int, so lax pydantic would turn `true` into 1.
     with pytest.raises(ValueError):
         LoadRequest(model_path = "owner/repo", **{field: True})
     assert getattr(LoadRequest(model_path = "owner/repo", **{field: "16"}), field) == 16
-
-
-# ------------------------------------------------------------------- load mode policy
 
 
 @pytest.fixture
@@ -136,9 +129,7 @@ def test_auto_and_unknown_modes_emit_nothing(memory_settings):
 
 
 def test_an_explicitly_typed_load_mode_still_wins(memory_settings):
-    # The control emits BEFORE the extras, so a flag typed for THIS load is
-    # appended after it and last-wins, which is what the panel's diagnostics
-    # promise. Only the route strips, and only an INHERITED copy.
+    # The control emits before the extras, so a flag typed for this load is appended after it and wins.
     managed, extras = apply_load_mode_policy(
         ["--load-mode", "dio", "--top-k", "20"],
         supports_load_mode = True,
@@ -149,9 +140,7 @@ def test_an_explicitly_typed_load_mode_still_wins(memory_settings):
 
 
 def test_the_route_strips_an_inherited_load_mode(memory_settings):
-    # A trailing alias resets the whole mode in llama.cpp, so an INHERITED copy
-    # would silently undo the pick. The route drops it when the field is set, the
-    # same rule the batch pair follows; the policy itself strips nothing.
+    # A trailing alias resets the whole mode in llama.cpp, so the route drops an inherited copy.
     inherited = ["--no-mmap", "--mlock", "--top-k", "20"]
     assert strip_shadowing_flags(
         inherited,
@@ -174,8 +163,6 @@ def test_keep_resident_owns_the_mode(memory_settings):
 
 
 def test_keep_resident_releases_the_mode_when_the_weights_are_not_host_resident(memory_settings):
-    # The page-lock is skipped for a fully offloaded model, so nothing else is
-    # claiming the mode and the pick applies.
     memory_settings["keep_resident"] = True
     managed, _ = apply_load_mode_policy(
         [],
@@ -194,7 +181,6 @@ def test_no_ram_reserve_vetoes_the_reserving_modes(memory_settings, mode):
 
 @pytest.mark.parametrize("mode", ["mmap", "dio"])
 def test_no_ram_reserve_leaves_the_non_reserving_modes(memory_settings, mode):
-    # Neither holds a full host copy, so there is nothing for the setting to veto.
     memory_settings["no_ram_reserve"] = True
     managed, _ = apply_load_mode_policy([], supports_load_mode = True, requested_load_mode = mode)
     assert managed == ["--load-mode", mode]
@@ -215,8 +201,7 @@ def test_a_build_without_load_mode_falls_back_to_the_deprecated_spellings(memory
 
 
 def test_the_panel_and_the_policy_agree_on_which_modes_no_reserve_vetoes():
-    # The Run settings note names the setting that wins, so the two sets have to
-    # be the same one. RAM_RESERVING_LOAD_MODES in model-config-page.tsx.
+    # Must match RAM_RESERVING_LOAD_MODES in model-config-page.tsx.
     ui = (
         Path(_BACKEND_DIR).parent
         / "frontend"
@@ -230,9 +215,6 @@ def test_the_panel_and_the_policy_agree_on_which_modes_no_reserve_vetoes():
     assert {value.strip().strip('"') for value in listed.split(",") if value.strip()} == set(
         lsa._LOAD_MODE_MLOCK_VALUES | lsa._LOAD_MODE_RESERVING_VALUES
     )
-
-
-# ---------------------------------------------------------------------- shadow strips
 
 
 def test_strip_shadowing_flags_tuning_toggles():
@@ -251,8 +233,6 @@ def test_strip_shadowing_flags_tuning_toggles():
     assert "--cache-ram=2048" not in strip_shadowing_flags(args, strip_cache_ram = True)
     stripped = strip_shadowing_flags(args, strip_spec_draft_cache = True)
     assert stripped == ["--ctx-checkpoints", "8", "--cache-ram=2048", "--top-k", "20"]
-    # nothing is stripped by default, so an inherited flag survives a load that
-    # sets none of these fields
     assert strip_shadowing_flags(args) == args
 
 
@@ -270,10 +250,8 @@ def test_the_effective_checkpoint_count_comes_from_the_extras():
     """
     assert parse_ctx_checkpoints_override(["--ctx-checkpoints", "256"]) == 256
     assert parse_ctx_checkpoints_override(["--swa-checkpoints=8"]) == 8
-    # last-wins, like every other override parser here
     assert parse_ctx_checkpoints_override(["-ctxcp", "4", "--ctx-checkpoints", "16"]) == 16
     assert parse_ctx_checkpoints_override(["--top-k", "20"]) is None
-    # malformed extras are refused at the boundary; sizing must not raise
     assert parse_ctx_checkpoints_override(["--ctx-checkpoints", "many"]) is None
 
     assert resolve_ctx_checkpoints(["--ctx-checkpoints", "256"], 0) == 256
@@ -293,15 +271,12 @@ def test_the_checkpoint_flag_falls_back_to_the_legacy_spelling():
     from core.inference import llama_cpp
 
     probe = inspect.getsource(llama_cpp.LlamaCppBackend.probe_server_capabilities)
-    # both spellings probed, most modern first, and WHICH one is recorded
     assert 'for _alias in ("--ctx-checkpoints", "--swa-checkpoints")' in probe
     assert "ctx_checkpoints_flag = _alias" in probe
     assert "supports_ctx_checkpoints = ctx_checkpoints_flag is not None" in probe
-    # and the emission uses the recorded name, not a hard-coded one
     load = inspect.getsource(llama_cpp.LlamaCppBackend.load_model)
     assert "cmd.extend([str(_ctxcp_flag), str(int(ctx_checkpoints))])" in load
-    # The Windows tuning's 0 goes through the list the arch-crash respawn takes its own
-    # flags back off, so the sink is that list rather than cmd. What it pins is unchanged.
+    # The Windows 0 goes through the list the arch-crash respawn strips, not cmd.
     assert '_cache_flags_emitted.extend([str(server_caps["ctx_checkpoints_flag"]), "0"])' in load
     assert "cmd.extend(_cache_flags_emitted)" in load
 
@@ -315,12 +290,8 @@ def test_an_unsupported_draft_cache_dtype_is_dropped_not_launched():
     assert "Q8_0".strip().lower() in llama_cpp._VALID_KV_CACHE_TYPES
     assert "fp16" not in llama_cpp._VALID_KV_CACHE_TYPES
     source = inspect.getsource(llama_cpp.LlamaCppBackend.load_model)
-    # normalized and allow-listed before emission, like the main cache dtype
     assert "_draft_cache_type not in _VALID_KV_CACHE_TYPES" in source
     assert "Ignoring unsupported draft KV cache type" in source
-
-
-# ----------------------------------------------------------------------------- dedupe
 
 
 def _loaded_backend() -> LlamaCppBackend:
@@ -358,8 +329,6 @@ def test_dedupe_matches_the_same_tuning():
 
 
 def test_dedupe_reads_auto_and_unset_as_the_same_load():
-    # Both launch the same command, so picking Auto must not reload a server
-    # already running it.
     backend = _loaded_backend()
     assert backend._runtime_matches_intent(_intent(load_mode = "auto"), None) is True
     assert _normalized_load_mode("AUTO ") is None
@@ -383,10 +352,7 @@ def test_dedupe_reloads_on_a_tuning_change(changed):
 
 
 def test_dedupe_reloads_when_the_draft_cache_is_cleared():
-    # Clearing the control back to the f16 default has to relaunch, or the server
-    # keeps the quantized draft cache the panel no longer shows. Both sides hold
-    # what was REQUESTED, so a load that asked for nothing still matches one that
-    # asked for nothing.
+    # Clearing back to the f16 default must relaunch; both sides hold what was REQUESTED.
     backend = _loaded_backend()
     backend._requested_spec_draft_cache_type = "q8_0"
     assert backend._runtime_matches_intent(_intent(), None) is False
@@ -397,7 +363,6 @@ def test_dedupe_reloads_when_the_draft_cache_is_cleared():
 
 
 def test_dedupe_ignores_the_tuning_for_diffusion():
-    # The diffusion runner builds its own command and passes none of these.
     backend = _loaded_backend()
     backend._is_diffusion = True
     backend._diffusion_requested_ngl = None
@@ -416,8 +381,6 @@ def test_the_coexistence_estimate_charges_the_requested_checkpoints():
 
     from routes import inference as inference_routes
 
-    # threaded end to end: the guard reads the field, the estimator forwards it,
-    # and the KV sizing charges it
     assert (
         "ctx_checkpoints"
         in inspect.signature(inference_routes._estimate_gguf_required_gb).parameters
@@ -426,19 +389,13 @@ def test_the_coexistence_estimate_charges_the_requested_checkpoints():
     assert "ctx_checkpoints" in inspect.signature(inference_routes._gguf_runtime_bytes).parameters
     source = inspect.getsource(inference_routes._guard_chat_load_against_training)
     assert 'ctx_checkpoints = getattr(request, "ctx_checkpoints", None)' in source
-    # _estimate_gguf_kv_gb is the guard's summing wrapper; the arithmetic lives in
-    # _gguf_runtime_bytes, which the memory-estimate endpoint reads itemized. Both
-    # links are asserted, so dropping the field in either place still fails here.
+    # _estimate_gguf_kv_gb wraps _gguf_runtime_bytes; both links are asserted.
     assert "ctx_checkpoints = ctx_checkpoints" in inspect.getsource(
         inference_routes._estimate_gguf_kv_gb
     )
     kv_source = inspect.getsource(inference_routes._gguf_runtime_bytes)
-    # Pricing uses the same effective count as the launch.
     assert "effective_ctx_checkpoints_for_caps(" in kv_source
     assert "llama_extra_args," in kv_source
-
-
-# ------------------------------------------------------------------- override storage
 
 
 def test_override_store_round_trip():
@@ -472,8 +429,7 @@ def test_override_store_drops_values_the_loader_would_refuse():
 
 
 def test_override_store_drops_a_draft_dtype_without_a_separate_drafter():
-    # ngram loads no draft model, so there is no draft context for the dtype to
-    # apply to; storing it would show an edit the loader ignores.
+    # ngram loads no draft model, so a draft cache dtype is meaningless.
     entry = normalize_model_override({"speculative_type": "ngram", "spec_draft_cache_type": "q8_0"})
     assert "spec_draft_cache_type" not in entry
 
@@ -488,5 +444,4 @@ def test_override_kwargs_are_gguf_only():
     kwargs = model_override_load_kwargs(override, is_gguf = True)
     for key, value in override.items():
         assert kwargs[key] == value
-    # the flags are llama-server's, so a transformers load carries none of them
     assert not set(override) & set(model_override_load_kwargs(override, is_gguf = False))

@@ -277,7 +277,7 @@ def get_visible_gpu_utilization(
             )
         )
 
-    # nvidia-smi emits physical row order, so a reordering mask would hand back devices whose position contradicts their own visible_ordinal.
+    # nvidia-smi emits physical order; sort so position matches visible_ordinal.
     devices.sort(key = lambda d: d["visible_ordinal"])
 
     return {
@@ -314,11 +314,11 @@ def _nvidia_smi_executable() -> str:
     return "nvidia-smi"
 
 
-# "nvidia-smi is not on this machine" is a conclusive answer, not a failed probe: it is the normal state of every CPU-only, AMD and Intel host, and the installers read the same absence the same way. Distinct from None, which means a probe that WAS found could not answer (a hung driver, a permission fault, a non-zero exit).
+# Sentinel: nvidia-smi absent (normal on non-NVIDIA hosts). None means a found probe failed.
 NVIDIA_SMI_ABSENT = object()
 
 
-# This thread's last inventory exit code: exit 6 is nvidia-smi's own "No devices were found".
+# This thread's last inventory exit code; 6 is nvidia-smi's own "No devices were found".
 _inventory_exit = threading.local()
 
 
@@ -345,11 +345,10 @@ def _query_gpu_inventory(caller: str) -> Any:
             **_windows_hidden_subprocess_kwargs(),
         )
     except FileNotFoundError as e:
-        # No nvidia-smi at all, the NORMAL state of every CPU-only, AMD and Intel host. This is called on a 60 second refresh reached from the health and system polls, so warning here would log a line every minute on machines that are working correctly.
+        # Debug, not warning: absence is normal and this runs on a 60s refresh.
         logger.debug("nvidia-smi is not installed (%s): %s", caller, e)
         return NVIDIA_SMI_ABSENT
     except (OSError, subprocess.TimeoutExpired) as e:
-        # Past this point an nvidia-smi WAS found, so a failure is a real fault on this host.
         logger.warning("nvidia-smi query failed in %s: %s", caller, e)
         return None
     _inventory_exit.code = result.returncode
@@ -365,9 +364,9 @@ def _query_gpu_inventory(caller: str) -> Any:
             idx = int(parts[0])
         except (ValueError, TypeError):
             continue
-        # Rejoin in case the GPU name contains commas
+        # Rejoin in case the GPU name contains commas.
         name = parts[1] if len(parts) == 3 else ", ".join(parts[1:-1])
-        # A capacity this build of nvidia-smi will not report ("[N/A]", as _parse_smi_value already recognises) is a missing metric, not a missing card. Dropping the row hid the GPU from the whole inventory, and the Linux procfs fallback does not run either since it answers for a query that FAILED rather than one that came back short: the host lost its mismatch and its repair guidance over an unknown size.
+        # An "[N/A]" capacity is a missing metric, not a missing card: keep the row.
         mem_total_mb = _parse_smi_value(parts[-1])
         rows.append(
             {
@@ -395,9 +394,9 @@ def _linux_nvidia_procfs_gpu_count() -> int:
 def get_physical_gpu_inventory() -> dict[str, Any]:
     """Every NVIDIA GPU the driver enumerates, with no visibility mask and no torch. Display-only inventory: ``index`` is nvidia-smi's own row number, a physical id and NOT something a caller may pin, because the whole point of this probe is that PyTorch cannot open these devices. A failed probe comes back as a structured unavailable result, so this never raises out of an endpoint."""
     rows = _query_gpu_inventory("get_physical_gpu_inventory")
-    # Either way the CLI could not answer. The kernel driver publishes its cards regardless, and on a cold start there is no settled verdict for the resulting unknown to protect.
     if (rows is NVIDIA_SMI_ABSENT or rows is None) and _linux_nvidia_procfs_gpu_count():
-        # The kernel driver is loaded and enumerating cards; only the CLI is missing. _has_usable_nvidia_gpu() reads the same directory, so without this the installer can repair a CUDA wheel on a host the backend insists has no card. No name and no capacity: procfs gives neither, and an invented one would be worse than an honest blank.
+        # Driver enumerates cards but the CLI is missing; the installer's _has_usable_nvidia_gpu()
+        # reads the same procfs, so both must agree.
         return {
             "available": True,
             "source": "proc-driver-nvidia",
@@ -415,7 +414,6 @@ def get_physical_gpu_inventory() -> dict[str, Any]:
             "absent": False,
         }
     if rows is NVIDIA_SMI_ABSENT:
-        # An answer, and the caller must not read it as "some probe failed": an AMD-only host has no nvidia-smi by design.
         return {
             "available": False,
             "source": "nvidia-smi",
@@ -443,7 +441,7 @@ def get_physical_gpu_inventory() -> dict[str, Any]:
 def get_backend_visible_gpu_info(
     parent_visible_ids: Optional[list[int]], backend_cuda_visible_devices: Optional[str]
 ) -> dict[str, Any]:
-    # parent_visible_ids None (UUID/MIG mask): cannot map nvidia-smi rows to visible devices.
+    # UUID/MIG mask: cannot map nvidia-smi rows to visible devices.
     if parent_visible_ids is None:
         return {
             "available": False,

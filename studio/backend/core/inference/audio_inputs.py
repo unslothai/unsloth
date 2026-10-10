@@ -34,7 +34,6 @@ BYTE_CAP = 2 * 1024 * 1024 * 1024
 REFERENCE_MAX_SECONDS = 30.0
 REFERENCE_RATE = 24000
 _MAX_CHANNELS = 2
-# Caps the stored rate so a 30 minute upload stays under ~350 MB however it was encoded.
 MAX_RATE = 48000
 _NAME_MAX = 255
 _STALE_TMP_SECONDS = 60 * 60
@@ -469,7 +468,6 @@ def sweep(
         live.sort(reverse = True)
         running = 0
         for index, (_touched_at, input_id, size) in enumerate(live):
-            # Only kept inputs count toward the cap, so one eviction does not doom every older one.
             if running + size > byte_cap and index > 0 and input_id != keep:
                 removed += _remove(directory, input_id)
                 continue
@@ -482,7 +480,6 @@ def sweep(
             # "." = a crashed timed transcription's upload; full TTL (aligner downloads take an hour).
             elif name.startswith(("c-", "v-", ".")) and name.endswith(".wav") and age > ttl:
                 path.unlink(missing_ok = True)
-        # Music run folders a crash left behind.
         runs = directory / "runs"
         if runs.is_dir():
             for run in runs.iterdir():
@@ -521,7 +518,7 @@ def delete(input_id: str) -> bool:
 
 @dataclass(frozen = True)
 class Source:
-    kind: str  # "input" | "clip" | "voice"
+    kind: str
     id: str
     path: Path
     name: str
@@ -587,7 +584,6 @@ def prepared_path(
         cut = True,
     )
     if source.kind != "input":
-        # Cloning from history or a saved voice may never upload, so expired copies go here too.
         sweep()
     return dst
 

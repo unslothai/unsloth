@@ -50,60 +50,39 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Any, Optional
 
-# The ConvRot primitives, shared with the denoiser's hosted INT8 checkpoint. Re-exported below under the names this
-# module has always used.
 from .diffusion_convrot import (  # noqa: F401  (re-export: callers and tests name them here)
     build_convrot_hadamard,
     rotate_convrot_activation,
 )
 
-# The repo the prequantized denoisers already come from, so this adds no new dependency. It is no longer
-# H3_COMPONENT_REPO: the VAEs moved to the GGUF mirror and the conditioner did not, so the two are now separate repos
-# and aliasing them would send this file to the wrong one.
+# Not H3_COMPONENT_REPO: the VAEs moved to the GGUF mirror, the conditioner did not.
 H3_TE_QUANT_REPO = "unsloth/MiniMax-H3-FP8"
-# The community repack these quants were mirrored from, for an install whose cache predates the move. Same reasoning as
-# H3_LEGACY_COMPONENT_REPO, and the same owner: the pairing itself lives in diffusion_families' _SD_CPP_LEGACY_SOURCES
-# and is read through h3_te_quant_source below.
+# Legacy repack for caches predating the move; pairing lives in _SD_CPP_LEGACY_SOURCES.
 H3_LEGACY_TE_QUANT_REPO = "Comfy-Org/MiniMax-H3"
 
-# Hosted quantized conditioners, by ``text_encoder_quant`` scheme. nvfp4
-# (``qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors``, 14.61 GiB) is deliberately absent: it is an AWQ NVFP4 layout with
-# two levels of scale and a per-tensor global scale, a different loader and a different kernel, and shipping it needs
-# its own numerical verification. The table is the one place to add it.
+# nvfp4 (AWQ, two-level scales) deliberately absent: needs its own loader, kernel and verification.
 H3_TE_QUANT_FILES: dict[str, str] = {
     "int8": "text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
 }
 
-# The scheme an UNSET ``text_encoder_quant`` resolves to on a device that supports it. The released conditioner is a
-# 66.7 GB dense bfloat16 Qwen3-VL of 64 decoder layers and H3 reads ``hidden_states[50]``; transformers has no early
-# exit, so the default runs all 64 layers and streams 66.7 GB across the CPU-offload boundary every generation. The
-# hosted artifact is 27.1 GB over 50 layers with the same read, which is why it is the default rather than an opt-in.
-# NOT an INT8 GEMM: the ConvRot forward dequantizes to the compute dtype and runs an ordinary ``F.linear``, so the win
-# is bytes moved and layers executed, not faster math.
+# Default int8: 27 GB over 50 layers vs 66.7 GB dense 64-layer; transformers has no early exit.
+# Not an INT8 GEMM: ConvRot dequantizes then F.linear; the win is bytes moved, not math.
 H3_TE_QUANT_DEFAULT = "int8"
 
-# Resident bytes of each conditioner, decimal GB, measured from the safetensors headers on the Hub (2026-08-09) as the
-# end of the last tensor's data: bf16 51.51 GB, int8_convrot 27.14 GB. The quantized load is storage-faithful -- INT8
-# stays INT8, the per-output-channel scales stay float32, the vision tower and the embedding table stay bfloat16 -- so
-# the file size IS the resident size, unlike a cast-on-load path whose peak is the dense encoder. The bfloat16 number
-# here is the HOSTED 50-layer file; the budget default elsewhere is the RELEASED 64-layer encoder (66.7 GB).
+# From Hub safetensors headers; the load is storage-faithful, so file size == resident size.
 H3_TE_QUANT_RESIDENT_GB: dict[str, float] = {
     "int8": 27.2,
 }
 
-# Which Qwen3-VL hidden state conditions the transformer. Must stay equal to
-# ``MiniMaxH3ModularPipeline.text_encoder_layer``; ``h3_te_layer_budget`` below is the only reader.
+# Must equal MiniMaxH3ModularPipeline.text_encoder_layer.
 H3_TE_READ_LAYER = 50
 
-# ConvRot group size baked into the hosted checkpoint's per-tensor ``comfy_quant`` blob. Validated per tensor at load
-# rather than assumed, so a re-upload under a different group is refused instead of silently decoding to noise.
+# Validated per tensor at load so a re-upload with another group is refused, not decoded to noise.
 H3_TE_CONVROT_GROUP = 256
 
-# The quantization format the loader below implements. Any other value in a tensor's ``comfy_quant`` blob is a format
-# this code has not been verified against, and is refused.
+# Any other comfy_quant format is unverified and refused.
 _H3_TE_EXPECTED_QUANT = {"format": "int8_tensorwise", "convrot": True}
 
-# Tensor-name suffixes that make up one quantized linear in the hosted layout.
 _SCALE_SUFFIX = ".weight_scale"
 _QUANT_SUFFIX = ".comfy_quant"
 
@@ -155,15 +134,7 @@ def h3_te_resident_gb(scheme: Optional[str], *, bf16_gb: float) -> float:
     return H3_TE_QUANT_RESIDENT_GB[resolved] if resolved else bf16_gb
 
 
-# W_rot = W @ H_block^T offline, x_rot = x @ H_block online, with H a NORMALIZED REGULAR Hadamard (symmetric and
-# orthogonal, so H @ H == I exactly).
-
-
-# ConvRot INT8. W_rot = W @ H_block^T offline, x_rot = x @ H_block online, and H is a NORMALIZED REGULAR Hadamard,
-# which is symmetric and orthogonal, so H @ H == I exactly and x_rot @ W_rot^T == x @ W^T. The rotation is what lets
-# INT8 survive Qwen3-VL's per-channel activation outliers; dequantizing WITHOUT it is not an approximation, it is
-# noise (measured against the hosted bfloat16 file for one projection: 0.9% relative error with the rotation, 137%
-# without). The Hadamard lives in ``diffusion_convrot`` so the denoiser and conditioner share one copy.
+# H is a normalized regular Hadamard (H @ H == I); dequantizing without the rotation gives noise.
 @lru_cache(maxsize = None)
 def _int8_convrot_linear_class() -> Any:
     """The ConvRot INT8 ``nn.Linear`` stand-in, built lazily so importing this module never imports
@@ -256,9 +227,6 @@ def _terminator_layer_class() -> Any:
     return H3TextEncoderTerminatorLayer
 
 
-# Name mapping. The hosted checkpoint uses the ComfyUI flattening of the Qwen3-VL tree; transformers nests the
-# language model and the vision tower under ``model.``. Verified exhaustive on 2026-08-09: all 902 hosted names map
-# into ``MiniMaxAI/MiniMax-H3`` ``text_encoder/model.safetensors.index.json``, with nothing left over on this side.
 def h3_te_remap_key(key: str) -> str:
     """A hosted checkpoint tensor name in transformers' ``Qwen3VLForConditionalGeneration`` naming."""
     if key.startswith("visual."):
@@ -332,17 +300,14 @@ def load_h3_quantized_text_encoder(
 
         from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
 
-        # The repack when this install pulled the artifact before the move, else the mirror. The stager resolved the
-        # same way, so a load that was cleared on a cached copy reads it from the id it is actually cached under rather
-        # than 401ing or re-pulling 27 GB.
+        # Resolve as the stager did, so a cached legacy copy is read, not 401ed or re-pulled (27 GB).
         source_repo = h3_te_quant_source(scheme)
         path = hf_hub_download_with_xet_fallback(
             source_repo,
             filename,
             hf_token,
             cache_dir = cache_dir,
-            # Resolve the artifact through whichever root holds it, exactly as the stager that cleared this load did;
-            # pinned to cache_dir alone a moved cache folder re-pulls 27 GB.
+            # Pinned to cache_dir alone, a moved cache folder would re-pull 27 GB.
             reuse_other_cache_root = True,
             local_files_only = local_files_only,
             gguf_header_delta = True,
@@ -353,37 +318,28 @@ def load_h3_quantized_text_encoder(
             subfolder = "text_encoder",
             token = hf_token,
             cache_dir = cache_dir,
-            # `local_base` is None on an offline load, so this reads the hub id and would go out for the config without
-            # the flag
+            # local_base is None offline, so the hub id is read: the flag must be forwarded.
             local_files_only = local_files_only,
         )
         text_config = getattr(config, "text_config", config)
         released_layers = int(getattr(text_config, "num_hidden_layers", 0))
         if released_layers <= H3_TE_READ_LAYER:
-            # A base repo whose conditioner is already at or below the read layer is not the model this artifact was cut
-            # from; refuse rather than build something that reads a post-norm state. Cannot happen for
-            # MiniMaxAI/MiniMax-H3 (64), but the pairing is not enforced anywhere else.
+            # Refuse a conditioner not deeper than the read layer; nothing else enforces the pairing.
             raise ValueError(
                 f"{base} text_encoder has {released_layers} layers; MiniMax-H3 reads "
                 f"hidden_states[{H3_TE_READ_LAYER}] and needs more than that"
             )
-        # See the module docstring: one slot past the read layer, so the read lands on the raw state rather than the
-        # post-norm one.
+        # One slot past the read layer, so the read lands on the raw state, not the post-norm one.
         text_config.num_hidden_layers = H3_TE_READ_LAYER + 1
 
-        # include_buffers=False (it is also accelerate's default, but the whole load turns on it): PARAMETERS go to
-        # meta and are replaced wholesale by ``assign=True`` below, while BUFFERS -- the rotary inverse frequencies,
-        # which no state dict carries because they are non-persistent -- are built for real on CPU. They are a few KB.
-        # Putting them on meta instead would leave the encoder with meta tensors after the load and force a dense CPU
-        # rebuild, i.e. the 51 GB allocation this path exists to avoid.
+        # Params to meta (replaced by assign=True); non-persistent rotary buffers must be real on CPU,
+        # else a dense 51 GB CPU rebuild.
         with init_empty_weights(include_buffers = False):
             encoder = transformers.Qwen3VLForConditionalGeneration(config)
 
         language_model = encoder.model.language_model
         language_model.layers[H3_TE_READ_LAYER] = _terminator_layer_class()()
-        # Neither is in the artifact and neither can reach the conditioning: ``norm`` is only ever applied to the
-        # terminator's output, and the head is never called (the pipeline invokes ``text_encoder.model``, not
-        # ``text_encoder``). Dropping the head alone saves 1.56 GB.
+        # norm only follows the read layer and the head is never called; dropping it saves 1.56 GB.
         language_model.norm = torch.nn.Identity()
         encoder.lm_head = torch.nn.Identity()
 
@@ -393,8 +349,7 @@ def load_h3_quantized_text_encoder(
             quantized = {
                 name[: -len(_SCALE_SUFFIX)] for name in names if name.endswith(_SCALE_SUFFIX)
             }
-            # Swap every quantized projection for the INT8 module BEFORE loading, so the state dict lands on buffers of
-            # the right dtype instead of being cast into bfloat16 Linears.
+            # Swap before loading so the state dict lands on int8 buffers, not bf16 Linears.
             for prefix in sorted(quantized):
                 quant_key = prefix + _QUANT_SUFFIX
                 if quant_key not in names:
@@ -422,10 +377,7 @@ def load_h3_quantized_text_encoder(
                     ),
                 )
 
-            # The INT8 payload and its float32 scales are STORAGE and keep their dtypes; everything still dense (the
-            # vision tower, the embedding table, the norms) follows the pipeline's compute dtype, exactly as
-            # ``load_components(dtype=...)`` would have set it had this component been loaded the ordinary way. A no-op
-            # for the bfloat16 H3 runs.
+            # INT8 payload and fp32 scales keep their dtypes; dense parts follow the compute dtype.
             state_dict = {}
             for name in names:
                 if name.endswith(_QUANT_SUFFIX):
@@ -439,15 +391,8 @@ def load_h3_quantized_text_encoder(
                     tensor = tensor.to(dtype)
                 state_dict[h3_te_remap_key(name)] = tensor
 
-        # Strict=True proves the artifact and the meta-initialised skeleton describe the same 902 tensors, so a
-        # re-upload that renames, adds or drops one fails the load instead of silently conditioning on partly random
-        # weights. It does NOT prove they are quantized: a projection re-uploaded as a plain dense ``weight`` with its
-        # scale and metadata removed drops out of the set above, leaves the original bfloat16 Linear in place, and loads
-        # cleanly under strict. The load would then be recorded as engaged int8 while the resident encoder crept back
-        # toward the dense 51 GB, and the VRAM preflight -- which sizes the floor from the ENGAGED scheme -- would clear
-        # a generation that cannot fit. Checked structurally rather than against a count, so it stays true if the layer
-        # or projection set ever changes: no ordinary Linear may survive inside the decoder stack. The vision tower
-        # keeps its own dense Linears and is not in scope.
+        # strict=True does not prove quantization: a dense re-upload loads as bf16 Linear and breaks
+        # the VRAM preflight, so no plain Linear may survive in the decoder stack.
         dense = [
             name
             for name, module in language_model.layers.named_modules()
@@ -460,9 +405,7 @@ def load_h3_quantized_text_encoder(
                 f"path budgets for"
             )
         encoder.load_state_dict(state_dict, strict = True, assign = True)
-        # Nothing may be left on meta. A dense CPU rebuild is NOT an acceptable repair here (it is the 51 GB
-        # allocation this path exists to avoid), so a leftover is a refusal and the caller falls back to the released
-        # encoder, which at least loads correctly.
+        # A dense CPU rebuild is the 51 GB allocation this path avoids, so leftover meta is a refusal.
         stranded = _meta_tensor_names(encoder)
         if stranded:
             raise ValueError(
@@ -502,8 +445,7 @@ def _meta_tensor_names(module: Any) -> list[str]:
     ]
 
 
-# Streaming the conditioner: under enable_auto_cpu_offload the 27.2 GB int8 conditioner moved onto the device whole
-# (the ~29 GB floor); group offloading pages it in leaf by leaf with a prefetching copy stream.
+# Group offloading pages the int8 conditioner in leaf by leaf instead of moving 27 GB whole.
 H3_TE_STREAM_ENV = "UNSLOTH_H3_TE_STREAM"
 # Encode footprint: the 1.56 GB embedding table + the prefetched leaf + activations (B200, 12 / 16 / 24 GB caps).
 H3_TE_STREAMED_GB = 3.0
@@ -588,7 +530,6 @@ def pin_module_in_place(
         if tensor.numel() == 0 or (_arena_factory is None and tensor.is_pinned()):
             continue
         todo.append((tensor, owners))
-    # Largest first, first fit.
     todo.sort(key = lambda item: item[0].numel() * item[0].element_size(), reverse = True)
     arenas: list[list] = []  # [arena tensor, used bytes]
     pinned = 0

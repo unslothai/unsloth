@@ -42,12 +42,8 @@ from .diffusion_nvfp4_flag import nvfp4_blocked
 # torch.save dict layout tag; bump on an on-disk change so old/foreign artifacts are rejected
 PREQUANT_FORMAT = "unsloth_prequant_transformer_state_dict_v1"
 
-# v2 is v1 plus an ACTIVATION ROTATION (see ``diffusion_convrot``): the weights are stored in a rotated basis and are
-# wrong unless the loader rotates the activations to match. That is the one on-disk change a released Unsloth cannot
-# ignore safely -- an old build reading a rotated artifact as v1 would load it clean, raise nothing and render quietly
-# wrong pixels forever -- so it gets a tag old builds refuse outright, and the load drops to dense instead. Strictly a
-# biconditional: a v2 artifact MUST declare a rotation and a v1 artifact must NOT, both checked below, so neither a
-# hand-edited tag nor a builder that forgot one half can produce something that loads.
+# v2 = rotated weights; old builds must refuse it (they would render wrong pixels).
+# v2 MUST declare a rotation and v1 must NOT.
 PREQUANT_FORMAT_ROTATED = "unsloth_prequant_transformer_state_dict_v2"
 
 # Own tag, else an older build reads it as whole-model nvfp4. v3 MUST declare a policy, v1/v2 must NOT.
@@ -75,22 +71,12 @@ def prequant_format_for(metadata: Any) -> str:
     return PREQUANT_FORMAT_ROTATED if rotated else PREQUANT_FORMAT
 
 
-# A request-supplied ``kind == "path"`` is read ONLY inside an operator-configured directory ALLOWLIST: an arbitrary
-# path is an arbitrary MODEL. Not a code-execution gate -- the load is weights_only either way.
+# Request-supplied paths load only inside an operator allowlist (weights_only either way).
 ALLOW_LOCAL_PREQUANT_PATH_ENV = "UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH"
 
-# The constructors a pre-quant checkpoint's pickle may name, on top of what ``weights_only`` already permits
-# (storages, dtypes, ``_rebuild_*``, ``OrderedDict``, ``torch.device``, ``_get_layout``). Surveyed across every hosted
-# checkpoint Unsloth resolves (image + video, fp8 + int8, rotated and not) this is the complete set, so the load runs
-# ``weights_only = True`` and a checkpoint naming anything else is refused before one opcode of it executes, hosted or
-# local. Registered under the name the PICKLE records, which for a re-exported class is not the class's own
-# ``__module__`` (``torchao.quantization.Float8Tensor`` really lives in
-# ``...quantize_.workflows.float8.float8_tensor``), so both spellings are listed. Names a given torchao lacks are
-# skipped rather than raised: the set spans every release ``install_python_stack`` pins (0.14, 0.16, 0.17) and an
-# absent class could not have produced a loadable checkpoint here anyway. Adding a scheme means adding its
-# constructors here; forgetting warns and falls back to dense-quantise, never a silent unpickle.
+# Extra pickle constructors allowed under weights_only=True. Both the pickle name and the
+# real __module__ are listed; names a torchao lacks are skipped. New schemes add theirs.
 _PREQUANT_SAFE_GLOBALS: tuple[tuple[str, str], ...] = (
-    # int8: AffineQuantizedTensor + its plain layout, wrapped for dynamic activation quant
     ("torchao.dtypes.affine_quantized_tensor", "AffineQuantizedTensor"),
     ("torchao.dtypes.uintx.plain_layout", "PlainAQTTensorImpl"),
     ("torchao.dtypes.utils", "PlainLayout"),
@@ -98,7 +84,6 @@ _PREQUANT_SAFE_GLOBALS: tuple[tuple[str, str], ...] = (
     ("torchao.quantization.quant_api", "_int8_symm_per_token_reduced_range_quant"),
     ("torchao.quantization.quant_primitives", "ZeroPointDomain"),
     ("torchao.quantization.quant_primitives", "MappingType"),
-    # fp8: the newer tensor subclass, its per-row granularity and its kernel/mm options.
     ("torchao.quantization", "Float8Tensor"),
     ("torchao.quantization.quantize_.workflows.float8.float8_tensor", "Float8Tensor"),
     (
@@ -109,16 +94,13 @@ _PREQUANT_SAFE_GLOBALS: tuple[tuple[str, str], ...] = (
     ("torchao.quantization.granularity", "PerRow"),
     ("torchao.quantization.granularity", "PerTensor"),
     ("torchao.float8.inference", "Float8MMConfig"),
-    # mxfp8 / nvfp4: no hosted checkpoint uses these, but they are TQ_SCHEMES that
-    # scripts/build_prequant_checkpoint.py bakes, so a LOCAL override can be either. torchao only registers them on
-    # import of the prototype package, which nothing on this path imports.
+    # mxfp8 / nvfp4: local bakes only; torchao registers them only on prototype import.
     ("torchao.prototype.mx_formats.mx_tensor", "MXTensor"),
     ("torchao.prototype.mx_formats.mx_tensor", "QuantizeTensorToMXKwargs"),
     ("torchao.prototype.mx_formats.config", "ScaleCalculationMode"),
     ("torchao.prototype.mx_formats.nvfp4_tensor", "NVFP4Tensor"),
     ("torchao.prototype.mx_formats.nvfp4_tensor", "QuantizeTensorToNVFP4Kwargs"),
-    # The version string torch.save stamps into the subclass state: not in torch's default set, and without it every
-    # torchao checkpoint refuses to load.
+    # torch.save stamps TorchVersion; without it every torchao checkpoint is refused.
     ("torch.torch_version", "TorchVersion"),
 )
 
@@ -139,12 +121,8 @@ def _prequant_safe_globals() -> list:
 
 _SAFE_GLOBALS_LOCK = _threading.Lock()
 _SAFE_GLOBALS_REGISTERED: Optional[bool] = None
-# Filled in by the registration: which of the names above this install actually resolved.
 _RESOLVED_SAFE_GLOBALS: set = set()
 
-# What a checkpoint of each scheme actually NAMES, read off the artifacts with pickletools rather than assumed: every
-# hosted repo the family tables list, plus a local bake of each scheme for the two nothing hosts. Only these are
-# required, so dropping an unused name does not fail a scheme.
 _FP8_REQUIRED_GLOBALS: frozenset = frozenset(
     {
         "torchao.quantization.Float8Tensor",
@@ -236,21 +214,15 @@ def _register_prequant_safe_globals() -> bool:
             import torch
 
             add = getattr(torch.serialization, "add_safe_globals", None)
-            # A STUBBED torchao (Windows ROCm) fabricates a class for every name asked of it, so the allowlist would
-            # register fakes and answer yes for an install that cannot rebuild a single quantized tensor.
+            # A stubbed torchao (Windows ROCm) fabricates every class, so never register it.
             if add is not None and not is_stubbed("torchao") and _tuple_safe_globals_supported():
                 pairs = _prequant_safe_globals()
                 resolved = {name for _obj, name in pairs}
-                # "Some entries resolved" is not "a checkpoint can be opened". The floor is what EVERY artifact needs
-                # whatever its scheme: the version stamp plus at least one real torchao tensor class. Per-SCHEME
-                # completeness is asked separately, by the caller that knows which scheme it is about to plan for.
                 if "torch.torch_version.TorchVersion" in resolved and any(
                     name.startswith("torchao.") for name in resolved
                 ):
                     add(pairs)
                     _RESOLVED_SAFE_GLOBALS.update(resolved)
-                    # The same derivation the unpickler runs, so a form this torch cannot express fails here rather
-                    # than under a load a plan was already sized on.
                     try:
                         torch._weights_only_unpickler._get_user_allowed_globals()
                     except AttributeError:  # noqa: BLE001 -- private; absence is not a failure
@@ -350,7 +322,6 @@ def _load_prequant_checkpoint(path: str, **kwargs: Any) -> Any:
     return _torch_load_prequant(path, **kwargs)
 
 
-# 0 reads a pickle checkpoint headed for an accelerator into host memory instead of mapping it.
 _PREQUANT_MMAP_ENV = "UNSLOTH_DIFFUSION_PREQUANT_MMAP"
 
 
@@ -400,7 +371,7 @@ def _allowed_prequant_roots() -> list:
     for part in raw.split(os.pathsep):
         part = part.strip()
         if not part or part.lower() in _PREQUANT_TOGGLE_TOKENS:
-            continue  # a bare on/off value is not a directory
+            continue
         try:
             roots.append(os.path.realpath(os.path.expanduser(part)))
         except Exception:  # noqa: BLE001 - a bad entry is simply not allowlisted
@@ -435,8 +406,7 @@ def local_prequant_path_ready(path: str) -> bool:
     return os.path.isfile(os.path.expanduser(path))
 
 
-# Operator-side mirror checked BEFORE the Hub: ``<root>/<owner>/<repo>/<filename>``, roots split by ``os.pathsep``.
-# Names come from the family tables, never a request; anything leaving the root is ignored.
+# Operator mirror checked before the Hub: <root>/<owner>/<repo>/<filename>, os.pathsep roots.
 PREQUANT_MIRROR_ENV = "UNSLOTH_DIFFUSION_PREQUANT_MIRROR"
 
 
@@ -494,7 +464,6 @@ def _first_mirrored(repo_id: Optional[str], names: Sequence[str], readable: Any)
     return None
 
 
-# Set to 1 to always download the safetensors container even when its pickle twin is already cached.
 PREFER_SAFETENSORS_ENV = "UNSLOTH_PREQUANT_PREFER_SAFETENSORS"
 
 _PICKLE_SUFFIXES = (".pt", ".pth")
@@ -676,7 +645,6 @@ def prefer_cached_pickle_twins(
     if not repo_id or len(out) < 2:
         return out
     try:
-        # only the roots the caller's download will reuse, else it re-fetches the pickle it was promised
         roots = tuple(roots) if roots is not None else _twin_cache_roots(cache_dir)
 
         def _cached(name: str) -> bool:
@@ -810,7 +778,6 @@ def hub_name_known_absent(
             hit = try_to_load_from_cache(repo_id, name, cache_dir = root)
         except Exception:  # noqa: BLE001 - a malformed cache entry says nothing
             continue
-        # str = cached path, None = never asked, anything else = the .no_exist sentinel
         if hit is not None and not isinstance(hit, str):
             return True
     return False
@@ -861,9 +828,7 @@ class PrequantSource:
     location: str
     filename: Optional[str] = None
     fallback_filenames: tuple[str, ...] = ()
-    # Names the FAMILY declared, as opposed to ones derived from the repo id. A declared name is
-    # evidence the repo really hosts that file; a derived one is a guess that costs a 404. Planning
-    # needs to tell them apart, see ``usable_prequant_source``.
+    # Family-declared names are real; derived ones are guesses that may 404.
     declared_filenames: tuple[str, ...] = ()
 
     @property
@@ -983,22 +948,13 @@ def resolve_prequant_source(
 
         repo_id = family_prequant_repo(fam, scheme, base_repo = base_repo)
         preferred = family_prequant_filename(fam, scheme, task = task)
-        # What the same call would have resolved WITHOUT a task, which is what decides whether a fallback is safe
-        # below. Skipped when no task was asked for, since then the two are the same lookup.
         agnostic = family_prequant_filename(fam, scheme) if task else preferred
     except Exception:  # noqa: BLE001 - a bad family object must not break the load
         repo_id = None
     if repo_id:
         derived = derived_prequant_filenames(repo_id, scheme)
-        # A family may name a SECOND artifact for the same repo and scheme (today: MiniMax-H3's rotated INT8
-        # denoiser). It becomes the primary and the derived name becomes the fallback, so a build that knows the new
-        # name gets it and every older build keeps resolving the artifact it already understands. Without an override
-        # nothing changes: the derived name is primary and the legacy transformer_<scheme>.pt is the fallback.
-        # A TASK-SPECIFIC name gets NO fallback. The other artifacts in the repo are the same family, the same scheme
-        # and the same base, so every check the loader makes would pass on them -- the fallback would quietly install
-        # another partition's denoiser and generate from the wrong weights, which is precisely what naming the
-        # artifact per task prevents. Absent is better than wrong here: no artifact means the released bfloat16
-        # denoiser.
+        # A family may name a second artifact; it becomes primary. Task-specific names get NO
+        # fallback: another partition's denoiser would pass every check with the wrong weights.
         task_specific = preferred is not None and preferred != agnostic
         if task_specific:
             return PrequantSource(
@@ -1111,9 +1067,7 @@ def local_prequant_scheme(path: str) -> Optional[str]:
     try:
         real = os.path.expanduser(path)
         st = os.stat(real)
-        # Nanoseconds, not int(st_mtime): an atomic swap for a same-sized artifact inside the same second would
-        # otherwise reuse the previous scheme for the life of the process, and int8 and fp8 checkpoints of one model
-        # are exactly that shape.
+        # Nanoseconds: a same-size swap within one second would reuse the old scheme.
         key = (real, st.st_mtime_ns, int(st.st_size))
     except Exception:  # noqa: BLE001 -- unreadable is "unknown", handled by the caller
         return None
@@ -1171,7 +1125,6 @@ def hosted_nvfp4_repo_ids() -> frozenset:
     return frozenset(repos)
 
 
-# Root only: a diffusers pipeline keeps its weights in component folders.
 _PREQUANT_PROBE_SUFFIXES = (".safetensors", ".pt", ".pth")
 _PREQUANT_PROBE_LIMIT = 16
 
@@ -1521,9 +1474,6 @@ def usable_prequant_source(
     src = resolve_prequant_source(fam, scheme, path_override = path_override, base_repo = base_repo)
     if src is None:
         return None
-    # getattr, because a source here is anything shaped like one (the planners hand round lightweight stand-ins) and a
-    # missing attribute must not turn a usable prequant into a silent dense fallback. No name at all asks the
-    # scheme-only question, which is what this did before either container existed.
     candidates = (
         [src.location]
         if getattr(src, "kind", None) == "path"
@@ -1532,20 +1482,11 @@ def usable_prequant_source(
     readable = [n for n in candidates if restricted_prequant_load_supported(scheme, n)]
     if not readable:
         return None
-    # A DERIVED safetensors name is a guess: most repos do not host one yet, and a guess must not be
-    # what planning bets the dense shards on. So when the only readable candidates are safetensors
-    # names, require evidence that one is really there -- the family declared it, or it is already
-    # in the cache. Without that, an install that cannot open a pickle would plan a 6 GB artifact
-    # for a .pt-only repo, get a 404 then a refusal, and fall back to dense under a plan that never
-    # budgeted for it, which is the evict-then-OOM this function exists to prevent.
+    # A derived safetensors name is a guess: require it declared or cached before planning on it.
     from .prequant_safetensors import is_safetensors_checkpoint
 
     if src.kind == "repo" and all(is_safetensors_checkpoint(n) for n in readable):
         declared = set(getattr(src, "declared_filenames", ()) or ())
-        # The cache probe is scoped to the READABLE names for the same reason the list above is: a
-        # cached legacy pickle is not evidence for a safetensors artifact nobody has published, and
-        # an install that cannot open that pickle would take the cache hit as proof, plan without
-        # the dense shards, then resolve neither file.
         if (
             not any(n in declared for n in readable)
             and cached_checkpoint_path(src, names = readable, online = False) is None
@@ -1669,7 +1610,6 @@ def _cached_in_root(
         hit = try_to_load_from_cache(source.location, name, cache_dir = root)
     except Exception:  # noqa: BLE001 - a malformed cache entry is not a hit
         return None
-    # a str is the cached path; a miss is None and a known-absent file is a sentinel object
     return hit if isinstance(hit, str) and os.path.isfile(hit) else None
 
 
@@ -1757,8 +1697,6 @@ def load_prequantized_transformer(
     """
     _LAST_FAILURE.text = None
     try:
-        # A request-supplied local path names arbitrary WEIGHTS, a different question from the deserialization one
-        # below: allowlisted or not, the file is read weights_only.
         if source.kind == "path" and not _local_prequant_path_allowed(source.location):
             _warn(
                 logger,
@@ -1911,7 +1849,6 @@ def load_prequantized_transformer(
                 dtype = getattr(
                     torch, str(metadata.get("torch_dtype") or "bfloat16"), torch.bfloat16
                 )
-                # a host-placed module still computes on ``device``
                 warm_rotation_cache(
                     transformer,
                     on.device if on is not None and placement_device is None else device,
@@ -1919,16 +1856,12 @@ def load_prequantized_transformer(
                 )
             except Exception:  # noqa: BLE001
                 pass
-        # Same small-M row padding the runtime quantise path applies, and for the same reason: a checkpoint built
-        # under the current exclusion set QUANTISES the family's small-M linears, so without the wrappers they would
-        # raise inside _int_mm the moment the compiled scope reaches them. After load_state_dict, since wrapping
-        # reparents the Linears; after .to() so the granularity probe reads the device tensors the GEMM will see.
+        # Small-M padding, else quantised small-M linears raise in _int_mm. After load and .to().
         from .diffusion_transformer_quant import apply_small_m_padding, apply_zero_row_guard
 
         apply_small_m_padding(transformer, scheme, metadata.get("family"), logger = logger)
         apply_zero_row_guard(transformer, scheme, metadata.get("family"), logger = logger)
-        # from_config starts in TRAIN mode while the dense/GGUF paths use from_pretrained (eval()'d). Match it so
-        # train/eval-sensitive layers cannot make prequant inference diverge.
+        # from_config starts in train mode; match from_pretrained's eval().
         try:
             transformer.eval()
         except Exception:  # noqa: BLE001 - eval() is best-effort
@@ -1944,8 +1877,6 @@ def load_prequantized_transformer(
         except Exception:  # noqa: BLE001 - marker is best-effort
             pass
         try:
-            # The file that really loaded (the fallback name when the primary is absent): the
-            # provenance label has no other way to know which one it was.
             transformer._unsloth_prequant_path = path
         except Exception:  # noqa: BLE001 - marker is best-effort
             pass
@@ -2017,7 +1948,7 @@ def _download_checkpoint_name(
                     cache_dir = None,
                     local_files_only = local_files_only,
                 )
-            except LocalEntryNotFoundError:  # offline with the copy right there: use it
+            except LocalEntryNotFoundError:
                 return elsewhere
             except EntryNotFoundError:
                 if not propagate_missing:
@@ -2066,9 +1997,6 @@ def _resolve_checkpoint_path(
         all_names = list(names)
         if scheme is not None:
             readable = [n for n in names if restricted_prequant_load_supported(scheme, n)]
-            # Only when it leaves something. An empty filter means the source should never have
-            # been offered, and resolving nothing here would turn that into a silent None rather
-            # than the refusal the loader reports.
             names = readable or names
         if not names:
             return None
@@ -2084,7 +2012,7 @@ def _resolve_checkpoint_path(
             readable = lambda n: restricted_prequant_load_supported(scheme, n),
             cache_dir = cache_dir,
             logger = logger,
-            roots = tuple(dict.fromkeys((cache_dir, None))),  # what _download_checkpoint_name reuses
+            roots = tuple(dict.fromkeys((cache_dir, None))),
         )
         for index, name in enumerate(names):
             last = index == len(names) - 1
@@ -2094,9 +2022,7 @@ def _resolve_checkpoint_path(
                     name,
                     hf_token,
                     cache_dir,
-                    # Only the LAST name may swallow its own 404. Any earlier one has to let the
-                    # error reach here so the next candidate is tried, which is what makes the
-                    # safetensors-then-pickle preference work on a repo hosting only one of them.
+                    # Only the last name may swallow its 404, so the next candidate is tried.
                     propagate_missing = not last,
                     local_files_only = local_files_only,
                 )
@@ -2110,14 +2036,8 @@ def _resolve_checkpoint_path(
                 )
                 return path
             except LocalEntryNotFoundError:
-                # Caught BEFORE the base it subclasses, because the two mean different things and
-                # only the mode says which. huggingface_hub documents this one as "not on the disk
-                # when network is disabled OR UNAVAILABLE (connection issue). The entry may exist
-                # on the Hub", so online it is the Hub being unreachable, not this name being
-                # absent: advancing would spend a full attempt on every remaining candidate and
-                # then report the LAST one's error instead of the connection failure that actually
-                # happened. Offline, a cache miss is the only verdict there is, so the chain is
-                # walked exactly as for a 404.
+                # Before its base class: online, this means the Hub is unreachable, not that the name
+                # is absent. Offline, treat it as a 404.
                 if not local_files_only or last:
                     cached = (
                         None
@@ -2146,8 +2066,7 @@ def _config_cache_roots(checkpoint_path: str, cache_dir: Optional[str]) -> tuple
     import os
 
     try:
-        # normcase before comparing: on Windows C:\Users vs c:\users would read as "not under the live root" and
-        # silently reverse the order below
+        # normcase: Windows path case differences would reverse the order below.
         root = os.path.normcase(os.path.realpath(cache_dir))
         real = os.path.normcase(os.path.realpath(checkpoint_path))
         under_live = real == root or real.startswith(root + os.sep)
@@ -2452,8 +2371,7 @@ def _validate_checkpoint(
     if meta.get("scheme") != scheme:
         _warn(logger, scheme, ValueError(f"checkpoint scheme {meta.get('scheme')!r} != {scheme!r}"))
         return False
-    # fp8 REQUIRES per-row granularity (per-tensor collapses outlier-heavy DiTs to noise). An old checkpoint omits
-    # ``fp8_granularity`` or records non-per-row, so reject and let the loader re-quantise.
+    # fp8 requires per-row granularity; old checkpoints without it are re-quantised.
     from .diffusion_nvfp4_policy import declares_policy
     from .diffusion_transformer_quant import FP8_GRANULARITY, TQ_FP8
 
@@ -2468,13 +2386,8 @@ def _validate_checkpoint(
             ),
         )
         return False
-    # fp8 also REQUIRES the activation scale floor, and this is checked on the loaded TENSORS, not on metadata.
-    # torchao's per-row activation quantiser divides by each row's amax, so a zero row (qwen's text stream emits them)
-    # gives scale 0 and NaN qdata unless activation_value_lb floors it. That floor is serialised per tensor as
-    # act_quant_kwargs.hp_value_lb, so an artifact built before the fix stays broken however it is loaded, and it
-    # predates any metadata field we could stamp -- and "absent is accepted for back-compat", the convention every
-    # check above follows, is exactly wrong here. Reading the tensors is fail-closed and needs no format bump.
-    # Unless the floor is the only difference: it is not weight data, so ``_repair_legacy_checkpoint`` writes it in.
+    # fp8 also requires the activation scale floor (zero rows give NaN), checked on the
+    # tensors, fail-closed. A missing floor alone is repaired by _repair_legacy_checkpoint.
     if holds_fp8 and not _fp8_activation_floor_present(ckpt.get("state_dict"), logger, warn = False):
         if not _fp8_activation_floor_restorable(ckpt.get("state_dict")):
             _fp8_activation_floor_present(ckpt.get("state_dict"), logger)
@@ -2486,8 +2399,7 @@ def _validate_checkpoint(
             )
     ckpt_base = meta.get("base_model_id")
     if base:
-        # Keys matching a different base can load strict=True and generate from the wrong weights. Our builder always
-        # records base_model_id, so one omitting it against a requested base is untrustworthy.
+        # Wrong-base keys can load strict=True; the builder always records base_model_id.
         if not ckpt_base:
             _warn(
                 logger,
@@ -2516,9 +2428,6 @@ def _validate_checkpoint(
     ckpt_excludes = meta.get("exclude_name_tokens")
     if ckpt_excludes is not None:
         from .diffusion_transformer_quant import exclude_tokens_for_scheme
-
-        # The exclude set derives from scheme AND family, so use the recorded family: an artifact baked under an older
-        # token list is rejected and re-quantised, not loaded crashing.
         expected = tuple(exclude_tokens_for_scheme(scheme, meta.get("family")))
         if not isinstance(ckpt_excludes, (list, tuple)) or not set(expected) <= set(ckpt_excludes):
             _warn(
@@ -2529,8 +2438,6 @@ def _validate_checkpoint(
                 ),
             )
             return False
-    # require_bf16 (skip non-bf16 Linears) is scheme-pinned; recording and verifying it stops a future
-    # _REQUIRE_BF16_SCHEMES change loading an old-filter checkpoint. Absent accepted.
     ckpt_require_bf16 = meta.get("require_bf16")
     if ckpt_require_bf16 is not None:
         from .diffusion_transformer_quant import _REQUIRE_BF16_SCHEMES
@@ -2580,7 +2487,6 @@ def _validate_checkpoint(
                 "diffusion.prequant: checkpoint records no component; accepting it for %r",
                 component,
             )
-    # fp8 fast-accum is baked into the saved kernels; only enforce when the caller forces it.
     if fast_accum is not None:
         ckpt_fa = meta.get("fast_accum")
         if ckpt_fa is not None and bool(ckpt_fa) != bool(fast_accum):
@@ -2807,14 +2713,12 @@ def stream_prequantized_module(
     if not _unhook_from_manager(manager, module, logger = logger, what = "stream:hook"):
         return None
     try:
-        # load_state_dict(assign=True) leaves the weights trainable; group offload's grad-mode .cpu() copy then holds
-        # each weight's AccumulateGrad, and swap_tensors on onload hits Int8Tensor's missing aten.view.
+        # assign=True leaves weights trainable; group offload then breaks on Int8Tensor's aten.view.
         module.requires_grad_(False)
         install_group_offload_buffer_restore()
         install_group_offload_hooks_eager()
         use_stream = onload.type == "cuda" and _weights_pinnable(module)
         if onload.type == "cuda" and not use_stream:
-            # Sync copies measured 16.4 s/step vs 0.8 s resident (B200): rebuild v1 int8 as pinnable Int8Tensor.
             from .prequant_legacy_int8 import convert_legacy_int8_weights
             converted = convert_legacy_int8_weights(module)
             if converted:
@@ -2843,8 +2747,7 @@ def stream_prequantized_module(
                     tensor_payload_bytes(t) for t in chain(module.parameters(), module.buffers())
                 ) // (1024 * 1024)
                 kwargs["low_cpu_mem_usage"] = not _streamed_pin_plan(payload_mib, 0, logger)[0]
-        # A full up-front pin goes through one slab arena: per-tensor pin_memory() rounds every weight up to a power
-        # of two (19.45 GB of H3 int8 weights held 33.8 GB pinned) and kept the pageable source alive beside it.
+        # Pin through one slab arena: per-tensor pin_memory() rounds each weight to a power of two.
         from .diffusion_pinned_arena import pinned_arena_for_group_offload
 
         with pinned_arena_for_group_offload(
@@ -2865,7 +2768,6 @@ def stream_prequantized_module(
     except Exception as exc:
         _remove_group_offload_hooks(module)
         raise RuntimeError(f"group offloading could not be set up for the {label}: {exc}") from exc
-    # Only a full up-front pin keeps a second host copy; lazy pinning holds one group at a time.
     mode = (
         ("stream_lazy" if kwargs.get("low_cpu_mem_usage") else "stream") if use_stream else "sync"
     )
@@ -2891,8 +2793,7 @@ def _has_meta_tensors(module: Any) -> bool:
 
 
 _LAST_FAILURE = _threading.local()
-# An absolute POSIX or Windows path; the status keeps only its last component (the server's layout is not the
-# client's business). Not after a word, ':' or '/', so URLs and repo ids are left alone.
+# Absolute paths reduced to the last component; not after a word, ':' or '/' (URLs, repo ids).
 _ABS_PATH = _re.compile(
     r"(?<![\w:/.])(?:[A-Za-z]:[\\/]|/)(?:[^\s'\"<>|:;,()\[\]\\/]+[\\/])+(?=[^\s\\/])"
 )
@@ -2952,7 +2853,6 @@ def prequant_unreadable_reason(
         readable = [
             n for n in candidate_filenames_of(src) if restricted_prequant_load_supported(scheme, n)
         ]
-        # A derived safetensors name is a guess, as in usable_prequant_source: only a declared or cached one counts.
         if readable and all(is_safetensors_checkpoint(n) for n in readable):
             declared = set(getattr(src, "declared_filenames", ()) or ())
             if (

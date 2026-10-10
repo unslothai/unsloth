@@ -14,10 +14,7 @@ import types
 from unittest.mock import MagicMock
 
 
-# This file reaches core/inference/inference.py, which imports unsloth at module scope, from
-# inside a helper, so test_backend_tests_stub_heavy_imports.py's source scan never saw it. The
-# import only ever worked when another file on the same xdist worker had already stubbed
-# unsloth; sharding changed who shares a worker, so the stub is explicit here now.
+# inference.py imports unsloth; stub explicitly, the source scan misses this path.
 _STUBBED: list[str] = []
 
 
@@ -59,11 +56,7 @@ from core.inference.native_tool_tokens import (
 from core.inference.safetensors_agentic import run_safetensors_tool_loop
 from core.inference.tool_call_parser import parse_tool_calls_from_text
 
-# Bind the dependency while the stubs stand, then drop them, as test_trainer_stdout_quiet.py
-# does. Left in place they outlive this module, and a later file's _stub_if_missing returns
-# before recording ownership, so nobody can clean them up. Concretely, _shared_policy branches
-# on `"unsloth" in sys.modules` and returns None off the stub instead of reaching its disk
-# fallback. A real install stubs nothing, so this is a no-op there.
+# Bind under the stubs, then drop them: leftover stubs make _shared_policy return None.
 import core.inference.inference  # noqa: F401,E402 - imported to bind it under the stubs
 
 for _name in reversed(_STUBBED):
@@ -384,7 +377,6 @@ def test_a_tokenizer_whose_special_ids_raise_falls_back_instead_of_killing_the_t
     ):
         tokenizer = RaisesOnSpecialIds(exc)
         decoder = NativeToolTokenDecoder(tokenizer)
-        # Fail closed: behave exactly as skip_special_tokens=True did before this module.
         assert decoder.decode([1, 2]) == "<1><2>"
         assert decoder.preserves("<tool_call>") is False
         assert decoder_preserves_token(tokenizer, "<tool_call>") is False
@@ -424,7 +416,6 @@ def test_a_stop_token_is_named_by_decoding_when_conversion_cannot_name_it():
 
     for raises in (False, True):
         tokenizer = ConvertUnavailable(raises = raises)
-        # The decoder keeps it, so the cleanup must be able to name it.
         assert "<|end_message|>" in NativeToolTokenDecoder(tokenizer).decode([1, 7])
         assert stop_token_text(tokenizer, 7) == "<|end_message|>"
 

@@ -21,10 +21,7 @@ import pytest
 from utils.security import evaluate_remote_code_consent
 from utils.security.remote_code_scan import HIGH
 
-# The helpers this fix adds are imported inside the tests that use them, deliberately.
-# At module scope they would make this whole file fail to import on the code before the
-# fix, and "the test errored" is not evidence of anything. The tests that go through the
-# public gate have to fail on an assertion there, which is the actual defect.
+# Fix helpers imported inside tests so pre-fix code fails on assertions, not import.
 
 
 def _model(tmp_path, config):
@@ -116,13 +113,9 @@ def test_a_model_with_no_auto_map_anywhere_is_still_a_noop(tmp_path):
         ({}, False),
         ({"auto_map": {}}, False),
         ({"auto_map": {"AutoModel": "modeling_evil.Model"}}, True),
-        # The real composite shapes: a sub-config, and a sub-config of a sub-config
-        # (Qwen-Omni nests a thinker_config that itself carries a text_config).
         ({"text_config": {"auto_map": {"AutoModel": "m.C"}}}, True),
         ({"thinker_config": {"text_config": {"auto_map": {"AutoModel": "m.C"}}}}, True),
-        # A list of sub-configs, which some processor configs use.
         ({"sub_configs": [{"auto_map": {"AutoModel": "m.C"}}]}, True),
-        # Not a dict, so not an auto_map transformers would read.
         ({"auto_map": "modeling_evil.Model"}, False),
         ({"text_config": None}, False),
         ({"text_config": "llama"}, False),
@@ -141,6 +134,5 @@ def test_the_walk_is_depth_bounded(tmp_path):
     for _ in range(64):
         config = {"text_config": config}
 
-    # Terminates, and returns an answer rather than recursing to the interpreter limit.
     assert config_declares_auto_map(config) is False
     assert list(iter_auto_maps(config)) == []

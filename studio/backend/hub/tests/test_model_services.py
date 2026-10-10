@@ -461,7 +461,6 @@ def test_minimax_h3_variant_filter_keeps_both_denoiser_partitions(repo):
     assert selectable(repo, "minimax_h3_fl2va_pruned-UD-Q2_K_XL.gguf")
     assert selectable(repo, "minimax_h3_ref2va-Q4_K_M.gguf")
     assert selectable(repo, "minimax_h3_ref2va_pruned-Q2_K_M.gguf")
-    # The companions are still never picks.
     assert not selectable(repo, "qwen3vl_32b_minimax_h3-Q4_K_M.gguf")
     assert not selectable(repo, "qwen3vl_32b_minimax_h3-Q2_K_M.gguf")
 
@@ -553,8 +552,6 @@ def test_custom_inventory_filters_mtp_companions_at_registered_root(tmp_path, mo
 
 
 def test_custom_inventory_filters_dspark_companions_at_registered_root(tmp_path):
-    # Registering dspark/ as the scan root strips it from every relative path, so the basename prefix
-    # carries the exclusion.
     root = tmp_path / "dspark"
     root.mkdir()
     for name in (
@@ -1543,8 +1540,7 @@ def test_local_inventory_filters_and_dedupes_off_event_loop(monkeypatch):
 
 @pytest.mark.parametrize("change_kind", ["folders", "epoch"])
 def test_local_inventory_requests_share_scan(monkeypatch, change_kind):
-    # Assert the property, not one platform's spelling: POSIX realpath() rejects an embedded NUL with
-    # ValueError while Windows non-strict realpath falls back to abspath and joins the cwd.
+    # POSIX realpath rejects NUL with ValueError; Windows falls back to abspath.
     for hostile in ("\0", "\ud800"):
         identity = local_inventory._inventory_path_identity(hostile)
         assert identity == local_inventory._inventory_path_identity(hostile)
@@ -1664,14 +1660,10 @@ def test_local_inventory_indexes_registered_hf_state_once(monkeypatch, tmp_path)
 
 
 def test_local_inventory_lists_a_hermes_dir_registered_as_a_scan_folder_once(monkeypatch, tmp_path):
-    # Adding ~/.hermes/models as a custom folder was the way to see Hermes downloads before
-    # Studio scanned it; the Hermes scan and a generic walk of the same folder must not each
-    # list every download under the same id.
     hermes = tmp_path / ".hermes" / "models"
     hermes.mkdir(parents = True)
     weight = hermes / "Qwen3.8-27B-UD-Q4_K_M.gguf"
     weight.write_bytes(b"\x00" * 32)
-    # Something else the user keeps in that folder stays a custom row.
     extra = hermes / "extra" / "Other-Q4_K_M.gguf"
     extra.parent.mkdir()
     extra.write_bytes(b"\x00" * 32)
@@ -2078,9 +2070,7 @@ def test_cached_gguf_scan_degrades_when_the_shared_index_cannot_be_built(monkeyp
         "utils.hf_cache_settings.get_hf_cache_paths",
         lambda: SimpleNamespace(hub_cache = hub_cache),
     )
-    # An undecodable byte in a cache directory name reaches us as a lone surrogate, and the repo key
-    # cannot be hashed from it. Spelled directly rather than via os.fsdecode(b"...\xff...") because
-    # Windows decodes filenames as UTF-8 with surrogatepass, where a bare 0xff raises.
+    # Spelled directly: Windows decodes filenames as UTF-8 surrogatepass, where 0xff raises.
     bad_repo = "Org/Re\udcffpo"
     repos = [
         SimpleNamespace(
@@ -2138,8 +2128,7 @@ def test_state_scan_survives_a_state_filename_with_an_undecodable_byte(monkeypat
         with open(corrupt, "wb") as handle:
             handle.write(json.dumps({"version": 2, "repo_type": "model"}).encode("utf-8"))
     except (OSError, UnicodeError) as e:
-        # Only POSIX filesystems that accept arbitrary bytes can hold this name: macOS rejects it with
-        # EILSEQ and Windows has no byte-level filename API at all.
+        # macOS rejects it (EILSEQ); Windows has no byte-level filename API.
         pytest.skip(f"filesystem will not hold an undecodable filename: {e}")
 
     index = download_manifest.build_variant_state_index(
@@ -2149,7 +2138,6 @@ def test_state_scan_survives_a_state_filename_with_an_undecodable_byte(monkeypat
     assert state.has_marker("q4_k_m"), "the readable marker was lost to its corrupt neighbour"
     assert state.summary()[0] is True
 
-    # The per-repo iterators keep enumerating past it too, surrogate name and all.
     variants = [
         variant
         for variant, _path in download_manifest.iter_variant_markers(
@@ -2186,7 +2174,6 @@ def test_browse_allowlist_includes_linux_run_media_mounts(monkeypatch, tmp_path)
 
 
 def test_get_models_folder_response_creates_and_returns_dir(monkeypatch, tmp_path):
-    # The endpoint creates the cache dir on demand so "Open folder" works before the first download.
     target = tmp_path / "hub"
     monkeypatch.setattr(local_inventory, "_resolve_hf_cache_dir", lambda: target)
 
@@ -2414,7 +2401,6 @@ def test_cached_gguf_scan_keeps_infra_repo_with_user_downloaded_variant(monkeypa
         ],
         tmp_path / "embedder",
     )
-    # Variant manifests only exist for user Hub downloads, not auto-downloads.
     assert download_manifest.write_manifest(
         "model",
         "unsloth/bge-small-en-v1.5-GGUF",
@@ -2542,8 +2528,7 @@ def _diffusion_scan(
     monkeypatch.setattr(
         cache_inventory, "all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
     )
-    # The real signature takes snapshot_dir; a double that omits it raises TypeError, which the per-repo
-    # except swallows into an empty row list, silently skipping every assertion below.
+    # A double missing snapshot_dir raises TypeError that gets swallowed, skipping asserts.
     monkeypatch.setattr(
         cache_inventory.hf_cache_scan,
         "is_snapshot_partial",
@@ -2586,7 +2571,6 @@ def test_cached_models_scan_marks_a_companion_only_pipeline_partial(monkeypatch,
 
     assert row["partial"] is True
     assert row["companion_prefetch"] is True
-    # A companion-only snapshot arrived intact, so it has no Resume / Redownload story.
     assert row["partial_transport"] is None
 
 
@@ -2599,9 +2583,7 @@ def test_cached_models_scan_keeps_a_complete_pipeline_loadable(monkeypatch, tmp_
             _file("model_index.json", 900),
             _file("vae/diffusion_pytorch_model.safetensors", 300_000_000),
             _file("text_encoder/model.safetensors", 900_000_000),
-            # Unsharded, because this fixture stands for a COMPLETE pipeline: it used to name a lone
-            # "-00001-of-00002" shard with no index, and with no index diffusers reads the component as
-            # unsharded and asks for the plain name, so a lone shard is not loadable.
+            # Unsharded: a lone shard without an index is not loadable by diffusers.
             _file("transformer/diffusion_pytorch_model.safetensors", 4_000_000_000),
         ],
         task = "text-to-image",
@@ -2626,7 +2608,6 @@ def test_cached_models_scan_exposes_minimax_music3_modular_pipeline(monkeypatch,
         modular_manifest = {
             "_class_name": "MiniMaxMusic3ModularPipeline",
             "_blocks_class_name": "MiniMaxMusic3Blocks",
-            # A component sourced from its Hub repo, not the snapshot.
             "transformer": ["diffusers", "Model", {"pretrained_model_name_or_path": "Org/Music"}],
         },
         expect_task_classification = False,
@@ -2677,8 +2658,7 @@ def test_a_companion_mirror_carries_the_flag_on_the_hub_row(monkeypatch, tmp_pat
     )
 
     assert row["companion"] is True
-    # Startup auto-load filters on capabilities.can_chat, never on the flag, so a row carrying only the
-    # flag was still auto-loadable as a chat model.
+    # Auto-load filters on capabilities.can_chat, not the flag.
     assert row["capabilities"]["can_chat"] is False
 
 
@@ -2693,7 +2673,6 @@ def test_an_ordinary_repo_is_not_flagged_as_a_companion(monkeypatch, tmp_path):
     )
 
     assert row["companion"] is False
-    # ...and an ordinary chat repo keeps its chat capability.
     assert row["capabilities"]["can_chat"] is True
 
 
@@ -2856,7 +2835,6 @@ def test_cached_scans_hide_embedders_configured_by_snapshot_path(monkeypatch, tm
 def test_cached_models_scan_keeps_unrelated_repo_with_custom_generic_embedder(
     monkeypatch, tmp_path
 ):
-    # EXACT repo-id match only: substring basename matching used to drop real chat models from the inventory.
     from core.rag import config as rag_config
 
     monkeypatch.setattr(rag_config, "effective_embedding_model", lambda: "org/model")
@@ -2958,8 +2936,6 @@ def test_qwen38_flash_next_plan_includes_the_loaders_nested_mtp_choice():
             _sibling("MTP/mtp-Qwen3.8-Flash-Next-BF16.gguf", 7_700, "bf16"),
             _sibling("MTP/mtp-Qwen3.8-Flash-Next-Q8_0.gguf", 4_100, "q8"),
             _sibling("MTP/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf", 2_600, "shared-q8"),
-            # A real weight copy under MTP/ is hidden from the variant menu by the broad path
-            # predicate, but the loader refuses it as a drafter because its basename is not published.
             _sibling("MTP/aaa-Q8_0.gguf", 900, "not-a-drafter"),
         ]
     )
@@ -2978,8 +2954,6 @@ def test_qwen38_flash_next_plan_skips_incomplete_preferred_mtp_family():
     requirements = gguf_variants._build_gguf_variant_requirements(
         [
             _sibling("Qwen3.8-Flash-Next-UD-Q4_K_XL.gguf", 18_000, "main"),
-            # Q8_0 ranks first but cannot launch without shard 2. Planning must
-            # select the complete BF16 fallback, as detect_mtp_file does.
             _sibling(
                 "MTP/mtp-Qwen3.8-Flash-Next-Q8_0-00001-of-00002.gguf",
                 2_100,
@@ -3550,8 +3524,7 @@ def test_gguf_download_progress_fallback_logs_warning(monkeypatch):
         )
     )
 
-    # cache_path is ABSENT, not null: null means no cache dir exists, which hydration acts on by
-    # retiring the persisted job, and cache_measured carries the same distinction.
+    # cache_path ABSENT, not null: null makes hydration retire the job.
     assert result == {
         "downloaded_bytes": 0,
         "completed_bytes": 0,
@@ -3608,7 +3581,6 @@ def test_gguf_progress_subtracts_new_job_completed_baseline(monkeypatch, tmp_pat
 
 
 def test_gguf_progress_shows_main_when_companion_left_the_count(monkeypatch, tmp_path):
-    # The mmproj companion that seeded the baseline is gone, so completed_bytes is main-only and below it.
     entry = tmp_path / "models--Org--Model-GGUF"
     blobs = entry / "blobs"
     blobs.mkdir(parents = True)
@@ -3629,8 +3601,7 @@ def test_gguf_progress_shows_main_when_companion_left_the_count(monkeypatch, tmp
 
 
 def test_gguf_progress_complete_on_disk_ignores_full_baseline(monkeypatch, tmp_path):
-    # A variant already complete on disk carries a baseline equal to its full size; subtracting it would
-    # report 0/0, which the frontend evicts as gone.
+    # Baseline equal to full size would report 0/0, which the frontend evicts.
     entry, snap, blobs = _gguf_cache_dirs(tmp_path)
     (snap / "model-Q4_K_M.gguf").write_bytes(b"x" * 100)
     (snap / "mmproj-F16.gguf").write_bytes(b"y" * 30)
@@ -3648,8 +3619,7 @@ def test_gguf_progress_complete_on_disk_ignores_full_baseline(monkeypatch, tmp_p
 
 
 def test_gguf_progress_scoped_hashes_exclude_sibling_quant(monkeypatch, tmp_path):
-    # The "instant ~900 MB" bug: with this variant's hashes resolved, progress counts ONLY its in-
-    # progress blob, never a sibling quant's finalized bytes in the shared blobs/ dir.
+    # With hashes resolved, count only this variant's blobs, not a sibling's.
     entry = tmp_path / "models--Org--Model-GGUF"
     blobs = entry / "blobs"
     blobs.mkdir(parents = True)
@@ -3685,8 +3655,7 @@ def test_gguf_progress_scoped_hashes_exclude_sibling_quant(monkeypatch, tmp_path
 
 
 def test_gguf_progress_unknown_hashes_does_not_count_foreign_blobs(monkeypatch, tmp_path):
-    # With hashes unresolved, the shared blobs/ dir's FINALIZED blobs must not be counted wholesale: a
-    # cached sibling quant alongside is the "instant ~900 MB" bug.
+    # Unresolved hashes: do not count shared finalized blobs wholesale.
     entry, snap, blobs = _gguf_cache_dirs(tmp_path)
     (blobs / "mainhash").write_bytes(b"x" * 100)
     (blobs / "mmprojhash").write_bytes(b"y" * 30)
@@ -3705,8 +3674,7 @@ def test_gguf_progress_unknown_hashes_does_not_count_foreign_blobs(monkeypatch, 
 
 
 def test_gguf_progress_unknown_hashes_drops_unscoped_incomplete_blob(monkeypatch, tmp_path):
-    # With hashes unresolved an .incomplete cannot be attributed to this variant, so it is dropped; in
-    # production the worker writes the manifest before any .incomplete exists.
+    # Unresolved hashes: an .incomplete cannot be attributed, so it is dropped.
     entry = tmp_path / "models--Org--Model-GGUF"
     blobs = entry / "blobs"
     blobs.mkdir(parents = True)
@@ -3731,8 +3699,6 @@ def test_gguf_progress_unknown_hashes_drops_unscoped_incomplete_blob(monkeypatch
 
 
 def test_gguf_progress_unknown_hashes_no_backward_dip_when_variant_finalizes(monkeypatch, tmp_path):
-    # Regression for the two-variant dip: the sibling's .incomplete bytes used to leak into this
-    # numerator, dipping the bar to ~78% for one poll.
     entry = tmp_path / "models--unsloth--SmolLM2-360M-Instruct-GGUF"
     blobs, snap = _shared_setup_21(entry)
     own_total = 218_673_760
@@ -3744,7 +3710,6 @@ def test_gguf_progress_unknown_hashes_no_backward_dip_when_variant_finalizes(mon
 
     own_finalized = blobs / "q2hash"
     _sparse_file(own_finalized, own_total)
-    # ~72.7% of the sibling => sibling_partial / own_total == 0.78 pre-fix.
     sibling_incomplete = blobs / "q3hash.incomplete"
     _sparse_file(sibling_incomplete, int(sibling_total * 0.727))
 
@@ -4097,8 +4062,6 @@ def test_gguf_progress_recovers_the_windows_shaped_stale_download_card(monkeypat
     blobs = entry / "blobs"
     snap.mkdir(parents = True)
     blobs.mkdir(parents = True)
-    # Copy layout: the snapshot holds real files, and blobs/ was never populated with anything this reading
-    # could have matched by hash.
     (snap / "model-Q4_K_M.gguf").write_bytes(b"x" * 33_000)
     assert not (snap / "model-Q4_K_M.gguf").is_symlink()
 
@@ -4107,8 +4070,6 @@ def test_gguf_progress_recovers_the_windows_shaped_stale_download_card(monkeypat
         "utils.hf_cache_settings.get_hf_cache_paths",
         lambda: SimpleNamespace(hub_cache = str(hub_cache)),
     )
-    # A manifest as an older build filed it: hashed from the unresolved spelling, and with no sha256
-    # because HF metadata was already unreachable when the worker recorded it from the finished snapshot.
     legacy = state_dir.manifest_path(
         "model",
         "Org/Model-GGUF",
@@ -4224,7 +4185,6 @@ def test_running_job_never_reads_progress_from_a_remembered_cache(monkeypatch, t
 
     assert dirs == [active / "models--Org--Model"]
     assert not dirs[0].exists()
-    # Without force_active the remembered copy is still the best reading there is.
     assert hf_cache_state.preferred_repo_cache_dirs("model", "Org/Model") == [
         previous / "models--Org--Model"
     ]
@@ -4374,7 +4334,6 @@ def test_hf_cache_scan_flags_a_companion_only_pipeline(
     assert rows
     assert all(row.companion_prefetch is expected for row in rows)
     if expected:
-        # Still partial, so no picker loads a pipeline without its denoiser.
         assert all(row.partial for row in rows)
 
 
@@ -4479,7 +4438,6 @@ def test_a_gguf_with_no_architecture_is_classified_from_its_name(monkeypatch, tm
     )
     assert catalog_classification._gguf_path_task(chat) is None
 
-    # H3's conditioner is kv_count 0 too; only the fl2va / ref2va denoisers are video.
     conditioner = tmp_path / "qwen3vl_32b_minimax_h3-Q4_K_M.gguf"
     denoiser = tmp_path / "minimax_h3_fl2va_pruned-Q4_K.gguf"
     conditioner.write_bytes(b"gguf")
@@ -4636,8 +4594,7 @@ def test_completed_gguf_split_variant_requires_all_shards(tmp_path):
 
 
 def test_completed_gguf_variants_ignores_big_endian_by_the_loader_label(tmp_path):
-    # The scan reads Q4_K_M while the loader reads F16 and refuses the file as big-endian, so by the
-    # scan's label it would vouch for Q4_K_M and _complete_with_servable would skip the torn split.
+    # Scan reads Q4_K_M but loader reads F16 and refuses big-endian.
     snapshot = tmp_path / "snapshot"
     snapshot.mkdir()
     (snapshot / "0-F16-be-checkpoint-Q4_K_M.gguf").write_bytes(b"GGUF")
@@ -5061,7 +5018,6 @@ def test_cached_flash_next_quant_needs_managed_mtp_before_it_is_downloaded(
     assert before.dependencies_resolved is True
     assert before.variants[0].downloaded is False
     assert before.variants[0].download_size_bytes == (130 if "projector" in cache_case else 120)
-    # Every case has complete weights but lacks its planned drafter.
     assert before.variants[0].partial is True
     if cache_case in {"alternate-projector", "stale-main"}:
         assert before.variants[0].pending_drafter_filename is None
@@ -5097,7 +5053,6 @@ def test_a_cached_quant_missing_only_its_projector_stays_listed(monkeypatch, tmp
     snapshot = repo_dir / "snapshots" / "rev0"
     snapshot.mkdir(parents = True)
     (snapshot / "Model-UD-Q4_K_XL.gguf").write_bytes(b"m" * 100)
-    # Mirror the blob store so pricing credits the cached weights.
     (repo_dir / "blobs").mkdir()
     (repo_dir / "blobs" / "q4").write_bytes(b"m" * 100)
     siblings = [
@@ -5137,7 +5092,6 @@ def test_a_cached_quant_missing_only_its_projector_stays_listed(monkeypatch, tmp
         lambda *_args, **_kwargs: set(),
     )
 
-    # The picker pins cached Hub rows to a snapshot.
     listed = asyncio.run(
         gguf_variants.get_gguf_variants_response(repo_id, local_path = str(snapshot))
     )
@@ -5149,7 +5103,6 @@ def test_a_cached_quant_missing_only_its_projector_stays_listed(monkeypatch, tmp
     assert before["UD-Q4_K_XL"].download_remaining_bytes == 10
     assert before["Q8_0"].downloaded is False
     assert before["Q8_0"].partial is False
-    # Match the picker's On Device filter.
     assert [q for q, v in before.items() if v.downloaded or v.partial] == ["UD-Q4_K_XL"]
 
     (snapshot / "mmproj-F16.gguf").write_bytes(b"p" * 10)
@@ -5174,8 +5127,6 @@ def test_download_registry_repo_keys_are_case_insensitive():
         repo_id = "Org/Repo",
         variant = "Q8_0",
     )
-    # The same variant under a different-cased repo id resolves to the same job, so the second claim
-    # attaches to the running one instead of starting a duplicate.
     duplicate_claimed, duplicate_state = registry.claim(
         "org/repo::Q8_0",
         download_registry.TRANSPORT_HTTP,
@@ -5201,16 +5152,12 @@ def test_download_registry_allows_disjoint_gguf_variant_downloads():
 
 
 def test_download_registry_allows_overlapping_same_transport_variant_downloads():
-    # Two variants sharing one mmproj blob still download together on one transport:
-    # huggingface_hub's per-blob lock serializes the shared write and prepare_cache_for_transport
-    # never purges a blob a peer is writing.
+    # hf_hub's per-blob lock serializes the shared mmproj write.
     claimed, registry, state = _shared_setup_5()
     _shared_setup_2(claimed, registry, state)
 
 
 def test_download_registry_variant_delete_does_not_block_sibling_download():
-    # Deleting one quant's partial must be allowed while a different quant of the same repo is
-    # downloading, and must protect every blob the live sibling is writing.
     registry = download_registry.DownloadRegistry()
     registry.claim(
         "Org/Repo::Q8_0",
@@ -5222,18 +5169,13 @@ def test_download_registry_variant_delete_does_not_block_sibling_download():
         progress_blob_hashes = frozenset({"q8-main", "shared-mmproj"}),
     )
 
-    # A sibling variant delete is allowed; deleting the in-flight variant is not.
     assert registry.begin_delete("Org/Repo", "Q4_K_M") is True
     assert registry.begin_delete("Org/Repo", "Q8_0") is False
-    # A whole-repo delete still waits for every active download.
     assert registry.begin_delete("Org/Repo") is False
 
-    # The live sibling is detected so the delete keeps the shared companion.
     assert registry.has_active_peer_variant("Org/Repo", "Q4_K_M") is True
     assert registry.has_active_peer_variant("Org/Repo", "Q8_0") is False
 
-    # While Q4_K_M is being deleted, re-downloading it is blocked but an untouched third variant may still
-    # start.
     blocked, blocked_state = registry.claim(
         "Org/Repo::Q4_K_M",
         download_registry.TRANSPORT_HTTP,
@@ -5258,9 +5200,6 @@ def test_download_registry_variant_delete_does_not_block_sibling_download():
 
 
 def test_partial_gguf_reconstruction_dedupes_variant_casing(monkeypatch):
-    # The manifest keeps original casing while the marker is lowercased; offline reconstruction must
-    # collapse them to ONE entry, in the manifest's casing.
-    # Per-variant blob hashes (distinct main shard, shared mmproj companion).
     monkeypatch.setattr(
         download_manifest,
         "iter_variant_manifests",
@@ -5281,8 +5220,6 @@ def test_partial_gguf_reconstruction_dedupes_variant_casing(monkeypatch):
 
 
 def test_partial_gguf_reconstruction_drops_a_variant_read_off_the_filename(monkeypatch):
-    # An unreadable payload leaves only the filename, whose digest fragment names nothing; a variant
-    # genuinely called sha256-<32 hex> reads the same but is stored under the hash of itself.
     digest = "sha256-" + "0" * 32
     entries = [
         (f"@{digest}", Path(f"repo--variant--@{digest}.json")),
@@ -5304,8 +5241,7 @@ def test_partial_gguf_reconstruction_drops_a_variant_read_off_the_filename(monke
 
 
 def test_download_registry_serializes_cross_transport_variant_downloads():
-    # An HTTP append-resume and an XET rewrite of the same shared blob would corrupt each other, so
-    # different-transport variants are serialized.
+    # HTTP append-resume and XET rewrite of a shared blob corrupt each other.
     claimed, registry, state = _shared_setup_5()
     second_claimed, second_state = registry.claim(
         "Org/Repo::Q4_K_M",
@@ -5324,9 +5260,7 @@ def test_download_registry_serializes_cross_transport_variant_downloads():
 
 
 def test_download_registry_allows_unknown_hash_gguf_variant_downloads():
-    # Resolved blob hashes are NOT required to run two same-transport variants concurrently: safety
-    # comes from each worker purging only its own blobs plus huggingface_hub's per-etag lock, and
-    # requiring them rejected the second variant whenever a metadata fetch flaked.
+    # Hashes not required for same-transport concurrency: per-etag lock + own-blob purge.
     registry = download_registry.DownloadRegistry()
 
     claimed, state = registry.claim(
@@ -5344,8 +5278,7 @@ def test_download_registry_allows_unknown_hash_gguf_variant_downloads():
 
 
 def test_finalize_worker_exit_never_kills_a_healthy_worker(monkeypatch, tmp_path):
-    # finalize_worker_exit relies solely on the worker's exit code and never kills a live process:
-    # huggingface_hub already bounds reads with timeouts, so a liveness kill could only false-cancel.
+    # finalize_worker_exit never kills a live process; hf_hub reads already time out.
     import inspect
     import io
     import logging
@@ -5395,7 +5328,6 @@ def test_finalize_worker_exit_never_kills_a_healthy_worker(monkeypatch, tmp_path
 
     assert proc.killed is False
     assert registry.get_job(key).state == "complete"
-    # The stall-watchdog knob is gone entirely; no caller may re-enable it.
     assert (
         "enable_stall_watchdog"
         not in inspect.signature(download_lifecycle.finalize_worker_exit).parameters
@@ -5463,8 +5395,7 @@ def test_prepare_cache_for_transport_purges_cross_transport_companion(monkeypatc
     blobs = _vision_cache_root(monkeypatch, tmp_path)
     companion = frozenset({"shared-mmproj"})
 
-    # An interrupted XET download leaves a sparse partial, so a later HTTP download of a different
-    # variant must purge it, else the HTTP resumer appends to the sparse bytes and corrupts the blob.
+    # XET leaves sparse partials; HTTP resume would append to them and corrupt.
     download_registry.prepare_cache_for_transport(
         "model",
         "Org/Vision",
@@ -5490,7 +5421,7 @@ def test_prepare_cache_for_transport_purges_cross_transport_companion(monkeypatc
 
 def test_prepare_cache_for_transport_preserves_same_transport_companion(monkeypatch, tmp_path):
     """Only a hub that can still append to the partial earns the same-transport reprieve."""
-    # The purge asks partial_is_resumable, so patching the hub-version helper it wraps would be a no-op here.
+    # Purge calls partial_is_resumable, so patch that, not the hub-version helper.
     monkeypatch.setattr(download_registry, "partial_is_resumable", lambda _name, _root = None: True)
     blobs = _vision_cache_root(monkeypatch, tmp_path)
     companion = frozenset({"shared-mmproj"})
@@ -5505,7 +5436,6 @@ def test_prepare_cache_for_transport_preserves_same_transport_companion(monkeypa
     )
     partial = blobs / "shared-mmproj.incomplete"
     partial.write_bytes(b"resumable")
-    # Aged past the abandonment grace, so the reprieve is what preserves it, not its freshness.
     old = time.time() - download_registry.ABANDONED_PARTIAL_SECONDS - 60
     os.utime(partial, (old, old))
 
@@ -6004,8 +5934,6 @@ def test_model_download_watcher_invalidates_hf_cache_scan(monkeypatch):
 
 
 def test_two_concurrent_same_repo_variants_both_complete(monkeypatch, tmp_path):
-    # End-to-end proof that two GGUF variants of one repo download concurrently without cancelling each
-    # other, with real registry, finalize, subprocess and watch threads under true concurrency.
     import subprocess
     import time
 
@@ -6040,7 +5968,6 @@ def test_two_concurrent_same_repo_variants_both_complete(monkeypatch, tmp_path):
         "invalidate_hf_cache_scans",
         lambda: None,
     )
-    # Real subprocess that exits 0 immediately, with a stderr pipe to drain.
     spawned: list[subprocess.Popen] = []
 
     def _fake_spawn(*_args, **_kwargs):
@@ -6146,8 +6073,6 @@ def _patch_variant_delete_side_effects(monkeypatch, hub_cache = None):
         "purge_state",
         lambda *_args, **_kwargs: False,
     )
-    # The repo under test lives in this cache; make it the active one so the delete scopes to it (default target
-    # root is the active hub cache).
     if hub_cache is not None:
         monkeypatch.setattr(
             "utils.hf_cache_settings.get_hf_cache_paths",
@@ -6309,11 +6234,9 @@ def test_a_shared_companion_alone_is_not_evidence_the_quant_is_here(tmp_path):
 
     assert snapshot_progress._materialized_bytes(snap, matcher) == 0
 
-    # With the quant's own shard present, the companion counts again.
     (snap / "model-Q4_K_M.gguf").write_bytes(b"q" * 32)
     assert snapshot_progress._materialized_bytes(snap, matcher) == 96
 
-    # A matcher that does not take the keyword keeps the old behaviour.
     assert snapshot_progress._materialized_bytes(snap, lambda path: path.startswith("mmproj")) == 64
 
 
@@ -6410,8 +6333,6 @@ def test_a_partial_scan_cannot_report_the_target_as_gone(monkeypatch, tmp_path):
 
 
 def test_a_complete_scan_still_reports_the_target_as_gone(monkeypatch, tmp_path):
-    # The same reading with no scan error keeps the positive-evidence verdict, or the fix above would
-    # simply disable the phantom-adoption guard it is protecting.
     entry = tmp_path / "models--Org--Model-GGUF"
     (entry / "blobs").mkdir(parents = True)
     (entry / "snapshots" / "rev0").mkdir(parents = True)
@@ -6446,7 +6367,6 @@ def test_delete_variant_keeps_blob_shared_with_other_snapshot(monkeypatch, tmp_p
         snapshot_links = [
             ("rev1", "model-Q4_K_M.gguf", "sharedblob"),
             ("rev1", "model-Q8_0.gguf", "q8blob"),
-            # An unrelated file that happens to share Q4's blob content.
             ("rev1", "extra-copy.gguf", "sharedblob"),
         ],
     )
@@ -6455,7 +6375,6 @@ def test_delete_variant_keeps_blob_shared_with_other_snapshot(monkeypatch, tmp_p
     result = deletion._delete_cached_model_blocking("Org/Repo-GGUF", "Q4_K_M", None)
 
     assert result["status"] == "deleted"
-    # Q4 snapshot link gone, but its blob survives (extra-copy still links it).
     assert not (repo_dir / "snapshots" / "rev1" / "model-Q4_K_M.gguf").exists()
     assert (repo_dir / "blobs" / "sharedblob").exists()
     extra = repo_dir / "snapshots" / "rev1" / "extra-copy.gguf"
@@ -6478,7 +6397,6 @@ def test_delete_variant_unlinks_unshared_blob(monkeypatch, tmp_path):
 
     assert result["status"] == "deleted"
     assert not (repo_dir / "blobs" / "q4blob").exists()
-    # Untouched sibling variant remains fully intact.
     assert (repo_dir / "blobs" / "q8blob").exists()
     q8 = repo_dir / "snapshots" / "rev1" / "model-Q8_0.gguf"
     assert q8.is_symlink() and q8.exists()
@@ -6559,7 +6477,7 @@ def test_delete_variant_keeps_shared_xet_blob_referenced_by_other_repo(monkeypat
     assert payload.exists()
     other = other_dir / "snapshots" / "rev1" / "model-Q4_K_M.gguf"
     assert other.is_symlink() and other.exists()
-    # huggingface_hub 1.32 cannot rewrite the manifest on Windows (it fsyncs a read-only handle), so a stale line for the removed link may stay; it names nothing on disk and is ignored.
+    # hf_hub 1.32 cannot rewrite the manifest on Windows; a stale line is ignored.
     manifest = payload.with_name(f"{payload.name}.refs")
     live = [line for line in manifest.read_text().splitlines() if os.path.lexists(tmp_path / line)]
     assert live == ["models--Org--Other-GGUF/blobs/q4blob"]
@@ -6616,7 +6534,6 @@ def test_unlink_variant_blob_sweeps_when_cache_root_is_in_another_form(tmp_path)
     (repo_dir / "snapshots" / "rev1" / "model-Q4_K_M.gguf").unlink()
     blob = alias / repo_dir.name / "blobs" / "q4blob"
 
-    # The resolved root differs lexically from the blob's path, as a Windows 8.3 short name does.
     freed = deletion._unlink_variant_blob(blob, real.resolve())
 
     assert freed == 200
@@ -6824,7 +6741,7 @@ def _write_local_model(
         ({"architectures": ["BertModel"], "model_type": "bert"}, True, False),
         ({"architectures": ["RobertaForMaskedLM"], "model_type": "roberta"}, False, False),
         ({"architectures": ["CLIPModel"], "model_type": "clip"}, False, False),
-        # Unknown architectures must fail OPEN: never hide a real chat model.
+        # Unknown architectures must fail OPEN.
         ({"architectures": ["SomeCustomNet"], "model_type": "custom"}, False, None),
         ({}, False, None),
     ],
@@ -6857,7 +6774,6 @@ def test_local_embedding_model_is_not_chat_capable(tmp_path):
     }
     assert rows["all-MiniLM-L6-v2"].capabilities.can_chat is False
     assert rows["tiny-llama"].capabilities.can_chat is True
-    # Training and LoRA support are unchanged: this only gates chat.
     assert rows["all-MiniLM-L6-v2"].capabilities.can_train is True
 
 
@@ -6874,7 +6790,6 @@ def test_a_snapshot_whose_only_weight_is_finder_metadata_is_not_a_safetensors_ro
             (d / "._model.safetensors").write_bytes(weight)
         return [r.model_format for r in model_common._classify_local_path(d, "models_dir")]
 
-    # A config with no weight beside it is already "unknown"; metadata must not read as more.
     assert _formats("config-only") == ["unknown"]
     assert _formats("metadata-only", b"\x00\x05\x16\x07\x00\x02\x00\x00") == ["unknown"]
     assert _formats("named", b"weights") == ["safetensors"]
@@ -7162,9 +7077,6 @@ def test_custom_promotion_keeps_the_classifier_verdict(tmp_path, config, expecte
         assert promoted.capabilities.can_chat is expected
 
 
-# ── local diffusers pipelines reach the Images / Video pickers ───────────────
-
-
 def _write_pipeline(root: Path, *, components = ("transformer", "vae", "text_encoder")) -> Path:
     """A diffusers PIPELINE directory: a root model_index.json, no root config.json, and the
     weights inside component subdirs. Every image and video model downloaded as a pipeline
@@ -7272,7 +7184,6 @@ def test_the_custom_folder_filter_still_drops_a_row_it_cannot_classify(tmp_path)
     aborted.mkdir(parents = True)
     (aborted / "config.json").write_text(json.dumps({"model_type": "llama"}), encoding = "utf-8")
 
-    # The scan does see it, so the filter is what decides -- otherwise this proves nothing.
     assert "half-downloaded" in {
         Path(row.path).name for row in local_inventory._scan_models_dir(root)
     }
@@ -7354,7 +7265,6 @@ def test_gguf_progress_target_presence_is_aggregated_across_caches(monkeypatch, 
     holder = tmp_path / "b" / "models--Org--Model-GGUF"
     (holder / "snapshots" / "rev0").mkdir(parents = True)
     (holder / "blobs").mkdir(parents = True)
-    # Zero bytes keeps the tie with the sibling-only reading, and the name is what proves the target is in this cache.
     (holder / "snapshots" / "rev0" / "model-Q4_K_M.gguf").write_bytes(b"")
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
     assert download_manifest.write_manifest(
@@ -7423,7 +7333,6 @@ def test_a_running_job_does_not_borrow_another_caches_manifest(monkeypatch, tmp_
         "Org/Model-GGUF", "Q4_K_M", force_active = True, active_root = active.parent
     )
     assert scoped is not None and scoped.expected_files[0].sha256 == "new"
-    # Unscoped, the superseded cache is consulted too and the disagreement refuses both.
     assert (
         downloads._variant_manifest_in_any_cache(
             "Org/Model-GGUF", "Q4_K_M", active_root = active.parent
@@ -7520,7 +7429,6 @@ def test_an_unattributable_partial_keeps_presence_unknown(monkeypatch, tmp_path)
     presence on that path -- reports a confident absence. Idle hydration retires a persisted job
     on that verdict, throwing away a partial the user can still resume."""
     entry, snap, blobs = _gguf_cache_dirs(tmp_path)
-    # A sibling quant keeps the repo dir alive; the requested variant has nothing materialized.
     (snap / "model-Q2_K.gguf").write_bytes(b"z" * 900)
     (blobs / "somehash.incomplete").write_bytes(b"x" * 40)
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
@@ -7610,7 +7518,6 @@ def test_an_older_snapshot_still_proves_the_variant_is_here(monkeypatch, tmp_pat
     import os
     import time
 
-    # Make rev1 unambiguously the newest, which is the one latest_snapshot_dir picks.
     os.utime(old_snap, (time.time() - 600, time.time() - 600))
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
     _unresolvable_variant_metadata(monkeypatch, entry, state = "idle")
@@ -7646,7 +7553,6 @@ def test_a_verified_completion_wins_a_byte_tie_between_caches(monkeypatch, tmp_p
     monkeypatch.setattr(
         snapshot_progress,
         "preferred_repo_cache_dirs",
-        # The unverified cache first, so root order alone would carry it.
         lambda *_a, **_kw: [unverified, verified],
     )
 
@@ -7713,7 +7619,6 @@ def test_a_deleted_snapshot_link_is_absent_even_with_its_blob_left_behind(monkey
     presence off those counters called a quant that is gone present, and idle hydration
     re-adopted the phantom and blocked a fresh download of it."""
     entry, snap, blobs = _gguf_cache_dirs(tmp_path)
-    # The finalized blob survives; the snapshot entry that named it does not.
     (blobs / "mainhash").write_bytes(b"x" * 100)
     (snap / "model-Q2_K.gguf").write_bytes(b"z" * 900)
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
@@ -7778,7 +7683,6 @@ def test_local_inventory_classifies_off_the_event_loop(monkeypatch):
 
     def classify_row(row):
         idents.append(threading.get_ident())
-        # Only a responsive event loop can set this event.
         assert loop_is_free.wait(10), "the event loop was blocked while classification ran"
         return "task"
 
@@ -7891,7 +7795,6 @@ def test_local_inventory_retries_when_the_cache_changes_during_classification(mo
         return _scan_response(f"scan{len(scans)}")
 
     def classify_row(row):
-        # The cache is invalidated while the first scan's rows are being classified.
         if len(scans) == 1:
             epoch[0] += 1
         return "task"
@@ -8232,7 +8135,6 @@ def test_cached_gguf_task_describes_the_revision_the_load_id_resolves_to(tmp_pat
         cache_scans = [SimpleNamespace(repos = [repo_info])], active_hub_cache = hub_cache
     )
     row = next(row for row in rows if row["repo_id"] == "Org/Model-GGUF")
-    # The id resolves through refs/main to the llama revision, so the row must say so.
     assert row["load_id"] == "Org/Model-GGUF"
     assert row["task"] == "text-generation"
 
@@ -8317,8 +8219,7 @@ def test_every_row_key_the_scanner_emits_survives_the_response_schema():
                 }
         return set()
 
-    # Each scanner against ITS OWN schema: a union would let a key emitted on a model row pass because
-    # the GGUF schema happens to declare it, which is not what response_model does.
+    # Each scanner against ITS OWN schema, as response_model does.
     emitted = literal_keys("_cache_inventory_fields") | literal_keys("_scan_cached_models")
     watched = ("diffusers", "companion", "single_file", "partial", "load_id", "task")
     for flag in watched:
@@ -8328,8 +8229,7 @@ def test_every_row_key_the_scanner_emits_survives_the_response_schema():
                 f"FastAPI's response_model strips it before the frontend sees the row."
             )
 
-    # Prove it end to end rather than by field name alone: a declared-but-mistyped field is dropped or
-    # 500s at serialization time, which a model_fields check cannot see.
+    # End to end: a mistyped field is dropped or 500s at serialization.
     row = {
         "repo_id": "Org/Pipeline",
         "size_on_disk": 4096,

@@ -56,7 +56,6 @@ def _sse(delta = None, finish = None):
 
 _ANSWER_TURN = [_sse({"content": "The answer is 42."}), _sse(finish = "stop"), _DONE]
 
-# The call arrives as content, closed tag: the healer promotes it during feed().
 _TEXT_FORM_TURN = [
     _sse({"content": "Let me look that up. "}),
     _sse({"content": '<tool_call>{"name": "web_search", '}),
@@ -65,9 +64,8 @@ _TEXT_FORM_TURN = [
     _DONE,
 ]
 
-# Same call with the closing tag missing: promotion happens only in finalize(), after the
-# provider already sent its finish_reason. Arming at promotion time would be too late here,
-# which is why the loop holds the chunk back instead.
+# Closing tag missing: promotion happens only in finalize(), after finish_reason was sent,
+# so the loop holds the chunk back.
 _UNTERMINATED_TURN = [
     _sse({"content": "Let me look that up. "}),
     _sse({"content": '<tool_call>{"name": "web_search", '}),
@@ -76,7 +74,6 @@ _UNTERMINATED_TURN = [
     _DONE,
 ]
 
-# The control: the same call in the structured shape the stripper already handled.
 _STRUCTURED_TURN = [
     _sse({"content": "Let me look that up. "}),
     _sse(
@@ -217,8 +214,6 @@ def test_a_healed_call_does_not_leak_its_turns_stop(loop_env, turns, label):
     lines = _relay([turns, _ANSWER_TURN], ui_events = False)
 
     assert loop_env == ["web_search"], f"the tool must actually run ({label})"
-    # Exactly one finish_reason, and it arrives last: a client ending on the first one still
-    # reads the post-tool answer.
     assert _finish_reasons(lines) == ["stop"], label
     assert "The answer is 42." in _text(lines), label
     assert _finish_reasons(lines[:-1]) == [], f"the terminal must be last ({label})"
@@ -291,7 +286,6 @@ def test_holding_the_turn_end_does_not_reorder_the_text(loop_env):
     assert loop_env == [], "no tool call in this stream"
     assert _text(lines) == "Comparing: the value <to"
     assert _finish_reasons(lines) == ["stop"]
-    # The reason is last, so a client reading in order sees the whole turn before it ends.
     assert _finish_reasons(lines[:-1]) == []
 
 
@@ -343,7 +337,6 @@ def test_the_next_turns_legacy_call_keeps_its_own_reason(loop_env):
     assert "function_call" in _text(lines) or any(
         '"function_call"' in line for line in lines
     ), "the legacy call itself must reach the caller"
-    # Its own reason, not a minted stop: the caller dispatches on this.
     assert _finish_reasons(lines) == ["function_call"]
 
 

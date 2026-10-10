@@ -65,7 +65,6 @@ def _average_valid_temps(values: Iterable[float]) -> Optional[float]:
 
 
 def _is_gpu_energy_channel(name: str) -> bool:
-    # Exact "GPU Energy" plus "DIE_N_GPU Energy" on Ultra chips; the separate
     # "GPU SRAM*" channels are not GPU core power.
     return name.endswith("GPU Energy") and "SRAM" not in name
 
@@ -332,8 +331,7 @@ class _IOReportEnergy:
         )
         if not self._sub:
             raise OSError("IOReportCreateSubscription failed")
-        # Sample with the channels IOReport subscribes us to, not the requested
-        # group (matches macmon); fall back if the OS leaves it unset.
+        # Sample the channels IOReport subscribed (as macmon does); fall back if unset.
         self._sample_channels = subscribed if subscribed else self._channels
         self._channels_key = _cfstr(self._cf, "IOReportChannels")
         self._prev: Optional[tuple[int, float]] = None

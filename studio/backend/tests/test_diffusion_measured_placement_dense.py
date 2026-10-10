@@ -62,7 +62,7 @@ def klein_pipe(monkeypatch):
     monkeypatch.setattr(dm, "_pipe_denoisers_hold_torchao", lambda pipe: False)
     import torch
 
-    # fp16 on the T4: the compute dtype the dense eager table was measured at
+    # fp16 on the T4: the compute dtype the dense eager table was measured at.
     return types.SimpleNamespace(transformer = types.SimpleNamespace(dtype = torch.float16))
 
 
@@ -81,11 +81,9 @@ def test_dense_headroom_values(klein_pipe, monkeypatch):
     assert m("flux.1", "off", dense_transformer_mib = 22680) == 2816
     assert m("qwen-image", "off", dense_transformer_mib = 38968) == 5120
     assert m("flux.2-klein", "off", dense_transformer_mib = 7393, width = 2048, height = 2048) == 11520
-    # compiled tiers, unmeasured families and a larger DiT of the same family (klein-9B) keep the flat estimate
     assert m("flux.2-klein", "default", dense_transformer_mib = 7393) is None
     assert m("sdxl", "off", dense_transformer_mib = 4900) is None
     assert m("flux.2-klein", "off", dense_transformer_mib = 17300) is None
-    # the torchao table is untouched by the dense one
     assert m("flux.2-klein", "off") is None
     monkeypatch.setenv("UNSLOTH_DIFFUSION_MEASURED_ACTIVATION_DENSE", "0")
     assert m("flux.2-klein", "off", dense_transformer_mib = 7393) is None
@@ -97,7 +95,6 @@ def test_dense_headroom_values(klein_pipe, monkeypatch):
 
 def test_t4_klein_transformer_resident(klein_pipe):
     plan = _flat_plan(12758)
-    # the logged flat decision: every DiT block streamed, encoders streamed
     assert plan.estimates["resident_transformer_floor_mib"] == 17869
     assert plan.offload_policy == dm.OFFLOAD_GROUP
     assert plan.stream_transformer and plan.stream_text_encoders
@@ -180,7 +177,6 @@ def test_dense_request_extra_releases_for_oversized(monkeypatch):
     assert dm.measured_request_extra_mib(pipe, width = 1024, height = 1024) == 0
     assert dm.measured_request_extra_mib(pipe, width = 2048, height = 2048) == 11520 - KLEIN_HEADROOM
     assert dm.measured_request_extra_mib(pipe, width = 1024, height = 1024, batch_size = 2) > 0
-    # the three-field torchao reserve still reads as before
     q21 = types.SimpleNamespace(_unsloth_measured_reserve = (2304, "qwen-image-2.1", "default"))
     assert dm.measured_request_extra_mib(q21, width = 2048, height = 2048) == 8704 - 2304
 
@@ -194,7 +190,7 @@ def test_gguf_denoiser_keeps_the_flat_plan(klein_pipe):
     dit = torch.nn.Linear(4, 4)
     dit.weight = GGUFParameter(dit.weight.data, requires_grad = False)
     klein_pipe.transformer = types.SimpleNamespace(dtype = torch.float16, parameters = dit.parameters)
-    # GGUF dequantizes a whole Linear per forward: a transient the dense eager table never measured
+    # GGUF dequantizes a whole Linear per forward: a transient the dense table never measured.
     plan = _flat_plan(12758)
     assert _refine(klein_pipe, plan) is plan
 

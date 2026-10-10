@@ -143,7 +143,7 @@ def _reference_merge(e1, m1, e2, m2):
 
 
 _MASKS = [
-    # (mllm mask rows, byt5 mask rows): right-padded, interleaved, all padding, all valid
+    # (mllm mask rows, byt5 mask rows)
     ([[1, 1, 1, 0, 0, 0, 0]], [[1, 1, 0, 0, 0]]),
     ([[1, 0, 1, 1, 0, 0, 1], [0, 0, 0, 0, 0, 0, 1]], [[0, 1, 0, 1, 1], [0, 0, 0, 0, 0]]),
     ([[0] * 7, [1] * 7], [[1] * 5, [0] * 5]),
@@ -195,7 +195,6 @@ def _aten_ops(fn):
     return rec.ops
 
 
-# Ops whose output shape depends on tensor VALUES: each one needs the count on the host.
 _DATA_DEPENDENT = (
     "aten.index.Tensor",
     "aten.nonzero",
@@ -243,9 +242,7 @@ def test_rewrite_matches_the_stock_forward_and_keeps_lora_handling(
     got = safe(obj, **kw)
     assert torch.equal(want[0], got[0])
     assert torch.equal(want[1], got[1])
-    # LoRA scaling ran on both paths: the decorator re-applied, or the inline code kept.
     assert mod.SCALES == [0.5, 0.5]
-    # The byt5-free call skips the block on both paths.
     kw2 = dict(encoder_hidden_states = kw["encoder_hidden_states"], encoder_attention_mask = m1)
     assert torch.equal(cls.forward(obj, **kw2)[0], safe(obj, **kw2)[0])
 

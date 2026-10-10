@@ -32,10 +32,6 @@ from core.inference.tools import (
 )
 
 
-# ── Fixtures: snapshot of GitHub repo page fragments ─────────────
-
-# GitHub ships client-side error placeholders behind the `hidden` attribute (JS
-# reveals them on a failed fetch); a text converter must not surface them.
 _GITHUB_HIDDEN_ERROR_BLOCK = """
 <div data-show-on-forbidden-error hidden>
   <div class="Box">
@@ -112,9 +108,6 @@ _GITHUB_PAGE = f"""<!DOCTYPE html>
 """
 
 
-# ── html_to_markdown: hidden elements ────────────────────────────
-
-
 @pytest.mark.parametrize(
     "html, present_first, present_second, absent",
     [
@@ -125,8 +118,6 @@ _GITHUB_PAGE = f"""<!DOCTYPE html>
             "secret error text",
             id = "hidden_attribute_subtree_is_dropped",
         ),
-        # Error/loading blocks are often hidden with inline CSS rather than the
-        # ``hidden`` attribute; browsers do not render them, so they must not leak.
         pytest.param(
             "<body><p>visible</p>"
             '<div style="display:none">secret loading block</div>'
@@ -136,8 +127,6 @@ _GITHUB_PAGE = f"""<!DOCTYPE html>
             "secret loading block",
             id = "inline_style_display_none_subtree_is_dropped",
         ),
-        # A hidden void element (<hr>/<br>) never joins the open-element stack, so it
-        # must be suppressed inline rather than emitting its markup.
         pytest.param(
             '<body><p>before</p><hr aria-hidden="true"><p>after</p></body>',
             "before",
@@ -145,7 +134,6 @@ _GITHUB_PAGE = f"""<!DOCTYPE html>
             "---",
             id = "hidden_void_element_is_suppressed",
         ),
-        # The hidden <br> must not inject a newline between the two runs.
         pytest.param(
             "<body><p>one<br hidden>two</p></body>",
             "one",
@@ -153,8 +141,6 @@ _GITHUB_PAGE = f"""<!DOCTYPE html>
             "one\ntwo",
             id = "hidden_void_br_emits_no_break",
         ),
-        # Without main_content the whole document converts (backwards compatible),
-        # boilerplate included; only hidden subtrees are dropped.
         pytest.param(
             "<body><p>Skip to content</p><div hidden>gone</div><main><p>hello</p></main></body>",
             "Skip to content",
@@ -186,7 +172,6 @@ def test_hidden_subtrees_are_dropped_from_the_conversion(
             "ghost",
             id = "inline_style_visibility_hidden_subtree_is_dropped",
         ),
-        # The !important flag must not defeat the display:none detection.
         pytest.param(
             '<body><p>keep</p><div style="display:none !important">gone</div></body>',
             "gone",
@@ -197,8 +182,7 @@ def test_hidden_subtrees_are_dropped_from_the_conversion(
             "gone",
             id = "inline_style_display_none_among_other_declarations",
         ),
-        # ``hidden`` is enumerated: the spec maps invalid/empty values to the Hidden
-        # state, so hidden="false" is NOT rendered and must not reach the Markdown.
+        # hidden is enumerated: invalid or empty values, including "false", still hide.
         pytest.param(
             '<body><p>keep</p><div hidden="false">not rendered</div></body>',
             "not rendered",
@@ -218,8 +202,6 @@ def test_aria_hidden_false_subtree_is_kept():
 
 
 def test_inline_style_visible_display_is_kept():
-    # Over-strip guard: display:block / visibility:visible render, and a value or
-    # URL merely containing the substring "none" must not trigger the hidden path.
     html = (
         "<body>"
         '<div style="display:block">block kept</div>'
@@ -236,22 +218,18 @@ def test_inline_style_visible_display_is_kept():
 @pytest.mark.parametrize(
     "html, absent, present",
     [
-        # <p hidden> is never closed; the parent </div> must still end the hidden region.
         pytest.param(
             "<body><div><p hidden>gone</div><p>kept</p></body>",
             "gone",
             "kept",
             id = "hidden_recovers_from_omitted_close_tags",
         ),
-        # Void elements also imply closes: <hr> ends an open <p hidden>.
         pytest.param(
             "<body><p hidden>secret<hr>kept text</body>",
             "secret",
             "kept text",
             id = "hr_implicitly_closes_hidden_paragraph",
         ),
-        # A nested <table> re-scopes <tr>/<td>: an inner <td> must not be an
-        # optional-close sibling of a hidden outer <td> across the nested table.
         pytest.param(
             "<body><table><tr>"
             "<td hidden>outer<table><tr><td>secret cell</td></tr></table></td>"
@@ -278,8 +256,6 @@ def test_nested_hidden_regions():
 
 
 def test_hidden_paragraph_omitted_close_does_not_swallow_siblings():
-    # HTML5 optional end tags: a sibling <p> start tag implicitly closes an open
-    # <p hidden>, so the hidden region ends there instead of swallowing siblings.
     html = (
         "<body><div><p hidden>secret<p>visible one</p><p>visible two</p></div><p>after</p></body>"
     )
@@ -293,16 +269,12 @@ def test_hidden_paragraph_omitted_close_does_not_swallow_siblings():
 @pytest.mark.parametrize(
     "html, present_first, present_second",
     [
-        # <li hidden> without </li> is implicitly closed by the next <li>.
         pytest.param(
             "<body><ul><li hidden>secret<li>shown A</li><li>shown B</li></ul></body>",
             "shown A",
             "shown B",
             id = "hidden_list_item_omitted_close_keeps_following_items",
         ),
-        # A browser closes an open <p> when a <div> arrives, even with an unclosed
-        # <span> on top of it. The hidden region must end there, not swallow the
-        # following visible blocks.
         pytest.param(
             "<body><p hidden><span>secret<div>visible div</div><p>visible paragraph</body>",
             "visible div",
@@ -327,9 +299,7 @@ def test_hidden_regions_with_inline_children_end_at_the_implied_close(
 
 
 def test_skipped_tag_implicitly_closes_hidden_paragraph():
-    # A skipped block (<nav>/<footer>) also closes an open <p>. The optional-close
-    # bookkeeping must run before the skip, or the never-closed <p hidden> keeps its
-    # hidden mark and swallows every following sibling.
+    # Optional-close bookkeeping must run before the nav/footer skip.
     for skipped in ("nav", "footer"):
         html = f"<body><p hidden>secret<{skipped}>chrome</{skipped}>VISIBLE</body>"
         out = html_to_markdown(html)
@@ -339,7 +309,6 @@ def test_skipped_tag_implicitly_closes_hidden_paragraph():
 
 
 def test_visible_void_hr_still_renders():
-    # Guard: the suppression must not affect non-hidden void elements.
     html = "<body><p>a</p><hr><p>b</p></body>"
     out = html_to_markdown(html)
     assert "---" in out
@@ -366,16 +335,11 @@ def test_empty_header_does_not_consume_the_list_marker():
     assert html_to_markdown(html, main_content = True) == "* text text text"
 
 
-# ── html_to_markdown: main-content scoping ───────────────────────
-
-
 def test_github_page_main_content_keeps_readme_only():
     out = html_to_markdown(_GITHUB_PAGE, main_content = True)
-    # README content survives.
     assert "Unsloth Studio" in out
     assert "install.sh" in out
     assert "documentation" in out
-    # Client-side error placeholders and page furniture are gone.
     assert "Uh oh!" not in out
     assert "There was an error while loading" not in out
     assert "Please reload this page" not in out
@@ -404,7 +368,6 @@ def test_main_scope_used_when_no_article():
 
 
 def test_main_content_falls_back_to_full_document():
-    # No article/main and a tiny body: the unscoped conversion is returned.
     html = "<body><h1>Tiny</h1><p>Just a short page.</p></body>"
     out = html_to_markdown(html, main_content = True)
     assert "Tiny" in out
@@ -412,7 +375,6 @@ def test_main_content_falls_back_to_full_document():
 
 
 def test_tiny_article_stub_does_not_hijack_scope():
-    # An <article> with negligible text must not swallow the real content.
     body_text = "Real content paragraph. " * 30
     html = f"<body><article>ad</article><main><p>{body_text}</p></main></body>"
     out = html_to_markdown(html, main_content = True)
@@ -420,9 +382,6 @@ def test_tiny_article_stub_does_not_hijack_scope():
 
 
 def test_sibling_articles_do_not_leak_after_main_selected():
-    # The size gate picks the largest single <article> and renders only that
-    # subtree: sibling articles (related-post cards, comment threads) must not leak
-    # in just because the real article cleared the threshold.
     real = "Main article body content for selection. " * 20
     card = "Unrelated related-post card teaser blurb. " * 3
     cards = "".join(f"<article><p>{card}</p></article>" for _ in range(5))
@@ -433,9 +392,6 @@ def test_sibling_articles_do_not_leak_after_main_selected():
 
 
 def test_boilerplate_filter_preserves_phrase_inside_real_prose():
-    # The furniture filter once matched by substring, deleting a real sentence that
-    # merely CONTAINS a fragment ("we use cookies"). It must drop only lines COMPOSED
-    # of furniture, keeping real prose that quotes one.
     body = (
         "<article><h1>Authentication</h1>"
         "<p>We use cookies to authenticate API requests and keep sessions safe.</p>"
@@ -446,8 +402,6 @@ def test_boilerplate_filter_preserves_phrase_inside_real_prose():
 
 
 def test_boilerplate_filter_still_drops_standalone_and_stacked_furniture():
-    # A line that is purely furniture is dropped, as is one stacking several
-    # furniture phrases (as GitHub renders them).
     body = (
         "<article>"
         "<p>Skip to content</p>"
@@ -472,9 +426,6 @@ def test_boilerplate_not_stripped_inside_code_fences():
 
 
 def test_aside_callout_inside_article_is_kept():
-    # Docs render notes/warnings as <aside> callouts. An aside inside the selected
-    # article/main scope is real content and must survive; dropping it unconditionally
-    # loses page text.
     body = (
         "<article><h1>Guide</h1>"
         "<p>%s</p>"
@@ -485,12 +436,8 @@ def test_aside_callout_inside_article_is_kept():
     out = html_to_markdown(f"<body>{body}</body>", main_content = True)
     assert "This operation is destructive and cannot be undone." in out
     assert "Warning:" in out
-    # Also kept in the unscoped (backwards-compatible) conversion.
     out_full = html_to_markdown(f"<body>{body}</body>")
     assert "This operation is destructive and cannot be undone." in out_full
-
-
-# ── GitHub README rewrite ────────────────────────────────────────
 
 
 def test_github_repo_url_maps_to_readme_api():
@@ -545,9 +492,6 @@ def test_fetch_page_text_prefers_github_readme(monkeypatch):
 
 
 def test_fetch_page_text_keeps_html_readme_from_api(monkeypatch):
-    # A repo whose README is HTML returns HTML from the README API with a 200. That
-    # success is authoritative: convert to Markdown and keep it, never discard it in
-    # favour of the repo root page's UI chrome.
     html_readme = (
         "<!doctype html><html><body>"
         "<h1>Project Title</h1>"
@@ -569,7 +513,6 @@ def test_fetch_page_text_keeps_html_readme_from_api(monkeypatch):
 
     monkeypatch.setattr("core.inference.tools._fetch_url_raw", fake_fetch)
     out = _fetch_page_text("https://github.com/unslothai/unsloth")
-    # The successful README is converted and returned; no fallback fetch fires.
     assert "README of https://github.com/unslothai/unsloth" in out
     assert "Project Title" in out
     assert "Install with the one-line script" in out
@@ -591,7 +534,6 @@ def test_fetch_page_text_falls_back_to_html_when_readme_api_fails(monkeypatch):
 
     monkeypatch.setattr("core.inference.tools._fetch_url_raw", fake_fetch)
     out = _fetch_page_text("https://github.com/unslothai/unsloth")
-    # Fallback converts the HTML page with the main-content heuristic.
     assert "Unsloth Studio" in out
     assert "Uh oh!" not in out
     assert "There was an error while loading" not in out
@@ -620,7 +562,6 @@ def _page_text(monkeypatch, url, body, content_type):
 @pytest.mark.parametrize(
     "url, body, content_type, present, absent",
     [
-        # Whitespace preserved: the HTML renderer would have collapsed it.
         pytest.param(
             "https://raw.githubusercontent.com/o/r/main/file.txt",
             _RAW_TEXT_PAGE,
@@ -637,7 +578,6 @@ def _page_text(monkeypatch, url, body, content_type):
             ["Uh oh!"],
             id = "fetch_page_text_html_conversion",
         ),
-        # A header-less bare HTML fragment must still be sniffed and converted, not served raw.
         pytest.param(
             "https://example.com/fragment",
             _HTML_FRAGMENT,
@@ -646,7 +586,6 @@ def _page_text(monkeypatch, url, body, content_type):
             ["<article"],
             id = "fetch_page_text_missing_content_type_fragment_converted",
         ),
-        # A header-less server returning plain text stays raw (whitespace kept).
         pytest.param(
             "https://example.com/no-content-type.txt",
             _RAW_TEXT_PAGE,
@@ -655,7 +594,6 @@ def _page_text(monkeypatch, url, body, content_type):
             [],
             id = "fetch_page_text_missing_content_type_plain_text_raw",
         ),
-        # text/plain on an HTML body is sniffed and converted, as before extraction existed.
         pytest.param(
             "https://example.com/mislabeled",
             _GITHUB_PAGE,
@@ -815,36 +753,24 @@ def test_looks_like_html():
 
 
 def test_looks_like_html_markdown_with_leading_fenced_example_stays_markdown():
-    # A Markdown README OPENING with a fenced HTML example must not be sniffed as
-    # HTML just because a doctype/tag appears in the first 256 chars; html_to_markdown
-    # would corrupt the fences and prose.
     fenced = (
         "```html\n<!DOCTYPE html>\n<html><body><div>hi</div></body></html>\n```\n\n# Real README\n"
     )
     assert not _looks_like_html(fenced)
-    # Prose that mentions a tag inline, and a centered-logo README that opens
-    # with <p align>/<div align>/<h1 align>, also stay Markdown.
     assert not _looks_like_html("Use the <html> element to start a page.")
     assert not _looks_like_html('<p align="center"><img src="logo.png"></p>\n\n# Project\n')
     assert not _looks_like_html('<div align="center">\n\n# Project\n\n</div>\n')
     assert not _looks_like_html('<h1 align="center">Project</h1>\n\nMarkdown body.\n')
-    # An autolink is not a tag opener.
     assert not _looks_like_html("<https://example.com> is the homepage")
 
 
 def test_looks_like_html_detects_bare_fragments():
-    # A body that is a bare HTML fragment (no <html>/doctype) must still be
-    # recognized so it is converted to Markdown.
     assert _looks_like_html("<body><p>hello</p></body>")
     assert _looks_like_html("\n<article><h1>Title</h1><p>Body</p></article>")
     assert _looks_like_html("<section>content</section>")
 
 
 def test_looks_like_html_leading_table_stays_markdown():
-    # Markdown READMEs routinely open with a raw HTML <table> badge row or logo
-    # layout, then continue in Markdown. Sniffing that as HTML would collapse the
-    # Markdown body, so a leading <table> (and its row/cell children) must stay
-    # Markdown, like the excluded <div align>/<p align> layout headers.
     assert not _looks_like_html("<table><tr><td>cell</td></tr></table>")
     assert not _looks_like_html(
         '<table align="center"><tr><td><img src="logo.png"></td></tr></table>\n\n# Project\n'
@@ -855,9 +781,6 @@ def test_looks_like_html_leading_table_stays_markdown():
 @pytest.mark.parametrize(
     "md_readme, first, second, third",
     [
-        # A Markdown README opening with a fenced HTML snippet must be served verbatim,
-        # never run through html_to_markdown (which would drop the fences/tags).
-        # Markdown preserved verbatim: the fence and literal tags survive.
         pytest.param(
             "```html\n"
             "<!DOCTYPE html>\n"
@@ -869,10 +792,6 @@ def test_looks_like_html_leading_table_stays_markdown():
             "# My Project",
             id = "fetch_page_text_keeps_markdown_readme_with_html_example",
         ),
-        # A README opening with a raw HTML <table> badge/layout row then continuing in
-        # Markdown must be served verbatim, never run through html_to_markdown (which
-        # would collapse the list/fence/heading body onto one line).
-        # Markdown body verbatim: list, fence and heading survive on their own lines.
         pytest.param(
             '<table align="center">\n'
             '<tr><td><img src="logo.png"></td><td>Badges</td></tr>\n'
@@ -886,10 +805,6 @@ def test_looks_like_html_leading_table_stays_markdown():
             "# My Project",
             id = "fetch_page_text_keeps_markdown_readme_with_leading_table",
         ),
-        # A raw-Markdown README that OPENS with an HTML block tag (<blockquote>, <ul>,
-        # <pre>, ...) must not be run through html_to_markdown, which would collapse its
-        # headings/list/fence. Only a real HTML document (doctype / <html>) is converted.
-        # Markdown structure survives verbatim (heading, list, fenced code).
         pytest.param(
             "<blockquote>Note: pre-release.</blockquote>\n\n"
             "# My Project\n\n"
@@ -926,9 +841,7 @@ def test_fetch_page_text_keeps_a_markdown_readme_verbatim(
 
 
 def test_fetch_url_raw_missing_content_type_reported_empty(monkeypatch):
-    # Message.get_content_type() falls back to the RFC 2045 "text/plain" default
-    # when the header is absent; _fetch_url_raw must report "" instead so the HTML
-    # sniffing fallback can fire.
+    # get_content_type() defaults to text/plain; _fetch_url_raw must report "" so sniffing fires.
     import email
     import urllib.request
 
@@ -939,7 +852,6 @@ def test_fetch_url_raw_missing_content_type_reported_empty(monkeypatch):
             self._body = b"<html><body>hello</body></html>"
 
         def read(self, n = -1):
-            # Hand back the body once, then EOF, so the chunked reader terminates.
             body, self._body = self._body, b""
             return body
 
@@ -1060,7 +972,6 @@ def test_pinned_dial_walks_to_the_next_address_when_first_is_unreachable(monkeyp
 
 @pytest.mark.parametrize("overrun,budget", [(1.0, 0.3), (4.0, 0.001)])
 def test_pinned_dial_asks_for_no_more_than_the_callers_timeout(monkeypatch, overrun, budget):
-    # One budget for both passes; an overrunning dial still leaves the rest an attempt.
     import socket as _socket
 
     from core.inference import tools as tools_mod
@@ -1083,8 +994,6 @@ def test_pinned_dial_asks_for_no_more_than_the_callers_timeout(monkeypatch, over
 
 
 def test_pinned_dial_probe_stays_affordable_for_many_records(monkeypatch):
-    # A share of what is left compounds: half the remainder each time spent three
-    # quarters of a 31-record budget on probing alone.
     import socket as _socket
 
     from core.inference import tools as tools_mod
@@ -1110,7 +1019,6 @@ def test_pinned_dial_probe_stays_affordable_for_many_records(monkeypatch):
 
 
 def test_pinned_dial_shares_what_is_left_so_no_address_strands_the_next(monkeypatch):
-    # The probe is a first look, not a verdict.
     import socket as _socket
 
     from core.inference import tools as tools_mod
@@ -1131,7 +1039,6 @@ def test_pinned_dial_shares_what_is_left_so_no_address_strands_the_next(monkeypa
     assert sock.address == (addresses[2], 443)
     assert [ip for ip, _timeout in calls] == list(addresses) * 2
     assert [timeout for _ip, timeout in calls[:3]] == [0.02] * 3
-    # The first fails for free, so the next share rises from a third to a half.
     assert calls[3][1] == pytest.approx((0.6 - 0.04) / 3, rel = 0.01)
     assert calls[4][1] == pytest.approx(calls[3][1] * 3 / 2, rel = 0.01)
     assert sock.timeout == 0.6
@@ -1156,7 +1063,6 @@ def test_pinned_https_connection_walks_a_bracketed_ipv6_host(monkeypatch):
 
 
 def test_pinned_http_handler_walks_through_a_real_opener(monkeypatch):
-    # urllib reaches the walk itself, through http_open; only the dial is faked.
     import socket as _socket
     import urllib.request
 
@@ -1196,7 +1102,6 @@ def test_pinned_http_handler_walks_through_a_real_opener(monkeypatch):
 
 
 def test_fetch_url_raw_pins_one_address_and_hands_urllib_every_address(monkeypatch):
-    # The URL pins one address, all of them reach the connection, response keeps all.
     import socket as _socket
     import urllib.error
     import urllib.request
@@ -1256,8 +1161,7 @@ def test_fetch_url_raw_pins_one_address_and_hands_urllib_every_address(monkeypat
     [
         (False, False, "https://203.0.113.7:8443/page?q=1"),
         (False, True, "https://203.0.113.7:8443/page?q=1"),
-        # The opt-out only applies to a proxied fetch: a direct one would resolve
-        # the hostname again, which is the DNS-rebinding hole it must not reopen.
+        # The opt-out only applies to proxied fetches; direct ones would reopen DNS rebinding.
         (True, False, "https://203.0.113.7:8443/page?q=1"),
         (True, True, "https://example.com:8443/page?q=1"),
     ],
@@ -1315,8 +1219,6 @@ def test_fetch_url_raw_dns_pinning_proxy_opt_out(
     )
     monkeypatch.setattr(urllib.request, "proxy_bypass", lambda host: False)
 
-    # No embedded credentials: the web access policy rejects those outright
-    # (see test_fetch_url_raw_rejects_embedded_credentials).
     err, body, _content_type = tools_mod._fetch_url_raw("https://example.com:8443/page?q=1")
 
     assert err is None
@@ -1330,9 +1232,7 @@ def test_fetch_url_raw_dns_pinning_proxy_opt_out(
 
 
 def test_fetch_url_raw_proxy_scheme_key_case_insensitive(monkeypatch):
-    # A Windows registry ProxyServer value keeps the case it was written in, so
-    # getproxies can return "HTTPS". ProxyHandler lowercases its keys, so an
-    # exact-case test here would disable a proxy that urllib would have used.
+    # Windows registry proxy keys keep their case while ProxyHandler lowercases them.
     import email
     import urllib.request
 
@@ -1385,9 +1285,7 @@ def test_fetch_url_raw_proxy_scheme_key_case_insensitive(monkeypatch):
 @pytest.mark.parametrize(
     "no_proxy,disable_dns_pinning,expected_url",
     [
-        # urllib tests NO_PROXY against Request.host, so a port-qualified entry only
-        # matches with the port: probing the bare hostname would call this proxied,
-        # keep the hostname, and let the direct connect re-resolve it.
+        # urllib tests NO_PROXY against Request.host, so port-qualified entries need the port.
         ("example.com:8443", True, "https://203.0.113.7:8443/page?q=1"),
         ("example.com", True, "https://203.0.113.7:8443/page?q=1"),
         ("other.example", True, "https://example.com:8443/page?q=1"),
@@ -1395,8 +1293,7 @@ def test_fetch_url_raw_proxy_scheme_key_case_insensitive(monkeypatch):
     ],
 )
 def test_fetch_url_raw_no_proxy_routing(monkeypatch, no_proxy, disable_dns_pinning, expected_url):
-    # Real getproxies/proxy_bypass here, not stubs: both read the environment first
-    # on every platform, and the point is to agree with what urllib actually does.
+    # Real getproxies/proxy_bypass, not stubs: the point is to agree with urllib.
     import email
     import urllib.request
 
@@ -1446,8 +1343,6 @@ def test_fetch_url_raw_no_proxy_routing(monkeypatch, no_proxy, disable_dns_pinni
     assert err is None
     assert body == "ok"
     assert [req.full_url for req in requested] == [expected_url]
-    # A bypassed host keeps its direct route: the pinned IP would never match the
-    # NO_PROXY entry, so the opener has to carry the decision instead.
     bypassed = expected_url.startswith("https://203.0.113.7")
     empty_proxy_handlers = [
         h for h in built[0] if isinstance(h, urllib.request.ProxyHandler) and not h.proxies
@@ -1456,8 +1351,6 @@ def test_fetch_url_raw_no_proxy_routing(monkeypatch, no_proxy, disable_dns_pinni
 
 
 def test_fetch_url_raw_rejects_embedded_credentials(monkeypatch):
-    # Credentials in the URL are blocked rather than stripped, so they can never
-    # leak to a redirect target or into logs.
     import core.inference.tools as tools_mod
 
     def resolve(host, port):
@@ -1474,7 +1367,6 @@ def test_fetch_url_raw_rejects_embedded_credentials(monkeypatch):
 
 
 def test_fetch_page_text_missing_content_type_html_sniffed(monkeypatch):
-    # A header-less server returning an HTML body must still be converted.
     def fake_fetch(
         url,
         timeout = 30,
@@ -1491,17 +1383,7 @@ def test_fetch_page_text_missing_content_type_html_sniffed(monkeypatch):
     assert "Uh oh!" not in out
 
 
-# ── implicit-close past unclosed inline descendants (finding 14) ──
-
-
-# ── nested hidden list/table contents must stay suppressed ──
-
-
 def test_nested_hidden_list_does_not_leak_child_items():
-    # The nested <ul> re-scopes the item, so the inner <li> is a DESCENDANT of the
-    # hidden outer <li>, not an optional-close sibling. Optional-end-tag recovery
-    # must not cross the intervening <ul>, or the outer li's hidden mark is popped
-    # and the nested text leaks.
     html = (
         "<body><ul>"
         "<li hidden>parent<ul><li>secret child</li></ul></li>"
@@ -1515,9 +1397,6 @@ def test_nested_hidden_list_does_not_leak_child_items():
 
 
 def test_nested_hidden_list_with_omitted_closes_stays_suppressed():
-    # Same leak, doubly nested with omitted </li>/</ul>. Every hidden descendant
-    # stays gone; the following visible sibling (which implicitly closes the hidden
-    # outer <li>) still renders.
     html = (
         "<body><ul>"
         "<li hidden>parent<ul><li>secret child<ul><li>deeper secret</ul></li></ul>"
@@ -1529,9 +1408,6 @@ def test_nested_hidden_list_with_omitted_closes_stays_suppressed():
     assert "secret child" not in out
     assert "deeper secret" not in out
     assert "visible sibling" in out
-
-
-# ── aggregate tiny <article> cards must not displace <main> (finding 15) ──
 
 
 def test_many_tiny_articles_do_not_displace_substantial_main():
@@ -1683,14 +1559,8 @@ def test_truncated_open_main_scope_is_scored_and_preferred():
     assert "Repository file tree and page chrome." not in out
 
 
-# ── overall fetch deadline + cancellation (no per-hop timeout blowup) ──
-
-
 def test_fetch_url_raw_overall_deadline_aborts_across_redirects(monkeypatch):
-    # Each hop advances a fake clock by 5s; an 8s overall budget is exhausted on the
-    # third hop even though every hop stays within its own socket timeout. Without
-    # the deadline this would redirect until the 5-hop cap, so the "timed out" error
-    # proves the overall budget aborted it, not the hop cap.
+    # 5s per hop vs an 8s budget: aborts on hop 3, well before the 5-hop cap.
     import urllib.request
     from urllib.error import HTTPError
 
@@ -1770,8 +1640,6 @@ def test_fetch_url_raw_host_headers_follow_each_hop(monkeypatch):
 
 
 def test_fetch_url_raw_cancel_event_aborts_before_network(monkeypatch):
-    # A set cancel_event (client disconnected) stops the fetch before it opens any
-    # socket, so a dropped stream cannot leave a tool blocking on the wire.
     import threading
     import urllib.request
 
@@ -1806,8 +1674,6 @@ def test_fetch_url_raw_cancel_event_aborts_before_network(monkeypatch):
 
 
 def test_fetch_page_text_shares_one_deadline_across_readme_and_fallback(monkeypatch):
-    # The README API attempt and its HTML fallback must draw from ONE budget: a
-    # failed API call cannot hand the fallback a fresh full timeout.
     seen_deadlines = []
 
     def fake_fetch(
@@ -1818,25 +1684,17 @@ def test_fetch_page_text_shares_one_deadline_across_readme_and_fallback(monkeypa
         cancel_event = None,
     ):
         seen_deadlines.append(deadline)
-        # Fail the README API so the HTML fallback also runs.
         return "Failed to fetch URL: HTTP 429 rate limited", "", ""
 
     monkeypatch.setattr("core.inference.tools._fetch_url_raw", fake_fetch)
     out = _fetch_page_text("https://github.com/unslothai/unsloth", timeout = 30)
     assert out == "Failed to fetch URL: HTTP 429 rate limited"
-    # Both attempts ran and shared the same, single deadline value.
     assert len(seen_deadlines) == 2
     assert seen_deadlines[0] is not None
     assert seen_deadlines[0] == seen_deadlines[1]
 
 
-# -- overall deadline reaches the body read, the resolver, and the query path --
-
-
 def test_fetch_url_raw_deadline_aborts_slow_body(monkeypatch):
-    # A server dribbling the body must not stretch the read past the overall
-    # deadline: the body is read in chunks with the budget re-checked between them,
-    # so a single slow resp.read cannot outlast the fetch budget.
     import email
     import urllib.request
 
@@ -1849,8 +1707,6 @@ def test_fetch_url_raw_deadline_aborts_slow_body(monkeypatch):
         headers = email.message_from_string("")
 
         def read(self, n = -1):
-            # One chunk, then jump the clock past the deadline so the next
-            # between-chunk budget check aborts instead of reading forever.
             clock["t"] += 10.0
             return b"x" * 16
 
@@ -1923,8 +1779,6 @@ def test_read_capped_body_deadline_bounds_a_real_socket_drip():
 
 
 def test_resolve_with_budget_aborts_on_slow_resolver(monkeypatch):
-    # getaddrinfo has no deadline of its own; a resolver slower than the budget must
-    # abort on time instead of blocking the whole fetch.
     import threading
 
     import core.inference.tools as tools_mod
@@ -1935,7 +1789,7 @@ def test_resolve_with_budget_aborts_on_slow_resolver(monkeypatch):
     release = threading.Event()
 
     def slow_resolve(host, port):
-        release.wait(5.0)  # block until released; the budget should abort first
+        release.wait(5.0)
         return True, "", ["203.0.113.7"]
 
     monkeypatch.setattr(tools_mod, "_validate_and_resolve_host", slow_resolve)
@@ -1961,8 +1815,6 @@ def test_resolve_with_budget_aborts_on_slow_resolver(monkeypatch):
 
 
 def test_web_search_query_cancelled_skips_search(monkeypatch):
-    # A pre-set cancel_event (client disconnected) skips the blocking DDGS query,
-    # matching the direct-URL path's cancellation.
     import sys
     import threading
     import types
@@ -1996,7 +1848,6 @@ def test_looks_like_html_document_only_matches_real_documents():
     assert _looks_like_html_document("<!doctype html><html><body>x</body></html>")
     assert _looks_like_html_document("\n  <HTML lang='en'>")
     assert _looks_like_html_document("<body><h1>x</h1></body>")
-    # Block tags a Markdown README can open with are NOT full documents.
     for frag in (
         "<blockquote>q</blockquote>",
         "<ul><li>x</li></ul>",
@@ -2006,7 +1857,6 @@ def test_looks_like_html_document_only_matches_real_documents():
         assert not _looks_like_html_document(frag), frag
 
 
-# <header> inside the selected scope (Wikipedia's Vector 2022 skin)
 def _interlanguage_list(count: int) -> str:
     return "".join(
         f'<li class="interlanguage-link">'
@@ -2051,7 +1901,6 @@ def test_link_only_article_header_reduces_to_its_heading():
 
 
 def test_article_header_byline_and_date_are_kept():
-    # Standard semantic blog markup: only near-pure link lists are furniture.
     body = (
         "<article><header><h1>Why Rust</h1><p>By Jane Doe</p>"
         "<time>2026-07-12</time><p>A summary of what this essay argues.</p></header>"
@@ -2065,7 +1914,6 @@ def test_article_header_byline_and_date_are_kept():
 
 
 def test_small_link_header_is_left_alone():
-    # Under the size floor there is nothing large enough to displace an article.
     body = (
         "<article><header><h1>Post title</h1>"
         "<a href='/subscribe'>Subscribe now</a></header><p>%s</p></article>"
@@ -2076,7 +1924,6 @@ def test_small_link_header_is_left_alone():
 
 
 def test_unclosed_header_does_not_swallow_the_body():
-    # Browsers adopt the rest of the subtree into an unclosed <header>.
     body = "<main><header><h1>Title</h1><p>%s</p></main>" % ("Article body text. " * 40)
     out = html_to_markdown(f"<body>{body}</body>", main_content = True)
     assert "Article body text." in out
@@ -2084,7 +1931,6 @@ def test_unclosed_header_does_not_swallow_the_body():
 
 
 def test_unclosed_header_with_many_headings_keeps_body():
-    # Headings survive, so a heading-rich page clears the size gate alone.
     sections = "".join(f"<h2>Section {i}</h2><p>{'Body prose here. ' * 10}</p>" for i in range(12))
     body = f"<main><header><h1>T</h1>{sections}</main>"
     out = html_to_markdown(f"<body>{body}</body>", main_content = True)
@@ -2111,7 +1957,6 @@ def test_header_kept_in_unscoped_conversion():
 
 
 def test_unclosed_header_in_truncated_scope_keeps_body():
-    # A capped fetch ends before </main>: the flushed segment must still carry its dropped prose.
     sections = "".join(
         f"<h2>Section {i} of the article</h2><p>{'Body prose here. ' * 10}</p>" for i in range(12)
     )
@@ -2132,7 +1977,6 @@ def test_sibling_card_does_not_beat_an_article_with_a_swallowed_body():
 
 
 def test_text_heavy_header_is_kept_even_when_longer_than_the_body():
-    # python.org keeps its hero carousel here, so size alone cannot condemn it.
     body = "<main><header><h1>Title</h1><p>%s</p></header><p>%s</p></main>" % (
         "Introductory hero text. " * 30,
         "The real body prose. " * 20,
@@ -2144,7 +1988,6 @@ def test_text_heavy_header_is_kept_even_when_longer_than_the_body():
 
 
 def test_unclosed_link_in_unclosed_header_keeps_the_body():
-    # The <a> adopts the body, so its text is not link furniture.
     body = "<main><header><h1>Title</h1><a href='/'>Home<p>%s</p>" % ("Article body text. " * 40)
     out = html_to_markdown(f"<body>{body}", main_content = True)
     assert "Article body text." in out
@@ -2168,7 +2011,6 @@ def test_entity_encoded_body_is_not_lost_to_an_unclosed_header():
 
 
 def test_header_closed_by_an_ancestor_is_kept_whole():
-    # Without a matching </header> the header may have adopted the body, so keep all.
     body = "<div><header><h1>Site</h1><ul>%s</ul></div><p>%s</p>" % (
         _interlanguage_list(300),
         "The real body prose. " * 20,
@@ -2189,7 +2031,6 @@ def test_unclosed_header_does_not_strip_a_short_article_it_adopted():
 
 
 def test_heading_inside_a_nested_buffer_is_kept_and_the_links_still_go():
-    # Teeing keeps the title without forcing the language list back in.
     body = (
         "<main><header><blockquote><h1>Page Title</h1></blockquote><ul>%s</ul></header><p>%s</p></main>"
         % (
@@ -2204,7 +2045,6 @@ def test_heading_inside_a_nested_buffer_is_kept_and_the_links_still_go():
 
 
 def test_long_hrefs_count_toward_the_header_size_floor():
-    # Short labels, huge destinations: the rendered links are what displace it.
     nav = "".join('<a href="https://e.com/p?%s=%d">L%d</a>' % ("q" * 1000, i, i) for i in range(30))
     body = "<main><header>%s</header><p>%s</p></main>" % (nav, "Article body. " * 30)
     out = html_to_markdown(f"<body>{body}</body>", main_content = True)
@@ -2231,7 +2071,6 @@ def test_long_hrefs_count_toward_the_header_size_floor():
             "Byline",
             id = "anchor_without_href_is_prose_not_link_furniture",
         ),
-        # The heading is kept anyway, so its size must not clear the floor for the metadata beside it.
         pytest.param(
             "<article><header><h1><a href='/p?%s'>Title</a></h1>"
             "<a href='/author/jane'>Jane</a></header><p>%s</p></article>",
@@ -2266,7 +2105,6 @@ def test_linked_heading_is_not_emitted_twice():
 
 
 def test_article_still_beats_a_bigger_card_after_its_header_goes():
-    # Dropped furniture is added back when ranking siblings, so a stripped header still wins.
     real = "<article><header><h1>Real</h1><ul>%s</ul></header><p>%s</p></article>" % (
         _interlanguage_list(300),
         "Short real body. " * 14,
@@ -2278,7 +2116,6 @@ def test_article_still_beats_a_bigger_card_after_its_header_goes():
 
 
 def test_furniture_only_card_does_not_suppress_the_main_it_sits_in():
-    # Furniture ranks, never makes eligible: a nav-only header returned a 225 char astro.build card.
     card = "<article><header>%s</header><p>%s</p></article>" % (
         "".join('<a href="/l%d">Language %d</a>' % (i, i) for i in range(120)),
         "Short teaser about the related thing, read more.",
@@ -2290,7 +2127,6 @@ def test_furniture_only_card_does_not_suppress_the_main_it_sits_in():
 
 
 def test_a_preserved_heading_is_terminated():
-    # The closing tag's blank line lands after the heading mark pops, so render must supply it.
     body = "<main><header><h1>Title</h1><ul>%s</ul></header>Article body text here.</main>" % (
         _interlanguage_list(300)
     )
@@ -2301,7 +2137,6 @@ def test_a_preserved_heading_is_terminated():
 
 
 def test_scope_holding_only_furniture_does_not_win_or_blank_the_page():
-    # Removed furniture must not make an empty candidate eligible, or the fetch returns nothing.
     body = "<main><header><ul>%s</ul></header></main><p>%s</p>" % (
         _interlanguage_list(300),
         "Real page body prose. " * 30,
@@ -2561,19 +2396,15 @@ def test_header_survives_every_buffer_combination(
         f"<p>{_GRID_BODY}</p></main></body>"
     )
     out = html_to_markdown(html, main_content = True)
-    # These hold for every shape, however malformed.
     assert "Article body sentence." in out, "body lost"
     assert out.strip(), "empty output"
     assert out.index("Article body sentence.") < 16000, "body pushed past the fetch cap"
-    # The title holds only for closed markup with no <pre>: there a heading is verbatim text, and
-    # unclosed shapes get best-effort recovery predating this pass.
     well_formed = close_header and close_nested and "pre" not in (wrapper, nested)
     if _GRID_HEADINGS[heading] and well_formed:
         assert out.count("Page Title") == 1, "title duplicated or lost"
 
 
 def test_a_stub_cannot_outrank_a_real_article_on_removed_navigation():
-    # A long title alone is not substantive retained content.
     stub = "<article><header><h1>%s</h1><ul>%s</ul></header></article>" % (
         "A Long Title That Exceeds Fifty Characters Easily Here",
         _interlanguage_list(300),
@@ -2584,7 +2415,6 @@ def test_a_stub_cannot_outrank_a_real_article_on_removed_navigation():
 
 
 def test_unclosed_link_in_a_closed_header_counts_as_furniture():
-    # The </header> proves the anchor did not adopt the body.
     body = "<main><header><h1>T</h1><a href='/nav'>%s</header><p>%s</p></main>" % (
         "Navigation label text. " * 20,
         "Article body. " * 30,
@@ -2605,7 +2435,6 @@ def test_enclosing_anchor_text_counts_toward_header_density():
 
 
 def test_truncated_header_flushes_into_its_enclosing_buffer():
-    # The header is inside the link/cell, so its text belongs there, in order.
     assert html_to_markdown(
         "<body><main><a href='/x'>before<header><h1>Title", main_content = True
     ).startswith("[before")
@@ -2615,7 +2444,6 @@ def test_truncated_header_flushes_into_its_enclosing_buffer():
 
 
 def test_empty_blocks_do_not_inflate_the_header_size():
-    # _cleanup collapses them, so the size threshold must see the cleaned form.
     body = (
         "<article><header><h1>%s</h1>%s<a href='/x'>L</a></header></article>"
         "<article><p>%s</p></article>"
@@ -2649,7 +2477,6 @@ def test_list_left_open_in_a_header_does_not_indent_the_body():
 
 
 def test_deeply_nested_headers_do_not_blow_up_quadratically():
-    # Header sizing must not rescan each parent's cumulative buffer.
     chunk = "<p>%s</p>" % ("filler text here. " * 100)
 
     def build(depth):
@@ -2668,7 +2495,6 @@ def test_deeply_nested_headers_do_not_blow_up_quadratically():
         start = time.perf_counter()
         html_to_markdown(html, main_content = True)
         timings.append(time.perf_counter() - start)
-    # Four times the depth and payload, nowhere near quadratic cost.
     assert timings[1] < timings[0] * 12, timings
 
 
@@ -2683,7 +2509,6 @@ def test_linked_heading_text_is_counted_once_for_the_size_floor():
 
 
 def test_fenced_code_counts_as_retained_content():
-    # A leading # inside a fence is a comment, not a heading; scoring it as one loses this article.
     code = "<pre>%s</pre>" % "\n".join("# comment line %d" % i for i in range(16))
     article = "<article><header><h1>T</h1><ul>%s</ul></header>%s</article>" % (
         _interlanguage_list(300),
@@ -2699,8 +2524,6 @@ _FENCE = "`" * 3
 
 
 def test_dropped_furniture_cannot_dominate_sibling_ranking():
-    # Credit must not decide the match: a teaser with a 1000 link header outranked five times its
-    # own real text.
     teaser = "<article><header>%s</header><p>%s</p></article>" % (
         "".join('<a href="/l%d">Lang%d</a>' % (i, i) for i in range(1000)),
         "Teaser words here. " * 20,
@@ -2712,7 +2535,6 @@ def test_dropped_furniture_cannot_dominate_sibling_ranking():
 
 
 def test_literal_bracket_paren_is_prose_not_a_destination():
-    # No [ opened it, so "](" is literal and the parens hold prose; skipping them scored 192 of 295.
     article = "<article><p>%s](%s) %s</p></article>" % (
         "Real article prose that the reader wants to see. " * 3,
         "y" * 100,
@@ -2725,8 +2547,6 @@ def test_literal_bracket_paren_is_prose_not_a_destination():
 
 
 def test_hand_preserved_heading_reaches_the_eligibility_tally():
-    # The partial branch writes the title straight into heading_parts, so the gate needs telling
-    # too or a title-only card reads as body prose.
     card = (
         '<article><header><a href="/h"><div role="heading">%s</div>%s</a><ul>%s</ul></header></article>'
         % (
@@ -2741,7 +2561,6 @@ def test_hand_preserved_heading_reaches_the_eligibility_tally():
 
 
 def test_pre_inside_a_table_cell_is_drained_before_the_row():
-    # The row is emitted, so an open <pre> swallowed it into a fence as CODEMARKER|  |.
     body = "<main><header><h1>T</h1><table><tr><td><pre>CODEMARKER</header><p>%s</p></main>" % (
         "Article body. " * 30,
     )
@@ -2751,8 +2570,6 @@ def test_pre_inside_a_table_cell_is_drained_before_the_row():
 
 
 def test_post_processing_respects_the_widened_fence():
-    # Both passes toggled on any ``` line, so the literal one closed the block and its code was
-    # cleaned and de-boilerplated.
     code = "<pre>%s\nskip to content\n\nreal code line   \nmore code</pre>" % _FENCE
     body = "<article>%s<p>%s</p></article>" % (code, "Body text here. " * 20)
     out = html_to_markdown(f"<body><main>{body}</main></body>", main_content = True)
@@ -2762,7 +2579,6 @@ def test_post_processing_respects_the_widened_fence():
 
 
 def test_unbalanced_destination_keeps_scoring_the_rest_of_the_line():
-    # /docs/(draft never balances, so it is not a link; the scan must keep the prose on that line.
     article = '<article><p><a href="/docs/(draft">Doc</a> %s</p></article>' % (
         "Substantial article prose continues here. " * 6,
     )
@@ -2773,8 +2589,6 @@ def test_unbalanced_destination_keeps_scoring_the_rest_of_the_line():
 
 
 def test_structural_headings_do_not_satisfy_the_eligibility_gate():
-    # role="heading" renders as prose, so ATX reparsing missed it and a header-only card cleared
-    # the gate on its title plus dropped-list credit.
     card = '<article><header><div role="heading">%s</div><ul>%s</ul></header></article>' % (
         "Card Title Words " * 14,
         _interlanguage_list(300),
@@ -2786,7 +2600,6 @@ def test_structural_headings_do_not_satisfy_the_eligibility_gate():
 
 
 def test_anchor_wrapping_a_heading_preserves_only_the_heading():
-    # <a><h1>Title</h1>...nav...</a> carries a title; teeing the whole anchor returned 14k of nav.
     bulk = " ".join("NavWord%04d" % i for i in range(1200))
     body = (
         '<main><header><a href="/home"><h1>Title</h1>%s</a><ul>%s</ul></header><p>%s</p></main>'
@@ -2803,7 +2616,6 @@ def test_anchor_wrapping_a_heading_preserves_only_the_heading():
 
 
 def test_link_destination_scan_balances_parentheses():
-    # A destination may hold parens, so stopping at the first ) scored the rest of the URL as prose.
     query = "utm_source=x&" * 25
     card = '<article><header>%s</header><p><a href="/card(foo)?%s">Read</a></p></article>' % (
         "".join('<a href="/l%d">Lang%d</a>' % (i, i) for i in range(120)),
@@ -2816,7 +2628,6 @@ def test_link_destination_scan_balances_parentheses():
 
 
 def test_literal_fence_inside_pre_does_not_end_the_code_region():
-    # A ``` line in the source is content; ending the fence there made the rest read as headings.
     code = "<pre>%s\n%s</pre>" % (
         _FENCE,
         "\n".join("# code line %d" % i for i in range(20)),
@@ -2832,7 +2643,6 @@ def test_literal_fence_inside_pre_does_not_end_the_code_region():
 
 
 def test_heading_through_a_nested_buffer_is_emitted_once():
-    # The title was teed entering the blockquote and again on flush, so it was kept twice.
     body = (
         '<main><header><div role="heading"><blockquote>UniqueTitle</blockquote></div><ul>%s</ul></header><p>%s</p></main>'
         % (
@@ -2845,7 +2655,6 @@ def test_heading_through_a_nested_buffer_is_emitted_once():
 
 
 def test_late_code_end_tag_after_a_recovered_header_is_a_no_op():
-    # </code> arrives after </header>; the frame already closed the span, so a second emit is odd.
     body = "<main><header><h1>T</h1><code>navcode<ul>%s</ul></header><p>%s</p></code></main>" % (
         _interlanguage_list(300),
         "Article body. " * 30,
@@ -2856,7 +2665,6 @@ def test_late_code_end_tag_after_a_recovered_header_is_a_no_op():
 
 
 def test_header_text_is_sized_after_whitespace_collapses():
-    # The run collapses to one space, so counting it raw pushed a short byline over the floor.
     byline = '<a href="/a">Jane%sDoe</a><time>July 2026</time>' % (" " * 300)
     body = "<main><header><h1>T</h1>%s</header><p>%s</p></main>" % (
         byline,
@@ -2868,7 +2676,6 @@ def test_header_text_is_sized_after_whitespace_collapses():
 
 
 def test_link_destinations_do_not_count_as_retained_prose():
-    # A tracking URL is not prose: this card shows 4 visible chars but its destination scored 339.
     query = "utm_source=x&" * 25
     card = '<article><header>%s</header><p><a href="/card?%s">Read</a></p></article>' % (
         "".join('<a href="/l%d">Lang%d</a>' % (i, i) for i in range(120)),
@@ -2881,7 +2688,6 @@ def test_link_destinations_do_not_count_as_retained_prose():
 
 
 def test_late_end_tag_cannot_replay_a_recovered_pre_block():
-    # </header> arrives while <pre> is open, so the frame drains it; the later </pre> replayed it.
     body = "<main><header><h1>T</h1><ul>%s</ul><pre>%s</header><p>%s</p></pre></main>" % (
         _interlanguage_list(300),
         "NAVJUNK_MARKER\n" * 3,
@@ -2893,7 +2699,6 @@ def test_late_end_tag_cannot_replay_a_recovered_pre_block():
 
 
 def test_aria_heading_accepts_a_fallback_role_token_list():
-    # role is a token list authors use for fallbacks, so an exact match dropped the title.
     assert _is_aria_heading({"role": "heading"})
     assert _is_aria_heading({"role": "future-role heading"})
     assert _is_aria_heading({"role": "HEADING"})
@@ -2923,7 +2728,6 @@ def test_aria_heading_accepts_a_fallback_role_token_list():
     ],
 )
 def test_heading_survives_a_stripped_header(heading_markup, marker):
-    # However the title is expressed, reducing a link-only header keeps it and nothing else.
     body = "<main><header>%s<ul>%s</ul></header><p>%s</p></main>" % (
         heading_markup,
         _interlanguage_list(300),
@@ -2938,11 +2742,8 @@ def test_heading_survives_a_stripped_header(heading_markup, marker):
 @pytest.mark.parametrize(
     "body_markup",
     [
-        # The blockquote encloses the header, so its content belongs to the frame.
         "<main><blockquote><header><h1>T</h1><ul>{links}</ul></header></blockquote><p>{body}</p></main>",
-        # </blockquote> omitted: the frame must claim the content before judging.
         "<main><header><h1>T</h1><blockquote><ul>{links}</ul></header><p>{body}</p></main>",
-        # </td> omitted, same requirement through the cell buffer.
         "<main><header><h1>T</h1><table><tr><td><ul>{links}</ul></header><p>{body}</p></main>",
     ],
 )
@@ -2954,7 +2755,6 @@ def test_link_list_is_stripped_through_a_nested_buffer(body_markup):
 
 
 def test_hash_prefixed_prose_still_wins_its_scope():
-    # Every line opens with a hash, so treating those as headings left the scope looking empty.
     lines = "".join("<p>#include &lt;header_%02d.h&gt;</p>" % i for i in range(14))
     article = "<article><header><h1>T</h1><ul>%s</ul></header>%s</article>" % (
         _interlanguage_list(300),
@@ -2967,7 +2767,6 @@ def test_hash_prefixed_prose_still_wins_its_scope():
 
 
 def test_header_size_is_independent_of_the_buffer_it_renders_through():
-    # Text counted entering a nested buffer AND on flush doubled it, so links stripped once quoted.
     links = "".join(
         '<a href="/very/long/section/path/number/%03d/index">L%03d</a>' % (i, i) for i in range(14)
     )
@@ -2987,7 +2786,6 @@ def test_header_size_is_independent_of_the_buffer_it_renders_through():
 
 
 def test_nested_inline_code_closes_every_span_it_opened():
-    # Two <code> elements owe two backticks; as a flag the first </code> answered for both.
     body = "<main><article><p><code><code>x</code></code></p><p>%s</p></article></main>" % (
         "Body text here. " * 20,
     )
@@ -2997,7 +2795,6 @@ def test_nested_inline_code_closes_every_span_it_opened():
 
 
 def test_header_inside_open_inline_code_leaves_delimiters_paired():
-    # The <code> opened outside the header, so closing it in the frame left </code> unpaired.
     body = "<main><code>head<header><h1>T</h1></header>tail</code><p>%s</p></main>" % (
         "Article body. " * 30,
     )
@@ -3024,7 +2821,6 @@ def test_nested_blockquote_prose_does_not_backtrack():
 
 
 def test_deeply_nested_tags_stay_linear():
-    # _close_implicit must not rescan the whole open-tag stack per start tag.
     import time
 
     def build(count):
@@ -3040,5 +2836,4 @@ def test_deeply_nested_tags_stay_linear():
         start = time.perf_counter()
         html_to_markdown(build(count), main_content = True)
         timings.append(time.perf_counter() - start)
-    # Four times the tags, well under sixteen times the work.
     assert timings[1] < timings[0] * 12, timings

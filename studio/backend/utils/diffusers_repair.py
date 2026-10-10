@@ -27,17 +27,14 @@ DISABLE_ENV_VAR = "UNSLOTH_DISABLE_DIFFUSERS_AUTOREPAIR"
 _STUDIO_DIR = Path(__file__).resolve().parents[2]
 _INSTALLER = _STUDIO_DIR / "install_python_stack.py"
 _MAIN_PIN = _STUDIO_DIR / "backend" / "requirements" / "diffusers-main.txt"
-# Inside the desktop app's 300 s start deadline, with room left for the app import after it.
+# Inside the desktop app's 300 s start deadline, leaving room for the app import.
 _REPAIR_TIMEOUT_S = 120
-# The install from uv's cache takes about a second, so this only matters behind a slow prefetch.
 _INSTALL_MIN_TIMEOUT_S = 30
-# The installer's exit codes for --repair-diffusers-main.
 _INSTALLED, _NOTHING_TO_DO = 0, 1
-# The installer's DIFFUSERS_MAIN_MIN_PYTHON: diffusers main needs 3.10, and 3.9 stays supported.
+# Mirrors the installer's DIFFUSERS_MAIN_MIN_PYTHON.
 _MAIN_MIN_PYTHON = (3, 10)
 
-# Unattended, so secrets and index redirects stay out, as in mlx_repair. The Windows names are what
-# Python, git and uv need to start at all there; UV_OFFLINE is the operator's no-network switch.
+# Unattended, so secrets and index redirects stay out; Windows names are needed to start.
 _ENV_ALLOWLIST = frozenset(
     {
         "PATH",
@@ -150,7 +147,7 @@ def _diffusers_is_an_index_install() -> bool:
         payload = {}
     if not isinstance(payload, dict):
         return True
-    # dir_info is a local checkout, `pip install -e` included: the user's, not ours to replace.
+    # dir_info is a local checkout (including editable installs): not ours to replace.
     return not ("vcs_info" in payload or "archive_info" in payload or "dir_info" in payload)
 
 
@@ -162,7 +159,7 @@ def _repair_env() -> dict[str, str]:
         uv = _uv_executable()
     except Exception:  # noqa: BLE001 - without uv the installer falls back to pip
         uv = None
-    # A GUI launch starts with a minimal PATH, and the installer looks uv up there.
+    # A GUI launch has a minimal PATH, and the installer looks uv up there.
     if uv:
         env["PATH"] = os.pathsep.join(filter(None, (str(Path(uv).parent), env.get("PATH"))))
     return env
@@ -245,7 +242,7 @@ def _run_installer(flag: str, timeout: float) -> "tuple[int | None, str]":
         errors = "replace",
         **kwargs,
     )
-    # Tracked, so a backend that exits mid-install takes the installer and its uv/git children down.
+    # Tracked so a backend exit mid-install also kills the installer and its children.
     adopt_pid(proc.pid)
     try:
         output, _ = proc.communicate(timeout = timeout)
@@ -267,15 +264,14 @@ def _run_repair(
 ) -> bool:
     started = time.monotonic()
     if prefetch:
-        # The slow part (clone or download, then build) goes into uv's cache only, so stopping it
-        # at the deadline leaves site-packages untouched and the app can import as it is.
+        # The slow part only fills uv's cache, so stopping it leaves site-packages untouched.
         try:
             code, output = _run_installer("--prefetch-diffusers-main", _REPAIR_TIMEOUT_S)
         except OSError as exc:
             logger.warning("diffusers self-heal could not start the installer: %s", exc)
             return False
         if code is None:
-            # The prefetch takes no lock, so a peer may have started replacing packages meanwhile.
+            # The prefetch takes no lock, so a peer may have started replacing packages.
             if _peer_holds_pass():
                 logger.warning("diffusers self-heal timed out while a peer's dependency pass ran")
                 raise PeerInstallInProgress(PEER_INSTALL_MESSAGE)
@@ -287,7 +283,6 @@ def _run_repair(
             logger.warning("diffusers self-heal timed out after %ss", _REPAIR_TIMEOUT_S)
             return False
         if code not in (0, _NOTHING_TO_DO):
-            # The install below is authoritative: it fetches for itself and records its own failure.
             logger.warning("diffusers prefetch failed. Installer output:\n%s", output[-4000:])
     budget = max(_INSTALL_MIN_TIMEOUT_S, _REPAIR_TIMEOUT_S - (time.monotonic() - started))
     try:
@@ -296,12 +291,10 @@ def _run_repair(
         logger.warning("diffusers self-heal could not start the installer: %s", exc)
         return False
     if code is None:
-        # A remaining lock belongs to a peer. Abort without changing its manifest.
         if _peer_holds_pass():
             logger.warning("diffusers self-heal timed out behind a peer's dependency pass")
             raise PeerInstallInProgress(PEER_INSTALL_MESSAGE)
-        # Ours, and possibly stopped part way through replacing packages: importing them is unsafe.
-        # Not recorded as failed, so the next start retries from uv's cache.
+        # Possibly stopped mid-replace, so importing is unsafe; not recorded as failed to retry.
         logger.warning("diffusers self-heal install stopped after %.0fs", budget)
         raise InstallInterrupted(INTERRUPTED_MESSAGE)
     if code == _INSTALLED:
@@ -340,8 +333,7 @@ def repair_diffusers_before_imports(echo: Callable[[str], None] = lambda _line: 
     if candidate and not _installer_would_skip(main_active):
         loaded = _loaded_replaceable_modules()
         if loaded:
-            # An embedding host (a notebook kernel) imported them already; replacing the files
-            # under those modules is what this repair exists to avoid.
+            # An embedding host already imported them; replacing files under it is what we avoid.
             echo(
                 f"  - skipped the pinned Diffusers build: {', '.join(loaded)} is already imported "
                 "in this process; run `unsloth studio update`, then restart it"

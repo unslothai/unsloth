@@ -68,7 +68,7 @@ def suggestions_for_host(models: Iterable[str], device) -> list[str]:
 
 
 def get_default_models() -> list[str]:
-    device = hw.get_device()  # ensures detect_hardware() has run
+    device = hw.get_device()
     if hw.CHAT_ONLY:
         return list(DEFAULT_MODELS_GGUF)
     return suggestions_for_host(DEFAULT_MODELS_STANDARD, device)

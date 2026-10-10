@@ -414,11 +414,9 @@ def test_the_load_refuses_to_spawn_another_accelerators_build(monkeypatch):
     monkeypatch.setattr(sd_cpp_backend, "_installed_accelerator_of", lambda _b: "rocm")
     with pytest.raises(RuntimeError, match = "needs the cuda"):
         sd_cpp_backend._refuse_off_torch_build_mismatch(device, "/opt/sd/sd-server")
-    # An unrecorded build (SD_SERVER_PATH) cannot be shown to be CUDA either.
     monkeypatch.setattr(sd_cpp_backend, "_installed_accelerator_of", lambda _b: None)
     with pytest.raises(RuntimeError, match = "unrecorded"):
         sd_cpp_backend._refuse_off_torch_build_mismatch(device, "/opt/sd/sd-server")
-    # Torch-placed loads are untouched.
     sd_cpp_backend._refuse_off_torch_build_mismatch(None, "/opt/sd/sd-server")
 
 
@@ -429,10 +427,8 @@ def test_an_in_flight_off_torch_load_counts_as_off_torch():
         repo_id = "org/m", base_repo = "org/m", off_torch_device = "nvidia:0"
     )
     assert backend.runs_off_torch_device is True
-    # A torch-placed resident beside it still has to be freed.
     backend._state = _state()
     assert backend.runs_off_torch_device is False
-    # A failed load holds nothing.
     backend._state = None
     backend._loading.error = "boom"
     assert backend.runs_off_torch_device is False
@@ -449,7 +445,6 @@ def test_prediction_filters_a_leftover_build_like_selection(monkeypatch, install
     monkeypatch.setattr(r, "ensure_sd_server_binary", lambda **_: "/opt/sd/sd-server")
     monkeypatch.setattr(sd_cpp_backend, "_installed_accelerator_of", lambda _b: "rocm")
     predicted = r.predict_engine(detect_family("z-image"), model_kind = "gguf")
-    # Installs allowed: the load replaces the ROCm build with the CUDA one, so native is right.
     assert predicted == (ENGINE_SD_CPP if install_allowed else ENGINE_DIFFUSERS)
     if not install_allowed:
         r.select_and_activate_engine(detect_family("z-image"))
@@ -527,7 +522,6 @@ def test_a_refused_fallback_keeps_the_resident_engine(monkeypatch):
     with pytest.raises(RuntimeError, match = "training"):
         r.select_and_activate_engine(detect_family("z-image"), before_fallback = _refuse)
     assert activated == []
-    # Without a guard the fallback still activates as before.
     r.select_and_activate_engine(detect_family("z-image"))
     assert activated and activated[-1][0] == ENGINE_DIFFUSERS
 

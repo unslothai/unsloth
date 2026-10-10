@@ -25,10 +25,10 @@ class _Files:
 
     def __init__(self) -> None:
         self.ranges: list[str | None] = []
-        # Bytes each successive response sends before closing the connection; None sends it all.
+        # bytes each response sends before closing; None sends it all
         self.cut_after: list[int | None] = []
         self.ignore_range = False
-        # Answers a Range request with 206 from byte 0, as a broken cache might.
+        # answers a Range request with 206 from byte 0, as a broken cache might
         self.wrong_range = False
         self.status: int | None = None
         files = self
@@ -112,13 +112,13 @@ def test_files_land_whole_with_progress_over_the_model(files, tmp_path):
     assert not list(tmp_path.glob("*.partial"))
     percents = _percents(events)
     assert percents == sorted(percents) and percents[-1] == 99
-    # One event per percent, over the whole model; lemond's pull then brings the 100.
+    # one event per percent; lemond's pull then brings the 100
     assert len(events) <= 100 + 2
     assert {event["bytes_total"] for event in events} == {len(WEIGHTS) + len(CONFIG)}
 
 
 def test_a_dropped_connection_continues_from_the_byte_it_reached(files, tmp_path):
-    files.cut_after = [None, 1 << 20, 5000]  # config.json whole, then the weights in three goes
+    files.cut_after = [None, 1 << 20, 5000]
     list(ff.download_files(files.model(tmp_path)))
     assert (tmp_path / "model.q4nx").read_bytes() == WEIGHTS
     assert files.ranges == [None, None, f"bytes={1 << 20}-", f"bytes={(1 << 20) + 5000}-"]
@@ -142,7 +142,7 @@ def test_an_interrupted_download_resumes_in_the_next_one(files, tmp_path):
 
 
 def test_a_prefix_fastflowlm_left_under_the_final_name_is_continued(files, tmp_path):
-    # A killed `flm pull` leaves this, and FastFlowLM would then take the model as complete.
+    # a killed `flm pull` leaves this, and FastFlowLM would take the model as complete
     (tmp_path / "config.json").write_bytes(CONFIG)
     (tmp_path / "model.q4nx").write_bytes(WEIGHTS[:4096])
     list(ff.download_files(files.model(tmp_path)))
@@ -158,8 +158,7 @@ def test_a_server_that_ignores_range_sends_the_file_again(files, tmp_path):
 
 
 def test_refetching_the_same_prefix_is_not_progress(files, tmp_path):
-    # A server that ignores Range and drops every connection early restarts the file each time,
-    # never passing the byte already reached; that must count as stalled, not loop forever.
+    # a server ignoring Range restarts the file each time; must count as stalled, not loop
     (tmp_path / "config.json").write_bytes(CONFIG)
     (tmp_path / "model.q4nx.partial").write_bytes(WEIGHTS[:4096])
     files.ignore_range = True
@@ -173,7 +172,6 @@ def test_a_restart_that_passes_the_furthest_byte_is_progress(files, tmp_path):
     (tmp_path / "config.json").write_bytes(CONFIG)
     (tmp_path / "model.q4nx.partial").write_bytes(WEIGHTS[:4096])
     files.ignore_range = True
-    # Four stalls, a restart that gets past byte 4096, then four more stalls before it lands.
     files.cut_after = [1000] * 4 + [6000] + [1000] * 4
     list(ff.download_files(files.model(tmp_path)))
     assert len(files.ranges) == 10

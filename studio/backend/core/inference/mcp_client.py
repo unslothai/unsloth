@@ -43,9 +43,7 @@ MCP_TOOL_PREFIX = "mcp__"
 _WINDOWS_BATCH_ALWAYS_UNSAFE_ARGUMENT_CHARS = frozenset('%!"\r\n')
 _WINDOWS_BATCH_UNQUOTED_UNSAFE_ARGUMENT_CHARS = frozenset("&|<>^()")
 
-# A failed probe isn't cached (a recovered server must come back), but it's recorded so a down server isn't re-probed
-# -- and the chat send re-hung for the full timeout -- on every message. Cool off for this long after a failure; much
-# longer for OAuth, whose probe can hang up to _OAUTH_PROBE_TIMEOUT, so that hang doesn't recur every minute.
+# Failed probes are not cached but cool off, so a down server doesn't hang every send.
 FAILED_PROBE_COOLOFF_SECONDS = 60.0
 OAUTH_FAILED_PROBE_COOLOFF_SECONDS = 300.0
 
@@ -90,7 +88,7 @@ def _public_mcp_address(url: str) -> str:
 
 
 def validate_mcp_address(url: str) -> None:
-    # Studio's own Decisions server is answered in process; with a local model no request leaves this machine.
+    # Decisions is answered in process; with a local model no request leaves this machine.
     if not _managed_mcp_restricted() or (is_studio_decisions(url) and _local_decisions()):
         return
     if is_stdio(url):
@@ -173,8 +171,7 @@ def _split_windows_command_line(address: str) -> list[str]:
             backslashes = 0
             i += 1
             continue
-        # subprocess.list2cmdline() implements the MS C runtime grammar: only space and tab delimit arguments. Other
-        # Unicode/control whitespace is ordinary argument data and must not be split here.
+        # list2cmdline (MS C runtime) splits only on space and tab.
         if ch in (" ", "\t") and not in_quotes:
             if backslashes:
                 current.extend("\\" * backslashes)
@@ -313,8 +310,7 @@ def stdio_mcp_disabled_reason() -> str:
     )
 
 
-# Probe timeouts for discovering a server's tool list. OAuth needs minutes for first-connect/expired-token browser
-# sign-in; stdio allows for first-run package download (e.g. `npx -y ...`); HTTP fails fast.
+# OAuth needs minutes for browser sign-in; stdio allows first-run package download.
 _HTTP_PROBE_TIMEOUT = 8.0
 _OAUTH_PROBE_TIMEOUT = 305.0
 _STDIO_PROBE_TIMEOUT = 60.0
@@ -359,8 +355,7 @@ def _oauth_store():
         from key_value.aio.stores.filetree import FileTreeStore
         from utils.paths.storage_roots import ensure_dir, studio_root
 
-        # Hash keys/collections: fastmcp uses raw URLs as keys, and FileTreeStore would treat the "://" as nested
-        # directories.
+        # Hash keys: FileTreeStore treats '://' in raw URLs as nested directories.
         _oauth_token_store = FileTreeStore(
             data_directory = ensure_dir(studio_root() / "mcp-oauth-tokens"),
             key_sanitization_strategy = AlwaysHashStrategy(),
@@ -598,7 +593,6 @@ def _client(
         return Client(decisions_mcp)
 
     if is_stdio(url):
-        # Belt-and-suspenders: never spawn unless stdio is enabled on this host.
         if not stdio_mcp_enabled():
             raise PermissionError("stdio MCP servers are disabled on this host")
         from fastmcp.client.transports import StdioTransport
@@ -606,8 +600,7 @@ def _client(
         parts = parse_stdio_command(url)
         if not parts:
             raise ValueError(f"Empty stdio command: {url!r}")
-        # env vars ride the headers field (merged over the SDK default env). keep_alive=False tears the subprocess
-        # down so a one-shot call leaves no orphan.
+        # keep_alive=False tears the subprocess down so a one-shot call leaves no orphan.
         env = _stdio_env(headers, parts[0])
         argv = _stdio_argv(parts, env)
         return Client(
@@ -652,16 +645,13 @@ _SESSION_CLOSE_TIMEOUT = 10.0
 _SESSION_WEDGE_MARGIN = 15.0
 _SESSION_LIVENESS_TIMEOUT = 5.0
 _CANCEL_UNWIND_TIMEOUT = 2.0
-# An HTTP session idle this long is re-proved with tools/list before the next dispatch: the server may have expired it
-# (MCP says a server MAY terminate a session at any time), and no HTTP transport exposes a liveness probe we can ask
-# instead -- see _transport_dead.
+# Servers may expire idle sessions and HTTP has no liveness probe, so re-prove with tools/list.
 _HTTP_IDLE_RECHECK = 30.0
 _DEFAULT_MAX_SESSIONS = 32
 
 
 def _max_sessions_from_env() -> int:
-    # The cap covers stdio and HTTP sessions alike now, so the stdio-specific name is wrong; keep honouring it so
-    # deployments that already set it do not silently jump back to the default.
+    # Legacy stdio-specific name; still honoured for existing deployments.
     raw = os.environ.get("UNSLOTH_STUDIO_MAX_MCP_SESSIONS")
     if raw is None:
         raw = os.environ.get("UNSLOTH_STUDIO_MAX_STDIO_MCP_SESSIONS")
@@ -769,7 +759,7 @@ def _needs_idle_recheck(session, idle_for: float, remaining: Optional[float]) ->
     avoid."""
     if is_stdio(session.url):
         return False
-    # Negative means this borrower connected the session itself, so the handshake it just completed is proof enough.
+    # Negative = this borrower just connected it; the handshake is proof enough.
     if idle_for < 0.0 or idle_for < _HTTP_IDLE_RECHECK:
         return False
     return remaining is None or remaining > _SESSION_LIVENESS_TIMEOUT * 2
@@ -797,7 +787,6 @@ def _session_responsive(
         return False
     window = _SESSION_LIVENESS_TIMEOUT if budget is None else min(_SESSION_LIVENESS_TIMEOUT, budget)
     if window <= 0:
-        # No budget left to ask in; that is not evidence either way.
         return not timeout_is_fatal
     probe = getattr(client, "list_tools_mcp", None) or client.list_tools
     try:
@@ -808,9 +797,7 @@ def _session_responsive(
     except (asyncio.TimeoutError, _SessionWedged):
         return not timeout_is_fatal
     except Exception as exc:  # noqa: BLE001
-        # A JSON-RPC error (a rate limit, a permission rule on tools/list) is the server answering on this very
-        # session, exactly as it is for call_tool. Reconnecting would throw away the chat's state over a reply that
-        # proves the transport works.
+        # A JSON-RPC error means the transport works; reconnecting would lose session state.
         if not _is_protocol_error(exc):
             return False
     session.dirty = False
@@ -827,7 +814,6 @@ class _SessionClosed(Exception):
 
 
 def _abort_future(future) -> None:
-    # Let the cancelled coroutine unwind before its loop is stopped.
     future.cancel()
     try:
         future.result(1.0)
@@ -842,9 +828,7 @@ class _McpSession:
         headers: Optional[dict],
         use_oauth: bool = False,
     ):
-        # A cached session is built by _client(url, headers) with no auth, so an OAuth server must never reach here.
-        # call_tool_sync already routes it to the one-shot path; this makes a future routing slip fail loudly rather
-        # than quietly talk to an OAuth server unauthenticated.
+        # Cached sessions carry no auth; fail loudly rather than talk to an OAuth server unauthenticated.
         if use_oauth and not is_stdio(url):
             raise ValueError("OAuth MCP servers cannot use a shared session")
         self.url = url
@@ -856,18 +840,13 @@ class _McpSession:
         self.dirty = False  # a call was abandoned on it; ping before reuse
         self._close_lock = threading.Lock()
         self.call_lock = threading.Lock()
-        # One stdio subprocess is one ordered byte stream, so overlapping calls must not interleave on it. HTTP has no
-        # such constraint: every JSON-RPC message is its own POST and the spec lets a client keep several streams open
-        # at once, so serializing it would only undo the parallelism the one-shot path had.
+        # stdio is one ordered byte stream; HTTP POSTs can run in parallel.
         self.serialize_calls = is_stdio(url)
         self.last_used = time.monotonic()
-        # When the transport was last shown to be alive, as opposed to merely borrowed. Checkout refreshes last_used
-        # immediately, so the idle gap the recheck needs has to be measured from here or a second borrower arriving
-        # during the first one's probe would see no gap at all.
+        # Measured from proof of life, not checkout, so a concurrent borrower still sees the idle gap.
         self.proved_at = self.last_used
         self.in_flight = 0  # guarded by _mcp_sessions_lock
-        # On Windows a bare new_event_loop() can be a SelectorEventLoop (if any component set that policy), which
-        # cannot spawn subprocesses natively; force a ProactorEventLoop so the stdio transport always works.
+        # Windows: force ProactorEventLoop; SelectorEventLoop cannot spawn subprocesses.
         if sys.platform == "win32":
             self.loop = asyncio.ProactorEventLoop()
         else:
@@ -886,14 +865,11 @@ class _McpSession:
         async def _open():
             client = _client(self.url, self.headers)
             await client.__aenter__()
-            # Publish on the loop thread with no await in between: if an abort races a just-completed connect, close()
-            # still sees the client and __aexit__s it instead of orphaning the subprocess.
+            # No await between: close() must see the client after a racing abort.
             self.client = client
             return client
 
         future = asyncio.run_coroutine_threadsafe(_open(), self.loop)
-        # timeout=None means unlimited (no connect deadline); a finite caller timeout bounds connect by
-        # _connect_window(), which caps stdio at its cold-start limit and hands HTTP the whole remaining budget.
         window = _connect_window(self.url, timeout)
         deadline = None if window is None else time.monotonic() + window
         while True:
@@ -905,7 +881,7 @@ class _McpSession:
                 return
             except (concurrent.futures.TimeoutError, asyncio.TimeoutError):
                 if future.done():
-                    raise  # the connect itself failed fast; don't wait out the window
+                    raise
                 if deadline is not None and time.monotonic() >= deadline:
                     _abort_future(future)
                     raise _ConnectTimeout(window)
@@ -928,21 +904,17 @@ class _McpSession:
     ):
         self.last_used = time.monotonic()
         future = asyncio.run_coroutine_threadsafe(coro, self.loop)
-        # The coroutine enforces the tool timeout; the margin only catches a wedged loop. No deadline at all when the
-        # caller set none -- but poll so a session closed under us (server update/delete) can't hang the request
-        # thread forever on a stopped loop. Callers whose whole budget is the timeout (the liveness probe) pass
-        # margin=0.
+        # Margin only catches a wedged loop; poll so a closed session can't hang forever.
         deadline = None if timeout is None else time.monotonic() + timeout + margin
         try:
             while True:
                 try:
                     return future.result(0.25)
                 except concurrent.futures.CancelledError:
-                    # Only close() cancels in-flight tasks (in _shutdown).
                     raise _SessionClosed
                 except (concurrent.futures.TimeoutError, asyncio.TimeoutError):
                     if future.done():
-                        raise  # the call's own timeout; the session stays usable
+                        raise
                     if self.closed.is_set():
                         future.cancel()
                         raise _SessionClosed
@@ -953,7 +925,6 @@ class _McpSession:
             self.last_used = time.monotonic()
 
     def close(self) -> None:
-        # Setting `closed` first also unblocks run() waiters (they poll it).
         with self._close_lock:
             if self.closed.is_set():
                 return
@@ -968,8 +939,6 @@ class _McpSession:
                 client, self.client = self.client, None
                 if client is not None:
                     await client.__aexit__(None, None, None)
-                # Cancel in-flight calls so they unwind before loop.stop (their run() waiters have already been
-                # released via `closed`).
                 for task in asyncio.all_tasks():
                     if task is not asyncio.current_task():
                         task.cancel()
@@ -1008,17 +977,12 @@ class _McpKeyLock:
 _mcp_key_locks: dict[tuple, _McpKeyLock] = {}
 _mcp_sessions_lock = threading.Lock()
 _mcp_reaper_started = False
-# Sessions discarded while somebody else was mid-call, closed by one worker off the request path. See _close_detached.
 _mcp_cleanup_lock = threading.Lock()
 _mcp_cleanup_queue: list = []
-# Depth past which an evicting caller closes the overflow itself. See _close_detached.
 _MAX_PENDING_CLOSES = 8
-# How wide close_mcp_sessions fans out. See _close_all.
 _MAX_CLOSE_THREADS = 16
 _mcp_cleanup_worker: Optional[threading.Thread] = None
-# close_mcp_sessions() can only close sessions already published in _mcp_sessions; one still inside connect() would be
-# missed and then cached already stale. Bump a generation on every close so that connect discards its session instead
-# of publishing it. Guarded by _mcp_sessions_lock.
+# Bumped on every close so an in-flight connect discards its session instead of publishing it.
 _mcp_close_all_gen = 0
 _mcp_account_close_gen: dict[str, int] = {}
 _mcp_url_close_gen: dict[str | tuple[str, str], int] = {}
@@ -1033,9 +997,7 @@ def _headers_key(headers: Optional[dict]) -> tuple:
 
 
 def _url_close_key(url: str) -> str | tuple[str, str]:
-    # Commands/URLs (token args, embedded credentials) and env values can hold
-    # secrets and these maps are never pruned; key by digest so closed/edited
-    # configs don't retain them in memory forever.
+    # Key by digest: commands/URLs/env may hold secrets and these maps are never pruned.
     return _account_key(hashlib.sha256(url.encode()).hexdigest())
 
 
@@ -1123,11 +1085,8 @@ def _get_session(
             return session, idle_for
         key_lock = _borrow_key_lock(key)
     try:
-        # Poll the acquire with connect()'s deadline/cancel semantics: a second same-scope call must not block
-        # uncancellably behind another caller's slow startup (e.g. a first-run npx download).
+        # Poll so a same-scope call can be cancelled while queued behind a slow startup.
         remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
-        # timeout=None means no key-lock deadline (only cancel unblocks it). The wait is bounded exactly like the
-        # connect it is queueing behind, so an HTTP caller is not cut off at stdio's cold-start cap here either.
         window = _connect_window(url, remaining)
         lock_deadline = None if window is None else time.monotonic() + window
         while not key_lock.lock.acquire(timeout = 0.05):
@@ -1168,7 +1127,7 @@ def _get_session(
                     closed_while_connecting = _mcp_close_generation(url, headers) != generation
                     if not closed_while_connecting:
                         session.in_flight = 1
-                        evicted = _evict_lru_locked()  # bound the cache (LRU idle)
+                        evicted = _evict_lru_locked()
                         _mcp_sessions[key] = session
                         if not _mcp_reaper_started:
                             _mcp_reaper_started = True
@@ -1179,9 +1138,7 @@ def _get_session(
                 for victim in evicted:
                     logger.info("Evicting LRU idle MCP session: %s", _session_log_id(victim.url))
                 if evicted:
-                    # Detached: these belong to other scopes and nobody is waiting on them, but an unresponsive
-                    # transport costs _SESSION_CLOSE_TIMEOUT each. Charging that to this caller would spend the
-                    # deadline meant for their tool call.
+                    # Detached: an unresponsive close would eat this caller's tool-call deadline.
                     _close_detached(evicted)
                 if closed_while_connecting:
                     session.close()
@@ -1199,10 +1156,7 @@ def _release_session(session: _McpSession, defer_close: bool = False) -> None:
         session.in_flight = max(0, session.in_flight - 1)
         session.last_used = time.monotonic()
         close_now = session.defunct and session.in_flight == 0
-        # Re-enforce the cap once a burst's sessions go idle. Insert-time eviction only trims idle sessions, so it can
-        # overshoot while every cached session is busy; reclaim that overshoot here instead of waiting for the idle
-        # reaper. Never evict the session we just used (its last_used is newest).
-        # The cap is per account: finishing a call must not close a cached session of an account under its own limit.
+        # Insert-time eviction only trims idle sessions; reclaim overshoot here (per account cap).
         account_id = getattr(session, "account_id", None) or current_account_id()
         mine = {
             k: s
@@ -1220,11 +1174,7 @@ def _release_session(session: _McpSession, defer_close: bool = False) -> None:
             mine.pop(oldest)
             _discard_key_lock(oldest)
     if close_now and defer_close:
-        # This borrower was the last one on a session that has been discarded, either by its own failure or by a
-        # sibling's. Either way the caller is mid-request -- it may still have a reconnect and retry to do on the same
-        # deadline -- and a transport that is being discarded because it stopped answering is exactly the one whose
-        # close runs long. Only the unscoped one-shot path closes inline (defer_close is False there), because there
-        # the teardown is the call's own work and the caller expects the subprocess gone by the time it returns.
+        # Close off the request path: a discarded transport's close runs long.
         victims.append(session)
     elif close_now:
         session.close()
@@ -1312,9 +1262,6 @@ def close_mcp_sessions(
     pending, worker = _drain_cleanup_queue()
     _close_all(sessions + pending)
     if worker is not None and worker is not threading.current_thread():
-        # Draining the queue does not recall the session the worker had already popped, and this function promises its
-        # caller (a server edit, or atexit) that the teardown has happened. The worker stops as soon as the queue is
-        # empty, so this waits for that one close and no longer.
         worker.join(_SESSION_CLOSE_TIMEOUT + 5.0)
 
 
@@ -1348,15 +1295,11 @@ def _close_all(sessions: list) -> None:
                 session = pending.pop()
             _close_quietly(session)
 
-    # Bare threads, not a ThreadPoolExecutor: this also runs as the atexit handler, and Python shuts the executor
-    # machinery down before normal atexit callbacks, so submitting there raises ("can't register atexit after
-    # shutdown") and the whole cleanup aborts with stdio subprocesses still up.
+    # Bare threads: executors are shut down before atexit callbacks, so submitting there raises.
     width = min(len(pending), _MAX_CLOSE_THREADS)
     threads = [threading.Thread(target = _drain, name = "mcp-close", daemon = True) for _ in range(width)]
     for thread in threads:
         thread.start()
-    # Each worker may take several sessions in turn, so the wait scales with the rounds it has to make rather than
-    # with a single close.
     rounds = -(-len(sessions) // width)
     for thread in threads:
         thread.join(rounds * (_SESSION_CLOSE_TIMEOUT + 5.0))
@@ -1402,7 +1345,7 @@ def _cleanup_worker() -> None:
     while True:
         with _mcp_cleanup_lock:
             if not _mcp_cleanup_queue:
-                _mcp_cleanup_worker = None  # _close_detached starts the next one
+                _mcp_cleanup_worker = None
                 return
             session = _mcp_cleanup_queue.pop(0)
         _close_quietly(session)
@@ -1424,8 +1367,7 @@ def _close_quietly(session) -> None:
         logger.exception("Closing a discarded MCP session failed")
 
 
-# The cache stopped being stdio-only, but an in-place upgrade can leave a caller holding the old name; it costs two
-# lines to keep it working.
+# Legacy alias kept for callers of the old name.
 close_stdio_sessions = close_mcp_sessions
 
 
@@ -1437,8 +1379,7 @@ def _reset_after_fork() -> None:
     still using them."""
     global _mcp_reaper_started, _mcp_connects_in_flight, _mcp_sessions_lock
     global _mcp_cleanup_lock, _mcp_cleanup_worker
-    # Replaced, not just cleared: a lock the fork caught held belongs to a thread that no longer exists here, so the
-    # child would block on it forever.
+    # Replaced: a lock held at fork belongs to a thread that does not exist in the child.
     _mcp_sessions_lock = threading.Lock()
     _mcp_sessions.clear()
     _mcp_key_locks.clear()
@@ -1494,18 +1435,11 @@ async def list_tools_async(
     return await asyncio.wait_for(_fetch(), timeout = timeout)
 
 
-# Discovered-tool cache, keyed by MCP server id. get_enabled_mcp_tools() probes a server only
-# on a cache miss, keeping MCP discovery off the chat send's critical path -- tool schemas are
-# stable within a session. The /refresh route warms it; a URL/header/OAuth change or a delete
-# evicts it. Successful probes are cached indefinitely.
+# Probe only on cache miss, off the chat send's critical path. Successful probes cached forever.
 _tool_cache: dict[str | tuple[str, str], list[dict]] = {}
 
-# server_id -> monotonic time before which a failed server must not be
-# re-probed (see record_probe_failure). Cleared on a successful probe or
-# eviction.
 _probe_cooloff_until: dict[str | tuple[str, str], float] = {}
 
-# Coordinate off-loop token-count snapshots with row and schema-cache mutations.
 _mcp_server_snapshot_locks: WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock] = (
     WeakKeyDictionary()
 )
@@ -1527,9 +1461,7 @@ def serialize_mcp_server_mutation(handler):
     return _serialized
 
 
-# MCP server fields whose change invalidates a server's discovered tools: the endpoint/auth used to probe it (url,
-# headers, oauth) or whether it's used at all (is_enabled). A rename does not. The update route's eviction and
-# get_enabled_mcp_tools' mid-probe guard both key off this so they can't drift.
+# Shared by the update route's eviction and the mid-probe guard so they can't drift.
 TOOL_CACHE_INVALIDATING_FIELDS = frozenset(
     {"url", "headers_json", "use_oauth", "oauth_client_id", "oauth_client_secret", "is_enabled"}
 )
@@ -1626,7 +1558,6 @@ def _ui_envelope(result: Any, ui_resource_uri: str, seed: list) -> str:
         ]
     line = _json_within(payload, MAX_UI_STRUCTURED_CHARS)
     if line is None:
-        # Shed structuredContent, then content, then _meta: the view still gets its template.
         reduced = {"resourceUri": ui_resource_uri, "structuredContentOmitted": True}
         keys = [k for k in ("content", "_meta") if k in payload]
         for kept in (keys, keys[:1], keys[1:]):
@@ -1669,7 +1600,6 @@ def _block_text(block: Any) -> Optional[str]:
 
 
 def _block_link(block: Any) -> Optional[str]:
-    # keep host-generated link text from suppressing structured_content
     uri = getattr(block, "uri", None)
     if uri and getattr(block, "type", None) == "resource_link":
         name = getattr(block, "name", None)
@@ -1695,8 +1625,7 @@ _IMAGE_SUBTYPES = {
 }
 
 
-# What tool-fallback.tsx may interpolate into data:<type>;base64,... : an RFC 9110 8.3.1 token subtype, minus "*",
-# which names a range and never a payload.
+# Interpolated into data: URLs by tool-fallback.tsx; RFC 9110 token subtype, minus '*'.
 _MEDIA_TYPE = re.compile(r"^image/[a-z0-9][a-z0-9!#$%&'^_`|~.+-]*$")
 
 
@@ -1714,15 +1643,13 @@ def _uri_mime(uri: Any) -> Optional[str]:
 def _image_mime(mime: Any) -> Optional[str]:
     if not isinstance(mime, str):
         return None
-    # media type names are case-insensitive; data urls need only the essence
     essence = mime.partition(";")[0].strip().lower()
     if essence.startswith("image/"):
         resolved = essence
     else:
         subtype = essence[len("application/") :] if essence.startswith("application/") else ""
         resolved = _IMAGE_SUBTYPES.get(subtype) or _uri_mime(f"file:///image.{subtype}")
-    # one gate for every branch. Lowercased again because a registry answer carries the host's spelling: Windows
-    # returns image/JXL for .jxl, Linux and macOS image/jxl.
+    # Windows registry returns image/JXL, so lowercase again.
     resolved = resolved.lower() if resolved else ""
     return resolved if _MEDIA_TYPE.match(resolved) else None
 
@@ -1734,7 +1661,6 @@ def _resource_mime(obj: Any) -> Any:
 
 
 def _block_image(block: Any) -> Optional[tuple[str, str]]:
-    # embedded resources keep binary data on resource.blob
     data = getattr(block, "data", None)
     mime = _resource_mime(block)
     if not data:
@@ -1776,7 +1702,6 @@ def _block_attachment(block: Any) -> Optional[tuple[str, str]]:
 
 
 _MIRRORED = object()
-# fields MCP defines on image/audio and embedded resource blocks; anything else is the tool's own
 _MEDIA_FIELDS = frozenset({"type", "data", "mimeType", "mime_type", "annotations", "_meta"})
 _RESOURCE_BLOCK_FIELDS = frozenset({"type", "resource", "annotations", "_meta"})
 _RESOURCE_FIELDS = frozenset({"uri", "blob", "mimeType", "mime_type", "_meta"})
@@ -1787,7 +1712,6 @@ def _is_payload(value: Any, payloads: set[str]) -> bool:
 
 
 def _mirrored_extras(value: dict, payloads: set[str]) -> Optional[dict]:
-    # the tool's own fields on a content block copied from result.content; None if it is not one
     kind = value.get("type")
     if kind in ("image", "audio") and _is_payload(value.get("data"), payloads):
         return {k: v for k, v in value.items() if k not in _MEDIA_FIELDS}
@@ -1806,7 +1730,6 @@ def _mirrored_extras(value: dict, payloads: set[str]) -> Optional[dict]:
 
 
 def _strip_payloads(value: Any, payloads: set[str]) -> Any:
-    # drop mirrored payloads and the MCP fields of the blocks carrying them, then containers left empty
     if isinstance(value, str):
         return _MIRRORED if value in payloads else value
     if isinstance(value, dict):
@@ -1878,7 +1801,6 @@ def _flatten_result(result: Any, ui_resource_uri: Optional[str] = None) -> str:
             if data:
                 payloads.add(data)
     body = "\n".join(parts)
-    # the filesystem server mirrors binary blocks in structured_content; keep everything else
     structured = None if has_text else getattr(result, "structured_content", None)
     if structured is not None and payloads:
         structured = _strip_payloads(structured, payloads)
@@ -1949,8 +1871,6 @@ async def _race_tool_call(
         for t in (call_task, watch_task):
             if not t.done():
                 t.cancel()
-        # Let a cancelled call unwind before its session is reused, out of the caller's remaining budget. Outlasting
-        # it just leaves the session dirty.
         left = _unwind_budget(unwind_timeout, timeout, time.monotonic() - started)
         if left:
             await asyncio.wait({call_task, watch_task}, timeout = left)
@@ -1975,16 +1895,12 @@ def _call_session_tool(
 ) -> Any:
     if cancel_event is not None and cancel_event.is_set():
         raise _MCPCancelled
-    # One deadline covers the key-lock wait, connect, call-lock wait, and the call itself, matching the one-shot path
-    # where the caller's timeout wrapped connect plus call in a single window.
     deadline = None if timeout is None else time.monotonic() + timeout
 
     def _remaining() -> Optional[float]:
         return None if deadline is None else max(0.0, deadline - time.monotonic())
 
-    # Callers without an Unsloth session id must retain the former one-shot behavior: no browser/cookie/tool state can
-    # leak into another request. Use an ephemeral key (and close it below) rather than the shared empty scope that the
-    # persistent-session cache used previously.
+    # No session id: use an ephemeral key so no state leaks across requests.
     def _config_ok() -> bool:
         if config_check is None:
             return True
@@ -1997,17 +1913,13 @@ def _call_session_tool(
     if ephemeral:
         scope = f"request-{uuid.uuid4().hex}"
     key = _session_key(url, headers, scope)
-    # attempt 0 may find the cached session stale/dead *before* dispatch and reconnect once (safe); attempt 1 is a
-    # freshly connected session.
     for attempt in (0, 1):
         session, idle_for = _get_session(
             url, headers, scope, deadline, cancel_event, config_check, use_oauth
         )
         locked = False
         try:
-            # Serialize calls per session where the transport demands it: overlapping same-scope calls must not
-            # interleave operations on one stateful stdio server (browser, REPL). HTTP multiplexes by request id, so
-            # its calls run in parallel as they did one-shot.
+            # Serialize stdio (stateful byte stream); HTTP multiplexes by request id.
             if session.serialize_calls:
                 while not session.call_lock.acquire(timeout = 0.05):
                     if cancel_event is not None and cancel_event.is_set():
@@ -2017,7 +1929,6 @@ def _call_session_tool(
                         raise asyncio.TimeoutError
                 locked = True
         except BaseException:
-            # Never touched the transport: keep the session for its borrower.
             _release_session(session)
             if ephemeral:
                 _drop_session(key, session)
@@ -2025,16 +1936,11 @@ def _call_session_tool(
         discard_session = ephemeral
         retry = False
         try:
-            # We may have waited on the call lock while another caller's timeout retired this session, a server
-            # update/delete invalidated it, or a reused subprocess died. Re-check all three before dispatch so we
-            # never run on a retired/dead client or a stale config.
+            # Re-check after waiting on the call lock: session may be retired, invalidated or dead.
             if session.closed.is_set():
-                # Intentional close (server update/delete/shutdown): don't retry on stale config.
                 discard_session = True
                 raise RuntimeError("MCP server was updated or removed during the call")
             elif session.defunct:
-                # A concurrent same-scope caller's timeout retired this session; move to a fresh one instead of
-                # reusing the retired client.
                 discard_session = True
                 if attempt == 0:
                     retry = True
@@ -2055,9 +1961,7 @@ def _call_session_tool(
             ) and not _session_responsive(
                 session, _remaining(), cancel_event, timeout_is_fatal = session.dirty
             ):
-                # Dirty: still stuck on the abandoned call. Idle HTTP: the server may have expired the session while
-                # nothing was using it, and no HTTP transport lets us ask. Either way it failed to answer, so
-                # reconnect BEFORE dispatch rather than losing the user's call.
+                # Dirty or idle-HTTP sessions may be dead; reconnect BEFORE dispatch.
                 discard_session = True
                 if attempt == 0:
                     retry = True
@@ -2065,58 +1969,40 @@ def _call_session_tool(
                     raise RuntimeError("MCP server is not responding")
             else:
                 rem = _remaining()
-                # raise_on_error=False for the same reason as the one-shot path.
                 coro = _race_tool_call(
                     dispatch(session.client)
                     if dispatch is not None
                     else session.client.call_tool(name, args, raise_on_error = False),
                     rem,
                     cancel_event,
-                    # Only a cached session is worth waiting on.
                     0.0 if ephemeral else _CANCEL_UNWIND_TIMEOUT,
                 )
                 out = session.run(coro, rem)
-                # A completed round trip proves the transport better than any probe could, so it resets the idle clock
-                # the recheck reads.
                 session.proved_at = time.monotonic()
                 return out
         except (_MCPCancelled, asyncio.TimeoutError):
-            # Keep the session so a Stop doesn't destroy the server's state; the SDK drops the abandoned reply, and
-            # reuse is gated on a live probe.
+            # Keep the session so Stop doesn't destroy server state; reuse is gated on a live probe.
             session.dirty = True
             raise
         except _SessionWedged:
             discard_session = True
             raise asyncio.TimeoutError
         except _SessionClosed:
-            # close_mcp_sessions() shut this session mid-call (server update/delete/shutdown); don't retry on the
-            # stale config.
             discard_session = True
             raise RuntimeError("MCP server was updated or removed during the call")
         except Exception as exc:
             if session.closed.is_set():
-                # An intentional close (server update/delete) can surface as a plain transport error or AttributeError
-                # instead of _SessionClosed; don't mistake it for a crash.
+                # An intentional close can surface as a transport error or AttributeError.
                 discard_session = True
                 raise RuntimeError("MCP server was updated or removed during the call")
-            # A ToolError or a JSON-RPC error response means the server answered, so the transport is alive: keep the
-            # session and its state. Anything else is transport-level (dead subprocess, broken pipe, dropped HTTP
-            # stream): evict so it can't poison the scope, but DO NOT replay (the tool may already have run); the next
-            # call opens a fresh session.
+            # Protocol error = server alive, keep session. Transport error: evict but DO NOT replay.
             if _is_protocol_error(exc):
-                # The server replied, so the transport is fine and the session's state is worth keeping. Probe it
-                # before the next call anyway, in case the error was the server telling us the session is no longer
-                # one it recognises.
                 session.dirty = True
             elif not _is_tool_error(exc):
                 discard_session = True
             raise
         finally:
-            # Remove from the cache and mark defunct BEFORE giving up the borrow, so no other caller can check this
-            # session out after it failed. The order matters more now that HTTP callers do not queue on call_lock:
-            # released first, a concurrent same-scope call could check out the broken transport while it was still
-            # cached, and _release_session can sit closing LRU victims for seconds first. in_flight is still held
-            # here, so the close defers to the release below.
+            # Evict and mark defunct BEFORE releasing the borrow, so nobody checks out a broken transport.
             if discard_session:
                 _drop_session(key, session)
             _release_session(session, defer_close = not ephemeral)
@@ -2159,12 +2045,9 @@ def call_tool_sync(
 
     async def _one_shot() -> Any:
         async with _client(url, headers, use_oauth, **oauth) as client:
-            # Connecting (OAuth included) can outlast an edit or delete of the server row.
             if config_check is not None and not config_check():
                 raise RuntimeError("MCP server was updated or removed while connecting")
-            # raise_on_error=False lets an is_error result (which may still carry image content) reach _flatten_result
-            # instead of FastMCP raising ToolError and dropping the images. Transport failures still raise (handled
-            # below).
+            # raise_on_error=False so an is_error result keeps its image content.
             return await client.call_tool(name, args, raise_on_error = False)
 
     try:
@@ -2177,8 +2060,6 @@ def call_tool_sync(
     except _MCPCancelled:
         return f"Error: MCP tool '{name}' cancelled"
     except _ConnectTimeout as exc:
-        # Report the window that actually expired: for stdio that is the cold-start cap, not the (larger) caller
-        # timeout.
         suffix = f" after {round(exc.window, 1):g}s" if exc.window is not None else ""
         return f"Error: MCP tool '{name}' timed out connecting{suffix}"
     except asyncio.TimeoutError:
@@ -2243,7 +2124,6 @@ def _ui_request_sync(
     """``dispatch(client)`` on the transport call_tool_sync would pick for this scope."""
 
     async def _one_shot() -> Any:
-        # As the session branch: an edit during discovery must not reach the old endpoint.
         if config_check is not None and not config_check():
             raise RuntimeError("MCP server was updated or removed during the call")
         async with _client(url, headers, use_oauth, **oauth) as client:
@@ -2290,12 +2170,10 @@ def _resource_contents(blocks: Any, uri: str) -> dict:
         except Exception as exc:  # noqa: BLE001
             raise ValueError(f"resource blob is not base64: {exc}") from exc
         try:
-            # Decoded for the host to render a template; the widget still gets the server's blob.
             text = raw.decode("utf-8")
         except UnicodeDecodeError:
             text = ""
     text = str(text)
-    # Every block for a widget's own multi-block read; a single block is the fields above.
     contents = []
     for item in items if len(items) > 1 else ():
         entry = {"uri": str(getattr(item, "uri", "") or uri)}
@@ -2315,7 +2193,6 @@ def _resource_contents(blocks: Any, uri: str) -> dict:
     )
     if size > MAX_UI_RESOURCE_CHARS:
         raise ValueError(f"resource is {size} chars, over the {MAX_UI_RESOURCE_CHARS} limit")
-    # _meta.ui on the contents, not the tool: the template's CSP declaration.
     metas = (getattr(chosen, "meta", None), getattr(chosen, "_meta", None))
     ui = next((m["ui"] for m in metas if isinstance(m, dict) and isinstance(m.get("ui"), dict)), {})
     mime = str(_resource_mime(chosen) or "")

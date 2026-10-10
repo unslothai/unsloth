@@ -57,7 +57,7 @@ def _stub_torch(
     torch.float16 = "float16"
     if with_fp8:
         torch.float8_e4m3fn = "float8_e4m3fn"
-    # _cast_fp8 skips nn.Embedding tables and _keep_bf16_block_fqns walks nn.ModuleList stacks, so the stub torch exposes both.
+    # _cast_fp8 skips nn.Embedding and _keep_bf16_block_fqns walks nn.ModuleList, so stub both
     torch.nn = types.SimpleNamespace(
         Embedding = type("Embedding", (), {}),
         ModuleList = type("ModuleList", (list,), {}),
@@ -68,21 +68,19 @@ def _stub_torch(
 
 
 def _stub_casters(monkeypatch, recorder):
-    # diffusers fp8 layerwise casting
     hooks = types.ModuleType("diffusers.hooks")
     casting = types.ModuleType("diffusers.hooks.layerwise_casting")
     casting.DEFAULT_SKIP_MODULES_PATTERN = ("norm",)
     hooks.apply_layerwise_casting = lambda module, **kw: recorder.append(("fp8", module))
     monkeypatch.setitem(sys.modules, "diffusers.hooks", hooks)
     monkeypatch.setitem(sys.modules, "diffusers.hooks.layerwise_casting", casting)
-    # torchao nvfp4: quantize_ now receives the vision-tower exclusion filter_fn; accept + ignore.
+    # nvfp4 quantize_ receives a filter_fn; accept and ignore it
     tq = types.ModuleType("torchao.quantization")
     tq.quantize_ = lambda module, config, filter_fn = None: recorder.append(("nvfp4", module))
     mx = types.ModuleType("torchao.prototype.mx_formats")
     mx.NVFP4WeightOnlyConfig = lambda: "nvfp4cfg"
     monkeypatch.setitem(sys.modules, "torchao.quantization", tq)
     monkeypatch.setitem(sys.modules, "torchao.prototype.mx_formats", mx)
-    # _cast_nvfp4 / _cast_fp8_dynamic pull the shared linear filter from the transformer-quant module.
     dtq = types.ModuleType("core.inference.diffusion_transformer_quant")
     dtq.DEFAULT_MIN_LINEAR_FEATURES = 512
     dtq.make_filter_fn = lambda min_features, exclude = (), *, require_bf16 = False: (
@@ -92,9 +90,6 @@ def _stub_casters(monkeypatch, recorder):
     monkeypatch.setitem(sys.modules, "core.inference.diffusion_transformer_quant", dtq)
 
 
-# ── normalisation ─────────────────────────────────────────────────────────────
-
-
 def test_normalize_te_quant():
     assert normalize_te_quant(None) is None
     assert normalize_te_quant("") is None
@@ -102,13 +97,9 @@ def test_normalize_te_quant():
     assert normalize_te_quant("FP8") == TE_QUANT_FP8
     assert normalize_te_quant("NVFP4") == TE_QUANT_NVFP4
     assert normalize_te_quant("int8") == TE_QUANT_INT8
-    # Hyphens fold to underscores so "fp8-dynamic" is accepted.
     assert normalize_te_quant("FP8-Dynamic") == TE_QUANT_FP8_DYNAMIC
     with pytest.raises(ValueError):
         normalize_te_quant("int2")
-
-
-# ── gating ────────────────────────────────────────────────────────────────────
 
 
 def test_fp8_supported_requires_cuda_bf16_and_fp8(monkeypatch):
@@ -127,45 +118,39 @@ def test_nvfp4_supported_without_fp4_cores(monkeypatch, cc):
 def test_nvfp4_supported_requires_cuda_bf16_and_fp8_dtype(monkeypatch):
     _stub_torch(monkeypatch, cc = (8, 6))
     assert te_quant_supported(_target(device = "cpu"), TE_QUANT_NVFP4) is False
-    # pre-ampere resolves float16, which torchao's nvfp4 quantiser rejects
+    # pre-Ampere resolves float16, which torchao's nvfp4 quantiser rejects
     assert te_quant_supported(_target(dtype = "float16"), TE_QUANT_NVFP4) is False
     _stub_torch(monkeypatch, with_fp8 = False, cc = (8, 6))
     assert te_quant_supported(_target(), TE_QUANT_NVFP4) is False
 
 
 def test_nvfp4_unsupported_when_torchao_lacks_the_weight_only_config(monkeypatch):
-    # studio pins torchao 0.14 for torch 2.9 and older, which has no NVFP4WeightOnlyConfig
+    # torchao 0.14 (pinned for torch <= 2.9) has no NVFP4WeightOnlyConfig
     _stub_torch(monkeypatch, cc = (8, 6), nvfp4_config = False)
     assert te_quant_supported(_target(cc = (8, 6)), TE_QUANT_NVFP4) is False
     assert te_quant_supported(_target(cc = (8, 6)), TE_QUANT_INT8) is True
 
 
 def test_int8_supported_requires_sm80(monkeypatch):
-    # int8 tensor cores (torch._int_mm) need Ampere sm_80+.
+    # int8 tensor cores (torch._int_mm) need sm_80+
     _stub_torch(monkeypatch, cc = (8, 0))
     assert te_quant_supported(_target(), TE_QUANT_INT8) is True
     _stub_torch(monkeypatch, cc = (7, 5))
     assert te_quant_supported(_target(), TE_QUANT_INT8) is False
-    # Still needs CUDA + bf16 like every mode.
     _stub_torch(monkeypatch, cc = (8, 0))
     assert te_quant_supported(_target(device = "cpu"), TE_QUANT_INT8) is False
 
 
 def test_fp8_dynamic_supported_requires_sm89_and_fp8(monkeypatch):
-    # Compute fp8 (torch._scaled_mm) needs fp8-GEMM silicon: Ada sm_89+ / Hopper / Blackwell.
+    # fp8 GEMM (torch._scaled_mm) needs sm_89+
     _stub_torch(monkeypatch, cc = (8, 9))
     assert te_quant_supported(_target(), TE_QUANT_FP8_DYNAMIC) is True
     _stub_torch(monkeypatch, cc = (9, 0))
     assert te_quant_supported(_target(), TE_QUANT_FP8_DYNAMIC) is True
-    # Ampere (8.0) has int8 but not fp8 GEMM.
     _stub_torch(monkeypatch, cc = (8, 0))
     assert te_quant_supported(_target(), TE_QUANT_FP8_DYNAMIC) is False
-    # No fp8 dtype at all -> unsupported regardless of arch.
     _stub_torch(monkeypatch, with_fp8 = False, cc = (9, 0))
     assert te_quant_supported(_target(), TE_QUANT_FP8_DYNAMIC) is False
-
-
-# ── apply ─────────────────────────────────────────────────────────────────────
 
 
 def test_quantize_disabled_returns_none(monkeypatch):
@@ -259,16 +244,12 @@ def test_quantize_tolerates_caster_failure(monkeypatch):
     monkeypatch.setitem(sys.modules, "diffusers.hooks", hooks)
     monkeypatch.setitem(sys.modules, "diffusers.hooks.layerwise_casting", casting)
     pipe = types.SimpleNamespace(text_encoder = object())
-    # The only encoder fails to cast -> nothing applied -> None, reported as a fallback.
     outcome = quantize_text_encoders(pipe, _target(), mode = "fp8")
     assert outcome.mode is None and outcome.status == "fell_back"
 
 
-# ── int8 (selective) + fp8_dynamic routing ─────────────────────────────────────
-
-
 def test_quantize_int8_uses_family_keep_bf16_schedule(monkeypatch):
-    # int8 for a family with a measured schedule routes to the selective caster with that family's (skip_first, skip_last); qwen-image keeps first+last 6 blocks bf16.
+    # qwen-image keeps the first and last 6 blocks bf16
     _stub_torch(monkeypatch, cc = (10, 0))
     calls: list = []
     monkeypatch.setattr(
@@ -283,7 +264,7 @@ def test_quantize_int8_uses_family_keep_bf16_schedule(monkeypatch):
 
 
 def test_quantize_int8_unknown_family_falls_back_to_fp8(monkeypatch):
-    # A family without an int8 keep-bf16 schedule falls back to layerwise fp8 (logged), never silent full int8 that would degrade the encoder.
+    # no int8 schedule: fall back to layerwise fp8, never full int8
     _stub_torch(monkeypatch, cc = (10, 0))
     int8_calls: list = []
     fp8_calls: list = []
@@ -293,14 +274,12 @@ def test_quantize_int8_unknown_family_falls_back_to_fp8(monkeypatch):
     pipe = types.SimpleNamespace(text_encoder = te)
     outcome = quantize_text_encoders(pipe, _target(), mode = "int8", family = "wan-umt5")
     assert outcome.mode == TE_QUANT_FP8
-    # The downgrade is reported, not silent: this is what the status badge renders.
     assert outcome.status == "fell_back"
     assert "no measured keep-bf16 schedule" in outcome.reason and "wan-umt5" in outcome.reason
     assert int8_calls == [] and fp8_calls == [te]
 
 
 def test_quantize_fp8_dynamic_uses_compute_caster(monkeypatch):
-    # fp8_dynamic routes to the torchao per-row compute caster (not the layerwise one) and needs no per-family schedule.
     _stub_torch(monkeypatch, cc = (9, 0))
     calls: list = []
     monkeypatch.setattr(dp, "_cast_fp8_dynamic", lambda enc, tgt: calls.append(enc))
@@ -312,7 +291,6 @@ def test_quantize_fp8_dynamic_uses_compute_caster(monkeypatch):
 
 
 def test_quantize_int8_unsupported_hw_is_noop(monkeypatch):
-    # int8 on pre-Ampere silicon (no int8 tensor cores) applies nothing.
     _stub_torch(monkeypatch, cc = (7, 5))
     monkeypatch.setattr(dp, "_cast_int8_selective", lambda *a: pytest.fail("must not cast"))
     pipe = types.SimpleNamespace(text_encoder = object())
@@ -320,8 +298,7 @@ def test_quantize_int8_unsupported_hw_is_noop(monkeypatch):
 
 
 def test_quantize_te_skips_torchao_modes_under_offload(monkeypatch):
-    # The torchao modes produce tensor subclasses that reject Module.to(), which an offload hook uses, so they are skipped under
-    # offload. Hardware supports every mode here, so a None result proves the skip; the casters fail if wrongly invoked.
+    # torchao subclasses reject Module.to() used by offload hooks; the casters fail if invoked
     _stub_torch(monkeypatch, cc = (10, 0))
     monkeypatch.setattr(
         dp, "_cast_fp8_dynamic", lambda *a: pytest.fail("torchao caster must not run")
@@ -341,7 +318,6 @@ def test_quantize_te_skips_torchao_modes_under_offload(monkeypatch):
         ).mode
         is None
     )
-    # Layerwise fp8 is not torchao and streams fine under offload, so it still engages.
     fp8_calls: list = []
     monkeypatch.setattr(dp, "_cast_fp8", lambda enc, tgt: fp8_calls.append(enc))
     assert (
@@ -351,14 +327,10 @@ def test_quantize_te_skips_torchao_modes_under_offload(monkeypatch):
     assert len(fp8_calls) == 1
 
 
-# ── block selection + real int8 filter closure ─────────────────────────────────
-
-
 def test_keep_bf16_block_fqns_selects_first_and_last(monkeypatch):
     torch = _stub_torch(monkeypatch)
     module_list = torch.nn.ModuleList
     layers = module_list([object() for _ in range(10)])
-    # A short stack (at most skip_first + skip_last) contributes nothing, since keeping it all would leave no interior to quantise.
     short = module_list([object() for _ in range(4)])
     enc = types.SimpleNamespace()
     enc.named_modules = lambda: [("", enc), ("model.layers", layers), ("aux.blocks", short)]
@@ -373,7 +345,6 @@ def test_keep_bf16_block_fqns_selects_first_and_last(monkeypatch):
 
 
 def _stub_transformer_quant(monkeypatch, captured):
-    # Reuse the committed factory's names but record what the int8 caster hands quantize_().
     dtq = types.ModuleType("core.inference.diffusion_transformer_quant")
     dtq.TQ_INT8 = "int8"
     dtq.TQ_FP8 = "fp8"
@@ -408,14 +379,12 @@ def _stub_transformer_quant(monkeypatch, captured):
 
     tq.quantize_ = _quantize_
     monkeypatch.setitem(sys.modules, "torchao.quantization", tq)
-    # _cast_nvfp4 builds its config from here.
     mx = types.ModuleType("torchao.prototype.mx_formats")
     mx.NVFP4WeightOnlyConfig = lambda: "nvfp4cfg"
     monkeypatch.setitem(sys.modules, "torchao.prototype.mx_formats", mx)
 
 
 def test_int8_filter_keeps_blocks_and_towers_dense(monkeypatch):
-    # The real selective closure: interior Linears quantise while the kept first blocks, the vision tower, lm_head and the encoder's fp32-kept modules (T5 "wo") stay bf16.
     torch = _stub_torch(monkeypatch)
     captured: dict = {}
     _stub_transformer_quant(monkeypatch, captured)
@@ -426,20 +395,16 @@ def test_int8_filter_keeps_blocks_and_towers_dense(monkeypatch):
     _cast_int8_selective(enc, _target(), 3, 0)
     assert captured["config"] == "cfg:int8"
     ff = captured["filter_fn"]
-    # Kept first-3 decoder blocks stay bf16.
     assert ff(object(), "model.layers.0.self_attn.q_proj") is False
     assert ff(object(), "model.layers.2.mlp.gate_proj") is False
-    # An interior block is quantised.
     assert ff(object(), "model.layers.5.self_attn.q_proj") is True
-    # Vision tower / lm_head / T5 wo are excluded by the shared token filter.
     assert ff(object(), "visual.blocks.0.attn.qkv") is False
     assert ff(object(), "lm_head") is False
     assert ff(object(), "model.decoder.wo") is False
 
 
 def test_nvfp4_filter_keeps_vision_tower_dense(monkeypatch):
-    # Weight-only NVFP4 on a text encoder must exclude the VLM vision tower / lm_head / T5 "wo" like the int8 / fp8 TE modes,
-    # since 4-bit-ing a Qwen2.5-VL image tower degrades the edit conditioning. _cast_nvfp4 used to quantise every nn.Linear.
+    # 4-bit Qwen2.5-VL vision tower degrades edit conditioning, so nvfp4 must exclude it
     _stub_torch(monkeypatch)
     captured: dict = {}
     _stub_transformer_quant(monkeypatch, captured)
@@ -449,16 +414,12 @@ def test_nvfp4_filter_keeps_vision_tower_dense(monkeypatch):
 
     assert captured["config"] == "nvfp4cfg"
     ff = captured["filter_fn"]
-    assert ff is not None  # a filter is passed now, not None (which quantised everything)
-    # Vision tower / lm_head / T5 wo stay bf16; an interior projection still quantises.
+    assert ff is not None
     assert ff(object(), "visual.blocks.0.attn.qkv") is False
     assert ff(object(), "vision_tower.encoder.layers.0.mlp.fc1") is False
     assert ff(object(), "lm_head") is False
     assert ff(object(), "model.decoder.wo") is False
     assert ff(object(), "model.layers.5.self_attn.q_proj") is True
-
-
-# ── zero-output-row guard (per-row fp8 NaN protection) ───────────────────────────
 
 
 class _FakeAmaxVec:
@@ -497,19 +458,16 @@ class _FakeWeight:
 
 
 def test_weight_zero_output_row_detection():
-    # A dead output row NaNs torchao's per-row fp8 (scale 0 -> 0/0), and SDXL's text_encoder_2 really ships one in
-    # layers.2.self_attn.out_proj: every fp8_dynamic SDXL render was black until the row is kept dense.
+    # a zero output row NaNs torchao per-row fp8 (0/0); SDXL text_encoder_2 ships one
     zero_row = types.SimpleNamespace(weight = _FakeWeight([[0.1, 0.2], [0.0, 0.0]]))
     dense = types.SimpleNamespace(weight = _FakeWeight([[0.1, 0.2], [0.3, 0.0]]))
     assert dp._weight_has_zero_output_row(zero_row) is True
     assert dp._weight_has_zero_output_row(dense) is False
-    # Non-2D / absent weights are not the per-row scheme's input: never flagged.
     w3 = _FakeWeight([[1.0]])
     w3.ndim = 3
     assert dp._weight_has_zero_output_row(types.SimpleNamespace(weight = w3)) is False
     assert dp._weight_has_zero_output_row(types.SimpleNamespace()) is False
 
-    # An unreadable weight falls through to quantize_'s own handling.
     class _Boom:
         @property
         def weight(self):
@@ -519,7 +477,7 @@ def test_weight_zero_output_row_detection():
 
 
 def test_fp8_dynamic_filter_skips_zero_row_linear(monkeypatch):
-    # The fp8_dynamic caster leaves a zero-output-row Linear dense while the rest of the encoder still quantises (a family-wide deny would forfeit the win).
+    # only the zero-row Linear stays dense; a family-wide deny would forfeit the win
     _stub_torch(monkeypatch)
     captured: dict = {}
     _stub_transformer_quant(monkeypatch, captured)
@@ -535,10 +493,7 @@ def test_fp8_dynamic_filter_skips_zero_row_linear(monkeypatch):
 
 
 def test_quantize_partial_cast_is_reported_as_a_mixture(monkeypatch):
-    # One encoder takes the cast and its sibling does not. The mode DID engage, so the old code
-    # returned "applied" and both loaders' fail-closed checks (which only look at mode is None)
-    # let the load through, recording the requested mode as the engaged precision -- while the
-    # prompt was conditioned by one quantised and one dense bf16 tower.
+    # a partial cast still engages the mode, so loaders must not report it as applied
     _stub_torch(monkeypatch)
     good, bad = object(), object()
 
@@ -556,8 +511,6 @@ def test_quantize_partial_cast_is_reported_as_a_mixture(monkeypatch):
 
 
 def test_quantize_full_cast_is_not_partial(monkeypatch):
-    # The other side of the same fence: every present encoder cast, so nothing is a mixture and
-    # the loaders must not refuse.
     _stub_torch(monkeypatch)
     monkeypatch.setattr(dp, "_cast_fp8", lambda enc, tgt: None)
     pipe = types.SimpleNamespace(text_encoder = object(), text_encoder_2 = object())
@@ -566,16 +519,11 @@ def test_quantize_full_cast_is_not_partial(monkeypatch):
 
 
 def test_int8_without_a_schedule_reports_fp8_as_the_effective_mode():
-    # quantize_text_encoders rewrites an int8 request to layerwise fp8 on any family with no
-    # keep-bf16 schedule, and that path never touches torchao. A gate that asks about the raw
-    # int8 therefore refuses loads the runtime would happily run and report as fell_back: on a
-    # host whose torchao cannot do int8 while fp8 still works, every unscheduled family died.
+    # unscheduled families run int8 as layerwise fp8 (no torchao), so gate on the effective mode
     assert effective_te_quant(TE_QUANT_INT8, "z-image-turbo") == TE_QUANT_FP8
     assert effective_te_quant(TE_QUANT_INT8, None) == TE_QUANT_FP8
-    # A family WITH a schedule really does run int8, so the gate must keep asking about int8.
     assert effective_te_quant(TE_QUANT_INT8, "qwen-image") == TE_QUANT_INT8
     assert effective_te_quant(TE_QUANT_INT8, "Flux.2-Dev") == TE_QUANT_INT8
-    # Every other mode is its own effective mode, and absent stays absent.
     assert effective_te_quant(TE_QUANT_FP8_DYNAMIC, "z-image-turbo") == TE_QUANT_FP8_DYNAMIC
     assert effective_te_quant(None, "qwen-image") is None
 
@@ -615,7 +563,7 @@ def test_no_torchao_config_is_constructed_outside_quiet_config():
     from pathlib import Path
 
     backend = Path(__file__).resolve().parents[1]
-    # sglang_server.py runs in the SGLang engine's own Python and never imports Studio.
+    # sglang_server.py runs in SGLang's own Python and never imports Studio
     files = [
         path
         for path in sorted((backend / "core" / "inference").glob("*.py"))
@@ -644,9 +592,6 @@ def test_no_torchao_config_is_constructed_outside_quiet_config():
         "torchao config constructed outside _quiet_config (pass the CLASS as its first argument instead):\n  "
         + "\n  ".join(offenders)
     )
-
-
-# ── the text-encoder tri-state ───────────────────────────────────────────────────
 
 
 def test_unset_and_auto_are_the_only_spellings_that_invite_a_family_default():
@@ -679,7 +624,6 @@ def test_an_opt_out_still_pins_the_released_bf16_encoder():
 def test_an_explicit_scheme_still_wins_over_the_family_default():
     assert resolve_te_quant_request("int8", "fp8") == ("int8", False)
     assert resolve_te_quant_request("nvfp4", "fp8") == ("nvfp4", False)
-    # And is still validated: a bad explicit value is refused cheaply, as before.
     with pytest.raises(ValueError):
         resolve_te_quant_request("int3", "fp8")
 

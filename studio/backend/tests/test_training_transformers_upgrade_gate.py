@@ -126,8 +126,7 @@ def test_dev_only_upgrade_does_not_claim_16bit(monkeypatch):
 
 
 def test_already_routed_model_reports_16bit_without_an_upgrade(monkeypatch):
-    # The second run on a provisioned sidecar: nothing to install, still no 4-bit. The
-    # Configure preview reads "QLoRA - 4-bit" without this, understating the run's VRAM.
+    # Provisioned sidecar: still no 4-bit, or the preview understates VRAM.
     inf_mod = _stub(monkeypatch, upgrade = None, latest_tier = True)
     response = _call(inf_mod)
     assert response.requires_transformers_upgrade is False
@@ -145,17 +144,13 @@ def test_supported_model_needs_nothing(monkeypatch):
 
 
 def test_custom_code_fallback_is_reported(monkeypatch):
-    # Feeds the dialog's "continue with custom code" way out, exactly as /validate does.
     inf_mod = _stub(monkeypatch, upgrade = UPGRADE, trust_remote_code = True)
     assert _call(inf_mod).requires_trust_remote_code is True
 
 
 def test_a_merely_offered_upgrade_keeps_4bit_when_custom_code_can_load_it(monkeypatch):
-    # The dialog offers "continue with custom code" for these, and taking it installs
-    # nothing: the worker runs on the current transformers and loads bnb 4-bit. Claiming
-    # 16-bit would tell the preview 4-bit is unavailable when it is not, oversizing the
-    # run's VRAM. /validate exempts these the same way (_install_only_upgrade is gated
-    # on `not requires_trust_remote_code`).
+    # "Continue with custom code" installs nothing and loads bnb 4-bit; /validate exempts
+    # these too (_install_only_upgrade is gated on `not requires_trust_remote_code`).
     inf_mod = _stub(monkeypatch, upgrade = UPGRADE, trust_remote_code = True)
     response = _call(inf_mod)
     assert response.requires_transformers_upgrade is True
@@ -205,10 +200,7 @@ def _cached_snapshot(
 
 
 def test_a_pinned_snapshot_is_what_gets_inspected(monkeypatch, tmp_path):
-    # The gate used to be handed the Hub identifier for a cached model, while the
-    # remote-code gate and the worker both load the pinned snapshot
-    # (resolve_training_model_load_target returns model_snapshot_path or model_name). A
-    # repo's current config.json says nothing about the snapshot this run opens.
+    # The worker loads the pinned snapshot, so inspect that, not the Hub's current config.
     inspected: list = []
     inf_mod = _stub(monkeypatch, upgrade = None, inspected = inspected)
     snapshot = _cached_snapshot(monkeypatch, tmp_path)
@@ -223,7 +215,6 @@ def test_a_pinned_snapshot_is_what_gets_inspected(monkeypatch, tmp_path):
 
     assert inspected, "the route must inspect something"
     assert all(target == str(snapshot) for target in inspected), inspected
-    # The identifier still names the answer, for display and base-model resolution.
     assert response.model_name == "org/model"
 
 
@@ -245,12 +236,8 @@ def test_a_selected_cache_directory_resolves_to_its_snapshot(monkeypatch, tmp_pa
 
 
 def test_the_lora_base_is_resolved_from_the_pinned_snapshot(monkeypatch, tmp_path):
-    # The worker resolves a LoRA's base from its load target
-    # (core/training/worker.py: get_base_model_from_lora_identifier(load_target)) and the
-    # scan route does the same. Reading the Hub identifier instead asks the current
-    # adapter_config.json which base to judge while the run loads the pinned snapshot's,
-    # so a repo that repointed base_model_name_or_path since the pin was taken gets every
-    # answer for a base the run never opens.
+    # Resolve a LoRA's base from the load target, as the worker does, not the Hub's
+    # current adapter_config.json.
     resolved_from: list = []
     inf_mod = _stub(monkeypatch, upgrade = None)
     snapshot = _cached_snapshot(monkeypatch, tmp_path)
@@ -273,11 +260,7 @@ def test_the_lora_base_is_resolved_from_the_pinned_snapshot(monkeypatch, tmp_pat
 
 
 def test_a_known_cached_model_with_no_path_still_resolves_its_snapshot(monkeypatch, tmp_path):
-    # A cached inventory row can carry a null cachePath and the Train tab still sends
-    # prefer_local_cache for it. _resolve_model_snapshot searches every cache root for
-    # exactly that case, as routes/models.py and /train/start both rely on; requiring a
-    # path here judged those selections on the repo's current architecture while the
-    # worker loads the snapshot.
+    # A cached row can carry a null cachePath; _resolve_model_snapshot searches every root.
     inspected: list = []
     inf_mod = _stub(monkeypatch, upgrade = None, inspected = inspected)
     snapshot = _cached_snapshot(monkeypatch, tmp_path)
@@ -300,8 +283,7 @@ def test_an_unpinned_model_is_still_checked_by_identifier(monkeypatch):
 
 
 def test_an_unresolvable_pin_falls_back_to_the_identifier(monkeypatch, tmp_path):
-    # _model_config_inspection_target 404s for a snapshot that is gone. This preflight is
-    # additive, so it answers about the identifier rather than failing the start.
+    # A gone snapshot 404s; the preflight is additive, so answer about the identifier.
     inspected: list = []
     inf_mod = _stub(monkeypatch, upgrade = None, inspected = inspected)
 
@@ -317,10 +299,8 @@ def test_an_unresolvable_pin_falls_back_to_the_identifier(monkeypatch, tmp_path)
 
 
 def test_an_exact_4bit_resume_is_flagged_before_the_install_is_offered(monkeypatch):
-    # effective_training_load_in_4bit RAISES for this config once the latest sidecar
-    # routes the model, and that sidecar is a persistent overlay: consenting to the
-    # install on the way into a resume strands the checkpoint for good. The caller needs
-    # to know before it shows the dialog.
+    # The sidecar is a persistent overlay; installing on the way into a resume strands the
+    # checkpoint, so the caller must know before the dialog.
     inf_mod = _stub(monkeypatch, upgrade = UPGRADE, trust_remote_code = True)
     monkeypatch.setattr(
         "storage.studio_db.get_run",
@@ -332,9 +312,7 @@ def test_an_exact_4bit_resume_is_flagged_before_the_install_is_offered(monkeypat
     )
 
     assert _call(inf_mod, resume_run_id = "run-42").install_breaks_exact_resume is True
-    # No run named, no claim: a fresh start has no checkpoint to strand.
     assert _call(inf_mod).install_breaks_exact_resume is False
-    # An unknown run is not one to suppress an install for.
     assert _call(inf_mod, resume_run_id = "missing").install_breaks_exact_resume is False
 
 
@@ -361,13 +339,8 @@ def test_route_is_off_the_openai_compatible_mount():
     assert "/transformers-upgrade-check" not in {route.path for route in inf_mod.router.routes}
 
 
-# The tests above prove the gate fires. These pin the far more common case where it
-# must not: everything that worked before it existed still behaving as it did.
-
-
 def test_an_old_client_sends_the_identifier_alone():
-    # Every added field has to be optional, or a frontend built before them (an
-    # in-place upgrade mid-restart) fails validation on a payload the route once took.
+    # Added fields must be optional for frontends built before them.
     from models.inference import TransformersUpgradeCheckRequest
 
     request = TransformersUpgradeCheckRequest(model_name = MODEL)
@@ -377,8 +350,6 @@ def test_an_old_client_sends_the_identifier_alone():
 
 
 def test_a_minimal_response_reads_as_the_pre_gate_behaviour():
-    # What an older client sees and a newer one falls back to: no upgrade, no
-    # precision claim, no refusal.
     from models.inference import TransformersUpgradeCheckResponse
 
     response = TransformersUpgradeCheckResponse(model_name = MODEL)
@@ -430,8 +401,7 @@ def test_forces_16bit_over_every_combination(
     ],
 )
 def test_a_failing_preflight_never_escapes_the_route(monkeypatch, failure):
-    # The additive promise, and the only thing behind it: this route runs in front of
-    # every start, so a raise here fails a start for a model that loads fine.
+    # This route runs before every start, so it must never raise.
     inf_mod = _route()
     import utils.transformers_latest as latest_mod
     import utils.transformers_version as tv

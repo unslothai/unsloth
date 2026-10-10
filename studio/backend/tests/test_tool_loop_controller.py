@@ -54,13 +54,11 @@ def test_append_deferred_nudges_merges_deduped_into_one_message():
     conversation = [{"role": "assistant", "tool_calls": [1]}, {"role": "tool", "content": "r"}]
     nudges = [
         {"role": "user", "content": "duplicate"},
-        {"role": "user", "content": "duplicate"},  # dropped: same content
+        {"role": "user", "content": "duplicate"},
         {"role": "user", "content": "disabled foo"},
     ]
     append_deferred_nudges(conversation, nudges)
-    # One user message, after the results, with distinct contents joined.
     assert conversation[2:] == [{"role": "user", "content": "duplicate\n\ndisabled foo"}]
-    # Empty is a no-op.
     before = list(conversation)
     append_deferred_nudges(conversation, [])
     assert conversation == before
@@ -130,7 +128,6 @@ def test_status_and_provenance_match_local_event_conventions():
         ("//google.com", "Reading: google.com"),
         ("example.com:8443/path", "Reading: example.com"),
         ("github.com/unslothai/unsloth", "Reading: github.com"),
-        # still generic for what the fetch layer refuses
         ("/login", "Reading page..."),
         ("javascript:alert(1)", "Reading page..."),
         # urlparse raises on these, outside the fetch's handler: degrade, not raise
@@ -323,9 +320,8 @@ def test_command_can_run_again_after_a_file_edit():
 
     controller.record_noop(controller.prepare_call(run))
     assert not controller.force_final_answer
-    # The edit does NOT come back. Nothing new has run since it did -- only `run`, which was
-    # already spent -- so re-applying the identical edit is a repeating block replaying
-    # itself, and a non-idempotent one (an appending python/terminal call) would land twice.
+    # Replaying the identical edit is a block repeating itself; a non-idempotent call
+    # would land twice.
     assert controller.prepare_call(edit).action == "duplicate"
     assert controller.prepare_call(search).action == "duplicate"
 
@@ -560,13 +556,11 @@ def test_only_the_tools_that_emit_an_envelope_have_one_taken_off():
         assert strip_result_for_model(manifest, reader) == manifest
         assert strip_result_for_model(citation, reader) == citation
 
-    # The tools that do emit them are unaffected.
     for emitter in ("python", "terminal", "code_execution"):
         assert strip_result_for_model(manifest, emitter) == "icons/"
     for emitter in ("search_knowledge_base", "search_conversation"):
         assert strip_result_for_model(citation, emitter) == "notes"
 
-    # An unnamed caller still gets everything stripped, as it did before.
     assert strip_result_for_model(manifest) == "icons/"
     assert strip_result_for_model(citation) == "notes"
 
@@ -595,8 +589,6 @@ def test_an_unreadable_fragment_is_carried_as_the_text_the_card_shows():
     assert json.loads(payload["arguments_text"]) == {"raw": truncated}
     assert payload["arguments_text"] != decision.as_assistant_tool_call()["function"]["arguments"]
 
-
-# --- schema-aware argument typing -------------------------------------------------------
 
 _MCP_SERVER = {"id": "notes", "display_name": "Notes"}
 _MCP_TOOL = {
@@ -652,7 +644,6 @@ def test_a_value_reads_as_the_type_its_schema_declares(key, text, expected):
 @pytest.mark.parametrize(
     "spec",
     [
-        # The walk stops on any keyword it does not follow, whichever one it is.
         {"type": "boolean", "$ref": "#/$defs/Flag"},
         # Collapsing a union discards the rest, so it is read only where it is all there is.
         {"anyOf": [{"type": "boolean"}], "properties": {"x": {"type": "boolean"}}},
@@ -708,7 +699,6 @@ def test_an_mcp_tool_call_parsed_from_xml_arrives_typed():
         "tags": ["a", "b"],
         "depth": None,
     }
-    # The turn replayed to the model carries the typed values too, not the strings.
     assert decision.as_assistant_tool_call()["function"]["arguments"] == (
         '{"query":"ship dates","limit":25,"fuzzy":false,"tags":["a","b"],"depth":null}'
     )
@@ -780,7 +770,6 @@ def test_a_declared_type_nested_in_a_container_is_read_too():
     ]
     call = {"path": "app.py", "edits": edits}
     assert coerce_arguments_by_schema(call, props) == {"path": "app.py", "edits": typed}
-    # An already-typed container is descended into too: its elements can still be text.
     call = {"path": "app.py", "edits": json.loads(edits)}
     assert coerce_arguments_by_schema(call, props) == {"path": "app.py", "edits": typed}
 

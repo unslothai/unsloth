@@ -15,7 +15,7 @@ GRANTS_SETTING_KEY = "mxc_persistent_read_grants"
 DEFAULT_DACL_FALLBACK = False
 DEFAULT_PERSISTENT_GRANTS = True
 
-# A write drops the entry; the TTL only bounds staleness from ANOTHER process.
+# A write drops the entry; the TTL only bounds staleness from another process.
 _CACHE_TTL_SECONDS = 1.0
 _cache_lock = threading.Lock()
 _cached: tuple[float, dict[str, Any]] | None = None
@@ -53,7 +53,7 @@ def _stored() -> dict[str, Any] | None:
         from storage.studio_db import get_app_settings
         from utils.account_context import OWNER, run_as
 
-        # Installation-wide: the owner's store, whichever account's tool call is asking.
+        # Installation-wide: always the owner's store, whichever account asks.
         stored = run_as(OWNER, get_app_settings, [DACL_SETTING_KEY, GRANTS_SETTING_KEY])
     except Exception:  # noqa: BLE001 - an unreadable store falls back to the shipped defaults
         return None

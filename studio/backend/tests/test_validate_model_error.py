@@ -76,7 +76,6 @@ def test_value_error_not_supported_is_wrapped(monkeypatch):
     http = _provoke(monkeypatch, ValueError("architecture FooBar is not supported"))
     assert http.status_code == 400
     assert "not supported yet" in http.detail.lower()
-    # Original cause is preserved for context.
     assert "FooBar" in http.detail
 
 
@@ -89,7 +88,6 @@ def test_unexpected_exception_stays_generic(monkeypatch):
 
 
 def test_empty_runtime_error_falls_back_to_generic(monkeypatch):
-    # A RuntimeError with no message should not produce an empty 400 detail.
     http = _provoke(monkeypatch, RuntimeError(""))
     assert http.status_code == 400
     assert http.detail == "Invalid model"
@@ -115,7 +113,6 @@ def _drive_validate(monkeypatch, *, is_gguf: bool):
         gguf_file = None,
     )
     monkeypatch.setattr(inf.ModelConfig, "from_identifier", staticmethod(lambda **_kw: config))
-    # No LoRA base to resolve; keep it offline.
     monkeypatch.setattr(mc, "get_base_model_from_lora_identifier", lambda *_a, **_k: None)
     # Both gates WOULD flag this repo (mixed repo with auto_map + an unsafe pickle).
     monkeypatch.setattr(inf, "_requires_trust_remote_code_for_model", lambda *_a, **_k: True)
@@ -134,7 +131,6 @@ def test_selected_gguf_variant_skips_trc_and_security_review(monkeypatch):
 
 
 def test_non_gguf_load_still_runs_trc_and_security_review(monkeypatch):
-    # Control: a Transformers (non-GGUF) load must still honor both gates.
     resp = _drive_validate(monkeypatch, is_gguf = False)
     assert resp.is_gguf is False
     assert resp.requires_trust_remote_code is True
@@ -164,7 +160,6 @@ def test_resolve_loaded_trc_uses_runtime_and_yaml():
 
 
 def test_resolve_loaded_trc_falls_back_to_raw_auto_map(monkeypatch):
-    # No stored value or runtime/YAML signal: fall back to the raw auto_map check.
     monkeypatch.setattr(inf, "_requires_trust_remote_code_for_model", lambda *_a, **_k: True)
     assert inf._resolve_loaded_trust_remote_code("org/custom", {}, {}) is True
     monkeypatch.setattr(inf, "_requires_trust_remote_code_for_model", lambda *_a, **_k: False)
@@ -250,7 +245,6 @@ def test_validate_lora_flags_trc_from_adapter_only(monkeypatch):
 
 
 def test_validate_lora_flags_trc_from_base_only(monkeypatch):
-    # The classic case: the base ships custom code, the adapter does not.
     resp = _drive_validate_lora(monkeypatch, adapter_needs_trc = False, base_needs_trc = True)
     assert resp.requires_trust_remote_code is True
 

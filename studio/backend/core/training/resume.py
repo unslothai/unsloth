@@ -26,7 +26,6 @@ def _is_under_outputs(path: Path) -> bool:
         resolved.relative_to(root)
         return True
     except (OSError, RuntimeError, ValueError):
-        # Unrecognized state-file formats are not usable resume state.
         return False
 
 
@@ -289,7 +288,6 @@ def _resource_resume_cache_key(config: dict) -> Optional[str]:
 def can_resume_run(run: dict, *, resource_cache: Optional[dict[str, bool]] = None) -> bool:
     if run.get("resumed_later"):
         return False
-    # Set when a stop-and-save failed to write a current-step checkpoint.
     if run.get("resume_blocked"):
         return False
     if _uses_s3_dataset(run):

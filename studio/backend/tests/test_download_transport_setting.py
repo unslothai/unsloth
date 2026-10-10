@@ -46,8 +46,7 @@ def store(monkeypatch):
 
 def test_nothing_picked_means_auto(store):
     assert transport_settings.get_download_transport_mode() == "auto"
-    # Read-only: seeding a value would be this setting deciding for an install that never
-    # opened it.
+    # read-only: seeding a value would decide for an install that never opened the setting
     assert store == {}
 
 
@@ -79,11 +78,6 @@ def test_set_validates_and_persists(store):
             transport_settings.set_download_transport_mode(junk)
 
 
-# ------------------------------------------------------------------------------------------
-# Routes
-# ------------------------------------------------------------------------------------------
-
-
 @pytest.fixture
 def client(store):
     app = FastAPI()
@@ -95,7 +89,6 @@ def client(store):
 def test_route_reports_the_mode_and_what_auto_would_do(client):
     body = client.get("/download-transport").json()
     assert body["mode"] == "auto"
-    # The row shows this under Auto, so it has to be a transport a download can actually run on.
     assert body["auto_resolves_to"] in {"http", "xet"}
     assert isinstance(body["xet_available"], bool)
 

@@ -42,7 +42,6 @@ def claim_load_downloads(
             owner = LOAD_OWNER,
         )
         if accepted:
-            # The load runs as its caller, so a managed account sees its own load's downloads.
             download_lifecycle.record_download_account(registry, key)
             keys.append(key)
             continue

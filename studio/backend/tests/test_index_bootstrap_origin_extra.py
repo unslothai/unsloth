@@ -22,9 +22,6 @@ def _build_request(
     return request
 
 
-# ── IPv6 ────────────────────────────────────────────────────────────
-
-
 def test_is_same_origin_request_ipv6_loopback_same_origin():
     """Unsloth supports ``-H ::1`` binds; netloc is ``[::1]:8902``. Bare
     ``partition(":")`` mis-parses the bracketed form and would refuse the
@@ -84,9 +81,6 @@ def test_is_same_origin_request_ipv6_userinfo_stripped():
     assert _is_same_origin_request(req) is True
 
 
-# ── Opaque origins (data:, blob:) ───────────────────────────────────
-
-
 def test_is_same_origin_request_data_url_origin_is_cross_origin():
     """``data:`` URLs are opaque origins (HTML living standard); no host, never same-origin."""
     from main import _is_same_origin_request
@@ -113,9 +107,6 @@ def test_is_same_origin_request_file_url_origin_is_cross_origin():
     assert _is_same_origin_request(req) is False
 
 
-# ── Multi-Origin header (comma-joined by Starlette) ────────────────
-
-
 def test_is_same_origin_request_comma_joined_origins_cross_origin():
     """Starlette joins repeated headers with ``, ``; the canonical parser can't
     safely split this, so it falls to cross-origin.
@@ -127,9 +118,6 @@ def test_is_same_origin_request_comma_joined_origins_cross_origin():
         origin = "http://127.0.0.1:8902, http://evil.example",
     )
     assert _is_same_origin_request(req) is False
-
-
-# ── localhost vs 127.0.0.1 (distinct origins per web platform) ──────
 
 
 def test_is_same_origin_request_localhost_vs_127_is_cross_origin():
@@ -146,9 +134,6 @@ def test_is_same_origin_request_127_vs_localhost_is_cross_origin():
     from main import _is_same_origin_request
     req = _build_request("localhost:8902", origin = "http://127.0.0.1:8902")
     assert _is_same_origin_request(req) is False
-
-
-# ── urlparse ValueError robustness ─────────────────────────────────
 
 
 def test_is_same_origin_request_malformed_ipv6_bracket_is_cross_origin():

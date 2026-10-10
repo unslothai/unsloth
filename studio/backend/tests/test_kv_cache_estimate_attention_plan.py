@@ -30,8 +30,7 @@ from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
 
 N_CTX = 32768
 
-# Equal K/V widths, so the only flash-attention term that can move the total is the f16
-# floor on V.
+# Equal K/V widths: only the f16 V floor under flash attention can move the total.
 _PLAIN_GQA = {
     "context_length": 131072,
     "block_count": 32,
@@ -42,8 +41,7 @@ _PLAIN_GQA = {
     "attention.value_length": 128,
 }
 
-# Gemma-class: narrower V on the sliding-window layers, padded to the model-wide maximum
-# when flash attention is off, so even an f16 cache moves.
+# Gemma-class: narrower SWA V padded to model max when FA is off, so f16 moves too.
 _RAGGED_SWA = {
     "context_length": 131072,
     "block_count": 30,
@@ -164,8 +162,7 @@ class TestFlashAttention:
 
 class TestTheOtherTwoLayoutKnobs:
     def test_swa_full_collapses_the_two_cache_sizes(self, monkeypatch, ragged):
-        # Net of checkpoints: --swa-full zeroes the checkpoint share, so the totals can move
-        # the other way while the attention cache itself still grows.
+        # --swa-full zeroes the checkpoint share, so totals can drop while the cache grows.
         compact = _call_route(monkeypatch, path = ragged)
         full = _call_route(monkeypatch, path = ragged, swa_full = True)
         # The share is None, not 0, when nothing is reserved.

@@ -256,7 +256,6 @@ def test_merged_export_push_stages_the_clean_save_where_there_is_room(
     monkeypatch.setattr(shutil, "disk_usage", fake_disk_usage)
 
     if roomier == "export_but_unwritable":
-        # Only the export directory has to be writable; its parent need not be.
         real_temporary_directory = tempfile.TemporaryDirectory
 
         def refusing_temporary_directory(
@@ -341,8 +340,7 @@ def test_merged_export_push_still_uploads_when_the_card_fails(tmp_path, monkeypa
     assert seen["uploaded"] == ["model.safetensors"]
 
 
-# A stale weight file makes the folder look reused, so the emptiness is only visible on the staging
-# copy; a fresh folder shows it on the export directory itself.
+# a stale weight file makes the folder look reused, so emptiness shows only on staging
 @pytest.mark.parametrize("stale_weights", [False, True])
 def test_merged_export_push_merges_again_when_the_save_left_no_weights(
     tmp_path, monkeypatch, stale_weights
@@ -682,10 +680,7 @@ class _LoraModel:
         self.calls.append(f"model_push:{repo_id}")
 
 
-# leg -> (gguf, is_mlx, what lands in the repo)
-# Every leg opens the repo itself: leaving a fresh one to push_to_hub would let another
-# client create it public in the gap. The adapter leg writes the model card that the
-# delegated push can then no longer write.
+# leg -> (gguf, is_mlx, repo contents); each leg opens the repo itself so it cannot go public
 _LORA_LEGS = {
     "adapter": (
         False,
@@ -818,8 +813,7 @@ def test_lora_adapter_push_writes_the_card_the_delegated_push_can_no_longer_writ
     assert success is True, message
     assert seen["card_repo"] == "owner/model"
     assert "base_model: unsloth/Qwen2.5-0.5B-Instruct" in seen["card"]
-    # Same tags upload_to_huggingface produced for this path, trl included and unsloth
-    # not duplicated (the template already carries it).
+    # unsloth not duplicated: the template already carries it
     tags = seen["card"].split("tags:", 1)[1].split("license:", 1)[0]
     assert sorted(line.strip("- ").strip() for line in tags.strip().splitlines()) == [
         "qwen2",
@@ -828,9 +822,8 @@ def test_lora_adapter_push_writes_the_card_the_delegated_push_can_no_longer_writ
         "trl",
         "unsloth",
     ]
-    # empty `method` leaves a double space the template supplies; markdown collapses it
+    # empty `method` leaves a double space from the template; markdown collapses it
     assert "# Uploaded finetuned  model" in seen["card"]
-    # written before the weights, never after
     assert calls.index("model_card") < calls.index("model_push:owner/model")
 
 
@@ -876,7 +869,7 @@ def test_lora_mlx_push_that_cannot_serialise_leaves_no_repo_behind(tmp_path, mon
 
     assert success is False
     assert "MLX serialization failed" in message
-    assert calls == []  # no create_repo, no tightening, no upload
+    assert calls == []
     assert "repo" not in seen
 
 

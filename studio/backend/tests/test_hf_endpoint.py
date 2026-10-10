@@ -51,9 +51,9 @@ class TestGetHfEndpoint:
         "mirror",
         [
             "https://hf-mirror.com",
-            "https://hf-mirror.com/",  # trailing slash stripped
-            "hf-mirror.com",  # scheme-less gets https://
-            "hf-mirror.com/",  # scheme-less + trailing slash
+            "https://hf-mirror.com/",
+            "hf-mirror.com",
+            "hf-mirror.com/",
         ],
     )
     def test_mirror_forms_normalised(self, monkeypatch, mirror):
@@ -84,8 +84,8 @@ class TestGetHfDatasetsServer:
         "raw",
         [
             "https://ds.example.com/",
-            "ds.example.com",  # scheme-less gets https://
-            "ds.example.com/",  # scheme-less + trailing slash
+            "ds.example.com",
+            "ds.example.com/",
         ],
     )
     def test_forms_normalised(self, monkeypatch, raw):
@@ -120,8 +120,7 @@ class TestGetHfDatasetsServer:
         assert not [r for r in caplog.records if "HF_DATASETS_SERVER" in r.message]
 
 
-# These values reach the CSP connect-src built in main.py, and a source list is
-# whitespace-separated and semicolon-delimited.
+# These reach the CSP connect-src, which is whitespace- and semicolon-delimited.
 HOSTILE_ENDPOINTS = [
     "https://hf-mirror.com; script-src *",
     "https://hf-mirror.com *",
@@ -145,9 +144,7 @@ MALFORMED_ENDPOINTS = [
     "https://hf-mirror.com#frag",
     "https://hf-mirror.com:",
     "https://hf-mirror.com:not-a-port",
-    # An IPv6 literal written without its brackets, and the other authorities that
-    # make SplitResult.port raise. The rejection has to come from this module, not
-    # from an exception out of main.py's startup call to normalize_hf_endpoint_env.
+    # Authorities that make SplitResult.port raise; this module must reject them, not crash startup.
     "https://::1",
     "https://a:b:c",
     "https://hf-mirror.com:99999",
@@ -335,7 +332,6 @@ def test_the_environment_is_normalised_for_huggingface_hub(monkeypatch):
     hf_endpoint.normalize_hf_endpoint_env()
     assert os.environ["HF_ENDPOINT"] == "https://hf-mirror.com"
 
-    # Removed, so the library falls back rather than using a host we refused.
     for rejected in (
         "http://192.168.1.10:8080",
         "https://hf-mirror.com; script-src *",
@@ -360,11 +356,9 @@ def test_a_blank_endpoint_is_cleared_rather_than_left_for_the_library(monkeypatc
         hf_endpoint.normalize_hf_endpoint_env()
         assert "HF_ENDPOINT" not in os.environ, repr(blank)
 
-    # Idempotent, and it does not invent the variable when it was never set.
     hf_endpoint.normalize_hf_endpoint_env()
     assert "HF_ENDPOINT" not in os.environ
 
-    # Whitespace AROUND a real endpoint is trimmed, not treated as blank.
     monkeypatch.setenv("HF_ENDPOINT", "  https://hf-mirror.com  ")
     hf_endpoint.normalize_hf_endpoint_env()
     assert os.environ["HF_ENDPOINT"] == "https://hf-mirror.com"
@@ -393,14 +387,12 @@ def test_the_per_client_fallback_is_logged_once_per_endpoint(monkeypatch, caplog
             assert client_reachable_endpoint("8.8.8.8") == OFFICIAL_HF
     assert len([r for r in caplog.records if "not reachable" in r.getMessage()]) == 1
 
-    # A different endpoint is a different configuration, so it warns on its own.
     caplog.clear()
     monkeypatch.setenv("HF_ENDPOINT", "https://10.0.0.5:8443")
     with caplog.at_level(logging.WARNING, logger = "utils.hf_endpoint"):
         assert client_reachable_endpoint("8.8.8.8") == OFFICIAL_HF
     assert len([r for r in caplog.records if "not reachable" in r.getMessage()]) == 1
 
-    # A client that CAN reach it is not a fallback and must not warn.
     caplog.clear()
     with caplog.at_level(logging.WARNING, logger = "utils.hf_endpoint"):
         assert client_reachable_endpoint("192.168.1.50") == "https://10.0.0.5:8443"

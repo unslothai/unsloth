@@ -29,7 +29,6 @@ def test_a_plain_repo_id_is_unchanged():
 
 
 def test_a_local_path_is_never_rewritten(tmp_path):
-    # A trained checkpoint is a directory, and the registry knows nothing about it.
     assert _audio_probe_target(str(tmp_path)) == str(tmp_path)
 
 
@@ -42,8 +41,7 @@ def test_the_merged_export_load_path_resolves_the_alias_the_same_way():
     "Spark-TTS-0.5B/LLM" -> "unsloth/Spark-TTS-0.5B" mapping; it now shares load_scan_target
     with the capability probe here and with the trainer preflight in routes/training.py, so
     the three cannot drift."""
-    # Read rather than import: the codec module pulls optional audio dependencies in,
-    # which is what made a second, dependency-light copy of this mapping tempting.
+    # Read rather than import: the codec module pulls optional audio deps in.
     from pathlib import Path
 
     source = (
@@ -57,5 +55,4 @@ def test_the_merged_export_load_path_resolves_the_alias_the_same_way():
 
     repo, subdirs = load_scan_target(canonical_model_repo_id("Spark-TTS-0.5B/LLM"), ())
     assert repo == "unsloth/Spark-TTS-0.5B"
-    # BiCodec lives at the repo root; LLM is where the language model half sits.
     assert subdirs == ("LLM",)

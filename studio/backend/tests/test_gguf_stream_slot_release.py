@@ -61,7 +61,6 @@ def test_slot_is_freed_at_done_even_if_teardown_never_finishes():
             yield 'data: {"choices": [{"delta": {"content": "hi"}}]}\n\n'
             yield "data: [DONE]\n\n"
         finally:
-            # Stand-in for a teardown that never completes.
             await wedged.wait()
 
     async def _admitted(held):
@@ -84,8 +83,7 @@ def test_slot_is_freed_at_done_even_if_teardown_never_finishes():
         saw_done = asyncio.Event()
 
         async def _consume():
-            # Like Starlette's stream_response: it keeps pulling after the last chunk, so the
-            # generator resumes past [DONE] and only then runs into the wedged teardown.
+            # Starlette keeps pulling after the last chunk, so the generator resumes past [DONE] into the teardown.
             async for chunk in _admitted(lease):
                 seen.append(chunk)
                 if chunk == inference_route._SSE_DONE_CHUNK:
@@ -94,7 +92,6 @@ def test_slot_is_freed_at_done_even_if_teardown_never_finishes():
         task = asyncio.create_task(_consume())
         try:
             await asyncio.wait_for(saw_done.wait(), timeout = 5.0)
-            # Give the generator a turn to resume past the [DONE] yield and reach the wedge.
             for _ in range(50):
                 if _active_slots() == 0:
                     break
@@ -104,7 +101,6 @@ def test_slot_is_freed_at_done_even_if_teardown_never_finishes():
                 "slot still held after [DONE]; the next chat request would "
                 "queue behind a generation that already finished"
             )
-            # A second caller must be admitted right away.
             second = queue.reserve(capacity = 1, config = _ONE_SLOT).lease_nowait()
             assert second is not None, "next request was refused a free slot"
             second.release()
@@ -143,7 +139,7 @@ def test_stopping_the_disconnect_watcher_cannot_hang():
                 try:
                     await asyncio.sleep(0.01)
                 except asyncio.CancelledError:
-                    # Swallow cancellation, as the real watcher does on its way out.
+                    # Swallow cancellation, as the real watcher does.
                     if release.is_set():
                         raise
                     continue
@@ -230,7 +226,7 @@ def test_real_stream_frees_the_slot_at_done_with_a_wedged_teardown(monkeypatch):
         async def receive():
             if not frames:
                 return {"type": "http.request", "body": body, "more_body": False}
-            # Never disconnect: the browser keeps the socket open after [DONE].
+            # Browsers keep the socket open after [DONE].
             await asyncio.Event().wait()
 
         async def send(message):

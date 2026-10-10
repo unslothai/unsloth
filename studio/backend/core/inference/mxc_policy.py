@@ -315,7 +315,7 @@ def host_spawn_args(argv):
     try:
         return cmd_command_line(_system_cmd(), argv[-1])
     except MxcPolicyError:
-        return argv  # a multi-line or oversized command keeps today's argv behaviour on the host
+        return argv
 
 
 def _system_cmd() -> str:
@@ -448,8 +448,7 @@ def build_launch_request(
     runtime_roots = _runtime_read_roots(selected_runtime, _trusted_terminal_path_dirs(plan))
     readonly = _without_nested(runtime_roots + _model_read_roots(workdir, runtime_roots))
     _reject_grants_over_dacl_journal([workdir, *readonly])
-    # Tier 3 walks every readonly tree per launch; a one-time grant on the runtime folders skips it.
-    # Read fresh: a grant made on a stale cached "on" would outlive another process's opt-out.
+    # Read fresh: a grant on a stale cached 'on' would outlive another process's opt-out
     mxc_read_grants.refresh_saved_switches()
     if dacl_fallback_enabled():
         mxc_read_grants.ensure(runtime_roots)
@@ -466,8 +465,7 @@ def build_launch_request(
         cwd_alias = _checked_cwd_alias(cwd_alias, workdir_identity)
     run_id = run_id or uuid.uuid4().hex
     workload_env = _with_session_packages(dict(plan.env), workdir)
-    # MXC's Windows ProcessContainer validator requires LOCALAPPDATA to be
-    # present. Point it inside the session instead of exposing the real profile.
+    # MXC's ProcessContainer validator requires LOCALAPPDATA; point it inside the session
     workload_env.setdefault("LOCALAPPDATA", workdir)
     ui_policy = _studio_ui_policy()
     config = {
@@ -477,7 +475,6 @@ def build_launch_request(
         "lifecycle": {"destroyOnExit": True, "preservePolicy": False},
         "process": {
             "commandLine": command_line,
-            # Grants, scans and identities stay on the canonical workdir; only the workload starts in the alias.
             "cwd": cwd_alias or workdir,
             "env": [f"{key}={value}" for key, value in sorted(workload_env.items())],
             "timeout": 0

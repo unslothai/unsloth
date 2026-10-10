@@ -13,8 +13,6 @@ import sys
 import tempfile
 import threading
 
-# `logging` is deliberately NOT imported here; see _prefix_formatter_class().
-
 __all__ = [
     "LOG_RECORD_CONTINUATION_PREFIX",
     "LOG_RECORD_START_MARK",
@@ -29,13 +27,13 @@ __all__ = [
     "unexpected_exit_message",
 ]
 
-# Marks a record's continuation lines: a recovered request's `exc_info` traceback is byte-identical to a dying process's.
+# Marks a record's continuation lines, so a recovered traceback is not read as a crash.
 LOG_RECORD_CONTINUATION_PREFIX = "    | "
 
-# And its first line. UNIT SEPARATOR so it stays invisible in the operator's mirrored copy.
+# Unit separator so it stays invisible in the operator's mirrored copy.
 LOG_RECORD_START_MARK = "\x1f"
 
-# A kwarg, not an environment variable: a process-wide value would cross workers spawning at once.
+# A kwarg, not an env var: a process-wide value would cross concurrently spawning workers.
 STDERR_MIRROR_KWARG = "unsloth_stderr_mirror_path"
 
 DEFAULT_TAIL_LINES = 20
@@ -87,7 +85,6 @@ def decode_worker_stderr(data: bytes, *, ends_at_eof: bool = True) -> str:
         except UnicodeDecodeError:
             text = None
         else:
-            # cp1252 costs at worst one spurious character; discarding loses crash detail.
             tail_bytes = data[end:] if ends_at_eof else b""
             if tail_bytes:
                 try:
@@ -189,14 +186,13 @@ def _is_crash_marker(line: str) -> bool:
 
 def first_crash_line(text: str) -> str:
     """The reason in the terminal crash block, else empty (a SIGKILL leaves the exit code alone)."""
-    # Marked log records (a recovered `logger.exception`) are never the cause.
     lines = [
         line.strip()
         for line in (text or "").splitlines()
         if line.strip()
         and not line.startswith((LOG_RECORD_START_MARK, LOG_RECORD_CONTINUATION_PREFIX))
     ]
-    # Last few non-stack lines only: an earlier recovered "out of memory" is not the cause.
+    # Last non-stack lines only: an earlier recovered "out of memory" is not the cause.
     tail = []
     for line in reversed(lines):
         if line.startswith(_STACK_LINE_PREFIXES):
@@ -207,13 +203,12 @@ def first_crash_line(text: str) -> str:
     tail.reverse()
     marked = [index for index, line in enumerate(tail) if _is_crash_marker(line)]
     if marked:
-        # The first of the last run: "LLVM ERROR ..." precedes "Windows fatal exception ...".
+        # First of the last run: "LLVM ERROR ..." precedes "Windows fatal exception ...".
         index = marked[-1]
         while index > 0 and _is_crash_marker(tail[index - 1]):
             index -= 1
         line = tail[index]
         following = tail[index + 1] if index + 1 < len(tail) else ""
-        # C++ abort: "terminate called after throwing ..." then "what():  <reason>".
         if line.lower().startswith("terminate called") and following.startswith("what():"):
             line = following
         return line[:_CRASH_LINE_LIMIT]
@@ -234,7 +229,6 @@ def unexpected_exit_message(pid, exitcode, text: str) -> str:
         try:
             from core.inference.orchestrator import _redact_worker_output
         except Exception:
-            # Fail closed: the run error and /training/status are user-visible.
             return message
         line = _redact_worker_output(line)
     if line:
@@ -245,7 +239,7 @@ def unexpected_exit_message(pid, exitcode, text: str) -> str:
 # Exact paths, never a pattern: Studios share one temporary directory.
 _OPEN_SINKS: "set[str]" = set()
 _ATEXIT_REGISTERED = False
-# A fork inherits the set and the atexit registration, so the handler must check these paths are its own.
+# A fork inherits the set and the atexit hook, so the handler checks ownership.
 _SINKS_OWNER_PID: "int | None" = None
 
 
@@ -258,7 +252,6 @@ def _unlink_quietly(path: str) -> None:
 
 def _remove_open_sinks() -> None:
     if os.getpid() != _SINKS_OWNER_PID:
-        # An inherited handler in a forked child: these paths are the parent's.
         return
     for path in list(_OPEN_SINKS):
         _unlink_quietly(path)
@@ -294,7 +287,6 @@ class WorkerStderrCapture:
         max_chars: int = DEFAULT_TAIL_CHARS,
     ) -> str:
         try:
-            # O_NOFOLLOW: a tail is never worth following a symlink in a shared tmpdir for.
             fd = os.open(self._path, os.O_RDONLY | _O_NOFOLLOW | _O_BINARY)
             with os.fdopen(fd, "rb") as handle:
                 handle.seek(0, os.SEEK_END)
@@ -332,7 +324,6 @@ class WorkerStderrCapture:
         _unlink_quietly(self._path)
 
 
-# O_NOFOLLOW is POSIX only and O_BINARY is Windows only; both are absent-means-zero here.
 _O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 _O_BINARY = getattr(os, "O_BINARY", 0)
 
@@ -356,7 +347,7 @@ def _open_existing_sink(path: str):
 
 _TAIL_POLL_S = 0.05
 
-# 64 x 64 KiB: a stalled operator stderr costs 4 MiB of buffer before the mirror starts dropping.
+# 64 x 64 KiB: a stalled operator stderr costs 4 MiB before the mirror drops.
 _MIRROR_RELAY_CHUNKS = 64
 
 
@@ -410,7 +401,6 @@ def _compact_sink(
     keep = min(size, cap_bytes)
     sink.seek(size - keep)
     data = sink.read(keep)
-    # Everything past `total` is an append that arrived after this function started looking.
     total = size
     for _ in range(_COMPACT_CATCH_UP_ROUNDS):
         appended = sink.read()
@@ -423,7 +413,7 @@ def _compact_sink(
     sink.seek(0)
     sink.write(data)
     end = len(data)
-    # A native thread can write into the region about to be truncated during the rewrite.
+    # A native thread can write into the region being truncated during the rewrite.
     for _ in range(_COMPACT_CATCH_UP_ROUNDS):
         sink.seek(total)
         late = sink.read()
@@ -514,11 +504,10 @@ def _tail_sink_to_stderr(
             stop.wait(_TAIL_POLL_S)
             continue
         relay.emit(chunk)
-        # Bytes ON DISK, not bytes relayed: the relay can fall arbitrarily far behind.
+        # Bytes on disk, not relayed: the relay can fall arbitrarily far behind.
         if cap_bytes > 0 and _sink_size(sink) > 2 * cap_bytes:
             try:
                 _compact_sink(sink, cap_bytes, reader = reader, emit = relay.emit)
-                # The file was rewritten from the front; the old offset is now meaningless.
                 reader.seek(0, os.SEEK_END)
             except (OSError, ValueError):
                 pass
@@ -551,14 +540,13 @@ def _stop_mirror(
     except OSError:
         pass
     if stop is not None:
-        # fd 2 no longer points at the sink, so the next empty read is the end, not a pause.
         stop.set()
     pump.join(timeout = _PUMP_JOIN_TIMEOUT_S)
     if relay is not None:
         relay.close()
         relay.join(timeout = _PUMP_JOIN_TIMEOUT_S)
     if pump.is_alive() or (relay is not None and relay.is_alive()):
-        # A thread may be inside os.write(inherited_fd, ...); closing frees the number for any thread's next open().
+        # A thread may be inside os.write(inherited_fd); closing would free the number for reuse.
         return
     try:
         os.close(inherited_fd)
@@ -623,8 +611,7 @@ def install_worker_stderr_mirror(
 
 
 _PREFIX_FORMATTER_CLASS = None
-# On the formatter, not the class: built lazily, so two threads racing the first call make two
-# classes, `isinstance` is false across the pair, and the handler gets wrapped twice.
+# Marked on the formatter, not via a class: a first-call race builds two classes and double-wraps.
 _MARKS_CONTINUATIONS = "_unsloth_marks_continuations"
 
 
@@ -644,7 +631,6 @@ def _prefix_formatter_class():
     import logging
 
     class _EveryLineCarriesThePrefix(logging.Formatter):
-        # Read through `_formatter_marks_continuations`, never `isinstance`: see above.
         _unsloth_marks_continuations = True
 
         def __init__(self, inner: "logging.Formatter") -> None:
@@ -654,7 +640,6 @@ def _prefix_formatter_class():
         def format(self, record: "logging.LogRecord") -> str:
             text = self._inner.format(record)
             first, newline, rest = text.partition("\n")
-            # The first line too: a default-formatted single-line record has no shape to spot.
             marked_first = (
                 first if first.startswith(LOG_RECORD_START_MARK) else LOG_RECORD_START_MARK + first
             )

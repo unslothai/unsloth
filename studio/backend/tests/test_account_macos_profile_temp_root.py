@@ -63,8 +63,6 @@ def _profile(monkeypatch) -> str:
 def test_macos_profile_grants_no_read_on_the_shared_temp_tree(monkeypatch):
     profile = _profile(monkeypatch)
     account_tmp = str(Path(run_as(ALICE, tmp_root)).resolve())
-    # Every temp tree a macOS child can reach: the world-writable one, and the per-user
-    # darwin tree launchd points TMPDIR at.
     for root in ("/private/tmp", "/tmp", "/private/var/tmp", "/private/var/folders/ab/cd/T"):
         assert not _grants_read(
             profile, root
@@ -73,6 +71,5 @@ def test_macos_profile_grants_no_read_on_the_shared_temp_tree(monkeypatch):
         assert not _grants_read(
             profile, outsider
         ), f"the profile grants a managed tool read on {outsider}"
-    # The account keeps its own temp root, wherever tempfile puts it.
     assert _grants_read(profile, account_tmp)
     assert _grants_read(profile, account_tmp + "/scratch.txt")

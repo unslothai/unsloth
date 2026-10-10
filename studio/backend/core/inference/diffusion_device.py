@@ -29,8 +29,7 @@ class DiffusionDeviceTarget:
     supports_default_torch_compile: bool
     supports_pinned_transfer: bool
     supports_float64: bool = True
-    # Selected CUDA/ROCm physical index, kept OUT of ``device``: the memory, speed and attention policies compare that
-    # string against "cuda", so a "cuda:1" there disables them silently.
+    # Kept out of device: policies compare device to "cuda", so "cuda:1" would disable them.
     ordinal: Optional[int] = None
 
     @property
@@ -198,7 +197,7 @@ def install_decoder_sync(
 
 
 VAE_BF16_DECODE_ENV = "UNSLOTH_VIDEO_VAE_BF16_DECODE"
-# RDNA3 / RDNA3.5 / RDNA4: bf16 WMMA. Measured on gfx1151 (Strix Halo); RDNA2 and older have no bf16 matrix path.
+# RDNA3+ have bf16 WMMA; RDNA2 and older have no bf16 matrix path.
 _ROCM_BF16_DECODE_ARCH_PREFIXES = ("gfx11", "gfx12")
 
 
@@ -267,7 +266,6 @@ def install_rocm_vae_bf16_decode(
     decode = getattr(vae, "decode", None)
     if not callable(decode) or getattr(decode, "_unsloth_bf16_decode", False):
         return None
-    # NVIDIA's fp16 decode (diffusion_speed) owns the decoder dtype and recasts it to fp32 on a non-finite output.
     if getattr(vae, "_unsloth_half_decode", False):
         return None
     import torch
@@ -292,12 +290,11 @@ def install_rocm_vae_bf16_decode(
         if isinstance(m, torch.nn.Module)
     ]
     if mode == "weights" and not parts:
-        mode = "autocast"  # no separable decode half: cast nothing
+        mode = "autocast"
 
     if mode == "weights":
         for part in parts:
             part.to(torch.bfloat16)
-            # A path that reaches the decoder without vae.decode (a custom tiled / untiled decode) still gets bf16.
             part.register_forward_pre_hook(_cast_float_args(torch, torch.bfloat16))
 
         def _bf16_decode(z: Any, *args: Any, **kwargs: Any) -> Any:
@@ -363,8 +360,6 @@ def resolve_selected_cuda_ordinal(
         raise ValueError(f"GPU selection is unavailable on this host: {exc}") from exc
     allowed = resolve_requested_gpu_ids(wanted)
     visible = get_parent_visible_gpu_ids()
-    # Torch enumerates the parent-visible list in order, so its ordinal for a physical id is that id's position in the
-    # mask. Unmasked, the layer reports range(physical count) and this is the identity mapping.
     ordinals = [visible.index(gpu_id) for gpu_id in allowed if gpu_id in visible]
     if not ordinals:
         raise ValueError(
@@ -398,8 +393,7 @@ def diffusion_device_scope(ordinal: Optional[int]):
     if ordinal is None:
         yield
         return
-    # Entering the context is what may fail on an unusable index; the BODY's exceptions have to travel untouched, or a
-    # yield-after-throw replaces the caller's real refusal with "generator didn't stop after throw()".
+    # Only entering may fail; body exceptions must propagate untouched (yield-after-throw).
     try:
         import torch
         scope = torch.cuda.device(ordinal)
@@ -540,7 +534,6 @@ def diffusion_device_target_from_torch_device(
             supports_model_cpu_offload = True,
             supports_default_torch_compile = not is_rocm,
             supports_pinned_transfer = True,
-            # An overriding caller's "cuda:1" is a device choice to keep, not one to drop back to ordinal 0.
             ordinal = int(index) if index.isdigit() else None,
         )
     if device == "xpu":
@@ -589,9 +582,7 @@ def _cuda_or_rocm_target(
             bf16_ok = False
         dtype = torch.bfloat16 if bf16_ok else torch.float16
     else:
-        # NVIDIA: bf16 needs Ampere+ (major >= 8), by capability NOT is_bf16_supported() (pre-Ampere cards emulate bf16
-        # slowly but report it supported). Asked of the SELECTED card, since the argument-less form reports the current
-        # device, a different generation on a mixed box; still argument-less without a selection.
+        # bf16 needs Ampere+ by capability: pre-Ampere reports supported but emulates slowly.
         try:
             major = (
                 torch.cuda.get_device_capability()
@@ -654,13 +645,9 @@ def _mps_or_cpu_target(torch: Any) -> DiffusionDeviceTarget:
         mps_available = False
 
     if mps_available:
-        # torch reads PYTORCH_MPS_HIGH_WATERMARK_RATIO once, at the first MPS allocation (the probe below), so relax it
-        # first or the allocator caps at ~1.7x recommendedMaxWorkingSet and can OOM a model that would fit. setdefault
-        # respects an override.
+        # torch reads this once at first MPS allocation; else allocator caps at ~1.7x and may OOM.
         os.environ.setdefault("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "0.0")
-        # Prefer bfloat16, else float32, NEVER silent float16: modern DiTs produce activations far outside fp16's
-        # range (Z-Image MLP peaks near 9e5 -> inf -> NaN -> black image). bf16 (macOS 14+) shares fp32's exponent
-        # range; older macOS uses fp32.
+        # Never fp16: DiT activations overflow fp16 (black images). bf16 needs macOS 14+.
         dtype = torch.bfloat16 if _mps_supports_bfloat16(torch) else torch.float32
         return DiffusionDeviceTarget(
             device = "mps",
@@ -676,7 +663,6 @@ def _mps_or_cpu_target(torch: Any) -> DiffusionDeviceTarget:
 
 
 def _cpu_target(torch: Any, dtype: Any = None) -> DiffusionDeviceTarget:
-    # torch is None on the no-torch CPU fallback; leave dtype=None rather than crash.
     if dtype is None and torch is not None:
         dtype = torch.float32
     return DiffusionDeviceTarget(

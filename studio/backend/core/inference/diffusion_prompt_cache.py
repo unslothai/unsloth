@@ -37,7 +37,7 @@ def budget_bytes() -> int:
         mb = float(raw) if raw else float(_DEFAULT_BUDGET_MB)
     except ValueError:
         mb = float(_DEFAULT_BUDGET_MB)
-        raw = ""  # malformed = unset, so the automatic cap still applies
+        raw = ""
     budget = int(max(0.0, mb) * 1024 * 1024)
     if not raw:
         total = _host_ram_bytes()
@@ -170,8 +170,7 @@ class PromptCache:
 def _store_copy(t: Any) -> Any:
     t = t.detach()
     device = t.device
-    # Not pinned: pin_memory() is a fresh cudaHostAlloc per entry (60 ms to 1.6 s for 4 MB on a busy host) to save
-    # ~0.3 ms per hit.
+    # Not pinned: pin_memory() is a slow cudaHostAlloc per entry for ~0.3 ms per hit.
     stored = t.to("cpu", copy = True)
     stored._unsloth_src_device = device
     return stored
@@ -306,7 +305,7 @@ def _wrap_encode_prompt(
     return True
 
 
-# MiniMax-H3 steps call this module global, so it is shimmed process-wide and routed per text encoder.
+# MiniMax-H3 steps call this module global: shimmed process-wide, routed per encoder.
 _H3_MODULE = "diffusers.modular_pipelines.minimax_h3.encoders"
 _H3_FUNC = "get_qwen3vl_prompt_embeds"
 _H3_REGISTRY: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()

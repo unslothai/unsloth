@@ -28,7 +28,6 @@ _MANIFESTS = {
 _MANIFEST = _MANIFESTS["truststore"]
 _PACKAGES = {"truststore", "laya"}
 
-# Everything the vendor directory is allowed to hold, beyond the packages themselves.
 _SIDECARS = {
     "LICENSE",
     "LICENSE.laya",

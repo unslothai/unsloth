@@ -33,8 +33,7 @@ GPT_OSS = {
     "metal/model.bin": 13_750,
 }
 
-# bigscience/bloom shards its root safetensors with an underscore, and ships the same
-# 72 shards again as pytorch_model_000NN-of-00072.bin.
+# bigscience/bloom: underscore safetensors shards plus the same 72 shards as .bin.
 BLOOM = {
     "config.json": 2,
     "tokenizer.json": 14,
@@ -132,14 +131,12 @@ def test_a_bin_only_dtype_variant_survives():
     assert "pytorch_model.bin" not in kept
     assert "pytorch_model.fp16.bin" in kept
 
-    # Once the variant ships as safetensors too, the bin copy IS redundant.
     both = dict(bin_only_variant, **{"model.fp16.safetensors": 250})
     assert "pytorch_model.fp16.bin" not in _kept(both)
 
 
 def test_an_indexless_variant_does_not_authorise_dropping_its_bins():
-    # Same rule as the canonical gate, applied per variant: sharded fp16 safetensors with no
-    # fp16 index are not loadable, so the fp16 bin family is still the only usable copy.
+    # Sharded fp16 safetensors without an fp16 index are unloadable, so the fp16 bins stay.
     indexless_variant = {
         "config.json": 2,
         "model.safetensors": 500,
@@ -152,19 +149,16 @@ def test_an_indexless_variant_does_not_authorise_dropping_its_bins():
     assert "pytorch_model.bin" not in kept
     assert "pytorch_model.fp16-00001-of-00002.bin" in kept
 
-    # With the variant index the fp16 safetensors family is complete, so the bins go.
     indexed = dict(indexless_variant, **{"model.safetensors.index.fp16.json": 1})
     assert not any(n.startswith("pytorch_model") for n in _kept(indexed))
 
-    # transformers' _add_variant writes model.safetensors.index.fp16.json. The other
-    # spelling is not one a variant load can find, so it must not authorise the drop.
+    # transformers writes model.safetensors.index.fp16.json; the other spelling is not findable.
     wrong_index = dict(indexless_variant, **{"model.fp16.safetensors.index.json": 1})
     assert "pytorch_model.fp16-00001-of-00002.bin" in _kept(wrong_index)
 
 
 def test_both_variant_shard_layouts_are_recognised():
-    # transformers writes model-00001-of-00002.fp16.safetensors (counter first);
-    # unsloth/models/_utils.py::_is_canonical_variant_model_weight_safetensors takes both.
+    # transformers writes the counter first; both orders are accepted.
     counter_first = {
         "config.json": 2,
         "model.safetensors": 500,
@@ -181,8 +175,7 @@ def test_both_variant_shard_layouts_are_recognised():
 
 
 def test_a_variant_index_never_outlives_its_shards():
-    # openai/whisper-large-v3's real shape. The fp32 variant ships as safetensors, so the bin
-    # shards go -- and their index must go with them rather than dangle over absent files.
+    # openai/whisper-large-v3 shape: bin shards go, and their index must go too.
     whisper = {
         "config.json": 2,
         "model.safetensors": 3_090,
@@ -196,15 +189,12 @@ def test_a_variant_index_never_outlives_its_shards():
     }
     kept = _kept(whisper)
     assert not any(name.startswith("pytorch_model") for name in kept), sorted(kept)
-    # The safetensors side, including its own variant index, is untouched.
     assert "model.fp32-00001-of-00002.safetensors" in kept
     assert "model.safetensors.index.fp32.json" in kept
 
 
 def test_indexless_shards_do_not_open_the_gate():
-    # Numbered shards are resolved through model.safetensors.index.json; with no index a
-    # load falls back to looking for a single file and raises, so the .bin checkpoint here
-    # is the only loadable one and must survive.
+    # Numbered shards need the index; without it the .bin checkpoint is the only loadable one.
     indexless = {
         "config.json": 2,
         "model-00001-of-00002.safetensors": 500,
@@ -214,20 +204,15 @@ def test_indexless_shards_do_not_open_the_gate():
     assert _kept(indexless) == set(indexless)
     assert "pytorch_model*.bin" not in resolve_snapshot_ignore_patterns_for_files(indexless)
 
-    # The same repo WITH the index is a complete checkpoint, so the bin copy goes.
     indexed = dict(indexless, **{"model.safetensors.index.json": 1})
     assert "pytorch_model.bin" not in _kept(indexed)
 
-    # An unsharded model.safetensors needs no index to be loadable.
     unsharded = {"config.json": 2, "model.safetensors": 500, "pytorch_model.bin": 500}
     assert "pytorch_model.bin" not in _kept(unsharded)
 
 
 def test_a_non_ascii_shard_number_does_not_open_the_gate():
-    # Python's \d matches non-ASCII digits and JavaScript's does not, so a \d here would
-    # have this repo lose its .bin copy in the backend while the frontend still sized it
-    # in -- the download and the number shown in the Model hub would disagree. Both sides
-    # spell the shard number [0-9] so neither treats these as a root checkpoint.
+    # Python's \d matches non-ASCII digits but JS's does not; both sides use [0-9] to agree.
     arabic_indic = {
         "config.json": 2,
         "model-٠١-of-٠٢.safetensors": 500,

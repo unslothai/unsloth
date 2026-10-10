@@ -26,7 +26,7 @@ def _locale_encoding() -> str:
     return preferred
 
 
-# Trail bytes can land on JSON punctuation, so a single-byte fallback misreads these.
+# Trail bytes can land on JSON punctuation, so single-byte fallback misreads these.
 _DOUBLE_BYTE_ENCODINGS = ("cp932", "cp936", "cp949", "cp950")
 
 
@@ -53,7 +53,6 @@ def _read_line(raw: bytes, codepage: str) -> _Reading:
     That is also why several are tried: latin-1 alone mangles the double-byte codepages, since cp932 ``表`` is ``95 5C`` and latin-1 turns the trail byte into a JSON backslash, so the record fails to parse and its id is forgotten.
     """
     as_utf8 = _parse(raw, "utf-8")
-    # A record that reads as UTF-8 needs no second reading: re-parsing cost 2.8x on a 76 MB shard, and these reach gigabytes.
     if isinstance(as_utf8, dict):
         return _Reading(as_utf8, None)
     for encoding in (codepage, "latin-1", *_DOUBLE_BYTE_ENCODINGS):
@@ -81,7 +80,7 @@ class StateStore:
         self.path.parent.mkdir(parents = True, exist_ok = True)
         self._lock = threading.Lock()
         self._data: Dict[str, Any] = {}
-        # Read whole, and UTF-8 only unlike the shards below: a checkpoint holds nothing but base64 cursors and booleans, so a codepage retry could only resume on a mojibaked cursor GitHub rejects with INVALID_CURSOR_ARGUMENTS, whose empty page marks the stream done. Dropping a damaged checkpoint re-scrapes from page one, which the writers dedup.
+        # UTF-8 only: a mojibaked cursor would end the stream; a dropped checkpoint just re-scrapes.
         if self.path.exists():
             try:
                 raw = self.path.read_bytes()
@@ -138,7 +137,7 @@ class JsonlWriter:
             if scan.legacy:
                 self._count_seen_keys |= scan.legacy_keys
             if scan.saw_non_ascii or not scan.readable:
-                # Never convert: the writing encoding is unrecoverable and guessing mojibakes the records. Pure ASCII appends store identically under every codepage, and json.loads turns the escapes back.
+                # Never convert: the writing encoding is unrecoverable; ASCII appends read alike.
                 encoding = "ascii"
                 self._ensure_ascii = True
         self._fh = self.path.open("a", buffering = 1, encoding = encoding, errors = "strict")
@@ -162,14 +161,12 @@ class JsonlWriter:
                 for raw in handle:
                     line = raw.strip()
                     reading = _read_line(line, self._codepage)
-                    # ASCII reads the same everywhere: no vote, no constraint.
                     if not line.isascii():
                         saw_non_ascii = True
                         if reading.as_utf8 is None and reading.as_legacy is not None:
                             legacy_votes += 1
                         elif reading.as_utf8 is not None:
                             utf8_votes += 1
-                    # Kept apart so a damaged line does not block its own retry.
                     if isinstance(reading.as_utf8, dict):
                         key = self._key(reading.as_utf8)
                         if key is not None:

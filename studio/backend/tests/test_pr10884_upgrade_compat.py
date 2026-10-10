@@ -34,9 +34,6 @@ from utils.openai_auto_switch_settings import (  # noqa: E402
     normalize_model_override,
 )
 
-# A saved override from an existing install, using every placement key the
-# allow-list does carry. This is the shape that replays on the first load after
-# an update.
 LEGACY_OVERRIDE = {
     "gpu_memory_mode": "manual",
     "gpu_layers": 99,

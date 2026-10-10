@@ -103,7 +103,6 @@ def test_no_signature_pins_a_version_number():
     assert signatures
     for signature in signatures:
         assert not re.search(r"\d+\.\d+", signature), signature
-        # Long enough to be this refusal and not an arbitrary sentence saying the words.
         assert len(signature) >= 30, signature
 
 

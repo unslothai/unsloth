@@ -66,14 +66,11 @@ def _forbid_probe(monkeypatch):
     monkeypatch.setattr(tq, "_run_smoke_probe", _boom)
 
 
-# ── 1. the arch gate ──────────────────────────────────────────────────────────
-
-
 @pytest.mark.parametrize(
     "hip, version_str",
     [
-        ("7.1.25424", "2.10.0+rocm7.1"),  # the build in the report
-        (None, "2.10.0+rocm7.1"),  # AMD wheels that tag only __version__
+        ("7.1.25424", "2.10.0+rocm7.1"),
+        (None, "2.10.0+rocm7.1"),
     ],
 )
 def test_dense_transformer_unsupported_on_rocm(monkeypatch, hip, version_str):
@@ -88,7 +85,7 @@ def test_dense_transformer_still_supported_on_cuda(monkeypatch):
     assert tq.dense_transformer_supported(_target()) is True
 
 
-@pytest.mark.parametrize("cc", [(11, 0), (11, 5), (9, 4)])  # gfx1103, gfx1151, gfx942
+@pytest.mark.parametrize("cc", [(11, 0), (11, 5), (9, 4)])
 def test_auto_selects_nothing_and_never_probes_on_rocm(monkeypatch, cc):
     """The regression: (11, 0) is gfx1103, not sm_110, and must not clear the sm_100 tier."""
     _stub_torch(monkeypatch, hip = "7.1.25424", version_str = "2.10.0+rocm7.1", cc = cc)
@@ -115,9 +112,6 @@ def test_refusal_reason_unchanged_off_cuda(monkeypatch):
     assert "CUDA GPU in bf16" in tq.dense_transformer_unsupported_reason(_target(device = "cpu"))
 
 
-# ── 2. the text-encoder gate has the same capability misread ──────────────────
-
-
 @pytest.mark.parametrize("mode", [dp.TE_QUANT_INT8, dp.TE_QUANT_FP8_DYNAMIC, dp.TE_QUANT_NVFP4])
 def test_torchao_text_encoder_modes_unsupported_on_rocm(monkeypatch, mode):
     _stub_torch(monkeypatch, hip = "7.1.25424", version_str = "2.10.0+rocm7.1")
@@ -136,9 +130,6 @@ def test_torchao_text_encoder_modes_still_supported_on_cuda(monkeypatch, mode):
     monkeypatch.setattr(dp, "is_stubbed", lambda name: False)
     monkeypatch.setattr(dp, "nvfp4_weight_only_importable", lambda: True)
     assert dp.te_quant_supported(_target(), mode) is True
-
-
-# ── 3. a crashed probe child is a verdict, not a reason to retry in-process ───
 
 
 class _Proc:
@@ -162,11 +153,11 @@ def test_non_crash_exits_still_fall_back_in_process(exitcode):
 @pytest.mark.parametrize(
     "status",
     [
-        0xC0000005,  # STATUS_ACCESS_VIOLATION
-        0xC000001D,  # STATUS_ILLEGAL_INSTRUCTION
-        0xC0000094,  # STATUS_INTEGER_DIVIDE_BY_ZERO
-        0xC0000374,  # STATUS_HEAP_CORRUPTION
-        0xC0000409,  # STATUS_STACK_BUFFER_OVERRUN, where UCRT's abort() lands
+        0xC0000005,
+        0xC000001D,
+        0xC0000094,
+        0xC0000374,
+        0xC0000409,
     ],
 )
 def test_a_windows_native_fault_is_a_crash_not_an_inconclusive_exit(monkeypatch, status):
@@ -203,7 +194,6 @@ def test_crash_verdict_stops_the_in_process_probe(monkeypatch):
 
     monkeypatch.setattr(tq, "_run_smoke_probe", _boom)
     assert tq._scheme_supported(tq.TQ_INT8, "cuda") is False
-    # Cached, so a second load answers from memory instead of spawning another child to die.
     assert tq._SMOKE_CACHE[(tq.TQ_INT8, "cuda:0")] is False
 
 
@@ -245,9 +235,6 @@ def test_a_scheme_missing_from_the_table_is_still_not_an_answer(monkeypatch):
     assert probed == [tq.TQ_INT8]
 
 
-# ── 3a. the child must probe the card the verdict is filed under ─────────────
-
-
 def test_child_is_asked_about_the_pinned_card_not_the_default_one(monkeypatch):
     """A load pinned to GPU 1 caches under cuda:1, so the child has to be asked about cuda:1.
 
@@ -262,7 +249,6 @@ def test_child_is_asked_about_the_pinned_card_not_the_default_one(monkeypatch):
         current_device = 1,
     )
     asked: list = []
-    # Only the pinned card runs the scheme here, which is the mixed-GPU box this guards.
     monkeypatch.setattr(
         tq,
         "_child_probe_table",
@@ -286,9 +272,6 @@ def test_probe_child_selects_the_card_it_was_given(monkeypatch, device, expected
     torch = _stub_torch(monkeypatch)
     tq._select_probe_card(device)
     assert torch.cuda.selected == expected
-
-
-# ── 4. the training gate has the same misread, at four entry points ───────────
 
 
 def _stub_train_torch(
@@ -317,7 +300,6 @@ def test_info_stops_advertising_the_torchao_train_modes_on_rocm(monkeypatch):
     _stub_train_torch(monkeypatch, hip = "7.1.25424", version_str = "2.10.0+rocm7.1")
     modes, recommended = tc.train_precision_modes()
     assert [m for m in modes if m in _TORCHAO_TRAIN_MODES] == []
-    # bf16 and the auto ladder are untouched: neither goes near torchao.
     assert "bf16" in modes and "nf4" in modes and recommended == "auto"
 
 
@@ -356,7 +338,6 @@ def test_auto_never_resolves_to_int8_on_rocm(monkeypatch):
     """auto is the mode /info recommends, so it is the one users actually land on."""
     import core.training.diffusion_dit_trainer as dit
 
-    # free VRAM inside int8's band (> 1.15x dense, < 1.5x dense): the pick auto would make.
     assert dit._pick_auto_precision(False, "cuda", 13.8, 12.0, (11, 5), True, True) == "int8"
     assert dit._pick_auto_precision(False, "cuda", 13.8, 12.0, (11, 5), True, False) == "nf4"
 
@@ -368,9 +349,6 @@ def test_auto_never_resolves_to_int8_on_rocm(monkeypatch):
     )
     resolved = dit._resolve_base_precision(cfg, types.SimpleNamespace(dense_bf16_gb = 12.0), "cuda")
     assert resolved != "int8"
-
-
-# ── 4. the explicit-request decline must quote the helper, not its fallback ───
 
 
 def test_the_explicit_decline_text_is_the_helper_not_a_copy_of_its_fallback():
@@ -399,6 +377,5 @@ def test_the_explicit_decline_text_is_the_helper_not_a_copy_of_its_fallback():
 def test_the_rocm_reason_reaches_a_pinned_request(monkeypatch):
     _stub_torch(monkeypatch, hip = "7.1.25424", version_str = "2.10.0+rocm7.1")
     reason = tq.dense_transformer_unsupported_reason(_target())
-    # What the pinned branch now emits, for the device the probe actually measured.
     assert "ROCm" in reason and "AMD" in reason
     assert "needs a CUDA GPU" not in reason

@@ -263,7 +263,7 @@ def test_the_memoized_eval_workers_are_released_too():
         persistent_workers = True,
         collate_fn = _collate,
     )
-    list(eval_loader)  # the eval loop drains it; torch retains the iterator
+    list(eval_loader)
     trainer._eval_dataloaders = {"eval": eval_loader}
 
     assert eval_loader._iterator is not None, "torch dropped the persistent iterator"

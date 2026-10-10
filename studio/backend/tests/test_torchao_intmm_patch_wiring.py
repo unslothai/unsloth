@@ -110,7 +110,6 @@ def test_patch_leaves_an_already_patched_module_alone():
 
 def test_patch_refuses_an_unrecognised_body():
     def rewritten_upstream(input, mat2):
-        # None of the markers the gate looks for
         return input @ mat2
 
     module = _fake_intmm_module(rewritten_upstream)

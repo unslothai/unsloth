@@ -239,9 +239,6 @@ def test_tool_choice_auto_still_executes(executed):
     assert executed == ["web_search"]
 
 
-# ── a turn that ended early is described, not run ────────────────────
-
-
 @pytest.mark.parametrize("reason", ["length", "content_filter"])
 def test_a_turn_cut_short_does_not_execute_its_call(executed, reason):
     """Both endings mean the model never finished saying what it wanted."""

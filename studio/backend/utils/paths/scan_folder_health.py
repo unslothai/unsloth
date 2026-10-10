@@ -27,7 +27,7 @@ STATUS_UNKNOWN = "unknown"
 _PROBE_DEPTH = 2
 # Total opens for one probe, whatever the shape. Bounds the cost; the depth does not.
 _PROBE_OPEN_LIMIT = 64
-# A huggingface_hub cache keeps the weights only in <root>/models--org--name/snapshots/<commit>/, so refusing that directory leaves the folder looking healthy and empty at once.
+# HF caches keep weights only under snapshots/, so a refused one looks healthy and empty.
 _HF_SNAPSHOTS_DIR = "snapshots"
 _HF_HOME_HUB_DIR = "hub"
 
@@ -42,7 +42,6 @@ def _probe_dir(path: str, *, depth: int, budget: list[int]) -> tuple[str, Option
     try:
         with os.scandir(path) as entries:
             if depth <= 0:
-                # Only need to know it opens.
                 next(entries, None)
                 return STATUS_OK, None
             for entry in entries:
@@ -59,13 +58,13 @@ def _probe_dir(path: str, *, depth: int, budget: list[int]) -> tuple[str, Option
     for name, subdir in subdirs:
         child_depth = depth - 1
         if child_depth <= 0 and name == _HF_SNAPSHOTS_DIR:
-            # Spend one more level here rather than raising the depth everywhere: a diffusers pipeline's component directories would otherwise burn the budget.
+            # One more level here only: diffusers component dirs would burn the budget otherwise.
             child_depth = 1
         elif depth == _PROBE_DEPTH and name == _HF_HOME_HUB_DIR:
             child_depth = depth
         status, cause = _probe_dir(subdir, depth = child_depth, budget = budget)
         if status == STATUS_MISSING:
-            # It was in the listing a moment ago and is gone now (a model being deleted, or a download renaming its temp directory), which says nothing about the folder the user registered.
+            # Vanished mid-scan (delete or download rename); says nothing about the folder.
             continue
         if status != STATUS_OK:
             return status, cause or subdir
@@ -91,14 +90,13 @@ def is_readable_dir(path: str) -> bool:
     return probe_status(path) == STATUS_OK
 
 
-# Windows reports the real reason in ``winerror``: CPython folds ERROR_NOT_READY, ERROR_CRC and every media failure onto EACCES, so an ejected card reader reads as a permissions problem. ``errno`` is a lossy translation, and CPython's PC/errmap.h folds ERROR_GEN_FAILURE onto EACCES as well.
+# CPython folds media errors onto EACCES; winerror holds the real reason.
 _WINDOWS_PERMISSION = frozenset((5, 65, 1314))
 _WINDOWS_MISSING = frozenset((2, 3, 15, 20, 21, 53, 55, 67, 161, 206, 267))
 
 
 def classify_scan_error(error: OSError) -> str:
     """Map an error the scan already raised onto a status the UI can render."""
-    # Absent on POSIX, and None unless CPython set it, so this never shadows errno.
     winerror = getattr(error, "winerror", None)
     if winerror is not None:
         if winerror in _WINDOWS_PERMISSION:
@@ -111,7 +109,7 @@ def classify_scan_error(error: OSError) -> str:
     return STATUS_UNREADABLE
 
 
-# Read on every folder list, written only when a probe finds something wrong. Each value is (status, the directory that refused), so a recheck can settle a folder in one open instead of walking it again. Bounded by the folder count.
+# Values are (status, refusing dir) so a recheck needs one open. Bounded by folder count.
 _MAX_TRACKED = 256
 _failed: dict[str, tuple[str, str]] = {}
 
@@ -137,13 +135,13 @@ def note_scan_folder_scanned(path: str, *, found: bool) -> None:
     """Record the outcome of a scan of ``path``. Empty, gone, refused, or working with one model refused: the scanners return the same list for all of them, because they swallow the error per entry, so ask the OS instead of trying to read it back out of them. Bounded by ``_PROBE_OPEN_LIMIT`` opens per folder."""
     status, cause = probe_folder(path, children = True)
     if status == STATUS_UNKNOWN:
-        # Budget gone before the tail was reached, so this proves nothing either way. Settle it on the one directory that refused last time.
+        # Budget ran out, proving nothing; recheck the directory that refused last time.
         _recheck_cause(path)
         return
     if status == STATUS_OK:
         clear_scan_failure(path)
         return
-    # Models came back, so the folder itself is fine and only part of it is refused. Saying it cannot be read would contradict the rows on screen.
+    # Models were found, so the folder is fine and only part is refused.
     if found:
         status = STATUS_PARTIAL
     _record(path, status, cause or path)
@@ -189,7 +187,6 @@ def refresh_failed_scan_folders(folders: list[dict]) -> None:
             and cause is not None
             and cause != path
         ):
-            # The probe cannot see that models were found.
             status = STATUS_PARTIAL
         _record(path, status, cause or path)
 

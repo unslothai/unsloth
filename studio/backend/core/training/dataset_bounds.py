@@ -18,44 +18,35 @@ import re
 import tempfile
 from typing import Any, Optional
 
-# Deliberately loose: rows are consumed by things that never produce a step (the eval split, rows
-# train_on_responses_only drops when the response template is missing), and running short only
-# re-reads the subset; 4x is still orders of magnitude under the datasets this exists for.
+# Loose on purpose: some rows never produce a step (eval split, train_on_responses_only drops).
 MAX_STEPS_ROW_SLACK = 4
-# Below this a subset is small enough to skew a run for no meaningful saving.
 MIN_MAX_STEPS_ROWS = 1024
-# Read as env because this module is torch-free and the bound is computed before any process group
-# exists, so torch.distributed cannot be asked. A bare size is enough here, unlike
-# routes/inference.py, which pairs each size with its rank partner because it refuses requests.
+# Env, not torch.distributed: this module is torch-free and runs before any process group.
 WORLD_SIZE_ENV_VARS = (
-    "WORLD_SIZE",  # torchrun, accelerate launch, deepspeed. NOT set by any MPI
-    "LOCAL_WORLD_SIZE",  # torchrun's --nproc-per-node; it sets WORLD_SIZE too
-    "MLX_WORLD_SIZE",  # only mlx.launch's NCCL backend, which is CUDA-only
+    "WORLD_SIZE",  # torchrun, accelerate launch, deepspeed; not set by any MPI
+    "LOCAL_WORLD_SIZE",
+    "MLX_WORLD_SIZE",  # only mlx.launch's NCCL backend
     "OMPI_COMM_WORLD_SIZE",
     "PMI_SIZE",  # MPICH and Intel MPI via Hydra; srun only under --mpi=pmi2
-    "PMIX_SIZE",  # nothing sets this: PMIx answers job size through PMIx_Get
-    "MPI_WORLD_SIZE",  # likewise undocumented in every MPI checked
-    "MV2_COMM_WORLD_SIZE",  # MVAPICH2, and only under its mpirun_rsh launcher
+    "PMIX_SIZE",
+    "MPI_WORLD_SIZE",
+    "MV2_COMM_WORLD_SIZE",  # MVAPICH2, only under mpirun_rsh
 )
-# Of mlx.launch's five backends only NCCL exports MLX_WORLD_SIZE; ring and JACCL export a path to
-# a JSON file whose outer list has one entry per rank.
+# mlx.launch ring and JACCL backends export a path to a JSON list with one entry per rank.
 WORLD_SIZE_ENV_FILES = (
-    "MLX_HOSTFILE",  # ring backend: a path to [["ip:port", ...], ...], one per rank
-    "MLX_IBV_DEVICES",  # jaccl backend: a path to the N x N RDMA matrix, one row per rank
+    "MLX_HOSTFILE",
+    "MLX_IBV_DEVICES",
 )
-# Read a bounded prefix so a wrong path cannot pull an enormous file into memory; a truncated read
-# fails to parse as JSON and is discarded.
 MAX_WORLD_SIZE_FILE_BYTES = 1 << 20
-# Its absence is the signal that a checkpoint predates the bound.
+# Its absence means the checkpoint predates the bound.
 ROW_BOUND_MARKER_FILE = "unsloth_row_bound.json"
-# transformers writes checkpoint-<global_step> and nothing else under that prefix.
 _CHECKPOINT_DIR_RE = re.compile(r"^checkpoint-\d+$")
 
 
 def _int_or(value: Any, default: int) -> int:
     """Coerce a config value to an int; a row bound must never be what raises."""
     try:
-        # OverflowError: json accepts Infinity, so a config or request can carry one.
+        # OverflowError: json accepts Infinity.
         return int(value)
     except (TypeError, ValueError, OverflowError):
         return default
@@ -100,8 +91,7 @@ def world_size_from_rank_files(environ: Any = None) -> int:
             if value.lstrip()[:1] in ("[", "{"):
                 payload = json.loads(value[:MAX_WORLD_SIZE_FILE_BYTES])
             elif os.path.isfile(value):
-                # Binary, so the cap really is bytes: a text read() counts CHARACTERS, and json.loads takes bytes
-                # anyway.
+                # Binary so the cap counts bytes, not characters.
                 with open(value, "rb") as handle:
                     payload = json.loads(handle.read(MAX_WORLD_SIZE_FILE_BYTES))
             else:
@@ -240,7 +230,6 @@ def run_dir_for_checkpoint(checkpoint_path: Any) -> Optional[str]:
         return None
     head, tail = os.path.split(path)
     if _CHECKPOINT_DIR_RE.match(tail):
-        # A bare "checkpoint-30" splits to an empty head; its run dir is the cwd.
         return head or os.curdir
     return path
 
@@ -352,7 +341,6 @@ def bound_dataset_rows(
     try:
         total_rows = len(dataset)
     except TypeError:
-        # No __len__ means streaming, which is bounded lazily instead.
         return dataset
     if total_rows <= max_train_rows:
         return dataset

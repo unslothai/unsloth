@@ -33,7 +33,7 @@ from core.inference.llama_cpp import (  # noqa: E402
 )
 from core.inference.llama_server_args import strip_shadowing_flags  # noqa: E402
 
-# b10909. The name-alikes are the point: a substring match would report the flag wrongly.
+# b10909. The name-alike flags are deliberate: a substring match would misreport them.
 MODERN_HELP = """usage: llama-server [options]
 
 -m,    --model FNAME                    model path
@@ -217,13 +217,11 @@ class TestOnlyTheDeprecatedKeyMoves:
         ]
 
 
-# enable_thinking style, with preserve_thinking so both channels are exercised at once.
 THINKING_TEMPLATE = (
     "{% if enable_thinking %}<think>\n{% endif %}"
     "{% if preserve_thinking %}{{ messages[0].reasoning_content }}{% endif %}"
     "{{ messages[0].content }}"
 )
-# gpt-oss style: a ladder, no on/off gate, nothing deprecated.
 EFFORT_TEMPLATE = "{{ reasoning_effort }}{% if reasoning_effort == 'high' %}<think>{% endif %}"
 
 OSES = {

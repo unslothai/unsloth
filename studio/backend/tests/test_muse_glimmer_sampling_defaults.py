@@ -29,9 +29,7 @@ if str(_backend_root) not in sys.path:
 
 EXPECTED = {"temperature": 1.0, "top_p": 0.95, "top_k": 64, "min_p": 0.0}
 
-# Every shape an id reaches load_inference_config as. The snapshot path is not
-# hypothetical: _repo_gguf_load_id publishes a snapshot filesystem path as the
-# load_id for a GGUF repo in a non-active cache root.
+# _repo_gguf_load_id can publish a snapshot path for a GGUF repo in a non-active cache root.
 MUSE_GLIMMER_IDS = [
     "unsloth/Muse-Glimmer-30B-GGUF",
     "unsloth/Muse-Glimmer-30B",

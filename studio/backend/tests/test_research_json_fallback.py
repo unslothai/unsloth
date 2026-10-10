@@ -27,7 +27,6 @@ _NO_GRAMMAR_ENGINE = (
     "response_format needs a grammar engine, and the transformers backend has none; load an "
     "MLX or GGUF model to use it."
 )
-# Same code and param, different cause. The real-route cases keep these strings honest.
 _AUDIO_REFUSAL_MESSAGE = (
     "response_format cannot be honored by an audio reply; send the request to a text model "
     "to use guided decoding."
@@ -281,7 +280,6 @@ def test_fallback_uses_the_refused_request_not_an_intervening_model(
 
     class SwitchingTransport(httpx.ASGITransport):
         async def handle_async_request(self, request):
-            # Model loading is scripted; requests and the refusal use the real route.
             backend.active_model_name = "sf-model"
             response = await super().handle_async_request(request)
             statuses.append(response.status_code)
@@ -517,10 +515,7 @@ def test_json_fallback_does_not_refund_transport_retries(monkeypatch, research_c
     real_sleep = asyncio.sleep
     owner = threading.get_ident()
 
-    # `research_runs.asyncio` is the asyncio module, so this patches every event loop in
-    # the process; a TestClient portal another test left running polls with
-    # asyncio.sleep(0.1) from its own thread. Only this thread's sleeps are the retry
-    # loop's (see _capture_backoff in test_research_runs_hardening.py).
+    # research_runs.asyncio is the real module, so only this thread's sleeps are the retry loop's.
     async def sleep(delay, *args, **kwargs):
         if threading.get_ident() != owner:
             return await real_sleep(delay, *args, **kwargs)

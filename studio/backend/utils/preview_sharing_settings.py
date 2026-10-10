@@ -8,9 +8,7 @@ from __future__ import annotations
 from typing import Any
 
 PREVIEW_SHARING_SETTING_KEY = "preview_public_sharing_enabled"
-# Default on: signed share links work out of the box (current behavior). An admin
-# can flip this off to take the public ``/p`` surface offline entirely - links
-# then 404 even with a valid token, leaving preview to the authenticated app.
+# Off takes the public /p surface offline: links 404 even with a valid token.
 DEFAULT_PREVIEW_SHARING_ENABLED = True
 
 

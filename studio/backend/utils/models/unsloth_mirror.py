@@ -88,8 +88,7 @@ def _bad_mappings() -> Optional[dict]:
             for key, value in zip(node.value.keys, node.value.values):
                 name, replacement = _string_literal(key), _string_literal(value)
                 if name is None or replacement is None:
-                    # An entry we cannot read as data. Reading the rest would silently drop
-                    # whichever correction that entry was.
+                    # An unreadable entry would silently drop a correction, so give up.
                     return None
                 table[name.lower()] = replacement
             return table
@@ -122,23 +121,14 @@ def unsloth_public_mirror(model_name: Optional[str], load_in_4bit: bool = True) 
         return None
     int_to_float, float_to_int, map_to_unsloth_16bit = tables
     lower = model_name.strip().lower()
-    # An unsloth/ id is NOT a fixed point. A 16-bit load of an explicit -unsloth-bnb-4bit id
-    # resolves through INT_TO_FLOAT_MAPPER (unsloth/gemma-3-270m-it-unsloth-bnb-4bit ->
-    # unsloth/gemma-3-270m-it), and BAD_MAPPINGS is applied to the INPUT name when the tables
-    # resolve nothing (loader_utils.py:1014-1016), which is how a 4-bit
-    # unsloth/Qwen3-30B-A3B-unsloth-bnb-4bit becomes unsloth/Qwen3-30B-A3B. Both were verified
-    # against get_model_name. Returning None for these let the security scan check a repo the
-    # loader never fetches while the one it does fetch, and any custom code in it, went
-    # unscanned. Identity results are still dropped at the end.
+    # unsloth/ ids are not fixed points: INT_TO_FLOAT and BAD_MAPPINGS can still remap them,
+    # and the security scan must check the repo the loader actually fetches.
     if load_in_4bit:
-        # A 4-bit load resolves through FLOAT_TO_INT_MAPPER alone, and keeps an explicit
-        # -bnb-4bit name as given (unsloth.models.loader_utils.__get_model_name).
+        # 4-bit resolves via FLOAT_TO_INT_MAPPER alone and keeps explicit -bnb-4bit names.
         mirror = None if lower.endswith("-bnb-4bit") else float_to_int.get(lower)
     else:
         mirror = int_to_float.get(lower) or map_to_unsloth_16bit.get(lower)
-    # get_model_name corrects the resolved name, and corrects the INPUT name when the tables
-    # resolved nothing. Without this, a 4-bit Qwen/Qwen3-30B-A3B resolves to
-    # unsloth/Qwen3-30B-A3B-unsloth-bnb-4bit, which does not exist: the loader never fetches it.
+    # get_model_name applies BAD_MAPPINGS to the input when tables resolve nothing.
     corrections = _bad_mappings()
     if corrections is None:
         return None

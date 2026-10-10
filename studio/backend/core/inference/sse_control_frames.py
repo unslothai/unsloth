@@ -29,8 +29,7 @@ import json
 from typing import Any
 
 
-# Top-level "type" values the client routes away from the transcript: they paint UI on the user's behalf, so only this
-# server may send them.
+# Client routes these away from the transcript and paints UI, so only this server may send them.
 _CONTROL_TYPES = frozenset(
     {
         "tool_start",
@@ -44,7 +43,7 @@ _CONTROL_TYPES = frozenset(
     }
 )
 
-# Unsloth extensions carried inside a chunk: in no provider's wire format, read with the same trust as the frames above.
+# Unsloth extensions inside a chunk: same trust as the frames above.
 _CONTROL_KEYS = (
     "_toolEvent",
     "_toolStatus",
@@ -54,7 +53,6 @@ _CONTROL_KEYS = (
     "quote_cut",
 )
 
-# A stripped frame is only worth relaying if it still says something in the provider's own vocabulary.
 _SUBSTANTIVE_KEYS = ("choices", "usage", "error")
 
 
@@ -120,7 +118,6 @@ def sanitize_provider_sse_line(line: str) -> str | None:
         if key not in forged_keys and not (forged_type and key == "type")
     }
     if not any(key in cleaned for key in _SUBSTANTIVE_KEYS):
-        # A pure control frame with the control stripped out is an empty envelope.
         return None
     return "data: " + json.dumps(cleaned, separators = (",", ":"))
 
@@ -153,7 +150,7 @@ def is_ui_control_sse_line(line: str) -> bool:
     payload = _sse_payload(line)
     if payload is None:
         return False
-    # isinstance first: the sanitizer passes a non-string `type` through, and an unhashable one raises on `in`.
+    # isinstance first: an unhashable non-string `type` raises on `in`.
     if not isinstance(payload.get("type"), str):
         return False
     return not any(key in payload for key in _SUBSTANTIVE_KEYS)
@@ -200,20 +197,14 @@ def strip_server_executed_tool_call(line: str, pending_call: bool = False) -> st
         withheld = False
         for src_key in ("delta", "message"):
             src = choice.get(src_key)
-            # tool_calls only: the loop reads no other form, so a legacy function_call is the caller's to run.
+            # tool_calls only: a legacy function_call is the caller's to run.
             if isinstance(src, dict) and "tool_calls" in src:
                 src = {k: v for k, v in src.items() if k != "tool_calls"}
                 choice[src_key] = src
                 withheld = calls_withheld = True
         if choice.get("finish_reason") in not_really_final:
-            # Blanked, not renamed: the turn has not finished, the loop answers in the next
-            # one. Cannot be keyed on a call withheld on this line, since the arguments
-            # arrived in earlier chunks and this delta is usually empty.
-            #
-            # "function_call" only counts once a call is pending, for the gateway that
-            # streams modern delta.tool_calls then closes on the legacy reason (LocalAI does
-            # whenever the client sent no tools). A genuine legacy call never sets pending
-            # (_line_offers_tool_call keys on "tool_calls" alone), so it keeps its reason.
+            # Blanked, not renamed: the loop answers in the next turn. "function_call" counts only once a
+            # call is pending (LocalAI closes modern tool_calls streams on the legacy reason).
             choice["finish_reason"] = None
             withheld = True
         changed = changed or withheld
@@ -223,7 +214,6 @@ def strip_server_executed_tool_call(line: str, pending_call: bool = False) -> st
         return line
     payload = {**payload, "choices": kept_choices}
     if calls_withheld:
-        # Names the withheld calls by id; the caller never saw them.
         payload.pop("_mcp_provenance", None)
     if not _choices_say_anything(kept_choices) and "usage" not in payload:
         return None
@@ -316,17 +306,10 @@ class ServerToolCallStripper:
         pending = self._pending_call or _line_offers_tool_call(line)
         out = strip_server_executed_tool_call(line, pending_call = pending)
         ends_turn = _line_ends_turn(line)
-        # Turn closed: whatever the loop does next opens a turn whose finish_reason is the caller's to read.
         self._pending_call = pending and not ends_turn
         if pending or (ends_turn and (out is None or not _line_ends_turn(out))):
-            # Armed as soon as a call is withheld, not only where a finish_reason was
-            # removed: a provider closing the turn on [DONE] alone never offers one to
-            # remove. Settled below the moment a real terminal is relayed.
-            #
-            # The second clause is the reverse: a reason removed with no call ever seen. A
-            # provider reporting "tool_calls" for a call its own parser failed to emit
-            # (open llama.cpp and vLLM bugs) gives `pending` nothing to latch onto, so the
-            # reason is blanked and no debt recorded, leaving no finish_reason at all.
+            # Armed on withhold: a provider may close on [DONE] alone. The second clause covers a removed
+            # "tool_calls" reason with no emitted call (llama.cpp / vLLM parser bugs).
             self._owes_finish = True
         if out is not None and _line_ends_turn(out):
             self._owes_finish = False

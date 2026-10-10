@@ -17,7 +17,6 @@ from core.inference import video_minimax_h3 as vmh3
 
 
 def _arena_mod():
-    # Imported per test so each one reports on a tree that lacks the module, rather than one collection error.
     from core.inference import diffusion_pinned_arena
     return diffusion_pinned_arena
 
@@ -43,13 +42,13 @@ def _storage_ptrs(tensors):
 def test_arena_packs_weights_without_power_of_two_rounding(unpinned_slabs):
     arena_mod = _arena_mod()
     arena = arena_mod.PinnedArena(slab_bytes = 1 << 20)
-    # 200 tensors of ~30 KB: per-tensor pinning would round each to 32 KiB.
+    # Per-tensor pinning would round each ~30 KB tensor to 32 KiB.
     weights = [torch.randn(7_500 + i) for i in range(200)]
     pinned = [arena.pin(w) for w in weights]
     payload = sum(w.numel() * w.element_size() for w in weights)
     per_tensor = sum(arena_mod._pow2_ceil(w.numel() * w.element_size()) for w in weights)
     assert arena.payload_bytes == payload
-    assert all(n & (n - 1) == 0 for n in unpinned_slabs)  # every slab request is a power of two
+    assert all(n & (n - 1) == 0 for n in unpinned_slabs)
     assert arena.reserved_bytes <= payload * 1.05 + (1 << 20)
     assert arena.reserved_bytes < per_tensor
     assert len(_storage_ptrs(pinned)) == len(unpinned_slabs) < len(weights)
@@ -86,7 +85,6 @@ def test_group_offload_pins_through_the_arena_and_drops_the_pageable_source(unpi
     with arena_mod.pinned_arena_for_group_offload(enabled = True) as arena:
         assert arena is not None
         copy = go.ModuleGroup._to_cpu(lin.weight, False)
-    # The parameter now reads the single copy: the pageable source is no longer referenced by it.
     assert lin.weight.data_ptr() == copy.data_ptr() != source_ptr
     assert arena.payload_bytes == 256 * 256 * 4
     assert go.ModuleGroup.__dict__["_to_cpu"] is stock
@@ -131,7 +129,6 @@ def test_streamed_prequant_denoiser_keeps_one_host_copy(monkeypatch, unpinned_sl
         record_stream = False,
         low_cpu_mem_usage = False,
     ):
-        # What diffusers does up front with use_stream: one host copy per tensor through ModuleGroup._to_cpu.
         module._fake_cpu_param_dict = {
             p: go.ModuleGroup._to_cpu(p, low_cpu_mem_usage) for p in module.parameters()
         }
@@ -179,7 +176,7 @@ def _host(
 
 
 def test_capacity_counts_held_memory_once_and_not_mmapped_page_cache(monkeypatch):
-    # A checkpoint still mmap'd is in MemAvailable as page cache AND in RSS as RssFile: count it once.
+    # An mmap'd checkpoint is in both MemAvailable and RssFile: count it once.
     _host(monkeypatch, available_gb = 30.0, anon_gb = 36.0, shmem_gb = 20.0, file_gb = 10.8)
     assert vmh3.h3_host_capacity_bytes() / 1e9 == pytest.approx(86.0, abs = 0.01)
     monkeypatch.setenv(vmh3.H3_HOST_GUARD_HELD_ENV, "0")
@@ -187,11 +184,9 @@ def test_capacity_counts_held_memory_once_and_not_mmapped_page_cache(monkeypatch
 
 
 def test_repeat_render_on_the_reported_94gb_host_is_admitted_with_one_host_copy(monkeypatch):
-    # The reported second render: 82.5 GB capacity at a 47 GB VRAM tier, int8 conditioner + int8 denoiser.
     _host(monkeypatch, available_gb = 25.6, anon_gb = 36.7, shmem_gb = 20.2)
     sizes = dict(text_encoder_gb = 27.2, transformer_gb = 20.3)
     assert vmh3.h3_host_ram_shortfall(47.2, transformer_streamed = False, **sizes) is None
-    # The same host with the denoiser priced twice (pageable source + pinned copy) is what refused it.
     message = vmh3.h3_host_ram_shortfall(47.2, transformer_streamed = True, **sizes)
     assert message is not None and "85 GB" in message
 

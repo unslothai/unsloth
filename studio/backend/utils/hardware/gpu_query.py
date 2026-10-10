@@ -145,7 +145,7 @@ def _nounits(argv: Sequence[str]) -> bool:
 
 @dataclass
 class _Entry:
-    # None = the CLI's latest answer had no rows (failed or empty): never served, only orders writers.
+    # None means the latest answer had no rows: never served, only orders writers.
     result: Optional[subprocess.CompletedProcess]
     at: float
     gen: int
@@ -180,7 +180,7 @@ _lock = threading.Lock()
 _cache: dict[tuple, _Entry] = {}
 _inflight: dict[tuple, _Flight] = {}
 _static_gen = 0
-# Bumped by reset(): a child that outlives a reset must not refill the emptied cache.
+# A child that outlives a reset must not refill the emptied cache.
 _reset_epoch = 0
 _slow_until = 0.0
 _stats = _Stats()
@@ -262,13 +262,12 @@ def _run_child(flight: _Flight, argv: list, kind: str, kwargs: dict) -> None:
         flight.result = result
         stdout = getattr(result, "stdout", None)
         if isinstance(stdout, str):
-            # Failed / empty answers (exit 6: no devices) are never served but replace older ones.
+            # Failed or empty answers (exit 6: no devices) are never served but replace older ones.
             good = getattr(result, "returncode", None) == 0 and bool(stdout.strip())
             with _lock:
                 if flight.epoch != _reset_epoch:
                     return
                 existing = _cache.get(flight.key)
-                # A slow child that began before the current entry's must not replace it.
                 if existing is None or existing.started <= flight.started:
                     _cache[flight.key] = _Entry(
                         result = result if good else None,
@@ -277,7 +276,7 @@ def _run_child(flight: _Flight, argv: list, kind: str, kwargs: dict) -> None:
                         static_gen = flight.static_gen,
                         started = flight.started,
                     )
-    except BaseException as exc:  # handed to the waiters, never raised on this thread
+    except BaseException as exc:
         flight.exc = exc
         if isinstance(
             exc, subprocess.CalledProcessError
@@ -307,7 +306,7 @@ def _start_or_join(key: tuple, argv: list, kind: str, kwargs: dict, timeout: flo
     """Never joins a child started before the last invalidation of its kind."""
     with _lock:
         flight = _inflight.get(key)
-        # A child already running longer than this caller may wait is presumed hung: start another.
+        # A child running longer than this caller may wait is presumed hung.
         if (
             flight is not None
             and time.monotonic() - flight.started <= timeout
@@ -385,7 +384,7 @@ def run_nvidia_smi(
     text_mode = bool(
         kwargs.get("text") or kwargs.get("encoding") or kwargs.get("universal_newlines")
     )
-    # Runner object (not id: ids are reused) and resolved binary keyed so swapped fakes / PATH never share.
+    # Keyed on the runner object (ids are reused) and resolved binary.
     key = (subprocess.run, _resolved(argv[0]), tuple(argv), text_mode)
 
     if not cache or kind == CRITICAL or (_fresh_mode.get() and kind != STATIC):
@@ -404,7 +403,7 @@ def run_nvidia_smi(
             name = "nvidia-smi-query",
             daemon = True,
         ).start()
-        # Whole caller timeout (+1 s reap grace): a slow driver that answers must still be heard.
+        # Whole timeout plus 1 s reap grace: a slow driver that answers must still be heard.
         if not flight.done.wait(timeout + 1.0):
             _mark_slow()
             raise subprocess.TimeoutExpired(argv, timeout)
@@ -417,7 +416,7 @@ def run_nvidia_smi(
         if entry is not None and _entry_fresh(entry, kind, now):
             _stats.hits += 1
             return _copy(entry.result)
-        # Display only: an expired inventory waits for a new answer, so a detached card is not reported.
+        # Display only; an expired inventory waits so a detached card is not reported.
         serve_stale = (
             entry is not None
             and entry.result is not None

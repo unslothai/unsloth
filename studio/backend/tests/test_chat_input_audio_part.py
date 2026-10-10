@@ -297,9 +297,6 @@ def test_the_completion_route_refuses_an_unmodelled_part():
     assert "'file'" in response.json()["detail"]["error"]["message"]
 
 
-# ── The four review findings on the first two commits ──────────────────────────
-
-
 def test_a_non_string_part_type_is_a_validation_error_not_a_500():
     """A list or dict ``type`` is unhashable against the known-tag set.
 
@@ -591,7 +588,6 @@ def test_the_text_only_checkpoint_refusal_precedes_the_branch_that_consumes_audi
     branch = source.index('if payload.audio_base64 and not model_info.get("has_audio_input"):')
     consume = source.index('if payload.audio_base64 and model_info.get("has_audio_input"):')
 
-    # the refusal has to precede the consuming branch, or it never runs
     assert branch < consume
     assert "cannot read audio input" in source[branch:consume]
 
@@ -651,15 +647,13 @@ def test_transcoded_gguf_clips_share_one_wav_budget(monkeypatch):
     monkeypatch.setattr(inference_route, "_fit_transcoded_audio_to_wav_cap", _fit)
 
     inference_route._prepare_audio_for_llama("QUFB")
-    assert caps == [1000]  # one clip keeps the whole cap, exactly as before
+    assert caps == [1000]
 
-    # Clips that fit together are neither refit nor resampled.
     caps.clear()
     prepared = inference_route._prepare_audio_clips_for_llama(["QUFB", "QUFB", "QUFB"])
     assert caps == []
     assert [len(base64.b64decode(data)) for data, _ in prepared] == [44 + 100 * 2] * 3
 
-    # Pass-through clips are forwarded at their upload size, so transcodes share what they leave.
     caps.clear()
     monkeypatch.setattr(
         inference_route, "_sniff_audio_container", lambda raw: "wav" if raw == b"WAV!" else None
@@ -688,7 +682,6 @@ def test_the_wav_budget_does_not_depend_on_clip_order(monkeypatch):
         "_decode_audio_mono",
         lambda raw: ((long_clip if raw == b"LNG" else short_clip), 16000),
     )
-    # Room for 11 seconds at 9 kHz, well under the 16 kHz the clips arrive at.
     monkeypatch.setattr(inference_route, "_MAX_AUDIO_RAW_BYTES", 2 * 44 + 2 * 11 * 9000)
 
     def rates(prepared):
@@ -715,7 +708,6 @@ def test_clips_below_the_shared_rate_are_left_alone():
     n_low, n_high = 8000 * 1200, 48000 * 300
     budget = 25 * 1024 * 1024
     rate = inference_route._shared_wav_rate([(n_low, 8000), (n_high, 48000)], budget)
-    # The 8 kHz clip keeps its full size; the 48 kHz one still clears the 8 kHz floor.
     assert 8000 <= rate < 48000
     assert 2 * 44 + 2 * n_low + 2 * round(n_high / 48000 * rate) <= budget
 
@@ -826,7 +818,6 @@ def test_extra_clips_join_the_latest_user_turn_in_order():
         {"type": "audio", "audio": "c"},
         {"type": "text", "text": "compare these"},
     ]
-    # No extras: exactly the single-clip render.
     single = messages_with_attached_image(history, structured_content = True, image = 0, audio = "a")
     assert single[-1]["content"][0] == {"type": "audio", "audio": "a"}
     assert len(single[-1]["content"]) == 2

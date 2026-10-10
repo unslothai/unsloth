@@ -31,8 +31,7 @@ from core.inference.diffusion_memory import DeviceMemory, snapshot_device_memory
 MIB = 1024 * 1024
 GIB_MIB = 1024
 
-# unsloth/FLUX.2-dev, 112.9 GB: too large for every pool below, so a machine that keeps
-# loading it is one the guard genuinely never reaches.
+# FLUX.2-dev (112.9 GB) is too large for every pool, so loading it means the guard never ran
 FLUX2_DEV = [
     (f"{name}/model.safetensors", mib * MIB)
     for name, mib in (
@@ -42,7 +41,7 @@ FLUX2_DEV = [
         ("tokenizer", 16),
     )
 ]
-# unsloth/Lumina-Image-2.0, 20 GB stored fp32: the control that must still load.
+# Lumina-Image-2.0 (20 GB fp32): the control that must still load
 LUMINA_2 = [
     (f"{name}/model.safetensors", mib * MIB)
     for name, mib in (
@@ -53,8 +52,7 @@ LUMINA_2 = [
     )
 ]
 
-# Every OS Unsloth ships on. The classifier reads the device and the driver's `integrated`
-# flag and never sys.platform, so these are here to prove that rather than to vary it.
+# the classifier never reads sys.platform; these prove that rather than vary it
 PLATFORMS = ("linux", "wsl", "win32", "darwin")
 
 
@@ -100,9 +98,7 @@ def _classify(monkeypatch, *, device, integrated, total_mib, platform):
     hardware.trusted_mem_get_info = lambda: (total_mib * MIB, total_mib * MIB)
     monkeypatch.setitem(sys.modules, "utils.hardware", hardware)
     monkeypatch.setattr(memory_mod, "_system_memory_mib", lambda: (total_mib, total_mib))
-    # An integrated device is now priced against the host as well, and both of those
-    # readings are live. Unstubbed, a runner with a real memory.max decides what these
-    # faked 64 GiB machines have.
+    # stub host memory too, or a runner's real memory.max decides the faked 64 GiB result
     monkeypatch.setattr(memory_mod, "_available_system_memory_mib", lambda: total_mib)
     monkeypatch.setattr(memory_mod, "_cgroup_available_memory_mib", lambda: None)
     monkeypatch.setattr(memory_mod, "_cgroup_memory_limit_mib", lambda: None)
@@ -260,8 +256,6 @@ def test_no_offload_request_can_talk_a_shared_pool_into_it(monkeypatch, memory_m
     assert verdict(LUMINA_2, "Alpha-VLLM/Lumina-Image-2.0") is None
 
 
-# ── the manifest read ─────────────────────────────────────────────────────────
-
 _MANIFEST = {
     "_class_name": "FluxPipeline",
     "transformer": ["diffusers", "FluxTransformer2DModel"],
@@ -307,7 +301,7 @@ def _stub_manifest(
 def test_the_manifest_names_the_components_and_the_revision_it_was_read_at(monkeypatch, tmp_path):
     calls = _stub_manifest(monkeypatch, tmp_path, _MANIFEST)
     selected, ignored = _pipeline_components_from_index("repo", _info(sha = "abc123"), None)
-    # A component declared [None, None] is not loaded, so its files are not priced.
+    # a component declared [None, None] is not loaded, so its files are not priced
     assert selected == frozenset({"transformer", "text_encoder", "vae"})
     assert ignored == frozenset({"transformer/diffusion_pytorch_model.fp16.safetensors"})
     assert calls == [("repo", "model_index.json", "abc123")]
@@ -371,13 +365,10 @@ def test_an_ignore_list_of_the_wrong_shape_is_tolerated(monkeypatch, tmp_path):
     assert ignored == frozenset()
 
 
-# ── the two switches the plan exposes ─────────────────────────────────────────
-
-
 def _plan_probe(monkeypatch, calls):
     """A download_plan whose device-dependent steps announce themselves."""
     backend = DiffusionBackend()
-    # The real registry entry: download_plan reads more of it than a stub can carry.
+    # real registry entry: download_plan reads more than a stub can carry
     fam = detect_family_for_pick("unsloth/FLUX.2-dev", None, None)
     assert fam is not None
     monkeypatch.setattr(diffusion_mod, "detect_family_for_pick", lambda *_a, **_k: fam)

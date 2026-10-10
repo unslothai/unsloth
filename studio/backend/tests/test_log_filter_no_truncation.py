@@ -18,7 +18,6 @@ def _run(event_dict):
 
 class TestNoTruncation:
     def test_gguf_size_summary_survives(self):
-        # Mirrors the f-string at studio/backend/core/inference/llama_cpp.py:2117
         event = (
             "GGUF size: 232.9 GB, est. KV cache: 87.0 GB, context: 259072, "
             "GPUs free: [(0, 80000), (1, 80000)], selected: [0, 1], --fit: off"
@@ -28,7 +27,6 @@ class TestNoTruncation:
         assert "..." not in out["event"]
 
     def test_mmproj_path_survives(self):
-        # Mirrors logger.info at studio/backend/core/inference/llama_cpp.py:2283
         event = (
             "Using mmproj for vision: "
             "/home/user/.cache/unsloth/models/some-vision-model-uncensored-r1-distill/mmproj-F16.gguf"
@@ -37,7 +35,6 @@ class TestNoTruncation:
         assert out["event"] == event
 
     def test_llama_server_command_survives(self):
-        # Mirrors logger.info at studio/backend/core/inference/llama_cpp.py:2312
         event = (
             "Starting llama-server: /home/user/.unsloth/studio/llama.cpp/build/bin/llama-server "
             "-m /home/user/.cache/unsloth/models/foo.gguf --port 8090 -c 259072 --parallel 1 "

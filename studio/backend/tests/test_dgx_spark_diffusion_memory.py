@@ -23,7 +23,6 @@ import pytest
 
 GIB = 1 << 30
 MIB = 1 << 20
-# What a DGX Spark actually reports.
 SPARK_TOTAL_BYTES = 124609 * MIB
 SPARK_TOTAL_GB = round(SPARK_TOTAL_BYTES / GIB, 2)
 
@@ -44,19 +43,12 @@ class _DiscreteProps:
     gcnArchName = ""
 
 
-# ── the diffusion free-memory reading ────────────────────────────────────────
-
-
 @pytest.mark.parametrize(
     ("driver_free_mib", "available_mib", "expected_mib"),
     [
-        # The measured Spark case: a fresh 60 GiB download sits in reclaimable cache.
         (3 * 1024, 115 * 1024, 115 * 1024),
-        # A genuinely full machine is untouched: MemAvailable agrees with the driver.
         (3 * 1024, 3 * 1024, 3 * 1024),
-        # Never above the device total, however much host memory is advertised.
         (3 * 1024, 900 * 1024, 121 * 1024),
-        # Never below the driver's own figure.
         (100 * 1024, 40 * 1024, 100 * 1024),
     ],
 )
@@ -95,9 +87,6 @@ def test_spark_snapshot_is_unified_and_credits_the_cache(monkeypatch):
     )
     monkeypatch.setitem(__import__("sys").modules, "torch", torch_stub)
     monkeypatch.setattr(diffusion_memory, "_available_system_memory_mib", lambda: 115 * 1024)
-    # The cgroup probe is a second, independent read of the host: left live, a runner
-    # capped below 115 GiB lowers the snapshot and this case asserts the machine it
-    # happens to run on rather than the change.
     monkeypatch.setattr(diffusion_memory, "_cgroup_available_memory_mib", lambda: None)
     monkeypatch.setattr(diffusion_memory, "_cgroup_memory_limit_mib", lambda: None)
     hardware_stub = types.ModuleType("utils.hardware")
@@ -110,7 +99,6 @@ def test_spark_snapshot_is_unified_and_credits_the_cache(monkeypatch):
 
     assert memory.memory_kind == "unified_memory"
     assert memory.total_mib == 121 * 1024
-    # Was 3 GiB, which the shortfall guard turned into "about 0 GB is usable".
     assert memory.free_mib == 115 * 1024
 
 
@@ -154,13 +142,8 @@ def test_a_rocm_apu_snapshot_is_not_credited(monkeypatch):
 @pytest.mark.parametrize(
     ("driver_free_mib", "available_mib", "cgroup_mib", "expected_mib"),
     [
-        # A container's limit is a CEILING. Reading it only as a lower bound threw it
-        # away whenever the driver's host-wide MemFree was larger, which is the normal
-        # case in a container: the load is then sized above memory.max and killed.
         (102400, 16384, 16384, 16384),
-        # ... including when the credit itself would have stopped lower.
         (4096, 16384, 16384, 16384),
-        # No enforcing limit: the credited pool stands.
         (29509, 118451, None, 118451),
     ],
 )
@@ -169,9 +152,7 @@ def test_unified_free_is_bounded_by_an_enforcing_cgroup(
 ):
     monkeypatch.setattr(diffusion_memory, "_available_system_memory_mib", lambda: available_mib)
     monkeypatch.setattr(diffusion_memory, "_cgroup_available_memory_mib", lambda: cgroup_mib)
-    # The capacity probe is a THIRD read of the host and has to be stubbed with the
-    # other two, or a runner with a real memory.max decides the "no enforcing limit"
-    # case and this file stops being hermetic.
+    # Every host read (incl. the capacity probe) is stubbed, or the runner's memory.max decides.
     monkeypatch.setattr(diffusion_memory, "_cgroup_memory_limit_mib", lambda: cgroup_mib)
 
     assert (
@@ -202,7 +183,6 @@ def test_a_bound_cgroup_prices_the_reserve_against_the_container(monkeypatch):
             total_mib = total_mib,
         )
     )
-    # 32 GiB less its own 20%, not less 20% of a host total the container cannot reach.
     assert budget == 32 * 1024 - int(32 * 1024 * 0.20)
 
 
@@ -270,7 +250,6 @@ def test_the_two_cgroup_readings_are_not_the_same_number(monkeypatch):
     differently."""
     from core.inference.llama_cpp import LlamaCppBackend
 
-    # 64 GiB limit, 30 GiB of it in use.
     monkeypatch.setattr(
         LlamaCppBackend,
         "_cgroup_memory_budgets",
@@ -318,7 +297,6 @@ def test_a_finite_limit_caps_capacity_even_when_the_remainder_is_slack():
             total_mib = total_mib,
         )
     )
-    # 20% of 64 GiB, not of 121 GiB, so there is a budget at all.
     assert budget == 16 * 1024 - int(64 * 1024 * 0.20)
     assert budget > 0
 
@@ -382,5 +360,4 @@ def test_a_rocm_wheel_without_version_hip_is_still_rocm(monkeypatch):
     )
 
     assert memory.memory_kind == "unified_memory"
-    # Untouched: 90 GiB as the driver reported it, not talked up to 96.
     assert memory.free_mib == 90 * 1024

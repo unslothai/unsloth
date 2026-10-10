@@ -55,8 +55,7 @@ GATED = (
     "flash_attn_takes_value",
 )
 
-# Help text as llama.cpp actually prints it: the declaration starts at column 0
-# and its description is padded to column 40 (common_arg::to_string).
+# llama.cpp help format: declaration at column 0, description padded to column 40
 NEW_HELP = (
     "usage: llama-server [options]\n"
     "\n"
@@ -68,7 +67,6 @@ NEW_HELP = (
     "--jinja, --no-jinja                     whether to use jinja template engine for\n"
     "                                        chat (default: disabled)\n"
 )
-# The pre-enum vintage: -fa is a bare boolean and there is no --jinja.
 OLD_HELP = (
     "usage: llama-server [options]\n"
     "\n"
@@ -77,7 +75,6 @@ OLD_HELP = (
     "--no-context-shift                      disables context shift on infinite text\n"
     "                                        generation\n"
 )
-# A build predating flash attention: the flag does not exist at all.
 NO_FLASH_ATTN_HELP = (
     "usage: llama-server [options]\n"
     "\n"
@@ -86,7 +83,6 @@ NO_FLASH_ATTN_HELP = (
     "--no-context-shift                      disables context shift on infinite text\n"
     "                                        generation\n"
 )
-# What a wrapper prints before it gives up: real flags, but only some of them.
 PARTIAL_HELP = (
     "usage: llama-server [options]\n\n-m,    --model FNAME                    model path\n"
 )
@@ -333,13 +329,11 @@ class TestAFlaglessBuildIgnoresTheFlashAttentionEnv:
     estimate is capped on.
     """
 
-    # What the gate leaves on the command line for such a build: no -fa at all.
     CMD = ["llama-server", "-m", "m.gguf", "--no-context-shift", "-c", "8192"]
 
     def test_the_inherited_value_is_dropped(self):
         env = _flash_attn_env_scrub(known_off = True)
         assert "LLAMA_ARG_FLASH_ATTN" not in env
-        # ...and nothing else in the inherited env is touched.
         assert env == {"LLAMA_ARG_CTX_SIZE": "4096"}
 
     def test_the_recorded_state_then_matches_the_launch(self):
@@ -506,7 +500,6 @@ class TestTheFlaglessFixupKeepsMlaKAndVEqual:
         assert cmd[cmd.index("--cache-type-v") + 1] == "f16"
 
 
-# The -lv block of b11160 and later (llama.cpp "logs : reduce", #23021).
 TRACE_HELP = NEW_HELP + (
     "-lv,   --verbosity, --log-verbosity N   Set the verbosity threshold. Messages with a higher verbosity will be\n"
     "                                        ignored. Values:\n"
@@ -607,7 +600,6 @@ def test_the_offload_report_covers_metal_and_env_pinned_layers():
     assert "_offload_counts[0] <= 0" in src
     start = src.index("self._offload_overridden = ")
     assignment = src[start : src.index("\n                if ", start)]
-    # A --device the gpu_ids pin stripped never reached the child, so it pins nothing.
     assert "self._strip_device_extra_args(extra_args)" in assignment
     assert "if _gpu_ids_own_device_flags" in assignment
     assert "_env_fixes_gpu_layers(env)" in assignment

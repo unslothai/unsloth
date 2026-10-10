@@ -38,7 +38,6 @@ def _write_skill(
 
 @pytest.fixture(autouse = True)
 def _reset_tool_request_budget():
-    # execute_tool never resets these, so the pagination test's tight budget must not leak.
     from core.inference import tools
 
     context_token = tools._REQUEST_CONTEXT_TOKENS.set(tools._UNSET_CONTEXT_TOKENS)
@@ -107,12 +106,10 @@ def test_bundled_skill_creator_is_enabled_and_user_override_wins(isolated_skills
 
     creator = next(record for record in skills.list_skills() if record["name"] == "skill-creator")
     assert creator["source"] == "bundled"
-    # Bundled skills ship disabled: a fresh install must not carry skill tools into every chat.
     assert creator["enabled"] is False
     assert skills.enabled_skills() == []
     with pytest.raises(skills.SkillError, match = "disabled"):
         skills.read_skill_resource("skill-creator")
-    # Enabling one is an explicit override that survives a re-list; disabling clears it again.
     assert skills.set_skill_enabled("skill-creator", True)["enabled"] is True
     assert skills._load_overrides() == {"skill-creator": True}
     assert "create_skill" in skills.read_skill_resource("skill-creator")
@@ -246,7 +243,6 @@ def test_read_resource_rejects_escaping_symlink(isolated_skills):
     try:
         (root / "link.txt").symlink_to(outside)
     except (OSError, NotImplementedError):
-        # Reason: Windows may deny symlink creation without Developer Mode.
         pytest.skip("symlinks are unavailable on this platform")
 
     with pytest.raises(skills.SkillError, match = "symbolic links"):
@@ -267,14 +263,12 @@ def test_read_resource_rejects_link_swapped_during_open(isolated_skills, monkeyp
 
     def replacing_open(path, *args, **kwargs):
         nonlocal swapped
-        # The descriptor-relative walk opens the bare component name against a dir_fd.
         if path in (resource, resource.name) and not swapped:
             swapped = True
             resource.unlink()
             try:
                 resource.symlink_to(outside)
             except (OSError, NotImplementedError):
-                # Reason: Windows may deny symlink creation without Developer Mode.
                 pytest.skip("symlinks are unavailable on this platform")
         return original_open(path, *args, **kwargs)
 
@@ -299,7 +293,6 @@ def test_read_resource_rejects_skill_root_swapped_after_selection(isolated_skill
         try:
             root.symlink_to(outside, target_is_directory = True)
         except (OSError, NotImplementedError):
-            # Reason: Windows may deny symlink creation without Developer Mode.
             pytest.skip("symlinks are unavailable on this platform")
         return record, path, identity
 
@@ -438,7 +431,6 @@ def test_linked_skill_directory_is_followed_once_and_pinned(isolated_skills, tmp
         (root / "to-file").symlink_to(real / "SKILL.md")
         (real / "escape.md").symlink_to(tmp_path / "dotfiles")
     except (OSError, NotImplementedError):
-        # Reason: Windows may deny symlink creation without Developer Mode.
         pytest.skip("symlinks are unavailable on this platform")
 
     records = {record["name"]: record for record in skills.list_skills(home = home)}
@@ -574,7 +566,6 @@ def test_skill_tools_registration_selection_and_prompt(isolated_skills, monkeypa
     assert "- guided: Guide this task" in nudge
     assert "@skill-name" in nudge
     assert "create_skill" in nudge
-    # Codex and external paths skip the general nudge but keep the catalog for @mentions.
     narrow = inference_routes._build_tool_action_nudge(
         tools = [*selected, tools_module.WEB_SEARCH_TOOL],
         model_name = "test",
@@ -626,8 +617,6 @@ def test_read_skill_tool_keeps_pagination_consistent_with_tight_room(isolated_sk
     assert f"offset={end}." in result
     assert "truncated to" not in result
 
-
-# Account scoping: the owner keeps the home folders, a managed account gets its own workspace.
 
 _ALICE_ID = "a" * 32
 _BOB_ID = "b" * 32
@@ -692,19 +681,16 @@ def test_managed_account_overrides_and_creation_stay_in_its_workspace(managed_ac
     _write_skill(home, "agents", "shared-name", description = "owner copy")
     _account_skill(studio, _ALICE_ID, "shared-name", "alice copy")
 
-    # Alice disabling her copy leaves the owner's enabled and writes only her overrides file.
     assert run_as(alice, skills.set_skill_enabled, "shared-name", False)["enabled"] is False
     assert (studio / "accounts" / _ALICE_ID / "skill-overrides.json").is_file()
     assert not (studio / "skill-overrides.json").exists()
     assert next(r for r in skills.list_skills() if r["name"] == "shared-name")["enabled"] is True
     assert run_as(bob, skills.enabled_skills) == []
 
-    # Bob toggling a skill he cannot see is a not-found, not a write into Alice's file.
     with pytest.raises(skills.SkillNotFoundError):
         run_as(bob, skills.set_skill_enabled, "shared-name", False)
     assert not (studio / "accounts" / _BOB_ID / "skill-overrides.json").exists()
 
-    # create_skill lands in the caller's own workspace, never in the owner's home.
     record = run_as(bob, skills.create_skill, "bob-made", "Bob's skill", "Instructions")
     assert record["path"] == "skills/bob-made/SKILL.md"
     assert (studio / "accounts" / _BOB_ID / "skills" / "bob-made" / "SKILL.md").is_file()
@@ -735,7 +721,6 @@ def test_inference_catalog_cache_is_per_account(managed_accounts, monkeypatch):
     assert run_as(bob, inference_routes._enabled_agent_skills) == []
     assert set(inference_routes._AGENT_SKILLS_CACHE) == {None, _ALICE_ID, _BOB_ID}
 
-    # The catalog a request is built from follows the acting account.
     from models.inference import ChatCompletionRequest
 
     payload = ChatCompletionRequest(
@@ -769,7 +754,6 @@ def test_read_skill_page_floor_reports_no_room_instead_of_slivers(isolated_skill
     home, _ = isolated_skills
     monkeypatch.setattr(skills, "_owner_home", lambda: home)
     _write_skill(home, "agents", "long", body = "x" * 12_000)
-    # Whatever the room, a page smaller than the floor is not worth a round trip.
     monkeypatch.setattr(tools_module, "_fit_result_to_room", lambda result, name: result[:40])
     result = tools_module.execute_tool("read_skill", {"name": "long"})
     assert result.startswith("Error: Not enough context room")
@@ -787,12 +771,10 @@ def test_read_resource_rejects_ancestor_swapped_after_selection(isolated_skills,
 
     def replacing_selected_skill(name, *, home = None):
         selection = original_selected_skill(name, home = home)
-        # The skill directory itself stays a real directory; only its parent is swapped.
         skills_root.rename(home / "original-skills")
         try:
             skills_root.symlink_to(outside / ".agents" / "skills", target_is_directory = True)
         except (OSError, NotImplementedError):
-            # Reason: Windows may deny symlink creation without Developer Mode.
             pytest.skip("symlinks are unavailable on this platform")
         return selection
 
@@ -1054,7 +1036,6 @@ def test_linked_agents_skill_stays_read_only_in_the_dialog(isolated_skills, tmp_
     try:
         (root / "linked").symlink_to(real, target_is_directory = True)
     except (OSError, NotImplementedError):
-        # Reason: Windows may deny symlink creation without Developer Mode.
         pytest.skip("symlinks are unavailable on this platform")
     listed = skills.list_skills(home = home)[0]
     assert (listed["valid"], listed["linked"]) == (True, True)
@@ -1080,7 +1061,6 @@ def test_skill_under_a_linked_agents_root_stays_read_only(isolated_skills, tmp_p
             (home / ".agents").mkdir()
             (home / ".agents" / "skills").symlink_to(real / "skills", target_is_directory = True)
     except (OSError, NotImplementedError):
-        # Reason: Windows may deny symlink creation without Developer Mode.
         pytest.skip("symlinks are unavailable on this platform")
 
     assert skills.list_skills(home = home)[0]["linked"] is True

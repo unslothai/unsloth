@@ -31,12 +31,11 @@ def test_tile_starts_are_full_edge_aligned_tiles_with_wide_overlaps(length):
     if length <= tile:
         assert starts == [0]
         return
-    assert starts[-1] + tile == length  # the last tile ends at the edge at full size: no sliver
+    assert starts[-1] + tile == length
     assert all(b - a <= tile - overlap for a, b in zip(starts, starts[1:]))
     assert len(starts) == math.ceil((length - overlap) / (tile - overlap))
 
 
-# Every size the Images page offers for Qwen-Image-2.1, plus custom off-preset sizes.
 UI_SIZES = [
     (1024, 1024),
     (1024, 672),
@@ -291,8 +290,7 @@ def test_per_call_guard_budgets_one_wide_tile_at_every_ui_size(width, height):
     assert act.tiled_decode_mib >= 1_697
 
 
-# Extra peak of one encode tile over the weights, unfused bf16 diffusers VAE on a B200: a 512 px input is one
-# 32-latent tile, 1024 px and up encode in 64-latent tiles (one tile at 1024, 2,322 MiB worst at 2048 / 2752).
+# measured on B200, unfused bf16: 512 px is one 32-latent tile, 1024+ px use 64-latent tiles
 _MEASURED_ENCODE_TILE_MIB = {512: 590, 1024: 2_322, 2048: 2_322}
 
 
@@ -304,9 +302,7 @@ def test_per_call_guard_covers_the_encode_tile_at_every_reference_size(width, he
 
     fam = detect_family("Qwen/Qwen-Image-2.1")
     assert fam is not None and fam.name == "qwen-image-2.1"
-    assert (
-        fam.img2img_pipeline_class is None
-    )  # no plain img2img: every encode is a conditioned edit
+    assert fam.img2img_pipeline_class is None
     for ref in fam.reference_resolutions:
         cond = int(ref * ref * getattr(fam, "condition_pixel_weight", 1.0))
         tiled = dm.estimate_tiled_image_runtime_mib(
@@ -345,7 +341,7 @@ def test_tiled_encode_has_no_seam_lines(height, width):
     stock_err, wide_err = _line_error_latent(stock, untiled), _line_error_latent(wide, untiled)
     assert stock_err > 0
     if max(height, width) <= vt.ENCODE_TILE_LATENTS * 16:
-        # up to 1024 px a side (Studio's default reference resolution): one tile, the untiled encode exactly
+        # up to 1024 px a side is one tile, identical to the untiled encode
         assert torch.equal(wide, untiled)
     else:
         assert stock_err > 2 * wide_err, (stock_err, wide_err)
@@ -400,12 +396,12 @@ def test_budget_sized_tiles_keep_the_invariants_and_never_decode_more(width, hei
     th, tw = vt.choose_tiles(h, w, max_area)
     floor = (min(vt.TILE_LATENTS, h), min(vt.TILE_LATENTS, w))
     if max_area is None or max_area <= floor[0] * floor[1]:
-        assert (th, tw) == floor  # no room: the 32x32 tiles the planner budgets
+        assert (th, tw) == floor
     else:
         assert th * tw <= max_area
         assert _decoded_latents(h, w, th, tw) <= _decoded_latents(h, w, *floor)
     if max_area is not None and max_area >= h * w:
-        assert (th, tw) == (h, w)  # the whole canvas fits: untiled
+        assert (th, tw) == (h, w)
     for length, side in ((h, th), (w, tw)):
         assert side >= min(vt.TILE_LATENTS, length) and side <= length
         starts = vt.tile_starts(length, side)
@@ -423,7 +419,7 @@ def test_budget_comes_from_free_vram_and_the_env_caps_it(monkeypatch):
     z = torch.zeros(1, 4, 1, 64, 64)
     assert vt.decode_tile_budget(vae, z) == vt.TILE_LATENTS**2
     monkeypatch.delenv(vt.MAX_TILE_ENV)
-    assert vt.decode_tile_budget(vae, z) is None  # CPU: no budget, 32x32 tiles
+    assert vt.decode_tile_budget(vae, z) is None
     assert vt.choose_tiles(64, 64, None) == (32, 32)
 
 

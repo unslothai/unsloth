@@ -77,7 +77,7 @@ def keep_stock() -> dict[str, str]:
     return dict(getattr(_module("diffusion_vae_tiling"), "KEEP_STOCK", {}) or {})
 
 
-# "VAE class@ratio" -> a smaller geometry measured seam-free (real latent, tiled vs untiled decode). Measurement required.
+# "VAE class@ratio" -> a smaller geometry measured seam-free. Measurement required.
 SMALLER_GEOMETRY_OK: dict[str, Floor] = {
     # #12698 seam bench: worst 64 px window <= 1.88 levels, PSNR >= 53 dB (stock 2-latent overlaps: 2.3-7.7).
     "AutoencoderKLLTX2Video@32x": Floor(
@@ -90,7 +90,6 @@ SMALLER_GEOMETRY_OK: dict[str, Floor] = {
     "AutoencoderKLMiniMaxH3@16x": Floor(
         16, 4, 16, "decoder works at its 256 px tile; untiled is out of distribution"
     ),
-    # 16x video VAEs at stock tiles, real 33-frame clip vs untiled.
     "AutoencoderKLHunyuanVideo15@16x": Floor(
         16, 4, 4, "video seam audit: PSNR >= 50.6 dB, no line at the boundaries"
     ),

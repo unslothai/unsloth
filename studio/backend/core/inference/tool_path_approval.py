@@ -22,9 +22,7 @@ import sys
 import time
 import urllib.parse
 
-# Names this module borrows from `tools`. They are BOUND at the bottom of `tools` rather than
-# imported here, because the two modules import each other and a from-import would run before the
-# other side finished. The list is explicit so the boundary is visible rather than ambient.
+# Bound at the bottom of `tools`, not imported: the modules import each other.
 _BORROWED = (
     "_ARCHIVE_CTOR_NAMES",
     "_AUTO_SAFE_WRAPPERS",
@@ -78,14 +76,10 @@ def _bind(namespace) -> None:
     )
 
 
-# The tool child runs unconfined for the installation owner (account_confinement returns None there), so the session
-# sandbox is a working DIRECTORY, not a boundary: an absolute path in a tool call reaches the real filesystem with the
-# user's own permissions. A RELATIVE path resolves inside that workdir, so it stays silent and ordinary in-sandbox work
-# is untouched; an absolute path outside the roots below is the host's own data, and auto mode asks before it is read
-# or written.
+# The owner's tool child runs unconfined, so an absolute path reaches the real filesystem;
+# relative paths stay in the workdir, and absolute paths outside these roots ask in auto mode.
 _SYSTEM_READ_SILENT_ROOTS = (
-    # Installed software and kernel interfaces. Reading these is how a tool learns about the machine; the credential
-    # checks run FIRST, so /etc/shadow and friends still ask despite /etc being here.
+    # Credential checks run first, so /etc/shadow still asks despite /etc being here.
     "/usr",
     "/bin",
     "/sbin",
@@ -100,18 +94,13 @@ _SYSTEM_READ_SILENT_ROOTS = (
     "/proc",
     "/sys",
     "/dev",
-    # Runtime state (pid files, sockets). /run/secrets and /run/credentials are covered by the credential check that
-    # runs first. Mirrors tool_confinement._SYSTEM_READ_ROOTS.
+    # Mirrors tool_confinement._SYSTEM_READ_ROOTS; secret subdirs are caught by the credential check.
     "/run",
-    # The same directory under its older name. On Linux it is a symlink to /run; on macOS it is the
-    # REAL location (/private/var/run), and `/etc/resolv.conf` is a link into it, so resolving the
-    # candidate landed outside every root and an ordinary `grep nameserver /etc/resolv.conf` asked.
+    # On macOS /var/run is the real location and /etc/resolv.conf links into it.
     "/var/run",
-    # macOS
     "/System",
     "/Library",
     "/Applications",
-    # Windows
     "C:\\Windows",
     "C:\\Program Files",
     "C:\\Program Files (x86)",
@@ -119,19 +108,14 @@ _SYSTEM_READ_SILENT_ROOTS = (
 )
 
 
-# Carved OUT of the system roots above: these are tmpfs the user's own processes own, so their
-# contents are user data rather than machine state, and `/dev` and `/run` being read-silent must not
-# reach them. Normalized at module level because the roots they sit under are literals too.
+# Carved out of the system roots: user-owned tmpfs holds user data, not machine state.
 _WRITABLE_RUNTIME_SUBTREES = tuple(
     os.path.normcase(part)
-    # `/dev/fd/<n>` is the same kernel link `/proc/self/fd/<n>` is, and it reaches whatever the
-    # descriptor was opened on, so it is no more a property of /dev than the /proc spellings are.
+    # `/dev/fd/<n>` reaches whatever the descriptor was opened on, like `/proc/self/fd/<n>`.
     for part in ("/dev/shm", "/dev/mqueue", "/dev/fd", "/run/user", "/run/lock")
 )
 
 
-# Pseudo-devices a command legitimately writes to (`2> /dev/null`); the rest of /dev is read-silent but not
-# write-silent.
 _WRITE_SILENT_DEVICE_NODES = (
     "/dev/null",
     "/dev/zero",
@@ -142,8 +126,7 @@ _WRITE_SILENT_DEVICE_NODES = (
 )
 
 
-# Roots are resolved from settings and a sqlite table, so they are cached rather than rebuilt per token. A stale entry
-# only ever costs (or spares) one approval prompt, so a short TTL beats invalidation plumbing.
+# A stale entry only costs or spares one prompt, so a short TTL beats invalidation.
 _SILENT_ROOT_TTL_S = 60.0
 
 
@@ -216,37 +199,26 @@ def _build_silent_roots() -> "tuple[tuple[str, ...], tuple[str, ...]]":
         well_known_model_dirs,
     )
 
-    # Only the OUTPUT subdirectories are silent, never the studio home itself. studio_root() holds studio.db (chat
-    # history, provider and MCP configuration) and auth/ alongside them, and in the default layout
-    # shared_sandbox_root() resolves to that same directory, so granting either one would hand a tool everything
-    # Studio owns -- which is the opposite of what this gate is for.
+    # Only output subdirectories, never the studio home: it holds studio.db and auth/.
     write_roots = _silent_root_list(
         (
             sandbox_root,
             _legacy_sandbox_root,
             tmp_root,
-            # Not the SHARED bases: `shared_project_workspaces_root()` is the ancestor of every
-            # account's `Accounts/<id>/Projects`, and `shared_tmp_root()` of every account's tmp,
-            # so allowlisting either hands the owner (who gets no OS confinement) another account's
-            # private data. The owner's own `tmp_root()` IS the shared base, so nothing is lost.
+            # Not the shared bases: they are ancestors of every account's private data.
             project_workspaces_root,
             cache_root,
-            # Studio downloads models into these itself, so a tool that fetches one must not need approval for the
-            # cache write. Credential files inside them (token, stored_tokens) are caught by the sensitive-path check.
+            # Studio downloads models here; credential files inside are caught by the sensitive-path check.
             lambda: _hf_cache_dirs(),
             lambda: _WRITE_SILENT_DEVICE_NODES,
         )
     )
-    # Several of those producers fall back to the studio home when their own subdirectory is not configured
-    # (tmp_root and shared_sandbox_root both do in the default layout), and one such fallback silently grants
-    # everything Studio owns. Drop any root that IS the studio home or an ancestor of it; the narrow
-    # subdirectories under it are kept, so this cannot be defeated by adding another producer later.
+    # Producers fall back to the studio home when unconfigured; drop it and its ancestors.
     write_roots = _excluding_ancestors_of_studio_home(write_roots)
     read_roots = write_roots + _excluding_ancestors_of_studio_home(
         _silent_root_list(
             (
                 lambda: _SYSTEM_READ_SILENT_ROOTS,
-                # The interpreter, its stdlib and site-packages: a tool reads these to introspect its own environment.
                 lambda: (
                     sys.prefix,
                     sys.base_prefix,
@@ -256,8 +228,6 @@ def _build_silent_roots() -> "tuple[tuple[str, ...], tuple[str, ...]]":
                     os.environ.get("VIRTUAL_ENV", ""),
                     _SANDBOX_SITE_DIR,
                 ),
-                # Model folders the user registered with Studio, plus the well-known LM Studio / Ollama locations. These
-                # hold weights, not documents, and reading them is the point of the app.
                 _scan_folder_roots,
                 well_known_model_dirs,
             )
@@ -363,13 +333,9 @@ def _scan_folder_roots() -> "tuple[str, ...]":
     return tuple(str(row.get("path") or "") for row in list_scan_folders())
 
 
-# Environment that relocates a root. The cache key carries it, so repointing the studio home or a cache mid-process
-# takes effect at once instead of serving the previous install's roots for up to the TTL. Reading a few env vars is
-# nanoseconds; re-resolving the roots is milliseconds, which is why the TTL exists at all.
+# Env vars that relocate a root are part of the cache key so a repoint takes effect at once.
 _SILENT_ROOT_ENV_KEYS = (
     "UNSLOTH_STUDIO_HOME",
-    # The alias the resolver accepts alongside it, and the other variables that MOVE a root. Keyed
-    # on one of a pair only, changing the other left the previous install's roots live until the TTL.
     "STUDIO_HOME",
     "UNSLOTH_STUDIO_PROJECTS_HOME",
     "UNSLOTH_STUDIO_DOCUMENTS_HOME",
@@ -389,8 +355,7 @@ def _silent_roots() -> "tuple[tuple[str, ...], tuple[str, ...]]":
         account = current_account_id() or ""
     except Exception:  # noqa: BLE001
         account = ""
-    # The database's mtime too: registered scan folders and the configured cache root live in it, so
-    # removing a folder revoked a root that stayed silent for up to the TTL otherwise.
+    # The db mtime too: scan folders and the cache root live in it.
     identity = (account, tuple(os.environ.get(k) for k in _SILENT_ROOT_ENV_KEYS))
     account = identity + (_studio_db_revision(identity),)
     now = time.monotonic()
@@ -413,44 +378,31 @@ def _looks_absolute(text: str) -> bool:
         return False
     if text[0] == "/":
         return True
-    # A local `file:` URI is an absolute reference spelled with a scheme, so the operand scanners
-    # have to keep it rather than dropping it as a relative name.
     if text[:5].lower() == "file:":
         uri_path = _file_uri_path(text)
         return bool(uri_path) and _looks_absolute(uri_path)
     if text[0] == "~":
-        # A PLAIN `~` is the sandbox: `_build_safe_env` and `_build_bypass_env` both set the child's
-        # HOME to the tool workdir, so the shell and `expanduser` alike resolve `~/notes.txt` to a
-        # file inside the session. `~alice` still names a host account, so it stays absolute.
+        # A plain `~` is the sandbox (child HOME is the workdir); `~alice` stays absolute.
         return not (len(text) == 1 or text[1] in "/\\")
-    # A single leading backslash is root-relative on Windows (it resolves from the current drive's root), not a
-    # sandbox-relative name, so it counts alongside the UNC `\\server\share` form.
+    # A leading backslash is root-relative on Windows, not sandbox-relative.
     if text[0] == "\\":
         return True
-    # `C:notes.txt` is DRIVE-relative: it resolves against drive C's own current directory, which is
-    # not the session workdir, so it reaches the real filesystem as much as `C:\notes.txt` does.
+    # `C:notes.txt` resolves against drive C's current directory, not the session workdir.
     return bool(_WIN_DRIVE_RE.match(text) or _WIN_DRIVE_RELATIVE_RE.match(text))
 
 
-# `C:notes.txt`, with no separator: the drive's own current directory, not this one.
-# Anchored at both ends and single-colon, so a shell expansion like `${p:0:3}` (which folds to
-# `p:0:3`) is not read as a path on drive P.
+# Anchored and single-colon so `${p:0:3}` is not read as a path on drive P.
 _WIN_DRIVE_RELATIVE_RE = re.compile(r"^[A-Za-z]:(?![\\/:])[^:\s]+$")
 
 
-# The kernel symlinks under /proc that reach outside /proc: `root` is the process's root directory,
-# `cwd` its working directory, `fd/<n>` an open file. The shell's own PID spellings resolve to a
-# number before the path is opened, so they name the same links a literal number does.
+# Kernel links under /proc that reach outside it; shell PID spellings name the same links.
 _PROC_ID_RE = r"(?:self|thread-self|\d+|\$\$|\$\{?BASHPID\}?|\$\{?PPID\}?)"
-# `/proc/<pid>/task/<tid>/root` resolves through the same kernel link the process-level spelling
-# does, so the task level is matched too.
 _PROC_MAGIC_LINK_RE = re.compile(
     rf"/proc/{_PROC_ID_RE}/(?:task/{_PROC_ID_RE}/)?(?:root|cwd|fd)(?:/|$)"
 )
 
 
-# A local `file:` URI, in the spellings sqlite3 and the stdlib accept: `file:/p`, `file:///p` and
-# `file://localhost/p`. A host other than localhost is a remote resource, not a path here.
+# Local `file:` URI spellings; a non-localhost host is remote, not a path.
 _FILE_URI_RE = re.compile(r"^file://(?:localhost)?(?=/)|^file:(?=/)", re.IGNORECASE)
 
 
@@ -509,39 +461,27 @@ def _path_needs_approval(text, *, writing: bool = False) -> bool:
     text = text.strip()
     if len(text) > _MAX_PATH_SCAN_CHARS:
         return True
-    # \x02 marks a pathlib .parent walking OUT of its root (see _folded_path). It is an escape marker, so it asks;
-    # treating it like the unresolved marker would turn the signal into a pass.
+    # \x02 marks a pathlib .parent escaping its root (see _folded_path): ask.
     if "\x02" in text:
         return True
-    # \x00 is a segment the folder could not resolve, which is not a decidable path.
     if "\x00" in text:
         return False
-    # A `file:` URI names the same file the bare path does, so it is classified as that path.
     uri_path = _file_uri_path(text)
     if uri_path is not None:
         return _path_needs_approval(uri_path, writing = writing)
     if not _looks_absolute(text):
-        # Relative: resolves inside the session workdir. Only the credential/traversal scan applies.
         return bool(_references_sensitive_path(text) or _glob_token_sensitive(text))
     try:
         candidate = _normalized_fs_text(text)
     except Exception:  # noqa: BLE001
         return True
-    # The filesystem root ITSELF, which no silent root can cover (`_silent_root_list` drops a root
-    # that folds to `os.sep`, or everything would be silent). Reading it yields the top-level names
-    # and nothing else, so `ls /` asked for approval while `ls /usr` did not. Exact match only:
-    # anything UNDER it is still decided by the roots below.
+    # The filesystem root itself: listing it reveals only top-level names. Exact match only.
     if not writing and candidate == os.sep:
         return False
-    # `/proc/<pid>/root`, `/cwd` and `/fd/<n>` are kernel magic symlinks: the kernel resolves them
-    # before anything that follows, so `/proc/self/root/home/alice/report.txt` opens the very file
-    # `/home/alice/report.txt` does while reading, lexically, as an ordinary `/proc` path. `/proc` is
-    # read-silent, so containment on the text alone let the whole filesystem in through it.
+    # Kernel magic symlinks: `/proc/self/root/home/x` opens `/home/x` while looking like /proc.
     if _PROC_MAGIC_LINK_RE.match(candidate.replace(os.sep, "/")):
         return True
-    # A writable subtree of an otherwise system root. `/dev/shm` and `/run/user/<uid>` are tmpfs the
-    # user's own processes write into, so a read there is a read of somebody's data, not of the
-    # machine's configuration. Checked before containment, so the enclosing root cannot cover them.
+    # User-writable tmpfs under a system root; checked before containment.
     if any(
         candidate == root or candidate.startswith(root + os.sep)
         for root in _WRITABLE_RUNTIME_SUBTREES
@@ -551,27 +491,18 @@ def _path_needs_approval(text, *, writing: bool = False) -> bool:
     roots = write_roots if writing else read_roots
     if not _contained_in(candidate, roots):
         return True
-    # On a managed install the shared projects and tmp bases hold every account's own subtree, so a
-    # silent root can be an ANCESTOR of another account's private data. Their segment is never
-    # silent, whichever root it sits under.
+    # Shared project and tmp bases hold every account's subtree; never silent.
     if _names_a_managed_account_subtree(candidate):
         return True
-    # Lexical containment is not enough on its own: a symlink INSIDE a silent root can resolve
-    # outside it, and the lexical answer would have allowed the read. Resolved only here, where the
-    # answer would otherwise be silence, so the stat is paid on the paths that are about to be
-    # allowed rather than on every token. A link planted between this and the open is not covered;
-    # that TOCTOU gap is the OS sandbox's to close.
+    # A symlink inside a silent root can resolve outside it. Resolved only on the about-to-allow
+    # path; the TOCTOU gap is the OS sandbox's to close.
     resolved = _resolved_fs_text(candidate)
-    # Against the RESOLVED roots as well: a root that is itself a symlink (a sandbox under a
-    # macOS `/tmp`, `/dev/stdout`) would otherwise reject everything under it.
+    # A root that is itself a symlink (macOS /tmp) would otherwise reject everything under it.
     if resolved != candidate and not _contained_in(resolved, roots):
         if not _contained_in(resolved, tuple(_resolved_fs_text(r) for r in roots)):
             return True
-    # Inside a silent root, so only a credential underneath one still asks. Running the (superlinear) credential
-    # scan only here, rather than on every operand, keeps the ordering guarantee at a fraction of the cost:
-    # a path outside the roots already returned True, which is what the scan would have concluded anyway.
-    # The RESOLVED target as well: a link inside one silent root can point at a credential inside
-    # another (`/models/public -> $HF_HOME/token`), and the lexical name carries none of it.
+    # Only a credential under a silent root still asks; check the resolved target too
+    # (`/models/public -> $HF_HOME/token`).
     if _credential_under_silent_root(candidate) or (
         resolved != candidate and _credential_under_silent_root(resolved)
     ):
@@ -581,9 +512,7 @@ def _path_needs_approval(text, *, writing: bool = False) -> bool:
     return bool(_references_sensitive_path(text) or _glob_token_sensitive(text))
 
 
-# Secrets that live INSIDE a root this scan otherwise keeps silent. The name-based rules matter most for a cache
-# relocated off its default path: _SENSITIVE_PATH_RE recognises a token store by the "huggingface" directory in the
-# path, so HF_HOME=/media/hf-cache would hide one, and the whole cache root is allowlisted.
+# Name-based so a relocated cache (HF_HOME=/media/hf-cache) still hides its token store.
 _CREDENTIAL_BASENAMES = frozenset(
     {
         "token",
@@ -603,7 +532,6 @@ _CREDENTIAL_BASENAMES = frozenset(
 )
 
 
-# Files under a read-silent system root that _SENSITIVE_PATH_RE does not name.
 _CREDENTIAL_PATH_SUFFIXES = (
     "/etc/gshadow",
     "/etc/gshadow-",
@@ -618,25 +546,15 @@ def _credential_under_silent_root(candidate: str) -> bool:
     """True for a secret sitting inside an otherwise silent root, so the allowlist cannot expose it."""
     if os.path.basename(candidate) in _CREDENTIAL_BASENAMES:
         return True
-    # Compared on a separator-unified copy: the candidate is normalised to the HOST separator, so on
-    # Windows `/etc/gshadow` arrived as `\\etc\\gshadow` and matched none of these. What a path text
-    # means must not depend on which machine classifies it.
+    # Separator-unified so Windows hosts match POSIX paths too.
     unified = candidate.replace("\\", "/")
     if any(unified.endswith(suffix) for suffix in _CREDENTIAL_PATH_SUFFIXES):
         return True
-    # Studio's own identity database and key material live under <studio home>/auth.
     return "/auth/" in unified + "/"
 
 
-# Commands whose file operands are READ. Deliberately narrow: only names whose operands are unambiguously paths, so a
-# command this scan does not model contributes nothing rather than a guess.
-# `zcat --help`: "Usage: zcat [OPTION]... [FILE]...", uncompressing each to stdout. The
-# whole family reads the file it is given exactly as `cat` does.
-# `iconv --help`: "Usage: iconv [OPTION...] [FILE...]", so a bare operand is a file it reads.
-# `help test`: "unary expressions ... are often used to examine the status of a file", and
-# the answer is existence, type, ownership and timestamps of whatever they are given.
-# Changing directory to an absolute path re-points every RELATIVE operand that follows it, which is how the
-# rest of this scan decides a command stays in the sandbox. `cd /usr/lib && ls` still stays silent.
+# Read commands; deliberately narrow: only names whose operands are unambiguously paths.
+# `cd` to an absolute path re-points later relative operands.
 _PATH_READ_COMMANDS = frozenset(
     """
     cat zcat bzcat xzcat lzcat lz4cat zstdcat iconv test [ [[ tac head tail less more wc stat
@@ -648,11 +566,9 @@ _PATH_READ_COMMANDS = frozenset(
 )
 
 
-# Commands whose file operands are CREATED or OVERWRITTEN.
 _PATH_WRITE_COMMANDS = frozenset(
     {
-        # A permission change MODIFIES the file's metadata, and the first operand is the mode or
-        # owner rather than a path, so it is skipped through `_PATH_ARG_SKIP`.
+        # The first operand is a mode/owner, skipped through `_PATH_ARG_SKIP`.
         "chmod",
         "chown",
         "chgrp",
@@ -662,7 +578,6 @@ _PATH_WRITE_COMMANDS = frozenset(
         "truncate",
         "shred",
         "zip",
-        # Each of these replaces its operand with the compressed or decompressed file.
         "gzip",
         "gunzip",
         "bzip2",
@@ -672,36 +587,24 @@ _PATH_WRITE_COMMANDS = frozenset(
         "zstd",
     }
 )
-# `gzip --help`: "-c, --stdout   write on standard output, keep original files unchanged". In that
-# mode the operand is only READ, so it belongs against the wider read roots.
+# With -c/--stdout the operand is only read.
 _STDOUT_COMPRESSORS = frozenset({"gzip", "gunzip", "bzip2", "bunzip2", "xz", "unxz", "zstd"})
 _STDOUT_FLAGS = frozenset({"-c", "--stdout", "--to-stdout"})
 
 
-# Copy-like commands: the LAST operand is the destination (a write), the earlier ones are sources (reads).
 _PATH_DEST_LAST_COMMANDS = frozenset({"cp", "mv", "install", "ln", "rsync"})
 
 
-# `zip -h`: "zip [options] [zipfile list]", so the FIRST positional is the archive being written and
-# every later one is a source it reads. Scoring them all as writes prompted on archiving anything
-# out of a read-silent root. `-m` deletes the sources after adding them, which makes them writes.
+# First positional is the archive written; later ones are read sources (`-m` makes them writes).
 _PATH_DEST_FIRST_COMMANDS = frozenset({"zip"})
 
 
-# Commands whose SOURCE operand is checked as a write. `mv --help`: "Rename SOURCE to DEST", so the
-# source is gone afterwards. `ln` does not remove its target, but it hands the sandbox a name that
-# WRITES to it: after `ln -s /scan/model.gguf local`, an ordinary relative write through `local`
-# lands outside. `cp` and `rsync` read theirs and leave them alone.
+# Source checked as a write: `mv` removes it, and `ln` hands the sandbox a name that writes to it.
 _PATH_SOURCE_MUTATING_COMMANDS = frozenset({"mv", "ln"})
 
 
-# Interpreters and clients whose operands are files they LOAD. `python /media/private/job.py` reads
-# that file and runs it, which is strictly more than `cat` of the same path, yet the command was in
-# no table so every operand was dropped. Treated as reads, since that is what decides the prompt;
-# whether the loaded program then writes is not knowable here.
-# `awk` and `jq` are deliberately absent: their first positional is a PROGRAM, and a script that
-# starts with a slash (`awk '/^\/usr/ {print}'`) would read as an absolute path.
-# `unzip` READS its archive; the extraction destination is a flag (`-d`) handled above.
+# Interpreters loading their operand files, treated as reads. `awk`/`jq` are absent: their
+# first positional is a program.
 _PATH_SCRIPT_COMMANDS = frozenset(
     """
     python python2 python3 py perl bash sh zsh ksh dash fish csh tcsh source ruby node deno bun
@@ -710,15 +613,11 @@ _PATH_SCRIPT_COMMANDS = frozenset(
 )
 
 
-# `git` carries its paths on flags rather than in operand position, so it only needs the flag spec
-# below; listing it here would read a subcommand name as a path.
-# jq is here rather than among the readers because its POSITIONAL is a filter, not a path: only the
-# values of its flags name files.
+# Paths only via flags; positionals here are subcommands, filters or sources.
 _PATH_FLAG_ONLY_COMMANDS = frozenset("git make jq gcc g++ cc c++ clang clang++".split())
 
 
-# Commands whose first positional is a PROGRAM or PATTERN, not a file: `sed '/etc/d' notes.txt` and
-# `grep /usr/bin list.txt` must not read as absolute-path operands. The value is how many positionals to skip.
+# First positional is a program or pattern, not a file; the value is how many to skip.
 _PATH_ARG_SKIP = {
     "chmod": 1,
     "chown": 1,
@@ -741,40 +640,27 @@ _PATH_ARG_SKIP = {
 }
 
 
-# Commands whose skipped positional is a LEGACY OPTION WORD, which GNU tar only recognises as the
-# very first argument (`tar cf out.tar src`). Skipping unconditionally eats a real operand from the
-# ordinary hyphenated spelling: in `tar -cf local.tar /media/private`, `-cf` and its archive value
-# are already consumed as flags, so the skip would discard `/media/private` and the read would never
-# be classified. grep and sed are NOT in here: their skipped positional is a pattern, which is the
-# first POSITIONAL rather than the first argument, so their skip stays unconditional.
+# GNU tar recognises the legacy option word only as the very first argument.
 _PATH_SKIP_FIRST_ARG_ONLY = frozenset({"tar"})
 
 
-# Long spellings of an archive command's create mode. The short forms are read letter by letter out
-# of the cluster; these carry the same meaning and are matched whole.
-# `tar --help`: `--delete` deletes members from the archive and `-A, --concatenate` appends other
-# archives to it, so both MUTATE the file `-f` names exactly as create, append and update do.
+# Long spellings of archive write modes, including --delete and --concatenate.
 _ARCHIVE_CREATE_LONG_FLAGS = frozenset(
     {"--create", "--append", "--update", "--delete", "--concatenate", "--catenate"}
 )
 
 
-# The short spellings of the same three: create, append, update. All write the archive.
 _ARCHIVE_WRITE_SHORT_MODES = ("c", "r", "u", "A")
-# `7z --help`: the FIRST word is the command, and `a` adds to (creating or updating) an archive,
-# `u` updates and `d` deletes from it. The tar-style mode letters mean nothing here.
+# `7z`: the first word is the command; tar-style mode letters mean nothing here.
 _SEVENZIP_WRITE_COMMANDS = frozenset({"a", "u", "d", "rn"})
 
 
-# Flags that supply the pattern or program themselves. `_PATH_ARG_SKIP` spends a positional on it by
-# default, but `grep -f patterns.txt FILE` and `sed -e s/a/b/ FILE` already have theirs, so keeping
-# the skip would discard the first real input path and leave the read unclassified.
+# These flags supply the pattern, so no positional is skipped for one.
 _PATTERN_SUPPLYING_FLAGS = {
     "grep": {"-f", "--file", "-e", "--regexp"},
     "egrep": {"-f", "--file", "-e", "--regexp"},
     "fgrep": {"-f", "--file", "-e", "--regexp"},
-    # `rg --files [PATH ...]` takes no pattern at all (`rg --help`: "rg [OPTIONS] --files [PATH ...]"),
-    # so the skip would spend the first positional and leave the enumerated tree unclassified.
+    # `rg --files` takes no pattern.
     "rg": {"-f", "--file", "-e", "--regexp", "--files"},
     "ag": {"-f", "--file", "-e"},
     "ack": {"-f", "--file"},
@@ -785,14 +671,8 @@ _PATTERN_SUPPLYING_FLAGS = {
 }
 
 
-# Module-level `open()` functions, whose path is the FIRST ARGUMENT even though the call is spelled
-# as an attribute. Contrast `Path(p).open()`, where the receiver is the path.
-# tarfile.open(name, mode) takes the path first like the rest; without it the module read as
-# a path-bearing receiver and the archive operand was never scanned.
-# `import builtins; builtins.open(p, "w")` is the builtin under a qualified name. Without it
-# the module itself read as the path and the real one was never added.
-# `from PIL import Image; Image.open(p)` is a module-level open taking the path first, so
-# without it the bare `Image` folded as the path and the file was never seen.
+# Module-level `open()` functions taking the path first (unlike `Path(p).open()`), including
+# tarfile, builtins and PIL Image.
 _PY_MODULE_OPEN_RECEIVERS = frozenset(
     """
     io os posix gzip bz2 lzma codecs tokenize dbm shelve wave tarfile builtins __builtin__ PIL
@@ -801,13 +681,8 @@ _PY_MODULE_OPEN_RECEIVERS = frozenset(
 )
 
 
-# Receivers that are MODULES rather than paths, for every path-taking call, not only `open`. An
-# attribute call on one of these puts its paths in the ARGUMENTS: `os.rename(src, dst)` moves dst,
-# where `Path(src).rename(dst)` moves the receiver. Reading the receiver as a path on the module
-# form folds the bare module name and loses the real destination.
+# Module receivers put paths in the arguments: `os.rename(src, dst)` vs `Path(src).rename(dst)`.
 _PY_MODULE_PATH_RECEIVERS = _PY_MODULE_OPEN_RECEIVERS | frozenset(
-    # pandas belongs here for the same reason numpy does: `pd.read_csv(path)` carries its path in the
-    # arguments, never as the receiver.
     {
         "shutil",
         "pathlib",
@@ -825,8 +700,7 @@ _PY_MODULE_PATH_RECEIVERS = _PY_MODULE_OPEN_RECEIVERS | frozenset(
 )
 
 
-# `test`/`[` reach the filesystem ONLY through their file operators (`help test`); every other
-# operand is a string being compared. `[ "$d" != "/" ]` names no path at all.
+# `test`/`[` touch the filesystem only through file operators; other operands are strings.
 _TEST_COMMANDS = frozenset({"test", "[", "[["})
 _TEST_FILE_UNARY_FLAGS = frozenset(
     """
@@ -852,8 +726,6 @@ def _test_command_operands(args) -> "list[str]":
     return paths
 
 
-# Commands that turn their INPUT into another command's arguments, so a path arrives from the pipeline rather than
-# from an operand position.
 _PATH_FORWARDING_COMMANDS = frozenset({"xargs", "parallel"})
 
 
@@ -879,15 +751,11 @@ def _classified_terminal_commands() -> frozenset:
     )
 
 
-# What a flag's VALUE is, per command. "read"/"write" mean the value is a path with that access; "skip" means the
-# value is data (a delimiter, a pattern, a count) and must be stepped over so it is never read as an operand --
-# `cut -d /` and `sort -t /` pass a slash as a field separator, not as the root directory. "archive" follows the
-# command's create/extract mode. A flag absent from a command's table does NOT consume the token after it, so an
-# unmodelled path-taking flag still gets seen as a positional.
+# Flag value kinds: read/write path, "skip" for data (`cut -d /`), "archive" per mode. An
+# unlisted flag does not consume the next token, so its path is still seen as a positional.
 _PATH_FLAG_SPECS = {
     "cp": {"-t": "write", "--target-directory": "write", "-S": "skip", "--suffix": "skip"},
     "mv": {"-t": "write", "--target-directory": "write", "-S": "skip", "--suffix": "skip"},
-    # `iconv -o, --output=FILE` writes the converted text there; the rest name encodings, not paths.
     "iconv": {
         "-o": "write",
         "--output": "write",
@@ -896,21 +764,17 @@ _PATH_FLAG_SPECS = {
         "-t": "skip",
         "--to-code": "skip",
     },
-    # `make --help`: `-f FILE` reads that makefile and `-C DIR` changes to that directory first, so
-    # both select what make reads and executes. The bare positionals are TARGETS, not paths.
+    # `-f` and `-C` select what make reads and runs; bare positionals are targets.
     "make": {
         "-f": "read",
         "--file": "read",
         "--makefile": "read",
-        # `-C DIR` is where make RUNS, and a recipe writes there (`make -C /models clean`).
         "-C": "write",
         "--directory": "write",
         "-j": "skip",
         "--jobs": "skip",
         "-l": "skip",
     },
-    # `gcc --help`: `-o <file>` places the output there, truncating it. The positionals are source
-    # files, which the flag-only treatment leaves alone.
     "gcc": {"-o": "write"},
     "g++": {"-o": "write"},
     "cc": {"-o": "write"},
@@ -930,7 +794,6 @@ _PATH_FLAG_SPECS = {
         "-o": "write",
         "--output": "write",
         "--files0-from": "read",
-        # `sort --help`: "get random bytes from FILE", read whenever -R is in play.
         "--random-source": "read",
         "-t": "skip",
         "--field-separator": "skip",
@@ -960,24 +823,19 @@ _PATH_FLAG_SPECS = {
     "tar": {
         "-f": "archive",
         "--file": "archive",
-        # The listed-incremental snapshot is CREATED or updated by tar, so it is a write wherever it
-        # points, independent of whether this invocation creates or extracts the archive itself.
+        # The snapshot is written regardless of create or extract.
         "-g": "write",
         "--listed-incremental": "write",
         "-C": "extract_dir",
         "--directory": "extract_dir",
         "-T": "read",
         "--files-from": "read",
-        # `tar --help`: `--add-file=FILE` adds the named file, so it is read exactly as `-T`'s
-        # list members are. Unmodelled, the whole token was discarded and the path never seen.
         "--add-file": "read",
         "-X": "read",
         "--exclude-from": "read",
         "--exclude": "skip",
     },
-    # `diff --from-file=FILE1 local.txt` compares FILE1 to every operand, so the file it names is
-    # read even though nothing occupies an operand position. The value-taking options that are NOT
-    # paths are listed too, so a NUM or a pattern is stepped over rather than read as one.
+    # `--from-file` is read; non-path value options are listed so they are stepped over.
     "diff": {
         "--from-file": "read",
         "--to-file": "read",
@@ -1000,39 +858,27 @@ _PATH_FLAG_SPECS = {
         "-U": "skip",
         "--unified": "skip",
     },
-    # `git -C <path>` runs the whole command in that directory, so `git -C /media/private-repo show
-    # HEAD:secret.txt` prints a file outside the sandbox with nothing in an operand position to show
-    # for it. `git -h` gives the form as `git [-C <path>] [--git-dir=<path>] ... <command>`.
+    # `git -C <path>` runs the command in that directory.
     "git": {
         "-C": "read",
         "--git-dir": "read",
         "--work-tree": "read",
-        # `git archive --add-file <file>` reads an untracked file into the archive and `--output`
-        # writes the archive itself (`git archive -h`). Both are subcommand options rather than
-        # global ones, but the spec is per command, and no other git subcommand takes either name.
+        # `git archive` options; no other git subcommand takes these names.
         "--add-file": "read",
         "--output": "write",
         "-o": "write",
-        # `git clone -h`: `--[no-]separate-git-dir <gitdir>` puts the repository metadata there,
-        # which is a write outside the sandbox while every remaining operand stays relative.
         "--separate-git-dir": "write",
         "-c": "skip",
         "--exec-path": "skip",
         "--namespace": "skip",
     },
-    # `curl file:///p` READS a local file and `curl -o p url` writes one (`curl --manual`: the FILE
-    # scheme can read or write local files). Ordinary http(s) URLs are not absolute paths, so they
-    # never reach the gate; only the `file:` scheme does.
+    # Only the `file:` scheme reaches the gate; http(s) URLs are not paths.
     "curl": {
-        # `curl --help all`: `-K, --config <file>` reads a config from a file, and the attached
-        # `--config=` spelling was discarded whole rather than exposing its value.
         "-K": "read",
         "--config": "read",
         "-o": "write",
         "--output": "write",
-        # `--output-dir <dir>` is where `-O` puts what it downloads (`curl --help all`), and `-O`
-        # itself contributes no operand, so without this an ordinary download wrote outside the
-        # sandbox with nothing in the command for the gate to look at.
+        # `-O` contributes no operand, so the download dir is the only signal.
         "--output-dir": "write",
         "-O": "skip",
         "-d": "skip",
@@ -1053,11 +899,8 @@ _PATH_FLAG_SPECS = {
     "wget": {
         "-O": "write",
         "--output-document": "write",
-        # `-P, --directory-prefix=PREFIX` (`wget --help`): both spellings save under that prefix.
         "-P": "write",
         "--directory-prefix": "write",
-        # `wget --help`: `-o, --output-file=FILE` logs to FILE and `-a, --append-output=FILE`
-        # appends to it. A plain download writes the log wherever it is pointed.
         "-o": "write",
         "--output-file": "write",
         "-a": "write",
@@ -1065,9 +908,7 @@ _PATH_FLAG_SPECS = {
         "--header": "skip",
     },
     "zip": {"-x": "skip", "-i": "skip"},
-    # `unzip ... archive ... [-d exdir]` (`unzip -hh`): the ARCHIVE is read and the extraction
-    # target is written. Listed as all-writes, even `unzip -l /usr/share/doc/example.zip` asked,
-    # because a read under the read-silent /usr was measured against the narrower write roots.
+    # `-d` is the extraction target; the archive itself is a positional read.
     "unzip": {"-d": "write", "-x": "skip", "-O": "skip", "-P": "skip"},
     "cut": {
         "-d": "skip",
@@ -1085,8 +926,7 @@ _PATH_FLAG_SPECS = {
     "jq": {
         "-f": "read",
         "--from-file": "read",
-        # `jq --help`: `-L directory` searches modules there, so the filter can `include` a file
-        # from outside the sandbox without naming it.
+        # `-L` lets the filter `include` modules from that directory.
         "-L": "read",
         "--library-path": "read",
         "--arg": "skip",
@@ -1100,7 +940,6 @@ _PATH_FLAG_SPECS = {
         "-regex": "skip",
         "-newer": "read",
     },
-    # `fd --help`: `--ignore-file <path>` adds a custom ignore file, which it reads.
     "fd": {
         "--base-directory": "read",
         "--search-path": "read",
@@ -1114,10 +953,7 @@ _PATH_FLAG_SPECS = {
     "tail": {"-n": "skip", "--lines": "skip", "-c": "skip", "--bytes": "skip"},
     "openssl": {"-in": "read", "-out": "write"},
     "du": {"--exclude": "skip"},
-    # `date -f DATEFILE` processes every line of that file, and an invalid line is echoed back in the
-    # diagnostic, so the contents reach tool output (`date --help`).
-    # `date --help`: `-f FILE` reads dates from it and `-r, --reference=FILE` displays that file's
-    # last modification time; `-d`/`--date`/`-s` take a date STRING, not a path.
+    # `-f` reads dates from a file (bad lines are echoed) and `-r` reads its mtime; `-d` is a string.
     "date": {
         "-f": "read",
         "--file": "read",
@@ -1132,10 +968,7 @@ _PATH_FLAG_SPECS = {
 }
 
 
-# Archive tools: creating writes the archive, extracting reads it.
-
-# ripgrep's own path-bearing options, on top of the grep spec it inherits below. `rg --help` gives
-# `--ignore-file=PATH` as a gitignore-formatted rules file, which is read.
+# ripgrep's own path options, on top of the grep spec it inherits below.
 _RG_EXTRA_FLAG_SPEC = {
     "--ignore-file": "read",
     "--pre": "skip",
@@ -1162,26 +995,21 @@ _PATH_FLAG_SPECS["rg"] = {**_PATH_FLAG_SPECS["rg"], **_RG_EXTRA_FLAG_SPEC}
 _PATH_ARCHIVE_COMMANDS = frozenset({"tar", "zip", "7z"})
 
 
-# Wrapper flags that take a SEPARATE value, so the token after them is the wrapper's, not the command.
-# The shared set is the fallback; a wrapper listed in `_WRAPPER_VALUE_FLAGS_BY_CMD` uses its own,
-# which is the accurate one. `stdbuf -o L cat FILE` stopped the scan on `L` and lost the file.
+# Wrapper flags taking a separate value; per-command sets override the shared fallback.
 _WRAPPER_VALUE_FLAGS = frozenset(
     {"-n", "-u", "--unset", "-S", "--signal", "-k", "--kill-after", "--chdir", "-C"}
 )
 
 
-# Wrappers whose first bare operand belongs to the wrapper (`timeout 5 cat x`).
 _WRAPPER_LEADING_VALUE_COMMANDS = frozenset({"timeout", "nice", "ionice", "stdbuf"})
 
 
 _WRAPPER_LEADING_DURATION_RE = re.compile(r"^\d+(?:\.\d+)?[smhd]?$")
 
 
-# A token has to carry one of these before it can spell an absolute path in any supported syntax.
 _PATH_HINT_RE = re.compile(r"[/~\\:]")
 
 
-# `sed -i` rewrites its operands in place, unlike a plain sed.
 _SED_INPLACE_FLAGS = ("-i", "--in-place")
 # A short option that consumes the rest of its token as a value, so `perl -Ilib` is not an `-i`.
 _SHORT_OPTION_VALUE_CHARS = "eflI"
@@ -1202,17 +1030,13 @@ def _clusters_inplace(arg: str) -> bool:
 _REDIR_WRITE_RE = re.compile(r"^\d*(?:>>?\|?|&>>?)$")
 
 
-# A single `<` only. `<<` introduces a here-document whose next token is its DELIMITER, and `<<<` a
-# here-string whose next token is literal data: no shell opens either as a file, so reading them as
-# operands asked for approval on `cat <<< /media/x` when nothing is opened at all.
+# A single `<` only: `<<` and `<<<` take a delimiter or literal data, never a file.
 _REDIR_READ_RE = re.compile(r"^\d*<$")
 
 
-# The here-document and here-string forms, matched only to skip the word that follows them.
 _REDIR_HEREDOC_RE = re.compile(r"^\d*<<<?-?$")
 
 
-# A whole token that is a NAME=value prefix, as opposed to _SHELL_ASSIGN_RE which finds them inside a command string.
 _SHELL_ASSIGN_TOKEN_RE = re.compile(r"^[A-Za-z_]\w*=")
 
 
@@ -1224,22 +1048,14 @@ def _terminal_path_operands(tokens, text = None) -> "list[tuple[str, bool]]":
     (``head -n 5``) cannot look absolute. Redirection targets are included whichever command owns
     them, since ``> /abs/file`` truncates that file regardless.
     """
-    # Every operand this can report is absolute in some spelling, and each of those spellings needs
-    # one of these characters: a POSIX root or tilde, a UNC or Windows separator, or the colon of a
-    # drive letter. A redirection keeps its target in the same token (`>/abs/x`), so the character
-    # is present there too. No such character anywhere means no operand, and the segment machinery
-    # can be skipped outright -- which is the case for almost every ordinary command.
+    # Every absolute spelling needs one of these characters; most commands exit here.
     if not any(_PATH_HINT_RE.search(t) for t in tokens):
         return []
-    # shlex does not treat < and > as punctuation, so `echo CHANGED>/media/x` arrives as ONE token with the
-    # redirection buried inside it. Split those out, or the target is never seen.
+    # shlex does not split on < and >, so `echo X>/media/x` is one token.
     tokens = _split_attached_redirections(tokens, text)
     operands: "list[tuple[str, bool]]" = []
     segment: "list[str]" = []
-    # Redirections are read from the RAW text when there is one: quoting is the thing being decided,
-    # and `echo CHANGED>"/media/x host/a"` lexes to one token carrying both a live `>` and a space.
-    # The token pass below still covers a bare word list (a subprocess argv); duplicates are
-    # harmless, since these are candidates rather than a count.
+    # Redirections come from the raw text when present, since quoting is what is being decided.
     if text and ("<" in text or ">" in text):
         operands.extend(_raw_redirection_targets(text))
 
@@ -1252,17 +1068,13 @@ def _terminal_path_operands(tokens, text = None) -> "list[tuple[str, bool]]":
     pending_heredoc = False
     for token in tokens:
         if pending_heredoc:
-            # The word after `<<` names the delimiter and the word after `<<<` is the data itself,
-            # so neither is opened. A SUBSTITUTION inside it still runs though, before the data is
-            # handed over: `cat <<< "$(cat /media/x)"` reads that file, which is the thing this skip
-            # got wrong when it was added.
+            # The word after `<<`/`<<<` is not opened, but a substitution inside it still runs.
             pending_heredoc = False
             if not _looks_separator_for_paths(token):
                 operands.extend((path, False) for path in _substitution_operand_paths(token))
                 continue
         if pending_redirect is not None:
-            # `>| /abs` lexes as `>` then `|`: the punctuation is part of the operator, so keep waiting for the
-            # target rather than consuming the pipe as one.
+            # `>| /abs` lexes as `>` then `|`; keep waiting for the target.
             if _looks_separator_for_paths(token):
                 continue
             writing, pending_redirect = pending_redirect, None
@@ -1280,7 +1092,6 @@ def _terminal_path_operands(tokens, text = None) -> "list[tuple[str, bool]]":
             continue
         prefix = _REDIR_PREFIX_RE.match(token)
         if prefix:
-            # `<<END` and `<<<data` carry their word in the same token, and neither is opened.
             if _REDIR_HEREDOC_RE.match(prefix.group(0)):
                 continue
             target = token[prefix.end() :]
@@ -1289,33 +1100,21 @@ def _terminal_path_operands(tokens, text = None) -> "list[tuple[str, bool]]":
             continue
         segment.append(token)
     flush()
-    # A forwarding command builds ANOTHER command's argument list out of the pipeline's text, so the path never
-    # reaches the operand position this scan reads (`echo /media/x | xargs cat`). Every absolute token in the line is
-    # a candidate operand once one is present.
-    # The basename/lower/lookup per token is only worth paying once a forwarding name is present at
-    # all, so screen the tokens with a plain substring test first.
+    # Forwarding commands build argv from the pipeline, so every absolute token is a candidate.
+    # Substring screen first to skip the per-token lookup.
     if any("xargs" in t or "parallel" in t for t in tokens) and any(
         _token_command_base(t) in _PATH_FORWARDING_COMMANDS for t in tokens
     ):
-        # The wrapped command decides the mode: `xargs touch` MODIFIES what it is handed, and
-        # charging it as a read left a write to a read-silent root silent.
+        # The wrapped command decides the mode: `xargs touch` writes.
         forwarded_write = _forwarded_command_writes(tokens)
         operands.extend((t, forwarded_write) for t in tokens if _looks_absolute(t))
-    # A backtick substitution runs as a command of its own, so it is scanned as one IN ADDITION to
-    # the pass above. Not instead of: `cat `echo /media/x`` puts the path in the outer command's
-    # operand position too, and replacing the tokens dropped exactly that reading.
-    # A `cd` to an absolute directory moves where every RELATIVE path after it lands, and those are
-    # the paths this scan deliberately treats as sandbox-local. Rather than tracking a working
-    # directory (which the classifier has no state for), the destination is charged as a write when
-    # anything after it writes: `cd /models && touch weights.gguf` then asks, while `cd /models &&
-    # ls` does not.
+    # Backtick substitutions are scanned in addition to the outer command. A `cd` to an absolute dir
+    # is charged as a write when anything after it writes.
     operands.extend(_directory_change_write_targets(tokens))
     nested = _split_backticks(tokens, text)
     if nested != list(tokens):
         operands.extend(_terminal_path_operands(nested, text))
-    # `<( ... )` and `>( ... )` run their body as a command of its OWN, handing the outer command a
-    # pipe rather than the path. The lexer splits the parenthesis across tokens, so the body was
-    # never classified and `pr <(cat /media/x)` printed the file under an unmodelled outer command.
+    # Process substitution bodies run as their own command; the lexer splits them across tokens.
     if text and "(" in text:
         for body in _process_substitution_bodies(text):
             try:
@@ -1452,16 +1251,14 @@ def _split_backticks(tokens, text = None) -> "list[str]":
         return list(tokens)
     out: "list[str]" = []
     for token in tokens:
-        # SINGLE quotes only: a command substitution still runs inside double quotes, so
-        # `echo "`cat /media/x`"` executes the read exactly as the unquoted form does.
+        # Single quotes only: substitutions still run inside double quotes.
         if "`" not in token or _token_is_always_quoted(token, text, double = False):
             out.append(token)
             continue
         for index, piece in enumerate(token.split("`")):
             if index:
                 out.append("(")
-            # Split on whitespace too: inside double quotes the substitution is ONE token, so the
-            # body arrived as a single word and the command at its head was never read as one.
+            # Inside double quotes the substitution is one token, so split it into words.
             out.extend(piece.split())
     return out
 
@@ -1490,20 +1287,15 @@ def _split_attached_redirections(tokens, text = None) -> "list[str]":
         prefix = _REDIR_PREFIX_RE.match(token)
         tail = token[prefix.end() :] if prefix else token
         if prefix and "<" not in tail and ">" not in tail:
-            # One leading redirection with its target attached (`>out.txt`), which the redirection
-            # handling upstream already understands. Leave it whole.
             out.append(token)
             continue
-        # More than one redirection in the token. bash accepts `</dev/null>/media/x cmd`, and
-        # keeping that whole recorded a single read of `/dev/null>/media/x` under the silent /dev
-        # root while the real write to /media/x was never seen.
+        # Several redirections in one token (`</dev/null>/media/x`) must be split.
         parts = [piece for piece in _ATTACHED_REDIR_RE.split(token) if piece]
         out.extend(parts if len(parts) > 1 else [token])
     return out
 
 
-# Words that END one command and begin another. `if true; then cat /abs; fi` groups the read under
-# `then` otherwise, which is in no command table, so the whole segment was discarded unscanned.
+# Control words start a new command; otherwise the segment is in no table and goes unscanned.
 _SHELL_CONTROL_WORDS = frozenset(
     """
     if then elif else fi for while until select do done case esac in { } !
@@ -1518,9 +1310,7 @@ def _looks_separator_for_paths(token: str) -> bool:
 def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
     """Operands of one simple command (no separators, redirections already removed)."""
     index = 0
-    # Leading NAME=value assignments and safe wrappers (env, timeout, nice ...) precede the real command. A wrapper
-    # brings its OWN options and values with it (`timeout 5 cat x`, `nice -n 5 cat x`, `env -u VAR cat x`), so those
-    # are stepped over too; otherwise `5` reads as the command and the real one is never screened.
+    # Skip leading assignments and wrappers with their own options/values (`timeout 5`, `env -u V`).
     while index < len(segment):
         token = segment[index]
         base = os.path.basename(token).lower()
@@ -1528,8 +1318,7 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
             index += 1
             continue
         if base in _tools._MULTICALL_BINARIES:
-            # `busybox cat /media/x` dispatches to the applet named FIRST, so the applet is the
-            # command this scan has to classify. The main high-risk scan already unwraps these.
+            # `busybox cat` dispatches to the applet named first.
             index += 1
             continue
         if base not in _AUTO_SAFE_WRAPPERS:
@@ -1537,14 +1326,11 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
         index += 1
         while index < len(segment):
             candidate = segment[index]
-            # `env --help`: `env [OPTION]... [-] [NAME=VALUE]... [COMMAND [ARG]...]`, and "A mere -
-            # implies -i". The lone dash is env's OWN option, so the command still follows it;
-            # treating it as the command left `env - FOO=bar cat /media/x` unscreened.
+            # A lone `-` is env's own option (implies -i); the command still follows.
             if candidate == "-" and base == "env":
                 index += 1
                 continue
             if candidate.startswith("-") and candidate != "-":
-                # A wrapper flag that takes a separate value consumes the token after it.
                 index += 1
                 takes_value = _WRAPPER_VALUE_FLAGS_BY_CMD.get(base)
                 if (
@@ -1554,7 +1340,6 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
                 ):
                     index += 1
                 continue
-            # `timeout 5 cat x`: a bare duration is the wrapper's own operand, not the command.
             if base in _WRAPPER_LEADING_VALUE_COMMANDS and _WRAPPER_LEADING_DURATION_RE.match(
                 candidate
             ):
@@ -1567,11 +1352,8 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
     if command.endswith(".exe"):
         command = command[: -len(".exe")]
     args = segment[index + 1 :]
-    # `/media/alice/tool --flag` RUNS a file outside the sandbox, which reads it before anything the
-    # rest of this scan looks at. Taking the basename dropped the only spelling of that path, so the
-    # command word is reported as a read of its own before it is reduced to a name.
-    # A path ending in a separator names a DIRECTORY and can never be the binary, which is what
-    # keeps a `sed` expression fragment such as `/x/` from reading as one.
+    # Running a binary by path reads it, so report the command word as a read. A trailing
+    # separator names a directory, which keeps a sed fragment like `/x/` out.
     launched = (
         [(segment[index], False)]
         if _looks_absolute(segment[index]) and not segment[index].endswith(("/", "\\"))
@@ -1585,10 +1367,7 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
             else:
                 operands.extend((path, False) for path in _substitution_operand_paths(arg))
         return operands
-    # `sqlite3 FILE 'DELETE ...'` CREATES the file when absent and modifies it otherwise, so the
-    # database is a write unless the invocation is explicitly read-only (`sqlite3 --help` documents
-    # `-readonly`). Classifying it as a read let a delete against a read-silent-but-not-write-silent
-    # root through, a configured model folder being the realistic one.
+    # sqlite3 creates/modifies its database unless invoked with -readonly.
     sqlite_write = command == "sqlite3" and not any(
         arg in ("-readonly", "--readonly") for arg in args
     )
@@ -1606,7 +1385,6 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
             for arg in args
         )
     ):
-        # The operand is still opened, just not modified, so it becomes a READ rather than nothing.
         write_cmd = False
         read_cmd = True
     dest_last = command in _PATH_DEST_LAST_COMMANDS
@@ -1617,22 +1395,14 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
         for arg in args
     )
     spec = _PATH_FLAG_SPECS.get(command, {})
-    # `tar cf out.tar .` / `tar -cf out.tar .` create the archive; the same flags only read when extracting.
-    # Scan every short-flag token, not just args[0]: `tar -g snap -cf out.tar src` carries the mode
-    # on a later flag, and reading only the first argument would classify out.tar as a read. Limited
-    # to args[0] (the legacy option word) plus single-dash tokens, because an ORDINARY FILENAME can
-    # contain a "c" -- `tar -xf a.tar src` must not look like a create.
-    # `tar --help`: `-r` appends to the archive and `-u` updates it, so both MUTATE the file `-f`
-    # names, exactly as `-c` does. Only `c` was read here, and an append to a read-silent root asked
-    # for nothing.
+    # tar: scan every short-flag token for c/r/u (mode may come later), but only args[0] and
+    # single-dash tokens, since filenames can contain those letters.
     if command == "git" and "init" in args:
-        # `git init <directory>` CREATES the repository there (`git init -h`); every other git
-        # subcommand takes its paths through the flags the spec already lists.
+        # `git init <dir>` creates the repository there.
         after = args[args.index("init") + 1 :]
         target = next((arg for arg in after if not arg.startswith("-")), None)
         return launched + ([(target, True)] if target else [])
     if command in ("7z", "7za", "7zr"):
-        # `7z a out.7z src`: the archive is the first positional after the command word.
         creating = bool(args) and args[0].lower() in _SEVENZIP_WRITE_COMMANDS
         archive_from_flag = False
         return launched + _seven_zip_operands(args, creating)
@@ -1642,17 +1412,13 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
             for index, arg in enumerate(args)
             if not arg.startswith("--") and (index == 0 or arg.startswith("-"))
         )
-        # The long spellings carry the same mode and were not read at all, so
-        # `tar --create --file=/models/out.tar` classified the archive as a READ.
         or any(arg.split("=", 1)[0] in _ARCHIVE_CREATE_LONG_FLAGS for arg in args)
     )
-    # Whether the archive came from `-f`/`--file` rather than from the first positional.
     archive_from_flag = command in _PATH_ARCHIVE_COMMANDS and any(
         arg.split("=", 1)[0] in ("-f", "--file")
         or (arg.startswith("-") and not arg.startswith("--") and "f" in arg.lstrip("-"))
         for arg in args
     )
-    # `install -d` / `mkdir -p` style: every positional is a directory being CREATED.
     directory_mode = command == "install" and any(
         arg == "-d"
         or arg == "--directory"
@@ -1670,11 +1436,9 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
             _add_flag_operand(operands, spec.get(flag), arg, write_cmd, creating)
             continue
         if arg.startswith("-") and arg != "-":
-            # A flag can carry a path (`sort -o /abs` writes, `grep -f /abs` reads, `cp -t /abs` is the destination)
-            # or carry DATA that merely looks like one (`cut -d /`). Both must be consumed, with the right meaning.
+            # A flag value can be a path or data that merely looks like one (`cut -d /`).
             name, sep, attached = arg.partition("=")
-            # The pattern came from a flag, so no positional is owed to one and the first input file
-            # is a real operand rather than something to step over.
+            # The pattern came from a flag, so the first positional is a real operand.
             if name in pattern_flags:
                 skip = 0
             if name not in spec:
@@ -1695,21 +1459,16 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
                 pending_flag = flag
             continue
         if skip > 0:
-            # For a legacy-option-word command the skip is only owed to the first ARGUMENT; anything
-            # later is a real operand. `positionals` is still empty exactly when no positional has
-            # been taken yet, which is what "this is args[0]" means once flags are discounted.
+            # For legacy-option-word commands the skip only applies to the first argument.
             if command not in _PATH_SKIP_FIRST_ARG_ONLY or index == 0:
                 skip -= 1
                 continue
             skip = 0
         positionals.append(arg)
     for position, arg in enumerate(positionals):
-        # `key=value` forms (dd if=..., --output=...) carry the path on the right.
         if "=" in arg and not _looks_absolute(arg):
             arg = arg.split("=", 1)[1]
         if dest_last:
-            # `install -d DIRECTORY...` creates every operand (`install --help`), so there is no
-            # source to distinguish and the "more than one positional" rule does not apply.
             writing = (
                 directory_mode
                 or command in _PATH_SOURCE_MUTATING_COMMANDS
@@ -1723,23 +1482,17 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
                 for arg in args
             )
         else:
-            # `creating and position == 0` is the LEGACY form, `tar cf out.tar src`, where the
-            # archive occupies the first positional. With `-f` the archive arrived as a flag value
-            # and was classified there, so the first positional is a SOURCE: `tar -cf out.tar
-            # /usr/share/doc` reads that directory and must not ask under the read-silent root.
+            # Legacy `tar cf out.tar src` puts the archive first; with `-f` the first positional is a source.
             writing = write_cmd or inplace or (creating and position == 0 and not archive_from_flag)
         if not _looks_absolute(arg):
-            # The shell expands a substitution in this position into the operand the command
-            # actually opens, so a literal path inside one counts as if it were written here.
+            # The shell expands a substitution here into the operand actually opened.
             operands.extend((path, writing) for path in _substitution_operand_paths(arg))
             continue
         operands.append((arg, writing))
     return operands
 
 
-# Relative writes after a `chdir` land under the NEW directory, so the destination is charged as a
-# write when the snippet writes anything afterwards. Mirrors the terminal `cd` rule; the classifier
-# keeps no working-directory state, and a path computed at runtime stays the documented residual.
+# Relative writes after `chdir` land in the new directory; mirrors the terminal `cd` rule.
 def _ctor_opens_for_write(node) -> bool:
     """`h5py.File(path, "w")` rewrites the file it names; the default `"r"` mode does not."""
     mode = next(
@@ -1776,8 +1529,7 @@ def _subprocess_child_writes(tree) -> bool:
 
 def _python_directory_change_targets(tree, operands) -> "list[tuple[str, bool]]":
     """The absolute destination of an `os.chdir` in a snippet that also writes."""
-    # `open` is not listed: the operand pass already reports its mode, so a read through it does
-    # not count as writing while `open(p, "w")` does.
+    # `open` is not listed: the operand pass already reports its mode.
     writers = _PY_PATH_WRITE_CALLS | _PY_PATH_CONTENT_FIRST_CALLS
     if (
         not any(writing for _path, writing in operands)
@@ -1786,8 +1538,7 @@ def _python_directory_change_targets(tree, operands) -> "list[tuple[str, bool]]"
             and (getattr(node.func, "attr", None) or getattr(node.func, "id", None)) in writers
             for node in ast.walk(tree)
         )
-        # A relative operand handed to a child process leaves no path entry at all, so the write
-        # `os.chdir("/models"); subprocess.run(["touch", "w.gguf"])` performs is only visible here.
+        # A child given a relative path leaves no path entry, so its write is only visible here.
         and not _subprocess_child_writes(tree)
     ):
         return []
@@ -1821,7 +1572,7 @@ def _shell_words(text: str) -> "list[str]":
         return []
     try:
         words = shlex.split(text)
-    except ValueError:  # unbalanced quotes: the raw words are the best available reading
+    except ValueError:
         words = text.split()
     return words or [text]
 
@@ -1845,7 +1596,6 @@ def _seven_zip_operands(args, creating: bool) -> "list[tuple[str, bool]]":
     return operands
 
 
-# Commands whose presence after a `cd` means something under the new directory is written.
 _DIRECTORY_CHANGE_COMMANDS = frozenset({"cd", "pushd"})
 
 
@@ -1868,7 +1618,6 @@ def _command_base_writes(base: str) -> bool:
 
 
 _EXTRA_WRITE_COMMANDS = frozenset("rm rmdir touch truncate dd shred sed perl".split())
-# `xargs -n 1 cmd`: these carry their value in the NEXT token, which is not the wrapped command.
 _FORWARDING_VALUE_FLAGS = frozenset("-a -d -E -e -I -i -L -l -n -P -s".split())
 
 
@@ -1888,7 +1637,6 @@ def _forwarded_command_writes(tokens) -> bool:
     return False
 
 
-# An interpreter whose `-c` payload is a command line or a snippet of its own.
 _INLINE_CODE_COMMANDS = frozenset("python python2 python3 sh bash zsh dash ksh".split())
 
 
@@ -1966,10 +1714,7 @@ def _short_flag_with_value(arg: str, spec) -> "tuple[str | None, str | None]":
     if body.isalpha():
         last = "-" + body[-1]
         return (last, None) if last in spec else (None, None)
-    # A cluster whose value is ATTACHED to the last letter: `tar -cf/media/x/out.tar`, which GNU tar
-    # accepts and which creates that archive. Requiring the whole body to be alphabetic rejected it
-    # the moment the value contained a separator, so the archive operand was never seen. Split at
-    # the first non-letter: everything before it is the cluster, the rest is the value.
+    # A value can be attached to the cluster (`tar -cf/media/x/out.tar`); split at the first non-letter.
     for index, char in enumerate(body):
         if not char.isalpha():
             break
@@ -1982,9 +1727,7 @@ def _short_flag_with_value(arg: str, spec) -> "tuple[str | None, str | None]":
     return (last, value or None) if last in spec else (None, None)
 
 
-# A command substitution or arithmetic/brace expansion sitting where a path belongs. shlex keeps the
-# whole thing as ONE token, and that token is not itself absolute, so the operand scan saw nothing at
-# all for `cat "$(printf /media/private/report.txt)"` while the shell handed `cat` the real path.
+# shlex keeps a substitution as one non-absolute token, hiding the path the shell passes.
 _SUBSTITUTION_RE = re.compile(r"\$\((.*?)\)|`([^`]*)`|\$\{([^{}]*)\}", re.DOTALL)
 
 
@@ -2022,8 +1765,7 @@ def _add_flag_operand(operands, kind, value: str, write_cmd: bool, creating: boo
     if kind == "archive":
         writing = creating
     elif kind == "extract_dir":
-        # tar -C is where the operation HAPPENS, so its sense is the inverse of the archive's:
-        # extracting creates and overwrites members under it, creating only reads them from it.
+        # tar -C is inverse to the archive: extract writes under it, create reads from it.
         writing = not creating
     else:
         writing = kind == "write" or write_cmd
@@ -2039,8 +1781,7 @@ def _terminal_reaches_outside_sandbox(tokens, text: "str | None" = None) -> bool
     it carries a drive or a UNC share, and the operands from both passes are weighed.
     """
     if not any(_ABSOLUTE_HINT_RE.search(token) for token in tokens):
-        # A POSIX lex may have eaten the separators that make the path absolute, so a Windows
-        # spelling in the raw text still deserves the second pass below.
+        # A POSIX lex may have eaten the separators, so recheck Windows spellings in the raw text.
         if not (text and _WINDOWS_SPELLING_RE.search(text)):
             return False
     if any(
@@ -2059,10 +1800,7 @@ def _terminal_reaches_outside_sandbox(tokens, text: "str | None" = None) -> bool
     )
 
 
-# A drive-qualified path or a UNC share, the two spellings a POSIX lexer destroys.
-# A drive-qualified path, a UNC share, or a ROOT-relative one: `cat \\Users\\alice\\notes.txt` opens
-# `\\Users\\alice\\notes.txt` on the current drive, and a POSIX lex turns it into `Usersalicenotes.txt`
-# with nothing absolute left to see.
+# Drive-qualified, UNC, or root-relative Windows paths, which a POSIX lexer destroys.
 _WINDOWS_SPELLING_RE = re.compile(r"(?:^|[\s'\"=])[A-Za-z]:(?![:\s])|\\\\[^\\/]|(?:^|\s)\\[^\\/\s]")
 
 
@@ -2077,31 +1815,20 @@ def _lex_keeping_backslashes(text: str) -> "list[str] | None":
     return [t[1:-1] if len(t) > 1 and t[0] == t[-1] and t[0] in "\"'" else t for t in tokens]
 
 
-# A token can only carry an absolute path if it holds a separator, a tilde or a drive colon.
 _ABSOLUTE_HINT_RE = re.compile(r"[/~\\]|^[A-Za-z]:")
 
 
-# Python callables whose first argument (or receiver, for a method) names a file being READ. Only names that take a
-# path are listed: `json.load(fh)` and `copy.copy(obj)` fold to nothing, so sharing a name with one of these costs
-# nothing.
-# Readers whose NAME alone is ambiguous, so they are keyed on the receiving module. `numpy.load`
-# takes a filename; the `load` of every other serializer in these tables takes a file object.
+# Python callables whose first argument (or receiver) is a file read. Ambiguous names are keyed
+# on the module: `numpy.load` takes a filename, other serializers' `load` takes a file object.
 _PY_QUALIFIED_READ_CALLS = {
     "numpy": frozenset({"load"}),
     "np": frozenset({"load"}),
 }
-# Readers reached through an INSTANCE rather than a module, so neither the receiver nor the bare
-# name identifies them. `ConfigParser().read(p)` opens the file it is handed (and accepts a LIST of
-# them), while `read` on anything else is an ordinary method, so the constructor is what says which
-# is which.
-# `io.FileIO(p)` opens the path directly, as `io.open` does.
+# Readers reached via an instance; the constructor identifies them (`ConfigParser().read(p)`).
 _PY_MODULE_OPEN_CTORS = {"FileIO"}
 
 
-# Constructors that OPEN their first argument, so the path is the constructor's rather than the
-# reader method's: `pd.ExcelFile(p).parse(0)` never names the workbook again after this call.
-# `h5py.File(path, "r")` and `netCDF4.Dataset(path)` open the file they are handed, like the pandas
-# pair above. The mode sits where `open`'s does, so the shared ctor branch decides read or write.
+# Constructors that open their first argument; the mode sits where `open`'s does.
 _PY_PATH_OPENING_CTORS = frozenset({"ExcelFile", "HDFStore", "File", "Dataset"})
 
 
@@ -2112,15 +1839,7 @@ _PY_INSTANCE_READ_CTORS = {
 }
 
 
-# `io.open_code(path)` opens that file in binary mode (it is what the interpreter itself
-# uses to read source), so it reads a path exactly as `open` does.
-# The stat family alongside the `os.path.get*` helpers that wrap it: they answer existence,
-# size, ownership and timestamps for a path outside the sandbox.
-# The predicate family answers existence and type for a path, which is the same disclosure
-# `test -e` and `os.stat` make.
-# os.chdir re-points every relative path that follows, the same way `cd` does in the shell.
-# Readers that DESCEND. `glob`/`iglob`/`rglob` are listed because their pattern decides, and a
-# pattern rooted at `/` reaches the whole host either way.
+# Descending readers; a pattern rooted at `/` reaches the whole host.
 _PY_RECURSIVE_READ_CALLS = frozenset("walk rglob glob iglob".split())
 
 
@@ -2137,11 +1856,9 @@ _PY_PATH_READ_CALLS = frozenset(
 )
 
 
-# Callables whose first argument (or receiver) names a file being CREATED, OVERWRITTEN or REMOVED.
 _PY_PATH_WRITE_CALLS = frozenset(
     {
-        # `shutil.make_archive` CREATES `base_name + ext`; its source directories are read through
-        # `_PY_PATH_KWARGS_BY_CALL`.
+        # Source directories are read through `_PY_PATH_KWARGS_BY_CALL`.
         "make_archive",
         "write_text",
         "write_bytes",
@@ -2170,13 +1887,11 @@ _PY_PATH_WRITE_CALLS = frozenset(
 )  # extended with `tools._AUTO_UNSAFE_PY_WRITE_METHODS` in `_bind`
 
 
-# Archive constructors: the mode sits in the second argument, exactly like open().
-# Extended with `tools._ARCHIVE_CTOR_NAMES` in `_bind`.
+# Mode is the second argument, like open(). Extended with `tools._ARCHIVE_CTOR_NAMES` in `_bind`.
 _PY_PATH_ARCHIVE_CTORS = frozenset({"TarFile", "tarfile"})
 
 
-# Serializers whose DESTINATION is the second argument: the first is the object being written out. Only true for the
-# modules below; numpy.save / savez take the path FIRST, so the receiver is what disambiguates them.
+# Destination is the second argument for these modules; numpy.save takes the path first.
 _PY_PATH_SERIALIZE_CALLS = frozenset({"save", "dump", "save_file", "save_model"})
 
 
@@ -2196,12 +1911,10 @@ _PY_SERIALIZE_SECOND_ARG_MODULES = frozenset(
 )
 
 
-# Writers whose first argument is CONTENT, not a path (the path is the receiver).
 _PY_PATH_CONTENT_FIRST_CALLS = frozenset({"write_text", "write_bytes", "write"})
 
 
-# Keywords that always name a destination, whatever the call's default access is.
-# `tempfile` creators put their file in `dir` when it is given, and in TMPDIR otherwise.
+# `tempfile` creators write into `dir` when given, else TMPDIR.
 _PY_TEMPFILE_CALLS = frozenset(
     """mkstemp mkdtemp NamedTemporaryFile TemporaryFile TemporaryDirectory SpooledTemporaryFile""".split()
 )
@@ -2217,16 +1930,12 @@ _PY_PATH_DEST_KWARGS = frozenset(
         "out",
         "save_directory",
         "f",
-        # `shutil.unpack_archive(a, extract_dir = d)` writes the members under `d`.
         "extract_dir",
     }
 )
 
 
-# Spawning a child hands the path to a process this scan does not see, so its argv is screened wholesale.
 _PY_PATH_SUBPROCESS_CALLS = frozenset(
-    # `os.popen(cmd)` runs the command line through a shell exactly as `os.system` does; only the
-    # handle it returns differs, and that is not what decides whether the child touched a path.
     {
         "run",
         "Popen",
@@ -2241,18 +1950,14 @@ _PY_PATH_SUBPROCESS_CALLS = frozenset(
 )
 
 
-# Callables whose SECOND argument is the destination (shutil.copy(src, dst), os.rename(a, b)).
-# The members of the table below that REMOVE the source: after one, the source path is gone.
+# Destination-second callables that also remove their source.
 _PY_PATH_MOVE_CALLS = frozenset({"move", "rename", "renames", "replace"})
 
 
-# `os.symlink(target, name)` does not remove its target, but it hands the sandbox a name that WRITES
-# to it, so the target is checked as a write for the same reason the terminal `ln` source is. The
-# call itself creates the escape, which is what separates it from the pre-existing-symlink residual.
+# `os.symlink` target is checked as a write: the new name writes to it.
 _PY_PATH_LINK_CALLS = frozenset({"link", "symlink"})
 
 
-# Archive members are written UNDER the destination these take, so it is a write of a whole tree.
 _PY_PATH_EXTRACT_CALLS = frozenset({"extract", "extractall"})
 
 
@@ -2270,14 +1975,11 @@ _PY_PATH_DEST_SECOND_CALLS = frozenset(
         "replace",
         "link",
         "symlink",
-        # `shutil.unpack_archive(filename, extract_dir)` reads the archive and CREATES its members
-        # under the destination, so the pair reads exactly like a copy.
         "unpack_archive",
     }
 )
 
 
-# Keyword arguments that carry a path on these callables.
 _PY_PATH_KWARGS = (
     "path",
     "file",
@@ -2303,11 +2005,9 @@ _PY_PATH_KWARGS = (
 )
 
 
-# Path parameters named by one callable only, which is why they are not in the shared list above: a
-# bare `filenames = ` or `pathname = ` elsewhere is not necessarily a path this scan should open.
+# Path parameters only these callables use; elsewhere the same keyword may not be a path.
 _PY_PATH_KWARGS_BY_CALL = {
     "read": ("filenames",),
-    # Pillow's `Image.open(fp = ...)`, and the stdlib spellings that name the file differently.
     "open": ("fp",),
     "imread": ("fname",),
     "load": ("file",),
@@ -2316,21 +2016,16 @@ _PY_PATH_KWARGS_BY_CALL = {
     "listdir": ("path",),
     "scandir": ("path",),
     "walk": ("top",),
-    # `pandas.read_excel(io = ...)`: `io` is the documented name of its first parameter.
     "read_excel": ("io",),
-    # `shutil.make_archive(base_name, format, root_dir, base_dir)`: the archive is the first
-    # argument (a write), and the two directories it packs are reads.
     "make_archive": ("root_dir", "base_dir"),
 }
 
 
-# Positional arguments that are SOURCE paths on a call whose first argument is already classified.
-# `shutil.make_archive("backup", "zip", "/home/alice/private")` passes the directory it packs third.
+# Extra positional source paths, e.g. make_archive's root_dir/base_dir.
 _PY_PATH_EXTRA_READ_POSITIONS = {"make_archive": (2, 3)}
 
 
-# Every call name the path tables model, so an alias of any of them resolves back. Built from the
-# tables themselves rather than repeated by hand, so a name added to one is aliasable at once.
+# Built from the tables so a name added to one is aliasable at once.
 _PY_ALIASABLE_PATH_CALLS = (
     frozenset({"open", "fdopen"})
     | _PY_PATH_READ_CALLS
@@ -2366,7 +2061,6 @@ def _python_function_aliases(tree, module_aliases: "dict | None" = None) -> dict
                 if entry.asname and entry.name in _PY_ALIASABLE_PATH_CALLS:
                     aliases[entry.asname] = entry.name
             continue
-        # `reader: object = open` binds exactly what the unannotated form does.
         if isinstance(node, ast.AnnAssign):
             if node.value is None or not isinstance(node.target, ast.Name):
                 continue
@@ -2385,28 +2079,18 @@ def _python_function_aliases(tree, module_aliases: "dict | None" = None) -> dict
         for target in node.targets:
             if not isinstance(target, ast.Name):
                 continue
-            # A rebinding does not undo the calls BEFORE it: `reader = open;
-            # reader('/media/x').read(); reader = None` performs the read, and dropping the name
-            # outright let it through. The first modelled binding is kept, and a later one is
-            # ignored rather than replacing it, which is the fail-closed reading of an order this
-            # whole-tree pass does not track. Nothing is gated by the binding alone: the name has to
-            # be CALLED with a path outside the sandbox before it reaches an approval.
+            # A rebinding does not undo earlier calls: keep the first modelled binding (fail closed).
             if target.id in seen_twice:
-                # A first binding that was not itself modelled leaves room for a later one.
                 if real and real != target.id:
                     assigned.setdefault(target.id, real)
                 continue
             seen_twice.add(target.id)
-            # Recorded even when the right-hand side is not itself a modelled name: `reader2 =
-            # reader` only becomes meaningful once the chain below resolves it, and an entry that
-            # never lands on a modelled call is dropped there.
+            # Recorded even if not modelled yet; the chain below resolves or drops it.
             if real and real != target.id:
                 assigned[target.id] = real
     for name, real in assigned.items():
         aliases.setdefault(name, real)
-    # `reader = open; reader2 = reader` binds the same function one step further out, so each alias
-    # is followed to the modelled name at the end of its chain. Bounded by the number of aliases,
-    # and a cycle simply stops when a name repeats.
+    # Follow alias chains to the modelled name; a cycle stops when a name repeats.
     resolved: dict = {}
     for name, real in aliases.items():
         seen = {name}
@@ -2435,8 +2119,7 @@ def _python_module_aliases(tree) -> dict:
                 if entry.asname and entry.name in _PY_MODULE_PATH_RECEIVERS:
                     aliases[entry.asname] = entry.name
             continue
-        # `stream = io` copies the module under a new name, exactly as `import io as stream` does.
-        # Resolved after the walk, since the import it refers to may come later in the source.
+        # `stream = io` aliases the module; resolved after the walk since the import may come later.
         if isinstance(node, ast.Assign) and isinstance(node.value, ast.Name):
             for target in node.targets:
                 if isinstance(target, ast.Name) and target.id != node.value.id:
@@ -2446,8 +2129,7 @@ def _python_module_aliases(tree) -> dict:
         for entry in node.names:
             root = entry.name.split(".", 1)[0]
             aliases[entry.asname or root] = root
-    # A copy only counts when what it copies resolves to a modelled module, so `x = some_object`
-    # binds nothing. Followed to the end of its chain, and a name bound more than once is dropped.
+    # Only copies resolving to a modelled module count; names bound twice are dropped.
     bound_twice = {name for name, _ in assigned if sum(1 for n, _ in assigned if n == name) > 1}
     for name, source in assigned:
         if name in bound_twice or name in aliases:
@@ -2476,10 +2158,7 @@ def _chained_instance_reader_methods(receiver, module_aliases: "dict | None" = N
     return _PY_INSTANCE_READ_CTORS.get(name, frozenset())
 
 
-# `ZipFile.write(src)` and `TarFile.add(src)` name a file ON DISK and copy it INTO the archive, so
-# the first argument is a path being READ. That is the opposite of `f.write(data)`, which is why the
-# receiver has to identify it. Only the member-based archives: a `GzipFile`/`BZ2File` write takes
-# data, exactly like an ordinary file object.
+# `ZipFile.write(src)` / `TarFile.add(src)` read a file from disk, unlike `f.write(data)`.
 _PY_ARCHIVE_SOURCE_CALLS = frozenset({"write", "add"})
 _PY_ARCHIVE_MEMBER_CTORS = frozenset({"ZipFile", "TarFile"})
 
@@ -2512,7 +2191,6 @@ def _is_archive_ctor_call(
         receiver = func.value
         base = receiver.id if isinstance(receiver, ast.Name) else ""
         base = (module_aliases or {}).get(base, base)
-        # `tarfile.open` / `zipfile.ZipFile` are the documented constructors.
         return func.attr in _PY_ARCHIVE_MEMBER_CTORS or (
             func.attr == "open" and base in ("tarfile", "zipfile")
         )
@@ -2565,7 +2243,6 @@ def _python_instance_reader_names(tree) -> dict:
                     ctors[entry.asname] = _PY_INSTANCE_READ_CTORS[entry.name]
     names: dict = {}
     for node in _tree_nodes(tree):
-        # `cfg: ConfigParser = ConfigParser()` binds exactly what the unannotated form binds.
         if isinstance(node, ast.AnnAssign) and node.value is not None:
             if not isinstance(node.target, ast.Name):
                 continue
@@ -2604,9 +2281,7 @@ def _python_qualified_read_aliases(tree) -> "set[str]":
     return aliases
 
 
-# Method names that mean a filesystem operation on a path OBJECT and something else entirely on any
-# other receiver: `text.replace(a, b)` and `items.remove(x)` touch no file. The qualified forms
-# (`os.replace`, `os.remove`) are unambiguous and are handled by the module receiver instead.
+# Filesystem ops only on a path receiver: `text.replace(a, b)` touches no file.
 _PY_AMBIGUOUS_PATH_METHODS = frozenset({"replace", "remove"})
 
 
@@ -2671,8 +2346,7 @@ def _python_path_fold_aliases(tree) -> "tuple[set, set]":
                 elif entry.name == "join" and (module == "os.path" or module.endswith(".path")):
                     joins.add(local)
             continue
-        # `P = Path` binds the constructor exactly as an import alias does, and `j = os.path.join`
-        # the join. Without this the call folded to nothing and the path it built was never seen.
+        # `P = Path` / `j = os.path.join` bind like an import alias.
         if not isinstance(node, ast.Assign):
             continue
         value = node.value
@@ -2717,8 +2391,7 @@ def _python_path_bindings(
             targets, value = [node.target], node.value
         else:
             continue
-        # `p, _ = "/media/x", 1` binds elementwise, and it does so per target, so the tuple halves of
-        # `a, b = c, d = "/media/x", "/media/y"` are both reached.
+        # Tuple targets bind elementwise, per target.
         pairs = []
         for target in targets:
             if isinstance(target, ast.Tuple) and isinstance(value, (ast.Tuple, ast.List)):
@@ -2732,11 +2405,7 @@ def _python_path_bindings(
                 folded = _folded_path(bound, bindings, ctors, joins)
             except Exception:  # noqa: BLE001 - folding is best effort
                 continue
-            # A name this value is DERIVED from may itself have held other paths, and folding with
-            # the primary binding alone loses them: `base = 'local'; base = '/media/x'; p = base +
-            # '/f'` folded p to `local/f` only, so the out-of-sandbox read through p was invisible.
-            # One alternate is substituted at a time rather than the full cartesian product, which
-            # keeps this linear in the number of rebindings.
+            # Substitute alternate bindings of dependencies one at a time (linear, not cartesian).
             derived: "list[str]" = []
             if extra:
                 for used in {n.id for n in ast.walk(bound) if isinstance(n, ast.Name)}:
@@ -2748,7 +2417,6 @@ def _python_path_bindings(
                         if isinstance(other, str) and other and "\x00" not in other:
                             derived.append(other)
             if not isinstance(folded, str) or not folded or "\x00" in folded:
-                # The primary fold failed, but a rebound dependency can still make it resolvable.
                 for candidate in _capped_alternates(derived):
                     extra.setdefault(target.id, []).append(candidate)
                 continue
@@ -2759,23 +2427,18 @@ def _python_path_bindings(
             for candidate in _capped_alternates(derived):
                 if candidate != bindings.get(target.id):
                     extra.setdefault(target.id, []).append(candidate)
-    # Rebindings ride along under a private key so `add` can test every value a name ever held.
     if extra:
         bindings[_REBOUND_PATHS_KEY] = extra
     return bindings
 
 
-# Private key inside the bindings map holding `name -> [other paths it was bound to]`.
 _REBOUND_PATHS_KEY = "\x00__rebound__"
 
 
-# Ceiling on alternates carried through a derived binding. A loop that rebinds a name many times
-# would otherwise grow this without bound for no extra signal.
+# Bounds alternates when a loop rebinds a name many times.
 _MAX_REBOUND_ALTERNATES = 8
 
 
-# Rebound names substituted into one compound expression, bounding the work on a snippet that
-# assembles a path from many variables each bound several times.
 _MAX_REBOUND_NAMES = 3
 
 
@@ -2790,16 +2453,8 @@ def _capped_alternates(values) -> "list[str]":
     if len(values) <= _MAX_REBOUND_ALTERNATES:
         return values
 
-    # Ranked by what the value would COST, not by whether it happens to be absolute: a path under a
-    # silent root needs no approval, so filling the cap with sandbox rebindings would drop the one
-    # `/media/...` value that does. Ordering by need keeps the bound on work, not coverage.
-    # The cap is spent here, before the access mode is known, so BOTH modes have to be represented
-    # or one of them starves. The write-silent roots are a subset of the read-silent ones, which
-    # gives a total order: a value gated for reading is gated for writing too, a value like
-    # `/usr/share` is gated only for writing, and a sandbox path is gated for neither. Ranking on
-    # read alone dropped `/usr/share` and let the `open(p, "w")` that followed overwrite it in
-    # silence; ranking on "either mode" let nine `/usr/...` rebindings crowd out the one `/media/...`
-    # value. Ordering by strength keeps both.
+    # Ranked by approval cost so the cap never drops a value that needs it. Write-silent roots are
+    # a subset of read-silent ones, so the ranking covers both modes.
     def rank(value: str) -> int:
         if _path_needs_approval(value):
             return 0
@@ -2920,8 +2575,7 @@ def _subscript_literal_paths(node, containers) -> "list[str]":
     )
     index = node.slice
     if isinstance(index, ast.Constant) and isinstance(index.value, int) and paths:
-        # The literal index is into the container as WRITTEN, and only the absolute strings of it
-        # are collected here, so this resolves exactly when the container is all paths.
+        # Resolves exactly only when the container holds nothing but paths.
         exact = _exact_indexed_path(target, containers, index.value)
         if exact is not None:
             return [exact]
@@ -2959,8 +2613,7 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
     rebound = bindings.get(_REBOUND_PATHS_KEY) or {}
     module_aliases = _python_module_aliases(tree)
     function_aliases = _python_function_aliases(tree, module_aliases)
-    # `from zipfile import ZipFile as Z` binds the constructor under a name no table holds, so the
-    # function aliases count here exactly as the module ones do.
+    # Function aliases (`from zipfile import ZipFile as Z`) count like module ones.
     archive_aliases = {**module_aliases, **function_aliases}
     archive_ctors = _python_archive_ctor_names(tree)
     path_objects = _python_path_object_names(tree, ctors)
@@ -2982,23 +2635,17 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
                 if isinstance(piece, ast.Constant) and isinstance(piece.value, str):
                     words.extend(_shell_words(piece.value))
                 elif isinstance(piece, ast.Name):
-                    # Split a folded value the same way a literal is split. `cmd = "cat /media/x";
-                    # subprocess.run(cmd, shell = True)` otherwise appended one unrecognised word,
-                    # so the operand scan saw no command and no path.
+                    # Split a folded command string so `subprocess.run(cmd, shell = True)` is scanned.
                     folded = bindings.get(piece.id)
                     if isinstance(folded, str) and folded:
                         words.extend(_shell_words(folded))
                     for path in rebound.get(piece.id, ()):
                         words.extend(_shell_words(path))
-        # `subprocess.run(["echo"], executable = "/media/x")` LAUNCHES that binary; argv[0] is only
-        # what the child sees as its name. Scanned on its own, since a recognised argv command
-        # otherwise suppressed the fallback that would have caught it.
+        # `executable =` launches that binary; argv[0] is only the child's name for itself.
         for keyword in _call_keywords(call):
             if keyword.arg == "executable":
                 add(keyword.value, False)
-        # argv[0] IS the binary that runs, whatever follows it. A recognised command name later in
-        # the list (`["/media/x/payload", "cat"]`) made the operand scan return something, which
-        # suppressed the bare-path fallback below, so the outside binary launched unscreened.
+        # argv[0] is the binary that runs, even if a known command name appears later.
         head = call.args[0] if call.args else None
         if isinstance(head, (ast.List, ast.Tuple)) or (
             isinstance(head, ast.Name) and head.id in containers
@@ -3006,8 +2653,7 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
             argv0 = next(iter(_sequence_elements(head, containers)), None)
             if argv0 is not None:
                 add(argv0, False)
-        # `subprocess.run(["python", "-c", "open('/media/x', 'w')"])` carries CODE, not a path, so
-        # the terminal operand scan sees nothing. The payload goes through the python scan instead.
+        # `python -c` carries code, scanned by the python scan.
         elements = _sequence_elements(call.args[0], containers) if call.args else []
         literals = [
             e.value for e in elements if isinstance(e, ast.Constant) and isinstance(e.value, str)
@@ -3021,10 +2667,7 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
         if words:
             from_command = _terminal_path_operands(words)
             operands.extend(from_command)
-            # A bare path with no recognised command around it still reaches the child. Only then:
-            # once the scan has classified the child command, `subprocess.run(["echo", "/home/x"])`
-            # is the same nothing `echo /home/x` is at a terminal, and prompting on one and not the
-            # other was a difference with no reason behind it.
+            # Only for an unrecognised command: `["echo", "/home/x"]` is as harmless as at a terminal.
             if not from_command and not any(
                 _token_command_base(word) in _classified_terminal_commands() for word in words
             ):
@@ -3033,12 +2676,9 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
     def add(node, writing: bool) -> None:
         if node is None:
             return
-        # `open(p := "/media/x")` passes the assigned VALUE to the call, so fold through the walrus.
         if isinstance(node, ast.NamedExpr):
             node = node.value
-        # `pd.read_csv(*["/media/x.csv"])` hands the reader a literal path through a splat, which
-        # the fold has no value for. Only a literal sequence is unpacked, so nothing dynamic is
-        # guessed at.
+        # Only literal sequences are unpacked, so nothing dynamic is guessed.
         if isinstance(node, ast.Starred):
             for element in _sequence_elements(node.value, containers):
                 if element is not node.value:
@@ -3051,20 +2691,14 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
         if isinstance(folded, str) and folded:
             operands.append((folded, writing))
         elif isinstance(node, ast.Subscript):
-            # `paths = ["/media/x"]; open(paths[0])` and `open({"p": "/media/x"}["p"])` name the
-            # path with nothing dynamic in them, and the fold has no value for a subscript. Every
-            # literal the container holds counts rather than the indexed one: the index is not
-            # always constant, and a container of paths is read through whichever element is picked.
+            # Every literal in the container counts: the index is not always constant.
             for path in _subscript_literal_paths(node, containers):
                 operands.append((path, writing))
-        # A name rebound elsewhere in the snippet reaches every path it ever held, and the scan
-        # cannot order the statements, so each candidate counts.
+        # Order is not tracked, so every value a rebound name held counts.
         if isinstance(node, ast.Name) and node.id in rebound:
             operands.extend((path, writing) for path in rebound[node.id])
             return
-        # The same name inside a larger expression: `open(base + '/report')` folds `base` to one of
-        # its bindings and the others never reach the gate. Substituted one name at a time, since a
-        # path is assembled from one variable and literals far more often than from two.
+        # Substitute one rebound name at a time inside larger expressions.
         names = [
             piece.id
             for piece in ast.walk(node)
@@ -3088,16 +2722,13 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
         if isinstance(func, ast.Attribute):
             name = func.attr
         elif isinstance(func, ast.Name):
-            # `from io import open as fopen` leaves a plain Name in no table; resolve it back.
             name = function_aliases.get(func.id, func.id)
         else:
             continue
         first = node.args[0] if node.args else None
         second = node.args[1] if len(node.args) > 1 else None
         is_method = isinstance(func, ast.Attribute)
-        # Whether an attribute call's receiver is a MODULE rather than a path, resolved through the
-        # import aliases. Decided once here: every branch below that treats the receiver as a path
-        # has a module-function counterpart that does not.
+        # Resolved once: each path-receiver branch below has a module-function counterpart.
         receiver_name = (
             module_aliases.get(getattr(func.value, "id", ""), getattr(func.value, "id", ""))
             if is_method
@@ -3106,23 +2737,12 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
         module_receiver = is_method and receiver_name in _PY_MODULE_PATH_RECEIVERS
         writing_default = name in _PY_PATH_WRITE_CALLS
         if name in _PY_MODULE_OPEN_CTORS and receiver_name in _PY_MODULE_OPEN_RECEIVERS:
-            # `io.FileIO(p)` opens the path the same way `io.open(p)` does; the mode argument is a
-            # string in the same position, so the write decision is the open one.
             add(first, _open_call_writes(node, mode_index = 1))
         elif name in ("open", "fdopen"):
-            # The mode decides: `open(p)` reads, `open(p, 'w')` creates or truncates. As a METHOD
-            # (Path(p).open('w')) the receiver is the path, so the mode moves to the first argument.
-            # os.open is the low-level create and counts as a write either way.
-            #
-            # An attribute call is NOT automatically receiver-based: `io.open(p)`, `gzip.open(p)` and
-            # the rest of _PY_MODULE_OPEN_RECEIVERS are module functions taking the path FIRST, so
-            # folding their receiver yields the bare module name and the read escapes unprompted.
-            # `import io as stream` makes the receiver `stream`, which is in no table; the alias is
-            # resolved above, or the call reads as a Path-style method and the path argument is
-            # never looked at.
+            # The mode decides read vs write; as a method the mode is the first argument. Module functions
+            # (io.open, gzip.open) take the path first, so their receiver is not a path.
             receiver = receiver_name
-            # A dotted receiver has no `.id`, so `PIL.Image.open(p)` left receiver_name empty and
-            # read as a Path-style method. The trailing name is the one the table is keyed on.
+            # A dotted receiver has no `.id`; the trailing name is what the table is keyed on.
             tail = func.value.attr if is_method and isinstance(func.value, ast.Attribute) else ""
             path_is_receiver = is_method and not (
                 receiver in _PY_MODULE_OPEN_RECEIVERS or tail in _PY_MODULE_OPEN_RECEIVERS
@@ -3133,13 +2753,11 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
             writing_default = writing
             add(func.value if path_is_receiver else first, writing)
         elif name in _PY_PATH_ARCHIVE_CTORS:
-            # ZipFile(name) reads, ZipFile(name, "w") writes -- the same mode position as open().
             writing = _open_call_writes(node, mode_index = 1)
             writing_default = writing
             add(first, writing)
         elif name in _PY_PATH_SUBPROCESS_CALLS:
-            # A child process is not bound by this scan at all, so its argv is screened as a command line: that way
-            # `subprocess.run(["cp", "x", "/etc/y"])` is seen as the WRITE it is, not as two reads.
+            # A child is not bound by this scan, so screen its argv as a command line.
             add_subprocess_operands(node)
         elif (
             name in _PY_AMBIGUOUS_PATH_METHODS
@@ -3147,31 +2765,22 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
             and not module_receiver
             and not _receiver_is_a_path_object(func.value, ctors, path_objects)
         ):
-            # `text.replace(a, b)` and `items.remove(x)` transform data in memory. Only a Path-like
-            # receiver makes these the filesystem calls of the same name; `os.replace` / `os.remove`
-            # arrive with a module receiver and are dispatched below as before.
+            # Only a Path-like receiver makes these filesystem calls.
             continue
         elif name in _PY_PATH_DEST_SECOND_CALLS:
-            # shutil.copy(src, dst) as a function; as a METHOD (Path(p).rename(q)) the receiver is the source.
-            # `os.rename(...)` is spelled as an attribute but is the FUNCTION form, so its receiver is
-            # a module and both paths are arguments.
+            # As a method the receiver is the source; `os.rename(...)` is the function form.
             receiver_is_path = is_method and not module_receiver
-            # A move REMOVES its source, so that side is a write too: `os.rename('/models/w.gguf',
-            # 'stolen.gguf')` takes the file out of a read-silent root with a relative destination.
-            # A copy leaves its source alone, which is why this is not the whole table.
+            # A move removes its source, so that side is a write too; a copy leaves it alone.
             add(
                 func.value if receiver_is_path else first,
                 name in _PY_PATH_MOVE_CALLS or name in _PY_PATH_LINK_CALLS,
             )
             add(first if receiver_is_path else second, True)
         elif name in _PY_PATH_SERIALIZE_CALLS and _serializes_to_second_arg(func, module_aliases):
-            # torch.save(obj, path) / joblib.dump(obj, path) put the DESTINATION second, the opposite of
-            # numpy.save(path, arr) and df.to_csv(path), so the receiver decides which argument to read.
+            # torch.save / joblib.dump put the destination second, unlike numpy.save.
             add(second, True)
         elif name in _PY_PATH_EXTRACT_CALLS:
-            # `ZipFile(a).extractall(dest)` and the tarfile equivalents CREATE files under the
-            # destination, which is the first argument for `extractall` and the second (`path = `)
-            # for `extract`. The archive itself is read by the constructor, which is modelled.
+            # Extraction destination is the first arg for extractall, the second for extract.
             add(second if name == "extract" else first, True)
             for keyword in _call_keywords(node):
                 if keyword.arg == "path":
@@ -3184,11 +2793,9 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
                 or _is_archive_ctor_call(func.value, module_aliases)
             )
         ):
-            # The member being added comes FROM the filesystem.
             add(first, False)
         elif name in _PY_PATH_CONTENT_FIRST_CALLS:
-            # Path(p).write_text(content): the first argument is DATA, not a path. Only the receiver is a path, so a
-            # config value that happens to look like one ("/api/v1/items") must not read as a write target.
+            # The first argument is data, not a path; only the receiver is.
             add(func.value if is_method else None, True)
         elif name in _PY_PATH_WRITE_CALLS:
             add(first, True)
@@ -3198,34 +2805,24 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
             name in instance_readers.get(receiver_name, ())
             or name in _chained_instance_reader_methods(func.value, module_aliases)
         ):
-            # `cfg = ConfigParser(); cfg.read(p)`, the chained `ConfigParser().read(p)`, and the
-            # list form `cfg.read([a, b])`.
             for element in _sequence_elements(first, containers):
                 add(element, False)
         elif name in _PY_QUALIFIED_READ_CALLS.get(receiver_name, ()) or (
             not is_method and name in qualified_readers
         ):
-            # Qualified, because the bare name is ambiguous: `numpy.load(p)` opens a path while
-            # `json.load(f)`, `pickle.load(f)` and `torch.load(f)` all take an already-open file.
+            # Qualified: `numpy.load` takes a path, `json/pickle/torch.load` take an open file.
             add(first, False)
         elif (name in ("input", "FileInput") and is_method and receiver_name == "fileinput") or (
             not is_method and func.id in fileinput_readers
         ):
-            # Qualified so the builtin input("/data directory: ") prompt is not read as a file, and
-            # through the import aliases so `import fileinput as fi` resolves back. `FileInput` is
-            # the constructor `input` returns, and iterates the same files.
-            # `files = ` is the keyword spelling of the same argument, and takes a sequence too.
+            # Qualified so builtin input() is not a file read; `files =` is the keyword form.
             given = first
             if given is None:
                 given = next((kw.value for kw in _call_keywords(node) if kw.arg == "files"), None)
             for element in _sequence_elements(given, containers):
                 add(element, False)
         elif name in ("connect", "Connection") and receiver_name in ("sqlite3", "apsw"):
-            # A connection CREATES the file if it is missing and can write it afterwards, so the
-            # database is a write target unless the URI says otherwise. (The whole call already
-            # prompts through the existing sqlite rule; this makes the operand itself accurate.)
-            # `sqlite3.connect(database = "/media/x/private.db")` is the documented keyword spelling
-            # of the same argument (`apsw.Connection` names it `filename`), and opens the same file.
+            # A connection creates the file if missing, so it is a write unless the URI says otherwise.
             given = first
             if given is None:
                 given = next(
@@ -3234,12 +2831,10 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
                 )
             add(given, not _sqlite_opens_read_only(node, given))
         elif name in _PY_TEMPFILE_CALLS:
-            # `tempfile.mkstemp(dir = "/media/x")` CREATES its file in that directory; without the
-            # keyword it lands in the sandbox's own TMPDIR, which is silent.
+            # Without `dir` the file lands in the sandbox TMPDIR, which is silent.
             add(next((kw.value for kw in _call_keywords(node) if kw.arg == "dir"), None), True)
         elif name in _PY_PATH_OPENING_CTORS:
-            # The mode applies to the keyword spelling of the path too (`h5py.File(name = ...,
-            # mode = "w")`), which reaches the shared keyword loop rather than this `add`.
+            # The mode applies to the keyword spelling of the path too.
             writing_default = _ctor_opens_for_write(node)
             add(first, writing_default)
         elif name in _PY_PATH_READ_CALLS:
@@ -3248,9 +2843,7 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
             if is_method:
                 add(func.value, False)
             if name in _PY_RECURSIVE_READ_CALLS:
-                # The filesystem root itself is silent, because `ls /` names its entries and opens
-                # nothing. A RECURSIVE reader rooted there is a different act: it descends into
-                # every directory on the host, so what it reaches is reported instead of the root.
+                # A recursive reader rooted at `/` descends the whole host, unlike `ls /`.
                 for path, _writing in operands[start:]:
                     if path.rstrip("/\\") == "":
                         operands.append((path.rstrip("/\\") + "/**", False))
@@ -3261,15 +2854,12 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
                 add(node.args[position], False)
         for keyword in _call_keywords(node):
             if keyword.arg in _PY_PATH_KWARGS_BY_CALL.get(name, ()):
-                # A parameter name only this callable uses, so it is read per call rather than from the
-                # shared list: `ConfigParser.read(filenames = ...)` takes a sequence as readily as a str.
                 for element in _sequence_elements(keyword.value, containers):
                     add(element, False)
             elif keyword.arg in _PY_PATH_DEST_KWARGS:
                 add(keyword.value, True)
             elif keyword.arg in _PY_PATH_KWARGS:
-                # `open(file = p, mode = "w")` is the same write the positional form is: carry the mode decided
-                # above rather than re-deriving it from a table that does not list `open`.
+                # Keyword `file =` carries the positional form's mode.
                 add(keyword.value, writing_default)
     operands.extend(_python_directory_change_targets(tree, operands))
     return operands
@@ -3277,8 +2867,7 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
 
 def _python_reaches_outside_sandbox(tree, code = None) -> bool:
     """True when python code reads or writes an absolute path outside the silent roots."""
-    # No separator, tilde or drive colon anywhere in the source means no absolute path can be spelled in it, so the
-    # two AST walks below are pure cost. Ordinary numeric / dataframe work takes this exit.
+    # No separator, tilde or drive colon means no absolute path; skip the AST walks.
     if isinstance(code, str) and not _ABSOLUTE_HINT_RE.search(code):
         return False
     try:
@@ -3295,9 +2884,9 @@ def _open_call_writes(node, *, mode_index: int) -> bool:
     path. Reading the wrong position silently turns a write into a read.
     """
     if _has_kwarg_splat(node):
-        return True  # **{"mode": "w"} could request a write
+        return True
     if any(isinstance(a, ast.Starred) for a in node.args):
-        return True  # *("f", "w") could splat a write mode into the positionals
+        return True
     mode = node.args[mode_index] if len(node.args) > mode_index else None
     for kw in node.keywords or []:
         if kw.arg == "mode":
@@ -3305,8 +2894,5 @@ def _open_call_writes(node, *, mode_index: int) -> bool:
     return _mode_arg_writes(mode)
 
 
-# Importing this module on its own must still bind the borrowed names, and `tools` is what calls
-# `_bind`. Placed LAST so that call finds this module complete whichever of the two is imported
-# first: from here, `tools` runs to its end and binds; from `tools`, this line finds the module it
-# is already inside and its own bind follows immediately.
+# Placed last so `_bind` finds this module complete whichever module is imported first.
 from . import tools as _tools  # noqa: E402,F401

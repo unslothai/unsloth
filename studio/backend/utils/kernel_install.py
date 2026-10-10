@@ -209,7 +209,7 @@ def resolve_wheel_url(name: str, env: dict[str, str] | None) -> str | None:
         return None
     if name == "xformers":
         return xformers_wheel_url(env)
-    # flash-attn, causal-conv1d and mamba-ssm publish Linux wheels only.
+    # These kernels publish Linux wheels only.
     if not str(env.get("platform_tag") or "").startswith("linux"):
         return None
     if name == "flash_attn":
@@ -311,7 +311,7 @@ def _loads(check: str, run: Callable[..., subprocess.CompletedProcess]) -> bool:
 
 
 def _outside_venv() -> bool:
-    # Colab and other system interpreters: uv refuses them without --system.
+    # System interpreters (Colab): uv refuses them without --system.
     return sys.prefix == sys.base_prefix
 
 
@@ -346,11 +346,11 @@ def install_kernel(
                 )
                 return 0
     torch_desc = f"torch {env.get('torch_version')}" if env else "this environment"
-    # Only a 404 proves nothing is published; an unreachable check falls through to the install.
+    # Only a 404 proves nothing is published; an unreachable check falls through.
     if url is None or exists(url) is False:
         print(f"Unsloth: no prebuilt {name} for {torch_desc}; using the torch fallback.")
         return 0
-    # UNSLOTH_PYTORCH_MIRROR may carry credentials, and notebook output gets shared.
+    # UNSLOTH_PYTORCH_MIRROR may carry credentials.
     shown = redact_url_credentials(url)
     if dry_run:
         print(shown)

@@ -159,11 +159,8 @@ def test_fast_mode_none_does_not_attach_header_or_field(monkeypatch):
 def test_refusal_emits_user_facing_notice_and_content_filter_finish(monkeypatch):
     _, lines = _capture(monkeypatch, sse = _refusal_sse())
     body = "\n".join(lines)
-    # User-visible refusal notice.
     assert "stopped by Anthropic's safety classifier" in body, body
-    # OpenAI-spec finish_reason mapping.
     assert '"finish_reason": "content_filter"' in body, body
-    # Original deltas preserved before the refusal supplement.
     assert "Hello." in body, body
 
 
@@ -175,8 +172,7 @@ def test_refusal_emits_tool_event_for_chat_adapter_drop(monkeypatch):
     _, lines = _capture(monkeypatch, sse = _refusal_sse())
     body = "\n".join(lines)
     assert '"_toolEvent": {"type": "anthropic_refusal"}' in body, body
-    # Visible refusal text must not embed a sentinel that could spoof a
-    # context reset if echoed by another assistant message.
+    # A sentinel in visible text could spoof a context reset if echoed.
     assert "studio:anthropic-refusal" not in body, body
 
 
@@ -217,8 +213,7 @@ def _finish_reasons(lines: list[str]) -> list[str]:
 
 
 def _record_stream_logs(monkeypatch) -> list[tuple[str, str]]:
-    # Not caplog: this is a structlog bound logger, which never reaches the
-    # stdlib handlers caplog installs.
+    # structlog bound logger never reaches caplog's stdlib handlers.
     records: list[tuple[str, str]] = []
 
     def _record(level):
@@ -245,8 +240,7 @@ def test_context_window_exceeded_finishes_as_length(monkeypatch):
 
 
 def test_context_window_exceeded_emits_tool_event(monkeypatch):
-    # `length` alone arms the automatic continuation, which would replay the
-    # partial into the window that just overflowed.
+    # `length` would arm auto-continuation into the overflowed window.
     body = "\n".join(_stop_reason_lines(monkeypatch, "model_context_window_exceeded"))
     assert '"_toolEvent": {"type": "context_window_exceeded"}' in body, body
 
@@ -264,7 +258,6 @@ def test_end_turn_is_still_a_completed_answer(monkeypatch):
 
 
 def test_an_unmapped_stop_reason_is_logged(monkeypatch):
-    # The `stop` default hid the context-window reason until it was mapped.
     records = _record_stream_logs(monkeypatch)
     body = "\n".join(_stop_reason_lines(monkeypatch, "model_ran_out_of_ideas"))
     assert '"finish_reason": "stop"' in body, body

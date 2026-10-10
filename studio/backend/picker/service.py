@@ -55,10 +55,8 @@ _TOKENIZER_CONFIG_PATHS = ("tokenizer_config.json", "LLM/tokenizer_config.json")
 _JINJA_TEMPLATE_PATHS = ("chat_template.jinja", "LLM/chat_template.jinja")
 _PROCESSOR_TEMPLATE_PATHS = ("chat_template.json", "LLM/chat_template.json")
 
-# Cap sidecar reads so a malformed or hostile metadata file cannot exhaust memory
-# before its template is size-checked. The JSON envelope may exceed a bare template
-# (it carries other tokenizer metadata); the extracted template is still bounded by
-# MAX_CHAT_TEMPLATE_BYTES downstream.
+# Cap sidecar reads so a hostile metadata file cannot exhaust memory; the extracted
+# template is still bounded by MAX_CHAT_TEMPLATE_BYTES downstream.
 MAX_TEMPLATE_METADATA_BYTES = 4 * 1024 * 1024
 
 
@@ -78,7 +76,7 @@ def _read_bounded_text(path: Path, limit: int) -> Optional[str]:
 
 
 def _leaf_inside_allowlist(path: Path, allow_roots: Optional[list[Path]]) -> bool:
-    # Block symlinked children from escaping the validated directory (realpath-checked).
+    # Blocks symlinked children escaping the validated directory (realpath-checked).
     # None = trusted caller (HF cache / remote download).
     return allow_roots is None or _is_path_inside_allowlist(path, allow_roots)
 
@@ -87,8 +85,7 @@ def validate_chat_template(template: str) -> ValidateChatTemplateResponse:
     text = (template or "").strip()
     if not text:
         return ValidateChatTemplateResponse(valid = True, error = None)
-    # Import Jinja lazily: optional at runtime (e.g. GGUF-only installs), so a
-    # missing dependency must not crash API startup.
+    # Jinja is optional (GGUF-only installs); must not crash startup.
     try:
         from jinja2 import TemplateError
         from jinja2.ext import Extension
@@ -97,8 +94,7 @@ def validate_chat_template(template: str) -> ValidateChatTemplateResponse:
         return ValidateChatTemplateResponse(valid = True, error = None)
 
     class _GenerationTag(Extension):
-        # Accept Transformers' {% generation %} assistant-mask tag so a pasted HF
-        # chat template validates (we only parse it).
+        # Accept Transformers' {% generation %} tag so pasted HF templates validate.
         tags = {"generation"}
 
         def parse(self, parser):
@@ -164,16 +160,12 @@ def _chat_template_from_jinja_file(
 
 
 def _chat_template_from_processor_payload(payload: object) -> Optional[str]:
-    # processor chat_template.json may be the template string itself or a
-    # {name: template} map, not only a tokenizer_config-shaped object.
     if isinstance(payload, str):
         return payload if payload.strip() else None
     template = _chat_template_from_tokenizer_config(payload)  # type: ignore[arg-type]
     if template:
         return template
     if isinstance(payload, dict):
-        # Named-template map: prefer "default", else the first non-empty entry
-        # (mirrors the tokenizer-config list fallback).
         default = payload.get("default")
         if isinstance(default, str) and default.strip():
             return default
@@ -259,8 +251,7 @@ def _iter_ggufs(dir_path: Path) -> list[Path]:
 def _variant_matches(relative_path: str, needle: str) -> bool:
     from hub.utils.gguf import gguf_variant_key
 
-    # The variant's own key first: in a repo holding several checkpoints at one quant
-    # the bare label names every one of them, so it cannot pick between them.
+    # Variant key first: the bare label can name several checkpoints at one quant.
     if gguf_variant_key(relative_path).lower() == needle:
         return True
     quant = _extract_quant_label(relative_path).lower()
@@ -303,7 +294,6 @@ def _find_gguf_in_dir(dir_path: Path, gguf_variant: Optional[str]) -> Optional[P
             except ValueError:
                 return path.name
 
-        # Files this variant owns outright before ones its label merely also names.
         for owned in (True, False):
             for path in ggufs:
                 relative = _relative(path)
@@ -330,10 +320,7 @@ def _chat_template_from_dir(
             return None
         return read_gguf_chat_template(str(gguf))
 
-    # Sidecar tokenizer files (chat_template.jinja / tokenizer_config.json) are the
-    # author's maintained template and supersede the GGUF's possibly-stale embedded
-    # copy. The variant only picks the GGUF fallback, so tokenizer-first precedence
-    # holds whether or not a variant is given.
+    # Sidecar tokenizer files supersede the GGUF's possibly-stale embedded template.
     return _chat_template_from_tokenizer_dir(dir_path, allow_roots) or from_gguf()
 
 
@@ -354,8 +341,6 @@ def read_default_chat_template(
                 logger.debug("Refused chat template read outside allowed folders: %s", name)
                 return None
             if name.lower().endswith(".gguf"):
-                # Prefer a maintained sidecar next to the file over the GGUF's
-                # embedded copy (tokenizer-first precedence, as elsewhere).
                 sidecar = _chat_template_from_tokenizer_dir(target.parent, allow_roots)
                 if sidecar:
                     return sidecar
@@ -370,16 +355,10 @@ def read_default_chat_template(
 
     resolved = resolve_cached_repo_id_case(name)
 
-    # The walk returns a private repo's raw template without asking the Hub, so a denied
-    # caller goes to the Hub and is refused there. A UI session keeps the cache.
-    # Walk first, authorize the answer: the walk is local, and with nothing cached there is
-    # no disk-backed answer to protect, so probing would spend up to the probe timeout to
-    # decide a question that no longer has a subject. Same order as the per-file gate below.
+    # Walk locally first, then authorize: a denied caller is sent to the Hub.
     cached_template = None
     try:
-        # Resolve within each cached revision, newest first. A revision's sidecar
-        # supersedes its own embedded GGUF copy, but must not override a newer
-        # revision, so precedence stays per-snapshot rather than global.
+        # Precedence is per-snapshot: a sidecar must not override a newer revision.
         for snapshot in iter_snapshots_preferring_whole(resolved, gguf_variant):
             cached_template = _chat_template_from_dir(snapshot, gguf_variant)
             if cached_template:
@@ -391,9 +370,7 @@ def read_default_chat_template(
         return cached_template
 
     if hf_env_offline() and not cache_reads_authorized(hf_token, repo_id = resolved):
-        # Offline, hf_hub_download serves the cached copy without checking the credential,
-        # so the fallback would hand back the template the walk just refused. The route
-        # forces offline whenever the Hub looks unreachable.
+        # Offline hf_hub_download serves the cache without checking the credential.
         return None
 
     try:
@@ -411,9 +388,7 @@ def read_default_chat_template(
             try:
                 from huggingface_hub import try_to_load_from_cache
 
-                # The same cache the download below names: without it this asks the library
-                # default while the read it guards happens in the operator's chosen root, so
-                # a template living only there reported a miss and opened the gate.
+                # Same cache root as the download below, or a miss opens the gate.
                 return isinstance(
                     try_to_load_from_cache(
                         repo_id = resolved, filename = rel, cache_dir = active_hf_hub_cache()
@@ -424,17 +399,13 @@ def read_default_chat_template(
                 return True
 
         def _remote_worth_downloading(rel: str) -> bool:
-            # hf_hub_download returns the cached pointer for ANY failed head call, a 403 as
-            # much as an unreachable Hub, before it re-raises. So a successful metadata
-            # lookup is no more proof than the offline gate was: a gated repo can publish
-            # file metadata publicly. Asked once, ahead of both.
+            # hf_hub_download returns the cached pointer for any failed head call, a 403 included.
             if cached_read_refused(
                 hf_token,
                 repo_id = resolved,
                 is_cached = lambda: _this_file_is_cached(rel),
             ):
                 return False
-            # Reuse the size lookup to skip absent or oversized files.
             try:
                 infos = _api.get_paths_info(resolved, [rel], repo_type = "model", token = hf_token)
             except Exception:
@@ -465,11 +436,7 @@ def read_default_chat_template(
             if not _remote_worth_downloading(rel):
                 return None
             try:
-                # Lands files in the hub cache under what may be a one-off token, but only when
-                # it really fetches: hf_hub_download returns a cached file without asking the
-                # Hub, and recording that withholds a repo the cache may have held anonymously.
-                # Around the call, not before: a half-dead download has still written, while a
-                # 404 leaves nothing and the context manager takes that record back.
+                # Record only real fetches: a cached return does not prove the token's access.
                 recording = (
                     recording_a_request_token_fetch(hf_token, resolved, "model")
                     if not _this_file_was_already_here(rel)
@@ -490,11 +457,7 @@ def read_default_chat_template(
             template = _download_text(rel)
             if not template or not template.strip():
                 continue
-            # A raw Jinja sidecar is the whole template, so it must fit the route's
-            # response cap (the local path skips oversized .jinja too). Download stays
-            # bounded at MAX_TEMPLATE_METADATA_BYTES so a large JSON embedding a small
-            # template still extracts below, but an over-cap Jinja is dropped so the
-            # search falls through to the tokenizer/processor template.
+            # An over-cap Jinja is dropped so the search falls through to tokenizer templates.
             if len(template.encode("utf-8")) > MAX_CHAT_TEMPLATE_BYTES:
                 continue
             return template

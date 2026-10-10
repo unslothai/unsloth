@@ -86,9 +86,6 @@ def test_a_process_that_cannot_be_terminated_is_not_an_error(monkeypatch, tmp_pa
     assert backend._process is None, "the state has to be cleared either way"
     assert backend._healthy is False
     assert recorder.warnings == [], f"warned about a non-process: {recorder.warnings}"
-    # The whole finalizer, not the three assignments an earlier version of this
-    # duplicated: the log handle has to be closed and the reader joined, or a
-    # teardown that takes this path leaks them.
     assert log_fh.closed, "the log handle was left open"
     assert backend._llama_log_fh is None
     assert reader.joined, "the stdout reader was never joined"
@@ -133,9 +130,7 @@ def test_the_atexit_handler_quiets_stdlib_loggers_too(monkeypatch, capsys):
 
     ran = []
 
-    # **_kw because _cleanup calls _kill_process(teardown = True). A double that only
-    # accepts () raises TypeError inside a handler that swallows everything, so the
-    # write this test exists to make would never happen and nothing would say so.
+    # **_kw: _cleanup passes teardown=True and swallows a TypeError from a stale signature
     def kill_and_log(**_kw):
         ran.append(1)
         other.warning("something a dependency logs at exit")
@@ -144,8 +139,6 @@ def test_the_atexit_handler_quiets_stdlib_loggers_too(monkeypatch, capsys):
     monkeypatch.setattr(backend, "_kill_process", kill_and_log)
     try:
         backend._cleanup()
-        # _cleanup swallows everything, so a double whose signature stops
-        # matching would silently skip the write this test exists to make.
         assert ran, "the kill double never ran; this assertion proves nothing"
         assert capsys.readouterr().err == ""
     finally:
@@ -184,7 +177,8 @@ def test_sigkill_still_happens_when_the_log_write_fails(monkeypatch):
     try:
         backend._kill_process()
     except ValueError:
-        pass  # the write still fails; what matters is that it failed after the kill
+        # the write still fails; what matters is that it failed after the kill
+        pass
 
     assert proc.killed, "SIGKILL was skipped because the warning raised first"
 
@@ -238,8 +232,6 @@ def test_a_failing_kill_does_not_escape_the_atexit_handler(monkeypatch):
     monkeypatch.setattr(backend, "_kill_process", boom)
 
     backend._cleanup()
-    # Same trap: a TypeError from a stale signature is swallowed too, and then
-    # the RuntimeError this test is about is never raised at all.
     assert raised, "the failing kill never ran; the handler swallowed the wrong error"
 
 

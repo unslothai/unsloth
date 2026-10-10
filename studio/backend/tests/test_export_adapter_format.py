@@ -26,7 +26,7 @@ def _backend(monkeypatch, is_mlx, tmp_path):
 
 
 def _peft_writer(model):
-    # The real zoo converter refuses an existing destination and publishes a fresh one.
+    # the real zoo converter refuses an existing destination
     def _save(
         path,
         adapter_config = None,
@@ -343,7 +343,7 @@ def test_parse_adapter_features(tmp_path):
         (d / "adapter_config.json").write_text(json.dumps(cfg))
         return str(d)
 
-    assert parse_adapter_features(str(tmp_path)) is None  # no config
+    assert parse_adapter_features(str(tmp_path)) is None
     base = parse_adapter_features(_dir({"r": 8}))
     assert base == {
         "dora": False,
@@ -393,7 +393,7 @@ def test_local_dir_never_format_mixed(monkeypatch, tmp_path):
     backend = _backend(monkeypatch, True, tmp_path)
     out = tmp_path / "out"
     out.mkdir()
-    (out / "adapter_model.safetensors").write_bytes(b"x")  # other format
+    (out / "adapter_model.safetensors").write_bytes(b"x")
     ok, message, _ = backend.export_lora_adapter(str(out))
     assert not ok and "mix" in message
     backend.current_model.save_lora_adapters.assert_not_called()
@@ -425,7 +425,7 @@ def test_gguf_converter_honors_scripts_dir(monkeypatch, tmp_path):
     pinned = tmp_path / "pinned"
     pinned.mkdir()
     monkeypatch.setenv("UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", str(pinned))
-    sys.modules["unsloth_zoo.llama_cpp"]._resolve_converter_revision = None  # must not be called
+    sys.modules["unsloth_zoo.llama_cpp"]._resolve_converter_revision = None
     with pytest.raises(RuntimeError, match = "UNSLOTH_LLAMA_CPP_SCRIPTS_DIR"):
         backend._convert_peft_dir_to_gguf(adapter, "q8_0", None)
     (pinned / "convert_lora_to_gguf.py").write_text("")

@@ -145,7 +145,6 @@ def test_neighbouring_families_keep_their_detection():
     assert detect_family("unsloth/Qwen-Image-2512-GGUF").name == "qwen-image"
     assert detect_family("unsloth/Qwen-Image-Edit-2511-GGUF").name == "qwen-image-edit"
     assert detect_family("unsloth/Qwen-Image-2.1-GGUF").name == "qwen-image-2.1"
-    # A layered or inpaint variant of a family with no entry of its own is still refused.
     assert detect_family("unsloth/FLUX.1-dev-Layered-GGUF") is None
     assert detect_family("unsloth/Qwen-Image-2512-Inpaint") is None
     assert detect_family_for_pick("/models/misc", "z-image-layered-Q4.gguf") is None
@@ -153,11 +152,10 @@ def test_neighbouring_families_keep_their_detection():
 
 def test_layered_family_contract():
     fam = detect_family("unsloth/Qwen-Image-Layered-GGUF")
-    # Image in, layers out: no text-to-image tab.
     assert fam.edit is True and _family_workflows(fam) == ["edit"]
     assert fam.condition_image_mode == "RGBA"
     assert fam.cfg_kwarg == "true_cfg_scale"
-    # ComfyUI's Image to Layers template: 20 steps, cfg 2.5, ModelSamplingAuraFlow 1, 2 layers at 640.
+    # ComfyUI Image to Layers template: 20 steps, cfg 2.5, AuraFlow shift 1, 2 layers at 640
     assert (fam.layer_count, fam.layer_resolution) == (2, 640)
     assert comfy_flow_shift_for(fam, "unsloth/Qwen-Image-Layered-GGUF") == 1.0
     for name in (
@@ -167,16 +165,13 @@ def test_layered_family_contract():
         "local/qwenimagelayered-q4",
     ):
         assert default_generation_params(name) == (20, 2.5)
-    # Families without a layered pipeline stay at 0.
     assert detect_family("unsloth/Qwen-Image-Edit-2511-GGUF").layer_count == 0
-    # The full repo is an allowed non-GGUF base (and the GGUF's base_model tag).
     assert _is_trusted_diffusion_repo("Qwen/Qwen-Image-Layered")
 
 
 def test_gguf_transformer_reads_the_layered_config(layered):
     assert layered._state.family.name == "qwen-image-layered"
-    # The GGUF supplies weights only; the layered transformer config (additional t cond, layer3d RoPE) comes from the
-    # base, and so do the RGBA VAE and the pipeline.
+    # the GGUF supplies weights only; transformer config, RGBA VAE and pipeline come from the base
     assert _FakeTransformer.last["config"] == "Qwen/Qwen-Image-Layered"
     assert _FakeTransformer.last["subfolder"] == "transformer"
     assert _FakeTransformer.last["path"].endswith("qwen-image-layered-UD-Q4_K_XL.gguf")
@@ -195,11 +190,9 @@ def test_decomposition_call_and_layer_outputs(layered):
     call = layered._state.pipe.last_kwargs
     assert call["layers"] == 2 and call["resolution"] == 640
     assert call["true_cfg_scale"] == 2.5 and call["num_inference_steps"] == 20
-    # True CFG needs a negative present; Studio sends the empty one, as ComfyUI encodes.
+    # true CFG needs a negative; Studio sends the empty one, as ComfyUI encodes
     assert call["negative_prompt"] == ""
-    # The input keeps its alpha: the layered VAE encodes 4 channels.
     assert call["image"].mode == "RGBA" and call["image"].getpixel((0, 0)) == (120, 30, 30, 77)
-    # Each RGBA layer is its own output image, with the decomposition's seed.
     assert [im.mode for im in out["images"]] == ["RGBA", "RGBA"]
     assert [im.getpixel((0, 0)) for im in out["images"]] == list(_LAYER_COLOURS[:2])
     assert out["seeds"] == [7, 7] and out["seed"] == 7
@@ -214,7 +207,7 @@ def test_seed_batch_runs_one_decomposition_per_forward(layered):
         seeds = [3, 9],
         init_image = _png(),
     )
-    # The pipeline's per-prompt grouping is only right for one input, so each seed is its own call.
+    # the pipeline's per-prompt grouping is only right for one input, so one call per seed
     assert [c["num_images_per_prompt"] for c in _FakeLayeredPipe.calls] == [1, 1]
     assert len(out["images"]) == 4
     assert out["seeds"] == [3, 3, 9, 9]
@@ -232,9 +225,8 @@ def test_layered_needs_an_input_image(layered):
 def test_registered_shape_is_the_decomposition_canvas(size, expected):
     fam = detect_family("unsloth/Qwen-Image-Layered-GGUF")
     src = Image.new("RGBA", size)
-    # 640 x 640 area at the input's aspect ratio on the 32 px grid, as the pipeline sizes it.
+    # 640 x 640 area at the input aspect on the 32 px grid, as the pipeline sizes it
     assert _compile_shape_dims("edit", src, 1024, 1024, fam) == expected
-    # Other edit-only families still size from the source.
     kontext = detect_family("black-forest-labs/FLUX.1-Kontext-dev")
     assert _compile_shape_dims("edit", src, 1024, 1024, kontext) == size
 
@@ -248,13 +240,11 @@ def _saved(root, class_name):
 
 
 def test_saved_layered_pipeline_resolves_and_a_contradicting_one_is_refused(tmp_path):
-    # A real saved Qwen-Image-Layered declares its own class: the index and the name agree.
     real = _saved(tmp_path / "qwen-image-layered", "QwenImageLayeredPipeline")
     assert detect_family_for_pick(real).name == "qwen-image-layered"
-    # An opaque folder name: the index alone answers.
     opaque = _saved(tmp_path / "0f3d1a2b4c5d", "QwenImageLayeredPipeline")
     assert detect_family_for_pick(opaque).name == "qwen-image-layered"
-    # A layered NAME over a plain QwenImagePipeline: the name must not route it to the layered pipeline.
+    # a layered name over a plain QwenImagePipeline must not route to the layered pipeline
     wrong = _saved(tmp_path / "x" / "qwen-image-layered", "QwenImagePipeline")
     assert detect_family_for_pick(wrong) is None
 
@@ -265,8 +255,7 @@ def test_gguf_packed_embedding_is_dequantised_and_linears_are_left_packed():
     utils = pytest.importorskip("diffusers.quantizers.gguf.utils")
     from core.inference.diffusion import _dequantize_gguf_outside_linears
 
-    # nn.Embedding(2, 8) stored BF16, as the public Qwen-Image-Layered GGUFs store addition_t_embedding: GGUF keeps
-    # BF16 as raw bytes, (2, 16) uint8 for a (2, 8) table.
+    # GGUF keeps BF16 as raw bytes: a (2, 8) table is stored (2, 16) uint8
     table = torch.arange(16, dtype = torch.float32).reshape(2, 8).to(torch.bfloat16)
     raw = table.view(torch.uint8)
     model = torch.nn.Module()
@@ -277,22 +266,19 @@ def test_gguf_packed_embedding_is_dequantised_and_linears_are_left_packed():
         torch.zeros(8, 16, dtype = torch.uint8), quant_type = gguf.GGMLQuantizationType.BF16
     )
     model.proj = linear
-    # Before: the embedding lookup returns raw bytes, twice as wide as the model dimension.
     assert model.embed(torch.tensor([1])).shape[-1] == 16
 
     assert _dequantize_gguf_outside_linears(model, torch.bfloat16) == 1
     assert type(model.embed.weight) is torch.nn.Parameter
     assert model.embed.weight.dtype == torch.bfloat16 and tuple(model.embed.weight.shape) == (2, 8)
     assert torch.equal(model.embed(torch.tensor([1]))[0], table[1])
-    # The quantizer's own linears dequantise per forward and stay packed.
+    # the quantizer's own linears dequantise per forward and stay packed
     assert isinstance(model.proj.weight, utils.GGUFParameter)
-    # Nothing packed left: a second pass is a no-op.
     assert _dequantize_gguf_outside_linears(model, torch.bfloat16) == 0
 
 
 def test_load_planning_reserves_what_the_decomposition_guard_charges():
-    # The guard charges layers + 1 extra canvas frames; a load planned for one 1024x1024 frame then refused every
-    # default render on a card that had to offload to fit (no calibrated placement to release groups from).
+    # the guard charges layers + 1 canvas frames, which once refused default offloaded renders
     from core.inference import diffusion_memory as dm
 
     fam = detect_family("unsloth/Qwen-Image-Layered-GGUF")
@@ -307,7 +293,6 @@ def test_load_planning_reserves_what_the_decomposition_guard_charges():
     assert planned == dm.estimate_image_runtime_mib(
         width = side, height = side, family = hint, condition_pixels = extra
     )
-    # Free memory that covers only the planned headroom (an offloaded load): the default render still runs.
     verdict = dm.image_activation_verdict(
         device_memory = dm.DeviceMemory("cuda", "cuda", "discrete_vram", 10000, 24576),
         width = side,
@@ -317,5 +302,4 @@ def test_load_planning_reserves_what_the_decomposition_guard_charges():
         condition_pixels = extra,
     )
     assert verdict.action == dm.ACTIVATION_RUN
-    # Other families' planning is untouched.
     assert dm.estimate_image_runtime_mib(width = None, height = None, family = "qwen-image") == 8192

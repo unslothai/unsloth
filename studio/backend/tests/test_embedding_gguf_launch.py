@@ -27,8 +27,7 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# Same external-dep stubs as the other llama_cpp unit tests so importing
-# the backend doesn't drag in structlog / httpx / loggers.
+# stub external deps so importing the backend does not pull in structlog / httpx / loggers
 _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
@@ -42,7 +41,7 @@ import httpx  # noqa: F401
 from core.inference import llama_cpp as llama_cpp_module
 from core.inference.llama_cpp import LlamaCppBackend
 
-# llama_pooling_type, include/llama.h
+# llama_pooling_type values from include/llama.h
 POOLING_NONE = 0
 POOLING_MEAN = 1
 POOLING_CLS = 2
@@ -87,8 +86,8 @@ def _make_gguf(
 
     buf = io.BytesIO()
     buf.write(struct.pack("<I", 0x46554747))  # GGUF magic
-    buf.write(struct.pack("<I", 3))  # version 3
-    buf.write(struct.pack("<Q", 0))  # tensor count
+    buf.write(struct.pack("<I", 3))
+    buf.write(struct.pack("<Q", 0))
     buf.write(struct.pack("<Q", len(entries)))
     for key, value, vtype in entries:
         _write_kv(buf, key, value, vtype)
@@ -129,13 +128,13 @@ class TestIsEmbeddingGguf:
         assert backend.is_embedding_gguf is True
 
     def test_false_when_the_header_pools_nothing(self, tmp_path, backend):
-        # Pooling NONE returns per-token vectors, which /v1/embeddings cannot shape.
+        # pooling NONE returns per-token vectors, which /v1/embeddings cannot shape
         backend._read_gguf_metadata(_make_gguf(tmp_path, "bert", pooling_type = POOLING_NONE))
         assert backend._pooling_type == POOLING_NONE
         assert backend.is_embedding_gguf is False
 
     def test_false_for_a_reranker(self, tmp_path, backend):
-        # send_embedding would read n_embd_out floats from a RANK head's n_cls_out buffer.
+        # send_embedding would read n_embd_out floats from a RANK head's n_cls_out buffer
         backend._read_gguf_metadata(_make_gguf(tmp_path, "qwen3", pooling_type = POOLING_RANK))
         assert backend._pooling_type == POOLING_RANK
         assert backend.is_embedding_gguf is False
@@ -146,7 +145,7 @@ class TestIsEmbeddingGguf:
         assert backend.is_embedding_gguf is False
 
     def test_true_for_dedicated_embedding_arch_without_pooling_type(self, tmp_path, backend):
-        # nomic-bert and similar encoder GGUFs often omit pooling_type in the header.
+        # encoder GGUFs like nomic-bert often omit pooling_type in the header
         backend._read_gguf_metadata(_make_gguf(tmp_path, "nomic-bert-moe"))
         assert backend._pooling_type is None
         assert backend.is_embedding_gguf is True
@@ -168,7 +167,6 @@ class TestIsEmbeddingGguf:
         assert backend.is_embedding_gguf is False
 
     def test_false_after_unload(self, tmp_path, backend):
-        # A stale pooling type would report an unloaded backend as an embedding server.
         backend._read_gguf_metadata(_make_gguf(tmp_path, "bert", pooling_type = POOLING_CLS))
         assert backend.is_embedding_gguf is True
         backend.unload_model()
@@ -176,7 +174,6 @@ class TestIsEmbeddingGguf:
         assert backend.is_embedding_gguf is False
 
     def test_probe_reads_the_arch_prefixed_key_only(self, tmp_path, backend):
-        # A pooling_type under the wrong arch prefix is another model's key.
         backend._read_gguf_metadata(_make_gguf(tmp_path, "bert", pooling_type = POOLING_CLS))
         assert backend.is_embedding_gguf is True
         buf = io.BytesIO()
@@ -213,7 +210,7 @@ class TestLoadModelEmitsTheFlag:
         )
 
     def test_slots_are_clamped_to_the_micro_batch(self):
-        # The slots follow the micro-batch down, or --embedding aborts the load.
+        # slots must follow the micro-batch down, or --embedding aborts the load
         src = inspect.getsource(llama_cpp_module.LlamaCppBackend.load_model)
         guard = src.find("_effective_ubatch < n_parallel")
         assert guard != -1, "load_model must compare the micro-batch against the slot count"
@@ -294,8 +291,7 @@ class TestEmbeddingBatchSizedToContext:
 
 @pytest.mark.parametrize("flag", ["--embedding", "--embeddings", "--pooling"])
 def test_user_extra_args_still_cannot_pass_the_flag(flag):
-    # The denylist keeps a user-supplied --embedding off the chat server; the
-    # header probe is the only thing allowed to turn it on.
+    # only the header probe may enable --embedding; the denylist blocks user-supplied ones
     from core.inference.llama_server_args import is_managed_flag, validate_extra_args
     assert is_managed_flag(flag) is True
     with pytest.raises(ValueError, match = "managed by Unsloth Studio"):

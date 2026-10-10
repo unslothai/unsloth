@@ -26,9 +26,6 @@ from core.inference.audio_cpp_models import (
     RepoFile,
 )
 
-# ---------------------------------------------------------------------------
-# Fixtures: GGUF headers and a fake HF cache
-
 
 def _gguf_bytes(
     arch = "audiocpp",
@@ -41,7 +38,6 @@ def _gguf_bytes(
     kv = [("general.architecture", 8, arch)]
     kv.append(("general.name", 8, "test"))
     if blob_before_spec:
-        # audiocpp.embedded_files.data: a u8 array some writers place before the spec keys.
         kv.append(("audiocpp.embedded_files.data", 9, blob_before_spec))
     if family is not None:
         kv.append(("audiocpp.model_spec.version", 4, 1))
@@ -167,17 +163,12 @@ def _model(
 CANARY = _model("Canary-180M-Flash-GGUF", "canary_asr", "asr")
 
 
-# ---------------------------------------------------------------------------
-# Ids
-
-
 def test_ids_legacy_keys_and_subfolders_parse_without_io():
     ref = acm.parse_identifier("audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF")
     assert (ref.repo_id, ref.folder, ref.variant_hint) == (AUDIO_CPP_REPO, "Kokoro-82M-GGUF", None)
     assert ref.display_name == "Kokoro-82M-GGUF"
     legacy = acm.parse_identifier("audiocpp-ace-step-1.5-turbo")
     assert legacy.id == f"{AUDIO_CPP_REPO}/ACE-Step1.5-GGUF" and legacy.variant_hint == "turbo/Q8_0"
-    # The sub-folder ids of earlier builds name the folder row and a variant.
     old = acm.parse_identifier("audio-cpp/audio.cpp-gguf/PocketTTS-GGUF/english")
     assert old.id == f"{AUDIO_CPP_REPO}/PocketTTS-GGUF" and old.variant_hint == "english"
     moon = acm.parse_identifier("Audio-CPP/audio.cpp-gguf/Moonshine-Streaming-GGUF/tiny")
@@ -198,10 +189,6 @@ def test_ids_legacy_keys_and_subfolders_parse_without_io():
     assert acm.repo_of("audio-cpp/Yue2-3B-GGUF:Q8_0") == "audio-cpp/Yue2-3B-GGUF"
 
 
-# ---------------------------------------------------------------------------
-# Headers
-
-
 def test_header_reads_family_and_spec_past_embedded_data():
     data = _gguf_bytes(family = "moonshine_asr", spec = {"tasks": ["asr"]}, blob_before_spec = 5000)
     header = acm.parse_header(io.BytesIO(data))
@@ -210,7 +197,6 @@ def test_header_reads_family_and_spec_past_embedded_data():
         and header.family == "moonshine_asr"
         and header.spec == {"tasks": ["asr"]}
     )
-    # A prefix that stops inside the embedded data still answers "audio.cpp", without a family.
     short = acm.parse_header(io.BytesIO(data[:2000]))
     assert short.is_audio_cpp and short.family is None and not short.complete
     llama = acm.parse_header(io.BytesIO(_gguf_bytes(arch = "llama")))
@@ -225,21 +211,14 @@ def test_quant_labels():
     assert acm.quant_label("voxtral-mini-4b-realtime-2602-q4_k.gguf") == "Q4_K"
 
 
-# ---------------------------------------------------------------------------
-# Resolution, from the cache alone
-
-
 def test_umbrella_folder_resolves_from_its_cached_header(hub):
     _kokoro(hub)
     model = acm.resolve(f"{AUDIO_CPP_REPO}/Kokoro-82M-GGUF", network = False)
     assert model.family == "kokoro_tts" and model.task == "tts" and model.server_task == "tts"
     assert model.audio_type == "audiocpp_tts" and model.needs_espeak
     assert model.display_name == "Kokoro-82M-GGUF" and model.variant.key == "Q8_0"
-    assert model.files == (
-        "Kokoro-82M-GGUF/kokoro-82m-q8_0.gguf",
-    )  # the README is not a model file
+    assert model.files == ("Kokoro-82M-GGUF/kokoro-82m-q8_0.gguf",)
     assert model.unsupported is None
-    # The same model through its legacy key and a quant spelled any way.
     assert acm.resolve("audiocpp-kokoro-82m", network = False).id == model.id
     assert acm.resolve(model.id, "q8_0", network = False).variant.key == "Q8_0"
     missing = acm.resolve(model.id, "Q2_K", network = False)
@@ -251,7 +230,6 @@ def test_options_come_from_the_spec_minus_what_studio_drives(hub):
     _kokoro(hub)
     model = acm.resolve(f"{AUDIO_CPP_REPO}/Kokoro-82M-GGUF", network = False)
     by_name = {o["name"]: o for o in model.options}
-    # Language and seed have their own controls; lists and paths cannot be rendered.
     assert list(by_name) == ["voice", "speed", "text_chunk_size", "mode"]
     assert by_name["voice"] == {
         "name": "voice",
@@ -419,7 +397,6 @@ def test_runtime_knows_a_family_from_its_specs_or_the_pinned_list(monkeypatch, t
 def test_a_spec_fallback_family_the_runtime_lacks_is_refused(hub, monkeypatch, tmp_path):
     from core.inference.audio_cpp_spec_families import AUDIO_CPP_SPEC_FAMILIES_TAG
 
-    # The hub fixture leaves the runtime out of reach; this test installs one.
     monkeypatch.setattr(acm, "runtime_knows_family", _REAL_RUNTIME_KNOWS_FAMILY)
     _fake_runtime(monkeypatch, tmp_path, tag = AUDIO_CPP_SPEC_FAMILIES_TAG)
     for family, folder, tasks in (
@@ -498,7 +475,6 @@ def test_qwen3_tts_package_kind_comes_from_its_name(hub):
     base = acm.resolve(f"{AUDIO_CPP_REPO}/Qwen3-TTS-12Hz-0.6B-Base-GGUF", network = False)
     assert design.server_task == "vdes" and design.request_defaults["options"]["instruct"]
     assert custom.server_task == "tts" and custom.request_defaults["voice"] == "vivian"
-    # The published GGUF embeds no speaker list, so the picker offers the package's own nine.
     voice = next(o for o in custom.options if o["name"] == "voice")
     assert (
         voice["default"] == "vivian" and len(voice["values"]) == 9 and "uncle_fu" in voice["values"]
@@ -510,7 +486,6 @@ def test_qwen3_tts_package_kind_comes_from_its_name(hub):
     assert list(custom.workflows) == ["speak"] and list(design.workflows) == ["speak"]
 
 
-# family -> (server task, speaks, reference_text), from the audio.cpp sources.
 _CLONE_TABLE = {
     "chatterbox": ("clon", False, "unused"),
     "f5_tts": ("tts", False, "required"),
@@ -536,7 +511,6 @@ _CLONE_TABLE = {
 }
 
 
-# family -> (load task, mode -> server task, target, source rate)
 _CONVERT_TABLE = {
     "rvc": ("vc", {"speech": "vc"}, "builtin", 16000),
     "seed_vc": ("vc", {"speech": "vc", "singing": "svc"}, "audio", 44100),
@@ -556,7 +530,6 @@ def test_every_task_family_binds_its_workflows():
         "separate": "tasks",
     }
     for family in acm.FAMILIES.values():
-        # Edit is checked by its own table below.
         bindings = {k: v for k, v in family.workflows.items() if k != "edit"}
         if not family.task:
             assert bindings == {}, family.family
@@ -594,7 +567,6 @@ def test_every_task_family_binds_its_workflows():
         assert binding.server_task == family.default_server_task
     assert set(_CLONE_TABLE) == {f.family for f in acm.FAMILIES.values() if f.clone is not None}
     assert set(_CONVERT_TABLE) == {f.family for f in acm.FAMILIES.values() if f.convert is not None}
-    # Chatterbox-Turbo is its own family and still speaks.
     assert list(acm.FAMILIES["chatterbox_turbo"].workflows) == ["speak"]
     assert acm.FAMILIES["chatterbox_turbo"].default_server_task == "tts"
     assert acm.family_from_names(["Chatterbox-Turbo-GGUF", "chatterbox-turbo-q8_0.gguf"]) == (
@@ -632,9 +604,7 @@ def test_edit_families_bind_the_edit_workflow():
         ], names
     vevo2, firered = acm.FAMILIES["vevo2"], acm.FAMILIES["firered_audio"]
     assert list(firered.workflows) == ["clone", "edit"]
-    # Vevo2 also converts a voice.
     assert list(vevo2.workflows) == ["clone", "edit", "convert"]
-    # Vevo2 edits in an s2s session though it loads as tts.
     assert vevo2.default_server_task == "tts"
     assert (vevo2.workflows["edit"].server_task, vevo2.workflows["edit"].route) == (
         "s2s",
@@ -670,7 +640,6 @@ def test_sub_folders_and_same_quant_files_become_named_variants(hub):
     model = acm.resolve(f"{AUDIO_CPP_REPO}/ACE-Step1.5-GGUF", network = False)
     assert [v.key for v in model.variants] == ["turbo/Q8_0", "base/Q8_0"]
     assert model.variant.key == "turbo/Q8_0" and model.variants[0].label == "Q8_0 · turbo"
-    # A bare quant shared by both picks the default; the legacy id names its sub-folder.
     assert acm.resolve(model.id, "Q8_0", network = False).variant.key == "turbo/Q8_0"
     assert acm.resolve("audiocpp-ace-step-1.5-base", network = False).variant.key == "base/Q8_0"
     moonshine = acm.resolve("audiocpp-moonshine-small", network = False)
@@ -798,14 +767,13 @@ def test_a_package_repo_lists_its_mixes_and_picks_its_components(hub):
     _minimax(hub)
     model = acm.resolve("audio-cpp/MiniMax-Music3-GGUF", network = False)
     assert model.family == "minimax_music3" and model.task == "music" and model.server_task == "gen"
-    assert model.is_package and [v.key for v in model.variants] == ["Q4_0"]  # only Q4_0 is complete
+    assert model.is_package and [v.key for v in model.variants] == ["Q4_0"]
     assert len(model.files) == 13 and model.gguf_file == "language_model_q4_0.gguf"
     assert model.model_options["session_options"] == {
         "minimax_music3.language_model_gguf": "language_model_q4_0.gguf",
         "minimax_music3.rvq_depth_decoder_gguf": "rvq_depth_decoder_q8_0.gguf",
         "minimax_music3.flow_transformer_gguf": "transformer_q4_0.gguf",
     }
-    # The Studio-side list stands in for the runtime's spec; lyrics and duration have their own fields.
     assert [o["name"] for o in model.options] == [
         "num_inference_steps",
         "guidance_scale",
@@ -836,7 +804,6 @@ def test_package_layouts_plan_whole_mixes(hub):
     assert sorted(plans) == ["bf16", "q8_0"]
     plan = plan_for_variant(plans, "BF16")
     assert set(plan.target_filenames) == set(names[:4]) | {"yue2-3b-bf16.gguf", "yue2-vae-f16.gguf"}
-    # Files every mix shares are companions, never one mix's own weights.
     assert plan.main_filenames == frozenset({"yue2-3b-bf16.gguf"})
     assert "yue2-vae-f16.gguf" in plan.companion_hashes
 
@@ -986,22 +953,16 @@ def test_download_target_maps_a_folder_row_onto_the_planner_key(hub):
     assert acm.download_target("audio-cpp/MiniMax-Music3-GGUF", "Q4_0") is None
 
 
-# ---------------------------------------------------------------------------
-# Files in the cache
-
-
 def test_cached_files_require_every_file_of_the_variant(hub):
     snap = _snapshot(hub)
     gguf = RepoFile("PocketTTS-GGUF/english/pocket-tts-english-q8_0.gguf", 4)
     voice = RepoFile("PocketTTS-GGUF/english/embeddings/alba.safetensors", 1)
     m = _model("PocketTTS-GGUF", "pocket_tts", "tts", files = (gguf, voice), key = "english/Q8_0")
     _put(snap, gguf.path, b"GGUF")
-    # An interrupted download missing a voice is not a complete model.
     assert audio_cpp_files.cached_files(m) is None
     assert audio_cpp_files.missing_files(m) == [(voice.path, 1)]
     _put(snap, voice.path, b"x")
     assert len(audio_cpp_files.cached_files(m)) == 2
-    # A truncated file is not complete either.
     _put(snap, gguf.path, b"GG")
     assert audio_cpp_files.cached_files(m) is None
 
@@ -1042,7 +1003,6 @@ def test_windows_refuses_a_model_path_the_server_cannot_open(hub, monkeypatch):
     monkeypatch.setattr(audio_cpp_files.sys, "platform", "win32")
     assert srv.model_runtime_problem(CANARY, binary) is None
     monkeypatch.setattr(audio_cpp_files, "_WINDOWS_MAX_MODEL_PATH", 10)
-    # Refused before download or eviction, not first at materialize.
     assert "shorter" in srv.model_runtime_problem(CANARY, binary)
     with pytest.raises(AudioCppUnavailableError, match = "shorter"):
         audio_cpp_files.materialize(CANARY, hub_cache = hub)
@@ -1110,10 +1070,10 @@ def test_prune_drops_farm_entries_whose_files_were_deleted(hub):
     )
     link, blob = _symlinked(hub, model, b"GGUF")
     path = audio_cpp_files.materialize(model, hub_cache = hub)
-    assert audio_cpp_files.prune_link_farm(hub) == 0  # still referenced
+    assert audio_cpp_files.prune_link_farm(hub) == 0
     link.unlink()
     blob.unlink()
-    assert audio_cpp_files.prune_link_farm(hub) == 2  # the file and its source record
+    assert audio_cpp_files.prune_link_farm(hub) == 2
     assert not os.path.exists(path)
 
 
@@ -1122,7 +1082,6 @@ def test_prune_removes_old_unrecorded_farm_dirs(hub):
     legacy = farm / "audiocpp-canary-180m-flash"
     legacy.mkdir(parents = True)
     (legacy / "canary.gguf").write_bytes(b"x")
-    # A young unrecorded folder may be a materialize in flight.
     assert audio_cpp_files.prune_link_farm(hub) == 0
     os.utime(legacy, (1, 1))
     assert audio_cpp_files.prune_link_farm(hub) == 1
@@ -1203,7 +1162,7 @@ def test_materialize_does_not_write_through_a_planted_model_folder_link(hub, tmp
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
     _dir_link(farm / CANARY.key, elsewhere)
-    monkeypatch.setattr(audio_cpp_files.sys, "platform", "win32")  # always goes through the farm
+    monkeypatch.setattr(audio_cpp_files.sys, "platform", "win32")
     served = audio_cpp_files.materialize(CANARY, hub_cache = hub)
     assert list(elsewhere.iterdir()) == []
     assert os.path.samefile(served, snap / CANARY.gguf_file)
@@ -1223,7 +1182,7 @@ def test_materialize_refuses_a_repo_file_name_that_climbs_out_of_the_farm(
     victim = audio_cpp_files._link_farm_root(hub).parent / "victim"
     variant = replace(CANARY.variant, files = (*CANARY.variant.files, evil))
     model = replace(CANARY, variant = variant, variants = (variant,))
-    monkeypatch.setattr(audio_cpp_files.sys, "platform", "win32")  # always goes through the farm
+    monkeypatch.setattr(audio_cpp_files.sys, "platform", "win32")
     with pytest.raises(AudioCppUnavailableError, match = "Refusing"):
         audio_cpp_files.materialize(model, hub_cache = hub)
     assert not victim.exists()
@@ -1269,14 +1228,9 @@ def test_downloaded_models_are_found_by_header(hub):
 
     assert sorted(s.downloaded_model_ids()) == [
         f"{AUDIO_CPP_REPO}/Qwen3-ASR-0.6B-GGUF",
-        # The legacy key of that downloaded folder, which Settings > Voice compares against.
         "audiocpp-qwen3-asr-0.6b",
         "someone/Parakeet-GGUF",
     ]
-
-
-# ---------------------------------------------------------------------------
-# Worker backend request shaping, against a recording fake server
 
 
 def _wav(seconds = 0.1, rate = 24000):
@@ -1378,7 +1332,6 @@ def test_speech_retry_keeps_package_defaults_and_user_options_and_covers_500():
     srv.post_json = post_json
     b.generate_audio_response("hi", language = "en")
     assert calls[0]["options"]["language"] == "en" and calls[0]["options"]["instruct"]
-    # The retry drops the request's hints, never the package's own instruction.
     assert calls[1]["options"] == design.request_defaults["options"]
 
 
@@ -1474,10 +1427,6 @@ def test_status_fields_of_a_loaded_model():
     ]
 
 
-# ---------------------------------------------------------------------------
-# Routing, config and classification
-
-
 def test_stt_routing_forces_the_audiocpp_engine_for_its_models(hub):
     import routes.inference as ri
 
@@ -1487,7 +1436,6 @@ def test_stt_routing_forces_the_audiocpp_engine_for_its_models(hub):
     for alias in ("audiocpp", "audio_cpp", "audio.cpp", " AudioCpp "):
         assert ri._resolve_stt_engine(alias) == "audiocpp"
     assert ri._stt_repo_reference("audiocpp-canary-180m-flash", "audiocpp") == AUDIO_CPP_REPO
-    # Saved legacy keys report as themselves (Settings compares against them); folder ids as rows.
     assert ri._stt_resolved_model_id("audiocpp-canary-180m-flash", "audiocpp") == (
         "audiocpp-canary-180m-flash"
     )
@@ -1536,7 +1484,6 @@ def test_model_config_answers_umbrella_ids_without_the_hub(hub, monkeypatch):
     assert config.is_audio and config.audio_type == "audiocpp_tts" and config.gguf_variant == "F16"
     assert not config.is_gguf and not config.is_lora and not config.is_vision
     assert config.audio_cpp.family == "supertonic" and config.is_cached
-    # A dictation model is not a main-slot model.
     with pytest.raises(ValueError, match = "speech-to-text"):
         model_config.ModelConfig.from_identifier("audiocpp-canary-180m-flash")
     _put(snap, "HTDemucs-GGUF/htdemucs-q8_0.gguf", _gguf_bytes(family = "htdemucs"))
@@ -1557,7 +1504,7 @@ def test_model_config_routes_a_hub_repo_by_its_gguf_header(hub, monkeypatch):
     ):
         _put(snap, rel, b"{}")
     _put(snap, "yue2-3b-q8_0.gguf", _gguf_bytes(family = "yue2"))
-    _put(snap, "yue2-vae-f16.gguf", _gguf_bytes())  # the VAE carries no spec
+    _put(snap, "yue2-vae-f16.gguf", _gguf_bytes())
     monkeypatch.setattr(
         model_config, "detect_gguf_model_remote", lambda *a, **k: "yue2-3b-q8_0.gguf"
     )
@@ -1612,7 +1559,6 @@ def test_audio_cpp_ggufs_are_classified_off_chat(hub):
     assert cc._gguf_path_task(sep) == "audio-to-audio"
     assert cc._gguf_path_audio_type(sep) == "audiocpp_sep"
     assert cc._gguf_path_audio_workflows(sep) == ["separate"]
-    # Architecture alone (a remote prefix): the family comes from the names.
     assert cc._arch_to_task("audiocpp", ("audio-cpp/MiniMax-Music3-GGUF",)) == "text-to-audio"
     assert cc._arch_to_audio_type("audiocpp", ("Kokoro-82M-GGUF",)) == "audiocpp_tts"
 
@@ -1645,7 +1591,6 @@ def test_public_id_of_an_audio_cpp_model_is_the_id_itself():
     from core.inference.model_ids import public_model_id
     for mid in (f"{AUDIO_CPP_REPO}/ACE-Step1.5-GGUF/turbo", f"{AUDIO_CPP_REPO}/Kokoro-82M-GGUF"):
         assert public_model_id(mid) == mid
-    # Unrelated three-segment paths are still paths.
     assert public_model_id("some/local/dir") != "some/local/dir"
 
 
@@ -1704,7 +1649,6 @@ def test_espeak_models_need_an_espeak_build(tmp_path, monkeypatch):
     assert srv.model_runtime_problem(CANARY, str(binary)) is None
     (tmp_path / "espeak-ng-data.bin").write_bytes(b"x")
     assert srv.model_runtime_problem(kokoro, str(binary)) is None
-    # A record that says eSpeak is not enough once the data was removed or quarantined.
     monkeypatch.setattr(srv, "read_install_record", lambda _binary: {"espeak": True})
     (tmp_path / "espeak-ng-data.bin").unlink()
     assert "eSpeak-ng" in srv.model_runtime_problem(kokoro, str(binary))
@@ -1775,10 +1719,6 @@ def test_a_package_config_carries_its_session_options(tmp_path, monkeypatch):
     assert entry["session_options"] == {"yue2.model_gguf": "yue2-3b-bf16.gguf"}
 
 
-# ---------------------------------------------------------------------------
-# Hub deletion
-
-
 def test_clearing_the_hub_cache_prunes_the_link_farm(hub, monkeypatch):
     from utils import cache_inventory
 
@@ -1839,7 +1779,6 @@ def test_deleting_any_repo_prunes_the_farm_of_the_cache_it_was_in(tmp_path, monk
     pruned = []
     monkeypatch.setattr(audio_cpp_files, "prune_link_farm", lambda root = None: pruned.append(root))
     asyncio.run(deletion.delete_cached_model_response(repo, cache_path = str(repo_folder)))
-    # The Hub row sends the repo folder; the farm sits beside that folder's hub root.
     assert pruned == [other_root.resolve()]
 
 
@@ -1875,7 +1814,6 @@ def test_umbrella_download_jobs_report_under_their_folder_row(hub):
     assert acm.folder_row_for_download(
         AUDIO_CPP_REPO, "Moonshine-Streaming-GGUF/moonshine-streaming-small-q8_0"
     ) == (f"{AUDIO_CPP_REPO}/Moonshine-Streaming-GGUF", "small/Q8_0")
-    # Not cached yet: the planner key's own path still names the row and quant.
     assert acm.folder_row_for_download(
         AUDIO_CPP_REPO, "PocketTTS-GGUF/english/pocket-tts-english-q8_0"
     ) == (f"{AUDIO_CPP_REPO}/PocketTTS-GGUF", "english/Q8_0")
@@ -1919,7 +1857,6 @@ def test_stt_requests_carry_their_variant_in_the_model_id():
         "audiocpp-moonshine-small:Q8_0"
     )
     assert SttLoadRequest(model = folder, engine = "audiocpp").model == folder
-    # Other engines keep their own ids untouched.
     assert SttLoadRequest(
         model = "openai/whisper-small", engine = "transformers", gguf_variant = "x"
     ).model == ("openai/whisper-small")
@@ -1960,7 +1897,7 @@ def test_deleting_a_package_mix_keeps_what_another_downloaded_mix_loads(hub, mon
     snap = _minimax(hub, quant = "q4_0")
     header = _gguf_bytes(family = "minimax_music3")
     for rel in ("language_model_q8_0.gguf", "transformer_q8_0.gguf"):
-        _put(snap, rel, header)  # Q8_0 is complete too, sharing rvq_depth_decoder_q8_0 with Q4_0
+        _put(snap, rel, header)
     monkeypatch.setattr(
         deletion.gguf_variants,
         "delete_variant_incomplete_blobs_result",
@@ -1970,11 +1907,9 @@ def test_deleting_a_package_mix_keeps_what_another_downloaded_mix_loads(hub, mon
         "audio-cpp/MiniMax-Music3-GGUF", "Q8_0", [_fake_cache_repo(snap)], None, root = hub
     )
     left = _files_under(snap)
-    # Q8_0's own weights are gone; every file the Q4_0 mix loads is still there.
     assert "language_model_q8_0.gguf" not in left and "transformer_q8_0.gguf" not in left
     assert set(acm.package_variant_files(left)["Q4_0"]) <= left
     assert "rvq_depth_decoder_q8_0.gguf" in left
-    # The last mix takes its shared files with it.
     deletion._delete_gguf_variant_from_repos(
         "audio-cpp/MiniMax-Music3-GGUF", "Q4_0", [_fake_cache_repo(snap)], None, root = hub
     )
@@ -2000,7 +1935,6 @@ def test_package_mixes_show_only_the_studio_option_list():
         "semantic_top_p",
         "semantic_top_k",
     ]
-    # Other families still follow the runtime's spec.
     assert [o["name"] for o in acm.option_schema(acm.FAMILIES["heartmula"], runtime, None)] == [
         "cot",
         "abc_temperature",
@@ -2050,15 +1984,12 @@ def test_an_audio_page_load_of_a_chat_gguf_is_refused(tmp_path, monkeypatch):
     config, request = _audio_load(tmp_path, "qwen3")
     monkeypatch.setattr(gguf_metadata, "read_gguf_tts_audio_type", lambda path: None)
     assert "not an audio model" in ri._audio_intent_gguf_refusal(config, request)
-    # Chat loads (no audio_device) are not this check's business.
     assert ri._audio_intent_gguf_refusal(config, SimpleNamespace(audio_device = None)) is None
-    # A speech-codec GGUF the page runs through llama-server passes, by vocab or by name.
     monkeypatch.setattr(gguf_metadata, "read_gguf_tts_audio_type", lambda path: "snac")
     assert ri._audio_intent_gguf_refusal(config, request) is None
     monkeypatch.setattr(gguf_metadata, "read_gguf_tts_audio_type", lambda path: None)
     orpheus, _ = _audio_load(tmp_path, "llama", name = "orpheus-3b-0.1-ft-Q4_K_M.gguf")
     assert ri._audio_intent_gguf_refusal(orpheus, request) is None
-    # A file not on disk yet is left to the load's own checks.
     config.gguf_file = str(tmp_path / "absent.gguf")
     assert ri._audio_intent_gguf_refusal(config, request) is None
 
@@ -2071,7 +2002,6 @@ def test_stt_takes_the_variant_keys_gguf_variants_lists_even_from_a_partial_cach
     assert acm.split_variant_ref(f"{folder}:small/Q8_0") == (folder, "small/Q8_0")
     request = SttLoadRequest(model = folder, engine = "audiocpp", gguf_variant = "small/Q8_0")
     assert request.model == f"{folder}:small/Q8_0"
-    # Only small is downloaded, so the cache alone would call it plain Q8_0.
     _put(
         _snapshot(hub),
         "Moonshine-Streaming-GGUF/moonshine-streaming-small-q8_0.gguf",
@@ -2162,17 +2092,14 @@ def test_a_variantless_stt_id_keeps_the_loaded_variant_and_an_explicit_one_switc
     try:
         side.load(f"{folder}:small/Q8_0")
         assert started == ["small/Q8_0"]
-        # Settings and dictation send the bare row id: that is the loaded small, not the default tiny.
         assert side.keep_loaded_variant(folder) == small.canonical_id
         assert side.keep_loaded_variant("audiocpp-moonshine-tiny") != small.canonical_id
         side.load(folder)
         assert started == ["small/Q8_0"] and side.loaded_variant == "small/Q8_0"
-        # An explicit variant still switches.
         side.load(f"{folder}:tiny/Q8_0")
         assert started == ["small/Q8_0", "tiny/Q8_0"] and side.loaded_variant == "tiny/Q8_0"
     finally:
         side.unload()
-    # Nothing loaded: the bare row id means the row's default.
     assert side.keep_loaded_variant(folder) == folder
 
 
@@ -2186,7 +2113,6 @@ def test_stt_status_speaks_legacy_keys_to_the_clients_that_saved_them(hub, monke
     _put(snap, CANARY.gguf_file, _gguf_bytes(family = "canary_asr"))
     downloaded = s.downloaded_model_ids()
     folder = f"{AUDIO_CPP_REPO}/Moonshine-Streaming-GGUF"
-    # Folder ids for the Audio page, and each key whose own folder and variant is on disk.
     for name in (
         folder,
         CANARY.id,
@@ -2215,12 +2141,10 @@ def test_stt_status_speaks_legacy_keys_to_the_clients_that_saved_them(hub, monke
         assert (
             side.loaded_model == "audiocpp-moonshine-small" and side.loaded_variant == "small/Q8_0"
         )
-        # The same model named by its folder row reports the row, without a restart.
         side.load(f"{folder}:small/Q8_0")
         assert side.loaded_model == folder
         side.load("audiocpp-moonshine-small")
         assert side.loaded_model == "audiocpp-moonshine-small"
-        # Unloading by either name finds it.
         side.unload(expected_model = folder)
         assert side.loaded_model is None
     finally:
@@ -2244,7 +2168,6 @@ def test_standalone_music_gguf_rows_are_not_offered_to_chat(hub):
     from hub.services.models import cache_inventory
 
     _put(_snapshot(hub, "audio-cpp/Yue2-3B-GGUF"), "yue2-3b-q8_0.gguf", _gguf_bytes(family = "yue2"))
-    # The fixture cache passed in: left to itself the scanner walks the machine's own caches.
     scans = [scan_cache_dir(hub)]
     rows = {
         r["repo_id"]: r
@@ -2287,7 +2210,6 @@ def test_deleting_from_an_inactive_cache_prunes_that_caches_farm(monkeypatch, tm
     monkeypatch.setattr(deletion, "_diffusion_blocks_delete", lambda *a: None)
     monkeypatch.setattr(deletion, "_video_blocks_delete", lambda *a: None)
     monkeypatch.setattr(deletion, "resolve_cached_repo_id_case", lambda r, **k: r)
-    # The repo lives only in the remembered, inactive cache; cache_path is omitted.
     monkeypatch.setattr(
         deletion, "_delete_cached_model_blocking", lambda *a, **k: {"status": "deleted"}
     )
@@ -2332,7 +2254,7 @@ def test_a_dictation_server_training_moved_to_cpu_returns_to_the_gpu_after(hub, 
     model = f"{AUDIO_CPP_REPO}/Canary-180M-Flash-GGUF"
     try:
         side.load(model, device = "gpu")
-        side.load(model, device = "gpu")  # still training: kept on the CPU, no restart
+        side.load(model, device = "gpu")
         assert started == [True]
         training[0] = False
         side.load(model, device = "gpu")
@@ -2390,14 +2312,13 @@ def test_missing_files_are_counted_in_the_snapshot_downloads_land_in(hub):
     from dataclasses import replace
 
     old = _snapshot(hub, sha = "b" * 40, main = False)
-    main = _snapshot(hub)  # refs/main
+    main = _snapshot(hub)
     gguf = RepoFile("PocketTTS-GGUF/english/pocket-tts-english-q8_0.gguf", 4)
     voice = RepoFile("PocketTTS-GGUF/english/embeddings/alba.safetensors", 1)
-    _put(old, gguf.path, b"GGUF")  # an older revision holds more of the files
+    _put(old, gguf.path, b"GGUF")
     variant = acm.AudioCppVariant("english/Q8_0", (gguf, voice), gguf.path)
     model = replace(CANARY, folder = "PocketTTS-GGUF", variant = variant, variants = (variant,))
-    # Downloads go to refs/main, so that is where the gap is measured; the old snapshot would
-    # report only the voice missing and never become complete.
+    # Downloads go to refs/main, so the gap is measured there.
     assert audio_cpp_files.missing_files(model, hub_cache = hub) == [(gguf.path, 4), (voice.path, 1)]
     _put(main, gguf.path, b"GGUF")
     _put(main, voice.path, b"v")
@@ -2418,10 +2339,8 @@ def test_required_inputs_come_from_the_raw_spec(hub):
     }
     _put(snap, "Maya1-GGUF/maya1-q8_0.gguf", _gguf_bytes(family = "maya1", spec = maya_spec))
     maya = acm.resolve(f"{AUDIO_CPP_REPO}/Maya1-GGUF", network = False)
-    # instruct travels as the request's description, not as an option.
     assert maya.required_inputs == ("instruct",)
     assert [o["name"] for o in maya.options] == ["temperature"]
-    # A voice-design package fills instruct itself.
     folder = "Qwen3-TTS-12Hz-1.7B-VoiceDesign-GGUF"
     design_spec = {**maya_spec, "family": "qwen3_tts"}
     _put(snap, f"{folder}/m-q8_0.gguf", _gguf_bytes(family = "qwen3_tts", spec = design_spec))
@@ -2432,7 +2351,6 @@ def _opt_spec(name, type_, **kw):
     return {"name": name, "type": type_, "description": name, **kw}
 
 
-# The request options of the runtime's rvc and seed_vc specs (model_specs/*.json at the pin).
 RVC_SPEC = {
     "family": "rvc",
     "tasks": ["vc"],

@@ -37,7 +37,7 @@ def test_status_runtime_fields_survive_a_double_that_answers_none():
     nor the double. This fails here instead, with the field in the message.
     """
     fields = inference_route._llama_runtime_fields(FakeLlamaCppBackend())
-    # Supplied by the route, not the backend; _llama_runtime_fields excuses it for that reason.
+    # supplied by the route, not the backend, so _llama_runtime_fields excuses it
     fields["requires_trust_remote_code"] = False
 
     try:

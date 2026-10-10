@@ -115,7 +115,6 @@ def test_concurrent_callers_import_once(warm, monkeypatch):
         t.join()
 
     assert results == [True] * 12
-    # `import torch._dynamo` plus `import torch._dynamo.utils`, from one thread only.
     assert len(imports) == 2, f"the import body ran more than once: {imports}"
 
 
@@ -168,8 +167,7 @@ def test_load_path_closes_the_window_before_every_dynamo_consumer():
     disabling compile while leaving the module poisoned for the offload below. So the pre-import
     has to precede all three, not just the offload."""
     body = _load_pipeline_body()
-    # Keyed on lineno, not on ast.walk order: walk is breadth-first, so wrapping a call in a
-    # try/except would silently reorder it and make this assertion meaningless.
+    # keyed on lineno: ast.walk is breadth-first, so a try/except wrapper would reorder it
     lines = {}
     for node in ast.walk(body):
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
@@ -178,19 +176,18 @@ def test_load_path_closes_the_window_before_every_dynamo_consumer():
             lines.setdefault(node.func.attr, node.lineno)
     assert "close_dynamo_import_window" in lines, "the load path never closes the dynamo window"
     for consumer in (
-        "hidream_te4_kwargs",  # FP8 text-encoder cast -> diffusion_precision -> diffusers.hooks
-        "apply_step_cache",  # diffusion_cache -> diffusers.hooks
-        "begin",  # compile_cache.begin -> the compile stack
-        "apply_speed_optims",  # reads torch._dynamo.config
-        "apply_memory_plan",  # offload -> diffusers.hooks
+        "hidream_te4_kwargs",
+        "apply_step_cache",
+        "begin",
+        "apply_speed_optims",
+        "apply_memory_plan",
     ):
         assert consumer in lines, f"{consumer} is no longer on this path; re-check the ordering"
         assert (
             lines["close_dynamo_import_window"] < lines[consumer]
         ), f"the dynamo pre-import runs after {consumer}, which can reach dynamo first"
 
-    # And ahead of the plain `import diffusers` too, which pulls dynamo in by itself: every
-    # module in diffusers.hooks evaluates @torch.compiler.disable() at class-body time.
+    # plain `import diffusers` pulls dynamo in too via @torch.compiler.disable() in diffusers.hooks
     src = (_BACKEND / "core/inference/diffusion.py").read_text(encoding = "utf-8").splitlines()
     first_diffusers = next(
         n for n, line in enumerate(src, 1) if line.strip() == "import diffusers" and n > body.lineno
@@ -210,8 +207,7 @@ def test_the_video_path_closes_the_window_before_each_of_its_diffusers_imports()
     images. Every ``import diffusers`` in this file must be preceded by the guard.
     """
     src = (_BACKEND / "core/inference/video.py").read_text(encoding = "utf-8").splitlines()
-    # A call to assert_pipeline_class_available counts: it closes the window itself, ahead of its
-    # own `import diffusers`, so an import below one is already protected.
+    # assert_pipeline_class_available closes the window itself, ahead of its own import
     guards = [
         n
         for n, line in enumerate(src, 1)
@@ -225,7 +221,6 @@ def test_the_video_path_closes_the_window_before_each_of_its_diffusers_imports()
         assert any(
             g < imp for g in guards
         ), f"`import diffusers` at video.py:{imp} has no dynamo guard above it"
-        # Above it in the same block, not merely somewhere earlier in a 6000-line file.
         assert (
             imp - max(g for g in guards if g < imp) < 40
         ), f"the guard for video.py:{imp} is too far above it to be the one protecting it"
@@ -404,8 +399,7 @@ def _load_pipeline_failure_handler():
 def test_trainer_reads_dynamo_config_defensively():
     """A bare ``torch._dynamo.config`` at module scope triggers the lazy import and can bind a
     half-built module, raising at import time where nothing handles it."""
-    # AST, not a substring search: the prose explaining why this form is wrong necessarily
-    # contains the wrong form, so a text match would fail on its own comment.
+    # AST, not substring: the explanatory prose contains the wrong form itself
     tree = ast.parse((_BACKEND / "core/training/trainer.py").read_text(encoding = "utf-8"))
     bare = [
         node

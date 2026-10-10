@@ -29,7 +29,7 @@ _USER_AGENT = f"com.google.android.youtube/{_CLIENT_VERSION} (Linux; U; Android 
 _PLAYER_URL = "https://www.youtube.com/youtubei/v1/player?prettyPrint=false"
 
 _VIDEO_ID_RE = re.compile(r"[A-Za-z0-9_-]{11}")
-# www. is stripped before the lookup, so only the bare forms are listed.
+# www. is stripped before the lookup, so only bare forms are listed.
 _WATCH_HOSTS = frozenset(
     {"youtube.com", "m.youtube.com", "music.youtube.com", "youtube-nocookie.com"}
 )
@@ -38,12 +38,10 @@ _ID_PATH_PREFIXES = ("/shorts/", "/embed/", "/live/", "/v/")
 _CAPTION_HOSTS = frozenset({"youtube.com", "www.youtube.com"})
 
 _TIMEOUT = httpx.Timeout(20.0)
-# Captions are text; a 4 MB track is already an outlier for a very long video.
 _MAX_CAPTION_BYTES = 4 * 1024 * 1024
 _MAX_PLAYER_BYTES = 4 * 1024 * 1024
-# Roughly 25k tokens: a three hour video's captions would swallow the model's context window on their own.
+# ~25k tokens: long-video captions would fill the context window.
 _MAX_TRANSCRIPT_CHARS = 100_000
-# Timedtext normally answers 200, but a hop is re-validated rather than refused.
 _MAX_CAPTION_REDIRECTS = 3
 
 
@@ -200,8 +198,7 @@ def _select_track(
         base = wanted.split("-")[0]
         for want_generated in (False, True):
             candidates = [t for t in tracks if (t.get("kind") == "asr") is want_generated]
-            # exact locale before the base-language fallback: a pt-BR request must not take a pt-PT track just
-            # because it is listed first
+            # exact locale first: pt-BR must not take a pt-PT track
             for matches_wanted in (
                 lambda code: code == wanted,
                 lambda code: code.split("-")[0] == base,
@@ -256,8 +253,7 @@ async def _fetch_track_text(client: httpx.AsyncClient, base_url: str) -> str:
 
     body = b""
     for _ in range(_MAX_CAPTION_REDIRECTS + 1):
-        # Redirects are followed by hand so the host allowlist covers every hop, not just the URL the player
-        # response handed us.
+        # Redirects followed by hand so the host allowlist covers every hop.
         async with client.stream(
             "GET", url, headers = {"User-Agent": _USER_AGENT}, follow_redirects = False
         ) as response:
@@ -289,7 +285,6 @@ def _flatten_events(events: list[Any]) -> str:
     for event in events:
         if not isinstance(event, dict):
             continue
-        # aAppend cues carry only the rolling-window newline between ASR lines.
         if event.get("aAppend") == 1:
             continue
         segments = event.get("segs")

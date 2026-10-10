@@ -18,26 +18,19 @@ from typing import Callable, Optional
 
 from utils.account_context import is_owner_context
 
-# Fine-tunes and exports are not here: training history, chats and the model picker keep their
-# absolute paths, so moving them would strand those references.
+# Not fine-tunes/exports: history, chats and the picker hold their absolute paths.
 MOVABLE = ("uploads", "images", "videos", "audio")
 
 _SETTING = "library.locations"
 _lock = threading.Lock()
-# Keyed by the owner's database, so a test or a relaunch on another root never reads a stale map.
-# Each choice is {"path", "mount"}: `mount` is the drive or share the folder was on when picked.
-# One saved before mount points were recorded is its bare path, and is marked `bare` until its
-# folder is there to ask (while it is not, the drive is what it would name). A move under way also
-# keeps `moving_from`, the folder its files are leaving, until they have all left it, and
-# `moving_mount`, the drive or share that folder is on.
+# Keyed by the owner's database. Entries are {path, mount} plus bare/moving_from/moving_mount.
 _cache: dict[str, dict[str, dict]] = {}
-# Bumped by each write, so a load that read the database before one never caches what it read.
+# Bumped by each write so a load that read before it never caches stale data.
 _generation = 0
-# Resolving the database path walks the filesystem, and the galleries ask on every file lookup.
-# It only moves with the variables that place Studio's home (or a test swapping the function).
+# Resolving the db path walks the filesystem; it only moves with these variables.
 _HOME_VARIABLES = ("UNSLOTH_STUDIO_HOME", "STUDIO_HOME", "UNSLOTH_HOME")
 _db_keys: dict[tuple, str] = {}
-# Set by core.library: finishes the move of a kind whose `moving_from` a crash left behind.
+# Set by core.library: finishes a move a crash left behind.
 resume_move: Optional[Callable[[str], None]] = None
 
 
@@ -106,7 +99,6 @@ def _load() -> dict[str, dict]:
         isinstance(raw[kind], str) and not entry.get("bare") for kind, entry in chosen.items()
     )
     with _lock:
-        # Written meanwhile: what was read is older than what that write cached.
         if _generation != generation:
             return _cache.get(key, chosen)
         if learned:
@@ -130,9 +122,7 @@ def _chosen_entry(key: str) -> Optional[dict]:
     try:
         return _load().get(key)
     except sqlite3.OperationalError as exc:
-        # No settings table (a database made without Studio's schema): nothing was ever moved.
-        # Any other failure, a lock held too long among them, is raised: falling back would save
-        # into the default folder, where the file vanishes once the chosen one is read again.
+        # Other failures raise: falling back would save into the default folder and lose files.
         if "no such table" in str(exc):
             return None
         raise
@@ -166,9 +156,8 @@ def _unavailable(entry: dict) -> bool:
     folder = Path(entry["path"])
     if not folder.is_dir():
         return True
-    # A fixed mount point stays behind as an empty folder once its drive is gone, and saves would
-    # land on the disk beneath it. The device number is not compared: it changes when a drive is
-    # plugged into another port, and the folder is still there then.
+    # An unmounted mount point is an empty dir; saves would land on the disk beneath.
+    # Device number is not compared: it changes when a drive moves ports.
     mount = entry.get("mount")
     return bool(mount) and not os.path.ismount(mount)
 

@@ -38,7 +38,6 @@ BLOCK_PRIVATE_ENV = providers_core._BLOCK_PRIVATE_ENV
 def isolated(monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.delenv(BLOCK_PRIVATE_ENV, raising = False)
-    # Each test is a fresh installation; in production the home is fixed at startup.
     mpu.forget_cached_setting()
     monkeypatch.setattr(policy, "installation_is_multi_user", lambda: True)
     for module in (credential_secrets, providers_db, studio_db):
@@ -96,9 +95,6 @@ def client_for(account):
 
 def allow_lan(value: bool):
     mpu.set_managed_private_provider_urls_allowed(value)
-
-
-# --- the opt-in does what it says ------------------------------------------------
 
 
 def test_managed_account_lists_models_from_a_loopback_provider_when_allowed(local_provider):
@@ -169,16 +165,12 @@ def test_owner_is_unaffected_either_way(local_provider):
             assert listed.status_code == 200, f"allowed={value}: {listed.text}"
 
 
-# --- what the opt-in must NOT relax ----------------------------------------------
-
-
 @pytest.mark.parametrize(
     "metadata_url",
     [
         "http://169.254.169.254/latest/meta-data/",
         "http://metadata.google.internal/computeMetadata/v1/",
         "http://[fd00:ec2::254]/latest/meta-data/",
-        # Legacy numeric spellings of the same address.
         "http://2852039166/v1",
         "http://0251.0376.0251.0376/v1",
     ],
@@ -236,6 +228,5 @@ def test_a_row_saved_while_allowed_is_refused_after_the_switch_is_off(local_prov
             json = {"provider_type": "custom", "base_url": local_provider},
         )
         assert used.status_code == 400, used.text
-        # The row itself survives; only its use is refused.
         listed = client.get("/providers/")
         assert any(row["id"] == provider_id for row in listed.json()), listed.text

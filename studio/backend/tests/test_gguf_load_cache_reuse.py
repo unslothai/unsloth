@@ -28,14 +28,12 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# Stub optional dependencies before importing the modules under test.
 _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
 
 _structlog_stub = _types.ModuleType("structlog")
-# routes/inference.py binds structlog.get_logger at import time, and setdefault
-# keeps a bare stub an earlier test left behind: repair it rather than rely on order.
+# routes/inference binds structlog.get_logger at import; setdefault may keep an earlier bare stub.
 _structlog_stub.get_logger = lambda *_args, **_kwargs: logging.getLogger("structlog_stub")
 sys.modules.setdefault("structlog", _structlog_stub)
 if not hasattr(sys.modules["structlog"], "get_logger"):
@@ -222,7 +220,6 @@ async def _inline_to_thread(func, /, *args, **kwargs):
 
 
 async def _no_gguf_gpu_ids(*_args, **_kwargs):
-    # Mirrors the resolver's no-gpu_ids early return: no ids, not Vulkan ordinals.
     return None, False
 
 
@@ -672,7 +669,6 @@ class TestLoadReusesCachedCopy:
             "Q4_K_M was loaded instead. The model does not fit in GPU memory."
         )
 
-        # The arch-crash retry calls this again after the download; the teardown clears both.
         backend._begin_load_warnings()
         assert backend.last_load_warning == "Q4_K_M was loaded instead."
 
@@ -708,7 +704,7 @@ class TestLoadReusesCachedCopy:
         assert "Q4_K_M" in (backend.last_load_warning or "")
         assert not backend.matches_load_source(requested)
         assert backend.matches_load_source(replace(requested, hf_variant = "Q4_K_M"))
-        # Replayed by the crash respawn, so it must name the quant that is running.
+        # Replayed by the crash respawn, so it must name the running quant.
         assert backend.last_load_intent.hf_variant == "Q4_K_M"
 
         with _low_disk_hub(100 * GIB, served = str(served)):
@@ -1032,8 +1028,7 @@ class TestLoadHubDownloadExclusion:
             model_identifier = REPO,
             adopt_load_intent_if_matched = lambda _intent: True,
             _audio_probed = True,
-            # The reuse fast path consults this before asserting CHAT ownership; a real
-            # LlamaCppBackend exposes it as a property, so the double has to carry it too.
+            # The real LlamaCppBackend exposes this property and the reuse fast path reads it.
             holds_no_vram = False,
         )
         request = LoadRequest(model_path = REPO, gguf_variant = VARIANT)
@@ -1083,8 +1078,6 @@ class TestLoadHubDownloadExclusion:
             matches_load_source = lambda _intent: True,
             adopt_load_intent_if_matched = lambda _intent: True,
             _audio_probed = True,
-            # The reuse fast path consults this before asserting CHAT ownership; a real
-            # LlamaCppBackend exposes it as a property, so the double has to carry it too.
             holds_no_vram = False,
         )
         config = SimpleNamespace(
@@ -1197,22 +1190,16 @@ class TestLoadHubDownloadExclusion:
             "mlx_context_budget",
             "spec_draft_model",
             "chat_template_override_reason",
-            # Constant True: llama.cpp allocates the window it reports.
             "context_length_enforced",
             "context_length_fitted",
-            # Constant False: each slot decodes against its own window.
             "context_unbounded_when_batched",
-            # Read from requested_extra_args, which is what the load was invoked
-            # with rather than the rewritten launch list.
+            # From requested_extra_args, not the rewritten launch list.
             "requested_llama_extra_args",
-            # Constant None: llama-server never serves an audio GGUF.
             "audio_family",
             "audio_options",
-            # None for the response validator to derive from is_audio and audio_type.
             "audio_workflows",
             "audio_reference_text",
             "audio_required_inputs",
-            # Constant None: nor converts one.
             "audio_options_by_workflow",
             "audio_workflow_tasks",
             "audio_server_task",
@@ -1246,7 +1233,7 @@ class TestLoadHubDownloadExclusion:
             assert not hf_gguf_load_in_flight("")
 
     def test_chat_load_marker_is_repo_agnostic_and_nests(self):
-        # The GPU arbiter needs to know a chat load exists before llama-server is spawned, for local paths and safetensors too, so this marker carries no repo key.
+        # Marker carries no repo key: the GPU arbiter needs it for local and safetensors loads too.
         from core.inference.llama_cpp import chat_load_active, chat_load_in_flight
 
         assert not chat_load_active()
@@ -1415,7 +1402,7 @@ class TestLoadHubDownloadExclusion:
 
         class FakeBackend:
             @_with_gguf_load_marker
-            # The marker forwards the scoped cancel event, so a loader must accept it.
+            # The marker forwards a cancel event, so loaders must accept it.
             def load_model(
                 self,
                 intent,
@@ -1457,17 +1444,13 @@ class TestLoadHubDownloadExclusion:
         source = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text(
             encoding = "utf-8"
         )
-        # Anchor on the enclosing function, not a nearby `if config.is_gguf:`: the old anchor took the last such line before the load marker, which held
-        # only while _resolve_inherited_extra_args sat above every one of them. The ordering is a property of _load_model_impl.
+        # Anchor on the enclosing function, not a nearby `if config.is_gguf:` that may move.
         marker = source.index("enter_context(gguf_load_in_flight")
         gguf_branch_start = source.rindex("async def _load_model_impl", 0, marker)
         gguf_branch = source[gguf_branch_start:]
 
-        # One chain, in this order:
-        # - _resolve_inherited_extra_args first: the inherited value (e.g. a carried --no-mmproj) shapes the guard's require_mmproj.
-        # - the gguf_load_in_flight marker before the hub-download guard: that handshake keeps a load and the download manager off the same files.
-        # - both before the CHAT handoff: the guard's 409 loads nothing, so checking it later destroyed a resident pipeline for a load that could never start.
-        # - the resident unload last. Anchored on call forms so each assertion pins a call site, not a definition.
+        # Order: inherited extras (shape require_mmproj), load marker, hub guard, CHAT handoff, unload.
+        # The guard's 409 must precede the handoff or a resident pipeline is torn down for nothing.
         assert (
             gguf_branch.index("= _resolve_inherited_extra_args(")
             < gguf_branch.index("enter_context(gguf_load_in_flight")
@@ -1513,7 +1496,6 @@ class TestLoadHubDownloadExclusion:
             captured["require_mmproj"] = require_mmproj
             return True
 
-        # A vision GGUF: require_mmproj is True unless the extras say --no-mmproj.
         config = SimpleNamespace(
             is_gguf = True,
             is_lora = False,
@@ -1528,7 +1510,6 @@ class TestLoadHubDownloadExclusion:
             identifier = REPO,
             display_name = REPO,
         )
-        # Pass-through extras the running backend recorded for the last load.
         llama_backend = SimpleNamespace(
             is_loaded = False,
             extra_args = list(stored_extra_args),
@@ -1581,13 +1562,9 @@ class TestLoadHubDownloadExclusion:
         return captured["require_mmproj"]
 
     def test_inherited_extra_args_shape_hub_guard_require_mmproj(self):
-        # Inheritance must resolve before the hub-download guard: an inherited
-        # --no-mmproj decides require_mmproj, so resolving later rejects a load
-        # over a download the effective arguments disable (#7251).
+        # Inherited --no-mmproj decides require_mmproj, so inheritance must resolve before the hub guard.
         assert self._capture_hub_guard_require_mmproj(["--no-mmproj"]) is False
-        # Control: nothing to inherit, so a vision GGUF still needs its mmproj.
         assert self._capture_hub_guard_require_mmproj([]) is True
-        # An explicit request list wins over the stored one, both ways.
         assert (
             self._capture_hub_guard_require_mmproj([], request_extra_args = ["--no-mmproj"]) is False
         )
@@ -1802,7 +1779,6 @@ def test_the_apply_dedup_sees_the_drafter_the_launch_opened(tmp_path):
 
     roots = local_path_gguf_companion_roots(str(weights))
     assert tuple(map(Path, roots)) == (weights, companions)
-    # The drafter the launch actually opens, through the real ModelConfig.
     launched = ModelConfig.from_identifier(
         str(weights), gguf_variant = "Q4_K_M", gguf_companion_roots = roots
     ).gguf_mtp_file
@@ -1827,8 +1803,7 @@ def test_the_apply_dedup_sees_the_drafter_the_launch_opened(tmp_path):
     )
     assert intent.mtp_draft_path == launched
 
-    # A load that recorded no widening keeps the single-snapshot answer, so a
-    # deliberately pinned revision is still compared against its own root only.
+    # No recorded widening: a pinned revision compares only against its own root.
     backend._openai_gguf_companion_roots = ()
     pinned = route._active_gguf_intent(
         LoadRequest(model_path = str(weights), gguf_variant = "Q4_K_M"),
@@ -1945,7 +1920,6 @@ def test_an_explicitly_empty_companion_scope_is_not_recomputed():
     pinned._gguf_companion_roots = ()
     pinned._gguf_companion_roots_set = True
     assert pinned._gguf_companion_roots == ()
-    # Private, so the marker cannot be set through the wire model either.
     assert "_gguf_companion_roots_set" not in pinned.model_dump()
     injected = LoadRequest(model_path = "/models/x", _gguf_companion_roots_set = True)
     assert injected._gguf_companion_roots_set is False

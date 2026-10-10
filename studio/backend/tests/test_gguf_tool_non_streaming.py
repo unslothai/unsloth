@@ -25,8 +25,6 @@ class _ToolGgufBackend(FakeLlamaCppBackend):
     context_length = 8192
 
     def generate_chat_completion_with_tools(self, **kwargs):
-        # The agentic loop runs one tool, then the model answers. Event shapes
-        # mirror the real GGUF loop (tool_start/tool_end/content/metadata).
         yield {
             "type": "tool_start",
             "tool_name": "python",
@@ -52,7 +50,6 @@ def _client(monkeypatch, backend = None):
     monkeypatch.setattr(
         inference_route, "get_llama_cpp_backend", lambda: backend or _ToolGgufBackend()
     )
-    # Tools forced on -- the same effect as the CLI `run --model` tool policy.
     monkeypatch.setattr(inference_route, "_effective_enable_tools", lambda payload: True)
 
     async def _fake_select(payload, **_kwargs):
@@ -78,7 +75,6 @@ def test_non_streaming_tool_call_returns_single_json(monkeypatch):
     response = _client(monkeypatch).post("/chat/completions", json = _payload(stream = False))
 
     assert response.status_code == 200
-    # The bug returned text/event-stream here; it must be a single JSON object.
     assert response.headers["content-type"].startswith("application/json")
 
     body = response.json()
@@ -92,8 +88,7 @@ def test_non_streaming_tool_call_returns_single_json(monkeypatch):
 
 
 def test_streaming_tool_call_still_streams(monkeypatch):
-    # The parallel path is untouched: stream:true keeps returning SSE. An unrestricted
-    # enable_tools arms the confirm gate, which asks over the control frames.
+    # Unrestricted enable_tools arms the confirm gate, which needs the SSE control frames.
     response = _client(monkeypatch).post(
         "/chat/completions",
         json = _payload(stream = True),
@@ -117,7 +112,6 @@ class _EventsBackend(_ToolGgufBackend):
 
 
 def test_non_streaming_missing_usage_defaults_to_zero(monkeypatch):
-    # No metadata event at all: usage zero-defaults and finish_reason falls back.
     events = [{"type": "content", "text": "hi"}]
     response = _client(monkeypatch, _EventsBackend(events)).post(
         "/chat/completions", json = _payload(stream = False)
@@ -148,13 +142,10 @@ def test_non_streaming_preserves_length_finish_reason(monkeypatch):
     assert response.status_code == 200
     body = response.json()
     assert body["choices"][0]["finish_reason"] == "length"
-    # total_tokens is derived when the server omits it.
     assert body["usage"]["total_tokens"] == 12
 
 
 def test_non_streaming_preserves_cached_tokens(monkeypatch):
-    # KV-cache hit details from the metadata event must survive into the body
-    # (the tool path used to drop them and always report cached_tokens=0).
     events = [
         {"type": "content", "text": "hi"},
         {

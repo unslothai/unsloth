@@ -213,7 +213,7 @@ def test_a_clone_run_hands_the_worker_an_account_path_and_saves_the_clip(stub, t
         {"options": {"voice_ref": "/etc/passwd"}},
         {"options": {"source_audio": "/etc/passwd"}},
         {"options": {"codec_model_path": "/etc/passwd"}},
-        {"options": {"video": "/etc/passwd"}},  # ControlFoley
+        {"options": {"video": "/etc/passwd"}},
         {"options": {"reference_image": "/etc/passwd"}},
         {"options": {"nested": {"a": 1}}},
         {"workflow": "transcribe"},
@@ -229,9 +229,9 @@ def test_client_paths_and_unknown_fields_are_422(stub, body):
 @pytest.mark.parametrize(
     "options",
     [
-        {"min_new_audio_steps": 10, "max_new_audio_steps": 900},  # FireRedAudio
-        {"no_ref": True},  # Irodori
-        {"audio_chunk_threshold_sec": 30, "audio_chunk_duration_sec": 20},  # DramaBox
+        {"min_new_audio_steps": 10, "max_new_audio_steps": 900},
+        {"no_ref": True},
+        {"audio_chunk_threshold_sec": 30, "audio_chunk_duration_sec": 20},
         {"use_video": True},
     ],
 )
@@ -582,7 +582,6 @@ def test_music_variations_are_saved_as_one_group(stub, tmp_path):
     assert [m["settings"]["seed"] for m in metas] == [40, 41, 42]
     assert metas[0]["settings"]["mode"] == "song" and metas[0]["settings"]["duration_s"] == 10.0
     assert metas[0]["settings"]["options"] == {"sampler": "euler"}
-    # Stable Audio always plays instrumental and ignores lyrics; history says what ran.
     assert (metas[0]["settings"]["instrumental"], metas[0]["settings"]["lyrics"]) == (True, None)
     items = {i["id"]: i for i in listing["audio"]}
     for clip in body["clips"]:
@@ -692,7 +691,7 @@ def test_music_refusals_name_the_fix(stub, body, detail):
 def test_edit_refusals_need_the_source(stub):
     stub["use"](STABLE_AUDIO, _music_info())
     sources = _alice_sources()
-    clip = {"clip_id": sources["clip_id"]}  # 0.1 s long
+    clip = {"clip_id": sources["clip_id"]}
     with _client(ALICE) as client:
         past = _edit(client, clip, ranges = [{"start_s": 0.2, "end_s": 0.4}])
         assert past.status_code == 400 and "after the clip ends" in past.json()["detail"]
@@ -715,7 +714,6 @@ def test_a_source_longer_than_the_model_can_return_is_refused(stub, monkeypatch)
     with _client(ALICE) as client:
         response = _edit(client, {"clip_id": sources["clip_id"]})
     assert response.status_code == 400
-    # Stable Audio Small returns at most ~120 s, so a longer edit would come back cut.
     assert response.json()["detail"] == "Edit clips up to 2 minutes. Trim it first."
     assert stub["backend"].calls == []
 
@@ -1001,7 +999,7 @@ def _staging_and_stems(tmp_path):
 
 
 def test_a_separation_prepares_44k_and_saves_every_stem_as_one_group(sep, tmp_path):
-    input_id = _input(ALICE, 2.0)  # 48 kHz stereo
+    input_id = _input(ALICE, 2.0)
     with _client(ALICE) as client:
         response = _separate(client, {"input_id": input_id}, seed = 3)
         assert response.status_code == 200, response.text
@@ -1040,7 +1038,6 @@ def test_a_separation_prepares_44k_and_saves_every_stem_as_one_group(sep, tmp_pa
         assert str(tmp_path) not in sidecar and ".separate-" not in sidecar
     for text in (response.text, listed):
         assert str(tmp_path) not in text and ".separate-" not in text
-    # The listing keeps the group, so history shows the run as one item.
     stems = [c for c in json.loads(listed)["audio"] if c["workflow"] == "separate"]
     assert {c["group_id"] for c in stems} == {body["group_id"]}
     assert sorted(c["role"] for c in stems) == sorted(SIX_STEMS)
@@ -1586,7 +1583,6 @@ def test_an_rvc_run_converts_an_upload_to_a_builtin_voice(stub, tmp_path):
     assert "voice_id" not in meta and "source_clip_id" not in meta
     sidecar = json.dumps(meta)
     assert str(tmp_path) not in sidecar and "inputs" not in sidecar
-    # The upload expires, so the clip keeps the 16 kHz copy the model heard beside it.
     assert meta["source_saved"] is True
     kept = tmp_path / "accounts" / ALICE.account_id / "audio" / f"{clip['id']}.source.wav"
     assert kept.read_bytes() == source.read_bytes()
@@ -1626,7 +1622,6 @@ def test_a_seed_vc_run_takes_a_history_clip_and_a_saved_voice_at_its_rates(stub,
     assert meta["prompt"] == "alice said → Alice"
     assert (meta["source_clip_id"], meta["voice_id"]) == (sources["clip_id"], sources["voice_id"])
     assert meta["reference_name"] == "Alice" and "target_builtin" not in meta
-    # A history clip stays in history: no copy, and no source file to serve.
     assert "source_saved" not in meta
     clip_id = response.json()["clips"][0]["id"]
     audio_dir = tmp_path / "accounts" / ALICE.account_id / "audio"
@@ -1662,7 +1657,6 @@ def test_convert_client_paths_and_unknown_fields_are_422(stub, body):
 def test_convert_fields_on_clone_and_speak_are_422(stub):
     with _client(ALICE) as client:
         assert _run(client, convert = {"mode": "speech"}).status_code == 422
-        # A source on clone or speak reaches the route, which refuses it as Music-only.
         assert _run(client, inputs = {"source": {"input_id": "a" * 32}}).status_code == 400
         assert _run(client, workflow = "speak", text = None).status_code == 422
     assert stub["backend"].calls == []
@@ -1824,7 +1818,6 @@ def test_the_worker_and_orchestrator_carry_convert_and_the_running_task(monkeypa
     )
     (cmd,) = sent
     assert cmd["convert"] == convert and cmd["audio_inputs"] == {"source": "/abs/s.wav"}
-    # The status mirror follows the server the run left running.
     assert orchestrator.models["m"]["audio_server_task"] == "vc"
 
 

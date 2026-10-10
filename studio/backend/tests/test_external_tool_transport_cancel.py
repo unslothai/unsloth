@@ -30,7 +30,7 @@ class _StallingClient:
             await self.released.wait()
             yield "data: [DONE]"
         finally:
-            # Where the real client awaits response.aclose().
+            # where the real client awaits response.aclose()
             self.torn_down = True
 
 

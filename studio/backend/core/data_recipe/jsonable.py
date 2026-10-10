@@ -51,7 +51,7 @@ def _to_pil_from_hf_image_dict(value: Any) -> Any | None:
 
     path_value = value.get("path")
     if isinstance(path_value, str) and path_value.strip():
-        # Row cells are user data: a managed account may only preview files it could read itself.
+        # A managed account may only preview files it could read itself.
         from fastapi import HTTPException
         from core.training.account_jobs import account_path
 
@@ -69,8 +69,7 @@ def _to_pil_from_hf_image_dict(value: Any) -> Any | None:
     return None
 
 
-# Resolved once: to_jsonable runs per value, and importing pandas per value cost 30% of it. The
-# placeholder is a private object rather than None, which a real value can be.
+# Resolved once: importing pandas per value cost 30%. Sentinel, since None is a real value.
 _NO_SENTINEL = object()
 _PANDAS_NA: Any = _NO_SENTINEL
 _PANDAS_NAT: Any = _NO_SENTINEL
@@ -98,11 +97,11 @@ def to_jsonable(value: Any) -> Any:
     except ImportError:  # pragma: no cover
         np = None  # type: ignore
 
-    # Ahead of everything below: NaT isoformat()s to "NaT" and NA hits the str() fallback.
+    # First: NaT isoformat()s to "NaT" and NA hits the str() fallback.
     if _is_pandas_missing(value):
         return None
 
-    # DuckDB hands a DECIMAL back as a float and pyarrow as a Decimal: 1.2 against "1.20".
+    # DuckDB returns DECIMAL as float, pyarrow as Decimal.
     if isinstance(value, Decimal):
         return float(value)
 
@@ -114,7 +113,7 @@ def to_jsonable(value: Any) -> Any:
             if not isinstance(value, float):
                 return value
 
-    # pandas' missing number is NaN; Starlette refuses NaN/inf, so one blank cell 500'd the page.
+    # Starlette refuses NaN/inf.
     if isinstance(value, float):
         return value if math.isfinite(value) else None
 

@@ -28,7 +28,7 @@ ENV_DEVICE = "UNSLOTH_SYSTEMONE_DEVICE"
 
 
 def _owner_setting(key: str) -> Any:
-    # Installation-wide: a managed account's API key must see the owner's switch, not its own database.
+    # Installation-wide: a managed account's API key must see the owner's switch.
     from storage.studio_db import get_app_setting
     from utils.account_context import OWNER, bind_account, reset_account
 

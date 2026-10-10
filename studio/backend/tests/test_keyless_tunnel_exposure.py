@@ -102,7 +102,7 @@ def test_a_published_tunnel_closes_loopback_and_leaves_the_lan_listener_alone(mo
             loopback, lan = request_for(LOOPBACK), request_for(LAN)
         # loopback is ambiguous while a tunnel terminates on it
         assert keyless_request_allowed(loopback) is False, signal
-        # on a wildcard bind the managed tunnel does not arrive with a LAN address
+        # on a wildcard bind the managed tunnel never arrives with a LAN address
         assert keyless_request_allowed(lan) is True, signal
         monkeypatch.setattr(host_policy, "_remote_connector_active", False, raising = False)
 

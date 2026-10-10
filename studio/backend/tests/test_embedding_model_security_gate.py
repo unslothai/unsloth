@@ -47,8 +47,7 @@ def _plan(model, backend):
 
 @pytest.fixture
 def client(monkeypatch):
-    # The settings scan unions in the ST module dirs read from modules.json; keep it
-    # offline and deterministic for the endpoint tests that use this fixture.
+    # keep the modules.json ST dir scan offline and deterministic
     import core.rag.embeddings as embeddings
 
     monkeypatch.setattr(embeddings, "_st_module_subdirs", lambda name, token = None: ())
@@ -93,7 +92,6 @@ def client(monkeypatch):
     app = FastAPI()
     app.include_router(settings.router)
     app.dependency_overrides[settings.get_current_subject] = lambda: "admin"
-    # Classified by caller now, so the app must be able to say which caller this is.
     app.dependency_overrides[settings.allow_ambient_hf_token] = lambda: True
     return TestClient(app, raise_server_exceptions = False), saved
 
@@ -104,9 +102,9 @@ def test_flagged_repo_is_blocked_even_with_force(client, monkeypatch):
     r = c.put(
         "/embedding-model", json = {"embedding_model": "attacker/malicious-embed", "force": True}
     )
-    # 403, not the forceable 409, so the client does not offer "save anyway".
+    # 403, not the forceable 409, so the client does not offer "save anyway"
     assert r.status_code == 403
-    assert "model" not in saved  # force must not persist a flagged repo
+    assert "model" not in saved
 
 
 def test_flagged_repo_is_blocked_without_force(client, monkeypatch):
@@ -130,14 +128,11 @@ def test_uncached_selection_is_marked_pending_so_loaders_stay_offline(client, mo
 
 
 def test_hard_block_uses_non_forceable_status(client, monkeypatch):
-    # The forceable verification path uses 409; the hard security block must be distinct
-    # (403) so the frontend never routes it into the "save anyway" force flow.
     c, _saved = client
     monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = True))
     blocked = c.put("/embedding-model", json = {"embedding_model": "attacker/malicious-embed"})
     assert blocked.status_code == 403
 
-    # A verification failure (not-an-embedding-model) stays forceable at 409.
     monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = False))
     monkeypatch.setattr(settings, "is_embedding_model", lambda *a, **k: False, raising = False)
     import utils.models as _models
@@ -148,8 +143,7 @@ def test_hard_block_uses_non_forceable_status(client, monkeypatch):
 
 
 def test_offline_cached_non_st_model_is_accepted(client, monkeypatch):
-    # Offline, a cached transformers-native embedder (no modules.json) is unverifiable via HF
-    # metadata, but ST can load any cached encoder, so accept it (no 409).
+    # ST can load any cached encoder offline, so accept it without HF metadata
     c, saved = client
     monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = False))
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
@@ -164,8 +158,6 @@ def test_offline_cached_non_st_model_is_accepted(client, monkeypatch):
 
 
 def test_offline_partial_or_uncached_model_still_409(client, monkeypatch):
-    # Offline but not loadable (uncached or metadata-only partial cache): keep the forceable
-    # 409, since the cache-only load would fail anyway.
     c, _saved = client
     monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = False))
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
@@ -179,8 +171,7 @@ def test_offline_partial_or_uncached_model_still_409(client, monkeypatch):
 
 
 def test_offline_skips_remote_gguf_probe(client, monkeypatch):
-    # Offline + llama backend: the remote GGUF probe (list_repo_files) must be skipped so a
-    # dead-DNS session cannot hang.
+    # offline llama path must skip list_repo_files so a dead-DNS session cannot hang
     c, _saved = client
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     monkeypatch.setattr(settings, "_llama_backend_active", lambda *_: True)
@@ -234,8 +225,7 @@ def test_security_scan_uses_the_resolved_destination_backend(client, monkeypatch
 
 
 def test_llama_backend_skips_the_st_pickle_scan(monkeypatch):
-    # On the llama-server backend the embedder loads GGUF (inert), not the ST repo's
-    # pickle, so a flagged ST repo with a clean GGUF companion must not be rejected here.
+    # the llama backend loads inert GGUF, not the ST pickle, so a flagged ST repo is fine
     saved: dict = {}
     monkeypatch.setattr(settings, "default_embedding_model", lambda: "unsloth/default-embed")
     monkeypatch.setattr(settings, "validate_embedding_model", lambda v: v)
@@ -261,7 +251,6 @@ def test_llama_backend_skips_the_st_pickle_scan(monkeypatch):
     monkeypatch.setattr(settings, "_resolves_as_local_gguf", lambda m: False)
     monkeypatch.setattr(settings, "get_rag_embedding_model", lambda: saved.get("model", ""))
     monkeypatch.setattr(settings, "get_stored_embedding_model", lambda: saved.get("model"))
-    # force skips the GGUF availability checks; the ST pickle gate is what we assert is skipped.
     called = {"scanned": False}
     mod = _types.ModuleType("utils.security")
 
@@ -283,20 +272,15 @@ def test_llama_backend_skips_the_st_pickle_scan(monkeypatch):
         json = {"embedding_model": "attacker/flagged-st-clean-gguf", "force": True},
     )
     assert r.status_code == 200
-    assert called["scanned"] is False  # the ST pickle scan never ran on the llama path
+    assert called["scanned"] is False
     assert saved.get("model") == "attacker/flagged-st-clean-gguf"
 
 
 def test_runtime_llama_fallback_skips_the_st_pickle_scan(monkeypatch):
-    # auto resolves to sentence-transformers (GPU present) but the embedder fell back to
-    # llama-server at runtime (torch/CUDA load or encode failure), so the process now loads
-    # only inert GGUF. The real _llama_backend_active() must reflect that cached fallback,
-    # so a flagged ST repo with a clean GGUF companion must not be hard-blocked here.
+    # the embedder fell back to llama-server at runtime; the real check must honor that
     import core.rag.embeddings as embeddings
     from core.rag.embed_llama_server import LlamaServerBackend
 
-    # Simulate the runtime fallback: the process-wide backend is a LlamaServerBackend even
-    # though the auto resolver would still say sentence-transformers.
     monkeypatch.setattr(embeddings, "_backend", LlamaServerBackend())
     monkeypatch.setattr(embeddings, "_resolve_auto", lambda: "sentence-transformers")
     monkeypatch.setattr(embeddings, "_st_module_subdirs", lambda name, token = None: ())
@@ -317,8 +301,7 @@ def test_runtime_llama_fallback_skips_the_st_pickle_scan(monkeypatch):
             )
         ),
     )
-    # Deliberately do NOT monkeypatch settings._llama_backend_active: this test exercises the
-    # real delegation to embeddings.active_backend_is_llama() so the cached fallback is honored.
+    # deliberately not patching _llama_backend_active: exercises the real delegation
     monkeypatch.setattr(settings, "_resolves_as_local_gguf", lambda m: False)
     monkeypatch.setattr(settings, "get_rag_embedding_model", lambda: saved.get("model", ""))
     monkeypatch.setattr(settings, "get_stored_embedding_model", lambda: saved.get("model"))
@@ -349,45 +332,37 @@ def test_runtime_llama_fallback_skips_the_st_pickle_scan(monkeypatch):
         json = {"embedding_model": "attacker/flagged-st-clean-gguf", "force": True},
     )
     assert r.status_code == 200
-    assert called["scanned"] is False  # the ST pickle scan never ran on the llama fallback
+    assert called["scanned"] is False
     assert saved.get("model") == "attacker/flagged-st-clean-gguf"
 
 
 def test_active_backend_is_llama_reflects_cache_and_resolver(monkeypatch):
-    # active_backend_is_llama() reports the ACTUAL built backend when one exists, and defers
-    # to the resolver (fresh-process behavior) when none has been built yet.
     import core.rag.embeddings as embeddings
     import core.rag.config as rag_config
     from core.rag.embed_llama_server import LlamaServerBackend
 
-    # A cached llama backend wins even when auto would resolve to sentence-transformers.
     monkeypatch.setattr(rag_config, "EMBED_BACKEND", "auto")
     monkeypatch.setattr(embeddings, "_resolve_auto", lambda: "sentence-transformers")
     monkeypatch.setattr(embeddings, "_backend", LlamaServerBackend())
     assert embeddings.active_backend_is_llama() is True
 
-    # A cached ST backend reports False even when the resolver now picks llama, so its
-    # pickle stays gated (the cached backend, not the resolver, is what actually embeds).
+    # the cached backend, not the resolver, is what actually embeds
     monkeypatch.setattr(embeddings, "_resolve_auto", lambda: "llama-server")
     monkeypatch.setattr(embeddings, "_backend", embeddings._SentenceTransformersBackend())
     assert embeddings.active_backend_is_llama() is False
 
-    # No cached backend -> the resolver decides, unchanged from before.
     monkeypatch.setattr(embeddings, "_resolve_auto", lambda: "sentence-transformers")
     monkeypatch.setattr(embeddings, "_backend", None)
-    assert embeddings.active_backend_is_llama() is False  # auto -> sentence-transformers
+    assert embeddings.active_backend_is_llama() is False
 
     monkeypatch.setattr(embeddings, "_resolve_auto", lambda: "llama-server")
-    assert embeddings.active_backend_is_llama() is True  # auto -> llama-server
+    assert embeddings.active_backend_is_llama() is True
 
-    # An explicit (non-auto) key is honored verbatim without a cached backend.
     monkeypatch.setattr(rag_config, "EMBED_BACKEND", "llama-server")
     assert embeddings.active_backend_is_llama() is True
 
 
 def test_settings_scan_scopes_module_subdirs(monkeypatch):
-    # The settings scan must pass the ST module dirs (0_Transformer/) as load roots so a
-    # pickle directly under one blocks; assert those subdirs reach evaluate_file_security.
     from utils import utils as studio_utils
 
     monkeypatch.setattr(studio_utils, "hf_env_offline", lambda: False)
@@ -457,9 +432,7 @@ def test_clean_repo_saves_under_force(client, monkeypatch):
         "default_embedding_model": "unsloth/default-embed",
         "default_embedding_gguf_repo": "unsloth/default-embed-GGUF",
         "is_custom": True,
-        # Nothing is held in this process, so Unload has nothing to offer.
         "loaded": False,
-        # Nor is any other model, so the Unload control stays hidden too.
         "backend_loaded": False,
     }
 
@@ -474,12 +447,11 @@ def test_load_sink_refuses_flagged_model(monkeypatch):
 def test_load_sink_allows_clean_model(monkeypatch):
     monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = False))
     import core.rag.embeddings as embeddings
-    embeddings._guard_model_security("acme/clean-embed")  # no raise
+    embeddings._guard_model_security("acme/clean-embed")
 
 
 def test_sink_threads_ambient_token_into_scan(monkeypatch):
-    # A gated repo set via env/default has no request token; the guard must feed the
-    # loader's own token to the scan, or it fails open for the repo that still loads.
+    # a repo set via env has no request token; the scan must get the loader's token or fail open
     seen = {}
     mod = _types.ModuleType("utils.security")
     mod.security_load_subdirs = lambda name, token = None: (
@@ -498,9 +470,6 @@ def test_sink_threads_ambient_token_into_scan(monkeypatch):
 
 
 def test_sink_scopes_st_module_subdirs_into_scan(monkeypatch):
-    # A flagged pickle directly under a Transformer module dir (0_Transformer/) must
-    # reach the scan as a load root; assert the guard unions the module dirs into
-    # load_subdirs so evaluate_file_security treats such a pickle as root-level.
     seen = {}
 
     def _capture(*a, **k):
@@ -522,8 +491,6 @@ def test_sink_scopes_st_module_subdirs_into_scan(monkeypatch):
 
 
 def test_st_module_subdirs_reads_local_modules_json(tmp_path, monkeypatch):
-    # The helper must parse each module's non-empty "path" from a local repo's
-    # modules.json and drop the root-level ("") Transformer entry.
     import json
     import core.rag.embeddings as embeddings
 
@@ -541,8 +508,6 @@ def test_st_module_subdirs_reads_local_modules_json(tmp_path, monkeypatch):
 
 
 def test_st_module_subdirs_swallows_errors(monkeypatch):
-    # Any failure (no modules.json, offline, malformed) returns () so the guard never
-    # bricks the embedder.
     import huggingface_hub
     import core.rag.embeddings as embeddings
 
@@ -554,7 +519,6 @@ def test_st_module_subdirs_swallows_errors(monkeypatch):
 
 
 def test_security_block_is_not_swallowed_by_llama_fallback(monkeypatch):
-    # The ST encode fallback must re-raise a security block, not swap to llama-server.
     import core.rag.embeddings as embeddings
 
     def _boom(*a, **k):
@@ -593,7 +557,6 @@ def test_a_sentence_transformers_plan_error_is_refused_not_persisted(client, mon
     )
 
     r = c.put("/embedding-model", json = {"embedding_model": "acme/gguf-only"})
-    # 409, so the client can still offer "save anyway" as it does for a GGUF error.
     assert r.status_code == 409
     assert "No sentence-transformers weights found." in r.json()["detail"]
     assert "model" not in saved
@@ -614,10 +577,8 @@ def test_forcing_over_a_failed_plan_stays_cache_only(client, monkeypatch):
 
     assert r.status_code == 200
     assert saved["model"] == "acme/embedder"
-    # Nothing was validated, so nothing is claimed...
     assert saved["backend"] is None
     assert saved["gguf_repo"] is None
-    # ...but the loader still may not download behind the user's back.
     assert saved["download_pending"] is True
 
 
@@ -627,14 +588,12 @@ def test_unload_is_offered_while_another_model_is_still_resident(client, monkeyp
     c, _saved = client
     import core.rag.embeddings as embeddings
 
-    # A is resident; B is what Settings now names.
     monkeypatch.setattr(embeddings, "backend_is_loaded", lambda model_name = None: model_name is None)
 
     body = c.get("/embedding-model").json()
     assert body["loaded"] is False
     assert body["backend_loaded"] is True
 
-    # Nothing resident at all: neither is claimed.
     monkeypatch.setattr(embeddings, "backend_is_loaded", lambda model_name = None: False)
     body = c.get("/embedding-model").json()
     assert body["loaded"] is False
@@ -683,9 +642,7 @@ def test_the_resolved_repo_is_what_gets_verified_and_scanned(client, monkeypatch
 
     r = c.put("/embedding-model", json = {"embedding_model": "all-MiniLM-L6-v2"})
     assert r.status_code == 200
-    # The setting keeps what the user picked...
     assert saved["model"] == "all-MiniLM-L6-v2"
-    # ...but every check ran against the repo the loader will open.
     assert seen["scanned"] == "sentence-transformers/all-MiniLM-L6-v2"
     assert seen["subdirs"] == "sentence-transformers/all-MiniLM-L6-v2"
     assert seen["verified"] == "sentence-transformers/all-MiniLM-L6-v2"
@@ -719,7 +676,6 @@ def test_a_llama_download_repo_is_not_used_as_the_scan_target(client, monkeypatc
 
     r = c.put("/embedding-model", json = {"embedding_model": "acme/embedder"})
     assert r.status_code == 200
-    # The llama path does not scan the ST repo at all, so nothing was scanned.
     assert "scanned" not in seen
 
 
@@ -738,7 +694,6 @@ def test_offline_cached_acceptance_still_asks_who_is_asking(client, monkeypatch)
 
     monkeypatch.setattr(_models, "is_embedding_model", lambda *a, **k: False)
     monkeypatch.setattr(_uu, "hf_cache_snapshot_is_loadable", lambda name: True)
-    # An API key, so its token is classified as explicit and must reach the repo to read it.
     c.app.dependency_overrides[settings.allow_ambient_hf_token] = lambda: False
     hf_tokens.reset_repo_access_cache()
     monkeypatch.setattr(hf_tokens, "_hub_offline", lambda: False)
@@ -773,8 +728,7 @@ def _custom_module_repo(tmp_path):
 
 
 def test_st_gate_refuses_repo_hosted_module_class_on_local_path(tmp_path):
-    # sentence-transformers < 6 trusted repo code for any local path (CVE-2026-68770), and the
-    # embedder loads the cached snapshot directory. The gate must refuse before the code runs.
+    # sentence-transformers < 6 trusted repo code for any local path (CVE-2026-68770)
     st = pytest.importorskip("sentence_transformers")
     import core.rag.embeddings as embeddings
 
@@ -799,7 +753,6 @@ def test_st_gate_allows_stock_classes_and_explicit_trust(tmp_path):
         model, "sentence_transformers.models.Pooling", str(tmp_path), False, None, None
     )
     assert pooling.__name__ == "Pooling"
-    # An explicit opt-in still reaches the original resolver.
     _custom_module_repo(tmp_path)
     resolve(model, "custom_mod.Pooling", str(tmp_path), True, None, None)
 
@@ -821,8 +774,7 @@ def test_st_gate_is_idempotent():
 
 
 def test_st_gate_covers_router_sub_module_types():
-    # sentence-transformers 5.0-5.4 Router resolves its sub-module types with import_from_string,
-    # past both class resolvers, so the gate has to cover that name too.
+    # ST 5.0-5.4 Router resolves sub-module types via import_from_string, past the class resolvers
     st = pytest.importorskip("sentence_transformers")
     if int(st.__version__.split(".")[0]) >= 6:
         pytest.skip("sentence-transformers 6 gates this itself")

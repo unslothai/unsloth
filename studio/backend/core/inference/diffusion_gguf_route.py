@@ -13,13 +13,10 @@ import os
 import re
 from typing import Any, Optional
 
-# "0" restores the resident-only swap.
 GGUF_OFFLOAD_PREQUANT_ENV = "UNSLOTH_DIFFUSION_GGUF_OFFLOAD_PREQUANT"
 
-# Widest GGUF auto replaces (Qwen-Image-2.1 LPIPS vs bf16: Q5_K_M 0.077, int8 0.059, Q6_K 0.042, fp8 0.10-0.11).
 _MAX_REPLACED_GGUF_BITS = {"int8": 5}
 _DEFAULT_MAX_REPLACED_GGUF_BITS = 4
-# Tokens led by their bit width; any other (BF16, F16, F32, unknown) is kept.
 _GGUF_BITS_RE = re.compile(r"^(?:MXFP|IQ|P?TQ|P?Q)([0-9]+)")
 
 

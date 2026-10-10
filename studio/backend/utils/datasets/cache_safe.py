@@ -56,18 +56,16 @@ class _NoSymlinkSupport(dict):
 def _disable_hf_symlinks_for_process() -> None:
     """Switch an affected worker to HF's regular-file cache fallback."""
     os.environ["HF_HUB_DISABLE_SYMLINKS"] = "1"
-    # huggingface_hub is already imported, so update its live state too. Hub 1.9
-    # added this constant; older installs decide purely from the mapping below.
+    # Hub 1.9 added this constant; older installs use only the mapping below.
     try:
         from huggingface_hub import constants, file_download
-    except ImportError:  # never mask the load error we are recovering
+    except ImportError:
         return
 
     if hasattr(constants, "HF_HUB_DISABLE_SYMLINKS"):
         constants.HF_HUB_DISABLE_SYMLINKS = True
     symlink_support = getattr(file_download, "_are_symlinks_supported_in_dir", None)
     if isinstance(symlink_support, dict):
-        # Flipped in place too, for anything already holding the old dict.
         for cache_dir in tuple(symlink_support):
             symlink_support[cache_dir] = False
         file_download._are_symlinks_supported_in_dir = _NoSymlinkSupport(symlink_support)
@@ -83,7 +81,7 @@ def load_dataset_cache_safe(*args, **kwargs):
     """Load a dataset with narrow retries for known cache permission failures."""
     from datasets import load_dataset
 
-    # datasets is in sys.modules exactly now.
+    # After the datasets import: it is in sys.modules exactly now.
     from loggers.config import quiet_third_party_progress_bars
 
     quiet_third_party_progress_bars()
@@ -101,8 +99,6 @@ def load_dataset_cache_safe(*args, **kwargs):
             try:
                 return load_dataset(*args, **kwargs)
             except OSError as retry_error:
-                # A second 1314 is a cache dir Hub had not probed; the
-                # Unsloth-owned cache is probed fresh and clears both cases.
                 if _is_retryable_cache_error(retry_error):
                     return _retry_in_studio_cache(load_dataset, args, kwargs, retry_error)
                 raise
@@ -119,8 +115,7 @@ def _retry_in_studio_cache(load_dataset, args, kwargs, error):
         fallback,
     )
     kwargs["cache_dir"] = fallback
-    # Nested builders consult the env var while the load runs; restore it
-    # after so other datasets keep trying the shared cache first.
+    # Nested builders read the env var during the load; restore it afterwards.
     old_env = os.environ.get("HF_DATASETS_CACHE")
     os.environ["HF_DATASETS_CACHE"] = fallback
     try:

@@ -77,8 +77,7 @@ def test_an_executed_call_gives_up_its_arguments():
     assert compacted == 1
     replayed = json.loads(_replayed_arguments(fitted))
     assert str(len(body)) in replayed["new_string"]
-    # The path survives: a model that cannot see which file it just wrote answers the
-    # receipt by writing it again.
+    # Keep the path: a model that cannot see which file it wrote writes it again.
     assert replayed["path"] == "flappy-bird.html"
     assert "flappy-bird.html" in replayed["new_string"]
     assert len(_replayed_arguments(fitted)) < len(_replayed_arguments(messages))
@@ -194,7 +193,6 @@ def test_one_large_edit_beside_many_small_ones_still_compacts_all_of_them():
     fitted, compacted = compact_completed_tool_arguments(messages)
 
     assert compacted == 1
-    # Per-leaf mode leaves the fifty small edits whole, which is over half the payload.
     assert len(_args(fitted)) < before // 4
 
 
@@ -377,13 +375,10 @@ def test_compacting_a_refusal_leaves_other_calls_alone():
 @pytest.mark.parametrize(
     "prompt_tokens, servable",
     [
-        # Observed live at a 4096 window: the gate refused these while llama-server, which
-        # admits on size alone, would have served them. The model answered by retrying
-        # ever smaller edits against a bar it could not see.
+        # Observed at a 4096 window: llama-server admits on size alone and would serve these.
         (3504, True),
         (3549, True),
         (3712, True),
-        # Genuinely too big: no room left to answer in.
         (3740, False),
         (4119, False),
     ],
@@ -432,7 +427,6 @@ def test_a_receipt_cannot_be_mistaken_for_the_tools_output():
 
     assert "arguments you sent" in replayed
     assert "Not tool output" in replayed
-    # The tool's real result is the one record of what happened and is never touched.
     assert "Created a.html" in replayed
 
 
@@ -634,7 +628,6 @@ def test_a_refused_call_with_malformed_arguments_is_not_replayed_as_having_run()
         ("edit_file", "ask for a smaller file"),
         ("python", "run a shorter program"),
         ("terminal", "run a shorter command"),
-        # Not a file, not a program, and not guessable: the neutral line.
         ("mcp__server__tool", "ask for less in one call"),
     ],
 )
@@ -667,10 +660,8 @@ def test_an_earlier_success_does_not_vouch_for_a_later_declined_call():
 
     fitted, compacted = compact_completed_tool_arguments(messages)
 
-    # The first call really did run, so it is still spent.
     assert compacted == 1
     assert "a" * 4000 not in json.dumps(fitted[1])
-    # The declined one keeps its arguments and is never called written.
     assert "b" * 4000 in json.dumps(fitted[3])
     assert "already written to second.html" not in json.dumps(fitted)
 
@@ -779,7 +770,6 @@ def test_a_reply_pairs_with_the_newest_pending_call_of_a_reused_id():
         {
             "role": "assistant",
             "content": "",
-            # Announced, then the turn was interrupted: no `tool` reply ever followed.
             "tool_calls": [_call("call_0", "edit_file", path = "first.html", new_string = body_a)],
         },
         {"role": "user", "content": "Try again"},

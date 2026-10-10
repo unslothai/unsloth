@@ -26,8 +26,7 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# core/training/trainer.py imports unsloth and trl at module level (heavy, GPU init). Stub
-# whichever are missing just long enough to import it, then restore.
+# trainer.py imports unsloth and trl at module level; stub missing ones only for the import.
 _STUBS = {
     "unsloth": ("FastLanguageModel", "FastVisionModel", "is_bfloat16_supported"),
     "unsloth.chat_templates": ("get_chat_template",),
@@ -72,8 +71,7 @@ from core.training.worker import (  # noqa: E402
 if not _TRAINER_PRE_IMPORTED:
     for _name in _STUBBED:
         sys.modules.pop(_name, None)
-    # Drop the stub-bound module and its parent package so a later test re-imports it against the
-    # real packages; the UnslothTrainer class held above stays usable.
+    # Drop the stub-bound module so later tests re-import against the real packages.
     sys.modules.pop("core.training.trainer", None)
     sys.modules.pop("core.training", None)
 
@@ -117,13 +115,8 @@ def _drive(
     return state, control
 
 
-# --- LLM/VLM/audio path: UnslothTrainer._create_progress_callback ->
-# worker._create_trainer_progress_callback ---
-
-
 def _make_owner():
-    # __new__ dispatches to the MLX adapter on Apple hardware, which has no
-    # _create_progress_callback; go straight to the class under test.
+    # __new__ dispatches to the MLX adapter on Apple hardware.
     owner = object.__new__(UnslothTrainer)
     UnslothTrainer.__init__(owner)
     owner._update_progress(is_training = True, total_steps = 4, status_message = "Starting training...")
@@ -179,7 +172,6 @@ def test_parent_status_advances_over_the_whole_chain():
     backend = TrainingBackend()
     event_queue = _FakeQueue()
     owner.add_progress_callback(_create_trainer_progress_callback(event_queue))
-    # The worker sends this right before trainer.train().
     event_queue.put({"type": "status", "message": "Starting training...", "ts": 0.0})
 
     _drive(owner._create_progress_callback(), steps = 3)
@@ -311,11 +303,6 @@ def test_mlx_adapter_keeps_the_session_start_step():
     assert adapter.training_progress.session_start_step == 900
 
 
-# ---------------------------------------------------------------------------
-# Embedding path: worker._create_embedding_progress_callback
-# ---------------------------------------------------------------------------
-
-
 def _make_embedding_callback(event_queue, should_stop = lambda: False):
     return _create_embedding_progress_callback(
         event_queue,
@@ -328,7 +315,6 @@ def _make_embedding_callback(event_queue, should_stop = lambda: False):
 def test_embedding_parent_status_advances_over_the_whole_chain():
     event_queue = _FakeQueue()
     backend = TrainingBackend()
-    # The worker sends this right before trainer.train().
     event_queue.put({"type": "status", "message": "Starting embedding training...", "ts": 0.0})
 
     _drive(_make_embedding_callback(event_queue), steps = 3)

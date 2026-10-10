@@ -12,7 +12,6 @@ import pytest
 from pathlib import Path
 
 
-# The backend uses "from utils..." imports; ensure the backend dir is on sys.path.
 import sys
 
 
@@ -59,7 +58,6 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# Stub the custom logger before importing the modules under test.
 import types as _types
 
 _loggers_stub = _types.ModuleType("loggers")
@@ -157,8 +155,7 @@ def _isolated_caches(tmp_path: Path, monkeypatch):
     """Fresh in-memory + on-disk caches per test; no accidental real studio_root writes."""
     tl.clear_caches()
     monkeypatch.setattr(tl, "_cache_file", lambda: tmp_path / "transformers_latest_check.json")
-    # The sidecar swap reservation writes a lock file next to the venv dir;
-    # point it at tmp so tests never touch the real studio root.
+    # The swap reservation writes a lock next to the venv dir; keep it in tmp.
     monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(tmp_path / "venv_t5_latest"))
     monkeypatch.delenv("UNSLOTH_STUDIO_NO_LATEST_TRANSFORMERS", raising = False)
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
@@ -179,9 +176,6 @@ def _no_network(monkeypatch, exc = None):
 
     monkeypatch.setattr("urllib.request.urlopen", _raise)
     return calls
-
-
-# --- AST extraction shared with the static router ---
 
 
 class TestModelTypesFromSource:
@@ -250,9 +244,6 @@ class TestFetchRemoteModelTypes:
 
         monkeypatch.setattr("urllib.request.urlopen", _fake)
         assert _fetch_remote_model_types("main") is None
-
-
-# --- latest_transformers_supports: snapshot, cache, offline, kill switch ---
 
 
 class TestLatestTransformersSupports:
@@ -364,10 +355,7 @@ class TestLatestTransformersSupports:
         assert latest_transformers_supports("brandnew_arch") is None
         first = calls["n"]
         assert latest_transformers_supports("brandnew_arch") is None
-        assert calls["n"] == first  # backed off, no second network attempt
-
-
-# --- check_upgrade_for_model: the tier hook ---
+        assert calls["n"] == first
 
 
 def _local_model(tmp_path: Path, model_type: str) -> str:
@@ -444,7 +432,6 @@ class TestCheckUpgradeForModel:
     def test_hardcoded_tier_type_never_fetches_even_without_overlays(
         self, tmp_path: Path, monkeypatch
     ):
-        # Sidecar overlays unreadable, but the hardcoded tables route it.
         _fake_overlays(
             monkeypatch,
             {"default": frozenset({"llama"})},
@@ -496,9 +483,6 @@ class TestNestedModelTypeExtraction:
         assert _model_types_from_config({}) == []
 
 
-# --- Routing parity: overlay-shipped model_types route as before, never remote-check ---
-
-
 class TestRoutingParity:
     def test_all_overlay_types_route_identically_and_never_check(self, tmp_path: Path, monkeypatch):
         _fake_overlays(monkeypatch)
@@ -527,7 +511,7 @@ class TestRoutingParity:
         for tier in ("default", "530", "550", "510"):
             types = tv._config_model_types(tier)
             if not types:
-                continue  # overlay not provisioned in this environment
+                continue
             for model_type in types:
                 assert _tier_from_config_mapping({"model_type": model_type}) is not None
                 seen += 1
@@ -543,9 +527,6 @@ class TestRoutingParity:
         monkeypatch.setenv("UNSLOTH_STUDIO_NO_LATEST_TRANSFORMERS", "1")
         _config_json_cache.clear()
         assert get_transformers_tier(path, probe = False) == tier_default == "default"
-
-
-# --- .venv_t5_latest provisioning and routing participation ---
 
 
 class TestLatestVenvProvisioning:
@@ -628,7 +609,6 @@ class TestLatestVenvProvisioning:
 
         monkeypatch.setattr(tv, "_ensure_venv_dir", _fake_ensure)
         assert tv._ensure_venv_t5_latest_exists() is True
-        # Repair also stage-and-swaps, never installing into the live dir.
         assert recorded["dir"] == str(venv_dir) + ".staging"
         assert "transformers==5.13.0" in recorded["packages"]
         assert latest_venv_pinned_version() == "5.13.0"
@@ -644,14 +624,12 @@ class TestLatestTierRouting:
         overlays["latest"] = frozenset({"brandnew_arch"})
         _fake_overlays(monkeypatch, overlays)
         assert _tier_from_config_mapping({"model_type": "brandnew_arch"}) == "latest"
-        # Anything a lower tier ships stays on the lower tier.
         assert _tier_from_config_mapping({"model_type": "qwen3_moe"}) == "530"
 
     def test_overlay_dir_for_latest(self, tmp_path: Path, monkeypatch):
         venv_dir = tmp_path / ".venv_t5_latest"
         (venv_dir / "transformers").mkdir(parents = True)
         monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(venv_dir))
-        # Unpinned dir is ignored: activation refuses an unpinned sidecar.
         assert tv._overlay_transformers_dir("latest") is None
         (venv_dir / tv._LATEST_PIN_MARKER).write_text("5.13.0")
         assert tv._overlay_transformers_dir("latest") == str(venv_dir / "transformers")
@@ -686,9 +664,6 @@ class TestLatestTierRouting:
         monkeypatch.setattr(tv, "get_transformers_tier", lambda *a, **k: "latest")
         with pytest.raises(RuntimeError, match = "venv_t5_latest"):
             activate_transformers_for_subprocess("some/brand-new-model")
-
-
-# --- install_latest_transformers: the consent endpoint helper ---
 
 
 class TestInstallLatestTransformers:
@@ -889,7 +864,7 @@ class TestCompatPlan:
     def test_sidecar_provided_hub_checked_against_recipe_pin(self, monkeypatch):
         self._patch_env(monkeypatch, ["huggingface-hub<2.0,>=1.5.0"], {"huggingface-hub": "0.36.2"})
         extras, blockers = tl.compat_plan("5.13.0")
-        assert extras == () and blockers == []  # 1.8.0 sidecar pin satisfies it
+        assert extras == () and blockers == []
 
     def test_sidecar_provided_hub_out_of_range_blocks(self, monkeypatch):
         self._patch_env(monkeypatch, ["huggingface-hub>=2.1"], {"huggingface-hub": "0.36.2"})
@@ -1041,7 +1016,7 @@ def test_install_in_progress_reflects_reservation():
 def test_upgrade_check_sees_nested_model_types(monkeypatch):
     """A supported wrapper with a brand-new nested backbone must still signal."""
     cfg = {
-        "model_type": "llava",  # in every installed overlay
+        "model_type": "llava",
         "text_config": {"model_type": "zz_brand_new_llm"},
     }
     monkeypatch.setattr(tl, "_load_config_json", lambda *a, **k: cfg)
@@ -1139,7 +1114,7 @@ def test_install_success_invalidates_capability_caches(monkeypatch):
     assert result["success"] is True
     assert tv._probe_tier_cache == {}
     assert "latest" not in tv._config_mapping_cache
-    assert tv._config_mapping_cache.get("default") == frozenset({"llama"})  # untouched
+    assert tv._config_mapping_cache.get("default") == frozenset({"llama"})
     assert mc._vision_detection_cache == {}
 
     tv._probe_tier_cache.clear()
@@ -1219,7 +1194,7 @@ def test_upgrade_check_mixed_pypi_main_reports_dev_only(monkeypatch):
     out = tl.check_upgrade_for_model("some-org/mixed-support")
     assert out is not None
     assert out["model_type"] == "zz_new_wrapper"
-    assert out["supported_in_pypi"] is False  # no install offered
+    assert out["supported_in_pypi"] is False
     assert out["supported_in_main"] is True
 
 
@@ -1335,7 +1310,6 @@ def test_fetch_text_bounds_the_whole_transfer_not_just_socket_operations(monkeyp
     monkeypatch.setattr(tl, "_FETCH_RETRIES", 0)
     monkeypatch.setattr(tl, "_FETCH_TIMEOUT_SECONDS", 1.0)
     monkeypatch.setattr(tl, "_FETCH_DEADLINE_SECONDS", 0.4)
-    # 30 chunks 0.05s apart: ~1.5s of transfer, every gap far inside the socket timeout.
     url = _slow_drip_server(chunks = 30, gap = 0.05)
     started = time.monotonic()
     body = tl._fetch_text(url)
@@ -1403,9 +1377,7 @@ def test_waiter_never_answers_no_upgrade_while_the_refresh_is_still_running(monk
     tl.clear_caches()
 
 
-# The tests near this bound the transfer budget from above. The opposite risk lands on
-# chat as well as training: a budget that also rejects ORDINARY responses would silently
-# stop /validate ever finding an upgrade.
+# Budget must not reject ordinary responses either, or /validate never finds an upgrade.
 
 
 class _BodyServer:
@@ -1478,8 +1450,7 @@ def test_an_ordinary_response_comes_back_whole(chunked):
 
 
 def test_a_multi_chunk_body_is_not_truncated_by_the_budget():
-    # configuration_auto.py is ~200 KB against a 64 KB read, so several chunks is the
-    # normal path rather than an edge case.
+    # configuration_auto.py is ~200 KB against a 64 KB read, so several chunks is normal.
     payload = (_AUTO_SOURCE + "# padding\n" * 40_000).encode()
     with _BodyServer(payload) as server:
         body = tl._fetch_text(server.url)
@@ -1492,16 +1463,13 @@ def test_an_empty_body_is_not_a_failure():
 
 
 def test_a_missing_file_stays_distinguishable_from_a_failure():
-    # auto_mappings.py does not exist on pre-5.10 tags, so a 404 stays its own answer:
-    # as a failure it breaks every lookup against an older tag, as an empty body it
-    # caches a mapping that supports nothing.
+    # Pre-5.10 tags have no auto_mappings.py, so a 404 is its own answer.
     with _BodyServer(b"nope", status = 404) as server:
         assert tl._fetch_text(server.url) == tl._FETCH_MISSING
 
 
 def test_a_truncated_source_fails_the_lookup_instead_of_shrinking_the_map(monkeypatch):
-    # The worst outcome here: a short mapping cached for the TTL as "the architectures
-    # this release ships", offering an upgrade to every model missing from it.
+    # A truncated mapping cached for the TTL would offer upgrades to every missing model.
     truncated = _AUTO_SOURCE[: len(_AUTO_SOURCE) // 2].encode()
     with _BodyServer(truncated) as server:
         monkeypatch.setattr(tl, "_RAW_URL", server.url + "?{ref}{name}")

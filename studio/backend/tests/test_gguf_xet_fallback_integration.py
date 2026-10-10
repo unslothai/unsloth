@@ -20,8 +20,7 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# Heavy-dep stubbing; prefer the real structlog so a bare stub never leaks to
-# later modules that log at import time.
+# Prefer the real structlog so a bare stub never leaks to modules that log at import.
 _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
@@ -110,7 +109,7 @@ def test_companion_routes_through_helper(hf_cache):
         out = backend._download_mmproj(hf_repo = REPO, hf_token = None)
 
     assert out == "/fake/mmproj-vision-F16.gguf"
-    # _cancel_event must be threaded through so /unload can abort the download.
+    # _cancel_event lets /unload abort the download.
     assert captured["cancel_event"] is backend._cancel_event
 
 

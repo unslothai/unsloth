@@ -79,15 +79,12 @@ def test_no_toggle_sends_no_template_kwargs(provider_type):
 
 @pytest.mark.parametrize("enable_thinking", [True, False])
 def test_a_custom_base_url_is_never_given_template_kwargs(enable_thinking):
-    # Deep Research sends enable_thinking=False on every call, so a strict gateway behind a
-    # "custom" connection would 400 on requests the user never asked to change.
+    # enable_thinking=False is sent on every call; a strict custom gateway would 400 on it.
     body = _capture_body("custom", "some-local-model", enable_thinking = enable_thinking)
     assert "chat_template_kwargs" not in body
 
 
 def test_the_registry_flag_alone_opts_a_provider_in(monkeypatch):
-    # Nothing in the client keys on the provider name, so a new self-hosted preset needs only
-    # the registry key -- and one that is not declared compatible stays out however it is named.
     entry = dict(providers_mod.PROVIDER_REGISTRY["custom"], supports_chat_template_kwargs = True)
     monkeypatch.setitem(providers_mod.PROVIDER_REGISTRY, "custom", entry)
     body = _capture_body("custom", "some-local-model", enable_thinking = False)
@@ -95,7 +92,6 @@ def test_the_registry_flag_alone_opts_a_provider_in(monkeypatch):
 
 
 def test_a_hosted_provider_is_not_given_template_kwargs():
-    # Kimi has its own mechanism (a top-level `thinking` field) and rejects the unknown key.
     body = _capture_body("kimi", "kimi-k2.6", enable_thinking = False)
     assert "chat_template_kwargs" not in body
     assert body["thinking"] == {"type": "disabled"}

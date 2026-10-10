@@ -413,7 +413,6 @@ def test_a_failed_load_does_not_authorize_the_requester_against_the_previous_res
     monkeypatch.setattr(gpu_arbiter, "_owner_account", ALICE.account_id)
     monkeypatch.setattr(gpu_arbiter, "_prior_account", None)
 
-    # Bob's load route: the arbiter claim, then the two records published right after begin_load.
     run_as(BOB, gpu_arbiter.acquire_for, "diffusion", lambda: None)
     run_as(BOB, access.note_resident_account, "diffusion", "org/public-model")
     run_as(
@@ -424,7 +423,6 @@ def test_a_failed_load_does_not_authorize_the_requester_against_the_previous_res
         None,
         "bob/private-lora",
     )
-    # ... and the background load fails with Alice's pipeline still resident.
     assert run_as(BOB, gpu_arbiter.restore_owner_account, "diffusion") is True
     assert run_as(BOB, access.restore_resident_metadata, "diffusion") is True
 

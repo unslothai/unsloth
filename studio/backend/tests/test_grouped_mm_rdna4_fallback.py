@@ -113,7 +113,7 @@ class TestRegistration:
         assert fallback.lib.namespace == "aten"
         assert fallback.lib.kind == "IMPL"
         assert fallback.name == "_grouped_mm"
-        # ROCm dispatches through the CUDA key; "HIP"/"PrivateUse1" would not bind.
+        # ROCm dispatches through the CUDA key; HIP/PrivateUse1 would not bind.
         assert fallback.key == "CUDA"
 
     def test_registers_exactly_once(self, fallback):
@@ -293,10 +293,10 @@ class TestLinuxHipVersionGate:
     @pytest.mark.parametrize(
         "hip_str,version,affected",
         [
-            ("7.12.0", "2.10.0+rocm7.12.0", True),  # the broken kernel
+            ("7.12.0", "2.10.0+rocm7.12.0", True),
             ("7.6.0", "2.9.0+rocm7.6.0", True),
             ("6.4.0", "2.8.0+rocm6.4.0", True),
-            ("7.13.0", "2.11.0+rocm7.13.0", False),  # AMD's fix
+            ("7.13.0", "2.11.0+rocm7.13.0", False),
             ("7.14.0", "2.11.0+rocm7.14.0", False),
             ("8.0.0", "2.12.0+rocm8.0.0", False),
         ],
@@ -362,8 +362,8 @@ class TestLinuxRdna4NameMatch:
             ("AMD Radeon RX 9060 XT", True),
             ("Radeon RX9070", True),
             ("AMD Radeon AI PRO R9700", True),
-            ("AMD Radeon RX 7900 XTX", False),  # RDNA3, kernel is fine
-            ("AMD Radeon 8060S Graphics", False),  # Strix Halo
+            ("AMD Radeon RX 7900 XTX", False),
+            ("AMD Radeon 8060S Graphics", False),
             ("AMD Radeon RX 6800 XT", False),
             ("NVIDIA GeForce RTX 4090", False),
         ],
@@ -411,7 +411,7 @@ class TestLinuxGateStructure:
     def test_windows_and_linux_share_one_implementation(self):
         """Two copies of this fallback would drift; #7292 deliberately hoisted it."""
         assert _WORKER_SOURCE.count("def _install_grouped_mm_cpu_fallback(") == 1
-        assert _WORKER_SOURCE.count("_install_grouped_mm_cpu_fallback(") >= 3  # def + win32 + linux
+        assert _WORKER_SOURCE.count("_install_grouped_mm_cpu_fallback(") >= 3
 
 
 if __name__ == "__main__":

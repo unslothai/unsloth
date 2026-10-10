@@ -13,12 +13,11 @@ import routes.inference as inference_route
 
 
 def _id3_prefix() -> bytes:
-    # ID3v2.4, no payload and no footer.
     return b"ID3\x04\x00\x00\x00\x00\x00\x00"
 
 
 def test_audio_container_sniffer_distinguishes_mpeg_layers_and_adts():
-    # MPEG-1 Layer III, MPEG-1 Layer II, and ADTS AAC respectively.
+    # MPEG-1 Layer III, MPEG-1 Layer II, and ADTS AAC respectively
     assert inference_route._sniff_audio_container(b"\xff\xfb\x90\x64") == "mp3"
     assert inference_route._sniff_audio_container(b"\xff\xfd\x90\x64") is None
     assert inference_route._sniff_audio_container(b"\xff\xf1\x50\x80") is None
@@ -59,7 +58,6 @@ def test_aac_and_mp2_are_transcoded_instead_of_forwarded_as_mp3(monkeypatch):
 
 
 def _encode_wma() -> bytes:
-    # PyAV is optional in a backend install, so only the fixtures that need it skip.
     av = pytest.importorskip("av")
     buffer = io.BytesIO()
     with av.open(buffer, mode = "w", format = "asf") as output:
@@ -81,10 +79,7 @@ def _encode_wma() -> bytes:
     return buffer.getvalue()
 
 
-# 0.4 s of a 440 Hz tone as AMR-NB at 12.2 kbit/s, 678 bytes. Stored rather than encoded here:
-# PyAV 19.0.0 wheels still decode AMR but no longer ship an AMR encoder, so building the fixture
-# at test time failed every test below with UnknownCodecError while the decoder the product
-# depends on was fine. Encoded with PyAV 18.1.0 from the same tone the old fixture generated.
+# stored, not encoded: PyAV 19 wheels dropped the AMR encoder (made with PyAV 18.1.0)
 _AMR_NB_440HZ = base64.b64decode(
     "IyFBTVIKPCQCB0gQS8fMygN69kBlccAAYacLDD94AAAacSQCayA8LXrmkAA3h2BeA1oHVr3p6Gb5"
     "Lu9EzyrIpP3Gaz70MDwkBuLoADWf4ZQDevbv9s/CmWXyFVr35EkEhUFlPm0gPC2A5YgAZ5/Q0AZq"
@@ -102,14 +97,13 @@ _AMR_NB_440HZ = base64.b64decode(
 
 
 def _encode_amr() -> bytes:
-    # The decode under test still needs PyAV; only the encode step is gone.
+    # the decode under test still needs PyAV
     pytest.importorskip("av")
     return _AMR_NB_440HZ
 
 
 def test_wma_and_amr_decode_with_no_librosa(monkeypatch):
-    # Match the GGUF-only installation: PyAV is present, librosa is not. Force
-    # libsndfile out too so the test proves the PyAV fallback owns both formats.
+    # soundfile forced out too, so the PyAV fallback must own both formats
     monkeypatch.setitem(sys.modules, "soundfile", None)
     monkeypatch.setitem(sys.modules, "librosa", None)
 
@@ -263,7 +257,6 @@ def test_a_wide_container_inside_the_clock_is_streamed_not_refused(monkeypatch):
     class _FakeTorchaudio:
         @staticmethod
         def info(_path):
-            # Inside the 30-minute clock, past the ceiling once channels count.
             return types.SimpleNamespace(
                 sample_rate = 48_000,
                 num_frames = 48_000 * 20 * 60,
@@ -313,8 +306,6 @@ def test_a_load_is_capped_by_the_sample_ceiling_not_only_by_the_clock(monkeypatc
     """num_frames is the value being distrusted, so a container that understates
     it must not license a read up to the rate-relative limit: at 192 kHz that is
     four times the sample ceiling."""
-    # torch is only a source of fake tensors for the fake torchaudio below, so
-    # a machine without it should skip rather than fail, as the av cases do.
     torch = pytest.importorskip("torch")
 
     loads: list[dict] = []
@@ -325,7 +316,6 @@ def test_a_load_is_capped_by_the_sample_ceiling_not_only_by_the_clock(monkeypatc
 
         @staticmethod
         def info(_path):
-            # Claims 8 frames; the file actually holds far more.
             return types.SimpleNamespace(sample_rate = 192_000, num_frames = 8, num_channels = 2)
 
         @staticmethod
@@ -343,15 +333,13 @@ def test_a_load_is_capped_by_the_sample_ceiling_not_only_by_the_clock(monkeypatc
         pass
     else:
         raise AssertionError("expected the sample ceiling to be enforced")
-    # One frame past ceiling / channels, not past rate * seconds.
+    # one frame past ceiling / channels, not past rate * seconds
     assert loads == [{"num_frames": ceiling // 2 + 1}]
 
 
 def test_an_honest_length_is_still_read_in_full(monkeypatch):
     """Capping by both limits must not truncate a file that fits: the read window
     stays at or above what info() reported."""
-    # torch is only a source of fake tensors for the fake torchaudio below, so
-    # a machine without it should skip rather than fail, as the av cases do.
     torch = pytest.importorskip("torch")
 
     loads: list[dict] = []
@@ -463,7 +451,6 @@ def test_a_high_rate_container_is_capped_by_samples_not_only_by_clock(monkeypatc
             return False
 
         def blocks(self, **_kwargs):
-            # Well inside the 30-minute clock at this rate, past the sample cap.
             block = np.ones(ceiling + 1, dtype = np.float32)
             decoded_blocks.append(len(block))
             yield block
@@ -524,7 +511,6 @@ def test_the_librosa_fallback_reads_only_up_to_the_cap(monkeypatch):
     )
 
     inference_route._decode_audio_mono(b"container only librosa reads")
-    # Bounded by the sample ceiling at this rate, not by the 30-minute clock.
     assert seen["duration"] is not None
     assert seen["duration"] <= inference_route._MAX_DECODED_SAMPLES / 192_000 + 1
     assert seen["duration"] < inference_route._MAX_AUDIO_SECONDS
@@ -632,7 +618,7 @@ def _wav_header(
 ) -> bytes:
     block_align = channels * bits // 8
     byte_rate = byte_rate or sample_rate * block_align
-    # WAVE_FORMAT_EXTENSIBLE needs its 22-byte extension to name a sub-format.
+    # WAVE_FORMAT_EXTENSIBLE needs its 22-byte extension to name a sub-format
     extension = b""
     if sub_format:
         extension = (
@@ -662,10 +648,10 @@ def _wav_header(
 
 def _mp3_frames(seconds: float, bitrate_kbps: int = 8) -> bytes:
     """MPEG-2.5 Layer III frames at 8 kHz: 576 samples and 72 bytes each at 8 kbps."""
-    version_bits = 0x00 << 3  # MPEG 2.5
-    layer_bits = 0x01 << 1  # Layer III
+    version_bits = 0x00 << 3
+    layer_bits = 0x01 << 1
     bitrate_index = (0, 8, 16, 24, 32, 40, 48, 56, 64).index(bitrate_kbps)
-    third = (bitrate_index << 4) | (0x02 << 2)  # 8 kHz, no padding
+    third = (bitrate_index << 4) | (0x02 << 2)
     header = bytes([0xFF, 0xE0 | version_bits | layer_bits | 0x01, third, 0x00])
     length = (576 // 8) * bitrate_kbps * 1000 // 8_000
     frame = header + b"\x00" * (length - 4)
@@ -675,8 +661,7 @@ def _mp3_frames(seconds: float, bitrate_kbps: int = 8) -> bytes:
 def test_a_forwarded_wav_is_bounded_by_its_own_header(monkeypatch):
     """Passthrough returns before every bounded decoder, so the duration cap has
     to come from the header."""
-    # A small cap, so the fixture can carry the PCM its header declares rather
-    # than allocating the 24 MB that 50 minutes at 8 kHz would really take.
+    # small cap, so the fixture can carry the PCM its header declares
     monkeypatch.setattr(inference_route, "_MAX_AUDIO_SECONDS", 1)
     long_wav = _wav_header(8_000, 1, 8, 8_000 * 2) + b"\x80" * (8_000 * 2)
     try:
@@ -686,7 +671,6 @@ def test_a_forwarded_wav_is_bounded_by_its_own_header(monkeypatch):
     else:
         raise AssertionError("expected a forwarded wav to be held to the limit")
 
-    # One inside the limit is still forwarded untouched.
     short_wav = _wav_header(8_000, 1, 8, 4_000) + b"\x80" * 4_000
     encoded, container = inference_route._prepare_audio_for_llama(
         base64.b64encode(short_wav).decode()
@@ -697,9 +681,10 @@ def test_a_forwarded_wav_is_bounded_by_its_own_header(monkeypatch):
 
 def test_an_inflated_block_align_cannot_shorten_a_forwarded_wav():
     wav = bytearray(_wav_header(16_000, 1, 16, 32_000) + bytes(32_000))
-    wav[32:34] = (2_000).to_bytes(2, "little")  # nBlockAlign, which the decoder ignores
+    # nBlockAlign, which the decoder ignores
+    wav[32:34] = (2_000).to_bytes(2, "little")
     assert inference_route._wav_seconds(bytes(wav)) == 1.0
-    # Unless the samples are not byte-aligned: 12-bit samples pad to nBlockAlign's two bytes.
+    # unless samples are not byte-aligned: 12-bit samples pad to nBlockAlign's two bytes
     wav[32:36] = (2).to_bytes(2, "little") + (12).to_bytes(2, "little")
     assert inference_route._wav_seconds(bytes(wav)) == 1.0
 
@@ -725,7 +710,6 @@ def test_the_frame_walk_stops_at_the_cap(monkeypatch):
     assert len(hours) > 1_000_000
     seconds = inference_route._mp3_seconds(hours, 60.0)
     assert seconds is not None
-    # Just past the cap, not the file's full three hours.
     assert 60.0 < seconds < 61.0
 
 
@@ -733,7 +717,6 @@ def test_a_container_that_cannot_say_reports_nothing():
     """None means the walk established no length, not that there is none."""
     assert inference_route._wav_seconds(b"RIFF\x00\x00\x00\x00WAVE") is None
     assert inference_route._mp3_seconds(b"not a frame at all", 60.0) is None
-    # A tag with no frames behind it reads as no audio, not as a duration.
     assert inference_route._mp3_seconds(_id3_prefix(), 60.0) is None
 
 
@@ -792,7 +775,6 @@ def test_a_compressed_wav_is_not_measured_with_pcm_arithmetic(monkeypatch):
     _encoded, container = inference_route._prepare_audio_for_llama(base64.b64encode(adpcm).decode())
     assert container == "wav"
 
-    # Uncompressed tags keep their header arithmetic, extensible included.
     for tag in (0x0001, 0x0003):
         pcm = _wav_header(8_000, 1, 8, 8_000, format_tag = tag) + b"\x80" * 8_000
         assert inference_route._wav_seconds(pcm) == pytest.approx(1.0, rel = 1e-6)
@@ -819,8 +801,6 @@ def test_the_last_resort_decoder_reads_a_bounded_range(monkeypatch):
     get_all_samples() and only then slices to num_frames, so the argument bounds
     the return value and not the allocation. The fallback asks torchcodec for
     the metadata and reads a range instead."""
-    # torch is only a source of fake tensors for the fake torchaudio below, so
-    # a machine without it should skip rather than fail, as the av cases do.
     torch = pytest.importorskip("torch")
 
     ranges: list = []
@@ -1033,8 +1013,7 @@ def test_resampling_does_not_allocate_grids_the_length_of_the_recording():
         peak = tracemalloc.get_traced_memory()[1] - before
     finally:
         tracemalloc.stop()
-    # The result is a third of the input; anything past it plus a slice means a
-    # grid was materialized whole.
+    # the result is a third of the input; more than it plus a slice means a whole grid
     assert peak < fitted.nbytes + 16 * 1024 * 1024
 
 
@@ -1171,8 +1150,7 @@ def test_a_header_past_the_duration_cap_is_not_preallocated(monkeypatch):
         pass
     else:
         raise AssertionError("expected the duration cap to refuse this decode")
-    # 8 kHz against a one-second cap, so the ceiling is 8000 and the header's
-    # 12000 is well past it.
+    # 8 kHz against a one-second cap: ceiling 8000, the header's 12000 is past it
     ceiling = inference_route._decoded_sample_ceiling(8_000)
     assert sizes, "the decoder allocated nothing at all"
     assert max(sizes) <= ceiling, sizes
@@ -1212,7 +1190,6 @@ def test_a_header_that_undercounts_keeps_the_samples_in_order(monkeypatch):
     )
     arr, rate = inference_route._decode_audio_mono_with_soundfile(b"undercounted")
     assert rate == 8_000
-    # A ramp in, so a reorder is a descent out.
     assert np.array_equal(arr, np.arange(3_500, dtype = np.float32))
 
 
@@ -1226,8 +1203,6 @@ def test_torchaudio_alone_can_still_decode_audio(monkeypatch):
     not an acceptable way to gain a memory bound, so it falls back to the
     bounded torchcodec reader that 2.9's own load() decodes through.
     """
-    # torch is only a source of fake tensors for the fake torchaudio below, so
-    # a machine without it should skip rather than fail, as the av cases do.
     torch = pytest.importorskip("torch")
 
     class _Metadata:
@@ -1318,8 +1293,6 @@ def test_pyav_writes_into_one_buffer_rather_than_collecting_blocks(monkeypatch):
     monkeypatch.setitem(sys.modules, "librosa", None)
     expected, rate = inference_route._decode_audio_mono(raw)
 
-    # An under-reported duration has to grow the buffer instead of appending to
-    # a list, and the samples must survive the growth copies in decode order.
     monkeypatch.setattr(inference_route, "_av_expected_samples", lambda *_args: 1)
     grown, grown_rate = inference_route._decode_audio_mono(raw)
     assert grown_rate == rate
@@ -1344,7 +1317,7 @@ def test_a_forged_container_duration_cannot_ask_for_a_huge_buffer(monkeypatch):
     class _Undeclared(_Container):
         duration = 0
 
-    # Nothing declared starts at a minute and grows from there.
+    # nothing declared starts at a minute and grows from there
     assert inference_route._av_expected_samples(_Undeclared(), 48_000, ceiling) == 60 * 48_000 + 1
 
 
@@ -1367,14 +1340,12 @@ def test_no_allocation_outgrows_the_limit_the_decode_enforces(monkeypatch):
         duration = 3 * 3600 * 10**6
         streams = types.SimpleNamespace(audio = [_Stream()])
 
-    # The clock binds below the sample ceiling at 8 kHz, and vice versa at 48.
     assert inference_route._decoded_sample_ceiling(8_000) == 8_000 * 1800
     assert inference_route._decoded_sample_ceiling(192_000) == inference_route._MAX_DECODED_SAMPLES
 
     ceiling = inference_route._decoded_sample_ceiling(8_000)
     assert inference_route._av_expected_samples(_Container(), 8_000, ceiling) == ceiling
 
-    # And the growth path stops there too rather than doubling past it.
     raw = _encode_amr()
     monkeypatch.setitem(sys.modules, "soundfile", None)
     monkeypatch.setitem(sys.modules, "librosa", None)

@@ -90,7 +90,6 @@ def _request(model_name, snapshot_path):
 
 def test_a_pinned_subdir_snapshot_is_accepted_on_resume(cache_root, bicodec_subdirs, offline):
     snapshot = _snapshot(cache_root, _BICODEC)
-    # The real Spark-TTS layout: nothing loadable at the snapshot root.
     (snapshot / "config.yaml").write_text("sample_rate: 16000\n")
     _write_model(snapshot / "LLM")
 

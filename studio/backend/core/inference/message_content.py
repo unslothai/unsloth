@@ -12,8 +12,7 @@ from __future__ import annotations
 
 from typing import Any
 
-# The composer sends a long paste as a text attachment wrapped in this tag, so a paste-only turn carries no `content`
-# text at all.
+# A long paste arrives as a text attachment in this tag, with no `content` text
 _PASTED_TEXT_OPEN = "<pasted_text name="
 _PASTED_TEXT_CLOSE = "</pasted_text>"
 
@@ -32,7 +31,6 @@ def content_to_text(content: Any) -> str:
                 if item:
                     parts.append(item)
             elif isinstance(item, dict):
-                # Skip non-text parts (image_url, input_audio, ...).
                 part_type = item.get("type")
                 if part_type is not None and part_type != "text":
                     continue

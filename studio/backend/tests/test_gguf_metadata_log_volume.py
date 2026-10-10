@@ -70,7 +70,7 @@ def test_the_cache_is_bounded(tmp_path):
 TEMPLATE = (
     "{% if enable_thinking %}<think>{% endif %}"
     "{% if preserve_thinking %}keep{% endif %}"
-    # The literal the tool detector actually looks for, not a paraphrase.
+    # The exact literal the tool detector matches.
     "{% if tools %}{{ tools }}{% endif %}"
 )
 
@@ -99,7 +99,6 @@ def test_debug_level_moves_the_capability_lines_off_info(monkeypatch):
     ) and first, "the first read must still describe the model at info"
     assert repeat, "a repeat must still be logged, just not at info"
     assert [lv for lv, _ in repeat] == ["debug"] * len(repeat)
-    # Same facts, different level: nothing is lost, only demoted.
     assert [m for _, m in first] == [m for _, m in repeat]
 
 

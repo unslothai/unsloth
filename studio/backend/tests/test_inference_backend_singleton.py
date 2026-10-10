@@ -29,8 +29,7 @@ import core.inference.orchestrator as orch
 
 _ORCHESTRATOR_SRC = Path(orch.__file__)
 
-# Wide enough that every thread is inside the window before the first leaves it, small
-# enough to stay a unit test. The real window is ~2.9s.
+# Wide enough that all threads overlap the window; the real window is ~2.9s.
 _BUILD_SECONDS = 0.20
 _THREADS = 8
 

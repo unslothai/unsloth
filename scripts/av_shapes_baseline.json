@@ -292,16 +292,6 @@
       }
     },
     {
-      "file": "studio/backend/core/inference/tools.py",
-      "rule": "AV004",
-      "severity": "error",
-      "reason": "Comments describing the PowerShell flags the terminal tool refuses to run; they document a block, not a use.",
-      "digests": {
-        "1ada29153175670b": 1,
-        "5c66025065883052": 1
-      }
-    },
-    {
       "file": "studio/backend/run.py",
       "rule": "AV015",
       "severity": "warn",

@@ -33,8 +33,7 @@ from loggers import get_logger
 
 logger = get_logger(__name__)
 
-# Companion files (text projections, VAEs incl. vocoder) beside the quants in unsloth's GGUF repo: the official
-# Lightricks weights split out of the combined checkpoint. Keyed by variant.
+# Companion files (projections, VAEs, vocoder) beside the quants in unsloth's GGUF repo.
 LTX23_EXTRAS_REPO = "unsloth/LTX-2.3-GGUF"
 
 
@@ -50,7 +49,6 @@ _EXTRAS_VIDEO_VAE = "vae/ltx-2.3-22b-{variant}_video_vae.safetensors"
 _EXTRAS_AUDIO_VAE = "vae/ltx-2.3-22b-{variant}_audio_vae.safetensors"
 
 
-# from_single_file config overrides on top of the base 2.0 transformer config.
 LTX_2_3_TRANSFORMER_CONFIG_OVERRIDES: dict[str, Any] = {
     "gated_attn": True,
     "cross_attn_mod": True,
@@ -60,7 +58,6 @@ LTX_2_3_TRANSFORMER_CONFIG_OVERRIDES: dict[str, Any] = {
     "perturbed_attn": True,
 }
 
-# Keys the 2.0-era converter doesn't know; renamed before from_single_file. Audio prefix first.
 _TRANSFORMER_PRERENAME = (
     ("audio_prompt_adaln_single.", "audio_prompt_adaln."),
     ("prompt_adaln_single.", "prompt_adaln."),
@@ -122,7 +119,6 @@ _VIDEO_VAE_RENAME = {
     "down_blocks.6": "down_blocks.3",
     "down_blocks.7": "down_blocks.3.downsamplers.0",
     "down_blocks.8": "mid_block",
-    # Decoder (2.3 adds up_blocks.7/8: a 4th decoder stage)
     "up_blocks.0": "mid_block",
     "up_blocks.1": "up_blocks.0.upsamplers.0",
     "up_blocks.2": "up_blocks.0",
@@ -182,7 +178,6 @@ _AUDIO_VAE_RENAME = {
     "per_channel_statistics.std-of-means": "latents_std",
 }
 
-# Same config as LTX-2.0 (upstream's comment); the weights are still 2.3-specific.
 _AUDIO_VAE_CONFIG: dict[str, Any] = {
     "base_channels": 128,
     "output_channels": 2,
@@ -536,7 +531,6 @@ def _copy_file_chunks(
             stream.synchronize()
     finally:
         try:
-            # A failed read leaves uploads queued from the staging ring.
             stream.synchronize()
         except Exception:  # noqa: BLE001
             pass
@@ -602,10 +596,8 @@ def _load_extras_file(
         LTX23_EXTRAS_REPO,
         filename,
         hf_token,
-        # The plan counts an extras file cached under EITHER root and stages neither, so this has to resolve both or it
-        # re-pulls what the planner skipped, inline and outside the manager.
+        # Resolve extras under EITHER cache root, else re-pull what the planner skipped.
         reuse_other_cache_root = True,
-        # the switch's locality gate cleared these three artifacts by name
         local_files_only = local_files_only,
         gguf_header_delta = True,
     )
@@ -736,9 +728,7 @@ def ltx23_extras_files(checkpoint_path: Path | str) -> tuple[str, ...]:
     )
 
 
-# Upstream ltx_core's DISTILLED_SIGMA_VALUES: the fixed 8-step curve the 22B distilled DiT was trained against (the
-# scheduler appends the terminal 0). The base scheduler's shifted spacing never lands near it, so 8 steps pass this
-# verbatim.
+# Upstream ltx_core DISTILLED_SIGMA_VALUES: the fixed 8-step curve the distilled DiT expects.
 LTX23_DISTILLED_SIGMAS: tuple[float, ...] = (
     1.0,
     0.99375,
@@ -776,12 +766,11 @@ def ltx2_distilled_guidance_kwargs(call_params: Any, guidance: Optional[float]) 
     step). Only kwargs the installed pipeline accepts, so older diffusers get the call they always did."""
     kwargs = {k: v for k, v in _LTX2_GUIDANCE_OFF.items() if k in call_params}
     if "audio_guidance_scale" in call_params:
-        # Pre-#14447: audio follows the video CFG.
         kwargs["audio_guidance_scale"] = float(guidance if guidance is not None else 1.0)
     return kwargs
 
 
-# Hosted 2.3 checkpoints were baked from this file only; distilled-1.1 and dev DiTs may not take them.
+# Hosted 2.3 checkpoints were baked from this file only (not distilled-1.1 or dev DiTs).
 LTX23_PREQUANT_BASE = "Lightricks/LTX-2.3"
 LTX23_PREQUANT_SOURCE_FILES = frozenset({"ltx-2.3-22b-distilled.safetensors"})
 # Resident size of LTX-2.3-FP8.pt (19,057,628,489 bytes); companions are priced separately.
@@ -926,7 +915,6 @@ def ltx23_source_file_verified(checkpoint_path: Path | str) -> bool:
                 "video.ltx23_prequant: hashing %s once to confirm it is the official file", real
             )
             verified = ltx23_source_sha256(real) == LTX23_PREQUANT_SOURCE_SHA256
-            # Changed while being read: neither stored nor trusted.
             if _ltx23_stat_key(real.stat()) != key:
                 return False
             _ltx23_write_verdict(str(real), {**key, "verified": verified})
@@ -1264,8 +1252,7 @@ def load_ltx23_transformer(
     import diffusers
     from diffusers import LTX2VideoTransformer3DModel
 
-    # Pre-rename the 2.3-only keys the converter does not know; from_single_file then merges the config overrides into
-    # the base 2.0 config and runs the stock conversion.
+    # Pre-rename 2.3-only keys the converter does not know before from_single_file.
     for old, new in _TRANSFORMER_PRERENAME:
         for key in [k for k in dit_state if k.startswith(old)]:
             dit_state[new + key[len(old) :]] = dit_state.pop(key)
@@ -1274,7 +1261,6 @@ def load_ltx23_transformer(
         "subfolder": "transformer",
         "torch_dtype": torch_dtype,
         "token": hf_token,
-        # ``config`` is the BASE REPO, so the 2.0 transformer config is a hub read here.
         "local_files_only": local_files_only,
         **LTX_2_3_TRANSFORMER_CONFIG_OVERRIDES,
     }
@@ -1296,8 +1282,7 @@ def load_ltx23_connectors(
 ) -> Any:
     from diffusers.pipelines.ltx2.connectors import LTX2TextConnectors
 
-    # Transformer-only checkpoints carry the connector stacks but not the per-modality text projections, so fetch those
-    # from the companion file.
+    # Transformer-only checkpoints lack per-modality text projections; fetch from the companion.
     if not any(k.startswith("text_embedding_projection") for k in connector_state):
         connector_state = dict(connector_state)
         connector_state.update(
@@ -1364,8 +1349,7 @@ def load_ltx23_audio_vae_and_vocoder(
         _AUDIO_VAE_RENAME,
         torch_dtype,
     )
-    # The 2.3 vocoder is a composite (base + bandwidth-extension stack + mel STFT buffers); keys line up
-    # module-for-module after the renames.
+    # 2.3 vocoder is composite; keys line up module-for-module after the renames.
     vocoder_state = _apply_rename(_to_plain_dtype(vocoder_state, torch_dtype), _VOCODER_RENAME)
     for key in [k for k in vocoder_state if ".ups." in k]:
         vocoder_state[key.replace(".ups.", ".upsamplers.")] = vocoder_state.pop(key)
@@ -1601,9 +1585,7 @@ def _assemble_ltx23_pipeline(
     groups = _split_checkpoint(state)
     del state
 
-    # The Lightricks fp8 single files store SCALED float8 weights (.weight_scale/.input_scale companions), and casting
-    # without the scales corrupts every quantized layer, so refuse loudly and point at the GGUF quants (Q8_0 for highest
-    # fidelity).
+    # Lightricks fp8 files are SCALED float8; casting without scales corrupts weights, so refuse.
     if any(k.endswith((".weight_scale", ".input_scale")) for k in groups["dit"]):
         raise ValueError(
             "This LTX checkpoint stores scaled fp8 weights, which this loader does "
@@ -1612,7 +1594,6 @@ def _assemble_ltx23_pipeline(
         )
 
     if transformer_override is not None:
-        # Pre-built (hosted) DiT: the file contributes only connectors / VAEs / vocoder.
         transformer = transformer_override
         groups.pop("dit", None)
     else:
@@ -1648,11 +1629,7 @@ def _assemble_ltx23_pipeline(
         local_files_only = local_files_only,
     )
 
-    # Shared 2.0/2.3 components from the base repo via model_index, so upstream class renames break loudly here rather
-    # than drift. Pinned to the LIVE hub root, not huggingface_hub's import-time constant: Unsloth's cache folder is a
-    # setting, and the locality gate that cleared this switch reads the live root. An unpinned lookup after a
-    # mid-session change searches the OTHER root, so under local_files_only it raises for a base that is fully
-    # downloaded, after eviction.
+    # Pin to the LIVE hub root (a setting), not the import-time constant, to match the locality gate.
     cache_dir = _live_cache_dir()
     index = LTX2Pipeline.load_config(
         base_repo, token = hf_token, local_files_only = local_files_only, cache_dir = cache_dir

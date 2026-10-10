@@ -34,7 +34,6 @@ def test_a_video_part_is_appended_to_the_last_user_message():
     ]
     _inject_video_part(messages, "AAAA")
     assert messages[1]["content"][-1] == {"type": "input_video", "input_video": {"data": "AAAA"}}
-    # The system message is untouched.
     assert messages[0]["content"] == "be brief"
 
 
@@ -200,23 +199,14 @@ def test_a_non_gguf_model_takes_the_clip_through_one_gate_and_hands_it_to_genera
     tools_block = source[use_tools : source.index("\n    )", use_tools)]
     tools_block = "\n".join(line.split("#")[0] for line in tools_block.splitlines())
     assert "and _video_clip is None" in tools_block
-    # Structural, not literal. This pinned the exact
-    # "(image is not None or _video_clip is not None) and not _sf_use_tools"; #10970
-    # widened the image half to `_sf_has_image`, a superset, so the clause still fires
-    # for everything it used to and the test failed on the spelling.
+    # Structural, not literal: #10970 widened the image half to `_sf_has_image`.
     client_tools = source.index("_sf_client_tools = (", handler)
     block = source[client_tools : source.index("\n    )", client_tools)]
-    # Comments stripped, then narrowed to the ONE line carrying the escape hatch. Both
-    # matter: the block names an image in its own prose and carries a second
-    # `and not _sf_use_tools` conjunct, so reading the whole block passes on the wrong
-    # occurrences. Two mutations below were missed before this narrowing.
+    # Strip comments and narrow to the ONE escape-hatch line, or other occurrences match.
     block = "\n".join(line.split("#")[0] for line in block.splitlines())
     escape = next(line for line in block.splitlines() if "not _sf_tools_on" in line)
     assert "and not _sf_use_tools" in escape, escape
-    # An image and a clip have to be ALTERNATIVES, each read positively. Merely occurring
-    # is not enough: `and` for `or` stops an image-only or video-only request entering the
-    # passthrough, and `image is None` / `not _sf_has_image` invert the condition. Either
-    # order, since which side reads first is arbitrary.
+    # Image and clip must be ALTERNATIVES, each read positively, in either order.
     image = r"(?:\bimage is not None\b|\b_sf_has_(?:any_)?image\b)"
     clip = r"\b_video_clip is not None\b"
     assert re.search(rf"{image}\s+or\s+{clip}|{clip}\s+or\s+{image}", escape), escape

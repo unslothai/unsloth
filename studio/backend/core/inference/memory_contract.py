@@ -121,12 +121,7 @@ def build_memory_estimate(
     """
     resident = int(getattr(breakdown, "weights_bytes", 0) or 0)
     quant = int(quant_file_bytes or 0)
-    # Deliberately NOT clamped against `resident`, though the quant file is by definition one of the resident files and
-    # so cannot really be larger. The two figures do not come from the same place. `resident` is what the planner
-    # measured from the files it opened; `quant` is what resolved the user's chosen file, which may be a listing size or
-    # a stat of a different path. They agree in production and diverge whenever anything stubs one side, and a clamp
-    # there does not catch a bug -- it silently replaces the caller's real number with an unrelated one. The first draft
-    # of this function clamped, and the contract-freeze suite caught it truncating a 4.1 GB quant to 373 bytes.
+    # Deliberately not clamped against resident: the figures come from different sources
     return MemoryEstimate(
         available = True,
         reason = None,
@@ -149,8 +144,7 @@ def build_memory_estimate(
             if isinstance(total_bytes, _Unset)
             else int(total_bytes or 0)
         ),
-        # Not `or 0`: zero is a real answer (an all-CPU launch) and must survive distinct from None. See the field's own
-        # description.
+        # Not `or 0`: zero means an all-CPU launch and must stay distinct from None
         gpu_bytes = (
             (None if getattr(breakdown, "gpu_bytes", None) is None else int(breakdown.gpu_bytes))
             if isinstance(gpu_bytes, _Unset)
@@ -187,7 +181,6 @@ def project_estimate_memory_response(estimate: MemoryEstimate) -> dict:
     return {
         "available": estimate.available,
         "reason": estimate.reason,
-        # The aggregate meaning. See the module docstring.
         "weights_bytes": estimate.resident_files_bytes,
         "kv_bytes": estimate.kv_bytes,
         "kv_checkpoint_bytes": estimate.kv_checkpoint_bytes,
@@ -244,7 +237,6 @@ def project_kv_cache_estimate(
     ``gpu_bytes``, which is passed straight through: see its field description.
     """
     return {
-        # The quant-file meaning. See the module docstring.
         "weights_bytes": estimate.quant_file_bytes or None,
         "kv_bytes": kv_bytes or None,
         "native_context": estimate.native_context,

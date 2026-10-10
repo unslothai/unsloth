@@ -46,8 +46,7 @@ DEFAULT_CONTEXT_LENGTH = 8192
 # Names the lemond install whose NPU passed `flm validate`, so a restart needs no new Enable.
 _VALIDATED_MARKER = "npu_validated.json"
 
-# Model modes Unsloth's chat cannot serve: embeddings and transcription have no chat endpoint,
-# and a single-turn ("flash") model answers only the first message of a conversation.
+# Unservable modes: no chat endpoint for embeddings/transcription; single-turn answers once
 _EXCLUDED_LABELS = frozenset({"embeddings", "transcription", "single-turn"})
 
 _VALIDATE_PROBLEMS = (
@@ -667,7 +666,6 @@ class LemonadeNpuBackend:
                 if line.startswith("event:"):
                     event = line[len("event:") :].strip() or "progress"
                     continue
-                # A plain JSON body instead of a stream: lemond's HTTP 200 error answer.
                 raw = line[len("data:") :] if line.startswith("data:") else line
                 if not line.startswith("data:") and not line.startswith("{"):
                     continue
@@ -708,7 +706,6 @@ class LemonadeNpuBackend:
     ) -> NpuModel:
         """Load a downloaded model onto the NPU and return it once lemond reports it resident."""
         with self._lock:
-            # Cleared before the load is published, so a cancel that sees it is never wiped.
             with self._commit_lock:
                 self._load_cancelled.clear()
                 self._loading = model_id
@@ -759,7 +756,6 @@ class LemonadeNpuBackend:
             finally:
                 self._loading = None
                 if replaced and not loaded and self._server is not None:
-                    # lemond may still hold the previous model, which Studio no longer records.
                     self._server.stop()
 
     def _raise_if_load_cancelled(self, model_id: str) -> None:

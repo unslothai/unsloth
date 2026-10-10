@@ -108,8 +108,8 @@ def happy_eyeballs_connection(
     ordered = _interleave(infos)
     delay = attempt_delay()
     exceptions: list = []
-    failed: dict = {}  # sockaddr -> its failure
-    pending: dict = {}  # socket -> (sockaddr, expiry); every attempt gets the whole timeout
+    failed: dict = {}
+    pending: dict = {}  # every attempt gets the whole timeout
     winner = None
 
     def _fail(sa, exc):
@@ -120,7 +120,7 @@ def happy_eyeballs_connection(
     try:
         index = 0
         next_due = 0.0
-        kick = True  # a failed attempt lets the next one start at once (RFC 8305)
+        kick = True
         while True:
             now = time.monotonic()
             for sock, (sa, expiry) in list(pending.items()):
@@ -199,8 +199,7 @@ def happy_eyeballs_connection(
         exceptions.append(socket.timeout("timed out"))
     if all_errors and _HAS_EXCEPTION_GROUP:
         raise ExceptionGroup("create_connection failed", exceptions)  # novermin
-    # Like the stdlib, the last address in resolver order decides the error:
-    # hf_tcp_reachable reads ECONNREFUSED as "the endpoint answered".
+    # Like the stdlib, the last address decides the error; hf_tcp_reachable reads ECONNREFUSED as up.
     raise failed.get(infos[-1][4]) or socket.timeout("timed out")
 
 

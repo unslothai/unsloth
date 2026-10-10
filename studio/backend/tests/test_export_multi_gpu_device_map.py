@@ -21,7 +21,6 @@ _TESTS_DIR = Path(__file__).resolve().parent
 if str(_TESTS_DIR) not in sys.path:
     sys.path.insert(0, str(_TESTS_DIR))
 
-# Reuse the absolute-paths stub harness: loads core/export/export.py without torch/unsloth.
 from test_export_absolute_paths import (  # noqa: E402
     _install_export_backend_stubs,
     _load_module,
@@ -37,9 +36,6 @@ def _stub_hardware(monkeypatch, visible, device_map):
     hw = sys.modules["utils.hardware"]
     monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", lambda: visible, raising = False)
     monkeypatch.setattr(hw, "get_device_map", lambda ids: device_map, raising = False)
-
-
-# ── _multi_gpu_device_map_kwargs ──
 
 
 def test_multi_gpu_host_gets_balanced(monkeypatch):
@@ -67,7 +63,6 @@ def test_single_gpu_host_keeps_loader_default(monkeypatch):
 
 
 def test_non_balanced_resolution_keeps_loader_default(monkeypatch):
-    # >1 visible id but a non-CUDA device resolves to "sequential": pass nothing.
     mod = _export_mod(monkeypatch)
     monkeypatch.setattr(mod, "_IS_MLX", False)
     _stub_hardware(monkeypatch, [0, 1], "sequential")
@@ -75,7 +70,7 @@ def test_non_balanced_resolution_keeps_loader_default(monkeypatch):
 
 
 def test_uuid_mig_mask_falls_back_to_count_detection(monkeypatch):
-    # UUID/MIG masks resolve to no numeric ids, but get_device_map(None) still sees >1 GPU.
+    # UUID/MIG masks resolve to no numeric ids, but get_device_map(None) still sees >1 GPU
     mod = _export_mod(monkeypatch)
     monkeypatch.setattr(mod, "_IS_MLX", False)
     hw = sys.modules["utils.hardware"]
@@ -90,7 +85,6 @@ def test_uuid_mig_mask_falls_back_to_count_detection(monkeypatch):
 
 
 def test_no_visible_gpus_keeps_loader_default(monkeypatch):
-    # Empty mask / CPU host: get_device_map(None) resolves "sequential" -> {}.
     mod = _export_mod(monkeypatch)
     monkeypatch.setattr(mod, "_IS_MLX", False)
     hw = sys.modules["utils.hardware"]
@@ -101,7 +95,6 @@ def test_no_visible_gpus_keeps_loader_default(monkeypatch):
 
 def test_mlx_host_keeps_loader_default(monkeypatch):
     mod = _export_mod(monkeypatch)
-    # The stubs set _IS_MLX = True; even a multi-GPU view must yield no device_map.
     _stub_hardware(monkeypatch, [0, 1], "balanced")
     assert mod._multi_gpu_device_map_kwargs() == {}
 
@@ -116,9 +109,6 @@ def test_hardware_probe_failure_keeps_loader_default(monkeypatch):
 
     monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", _boom, raising = False)
     assert mod._multi_gpu_device_map_kwargs() == {}
-
-
-# ── load_checkpoint forwards the kwargs to from_pretrained ──
 
 
 class _RecordingLoader:
@@ -157,7 +147,7 @@ def test_load_checkpoint_forwards_balanced_device_map(monkeypatch, tmp_path):
 
 def test_load_checkpoint_omits_device_map_on_single_gpu(monkeypatch, tmp_path):
     kwargs = _load_text_checkpoint(monkeypatch, tmp_path, {})
-    assert "device_map" not in kwargs  # loader default (sequential) untouched
+    assert "device_map" not in kwargs
 
 
 def test_whisper_checkpoint_loads_with_its_processor_like_training(monkeypatch, tmp_path):
@@ -234,9 +224,6 @@ def test_load_checkpoint_repairs_legacy_cache_identity_without_rewriting_adapter
     assert adapter_path.read_text(encoding = "utf-8") == original_adapter
 
 
-# ── a load that succeeds but offloads to CPU/disk ──
-
-
 def test_cpu_offloaded_modules_counts_cpu_and_disk(monkeypatch):
     mod = _export_mod(monkeypatch)
     model = types.SimpleNamespace(hf_device_map = {"a": 0, "b": "cpu", "c": 1, "d": "disk"})
@@ -281,25 +268,22 @@ def _run_spill_loader(monkeypatch, tmp_path, device_map_kwargs):
 
 
 def test_successful_load_that_offloads_to_cpu_retries_single_device(monkeypatch, tmp_path):
-    # Nothing raises, so only hf_device_map catches it; otherwise the params stay on meta and kill the export.
+    # nothing raises, so only hf_device_map catches params left on meta
     ok, message, calls = _run_spill_loader(monkeypatch, tmp_path, {"device_map": "balanced"})
     assert ok, message
     assert len(calls) == 2
     assert calls[0]["device_map"] == "balanced"
-    # Named, not omitted: an omitted map is unsloth's marked default, which is upgraded
-    # back to the planner rather than being the single-device load this retry wants.
+    # named, not omitted: an omitted map is upgraded back to the planner
     assert calls[1]["device_map"] == "sequential"
 
 
 def test_single_gpu_offload_is_left_alone(monkeypatch, tmp_path):
-    # No multi-GPU map was requested, so there is nothing to retry on.
     ok, message, calls = _run_spill_loader(monkeypatch, tmp_path, {})
     assert ok, message
     assert len(calls) == 1
 
 
 def test_retry_result_is_kept_even_if_it_also_offloads(monkeypatch, tmp_path):
-    # The retry runs with _device_map_override set, so it must never recurse again.
     mod = _export_mod(monkeypatch)
 
     class _AlwaysSpills:
@@ -328,9 +312,6 @@ def test_retry_result_is_kept_even_if_it_also_offloads(monkeypatch, tmp_path):
     ok, message = backend.load_checkpoint(str(checkpoint))
     assert ok, message
     assert len(_AlwaysSpills.calls) == 2
-
-
-# ── the "unsloth" planner refusing to place the model ──
 
 
 def test_is_device_map_infeasible_matches_by_class_name(monkeypatch):
@@ -386,8 +367,7 @@ def test_planner_refusal_retries_on_the_single_device_loader(monkeypatch, tmp_pa
 
 
 def test_an_unrelated_error_is_still_reported_rather_than_retried(monkeypatch, tmp_path):
-    # The retry is for placement, not for every failure: a broken checkpoint must not
-    # be loaded twice and reported against the second attempt.
+    # retry only for placement: a broken checkpoint must not be loaded twice
     mod = _export_mod(monkeypatch)
 
     class _AlwaysBroken:
@@ -437,7 +417,6 @@ def test_the_retry_names_sequential_rather_than_omitting_the_device_map(monkeypa
         @classmethod
         def from_pretrained(cls, **kwargs):
             cls.calls.append(kwargs)
-            # Stands in for the planner: it refuses whenever it is the one asked to place.
             if (
                 kwargs.get("device_map") in ("unsloth", "unsloth_balanced", None)
                 or "device_map" not in kwargs

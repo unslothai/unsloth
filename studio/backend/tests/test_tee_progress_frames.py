@@ -47,7 +47,6 @@ def test_plain_output_is_unchanged_on_both_sides():
 
 def test_console_always_sees_every_frame():
     _log, console = _tee(["\rbar 1%", "\rbar 50%", "\rbar 100%", "\n"])
-    # The animation is the console's whole point; only the file copy collapses.
     assert console == "\rbar 1%\rbar 50%\rbar 100%\n"
 
 
@@ -67,15 +66,13 @@ def test_several_bars_in_one_chunk_collapse_per_line():
 
 
 def test_unterminated_prompt_after_a_bar_is_not_withheld():
-    # "Start Unsloth Studio now? [Y/n]: " never gets a newline; it must still reach the file,
-    # and on its own line rather than glued to the frame that was being held.
+    # A prompt with no newline must still reach the file, on its own line.
     log, _console = _tee(["\rbar 40%", "Start Unsloth Studio now? [Y/n]: "])
     assert log == "bar 40%\nStart Unsloth Studio now? [Y/n]: "
 
 
 def test_record_after_a_held_frame_stays_parseable():
-    # The reason the frame is closed off rather than prefixed: a structlog record arriving
-    # while a bar is mid-redraw must still be one JSON object on one line.
+    # A structlog record arriving mid-redraw must still be one JSON line.
     log, _console = _tee(["\rLoading weights:  47%", '{"event": "model_loaded"}\n'])
     lines = log.splitlines()
     assert lines == ["Loading weights:  47%", '{"event": "model_loaded"}']
@@ -91,7 +88,6 @@ def test_close_lands_a_frame_nothing_came_back_to_supersede():
 
 
 def test_hang_mid_bar_keeps_the_real_partial_line():
-    # The case that decides whether this is safe: a torn line is written, a frame is not.
     log, _console = _tee(["Traceback (most recent call last):", "\rbar 5%"])
     assert log == "Traceback (most recent call last):"
 
@@ -107,15 +103,8 @@ def test_file_failure_never_reaches_the_console():
     assert console.text == "still printed\n"
 
 
-# ---------------------------------------------------------------------------------------
-# A "\r" is only a redraw when something follows it on the same line.
-# ---------------------------------------------------------------------------------------
-
-
 def test_a_crlf_line_keeps_its_payload():
-    # "\r\n" is one terminator. Reading its "\r" as a redraw keeps the empty text after it
-    # and drops the line -- and on Windows every relayed child line arrives in this shape,
-    # so the session log goes blank exactly where the evidence should be.
+    # "\r\n" is one terminator; on Windows every relayed child line arrives in this shape.
     log, _console = _tee(["Hardware detected: NVIDIA GeForce RTX 4090\r\n"])
     assert log == "Hardware detected: NVIDIA GeForce RTX 4090\n"
 
@@ -152,8 +141,6 @@ def test_an_all_blank_line_never_writes_a_carriage_return():
 
 
 def test_a_zero_length_write_does_not_glue_a_frame_onto_the_next_record():
-    # print("", end = "") is enough: an empty write used to read as a continuation of the
-    # held frame, which then fell through and was written with no newline.
     log, _console = _tee(["\rLoading weights:  47%", "", '{"event": "model_loaded"}\n'])
     lines = log.splitlines()
     assert lines == ["Loading weights:  47%", '{"event": "model_loaded"}']

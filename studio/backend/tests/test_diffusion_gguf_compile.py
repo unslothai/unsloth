@@ -34,18 +34,14 @@ def test_compiled_dequant_install_uninstall_reversible():
 
     assert gc.install_compiled_dequant() is True
     assert gc.is_compiled_dequant_installed() is True
-    # The module attribute is now a different (compiled) callable...
     assert gguf_utils.dequantize_gguf_tensor is not orig
-    # ...idempotent: a second install is a no-op, attribute unchanged.
     patched = gguf_utils.dequantize_gguf_tensor
     assert gc.install_compiled_dequant() is True
     assert gguf_utils.dequantize_gguf_tensor is patched
 
     gc.uninstall_compiled_dequant()
     assert gc.is_compiled_dequant_installed() is False
-    # Exact original restored.
     assert gguf_utils.dequantize_gguf_tensor is orig
-    # Uninstall is idempotent.
     gc.uninstall_compiled_dequant()
     assert gguf_utils.dequantize_gguf_tensor is orig
 
@@ -59,7 +55,6 @@ def test_compiled_dequant_kill_switch(monkeypatch):
 
 
 def test_compiled_dequant_on_by_default(monkeypatch):
-    # The compiled dequant is the real win, so it is ON without any env opt-in.
     monkeypatch.delenv("UNSLOTH_DIFFUSION_GGUF_COMPILE_DEQUANT", raising = False)
     assert gc.install_compiled_dequant() is True
     assert gc.is_compiled_dequant_installed() is True
@@ -101,7 +96,6 @@ class TestGgufTrimmedDimsAreRestored:
         sd = {"cap_pad_token": torch.arange(8, dtype = torch.float32)}
         out = _restore_gguf_trimmed_dims(model, sd)
         assert tuple(out["cap_pad_token"].shape) == (1, 8)
-        # The values must survive the reshape in order, or the pad token is silently scrambled.
         assert torch.equal(out["cap_pad_token"].flatten(), torch.arange(8, dtype = torch.float32))
 
     def test_a_tensor_of_the_wrong_size_is_left_alone(self):

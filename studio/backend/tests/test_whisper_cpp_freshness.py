@@ -42,9 +42,6 @@ import pytest
 from utils import whisper_cpp_freshness as fr
 
 
-# Helpers.
-
-
 def _write_marker(install_dir: Path, **overrides) -> Path:
     payload = {
         "requested_tag": "latest",
@@ -76,27 +73,20 @@ def _fake_binary(install_dir: Path) -> Path:
 
 @pytest.fixture(autouse = True)
 def _reset(monkeypatch, tmp_path):
-    # Isolate disk cache per-test; never touch the real cache.
     monkeypatch.setattr(fr, "_cache_dir", lambda: tmp_path / ".freshness")
     fr.reset_caches()
     yield
     fr.reset_caches()
 
 
-# parse_release_version.
-
-
 def test_parse_release_version():
     assert fr.parse_release_version("v1.9.1-unsloth.2") == (1, 9, 1, 2)
-    assert fr.parse_release_version("1.10.0") == (1, 10, 0, 0)  # no v, no serial
+    assert fr.parse_release_version("1.10.0") == (1, 10, 0, 0)
     assert fr.parse_release_version(" v2.0.0-unsloth.10 ") == (2, 0, 0, 10)
-    assert fr.parse_release_version("v1.9") == (1, 9, 0, 0)  # padded
+    assert fr.parse_release_version("v1.9") == (1, 9, 0, 0)
     assert fr.parse_release_version("nightly") is None
     assert fr.parse_release_version(None) is None
     assert fr.parse_release_version("") is None
-
-
-# is_behind decision matrix + downgrade guard.
 
 
 def test_is_behind_serial_bump():
@@ -104,7 +94,6 @@ def test_is_behind_serial_bump():
 
 
 def test_is_behind_downgrade_guard():
-    # A lower serial or version is never "behind".
     assert fr.is_behind("v1.9.1-unsloth.2", "v1.9.1-unsloth.1") is False
     assert fr.is_behind("v1.10.0-unsloth.1", "v1.9.1-unsloth.9") is False
 
@@ -124,9 +113,6 @@ def test_is_behind_unparseable_differs_is_behind():
 def test_is_behind_missing_side_fails_open():
     assert fr.is_behind(None, "v1.9.1-unsloth.2") is False
     assert fr.is_behind("v1.9.1-unsloth.1", None) is False
-
-
-# check_prebuilt_freshness end-to-end.
 
 
 def test_check_prebuilt_freshness_reports_stale_when_old_and_behind(monkeypatch, tmp_path):

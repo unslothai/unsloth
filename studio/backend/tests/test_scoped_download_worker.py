@@ -60,7 +60,7 @@ def _run(scope = "diffusion"):
 
 
 def test_offline_scoped_download_fails_when_the_files_are_not_on_disk(offline, capsys):
-    (offline / "model_index.json").write_text("{}", encoding = "utf-8")  # the cheap file only
+    (offline / "model_index.json").write_text("{}", encoding = "utf-8")
 
     with pytest.raises(SystemExit) as exit_info:
         _run()
@@ -76,7 +76,7 @@ def test_offline_scoped_download_passes_when_every_file_is_present(offline):
         path.parent.mkdir(parents = True, exist_ok = True)
         path.write_text("weights", encoding = "utf-8")
 
-    _run()  # no SystemExit: everything the job asked for is on disk
+    _run()
 
 
 def test_a_dangling_symlink_does_not_count_as_present(offline, capsys):

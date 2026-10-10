@@ -90,7 +90,6 @@ def get_skills(current_subject: str = Depends(get_current_subject)) -> list[dict
         records = list_skills()
     except SkillError as exc:
         raise HTTPException(status_code = 500, detail = "Could not read Agent Skills.") from exc
-    # The client just saw the folders; the next inference scan must not serve an older snapshot.
     _invalidate_catalog()
     return records
 

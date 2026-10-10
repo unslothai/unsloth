@@ -44,8 +44,6 @@ def _chunk(
 
 
 _USAGE = {"prompt_tokens": 12, "completion_tokens": 5, "total_tokens": 17}
-# Final usage captured from FastFlowLM via Lemonade 11.9.0 on Strix Halo.
-# Durations are seconds; speeds are tokens per second.
 _FLM_USAGE = {
     "prompt_tokens": 20,
     "completion_tokens": 39,
@@ -263,7 +261,6 @@ def test_an_environment_proxy_never_sees_npu_chat(flm, monkeypatch):
     stop = threading.Event()
     thread = threading.Thread(target = serve, daemon = True)
     thread.start()
-    # Studio started under a proxy: its shared client picks the proxy up at construction.
     monkeypatch.delenv("NO_PROXY", raising = False)
     monkeypatch.delenv("no_proxy", raising = False)
     monkeypatch.setenv("HTTP_PROXY", f"http://127.0.0.1:{proxy.getsockname()[1]}")
@@ -366,7 +363,6 @@ def test_non_streaming_reply_is_collected_from_the_stream(flm):
     assert body["model"] == "lemonade:qwen3-0.6b-FLM"
     choice = body["choices"][0]
     assert choice["message"]["content"] == "one two seven eight"
-    # The stream's own reason: FastFlowLM's non-streaming reply says "stop" for a cutoff.
     assert choice["finish_reason"] == "length"
     assert body["usage"] == _USAGE
 
@@ -1224,7 +1220,6 @@ def test_a_cancel_racing_the_npu_load_unloads_what_landed(monkeypatch):
             return model
 
         def load(self, model_id, ctx):
-            # The Stop click lands here, before lemond reports the load in flight.
             cancel.set()
             calls.append("load")
 

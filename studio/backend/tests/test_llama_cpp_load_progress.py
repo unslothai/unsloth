@@ -30,8 +30,6 @@ from unittest.mock import patch
 
 import pytest
 
-# Stub heavy / unavailable deps before importing the module under test.
-
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
@@ -70,11 +68,8 @@ _httpx_stub.Client = type(
         "__exit__": lambda self, *a: None,
     },
 )
-# Only when the real library is absent. sys.modules holds what has been IMPORTED, not
-# what is installed, so setdefault does not defer to a real httpx that nothing in this
-# process has touched yet: the stub wins and shadows it for the whole session. This stub
-# has no Response, and starlette.testclient reads httpx.Response at import, so every
-# module collected afterwards that reaches fastapi.testclient or routes.inference dies.
+# Stub only if httpx is not installed: a stub without Response breaks later
+# starlette.testclient imports for the whole session.
 try:
     import httpx  # noqa: F401
 except ImportError:
@@ -82,11 +77,6 @@ except ImportError:
 
 from core.inference.llama_cpp import LlamaCppBackend
 import io
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 
 def _make_instance():
@@ -111,11 +101,6 @@ def _write_sparse_file(path: Path, size_bytes: int) -> None:
             fh.truncate(size_bytes)
 
 
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
-
-
 class TestLoadProgressEmptyStates:
     def test_returns_none_when_no_process(self):
         inst = _make_instance()
@@ -131,18 +116,17 @@ class TestLoadProgressSingleShard:
     def test_mmap_phase_for_alive_but_unhealthy(self, tmp_path):
         """VmRSS below total -> phase='mmap', fraction reflects progress."""
         gguf = tmp_path / "model.gguf"
-        _write_sparse_file(gguf, 40 * 1024**3)  # 40 GB
+        _write_sparse_file(gguf, 40 * 1024**3)
 
         inst = _make_instance()
-        inst._process = _FakeProc(pid = os.getpid())  # use our own pid
+        inst._process = _FakeProc(pid = os.getpid())
         inst._gguf_path = str(gguf)
         inst._healthy = False
 
-        # Patch /proc read to claim 10 GB RSS.
         def fake_open(path, *args, **kwargs):
             if str(path).startswith("/proc/"):
                 return io.StringIO(f"Name:\ttest\nVmRSS:\t{10 * 1024 ** 2}\tkB\n")
-            return open(path, *args, **kwargs)  # fall through
+            return open(path, *args, **kwargs)
 
         with patch("builtins.open", side_effect = fake_open):
             out = inst.load_progress()
@@ -151,7 +135,7 @@ class TestLoadProgressSingleShard:
         assert out["phase"] == "mmap"
         assert out["bytes_total"] == 40 * 1024**3
         assert out["bytes_loaded"] == 10 * 1024**3
-        assert 0.24 < out["fraction"] < 0.26  # ~25%
+        assert 0.24 < out["fraction"] < 0.26
 
     def test_ready_phase_when_healthy(self, tmp_path):
         gguf = tmp_path / "model.gguf"
@@ -187,7 +171,6 @@ class TestLoadProgressMultiShard:
                 tmp_path / f"model-{i:05d}-of-00004.gguf",
                 size_bytes = 20 * 1024**3,
             )
-        # An unrelated .gguf in the same folder -- must not be counted.
         _write_sparse_file(tmp_path / "mmproj-BF16.gguf", 2 * 1024**3)
 
         inst = _make_instance()
@@ -204,7 +187,7 @@ class TestLoadProgressMultiShard:
             out = inst.load_progress()
 
         assert out is not None
-        assert out["bytes_total"] == 80 * 1024**3  # 4 x 20 GB, no mmproj
+        assert out["bytes_total"] == 80 * 1024**3
 
 
 class TestLoadProgressDegradation:
@@ -232,11 +215,9 @@ class TestLoadProgressDegradation:
 
     def test_unreadable_proc_returns_none(self, tmp_path):
         inst = _make_instance()
-        # Pid that doesn't exist -> /proc read fails.
         inst._process = _FakeProc(pid = 999_999_999)
-        inst._gguf_path = str(tmp_path / "model.gguf")  # doesn't need to exist
+        inst._gguf_path = str(tmp_path / "model.gguf")
         inst._healthy = False
 
         out = inst.load_progress()
-        # FileNotFoundError on /proc path -> load_progress returns None.
         assert out is None

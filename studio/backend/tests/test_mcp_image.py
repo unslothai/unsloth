@@ -104,7 +104,6 @@ def test_public_tool_hides_only_a_mapped_string_field():
     assert public["inputSchema"]["properties"]["image"]["enum"] == [ATTACHED_IMAGE]
     assert public["inputSchema"]["properties"]["cut_borders"] == {"type": "boolean"}
     assert LOOKUP["inputSchema"]["properties"]["image"] == {"type": "string"}
-    # A field that stopped being a string (or vanished) after a server update leaves the tool as is.
     renamed = {
         "image_input_mappings_json": json.dumps([{"tool": "lookup", "field": "cut_borders"}])
     }
@@ -130,10 +129,8 @@ def test_execute_tool_inserts_the_image_only_when_given_one(mapped_server):
     out = tools_mod.execute_tool("mcp__srv1__lookup", args, mcp_image = approved)
     assert mapped_server[0]["args"]["image"] == image.encoded("data_url")
     assert args == {"image": ATTACHED_IMAGE}
-    # The server echoed its input; the bytes must not reach the model.
     assert out == "match for [attached image]"
 
-    # Repointing the server after approval must not redirect the image.
     mcp_servers_db.update_server("srv1", {"url": "https://elsewhere.example/mcp"})
     out = tools_mod.execute_tool("mcp__srv1__lookup", args, mcp_image = approved)
     assert out.startswith("Error: the MCP server changed") and len(mapped_server) == 1
@@ -145,7 +142,6 @@ def test_an_edit_while_the_card_is_open_does_not_redirect_the_image(mapped_serve
     approved = tools_mod.mcp_image_share("mcp__srv1__lookup", args, image)["image"]
     stale = mcp_servers_db.get_server("srv1")
     mcp_servers_db.update_server("srv1", {"headers_json": json.dumps({"X-Key": "other"})})
-    # execute_tool resolved the row before the edit landed.
     monkeypatch.setattr(mcp_servers_db, "get_server_for_tool", lambda _key: stale)
     out = tools_mod.execute_tool("mcp__srv1__lookup", args, mcp_image = approved)
     assert out.startswith("Error: the MCP server changed") and mapped_server == []
@@ -172,7 +168,6 @@ def test_a_mapping_revoked_before_dispatch_blocks_the_send(mapped_server, monkey
     checks = []
 
     def fake_call(**kwargs):
-        # The mapping is removed while the call waits for its session, before config_check runs.
         mcp_servers_db.update_server("srv1", {"image_input_mappings_json": "[]"})
         checks.append(kwargs["config_check"]())
         return "sent"
@@ -255,7 +250,6 @@ def test_an_approved_image_whose_mapping_vanished_is_not_forwarded(mapped_server
     image = McpImage(mime = "image/png", data = _png_bytes())
     args = {"image": ATTACHED_IMAGE}
     approved = tools_mod.mcp_image_share("mcp__srv1__lookup", args, image)["image"]
-    # A header edit drops the tool cache, so the field can no longer be resolved.
     mcp_client._tool_cache.clear()
     out = tools_mod.execute_tool("mcp__srv1__lookup", args, mcp_image = approved)
     assert out.startswith("Error: the MCP server changed") and mapped_server == []
@@ -317,7 +311,6 @@ def test_inline_images_in_an_image_calls_reply_are_withheld(prefix):
 def test_a_reencoded_echo_withholds_the_result(encode):
     image = McpImage(mime = "image/png", data = _noise_png())
     out = image.redact(f"result: {encode(image.data)}")
-    # Either the image is cut out where it sits or, when it cannot be located, the reply is withheld.
     assert out in (WITHHELD_RESULT, "result: [image withheld]")
     assert image.redact("result: Cowboy Bebop ep 5") == "result: Cowboy Bebop ep 5"
 
@@ -352,7 +345,6 @@ def test_unmapped_and_literal_arguments_take_the_ordinary_path(mapped_server):
         "destination": "trace.example",
     }
     assert share["image"].data == image.data and share["image"].recipient
-    # Credentials in URL userinfo or stdio arguments never reach the card.
     assert tools_mod._mcp_image_destination("https://u:pw@trace.example/mcp") == "trace.example"
     assert (
         tools_mod._mcp_image_destination("npx -y trace-mcp --token s3cret") == "local command npx"
@@ -627,7 +619,6 @@ def test_mappings_round_trip_through_the_routes(mapped_server):
     assert routes_mcp.list_mcp_server_tools("srv1", current_subject = "u")[0]["name"] == "lookup"
     listed = lambda: routes_mcp._row_to_response(mcp_servers_db.get_server("srv1"))  # noqa: E731
     assert listed().image_mappings_active is True
-    # The server dropped the string field: images must not be made tool-only for it.
     stale = {
         **LOOKUP,
         "inputSchema": {"type": "object", "properties": {"image": {"type": "boolean"}}},
@@ -684,7 +675,6 @@ def test_every_local_exit_without_a_tool_loop_refuses_the_image():
         "_refuse_unused_mcp_image(_mcp_image, _catalog_names(_sf_tools_to_use) if _sf_use_tools else None)",
     ):
         assert guard in statements
-    # NPU, both speech models, audio input and the GGUF passthrough return before either loop.
     calls = [
         node
         for node in ast.walk(ast.parse(src))
@@ -692,14 +682,12 @@ def test_every_local_exit_without_a_tool_loop_refuses_the_image():
         and getattr(node.func, "id", None) == "_refuse_unused_mcp_image"
     ]
     assert len(calls) == 7
-    # The forced image approval parks the GGUF stream, so the slot must be tracked for reclaim.
     slot = [
         ast.unparse(node.value)
         for node in ast.walk(ast.parse(src))
         if isinstance(node, ast.keyword) and node.arg == "on_decode_slot"
     ]
     assert slot and all("_mcp_image is not None" in expr for expr in slot)
-    # External: before any catalog, then once the Codex and the generic catalogs are resolved.
     external = inspect.getsource(inf._proxy_to_external_provider)
     assert "_refuse_unused_mcp_image(_mcp_image, _catalog_names(studio_tool_payloads))" in external
     assert "_refuse_unused_mcp_image(_mcp_image, _catalog_names(external_studio_tools))" in external
@@ -721,7 +709,7 @@ def test_the_tool_loop_must_offer_a_mapped_tool(mapped_server):
 
 
 def test_gguf_loop_gates_and_forwards_the_image_like_the_other_loops():
-    # The GGUF loop needs a live llama-server (see test_bypass_permissions), so check its source.
+    # The GGUF loop needs a live llama-server, so check its source instead.
     import ast
     import inspect
     import textwrap

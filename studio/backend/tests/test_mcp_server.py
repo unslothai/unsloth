@@ -87,8 +87,7 @@ def test_bearer_token_middleware_closes_unauthorized_websocket():
 
 
 def test_bearer_token_middleware_rejects_non_ascii_authorization():
-    # A non-ASCII bearer value must produce a clean 401, not a 500. Comparing on
-    # bytes avoids the str hmac.compare_digest TypeError on non-ASCII input.
+    # Compare on bytes: str hmac.compare_digest raises TypeError on non-ASCII input.
     events = []
 
     async def app(scope, receive, send):
@@ -144,8 +143,7 @@ def test_bearer_token_middleware_rejects_non_ascii_token():
     async def app(scope, receive, send):
         pass
 
-    # non-ASCII tokens cannot be transmitted in an HTTP header by a standard
-    # client, so they are rejected at construction instead of locking out.
+    # Standard clients cannot send non-ASCII header tokens, so reject them at construction.
     for bad in ("töken", "\U0001f600"):
         with pytest.raises(ValueError):
             BearerTokenMiddleware(app, bad)
@@ -229,8 +227,7 @@ def test_export_gguf_forwards_hf_token_and_imatrix(monkeypatch):
     assert captured["quantization_method"] == ["Q4_K_M", "Q8_0"]
     assert captured["private"] is True
     assert result["current_subject"] == "mcp"
-    # A direct call skips FastAPI, so the route's Depends default never resolves; MCP has to
-    # name the policy itself or allow_ambient arrives as a truthy Depends object.
+    # A direct call skips FastAPI, so MCP must pass allow_ambient or it gets a truthy Depends.
     assert result["allow_ambient"] is False
 
 
@@ -373,7 +370,7 @@ def test_get_recipe_job_dataset_clamps_pagination(monkeypatch):
     _stub_module(monkeypatch, "routes.data_recipe")
     _stub_module(monkeypatch, "routes.data_recipe.jobs", job_dataset = fake_job_dataset)
 
-    tool = _get_tool("get_recipe_job_dataset")  # this tool is synchronous
+    tool = _get_tool("get_recipe_job_dataset")
     tool.fn(job_id = "job-1", limit = -1, offset = -9)
 
     assert captured["limit"] == 1

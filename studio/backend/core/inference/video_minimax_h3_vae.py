@@ -443,8 +443,7 @@ def _guarded(fast: Any, stock: Any, label: str) -> Any:
     return forward
 
 
-# Activations travel as (tensor, pending_bias): the next fused pass adds the conv bias, avoiding PyTorch's
-# separate strided bias pass. A 1x1 conv folds its input's pending bias through its weight exactly.
+# Activations travel as (tensor, pending_bias): the next fused pass adds the conv bias.
 
 
 def _bias_view(bias: Any) -> Any:
@@ -1178,7 +1177,7 @@ def _install_decode_scope(vae: Any, *, fp16_accum: bool) -> bool:
     return True
 
 
-# Skipping the search measured <= 1.4% slower here; a T4 / L4 still gain 17-19% / 2-8% from it, so they keep it.
+# Skipping the search costs <= 1.4% here; T4 / L4 gain 17-19% / 2-8% from it, so they keep it.
 _AUDIO_VAE_NO_SEARCH_CAPABILITIES = frozenset({(8, 0), (10, 0), (12, 0)})
 
 
@@ -1336,7 +1335,7 @@ def apply_h3_vae_speedups(
     if LEVER_TILE_BATCH in planned:
         _try(LEVER_TILE_BATCH, lambda: _install_tile_batch(vae))
     fp16_accum = LEVER_FP16_ACCUM in planned
-    # always installed: also holds the flag OFF when float16 accumulation is not planned
+    # Always installed: also holds the flag OFF when fp16 accumulation is not planned.
     try:
         if _install_decode_scope(vae, fp16_accum = fp16_accum) and fp16_accum:
             engaged.append(LEVER_FP16_ACCUM)
@@ -1363,7 +1362,6 @@ def settle_h3_vae_fallback(state: Any, pipe: Any) -> None:
         optims = tuple(getattr(state, "speed_optims", None) or ())
         updated = tuple(o for o in optims if o not in failed)
         if updated != optims:
-            # the load states are frozen dataclasses
             object.__setattr__(state, "speed_optims", updated)
     except Exception:  # noqa: BLE001 - a status fix-up must never fail a render
         pass

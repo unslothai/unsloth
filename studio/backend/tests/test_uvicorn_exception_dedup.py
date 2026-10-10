@@ -93,8 +93,7 @@ def test_uvicorn_duplicate_traceback_is_dropped(logs):
 
 
 def test_exception_never_seen_by_the_middleware_still_logs():
-    # Raised above LoggingMiddleware (CORS, remote-access, the protocol layer): it
-    # carries no marker, so uvicorn's traceback is the only record of it and must stay.
+    # Raised above LoggingMiddleware: no marker, so uvicorn's traceback must stay.
     try:
         raise RuntimeError("cors blew up")
     except RuntimeError as exc:

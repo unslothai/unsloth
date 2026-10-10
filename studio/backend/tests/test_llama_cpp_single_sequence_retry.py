@@ -16,7 +16,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from core.inference.llama_cpp import LlamaCppBackend
 
-# Verbatim from a Strix Halo report: llama-server refusing GLM-5.3-Flash.
 _REFUSAL = (
     "0.56.012.623 E llama_init_from_model: failed to initialize the context: "
     "glm5next: the pooled indexer needs one sequence per stream, so a unified "
@@ -24,7 +23,6 @@ _REFUSAL = (
 )
 
 
-# What the binary prints: the full buffer is scanned, so the backtrace cannot bury it.
 _ASSERT = (
     "/build/llama.cpp/src/models/glm5next.cpp:1018: GGML_ASSERT(n_ps == 1 && "
     '"the per-cell pool view needs one sequence per stream") failed\n'
@@ -45,7 +43,6 @@ def test_an_unrelated_failure_is_not():
         "error loading model: unknown model architecture: 'qwen4exp'"
     )
     assert not LlamaCppBackend._is_kv_unified_refused("")
-    # minimax-m3 still loads: retrying it would cost three slots for nothing.
     assert not LlamaCppBackend._is_kv_unified_refused(
         "minimax_m3: unified KV cache with n_seq_max > 1; MSA needs per-sequence "
         "streams -> running DENSE attention. Drop --kv-unified to enable MSA."
@@ -155,13 +152,11 @@ def test_the_fit_recovery_rungs_stand_down_for_this_refusal():
 
     src = inspect.getsource(LlamaCppBackend.load_model)
     assert "_capability_crash = _tensor_capability_crash or self._is_kv_unified_refused" in src
-    # Every --fit rung, and only those: the HIP rung keeps its narrower gate.
     assert src.count("and not _capability_crash") == 3
     assert src.count("and not _tensor_capability_crash") == 1
 
 
 def test_the_retry_commits_the_one_slot_geometry_it_launched():
-    # Committed after the ladder, so the retry must overwrite what it reverses.
     import inspect
 
     src = inspect.getsource(LlamaCppBackend.load_model)

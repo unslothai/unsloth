@@ -35,13 +35,10 @@ _EXTERNAL_ENCODER_FAMILIES = frozenset({"hidream-i1"})
 # encoder repos that always ship sharded, where a missing index means an interrupted download
 _SHARDED_ENCODER_REPOS = frozenset({"unsloth/Meta-Llama-3.1-8B-Instruct"})
 
-# what from_pretrained reads besides the weights, tiny next to them but still a download
 _ENCODER_METADATA_FILES = ("config.json", "tokenizer.json", "tokenizer_config.json")
 
-# suffixes a weight-bearing pipeline component can satisfy from_pretrained with
 _WEIGHT_SUFFIXES = (".safetensors", ".bin", ".pt", ".pth", ".ckpt", ".msgpack", ".onnx")
 
-# any one of these is the vocabulary a tokenizer class builds itself from
 _TOKENIZER_ASSETS = (
     "tokenizer.json",
     "vocab.json",
@@ -112,7 +109,6 @@ def is_edit_only(pick: MediaModelPick) -> bool:
 
 def _needs_external_encoder(pick: MediaModelPick) -> bool:
     """Whether this pick's pipeline fetches an encoder that its own directory cannot hold."""
-    # an unrecognised family keeps the shortcut, since refusing every on-device model is worse
     fam = detected_image_family(pick)
     return fam is not None and getattr(fam, "name", "") in _EXTERNAL_ENCODER_FAMILIES
 
@@ -206,7 +202,6 @@ def hidden_ltx23_extras(owner: str, pick: MediaModelPick) -> bool:
         if root.exists():
             checkpoint = resolve_local_gguf_child(root, pick.gguf_filename)
         else:
-            # a cached repo id: the checkpoint is on disk all the same, and its header decides
             cached = _cached_snapshot_file(pick.model_path, pick.gguf_filename)
             if cached is None:
                 return False
@@ -219,7 +214,6 @@ def hidden_ltx23_extras(owner: str, pick: MediaModelPick) -> bool:
     from core.inference.video_ltx2 import ltx23_extras_files
 
     extras = ltx23_extras_files(checkpoint)
-    # the exact three artifacts, since the repo also holds checkpoints that prove nothing here
     return bool(extras) and not cache_holds_files(LTX23_EXTRAS_REPO, list(extras))
 
 
@@ -299,11 +293,8 @@ def _pipeline_components_present(root: Path) -> bool:
         for component, entry in index.items():
             if component.startswith("_") or not isinstance(entry, (list, tuple)):
                 continue
-            # [null, null] marks a component this pipeline deliberately ships without.
             if len(entry) not in (2, 3) or not entry[1]:
                 continue
-            # a modular entry is [library, class, spec], and its spec can name another repo, which this directory is
-            # never expected to hold but the load still pulls
             hosted = _hosted_source(entry[2]) if len(entry) == 3 else None
             if hosted is not None:
                 if not _hosted_component_cached(*hosted):
@@ -384,8 +375,7 @@ def _hosted_component_cached(source: str, subfolder: str, revision: str, variant
     snapshot = _cached_snapshot_root(source, revision)
     if snapshot is None:
         return False
-    # the same component rules either way: _upstream_is_cached's no-manifest branch is satisfied by a single weight
-    # file, which an interrupted sharded pull leaves behind
+    # An interrupted sharded pull leaves a single weight file, so use the component rules
     return _component_present(snapshot / subfolder if subfolder else snapshot, variant)
 
 
@@ -416,18 +406,12 @@ def _component_present(component: Path, variant: str = "") -> bool:
         return False
     if variant and not any(f".{variant}." in entry.name for entry in files):
         return False
-    # kept on the full listing: a shard index whose blob is gone must still route here, where _shards_declared reads the
-    # unreadable index and refuses, rather than fall through to the weight test below and pass on whichever sibling
-    # shard did survive
+    # Kept on the full listing so an index whose blob is gone refuses, not passes on a sibling
     if any(entry.name.endswith(".index.json") for entry in entries):
         # an index is proof only once it declares something; an empty weight_map declares nothing
         return _shards_declared(component)
-    # a weight-bearing component declares config.json; schedulers, tokenizers and processors carry their own
-    # *_config.json instead and ship no weights at all
     if (component / "config.json").is_file():
         return any(entry.suffix.lower() in _WEIGHT_SUFFIXES for entry in files)
-    # a tokenizer ships no weights but is still useless without its vocabulary, and which file that is varies by
-    # class, so any one of the known spellings answers for all of them
     if (component / "tokenizer_config.json").is_file():
         return any((component / name).is_file() for name in _TOKENIZER_ASSETS)
     # a metadata-only component is its config: a scheduler or processor directory holding anything else at all (a stray
@@ -491,8 +475,6 @@ def missing_download_bytes(
     if local_pipeline and not _pipeline_components_present(Path(target.model_path)):
         return UNSIZED_MISSING
     if owner == DIFFUSION:
-        # asked of every image pick, not only local pipelines: a single-file HiDream checkpoint plans clean and its
-        # assembly still loads the encoder repo unconditionally
         external = _missing_external_encoder(target)
         if external is None or external:
             return external
@@ -507,9 +489,7 @@ def missing_download_bytes(
                 model_kind = target.model_kind,
                 gpu_ordinal = ordinal,
                 hf_token = hf_token,
-                # Only the verdict, not the probe: this asks whether the pick is already on disk, so it must count the
-                # SAME files the load will fetch. Clearing the probe drops the pre-cast encoder and the GGUF
-                # dense-transformer widening, which is how a "fully downloaded" answer goes wrong.
+                # Verdict only, not the probe: must count the same files the load will fetch
                 memory_verdict = False,
             )
             or {}

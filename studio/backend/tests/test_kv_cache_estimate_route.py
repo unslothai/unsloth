@@ -26,19 +26,16 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# Installs the process-wide loggers/structlog/httpx stubs and the GGUF builder.
+# Installs the process-wide loggers/structlog/httpx stubs.
 import test_kv_cache_estimation  # noqa: E402
 from test_kv_cache_estimation import _backend_from_gguf, _make_gguf_bytes  # noqa: E402
 
 import routes.models as models_routes  # noqa: E402
 from core.inference.llama_cpp import _pick_mtp  # noqa: E402
 
-# The platform keys the repo already parametrises over elsewhere
-# (test_diffusion_predownload_guard_platforms.py).
 PLATFORMS = ("linux", "wsl", "win32", "darwin")
 
-# MLA (kv_lora_rank set) with NO MTP head: no nextn_predict_layers. This is the
-# shape that was charged a duplicate KV.
+# MLA with no MTP head: the shape that was charged a duplicate KV.
 _MLA_NO_HEAD = {
     "context_length": 131072,
     "block_count": 62,
@@ -52,8 +49,6 @@ _MLA_NO_HEAD = {
 }
 
 
-# An ordinary GQA model with nothing special about it, for asserting that the
-# shared machinery ran at all.
 _PLAIN_GQA = {
     "context_length": 32768,
     "block_count": 32,
@@ -64,8 +59,7 @@ _PLAIN_GQA = {
     "attention.value_length": 128,
 }
 
-# A sliding-window model, which is the only shape where --ctx-checkpoints costs
-# anything: each checkpoint is an SWA snapshot per slot.
+# Only SWA models pay for --ctx-checkpoints (an SWA snapshot per slot).
 _SWA_MODEL = {
     "context_length": 131072,
     "block_count": 32,
@@ -141,8 +135,7 @@ def _call_route(
             n_batch = None,
             n_ubatch = None,
             tensor_parallel = tensor_parallel,
-            # Real None, not left out: a direct call leaves omitted parameters holding
-            # their fastapi Query sentinel.
+            # Real None: a direct call leaves omitted params as fastapi Query sentinels.
             flash_attn = flash_attn,
             kv_unified = kv_unified,
             swa_full = swa_full,
@@ -182,7 +175,6 @@ class TestMtpReserveFollowsTheLoader:
             repo_id = "org/plain-model",
             speculative_type = mode,
         )
-        # The KV itself must still be reported; only the reserve goes away.
         assert out["kv_bytes"] and out["kv_bytes"] > 0
         assert out["spec_bytes"] is None, (
             f"{mode}: a model with no head, no MTP name and no drafter was charged "
@@ -505,7 +497,6 @@ class TestTheEstimateMatchesTheConfiguredLoad:
             "attention.sliding_window_pattern": [True, True, True, False],
         }
         gguf = _write_gguf(tmp_path / "swa-Q4_K_M.gguf", fields)
-        # Blank means llama.cpp's default, so use an explicit zero as the baseline.
         none = _call_std_route(
             monkeypatch,
             path = gguf,
@@ -559,8 +550,7 @@ class TestTheEstimateMatchesTheConfiguredLoad:
         assert (
             deep["spec_bytes"] > zero["spec_bytes"] * 10
         ), "spec_draft_n_max did not reach the MTP estimator"
-        # A blank field is NOT zero: _build_speculative_flags emits its own default and the
-        # rollback state is multiplied by it. An explicit zero still means zero.
+        # Blank is NOT zero: _build_speculative_flags emits its own default.
         assert (
             none["spec_bytes"] > zero["spec_bytes"]
         ), "an unset draft depth was priced as zero, dropping every rollback copy"
@@ -651,7 +641,6 @@ class TestTheEstimateMatchesTheConfiguredLoad:
         assert (
             pinned["projector_bytes"] is None
         ), "a projector pinned to host memory must not be reported as VRAM"
-        # Vision is still on: "no projector on the card" is not "no vision".
         assert pinned["kv_bytes"] and pinned["kv_bytes"] > 0
 
     def test_an_inherited_host_pin_is_not_charged_to_the_card_either(self, monkeypatch, tmp_path):
@@ -673,7 +662,6 @@ class TestTheEstimateMatchesTheConfiguredLoad:
             assert inherited["projector_bytes"] is None, variable
             assert inherited["kv_bytes"] and inherited["kv_bytes"] > 0, variable
 
-        # An explicit flag still wins over the environment, as the child resolves them.
         monkeypatch.setenv("LLAMA_ARG_NO_MMPROJ_OFFLOAD", "1")
         monkeypatch.delenv("LLAMA_ARG_MMPROJ_OFFLOAD", raising = False)
         asked_on = _call_std_route(
@@ -685,7 +673,6 @@ class TestTheEstimateMatchesTheConfiguredLoad:
         )
         assert asked_on["projector_bytes"], "an explicit --mmproj-offload must still charge"
 
-        # A clean environment and nothing asked is unchanged: the projector is resident.
         monkeypatch.delenv("LLAMA_ARG_NO_MMPROJ_OFFLOAD", raising = False)
         monkeypatch.delenv("LLAMA_ARG_MMPROJ_OFFLOAD", raising = False)
         plain = _call_std_route(monkeypatch, path = gguf, repo_id = str(tmp_path), is_local = True)
@@ -757,8 +744,7 @@ class TestHostMemoryIsNotChargedToTheCard:
         )
         share = with_checkpoints["kv_checkpoint_bytes"]
         assert share, "checkpoints were requested but no host share was reported"
-        # By difference against the same call with none, which is how the load
-        # planner derives it -- asking one function twice cannot drift from it.
+        # By difference against a call with none, as the load planner derives it.
         assert share == with_checkpoints["kv_bytes"] - without["kv_bytes"]
         # A SHARE of kv_bytes, not a figure beside it: an existing caller reads it that way.
         assert share < with_checkpoints["kv_bytes"]
@@ -788,8 +774,7 @@ class TestAutoAbstainsOverASidecar:
         model_dir = tmp_path / "local-model"
         gguf = _write_gguf(model_dir / "model-Q4_K_M.gguf", _MLA_NO_HEAD)
         if sidecar:
-            # By header, not by name: detect_dflash_file confirms
-            # general.architecture = dflash, settling the model merely CALLED DFlash.
+            # By header: detect_dflash_file checks general.architecture = dflash.
             _write_gguf(
                 model_dir / sidecar,
                 _MLA_NO_HEAD,
@@ -847,8 +832,6 @@ class TestAutoAbstainsOverASidecar:
         assert out["spec_unpriced"] is False
 
     def test_a_binary_that_cannot_run_one_still_prices_normally(self, monkeypatch, tmp_path):
-        # The planner gates sidecar selection on the binary's capability, so abstaining
-        # where the launch opens none blanks the bar for nothing.
         out = self._call(monkeypatch, tmp_path, sidecar = "dspark-model-Q8_0.gguf", supports = False)
         assert out["spec_unpriced"] is False
 
@@ -893,8 +876,6 @@ class TestThePlannerFiguresArrive:
         )
         assert out["gpu_bytes"], "no authoritative GPU total"
         assert out["gpu_floor_bytes"], "no irreducible floor"
-        # The floor is what survives shrinking the context, so it cannot exceed
-        # the full plan, and for a context-sensitive model it should be smaller.
         assert out["gpu_floor_bytes"] <= out["gpu_bytes"]
         assert out["gpu_floor_bytes"] < out["gpu_bytes"], (
             "the floor equals the full plan, so the second pricing did not use a "
@@ -914,15 +895,11 @@ class TestADirectGgufFileResolves:
         assert size == gguf.stat().st_size
 
     def test_a_directory_still_takes_the_quant_scan(self, tmp_path):
-        # The direct-file branch must not swallow the ordinary case: a folder is
-        # still scanned for the quant that was asked for.
         model_dir = tmp_path / "folder"
         _write_gguf(model_dir / "model-Q4_K_M.gguf", _PLAIN_GQA)
         path, size = models_routes._resolve_quant_gguf(str(model_dir), "Q4_K_M", True)
         assert path and path.endswith("model-Q4_K_M.gguf")
         assert size > 0
-        # And a quant it does not hold resolves to nothing rather than to
-        # whatever happened to be there.
         missing, _ = models_routes._resolve_quant_gguf(str(model_dir), "Q2_K", True)
         assert missing is None
 
@@ -933,8 +910,7 @@ class TestTheInheritedEnvironmentIsPriced:
     not what the request said."""
 
     def test_an_inherited_context_beats_the_native_length(self, monkeypatch, tmp_path):
-        # load_model drops an inherited context only when it is zero, so a positive one sets
-        # the window and falling through to native priced a 4k load at the header's length.
+        # load_model drops an inherited context only when zero; a positive one sets the window.
         gguf = _write_gguf(tmp_path / "model-Q4_K_M.gguf", _PLAIN_GQA)
         monkeypatch.setenv("LLAMA_ARG_CTX_SIZE", "4096")
         out = _call_std_route(monkeypatch, path = gguf, n_ctx = None)
@@ -951,8 +927,7 @@ class TestTheInheritedEnvironmentIsPriced:
         assert out["n_ctx"] == _PLAIN_GQA["context_length"]
 
     def test_an_inherited_cache_type_sizes_the_cache(self, monkeypatch, tmp_path):
-        # Pricing f16 while the child opens q8_0 makes the KV segment and the per-token
-        # readout contradict the planner total drawn beside them.
+        # Pricing f16 while the child opens q8_0 contradicts the planner total.
         gguf = _write_gguf(tmp_path / "model-Q4_K_M.gguf", _PLAIN_GQA)
         monkeypatch.delenv("LLAMA_ARG_CACHE_TYPE_K", raising = False)
         monkeypatch.delenv("LLAMA_ARG_CACHE_TYPE_V", raising = False)
@@ -966,8 +941,6 @@ class TestTheInheritedEnvironmentIsPriced:
         )
 
     def test_an_inherited_context_is_reported_as_pinned(self, monkeypatch, tmp_path):
-        # The loader keeps a positive inherited context rather than fitting it, so
-        # "auto-fitted" suppressed the overage and drew only the irreducible floor.
         gguf = _write_gguf(tmp_path / "model-Q4_K_M.gguf", _PLAIN_GQA)
         monkeypatch.setenv("LLAMA_ARG_CTX_SIZE", "4096")
         assert _call_std_route(monkeypatch, path = gguf, n_ctx = None)["context_is_pinned"] is True
@@ -983,16 +956,13 @@ class TestTheInheritedEnvironmentIsPriced:
         assert _call_std_route(monkeypatch, path = gguf, n_ctx = 8192)["context_is_pinned"] is True
 
     def test_an_inherited_device_pin_is_reported(self, monkeypatch, tmp_path):
-        # The child is confined to the cards LLAMA_ARG_DEVICE names, so an aggregate VRAM
-        # budget describes a pool the launch will not open.
+        # The child only sees LLAMA_ARG_DEVICE cards, so aggregate VRAM is the wrong pool.
         gguf = _write_gguf(tmp_path / "model-Q4_K_M.gguf", _PLAIN_GQA)
         monkeypatch.setenv("LLAMA_ARG_DEVICE", "CUDA0")
         assert _call_std_route(monkeypatch, path = gguf)["inherited_device_pin"] is True
 
     @pytest.mark.parametrize("value", ["", "none", "NONE"])
     def test_no_usable_pin_is_not_reported_as_one(self, monkeypatch, tmp_path, value):
-        # "none" is a CPU-only launch, already answered with zero GPU bytes; reporting it
-        # as a pin would blank the row for a second, unrelated reason.
         gguf = _write_gguf(tmp_path / "model-Q4_K_M.gguf", _PLAIN_GQA)
         monkeypatch.setenv("LLAMA_ARG_DEVICE", value)
         assert _call_std_route(monkeypatch, path = gguf)["inherited_device_pin"] is False

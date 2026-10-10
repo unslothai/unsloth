@@ -45,7 +45,7 @@ def _isolated(tmp_path, monkeypatch):
         hf_cache_settings, "get_hf_cache_paths", lambda: SimpleNamespace(hub_cache = tmp_path)
     )
     monkeypatch.setattr(mc.time, "sleep", lambda *_: None)
-    # No ambient credential, so a 401 here is the repo's answer and is not retried anonymously.
+    # No ambient credential, so the 401 is final and not retried anonymously.
     monkeypatch.setattr(hf_tokens, "_ambient_hf_token", lambda: (True, None))
     monkeypatch.setattr(hf_tokens, "_wire_hf_token", lambda: None)
     monkeypatch.setattr(
@@ -110,8 +110,7 @@ def test_hub_401_on_gguf_repo_raises_clear_error(monkeypatch):
     ids = ["no_token", "anonymous", "explicit_token"],
 )
 def test_hub_401_is_not_served_from_a_stale_cache(monkeypatch, _isolated, hf_token):
-    # Not the owner's own session (an API key or another account): the cached copy stays
-    # refused. The owner's session case lives in test_gguf_refused_cached_load.py.
+    # The owner-session case lives in test_gguf_refused_cached_load.py.
     _cache(_isolated, REPO, GGUF)
     monkeypatch.setattr(
         huggingface_hub, "model_info", _hub(RepositoryNotFoundError("401 Client Error"))

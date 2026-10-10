@@ -192,7 +192,6 @@ def test_importing_a_conversation_with_repeated_turns_keeps_them_all(db):
     assert len(_assert_no_dangling_parents()) == len(records)
 
 
-# delete-thread-message.ts also goes through sync_chat_messages.
 def test_deleting_one_message_leaves_the_rest_of_the_tree_linked(db):
     records = [
         _msg("u1", "user", None, "hi", 1000),
@@ -226,7 +225,6 @@ def _apply(operation, state, counter):
         record = _msg(assistant_id, "assistant", state["last_user"], "reply", next(counter))
         state["records"].append(record)
         studio_db.upsert_chat_message(record)
-        # A stopped reply is still persisted, and the head only advances on a finished one.
         if operation == "regenerate":
             state["head"] = assistant_id
         return
@@ -287,8 +285,6 @@ def test_an_empty_string_parent_reads_as_the_root(db):
     _assert_no_dangling_parents()
 
 
-# The #9984 thread id for id: two user rows under cOfdER0, 26.12 hours apart, each with
-# replies. A fix must not merge them, since four assistant rows hang off the pair.
 _REPORTED_THREAD = [
     ("4dwSP7r", "user", None, 1787854341631),
     ("Nmi02kB", "assistant", "4dwSP7r", 1787854341640),

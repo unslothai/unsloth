@@ -222,7 +222,7 @@ def test_uploads_are_listed_and_typed_by_their_extension_not_the_client(client, 
         ("image/png", True),
         ("audio/mpeg", True),
         ("image/png; charset=binary", True),
-        # Served on the app origin, so markup never comes back as something a browser renders.
+        # Served on the app origin, so markup must never come back browser-renderable.
         ("text/html", False),
         ("image/svg+xml", False),
         ("audio/x, text/html", False),
@@ -254,7 +254,6 @@ def test_rename_favorite_and_folders_are_an_overlay(client):
     for missing in ("upload:gone", "sandbox:t-lib:gone.txt"):
         assert _post(client, "items/opened", id = missing).status_code == 404
     assert "upload:gone" not in library_db.list_entries()
-    # The type follows the file's own name, so a binary renamed to .txt never opens as text.
     assert item["fileName"] == "photo.png"
     _patch(client, id = image, favorite = False)
     assert _items(client)[0][image]["folderId"] == folder
@@ -262,7 +261,6 @@ def test_rename_favorite_and_folders_are_an_overlay(client):
     assert _items(client)[0][image]["folderId"] is None
     response = client.patch("/api/library/items", json = {"id": image, "folderId": "nope"})
     assert response.status_code == 404
-    # Folders nest; a folder never moves under itself, and a deleted one hands its contents up.
     inner = _folder(client, "Inner", folder)
     child = _folder(client, "Child", inner)
     for parent in (inner, folder):
@@ -1042,13 +1040,11 @@ def test_the_slow_sources_are_remembered_briefly_and_forgotten_on_a_write(client
 
     monkeypatch.setattr(library, "_sandbox_items", walked)
     monkeypatch.setattr(library, "_SOURCES", (library._remembered("_sandbox_items", 60), broken))
-    # Listed only, never written: the star is kept for the file it would find.
     monkeypatch.setattr(library, "fingerprint", lambda _item_id: "1:1")
     _patch(client, id = "sandbox:t:a.txt", favorite = True)
     for _ in range(2):
         assert _items(client)[0]["sandbox:t:a.txt"]["favorite"] is True
     assert len(calls) == 1
-    # Another account's listing is never this one's.
     monkeypatch.setattr(library, "_account_key", lambda: "other")
     _items(client)
     _items(client)
@@ -1367,7 +1363,6 @@ def test_a_chat_image_is_copied_out_of_its_message_into_a_project(client, projec
     assert copied.name.startswith("Chat image-") and copied.suffix == ".png"
     assert copied.read_bytes() == png
     assert add("attachment:m%3A1:pic").json() == {"already": True}
-    # Only an image or clip has bytes of its own to copy.
     assert add("attachment:m%3A1:words").status_code == 404
     assert add("attachment:m%3A1:gone").status_code == 404
 
@@ -1425,7 +1420,6 @@ def test_generated_media_download_under_their_prompt(client, signed_in, project)
     assert disposition(f"image:{image}").startswith('attachment; filename="A red fox at dawn.png"')
     image = _gallery_image("Café ☕ at noon")
     assert f"filename*=UTF-8''{quote('Café ☕ at noon.png')}" in disposition(f"image:{image}")
-    # No prompt: the id, never an empty name.
     image = _gallery_image("  ")
     assert f'filename="{image}.png"' in disposition(f"image:{image}")
     assert 'filename="Hello there.wav"' in disposition(f"audio:{_gallery_audio('Hello there')}")
@@ -1461,7 +1455,6 @@ def test_a_sandbox_file_is_reachable_by_id_only_as_the_listing_walks_it(
         raise AssertionError("a per-item route listed the sandboxes")
 
     with monkeypatch.context() as patched:
-        # A card's file never lists every chat, and its sandbox is walked once for every card.
         patched.setattr(library, "_sandbox_sessions", listed)
         response = _download(client, "sandbox:t-lib:a.txt")
         assert response.content == b"mine"
@@ -1502,7 +1495,6 @@ def test_a_file_swapped_for_a_fifo_is_refused_without_waiting_for_a_writer(tmp_p
     worker.start()
     worker.join(5)
     if worker.is_alive():
-        # Unblock the stuck open so the thread ends, then fail.
         os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))
     assert outcome == ["refused"]
 
@@ -1543,7 +1535,6 @@ def test_a_projects_own_files_are_listed(client, monkeypatch, tmp_path):
     project = studio_db.upsert_chat_project(
         {"id": "p-lib", "name": "Research", "createdAt": 1, "updatedAt": 1}
     )
-    # Studio gives every project a folder of its own, so the column is never empty.
     assert project["rootPath"]
     directory = resolve_sandbox_workdir("project-p-lib")
     os.makedirs(os.path.join(directory, "files"), exist_ok = True)
@@ -1562,8 +1553,7 @@ def test_a_projects_own_files_are_listed(client, monkeypatch, tmp_path):
 
 @pytest.fixture(autouse = True)
 def _temp_folders_are_ordinary(monkeypatch):
-    # macOS keeps pytest's temp folders under /private/var, which the real checks refuse, and they
-    # are temporary folders, which Library moves refuse too.
+    # macOS tmp lives under /private/var, which the real path checks refuse
     monkeypatch.setattr(
         _scan_folders,
         "is_denied_system_path",
@@ -1764,7 +1754,6 @@ def test_a_flag_set_during_a_move_keeps_the_ones_set_before(client, tmp_path, mo
     image_gallery.set_flags(kept, archived = True)
     fresh = _gallery_image("archived during the move")
 
-    # The images first and the store last, the order that loses it (directory order is the OS's).
     def store_last(
         source,
         target,
@@ -1890,9 +1879,7 @@ def test_another_spelling_of_a_folder_is_that_folder(client, tmp_path, monkeypat
     if spelling == "case" and not (images.parent / images.name.upper()).is_dir():
         pytest.skip("this disk tells case apart")
     if spelling == "link":
-        # resolve() keeps the spelling it is given: a case alias on a case-insensitive disk, or a
-        # bind mount, names a folder by a path that is not its own. A link that resolve() is kept
-        # from following stands in for either on any disk.
+        # a link resolve() cannot follow stands in for a case alias or bind mount
         monkeypatch.setattr(library, "_move_target", lambda raw: Path(raw))
 
     def alias(folder):
@@ -1901,7 +1888,6 @@ def test_another_spelling_of_a_folder_is_that_folder(client, tmp_path, monkeypat
         (tmp_path / folder.name).symlink_to(folder, target_is_directory = True)
         return tmp_path / folder.name
 
-    # The current folder under another name: nothing moves (a move onto itself would empty it).
     assert _move(client, "images", str(alias(images))).status_code == 200
     assert _move(client, "images", str(alias(videos))).status_code == 400
     assert _files(images) == ["0.png", "1.png", "2.png"] and _files(videos) == ["v.mp4"]
@@ -2445,7 +2431,6 @@ def _os_named(name):
         ("linux", "posix", True, False, None, "explorer"),
         ("linux", "posix", False, False, None, None),
         ("linux", "posix", False, False, "WAYLAND_DISPLAY", "files"),
-        # Never in a container, even with a display.
         ("linux", "posix", False, True, "DISPLAY", None),
     ],
 )
@@ -2515,7 +2500,6 @@ def test_containment_ignores_the_windows_long_path_prefix(path, root, inside):
         ((3000, 2000), "RGB", (640, 427)),
         ((1000, 5000), "RGBA", (640, 960)),
         ((4000, 500), "RGB", (640, 427)),
-        # Never scaled up.
         ((100, 80), "RGB", (100, 80)),
     ],
 )
@@ -2568,7 +2552,6 @@ def test_what_is_not_a_small_raster_or_clip_has_no_thumbnail(client, monkeypatch
         client,
         ("huge.png", _png(101, 100, "RGB"), "image/png"),
         ("broken.png", b"not a png", "image/png"),
-        # A format Pillow knows but a card does not need is never handed to its decoder.
         ("pic.png", ppm.getvalue(), "image/png"),
         ("pic.jpg", eps, "image/jpeg"),
         ("broken.mp4", b"not a video", "video/mp4"),
@@ -2664,7 +2647,6 @@ def _stream_url(client, item_id):
 
 
 def _stream(item_id, token):
-    # The real dependencies: the stream route must not need the bearer the mint does.
     return _app(None).get("/api/library/items/stream", params = {"id": item_id, "token": token})
 
 
@@ -2725,7 +2707,6 @@ def test_only_audio_and_video_items_get_a_stream_link(client):
         client,
         ("note.md", b"# hi", "text/markdown"),
         ("pic.png", b"\x89PNG", "image/png"),
-        # A declared type the extension map does not know is stored, but never streamed.
         ("clip.xyz", b"x", "video/x-custom"),
     )
     _sandbox_chat("notes.txt", b"text")
@@ -2735,7 +2716,6 @@ def test_only_audio_and_video_items_get_a_stream_link(client):
     for item_id in ("model:training:/x", "elsewhere:x"):
         assert mint(item_id) == 400, item_id
     assert (mint("upload:" + "0" * 32), mint("video:nope")) == (404, 404)
-    # A link can never be made for one, so the stream refuses it even with a valid signature.
     response = _stream(note, library_routes._sign_stream_id(note))
     assert response.status_code == 404 and b"# hi" not in response.content
     assert _mint(_app(None), note).status_code in (401, 403)
@@ -2764,7 +2744,6 @@ def test_a_tampered_expired_foreign_or_other_kind_of_link_is_refused(client, mon
     response = _stream(other, token)
     assert response.status_code == 401 and b"other" not in response.content
 
-    # A Video page link never opens this route, nor one of these the Video page's.
     video = _gallery_video("A calm sea")
     app = FastAPI()
     app.include_router(video_routes.router, prefix = "/api/inference")

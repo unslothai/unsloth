@@ -47,8 +47,6 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
-    # Added after the first release of the table, in place: a studio.db from before keeps its
-    # rows, fingerprinted on first sight.
     entry_columns = {row[1] for row in conn.execute("PRAGMA table_info(library_entries)")}
     for column, kind in (("opened_at", "INTEGER"), ("fingerprint", "TEXT")):
         if column in entry_columns:
@@ -80,8 +78,7 @@ def reset_schema_state_for_tests() -> None:
 def get_connection() -> sqlite3.Connection:
     db_path = studio_db_path()
     ensure_dir(db_path.parent)
-    # One key for the check and the add, or a home reached through a link never finds its entry
-    # and runs the schema again on every connection.
+    # One key for check and add, or a symlinked home reruns the schema on every connection.
     schema_path = db_path.resolve()
     conn = connect_studio_db(db_path)
     conn.row_factory = sqlite3.Row

@@ -69,7 +69,6 @@ def test_the_loop_hands_its_search_the_active_branch():
 
     _run(1, execute_tool)
 
-    # The client's messages, then the call the loop itself appended, as the GGUF loop passes.
     [branch] = seen
     assert branch[: len(MESSAGES)] == MESSAGES and len(branch) == len(MESSAGES) + 1
 
@@ -129,8 +128,6 @@ def test_the_budget_charges_token_dense_text_at_its_real_rate():
 
     budget = seen.get("conversation_budget_tokens")
     assert budget is not None
-    # The flat estimate is the one that overstates the room. Charged densely, the budget
-    # has to be at most what is left after the real cost of what is already there.
     assert budget <= prompt_budget(4096, 512) - estimate_messages_tokens_dense(dense_messages)
     assert estimate_messages_tokens_dense(dense_messages) > estimate_messages_tokens(dense_messages)
 
@@ -175,7 +172,6 @@ def test_the_loop_budgets_its_search_against_this_models_context():
 
     budget = seen.get("conversation_budget_tokens")
     assert budget is not None
-    # Everything already in the prompt is charged: the messages and the catalogue.
     assert budget <= prompt_budget(4096, 512) - estimate_messages_tokens(tools)
     assert budget < prompt_budget(4096, 512) - estimate_messages_tokens(MESSAGES)
 
@@ -239,9 +235,7 @@ def test_the_budget_charges_this_turns_own_output_in_tokens_not_bytes():
     preamble = "the answer is somewhere in the earlier turns. " * 100
     budget = _budget_after_a_preamble(preamble, 3_067, {})
 
-    # Charged as its 4600 bytes this is nothing. Charged as tokens it is a real search.
     assert budget > 3_000
-    # And it IS charged: the room is smaller than it was before the turn wrote anything.
     assert budget < retrieval_budget(8192, 512, 3_067, reply_returns = True)
 
 

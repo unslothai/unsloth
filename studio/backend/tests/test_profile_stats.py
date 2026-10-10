@@ -50,8 +50,7 @@ def stats_db(tmp_path, monkeypatch):
     invalidate_profile_stats_cache()
 
 
-# _seed_thread writes the assistant reply this far after the user turn, and
-# fork_chat_thread copies created_at verbatim, so clones must reuse it.
+# _seed_thread's user-to-reply gap; fork_chat_thread copies created_at, so clones reuse it.
 REPLY_DELAY = timedelta(seconds = 10)
 
 
@@ -134,8 +133,6 @@ def _metadata(
             "modelId": "unsloth/gpt-oss-20b",
         },
         "timing": {
-            # The adapter writes streamStartTime as an epoch stamp and
-            # firstTokenTime as the elapsed ms before the first chunk.
             "streamStartTime": 1_760_000_000_000,
             "firstTokenTime": 200,
             "totalStreamTime": 2000,
@@ -187,7 +184,6 @@ def test_mixed_chat_and_api_usage_combines_only_activity_metrics(stats_db):
     assert totals["apiPromptTokens"] == 40
     assert totals["apiCompletionTokens"] == 10
     assert totals["apiTokens"] == 50
-    # API requests do not inflate the chat-only counters.
     assert totals["threads"] == 1
     assert totals["messages"] == 2
     assert totals["cachedTokens"] == 5
@@ -222,14 +218,11 @@ def test_api_usage_and_cache_are_subject_scoped_while_legacy_chat_is_shared(stat
     alice = compute_profile_stats(days = 1, tz_name = "UTC", subject = "alice")
     bob = compute_profile_stats(days = 1, tz_name = "UTC", subject = "bob")
 
-    # Chat tables have no subject column and remain install-wide for compatibility.
     assert alice["totals"]["chatTokens"] == bob["totals"]["chatTokens"] == 15
     assert alice["totals"]["apiTokens"] == 11
     assert bob["totals"]["apiTokens"] == 23
     assert alice["totals"]["totalTokens"] == 26
     assert bob["totals"]["totalTokens"] == 38
-    # Both subjects deliberately have the same count/max-time fingerprint;
-    # distinct payloads prove the cache key includes identity.
     assert alice is not bob
 
 
@@ -248,7 +241,6 @@ def test_api_only_usage_is_durable_idempotent_and_invalidates_cache(stats_db):
     assert after_insert["models"][0]["id"] == "unsloth/api-model"
     assert after_insert["streak"]["current"] == 1
 
-    # A fresh process/schema initialization still reads the same receipt.
     studio_db._schema_ready = set()
     invalidate_profile_stats_cache()
     after_restart = compute_profile_stats(days = 7, tz_name = "UTC", subject = "external-client")
@@ -257,7 +249,6 @@ def test_api_only_usage_is_durable_idempotent_and_invalidates_cache(stats_db):
 
 
 def test_terminal_callback_returns_promptly_while_locked_db_eventually_persists(stats_db):
-    # Initialize the additive schema before taking the writer lock.
     lock_conn = studio_db.get_connection()
     callback_lease = None
     writer_lease = acquire_api_usage_writer()
@@ -278,10 +269,7 @@ def test_terminal_callback_returns_promptly_while_locked_db_eventually_persists(
         started = time.perf_counter()
         monitor.finish(entry_id)
         elapsed = time.perf_counter() - started
-        # The row count below is the sharp claim; this only rules out queueing on the lock.
-        # A second is already three orders of magnitude past a put_nowait, and this file is
-        # in the serial leg of studio-backend-ci.yml rather than under `-n 4`, so there is no
-        # contention to buy slack for: a looser bound just lets a stalling callback through.
+        # This file runs in the serial CI leg, so a 1s bound only rules out lock queueing.
         assert elapsed < 1.0, f"finish() blocked on the locked database: {elapsed:.3f}s"
         assert (
             lock_conn.execute(
@@ -360,8 +348,6 @@ def test_writer_retains_busy_receipt_after_inner_retry_budget(stats_db, monkeypa
         persisted.append(receipt.id)
         return True
 
-    # Exercise all inner record_api_usage retries plus another worker-level
-    # retry without paying the production backoff in this focused unit test.
     monkeypatch.setattr(api_usage_db, "_insert_api_usage", busy_then_success)
     monkeypatch.setattr(api_usage_db, "_sleep_after_busy", lambda _delay: None)
     writer = ApiUsageWriter()
@@ -386,7 +372,6 @@ def test_writer_busy_shutdown_is_bounded_then_drains_after_unlock(monkeypatch, c
         persisted.append(receipt.id)
         return True
 
-    # Keep the retry responsive without a hot spin in the test process.
     monkeypatch.setattr(
         api_usage_db,
         "_sleep_after_busy",
@@ -397,9 +382,7 @@ def test_writer_busy_shutdown_is_bounded_then_drains_after_unlock(monkeypatch, c
     assert writer.submit(receipt)
     assert entered.wait(timeout = 1)
 
-    # What stop() hands its join, not how long the box took to get back: a wall-clock
-    # budget loose enough to survive `-n 4` is also loose enough to pass a stop() that
-    # waited whole seconds, which is the regression named here.
+    # Assert what stop() hands its join, not wall-clock time (too loose under -n 4).
     joins: list[float | None] = []
     joining = writer._thread.join
 
@@ -609,7 +592,6 @@ def test_api_usage_filters_internal_and_zero_receipts_but_keeps_partial_failures
     stats = compute_profile_stats(days = 1, tz_name = "UTC", subject = "external-client")
     assert stats["totals"]["apiPromptTokens"] == 3
     assert stats["totals"]["apiCompletionTokens"] == 4
-    # The authoritative total is retained instead of recomputing 3 + 4.
     assert stats["totals"]["apiTokens"] == 9
     conn = studio_db.get_connection()
     try:
@@ -633,8 +615,6 @@ def test_api_usage_uses_iana_timezone_across_dst_dates(stats_db):
         subject = "external-client",
     )
     by_date = {day["date"]: day["tokens"] for day in stats["daily"]}
-    # Both UTC instants are before local midnight using the date-specific
-    # standard/daylight offset.
     assert by_date["2026-01-14"] == 11
     assert by_date["2026-07-14"] == 13
 
@@ -724,7 +704,6 @@ def test_tokens_streaks_and_models_are_aggregated(stats_db):
     assert stats["speed"]["bestTokensPerSecond"] == 120.0
     assert stats["speed"]["averageTokensPerSecond"] == pytest.approx(68.333, rel = 1e-3)
 
-    # Each turn is a user message plus an assistant reply 10s later.
     assert stats["longestChat"]["seconds"] == 30
     assert stats["longestChat"]["messages"] == 6
 
@@ -748,9 +727,7 @@ def test_completion_tokens_fall_back_to_adapter_count(stats_db):
 
     assert stats["totals"]["completionTokens"] == 64
     assert stats["totals"]["totalTokens"] == 64
-    # No modelId on the turn, so it is not credited to any model. The thread's
-    # model_id follows the current selection and would misattribute after a
-    # mid-conversation switch.
+    # No modelId on the turn: thread model_id follows the current selection and would misattribute.
     assert stats["models"] == []
 
 
@@ -771,7 +748,6 @@ def test_session_time_ignores_long_idle_gaps(stats_db):
 
     stats = compute_profile_stats(days = 30)
 
-    # Two turns of 10s each; the 3-day gap between them is excluded.
     assert stats["longestChat"]["seconds"] == 20
     assert stats["totals"]["chatSeconds"] == 20
 
@@ -820,7 +796,6 @@ def test_training_totals(stats_db):
             "VALUES ('r2', 'error', 'unsloth/qwen3-4b', 'my/dataset', '{}', "
             "'2026-01-02T10:00:00', 100, 20, 1.8, 600)",
         )
-        # num_tokens is a running total, so the last row is the run's figure.
         conn.executemany(
             "INSERT INTO training_metrics (run_id, step, loss, num_tokens) VALUES (?, ?, ?, ?)",
             [("r1", step, 1.0, (step + 1) * 1000) for step in range(10)],
@@ -885,7 +860,6 @@ def test_forked_threads_do_not_double_count_copied_history(stats_db):
             "VALUES ('fork', 'fork of src', 'base', 'm', ?, ?, 'src', 'src-a0')",
             (_ms(fork_at), _ms(fork_at)),
         )
-        # The clone keeps the original timestamp, exactly as fork_chat_thread does.
         conn.execute(
             "INSERT INTO chat_messages (id, thread_id, role, content_json, metadata_json, "
             "created_at) VALUES ('fork-a0', 'fork', 'assistant', '[]', ?, ?)",
@@ -901,7 +875,6 @@ def test_forked_threads_do_not_double_count_copied_history(stats_db):
     assert after["totals"]["totalTokens"] == 150
     assert after["totals"]["messages"] == 2
 
-    # A genuinely new turn in the fork still counts.
     conn = studio_db.get_connection()
     try:
         conn.execute(
@@ -923,9 +896,7 @@ def test_resumed_runs_do_not_double_count_steps_or_tokens(stats_db):
     """A resume continues the source's counters, so only the tail is counted."""
     conn = studio_db.get_connection()
     try:
-        # 'stopped' at step 10, then claimed by the resume below. The claim sets
-        # resume_blocked and leaves output_dir, which is how it is told apart
-        # from a cancelled run.
+        # The resume claim sets resume_blocked and keeps output_dir, unlike a cancel.
         _shared_setup_1(conn)
         conn.execute(
             "INSERT INTO training_runs (id, status, model_name, dataset_name, config_json, "
@@ -935,7 +906,6 @@ def test_resumed_runs_do_not_double_count_steps_or_tokens(stats_db):
         )
         conn.executemany(
             "INSERT INTO training_metrics (run_id, step, num_tokens) VALUES (?, ?, ?)",
-            # The continuation's counter picks up where the source stopped.
             [("src", step, step * 100) for step in range(1, 11)]
             + [("cont", step, step * 100) for step in range(11, 16)],
         )
@@ -945,10 +915,8 @@ def test_resumed_runs_do_not_double_count_steps_or_tokens(stats_db):
 
     training = compute_profile_stats(days = 7)["training"]
 
-    # Training reached step 15, not 10 + 15.
     assert training["steps"] == 15
     assert training["tokens"] == 1500
-    # Both attempts still show up as runs.
     assert training["runs"] == 2
 
 
@@ -956,7 +924,6 @@ def test_cancelled_runs_keep_the_work_they_did(stats_db):
     """Cancelling sets resume_blocked too, but nothing resumed from that run."""
     conn = studio_db.get_connection()
     try:
-        # mark_run_cancel_requested clears output_dir and sets resume_blocked.
         conn.execute(
             "INSERT INTO training_runs (id, status, model_name, dataset_name, config_json, "
             "started_at, total_steps, final_step, duration_seconds, output_dir, resume_blocked) "
@@ -1001,7 +968,6 @@ def test_forks_count_as_chats_before_their_first_new_turn(stats_db):
 
     stats = compute_profile_stats(days = 7)
 
-    # Two conversations, but the cloned turn is not counted twice.
     assert stats["totals"]["threads"] == 2
     assert stats["totals"]["messages"] == 2
     assert stats["totals"]["totalTokens"] == 150
@@ -1047,7 +1013,6 @@ def test_recent_run_name_prefers_the_users_rename(stats_db):
 
     assert recent["named"]["name"] == "Support triage v3"
     assert recent["named"]["modelLabel"] == "llama-3-8b"
-    # Unnamed runs fall back to the short label, not the full repo id.
     assert recent["plain"]["name"] == "qwen3-4b"
 
 
@@ -1075,14 +1040,12 @@ def test_historical_daylight_saving_offsets_are_respected(stats_db):
     finally:
         conn.close()
 
-    # A browser on summer time sends offset 240 (UTC-4) with the zone name.
     named = compute_profile_stats(days = 366, tz_offset_minutes = 240, tz_name = "America/New_York")
     invalidate_profile_stats_cache()
     offset_only = compute_profile_stats(days = 366, tz_offset_minutes = 240)
 
     assert {day["date"] for day in named["daily"] if day["messages"]} == {"2026-01-14"}
 
-    # The fixed offset lands an hour late, which is what the zone name fixes.
     assert {day["date"] for day in offset_only["daily"] if day["messages"]} == {"2026-01-15"}
 
 
@@ -1133,7 +1096,6 @@ def test_deleting_the_source_thread_keeps_the_forks_copies(stats_db):
     invalidate_profile_stats_cache()
     stats = compute_profile_stats(days = 7)
 
-    # The fork now holds the only copy, so it must still be counted once.
     assert stats["totals"]["totalTokens"] == 150
     assert stats["totals"]["messages"] == 1
 
@@ -1178,7 +1140,6 @@ def test_sibling_forks_do_not_multiply_a_deleted_source(stats_db):
     invalidate_profile_stats_cache()
     stats = compute_profile_stats(days = 7)
 
-    # Exactly one surviving copy is counted, not one per sibling fork.
     assert stats["totals"]["totalTokens"] == 150
     assert stats["totals"]["messages"] == 1
 
@@ -1196,7 +1157,6 @@ def test_deleting_an_original_message_keeps_the_forks_clone(stats_db):
             "VALUES ('branch', 'fork', 'base', 'm', ?, ?, 'orig', 'orig-a0')",
             (_ms(now), _ms(now)),
         )
-        # The clone keeps the original's timestamp and role.
         conn.execute(
             "INSERT INTO chat_messages (id, thread_id, role, content_json, metadata_json, "
             "created_at) VALUES ('branch-a0', 'branch', 'assistant', '[]', ?, ?)",
@@ -1206,7 +1166,6 @@ def test_deleting_an_original_message_keeps_the_forks_clone(stats_db):
     finally:
         conn.close()
 
-    # While the original is there the clone is ignored.
     assert compute_profile_stats(days = 7)["totals"]["totalTokens"] == 150
 
     conn = studio_db.get_connection()
@@ -1219,7 +1178,6 @@ def test_deleting_an_original_message_keeps_the_forks_clone(stats_db):
     invalidate_profile_stats_cache()
     stats = compute_profile_stats(days = 7)
 
-    # The thread survives but that message does not, so the clone stands in.
     assert stats["totals"]["totalTokens"] == 150
     assert stats["totals"]["assistantMessages"] == 1
 
@@ -1267,7 +1225,6 @@ def test_comparison_panes_count_as_one_chat(stats_db):
     stats = compute_profile_stats(days = 7)
 
     assert stats["totals"]["threads"] == 1
-    # Both panes still contribute their own messages and tokens.
     assert stats["totals"]["messages"] == 2
     assert stats["totals"]["totalTokens"] == 300
 
@@ -1303,7 +1260,6 @@ def test_deleting_a_continuation_restores_its_source(stats_db):
 
     invalidate_profile_stats_cache()
 
-    # With the continuation gone the source is the only record of that work.
     assert compute_profile_stats(days = 7)["training"]["steps"] == 10
 
 
@@ -1328,8 +1284,6 @@ def test_out_of_range_timestamps_do_not_break_the_panel(stats_db):
 
     stats = compute_profile_stats(days = 7)
 
-    # Totals still include the bad row; only its day bucket is dropped, so the
-    # activity grid holds just the one well-formed day.
     assert stats["totals"]["totalTokens"] == 30
     assert stats["totals"]["messages"] == 3
     assert stats["totals"]["activeDays"] == 1
@@ -1353,7 +1307,6 @@ def test_future_dated_history_is_not_a_current_streak(stats_db):
 
 def test_days_and_hours_use_the_callers_timezone(stats_db):
     """A remote browser must not be bucketed against the server's calendar."""
-    # 01:30 UTC. In UTC that is one day; at UTC-4 it is 21:30 the day before.
     when = datetime(2026, 3, 10, 1, 30, tzinfo = timezone.utc)
     conn = studio_db.get_connection()
     try:
@@ -1472,7 +1425,6 @@ def test_an_oversized_token_counter_does_not_break_the_panel(stats_db):
             (_ms(now), _ms(now)),
         )
         huge = _metadata(100, 50)
-        # Wider than float can hold, so every counter reads as unusable.
         oversized = int("9" * 309)
         for field in ("promptTokens", "completionTokens", "totalTokens"):
             huge["contextUsage"][field] = oversized
@@ -1486,8 +1438,6 @@ def test_an_oversized_token_counter_does_not_break_the_panel(stats_db):
     finally:
         conn.close()
 
-    # The row degrades to zero instead of raising, and the absurd counter
-    # never reaches the totals; the healthy thread still reports.
     stats = compute_profile_stats(days = 7)
     assert stats["totals"]["totalTokens"] == 150
     assert stats["totals"]["messages"] == 3
@@ -1500,14 +1450,12 @@ def test_divergent_sibling_forks_keep_their_own_branch_messages(stats_db):
     conn = studio_db.get_connection()
     try:
         _seed_thread(conn, "root", "m", [(older, _metadata(100, 50))])
-        # A regeneration of the same turn, a second later.
         regenerated = older + REPLY_DELAY + timedelta(seconds = 1)
         conn.execute(
             "INSERT INTO chat_messages (id, thread_id, role, content_json, metadata_json, "
             "created_at) VALUES ('root-a1', 'root', 'assistant', '[]', ?, ?)",
             (json.dumps(_metadata(200, 100)), _ms(regenerated)),
         )
-        # One fork per branch: each carries only its own reply.
         for fork_id, stamp, meta in (
             ("forkA", older + REPLY_DELAY, _metadata(100, 50)),
             ("forkB", regenerated, _metadata(200, 100)),
@@ -1527,7 +1475,6 @@ def test_divergent_sibling_forks_keep_their_own_branch_messages(stats_db):
     finally:
         conn.close()
 
-    # Both originals counted, both clones suppressed.
     assert compute_profile_stats(days = 7)["totals"]["totalTokens"] == 450
 
     conn = studio_db.get_connection()
@@ -1540,7 +1487,6 @@ def test_divergent_sibling_forks_keep_their_own_branch_messages(stats_db):
     invalidate_profile_stats_cache()
     stats = compute_profile_stats(days = 7)
 
-    # Each branch survives in exactly one fork, so nothing is lost or doubled.
     assert stats["totals"]["totalTokens"] == 450
     assert stats["totals"]["messages"] == 2
 
@@ -1550,7 +1496,6 @@ def test_a_resume_that_never_logged_a_step_keeps_the_source_counters(stats_db):
     conn = studio_db.get_connection()
     try:
         _shared_setup_1(conn)
-        # Errored before its first training step: no final_step, no metrics.
         conn.execute(
             "INSERT INTO training_runs (id, status, model_name, dataset_name, config_json, "
             "started_at, total_steps, final_step, duration_seconds, output_dir, resume_blocked) "
@@ -1567,7 +1512,6 @@ def test_a_resume_that_never_logged_a_step_keeps_the_source_counters(stats_db):
 
     training = compute_profile_stats(days = 7)["training"]
 
-    # The source's completed work is still the only work there is.
     assert training["steps"] == 10
     assert training["tokens"] == 1000
 
@@ -1578,7 +1522,6 @@ def test_a_future_dated_message_cannot_become_the_peak_day(stats_db):
     conn = studio_db.get_connection()
     try:
         _seed_thread(conn, "past", "m", [(now - timedelta(days = 1), _metadata(100, 50))])
-        # A skewed client clock landed this one a week out.
         _seed_thread(conn, "ahead", "m", [(now + timedelta(days = 7), _metadata(900, 900))])
         conn.commit()
     finally:
@@ -1588,7 +1531,6 @@ def test_a_future_dated_message_cannot_become_the_peak_day(stats_db):
 
     assert stats["peakDay"] is not None
     assert stats["peakDay"]["date"] == (now - timedelta(days = 1)).date().isoformat()
-    # The future day is not an active day either.
     assert stats["totals"]["activeDays"] == 1
 
 
@@ -1597,7 +1539,6 @@ def test_cancelling_a_resumed_run_keeps_the_source_superseded(stats_db):
     conn = studio_db.get_connection()
     try:
         _shared_setup_1(conn)
-        # Resumed, then cancelled: output_dir cleared, counters still cumulative.
         conn.execute(
             "INSERT INTO training_runs (id, status, model_name, dataset_name, config_json, "
             "started_at, total_steps, final_step, duration_seconds, output_dir, resume_blocked, "
@@ -1616,7 +1557,6 @@ def test_cancelling_a_resumed_run_keeps_the_source_superseded(stats_db):
 
     training = compute_profile_stats(days = 7)["training"]
 
-    # 15, not 10 + 15: the cancelled continuation still carries the shared work.
     assert training["steps"] == 15
     assert training["tokens"] == 1500
 
@@ -1793,5 +1733,4 @@ def test_inline_media_counts_as_attachments_without_double_counting(stats_db):
 
     totals = compute_profile_stats(days = 7)["totals"]
 
-    # The image appears in both storage representations and twice inline.
     assert totals["attachments"] == 2

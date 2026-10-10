@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-# Exits a desktop-owned backend when the app that spawned it dies without
-# running its cleanup. The orphan would otherwise keep the port and make
-# next launch's preflight refuse to start.
+# Exits a desktop-owned backend whose app died without cleanup, so the port is freed.
 
 from __future__ import annotations
 
@@ -28,8 +26,7 @@ def _fire(on_parent_exit: Callable[[], None]) -> None:
 
 
 def _watch_unix(parent_pid, on_parent_exit, stop, poll_seconds) -> None:
-    # "My parent is no longer the owner pid" is the death signal: kernel truth, immune to pid reuse, and indifferent to
-    # reaping, which a kill-0 probe is not. Checked before the first wait.
+    # Reparenting (parent != owner pid) is the death signal: immune to pid reuse and reaping.
     while True:
         if os.getppid() != parent_pid:
             _fire(on_parent_exit)
@@ -43,8 +40,7 @@ def _watch_windows(parent_pid, on_parent_exit, stop, poll_seconds) -> None:
     from ctypes import wintypes
 
     kernel32 = ctypes.windll.kernel32
-    # Explicit signatures: handles are pointer-sized and would be truncated by
-    # the c_int defaults on 64-bit, leaving the wait on an invalid handle.
+    # Explicit HANDLE signatures: c_int defaults truncate handles on 64-bit.
     kernel32.OpenProcess.restype = wintypes.HANDLE
     kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
     kernel32.WaitForSingleObject.restype = wintypes.DWORD
@@ -56,11 +52,9 @@ def _watch_windows(parent_pid, on_parent_exit, stop, poll_seconds) -> None:
     WAIT_OBJECT_0 = 0
     handle = kernel32.OpenProcess(SYNCHRONIZE, False, parent_pid)
     if not handle:
-        # A same-user owner is always openable.
         _fire(on_parent_exit)
         return
     try:
-        # Bounded waits so a stop request is honored.
         while not stop.is_set():
             if kernel32.WaitForSingleObject(handle, int(poll_seconds * 1000)) == WAIT_OBJECT_0:
                 _fire(on_parent_exit)
@@ -69,9 +63,7 @@ def _watch_windows(parent_pid, on_parent_exit, stop, poll_seconds) -> None:
         kernel32.CloseHandle(handle)
 
 
-# Watches parent_pid (the spawning app's own pid when it passes one, else the
-# direct parent). Returns the stop event, or None when the parent was already
-# gone at arm time, in which case the callback fires immediately.
+# Returns the stop event, or None if the parent was already gone (callback fires at once).
 def start_parent_watchdog(
     on_parent_exit: Callable[[], None],
     parent_pid: Optional[int] = None,

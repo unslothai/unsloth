@@ -15,8 +15,7 @@ from typing import Optional
 from loggers import get_logger
 from utils.paths import path_utils as _path_utils
 
-# One policy, defined in utils.paths.storage_roots: the copy that used to live here drifted, and a
-# BOM'd settings.json was honoured by one side and dropped by the other (#9748).
+# One policy in utils.paths.storage_roots; a local copy drifted before.
 from utils.paths.storage_roots import (
     hermes_model_dirs,
     studio_root,
@@ -114,8 +113,7 @@ def is_valid_repo_id(repo_id: str) -> bool:
     segments = repo_id.split("/")
     if len(segments) not in (1, 2):
         return False
-    # Match huggingface_hub.validate_repo_id: the 96-char limit applies per segment, not to the whole
-    # "namespace/repo_name" string.
+    # Like validate_repo_id: the 96-char limit is per segment.
     return all(
         segment not in ("", ".", "..")
         and len(segment) <= _MAX_REPO_ID_LENGTH
@@ -145,8 +143,6 @@ def is_valid_gguf_variant(variant: str) -> bool:
     return all(segment not in ("", ".", "..") for segment in normalized.split("/"))
 
 
-# Per-process memo for resolve_cached_repo_id_case. Bounded LRU so a long-lived process cannot
-# grow it without limit; evicted cold entries simply recompute.
 _CACHE_CASE_RESOLUTION_MEMO_MAX = 512
 _CACHE_CASE_RESOLUTION_MEMO: "OrderedDict[tuple[str, str], str]" = OrderedDict()
 _CACHE_CASE_RESOLUTION_LOCK = threading.Lock()
@@ -237,8 +233,7 @@ def resolve_dataset_path(path_value: str) -> Path:
     raw = str(path_value or "").strip()
     if "\x00" in raw:
         raise ValueError("dataset path may not contain null bytes")
-    # Normalize first so Windows/UNC and backslash paths resolve like the rest of the Hub path layer,
-    # and a backslashed ".." is caught by the traversal guard below.
+    # Normalize first so a backslashed ".." is caught by the traversal guard below.
     normalized = normalize_path(raw)
     path = Path(normalized).expanduser()
     if ".." in path.parts:
@@ -324,8 +319,6 @@ def resolve_cached_repo_id_case(
                     continue
                 if entry.name.lower() != expected_lower:
                     continue
-                # The lowercased full-name match already proves the prefix matches; a case-sensitive startswith
-                # would reject a mixed-case imported dir such as Models--Org--Repo.
                 repo_part = entry.name[len(prefix) :]
                 if not repo_part:
                     continue

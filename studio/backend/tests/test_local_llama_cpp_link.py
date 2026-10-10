@@ -31,8 +31,6 @@ from core.inference.llama_cpp import LlamaCppBackend
 
 @pytest.fixture(autouse = True)
 def _no_whisper_piggyback(monkeypatch):
-    # Keep the whisper piggyback probe off the host: these tests exercise the
-    # llama local-link contract only.
     monkeypatch.setattr(u, "_whisper_chain_status", lambda **kwargs: None)
 
 
@@ -82,7 +80,6 @@ def test_active_install_is_local_link(tmp_path: Path) -> None:
     binary = str(link / _server_subpath())
     assert u._active_install_is_local_link(binary) is True
 
-    # A plain (non-link) llama.cpp dir is Unsloth-managed, not a local link.
     plain = tmp_path / "plain" / "llama.cpp"
     plain.mkdir(parents = True)
     assert u._active_install_is_local_link(str(plain / _server_subpath())) is False
@@ -108,7 +105,6 @@ def test_a_link_into_the_studio_app_tree_is_not_a_local_link(tmp_path: Path, mon
     whisper_binary = str(whisper_link / "build" / "bin" / "whisper-server")
     assert w._active_install_is_local_link(whisper_binary) is False
 
-    # a link out of the image's code is still the user's own checkout
     outside = home / "outside.cpp" / "llama.cpp"
     outside.parent.mkdir()
     _make_link(outside, tmp_path / "my-checkout")
@@ -162,13 +158,12 @@ def _fake_procfs(tmp_path: Path, fake: _FakeProc) -> Path:
     root = tmp_path / "fake-proc"
     entry = root / str(fake.info["pid"])
     entry.mkdir(parents = True)
-    # comm sits between the first "(" and the last ")"; starttime is field 22.
+    # comm sits between the first '(' and the last ')'; starttime is field 22.
     filler = " ".join(["0"] * 18)  # fields 4..21
     (entry / "stat").write_bytes(
         f"{fake.info['pid']} (llama-server) S {filler} 1000".encode("utf-8")
     )
     (entry / "exe").symlink_to(fake.info["exe"])
-    # A non-numeric sibling and a process with a different name must be ignored.
     (root / "self").mkdir()
     other = root / str(fake.info["pid"] + 1)
     other.mkdir()
@@ -183,8 +178,6 @@ def _run_orphan_scan(
     scan: str = "psutil",
     tmp_path: Path = None,
 ) -> int:
-    # psutil drives the cross-platform process scan; skip (rather than error) if a
-    # minimal test env lacks it. CI installs it so these tests actually run.
     psutil = pytest.importorskip("psutil")
 
     monkeypatch.setattr(
@@ -194,29 +187,11 @@ def _run_orphan_scan(
     )
     monkeypatch.setattr(LlamaCppBackend, "_reap_recorded_pid", staticmethod(lambda: 0))
 
-    # The fake is an orphan by construction, so say so instead of letting the host
-    # decide. _kill_orphaned_servers skips any candidate whose parent is alive, and
-    # _pid_parent_is_alive answers that by looking the PID up for real:
-    # psutil.Process(pid).ppid() then psutil.pid_exists(ppid). Nothing here stubs
-    # psutil.Process -- only process_iter -- so the lookup hits the actual machine.
-    #
-    # The PID is os.getpid() + 888, invented on the assumption that nothing owns it.
-    # On a quiet runner nothing does, NoSuchProcess comes back, the candidate is
-    # treated as an orphan and killed. On a busier one that PID is a real process
-    # with a real live parent, the candidate is skipped, and the test reports
-    # `assert 0 == 1` having exercised the ownership logic correctly. That is what
-    # it did on a staging runner while passing on the org queue for the same commit.
-    #
-    # These two tests are about OWNERSHIP -- link tree spared, real root reaped --
-    # and parent liveness is incidental to both, so it is pinned rather than left to
-    # whatever else happens to be running. test_llama_cpp_wait_for_vram_settle.py
-    # stubs this at every one of its call sites for the same reason; this harness
-    # stubbed the sibling _reap_recorded_pid and missed this one.
+    # Pin parent liveness: the invented PID may be a real process on busy runners.
     monkeypatch.setattr(LlamaCppBackend, "_pid_parent_is_alive", staticmethod(lambda pid: False))
 
     if scan == "procfs":
-        # Linux reads /proc directly. Point it at a fixture tree and intercept the
-        # signal, since the fixture's pid is not a real process.
+        # Fixture pid is not real, so intercept the signal.
         if sys.platform != "linux":
             pytest.skip("the procfs scan only runs on Linux")
         monkeypatch.setattr(llama_cpp_module, "_PROC_ROOT", str(_fake_procfs(tmp_path, fake)))
@@ -229,7 +204,6 @@ def _run_orphan_scan(
 
         monkeypatch.setattr(os, "kill", _fake_kill)
     else:
-        # No /proc means the psutil branch, which is what macOS and Windows take.
         monkeypatch.setattr(llama_cpp_module, "_PROC_ROOT", str(studio_root / "no-such-proc"))
         monkeypatch.setattr(psutil, "process_iter", lambda attrs = None: iter([fake]))
     return LlamaCppBackend._kill_orphaned_servers()
@@ -253,8 +227,6 @@ def test_orphan_cleanup_spares_local_link_tree(tmp_path: Path, monkeypatch, scan
 
 @pytest.mark.parametrize("scan", ["psutil", "procfs"])
 def test_orphan_cleanup_kills_under_real_root(tmp_path: Path, monkeypatch, scan) -> None:
-    # Control: a real (non-link) managed root still gets its orphan reaped, so the
-    # spare-the-link test above is not a no-op.
     studio_root = tmp_path / "studio-home"
     bin_dir = studio_root / "llama.cpp" / _server_subpath().parent
     bin_dir.mkdir(parents = True)

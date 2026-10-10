@@ -207,7 +207,6 @@
     {{- '<turn|>\n' -}}
 {%- endif %}
 
-{#- Pre-scan: find last user message index for reasoning guard -#}
 {%- set ns_turn = namespace(last_user_idx=-1) -%}
 {%- for i in range(loop_messages | length) -%}
     {%- if loop_messages[i]['role'] == 'user' -%}
@@ -258,14 +257,12 @@
 
             {%- set ns_tr_out = namespace(flag=false) -%}
             {%- if message.get('tool_responses') -%}
-                {#- Legacy: tool_responses embedded on the assistant message (Google/Gemma native) -#}
                 {%- for tool_response in message.get('tool_responses') -%}
                     {{- format_tool_response_block(tool_response['name'] | default('unknown', true), tool_response['response']) -}}
                     {%- set ns_tr_out.flag = true -%}
                     {%- set ns.prev_message_type = 'tool_response' -%}
                 {%- endfor -%}
             {%- elif message.get('tool_calls') -%}
-                {#- OpenAI Chat Completions: forward-scan consecutive role:tool messages -#}
                 {%- set ns_tool_scan = namespace(stopped=false) -%}
                 {%- for k in range(loop.index0 + 1, loop_messages | length) -%}
                     {%- if ns_tool_scan.stopped -%}
@@ -273,14 +270,12 @@
                         {%- set ns_tool_scan.stopped = true -%}
                     {%- else -%}
                         {%- set follow = loop_messages[k] -%}
-                        {#- Resolve tool_call_id to function name -#}
                         {%- set ns_tname = namespace(name=follow.get('name') or 'unknown') -%}
                         {%- for tc in message.get('tool_calls') -%}
                             {%- if tc.get('id') == follow.get('tool_call_id') -%}
                                 {%- set ns_tname.name = tc['function']['name'] -%}
                             {%- endif -%}
                         {%- endfor -%}
-                        {#- Handle content as string or content-parts array -#}
                         {%- set tool_body = follow.get('content') -%}
                         {%- if tool_body is string -%}
                             {{- format_tool_response_block(ns_tname.name, tool_body) -}}

@@ -98,7 +98,6 @@ def music_rules(model: AudioCppModel, max_batch: int = 1) -> Optional[dict[str, 
             {
                 "max": MUSIC_MAX_VARIATIONS,
                 "how": mode.variations,
-                # Variations one request makes without a reload.
                 "loaded": max(1, int(max_batch))
                 if mode.variations == "batch"
                 else MUSIC_MAX_VARIATIONS,
@@ -169,7 +168,7 @@ def song_request(
     if model.family == "minimax_music3":
         if not lyrics:
             raise MusicRequestError("MiniMax Music 3 needs lyrics.")
-        # Sending duration_seconds and duration_sec together is refused as conflicting, even equal.
+        # duration_seconds plus duration_sec is refused as conflicting, even when equal.
         request.update(
             {"text": description or lyrics, "lyrics": lyrics, "duration_seconds": seconds}
         )
@@ -182,7 +181,6 @@ def song_request(
     if model.family == "yue2":
         if not description:
             raise MusicRequestError("YuE2 needs a style description.")
-        # Missing or empty lyrics still sing; only "[Instrumental]" comes back wordless.
         if instrumental or not lyrics:
             lyrics = (
                 music.instrumental_lyrics
@@ -192,7 +190,7 @@ def song_request(
         request["text"] = lyrics
         request_options["style"] = description
         request_options["lyrics"] = lyrics
-        # Length is the semantic token budget (25 fps); the default 200-frame floor outlasts short asks.
+        # 25 fps semantic tokens; the default 200-frame floor outlasts short asks.
         frames = int(round(seconds * 25))
         request_options["semantic_max_tokens"] = frames
         request_options["semantic_min_tokens"] = min(200, frames)
@@ -223,7 +221,6 @@ def legacy_song_request(
     lyrics = str(text or "").strip()
     if model.family not in ("minimax_music3", "yue2") and not description:
         description, lyrics = lyrics, ""
-    # MiDashengLM crashes past 81 s.
     mode = model.music.modes[0] if model.music is not None and model.music.modes else None
     if mode is not None:
         seconds = min(seconds, mode.duration[1])
@@ -280,7 +277,6 @@ def edit_request(
                 start, end = source_seconds, source_seconds + float(edit.get("extend_s") or 0.0)
             else:
                 (start, end) = ranges[0]
-            # The window may pass the clip's end: ACE-Step pads it, extending the song.
             request_options.update(
                 {"route": "repaint", "repainting_start": start, "repainting_end": end}
             )
@@ -289,10 +285,9 @@ def edit_request(
         elif action == "cover":
             request_options["route"] = "cover"
             if strength is not None:
-                # strength is how much to change; audio_cover_strength is the share of steps
-                # conditioned on the source (diffusion.cpp), so higher keeps more of it.
+                # audio_cover_strength is the share of steps conditioned on the source, so invert.
                 request_options["audio_cover_strength"] = 1.0 - float(strength)
-        else:  # continue: ACE-Step's "complete" adds parts across the whole track.
+        else:
             request_options["route"] = "complete"
             request_options["duration_seconds"] = float(duration_s or source_seconds)
         return _finish(model, request, request_options, seed)
@@ -308,7 +303,7 @@ def edit_request(
                     "inpaint_mask_end_seconds": ",".join(seconds_text(e) for _, e in merged),
                 }
             )
-        else:  # restyle
+        else:
             request_options["audio_input_kind"] = "init_audio"
             if strength is not None:
                 request_options["init_noise_level"] = float(strength)

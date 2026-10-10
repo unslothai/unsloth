@@ -126,9 +126,7 @@ def test_completion_invalidates_inventory_before_publishing_state(monkeypatch):
 def test_xet_failure_retries_over_http_for_model_and_dataset(monkeypatch, tmp_path):
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
     monkeypatch.setattr(download_lifecycle.threading, "Thread", _ImmediateThread)
-    # _ImmediateThread mutates the stdlib threading module the shared Zoo watchdog also imports, so it
-    # would run INLINE and block in Event.wait() before finalize_worker_exit could stop it. Stub the
-    # seam instead.
+    # _ImmediateThread would run the shared Zoo watchdog inline and block; stub the seam.
     monkeypatch.setattr(download_lifecycle, "_start_stall_watchdog", lambda *a, **k: None)
     register_worker = download_lifecycle.register_worker
 
@@ -366,8 +364,7 @@ def test_a_verdict_carried_onto_the_http_rung_is_still_charged(monkeypatch, tmp_
         transport = download_registry.TRANSPORT_XET,
         watch_name = "model-watch",
     )
-    # Before the verdict: a double whose signature has fallen behind spawn_worker raises TypeError,
-    # which reads as a spawn failure and still records the verdict, staying green.
+    # Stale double signatures raise TypeError that still records a verdict; assert spawn ran.
     assert spawned == [True, False], "the HTTP rung never ran, so the verdict proves nothing"
     assert recorded == [verdict], "a real Xet stall was dropped when HTTP finished the download"
 
@@ -375,8 +372,7 @@ def test_a_verdict_carried_onto_the_http_rung_is_still_charged(monkeypatch, tmp_
 def test_http_failure_remains_terminal(monkeypatch, tmp_path):
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
     monkeypatch.setattr(download_lifecycle.threading, "Thread", _ImmediateThread)
-    # _ImmediateThread mutates the stdlib threading module the shared Zoo watchdog also imports, so stub
-    # the seam instead.
+    # Stub the seam (see above).
     monkeypatch.setattr(download_lifecycle, "_start_stall_watchdog", lambda *a, **k: None)
     register_worker = download_lifecycle.register_worker
     registry = download_registry.DownloadRegistry()
@@ -481,7 +477,7 @@ def test_a_sibling_variants_bytes_do_not_count_as_this_jobs_progress(monkeypatch
         root = None,
     ):
         seen.append(frozenset(blob_hashes))
-        return 1_000  # this variant's own blobs never grow: it was already cached
+        return 1_000
 
     monkeypatch.setattr(download_registry, "completed_blob_bytes", _fake_completed)
     monkeypatch.setattr(
@@ -634,7 +630,6 @@ def test_the_last_xet_stall_falls_back_to_http_and_charges_once(monkeypatch, tmp
         retries = retries,
     )
     assert len(recorded) == 1
-    # The HTTP rung carries no pending verdict: it was just recorded.
     assert retries == [(download_registry.TRANSPORT_HTTP, 2, None)]
 
 

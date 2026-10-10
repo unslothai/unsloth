@@ -16,7 +16,7 @@ from utils.prebuilt import freshness_flow as _flow
 
 logger = structlog.get_logger(__name__)
 
-# 3 days matches Unsloth's typical llama.cpp release cadence.
+# Matches Unsloth's typical llama.cpp release cadence.
 STALENESS_THRESHOLD_DAYS = 3
 
 _INSTALL_MARKER_NAME = "UNSLOTH_PREBUILT_INFO.json"
@@ -24,7 +24,6 @@ _INSTALL_MARKER_NAME = "UNSLOTH_PREBUILT_INFO.json"
 _marker_cache: dict[str, Optional[dict]] = {}
 _release_memo: dict[str, tuple[float, Optional[str]]] = {}
 _release_failed_at: dict[str, float] = {}
-# Newest-release asset sizes (name -> bytes), memoized like the tag (24h TTL).
 _assets_memo: dict[str, tuple[float, dict[str, int]]] = {}
 
 
@@ -105,12 +104,11 @@ def update_download_size_bytes(
     installed_asset = marker.get("asset")
     if not isinstance(installed_asset, str):
         return None
-    # Tag-independent platform suffix: accept the fork's "app-*" bundles and the upstream ggml-org "ubuntu-*"/"win-*" prebuilts ("windows" before "win").
+    # Accept fork "app-*" and upstream "ubuntu-*"/"win-*" assets ("windows" before "win").
     m = re.search(r"-((?:linux|ubuntu|windows|win|macos|darwin)-.*)$", installed_asset)
     if not m:
         return None
     suffix = m.group(1)
-    # Upstream ubuntu/win assets live in the marker's binary_repo.
     repos = [repo]
     binary_repo = marker.get("binary_repo")
     if isinstance(binary_repo, str) and binary_repo and binary_repo != repo:
@@ -122,7 +120,6 @@ def update_download_size_bytes(
             continue
         if want in assets:
             return assets[want]
-        # Tag formatting can vary (mix suffixes); fall back to the platform suffix.
         for name, size in assets.items():
             if name.endswith(suffix):
                 return size
@@ -153,7 +150,7 @@ def is_behind(installed: Optional[str], latest: Optional[str]) -> bool:
         return True
     if lb != ib:
         return lb > ib
-    # Same base build, different tags: offer a mix (latest carries a suffix), but never offer a bare base over a mix install at the same base.
+    # Offer a same-base mix, but never a bare base over a mix install.
     return latest != f"b{lb}"
 
 
@@ -164,7 +161,7 @@ def check_prebuilt_freshness(
     now: Optional[datetime] = None,
 ) -> dict:
     """Returns {has_marker, stale, behind, installed_tag, latest_tag, installed_at_utc, age_days, published_repo, threshold_days}. behind = installed genuinely older than latest (see is_behind), stale = behind AND age >= threshold. Fails open on missing data (behind/stale stay False)."""
-    # Display prefers the normalized base tag, comparison uses the FULL identity, since /releases/latest returns the full tag_name and comparing the two produced a permanent "downgrade" banner. The marker records a normalized base tag ("tag", e.g. b9596) and the full "release_tag" (b9596-mix-<sha>), with deliberately opposite fallbacks.
+    # Display uses the base tag, comparison the full release_tag, else a false downgrade shows.
     return _flow.check_freshness(
         binary_path,
         threshold_days = threshold_days,

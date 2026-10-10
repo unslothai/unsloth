@@ -37,7 +37,7 @@ LocalModelSource = Literal[
 
 
 def _safe_is_dir(path) -> bool:
-    # Py >= 3.12 propagates PermissionError (EACCES) from is_dir(), and folder scans probe root-owned system dirs, so treat un-stat-able paths as not-a-dir.
+    # Py 3.12+ raises PermissionError from is_dir() on root-owned dirs; treat as not-a-dir.
     try:
         return Path(path).is_dir()
     except OSError:
@@ -119,7 +119,6 @@ def _diffusers_pipeline_artifact_kind(path: Optional[Path]) -> Optional[LocalArt
 
 
 def _is_diffusers_pipeline_dir(path: Path) -> bool:
-    # An interrupted copy is still one pipeline; completeness gates only artifact_kind.
     try:
         return (path / "model_index.json").is_file() or (
             path / "modular_model_index.json"
@@ -182,7 +181,6 @@ _NON_GENERATIVE_ARCHITECTURE_SUFFIXES = (
     "ForVideoClassification",
     "ForZeroShotImageClassification",
 )
-# Generative, but not of a chat reply: they match a generative suffix below yet cannot answer a text turn.
 _NON_CHAT_GENERATIVE_MODEL_TYPES = frozenset(
     {
         "blip",
@@ -266,7 +264,6 @@ _ENCODER_ONLY_MODEL_TYPES = frozenset(
         "squeezebert",
         "vision-text-dual-encoder",
         "xlm-roberta",
-        # Vision and audio backbones: their bare *Model names carry no task suffix, so only the model type identifies them.
         "beit",
         "convnext",
         "convnextv2",
@@ -294,19 +291,19 @@ _ENCODER_ONLY_MODEL_TYPES = frozenset(
 )
 
 
-# Real configs are a few KB; the cap keeps a huge or hostile file out of memory.
+# Cap keeps a huge or hostile config out of memory.
 _MAX_LOCAL_JSON_BYTES = 1 << 20
 
 
 def _read_local_json_object(path: Path) -> dict:
     """Config metadata, or ``{}``. Never raises: one unreadable file must not fail the whole scan."""
     try:
-        # is_file() also skips a FIFO, whose read would block the scan forever.
+        # is_file() also skips a FIFO, whose read would block forever.
         if not path.is_file() or path.stat().st_size > _MAX_LOCAL_JSON_BYTES:
             return {}
         data = json.loads(path.read_text(encoding = "utf-8"))
         return data if isinstance(data, dict) else {}
-    # ValueError covers JSONDecodeError and UnicodeDecodeError; deeply nested JSON raises RecursionError, which is neither.
+    # Deeply nested JSON raises RecursionError, not ValueError.
     except (ValueError, OSError, RecursionError):
         return {}
 
@@ -316,11 +313,10 @@ def _local_transformers_can_chat(path: Path) -> Optional[bool]:
     if not _safe_is_dir(path):
         return None
 
-    # Before every architecture test below: a TTS model is an ordinary causal LM wearing a codec vocabulary (Orpheus is LlamaForCausalLM), so the suffix rules answer True and auto-load picks it.
+    # Before the arch checks: TTS models are plain causal LMs (Orpheus is LlamaForCausalLM).
     if detect_local_tts_audio_type(path) is not None:
         return False
 
-    # SentenceTransformers exports carry this even when the config names a broadly reusable encoder class.
     try:
         if (path / "modules.json").is_file():
             return False
@@ -345,7 +341,7 @@ def _local_transformers_can_chat(path: Path) -> Optional[bool]:
     )
     model_type_raw = config.get("model_type")
     normalized_type = model_type_raw.strip().lower() if isinstance(model_type_raw, str) else ""
-    # Before the generative suffix: Whisper and friends end in ForConditionalGeneration but cannot answer a text turn.
+    # Whisper etc. end in ForConditionalGeneration but cannot answer a text turn.
     if normalized_type in _NON_CHAT_GENERATIVE_MODEL_TYPES or any(
         name in _NON_CHAT_GENERATIVE_ARCHITECTURES for name in names
     ):
@@ -354,12 +350,10 @@ def _local_transformers_can_chat(path: Path) -> Optional[bool]:
         return True
     if names and all(name.endswith(_NON_GENERATIVE_ARCHITECTURE_SUFFIXES) for name in names):
         return False
-    # AutoModel.save_pretrained on a chat family writes the backbone name, which has no LM head. Listed explicitly, not shape-matched, so an unfamiliar FooModel still fails open.
+    # Listed explicitly so an unfamiliar FooModel still fails open.
     if names and all(name in _BARE_TEXT_BACKBONE_ARCHITECTURES for name in names):
         return False
 
-    # The type alone decides: requiring the name shape too kept rows chat-capable when it did not fit,
-    # e.g.
     if normalized_type in _ENCODER_ONLY_MODEL_TYPES:
         return False
     return None
@@ -392,13 +386,12 @@ def _base_transformers_can_chat(
     except (OSError, RuntimeError, ValueError):
         return None
 
-    # The scan covers legacy and previously configured roots, so an adapter can be listed from an inactive root with its base cached beside it; the active root alone answered None, which is inconclusive and left encoder LoRAs in the chat picker.
     try:
         from huggingface_hub import try_to_load_from_cache
     except Exception:
         return None
 
-    # Each source collected independently: under one try, a failure enumerating the OPTIONAL extra roots discarded the adapter's own root too and answered None.
+    # Collect each source independently so a failing optional root keeps the adapter's own root.
     roots: list[Path] = []
 
     def _add(root: Optional[Path]) -> None:
@@ -431,7 +424,7 @@ def _base_transformers_can_chat(
             )
         except Exception:
             continue
-        # A non-str is _CACHED_NO_EXIST ("we know it is absent here") or None ("unknown"), and neither rules the base out of a different root.
+        # Non-str is _CACHED_NO_EXIST or None; neither rules out another root.
         if isinstance(found, str):
             config_path = found
             break
@@ -450,7 +443,6 @@ def _local_path_can_chat(path: str | Path, base_model: Optional[str] = None) -> 
     adapter_base = _clean_optional_string(adapter_config.get("base_model_name_or_path"))
     revision = _clean_optional_string(adapter_config.get("revision"))
     base = adapter_base or _clean_optional_string(base_model)
-    # model_path is the adapter's snapshot, which names the cache root its base shares.
     return _base_transformers_can_chat(base, revision, model_path) if base else None
 
 
@@ -546,7 +538,6 @@ def _apply_format_aware_partial(
         if not target:
             rewritten.append(row)
             continue
-        # GGUF row-level transport is ambiguous, since variants may differ; per-variant detail lives on GgufVariantDetail.partial_transport.
         partial_transport = None if row.model_format == "gguf" else snapshot_partial_transport
         rewritten.append(
             row.model_copy(
@@ -577,7 +568,6 @@ def _is_adapter_weight_name(name: str) -> bool:
     return lower.startswith("adapter_model") and lower.endswith((".safetensors", ".bin"))
 
 
-# Trainer state saved beside the weights, not the model. The .bin side is already an allow list.
 _TRAINING_ARTEFACT_PREFIXES = (
     "optimizer",
     "scheduler",

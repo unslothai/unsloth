@@ -156,7 +156,7 @@ def generation_is_mine(modality: str) -> bool:
 
 
 def generation_is_foreign(modality: str) -> bool:
-    # account_scope, not login mode: a deactivated account's job keeps running and stays foreign.
+    # account_scope, not login mode: a deactivated account's job stays foreign.
     if account_scope() is None:
         return False
     account_id = current_account_id()
@@ -181,7 +181,7 @@ def foreign_media_generations(account_id: str) -> int:
             total += sum(count for account, count in counts.items() if account != account_id)
         for holders in _generation_holders.values():
             total += sum(1 for holder in holders if holder != account_id)
-    # sys.modules, not an import: no job is in flight before (or while) its module loads.
+    # sys.modules, not import: no job is in flight before the module loads.
     video = sys.modules.get("core.inference.video")
     in_flight = getattr(video, "generation_account_in_flight", None) if video is not None else None
     reserved = in_flight() if callable(in_flight) else None
@@ -190,9 +190,7 @@ def foreign_media_generations(account_id: str) -> int:
     return total
 
 
-# A failed load leaves the previous model resident, still owned by its account.
 _prior_resident_accounts: dict[str, tuple[str, frozenset[str]]] = {}
-# What each publish displaced, so a load that never commits can restore it.
 _uncommitted_resident: dict[str, tuple] = {}
 _uncommitted_components: dict[str, tuple] = {}
 
@@ -211,7 +209,7 @@ def note_resident_account(modality: str, *references: str) -> None:
         _resident_accounts[modality] = (current_account_id(), frozenset(references))
 
 
-# Admits a media load and scans for one at retirement, so neither slips between the other's steps.
+# Serializes media load admission with retirement scans.
 media_load_lock = threading.Lock()
 
 
@@ -248,7 +246,6 @@ def retire_media_load(modality: str, account_id: str, engine) -> bool:
         return True
 
 
-# Accounts sharing the resident: its loader plus every account whose matching load reused it.
 _resident_sharers: dict[str, set[str]] = {}
 _sharers_lock = threading.Lock()
 
@@ -560,7 +557,7 @@ def _hub_public_answer(
 
 
 def _public_key(repo_id: str, repo_type: str) -> tuple[str, str, str]:
-    # A repo public on one Hub may be private, or someone else's, on another.
+    # A repo public on one Hub may be private on another.
     return (hf_constants.ENDPOINT.rstrip("/"), repo_type, repo_id.lower())
 
 
@@ -654,7 +651,6 @@ def _hub_probe_targets(references, repo_type: str, grants: set[str]) -> set[str]
             if (entry := _public_repos.get(_public_key(repo_id, repo_type))) is None
             or entry[0] <= now
         }
-    # A local path that happens to spell a repo id resolves against the cache, not the Hub.
     return {
         repo_id
         for repo_id, reference in unknown.items()
@@ -722,7 +718,7 @@ def record_model_grant(repo_id: str, repo_type: str = "model") -> None:
 
     if account_is_retired():
         return
-    # Held across the write so a late completion cannot recreate a retired account's workspace.
+    # Held so a late completion cannot recreate a retired account's workspace.
     with storage_roots.root_retirement_lock:
         path = studio_db_path()
         try:
@@ -867,7 +863,7 @@ def private_directory(path: str, folder: str) -> str:
 
     legacy = studio_root() / folder
     target = workspace_root() / folder if Path(path).resolve() == legacy.resolve() else Path(path)
-    # The project workspace counts as the account's own, matching within_account().
+    # Project workspace counts as the account's own, matching within_account().
     own_roots = (workspace_root(), project_workspaces_root())
     resolved = target.resolve()
     if not any(resolved.is_relative_to(root.resolve()) for root in own_roots):
@@ -889,7 +885,7 @@ def authorize_download(repo_id: str, repo_type: str, hf_token) -> None:
         token = account_hf_token(hf_token)
         info = api.repo_info(repo_id, repo_type = repo_type, token = token, timeout = 5.0)
         if getattr(info, "gated", False):
-            # Gated repo metadata is public even when the caller cannot read its files.
+            # Gated repo metadata is public even when files are not.
             api.auth_check(repo_id, repo_type = repo_type, token = token)
     except Exception as exc:  # noqa: BLE001 - a cached file is never a grant
         raise HTTPException(status_code = 404, detail = "Repository not found") from exc
@@ -956,7 +952,7 @@ def resident_components(status: dict, modality: str | None = None) -> list[str]:
     repo_id = status.get("repo_id")
     references = [repo_id, status.get("base_repo")]
     primary, components = _resident_components.get(modality, ("", frozenset()))
-    # Baked adapters are absent from status(), so the load's authorized list stands in.
+    # Baked adapters are absent from status().
     if primary and repo_id and primary == repo_id:
         references.extend(sorted(components))
     return [ref for ref in references if isinstance(ref, str) and ref]

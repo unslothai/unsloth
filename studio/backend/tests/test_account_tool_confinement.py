@@ -327,7 +327,6 @@ def test_writable_roots_cannot_make_devices_or_links(abi):
         tool_confinement._FS_IOCTL_DEV,
     ):
         assert not writable & right
-    # Ordinary file work stays granted, and nothing outside the handled set leaks in.
     assert writable & tool_confinement._FS_WRITE_FILE and writable & tool_confinement._FS_READ_DIR
     assert writable & ~handled == 0
 
@@ -431,11 +430,7 @@ def test_install_under_a_granted_root_stays_hidden(tmp_path, monkeypatch):
         auth = home / "auth" / "auth.db"
         auth.parent.mkdir(parents = True, exist_ok = True)
         auth.write_text("OWNER_AUTH_DB", encoding = "utf-8")
-        # Three separate claims, run as three separate commands. They used to share one
-        # command line, and once the credential pre-flight in tools.py learned to refuse a
-        # command that NAMES the auth database, that one line was refused whole: the reach
-        # probes passed because nothing ran at all, and the usability probe could not run
-        # either. Split, each claim is answered by the layer that actually owns it.
+        # Three separate commands: tools.py refuses a whole command line naming the auth DB.
         reach = run_as(
             BOB,
             tools._bash_exec,
@@ -447,9 +442,6 @@ def test_install_under_a_granted_root_stays_hidden(tmp_path, monkeypatch):
         listing = run_as(BOB, tools._bash_exec, f"ls {home}; echo ls_rc=$?", session_id = "chat")
         assert "OWNER_AUTH_DB" not in listing and "ls_rc=0" not in listing, listing
 
-        # Names no part of the auth path, so nothing short-circuits it: this is the half
-        # that says the rest of the granted root is still usable, which is the whole point
-        # of hiding one directory inside it rather than revoking the root.
         usable = run_as(
             BOB,
             tools._bash_exec,
@@ -518,8 +510,7 @@ def test_a_rule_path_removed_before_the_child_opens_it_does_not_kill_the_call(tm
     handled = tool_confinement._handled_mask(tool_confinement.landlock_abi())
     gone.rmdir()
 
-    # Forked, because _landlock_preexec restricts the process it runs in and pytest is not a
-    # process to restrict.
+    # Forked: _landlock_preexec restricts its own process, and pytest must not be restricted.
     pid = os.fork()
     if pid == 0:
         try:
@@ -821,7 +812,6 @@ def test_a_tool_launch_after_deletion_refuses_instead_of_recreating_the_roots(ma
         with pytest.raises(storage_roots.RetiredAccountError):
             run_as(alice, helper)
 
-    # The public entry a tool call uses refuses too, as a returned error rather than a raise.
     with pytest.raises(storage_roots.RetiredAccountError):
         run_as(alice, tools._get_workdir, "chat")
     result = run_as(alice, tools._bash_exec, "echo hi", "chat")
@@ -842,7 +832,6 @@ def test_runtime_secret_mounts_are_excluded_from_the_system_grant(tmp_path, monk
     (run / "credentials" / "svc" / "token").write_text("token")
     _keep_the_interpreter_walk_out_of_the_fixtures(tmp_path, monkeypatch)
     monkeypatch.setattr(tool_confinement, "_SYSTEM_READ_ROOTS", (str(run),))
-    # The shipped list, relocated under the fake /run, so the test reads the real constant.
     monkeypatch.setattr(
         tool_confinement,
         "_PRIVATE_RUNTIME_ROOTS",

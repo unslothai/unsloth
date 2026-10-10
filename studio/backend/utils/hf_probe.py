@@ -45,7 +45,7 @@ def hf_file_definitely_absent(
             repo_type = repo_type,
             revision = revision,
         )
-        # A refused credential is not an answer about the file: ask once more without it.
+        # A refused credential says nothing about the file: retry anonymously.
         call_with_anonymous_retry(lambda sent: get_hf_file_metadata(url, token = sent), token)
     except LocalEntryNotFoundError:
         return False

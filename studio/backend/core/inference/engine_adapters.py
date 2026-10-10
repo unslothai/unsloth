@@ -323,7 +323,6 @@ def gpu_memory_fraction(
             reserve = max(reserve_mib, reserve_share * total)
             if total <= 0 or free <= reserve or free > total:
                 raise ValueError("Insufficient available GPU memory")
-            # One fraction for all ranks: the most constrained GPU bounds it.
             fraction = min(fraction, (free - reserve) / total)
         if fraction < 0.05:
             raise ValueError("Insufficient available GPU memory")

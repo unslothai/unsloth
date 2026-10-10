@@ -31,13 +31,12 @@ from utils.paths.storage_roots import account_path
 
 logger = get_logger(__name__)
 
-# ids are file stems; restrict to safe chars so a crafted id cannot escape the directory
+# ids are file stems; safe chars only so a crafted id cannot escape the directory.
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
 
 def gallery_dir() -> Path:
     if is_owner_context():
-        # Settings > Library can move the owner's folder elsewhere.
         return location_dir("audio", studio_root() / "audio")
     return ensure_account_dir(account_path("audio"))
 
@@ -120,14 +119,10 @@ def save_file(
     return _record(audio_id, meta)
 
 
-# The OpenAI-compatible /v1/audio/speech route persists every call, so an automated client can grow the gallery until
-# the disk fills. Bounded here rather than at that route so the UI's own runaway is covered too. Generous by default:
-# this is a convenience gallery, and the clip is returned to the caller either way.
+# /v1/audio/speech persists every call, so cap the gallery to avoid filling the disk.
 _MAX_CLIPS_ENV = "UNSLOTH_AUDIO_GALLERY_MAX_CLIPS"
 _DEFAULT_MAX_CLIPS = 2000
 
-# A count alone does not bound the disk: 2000 clips of maximum-length speech is tens of gigabytes, and the cap exists to
-# stop /v1/audio/speech filling the disk. Whichever limit binds first wins.
 _MAX_BYTES_ENV = "UNSLOTH_AUDIO_GALLERY_MAX_BYTES"
 _DEFAULT_MAX_BYTES = 5 * 1024 * 1024 * 1024
 
@@ -178,15 +173,11 @@ def _prune_to_cap() -> int:
     directory = gallery_dir()
     removed = 0
     try:
-        # Select AND delete under one lock, as clear() does. Choosing victims from a snapshot and unlinking after it
-        # leaves a window where an archive lands and is deleted anyway.
+        # Select AND delete under one lock, as clear() does.
         with gallery_flags.exclusive(directory, require_file_lock = True):
-            # By age, not display order: a clip dragged down is not older. Pinned clips are exempt.
             entries = [e for e in _list_audio_entries() if not e[0].get("pinned")]
             entries.sort(key = lambda e: _mtime(gallery_dir() / f"{e[0]['id']}.wav"), reverse = True)
 
-            # Newest first, so the index where either budget runs out is the cut point. The newest is always kept:
-            # dropping what the caller just generated looks like a silent failure.
             keep = len(entries) if cap <= 0 else min(cap, len(entries))
             if byte_cap > 0:
                 running = 0
@@ -195,14 +186,11 @@ def _prune_to_cap() -> int:
                     if running > byte_cap and index > 0:
                         keep = index
                         break
-            # A run's clips (a separation's stems) go together: a kept clip keeps its siblings.
             kept_groups = {r["group_id"] for r, _ in entries[:keep] if r.get("group_id")}
             if keep >= len(entries):
                 return 0
 
-            # Re-read TRUSTED immediately before deleting: read() answers "nothing is archived" for a store it cannot
-            # parse, which here would drop the clips the shelf exists to keep. It also covers filesystems where the
-            # cross-process lock degrades to a no-op.
+            # Re-read TRUSTED: read() reports "nothing archived" for a store it cannot parse.
             flags = gallery_flags.read_trusted(directory)
             victims = [
                 record["id"]
@@ -262,7 +250,6 @@ def _record(
         "id": audio_id,
         "url": f"/api/inference/audio/gallery/{audio_id}/file",
         **gallery_flags.flags_for(flags, audio_id),
-        # The listing's own sort key, so a client re-sort agrees with it.
         "order_at": gallery_flags.order_rank(
             flags, audio_id, _mtime(gallery_dir() / f"{audio_id}.wav")
         ),
@@ -326,7 +313,6 @@ def _sources_in_use(directory: Path, leaving: set[str]) -> set[str]:
     return used & sources
 
 
-# Key-presence ownership test: a hand-dropped wav with a partial sidecar is neither counted as ours nor destroyed.
 _REQUIRED_META = (
     "prompt",
     "model",
@@ -346,7 +332,6 @@ def _read_meta(sidecar: Path) -> Optional[dict[str, Any]]:
         meta = json.loads(raw)
     except (ValueError, TypeError):
         return None
-    # a parseable dict is not enough: a foreign or different-schema sidecar lacks the required keys
     if not isinstance(meta, dict) or any(k not in meta for k in _REQUIRED_META):
         return None
     return meta
@@ -381,7 +366,6 @@ def _mtime(path: Path) -> float:
         return 0.0
 
 
-# (pin rank, order key, id), newest first; an unpinned clip's pin rank is -inf.
 GalleryCursor = tuple[float, float, str]
 
 
@@ -492,7 +476,6 @@ def move(audio_id: str, after_id: Optional[str]) -> Optional[dict[str, Any]]:
         flags = gallery_flags.read(gallery_dir())
         if gallery_flags.is_archived(flags, audio_id):
             return None
-        # The whole shelf in listing order, so neighbours past the client's loaded window are known.
         try:
             paths = [
                 p for p in _clip_wavs(gallery_dir()) if not gallery_flags.is_archived(flags, p.stem)

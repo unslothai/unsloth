@@ -68,9 +68,6 @@ def _install_manifest_returning(monkeypatch, value):
     monkeypatch.setitem(sys.modules, "studio.install_manifest", module)
 
 
-# --- _installed_without_torch: only a literal True opts out ------------------------
-
-
 def test_true_means_no_torch(monkeypatch):
     _install_manifest_returning(monkeypatch, True)
     assert mr._installed_without_torch() is True
@@ -108,7 +105,7 @@ def test_a_failed_lookup_fails_open(monkeypatch, error):
 
 
 def test_a_missing_studio_package_fails_open(monkeypatch):
-    monkeypatch.setitem(sys.modules, "studio", None)  # import raises
+    monkeypatch.setitem(sys.modules, "studio", None)
     assert mr._installed_without_torch() is False
 
 
@@ -139,10 +136,10 @@ def _real_install_manifest(monkeypatch, venv_root: Path):
     [
         ({"no_torch": True}, True),
         ({"no_torch": False}, False),
-        ({"no_torch": "1"}, True),  # tolerated hand edit
+        ({"no_torch": "1"}, True),
         ({"no_torch": "no"}, False),
-        ({"steps_total": 12}, False),  # an install predating the key
-        (None, False),  # no manifest at all
+        ({"steps_total": 12}, False),
+        (None, False),
     ],
 )
 def test_against_a_real_manifest_on_disk(monkeypatch, tmp_path, manifest, expected):
@@ -158,9 +155,6 @@ def test_a_corrupt_manifest_does_not_disable_the_repair(monkeypatch, tmp_path):
     module = _real_install_manifest(monkeypatch, tmp_path)
     (tmp_path / module.MANIFEST_NAME).write_text("{not json", encoding = "utf-8")
     assert mr._installed_without_torch() is False
-
-
-# --- start_mlx_autorepair_if_needed: the gate itself -------------------------------
 
 
 def _hardware(monkeypatch, *, blames_mlx: bool):

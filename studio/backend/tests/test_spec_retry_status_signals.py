@@ -95,14 +95,11 @@ def test_answers_only_for_the_two_binary_reasons():
     ):
         backend = _Backend(reason)
         assert helper(backend) is None
-        # The point of the gate: no binary lookup on a poll that cannot need one.
         assert backend.calls == 0
 
 
 def test_reports_the_whole_retry_predicate():
-    # The predicate, not just its revision half: binary_no_mtp also asks whether the
-    # replacement advertises what the drafter kind needs, and a replacement that still
-    # lacks it never repairs, so a half answer would prompt on every later re-pick.
+    # Test the whole predicate: binary_no_mtp also checks the replacement supports the drafter kind.
     helper = _load_helper()
     for reason in ("binary_no_mtp", "binary_outdated"):
         assert helper(_Backend(reason, changed = False)) is False
@@ -145,11 +142,8 @@ def test_the_probe_arm_only_probes_once_a_launch_was_degraded():
     helper = _load_helper("_spec_probe_retry_pending")
     settled = _SpecBackend(inconclusive = False)
     assert helper(settled) is False
-    # The status is polled from first paint; a healthy runtime must not pay for this.
     assert settled.probes == 0
-    # Still inconclusive: nothing has changed, so an identical load would dedupe.
     assert helper(_SpecBackend(inconclusive = True, probe = True)) is False
-    # Answering now: the degraded runtime is re-derived once.
     assert helper(_SpecBackend(inconclusive = True, probe = False)) is True
 
 
@@ -214,8 +208,7 @@ def test_the_arch_gate_drop_is_reported():
 
 
 def test_the_paravirtual_pin_follows_the_detector(monkeypatch):
-    # The helper reads the detector rather than deciding anything itself, so drive the
-    # detector. It is lru_cached, which is what keeps this free on the status poll.
+    # The detector is lru_cached, which keeps the status poll free.
     helper = _load_helper("_gpu_placement_paravirtual")
     from core.inference import llama_cpp
 
@@ -257,8 +250,6 @@ def test_a_pending_audio_probe_is_reported():
 
 
 def test_the_diffusion_split_support_is_reported_for_diffusion_only():
-    # Off a diffusion runner there is no split to apply, and answering False there would
-    # tell a client the recheck does not apply when the question never arose.
     helper = _load_helper("_diffusion_split_supported")
 
     class _Runner:

@@ -158,7 +158,6 @@ def test_rewind_resets_cached_state():
     stripper = StreamingMarkupStripper(ENABLED)
     long_text = 'hello <tool_call>{"name": "search", "arguments": {}}</tool_call> world'
     assert stripper.strip(long_text) == _reference_strip(long_text)
-    # Unrelated shorter text: not an extension of the previous input.
     assert stripper.strip("different") == _reference_strip("different")
     assert stripper.strip(long_text) == _reference_strip(long_text)
 
@@ -205,8 +204,7 @@ def test_scan_is_amortized_not_quadratic():
     )
 
 
-# Cases the corpus and the alphabet fuzz both missed. Each produced a real divergence from
-# the reference strip before the guard it names was added, so each is pinned as a literal.
+# Each case diverged from the reference strip before its guard was added.
 _MISSED_BY_THE_CORPUS = (
     # ``_GEMMA_BARE_TC_RE`` is ``call\s*:``, so a space or newline before the colon is
     # still a call. Sentinel completeness needs the literal ``call``, not ``call:``.
@@ -483,7 +481,6 @@ def test_early_markup_is_not_slower_than_the_code_it_replaces(monkeypatch, prefi
 
         return wrapper
 
-    # Both arms reach these through the same module objects, so one patch counts both.
     monkeypatch.setattr(
         tool_healing,
         "strip_outside_think",
@@ -521,7 +518,6 @@ def test_early_markup_is_not_slower_than_the_code_it_replaces(monkeypatch, prefi
     incremental, got = run(StreamingMarkupStripper(ENABLED).strip)
 
     assert got == expected
-    # Not vacuous: the reference did one full strip per token, so the counters were live.
     assert reference.get("strip_outside_think", 0) >= count * len(prefix)
     assert reference.get("strip_segment", 0) > 0
     assert not incremental.get("whole_buffer_checks"), (
@@ -657,7 +653,6 @@ def test_a_cut_never_crosses_an_open_parameter_block():
         assert got == expected
         assert "TEXT</function>" not in got
 
-    # A closed parameter block still gets cut, so the guard is not blanket.
     closed = "Visible <parameter=x>v</parameter>\n<function=a></function>TEXT</function>"
     stripper = StreamingMarkupStripper(names)
     for i in range(1, len(closed) + 1):
@@ -765,5 +760,4 @@ def test_a_body_scan_with_no_closing_brace_short_circuits():
 
     assert _balanced_json_span('{"command":"' + "A" * 4096, 0) is None
     assert _balanced_json_span('{"command":"x"}', 0) == 14
-    # A brace inside a string still does not close it.
     assert _balanced_json_span('{"c":"}"}', 0) == 8

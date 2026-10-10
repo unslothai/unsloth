@@ -33,8 +33,6 @@ if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
 
-# Stub heavy/unavailable external deps before importing the modules under
-# test (same pattern as other studio backend tests).
 def _module_available(name: str) -> bool:
     """True if the real module can be imported. Probed rather than imported: these stubs
     land in sys.modules for the whole session, so an empty one breaks anything imported
@@ -53,7 +51,6 @@ if not _module_available("loggers"):
 if not _module_available("structlog"):
     sys.modules.setdefault("structlog", _types.ModuleType("structlog"))
 
-# Prefer real httpx if installed (CI installs it). Stub only as fallback.
 try:
     import httpx  # noqa: F401
 except ImportError:
@@ -123,11 +120,6 @@ def boom(*a, **k):
 
 def boom_list(*a, **k):
     raise OSError("offline")
-
-
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
 
 
 def _build_cache(
@@ -307,7 +299,6 @@ class TestGgufVariantFileResolution:
     def test_download_reuses_older_snapshot_when_current_ref_snapshot_is_partial(
         self, monkeypatch, hf_cache
     ):
-        # Keep coverage for offline reuse; online reuse is tested separately.
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")
         backend = LlamaCppBackend()
         repo = "unsloth/vision-GGUF"
@@ -350,7 +341,6 @@ class TestGgufVariantFileResolution:
     def test_download_reuses_cached_gguf_when_lowercase_partial_cache_shadows_it(
         self, monkeypatch, hf_cache
     ):
-        # Keep coverage for case-insensitive offline cache lookup.
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")
         backend = LlamaCppBackend()
         canonical_repo = "unsloth/gemma-4-E2B-it-GGUF"
@@ -403,7 +393,6 @@ class TestGgufVariantFileResolution:
         assert seen_repos
 
     def test_download_online_reuses_complete_cached_snapshot(self, monkeypatch, hf_cache):
-        # Loads reuse complete cached models across repo revisions.
         monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
         backend = LlamaCppBackend()
         repo = "unsloth/vision-GGUF"
@@ -424,10 +413,7 @@ class TestGgufVariantFileResolution:
         assert out == str(snap / "model-UD-Q4_K_XL.gguf")
 
     def test_download_reuses_older_snapshot_when_offline_env_is_true(self, monkeypatch, hf_cache):
-        # HF_HUB_OFFLINE accepts truthy spellings beyond "1" (true/yes/on); the offline
-        # cache reuse must trigger for those too, otherwise the earlier Hub calls run
-        # offline while this branch still attempts hf_hub_download and the cached GGUF
-        # cannot load.
+        # Truthy HF_HUB_OFFLINE spellings must trigger cache reuse too, or hf_hub_download runs.
         monkeypatch.setenv("HF_HUB_OFFLINE", "true")
         backend = LlamaCppBackend()
         repo = "unsloth/vision-GGUF"
@@ -453,16 +439,12 @@ class TestGgufVariantFileResolution:
     def test_download_companion_resolves_from_case_variant_snapshot_offline(
         self, monkeypatch, hf_cache
     ):
-        # Offline, resolve_cached_repo_id_case can keep a partial lower-case spelling,
-        # so the companion (mmproj) must resolve from whichever case-variant snapshot
-        # actually holds it rather than being dropped by an hf_hub_download on the
-        # wrong casing.
+        # Offline casing may keep a partial lowercase dir; mmproj must come from whichever has it.
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")
         backend = LlamaCppBackend()
         canonical_repo = "unsloth/gemma-4-E2B-it-GGUF"
         requested_repo = "unsloth/gemma-4-e2b-it-gguf"
         snap = _build_cache(hf_cache, canonical_repo, {"mmproj-F16.gguf": 4}, snapshot_sha = "a" * 40)
-        # A partial lower-case dir exists so casing resolution keeps the requested spelling.
         _build_cache(hf_cache, requested_repo, {"config.json": 1}, snapshot_sha = "b" * 40)
 
         _offline_exc = type("OfflineModeIsEnabled", (Exception,), {})
@@ -560,10 +542,7 @@ class TestGgufVariantFileResolution:
         assert out == "/fake/org/repo/model-Q4_K_M-00001-of-00002.GGUF"
 
     def test_download_refetches_split_gguf_when_shards_span_snapshots(self, monkeypatch, hf_cache):
-        # The cached main shard lives in an older snapshot; its sibling shard is only
-        # in a newer, separate snapshot. Reusing the main shard alone would leave
-        # llama.cpp unable to resolve the sibling, so the whole set must be re-fetched
-        # together (co-located) rather than served split across snapshot dirs.
+        # Sibling shard only in a newer snapshot: refetch the set so llama.cpp finds it co-located.
         backend = LlamaCppBackend()
         repo = "org/split"
         files = [
@@ -611,11 +590,6 @@ def _siblings(items: dict[str, int]):
     )
 
 
-# ---------------------------------------------------------------------------
-# _iter_hf_cache_snapshots
-# ---------------------------------------------------------------------------
-
-
 class TestIterHfCacheSnapshots:
     def test_returns_empty_when_cache_dir_missing(self, monkeypatch):
         monkeypatch.setattr(hf_constants, "HF_HUB_CACHE", "/no/such/dir")
@@ -625,7 +599,6 @@ class TestIterHfCacheSnapshots:
         assert list(_iter_hf_cache_snapshots("unsloth/not-here")) == []
 
     def test_returns_empty_when_snapshots_dir_missing(self, hf_cache):
-        # Repo dir exists but no snapshots/ inside.
         (hf_cache / "models--unsloth--bare").mkdir()
         assert list(_iter_hf_cache_snapshots("unsloth/bare")) == []
 
@@ -654,14 +627,8 @@ class TestIterHfCacheSnapshots:
 
     def test_repo_id_match_is_case_insensitive(self, hf_cache):
         _build_cache(hf_cache, "unsloth/Foo-GGUF", {"Foo-Q4_K_M.gguf": 1})
-        # Lookup with different org/name casing still resolves
         out = list(_iter_hf_cache_snapshots("UNSLOTH/foo-gguf"))
         assert len(out) == 1
-
-
-# ---------------------------------------------------------------------------
-# _list_gguf_variants_from_hf_cache / list_gguf_variants
-# ---------------------------------------------------------------------------
 
 
 class TestListGgufVariantsFromCache:
@@ -686,8 +653,7 @@ class TestListGgufVariantsFromCache:
 
 class TestCachedColocatedSplitMain:
     def test_prefers_older_complete_snapshot_over_newer_partial(self, hf_cache):
-        # Newer snapshot has only shard 1; older snapshot has the complete set. The
-        # complete older snapshot must win so the split GGUF can load co-located.
+        # The complete older snapshot must win so the split GGUF loads co-located.
         shard1 = "m-00001-of-00002.gguf"
         shard2 = "m-00002-of-00002.gguf"
         old = _build_cache(
@@ -718,8 +684,6 @@ class TestResolveRepoIdCasing:
             "utils.paths.resolve_cached_repo_id_case",
             lambda repo: "unsloth/Gemma-4-GGUF" if repo.lower() == "unsloth/gemma-4-gguf" else repo,
         )
-        # A companion download passed the resolved id reads the same cache entry
-        # as the main GGUF instead of missing it under the requested casing.
         assert _resolve_repo_id_casing("unsloth/gemma-4-gguf") == "unsloth/Gemma-4-GGUF"
 
     def test_passthrough_on_resolver_error(self, monkeypatch):
@@ -730,9 +694,7 @@ class TestResolveRepoIdCasing:
         assert _resolve_repo_id_casing("unsloth/gemma-4-gguf") == "unsloth/gemma-4-gguf"
 
     def test_companion_only_newer_snapshot_does_not_shadow_real_variants(self, hf_cache):
-        # A newer snapshot holds only a vision projector fetched on demand,
-        # while the quant files live in an older snapshot. The newer snapshot
-        # must not shadow the real variants; the vision flag carries over.
+        # A newer mmproj-only snapshot must not shadow older quant variants.
         old = _build_cache(
             hf_cache,
             "unsloth/vision-GGUF",
@@ -755,8 +717,6 @@ class TestResolveRepoIdCasing:
         assert has_vision is True
 
     def test_companion_only_cache_returns_empty_variants_with_vision(self, hf_cache):
-        # Only a vision projector is cached anywhere: report the vision flag
-        # with an empty variant list rather than None.
         _build_cache(hf_cache, "unsloth/vision-GGUF", {"mmproj-vision-F16.gguf": 10})
         out = _list_gguf_variants_from_hf_cache("unsloth/vision-GGUF")
         assert out is not None
@@ -814,7 +774,6 @@ class TestListGgufVariantsOffline:
                 list_gguf_variants("unsloth/never-cached")
 
     def test_online_path_unaffected(self, hf_cache, clean_offline_env):
-        # When the API succeeds, cache is not consulted.
         from utils.models.model_config import list_gguf_variants
 
         api_payload = _siblings({"a-UD-Q4_K_XL.gguf": 5, "a-Q2_K.gguf": 3})
@@ -825,11 +784,6 @@ class TestListGgufVariantsOffline:
         with patch("huggingface_hub.model_info", hf_info):
             variants, _has = list_gguf_variants("unsloth/a")
         assert sorted(v.quant for v in variants) == ["Q2_K", "UD-Q4_K_XL"]
-
-
-# ---------------------------------------------------------------------------
-# _detect_gguf_from_hf_cache / detect_gguf_model_remote
-# ---------------------------------------------------------------------------
 
 
 class TestDetectGgufFromCache:
@@ -904,7 +858,6 @@ class TestDetectGgufModelRemoteOffline:
         def boom(*a, **k):
             raise OSError("hub down")
 
-        # Patch time.sleep so the 1s/2s/4s backoff doesn't slow the test.
         with (
             patch("huggingface_hub.model_info", boom),
             patch("time.sleep", lambda *_: None),
@@ -924,7 +877,6 @@ class TestDetectGgufModelRemoteOffline:
         assert detect_gguf_model_remote("unsloth/a") is None
 
     def test_repository_not_found_does_not_consult_cache(self, hf_cache, clean_offline_env):
-        # Cache has a file but the API says the repo is gone.
         _build_cache(hf_cache, "unsloth/a", {"a-Q4_K_M.gguf": 1})
 
         class RepositoryNotFoundError(Exception):
@@ -935,7 +887,6 @@ class TestDetectGgufModelRemoteOffline:
 
         with patch("huggingface_hub.model_info", gone):
             out = detect_gguf_model_remote("unsloth/a")
-        # Early-return semantics preserved: 404 wins over a stale cache.
         assert out is None
 
 
@@ -1067,8 +1018,7 @@ class TestSharedHubModelInfo:
             _hub_model_info("org/repo", "tok")
             cfg = mc.ModelConfig.from_identifier("org/repo", hf_token = "tok")
 
-        # The classification, not only the count: deleting sibling-based detection would
-        # otherwise leave the count at one and pass.
+        # Assert the classification too: the count alone passes without sibling-based detection.
         assert cfg is not None and cfg.is_lora is True and cfg.base_model == "org/base"
         assert len(hub.calls) == 1
 
@@ -1101,8 +1051,6 @@ class TestSharedHubModelInfo:
         def _request_a():
             with shared_hub_model_info():
                 first = _hub_model_info("org/repo", "alice")
-                # Recorded, not merely awaited: a timeout would drop the overlap this test
-                # exists to create.
                 overlapped.append(b_is_inside.wait(timeout = 30))
                 a_result.append(_hub_model_info("org/repo", "alice") is first)
                 a_is_finished.set()
@@ -1181,13 +1129,7 @@ class TestSharedHubModelInfo:
 
         assert result.is_embedding is True
         assert len(hub.calls) == 1
-        # Dropping either scope from the handler leaves every probe below it unchanged.
         assert pinned_inside == [True]
-
-
-# ---------------------------------------------------------------------------
-# _probe_dns_dead / _hf_offline_if_unreachable
-# ---------------------------------------------------------------------------
 
 
 class _DnsState:
@@ -1281,7 +1223,6 @@ class TestHfOfflineIfUnreachable:
             assert did_set is True
             assert os.environ.get("HF_HUB_OFFLINE") == "1"
             assert os.environ.get("TRANSFORMERS_OFFLINE") == "1"
-        # P1 #2: env must be restored after the block
         assert "HF_HUB_OFFLINE" not in os.environ
         assert "TRANSFORMERS_OFFLINE" not in os.environ
 
@@ -1292,7 +1233,6 @@ class TestHfOfflineIfUnreachable:
             assert "HF_HUB_OFFLINE" not in os.environ
 
     def test_dns_ok_but_endpoint_unreachable_engages(self, dns, reachable, clean_offline_env):
-        # WAN down behind a live router: DNS answers, egress does not.
         dns.ok()
         reachable(True)
         with _hf_offline_if_unreachable() as did_set:
@@ -1308,12 +1248,10 @@ class TestHfOfflineIfUnreachable:
             assert "HF_HUB_OFFLINE" not in os.environ
 
     def test_dns_recovers_between_calls(self, dns, reachable, clean_offline_env):
-        # First call: DNS dead -> env set inside, cleared on exit.
         dns.fail()
         with _hf_offline_if_unreachable():
             pass
         assert "HF_HUB_OFFLINE" not in os.environ
-        # Second call: DNS healthy -> no env mutation.
         dns.ok()
         with _hf_offline_if_unreachable() as did_set:
             assert did_set is False
@@ -1322,13 +1260,11 @@ class TestHfOfflineIfUnreachable:
     def test_user_set_hf_hub_offline_is_preserved(
         self, dns, reachable, clean_offline_env, monkeypatch
     ):
-        # User explicitly set offline before launching Unsloth.
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")
         dns.fail()
         with _hf_offline_if_unreachable() as did_set:
             assert did_set is False
             assert os.environ.get("HF_HUB_OFFLINE") == "1"
-        # Helper must not pop a variable it did not set.
         assert os.environ.get("HF_HUB_OFFLINE") == "1"
 
     def test_user_set_transformers_offline_is_preserved(
@@ -1339,9 +1275,7 @@ class TestHfOfflineIfUnreachable:
         with _hf_offline_if_unreachable():
             assert os.environ.get("HF_HUB_OFFLINE") == "1"
             assert os.environ.get("TRANSFORMERS_OFFLINE") == "1"
-        # HF_HUB_OFFLINE was set by helper -> removed.
         assert "HF_HUB_OFFLINE" not in os.environ
-        # TRANSFORMERS_OFFLINE pre-existed -> preserved.
         assert os.environ.get("TRANSFORMERS_OFFLINE") == "1"
 
     def test_exception_inside_block_still_restores_env(self, dns, reachable, clean_offline_env):
@@ -1349,7 +1283,6 @@ class TestHfOfflineIfUnreachable:
         with pytest.raises(RuntimeError, match = "boom"):
             with _hf_offline_if_unreachable():
                 raise RuntimeError("boom")
-        # Cleanup must happen on exception as well.
         assert "HF_HUB_OFFLINE" not in os.environ
         assert "TRANSFORMERS_OFFLINE" not in os.environ
 
@@ -1712,7 +1645,6 @@ class TestConcurrentGuardsHoldTheirOwnReference:
         assert seen.get("engaged") is True, "second guard no-opped instead of taking a reference"
         assert seen.get("offline_after_a_exit") is True
         assert seen.get("env_after_a_exit") == "1"
-        # Both windows closed -> fully restored.
         assert hf_constants.HF_HUB_OFFLINE is False
         assert "HF_HUB_OFFLINE" not in os.environ
 
@@ -1754,13 +1686,10 @@ class TestConcurrentGuardsHoldTheirOwnReference:
             return snapshot
 
         def stale_active_read():
-            # Old implementation: depth is read before the owner sets the env.
             return start_owner_after(original_active())
 
         def atomic_state_then_owner_enters():
-            # New implementation: ownership + env are one consistent snapshot. Even if
-            # another owner enters immediately after it, hf_env_offline catches that and
-            # this guard takes a reference instead of treating the env as user-owned.
+            # New: ownership + env are one snapshot, so a racing owner is seen as a reference.
             return start_owner_after(original_state())
 
         monkeypatch.setattr(uu, "force_hf_offline_active", stale_active_read)
@@ -1841,9 +1770,7 @@ class TestSpawnWindowKeepsTheParentOffline:
         with force_hf_offline():
             assert _env_offline() is True and hf_env_offline() is True
             with child_environment_for_spawn({}):
-                # The child must inherit the user's own (online) intent ...
                 assert "HF_HUB_OFFLINE" not in os.environ
-                # ... while the parent's own gates stay closed.
                 assert _env_offline() is True
                 assert hf_env_offline() is True
             assert _env_offline() is True
@@ -1923,7 +1850,6 @@ class TestProxyTimeoutIsNotExcused:
     def test_timeout_through_a_proxy_stays_unreachable(self, monkeypatch):
         probe = self._probe_timing_out(monkeypatch)
         monkeypatch.setattr("utils.utils.hf_proxy_configured", lambda: True)
-        # Even if the proxy itself accepts TCP, the hub behind it may be blackholed.
         monkeypatch.setattr("utils.utils.hf_tcp_reachable", lambda *a, **k: True)
         assert probe(timeout = 1) is True
 
@@ -1980,9 +1906,7 @@ class TestIpv6Endpoint:
         assert dns_host_dead("::1", timeout = 2.0) is False
 
     def test_unresolvable_host_still_dead(self, monkeypatch):
-        # Mock the resolver rather than trusting the runner's: an ISP or captive
-        # portal that hijacks NXDOMAIN resolves .invalid and would fail this test on
-        # a perfectly good build. Also saves a real 2s lookup per run.
+        # Mock the resolver: NXDOMAIN-hijacking resolvers would resolve .invalid.
 
         from utils.utils import dns_host_dead
         import socket as _socket
@@ -2022,8 +1946,6 @@ class TestCallWithDeadline:
             _time.sleep(1.4)
             return "done"
 
-        # Longer than any plausible internal floor, so a deadline quietly clamped to a
-        # shorter one would cut this off.
         assert call_with_deadline(_slow, 5.0) == "done"
 
     def test_the_caller_s_log_context_follows_the_work(self):
@@ -2068,7 +1990,7 @@ class TestGuardSkipsLocalPaths:
         called: list = []
         monkeypatch.setattr("utils.utils.hf_unreachable", lambda *a, **k: called.append(1) or True)
         with _hf_offline_if_unreachable_for(str(tmp_path / "model.gguf")) as engaged:
-            assert engaged is None  # nullcontext yields None
+            assert engaged is None
         assert called == [], "probed the hub for a local path"
 
     def test_remote_id_still_guarded(self, monkeypatch, clean_offline_env):
@@ -2106,7 +2028,6 @@ class TestGatewayErrorsAreNotConnectionFailures:
         exc = urllib.error.HTTPError("u", code, "err", {}, None)
         probe = self._probe_with(monkeypatch, exc)
         assert probe(timeout = 1, gateway_errors_offline = False) is False
-        # Default (scoped callers) keeps treating a downed hub as offline.
         assert probe(timeout = 1) is True
 
     @pytest.mark.parametrize("code", [401, 403, 404, 429])
@@ -2156,9 +2077,7 @@ class TestHfUnreachableProbe:
 
         seen = {}
 
-        # **_kwargs so the sibling ambiguity flag does not turn this into a TypeError
-        # that the guard's fail-open would swallow. Both flags are asserted by
-        # TestSlowProxyDoesNotForceOffline.
+        # **_kwargs: a TypeError here would be swallowed by the guard's fail-open.
         def _probe(
             timeout,
             *,
@@ -2186,7 +2105,6 @@ class TestHfUnreachableProbe:
 
         calls: list = []
         self._patch_probe(monkeypatch, RuntimeError("boom"), calls)
-        # Fail open: a broken probe must not strand a working install offline.
         assert hf_unreachable() is False
 
     def test_reset_forces_reprobe(self, monkeypatch, clean_offline_env):
@@ -2220,8 +2138,8 @@ class TestHfUnreachableProbe:
             "hf_endpoint_unreachable",
             lambda *a, **k: verdict["value"],
         )
-        assert hf_unreachable() is False  # online during the download
-        verdict["value"] = True  # plug pulled
+        assert hf_unreachable() is False
+        verdict["value"] = True
         _time.sleep(0.3)
         assert hf_unreachable() is True
 
@@ -2241,7 +2159,6 @@ class TestExtractQuantLabelSubdir:
         assert _extract_quant_label("UD-Q4_K_XL/weight.gguf") == "UD-Q4_K_XL"
 
     def test_deeper_nesting_picks_nearest_quant_dir(self):
-        # Multiple matching parents: prefer the innermost (closest to the file).
         assert _extract_quant_label("models/MXFP4_MOE/foo.gguf") == "MXFP4_MOE"
 
 
@@ -2266,7 +2183,6 @@ class TestDownloadMmprojOfflineCacheFallback:
             token = None,
             **kwargs,
         ):
-            # Echo back so the test can verify the cache-resolved filename
             return f"/fake/cache/{repo_id}/{filename}"
 
         with (
@@ -2574,9 +2490,7 @@ class TestProbeDnsDeadNoGlobalTimeoutMutation:
             original_set(value)
 
         monkeypatch.setattr(_socket, "setdefaulttimeout", tracking_set)
-        # The probe resolves with getaddrinfo, not the IPv4-only gethostbyname, so
-        # patching the latter left this test doing a real lookup and never exercising
-        # the "DNS up" branch it is named for.
+        # The probe uses getaddrinfo, not gethostbyname; patch that or the test is vacuous.
         monkeypatch.setattr(
             _socket,
             "getaddrinfo",
@@ -2586,7 +2500,6 @@ class TestProbeDnsDeadNoGlobalTimeoutMutation:
         try:
             _probe_dns_dead("example.invalid", timeout = 0.5)
         finally:
-            # Restore exact state regardless of test-side mutation.
             original_set(prev)
 
         assert set_calls == [], (
@@ -2607,8 +2520,6 @@ class TestProbeDnsDeadNoGlobalTimeoutMutation:
 
         from core.inference.llama_cpp import _probe_dns_dead
 
-        # Patch getaddrinfo, which is what the probe calls; patching gethostbyname made
-        # this pass vacuously off the real NXDOMAIN for .invalid.
         def wedged(*a, **k):
             threading.Event().wait()
 
@@ -2981,7 +2892,6 @@ class TestMetadataReadsUseTheHubProxy:
 
         srv = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
         _threading.Thread(target = srv.serve_forever, daemon = True).start()
-        # Proxy-only egress: the hub name never resolves locally (.invalid, RFC 2606).
         monkeypatch.setenv("HF_ENDPOINT", "http://hub.invalid")
         monkeypatch.setenv("ALL_PROXY", f"http://127.0.0.1:{srv.server_address[1]}")
         monkeypatch.setenv("HF_HOME", str(tmp_path))
@@ -2997,8 +2907,7 @@ class TestMetadataReadsUseTheHubProxy:
 
         monkeypatch.setattr(tv, "_config_json_cache", {})
         monkeypatch.setattr(tv, "_tokenizer_class_cache", {})
-        # urlopen builds its default opener once per process and caches it in _opener, so
-        # an earlier test's proxy env would otherwise decide this one's routing.
+        # urlopen caches its opener in _opener; reset so an earlier test's proxy env is not reused.
         monkeypatch.setattr(urllib.request, "_opener", None)
 
     def test_all_proxy_is_ignored_by_the_default_opener(self, monkeypatch):
@@ -3138,7 +3047,6 @@ class TestSlowProxyDoesNotForceOffline:
                 raise TimeoutError("proxy is up, upstream is slow")
 
         monkeypatch.setattr(tv, "_hf_proxy_opener", lambda _url: _SlowOpener())
-        # Sanity: the same input IS offline with the flag on, so the flag is what moves it.
         assert tv.hf_endpoint_unreachable(1, proxy_timeouts_offline = True) is True
 
         assert hf_unreachable(timeout = 1) is False
@@ -3156,7 +3064,6 @@ class TestValidateGuardCoversMetadataPreflights:
         import ast
         import pathlib
 
-        # Anchored on __file__: CI runs pytest from the repo root, not studio/backend.
         backend_root = pathlib.Path(__file__).resolve().parent.parent
         src = (backend_root / "routes" / "inference.py").read_text(encoding = "utf-8")
         tree = ast.parse(src)
@@ -3199,7 +3106,6 @@ class TestGuardIsKeyedOnWhatIsRead:
             n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_any_remote"
         )
         ns: dict = {}
-        # is_local_path is imported inside the body; give it a stub module to import from.
         exec(compile(ast.Module([fn], []), "<any_remote>", "exec"), ns)
         import sys
         import types
@@ -3216,12 +3122,11 @@ class TestGuardIsKeyedOnWhatIsRead:
             assert any_remote(("/local/a", "/local/b")) is False
             assert any_remote(None) is False
             assert any_remote(()) is False
-            # A falsy entry means there is no base to read, not an unknown one: a local
-            # model whose config carries base_model=None must not pay the probe.
+            # A falsy base means no base, so a local model must not pay the probe.
             assert any_remote((None,)) is False
             assert any_remote(("/local/adapter", None)) is False
             assert any_remote(("/local/adapter", "", "org/base")) is True
-            assert any_remote((123,)) is True  # unresolvable: guard anyway
+            assert any_remote((123,)) is True
         finally:
             if saved is None:
                 del sys.modules["utils.paths"]
@@ -3249,7 +3154,6 @@ class TestGuardIsKeyedOnWhatIsRead:
                 continue
             targets, read = node.args[1], node.args[2]
             read_name = getattr(read, "id", None) or getattr(read, "attr", None)
-            # A read of the resolved config must not be keyed on model_identifier alone.
             if read_name in ("latest_tier_active_for", "_guard_chat_load_against_training"):
                 if isinstance(targets, ast.Name):
                     bad.append((read_name, node.lineno))
@@ -3278,7 +3182,6 @@ class TestTransformersOfflineDoesNotSilenceDatasets:
 
     def test_env_requested_offline_does_not_set_network_offline(self):
         block = self._worker_block()
-        # hf_env_offline() feeds _offline only; the two probes feed _network_offline too.
         assert "_offline = hf_env_offline()" in block
         assert "_offline = _network_offline = hf_dns_dead()" in block
         assert "_offline = _network_offline = hf_endpoint_unreachable(" in block
@@ -3325,9 +3228,9 @@ class TestModelConfigPredicateHonoursTheWindow:
             t.join(5)
             assert _env_offline() is True
 
-        assert seen["env_during"] is None  # the user's value really was restored
-        assert seen["predicate_during"] is True  # but the predicate still reads offline
-        assert _env_offline() is False  # and it lets go afterwards
+        assert seen["env_during"] is None
+        assert seen["predicate_during"] is True
+        assert _env_offline() is False
 
     def test_raw_fetch_is_skipped_during_the_window(self, monkeypatch, tmp_path):
         """The stall this prevents: _detect_audio_from_tokenizer's own requests.get is the
@@ -3352,7 +3255,6 @@ class TestModelConfigPredicateHonoursTheWindow:
 
         monkeypatch.setitem(sys.modules, "requests", _FakeRequests)
 
-        # Control: outside any window the gate is open and the fetch is attempted.
         mc._detect_audio_from_tokenizer("org/some-audio-model", None, local_files_only = False)
         assert calls, "the raw fetch is not reached at all, so the gate is untested"
         calls.clear()
@@ -3412,7 +3314,7 @@ class TestLocalModelWithRemoteBaseIsGuarded:
 
         monkeypatch.setattr(builtins, "__import__", _boom)
         with mc._offline_while_reading("org/base"):
-            pass  # must not raise
+            pass
 
     def test_local_lora_base_lookup_runs_inside_the_window(self):
         """AST check: the base-derived vision/audio probes sit under the guard."""
@@ -3470,8 +3372,6 @@ class TestLocalModelWithRemoteBaseIsGuarded:
                 isinstance(node, ast.Call) and getattr(node.func, "id", None) == "is_vision_model"
             ):
                 continue
-            # Only calls on a name that came from resolved metadata, not on the identifier
-            # the caller already guarded.
             arg = node.args[0] if node.args else None
             if (
                 getattr(arg, "id", None) in ("base", "check_model")
@@ -3548,7 +3448,6 @@ class TestLocalGgufWithoutABaseSkipsTheProbe:
                 arg = ctx.args[0] if ctx.args else None
                 if getattr(arg, "id", None) != "base":
                     continue
-                # The base variant must sit under an `if base:` truthiness check.
                 guarded_by_if = any(
                     isinstance(anc, ast.If)
                     and getattr(anc.test, "id", None) == "base"
@@ -3601,7 +3500,6 @@ class TestLocalLoraRemoteBaseIsInTheGuardTargets:
                     names.append(getattr(el.func, "id", "?"))
                 else:
                     names.append(getattr(el, "id", "?"))
-            # A tuple keyed on the resolved config must also carry its base.
             if "config.identifier" in names:
                 checked += 1
                 if not any(n == "getattr" for n in names):
@@ -3717,7 +3615,7 @@ class TestGuardsShareOneDnsLookup:
 
         assert _hf_unreachable() is True
         state["dead"] = False
-        assert _hf_unreachable() is False  # no waiting out the TTL
+        assert _hf_unreachable() is False
 
 
 class TestPinnedReachability:
@@ -3741,7 +3639,6 @@ class TestPinnedReachability:
             return state.verdict
 
         monkeypatch.setattr(tv, "hf_endpoint_unreachable", _probe)
-        # Zero TTL: every read after the first would re-probe were the pin not holding one.
         monkeypatch.setattr(uu, "_HF_REACHABILITY_TTL_S", 0.0)
         uu.reset_hf_reachability_cache()
         return state
@@ -3769,7 +3666,7 @@ class TestPinnedReachability:
 
         def _dns_dead(*_a, **_k):
             lookups.append(1)
-            return len(lookups) > 1  # alive for the first guard, then the link drops
+            return len(lookups) > 1
 
         monkeypatch.setattr(uu, "hf_dns_dead", _dns_dead)
         with uu.pinned_hf_reachability():
@@ -3785,7 +3682,6 @@ class TestPinnedReachability:
         probe.verdict = verdict
         with uu.pinned_hf_reachability():
             assert uu.hf_unreachable() is verdict
-            # Every later guard in this request, with the memo already stale.
             assert uu.hf_unreachable() is verdict
             assert uu.hf_reachability_memo() is verdict
 
@@ -3802,7 +3698,6 @@ class TestPinnedReachability:
 
         with uu.pinned_hf_reachability():
             assert uu.hf_unreachable() is False
-            # The memo goes stale mid-request, as it does on a slow link.
             monkeypatch.setattr(uu, "_HF_REACHABILITY_TTL_S", 0.0)
             probe.verdict = True
             assert uu.hf_unreachable() is False
@@ -3834,7 +3729,6 @@ class TestPinnedReachability:
 
         with uu.pinned_hf_reachability():
             assert uu.hf_unreachable() is False
-        # Pinning must not outlive the request: the plug may have been pulled since.
         probe.verdict = True
         with uu.pinned_hf_reachability():
             assert uu.hf_unreachable() is True
@@ -3844,7 +3738,6 @@ class TestPinnedReachability:
     def test_nothing_is_pinned_until_something_probes(self, probe):
         import utils.utils as uu
         with uu.pinned_hf_reachability():
-            # A block that never reaches the Hub pays nothing, and reports no verdict.
             assert uu.hf_reachability_memo() is None
 
         assert probe.calls == 0

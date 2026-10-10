@@ -140,7 +140,6 @@ def test_a_drafter_budget_prices_the_largest_file_of_a_shared_basename(tmp_path,
     from routes.inference import _cached_repo_gguf_bytes
     from utils.models import drafters
 
-    # Largest in the middle, so keeping the first or the last entry for a name both miss it.
     repo = _cache_repo(
         tmp_path,
         (
@@ -212,23 +211,11 @@ def test_consolidated_weights_are_not_hidden_by_their_companion():
     assert repo_ships_transformers_weights(["model.safetensors"]) is True
 
 
-# ---------------------------------------------------------------------------
-# The GGUF selection sites in core/inference/llama_cpp.py.
-#
-# Every one of these was filtered by #8919 and every one was silently reverted by
-# #9074's whole-file merge resolution. Only one of the five had a test, so CI
-# reported a lost error message and said nothing at all about the four selection
-# sites, which is the half that actually loads the wrong file. These cover the
-# selection behaviour directly, so a revert cannot come back quiet again.
-# ---------------------------------------------------------------------------
-
-
 def test_a_sidecar_never_wins_the_mmproj_preference():
     """ "._mmproj-F16.gguf" satisfies the F16 preference and sorts ahead of the real adapter."""
     from core.inference.llama_cpp import _pick_mmproj
 
     assert _pick_mmproj(["._mmproj-F16.gguf", "mmproj-F16.gguf"]) == "mmproj-F16.gguf"
-    # A file a user genuinely named "._..." with no sibling to shadow still resolves.
     assert _pick_mmproj(["._mmproj-F16.gguf"]) == "._mmproj-F16.gguf"
 
 
@@ -260,7 +247,6 @@ def test_a_snapshot_walk_skips_the_companion_by_its_bytes(tmp_path):
 
     (tmp_path / "model-Q4_K_M.gguf").write_bytes(b"GGUF" + b"\x00" * 32)
     (tmp_path / "._model-Q4_K_M.gguf").write_bytes(_AD)
-    # A real GGUF a user named "._..." is decided on its bytes, so it survives.
     (tmp_path / "._mine.gguf").write_bytes(b"GGUF" + b"\x00" * 32)
 
     found = sorted(_gguf_snapshot_files(tmp_path))

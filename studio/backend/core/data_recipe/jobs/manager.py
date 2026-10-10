@@ -146,7 +146,6 @@ class JobManager:
     def _clear_account_result(self):
         self._job = None
         self._events.clear()
-        # Old subscribers retain their private queues but never receive a successor's events.
         self._subs.clear()
 
     @owned_job()
@@ -217,8 +216,7 @@ class JobManager:
                 )
                 from utils.process_lifetime import adopt_pid, spawn_on_lifetime_thread
 
-                # Linux PDEATHSIG follows the spawning thread. A sync request's pool
-                # thread can retire while this recipe is still generating (#11002).
+                # Linux PDEATHSIG follows the spawning thread, and a sync request's pool thread can retire.
                 spawn_on_lifetime_thread(proc.start)
 
                 adopt_pid(proc.pid)
@@ -363,8 +361,7 @@ class JobManager:
                     return {"error": f"dataset path missing: {parquet_dir}"}
                 return None
             if job_status not in {"completed", "error", "cancelled"}:
-                # DuckDB opens with FILE_SHARE_DELETE; the pyarrow fallback would block the
-                # worker's merge rmtree on Windows.
+                # DuckDB opens with FILE_SHARE_DELETE; pyarrow would block the merge rmtree on Windows.
                 return self._load_dataset_page_with_duckdb(
                     parquet_dir = parquet_dir, limit = limit, offset = offset
                 )
@@ -401,8 +398,7 @@ class JobManager:
         try:
             conn = duckdb.connect(":memory:")
             try:
-                # Row counts from the footers, then scan only the shards the page covers: a full
-                # sort per request grows with the run and the live preview polls page 1.
+                # Scan only the shards the page covers; the live preview polls page 1.
                 shards = conn.execute(
                     "SELECT file_name, num_rows FROM parquet_file_metadata(?) ORDER BY file_name",
                     [parquet_glob],
@@ -510,7 +506,6 @@ class JobManager:
             except queue.Empty:
                 return events
             except Exception:
-                # Return what we have so the run still finalizes rather than wedging "active".
                 logger.exception(
                     "Data-recipe job pump: queue drain failed; finalizing with drained events"
                 )
@@ -518,7 +513,7 @@ class JobManager:
 
     def _safe_handle_event(self, job: Job, event: dict) -> None:
         """Apply one event, swallowing any handler error so the pump can't die."""
-        # Worker exited: drain + finalize, guarded so an error can't strand the run "active".
+        # Guarded so an error can't strand the run "active".
         try:
             self._handle_event(job, event)
         except Exception:
@@ -541,7 +536,6 @@ class JobManager:
             try:
                 event = self._read_queue_with_timeout(mp_q, timeout_sec = 0.25)
             except Exception:
-                # Only retry while the worker is alive; otherwise finalize instead of spinning forever.
                 logger.exception("Data-recipe job pump: queue read failed; continuing")
                 if proc.is_alive():
                     time.sleep(0.1)

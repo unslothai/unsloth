@@ -52,7 +52,7 @@ def _load_seed_route(
     spec.loader.exec_module(seed_route)
     seed_route.UNSTRUCTURED_UPLOAD_ROOT = tmp_path / "unstructured-uploads"
     if inline_extraction:
-        # Unit cases inject extractor failures in this process. Process isolation has separate tests.
+
         async def extract(file_path, ext):
             return seed_route._extract_text_from_file(file_path, ext)
 
@@ -307,14 +307,10 @@ def test_total_upload_quota_is_scoped_per_block(monkeypatch, tmp_path):
         _run_upload(seed_route, "b.txt", b"123")
     assert exc.value.status_code == 413
 
-    # Another block starts with its own untouched budget.
     other = _run_upload(seed_route, "c.txt", b"123", block_id = "other")
     assert other.status == "ok"
 
 
-# A desktop drop names a local file of any size, so the cap has to be enforced
-# on its stat. Reading first let a multi-gigabyte drop into backend memory
-# before the 413 (#9036).
 def test_an_oversized_native_drop_is_refused_before_it_is_read(monkeypatch, tmp_path):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
     huge = tmp_path / "corpus.txt"
@@ -352,8 +348,6 @@ def test_an_oversized_native_drop_is_refused_before_it_is_read(monkeypatch, tmp_
     assert reads == [], "the file was opened before the size check"
 
 
-# The block's remaining budget bounds the read too, so a file that grew between
-# the stat and the read cannot slip past it.
 def test_a_native_drop_over_the_block_budget_is_refused(monkeypatch, tmp_path):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
     dropped = tmp_path / "notes.txt"
@@ -450,7 +444,6 @@ def test_text_extraction_falls_back_to_raw_without_the_plugin(monkeypatch, tmp_p
     source = tmp_path / "notes.txt"
     source.write_text("a\n\n\n\nb", encoding = "utf-8")
 
-    # The plugin is what collapses the run of blank lines.
     assert seed_route._extract_text_from_file(source, ".txt") == "a\n\n\n\nb"
 
 
@@ -499,7 +492,6 @@ def test_a_backend_executed_seed_resolves_the_endpoint_on_the_backend(monkeypatc
     _resolve_seed_endpoint(explicit)
     assert explicit["seed_config"]["source"]["endpoint"] == "https://hub.internal"
 
-    # Nothing to resolve for the other seed types, and no crash on a malformed recipe.
     other = {"seed_config": {"source": {"seed_type": "local", "paths": []}}}
     _resolve_seed_endpoint(other)
     assert "endpoint" not in other["seed_config"]["source"]
@@ -518,7 +510,6 @@ _GSM8K_FILES = [
 @pytest.mark.parametrize(
     ("files", "split", "subset", "expected"),
     [
-        # No card: the loader reads every train-named file as one split.
         (_GSM8K_FILES, "train", None, "datasets/org/repo/**/train-*.parquet"),
         (_GSM8K_FILES, "test", "main", "datasets/org/repo/main/test-*.parquet"),
         (_GSM8K_FILES, "train", "socratic", "datasets/org/repo/socratic/train-*.parquet"),
@@ -537,8 +528,6 @@ _GSM8K_FILES = [
             None,
             "datasets/org/repo/raw/gsm_train*.jsonl",
         ),
-        # A split named by the file itself can still be sharded, so the pattern has
-        # to reach the siblings instead of pinning the first shard.
         (
             ["train.jsonl", "train_2.jsonl", "test.jsonl"],
             "train",
@@ -575,8 +564,6 @@ def test_seed_preview_file_comes_from_the_chosen_subset(monkeypatch, tmp_path):
     )
 
 
-# fineweb-edu: the config name is not a folder, so a folder-name guess reads a
-# different config entirely.
 _SAMPLE_FILES = [
     "data/CC-MAIN-2013-20/train-00000-of-00014.parquet",
     "sample/10BT/000_00000.parquet",
@@ -632,7 +619,6 @@ def test_seed_hf_path_reads_every_card_data_files_shape(monkeypatch, tmp_path, d
 @pytest.mark.parametrize(
     ("configs", "expected"),
     [
-        # A card with one config uses it whatever it is called.
         (
             [
                 {
@@ -642,7 +628,6 @@ def test_seed_hf_path_reads_every_card_data_files_shape(monkeypatch, tmp_path, d
             ],
             "datasets/org/repo/pt/train-*.parquet",
         ),
-        # Another config can be flagged as the default one.
         (
             [
                 {"config_name": "a", "data_files": [{"split": "train", "path": "a/train-*"}]},
@@ -671,7 +656,6 @@ def test_seed_card_globs_keep_their_character_classes(monkeypatch, tmp_path):
         "data/train-2-of-9.parquet"
     ]
     assert seed_route._files_under_patterns(["data/[!x]*.parquet"], files) == files
-    # An unclosed bracket is a literal, not a syntax error.
     assert seed_route._files_under_patterns(["a[b.parquet"], ["a[b.parquet"]) == ["a[b.parquet"]
 
 
@@ -686,8 +670,6 @@ def test_seed_hf_path_covers_a_split_declared_across_two_folders(monkeypatch, tm
             ],
         }
     ]
-    # One glob cannot name two folders, so cover the folder holding both rather
-    # than dropping one of them, keeping the split in the pattern.
     assert (
         seed_route._resolve_seed_hf_path("org/repo", files, "train", None, configs)
         == "datasets/org/repo/sets/**/*train*.parquet"
@@ -743,13 +725,11 @@ def test_seed_hf_path_follows_the_split_aliases_datasets_uses(
 @pytest.mark.parametrize(
     ("files", "expected"),
     [
-        # A folder qualified by a separator is the split folder too.
         (["train_a/0.parquet", "test/0.parquet"], "datasets/org/repo/train_a/**/*.parquet"),
         (
             ["data/train/0.parquet", "data/test/0.parquet"],
             "datasets/org/repo/data/train/**/*.parquet",
         ),
-        # "pretrain" is a different word, so train/ still wins.
         (["pretrain/0.parquet", "train/0.parquet"], "datasets/org/repo/train/**/*.parquet"),
     ],
 )
@@ -770,8 +750,6 @@ def test_seed_hf_path_widens_through_an_alias_named_split(monkeypatch, tmp_path)
             ],
         }
     ]
-    # The files say dev, not validation, so the widened form has to say dev too
-    # or it takes the train shard with it.
     assert (
         seed_route._resolve_seed_hf_path("org/repo", files, "validation", None, configs)
         == "datasets/org/repo/sets/**/*dev*.parquet"
@@ -780,7 +758,6 @@ def test_seed_hf_path_widens_through_an_alias_named_split(monkeypatch, tmp_path)
 
 def test_seed_hf_path_counts_a_digit_as_a_label_separator(monkeypatch, tmp_path):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
-    # The loader's own separators include digits, so train1 is train.
     files = ["data/train-0.parquet", "data/train1.parquet", "data/test-0.parquet"]
     assert (
         seed_route._resolve_seed_hf_path("org/repo", files, "train")
@@ -806,8 +783,6 @@ def test_seed_hf_path_keeps_a_split_spread_over_sibling_folders(monkeypatch, tmp
             ],
         }
     ]
-    # Nothing names the split, but the two declared files share a name the test
-    # file does not, so the union stays off sets/c.
     assert (
         seed_route._resolve_seed_hf_path("org/repo", files, "train", None, configs)
         == "datasets/org/repo/sets/**/part*.parquet"
@@ -826,18 +801,16 @@ def test_seed_hf_path_unions_declared_files_with_unrelated_names(monkeypatch, tm
             ],
         }
     ]
-    # Nothing is shared but the first letters, and a class is the only union the
-    # reader understands: it rejects {a,b} outright.
     assert (
         seed_route._resolve_seed_hf_path("org/repo", files, "train", None, configs)
+        # A character class is the only union the reader accepts: it rejects {a,b}.
         == "datasets/org/repo/sets/**/[cp]*.parquet"
     )
 
 
 def test_seed_format_inference_stops_where_the_loader_stops(monkeypatch, tmp_path):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
-    # 200 csv sort ahead of 201 parquet, and the loader only looks at the first
-    # 200, so it builds csv and the recipe has to agree.
+    # The loader only looks at the first 200 files, which sort as csv here.
     files = [f"data/{i:03d}.csv" for i in range(200)] + [
         f"data/z{i:03d}.parquet" for i in range(201)
     ]
@@ -851,7 +824,6 @@ def test_seed_format_inference_stops_where_the_loader_stops(monkeypatch, tmp_pat
 @pytest.mark.parametrize(
     ("files", "expected"),
     [
-        # Most files wins, so the long csv name does not decide the format.
         (
             ["data/a-very-long-name.csv", "data/z.parquet", "data/y.parquet"],
             "datasets/org/repo/data/*.parquet",
@@ -884,8 +856,6 @@ def test_seed_hf_path_combines_bare_and_explicit_train_entries(monkeypatch, tmp_
         "data/part-b.parquet",
     ]
     files = ["data/part-a.parquet", "data/part-b.parquet", "data/test-0.parquet"]
-    # Neither declared file names the split, but they share a name the test file
-    # does not, so the union stays exact.
     assert (
         seed_route._resolve_seed_hf_path("org/repo", files, "train", None, configs)
         == "datasets/org/repo/data/part-*.parquet"
@@ -894,8 +864,6 @@ def test_seed_hf_path_combines_bare_and_explicit_train_entries(monkeypatch, tmp_
 
 def test_seed_hf_path_keeps_a_folder_subset_whose_files_are_generic(monkeypatch, tmp_path):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
-    # en/ is the config even though its file says nothing about the split, so
-    # other/train.parquet must not win it.
     files = ["en/data.parquet", "other/train.parquet"]
     assert (
         seed_route._resolve_seed_hf_path("org/repo", files, "train", "en")
@@ -915,8 +883,6 @@ def test_seed_hf_path_keeps_a_subset_written_after_the_split(
 ):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
     files = ["train-main.parquet", "test-main.parquet", "train-socratic.parquet"]
-    # train-*.parquet fits the subset slice but takes the other subset with it,
-    # so the candidate has to be judged against the whole listing.
     assert seed_route._resolve_seed_hf_path("org/repo", files, "train", subset) == expected
 
 
@@ -957,7 +923,6 @@ def test_seed_format_vote_ignores_folder_metadata(monkeypatch, tmp_path):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
     configs = [{"config_name": "default", "data_files": [{"split": "train", "path": "data/*"}]}]
     files = ["data/metadata.csv", "data/metadata2.csv", "data/shard.parquet"]
-    # metadata.csv never decides a builder for the loader, so it cannot here.
     assert (
         seed_route._resolve_seed_hf_path("org/repo", files, "train", None, configs)
         == "datasets/org/repo/data/*.parquet"
@@ -1404,7 +1369,6 @@ def test_seed_hf_path_reads_sibling_folders_as_one_split_without_a_card(monkeypa
         seed_route._resolve_seed_hf_path("org/repo", files, "train")
         == "datasets/org/repo/**/train-*.parquet"
     )
-    # Ask for one of them and only that one is read.
     assert (
         seed_route._resolve_seed_hf_path("org/repo", files, "train", "socratic")
         == "datasets/org/repo/socratic/train-*.parquet"
@@ -1462,8 +1426,6 @@ def test_seed_hf_path_treats_an_unnamed_config_as_the_default(monkeypatch, tmp_p
 
 def test_seed_hf_path_ignores_a_subset_label_that_is_not_the_config(monkeypatch, tmp_path):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
-    # x/main.parquet carries the label but nothing of the split, so it is a name
-    # collision rather than the config.
     files = ["x/main.parquet", "y/train-0.parquet"]
     assert (
         seed_route._resolve_seed_hf_path("org/repo", files, "train", "main")
@@ -1478,7 +1440,6 @@ def test_seed_hf_path_keeps_the_split_when_widening_several_declared_globs(monke
         {
             "config_name": "default",
             "data_files": [
-                # Declared twice for the same split, which must not lose the second.
                 {"split": "train", "path": "sets/a/train-*"},
                 {"split": "train", "path": "sets/b/train-*"},
             ],
@@ -1488,7 +1449,6 @@ def test_seed_hf_path_keeps_the_split_when_widening_several_declared_globs(monke
         "sets/a/train-*",
         "sets/b/train-*",
     ]
-    # sets/**/*.parquet would take the test file back; the split-named form does not.
     assert (
         seed_route._resolve_seed_hf_path("org/repo", files, "train", None, configs)
         == "datasets/org/repo/sets/**/*train*.parquet"
@@ -1529,7 +1489,6 @@ def test_seed_hf_path_widens_through_split_named_folders(monkeypatch, tmp_path):
             ],
         }
     ]
-    # The shard names say nothing, so the split has to come from the folders.
     assert (
         seed_route._resolve_seed_hf_path("org/repo", files, "train", None, configs)
         == "datasets/org/repo/sets/**/*train*/**/*.parquet"
@@ -1560,23 +1519,18 @@ def test_seed_declared_files_match_the_glob_not_its_prefix(monkeypatch, tmp_path
 @pytest.mark.parametrize(
     ("files", "expected"),
     [
-        # train-part.parquet wins on length, but questions_train.parquet is train
-        # too, so the pattern has to reach both without taking test-part.
         (
             ["data/train-part.parquet", "data/questions_train.parquet", "data/test-part.parquet"],
             "datasets/org/repo/data/*train*.parquet",
         ),
-        # A split named mid-name, the conventional sharded form.
         (
             ["data/questions_train_000.jsonl", "data/questions_test_000.jsonl"],
             "datasets/org/repo/data/*train*.jsonl",
         ),
-        # A dotted split name: only the final extension comes off the stem.
         (
             ["data/questions.train.parquet", "data/questions.test.parquet"],
             "datasets/org/repo/data/*train*.parquet",
         ),
-        # "training" is datasets' own alias for train, so both belong to it.
         (
             ["data/train-0.parquet", "data/training-0.parquet", "data/test-0.parquet"],
             "datasets/org/repo/data/*train*.parquet",
@@ -1617,8 +1571,6 @@ def test_seed_hf_path_gives_a_card_glob_a_readable_extension(
             ["data/test/0.parquet", "data/train/0.parquet"],
             "datasets/org/repo/data/train/**/*.parquet",
         ),
-        # Split folders at the repo root: the shorter "test" path used to win on
-        # length alone, so a train recipe was served the test split.
         (["test/0.parquet", "train/0.parquet"], "datasets/org/repo/train/**/*.parquet"),
     ],
 )

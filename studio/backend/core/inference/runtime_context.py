@@ -9,12 +9,9 @@ from collections.abc import Iterator, Mapping
 from itertools import chain
 from typing import Any, Optional
 
-#: Longest context a load may ask for, and the ceiling a resolved window is held to.
-#: LoadRequest.max_seq_length bounds requests by this; a backend that reads a wider
-#: window from the model reports it as native but does not serve past it.
+# LoadRequest.max_seq_length is bounded by this; wider native windows are not served.
 MAX_REQUESTABLE_CONTEXT = 1048576
 
-#: Budget for an unset limit when there is no free context to size it from.
 UNSET_GENERATION_BUDGET = 2048
 
 
@@ -40,7 +37,7 @@ def _declared_context_lengths(model: Any) -> Iterator[Any]:
     """Declared windows, best first. Yields, so an outer 0 / "n/a" cannot shadow a real one."""
     holders = (
         model,
-        # config / _config: the spread _mlx_config_field walks in mlx_inference.py.
+        # Same spread _mlx_config_field walks in mlx_inference.py.
         _field(model, "config"),
         _field(model, "_config"),
         _field(model, "args"),
@@ -89,8 +86,7 @@ def generation_budget_for_window(
     if not window:
         return UNSET_GENERATION_BUDGET
     free = int(window) - int(prompt_length)
-    # No room left: take the default and let the backend's overflow check decide. A floor
-    # of 1 would pass that check on a model loaded narrower than its checkpoint.
+    # A floor of 1 would pass the overflow check on a model loaded narrower than its checkpoint.
     return free if free > 0 else UNSET_GENERATION_BUDGET
 
 

@@ -66,7 +66,6 @@ def _isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(mc, "is_vision_model", lambda *a, **k: False)
     monkeypatch.setattr(mc, "detect_audio_type", lambda *a, **k: None)
     monkeypatch.setattr(mc, "is_model_cached", lambda *a, **k: False)
-    # Only this test's cache: no copies remembered from caches the host used before.
     import hub.utils.gguf_sources as gguf_sources
 
     monkeypatch.setattr(gguf_sources, "gguf_cache_snapshots", lambda repo: [])
@@ -171,7 +170,6 @@ def test_a_split_copy_missing_a_shard_is_refused(monkeypatch, _isolated):
 
 
 def test_a_copy_its_manifest_calls_incomplete_is_refused(monkeypatch, _isolated):
-    # The download recorded a projector the variant needs, and it never arrived.
     _download(_isolated, GGUF)
     import hub.utils.gguf_sources as gguf_sources
 
@@ -196,9 +194,7 @@ def test_only_a_projector_on_disk_is_refused(monkeypatch, _isolated):
     ids = ["anonymous", "api_key_without_token", "api_key_with_token"],
 )
 def test_callers_the_cache_rules_refuse_stay_refused(monkeypatch, _isolated, token):
-    # owner_session=False: an sk-unsloth API key or a managed account. No token there is
-    # anonymous, not the installation's; an explicit token must reach the repo, which the
-    # Hub just refused.
+    # owner_session=False (API key or managed account): no token means anonymous, not the installation's.
     _download(_isolated, GGUF)
     _refuse(monkeypatch)
     monkeypatch.setattr(
@@ -216,9 +212,7 @@ def test_callers_the_cache_rules_refuse_stay_refused(monkeypatch, _isolated, tok
 def test_a_token_the_hub_just_refused_is_not_outranked_by_the_cache_rule(
     monkeypatch, _isolated, verdict
 ):
-    # The listing refused this very token. A /auth-check "yes" still in its cache, or a probe
-    # that times out on a host whose only credential downloaded the repo, must not let an API
-    # key or another account read the downloaded copy.
+    # A cached /auth-check yes or a timed-out probe must not let another caller read a refused repo.
     _download(_isolated, GGUF)
     _refuse(monkeypatch, GatedRepoError("403 Client Error", status_code = 403))
     monkeypatch.setattr(
@@ -226,7 +220,6 @@ def test_a_token_the_hub_just_refused_is_not_outranked_by_the_cache_rule(
         "_explicit_token_reaches_repo",
         lambda repo, token, repo_type, offline = False: verdict,
     )
-    # This token downloaded the copy, so an unanswerable probe would otherwise be settled by it.
     monkeypatch.setattr(hf_tokens, "_caller_populated_the_cache", lambda *a, **k: True)
     monkeypatch.setattr(hf_tokens, "_repo_present_on_disk", lambda *a, **k: True)
     for _ in range(2):
@@ -235,8 +228,6 @@ def test_a_token_the_hub_just_refused_is_not_outranked_by_the_cache_rule(
 
 
 def test_a_revoked_grant_is_refused_even_for_a_managed_accounts_token(monkeypatch, _isolated):
-    # A managed account's own token whose access the Hub has withdrawn: the cache is another
-    # person's download, and /auth-check says this token no longer reaches the repo.
     _download(_isolated, GGUF)
     _refuse(monkeypatch)
     monkeypatch.setattr(
@@ -313,7 +304,7 @@ def test_only_the_owners_own_session_counts_as_the_owner(monkeypatch, managed, a
 
 
 def test_an_internal_workflow_key_is_not_the_owner(monkeypatch):
-    # A data-recipe subprocess holds an internal sk-unsloth key: never the owner's session.
+    # Data-recipe subprocesses hold an internal sk-unsloth key, never the owner's session.
     import routes.inference as inference
 
     monkeypatch.setattr(inference.account_access, "managed_account", lambda: False)
@@ -324,7 +315,6 @@ def test_an_internal_workflow_key_is_not_the_owner(monkeypatch):
 
 
 def test_a_cancelled_download_is_not_run_when_the_hub_refuses(monkeypatch, _isolated):
-    # Its main file is on disk, but the download was cancelled: not a complete copy.
     _download(_isolated, GGUF)
     import hub.utils.gguf_sources as gguf_sources
 
@@ -337,7 +327,6 @@ def test_a_cancelled_download_is_not_run_when_the_hub_refuses(monkeypatch, _isol
 
 
 def test_auto_selection_falls_back_to_the_next_complete_variant(monkeypatch, _isolated):
-    # The preferred UD-Q4_K_XL was interrupted after its first shard; Q8_0 is complete.
     snapshot = _download(
         _isolated,
         f"{VARIANT}/Qwen3-0.6B-{VARIANT}-00001-of-00002.gguf",
@@ -353,7 +342,6 @@ def test_auto_selection_falls_back_to_the_next_complete_variant(monkeypatch, _is
 def test_the_refusal_fallback_passes_the_snapshot_root_as_the_companion_root(
     monkeypatch, _isolated
 ):
-    # A main file in a non-quant subdirectory still finds a repo-root projector or drafter.
     monkeypatch.setattr(
         hf_cache_settings,
         "get_hf_cache_paths",
@@ -376,7 +364,6 @@ def test_the_refusal_fallback_passes_the_snapshot_root_as_the_companion_root(
 
 
 def test_a_repo_not_named_gguf_still_runs_its_downloaded_gguf(monkeypatch, _isolated):
-    # _looks_like_gguf_repo says no for this name, yet a healthy Hub would have found the GGUF.
     monkeypatch.setattr(mc, "_looks_like_gguf_repo", lambda *a, **k: False)
     snapshot = _download(_isolated, GGUF)
     _refuse(monkeypatch)
@@ -386,7 +373,6 @@ def test_a_repo_not_named_gguf_still_runs_its_downloaded_gguf(monkeypatch, _isol
 
 
 def test_auto_selection_finds_a_complete_variant_in_an_older_snapshot(monkeypatch, _isolated):
-    # The newest snapshot holds only an interrupted UD-Q4_K_XL; an older one a complete Q8_0.
     import os
 
     older = _download(_isolated, "Qwen3-0.6B-Q8_0.gguf")
@@ -405,7 +391,7 @@ def test_auto_selection_finds_a_complete_variant_in_an_older_snapshot(monkeypatc
 
 
 def test_the_downloaded_copy_keeps_its_repo_for_the_download_interlock(monkeypatch, _isolated):
-    # Not gguf_hf_repo (that would fetch from the Hub), but /load's marker and 409 need the repo.
+    # Not gguf_hf_repo, which would fetch from the Hub.
     _download(_isolated, GGUF)
     _refuse(monkeypatch)
     config, _ = _load(gguf_variant = VARIANT, owner_session = True)
@@ -414,7 +400,6 @@ def test_the_downloaded_copy_keeps_its_repo_for_the_download_interlock(monkeypat
 
 
 def test_a_missing_llama_server_fails_before_the_cached_copy_is_returned(monkeypatch, _isolated):
-    # /load must not unload the resident model for a launch that cannot start.
     _download(_isolated, GGUF)
     _refuse(monkeypatch)
     monkeypatch.setattr(
@@ -430,7 +415,6 @@ def test_a_missing_llama_server_fails_before_the_cached_copy_is_returned(monkeyp
 def test_auto_selection_prefers_the_root_checkpoint_whatever_the_listing_order(
     monkeypatch, _isolated, listed
 ):
-    # As the healthy-Hub pick: the bare repo id is the root checkpoint, not distilled/.
     root, sub = "Qwen3-0.6B-Q6_K.gguf", "distilled/Qwen3-0.6B-Q6_K.gguf"
     snapshot = _download(_isolated, root, sub)
     order = [root, sub] if listed == "root_first" else [sub, root]
@@ -443,8 +427,6 @@ def test_auto_selection_prefers_the_root_checkpoint_whatever_the_listing_order(
 def test_auto_selection_finds_a_copy_in_a_remembered_cache(
     monkeypatch, _isolated, tmp_path_factory
 ):
-    # The active cache was switched to an empty one; the explicit-variant lookup still finds the
-    # remembered copy, so automatic selection must too.
     import hub.utils.gguf_sources as gguf_sources
 
     remembered = _download(tmp_path_factory.mktemp("previous_cache"), GGUF)
@@ -460,8 +442,7 @@ def test_auto_selection_finds_a_copy_in_a_remembered_cache(
 
 
 def test_the_downloaded_copy_is_reported_as_a_hub_model(monkeypatch, _isolated):
-    # Not the user's own file: /load reports is_local_model from this, and the chat settings
-    # then give Hub recovery guidance rather than "put the drafter beside your file".
+    # is_local_model drives the chat guidance: Hub recovery vs 'put the drafter beside your file'.
     _download(_isolated, GGUF)
     _refuse(monkeypatch)
     config, _ = _load(gguf_variant = VARIANT, owner_session = True)
@@ -472,7 +453,6 @@ def test_the_downloaded_copy_is_reported_as_a_hub_model(monkeypatch, _isolated):
 def test_a_companion_an_earlier_listing_named_must_be_on_disk(
     monkeypatch, _isolated, projector_on_disk
 ):
-    # No manifest, so the shards alone look complete; the live listing said it needs a projector.
     from hub.services.models import gguf_variants
     from hub.utils import download_manifest
 
@@ -497,8 +477,7 @@ def test_a_companion_an_earlier_listing_named_must_be_on_disk(
 
 
 def test_only_the_load_that_shows_the_warning_may_use_the_cached_copy(monkeypatch):
-    # Auto-switch, idle restore and preview call the impl directly and drop its response, so
-    # the warning would never be seen; only the /load wrapper turns the fallback on.
+    # Auto-switch, idle restore and preview drop the response, so only /load enables the fallback.
     import asyncio
 
     import routes.inference as inference
@@ -522,8 +501,7 @@ def test_only_the_load_that_shows_the_warning_may_use_the_cached_copy(monkeypatc
 def test_a_refusal_known_only_by_its_status_takes_the_refused_repo_policy(
     monkeypatch, _isolated, status
 ):
-    # DisabledRepoError or a bare HTTP 403: not retried into the ordinary cache route, where an
-    # API key would get the copy with no warning.
+    # Not retried via the ordinary cache route, where an API key would get the copy silently.
     class DisabledRepoError(Exception):
         def __init__(self):
             super().__init__(f"{status} Client Error")
@@ -538,8 +516,7 @@ def test_a_refusal_known_only_by_its_status_takes_the_refused_repo_policy(
 
 
 def test_status_keeps_the_cached_copy_warning_the_load_carried(monkeypatch):
-    # The client re-applies /status after a load and shows its memory_warning, so a warning only
-    # on the load response is dismissed as soon as it appears.
+    # The client re-applies /status after load, so the warning must also live there.
     import routes.inference as inference_routes
     from models.inference import LoadResponse
 
@@ -560,7 +537,6 @@ def test_status_keeps_the_cached_copy_warning_the_load_carried(monkeypatch):
     assert inference_routes._status_load_warning(backend) == warned.memory_warning
     assert hub_refused_cached_copy_warning(REPO) in warned.memory_warning
 
-    # The next GGUF load that the Hub answers drops it.
     with collecting_hub_token_rejections() as rejections:
         inference_routes._remember_hub_access_warning(response, rejections)
     assert inference_routes._status_load_warning(backend) == "Runs partly from disk."

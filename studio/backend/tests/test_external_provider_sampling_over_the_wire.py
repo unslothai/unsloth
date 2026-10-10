@@ -53,7 +53,6 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(sse)
 
 
-# What a gateway that validates its input accepts; the sampling extensions are absent.
 _OPENAI_DOCUMENTED = frozenset(
     {
         "model",
@@ -82,7 +81,7 @@ class _Server:
         self._handler = handler or _Handler
 
     def __enter__(self) -> "_Server":
-        # Port 0: the OS assigns, so no free-port scan can lose the race on a busy runner.
+        # port 0: the OS assigns, so no free-port race on a busy runner
         self._httpd = ThreadingHTTPServer(("127.0.0.1", 0), self._handler)
         self._httpd.recorded = []  # type: ignore[attr-defined]
         self._thread = threading.Thread(target = self._httpd.serve_forever, daemon = True)
@@ -203,7 +202,7 @@ def _route_capture(
 
 
 def test_a_request_that_never_mentioned_them_forwards_nothing():
-    # payload.min_p yields 0.01 here, not None; only model_fields_set separates the two.
+    # payload.min_p yields 0.01, not None; only model_fields_set separates them
     assert _route_capture() == {}
 
 
@@ -216,7 +215,7 @@ def test_the_route_forwards_explicit_values():
 
 
 def test_explicit_values_equal_to_the_schema_defaults_are_still_forwarded():
-    # 20 / 0.01 / 1.0 ARE the defaults, so a `!= default` shortcut would drop them.
+    # these ARE the defaults, so a `!= default` shortcut would drop them
     assert _route_capture(top_k = 20, min_p = 0.01, repetition_penalty = 1.0) == {
         "top_k": 20,
         "min_p": 0.01,
@@ -243,7 +242,7 @@ def test_one_field_set_forwards_only_that_field(field, value):
 def test_writing_to_the_payload_would_make_an_omission_look_explicit():
     payload = ChatCompletionRequest(messages = [{"role": "user", "content": "hi"}])
     assert "min_p" not in payload.model_fields_set
-    payload.min_p = payload.min_p  # a no-op write, same value
+    payload.min_p = payload.min_p
     assert "min_p" in payload.model_fields_set
 
 
@@ -271,7 +270,7 @@ def test_ollama_receives_none_of_them_even_from_a_raw_api_caller():
 
 
 def test_the_tool_loop_continuation_keeps_the_same_sampling():
-    # OAICompatTransport replays **request_kwargs every turn; a tool call must not change it.
+    # OAICompatTransport replays **request_kwargs every turn
     from core.inference.external_tool_transport import OAICompatTransport
     with _Server() as server:
         client = ExternalProviderClient(
@@ -324,8 +323,7 @@ def test_the_tool_loop_continuation_keeps_the_same_sampling():
 
 
 def test_a_stale_frontend_bundle_does_not_start_400ing_a_custom_gateway():
-    # The pre-PR bundle spread top_k on every custom request and a tab left open across an
-    # upgrade still runs it. Without custom's registry guard this same body went 200 -> 400.
+    # old bundles in open tabs still send top_k on custom; strict endpoints 400 without the guard
     class _Strict(_Handler):
         def do_POST(self) -> None:  # noqa: N802
             length = int(self.headers.get("Content-Length") or 0)

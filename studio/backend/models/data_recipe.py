@@ -74,10 +74,8 @@ class SeedInspectRequest(BaseModel):
 
 
 class SeedInspectUploadRequest(BaseModel):
-    # Legacy single-file flow (mutually exclusive with file_ids)
     filename: str | None = None
     content_base64: str | None = None
-    # Multi-file flow (mutually exclusive with content_base64)
     block_id: str | None = None
     file_ids: list[str] | None = None
     file_names: list[str] | None = None

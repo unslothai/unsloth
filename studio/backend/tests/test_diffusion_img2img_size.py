@@ -26,23 +26,20 @@ def _img(w: int, h: int):
 
 
 def test_oversized_source_is_bounded_by_the_requested_box():
-    # The reported case: a big upload with the sliders set small.
     out = _fit_within(_img(4000, 3000), 512, 512)
-    assert out.size == (512, 384)  # fits the box, aspect ratio preserved
+    assert out.size == (512, 384)
 
 
 def test_bound_is_the_box_not_just_the_longest_side():
-    # A wide box and a square source: the HEIGHT binds, which a longest-side clamp misses.
+    # Height binds here, which a longest-side clamp would miss.
     assert _fit_within(_img(1024, 1024), 1024, 256).size == (256, 256)
-    # The longest-side clamp leaves it untouched -- the two are not interchangeable.
     assert _clamp_max_side(_img(1024, 1024), 1024).size == (1024, 1024)
 
 
 def test_small_source_is_never_enlarged():
-    # Growing a source is the Upscale workflow; Transform must not silently do it.
+    # Growing a source is the Upscale workflow's job; Transform must not do it.
     src = _img(384, 256)
     assert _fit_within(src, 2048, 2048) is src
-    # Exactly on the box is also a no-op (identity, no resample pass).
     on_box = _img(512, 512)
     assert _fit_within(on_box, 512, 512) is on_box
 
@@ -52,7 +49,7 @@ def test_one_axis_over_still_downscales_both():
 
 
 def test_degenerate_box_does_not_produce_a_zero_dimension():
-    # Only a malformed request gets here, but a 0-px side would raise deep inside the VAE.
+    # A 0-px side would raise deep inside the VAE.
     out = _fit_within(_img(1000, 10), 1, 1)
     assert out.size[0] >= 1 and out.size[1] >= 1
 
@@ -68,7 +65,6 @@ def _cuda(free_mib: int, total_mib: int) -> DeviceMemory:
 
 
 def _shortfall(**kwargs) -> str:
-    # 4096x4096 on a card with ~14 GB free is well past both arms of the guard.
     message = image_activation_shortfall_message(
         device_memory = _cuda(free_mib = 14000, total_mib = 16000),
         width = 4096,
@@ -88,7 +84,6 @@ def test_slider_driven_refusal_keeps_the_resolution_remedy():
 def test_source_driven_refusal_points_at_the_upload_instead():
     message = _shortfall(source_driven = True)
     assert "Upload a smaller source image" in message
-    # The wrong advice must be gone, not merely accompanied.
     assert "Generate at a smaller resolution" not in message
     assert "Resolution setting" in message
 

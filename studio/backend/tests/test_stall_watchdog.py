@@ -249,7 +249,6 @@ def test_stands_down_until_the_warm_is_over(monkeypatch):
     assert sw.stand_down_for_the_warm() is True
     status(started = True, finished = True, alive = False)
     assert sw.stand_down_for_the_warm() is False
-    # A warm that died mid-stage is not coming back.
     status(started = True, finished = False, alive = False)
     assert sw.stand_down_for_the_warm() is False
 

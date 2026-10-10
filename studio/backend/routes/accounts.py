@@ -50,8 +50,7 @@ def retire_account_roots(account: AccountContext):
     account_access.retire_resident_shares(account.account_id)
     from core.inference.external_provider import retire_account_clients
 
-    # Its provider clients hold a cookie jar and idle sockets, and the cache they sit in is
-    # keyed by account, so nothing else would ever drop them.
+    # Cache is keyed by account, so nothing else would drop these clients.
     retire_account_clients(account.account_id)
     from core.inference.mcp_client import close_mcp_sessions, invalidate_tool_cache
     from core.training.account_jobs import retire_account_jobs
@@ -69,7 +68,6 @@ def retire_account_roots(account: AccountContext):
     image_active = cancel_generation_for_account(account.account_id)
     if video_active or image_active:
         raise AccountRetirementError("Media generation is still active; retry deletion")
-    # A load the account started before its tombstone is torn down here; one after it is refused.
     from core.inference import video as video_module
     from core.inference.diffusion_engine_router import retire_load_for_account
     from routes.inference import retire_account_loads
@@ -87,7 +85,6 @@ def retire_account_roots(account: AccountContext):
     moved: list[tuple[Path, Path]] = []
 
     def restore() -> None:
-        # A root that will not come back stays listed, so the caller hears where its data is.
         stranded: list[tuple[Path, Path, OSError]] = []
         with storage_roots.root_retirement_lock:
             for root, destination in reversed(moved):
@@ -102,7 +99,7 @@ def retire_account_roots(account: AccountContext):
                 + ", ".join(str(destination) for _, destination, _ in stranded)
             ) from stranded[0][2]
 
-    # Same lock as ensure_account_dir: the rename never lands between its check and mkdir.
+    # Same lock as ensure_account_dir so the rename never splits its check and mkdir.
     with storage_roots.root_retirement_lock:
         try:
             for root in sorted(roots, key = lambda path: len(path.parts), reverse = True):
@@ -145,7 +142,6 @@ def set_account_active(account_id: str, payload: AccountActiveRequest):
     with _account_errors():
         result = storage.set_account_active(account_id, payload.is_active)
         if payload.is_active:
-            # A delete that failed after retiring the jobs left the id tombstoned in-process.
             from core.inference.external_provider import restore_account_clients
             from core.training.account_jobs import restore_account_jobs
 

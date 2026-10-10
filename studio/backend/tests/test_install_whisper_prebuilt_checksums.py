@@ -48,14 +48,6 @@ def _index(**overrides) -> dict:
     return payload
 
 
-# parse_release_checksums / expected_sha256_for are prebuilt_core re-exports;
-# their valid/fail-closed matrix is asserted against the real whisper
-# descriptor in tests/studio/install/test_prebuilt_core.py. The download-host
-# fast-path tests below still route through this module's parse wrapper.
-
-# release tag resolution.
-
-
 def test_resolve_release_tag_explicit_override_passthrough():
     assert iwp.resolve_release_tag(_REPO, published_release_tag = "v1.9.1-unsloth.2") == (
         "v1.9.1-unsloth.2"
@@ -86,12 +78,9 @@ def test_resolve_newest_release_tag_none_published_fails_closed(monkeypatch):
 
 
 def test_pins_symbols_are_gone():
-    # The committed-pins trust model was removed in favour of llama's runtime index.
     for gone in ("load_pins", "pins_path", "resolve_expected_sha256", "PINS_FILENAME"):
         assert not hasattr(iwp, gone), f"{gone} should have been removed"
 
-
-# Download-host fast path (resolve + fetch the JSON assets with no GitHub API).
 
 _CPU_ASSET = "whisper-v1.9.1-unsloth.1-linux-x64-cpu.tar.gz"
 
@@ -131,7 +120,6 @@ def test_fetch_release_for_install_prefers_download_host(monkeypatch):
     bundle, checks = iwp.fetch_release_for_install(_REPO, published_release_tag = None)
     assert bundle.release_tag == _TAG
     assert checks[_CPU_ASSET] == _A
-    # asset_urls point at the download host (github.com), not the API.
     assert bundle.asset_urls[iwp.SHA256_ASSET_NAME].startswith(
         f"https://github.com/{_REPO}/releases/"
     )
@@ -144,7 +132,6 @@ def test_fetch_release_for_install_prefers_download_host(monkeypatch):
 
 
 def test_fetch_release_for_install_explicit_tag_skips_the_head(monkeypatch):
-    # An explicit tag needs no /releases/latest HEAD: resolving it must not call it.
     monkeypatch.setattr(
         iwp,
         "_download_host_latest_release_tag",
@@ -161,7 +148,6 @@ def test_fetch_release_for_install_explicit_tag_skips_the_head(monkeypatch):
 
 
 def test_fetch_release_for_install_falls_back_to_api(monkeypatch):
-    # Fast path returns None (e.g. a 404) -> the API path resolves the release.
     monkeypatch.setattr(iwp, "_resolve_release_via_download_host", lambda repo, tag: None)
     sentinel = iwp.ReleaseBundle(repo = _REPO, release_tag = _TAG, manifest = _manifest(), asset_urls = {})
     monkeypatch.setattr(iwp, "resolve_release_tag", lambda repo, *, published_release_tag: _TAG)
@@ -185,7 +171,6 @@ def test_resolve_via_download_host_sha_404_returns_none(monkeypatch):
 
 
 def test_resolve_via_download_host_tag_mismatch_returns_none(monkeypatch):
-    # A checksum index whose self-reported release_tag disagrees is rejected (None).
     monkeypatch.setattr(iwp, "_download_host_latest_release_tag", lambda repo: _TAG)
     monkeypatch.setattr(
         iwp, "_download_host_json", lambda url: _index(release_tag = "v1.9.1-unsloth.2")

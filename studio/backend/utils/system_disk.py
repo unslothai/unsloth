@@ -61,10 +61,9 @@ def models_disk_usage(cache: Optional[Path] = None) -> Optional[dict]:
         system = shutil.disk_usage(root)
     except (OSError, ValueError):
         return None
-    # APFS Data volumes (macOS) and btrfs subvolumes (Fedora /home) have their own st_dev but share `/`'s pool.
+    # APFS Data volumes and btrfs subvolumes have their own st_dev but share `/`'s pool.
     if usage.total == system.total and abs(usage.free - system.free) < _SAME_POOL_SLACK:
         return None
-    # psutil's percent formula, matching the system disk reading.
     seen = usage.used + usage.free
     return {
         "total_gb": round(usage.total / 1e9, 2),
@@ -74,8 +73,8 @@ def models_disk_usage(cache: Optional[Path] = None) -> Optional[dict]:
 
 
 _lock = threading.Lock()
-_readings: dict = {}  # cache path -> (monotonic time, reading)
-_probes: dict = {}  # cache path -> in-flight thread
+_readings: dict = {}
+_probes: dict = {}
 
 
 def _cache_key() -> str:
@@ -87,7 +86,7 @@ def _cache_key() -> str:
 
 
 def _probe(key: str) -> None:
-    # Resolving the configured path can block on the same dead mount, so it happens here.
+    # Resolving the configured path can block on a dead mount, so do it on this thread.
     reading = models_disk_usage()
     with _lock:
         _probes.pop(key, None)

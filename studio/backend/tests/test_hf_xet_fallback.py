@@ -20,8 +20,7 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# Stub heavy/unavailable deps before importing the module under test. Use real structlog when present;
-# a bare stub would break later modules that log at import time.
+# Use real structlog when present; a bare stub breaks modules that log at import time.
 _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
@@ -105,8 +104,7 @@ def test_shim_injects_studio_prepare_on_http_retry(monkeypatch):
     _requires_shared()
     for var in ("UNSLOTH_DISABLE_XET", "UNSLOTH_STABLE_DOWNLOADS", "HF_HUB_DISABLE_XET"):
         monkeypatch.delenv(var, raising = False)
-    # This seam checks the Xet -> HTTP transition, not the independently configurable
-    # number of Xet retries (newer Zoo releases default to two).
+    # Isolate the Xet->HTTP transition from the configurable Xet retry count.
     monkeypatch.setenv("UNSLOTH_XET_ATTEMPTS", "1")
     monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", lambda *a, **k: None)
 
@@ -148,7 +146,7 @@ def test_shim_injects_studio_prepare_on_http_retry(monkeypatch):
         cache_dir = selected_cache,
     )
     assert out == "/cache/model.gguf"
-    assert seen_disable_xet == [False, True]  # Xet first, then HTTP
+    assert seen_disable_xet == [False, True]
     assert prepared == [
         ("model", DL_REPO, "http", Path(selected_cache))
     ], "shim must prepare the cache captured by the download"
@@ -204,14 +202,12 @@ def test_degrades_gracefully_without_shared_helper(monkeypatch):
     try:
         degraded = importlib.import_module("utils.hf_xet_fallback")
 
-        # Boots without raising and mirrors the shared API surface.
         assert issubclass(degraded.DownloadStallError, RuntimeError)
         assert degraded.child_should_disable_xet({"disable_xet": True}) is True
-        assert degraded.get_hf_download_state(["x"]) is None  # unmeasurable
+        assert degraded.get_hf_download_state(["x"]) is None
         event = degraded.start_watchdog(repo_ids = ["x"], on_stall = lambda m: None)
-        assert hasattr(event, "set") and not event.is_set()  # never fires
+        assert hasattr(event, "set") and not event.is_set()
 
-        # Degraded mode still emits heartbeats so the inactivity deadline is not tripped.
         import time as _time
 
         beats = []
@@ -229,7 +225,6 @@ def test_degrades_gracefully_without_shared_helper(monkeypatch):
         finally:
             hb_stop.set()
 
-        # Downloads fall back to plain huggingface_hub (no watchdog, no crash).
         called = {}
 
         def _fake_snapshot(repo_id, **kwargs):
@@ -240,7 +235,6 @@ def test_degrades_gracefully_without_shared_helper(monkeypatch):
         assert degraded.snapshot_download_with_xet_fallback("org/model") == "/snap-dir"
         assert called["repo_id"] == "org/model"
 
-        # Cancellation still holds: an already-set cancel_event aborts before the HF download.
         import threading as _threading
 
         cancelled = _threading.Event()
@@ -270,7 +264,6 @@ def test_degrades_when_unsloth_zoo_entirely_absent():
             path = None,
             target = None,
         ):
-            # Whole package absent, so ModuleNotFoundError.name is the top-level 'unsloth_zoo'.
             if name == "unsloth_zoo" or name.startswith("unsloth_zoo."):
                 raise ModuleNotFoundError("No module named 'unsloth_zoo'", name = "unsloth_zoo")
             return None
@@ -287,7 +280,6 @@ def test_degrades_when_unsloth_zoo_entirely_absent():
     sys.meta_path.insert(0, finder)
     try:
         degraded = importlib.import_module("utils.hf_xet_fallback")
-        # Boots without raising and exposes the stub API.
         assert issubclass(degraded.DownloadStallError, RuntimeError)
         assert degraded.get_hf_download_state(["x"]) is None
         event = degraded.start_watchdog(repo_ids = ["x"], on_stall = lambda m: None)
@@ -312,7 +304,6 @@ def test_degrades_when_shared_helper_import_raises_importerror():
             target = None,
         ):
             if name == "unsloth_zoo.hf_xet_fallback":
-                # Mirror a torch-less install: a plain ImportError with no .name.
                 raise ImportError("Unsloth: Pytorch is not installed.")
             return None
 
@@ -374,7 +365,6 @@ def test_no_light_gpu_init_retry_on_an_accelerator_host(monkeypatch):
         shim = importlib.import_module("utils.hf_xet_fallback")
         monkeypatch.setattr(shim, "_gpu_present", lambda: True)
         assert shim._load_shared() is False
-        # Exactly ONE attempt, made without the light-init flag.
         assert attempts == [None], attempts
         assert os.environ.get("UNSLOTH_ZOO_DISABLE_GPU_INIT") is None
     finally:
@@ -525,10 +515,7 @@ def test_retries_under_light_gpu_init_when_import_fails(monkeypatch):
             path = None,
             target = None,
         ):
-            # Crash is in unsloth_zoo's __init__, so intercept "unsloth_zoo" itself (the parent).
             if name == "unsloth_zoo":
-                # Record the env each attempt sees; raise the no-GPU error both times so the shim
-                # degrades.
                 seen_env.append(os.environ.get("UNSLOTH_ZOO_DISABLE_GPU_INIT"))
                 raise NotImplementedError("Unsloth cannot find any torch accelerator")
             return None
@@ -545,17 +532,12 @@ def test_retries_under_light_gpu_init_when_import_fails(monkeypatch):
     sys.meta_path.insert(0, finder)
     try:
         degraded = importlib.import_module("utils.hf_xet_fallback")
-        # The retry only applies to a host with no accelerator (see _gpu_present); pin that on the freshly imported module.
+        # The retry only applies with no accelerator; pin that.
         monkeypatch.setattr(degraded, "_gpu_present", lambda: False)
-        # Import is light (lazy backend); unsloth_zoo not loaded yet.
         assert seen_env == [], seen_env
-        # First use of a heavy helper triggers the load (attempt without the light env, then a retry
-        # with it set); accessing DownloadStallError drives it via __getattr__.
         stall_error = degraded.DownloadStallError
         assert seen_env == [None, "1"], seen_env
-        # Both attempts raised -> Unsloth still boots in degraded mode.
         assert issubclass(stall_error, RuntimeError)
-        # The env override must not leak past the load.
         assert os.environ.get("UNSLOTH_ZOO_DISABLE_GPU_INIT") is None
     finally:
         sys.meta_path.remove(finder)
@@ -582,7 +564,6 @@ def test_a_worker_spawned_during_the_gpu_init_retry_does_not_inherit_the_overrid
             target = None,
         ):
             if name == "unsloth_zoo":
-                # A concurrent request lands mid-retry and spawns its worker right here.
                 child_envs.append(utf8_child_env())
                 raise NotImplementedError("Unsloth cannot find any torch accelerator")
             return None
@@ -599,12 +580,9 @@ def test_a_worker_spawned_during_the_gpu_init_retry_does_not_inherit_the_overrid
     sys.meta_path.insert(0, finder)
     try:
         shim = importlib.import_module("utils.hf_xet_fallback")
-        # There is only a retry to spawn into on a host with no accelerator (see _gpu_present),
-        # so pin that rather than letting the runner's hardware decide the assertion.
         monkeypatch.setattr(shim, "_gpu_present", lambda: False)
-        shim.DownloadStallError  # drives the load: plain attempt, then the retry
+        shim.DownloadStallError
         assert len(child_envs) == 2, child_envs
-        # The retry is the attempt that sets it; neither child may see it.
         assert os.environ.get("UNSLOTH_ZOO_DISABLE_GPU_INIT") is None
         for env in child_envs:
             assert "UNSLOTH_ZOO_DISABLE_GPU_INIT" not in env, env
@@ -704,10 +682,8 @@ def test_importing_child_should_disable_xet_stays_light(monkeypatch):
         monkeypatch.delitem(sys.modules, name, raising = False)
 
     mod = importlib.import_module("utils.hf_xet_fallback")
-    # The lightweight decision works without the heavy backend.
     assert mod.child_should_disable_xet({"disable_xet": True}) is True
     assert mod.child_should_disable_xet({}) is False
-    # And nothing heavy was imported as a side effect.
     assert "transformers" not in sys.modules, "importing the shim must not import transformers"
     assert "unsloth_zoo" not in sys.modules, "importing the shim must not import unsloth_zoo"
 
@@ -872,9 +848,7 @@ def test_a_zoo_that_can_resize_is_asked_for_the_workers_own_cache(monkeypatch):
     assert seen["applied"] is True
 
 
-# --- free-RAM clamp (issue #9032) ---------------------------------------------------------------
-# The zoo sizes Xet's buffers from TOTAL RAM, which cannot see a loaded model. Unsloth clamps the
-# result to what is free. The bar: shrink under pressure, change nothing otherwise.
+# Zoo sizes Xet buffers from TOTAL RAM; Unsloth clamps to free RAM.
 
 _GB = 1_000_000_000
 _LIMIT = "HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_LIMIT"
@@ -960,8 +934,6 @@ def test_clamp_shrinks_a_budget_free_ram_cannot_afford(monkeypatch):
     assert env[_LIMIT] == written[_LIMIT], "the worker's env is what actually ships"
     assert calls, "the zoo must be the one re-sizing, so its formulas stay the single source"
     assert calls[0].total_ram_bytes < 32 * _GB, "it should be asked about a smaller machine"
-    # Every derived number moves together; a limit shrunk on its own would leave the per-file and
-    # concurrency values describing a budget that no longer exists.
     assert int(written["HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_SIZE"]) < int(
         unclamped["HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_SIZE"]
     )
@@ -985,14 +957,11 @@ def test_clamp_never_writes_a_key_the_user_set(monkeypatch):
     calls = []
     module = _fake_tuning(32 * _GB, 1 * _GB, calls = calls)
 
-    # High-performance stand-down: no budget key in what the zoo wrote.
     env = {"HF_XET_HIGH_PERFORMANCE": "1"}
     assert shim.clamp_to_available_ram(env, {}, module = module) == {}
     assert env == {"HF_XET_HIGH_PERFORMANCE": "1"}
     assert calls == [], "with no caps to clamp there is nothing to re-size"
 
-    # A user-pinned per-file size is absent from `sized` for the same reason; clamping the rest must
-    # not write it back at our number.
     sized = {_LIMIT: str(8 * _GB)}
     env = {_LIMIT: str(8 * _GB), "HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_PERFILE_SIZE": "999"}
     written = shim.clamp_to_available_ram(env, sized, module = module)
@@ -1062,7 +1031,6 @@ def test_clamp_never_raises_a_value_the_zoo_had_lowered():
     the smaller of the two per key. Otherwise shrinking buffers would restore the stream ceiling."""
     module = _fake_tuning(32 * _GB, 8 * _GB)
     unclamped = module.xet_env_overrides(_fake_profile_cls()(32 * _GB, 8 * _GB))
-    # As if a 429 had halved the ceiling on the way in.
     throttled = dict(unclamped, HF_XET_CLIENT_AC_MAX_DOWNLOAD_CONCURRENCY = "4")
 
     written = shim.clamp_to_available_ram({}, dict(throttled), module = module)
@@ -1094,9 +1062,7 @@ def test_free_ram_pressure_reason_applies_the_zoos_own_floor(monkeypatch):
     assert shim.free_ram_pressure_reason() is None
 
 
-# --- concurrent-worker reservations --------------------------------------------------------------
-# A worker allocates in the child, after Popen returns, so free RAM does not move until well after
-# sizing. Without reservations, downloads starting together each read the same untouched number.
+# Workers allocate after Popen returns, so concurrent sizings would read the same free RAM.
 
 
 @pytest.fixture(autouse = True)
@@ -1114,14 +1080,7 @@ def test_workers_starting_together_do_not_promise_the_same_ram_twice(clean_ledge
     """Four downloads queued at once each used to take a quarter of the same snapshot, promising the
     whole machine before any of them had allocated a byte."""
     shim = clean_ledger
-    # A reservation is credited against what its worker already holds (_live_reserved_locked
-    # subtracts _worker_rss), because a resident byte is already missing from `available`. These
-    # tests stand in for the worker with the pytest process itself, whose RSS is whatever the run
-    # has imported so far. Once that exceeds the promises, every credit clamps to zero, the ledger
-    # reserves nothing, and all four sizings see the same full snapshot: exactly the unledgered
-    # 8GB this test exists to catch, reported as a failure of code that is working. A freshly
-    # spawned worker holds nothing, which is the case being described, and the rest of this file
-    # already pins the same reading wherever it matters.
+    # Pytest's RSS stands in for the worker; zero it or every credit clamps to 0.
     monkeypatch.setattr(shim, "_worker_rss", lambda pid: 0)
     module = _fake_tuning(32 * _GB, 8 * _GB)
     sized = module.xet_env_overrides(_fake_profile_cls()(32 * _GB, 8 * _GB))
@@ -1129,12 +1088,11 @@ def test_workers_starting_together_do_not_promise_the_same_ram_twice(clean_ledge
     promised, budgets = 0, []
     for _ in range(4):
         written = shim.clamp_to_available_ram({}, dict(sized), module = module)
-        shim.bind_worker_budget(os.getpid())  # this process stands in for a live worker
+        shim.bind_worker_budget(os.getpid())
         budgets.append(int(written[_LIMIT]))
         promised += budgets[-1]
 
-    # Strictly under, not merely equal: without the ledger these four land on exactly 8GB, a
-    # quarter each of the same snapshot, which is the whole bug.
+    # Without the ledger these four land on exactly 8GB.
     assert promised < 8 * _GB, f"four workers promised {promised / _GB:.2f}GB of 8GB free"
     assert budgets[1] < budgets[0], "the second worker ignored what the first was already promised"
 
@@ -1168,7 +1126,6 @@ def test_a_spawn_that_never_happened_does_not_leak(clean_ledger):
     with shim._budget_lock:
         assert shim._live_reserved_locked() == 0
 
-    # And one never bound at all ages out rather than pinning RAM for the process's life.
     shim.clamp_to_available_ram({}, dict(sized), module = module)
     for entry in shim._budget_reservations.values():
         entry[2] -= shim._UNBOUND_RESERVATION_TTL + 1
@@ -1200,7 +1157,7 @@ def test_the_transport_gate_counts_ram_promised_to_running_downloads(clean_ledge
 
     module = _fake_tuning(32 * _GB, 8 * _GB)
     sized = module.xet_env_overrides(_fake_profile_cls()(32 * _GB, 8 * _GB))
-    monkeypatch.setattr(shim, "_worker_rss", lambda pid: 0)  # spawned, nothing allocated yet
+    monkeypatch.setattr(shim, "_worker_rss", lambda pid: 0)
     promised = 0
     for _ in range(3):
         written = shim.clamp_to_available_ram({}, dict(sized), module = module)
@@ -1211,8 +1168,6 @@ def test_the_transport_gate_counts_ram_promised_to_running_downloads(clean_ledge
     assert reason is not None, "three running downloads left too little RAM for a fourth on Xet"
     assert "RAM free" in reason
 
-    # Same three workers once their buffers are resident: the promises are spent, and the RAM
-    # reading they have already moved is what refuses the fourth.
     monkeypatch.setattr(shim, "_worker_rss", lambda pid: promised)
     monkeypatch.setattr(shim, "available_ram_bytes", lambda: (8 * _GB - promised, 4 * _GB))
     assert (
@@ -1235,23 +1190,18 @@ def test_a_resident_promise_is_not_charged_against_free_ram_twice(clean_ledger, 
     promise = int(written[_LIMIT])
     shim.bind_worker_budget(os.getpid())
 
-    # Not yet allocated: the promise is the only thing standing between the sibling and this RAM.
     monkeypatch.setattr(shim, "_worker_rss", lambda pid: 0)
     with shim._budget_lock:
         assert shim._live_reserved_locked() == promise
 
-    # Allocated: `available` fell by `promise`, so the ledger must stop asking for it again.
     monkeypatch.setattr(shim, "_worker_rss", lambda pid: promise)
     with shim._budget_lock:
         assert shim._live_reserved_locked() == 0, "a resident promise was subtracted a second time"
 
-    # Half in flight leaves exactly the unmaterialized half reserved.
     monkeypatch.setattr(shim, "_worker_rss", lambda pid: promise // 2)
     with shim._budget_lock:
         assert shim._live_reserved_locked() == promise - promise // 2
 
-    # And the gate follows: 8GB free with one fully resident 2GB worker is 6GB, not 4GB, so Auto
-    # for the next download stays on Xet.
     monkeypatch.setattr(shim, "available_ram_bytes", lambda: (8 * _GB - promise, 4 * _GB))
     monkeypatch.setattr(shim, "_worker_rss", lambda pid: promise)
     assert (
@@ -1276,7 +1226,6 @@ def test_the_ledger_reads_a_real_workers_rss(clean_ledger):
         child.stdin.close()
         child.wait(timeout = 30)
 
-    # An exited worker cannot be read, and an unreadable one keeps its whole promise reserved.
     assert shim._worker_rss(child.pid) == 0 or not shim._pid_alive(child.pid)
 
 
@@ -1290,14 +1239,7 @@ def test_concurrent_sizings_cannot_all_claim_the_same_free_ram(clean_ledger, mon
     import time
 
     shim = clean_ledger
-    # A reservation is credited against what its worker already holds (_live_reserved_locked
-    # subtracts _worker_rss), because a resident byte is already missing from `available`. These
-    # tests stand in for the worker with the pytest process itself, whose RSS is whatever the run
-    # has imported so far. Once that exceeds the promises, every credit clamps to zero, the ledger
-    # reserves nothing, and all four sizings see the same full snapshot: exactly the unledgered
-    # 8GB this test exists to catch, reported as a failure of code that is working. A freshly
-    # spawned worker holds nothing, which is the case being described, and the rest of this file
-    # already pins the same reading wherever it matters.
+    # Pytest's RSS stands in for the worker; zero it or every credit clamps to 0.
     monkeypatch.setattr(shim, "_worker_rss", lambda pid: 0)
     workers = 4
     barrier = threading.Barrier(workers)
@@ -1393,7 +1335,7 @@ def test_a_running_worker_keeps_its_reservation_on_windows(clean_ledger, monkeyp
     class _FakeKernel32:
         def __init__(self, *_args, **_kwargs):
             self.OpenProcess = _FakeFn(0xBEEF)
-            self.WaitForSingleObject = _FakeFn(WAIT_TIMEOUT)  # still running
+            self.WaitForSingleObject = _FakeFn(WAIT_TIMEOUT)
             self.CloseHandle = _FakeFn(1)
 
     monkeypatch.setattr(ctypes, "WinDLL", _FakeKernel32, raising = False)
@@ -1407,11 +1349,10 @@ def test_a_running_worker_keeps_its_reservation_on_windows(clean_ledger, monkeyp
     with shim._budget_lock:
         assert shim._live_reserved_locked() > 0, "a live Windows worker's reservation was pruned"
 
-    # And an exited worker (handle signalled) frees its reservation.
     class _FakeKernel32Dead(_FakeKernel32):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
-            self.WaitForSingleObject = _FakeFn(0)  # WAIT_OBJECT_0: exited
+            self.WaitForSingleObject = _FakeFn(0)
 
     monkeypatch.setattr(ctypes, "WinDLL", _FakeKernel32Dead, raising = False)
     with shim._budget_lock:

@@ -12,33 +12,27 @@ from typing import Any, Optional
 from utils.account_context import current_account_id
 
 EMBEDDING_MODEL_SETTING_KEY = "rag_embedding_model"
-# The GGUF repo the picker resolved for that model, stored so the loader opens what was actually downloaded instead of re-deriving a name that may not exist.
+# Stored so the loader opens what was downloaded instead of re-deriving a name.
 EMBEDDING_GGUF_SETTING_KEY = "rag_embedding_gguf_repo"
-# Which backend that model needs. An embedder with no GGUF still runs fine on sentence-transformers (safetensors), it just costs about 1 GB more memory.
 EMBEDDING_BACKEND_SETTING_KEY = "rag_embedding_backend"
-# Atomic association between the selected model and the artifacts/backend the resolver validated for it. Unlike the override key this may name the env default: an off-convention GGUF still has to stay attached to that model.
+# May name the env default: an off-convention GGUF still has to stay attached.
 EMBEDDING_RESOLUTION_SETTING_KEY = "rag_embedding_resolution"
 MAX_EMBEDDING_MODEL_LENGTH = 512
 
-# Consulted on the embedder hot path once per embed/tokenize call during ingestion, so the stored value is cached briefly; writes invalidate in-process and other readers converge within the TTL.
+# Read on the embed hot path, so cached briefly; other processes converge within the TTL.
 _CACHE_TTL_S = 2.0
-# typing.Optional, not `str | None`: the future import defers annotations, but a type ALIAS is evaluated at import, and PEP 604 needs 3.10 over a 3.9 floor.
+# typing.Optional: a type alias is evaluated at import, and 3.9 lacks PEP 604.
+# (override model, resolved model, GGUF repo, backend, download pending, raw record).
 _StoredState = tuple[
     Optional[str], Optional[str], Optional[str], Optional[str], bool, Optional[dict]
 ]
-# (override model, resolved model, GGUF repo, backend, download pending, raw record).
-# The raw record is carried so a conditional write compares against exactly what is stored: a reconstruction never
-# matches a record written by a build with one field fewer.
+# The raw record lets a conditional write compare against exactly what is stored.
 _cached: dict[tuple[str, str], tuple[float, _StoredState]] = {}
 _CACHE_MAX = 256
-# Bumped on every write/invalidate. A reader captures it before the DB read and
-# only fills the cache if it is unchanged afterward, so a read that overlapped a
-# save cannot repopulate the cache with the pre-save value for the whole TTL.
+# Bumped per write so a read overlapping a save cannot cache the pre-save value.
 _generation: dict[tuple[str, str], int] = {}
 _lock = threading.Lock()
-# Per-model, process-local: the last (gguf_repo, backend, download_pending, files)
-# seen for each model. The one stored record belongs to whichever model was saved
-# last; see remembered_gguf_repo.
+# Per model, process-local; see remembered_gguf_repo.
 _resolved_gguf_memo: dict[
     tuple[str, str], tuple[Optional[str], Optional[str], bool, Optional[list]]
 ] = {}
@@ -73,7 +67,6 @@ def _coerce_embedding_model(value: Any) -> str | None:
     cleaned = value.strip()
     if not cleaned or len(cleaned) > MAX_EMBEDDING_MODEL_LENGTH:
         return None
-    # Newlines/control chars are never valid in a repo id or path.
     if any(ord(ch) < 32 for ch in cleaned):
         return None
     return cleaned
@@ -177,16 +170,15 @@ def clear_stored_download_pending(model: str) -> bool:
         return False
     expected = stored[5]
     if not isinstance(expected, dict):
-        # Pre-atomic layout: the flag lives nowhere this can clear.
         return False
     from storage.studio_db import compare_and_set_app_setting
 
-    # Conditional, not a plain upsert, or a save for another model committing between the read and this write is reverted. Compared as read, not rebuilt, so the guard survives fields this build does not know about.
+    # Conditional write on the raw record, so a concurrent save for another model survives.
     if not compare_and_set_app_setting(
         EMBEDDING_RESOLUTION_SETTING_KEY, expected, {**expected, "download_pending": False}
     ):
         return False
-    # Retire the memo with the record, or a pinned job keeps reading pending=True and stays cache-only after the download landed.
+    # Retire the memo too, or a pinned job keeps reading pending=True.
     _remember_resolution(model, (stored[0], stored[1], stored[2], stored[3], False, stored[5]))
     _invalidate_cache()
     return True
@@ -222,7 +214,7 @@ def _get_stored_state() -> _StoredState:
             ]
         )
     except Exception:
-        # Transient store failure: keep the last known value instead of silently reverting the embed/search hot path to the default model, which would mix vector spaces mid-ingestion.
+        # Keep the last value on a store failure, or ingestion could mix vector spaces.
         with _lock:
             cached = _cached.get(key)
             if cached is not None:
@@ -239,15 +231,13 @@ def _get_stored_state() -> _StoredState:
         backend = _coerce_embedding_model(resolution.get("backend"))
         download_pending = resolution.get("download_pending") is True
     elif override:
-        # Legacy PR builds stored the association in separate keys. The one-shot read above still gives this compatibility path a consistent snapshot.
+        # Legacy builds stored the association in separate keys.
         resolved_model = override
         repo = _coerce_embedding_model(settings.get(EMBEDDING_GGUF_SETTING_KEY))
         backend = _coerce_embedding_model(settings.get(EMBEDDING_BACKEND_SETTING_KEY))
     raw = resolution if isinstance(resolution, dict) else None
     value: _StoredState = (override, resolved_model, repo, backend, download_pending, raw)
     with _lock:
-        # Only cache when no save landed while reading: a pre-save value would mask the new one for the
-        # whole TTL.
         if _generation.get(key, 0) == gen:
             _store_cached(key, value)
     return value
@@ -257,7 +247,7 @@ def get_rag_embedding_model() -> str:
     """Effective embedding model: persisted override, else env/default."""
     stored = _get_stored_state()
     model = stored[0] or default_embedding_model()
-    # Reading this is how a job pins its model, so record the resolution here: the memo protects a pinned job only if it was populated before another model's save takes the stored record.
+    # Record here: the memo only protects a pinned job if populated before another save.
     if stored[1] == model:
         _remember_resolution(model, stored)
     return model
@@ -273,7 +263,6 @@ def set_rag_embedding_model(
     parsed = validate_embedding_model(value)
     from storage.studio_db import upsert_app_settings
 
-    # Saving the default is not an override; keeps is_custom (and the UI's reset affordance) honest.
     stored = parsed if parsed != default_embedding_model() else None
     repo = _coerce_embedding_model(gguf_repo)
     chosen = _coerce_embedding_model(backend)
@@ -293,7 +282,6 @@ def set_rag_embedding_model(
         {
             EMBEDDING_MODEL_SETTING_KEY: stored,
             EMBEDDING_RESOLUTION_SETTING_KEY: resolution,
-            # Retire the pre-atomic spelling on the same commit.
             EMBEDDING_GGUF_SETTING_KEY: None,
             EMBEDDING_BACKEND_SETTING_KEY: None,
         }
@@ -307,10 +295,10 @@ def reset_rag_embedding_model() -> str:
     from storage.studio_db import upsert_app_settings
 
     restored = default_embedding_model()
-    # The memo survives a reset, but the restored default is not a running job, so write any remembered resolution back durably rather than leave a process-only answer that changes on restart.
+    # Write any remembered resolution back durably so it does not change on restart.
     remembered = _remembered(restored)
     resolution = None
-    # The pending flag counts as much as a repo or a backend: a default saved over a failed resolution legitimately remembers (None, None, True), and that flag is what keeps the first index from starting the implicit download.
+    # The pending flag matters too: it stops the first index starting the implicit download.
     if remembered and (remembered[0] or remembered[1] or remembered[2]):
         resolution = {
             "model": restored,

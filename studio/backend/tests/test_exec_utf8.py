@@ -22,8 +22,7 @@ if str(_BACKEND_ROOT) not in sys.path:
 
 from core.inference.tools import _python_exec
 
-# Arrow, em-dash, accent, CJK, check mark, astral-plane emoji -- none encodable
-# in cp1252, so the OS default codec would raise on write or read.
+# none of these are encodable in cp1252
 _UNICODE = "café — 数字 → ✓ 😀"
 
 

@@ -33,23 +33,17 @@ from pathlib import Path
 
 import pytest
 
-# Stub heavy / unavailable deps before importing the module under test.
-# Same pattern as test_kv_cache_estimation.py.
-
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# loggers
 _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
 
-# structlog
 _structlog_stub = _types.ModuleType("structlog")
 sys.modules.setdefault("structlog", _structlog_stub)
 
-# httpx
 _httpx_stub = _types.ModuleType("httpx")
 for _exc_name in (
     "ConnectError",
@@ -77,11 +71,8 @@ _httpx_stub.Client = type(
         "__exit__": lambda self, *a: None,
     },
 )
-# Only when the real library is absent. sys.modules holds what has been IMPORTED, not
-# what is installed, so setdefault does not defer to a real httpx that nothing in this
-# process has touched yet: the stub wins and shadows it for the whole session. This stub
-# has no Response, and starlette.testclient reads httpx.Response at import, so every
-# module collected afterwards that reaches fastapi.testclient or routes.inference dies.
+# Stub only if httpx is not installed: a stub without Response breaks later
+# starlette.testclient imports for the whole session.
 try:
     import httpx  # noqa: F401
 except ImportError:
@@ -93,8 +84,6 @@ from core.inference.llama_cpp import (
     LlamaCppBackend,
 )
 
-
-# Helpers
 
 GIB = 1024**3
 
@@ -167,9 +156,6 @@ def _compute_max_available_ctx(
     return max_available_ctx
 
 
-# Weights exceed every GPU subset's VRAM  (MiniMax-M2.7-like)
-
-
 class TestMaxContextLengthForWeightsExceedVRAM:
     """UI ``max_context_length`` must fall back to the Auto offload context so
     the warning fires as soon as the user drags above what Auto selects.
@@ -204,9 +190,6 @@ class TestMaxContextLengthForWeightsExceedVRAM:
         assert got == 2048
 
 
-# Fittable models (regression guard)
-
-
 class TestMaxContextLengthForFittableModels:
     """The existing best-cap behaviour must be unchanged."""
 
@@ -239,10 +222,7 @@ class TestMaxContextLengthForFittableModels:
             gpus = [(0, 80_000)],
             kv_per_token_bytes = 64,
         )
-        assert got >= 131072 - 256  # rounded to 256 boundary
-
-
-# Property plumbing
+        assert got >= 131072 - 256
 
 
 class TestMaxContextLengthProperty:

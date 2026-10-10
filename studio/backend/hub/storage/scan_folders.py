@@ -29,8 +29,7 @@ def _denied_path_prefixes() -> list[str]:
     if system == "Linux":
         return ["/proc", "/sys", "/dev", "/etc", "/boot", "/run"]
     if system == "Darwin":
-        # realpath() resolves /etc -> /private/etc and /tmp -> /private/tmp on macOS, so include the
-        # /private variants to avoid bypasses.
+        # macOS realpath maps /etc, /tmp to /private/...; include those to avoid bypasses.
         return [
             "/System",
             "/Library",
@@ -72,7 +71,7 @@ def _denied_prefix(path: str) -> str | None:
     return None
 
 
-# Longest first: \\?\UNC\server\share is the share \\server\share. After normcase, so lower case.
+# Longest first. After normcase, so lower case.
 _EXTENDED_PREFIXES = (
     ("\\\\?\\unc\\", "\\\\"),
     ("\\\\.\\unc\\", "\\\\"),
@@ -147,8 +146,7 @@ def add_scan_folder_with_status(path: str, recursive: bool | None = None) -> tup
     if not os.path.isdir(normalized):
         raise ValueError("Path must be a directory, not a file")
     if is_local_filesystem_root(normalized):
-        # A local fs root would expose denied system dirs via browse; a UNC share root has none under it and
-        # stays registerable.
+        # A local fs root would expose denied system dirs; a UNC share root is fine.
         raise ValueError("The filesystem root cannot be registered")
     if _contains_sensitive_path_component(normalized):
         raise ValueError("Credential or configuration directories are not allowed")
@@ -180,7 +178,7 @@ def add_scan_folder_with_status(path: str, recursive: bool | None = None) -> tup
                 (normalized,),
             ).fetchone()
         if existing is not None:
-            # None keeps the stored flag, so a re-add from export registration never resets it.
+            # None keeps the stored flag so export registration never resets it.
             if recursive is None or bool(existing["recursive"]) == recursive:
                 return dict(existing), False
             conn.execute(
@@ -219,7 +217,7 @@ def add_scan_folder(path: str, recursive: bool | None = None) -> dict:
 
 
 def remove_scan_folder(id: int) -> bool:
-    # sqlite INTEGER is signed 64-bit; ids outside that range cannot exist.
+    # sqlite INTEGER is signed 64-bit.
     if not -(2**63) <= id < 2**63:
         return False
     conn = get_connection()

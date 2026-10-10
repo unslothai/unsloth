@@ -69,7 +69,6 @@ from utils.subprocess_compat import windows_hidden_subprocess_kwargs
 
 logger = logging.getLogger(__name__)
 
-# "server gone / connection refused": not-ready while polling, fatal mid-request.
 _TRANSPORT_ERRORS = (
     httpx.ConnectError,
     httpx.ReadError,
@@ -77,15 +76,13 @@ _TRANSPORT_ERRORS = (
     httpx.WriteError,
 )
 
-# Readiness probe: the port binds only after the model loads, so any 200 means ready. Use trivial /v1/models, not the
-# capabilities endpoint (which can block).
+# Port binds only after the model loads; the capabilities endpoint can block.
 _READY_PATH = "/v1/models"
 _IMG_GEN_PATH = "/sdcpp/v1/img_gen"
 _VID_GEN_PATH = "/sdcpp/v1/vid_gen"
 _JOBS_PATH = "/sdcpp/v1/jobs"
 
-# Stable parameter residency reported once during startup. Compute-buffer lines are deliberately excluded: those
-# allocations can change between generations, while this floor lives until the server process exits.
+# Compute-buffer lines excluded: they vary per generation, params stay until exit.
 _TOTAL_PARAMS_VRAM_RE = re.compile(
     r"total params memory size\s*=\s*[0-9.]+\s*MB\s*\(\s*VRAM\s+([0-9]+(?:\.[0-9]+)?)\s*MB\b",
     re.IGNORECASE,
@@ -130,7 +127,7 @@ class SdCppServerUnsupported(RuntimeError):
 
 
 def _route_unsupported(status_code: int, text: str, kind: str) -> bool:
-    # 404: no route in this build; 400 "does not support": the loaded model lacks the mode (runtime.cpp).
+    # 404: no route in this build; 400 "does not support": the model lacks the mode (runtime.cpp).
     if status_code == 404:
         return True
     return status_code == 400 and f"does not support {kind}" in (text or "")
@@ -150,13 +147,10 @@ class SdCppServer:
         self.port: Optional[int] = None
         self._process: Optional[subprocess.Popen] = None
         self._resident_params_vram_gb: Optional[float] = None
-        # Bounded tail buffer shared by the drain thread (appends) and readers (diagnostics).
         self._tail: deque[str] = deque(maxlen = 200)
         self._stdout_thread: Optional[threading.Thread] = None
         self._lifecycle_lock = threading.Lock()
-        # Set lock-free by stop() so a blocking start()/readiness wait bails promptly.
         self._abort = threading.Event()
-        # Set during a generation so the stdout drain feeds the step-progress callback.
         self._step_listener: Optional[Callable[[str], None]] = None
         # trust_env=False: loopback-only client must not route through HTTP(S)_PROXY.
         self._client = httpx.Client(timeout = 30.0, trust_env = False)
@@ -205,13 +199,12 @@ class SdCppServer:
         wins), which is how the CPU-backend restart pins the graph off the GPU.
         """
         with self._lifecycle_lock:
-            # A stop()/unload that raced in before start() took the lock already set _abort and closed the client; honor
-            # it rather than leak a spawned process.
+            # A stop() that raced in before the lock already closed the client; do not leak a process.
             if self._stopped or self._abort.is_set():
                 raise SdCppCancelled("sd-server start was cancelled before launch.")
             self._abort.clear()
             port = self._find_free_port()
-            # empty scratch dir for sd-server's LoRA/upscaler/embeddings scans (errors if missing)
+            # sd-server errors if its LoRA/upscaler/embeddings scan dirs are missing.
             self._scratch_dir = tempfile.mkdtemp(prefix = "sdcpp_dirs_")
             cmd = build_sd_cpp_server_command(
                 self.binary,
@@ -223,7 +216,7 @@ class SdCppServer:
                 native_speed = native_speed,
                 threads = threads,
                 scratch_dir = self._scratch_dir,
-                verbose = True,  # sd-server prints the per-step sampling lines we parse
+                verbose = True,
                 extra_args = list(extra_args or []),
             )
             run_env = runtime_env(self.binary, child_env_without_native_path_secret())
@@ -236,19 +229,15 @@ class SdCppServer:
                     "starting sd-server: %s",
                     _sd_cpp_command_summary(cmd, default_mode = "server"),
                 )
-            # Clear in place; reassigning [] would drop the maxlen bound and grow unbounded.
+            # Reassigning [] would drop the maxlen bound.
             self._tail.clear()
             self._resident_params_vram_gb = None
             self._spawn_error: Optional[Exception] = None
             spawned = threading.Event()
 
-            # Spawn INSIDE the long-lived drain thread: child_popen_kwargs() sets PR_SET_PDEATHSIG, bound to the
-            # creating thread on Linux, so the creator must outlive the child.
+            # Spawn in the drain thread: PR_SET_PDEATHSIG is bound to the creating thread on Linux.
             def _own_process() -> None:
-                # One flag at every spawn. No _graceful_shutdown step unloads the
-                # diffusion engine and cancel_pending_loads only knows about chat loads,
-                # so without this a quit during an /images/load can start a multi-GB
-                # sd-server after the step-7 sweep has taken its snapshot.
+                # Nothing in _graceful_shutdown unloads this engine, so gate every spawn on shutdown.
                 if is_process_shutting_down():
                     self._spawn_error = RuntimeError(
                         "Unsloth is shutting down; not starting sd-server"
@@ -273,10 +262,8 @@ class SdCppServer:
                     return
                 self._process = proc
                 self.port = port
-                adopt_pid(proc.pid)  # so a global shutdown sweep also reaps it
-                # Recheck once the pid is recorded, for the window between the gate and
-                # this record. Adoption runs first, so a child killed here was in the
-                # sweep record for as long as it existed.
+                adopt_pid(proc.pid)
+                # Recheck after recording: covers the window between the gate and adopt_pid.
                 if is_process_shutting_down():
                     logger.info("shutdown began during the spawn; killing the new sd-server")
                     try:
@@ -284,10 +271,7 @@ class SdCppServer:
                         proc.wait(timeout = 5)
                     except Exception:  # noqa: BLE001 - the reap is best-effort
                         pass
-                    # Only drop the record once the child is confirmed gone. If the kill
-                    # or the wait raised, the server is still alive with the sweep
-                    # already past it, and this record is the last thing that could
-                    # reap it; forgetting it here would be the orphan this PR is about.
+                    # Keep the record if kill/wait raised: it is the last thing that could reap the child.
                     if proc.poll() is not None:
                         forget_pid(proc.pid)
                     else:
@@ -337,8 +321,6 @@ class SdCppServer:
         deadline = time.monotonic() + timeout
         url = f"{self.base_url}{_READY_PATH}"
         while time.monotonic() < deadline:
-            # a concurrent stop() sets _abort so this wait bails without holding the model load hostage for the full
-            # startup_timeout
             if self._abort.is_set():
                 logger.info("sd-server startup aborted before ready")
                 return False
@@ -384,7 +366,7 @@ class SdCppServer:
                     continue
                 owner = conn.pid
                 if owner is None:
-                    continue  # not visible to us; do not punish a healthy start
+                    continue
                 if owner == proc.pid or _has_ancestor(owner, proc.pid):
                     return True
                 logger.error(
@@ -446,7 +428,7 @@ class SdCppServer:
     def stop(self) -> None:
         """Terminate the server (SIGTERM -> SIGKILL), join the drain, and release the HTTP
         client + atexit handler. Idempotent."""
-        # signal abort BEFORE contending for the lock so a start() readiness wait bails instead of blocking stop()
+        # Set abort BEFORE taking the lock so a start() readiness wait bails instead of blocking.
         self._abort.set()
         self._stopped = True
         with self._lifecycle_lock:
@@ -567,7 +549,7 @@ class SdCppServer:
         Raises ``RuntimeError`` on submit/poll failures (including the server dying), with
         the log tail attached.
         """
-        # Already stopped with the cancel event set: report cancellation (route 409), not a generic "server died" 500.
+        # Report cancellation (route 409), not a generic "server died" 500.
         if self._stopped or not self.is_alive():
             if cancel_event is not None and cancel_event.is_set():
                 raise SdCppCancelled("sd-server generation was cancelled.")
@@ -615,20 +597,15 @@ class SdCppServer:
                         self.cancel(job_id)
                         cancel_sent_at = time.monotonic()
                     elif time.monotonic() - cancel_sent_at > _CANCEL_GRACE_S:
-                        # Cancel not reflected within the grace window, so the job is still running and sd-server will
-                        # not interrupt it. Stop the process before reporting the cancellation: abandoning the poll
-                        # frees the generate lock while the native job keeps the GPU. Safe, since the backend reloads on
-                        # the next generate.
+                        # sd-server will not interrupt the job; stop it so the GPU is freed with the generate lock.
                         self.stop()
                         raise SdCppCancelled("sd-server generation was cancelled.")
                 if not self.is_alive():
-                    # Unwinding a cancel (e.g. unload killed the server): clean cancellation.
                     if cancel_event is not None and cancel_event.is_set():
                         raise SdCppCancelled("sd-server generation was cancelled.")
                     raise RuntimeError(self._died_message(f"{kind} poll", None))
                 if time.monotonic() > deadline:
-                    # sd-server will not interrupt an in-flight job, so cancel + stop to free the slot; the backend
-                    # reloads on the next generate.
+                    # sd-server will not interrupt an in-flight job; the backend reloads on the next generate.
                     self.cancel(job_id)
                     self.stop()
                     raise RuntimeError(f"sd-server generation timed out after {total_timeout}s")
@@ -638,8 +615,7 @@ class SdCppServer:
                     time.sleep(poll_interval)
                     continue
                 except RuntimeError as exc:
-                    # a concurrent stop() closes the shared client, giving a plain RuntimeError rather than a transport
-                    # error
+                    # A concurrent stop() closes the client, giving a plain RuntimeError, not a transport error.
                     if cancel_event is not None and cancel_event.is_set():
                         raise SdCppCancelled("sd-server generation was cancelled.") from exc
                     raise
@@ -697,7 +673,6 @@ class SdCppServer:
 
     @staticmethod
     def _decode_images(job: dict[str, Any]) -> list[bytes]:
-        # Type-check each level before indexing (guards a misbehaving/older server).
         result = job.get("result") if isinstance(job, dict) else None
         images = result.get("images") if isinstance(result, dict) else None
         items = [it for it in images if isinstance(it, dict)] if isinstance(images, list) else []

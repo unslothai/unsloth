@@ -45,7 +45,7 @@ def _create(names):
     policy.invalidate_account_cache()
 
 
-# Three readings, not two: two cannot tell which of a disagreeing pair is the steady state.
+# Three readings: two cannot tell which of a disagreeing pair is steady.
 _REPEATS = 3
 
 
@@ -58,10 +58,7 @@ def _steady(readings: list) -> dict:
     """
     keys = set().union(*readings) if readings else set()
     steady = {key: min(reading.get(key, 0) for reading in readings) for key in keys}
-    # A counter only present in the noisy reading has a minimum of zero, and a zero is the
-    # same statement as the key being absent: Counter never records one. Keeping it would
-    # turn the noise back into a difference under the `==` below, which is the whole thing
-    # this is trying to stop.
+    # Counter never records zero, so drop zeros or noise becomes a difference.
     return {key: value for key, value in steady.items() if value}
 
 
@@ -140,7 +137,6 @@ def test_owner_routing_facts_and_shared_queue(isolated_auth, account_client):
     assert run_as(OWNER, access.account_scope) == "owner"
     assert run_as(managed, access.account_scope) == alice.account_id
     assert run_as(OWNER, access.resident_hidden, "chat") is False
-    # Admission queues are keyed by the resident server, never by the calling account.
     key = "http://127.0.0.1:1"
     assert run_as(OWNER, get_llama_admission_queue, key) is run_as(
         managed, get_llama_admission_queue, key
@@ -168,10 +164,6 @@ def test_steady_cost_keeps_a_persistent_increase_and_drops_a_one_off():
         "swallowed it this guard would pass a per-account regression"
     )
 
-    # A counter that appears in only one reading is absent from the others, so its minimum
-    # is zero, and a zero has to be dropped rather than reported. Counter never records a
-    # zero, so a reading that never saw the mkdir has no `mkdir` key at all, and keeping
-    # `{"mkdir": 0}` would fail the `==` against it just as surely as `{"mkdir": 1}` would.
     appears_once = [{"connections": 2}, {"connections": 2, "mkdir": 1}, {"connections": 2}]
     never_appears = [{"connections": 2}] * _REPEATS
     assert _steady(appears_once) == {"connections": 2}

@@ -77,8 +77,7 @@ def _health(
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    # health_check does `from utils.hardware import is_apple_silicon` at call time, so
-    # the package attribute is the one it reads.
+    # health_check imports is_apple_silicon at call time, so patch the package attribute.
     monkeypatch.setattr(hardware_pkg, "is_apple_silicon", lambda: apple_silicon)
 
     hw_mod = main_mod._hw_module
@@ -105,7 +104,6 @@ def _health(
     finally:
         if not was_complete:
             hw_mod.DETECTION_COMPLETE.clear()
-        # Put back exactly what was displaced, so nothing downstream inherits this.
         sys.modules.update(_swapped_modules)
 
 

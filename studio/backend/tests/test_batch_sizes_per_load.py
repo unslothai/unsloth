@@ -51,19 +51,15 @@ def test_load_request_bounds(field):
     for bad in (BATCH_MIN - 1, BATCH_MAX + 1):
         with pytest.raises(ValueError):
             LoadRequest(model_path = "owner/repo", **{field: bad})
-    # /validate sizes like /load, so it carries the same field and bounds
     assert getattr(ValidateModelRequest(model_path = "owner/repo", **{field: 256}), field) == 256
 
 
 @pytest.mark.parametrize("field", ["n_batch", "n_ubatch"])
 @pytest.mark.parametrize("model", [LoadRequest, ValidateModelRequest])
 def test_batch_fields_reject_json_booleans(model, field):
-    # bool is an int subclass, so lax pydantic turns `true` into 1 -> --batch-size 1, which
-    # llama-server refuses to start on: the caller saw a 500 instead of a 422. The override
-    # store already drops booleans, so this keeps /load and /settings in agreement.
+    # bool is an int subclass; reject it so `true` is not --batch-size 1.
     with pytest.raises(ValueError):
         model(model_path = "owner/repo", **{field: True})
-    # numeric strings and plain ints still coerce as before
     assert getattr(model(model_path = "owner/repo", **{field: "4096"}), field) == 4096
     assert getattr(model(model_path = "owner/repo", **{field: 4096}), field) == 4096
 
@@ -74,7 +70,6 @@ def test_effective_ubatch_prefers_first_class_over_env():
 
 
 def test_effective_ubatch_lets_extras_override_first_class():
-    # extras are appended after the emitted flags, so they last-wins at launch
     assert _extra_args_n_ubatch(["-ub", "256"], env = {}, n_ubatch = 1024) == 256
 
 
@@ -137,7 +132,6 @@ def test_strip_shadowing_flags_batch_toggles():
 def test_override_store_round_trip():
     entry = normalize_model_override({"n_batch": 4096, "n_ubatch": 1024})
     assert entry == {"n_batch": 4096, "n_ubatch": 1024}
-    # out of range or boolean values drop silently, like the other knobs
     assert normalize_model_override({"n_batch": 0, "n_ubatch": True}) == {}
     kwargs = model_override_load_kwargs(entry, is_gguf = True)
     assert kwargs["n_batch"] == 4096 and kwargs["n_ubatch"] == 1024
@@ -145,7 +139,6 @@ def test_override_store_round_trip():
 
 
 def test_fast_path_intent_strips_inherited_batch_flags_when_field_set():
-    # the already-loaded dedupe must see the same override the slow path launches
     from routes.inference import _active_gguf_intent
 
     backend = _loaded_backend()
@@ -170,11 +163,7 @@ def test_fast_path_intent_strips_inherited_batch_flags_when_field_set():
 
 
 def test_slow_path_intent_strips_inherited_batch_flags_when_field_set(monkeypatch):
-    # Sibling of the fast-path case above. A bare repo id with no gguf_variant skips
-    # _active_gguf_intent entirely, so without the same bookkeeping here the dedupe
-    # compares the LAUNCHED extras (still carrying -b 512) against themselves and reports
-    # already_loaded -- leaving the server at effective batch 512 for an Apply that asked
-    # for 4096.
+    # A bare repo id skips _active_gguf_intent, so the dedupe needs the same bookkeeping.
     from types import SimpleNamespace
 
     from routes import inference as route
@@ -195,7 +184,6 @@ def test_slow_path_intent_strips_inherited_batch_flags_when_field_set(monkeypatc
         gguf_mtp_file = None,
         is_vision = False,
     )
-    # n_ctx must match the resident one, or the dedupe short-circuits before the extras.
     request = LoadRequest(model_path = "owner/repo", n_batch = 4096, max_seq_length = 8192)
     resolved = route._resolve_inherited_extra_args(request, config, config.identifier, None)
     assert resolved == ["--top-k", "20"]
@@ -212,12 +200,9 @@ def test_slow_path_intent_strips_inherited_batch_flags_when_field_set(monkeypatc
         n_parallel = 1,
     )
     assert intent.extra_args_inherited is False
-    # Match the resident batch too, so the stripped inherited -b is the ONLY reason left to
-    # reload. Without this the batch-field comparison alone satisfies the assert and the
-    # extras are never reached.
+    # Match the resident batch so the stripped -b is the only reason to reload.
     backend._requested_n_batch = 4096
     assert backend._runtime_matches_intent(intent, ["--top-k", "20"]) is False
-    # Control: with the flag no longer inherited, the same intent dedupes.
     assert (
         backend._runtime_matches_intent(
             replace(intent, extra_args_inherited = True), ["--top-k", "20"]
@@ -225,7 +210,6 @@ def test_slow_path_intent_strips_inherited_batch_flags_when_field_set(monkeypatc
         is True
     )
 
-    # An Apply that does not name the field still inherits the flag untouched.
     plain = LoadRequest(model_path = "owner/repo", max_seq_length = 8192)
     plain_args = route._resolve_inherited_extra_args(plain, config, config.identifier, None)
     plain_intent = route._resolve_gguf_load_intent(
@@ -244,7 +228,6 @@ def test_slow_path_intent_strips_inherited_batch_flags_when_field_set(monkeypatc
 
 
 def test_remote_gguf_guard_counts_explicit_micro_batch():
-    # a remote gguf has no readable dims, but an explicit ubatch still grows the kq mask
     from types import SimpleNamespace
     from unittest.mock import patch
 
@@ -270,10 +253,8 @@ def test_remote_gguf_guard_counts_explicit_micro_batch():
             config, max_seq_length = 32768, n_batch = 65536, n_ubatch = 65536
         )
     assert base > 1.5
-    # ctx-capped ubatch (32768) x ctx x 2 x 1.5 mask safety ~= 3 GiB on top
     assert big > base + 2.0
 
-    # auto context still reserves: assume the native one fits a full micro-batch
     with (
         patch(
             "utils.models.model_config.list_gguf_variants",
@@ -292,7 +273,6 @@ def test_remote_gguf_guard_counts_explicit_micro_batch():
             is_diffusion = True,
         )
     assert auto_ctx > base + 2.0
-    # the diffusion runner ignores the llama-server batch flags, so no reserve
     assert diffusion == pytest.approx(1.0)
 
 
@@ -323,9 +303,7 @@ _QWEN3_8B = dict(
 
 
 def test_guard_rebuilds_the_compute_buffer_when_the_header_lost_its_vocab():
-    # _vocab_size comes only from the tokenizer.ggml.tokens array length, so a truncated
-    # header keeps the dims and drops the vocab. Substituting the loader's 5 GiB reserve
-    # here charged ~139x the real allocation and 409'd loads that fit.
+    # A truncated header keeps dims but drops vocab; the flat reserve overcharged.
     from unittest.mock import patch
 
     from routes import inference as route
@@ -338,15 +316,11 @@ def test_guard_rebuilds_the_compute_buffer_when_the_header_lost_its_vocab():
         tensor = route._estimate_gguf_kv_gb(
             "/x.gguf", 8192, n_parallel = 1, n_devices = 4, tensor_parallel = True
         )
-    # At one slot the vocab-width term drops out entirely, so the rebuild is exact.
     assert rebuilt == pytest.approx(complete, abs = 0.01)
-    # And the 5 GiB per device the reserve would have cost never appears.
     assert tensor < complete + 4.0
 
 
 def test_guard_floors_a_header_with_no_dimensions_at_all():
-    # Nothing to rebuild from: both compute terms are blind, so the loader's flat reserve
-    # is the floor. Charged once, not per device, since it is an invented number.
     from unittest.mock import patch
 
     from routes import inference as route
@@ -363,9 +337,7 @@ def test_guard_floors_a_header_with_no_dimensions_at_all():
 
 
 def test_batch_bounds_stay_standard_json_schema():
-    # An Annotated BeforeValidator stops pydantic folding the Field constraints into the
-    # int core schema, so they leak out as non-standard ge/le and generated clients drop
-    # them. Pin the batch fields against an untouched sibling.
+    # An Annotated BeforeValidator would leak ge/le out of the int schema.
     from models.inference import LoadRequest, ValidateModelRequest
     for model in (LoadRequest, ValidateModelRequest):
         props = model.model_json_schema()["properties"]
@@ -389,7 +361,7 @@ def test_batch_bounds_stay_standard_json_schema():
         (8, 8, 8),
         (32, 64, 64),
         (64, 64, 64),
-        (64, 1, 64),  # already above both floors: untouched
+        (64, 1, 64),
         (4096, 8, 4096),
     ],
 )
@@ -398,7 +370,6 @@ def test_emitted_batch_clears_both_llama_server_floors(n_batch, n_parallel, expe
     b4/p8 aborts, b8/p8 loads, b32/p64 aborts, b64/p64 loads. So the floor is
     max(slots, 2). The per-field bounds cannot express it, so the loader raises instead."""
     assert _emitted_n_batch(n_batch, n_parallel) == expected
-    # llama.cpp defaults emit no flag, so there is nothing to raise
     assert _emitted_n_batch(None, n_parallel) is None
 
 
@@ -409,23 +380,19 @@ def test_budgets_use_the_raised_batch_not_the_requested_one():
 
     from routes import inference as route
 
-    # what the launch actually runs: the raise is the only difference
     assert _emitted_n_batch(1, 64) == 64
     assert _extra_args_n_ubatch(None, env = {}, n_ctx = 32768, n_batch = 1, n_ubatch = 64) == 1
     assert _extra_args_n_ubatch(None, env = {}, n_ctx = 32768, n_batch = 64, n_ubatch = 64) == 64
 
     with patch.object(LlamaCppBackend, "_read_gguf_metadata", _header_reader(**_QWEN3_8B)):
         raised = route._estimate_gguf_kv_gb("/x.gguf", 32768, n_parallel = 64, n_batch = 1, n_ubatch = 64)
-        # the value the loader emits, asked for directly: the guard must match it
         explicit = route._estimate_gguf_kv_gb(
             "/x.gguf", 32768, n_parallel = 64, n_batch = 64, n_ubatch = 64
         )
-        # and the un-raised micro-batch of 1, which is what a requested-value budget gave
         unraised = route._estimate_gguf_kv_gb(
             "/x.gguf", 32768, n_parallel = 64, n_batch = 1, n_ubatch = 1
         )
     assert raised == pytest.approx(explicit, abs = 0.01)
-    # 63 more micro-batch tokens of activations and KQ mask, and 63 more output rows.
     probe = LlamaCppBackend()
     _header_reader(**_QWEN3_8B)(probe, "/x.gguf")
     grown = (
@@ -437,7 +404,6 @@ def test_budgets_use_the_raised_batch_not_the_requested_one():
     assert grown > 0.05
     assert raised - unraised == pytest.approx(grown, abs = 0.001)
 
-    # the remote branch shares the floor: no dims, but the kq mask still grows
     from types import SimpleNamespace
 
     config = SimpleNamespace(
@@ -465,12 +431,8 @@ def test_budgets_use_the_raised_batch_not_the_requested_one():
             config, max_seq_length = 262144, n_parallel = 64, n_batch = 1, n_ubatch = 1
         )
     assert remote_raised == pytest.approx(remote_explicit, abs = 0.01)
-    # 1 GiB of weights plus a kq mask that is 64x the one a requested-value budget charged
     assert remote_raised > remote_unraised + 0.04
 
-    # A batch already above both floors is untouched, so the ordinary case is unchanged,
-    # and llama.cpp defaults stay defaults however many slots are asked for: the raise
-    # must not turn an unset field into an emitted one.
     assert _emitted_n_batch(4096, 8) == 4096
     with patch.object(LlamaCppBackend, "_read_gguf_metadata", _header_reader(**_QWEN3_8B)):
         above_floor = route._estimate_gguf_kv_gb(
@@ -478,15 +440,12 @@ def test_budgets_use_the_raised_batch_not_the_requested_one():
         )
         defaults = route._estimate_gguf_kv_gb("/x.gguf", 32768, n_parallel = 8)
         ubatch_only = route._estimate_gguf_kv_gb("/x.gguf", 32768, n_parallel = 8, n_ubatch = 512)
-    # -ub 512 is the llama.cpp default, so pinning it must not move the budget
     assert above_floor == pytest.approx(ubatch_only, abs = 0.01)
     assert defaults == pytest.approx(ubatch_only, abs = 0.01)
 
 
 def test_remote_guard_drops_the_split_mask_when_pipelining_is_disabled():
-    # The local rule gates the 4x KQ-mask multiplier on _pipeline_parallel_disabled_by_args.
-    # Without the same gate remotely, -ot / -ncmoe on a 2-GPU pin is charged 4x while the
-    # model is undownloaded and 1x once cached: same model, same flags, two verdicts.
+    # Remote must gate the 4x KQ-mask multiplier like the local rule.
     from types import SimpleNamespace
     from unittest.mock import patch
 
@@ -533,11 +492,9 @@ def test_guard_device_count_follows_the_split_the_loader_would_pick():
         "_effective_gpu_count",
         lambda ids = None: len(ids) if ids else 0,
     ):
-        # tensor mode replicates on every device; a vulkan host counts the probed pool
         assert _guard_device_count(None, pool, tensor_parallel = True) == 3
         assert _guard_device_count([1, 2], pool, tensor_parallel = True) == 2
         assert _guard_device_count(None, [], tensor_parallel = True) == 1
-        # a layer split lands on the fewest gpus that fit, so auto placement is one
         assert _guard_device_count(None, pool) == 1
         assert _guard_device_count([1, 2], pool) == 2
 
@@ -548,7 +505,6 @@ def test_override_strips_shadowing_batch_flags():
         is_gguf = True,
     )
     assert kwargs["llama_extra_args"] == ["--top-k", "20"]
-    # a flag with no first-class field behind it still passes through
     kwargs = model_override_load_kwargs(
         {"llama_extra_args": ["-ub", "256"]},
         is_gguf = True,
@@ -567,7 +523,6 @@ def test_the_local_guard_charges_diffusion_nothing_for_the_batch_flags():
 
     from routes import inference as route
 
-    # SWA needs the KV widths as well as the window, or the estimate takes the dense path
     swa_header = dict(_QWEN3_8B, sliding_window = 1024, kv_key_length = 128, kv_value_length = 128)
     with patch.object(LlamaCppBackend, "_read_gguf_metadata", _header_reader(**swa_header)):
         quiet = route._estimate_gguf_kv_gb("/x.gguf", 131072, n_parallel = 1, is_diffusion = True)
@@ -579,13 +534,11 @@ def test_the_local_guard_charges_diffusion_nothing_for_the_batch_flags():
             n_ubatch = 8192,
             is_diffusion = True,
         )
-        # the same header on a real llama-server load, where the flags DO apply
         chat_quiet = route._estimate_gguf_kv_gb("/x.gguf", 131072, n_parallel = 1)
         chat_loud = route._estimate_gguf_kv_gb(
             "/x.gguf", 131072, n_parallel = 1, n_batch = 8192, n_ubatch = 8192
         )
     assert loud == pytest.approx(quiet, abs = 0.001)
-    # and the gate is not vacuous: on the identical header a chat load pays for them
     assert chat_loud > chat_quiet + 0.7
 
 
@@ -661,7 +614,6 @@ def test_the_recorded_micro_batch_is_derived_from_the_slots_that_launched():
     compact = "".join(src.split())
     assert "self._n_ubatch=max(0,int(self._DEFAULT_N_UBATCHif_launched_ubatchisNone" in compact
     assert "_launched_ubatch=_ubatch_for_slots(n_parallel)" in compact
-    # and it is derived after the last thing that can move the slot count
     assert compact.index("_launched_ubatch=_ubatch_for_slots") > compact.index(
         "gpu_indices,use_fit,n_parallel=_gi_slots,False,_slots"
     )
@@ -718,19 +670,13 @@ def test_the_remote_guard_charges_the_flat_output_buffer():
         big_2 = _gb(n_parallel = 2, n_batch = 32768, n_ubatch = 32768)
         typical_4 = _gb(n_parallel = 4, n_batch = 2048, n_ubatch = 512)
 
-    # Unset fields still launch at llama.cpp's known default 512-token micro-batch.
     assert blank_1 > 1.5
-    # Slots add output rows, far below a second activation reserve.
     assert blank_1 < blank_4 < blank_1 + 0.5
-    # The activation ceiling at a 32768-token micro-batch.
     assert big_1 > blank_1 + 30.0
     assert big_1 < big_2 < big_1 + 1.0
-    # and it stays proportionate where the values are ordinary
     assert typical_4 < 4.0
 
-    # Scaled per device only in tensor mode. The layer path folds the flat buffer in once
-    # (_flat_buffer(False) is not multiplied), so charging it per device would 409 a
-    # 2-GPU layer split for ~32 GiB it never allocates.
+    # Scale per device only in tensor mode; the layer path adds the buffer once.
     with (
         patch(
             "utils.models.model_config.list_gguf_variants",
@@ -752,7 +698,5 @@ def test_the_remote_guard_charges_the_flat_output_buffer():
 
         layer_1, layer_2 = _split(False, 1), _split(False, 2)
         tensor_1, tensor_2 = _split(True, 1), _split(True, 2)
-    # the second device adds only the ctx-linear mask, not another 35 GiB of activations
     assert layer_2 - layer_1 < 30.0
-    # tensor mode replicates the whole buffer on every card, so it does roughly double
     assert tensor_2 > tensor_1 * 1.8

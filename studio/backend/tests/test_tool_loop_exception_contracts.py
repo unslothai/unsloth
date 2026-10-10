@@ -32,8 +32,7 @@ def _shared_setup_1(monkeypatch):
     return loop_mod, studio_h
 
 
-# Backend root plus the tests dir: the two harnesses this borrows sit alongside
-# and import as top-level modules.
+# The two borrowed harnesses sit alongside and import as top-level modules.
 _TESTS_DIR = str(Path(__file__).resolve().parent)
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 for _entry in (_BACKEND_DIR, _TESTS_DIR):
@@ -116,9 +115,6 @@ def test_the_failing_tool_result_reaches_the_model(monkeypatch):
     assert REAL_ERROR in json.dumps(tool_messages)
 
 
-# ── The external-provider loop ────────────────────────────────────
-
-
 def test_the_studio_loop_reports_the_real_error_and_continues(monkeypatch):
     """stream_with_studio_tools already had the handler; prove it end to end."""
     loop_mod, studio_h = _shared_setup_1(monkeypatch)
@@ -189,9 +185,6 @@ def test_the_studio_loop_still_reports_a_genuinely_unknown_tool(monkeypatch):
     assert ends[0]["result"] == "Unknown tool: no_such_tool_at_all"
 
 
-# ── The duplicate-call ledger ─────────────────────────────────────
-
-
 def test_a_repeated_failing_call_stays_bounded(monkeypatch):
     """The result's classification changes, so check the loop still ends.
 
@@ -230,7 +223,6 @@ def test_a_repeated_failing_call_stays_bounded(monkeypatch):
         studio_h._DONE,
     ]
     max_calls = 4
-    # More identical turns scripted than the budget allows.
     transport = studio_h.FakeTransport([list(bad_turn) for _ in range(max_calls + 6)])
     lines = studio_h._run(
         transport,
@@ -245,16 +237,11 @@ def test_a_repeated_failing_call_stays_bounded(monkeypatch):
     )
     ends = studio_h._events(lines, "tool_end")
     assert ends, "no tool_end at all"
-    # Every execution reports the real error; the trailing card is the
-    # controller's budget notice, which is how the loop says it stopped.
     executed_ends = [e for e in ends if REAL_ERROR in e["result"]]
     assert len(executed_ends) == len(executions), [e["result"] for e in ends]
     assert "limit was reached" in ends[-1]["result"], ends[-1]["result"]
     assert not any("Unknown tool" in e["result"] for e in ends)
     assert transport.turns, "the loop consumed every scripted turn instead of stopping"
-
-
-# ── research_runs stays outside the blast radius ──────────────────
 
 
 def test_research_only_calls_tools_that_are_not_session_guarded():

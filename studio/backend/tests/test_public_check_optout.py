@@ -53,9 +53,6 @@ def calls(monkeypatch):
     return seen
 
 
-# ── public_check_disabled ───────────────────────────────────────────
-
-
 def test_enabled_by_default(monkeypatch):
     monkeypatch.delenv(DISABLE_PUBLIC_CHECK_ENV, raising = False)
     assert public_check_disabled() is False
@@ -71,9 +68,6 @@ def test_disabling_values(monkeypatch, raw):
 def test_anything_else_leaves_it_on(monkeypatch, raw):
     monkeypatch.setenv(DISABLE_PUBLIC_CHECK_ENV, raw)
     assert public_check_disabled() is False
-
-
-# ── the two lookups ─────────────────────────────────────────────────
 
 
 def test_public_ip_lookup_runs_by_default(calls):

@@ -35,7 +35,7 @@ def _workdir_alias(plan):
     try:
         workdir = mxc_policy._safe_canonical_path(plan.workdir, directory = True)
     except Exception:
-        return None, ()  # build_launch_request refuses the same workdir with the real reason
+        return None, ()
     lease = mxc_drive_alias.acquire(workdir)
     if lease is None:
         return None, (mxc_drive_alias.LIMITATION_UNAVAILABLE,)
@@ -126,7 +126,6 @@ def capability_snapshot(
             "launches stay fast; turn that off in the same place (or set "
             f"{mxc_read_grants.PERSISTENT_GRANTS_ENV}=0) to keep every entry temporary."
         )
-    # Only in DACL mode: a bare --probe allows the fallback, so it warns on hosts Studio never uses it on.
     host_prep = (
         mxc_probe.host_prep_remediation()
         if dacl and not available and not shell_incompatible
@@ -222,7 +221,6 @@ def prepare(plan, capability):
             cancelled = isinstance(exc, mxc_adapter.MxcLaunchCancelled)
             refused = getattr(exc, "stage", None) == "policy"
             if plan.requested_mode == "auto" and not (may_have_started or cancelled or refused):
-                # The same environment as any other unisolated launch, session packages included.
                 kwargs = {
                     **kwargs,
                     "env": with_session_packages(kwargs.get("env") or plan.env, plan.workdir),
@@ -314,8 +312,7 @@ def verify_success(prepared, proc) -> dict:
             raise SandboxBuildError(
                 "MXC cleanup did not complete cleanly; execution state is uncertain"
             )
-        # Studio killed the tree, so the workload is gone; only ACE restore is unconfirmed, and every
-        # later wxc-exec start replays the journal. Report the timeout or cancel, not an error.
+        # Tree killed; only ACE restore is unconfirmed and later wxc-exec replays the journal.
         logger.warning(
             "MXC could not confirm the DACL restore after a forced exit; it retries at the next start"
         )

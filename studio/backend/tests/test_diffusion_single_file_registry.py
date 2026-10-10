@@ -122,9 +122,7 @@ def test_registration_fills_the_gap_and_the_real_call_stops_refusing(monkeypatch
     entry = sfm.SINGLE_FILE_LOADABLE_CLASSES[CLASS]
     assert entry["checkpoint_mapping_fn"] is studio._qwen_image_21_checkpoint_to_diffusers
     assert entry["default_subfolder"] == "transformer"
-    # And diffusers' own lookup now resolves the class, which is the check that raised.
     assert sfm._get_single_file_loadable_mapping_class(getattr(diffusers, CLASS)) == CLASS
-    # Idempotent.
     assert studio._register_unregistered_single_file_classes() == ()
 
 

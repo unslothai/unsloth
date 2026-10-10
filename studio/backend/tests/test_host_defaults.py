@@ -24,7 +24,6 @@ def _parse_function_param_defaults(source: str, func_name: str) -> dict:
             result = {}
             all_args = node.args.args
             defaults = node.args.defaults
-            # Defaults are right-aligned against the args list
             offset = len(all_args) - len(defaults)
             for i, default in enumerate(defaults):
                 arg_name = all_args[offset + i].arg

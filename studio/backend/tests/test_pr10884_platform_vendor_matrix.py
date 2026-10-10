@@ -45,12 +45,9 @@ import core.inference.llama_cpp as llama_cpp  # noqa: E402
 
 GIB = 1024**3
 
-# (index, free_mib, total_mib). Two roomy cards: enough that the planner decides
-# an even share is safe and returns nothing, which is the branch the PR added.
 TWO_CARDS = [(0, 24_000, 24_000), (1, 24_000, 24_000)]
 
 OSES = {
-    # label: (sys.platform, _is_wsl)
     "linux": ("linux", False),
     "windows": ("win32", False),
     "wsl": ("linux", True),
@@ -96,8 +93,6 @@ def host(monkeypatch):
         platform, is_wsl = OSES[os_label]
         monkeypatch.setattr(sys, "platform", platform)
         monkeypatch.setattr(llama_cpp, "_is_wsl", lambda: is_wsl, raising = False)
-        # A real Mac is never the paravirtual case unless it is a VM; that shape
-        # has its own test in the sibling file.
         monkeypatch.setattr(llama_cpp, "_metal_device_is_paravirtual", lambda: False, raising = False)
         visible = [] if vendor == "cpu" else cards
         monkeypatch.setitem(
@@ -140,8 +135,6 @@ def test_the_user_ratio_survives_every_host(tmp_path, host, os_label, vendor):
     cmd = captured["cmd"]
 
     if vendor == "cpu":
-        # Nothing to split. The mode is dropped before the emit block, and the
-        # new fallback must not resurrect it.
         assert _flag(cmd, "--tensor-split") is None
         return
 
@@ -202,8 +195,7 @@ def test_the_ratio_and_the_device_pin_agree_on_every_host(tmp_path, host, os_lab
         assert "ROCR_VISIBLE_DEVICES" not in env, "ROCr does not exist on Windows"
     elif vendor == "rocm":
         pinned = env["ROCR_VISIBLE_DEVICES"].split(",")
-        # With ROCr masking, HIP honours the CUDA mask, which must carry the
-        # POST-mask ordinals or a non-zero pick points out of range.
+        # With ROCr masking, HIP honours the CUDA mask, which must carry post-mask ordinals.
         assert env["CUDA_VISIBLE_DEVICES"].split(",") == [
             str(i) for i in range(len(pinned))
         ], f"{os_label}/{vendor}"
@@ -226,13 +218,8 @@ def test_an_identical_request_reuses_the_server_on_every_host(
     from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend
 
     backend, gguf, visible = host(os_label, vendor, tmp_path = tmp_path)
-    # The matcher asks the binary about MTP through a CLASSMETHOD, so the
-    # instance stub `_backend` installs does not cover it, and under a
-    # simulated `sys.platform = "win32"` the stdlib's own `shutil.which` then
-    # reaches into `_winapi`, which does not exist on this Linux host. That is
-    # this simulation's ceiling, not the product's: the real Windows answer is
-    # the windows-latest runner. Stub the probe so the axis under test is the
-    # only one being measured.
+    # The MTP probe is a classmethod the instance stub misses, and a simulated win32 sends
+    # shutil.which into _winapi; stub it so only the axis under test varies.
     monkeypatch.setattr(
         LlamaCppBackend, "probe_server_capabilities", staticmethod(lambda *a, **k: {})
     )

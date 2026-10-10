@@ -24,7 +24,6 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# Mirror sibling tests' stubbing so the module imports without fastapi.
 _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
@@ -36,8 +35,8 @@ import httpx  # noqa: E402
 from core.inference import llama_cpp as llama_cpp_mod  # noqa: E402
 from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
 
-_PREFILL_TIMEOUT = 1200.0  # what httpcore snapshots from the prefill timeout
-_STALL_TIMEOUT = 120.0  # the post-first-token stall timeout the wrapper must honor
+_PREFILL_TIMEOUT = 1200.0
+_STALL_TIMEOUT = 120.0
 
 
 class _Obj:
@@ -57,13 +56,12 @@ def _install(response, clock, silent_stream):
     client = _Obj()
     client._transport = transport
 
-    cancel_event = threading.Event()  # never set: we test the stall path, not cancel
+    cancel_event = threading.Event()
     sig = inspect.signature(LlamaCppBackend._install_cancel_aware_read)
     if "response" in sig.parameters:
-        # Fixed signature: wrapper reads the live extensions timeout.
         LlamaCppBackend._install_cancel_aware_read(client, cancel_event, response)
     else:
-        # Pre-fix signature: no response, so the stall assertion fails (proves the bug).
+        # Pre-fix signature: the stall assertion then fails, proving the bug.
         LlamaCppBackend._install_cancel_aware_read(client, cancel_event)
     return silent_stream.read
 
@@ -72,7 +70,6 @@ def test_stall_timeout_honored_after_first_token(monkeypatch):
     clock = {"t": 0.0}
     monkeypatch.setattr(llama_cpp_mod.time, "monotonic", lambda: clock["t"])
 
-    # One token then silence: every read times out, advancing fake time by its timeout.
     def silent_read(max_bytes, timeout = None):
         clock["t"] += timeout if timeout is not None else 0.0
         raise httpcore.ReadTimeout("slice timed out on silence")
@@ -80,7 +77,6 @@ def test_stall_timeout_honored_after_first_token(monkeypatch):
     stream = _Obj()
     stream.read = silent_read
 
-    # First token seen: the live read timeout is lowered to the stall timeout.
     request = _Obj()
     request.extensions = {"timeout": {"read": _STALL_TIMEOUT}}
     response = _Obj()
@@ -92,7 +88,6 @@ def test_stall_timeout_honored_after_first_token(monkeypatch):
     with pytest.raises(httpcore.ReadTimeout):
         wrapped_read(65536, timeout = _PREFILL_TIMEOUT)
 
-    # Must give up ~stall timeout after the last token, not the prefill window.
     assert clock["t"] <= _STALL_TIMEOUT * 1.5, (
         f"stall timeout not honored: waited {clock['t']}s "
         f"(expected ~{_STALL_TIMEOUT}s, not {_PREFILL_TIMEOUT}s)"
@@ -130,7 +125,6 @@ def test_prompt_progress_keeps_the_prefill_read_timeout():
     assert Response.request.extensions["timeout"]["read"] > _STALL_TIMEOUT
     assert next(iterator) == fragments[1]
     assert Response.request.extensions["timeout"]["read"] > _STALL_TIMEOUT
-    # A generated-output event switches timeouts only after its delimiter is complete.
     assert next(iterator) == fragments[2]
     assert Response.request.extensions["timeout"]["read"] > _STALL_TIMEOUT
     assert next(iterator) == fragments[3]
@@ -178,7 +172,6 @@ def test_advancing_prefill_progress_extends_the_first_token_deadline(monkeypatch
     clock = {"t": 0.0}
     monkeypatch.setattr(llama_cpp_mod.time, "monotonic", lambda: clock["t"])
 
-    # Progress every 200s keeps a 4000s prefill alive.
     events = [_progress_event(i * 4096) for i in range(1, 21)] + [_OUTPUT_EVENT]
 
     assert _run(events, clock)[-1] == _OUTPUT_EVENT
@@ -216,7 +209,6 @@ def test_prefill_timeout_used_when_no_live_override(monkeypatch):
     stream = _Obj()
     stream.read = silent_read
 
-    # No timeout extension: wrapper falls back to httpcore's passed timeout.
     request = _Obj()
     request.extensions = {}
     response = _Obj()

@@ -7,8 +7,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping, Optional
 
-# The standalone installer imports this map, so planning and marker reads share
-# one vocabulary instead of relying on mirrored definitions.
+# The standalone installer imports this map, so both share one vocabulary.
 INSTALL_KIND_BACKENDS: dict[str, str] = {
     "linux-cuda": "cuda",
     "linux-arm64-cuda": "cuda",
@@ -28,8 +27,7 @@ INSTALL_KIND_BACKENDS: dict[str, str] = {
     "macos-x64": "metal",
 }
 
-# Backends a user may ask for. "metal" is absent on purpose: it is the only macOS build, so
-# there is nothing to choose.
+# metal is absent: it is the only macOS build, so there is nothing to choose.
 REQUESTABLE_BACKENDS = ("auto", "cpu", "cuda", "rocm", "vulkan")
 
 # Longest-token-first, so "cuda13-older" cannot read as something else.

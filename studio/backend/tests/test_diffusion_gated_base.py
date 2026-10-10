@@ -77,7 +77,6 @@ def _stub_hub(
     monkeypatch.setattr("huggingface_hub.get_hf_file_metadata", _metadata)
     # No ambient cache: whether THIS box happens to hold the repo must not decide the test.
     monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", lambda *a, **k: None)
-    # The probe must never route through the download API: a cached manifest answers that from disk.
     monkeypatch.setattr(
         "huggingface_hub.hf_hub_download",
         lambda *a, **k: pytest.fail("the access probe must not be satisfiable from the cache"),
@@ -93,7 +92,6 @@ def _gated_error():
 
 
 def test_a_gated_base_fails_at_plan_time_naming_the_repo_and_its_licence(monkeypatch):
-    # The whole point: metadata says 18 files / 15.4 GiB, the first byte says 401.
     probed = _stub_hub(monkeypatch, info = _FakeInfo("auto"), download_error = _gated_error())
 
     with pytest.raises(ValueError) as excinfo:
@@ -103,12 +101,10 @@ def test_a_gated_base_fails_at_plan_time_naming_the_repo_and_its_licence(monkeyp
     assert GATED_REPO in detail
     assert f"https://huggingface.co/{GATED_REPO}" in detail
     assert "licence" in detail.lower() and "token" in detail.lower()
-    # Probed the manifest the load fetches anyway, not a multi-GB shard.
     assert probed == [f"https://huggingface.co/{GATED_REPO}/resolve/main/model_index.json"]
 
 
 def test_an_open_base_is_never_probed(monkeypatch):
-    # gated is False for almost every repo, so the preflight costs one metadata call.
     probed = _stub_hub(monkeypatch, info = _FakeInfo(False), download_error = _gated_error())
 
     _assert_base_repo_accessible("Tongyi-MAI/Z-Image-Turbo", None)
@@ -117,11 +113,9 @@ def test_an_open_base_is_never_probed(monkeypatch):
 
 
 def test_a_network_error_fails_open(monkeypatch):
-    # Offline / transient must never refuse a load: the download surfaces any real error.
     _stub_hub(monkeypatch, model_info_error = OSError("Connection reset by peer"))
     _assert_base_repo_accessible(GATED_REPO, None)
 
-    # Same on the byte probe: only an access verdict counts.
     from huggingface_hub.errors import EntryNotFoundError
 
     _stub_hub(monkeypatch, info = _FakeInfo("auto"), download_error = EntryNotFoundError("404"))
@@ -132,8 +126,7 @@ def test_a_network_error_fails_open(monkeypatch):
 
 
 def test_unreadable_metadata_is_named_too(monkeypatch):
-    # A private / renamed / deleted base 401s on model_info, which the size estimate swallows into
-    # a zero-byte plan, so the load fails with no explanation.
+    # A private / renamed base 401s on model_info, which the size estimate swallows into zero bytes.
     from huggingface_hub.errors import RepositoryNotFoundError
 
     _stub_hub(
@@ -147,7 +140,6 @@ def test_unreadable_metadata_is_named_too(monkeypatch):
     assert "unsloth/not-published-yet" in str(excinfo.value)
     assert "https://huggingface.co/unsloth/not-published-yet" in str(excinfo.value)
 
-    # A gated repo that also withholds its metadata keeps the licence wording.
     _stub_hub(monkeypatch, model_info_error = _gated_error())
     with pytest.raises(ValueError) as gated:
         _assert_base_repo_accessible(GATED_REPO, None)
@@ -166,8 +158,7 @@ def test_an_already_downloaded_base_is_never_refused(monkeypatch, tmp_path):
     (folder / "snapshots" / commit).mkdir(parents = True)
     (folder / "snapshots" / commit / "model_index.json").write_text("{}")
 
-    # Cached under the LIVE root, and separately under huggingface_hub's import-time constant: the
-    # prefetch downloads under the latter, so checking only one root would still refuse the load.
+    # The prefetch downloads under huggingface_hub's import-time root, so check both roots.
     for live, imported in ((str(root), tmp_path / "other"), (str(tmp_path / "other"), root)):
         monkeypatch.setattr("core.inference.diffusion.hub_cache_dir", lambda live = live: live)
         monkeypatch.setenv("HF_HUB_CACHE", str(imported))
@@ -183,9 +174,8 @@ def test_an_already_downloaded_base_is_never_refused(monkeypatch, tmp_path):
             ),
         )
         _assert_base_repo_accessible(GATED_REPO, "stale-token")
-        assert probed == []  # served from disk, so not one Hub call was made
+        assert probed == []
 
-    # Nothing cached: the reported case still fails up front, naming the repo and its licence.
     monkeypatch.setattr("core.inference.diffusion.hub_cache_dir", lambda: str(tmp_path / "empty"))
     _stub_hub(monkeypatch, info = _FakeInfo("auto"), download_error = _gated_error())
     with pytest.raises(ValueError, match = "gated"):
@@ -193,7 +183,6 @@ def test_an_already_downloaded_base_is_never_refused(monkeypatch, tmp_path):
 
 
 def test_local_and_non_repo_bases_are_skipped(monkeypatch, tmp_path):
-    # Only a remote 'org/name' can be gated; a local pipeline dir is already on disk.
     def _explode(*a, **k):
         pytest.fail("a local / non-repo base must never be probed")
 
@@ -208,9 +197,7 @@ def test_local_and_non_repo_bases_are_skipped(monkeypatch, tmp_path):
 
 
 def test_a_base_whose_home_cannot_be_resolved_fails_open(monkeypatch):
-    # '~other/models' and '~/models' under an account with no home both carry one slash, so they
-    # reach the local-path probe, where pathlib raises RuntimeError -- NOT an OSError. It must fall
-    # through rather than 500 a load not yet started.
+    # '~other/models' reaches the local-path probe, where pathlib raises RuntimeError (not OSError).
     probed = _stub_hub(monkeypatch, info = _FakeInfo(False))
 
     class _NoHomePath:
@@ -223,13 +210,11 @@ def test_a_base_whose_home_cannot_be_resolved_fails_open(monkeypatch):
     monkeypatch.setattr("core.inference.diffusion.Path", _NoHomePath)
 
     _assert_base_repo_accessible("~ghost/my-base", None)
-    # Fell through to the remote probe instead of raising: an open repo costs one metadata call.
     assert probed == []
 
 
 def test_an_unknown_user_home_base_fails_open_for_real(monkeypatch):
-    # The same failure unstubbed: no such user, so expanduser() raises. POSIX only -- Windows
-    # rewrites '~ghost' against USERPROFILE's parent and never reaches the RuntimeError branch.
+    # POSIX only: Windows rewrites '~ghost' against USERPROFILE and never raises.
     if os.name == "nt":
         pytest.skip("POSIX-only: Windows expanduser() never fails for an unknown user")
     _stub_hub(monkeypatch, info = _FakeInfo(False))
@@ -238,8 +223,7 @@ def test_an_unknown_user_home_base_fails_open_for_real(monkeypatch):
 
 
 def test_download_plan_refuses_a_gated_base_before_listing_files(monkeypatch):
-    # End to end: the ValueError the route maps to a 400 replaces a confident 18-file plan.
-    # Mirror swap off so this pins the preflight itself; the #7952 mirror rescue is covered below.
+    # Mirror swap off so this pins the preflight itself.
     monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
     _stub_hub(
         monkeypatch,
@@ -257,9 +241,7 @@ def test_download_plan_refuses_a_gated_base_before_listing_files(monkeypatch):
 
 
 def test_the_pre_eviction_preflight_refuses_the_same_gated_base(monkeypatch):
-    # The route calls this BEFORE acquire_for: _run_load's own check runs only after the GPU was
-    # taken from chat, and the images page falls back to /images/load on any plan failure.
-    # Mirror swap off so this pins the preflight itself; the #7952 mirror rescue is covered below.
+    # Runs BEFORE acquire_for, since _run_load checks only after the GPU was taken from chat.
     monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
     _stub_hub(
         monkeypatch,
@@ -280,7 +262,6 @@ def test_the_pre_eviction_preflight_refuses_the_same_gated_base(monkeypatch):
 
 
 def test_the_pre_eviction_preflight_clears_an_open_base(monkeypatch):
-    # It must refuse a load, never block one: an open base costs one metadata call and no byte probe.
     probed = _stub_hub(monkeypatch, info = _FakeInfo(False))
     monkeypatch.setattr("core.inference.diffusion._resolve_base_repo", lambda *a, **k: "unsloth/x")
 
@@ -295,8 +276,6 @@ def test_the_pre_eviction_preflight_clears_an_open_base(monkeypatch):
 
 
 def test_the_native_pre_eviction_preflight_refuses_a_gated_companion(monkeypatch):
-    # A forced-native load on a GPU box takes the arbiter too, so sd.cpp needs the same entry point.
-    # Mirror swap off so this pins the preflight itself; the #7952 mirror rescue is covered below.
     monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
     from core.inference.sd_cpp_backend import SdCppDiffusionBackend
 
@@ -322,8 +301,6 @@ def test_the_native_pre_eviction_preflight_refuses_a_gated_companion(monkeypatch
 
 
 def test_run_load_stamps_the_gated_error_on_the_load(monkeypatch):
-    # The load path takes the same preflight, so the failure reaches the UI as a load error.
-    # Mirror swap off so this pins the preflight itself; the #7952 mirror rescue is covered below.
     monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
     backend = DiffusionBackend()
     monkeypatch.setattr(
@@ -343,7 +320,6 @@ def test_run_load_stamps_the_gated_error_on_the_load(monkeypatch):
     monkeypatch.setattr(
         DiffusionBackend, "_estimate_download_bytes", staticmethod(lambda *a, **k: (0, []))
     )
-    # What begin_load() stamps before handing off to the worker thread.
     backend._loading = _LoadingState(
         repo_id = "unsloth/FLUX.1-dev-GGUF", base_repo = "black-forest-labs/FLUX.1-schnell"
     )
@@ -421,14 +397,13 @@ def test_a_blank_token_is_not_sent_as_a_credential(token, monkeypatch):
     monkeypatch.setattr("huggingface_hub.HfApi", lambda *a, **k: _Api())
     _assert_base_repo_accessible("some-org/open-model", token)
 
-    assert seen == [None]  # blank normalized away, so the cached login still applies
+    assert seen == [None]
 
 
 def test_the_native_plan_preflights_its_companion_repos_too(monkeypatch):
     """A GPU-less host routes /images/download-plan to the sd.cpp planner, whose asset list carries
     its own companion repos: flux.1's VAE is the gated black-forest-labs/FLUX.1-schnell. The size
     probe swallows the 401, so without the preflight that entry plans at 0 bytes."""
-    # Mirror swap off so this pins the preflight itself; the #7952 mirror rescue is covered below.
     monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
     from core.inference.sd_cpp_backend import SdCppDiffusionBackend
 
@@ -438,7 +413,6 @@ def test_the_native_plan_preflights_its_companion_repos_too(monkeypatch):
         SdCppDiffusionBackend, "_plan_file_sizes", staticmethod(lambda by_repo, token: {})
     )
 
-    # Only the VAE repo is gated, as on the Hub: the pick and the encoder repo answer normally.
     class _Api:
         def model_info(
             self,
@@ -463,14 +437,11 @@ def test_the_native_plan_preflights_its_companion_repos_too(monkeypatch):
     detail = str(excinfo.value)
     assert gated in detail and f"https://huggingface.co/{gated}" in detail
 
-    # An open family is untouched: every companion answers, so the plan is built exactly as before.
     plan = b.download_plan(
         "unsloth/Z-Image-Turbo-GGUF",
         gguf_filename = "z-image-turbo-Q4_K_M.gguf",
         model_kind = "gguf",
     )
-    # The companion is the unsloth mirror now, not the community repack: this PR repointed the
-    # table, and no legacy copy is cached here so prefer_cached_legacy_source keeps the mirror.
     assert {e["repo_id"] for e in plan["entries"]} == {
         "unsloth/Z-Image-Turbo-GGUF",
         "unsloth/Z-Image-Turbo-ComfyUI",
@@ -480,7 +451,6 @@ def test_the_native_plan_preflights_its_companion_repos_too(monkeypatch):
 def test_the_native_plan_probes_the_asset_it_stages(monkeypatch):
     """flux.1's native VAE repo is read for ae.safetensors only, so probing the pipeline manifest
     there would neither verify access to that file nor see it in the cache."""
-    # Mirror swap off so this pins the preflight itself; the #7952 mirror rescue is covered below.
     monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
     from core.inference.sd_cpp_backend import SdCppDiffusionBackend
 
@@ -512,7 +482,6 @@ def test_the_native_plan_probes_the_asset_it_stages(monkeypatch):
 
     monkeypatch.setattr("huggingface_hub.get_hf_file_metadata", _metadata)
 
-    # Nothing cached: the probe is the VAE file the plan stages, not the manifest.
     monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", lambda *a, **k: None)
     with pytest.raises(ValueError, match = "gated"):
         b.download_plan(
@@ -522,7 +491,6 @@ def test_the_native_plan_probes_the_asset_it_stages(monkeypatch):
         )
     assert probed == [f"https://huggingface.co/{gated}/resolve/main/ae.safetensors"]
 
-    # That same VAE already on disk clears the plan without a single Hub call.
     probed.clear()
     monkeypatch.setattr(
         "huggingface_hub.try_to_load_from_cache",
@@ -559,13 +527,11 @@ def test_the_gguf_is_resolved_against_the_live_cache_root(monkeypatch, tmp_path)
 
     b = DiffusionBackend()
 
-    # Nothing cached anywhere: the download is pinned to the live root, not the import-time one.
     monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", lambda *a, **k: None)
     b._resolve_gguf_path("unsloth/Z-Image-Turbo-GGUF", "z.gguf", None)
     assert calls == [str(live)]
 
-    # A copy under the OTHER root is reached THROUGH that root, not returned raw: the blob is
-    # reused, but the ref still resolves, so a republished GGUF is picked up instead of pinned.
+    # Reached THROUGH the other root so the ref still resolves and a republished GGUF is picked up.
     other = tmp_path / "other" / "z.gguf"
     other.parent.mkdir(parents = True)
     other.write_bytes(b"gguf")
@@ -575,9 +541,8 @@ def test_the_gguf_is_resolved_against_the_live_cache_root(monkeypatch, tmp_path)
         lambda repo_id, filename, cache_dir = None, **k: None if cache_dir else str(other),
     )
     b._resolve_gguf_path("unsloth/Z-Image-Turbo-GGUF", "z.gguf", None)
-    assert calls == [None]  # revalidated through the root holding the copy, never the live one
+    assert calls == [None]
 
-    # Revalidation is a bonus, never a new failure: offline, the path already found is returned.
     calls.clear()
     monkeypatch.setattr(
         "huggingface_hub.hf_hub_download",
@@ -605,7 +570,7 @@ def test_a_private_but_already_downloaded_base_is_not_refused(monkeypatch):
             lambda repo_id, filename, cache_dir = None, **k: "/cache/model_index.json",
         )
         _assert_base_repo_accessible(private, "expired-token")
-        assert probed == []  # served from disk, so not one byte probe was made
+        assert probed == []
 
 
 def test_a_deleted_or_renamed_base_still_raises_even_when_cached(monkeypatch):
@@ -631,10 +596,7 @@ def test_a_repo_not_found_with_no_response_still_raises(monkeypatch):
     can be proven, so the cache escape is not granted. Fail safe."""
     from huggingface_hub.errors import RepositoryNotFoundError
 
-    # Built through __new__: on hub 1.x ``response`` is a REQUIRED keyword-only argument AND
-    # __init__ dereferences it unguarded, so omitting it raises TypeError and passing None raises
-    # AttributeError. Bypassing __init__ is the only portable way to model an error with no
-    # response; only args/response/server_message are read back, so setting those is enough.
+    # Built via __new__: hub 1.x requires `response` and __init__ dereferences it unguarded.
     err = RepositoryNotFoundError.__new__(RepositoryNotFoundError)
     Exception.__init__(err, "no response attached")
     err.response = None
@@ -685,7 +647,6 @@ def test_the_native_load_preflights_its_companion_repos_too(monkeypatch):
     """The plan alone is not enough: images-page.tsx wraps getDiffusionDownloadPlan in a try/catch
     and calls /images/load regardless, so the plan's 400 is swallowed and the load would run with
     no preflight. The diffusers backend checks in both places; the native one must too."""
-    # Mirror swap off so this pins the preflight itself; the #7952 mirror rescue is covered below.
     monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
     from core.inference.diffusion_families import detect_family_for_pick
     from core.inference.sd_cpp_backend import _SdLoading
@@ -720,7 +681,7 @@ def test_the_native_load_preflights_its_companion_repos_too(monkeypatch):
         _load_token = b._load_token,
     )
 
-    assert fetched == []  # refused before the multi-GB pull, not 15 GiB into it
+    assert fetched == []
     detail = b._loading.error or ""
     assert gated in detail and "licence" in detail.lower()
 
@@ -728,7 +689,6 @@ def test_the_native_load_preflights_its_companion_repos_too(monkeypatch):
 def test_the_native_load_probes_the_asset_it_stages_and_honours_the_cache(monkeypatch):
     """Same two properties as the plan half, so the load half cannot drift: the probe is the file
     THIS pick stages (a VAE-only repo has no manifest), and a cached companion is never refused."""
-    # Mirror swap off so this pins the preflight itself; the #7952 mirror rescue is covered below.
     monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
     from core.inference.diffusion_families import detect_family_for_pick
     from core.inference.sd_cpp_backend import _SdLoading
@@ -770,11 +730,9 @@ def test_the_native_load_probes_the_asset_it_stages_and_honours_the_cache(monkey
         _load_token = b._load_token,
     )
     b._run_load(**kwargs)
-    # The VAE file the load actually opens, not model_index.json, which that repo would not serve.
     assert probed == [f"https://huggingface.co/{gated}/resolve/main/ae.safetensors"]
     assert fetched == []
 
-    # That same VAE already on disk clears the preflight and the load proceeds to the fetch.
     probed.clear()
     b._loading = _SdLoading(repo_id = "unsloth/FLUX.1-dev-GGUF", base_repo = "")
     monkeypatch.setattr(
@@ -785,7 +743,7 @@ def test_the_native_load_probes_the_asset_it_stages_and_honours_the_cache(monkey
     )
     b._run_load(**kwargs)
     assert probed == []
-    assert len(fetched) == 1  # got past the preflight, exactly as before this check existed
+    assert len(fetched) == 1
 
 
 def _stub_shared_download(
@@ -834,12 +792,7 @@ def test_the_prefetch_reuses_a_base_asset_cached_under_the_other_root(monkeypatc
         ["ae.safetensors", "text_encoder/model.safetensors"],
         "no-access",
     )
-    assert seen == [
-        # cached only under the import-time root: reached through it, not re-pulled into the live one
-        ("ae.safetensors", None),
-        # nowhere on disk: a real download, still pinned to the root Unsloth is reading
-        ("text_encoder/model.safetensors", "/live-hub"),
-    ]
+    assert seen == [("ae.safetensors", None), ("text_encoder/model.safetensors", "/live-hub")]
 
 
 def _stub_split_download(monkeypatch, per_file):
@@ -951,7 +904,6 @@ def test_a_base_excused_by_the_other_root_is_loaded_from_that_snapshot(monkeypat
         lambda *a, **k: types.SimpleNamespace(name = "flux.1", single_file_is_pipeline = False),
     )
     monkeypatch.setattr("core.inference.diffusion._resolve_base_repo", lambda *a, **k: private)
-    # Unsloth's cache folder was changed: the live root holds none of it.
     monkeypatch.setattr(
         "core.inference.diffusion.hub_cache_dir", lambda: str(tmp_path / "live-hub")
     )
@@ -976,8 +928,7 @@ def test_a_base_excused_by_the_other_root_is_loaded_from_that_snapshot(monkeypat
         hf_token,
         cancel_event = None,
         fetch_base = None,
-        # Tracks the real signature: the staging phase now threads the no-download flag into the
-        # prefetch, and a double that refuses it turns the load into a TypeError.
+        # Track the real signature: the staging phase threads local_files_only into the prefetch.
         local_files_only = False,
     ):
         staged.append(base_files)
@@ -995,9 +946,7 @@ def test_a_base_excused_by_the_other_root_is_loaded_from_that_snapshot(monkeypat
         _load_token = backend._load_token,
     )
 
-    # The 401 the escape forgave is the same call the estimate needs, so it stages nothing.
     assert staged == [[]]
-    # ...and the load still reaches the base, through the root that actually holds it.
     assert loaded["_base_local_dir"] == str(snapshot)
     assert backend._loading is None
 
@@ -1055,7 +1004,6 @@ def test_a_gated_base_with_a_live_mirror_is_not_refused(monkeypatch):
             files_metadata = False,
             token = None,
         ):
-            # Gated upstream, open mirror: the Hub state this rescue exists for.
             return _FakeInfo(
                 "auto" if repo_id == GATED_REPO else False,
                 [
@@ -1082,8 +1030,6 @@ def test_a_gated_base_with_a_live_mirror_is_not_refused(monkeypatch):
     )
 
     repos = {e["repo_id"] for e in plan["entries"]}
-    # Staged from the mirror, and probed there too: an open repo costs one metadata call and no
-    # byte probe, so the 401 the upstream would have raised never happens.
     assert mirror in repos and GATED_REPO not in repos
     assert probed == []
 
@@ -1124,7 +1070,6 @@ def test_the_native_load_lets_the_mirror_stand_in_for_a_gated_companion(monkeypa
         _load_token = b._load_token,
     )
 
-    # Reached the fetch instead of being refused, and the VAE it asks for is the mirror's.
     assert len(fetched) == 1
     vae_repos = {repo for repo, _f, kind in fetched[0] if kind == "vae"}
     assert vae_repos == {"unsloth/FLUX.1-schnell"}

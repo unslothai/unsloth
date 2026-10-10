@@ -30,7 +30,6 @@ FAMILIES = {
     "ltx-2": "Lightricks/LTX-2",
 }
 
-# Tiers: none, dit (TE streamed), stream (DiT streamed), both, model (whole-module). Precision: bf16, ao (torchao), w8 (torchao-free int8).
 _BF, _AO, _W8 = "bf16", "ao", "w8"
 EXPECTED = {
     "wan2.2-ti2v-5b": {
@@ -195,7 +194,6 @@ def test_auto_planner_table(fake_runtime, monkeypatch, family, tier_gib, cap_nam
     assert spy.speed and all(call["compiled"] for call in spy.speed)
     assert status["loaded"] is True
     if precision == _W8:
-        # the torchao-free build is asked for by name: auto alone would walk the torchao ladder
         assert spy.quant[0]["mode"] == "int8"
 
 
@@ -350,12 +348,10 @@ def test_offload_tiers_rank_fastest_first():
 @pytest.mark.parametrize(
     "state, expected",
     [
-        # a torchao DiT under whole-module offload: the hook swap fails under inference_mode
         (dict(transformer_quant = "int8", offload_policy = "model"), True),
         (dict(transformer_quant = "fp8", offload_policy = "group"), True),
         (dict(transformer_quant = "int8", offload_policy = "none"), False),
         (dict(transformer_quant = None, offload_policy = "model"), False),
-        # MiniMax-H3: only its streamed denoiser switches; the pinned one never moves
         (dict(transformer_quant = "int8", offload_policy = "model", modular = True), False),
         (
             dict(
@@ -410,7 +406,6 @@ def test_vram_floor_counts_what_each_tier_holds_at_once():
 
     assert _video_offload_vram_floor_mib(pipe, _plan("none")) is None
     assert _video_offload_vram_floor_mib(pipe, _plan("model")) == 12
-    # a flat module is one group, so its whole payload is onloaded during its forward
     assert _video_offload_vram_floor_mib(pipe, _plan("group", te = True, dit = False)) == 35
     assert _video_offload_vram_floor_mib(pipe, _plan("group")) == 25
     assert _video_offload_vram_floor_mib(pipe, _plan("group", te = True)) == 15
@@ -449,15 +444,11 @@ def test_vram_floor_adds_the_largest_onloaded_block_or_leaf():
             device_memory = types.SimpleNamespace(backend = backend),
         )
 
-    # resident TE 7 + VAE 3, plus DiT embed 1 + current and prefetched 2 MiB blocks
     assert _video_offload_vram_floor_mib(pipe, _plan("group", "cuda")) == 15
     assert _video_offload_vram_floor_mib(pipe, _plan("group", "mps")) == 13
-    # resident DiT 9 + VAE 3, plus the 3 MiB embedding and the next 1 MiB leaf
     assert _video_offload_vram_floor_mib(pipe, _plan("group", "cuda", te = True, dit = False)) == 16
-    # streamed modules run in turn: VAE 3 plus the larger of DiT 5 and TE 4
     assert _video_offload_vram_floor_mib(pipe, _plan("streaming", "cuda")) == 8
     assert _video_offload_vram_floor_mib(pipe, _plan("streaming", "cpu")) == 6
-    # the VAE decode runs after the streamed DiT has offloaded: only the residents (or the decoder alone) remain
     assert _video_offload_vram_floor_mib(pipe, _plan("group", "cuda"), phase = "decode") == 10
     assert _video_offload_vram_floor_mib(pipe, _plan("group", "cuda", te = True), phase = "decode") == 3
     assert _video_offload_vram_floor_mib(pipe, _plan("streaming", "cuda"), phase = "decode") == 3
@@ -506,7 +497,6 @@ def test_generate_requirement_grows_with_the_requested_clip():
     assert _required(1280, 480, 49) > base
     assert _required(640, 960, 49) > base
     assert _required(640, 480, 161) > base
-    # a small clip still fits where a long 720p one does not
     kwargs = dict(family = "f", floor_mib = 10000, available_mib = 12500, placement = "x")
     assert video_offload_shortfall_message(**kwargs, width = 256, height = 256, frames = 9) is None
     assert video_offload_shortfall_message(**kwargs, width = 1280, height = 720, frames = 121)
@@ -550,7 +540,6 @@ def test_generate_refuses_below_the_offload_floor(fake_runtime, monkeypatch, tmp
     free["bytes"] = 20 * 1024**3
     with pytest.raises(RuntimeError, match = "needs about"):
         backend.generate(prompt = "a sloth", width = 256, height = 256, num_frames = 9, fps = 8)
-    # same free VRAM: a small clip runs, a long 720p clip is refused before the render
     free["bytes"] = 31 * 1024**3
     backend.generate(prompt = "a sloth", width = 256, height = 256, num_frames = 9, fps = 8)
     with pytest.raises(RuntimeError, match = "at 121 frames"):
@@ -571,7 +560,6 @@ def test_quantise_stages_what_fits_on_the_card_and_unstages_it(monkeypatch):
     dit.proj_out = torch.nn.Linear(1024, 64, bias = False).to(torch.bfloat16)
     block_bytes = 1024 * 1024 * 2
     target = types.SimpleNamespace(device = "cuda", torch_device = "cuda")
-    # room for the overhead, the linear workspace and exactly two blocks
     free = (
         V.DEFAULT_BASE_OVERHEAD_MIB * 1024 * 1024
         + V._STAGE_LINEAR_WORKSPACE * block_bytes
@@ -588,7 +576,6 @@ def test_quantise_stages_what_fits_on_the_card_and_unstages_it(monkeypatch):
     assert not next(dit.blocks[3].parameters()).is_cuda
     V._unstage_modules(staged)
     assert all(not p.is_cuda for p in dit.parameters())
-    # nothing staged off CUDA, or for a DiT already on the card
     assert V._stage_denoiser_for_quant(dit, types.SimpleNamespace(device = "mps")) == []
 
 
@@ -613,7 +600,6 @@ def test_leaf_streaming_peak_keeps_an_enclosing_parent_group_onloaded():
     def size(t):
         return t.numel() * t.element_size()
 
-    # inside block: its 1 MiB table plus leaf a and the prefetched leaf b
     assert _video_streamed_peak_bytes(root, "leaf_level", prefetch = True, size = size) == 5 * mib
     assert _video_streamed_peak_bytes(root, "leaf_level", prefetch = False, size = size) == 3 * mib
 
@@ -626,18 +612,14 @@ def test_decoded_clip_share_sits_beside_the_decode_floor_not_the_streamed_dit():
     import core.inference.video as V
 
     kwargs = dict(family = "f", floor_mib = 20000, placement = "x", width = 1280, height = 720, frames = 121)
-    # denoise needs 20000 + 2048; decode needs 3000 + 2048 + the clip share, so 23000 MiB is enough
     assert (
         V.video_offload_shortfall_message(**kwargs, available_mib = 23000, decode_floor_mib = 3000)
         is None
     )
-    # unknown decode floor keeps the conservative sum
     assert V.video_offload_shortfall_message(**kwargs, available_mib = 23000)
-    # a huge clip makes the decode phase the binding one, even with a small decode floor
     big = dict(kwargs, floor_mib = 5000, width = 1920, height = 1080, frames = 241)
     message = V.video_offload_shortfall_message(**big, available_mib = 12000, decode_floor_mib = 4000)
     assert message and float(re.search(r"needs about ([0-9.]+) GiB", message).group(1)) > 20
-    # the generate guard hands the decode floor recorded at load to the check
     src = inspect.getsource(V)
     assert 'decode_floor_mib = getattr(state, "vram_decode_floor_mib", None)' in src
     assert 'phase = "decode"' in src
@@ -662,7 +644,6 @@ def test_leaf_streaming_peak_does_not_stack_sibling_branch_groups():
     def size(t):
         return t.numel() * t.element_size()
 
-    # one 1 MiB enclosing table plus the current and prefetched 2 MiB leaves; not both tables
     assert _video_streamed_peak_bytes(root, "leaf_level", prefetch = True, size = size) == 5 * mib
 
 
@@ -699,7 +680,6 @@ def test_whole_module_vae_phase_counts_only_the_decoded_clip_share():
         estimates: dict = dc.field(default_factory = lambda: {"safe_device_budget_mib": 17000})
 
     runtime = V.estimate_video_runtime_mib(width = 1280, height = 704, num_frames = 121)
-    # DiT phase 10000 + 4096 + 2048 = 16144; VAE phase 8000 + clip share + 2048 ~ 13.8 GiB, not 8000 + runtime + 2048
     out = V._video_prefer_whole_module(
         _Plan(), denoiser_mib = 10000, text_encoder_mib = 6000, vae_mib = 8000, runtime_mib = runtime
     )
@@ -733,7 +713,6 @@ def test_leaf_streaming_peak_counts_a_large_parent_group_once():
     def size(t):
         return t.numel() * t.element_size()
 
-    # the 4 MiB table plus leaf a and the prefetched leaf b, not 4 + 4 + 1
     assert _video_streamed_peak_bytes(root, "leaf_level", prefetch = True, size = size) == 6 * mib
     assert _video_streamed_peak_bytes(root, "leaf_level", prefetch = False, size = size) == 5 * mib
 
@@ -761,9 +740,7 @@ def test_applied_floor_counts_an_encoder_that_refused_leaf_offload():
         stream_transformer = True,
         device_memory = types.SimpleNamespace(backend = "cuda"),
     )
-    # as planned: VAE 3 plus the larger streamed unit (TE 12)
     assert V._video_offload_vram_floor_mib(pipe, plan) == 15
-    # as applied: the unhooked encoder is resident, so VAE 3 + TE 12 plus the streamed DiT 10
     assert V._video_offload_vram_floor_mib(pipe, plan, applied = True) == 25
     assert "_video_offload_vram_floor_mib(pipe, plan, applied = True)" in inspect.getsource(V)
 
@@ -816,7 +793,6 @@ def test_applied_floor_counts_a_dit_the_fallback_hooked():
         stream_transformer = False,
         device_memory = types.SimpleNamespace(backend = "cuda"),
     )
-    # resident TE 12 + VAE 3, plus the streamed DiT's embed 1 and current and prefetched 2 MiB blocks
     assert V._video_offload_vram_floor_mib(pipe, plan, applied = True) == 20
 
 
@@ -887,7 +863,6 @@ def test_a_cancel_during_the_background_pin_wait_ends_the_render_promptly(
             pass
 
         def join(self, timeout = None):
-            # A pin that takes 3 s; an unbounded join waits it out, like the real worker.
             time.sleep(3.0 if timeout is None else timeout)
             return timeout is None
 

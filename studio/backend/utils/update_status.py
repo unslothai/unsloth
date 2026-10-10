@@ -125,8 +125,7 @@ def get_studio_update_status(current_version: str) -> dict[str, Any]:
     install_source = detect_install_source()
     disabled = update_checks_disabled()
 
-    # Dev-only: the popup is PyPI-install-only, so fake a version to review it
-    # from a checkout. The documented opt-out still wins.
+    # Dev-only: fakes a version so the PyPI-only popup can be reviewed from a checkout.
     forced_version = os.environ.get(FAKE_UPDATE_ENV_VAR, "").strip()
     if forced_version and not disabled and _is_version(forced_version):
         return _status_response(
@@ -364,7 +363,6 @@ def _path_has_git_parent(path: Path) -> bool:
 
 
 def _repo_root_from_this_file() -> Path:
-    # update_status.py -> utils -> backend -> studio -> repo root
     try:
         return Path(__file__).resolve().parents[3]
     except IndexError:

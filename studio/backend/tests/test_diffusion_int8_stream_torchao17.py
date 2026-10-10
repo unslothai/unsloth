@@ -30,7 +30,7 @@ AO17, AO18, AO16 = (0, 17), (0, 18), (0, 16)
 
 @pytest.fixture(autouse = True)
 def _host(monkeypatch):
-    # hermetic: the installed torchao / diffusers of the test host never decide these tests
+    # Hermetic: the host's installed torchao / diffusers must not decide these tests.
     monkeypatch.setattr(mem, "_installed_diffusers_version", lambda: (0, 41))
     monkeypatch.setattr(mem, "_int8_tensor_pinnable", lambda: True, raising = False)
     monkeypatch.delenv(ENV, raising = False)
@@ -96,9 +96,6 @@ def test_fp8_and_other_schemes_unchanged():
     assert torchao_scheme_streams("fp8", torchao_version = AO17) is True
     assert torchao_scheme_streams("fp8", torchao_version = AO16) is False
     assert torchao_scheme_streams("nvfp4", torchao_version = AO18) is False
-
-
-# ---- apply time: a v1 int8 module (0.17's default int8 class) keeps the copy stream through the pin-op shim
 
 
 class _V1Weight:
@@ -198,7 +195,7 @@ def test_v1_int8_streams_bit_identically_with_the_shim():
         ]
     ).to(torch.bfloat16)
     offloaded = copy.deepcopy(blocks)
-    # set_inductor_config = False as Studio builds it: the bare config sets float32 matmul precision process-wide
+    # set_inductor_config=False as Studio does: the bare config sets fp32 matmul precision globally.
     quantize_(offloaded, Int8DynamicActivationInt8WeightConfig(set_inductor_config = False))
     offloaded.requires_grad_(False)
     assert type(next(offloaded.parameters())).__name__ == "LinearActivationQuantizedTensor"

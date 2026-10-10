@@ -16,7 +16,6 @@ import pytest
 
 from routes.models import _dir_has_downloaded_model, _scan_ollama_dir
 
-# Valid JSON, wrong shape. Each of these is something json.loads happily returns.
 NON_OBJECT_MANIFESTS = ("[]", '["a"]', '"just a string"', "3", "null", "true")
 
 
@@ -74,8 +73,6 @@ def test_one_bad_manifest_does_not_hide_the_good_models(tmp_path, payload):
         {"layers": [{"mediaType": "application/vnd.ollama.image.model", "digest": 42}]},
         {"config": "not-a-dict"},
         {"config": ["digest"]},
-        # A dict config carrying a non-string digest: truthy, so it reaches
-        # config_digest.replace(":", "-") once a blobs/ dir exists.
         {"config": {"digest": 42}},
     ],
 )

@@ -175,7 +175,7 @@ def store(card: str, table: dict[str, Any]) -> bool:
     if not enabled() or not isinstance(table, dict):
         return False
     verdicts = {str(k): v for k, v in table.items() if isinstance(v, bool)}
-    # No scheme passed: a busy / unavailable device fails every scheme alike, so nothing durable was learned.
+    # Busy/unavailable device fails every scheme alike: nothing durable learned.
     if not any(verdicts.values()):
         return False
     path = _cache_file()

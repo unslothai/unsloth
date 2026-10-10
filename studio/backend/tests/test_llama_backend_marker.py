@@ -28,7 +28,6 @@ for _path in (str(_BACKEND), str(_STUDIO)):
 ilp = importlib.import_module("install_llama_prebuilt")
 from utils.prebuilt import llama_backend as backend_marker  # noqa: E402
 
-# Marker shapes shared by the installer and backend reader.
 MARKERS = [
     {},
     {"asset": "app-b1-linux-x64-cuda12-older.tar.gz"},
@@ -114,20 +113,18 @@ def test_the_api_reports_an_unreadable_newer_backend_request_verbatim():
 @pytest.mark.parametrize(
     "marker, chosen",
     [
-        # Detected, so crash recovery may still fall back to CPU placement.
         ({}, False),
         ({"llama_backend": None}, False),
         ({"llama_backend": ""}, False),
         ({"llama_backend": "auto"}, False),
         ({"backend_request": "auto"}, False),
-        # Legacy Vulkan stays eligible for automatic recovery.
+        # legacy Vulkan stays eligible for automatic recovery
         ({"asset": "llama-b1-bin-ubuntu-vulkan-x64.tar.gz"}, False),
-        # Chosen.
         ({"llama_backend": "vulkan"}, True),
         ({"force_cpu": True}, True),
         ({"backend_request": "vulkan"}, True),
         ({"backend_request": "cpu"}, True),
-        # Unreadable is chosen: undoing a choice we cannot name is the wrong guess.
+        # unreadable counts as chosen: undoing a choice we cannot name is the wrong guess
         ({"llama_backend": "sycl"}, True),
         ({"backend_request": "sycl"}, True),
     ],

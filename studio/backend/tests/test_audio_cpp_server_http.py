@@ -100,7 +100,6 @@ def fake_binary(tmp_path, monkeypatch):
     real_popen = srv.subprocess.Popen
 
     def launch(command, *args, **kwargs):
-        # The fake runs as the direct child (no shell wrapper), so stop() terminates the server itself.
         if command and command[0] == str(binary):
             command = [sys.executable, str(script), *command[1:]]
         return real_popen(command, *args, **kwargs)
@@ -122,7 +121,6 @@ def test_ready_only_when_our_model_id_is_listed(fake_binary, tmp_path, monkeypat
         server.stop()
     assert not server.alive()
     assert not server._config_dir.exists()
-    # A responder that does not list this launch's id is not our child: never treated as ready.
     with pytest.raises(srv.AudioCppUnavailableError, match = "did not start in time"):
         srv.AudioCppServer.start(model, str(tmp_path / "wrong-id.gguf"))
 
@@ -155,7 +153,6 @@ def test_cancel_closes_the_socket_mid_request(fake_binary, tmp_path):
             )
         # Returns on the cancel, not on the server's reply or the timeout (Windows never woke the recv).
         assert time.monotonic() - started < 5
-        # The server is untouched by the client-side cancel and still serves.
         _ctype, data = server.post_json(
             "/v1/audio/speech", {"model": server.model_id, "input": "hi"}
         )
@@ -196,7 +193,6 @@ def test_cancelled_transcription_stops_the_busy_server(fake_binary, tmp_path):
         threading.Timer(0.3, cancel.set).start()
         with side._lock, pytest.raises(SttTranscriptionCancelledError):
             side._post_details(tmp_path / "a.wav", "slow", cancel, {})
-        # The child still decoding the abandoned clip is gone, so the next load starts a fresh one.
         assert side._server is None and not server.alive()
     finally:
         server.stop()
@@ -204,7 +200,7 @@ def test_cancelled_transcription_stops_the_busy_server(fake_binary, tmp_path):
 
 def test_threads_budget_reaches_the_command_line(fake_binary, tmp_path, monkeypatch):
     seen = {}
-    launch = srv.subprocess.Popen  # the fixture's launcher
+    launch = srv.subprocess.Popen
 
     def spy(command, *args, **kwargs):
         seen["command"] = command
@@ -223,7 +219,7 @@ def test_cuda_graphs_are_off_only_for_families_that_wedge_with_them(
     fake_binary, tmp_path, monkeypatch
 ):
     seen = []
-    launch = srv.subprocess.Popen  # the fixture's launcher
+    launch = srv.subprocess.Popen
 
     def spy(command, *args, **kwargs):
         seen.append(kwargs["env"])
@@ -239,7 +235,7 @@ def test_cuda_graphs_are_off_only_for_families_that_wedge_with_them(
 
 def test_gpu_runs_cap_host_threads_unless_the_user_set_a_budget(fake_binary, tmp_path, monkeypatch):
     seen = []
-    launch = srv.subprocess.Popen  # the fixture's launcher
+    launch = srv.subprocess.Popen
 
     def spy(command, *args, **kwargs):
         seen.append(command)
@@ -248,7 +244,7 @@ def test_gpu_runs_cap_host_threads_unless_the_user_set_a_budget(fake_binary, tmp
     monkeypatch.setattr(srv.subprocess, "Popen", spy)
     monkeypatch.delenv("UNSLOTH_CPU_THREADS", raising = False)
     monkeypatch.setattr(srv.os, "cpu_count", lambda: 192)
-    srv.AudioCppServer.start(KOKORO, str(tmp_path / "m.gguf")).stop()  # the fixture's CPU backend
+    srv.AudioCppServer.start(KOKORO, str(tmp_path / "m.gguf")).stop()
     monkeypatch.setattr(srv, "select_backend", lambda binary, force_cpu: "cuda")
     srv.AudioCppServer.start(KOKORO, str(tmp_path / "m.gguf")).stop()
     monkeypatch.setenv("UNSLOTH_CPU_THREADS", "32")
@@ -279,7 +275,6 @@ def test_a_custom_build_launches_on_a_backend_it_was_compiled_with(tmp_path, mon
     assert srv.select_backend(build("cpu", "cpu"), False) == "cpu"
     assert srv.select_backend(build("vulkan", "cpu,vulkan"), False) == "vulkan"
     assert srv.select_backend(build("cuda", "cpu,cuda"), False) == "cuda"
-    # A build too old to report keeps the host guess.
     assert srv.select_backend(build("silent", ""), False) == "cuda"
 
 

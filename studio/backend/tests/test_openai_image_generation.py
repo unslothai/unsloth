@@ -135,9 +135,6 @@ def _collect_tool_events(monkeypatch) -> list[dict]:
     return events
 
 
-# ── tool entry appended to outbound body on cloud OpenAI ─────────────
-
-
 def test_cloud_openai_appends_image_generation_tool(monkeypatch):
     captured = _capture_body(
         monkeypatch,
@@ -159,9 +156,6 @@ def test_combined_with_web_search_and_code_execution(monkeypatch):
     assert tool_types == {"web_search", "shell", "image_generation"}, tools
 
 
-# ── non-cloud base silently drops the tool ──────────────────────────
-
-
 def test_non_cloud_base_drops_image_generation(monkeypatch):
     captured = _capture_body(
         monkeypatch,
@@ -172,9 +166,6 @@ def test_non_cloud_base_drops_image_generation(monkeypatch):
     assert {"type": "image_generation"} not in tools, tools
 
 
-# ── omitted pill leaves body untouched ──────────────────────────────
-
-
 def test_omitted_image_generation_pill_no_tool(monkeypatch):
     captured = _capture_body(
         monkeypatch,
@@ -183,9 +174,6 @@ def test_omitted_image_generation_pill_no_tool(monkeypatch):
     )
     tools = captured["body"].get("tools") or []
     assert all(t.get("type") != "image_generation" for t in tools)
-
-
-# ── output translation surfaces tool_start + tool_end ────────────────
 
 
 def test_image_generation_done_emits_tool_event_chunks(monkeypatch):
@@ -200,8 +188,6 @@ def test_image_generation_done_emits_tool_event_chunks(monkeypatch):
     ends = [e for e in image_events if e.get("type") == "tool_end"]
     assert len(starts) == 1, image_events
     assert len(ends) == 1, image_events
-    # `_server_tool: True` marks this as a provider-side synthetic tool card
-    # for the frontend's history serializer.
     assert starts[0]["arguments"] == {
         "kind": "image",
         "prompt": "A photorealistic cat sitting",
@@ -213,9 +199,6 @@ def test_image_generation_done_emits_tool_event_chunks(monkeypatch):
     assert ends[0]["size"] == "1024x1024"
     assert ends[0]["quality"] == "high"
     assert ends[0]["background"] == "opaque"
-
-
-# ── replayed reasoning item stays input-safe ────────────────────────
 
 
 def test_reasoning_replay_item_drops_status():
@@ -230,16 +213,11 @@ def test_reasoning_replay_item_drops_status():
             "encrypted_content": "secret",
         }
     )
-    # Asserted field by field rather than as a whole-dict match. What this test
-    # is about is `status`, and an exact match also silently pinned everything
-    # else the sanitizer may legitimately need to carry.
     assert "status" not in replay
     assert replay["type"] == "reasoning"
     assert replay["id"] == "rs_abc"
     assert replay["summary"] == [{"type": "summary_text", "text": "thinking"}]
-    # Kept deliberately: a zero-data-retention org gets store=false forced on it,
-    # so the id resolves to nothing server side and the encrypted blob is the
-    # only way the model's reasoning state survives into the next request.
+    # ZDR orgs force store=false, so the encrypted blob is the only reasoning state that survives.
     assert replay["encrypted_content"] == "secret"
 
 
@@ -302,7 +280,6 @@ def test_replayed_image_edit_body_has_no_status_field(monkeypatch):
     reasoning = [i for i in items if isinstance(i, dict) and i.get("type") == "reasoning"]
     assert reasoning, items
     assert "status" not in reasoning[0], reasoning[0]
-    # The paired call must survive, else the edit loses its reference.
     assert any(
         i.get("type") == "image_generation_call" for i in items if isinstance(i, dict)
     ), items

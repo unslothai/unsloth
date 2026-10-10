@@ -32,51 +32,32 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-# Collapse identical GET/2xx logs within the window, since the SPA fans one invalidation into many
-# list fetches; mutations and errors always log.
 _ACCESS_LOG_DEDUP_MS = _env_int("UNSLOTH_STUDIO_ACCESS_LOG_DEDUP_MS", 300)
-# Liveness/UI polls whose line means only "still polling"; collapse to a longer heartbeat. First hit and errors still
-# log. 0 = off.
 _QUIET_POLL_DEDUP_MS = _env_int("UNSLOTH_STUDIO_ACCESS_LOG_POLL_DEDUP_MS", 10000)
-# The desktop watchdog probe rounds are ~19s apart, so a 10s window that stamps only on emit would
-# collapse nothing; it gets its own, wider window.
+# Watchdog probes are ~19s apart, so they need a window wider than the 10s quiet one.
 _WATCHDOG_POLL_DEDUP_MS = _env_int("UNSLOTH_STUDIO_ACCESS_LOG_WATCHDOG_DEDUP_MS", 60000)
-# Both windows off is what --verbose sets, and the drop-the-2xx suppressor below has no window of
-# its own, so it reads the same signal.
 _VERBOSE_ACCESS_LOG = _ACCESS_LOG_DEDUP_MS <= 0 and _QUIET_POLL_DEDUP_MS <= 0
 _QUIET_POLL_PATHS = {
     "/api/health",
     "/api/auth/status",
     "/api/inference/status",
     "/api/inference/monitor",
-    # The loaded-models indicator polls all four runtimes every 5s for as long as the app is open, and
-    # on the desktop every line is mirrored into tauri.log.
     "/api/inference/images/status",
     "/api/inference/video/status",
     "/api/inference/audio/stt/status",
-    # Re-read whenever the settings dialog or the remote-access section is open, and it is a plain read
-    # of a toggle: 116 lines in the 4h sample.
     "/api/settings/remote-access",
-    # List polls the tabs refetch on a timer and on every tab switch.
     "/api/train/runs",
     "/api/models/checkpoints",
     "/api/models/local",
     "/api/rag/knowledge-bases",
-    # Legacy download polls emit no progress events (unlike /api/hub/*), so heartbeat them.
     "/api/models/download-progress",
     "/api/models/gguf-download-progress",
     "/api/datasets/download-progress",
-    # Polled every 1.5s while the train UI is open.
     "/api/train/diffusion/status",
-    # Templated; matched through normalize_poll_path. See _TEMPLATED_POLL_PATHS.
     "/api/chat/threads/{id}",
     "/api/chat/threads/{id}/forks",
 }
-# The pure-liveness subset: the SPA fires them together in one burst, so they share a single bucket, the first
-# logging with its real path and the rest of the window dropping. Only this group is shared: the other quiet paths
-# each report on a different subsystem, so they keep their own heartbeat. Two paths are deliberately NOT here
-# because their latency is worth seeing: /api/health waits on hardware detection, and /api/inference/status reads
-# llama.cpp capabilities in an executor.
+# Pure-liveness paths share one bucket; /api/health and /api/inference/status excluded on purpose.
 _LIVENESS_POLL_PATHS = frozenset(
     {
         "/api/auth/status",
@@ -86,10 +67,7 @@ _LIVENESS_POLL_PATHS = frozenset(
         "/api/inference/audio/stt/status",
     }
 )
-# The desktop shell's watchdog probe was in no suppressor at all: 760 lines on an idle 4h session.
-# Out of _QUIET_POLL_PATHS because that window is narrower than the poll interval.
 _WATCHDOG_POLL_PATHS = {"/api/liveness"}
-# Bucket key for the group above; not a real (method, path, query, status), so it can never collide with one.
 _LIVENESS_DEDUP_KEY = ("GET", "\x00liveness", b"", 200)
 _DEDUP_MAP_MAX = 4096
 _NATIVE_PATH_LEASE_RE = re.compile(
@@ -111,11 +89,8 @@ _EXCLUDED_SUFFIXES = (
     ".woff2",
     ".ttf",
 )
-# GET polls whose 2xx line carries no signal, so drop it entirely; non-2xx still logs.
-# Media progress and /api/hub download polls emit structured events.
 _QUIET_SUCCESS_PATHS = {
     "/api/inference/load-progress",
-    # Their route handlers publish structured phase and 10 percent milestones.
     "/api/inference/images/load-progress",
     "/api/inference/video/load-progress",
     "/api/inference/images/generate-progress",
@@ -123,7 +98,6 @@ _QUIET_SUCCESS_PATHS = {
     "/api/llama/update-status",
     "/api/export/logs",
     "/api/export/status",
-    # The Settings > Logs viewer polls are suppressed in _SELF_READ_PATHS below.
     "/api/hub/download-status",
     "/api/hub/download-progress",
     "/api/hub/gguf-download-progress",
@@ -133,32 +107,21 @@ _QUIET_SUCCESS_PATHS = {
     "/api/hub/datasets/download-progress",
     "/api/hub/datasets/active-downloads",
     "/api/hub/datasets/transport-status",
-    # Boot-burst catalog reads: the SPA refetches these on every auth change and dialog open, and each outcome is
-    # already visible in the UI. syncExternalProvidersFromBackend fetches the pair in one Promise.all, so they
-    # always arrive as two lines saying the same thing.
     "/api/providers/registry",
     "/api/providers/",
-    # Fetched in the same Promise.all as two routes that keep their access line, so the resync is still
-    # traceable without it.
     "/api/models/loras",
-    # Suppression is GET-only, so the PUT that actually writes a profile change still logs.
     "/api/settings/personalization",
 }
-# The token-refresh route: its first 2xx means the client has a valid session, so from then on chat
-# 401s are real failures and must stay visible.
+# After its first 2xx, chat list 401s are real failures, not the bootstrap race.
 _AUTH_REFRESH_PATH = "/api/auth/refresh"
-# Exact paths only, so detail and message reads keep their logs; the pre-auth 401 race also fires on these polls.
 _CHAT_LIST_PATHS = {
     "/api/chat/threads",
     "/api/chat/projects",
 }
-# The sets above match EXACTLY so detail reads keep their access line, but streaming drives these
-# two on a loop (34% of the access log over a 20s session), so they get a heartbeat instead.
 _CHAT_THREAD_DETAIL = "/api/chat/threads/{id}"
 _CHAT_THREAD_FORKS = "/api/chat/threads/{id}/forks"
 _TEMPLATED_POLL_PATHS = frozenset({_CHAT_THREAD_DETAIL, _CHAT_THREAD_FORKS})
-# One id segment, no slashes: a deeper path such as /threads/{id}/messages/{mid} must NOT collapse
-# into the detail bucket.
+# One id segment: deeper paths (/threads/{id}/messages/...) must NOT join the detail bucket.
 _CHAT_THREAD_PATH_RE = re.compile(r"^/api/chat/threads/(?!$)[^/]+(/forks)?$")
 
 
@@ -173,9 +136,7 @@ def normalize_poll_path(path: str) -> str:
     return _CHAT_THREAD_FORKS if m.group(1) else _CHAT_THREAD_DETAIL
 
 
-# The log viewer polls these while reading the very file this middleware writes, so unsuppressed each poll
-# appends a record the next reads back; _is_redundant_repeat cannot cover it. Separate from _QUIET_SUCCESS_PATHS
-# because --verbose must NOT lift this one: the extra noise buries the failure the viewer was opened for.
+# Log viewer reads this very file; --verbose must NOT lift this suppression.
 _SELF_READ_PATHS = {
     "/api/settings/debug/logs",
     "/api/settings/debug/logs/sources",
@@ -198,13 +159,9 @@ def _is_quiet_success(method: str, path: str, status_code: int, pre_auth: bool) 
     return pre_auth and status_code == 401 and path in _CHAT_LIST_PATHS
 
 
-# An unhandled request exception is logged twice: here as a structured request_failed event whose "exception"
-# field carries the whole traceback (format_exc_info renders it, see loggers/config.py), and again by uvicorn on
-# stderr, which the desktop shell mirrors into tauri.log at ~90 lines per failure. Keep the structured copy.
+# uvicorn re-logs exceptions already logged here as request_failed; keep only the structured copy.
 _UVICORN_ASGI_EXC_MSG = "Exception in ASGI application"
-# Set on the exception instance itself rather than a side table: the object is what uvicorn hands us, so the
-# match cannot go stale or collide with a recycled id, and an exception raised above this middleware (CORS,
-# remote-access, the protocol layer) keeps uvicorn's traceback.
+# Marked on the exception itself so the match cannot go stale or hit a recycled id.
 _LOGGED_EXC_ATTR = "_unsloth_request_failed_logged"
 
 
@@ -248,10 +205,7 @@ class LoggingMiddleware:
 
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
-        # (method, path, query, status_code) -> monotonic ts of the last EMITTED log.
         self._last_log: dict[tuple[str, str, bytes, int], float] = {}
-        # Before the first successful /api/auth/refresh, chat list-poll 401s are the transient bootstrap
-        # race and are suppressed.
         self._auth_refreshed = False
 
     def _is_redundant_repeat(
@@ -261,13 +215,10 @@ class LoggingMiddleware:
         never dedup; quiet-poll paths use the longer heartbeat. Stamps only on emit, so steady polls still log."""
         if method != "GET" or not (200 <= status_code < 300):
             return False
-        # A query makes the request something other than the background poll, so it keeps its own identity
-        # rather than joining the bucket.
         is_liveness = path in _LIVENESS_POLL_PATHS and not query
-        # Bucketed by template, so four tabs polling four threads share one heartbeat.
         norm = normalize_poll_path(path) if not query else path
         if path in _WATCHDOG_POLL_PATHS:
-            # Zeroed along with the quiet window, so --verbose still logs every probe.
+            # Zeroed with the quiet window, so --verbose still logs every probe.
             window_ms = _WATCHDOG_POLL_DEDUP_MS if _QUIET_POLL_DEDUP_MS > 0 else 0
         elif is_liveness or norm in _QUIET_POLL_PATHS:
             window_ms = _QUIET_POLL_DEDUP_MS
@@ -275,8 +226,6 @@ class LoggingMiddleware:
             window_ms = _ACCESS_LOG_DEDUP_MS
         if window_ms <= 0:
             return False
-        # The liveness group shares one bucket, so a burst logs once rather than once per path; only the
-        # query-less form joins it, so a parameterized call still gets its own status and latency line.
         key = _LIVENESS_DEDUP_KEY if is_liveness else (method, norm, query, status_code)
         last = self._last_log.get(key)
         if last is not None and (now - last) * 1000.0 < window_ms:

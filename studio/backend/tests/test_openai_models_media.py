@@ -303,7 +303,6 @@ def test_the_media_scan_is_reused_across_requests_in_one_catalog_window(monkeypa
         asyncio.run(inf._openai_catalog_objects())
     assert calls == list(inf._MEDIA_MODEL_TASKS), calls
 
-    # A replaced catalog scan rebuilds it.
     inf._CATALOG_CACHE["at"] = 5678.0
     asyncio.run(inf._openai_catalog_objects())
     assert calls == list(inf._MEDIA_MODEL_TASKS) * 2, calls
@@ -543,7 +542,6 @@ def test_a_whisper_id_cached_only_for_whisper_cpp_is_not_advertised(monkeypatch)
     from core.inference import stt_ggml_sidecar
 
     _stt(monkeypatch, downloaded = ())
-    # Resident on the GGML sidecar, and cached there, yet still not OpenAI-servable.
     monkeypatch.setattr(
         stt_ggml_sidecar, "_cached_model_path", lambda m: "/x" if m == "large-v3-turbo" else None
     )
@@ -747,7 +745,6 @@ def test_audio_input_models_are_not_tagged_text_to_speech(monkeypatch):
         (entry,) = inf._openai_model_objects()
         assert "task" not in entry, f"{audio_type} advertised as {entry.get('task')}"
 
-    # A transformers TTS codec still is tagged.
     unsloth = type(
         "_Tts",
         (_FakeUnsloth,),
@@ -760,7 +757,6 @@ def test_audio_input_models_are_not_tagged_text_to_speech(monkeypatch):
     (entry,) = inf._openai_model_objects()
     assert entry["task"] == "text-to-speech"
 
-    # the mlx worker rejects audio generation even when its model metadata is tts.
     unsloth.models["unsloth/csm-1b"]["is_mlx"] = True
     (entry,) = inf._openai_model_objects()
     assert "task" not in entry

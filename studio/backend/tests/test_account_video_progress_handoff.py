@@ -175,7 +175,6 @@ def test_a_hidden_poll_still_answers_the_shape_the_route_declares(monkeypatch):
 
     for field in VideoGenerateProgressResponse.model_fields:
         assert field in body, f"hidden poll dropped {field!r} from the declared shape: {body}"
-    # Every declared field is at its idle default, so the shape costs no privacy.
     assert body == {
         **VideoGenerateProgressResponse().model_dump(mode = "json"),
         "loaded": True,

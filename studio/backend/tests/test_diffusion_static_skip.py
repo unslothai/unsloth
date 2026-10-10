@@ -26,7 +26,7 @@ from .test_diffusion_cuda_graph import _build_stub_torch, _FakeTensor
 def test_schedule_matches_the_measured_prototype_at_25_steps():
     plan = ss.static_schedule(25)
     assert len(plan) == 25
-    # head round(5.0) = 5, tail round(2.5) = 2 (banker's), the middle computes every other step.
+    # head round(5.0) = 5, tail round(2.5) = 2 (banker's rounding); middle computes every other step.
     assert plan[:6] == (True,) * 6
     assert plan[-2:] == (True, True)
     assert [i for i, c in enumerate(plan) if not c] == list(range(6, 23, 2))
@@ -179,7 +179,7 @@ def test_cfg_contexts_are_counted_per_branch():
     assert len(dit.calls) == 32
     stats = ss.static_skip_stats(pipe)["stats"]
     assert stats == {"calls": 50, "computed": 32, "skipped": 18}
-    # A skipped step returns the SAME branch's last output, never the other branch's.
+    # A skipped step reuses the SAME branch's last output, never the other branch's.
     plan = ss.static_schedule(25)
     for i, compute in enumerate(plan):
         if not compute:
@@ -226,7 +226,7 @@ def test_reuse_returns_a_clone_of_the_last_output():
 def test_taylor1_extrapolates_in_timestep():
     pipe = _installed(mode = "taylor1")
     outs = _run(pipe, 25)["cond"]
-    # The fake output equals its timestep, so a first-order extrapolation is exact.
+    # The fake output equals its timestep, so first-order extrapolation is exact.
     for i in range(6, 23, 2):
         assert torch.allclose(outs[i][0], torch.full((1, 4, 2), 1.0 - i / 25), atol = 1e-6)
 
@@ -279,7 +279,7 @@ def test_taylor1_falls_back_to_reuse_across_a_shape_change():
     real_reset = layer.reset
 
     def reset(steps, **kwargs):
-        # Force a skip at step 2, whose history is step 0 (7 rows, extract) and step 1 (4 rows).
+        # Force a skip at step 2; history is step 0 (7 rows, extract) and step 1 (4 rows).
         real_reset(steps, **kwargs)
         layer.plan = (True, True, False) + (True,) * (steps - 3)
         layer.last_skip = 2
@@ -340,7 +340,7 @@ def test_z_image_list_outputs_are_skipped_and_rebuilt():
 
 
 def test_z_image_list_in_output_dataclass_is_skipped_and_rebuilt():
-    # ZImageImg2ImgPipeline / ZImageInpaintPipeline call the transformer without return_dict=False.
+    # ZImageImg2Img / ZImageInpaint pipelines call the transformer without return_dict=False.
     outputs = pytest.importorskip("diffusers.models.modeling_outputs")
     out_cls = outputs.Transformer2DModelOutput
     value, rebuild = ss._split_output(out_cls(sample = [torch.ones(4, 2), torch.zeros(4, 2)]))
@@ -390,13 +390,12 @@ def test_taylor1_reads_a_positional_timestep():
         outs.append(dit.forward(x, torch.tensor([1.0 - i / 25]), None, return_dict = False))
         ss.mark_step_end(pipe)
     assert ss.static_skip_stats(pipe)["stats"]["skipped"] == 9
-    # Extrapolated, not reused: a skipped step matches its own timestep, not the previous step's.
     for i in range(6, 23, 2):
         assert torch.allclose(outs[i][0], torch.full((1, 4, 2), 1.0 - i / 25), atol = 1e-6)
 
 
 def test_multi_value_outputs_are_never_skipped():
-    # FLUX.2 klein KV's (noise, kv_cache): nothing a skip could reproduce.
+    # FLUX.2 klein KV returns (noise, kv_cache): nothing a skip could reproduce.
     pipe = _installed(_DiT(container = "pair"))
     _run(pipe, 25)
     assert len(pipe.transformer.calls) == 25
@@ -671,7 +670,6 @@ def test_auto_load_never_installs_static(fake_runtime, tmp_path, monkeypatch, re
     (tmp_path / "model.gguf").write_bytes(b"weights")
     backend = dmod.DiffusionBackend()
     _load_into(backend, tmp_path, transformer_cache = request_cache)
-    # Auto resolves per speed tier (FBCache on max, else uncached); never to static.
     assert len(modes) == 1 and modes[0] in (None, dcache.TC_FBCACHE)
     backend.unload()
 
@@ -861,7 +859,7 @@ def test_status_route_carries_the_last_generation_skip_counts():
 
 
 def test_stats_add_up_over_the_chunks_of_one_generation():
-    # Two pipeline calls of one generation (a batch cap or an OOM split): the status keeps both chunks' counts.
+    # Two pipeline calls in one generation (batch cap or OOM split): status sums both.
     pipe = _installed()
     _run(pipe, 25)
     one = dict(ss.static_skip_stats(pipe)["stats"])
@@ -933,7 +931,7 @@ def test_status_route_shows_skip_counts_only_to_their_producer(monkeypatch, scop
         "active_status",
         lambda: {"loaded": True, "transformer_cache": "static", "transformer_cache_stats": stats},
     )
-    # The view's snapshot, not the earlier status() read, is what the caller gets.
+    # The caller gets the view's snapshot, not the earlier status() read.
     fresh = {**stats, "stats": {"calls": 30, "computed": 19, "skipped": 11}}
     engine = types.SimpleNamespace(static_skip_view = lambda: (owner, fresh))
     monkeypatch.setattr(diffusion_engine_router, "get_active_diffusion_engine", lambda: engine)
@@ -955,7 +953,6 @@ def test_a_new_owner_never_inherits_the_previous_owners_counts():
     owner, stats = ss.static_skip_view(pipe)
     assert owner == "b"
     assert stats["stats"] == {"calls": 0, "computed": 0, "skipped": 0}
-    # The same owner's next generation keeps its last counts visible until it calls.
     ss.reset_static_step_skip(pipe, None)
     ss.reset_static_step_skip(pipe, 25, owner = "b")
     assert ss.static_skip_view(pipe)[0] == "b"

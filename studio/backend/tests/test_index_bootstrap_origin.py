@@ -45,20 +45,15 @@ def test_is_same_origin_request_evil_origin_is_cross_origin():
 
 
 def test_is_same_origin_request_scheme_mismatch_is_cross_origin():
-    # https origin against an http listener is not same-origin.
     from main import _is_same_origin_request
     req = _build_request("127.0.0.1:8888", origin = "https://127.0.0.1:8888")
     assert _is_same_origin_request(req) is False
 
 
 def test_is_same_origin_request_port_mismatch_is_cross_origin():
-    # Same host different port is not same-origin per the web platform.
     from main import _is_same_origin_request
     req = _build_request("127.0.0.1:8888", origin = "http://127.0.0.1:5173")
     assert _is_same_origin_request(req) is False
-
-
-# ── Canonicalisation: default-port stripping + case folding ─────────
 
 
 def test_is_same_origin_request_https_default_port_stripped_on_origin():

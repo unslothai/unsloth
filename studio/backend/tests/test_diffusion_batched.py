@@ -25,7 +25,6 @@ def _draw():
     raise AssertionError("draw_seed must not be called when seed material was supplied")
 
 
-# --------------------------------------------------------------------------- job resolution
 def test_legacy_batch_derives_sequential_seeds():
     jobs, base = resolve_batch_jobs(
         prompt = "p", prompts = None, seed = 7, seeds = None, batch_size = 3, draw_seed = _draw
@@ -78,7 +77,7 @@ def test_prompt_and_seed_lists_pair_elementwise():
         draw_seed = _draw,
     )
     assert jobs == [("a", 9), ("b", 3)]
-    assert base == 9  # base seed = first per-image seed
+    assert base == 9
 
 
 def test_derived_seeds_stay_json_safe_at_the_cap():
@@ -113,7 +112,6 @@ def test_invalid_lists_rejected(kwargs, match):
         resolve_batch_jobs(draw_seed = lambda: 0, **base)
 
 
-# --------------------------------------------------------------------------------- chunking
 def test_default_batch_size_runs_everything_in_one_forward():
     jobs = [("p", i) for i in range(8)]
     assert chunk_jobs(jobs, 1) == [jobs]
@@ -123,7 +121,7 @@ def test_explicit_batch_size_caps_each_chunk():
     jobs = [("p", i) for i in range(5)]
     chunks = chunk_jobs(jobs, 2)
     assert [len(c) for c in chunks] == [2, 2, 1]
-    assert [s for c in chunks for _, s in c] == list(range(5))  # order preserved
+    assert [s for c in chunks for _, s in c] == list(range(5))
 
 
 def test_chunk_jobs_empty():
@@ -134,7 +132,7 @@ def test_split_chunk_halves_and_terminates():
     chunk = [("p", i) for i in range(5)]
     first, second = split_chunk(chunk)
     assert first + second == chunk
-    assert len(first) == 3 and len(second) == 2  # first never smaller: splits terminate
+    assert len(first) == 3 and len(second) == 2
     with pytest.raises(ValueError):
         split_chunk([("p", 0)])
 
@@ -144,7 +142,6 @@ def test_uniform_prompt():
     assert uniform_prompt([("a", 1), ("b", 2)]) is None
 
 
-# ---------------------------------------------------------------------------- OOM classifier
 def test_is_oom_error_matches_class_name_and_message():
     oom_cls = type("OutOfMemoryError", (RuntimeError,), {})
     assert is_oom_error(oom_cls("boom"))

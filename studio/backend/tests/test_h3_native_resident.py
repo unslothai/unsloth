@@ -34,7 +34,6 @@ AUTO_FLAGS = (
     "--backend",
     "diffusion=CUDA0,te=CUDA0,vae=CUDA0",
 )
-# The four Hub files of the UD-Q3_K_XL and Q8_0 bundles (bytes on disk).
 Q3_FILES = int((8.90 + 16.97 + 4.85 + 0.56) * GIB)
 Q8_FILES = int((19.97 + 16.97 + 4.85 + 0.56) * GIB)
 
@@ -46,7 +45,6 @@ def test_auto_runs_resident_when_the_card_holds_the_bundle():
     )
     assert resident is True
     assert "--offload-to-cpu" not in flags and "--stream-layers" not in flags
-    # Everything else the load committed is kept, in order: flash attention, the graph-cut budget, the device pin.
     assert flags == [
         "--diffusion-fa",
         "--max-vram",
@@ -101,10 +99,9 @@ def test_kill_switch(value):
 
 
 def test_estimate_covers_the_measured_resident_peaks():
-    # Resident peaks measured with nvidia-smi on a B200, 960x544x124, pinned u1d02858: 33030 MiB (q3), 44318 MiB (q8).
+    # Measured B200 resident peaks at 960x544x124: 33030 MiB (q3), 44318 MiB (q8).
     assert h3.h3_native_resident_bytes(Q3_FILES, 960, 544, 124) > 33030 * 1024**2
     assert h3.h3_native_resident_bytes(Q8_FILES, 960, 544, 124) > 44318 * 1024**2
-    # A 48 GB card (the RTX 6000 Ada this was reported on) holds the q3 bundle resident; a 24 GB card does not.
     assert h3.h3_native_resident_bytes(Q3_FILES, 960, 544, 124) < 47 * GIB
     assert h3.h3_native_resident_bytes(Q3_FILES, 960, 544, 124) > 23 * GIB
 
@@ -116,7 +113,7 @@ def test_estimate_grows_with_the_clip_and_never_shrinks_below_h1():
 
 
 def _video_backend_tests():
-    # The H3 generate fixture lives there; loaded by path because `tests` can resolve to the repo-root package.
+    # Loaded by path because `tests` can resolve to the repo-root package.
     import importlib.util
 
     name = "_studio_test_video_backend"
@@ -139,7 +136,7 @@ def _backend_with_files(monkeypatch, tmp_path, calls, *, memory_mode, flags):
         p.write_bytes(b"")
         paths[name] = str(p)
         sizes[str(p)] = size * GIB
-    # Not truncate(): NTFS allocates the full 32 GiB per test, which fills a Windows runner's disk.
+    # Not truncate(): NTFS allocates the full 32 GiB, filling a Windows runner's disk.
     real_getsize = os.path.getsize
     monkeypatch.setattr(os.path, "getsize", lambda p: sizes.get(str(p)) or real_getsize(p))
     import dataclasses

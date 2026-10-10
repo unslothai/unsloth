@@ -63,7 +63,6 @@ def test_series_ignores_repeats_at_the_same_step():
 
 def test_series_never_ends_on_the_average():
     h = _History()
-    # The exact tail a 30 step run produced before the fix.
     for step, loss in [(30, 0.3205), (30, 0.3205), (30, 0.3834), (30, 0.3834)]:
         h.offer(step, loss)
     assert h.steps == [30]
@@ -85,16 +84,13 @@ def test_normal_monotonic_run_is_unchanged():
 
 
 def test_the_shipped_call_sites_no_longer_fall_back_to_train_loss():
-    # Guard the actual source: the fallback is what caused this.
     for rel in ("core/training/trainer.py", "core/training/worker.py"):
         text = (_BACKEND / rel).read_text(encoding = "utf-8")
         assert 'logs.get("loss", logs.get("train_loss", None))' not in text, rel
 
 
 def test_the_terminal_summary_still_reports_elapsed_time():
-    # The summary record has no step loss, so the progress filter dropped it; the
-    # elapsed time it carries (final eval, checkpoint save, best-model reload) is the
-    # run's real duration and must still reach the parent.
+    # the summary record has no step loss but carries the run's real elapsed time
     import sys
     from pathlib import Path
 
@@ -166,8 +162,7 @@ def test_a_lossless_mid_run_record_is_still_dropped():
 
 
 def test_an_early_stopped_run_still_reports_its_duration():
-    # Stopping at step 12 of 30 still produces HF's lossless summary; the step
-    # comparison alone would discard it and finalize the run with stale timing.
+    # an early stop still produces HF's summary; a step comparison alone would drop it
     import sys
     from pathlib import Path
 

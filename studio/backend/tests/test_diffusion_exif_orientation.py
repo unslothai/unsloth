@@ -103,7 +103,6 @@ def _mask_data_url(width: int, height: int) -> str:
 
 
 def test_inpaint_mask_from_the_preview_matches_the_decoded_source():
-    # naturalWidth/naturalHeight are oriented, and a mismatched mask is stretched, not refused.
     stored_w, stored_h = 64, 32
     source = decode_b64_image(_phone_photo_data_url(stored_w, stored_h))
     mask = decode_b64_image(_mask_data_url(stored_h, stored_w), mode = "L")
@@ -111,7 +110,6 @@ def test_inpaint_mask_from_the_preview_matches_the_decoded_source():
 
 
 def test_an_image_without_an_orientation_tag_is_untouched():
-    # Quadrants, not a flat fill: a uniform image survives a 180 turn or either mirror intact.
     buf = io.BytesIO()
     _quadrant_image(64, 32).save(buf, format = "PNG")
     img = decode_b64_image("data:image/png;base64," + base64.b64encode(buf.getvalue()).decode())
@@ -140,11 +138,10 @@ def test_an_imagemagick_text_profile_is_ignored_the_way_the_browser_ignores_it()
 
 
 def test_an_xmp_orientation_cached_during_open_is_still_ignored():
-    # Resolution tags without Orientation make the opener read the DPI, filling its EXIF cache
-    # from the XMP fallback: stripping metadata after open() is too late.
+    # Resolution tags make the opener fill its EXIF cache from XMP, so strip before open().
     img = _quadrant_image(300, 100)
     exif = img.getexif()
-    exif[0x011A], exif[0x011B] = 72.0, 72.0  # resolution, no Orientation
+    exif[0x011A], exif[0x011B] = 72.0, 72.0
     buf = io.BytesIO()
     img.save(buf, format = "JPEG", quality = 95, subsampling = 0, exif = exif, xmp = _xmp_packet(6))
     decoded = decode_b64_image(
@@ -155,7 +152,6 @@ def test_an_xmp_orientation_cached_during_open_is_still_ignored():
 
 
 def test_a_malformed_metadata_block_does_not_refuse_a_decodable_image():
-    # The pixels decode and the pre-change decoder accepted this; reading the tag must not 400 it.
     buf = io.BytesIO()
     _quadrant_image(64, 32).save(buf, format = "PNG", exif = b"bad")
     img = decode_b64_image("data:image/png;base64," + base64.b64encode(buf.getvalue()).decode())
@@ -174,9 +170,7 @@ def test_a_real_exif_orientation_still_applies_to_a_png():
     assert _quadrants(decoded) == _AS_DISPLAYED[6][1]
 
 
-# For a 300x100 photo stored red/green over blue/yellow, read off the tag definitions (2/4 mirror,
-# 3 turns 180, 5/7 flip diagonally, 6/8 turn a quarter) and never off Pillow, which would agree
-# with a wrong implementation.
+# Expected orientations come from the tag definitions, never Pillow (it would agree with a bug).
 _AS_DISPLAYED = {
     1: ((300, 100), ["red", "green", "blue", "yellow"]),
     2: ((300, 100), ["green", "red", "yellow", "blue"]),
@@ -193,7 +187,7 @@ _AS_DISPLAYED = {
 def test_every_orientation_decodes_the_way_the_viewer_shows_it(orientation):
     data = _phone_photo_data_url(300, 100, orientation)
     stored = PIL.open(io.BytesIO(base64.b64decode(data.partition(",")[2])))
-    assert stored.size == (300, 100)  # the bytes on the wire really are un-rotated
+    assert stored.size == (300, 100)
 
     size, quadrants = _AS_DISPLAYED[orientation]
     img = decode_b64_image(data)
@@ -202,7 +196,6 @@ def test_every_orientation_decodes_the_way_the_viewer_shows_it(orientation):
 
 
 def test_no_orientation_survives_the_decode_to_be_applied_twice():
-    # Carries one in BOTH an EXIF block and an XMP packet: clearing only the acted-on source fails.
     img = decode_b64_image(_phone_photo_data_url(300, 100, 6, xmp_orientation = 8))
     assert img.size == (100, 300)
 

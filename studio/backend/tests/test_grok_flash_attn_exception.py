@@ -72,7 +72,6 @@ class TestNothingPutsItBack:
             _planned_flash_attn_state(planned_cache_types = ("f16", v_type), architecture = "grok")
             is False
         )
-        # The same pair elsewhere still forces it on: not asserting a constant.
         assert (
             _planned_flash_attn_state(planned_cache_types = ("f16", v_type), architecture = "qwen3")
             is True

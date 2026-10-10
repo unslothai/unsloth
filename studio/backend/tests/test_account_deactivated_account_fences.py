@@ -138,7 +138,6 @@ async def test_owner_run_cannot_take_a_deactivated_accounts_supervisor_slot(
     ):
         deactivatable["value"] = False
         started: list = []
-        # A live task under the bare id: start() returns without scheduling anything.
         supervisor = SimpleNamespace(
             _tasks = {"run-1": object()},
             start = lambda run_id, **identity: started.append(run_id),

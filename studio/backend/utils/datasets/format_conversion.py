@@ -114,7 +114,6 @@ def standardize_chat_format(
     else:
         raise ValueError(f"Could not infer role/content keys for chat column '{chat_column}'")
 
-    # Keyed on the normalised alias: "Human" / " user " would reach the template raw.
     aliases_mapping = {}
     for x in aliases_for_system:
         aliases_mapping[_normalize_role_alias(x)] = "system"
@@ -136,18 +135,15 @@ def standardize_chat_format(
                 if not isinstance(message, dict):
                     continue
 
-                # Use the inferred keys first, falling back per-message so mixed ShareGPT/ChatML rows keep valid turns.
+                # Fall back per message so mixed ShareGPT/ChatML rows keep valid turns.
                 original_role = message.get(role_key)
                 original_content = message.get(content_key)
-                # Blank counts as absent for the ROLE, matching the preview: `is None` here
-                # trained {"role": "", "from": "gpt"} as a user turn. Content is not blank-
-                # checked, because an empty message is a legitimate value.
+                # A blank role counts as absent, matching the preview; blank content is legitimate.
                 if not _normalize_role_alias(original_role):
                     original_role = message.get("role") or message.get("from") or ""
                 if original_content is None:
                     original_content = message.get("content") or message.get("value") or ""
 
-                # Unknown alias left as written; blank is "user", as most templates reject one.
                 normalized_role = _normalize_role_alias(original_role)
                 standard_role = (
                     aliases_mapping.get(normalized_role, original_role)
@@ -183,7 +179,7 @@ def standardize_chat_format(
 
     result = dataset.map(_standardize_dataset, **dataset_map_kwargs)
 
-    # For streaming, force the first mapped row through now so column/format errors surface before training rather than mid-iteration; IterableDataset re-iterates from the generator source, so this is safe.
+    # Force the first streamed row now so mapping errors surface before training.
     if is_streaming_dataset(dataset):
         try:
             next(iter(result))
@@ -249,7 +245,6 @@ def convert_chatml_to_alpaca(
                     turns[-1][1] = f"{turns[-1][1]}\n\n{content}"
                 else:
                     turns.append([role, content])
-            # A separate system column fills in only when the conversation has no leading system turn.
             if (
                 isinstance(column_system, str)
                 and column_system.strip()
@@ -295,7 +290,7 @@ def convert_chatml_to_alpaca(
 
     result = dataset.map(_convert, **dataset_map_kwargs)
 
-    # For streaming, force the first mapped row through now so column/format errors surface before training rather than mid-iteration; IterableDataset re-iterates from the generator source, so this is safe.
+    # Force the first streamed row now so mapping errors surface before training.
     if is_iterable:
         try:
             next(iter(result))
@@ -357,7 +352,7 @@ def convert_alpaca_to_chatml(
 
     result = dataset.map(_convert, **dataset_map_kwargs)
 
-    # For streaming, force the first mapped row through now so column/format errors surface before training rather than mid-iteration; IterableDataset re-iterates from the generator source, so this is safe.
+    # Force the first streamed row now so mapping errors surface before training.
     if is_iterable:
         try:
             next(iter(result))
@@ -426,7 +421,6 @@ def convert_to_vlm_format(
 
     def _convert_single_sample(sample):
         """Convert a single sample to VLM format."""
-        # Image may be a PIL Image, local path, URL, or bare filename
         image_data = sample[image_column]
 
         if isinstance(image_data, str):
@@ -436,7 +430,6 @@ def convert_to_vlm_format(
                 with fsspec.open(image_data, "rb", expand = True) as f:
                     image_data = Image.open(BytesIO(f.read())).convert("RGB")
             elif _image_lookup is not None and image_data in _image_lookup:
-                # Bare filename → resolve via HF repo lookup
                 from huggingface_hub import hf_hub_download
                 from utils.hf_cache_settings import active_hf_hub_cache
 
@@ -511,7 +504,6 @@ def convert_to_vlm_format(
                 for f in repo_files
                 if any(f.lower().endswith(ext) for ext in _IMAGE_EXTS)
             }
-            # Also key by the full relative path, e.g. "images/0001.jpg", as the ShareGPT converter does.
             for f in repo_files:
                 if any(f.lower().endswith(ext) for ext in _IMAGE_EXTS):
                     _image_lookup[f] = f
@@ -528,7 +520,6 @@ def convert_to_vlm_format(
             logger.info(f"⚠️ Failed to build HF repo image lookup: {e}")
             _image_lookup = None
 
-    # URL probe: 200 parallel samples to estimate speed and failure rate.
     PROBE_SIZE = 200
     MAX_FAIL_RATE = 0.3
 
@@ -752,7 +743,6 @@ def convert_sharegpt_with_images_to_vlm_format(
         if progress_callback:
             progress_callback(status_message = msg)
 
-    # Resolve image loading, the same 3 tiers as convert_to_vlm_format.
     total = len(dataset)
     first_image = next(iter(dataset))[image_column]
 
@@ -776,7 +766,6 @@ def convert_sharegpt_with_images_to_vlm_format(
                 for f in repo_files
                 if any(f.lower().endswith(ext) for ext in _IMAGE_EXTS)
             }
-            # Also key by the full relative path, e.g. "sam/images/sa_545504.jpg".
             for f in repo_files:
                 if any(f.lower().endswith(ext) for ext in _IMAGE_EXTS):
                     _image_lookup[f] = f

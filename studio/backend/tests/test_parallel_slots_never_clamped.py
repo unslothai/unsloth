@@ -18,12 +18,10 @@ _TESTS_DIR = str(Path(__file__).resolve().parent)
 if _TESTS_DIR not in sys.path:
     sys.path.insert(0, _TESTS_DIR)
 
-# Reuses the only harness in the suite that yields a real launched argv.
 from test_llama_cpp_placement import _backend, _launch, _write_gguf  # noqa: E402
 
 _MEMORY = [(0, 40 * 1024**3, 48 * 1024**3)]
 
-# Everything the MTP branch of _build_speculative_flags probes for.
 _CAPS = {
     "found": True,
     "supports_kv_unified": True,
@@ -39,7 +37,7 @@ def mtp_backend(tmp_path, monkeypatch):
     monkeypatch.setattr(
         type(backend), "probe_server_capabilities", classmethod(lambda cls, binary = None: _CAPS)
     )
-    # The name is what _is_mtp_model_name reads, so this GGUF resolves to MTP.
+    # _is_mtp_model_name reads the filename, so this GGUF resolves to MTP.
     return backend, _write_gguf(tmp_path / "Qwen3.5-9B-MTP.gguf")
 
 

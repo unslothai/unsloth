@@ -428,7 +428,6 @@ def native_audio_security_targets(
     from core.inference.audio_cpp_models import AUDIO_CPP_AUDIO_TYPES, looks_like_audio_cpp, repo_of
 
     if audio_type in AUDIO_CPP_AUDIO_TYPES or looks_like_audio_cpp(model_name):
-        # An umbrella id names a subfolder; the weights, and so the scan, belong to the repo that holds it.
         return [repo_of(model_name) or model_name]
     targets = [model_name]
     resolved_type = audio_type or _native_audio_type(model_name)
@@ -971,7 +970,6 @@ class NativeAudioBackend:
                 "multi-GPU sharding is not supported yet."
             )
         if audio_type == "minimax_music3" and self.device != "cuda":
-            # Chosen, not missing: the generic message sends users hunting for a card.
             from core.inference.audio_device import audio_device_forces_cpu
             if audio_device_forces_cpu(self.device_preference):
                 raise RuntimeError(

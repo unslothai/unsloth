@@ -24,9 +24,6 @@ if str(_BACKEND) not in sys.path:
 from auth import terminal_prompt  # noqa: E402
 
 
-# ── platform seams ───────────────────────────────────────────────────
-
-
 def test_the_windows_getch_path_decodes_a_password(monkeypatch):
     """`_getch` is selected by os.name at import; exercise the Windows half.
 
@@ -38,7 +35,7 @@ def test_the_windows_getch_path_decodes_a_password(monkeypatch):
 
     keys = list("pw1\r")
     fake = types.ModuleType("msvcrt")
-    # An arrow key arrives as \xe0 then a second wchar that must be swallowed.
+    # An arrow key arrives as \xe0 plus a second wchar that must be swallowed.
     queue = ["\xe0", "H"] + keys
 
     def _getwch():
@@ -61,7 +58,6 @@ def test_the_windows_getch_path_decodes_a_password(monkeypatch):
             pass
 
     assert terminal_prompt._read_password("pw: ", out = _Out()) == "pw1"
-    # The arrow key is swallowed, not masked: one star per character.
     assert "".join(out).count("*") == 3
 
 
@@ -108,9 +104,6 @@ def test_a_split_terminal_never_prompts(stdin_tty, stderr_tty):
     )
 
 
-# ── old installs ─────────────────────────────────────────────────────
-
-
 def test_an_old_caller_that_omits_bind_is_exposed_behaves_as_before():
     """The new kwarg is optional and defaults off.
 
@@ -143,13 +136,9 @@ def test_the_prompt_signature_stays_keyword_compatible():
 
     params = inspect.signature(terminal_prompt.prompt_for_password_change).parameters
     assert params["exposure"].default == "on the public internet"
-    # An old run.py still passes refusal_aborts, and it still picks the banner.
     assert "refusal_aborts" in params
     for name, param in params.items():
         assert param.kind is not inspect.Parameter.POSITIONAL_ONLY, name
-
-
-# ── no hardware coupling ─────────────────────────────────────────────
 
 
 def test_the_password_gate_imports_no_gpu_or_torch_module():

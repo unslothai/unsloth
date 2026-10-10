@@ -49,7 +49,7 @@ def test_lexical_returns_only_matching_docs(rag_conn):
     _add_doc(rag_conn, "kb_a", "d1", "d1.txt", "h1", ["alpha bravo charlie"])
     _add_doc(rag_conn, "kb_a", "d2", "d2.txt", "h2", ["golf hotel india"])
     hits = store.search_lexical(rag_conn, "kb_a", "alpha", 10)
-    assert [cid for cid, _ in hits] == ["d1:0"]  # d2 not returned (score 0)
+    assert [cid for cid, _ in hits] == ["d1:0"]
 
 
 def test_scope_isolation(rag_conn):
@@ -64,7 +64,6 @@ def test_match_query_sanitizes_special_chars():
 
 def test_lexical_does_not_crash_on_punctuation(rag_conn):
     _add_doc(rag_conn, "kb_a", "d1", "f", "h1", ["alpha bravo"])
-    # Must not raise on FTS operators in the query.
     store.search_lexical(rag_conn, "kb_a", 'NEAR("x" AND', 5)
 
 
@@ -107,7 +106,6 @@ def test_dense_knn_binds_k_rather_than_limit(rag_conn):
 
 
 def test_dense_empty_before_any_ingest(rag_conn):
-    # No chunks_vec table yet -> [], no crash.
     assert store.search_dense(rag_conn, "kb_a", embed("alpha"), 10) == []
 
 
@@ -127,7 +125,6 @@ def test_delete_document_purges_all_tables(rag_conn):
 
 
 def test_incremental_add_is_flat(rag_conn):
-    # Adding doc2 must not touch doc1's fts rowids (append, not rebuild).
     _add_doc(rag_conn, "kb_a", "d1", "f", "h1", ["alpha bravo charlie"])
     before = rag_conn.execute(
         "SELECT rowid, chunk_id FROM chunks_fts WHERE scope='kb_a'"
@@ -228,7 +225,6 @@ def test_lexical_hides_retired_scope_and_unmapped_linked_document(rag_conn):
     _add_doc(rag_conn, "kb_a", "d1", "d1.txt", "h1", ["alpha bravo charlie"])
     _add_doc(rag_conn, "kb_a", "d2", "d2.txt", "h2", ["alpha delta echo"])
     _link_folder(rag_conn, "f1", "kb_a")
-    # d2 belongs to a folder but has no mapping row yet, so it is not searchable.
     rag_conn.execute("UPDATE documents SET linked_folder_id='f1' WHERE id='d2'")
     rag_conn.commit()
     assert [cid for cid, _ in store.search_lexical(rag_conn, "kb_a", "alpha", 10)] == ["d1:0"]
@@ -259,7 +255,7 @@ def test_lexical_results_match_across_both_query_forms(rag_conn):
             rag_conn, "kb_a", f"d{i}", f"d{i}.txt", f"h{i}", [f"alpha bravo {'charlie ' * (i % 4)}"]
         )
     fast = store.search_lexical(rag_conn, "kb_a", "alpha bravo", 5)
-    _link_folder(rag_conn, "f1", "kb_b")  # another scope, so nothing is excluded
+    _link_folder(rag_conn, "f1", "kb_b")
     filtered = store.search_lexical(rag_conn, "kb_a", "alpha bravo", 5)
     assert fast == filtered
 
@@ -294,10 +290,8 @@ def test_lexical_gate_and_read_share_one_snapshot(rag_conn, monkeypatch):
     hits = store.search_lexical(rag_conn, "kb_a", "alpha", 10)
 
     assert observed["gate"] is False
-    # Same connection, same call, after another connection committed the retirement.
     assert observed["after_commit"] is False
     assert [cid for cid, _ in hits] == ["d1:0"]
-    # The snapshot is released, so the next call sees the retirement and hides the row.
     monkeypatch.setattr(store, "linked_folder_rows_exist", real)
     assert store.search_lexical(rag_conn, "kb_a", "alpha", 10) == []
 
@@ -406,8 +400,7 @@ def test_a_pasted_log_does_not_make_the_archive_query_quadratic(monkeypatch):
     expressions = store.conversation_match_queries(question)
 
     assert expressions and expressions[0].startswith('"zqxvara123"')
-    # Once for the lower-cased tokens, once for the raw ones. Anything that grows with the
-    # token count is the quadratic coming back.
+    # Anything growing with token count means the quadratic is back.
     assert scans["n"] <= 2, f"tokenized the question {scans['n']} times"
 
 
@@ -440,7 +433,6 @@ def test_a_quoted_function_word_survives_the_stopword_filter():
 
     assert quoted == ['"say" OR "this"']
     assert plain == ['"say"']
-    # A quoted function word is not an identifier, so only the permissive pass widens.
     assert len(quoted) == 1
 
 
@@ -479,7 +471,6 @@ def test_the_candidate_window_is_cut_in_conversation_order(rag_home, rag_conn):
             archive_messages = 2,
             archive_ordinal = None,
             document_id = document_id,
-            # One tick for the whole archive, the way a Windows host stamps a compaction.
             created_at = "2026-01-01T00:00:00+00:00",
             commit = False,
         )
@@ -497,7 +488,6 @@ def test_the_candidate_window_is_cut_in_conversation_order(rag_home, rag_conn):
         store.add_chunks(conn, scope, document_id, chunks, [[0.0] * 4] * per_document)
     conn.commit()
 
-    # The premise: one score across the whole run, and more of it than the cap allows.
     everything = store.search_lexical(conn, scope, "ZQXTIEBREAK", documents * per_document + 10)
     assert len(everything) == documents * per_document
     assert len({score for _, score in everything}) == 1
@@ -512,14 +502,11 @@ def test_the_candidate_window_is_cut_in_conversation_order(rag_home, rag_conn):
     in_oldest = sorted({position_of[chunk.rsplit(":", 1)[0]] for chunk in oldest})
     in_newest = sorted({position_of[chunk.rsplit(":", 1)[0]] for chunk in newest})
 
-    # Both true ends survive the cut, which is the whole point of taking two windows.
     assert 0 in in_oldest, in_oldest
     assert documents - 1 in in_newest, in_newest
-    # And each window really is an END of the conversation, not a slice out of its middle.
     assert in_oldest[0] == 0 and in_oldest == list(range(len(in_oldest))), in_oldest
     assert in_newest[-1] == documents - 1, in_newest
     assert in_newest == list(range(documents - len(in_newest), documents)), in_newest
-    # The two windows are disjoint, so the pair spans strictly more than either alone.
     assert not set(in_oldest) & set(in_newest)
 
 
@@ -566,8 +553,7 @@ def test_the_candidate_order_survives_a_re_embed(rag_home, rag_conn):
             archive_messages = 2,
             archive_ordinal = ordinal,
             document_id = _document_id(position),
-            # One tick for every turn, so `created_at` cannot separate them and the rowid
-            # is the only record left of which was said first.
+            # One tick for every turn, so only rowid records order.
             created_at = created or "2026-01-01T00:00:00+00:00",
             rowid = rowid,
             commit = False,
@@ -619,12 +605,10 @@ def test_the_candidate_order_survives_a_re_embed(rag_home, rag_conn):
         row[0]
         for row in conn.execute("SELECT embedding_model FROM documents WHERE scope=?", (scope,))
     } == {"old-model", "new-model"}
-    # The rowid the ORDER BY sorts on came across the rewrite unchanged.
     assert (
         dict(conn.execute("SELECT id, rowid FROM documents WHERE scope=?", (scope,)).fetchall())
         == rowids_before
     )
-    # And so the window is still cut in conversation order, from either end.
     assert _positions(oldest_first = True) == list(range(turns))
     assert _positions(newest_first = True) == list(reversed(range(turns)))
 

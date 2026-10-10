@@ -43,7 +43,6 @@ def test_a_raw_mkdir_after_deletion_does_not_unfence_the_account(account_home, m
     retire_account_roots(ALICE)
     assert not root.exists()
 
-    # routes/training.py restore_folded(), verbatim, on a folder under the retired workspace.
     folder = run_as(ALICE, lambda: roots.datasets_root() / "tuxemon")
     folder.mkdir(parents = True, exist_ok = True)
     assert root.exists()
@@ -55,5 +54,4 @@ def test_a_raw_mkdir_after_deletion_does_not_unfence_the_account(account_home, m
         run_as(ALICE, studio_db.get_connection).close()
     assert not (root / "studio.db").exists()
 
-    # Single-user / owner installs are untouched: the owner is never retired.
     assert run_as(OWNER, lambda: roots.ensure_dir(roots.outputs_root())).is_dir()

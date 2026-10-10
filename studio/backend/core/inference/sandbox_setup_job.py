@@ -44,7 +44,7 @@ class SetupUnavailable(ValueError):
 class SetupJob:
     id: str
     operation: str
-    state: str = "running"  # running | succeeded | declined | failed
+    state: str = "running"
     started_at: float = field(default_factory = time.time)
     finished_at: float | None = None
     exit_code: int | None = None

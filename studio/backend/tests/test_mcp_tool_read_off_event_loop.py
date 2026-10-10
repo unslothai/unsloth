@@ -23,7 +23,6 @@ _TESTS_DIR = str(Path(__file__).resolve().parent)
 if _TESTS_DIR not in sys.path:
     sys.path.insert(0, _TESTS_DIR)
 
-# Reuse the token-count handler fixtures.
 from test_openai_auto_switch import (  # noqa: E402
     MCP_TOOL_PAYLOAD,
     _count_request,

@@ -88,7 +88,6 @@ def test_cpu_media_load_refuses_a_generation_started_mid_load(
         return None
 
     def start_foreign(*_a, **_k):
-        # The window: another account's generation registers while this load is still validating.
         foreign_generation("diffusion" if modality == "image" else "video")
 
     monkeypatch.setattr(diffusion, "get_diffusion_backend", lambda: backend)
@@ -130,5 +129,4 @@ def test_cpu_media_load_refuses_a_generation_started_mid_load(
         asyncio.run(arun_as(BOB, load(request, BOB.username)))
     assert refused.value.status_code == 409
     assert refused.value.detail["error"] == "gpu_busy"
-    # Nothing was activated and nothing was loaded: ALICE's generation still owns the backend.
     assert touched == []

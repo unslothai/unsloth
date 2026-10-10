@@ -38,7 +38,6 @@ def _mask_tool_responses(trainer, start_id, end_id, turn_id):
                 starts = [i for i, token in enumerate(input_ids) if token == start_id]
                 for start, limit in zip(starts, starts[1:] + [len(input_ids)]):
                     span = input_ids[start + 1 : limit]
-                    # An unanswered tool call has no closing marker; its span ends at the next turn.
                     if end_id in span:
                         stop = span.index(end_id) + 1
                     else:
@@ -108,7 +107,6 @@ def apply_completion_masking(
             processor = wrapped
     inner = getattr(processor, "tokenizer", processor)
 
-    # Gemma 4 puts tool results inside the model turn; MLX labels its batches inside train_fn, out of reach here.
     vocab = inner.get_added_vocab() if hasattr(inner, "get_added_vocab") else {}
     tool_response = (vocab.get("<|tool_response>"), vocab.get("<tool_response|>"))
     if None not in tool_response and type(trainer).__name__ != "MLXTrainer":
@@ -151,8 +149,7 @@ def apply_completion_masking(
 
     template, instruction_part, response_part = lookup_manual_markers(model_name)
 
-    # gpt-oss goes auto-first: quantized/BF16 checkpoints ship a channel-less template, so the manual markers match
-    # nothing and zero tokens are trained.
+    # gpt-oss goes auto-first: some checkpoints ship a channel-less template.
     if is_gpt_oss_model_name(model_name) and not (instruction_part and response_part):
         markers = TEMPLATE_TO_RESPONSES_MAPPER.get("gpt-oss")
         if markers:
@@ -160,7 +157,6 @@ def apply_completion_masking(
             instruction_part = markers["instruction"]
             response_part = markers["response"]
     if hasattr(inner, "_unsloth_input_part") and hasattr(inner, "_unsloth_output_part"):
-        # Markers preset on the tokenizer; zoo reuses them on a bare call.
         trainer = train_fn(trainer, **kwargs)
         notify(
             "info",
@@ -170,8 +166,7 @@ def apply_completion_masking(
     auto_instruction = auto_response = None
     try:
         if detect_fn is None:
-            # Torch-backed import is fine: the MLX train_fn itself requires
-            # unsloth_zoo.dataset_utils, so a torch-free host cannot mask either way.
+            # MLX train_fn needs unsloth_zoo.dataset_utils anyway, so torch import is fine.
             from unsloth_zoo.dataset_utils import get_chat_template_parts as detect_fn
         auto_instruction, auto_response = detect_fn(processor)
     except Exception as e:

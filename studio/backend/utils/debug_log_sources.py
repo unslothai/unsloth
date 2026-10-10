@@ -12,7 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-# (subdirectory under a studio home, filename glob). backend-* is the Tauri shell's capture of backend stdout, and the only record that exists when the backend dies before disk logging starts. Python writers are run.py:_setup_server_disk_logging and the llama / diffusion runners in core/inference/llama_cpp.py; the desktop families come from src-tauri/src/diagnostics/phase_log.rs and land in the logs directory ITSELF, with tauri.log at the home root.
+# (subdir under studio home, filename glob). backend-* is the Tauri capture of stdout,
+# the only record when the backend dies before disk logging starts.
 FAMILIES: dict[str, tuple[str, str]] = {
     "server": ("logs/server", "server-*.log"),
     "llama-server": ("logs/llama-server", "llama-*.log"),
@@ -24,7 +25,7 @@ FAMILIES: dict[str, tuple[str, str]] = {
     "desktop-shell": ("", "tauri.log*"),
 }
 
-# Per family, so a busy host cannot make the picker unusable. Several, not one: the llama runner writes a file per load ATTEMPT, so after a retry the useful one is often not the newest.
+# Several per family: the llama runner writes one file per load attempt.
 MAX_SOURCES_PER_FAMILY = 10
 
 _DIGEST_CHARS = 16
@@ -52,7 +53,6 @@ def candidate_roots() -> list[Path]:
             resolved = Path(os.path.realpath(path))
         except (OSError, ValueError):
             return
-        # Folded, so a case-only difference is not scanned twice on a case-insensitive volume.
         if not any(_identity(resolved) == _identity(known) for known in roots):
             roots.append(resolved)
 
@@ -62,12 +62,12 @@ def candidate_roots() -> list[Path]:
     except Exception:
         pass
 
-    # Mirror _swa_cache_path exactly: env override if set, else the legacy home. Both would pull a DIFFERENT installation's logs into this one.
+    # Mirror _swa_cache_path exactly, or a different installation's logs get pulled in.
     env_home = (
         os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME") or ""
     ).strip()
     if env_home:
-        # Both spellings, because writer and reader disagree about the tilde: _swa_cache_path builds Path(home) raw, so an unexpanded value (systemd EnvironmentFile, dotenv) makes the runners write to a directory NAMED "~" while expanduser looks in the real home. Safe unlike the env-versus-legacy case above: one value, two spellings.
+        # Both spellings: the runners may write to a literal "~" directory when unexpanded.
         for spelling in (Path(env_home).expanduser(), Path(env_home)):
             try:
                 _add(spelling)
@@ -126,13 +126,13 @@ def _family_files(family: str) -> list[Path]:
             entries = list(directory.glob(pattern))
         except OSError:
             continue
-        # Nothing prunes logs/llama-server and one file is written per load ATTEMPT (11,794 on this host), so a filename presort, which tracks time order, leaves a handful to stat. Every family's filename embeds its creation time (server-YYYYmmdd-HHMMSS, llama-<epoch>, diffusion-<epoch>, desktop ms epoch), and realpath + stat on every file cost ~356ms at a 1 Hz poll.
+        # Filenames embed creation time, so a name presort avoids stat on thousands of files.
         entries.sort(key = lambda entry: entry.name, reverse = True)
         entries = entries[: MAX_SOURCES_PER_FAMILY * 3]
         for entry in entries:
             try:
                 real = Path(os.path.realpath(entry))
-                # The TARGET must stay inside: a symlink dropped into the log directory must not become a reader for ~/.ssh/id_rsa.
+                # The target must stay inside, so a symlink cannot expose files like ~/.ssh/id_rsa.
                 if not _is_inside(real, real_dir):
                     continue
                 if not real.is_file():
@@ -142,7 +142,7 @@ def _family_files(family: str) -> list[Path]:
                 stat = real.stat()
             except (OSError, ValueError):
                 continue
-            # Keyed on the folded spelling so a case-insensitive volume cannot list one file twice; the first spelling seen is kept, so the id digest stays over the real path.
+            # Keyed on the folded spelling so a case-insensitive volume does not list a file twice.
             found.setdefault(_identity(real), (real, stat.st_mtime))
     ordered = sorted(found.values(), key = lambda item: item[1], reverse = True)
     return [path for path, _ in ordered[:MAX_SOURCES_PER_FAMILY]]
@@ -150,7 +150,7 @@ def _family_files(family: str) -> list[Path]:
 
 def _is_current(family: str, path: Path, newest: Optional[Path]) -> bool:
     if family == "server":
-        # uvicorn is single process here, so our own pid is in the active session's filename: an exact match, not a newest-file guess. Anchored on the suffix because a substring test for "pid1234" would also match a retained ...-pid12345.log.
+        # Single-process uvicorn: our pid is in the active log name; suffix match avoids pid prefixes.
         return path.name.endswith(f"-pid{os.getpid()}.log")
     return newest is not None and path == newest
 
@@ -225,7 +225,7 @@ def default_source_id() -> Optional[str]:
     for source in sources:
         if source.family == "server" and source.is_current:
             return source.id
-    # No live session: the newest file across every family, NOT any retained server log, which would open the tab on a previous run while the llama log holding the failure sat one entry down. That is the state after UNSLOTH_STUDIO_NO_FILE_LOG=1 or a failed log setup.
+    # No live session: pick the newest file across all families, not the newest server log.
     return max(sources, key = lambda s: s.modified_at).id
 
 

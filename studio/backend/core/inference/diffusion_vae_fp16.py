@@ -82,7 +82,7 @@ def enable_fp16_vae_decode(
     config = getattr(vae, "config", None)
     if type(vae).__name__ != "AutoencoderKL" or not getattr(config, "force_upcast", False):
         return False
-    # A decode compiled before this would sit inside the check, and its eager fallback would unwrap it.
+    # A decode compiled before this would sit inside the check and be unwrapped on fallback.
     if getattr(vae, "_unsloth_compiled_decode", False):
         return False
     try:
@@ -112,7 +112,7 @@ def enable_fp16_vae_decode(
             if m is not None
         ]
         fell_back: list = []
-        # Decode compile goes in this slot: the check stays eager (no graph break) and outlives a fallback.
+        # Decode compile goes in this slot: the check stays eager and outlives a fallback.
         slot = types.SimpleNamespace(decode = decode)
 
         def _fp32_call(fn: Any, parts: list, x: Any, *args: Any, **kwargs: Any) -> Any:

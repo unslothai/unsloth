@@ -100,15 +100,13 @@ def test_formats_finish_and_remain_searchable(
     assert events[-1]["type"] == "complete"
     progress = [e["progress"] for e in events if e["type"] == "progress"]
     assert progress == sorted(progress)
-    assert not vision_calls  # Text-only fixtures need no vision.
+    assert not vision_calls
     conn = rag_db.get_connection()
     try:
         doc = store.get_document(conn, doc_id)
         assert doc["status"] == "completed" and doc["num_chunks"] > 1
         assert store.search_lexical(conn, scope, "revenue", 5)
-        assert store.search_lexical(
-            conn, scope, "zebramarker", 5
-        )  # Preserve the final paragraph or table cell.
+        assert store.search_lexical(conn, scope, "zebramarker", 5)
         assert not store.search_lexical(conn, scope, "hiddenscriptmarker", 5)
     finally:
         conn.close()

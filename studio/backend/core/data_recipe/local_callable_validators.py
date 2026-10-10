@@ -232,10 +232,10 @@ def _run_oxc_batch(
         "mode": validation_mode,
         "code_shape": code_shape,
         "codes": code_values,
-        # The wrapper bounds oxlint with this; a kill here would leave the grandchild.
+        # The wrapper bounds oxlint; a kill here would leave the grandchild.
         "timeout_ms": int(_OXC_TIMEOUT_S * 1000),
     }
-    # Resolve a usable Node: a bare "node" fails for isolated-Node users, whose install is not on PATH.
+    # A bare "node" fails for isolated-Node installs not on PATH.
     node_executable = resolve_node_executable()
     if not node_executable:
         return _fallback_results(
@@ -249,7 +249,6 @@ def _run_oxc_batch(
         env["TMPDIR"] = tmp_dir_str
         env["TMP"] = tmp_dir_str
         env["TEMP"] = tmp_dir_str
-        # Resolved node's dir first on the child PATH so it finds its own npm/npx.
         node_bin_dir = os.path.dirname(node_executable)
         if node_bin_dir:
             env["PATH"] = node_bin_dir + os.pathsep + env.get("PATH", "")

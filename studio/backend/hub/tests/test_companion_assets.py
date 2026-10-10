@@ -21,7 +21,7 @@ from hub.utils import companion_assets
 
 GGUF_REPO = "unsloth/FLUX.2-klein-4B-GGUF"
 BASE_REPO = "black-forest-labs/FLUX.2-klein-4B"
-# Real byte counts, measured from a cache holding exactly this pair.
+# Real byte counts measured from a cache holding this pair.
 Q2_K_BYTES = 1_827_807_808
 Q4_K_M_BYTES = 2_604_311_104
 COMPANION_BYTES = 8_229_021_460
@@ -91,18 +91,12 @@ def _install(monkeypatch, *repos):
     return scans
 
 
-# --------------------------------------------------------------------------------------------
-
-
 def test_two_quants_of_one_family_resolve_to_a_single_companion_base():
     """Both quants derive the same base id, so the cache holds one copy, not two."""
     scans = [SimpleNamespace(repos = [_gguf_repo(("Q2_K", Q2_K_BYTES), ("Q4_K_M", Q4_K_M_BYTES))])]
     required = companion_assets.required_companion_bases(scans)
     assert BASE_REPO.lower() in required
     assert required[BASE_REPO.lower()] == {GGUF_REPO}
-
-
-# --------------------------------------------------------------------------------------------
 
 
 def test_deleting_one_of_two_quants_retains_the_companions(monkeypatch):
@@ -112,7 +106,6 @@ def test_deleting_one_of_two_quants_retains_the_companions(monkeypatch):
     retained = impact["retained_companions"]
     assert [r["repo_id"] for r in retained] == [BASE_REPO]
     assert retained[0]["size_bytes"] == COMPANION_BYTES
-    # The surviving quant is named as the reason, so the dialog can say who is holding it.
     assert retained[0]["needed_by"] == [GGUF_REPO]
     assert impact["freeable_companions"] == []
 
@@ -133,9 +126,6 @@ def test_whole_repo_delete_reclaims_every_quant(monkeypatch):
     impact = asyncio.run(companion_cleanup.delete_impact_response(GGUF_REPO))
     assert impact["reclaimed_bytes"] == Q2_K_BYTES + Q4_K_M_BYTES
     assert [f["repo_id"] for f in impact["freeable_companions"]] == [BASE_REPO]
-
-
-# --------------------------------------------------------------------------------------------
 
 
 def test_shared_base_cannot_be_deleted_while_a_quant_is_installed(monkeypatch):
@@ -178,8 +168,6 @@ def test_a_base_reached_only_through_a_card_tag_is_still_protected(monkeypatch):
     gguf = _repo("unsloth/FLUX.2-klein-9B-GGUF", [("flux-2-klein-9b-Q4_K_M.gguf", Q4_K_M_BYTES)])
     other_base = "black-forest-labs/FLUX.2-klein-9B"
     _install(monkeypatch, gguf, _base_repo(other_base))
-    # Before any load has been recorded: the id says klein-9B, so the curated klein-9B base is derived
-    # even though the family default is klein-4B.
     assert companion_cleanup.companion_dependents(other_base) == ["unsloth/FLUX.2-klein-9B-GGUF"]
     companion_assets.record_companion_link("unsloth/FLUX.2-klein-9B-GGUF", other_base)
     assert companion_cleanup.companion_dependents(other_base) == ["unsloth/FLUX.2-klein-9B-GGUF"]
@@ -214,9 +202,6 @@ def test_the_guard_leaves_ordinary_repos_alone(monkeypatch):
     assert companion_assets.is_companion_base(BASE_REPO)
 
 
-# --------------------------------------------------------------------------------------------
-
-
 def test_orphan_listing_is_empty_while_a_quant_is_installed(monkeypatch):
     _install(monkeypatch, _gguf_repo(("Q4_K_M", Q4_K_M_BYTES)), _base_repo())
     result = asyncio.run(companion_cleanup.orphan_companions_response())
@@ -229,7 +214,6 @@ def test_orphan_listing_reports_the_stranded_companions_once_the_quants_are_gone
     result = asyncio.run(companion_cleanup.orphan_companions_response())
     assert [c["repo_id"] for c in result["companions"]] == [BASE_REPO]
     assert result["total_bytes"] == COMPANION_BYTES
-    # The repo dir, not the cache root: the delete route resolves the owning cache from it.
     assert (
         result["companions"][0]["cache_path"] == "/cache/models--black-forest-labs--FLUX.2-klein-4B"
     )
@@ -295,7 +279,6 @@ def test_recording_a_link_keeps_the_ones_already_there():
     links = companion_assets.read_companion_links()
     assert links[GGUF_REPO.lower()] == [BASE_REPO]
     assert links["unsloth/flux.2-klein-9b-gguf"] == ["black-forest-labs/FLUX.2-klein-9B"]
-    # Re-recording the same pair is a no-op rather than a duplicate.
     assert companion_assets.record_companion_link(GGUF_REPO, BASE_REPO) is False
     assert companion_assets.read_companion_links()[GGUF_REPO.lower()] == [BASE_REPO]
 
@@ -343,7 +326,6 @@ def test_the_link_trim_keeps_the_newest_not_the_alphabetically_last(monkeypatch)
     its non-table companion base then looked deletable while the checkpoint was still installed.
     """
     monkeypatch.setattr(companion_assets, "_MAX_LINKS", 3)
-    # Recorded newest-last but named so that alphabetical order is the exact reverse.
     for name in ("unsloth/zz-GGUF", "unsloth/mm-GGUF", "unsloth/aa-GGUF"):
         assert companion_assets.record_companion_link(name, BASE_REPO) is True
     assert list(companion_assets.read_companion_links()) == [
@@ -351,7 +333,6 @@ def test_the_link_trim_keeps_the_newest_not_the_alphabetically_last(monkeypatch)
         "unsloth/mm-gguf",
         "unsloth/aa-gguf",
     ]
-    # A fourth evicts the oldest, which is the first recorded, not "aa".
     assert companion_assets.record_companion_link("unsloth/nn-GGUF", BASE_REPO) is True
     assert list(companion_assets.read_companion_links()) == [
         "unsloth/mm-gguf",
@@ -377,7 +358,6 @@ def test_recording_a_second_base_refreshes_the_checkpoints_recency(monkeypatch):
         BASE_REPO,
         "unsloth/other-base",
     ]
-    # "second" is the oldest now, so it is what a third checkpoint displaces.
     assert companion_assets.record_companion_link("unsloth/third-GGUF", BASE_REPO) is True
     assert list(companion_assets.read_companion_links()) == [
         "unsloth/first-gguf",
@@ -399,7 +379,6 @@ def test_freeable_companions_only_names_bases_free_up_space_can_offer(monkeypatc
     )
     impact = asyncio.run(companion_cleanup.delete_impact_response(GGUF_REPO))
     assert [c["repo_id"] for c in impact["freeable_companions"]] == []
-    # It is still PROTECTED, which is the half the guard owns.
     assert companion_assets.is_companion_base(link_only) is True
     offered = asyncio.run(companion_cleanup.orphan_companions_response())["companions"]
     assert [c["repo_id"] for c in offered] == []
@@ -413,8 +392,6 @@ def test_reusing_an_existing_link_still_refreshes_its_recency(monkeypatch):
     monkeypatch.setattr(companion_assets, "_MAX_LINKS", 2)
     assert companion_assets.record_companion_link("unsloth/old-GGUF", BASE_REPO) is True
     assert companion_assets.record_companion_link("unsloth/new-GGUF", BASE_REPO) is True
-    # The old one resolves again to the SAME base: nothing new to record, but it is now the freshest
-    # link, so the next checkpoint displaces the other one.
     assert companion_assets.record_companion_link("unsloth/old-GGUF", BASE_REPO) is False
     assert companion_assets.read_companion_links()["unsloth/old-gguf"] == [BASE_REPO]
     assert companion_assets.record_companion_link("unsloth/third-GGUF", BASE_REPO) is True
@@ -443,7 +420,6 @@ def test_a_cached_community_repack_is_a_companion_identity_too(monkeypatch):
     required = companion_assets.required_companion_bases(cache_inventory.all_hf_cache_scans())
     assert GGUF_REPO in required.get(repack.lower(), set())
     assert companion_cleanup.companion_dependents(repack) == [GGUF_REPO]
-    # And it is refused as a delete while the GGUF is installed.
     assert companion_assets.is_companion_base(repack) is True
 
 
@@ -554,14 +530,11 @@ def test_deleting_the_companion_quant_itself_runs_the_guard(monkeypatch):
             ],
         ),
     )
-    # The exact quant the image load opens is guarded even with a sibling still present.
     assert deletion._variant_is_a_required_companion_asset(encoder_repo, "Q4_K_M") is True
-    # The sibling is nobody's asset, so an ordinary variant delete stays unguarded.
     assert deletion._variant_is_a_required_companion_asset(encoder_repo, "Q8_0") is False
     assert deletion._variant_is_a_required_companion_asset("some-owner/unrelated", "Q4_K_M") is (
         False
     )
-    # ... and the guard reports the dependant, so the delete is refused rather than silently done.
     assert companion_cleanup.companion_dependents(encoder_repo) == ["some-owner/qwen-image"]
 
 
@@ -827,7 +800,6 @@ def test_free_up_space_refuses_a_row_that_became_an_installed_model(monkeypatch)
     from hub.services.models import deletion
 
     base = BASE_REPO
-    # The companion-only copy Free up space listed, now carrying a downloaded denoiser.
     _install(monkeypatch, _repo(base, [("transformer/diffusion_pytorch_model.safetensors", 9_000)]))
     with pytest.raises(HTTPException) as excinfo:
         asyncio.run(deletion.delete_cached_model_response(base, only_if_orphan = True))
@@ -891,7 +863,6 @@ def test_one_checkpoints_recorded_bases_are_bounded(monkeypatch):
         companion_assets.record_companion_link(GGUF_REPO, f"some-vendor/base-{i}")
     bases = companion_assets.read_companion_links()[GGUF_REPO.lower()]
     assert len(bases) == companion_assets._MAX_BASES_PER_CHECKPOINT
-    # The most recent survive; the oldest go.
     assert bases[-1] == f"some-vendor/base-{companion_assets._MAX_BASES_PER_CHECKPOINT + 4}"
     assert "some-vendor/base-0" not in bases
 

@@ -65,8 +65,6 @@ class TestTheBudgetIsEnforced:
             lease = first.lease_nowait()
             assert lease is not None, "the first request owns the cache"
             second = await _reserve(queue, capacity = 4, tokens = 1500, budget = 2048)
-            # A slot is free, but the cache is not. Before token accounting this
-            # returned a lease and llama.cpp killed both tasks.
             assert second.lease_nowait() is None
             return queue, lease, second
 
@@ -106,7 +104,6 @@ class TestTheBudgetIsEnforced:
             assert queue.snapshot().committed == 1500
             lease.release()
             assert queue.snapshot().committed == 0
-            # And the cache is available again.
             second = await _reserve(queue, capacity = 4, tokens = 1500, budget = 2048)
             return second.lease_nowait()
 
@@ -223,7 +220,6 @@ class TestTheRouteHelpers:
             budget = 2048,
             capacity = 4,
         )
-        # Clamped so the queue admits it alone rather than stranding it.
         assert cost == 2048
 
     def test_a_shape_with_no_messages_reserves_a_fair_share(self):
@@ -236,8 +232,7 @@ class TestTheRouteHelpers:
             budget = 2048,
             capacity = 4,
         )
-        # Not the whole budget (that would serialise /completions) and not nothing
-        # (that would restore the overcommit).
+        # not the whole budget (serialises /completions), not zero (overcommits)
         assert cost == 512
 
     def test_no_budget_means_no_cost(self):
@@ -271,7 +266,6 @@ class TestParkedLeasesStillHoldTheirKV:
             lease = first.lease_nowait()
             assert lease is not None
             assert lease.park() is True, "the park budget must allow this"
-            # The slot is back, the KV is not.
             assert queue.snapshot().committed == 1500
             second = await _reserve(queue, capacity = 4, tokens = 1500, budget = 2048)
             return queue, second.lease_nowait()
@@ -539,7 +533,6 @@ class TestToolLoopsOpenAtAShareAndGrow:
             for _ in range(4):
                 reservation = await _reserve(queue, capacity = 4, tokens = cost, budget = 2048)
                 leases.append(reservation.lease_nowait())
-            # The cache is exactly full at four shares, so nobody may grow.
             return leases, queue
 
         leases, queue = _run(scenario())
@@ -597,12 +590,12 @@ class TestCancellingTheBlockingHeadReopensTheLine:
 
             blocked = await _reserve(queue, capacity = 4, tokens = 1500, budget = 2048)
             behind = await _reserve(queue, capacity = 4, tokens = 500, budget = 2048)
-            # 1000 + 1500 > 2048, and FIFO holds the 500 behind it.
+            # 1000 + 1500 > 2048, and FIFO holds the 500 behind it
             assert blocked.lease_nowait() is None
             assert behind.lease_nowait() is None
 
             blocked.cancel()
-            # No other queue traffic: the cancel itself must reopen the line.
+            # no other queue traffic: the cancel itself must reopen the line
             await asyncio.sleep(0)
             assert behind.lease_nowait() is not None
 
@@ -627,7 +620,6 @@ class TestCancellingTheBlockingHeadReopensTheLine:
 
             tail.cancel()
             await asyncio.sleep(0)
-            # The oversized head is still oversized, so it stays queued.
             assert head.lease_nowait() is None
             assert queue.snapshot().queued == 1
 

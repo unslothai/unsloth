@@ -107,9 +107,6 @@ def _texts(events) -> list[str]:
     ]
 
 
-# ── The shape the UI sends ─────────────────────────────────────────
-
-
 @pytest.mark.parametrize(
     "last, kind",
     [
@@ -117,10 +114,8 @@ def _texts(events) -> list[str]:
         ({"role": "assistant", "content": "2, 3", "reasoning_content": "Easy."}, "content"),
         (_CUT_MID_THOUGHT, "reasoning_content"),
         ({"role": "assistant", "content": [], "reasoning_content": _THOUGHT}, "reasoning_content"),
-        # Whitespace is no thought, and an empty turn has nothing to resume.
         ({"role": "assistant", "content": "", "reasoning_content": "  \n"}, None),
         ({"role": "assistant", "content": ""}, None),
-        # A tool call has no resume point, whatever reasoning it carries.
         (
             {
                 "role": "assistant",
@@ -158,9 +153,6 @@ def test_the_route_resumes_a_thought_only_where_asked():
     assert _continue_final_message(payload) is True
 
 
-# ── Plain GGUF path ──────────────────────────────────────────────
-
-
 def test_a_thought_only_turn_goes_out_as_a_reasoning_continuation(monkeypatch):
     payloads: list[dict] = []
     backend = _make_backend(
@@ -180,7 +172,6 @@ def test_a_thought_only_turn_goes_out_as_a_reasoning_continuation(monkeypatch):
     assert sent["continue_final_message"] is True
     assert sent["add_generation_prompt"] is False
     assert sent["messages"][-1] == _CUT_MID_THOUGHT
-    # Only what llama-server streamed: the UI already holds the thought it sent.
     assert _texts(events)[-1] == "<think> 2, 3 and 5.</think>2, 3 and 5."
 
 
@@ -217,9 +208,6 @@ def test_promotion_is_unchanged_without_a_resumed_thought():
     assert _finalize_reasoning_only_cumulative("<think>c", "c", "length", True, "ab") == (
         "<think>c</think>"
     )
-
-
-# ── Tool loop ────────────────────────────────────────────────────
 
 
 def test_the_tool_loop_resumes_the_thought_and_keeps_it_whole(monkeypatch):
@@ -294,7 +282,6 @@ def test_a_no_op_tool_call_after_a_resumed_thought_replays_the_whole_thought(mon
         [
             [
                 *([_sse({"reasoning_content": tail})] if tail else []),
-                # Not enabled for this request, so the call is a no-op and a nudge follows.
                 _sse(
                     {
                         "tool_calls": [
@@ -384,9 +371,6 @@ def test_a_resumed_answer_keeps_its_own_reasoning():
         "content": "2, 3 and 5.",
         "reasoning_content": "Easy.",
     }
-
-
-# ── Older llama-server builds ─────────────────────────────────────
 
 
 @pytest.mark.parametrize(

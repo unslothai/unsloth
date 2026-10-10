@@ -65,9 +65,6 @@ def _whole_compiled(counter):
     return net
 
 
-# ---------------------------------------------------------------------------------------------- background compile
-
-
 _REAL_COMPILE = r"""
 import torch
 from core.inference import diffusion_bg_compile as bg
@@ -120,8 +117,7 @@ print("BG_COMPILE_OK")
 
 
 def test_force_eager_never_reaches_dynamo_and_the_background_compile_does(monkeypatch):
-    # Own interpreter: a dynamo compile on a worker thread leaves torch state that crashes a later make_fx trace in
-    # the same process (seen with test_video_minimax_h3_adaln.py, also with plain torch and no Studio code).
+    # Own interpreter: a dynamo compile on a worker thread breaks a later make_fx trace in-process.
     import os
     import subprocess
     from pathlib import Path
@@ -147,16 +143,13 @@ def test_recording_dedups_by_input_shape_and_ignores_unforced_calls():
     with torch.no_grad():
         with bg.force_eager():
             net(torch.randn(2, 8), return_dict = False)
-            net(torch.randn(2, 8), return_dict = False)  # same shape: not recorded again
-            net(
-                torch.randn(3, 8), return_dict = False
-            )  # a second shape (e.g. the CFG half with another length)
+            net(torch.randn(2, 8), return_dict = False)
+            net(torch.randn(3, 8), return_dict = False)
     assert len(job.samples) == 2
     job.close()
 
 
 def test_close_breaks_the_hook_job_cycle():
-    # An aborted load closes its job: the hook <-> job cycle would otherwise keep the pipeline's tensors alive.
     net = _whole_compiled(_Counter())
     job = bg.arm(net)
     assert len(net._forward_pre_hooks) == 1
@@ -188,8 +181,7 @@ def test_kill_switch_disables_arming(monkeypatch):
     ],
 )
 def test_load_time_background_compile_is_opt_in(monkeypatch, raw, deferred, at_load):
-    # Render 1 eager + render 2 compiled would break "same seed twice repeats", so only the deferred profile (which
-    # already switched eager -> compiled at generation 3) compiles in the background unless =1 opts the load in.
+    # Eager then compiled renders would break same-seed repeats, so only deferred compiles in bg.
     if raw is None:
         monkeypatch.delenv("UNSLOTH_DIFFUSION_BG_COMPILE", raising = False)
     else:
@@ -210,7 +202,7 @@ def test_a_render_waits_for_an_in_flight_compile_and_cancel_releases_it():
     job = bg.BackgroundCompile(_Slow())
     assert job.install()
     with torch.no_grad(), bg.force_eager():
-        job.module(torch.zeros(1))  # recorded; only the background replay blocks on the gate
+        job.module(torch.zeros(1))
     job.kick()
     assert job.compiling()
     cancel = threading.Event()
@@ -266,7 +258,6 @@ def test_a_failing_warm_forward_ends_the_attempt_without_raising():
     net = _Boom()
     job = bg.BackgroundCompile(net)
     assert job.install()
-    # Record by hand: the eager call itself would raise too.
     job.samples.append(
         (("l", True, [("l", True, [("t", 0)]), ("d", [])]), [torch.zeros(1)], False, False, None)
     )
@@ -297,7 +288,6 @@ def test_graphed_forward_neither_captures_nor_poisons_under_force_eager():
         assert graphed.stats["captures"] == 0
         assert graphed.stats["eager_calls"] == 1
         assert not graphed.poisoned
-        # The background thread runs the wrapped callable without counting an eager call or capturing.
         token = bg._NO_CAPTURE.set(True)
         try:
             with torch.no_grad():
@@ -320,7 +310,7 @@ class _UNet2DConditionModel(torch.nn.Module):
         ({"transformer_quant": "int8"}, False),
         ({"gguf_transformer": True}, False),
         ({"offload_policy": "group", "_hooked": True}, False),
-        ({"offload_policy": "group"}, True),  # encoders streamed, denoiser resident
+        ({"offload_policy": "group"}, True),
         ({"speed_mode": "max"}, False),
         ({"speed_optims": ("cuda_graph",)}, False),
         ({"transformer_cache": "fbcache"}, False),
@@ -357,9 +347,6 @@ def test_only_dense_resident_default_tier_cuda_loads_compile_in_the_background(
     assert (got is unet) is expect
 
 
-# ---------------------------------------------------------------------------------------------- probe-table cache
-
-
 @pytest.fixture
 def probe_home(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
@@ -382,7 +369,6 @@ def test_probe_table_round_trips_and_misses_on_any_stack_change(probe_home, monk
 
 
 def test_an_all_negative_table_is_not_persisted(probe_home):
-    # A busy / unavailable device at probe time fails every scheme; that must not outlive the process.
     assert probe_cache.store("cuda:0", {"int8": False, "fp8": False, "mxfp8": None}) is False
     assert probe_cache.load("cuda:0") is None
 
@@ -423,7 +409,6 @@ def test_a_clean_child_table_is_persisted(monkeypatch):
         probe_cache, "store", lambda card, table: stored.setdefault(card, dict(table))
     )
 
-    # Drive the tail of _child_probe_table: a table read off the queue is persisted and returned.
     class _Q:
         def get(self, timeout = None):
             return {"int8": True}
@@ -452,9 +437,6 @@ def test_a_clean_child_table_is_persisted(monkeypatch):
     monkeypatch.setattr(tq, "_CHILD_PROBE_UNAVAILABLE", False, raising = False)
     assert tq._child_probe_table("cuda:0") == {"int8": True}
     assert stored == {"cuda:0": {"int8": True}}
-
-
-# ---------------------------------------------------------------------------------------------- mapped pre-quant read
 
 
 def test_mapped_read_only_for_an_accelerator_destination(monkeypatch):
@@ -510,9 +492,6 @@ def test_mapped_read_matches_the_full_read_and_falls_back(tmp_path, monkeypatch)
     assert torch.equal(out["state_dict"]["w"], ckpt["state_dict"]["w"])
 
 
-# ---------------------------------------------------------------------------------------------- deeper prewarm
-
-
 def _prewarm_ready(monkeypatch):
     from utils import torch_warmup
 
@@ -551,9 +530,6 @@ def test_the_model_prewarm_has_its_own_switch(monkeypatch):
     assert imported == []
 
 
-# ---------------------------------------------------------------------------------------------- load-progress latch
-
-
 def test_load_progress_stops_rescanning_once_every_byte_is_on_disk(monkeypatch):
     from core.inference import diffusion as D
 
@@ -570,7 +546,7 @@ def test_load_progress_stops_rescanning_once_every_byte_is_on_disk(monkeypatch):
     second = D.DiffusionBackend.load_progress(fake)
     assert first["phase"] == second["phase"] == "finalizing"
     assert len(scans) == 1, "a finished download was rescanned on every poll"
-    loading.expected_bytes = 200  # a revised estimate is a new question
+    loading.expected_bytes = 200
     D.DiffusionBackend.load_progress(fake)
     assert len(scans) == 2
     monkeypatch.setenv("UNSLOTH_DIFFUSION_PROGRESS_LATCH", "0")
@@ -594,9 +570,6 @@ def test_load_progress_keeps_scanning_while_downloading():
     for _ in range(3):
         assert D.DiffusionBackend.load_progress(fake)["phase"] == "downloading"
     assert len(scans) == 3 and loading.finalized_scan is None
-
-
-# ---------------------------------------------------------------------------------------------- boot-time probe
 
 
 @pytest.fixture

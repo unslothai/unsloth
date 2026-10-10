@@ -57,7 +57,7 @@ def _request(authorization = None):
     if authorization:
         headers["authorization"] = authorization
     return SimpleNamespace(
-        # The confirm gate can only ask over these frames.
+        # the confirm gate can only ask over these frames
         headers = headers,
         state = SimpleNamespace(skip_api_monitor = True),
         is_disconnected = is_disconnected,
@@ -144,9 +144,6 @@ def _run(
     return _drive(go())
 
 
-# ── the confirm gate reads the effective mode, not the raw flag ──────────────
-
-
 def test_non_streaming_ask_mode_is_rejected_like_the_local_routes(monkeypatch):
     """``permission_mode: "ask"`` is how the UI asks for the gate.
 
@@ -221,7 +218,6 @@ _PNG = (
 def test_an_mcp_image_is_refused_when_the_tool_loop_will_not_run(monkeypatch):
     """The direct proxy forwards no MCP image, so accepting one would drop it silently."""
     inf = _install(monkeypatch, "openai")
-    # A provider/model that runs no local tools proxies straight through.
     monkeypatch.setattr(inf, "provider_model_runs_local_tools", lambda *a: False)
     payload = _payload(enable_tools = True, mcp_enabled = True, mcp_image = _PNG)
     with pytest.raises(HTTPException) as excinfo:
@@ -245,7 +241,6 @@ def test_an_mcp_image_reaches_the_tool_loop(monkeypatch):
     from core.inference import tools as tools_mod
 
     inf = _install(monkeypatch, "openai")
-    # Stands in for an enabled server whose tool has a mapped image field.
     monkeypatch.setattr(tools_mod, "mcp_catalog_takes_image", lambda names: True)
     entered = _capture_loop(monkeypatch, inf)
     _run(
@@ -261,9 +256,6 @@ def test_a_non_streaming_request_without_any_confirm_intent_still_proxies(monkey
     payload = _payload(stream = False, enable_tools = True, permission_mode = "off")
     _run(inf, payload)
     assert FakeExternalClient.last["passthrough"] is not None
-
-
-# ── the summed usage chunk keeps the model it was spent on ───────────────────
 
 
 def test_the_external_loop_is_told_which_model_the_usage_belongs_to(monkeypatch):
@@ -333,9 +325,6 @@ def test_the_usage_chunk_falls_back_only_when_no_model_is_known():
     """`"external"` is the last resort, so it must not be what a real run reports."""
     from core.inference.studio_tool_loop import ToolLoopRun
     assert ToolLoopRun(messages = []).model is None
-
-
-# ── the saved-credential exception is scoped to the workflow that needs it ───
 
 
 def test_a_data_recipe_key_cannot_spend_a_saved_cloud_credential(monkeypatch):
@@ -408,9 +397,6 @@ def test_an_interactive_session_still_uses_its_saved_connection(monkeypatch):
     assert seen == [True]
 
 
-# ── the watcher the stream starts is joined, not just cancelled ──────────────
-
-
 def test_the_external_disconnect_watcher_is_awaited_after_cancel():
     """A bare cancel() leaves the task's exception unretrieved.
 
@@ -438,8 +424,6 @@ def test_the_external_disconnect_watcher_is_awaited_after_cancel():
         for node in ast.walk(tree)
         if isinstance(node, ast.Name) and node.id == "disconnect_task"
     ]
-    # Every cancel site must be followed by a gather of the same task; counting
-    # the bare references is enough to catch a cancel with no join next to it.
     assert len(gathers) >= len(cancels) * 3, "each disconnect_task.cancel() needs a gather"
 
 

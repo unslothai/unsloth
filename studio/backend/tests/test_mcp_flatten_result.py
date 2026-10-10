@@ -105,9 +105,7 @@ def test_strip_result_for_model_drops_image_payload():
 
 
 def test_strip_preserves_literal_mcp_sentinel_in_text():
-    # A tool that legitimately returns text containing the marker (e.g. reading
-    # source/docs that quote it) must not be truncated: the suffix is not a
-    # valid JSON image array.
+    # Tool text quoting the marker must not be truncated: the suffix is not a JSON image array.
     text = "before\n__MCP_IMAGES__: literal from source\nafter"
     assert strip_result_for_model(text) == text
 
@@ -298,8 +296,7 @@ def test_structured_content_fallback_still_used():
 
 
 def test_call_tool_sync_passes_raise_on_error_false_and_keeps_error_images(monkeypatch):
-    # Guards that call_tool_sync passes raise_on_error=False, so an is_error result
-    # with image content reaches _flatten_result instead of FastMCP raising ToolError.
+    # call_tool_sync must pass raise_on_error=False so is_error results reach _flatten_result.
     seen = {}
 
     class _FakeClient:
@@ -435,7 +432,7 @@ def test_server_text_still_wins_over_structured_content():
 
 
 def test_fastmcp_file_format_png_is_rendered():
-    # fastmcp File(data=..., format="png") labels the blob application/png
+    # fastmcp File(format='png') labels the blob application/png.
     flat = _flatten_result(_result(_blob_resource(mime = "application/png")))
     body, payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)
     assert body == "[1 image returned]"
@@ -486,7 +483,6 @@ def test_image_content_mime_is_passed_through_unchanged():
 
 
 def test_mixed_case_image_mime_is_matched():
-    # media type names are case-insensitive
     for mime in ("IMAGE/PNG", "Image/Png", "image/PNG"):
         flat = _flatten_result(_result(_blob_resource(mime = mime)))
         payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)[1]
@@ -500,8 +496,7 @@ def test_mime_parameters_are_dropped_from_the_data_url_type():
 
 
 def test_uri_query_and_fragment_are_not_part_of_the_name():
-    # mimetypes only stopped reading the query and fragment in 3.11.9/3.12.3/3.13
-    # (CPython gh-117217); on older supported interpreters this dropped the image.
+    # mimetypes read query/fragment before CPython 3.11.9/3.12.3/3.13 (gh-117217).
     for uri in (
         "file:///out/gen.png?download=1",
         "file:///out/gen.png#preview",
@@ -514,7 +509,6 @@ def test_uri_query_and_fragment_are_not_part_of_the_name():
 
 
 def test_extension_only_in_the_query_is_not_an_image():
-    # the same defect the other way: a query naming a .png made a non-image render
     for uri in ("file:///out/download?name=gen.png", "file:///out/download#gen.png"):
         assert _flatten_result(_result(_blob_resource(mime = None, uri = uri))) == (
             f"[file attachment <{uri}> not shown to the model]"
@@ -536,7 +530,7 @@ def test_data_uri_still_resolves_its_own_type():
 
 
 def test_a_bare_host_is_not_a_file_name():
-    # urlsplit puts gen.png in netloc, not path; 3.10 guessed image/png from it
+    # urlsplit puts gen.png in netloc, not path; 3.10 guessed image/png from it.
     assert _flatten_result(_result(_blob_resource(mime = None, uri = "resource://gen.png"))) == (
         "[file attachment <resource://gen.png> not shown to the model]"
     )
@@ -545,7 +539,7 @@ def test_a_bare_host_is_not_a_file_name():
 
 
 def test_malformed_image_types_never_reach_the_data_url():
-    # anything that survives is interpolated into data:<type>;base64, by the frontend
+    # Survivors are interpolated into data:<type>;base64, by the frontend.
     for mime in (
         "image/",
         "image//png",
@@ -566,7 +560,7 @@ def test_unusual_but_valid_image_types_are_kept():
 
 
 def test_snake_case_mime_attribute_is_read_too():
-    # mcp 2.x renames mimeType to mime_type and keeps camelCase only as an alias
+    # mcp 2.x renames mimeType to mime_type and keeps camelCase only as an alias.
     block = SimpleNamespace(
         type = "resource",
         resource = SimpleNamespace(uri = "file:///out/gen.bin", mime_type = "image/png", blob = PNG_B64),
@@ -582,7 +576,7 @@ def test_snake_case_mime_attribute_is_read_too():
 
 
 def test_registry_case_does_not_decide_whether_an_image_survives(monkeypatch):
-    # windows answers .jxl with image/JXL, linux and macos image/jxl; same type per RFC 9110
+    # Windows answers .jxl with image/JXL, Linux and macOS image/jxl; same type per RFC 9110.
     monkeypatch.setattr(
         mcp_client.mimetypes, "guess_type", lambda name, strict = True: ("image/JXL", None)
     )

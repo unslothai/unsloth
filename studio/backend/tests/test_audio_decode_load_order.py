@@ -29,15 +29,11 @@ def _calls_the_shim(node: ast.AST) -> bool:
 
 
 def test_the_shim_is_installed_before_the_first_row_is_read():
-    # This worker starts without the shim the API process installs, so an Audio column
-    # decoding inside load_dataset() raised "please install 'torchcodec'".
     body = _load_and_format_dataset_body()
     assert body.index("ensure_audio_decoding()") < body.index("= load_dataset(")
 
 
 def test_the_audio_branches_are_still_covered():
-    # They call it themselves and keep reporting the FFmpeg-naming failure; the early
-    # call only has to precede them.
     body = _load_and_format_dataset_body()
     assert body.index("ensure_audio_decoding()") < body.index(
         "# ========== AUDIO MODELS: custom preprocessing =========="
@@ -45,15 +41,12 @@ def test_the_audio_branches_are_still_covered():
 
 
 def test_the_import_is_module_level():
-    # A local import inside the audio branch would leave the early call a NameError.
     text = _TRAINER.read_text(encoding = "utf-8")
     assert "\nfrom utils.datasets.audio_decode import ensure_audio_decoding\n" in text
 
 
 def test_the_early_call_cannot_stop_a_text_run():
-    # It sits above the method's own try, so anything ensure_audio_decoding() does not
-    # catch (`import librosa` raises more than ImportError) would fail every run, audio
-    # or not. The audio branches below re-run it and report.
+    # Above the method's try, so anything uncaught would fail every run.
     fn = next(
         node
         for node in ast.walk(ast.parse(_TRAINER.read_text(encoding = "utf-8")))
@@ -61,21 +54,18 @@ def test_the_early_call_cannot_stop_a_text_run():
     )
     first = next(stmt for stmt in fn.body if _calls_the_shim(stmt))
     assert isinstance(first, ast.Try), "the early call is not wrapped"
-    # Directly in the try body, not merely somewhere inside a larger block.
     assert any(isinstance(b, ast.Expr) and _calls_the_shim(b) for b in first.body)
     assert any(getattr(h.type, "id", "") == "Exception" for h in first.handlers)
 
 
 def test_a_datasets_without_the_torchcodec_flag_returns_a_bool():
-    # `datasets` < 4 (still allowed by pyproject) has no config.TORCHCODEC_AVAILABLE, and
-    # reading it raised AttributeError at the unguarded audio call site. Those versions
-    # decode through soundfile already, so the answer is True and nothing is patched.
+    # datasets < 4 has no TORCHCODEC_AVAILABLE; it decodes via soundfile.
     import sys
     import types
 
     from utils.datasets import audio_decode
 
-    fake_config = types.SimpleNamespace()  # no TORCHCODEC_AVAILABLE, as on datasets 3.x
+    fake_config = types.SimpleNamespace()
     fake_audio = types.ModuleType("datasets.features.audio")
     fake_audio.Audio = type("Audio", (), {"decode_example": None, "encode_example": None})
     fake_datasets = types.ModuleType("datasets")
@@ -102,9 +92,7 @@ def test_a_datasets_without_the_torchcodec_flag_returns_a_bool():
 
 
 def test_a_torchcodec_that_raises_anything_at_import_is_marked_unusable():
-    # A damaged wheel can raise AttributeError or SyntaxError rather than ImportError. The
-    # installer's probe reports every import failure as "broken, soundfile takes over", so
-    # the runtime must treat every shape the same way or that promise is false.
+    # Damaged wheels raise non-ImportError; treat every failure the same.
     import importlib.abc
     import importlib.machinery
     import sys

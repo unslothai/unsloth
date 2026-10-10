@@ -42,7 +42,6 @@ def _alice_project(tmp_path):
 
 def test_private_directory_admits_the_accounts_own_project_workspace(tmp_path):
     project = _alice_project(tmp_path)
-    # The same path the account boundary and model visibility already accept.
     assert run_as(ALICE, access.model_visible, str(project))
     assert run_as(ALICE, access.private_directory, str(project), "") == str(project)
 

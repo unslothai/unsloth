@@ -80,7 +80,6 @@ def test_an_install_for_an_older_pin_is_upgraded_once(tmp_path, monkeypatch):
     assert bk.ensure_sd_cpp_binary(accelerator = "cuda") == str(cli)
     assert [k["accelerator"] for k in installs] == ["cuda"]
     assert cli.read_bytes() == b"new-build"
-    # The record now names the shipped pin: the next load reuses it.
     assert bk.ensure_sd_cpp_binary(accelerator = "cuda") == str(cli)
     assert bk.ensure_sd_server_binary(accelerator = "cuda") == str(server)
     assert len(installs) == 1
@@ -138,8 +137,8 @@ def test_the_current_pin_is_never_reinstalled(tmp_path, monkeypatch):
 @pytest.mark.parametrize(
     "record",
     [
-        None,  # predates the record
-        {"accelerator": "cuda", "repo": "r"},  # no tag
+        None,
+        {"accelerator": "cuda", "repo": "r"},
         {"accelerator": "cuda", "repo": "r", "tag": ""},
     ],
 )
@@ -150,7 +149,6 @@ def test_an_install_that_cannot_say_its_pin_is_left_alone(tmp_path, monkeypatch,
         raise AssertionError("unknown is not stale")
 
     monkeypatch.setattr(sdmod, "install", _install)
-    # cpu: an unrecorded install is not an accelerator mismatch either, so only the pin check could fire.
     assert bk.ensure_sd_cpp_binary(accelerator = "cpu") == str(cli)
 
 

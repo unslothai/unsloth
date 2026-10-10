@@ -259,7 +259,6 @@ def test_skipped_reconciliation_releases_a_claim_the_queue_already_activated(rag
     assert folder_sync._claim_job(job_id) == (job_id, folder["id"])
     with _connection() as conn:
         assert job_leases.owned_by_this_process(conn, job_leases.FOLDER_SYNC, job_id)
-        # delete_folder() fails the claimed job before reconciliation starts.
         conn.execute("UPDATE linked_folder_sync_jobs SET status='failed' WHERE id=?", (job_id,))
         conn.commit()
 
@@ -916,8 +915,7 @@ def test_reauthorizing_same_path_refreshes_root_identity_and_retains_mappings(
     source_stat = source.stat()
     assert reauthorized.is_set()
     assert refreshed["id"] == folder["id"]
-    # Read back through the loader: an identity above SQLite's signed maximum is stored as
-    # a hex string, which is the ordinary case for a Windows device id.
+    # Identities above SQLite's signed max are stored as hex (common for Windows device ids).
     loaded = folder_sync._load_identity(refreshed["root_device"], refreshed["root_inode"])
     assert loaded == (source_stat.st_dev, source_stat.st_ino), _identity_mismatch(
         loaded,
@@ -937,8 +935,7 @@ def test_reauthorizing_same_path_refreshes_root_identity_and_retains_mappings(
 @pytest.mark.parametrize("source_name", ["source", "source "])
 def test_directory_lease_contract_preserves_path_and_purpose(rag_home, source_name):
     if source_name.endswith(" ") and os.name == "nt":
-        # Win32 strips a trailing space from a path component, so the two names are one
-        # directory there and the pair this case contrasts cannot be created at all.
+        # Win32 strips trailing spaces from path components, so this pair cannot exist there.
         pytest.skip("Windows cannot hold a directory whose name ends in a space")
     source = rag_home / source_name
     source.mkdir()
@@ -1035,7 +1032,6 @@ def test_large_windows_file_identity_round_trips_through_sqlite(
     row = _mapping(folder)
     loaded = folder_sync._load_identity(row["device"], row["inode"])
     assert loaded == identity, _identity_mismatch(loaded, identity, (row["device"], row["inode"]))
-    # The same identity must still compare equal, so nothing re-embeds every sync.
     assert _run(folder["id"])["changed"] == 0
 
 
@@ -1048,14 +1044,12 @@ def test_identities_round_trip_across_the_sqlite_integer_boundary(value):
     """os.stat ids are unsigned, SQLite INTEGER is signed, and the encoding straddles that edge."""
     stored = folder_sync._store_identity((value, value))
     with closing(sqlite3.connect(":memory:")) as conn:
-        # Same declared affinity as linked_folders and linked_folder_files.
         conn.execute("CREATE TABLE ids(device INTEGER, inode INTEGER)")
         conn.execute("INSERT INTO ids VALUES(?,?)", stored)
         read = tuple(conn.execute("SELECT device, inode FROM ids").fetchone())
 
     loaded = folder_sync._load_identity(*read)
     assert loaded == (value, value), _identity_mismatch(loaded, (value, value), read)
-    # Anything SQLite can hold stays an integer, so rows written by older builds still load.
     fits = value <= folder_sync._SQLITE_INTEGER_MAX
     assert isinstance(read[0], int) is fits, (
         f"{value} was stored as {read[0]!r}; a value that {'fits' if fits else 'overflows'} "
@@ -1089,8 +1083,6 @@ def test_reauthorizing_encodes_a_root_identity_above_the_sqlite_maximum(
     stored = (refreshed["root_device"], refreshed["root_inode"])
     loaded = folder_sync._load_identity(*stored)
     assert loaded == identity, _identity_mismatch(loaded, identity, stored)
-    # Reconciliation reloads the row as the identity to expect, so an undecoded column would
-    # fail the whole sync rather than round-trip.
     assert _run(folder["id"])["status"] == "completed"
 
 
@@ -2369,7 +2361,6 @@ def test_unrelated_ingest_failure_still_removes_deleted_sources(
         else real_start(*args, **kwargs),
     )
 
-    # each vanished path gets one grace pass before it is removed anyway
     assert _run(folder["id"])["deleted"] == 0
     result = _run(folder["id"])
 
@@ -2444,7 +2435,6 @@ def test_a_rewritten_rename_retains_the_prior_document_until_it_reindexes(
     original.write_text("durable travelling words", encoding = "utf-8")
     assert _run(folder["id"])["status"] == "completed"
 
-    # an atomic re-save after a rename shares neither inode nor content with the original
     renamed = source / "report-final.txt"
     renamed.write_text("rewritten content that fails", encoding = "utf-8")
     original.unlink()
@@ -2514,7 +2504,6 @@ def test_a_project_recreated_during_delete_keeps_its_rag_scope(rag_home, monkeyp
     from routes import chat_history
 
     scope = store.project_scope("p1")
-    # the row delete has committed and another client has already created the id again
     monkeypatch.setattr(chat_history, "get_chat_project", lambda project_id: {"id": project_id})
 
     chat_history._delete_project_rag_sources("p1")
@@ -2540,7 +2529,6 @@ def test_the_purge_is_skipped_for_a_project_recreated_after_the_ownership_check(
     seen = {"checks": 0}
 
     def recreated_after_the_check(project_id):
-        # gone for the check that decides to retire, back by the time the purge asks
         seen["checks"] += 1
         return None if seen["checks"] == 1 else {"id": project_id}
 
@@ -2551,14 +2539,12 @@ def test_the_purge_is_skipped_for_a_project_recreated_after_the_ownership_check(
 
     survivor = folder_sync.get_folder(folder["id"])
     assert survivor is not None
-    # untouched, not just undeleted: a retired row left behind is not an abort
     assert (survivor["status"], survivor["auto_sync"], survivor["last_error"]) == (
         folder["status"],
         folder["auto_sync"],
         None,
     )
     assert seen["checks"] == 2
-    # and the scope is usable again immediately, not once the reconciler next runs
     assert folder_sync.scope_retired(scope) is False
 
 
@@ -2790,8 +2776,7 @@ def test_periodic_retirement_checks_ownership_under_the_scope_lock(rag_home):
     held = []
 
     def project_exists(project_id):
-        # create_folder and upload admission take this lock, so holding it here is what
-        # stops a project recreated mid-pass from having its new folders retired
+        # create_folder and upload admission take this lock, so a recreated project keeps its folders.
         lock = folder_sync._scope_lock(scope)
         acquired = []
         probe = threading.Thread(target = lambda: acquired.append(lock.acquire(blocking = False)))
@@ -2817,7 +2802,6 @@ def test_retirement_leaves_a_folder_linked_after_the_ownership_check(rag_home):
     source.mkdir()
     existing = folder_sync.create_folder(scope_type = "project", scope_id = "p1", path = str(source))
     owned = folder_sync.linked_folder_ids(scope)
-    # a second backend process links this one after the check and before the write
     later = rag_home / "after-check"
     later.mkdir()
     fresh = folder_sync.create_folder(scope_type = "project", scope_id = "p1", path = str(later))
@@ -2903,8 +2887,7 @@ def test_the_ownership_snapshot_survives_an_unloadable_vector_extension(rag_home
     def unavailable():
         raise sqlite3.OperationalError("cannot load sqlite-vec")
 
-    # scoped, not monkeypatch.undo(): rag_home patches through the same fixture, so undoing
-    # here would restore the database path before the assertions read it
+    # Scoped, not monkeypatch.undo(): rag_home patches through the same fixture.
     with monkeypatch.context() as no_vec:
         no_vec.setattr(folder_sync.rag_db, "get_connection", unavailable)
         owned = folder_sync.linked_folder_ids(scope)

@@ -92,8 +92,7 @@ def _finish(reason: str = "tool_calls") -> str:
 
 class FakeTransport:
     heals_text_tool_calls = False
-    # The OAI-compat transport sanitizes at ingress, so the loop must not strip
-    # the provider's own _toolEvent frames.
+    # OAI-compat transport sanitizes at ingress, so the loop must not strip provider _toolEvent frames.
     sanitizes_provider_frames = True
 
     def __init__(
@@ -189,9 +188,6 @@ def _replayed(transport) -> str:
     return json.dumps(transport.requests[1]["messages"])
 
 
-# ── the gap ──────────────────────────────────────────────────────────
-
-
 def test_a_hosted_result_reaches_the_follow_up_request(executed):
     """The provider searched, then asked us to run a tool. Both must survive."""
     transport = FakeTransport(
@@ -246,9 +242,6 @@ def test_the_models_own_prose_is_kept_alongside(executed):
     replayed = _replayed(transport)
     assert "Searching now." in replayed
     assert "hosted output" in replayed
-
-
-# ── what must not be replayed ────────────────────────────────────────
 
 
 def test_a_repeated_end_event_is_recorded_once(executed):
@@ -389,9 +382,6 @@ def test_a_turn_with_no_hosted_tool_replays_exactly_as_before(executed):
     assert "result]" not in replayed
 
 
-# ── image-only, oversized and stalled turns ──────────────────────────
-
-
 def test_a_plot_with_no_stdout_is_still_reported(executed):
     """Gemini code execution can return nothing but the image sentinel.
 
@@ -513,9 +503,6 @@ def test_a_stalled_continuation_stays_one_assistant_turn(executed):
     assert "gradient checkpointing lands" in resumed[0]["content"]
 
 
-# ── the label is the operation, not the transport's plumbing ─────────
-
-
 def test_gemini_code_execution_replays_the_code_not_its_thought_signature(executed):
     """Gemini stows the native part on the same `arguments` the header renders.
 
@@ -627,9 +614,6 @@ def test_openai_image_generation_replays_the_prompt_it_actually_used(executed):
     assert "BBBB" not in replayed
 
 
-# ── the cap and the envelope are the local ones, not copies ──────────
-
-
 def test_the_hosted_cap_follows_the_configured_local_one(executed, monkeypatch):
     """An install that lowers the local cap lowers the hosted one too.
 
@@ -676,9 +660,6 @@ def test_a_hosted_page_keeps_a_files_line_of_its_own(executed):
     replayed = _replayed(transport)
     assert "How the envelope looks" in replayed
     assert "plot.png" in replayed, "the page's own __FILES__ line was stripped"
-
-
-# ── a call that ran is a call the next turn hears about ──────────────
 
 
 def test_a_silent_hosted_execution_still_reaches_the_next_turn(executed):

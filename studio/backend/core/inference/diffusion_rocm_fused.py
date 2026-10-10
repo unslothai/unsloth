@@ -30,7 +30,7 @@ _MAX_D = 16384
 _LOCK = threading.Lock()
 _ROPE_STOCK: dict = {}
 _ADALN_PREV: dict = {}
-# Survives uninstall, so a fused forward restored later by another layer still reaches a real forward.
+# Survives uninstall, so a fused forward restored later still reaches a real forward.
 _ADALN_ORIGINAL: dict = {}
 COUNTS = {"rope_fused": 0, "rope_stock": 0, "adaln_fused": 0, "adaln_stock": 0}
 
@@ -52,7 +52,7 @@ def _is_rocm() -> bool:
     return bool(getattr(torch.version, "hip", None))
 
 
-# gfx1151 klein 1024^2: RoPE 8.76 -> 8.09 s pixel-identical; AdaLN adds no speed and moves pixels (LPIPS 0.004).
+# AdaLN fusion adds no speed and moves pixels; RoPE fusion is pixel-identical.
 _AUTO_ON = {FUSED_ROPE_ENV: True, FUSED_ADALN_ENV: False}
 
 
@@ -79,7 +79,6 @@ def wanted(
     return _adaln_kernel() is not None
 
 
-# ----------------------------------------------------------------------------------------------------------------- RoPE
 @functools.lru_cache(maxsize = 1)
 def _rope_kernel() -> Optional[Callable]:
     from .diffusion_flux2_rope import _kernel
@@ -107,7 +106,6 @@ def _rope_eligible(
     B, S, H, D = x.shape
     if D % 2 or x.stride(3) != 1 or x.numel() == 0:
         return False
-    # Kernel offsets are int32.
     if x.storage_offset() + sum((n - 1) * st for n, st in zip(x.shape, x.stride())) >= 2**31 - 1:
         return False
     for f in freqs_cis:
@@ -129,7 +127,7 @@ def _make_rope(module_name: str) -> Callable:
         import torch
 
         stock = _ROPE_STOCK.get(module_name) or _ROPE_ORIGINAL[module_name]
-        # Checked first: Dynamo graph-breaks on Triton's import path, so a compiled block stays whole on stock.
+        # Checked first: Dynamo graph-breaks on Triton's import path.
         if not torch.compiler.is_compiling():
             launch = _rope_kernel()
             if launch is not None and _rope_eligible(
@@ -154,7 +152,7 @@ def _make_rope(module_name: str) -> Callable:
     return _fused_apply_rotary_emb
 
 
-# Survives uninstall so a forward that looked up the patch just before teardown still reaches stock.
+# Survives uninstall so a forward looked up just before teardown still reaches stock.
 _ROPE_ORIGINAL: dict = {}
 _ROPE_FNS: dict = {m: _make_rope(m) for m in _MODULES}
 
@@ -177,7 +175,6 @@ def install_rope(
         except Exception:  # noqa: BLE001
             return False
         stock = getattr(mod, _ROPE_ATTR, None)
-        # Anything but diffusers' own function (another fused patch, a changed symbol) is left alone.
         if stock is None or getattr(stock, "__name__", "") != "apply_rotary_emb":
             return False
         _ROPE_STOCK[module_name] = stock
@@ -195,7 +192,6 @@ def uninstall_rope() -> None:
                 setattr(mod, _ROPE_ATTR, stock)
 
 
-# ----------------------------------------------------------------------------------------------------------------- AdaLN
 @functools.lru_cache(maxsize = 1)
 def _adaln_kernel() -> Optional[Callable]:
     try:
@@ -219,7 +215,6 @@ def _adaln_kernel() -> Optional[Callable]:
         var = tl.sum(xc * xc, axis = 0) / D
         rstd = 1.0 / tl.sqrt(var + eps)
         dt = OUT.dtype.element_ty
-        # stock: layer_norm (rounded) * (1 + scale) (rounded) -> product (rounded) + shift (rounded)
         n = (xc * rstd).to(dt)
         sc = tl.load(SCALE + b * scb + cols, mask = mask, other = 0.0).to(tl.float32)
         m = (1.0 + sc).to(dt)
@@ -370,7 +365,7 @@ _FORWARDS = {
     "AdaLayerNormZeroSingle": _adaln_zero_single_forward,
     "AdaLayerNormContinuous": _adaln_continuous_forward,
 }
-# Source lines the fused forwards reimplement: a diffusers release that changes them keeps the stock class.
+# Source lines the fused forwards reimplement: a diffusers change keeps the stock class.
 _STOCK_LINES = {
     "AdaLayerNormZero": (
         "shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = emb.chunk(6, dim=1)",
@@ -405,7 +400,7 @@ def _stock_classes() -> dict:
 def _stock_body_ok(cls: type, name: str) -> bool:
     import inspect
 
-    # The stock body is checked on the ORIGINAL forward (the Studio eager patch may be live on top of it).
+    # Checked on the ORIGINAL forward (the Studio eager patch may be live on top).
     fn = cls.__dict__.get("forward")
     for cand in (getattr(fn, "__wrapped__", None), fn):
         if cand is None:
@@ -428,7 +423,6 @@ def install_adaln(dtype: Any, device: Any = "cuda") -> int:
     with _LOCK:
         for name, cls in classes.items():
             live = cls.forward
-            # Studio's eager addcmul patch was fingerprinted against the same stock body at its own install.
             ours = (getattr(live, "__module__", "") or "").endswith("diffusion_eager_patches")
             if not ours and not _stock_body_ok(cls, name):
                 continue
@@ -441,13 +435,12 @@ def install_adaln(dtype: Any, device: Any = "cuda") -> int:
 def uninstall_adaln() -> None:
     with _LOCK:
         for cls, prev in list(_ADALN_PREV.items()):
-            # Not ours on top (deferred eager patch): keep the entry for the uninstall after that layer's.
+            # Not ours on top: keep the entry for the uninstall after that layer's.
             if cls.__dict__.get("forward") in _FORWARDS.values():
                 cls.forward = prev
                 del _ADALN_PREV[cls]
 
 
-# ------------------------------------------------------------------------------------------------------------- lifecycle
 def install_for_pipe(
     pipe: Any,
     dtype: Any,

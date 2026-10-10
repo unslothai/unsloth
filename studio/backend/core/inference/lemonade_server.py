@@ -53,9 +53,7 @@ _CONFIG_OVERRIDES: dict[str, Any] = {
 }
 
 
-# _find_free_port releases the port before lemond binds it, so another process can take it in
-# between. Only an exit that names the collision is retried, on a fresh port; any other early exit
-# is a real failure and is reported at once.
+# The freed port can be taken before lemond binds it; only a collision exit is retried.
 _START_ATTEMPTS = 3
 _PORT_TAKEN = re.compile(
     r"address already in use|eaddrinuse|only one usage of each socket address|errno 98\b|errno 48\b"
@@ -210,7 +208,6 @@ class LemonadeServer:
         self._process = proc
         self.port = port
         self.api_key = api_key
-        # Shutdown may have swept children before this process was adopted.
         if is_process_shutting_down():
             self._kill_locked()
             raise LemonadeUnavailable("Unsloth is shutting down; not starting Lemonade.")

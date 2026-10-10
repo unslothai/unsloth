@@ -132,9 +132,7 @@ def _validate_provider_auth_contract(
         raise HTTPException(status_code = 400, detail = "ChatGPT subscription routing is fixed.")
     if models is None:
         return
-    # Same order of evidence the chat route uses, so a save cannot persist a model that every send would then
-    # refuse: the plan's catalog once it is known, otherwise the seed, plus what this row already carries unless it
-    # was left by another account.
+    # Same evidence order as the chat route, so a save cannot persist a model every send refuses.
     if provider_id and openai_codex_client.subscription_catalog_known(provider_id):
         allowed = openai_codex_client.offered_subscription_model_ids(provider_id) | {
             slug
@@ -151,8 +149,7 @@ def _validate_provider_auth_contract(
             and proven
             and not (provider_id and openai_codex_client.subscription_catalog_stale(provider_id))
         ):
-            # Already accepted on this row once, so an upstream outage must not make an
-            # unrelated edit such as a rename unsavable.
+            # Already accepted once, so an upstream outage must not block unrelated edits.
             allowed |= set(persisted_models)
     if not models or not set(models).issubset(allowed):
         raise HTTPException(status_code = 400, detail = "Choose only curated Codex models.")
@@ -260,8 +257,7 @@ async def create_provider_config(
     )
 
     base_url = payload.base_url or info["base_url"]
-    # An empty base URL stays allowed (custom/vLLM entries carry none until the
-    # user fills one in); anything present is checked before a key is decrypted.
+    # Empty is allowed (custom entries); a present URL is checked before a key is decrypted.
     if base_url:
         try:
             base_url = validate_provider_base_url(base_url)
@@ -332,13 +328,10 @@ async def update_provider_config(
         payload.max_output_tokens,
     )
     persisted_models = list(existing.get("models") or [])
-    # One reading of who owns this connection, used for every decision in this request: a second lookup later could
-    # name a different account than the one the selection was actually judged against.
+    # Single ownership read: a later lookup could name a different account.
     validated_account: str | None = None
     if existing_info.get("auth_kind") == "chatgpt_oauth":
-        # The OAuth bundle is shared through the installation DB while the catalog is per process, so another worker
-        # may have rebound this connection. The chat route makes the same check; without it here a save would persist
-        # exactly what every send then refuses.
+        # Bundle is shared via DB but catalog is per process; another worker may have rebound it.
         current_bundle = openai_codex_auth.load_oauth_bundle(provider_id)
         validated_account = current_bundle.get("account_id") if current_bundle else None
         current_account = validated_account
@@ -348,9 +341,7 @@ async def update_provider_config(
             openai_codex_client.forget_subscription_models(provider_id)
             openai_codex_client.mark_subscription_catalog_stale(provider_id)
     if existing_info.get("auth_kind") == "chatgpt_oauth" and payload.models:
-        # Only a slug that is neither seeded nor already saved here needs the plan catalog. Reaching upstream for the
-        # others would make an ordinary save wait out the 20s connect / 120s read timeout whenever ChatGPT is
-        # unreachable, and would fail an unrelated edit to a connection whose selection was accepted long ago.
+        # Only unproven slugs hit the catalog, so saves do not wait on upstream timeouts.
         unproven = (
             set(payload.models) - set(existing_info["default_models"]) - set(persisted_models)
         )
@@ -392,8 +383,7 @@ async def update_provider_config(
     }
     metadata_requested = bool(payload.model_fields_set & metadata_fields)
 
-    # Only a *changed* base URL is validated. The dialog re-sends the stored value on every edit, so validating an
-    # unchanged legacy row would lock the user out of editing its models or API key. Outbound use is still checked.
+    # Validate only a changed base URL, or unchanged legacy rows become uneditable.
     base_url = payload.base_url
     if base_url and base_url != existing["base_url"]:
         try:
@@ -430,7 +420,6 @@ async def update_provider_config(
                 else None
             )
 
-    # The row snapshot this request found, keyed the way update_provider takes it.
     _restorable = dict(
         display_name = existing["display_name"],
         base_url = existing["base_url"],
@@ -482,8 +471,7 @@ async def update_provider_config(
     with current_credential_write(credential):
         credential_requested = replacement_api_key is not None or payload.clear_api_key
         if metadata_requested and credential_requested:
-            # Metadata and the saved key share studio.db.  Commit them together so
-            # another process can never route to the new endpoint with the old key.
+            # Commit metadata and key together so no process routes to the new endpoint with the old key.
             with providers_db.provider_bundle_transaction() as connection:
                 providers_db.update_provider(**metadata_updates, connection = connection)
                 if replacement_api_key is not None:
@@ -510,15 +498,7 @@ async def update_provider_config(
 
     row = providers_db.get_provider(provider_id)
     if existing_info.get("auth_kind") == "chatgpt_oauth" and payload.models is not None:
-        # Record the proof here rather than when a catalog is read: reading one only shows which account answered,
-        # while this is the point where the row's models were actually judged against it and stored. The account the
-        # selection was judged against, not whatever owns the connection by now: remember_catalog_account re-reads
-        # under the guard and declines to write when the bundle has moved on, so a rebind in between records nothing.
-        # Written after the row, never before: a proof recorded ahead of a commit that then failed would license
-        # models this connection never saved. Recording it is part of the save, so a failure here undoes the row too.
-        # Leaving the new models behind without the proof is the state saved_models_proven_for exists to catch, and it
-        # outlives the process: after a restart, with the plan catalog unreadable, the row's own slugs stop
-        # authorizing chat and the next save is refused as well.
+        # Recorded after the row commit and as part of the save; a failure here undoes the row too.
         if validated_account:
             try:
                 await openai_codex_auth.remember_catalog_account(provider_id, validated_account)
@@ -606,12 +586,7 @@ async def delete_provider_config(
                         "provider.delete_credential_rollback_failed", provider_id = provider_id
                     )
                 raise
-            # The plan catalog is held per connection in this process and is only released by
-            # forget_subscription_models. Disconnecting the OAuth bundle calls it, deleting the whole connection did
-            # not, so every ChatGPT connection a user removed left its catalog, its account marker and its request
-            # ticket behind for the life of the process. Ids come from uuid4 and are never reused, so nothing stale
-            # could be consulted again; it simply accumulated. Released here, after the row is gone for good, so a
-            # rolled back delete keeps the catalog it is about to need again.
+            # Release the per-process catalog only after the delete commits; a rollback still needs it.
             openai_codex_client.forget_subscription_models(provider_id)
 
 
@@ -1039,7 +1014,6 @@ async def list_provider_model_capabilities(
 
 
 def _model_capability_names(model: dict) -> Optional[list[str]]:
-    # Another server's shape under this key must not fail the listing's validation.
     values = model.get("capabilities")
     if not isinstance(values, list):
         return None
@@ -1124,10 +1098,7 @@ async def list_provider_models(
 
     try:
         models = await client.list_models()
-        # Registry model-id filters describe one vendor's own catalog, so they only apply on that vendor's host. A
-        # Gemini OAI-compat proxy returns prefixed ids the allowlist strips, and an Azure or self-hosted OpenAI base
-        # returns operator-chosen deployment names that can carry any word the denylist reads as non-chat
-        # (`gpt-5.5-image-analysis`). Either way the picker empties out for a connection that works.
+        # Model-id filters only apply on the vendor's own host; proxies and Azure use other names.
         _NATIVE_HOSTS = {
             "gemini": ("generativelanguage.googleapis.com",),
             "openai": ("api.openai.com",),
@@ -1159,8 +1130,6 @@ async def list_provider_models(
             denylist = info.get("model_id_denylist")
             if denylist is not None:
                 models = [m for m in models if not denylist.search(m.get("id", ""))]
-        # Optional cap after filtering to keep large catalogs picker-sized. Unsorted, so "first N matches"; pair with
-        # default_models for flagships.
         limit = info.get("model_id_limit")
         if isinstance(limit, int) and limit > 0:
             models = models[:limit]

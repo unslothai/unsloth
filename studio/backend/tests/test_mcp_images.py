@@ -23,8 +23,7 @@ if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
 
-# core.inference.inference imports unsloth and trl at module scope; studio-backend-ci.yml
-# does not install them, so stub them here rather than rely on an earlier test file having done so.
+# inference.py imports unsloth and trl at module scope, which backend CI does not install.
 def _stub_if_missing(
     name,
     attrs = (),
@@ -266,7 +265,6 @@ def test_history_merges_into_a_following_user_turn():
 
     assert [message["role"] for message in messages] == ["tool", "user"]
     assert messages[1]["content"][0]["type"] == "image_url"
-    # The note rides along on the merge, ahead of the question's own text.
     assert messages[1]["content"][1]["text"].startswith(mcp_images.IMAGE_TURN_TEXT)
     assert messages[1]["content"][2] == {"type": "text", "text": "what colour was it"}
 
@@ -321,8 +319,7 @@ def test_an_oversized_raster_is_rejected_off_the_header():
     from PIL import Image
 
     buffer = io.BytesIO()
-    # Uniform colour, so a 9000x9000 raster still encodes to a few kilobytes and
-    # clears every payload-size gate ahead of the decode.
+    # Uniform colour keeps a 9000x9000 PNG tiny so it clears the payload-size gates before decode.
     Image.new("RGB", (9000, 9000), (0, 0, 0)).save(buffer, format = "PNG")
     encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
     from core.inference.mcp_client import MAX_IMAGE_PAYLOAD_CHARS
@@ -354,8 +351,7 @@ def test_local_history_caps_the_images_a_replay_resends():
     )
 
     assert len(payloads) == mcp_images.MAX_TOTAL_MODEL_IMAGES
-    # A marker with no pixels behind it makes the processor count image tokens it
-    # was given nothing for, so the two have to come down together.
+    # A marker without pixels makes the processor count image tokens it never got.
     assert markers == len(payloads)
 
 
@@ -415,8 +411,6 @@ def test_a_marker_turn_merges_into_a_trailing_nudge():
     mcp_images.append_placeholder_turn(conversation, 2, 2)
 
     assert [m["role"] for m in conversation] == ["tool", "user"]
-    # The note rides along: merged bare, the markers read as pictures attached to the
-    # nudge rather than as the tool's output.
     assert [p["type"] for p in conversation[-1]["content"]] == ["text", "image", "image", "text"]
     assert conversation[-1]["content"][-1]["text"].startswith(mcp_images.IMAGE_TURN_TEXT)
 
@@ -470,7 +464,6 @@ def test_image_parts_are_dropped_for_a_text_only_fallback():
 
     out = _without_image_parts(messages)
 
-    # And the fallback branch really calls it, not just defines it.
     import inspect
 
     from core.inference import inference as inference_module
@@ -480,7 +473,6 @@ def test_image_parts_are_dropped_for_a_text_only_fallback():
 
     assert out[0] == messages[0]
     assert out[1] == messages[1]
-    # Collapsed back to a plain string, which is what a text template takes.
     assert out[2]["content"] == IMAGE_TURN_TEXT
     assert out[3]["content"] == ""
 
@@ -516,8 +508,6 @@ def test_a_named_non_mcp_tool_result_is_not_promoted_on_replay():
 
     out = promote_history(history, vision = True)
 
-    # The suffix still comes off -- it is base64 and the model must not read it as
-    # text -- but it never becomes image input.
     assert out[0]["content"] == "$ cat notes.txt"
     assert len(out) == 1, "a bash result was promoted into image input"
 
@@ -580,14 +570,12 @@ def test_stripping_is_unconditional_and_only_promotion_is_gated():
         return ToolCallCompletion(decision = decision, result = payload, executed = True)
 
     for name in ("mcp__fs__read", "bash", "web_search", "mcp"):
-        # 1. never as text, on the live path or the replay
         assert strip_result_for_model(payload, name) == "$ cat notes.txt", name
         replayed = promote_history(
             [{"role": "tool", "name": name, "content": payload}], vision = True
         )
         assert replayed[0]["content"] == "$ cat notes.txt", name
 
-    # 2. as image input only from a tool an MCP server served
     assert completion("mcp__fs__read").mcp_images()
     assert completion("bash").mcp_images() == []
     promoted = promote_history(
@@ -649,7 +637,6 @@ def test_replayed_markers_sit_ahead_of_the_attachment_marker():
         for part in message["content"]
         if part.get("type") == "image"
     ]
-    # Both replayed markers come before the attachment's turn.
     assert replayed[:2] == [0, 0]
     assert replayed[-1] == 1
 
@@ -728,8 +715,7 @@ def test_the_local_replay_keeps_markers_and_payloads_in_step_across_results():
 
     messages, payloads = mcp_images.promote_history_local(history, vision = True)
 
-    # Both results flush as one batch, and a local placeholder turn is one message,
-    # which on a non-GGUF model takes one picture. Parity is the invariant.
+    # A local placeholder turn on a non-GGUF model takes one picture; parity is the invariant.
     assert len(payloads) == mcp_images.LOCAL_MAX_IMAGES_PER_TURN
     assert mcp_images.count_image_parts(messages, "image") == len(payloads)
 
@@ -747,7 +733,6 @@ def test_the_ordinal_skips_the_turns_promotion_inserted():
 
     out = mcp_images.mark_last_user_turn(promoted, 1, ordinal = 1)
 
-    # The second REAL user turn, not the second user turn in the promoted list.
     assert isinstance(out[3]["content"], list)
     assert out[3]["content"][-1] == {"type": "text", "text": "and this new one"}
 
@@ -771,7 +756,6 @@ def test_undecodable_entries_are_not_counted_as_images():
     assert mcp_images.count_probably_decodable([svg] * 4) == 0
     assert mcp_images.count_probably_decodable([_image()] * 3) == 3
     assert mcp_images.count_probably_decodable([svg, _image(), svg, _image()]) == 2
-    # And the sniff never claims something it cannot open.
     assert not mcp_images.probably_decodable({"data": "not base64 at all!!", "mimeType": "x"})
     assert not mcp_images.probably_decodable({})
 
@@ -958,7 +942,6 @@ def test_the_attachment_is_not_the_one_the_cap_drops():
     conversation = [mcp_images.placeholder_turn(1, 1) for _ in range(8)]
     payloads = [f"mcp{i}" for i in range(8)]
 
-    # what the route now does: trim the replay to leave room, THEN interleave
     mcp_images.trim_image_turns(conversation, payloads, limit = mcp_images.MAX_TOTAL_MODEL_IMAGES - 1)
 
     assert len(payloads) == mcp_images.MAX_TOTAL_MODEL_IMAGES - 1
@@ -1096,7 +1079,6 @@ def test_the_eligible_pass_keeps_candidates_behind_an_undecodable_result():
 def test_an_oversized_parallel_batch_keeps_its_newest_results():
     """Everything else that bounds these keeps the newest, so filling the batch from
     the front showed the model results 1-2 on this turn and 2-3 on the next."""
-    # Distinct sizes so each result's decoded URLs are distinguishable.
     results = [
         [{"data": _png(size = (4 + index, 4 + index)), "mimeType": "image/png"} for _ in range(4)]
         for index in range(3)
@@ -1110,7 +1092,6 @@ def test_an_oversized_parallel_batch_keeps_its_newest_results():
     assert per_result[2] <= kept, "the newest result must survive"
     assert per_result[1] <= kept, "so must the one before it"
     assert not (per_result[0] & kept), "the OLDEST result is the one that goes"
-    # Within the batch the surviving results still read in call order.
     assert set(urls[:4]) == per_result[1] and set(urls[4:]) == per_result[2]
 
 
@@ -1162,7 +1143,6 @@ def test_the_owned_list_drops_evicted_parts_before_it_counts():
     )
     assert len(owned) == 8
 
-    # What truncation does: the turns go, the ownership list is not told.
     conversation.clear()
 
     mcp_images.append_image_turn(
@@ -1395,7 +1375,6 @@ def test_replay_leaves_room_for_the_pictures_the_caller_attached():
 
     assert len(urls) <= mcp_images.MAX_TOTAL_MODEL_IMAGES, len(urls)
     assert attachment["image_url"]["url"] in urls, "the caller's own picture was trimmed"
-    # And it survives a provider that keeps only the first MAX_TOTAL_MODEL_IMAGES.
     assert attachment["image_url"]["url"] in urls[: mcp_images.MAX_TOTAL_MODEL_IMAGES]
 
 
@@ -1415,7 +1394,6 @@ def test_the_replay_trim_runs_before_the_attachment_marker_exists():
 
     replay = [f"MCP{i}" for i in range(8)]
 
-    # The order the route now uses: trim, snapshot, then mark.
     conversation, payloads = _scene(), list(replay)
     mcp_images.trim_image_turns(conversation, payloads, limit = mcp_images.MAX_TOTAL_MODEL_IMAGES - 1)
     prior = mcp_images.image_marker_parts(conversation)
@@ -1465,8 +1443,7 @@ def test_a_live_result_leaves_room_for_the_pictures_the_caller_attached():
             [[{"data": _png(), "mimeType": "image/png"} for _ in range(4)]],
             per_result = True,
             owned = owned,
-            # What the EXTERNAL loop passes. The GGUF loop does not: it answers to a
-            # context window rather than to a provider's per-request image count.
+            # Only the external loop passes this; the GGUF loop is bound by context, not image count.
             reserve_caller_images = True,
         )
 
@@ -1481,7 +1458,6 @@ def test_a_live_result_leaves_room_for_the_pictures_the_caller_attached():
         f"{total} images in the conversation against a cap of "
         f"{mcp_images.MAX_TOTAL_MODEL_IMAGES}"
     )
-    # And the caller's own picture is not what made room.
     assert any(
         part.get("type") == "image_url" for part in conversation[0]["content"]
     ), "the attachment was trimmed to fit the tool's results"
@@ -1538,7 +1514,6 @@ def test_an_unnamed_tool_result_is_judged_by_the_call_that_made_it():
                     }
                 ],
             },
-            # No "name" on the result, as the wire format allows.
             {"role": "tool", "tool_call_id": "call_0", "content": _envelope("[1]", _image())},
         ]
 
@@ -1551,7 +1526,6 @@ def test_an_unnamed_tool_result_is_judged_by_the_call_that_made_it():
             if part.get("type") == "image_url"
         )
         assert bool(parts) is promotes, f"{tool}: promoted={bool(parts)}"
-        # Either way the suffix comes off the text; only IMAGE input is gated.
         assert mcp_images.SENTINEL not in _json.dumps(out)
 
 
@@ -1642,8 +1616,6 @@ def test_a_batch_with_a_later_text_result_does_not_say_the_tool_call_above():
     history = [
         {"role": "tool", "name": "mcp__s__shot", "content": _envelope("[1]", _image())},
         {"role": "tool", "name": "mcp__s__list", "content": "three files"},
-        # An assistant follows, so the turn is INSERTED after the batch rather than
-        # merged into a user message -- the case that carries a note at all.
         {"role": "assistant", "content": "done"},
     ]
 
@@ -2012,8 +1984,7 @@ def test_local_replay_keeps_every_picture_the_live_loop_kept():
     eligible = mcp_images.eligible_replay_images(history, local = True)
     tool_positions = [i for i, m in enumerate(history) if m.get("role") == "tool"]
     assert all(eligible.get(i, 0) >= 1 for i in tool_positions), eligible
-    # The part paths still take four per result: two rounds fill the budget and a
-    # third rides on the spare allowance, so only three results stay eligible there.
+    # Part paths take four per result: two rounds fill the budget and a third uses the spare.
     parts = mcp_images.eligible_replay_images(history)
     assert sum(1 for n in parts.values() if n) == 3, parts
 
@@ -2430,7 +2401,6 @@ def test_an_entry_with_an_unbounded_mime_type_is_not_an_image():
     hide from the byte budgets. Mirrors the frontend's MAX_MCP_IMAGE_MIME_CHARS."""
     long_mime = "image/" + "x" * mcp_images.MAX_MCP_IMAGE_MIME_CHARS
     text, images = split_images(_envelope("[2]", _image(mime = long_mime), _image()))
-    # The envelope still splits -- or its megabytes would stay in the prompt as text.
     assert len(images) == 2
     assert mcp_images.count_probably_decodable(images) == 1
     assert not mcp_images.probably_decodable(_image(mime = long_mime))
@@ -2663,7 +2633,6 @@ def test_the_content_part_extractor_keeps_marker_text_and_hops_the_split(monkeyp
         assert "await _extract_content_parts_async(" in body, fn
         assert "= _extract_content_parts(" not in body, fn
     chat = inspect.getsource(inference_route.produce_openai_chat_completions)
-    # only the async extraction strips images; all three synchronous paths preserve them.
     assert chat.count("await _extract_content_parts_async(") == 1
     assert chat.count("keep_tool_images = True") == 3
 

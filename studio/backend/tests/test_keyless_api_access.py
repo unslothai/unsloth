@@ -137,8 +137,7 @@ def test_exact_route_matrix_matches_registered_topology():
 
 
 def test_the_allowlisted_studio_paths_name_routes_that_exist():
-    # The matrix above pins the /v1 router. This one covers the studio router, whose
-    # paths carry a mount prefix, so a rename there cannot silently strand an entry.
+    # Covers the studio router, whose paths carry a mount prefix.
     from routes.inference import studio_router
     from utils.keyless_api_access import _INFERENCE_ROUTES
 
@@ -307,7 +306,7 @@ def test_concurrent_stale_cache_misses_coalesce_into_one_sqlite_read(monkeypatch
     for t in threads:
         t.start()
     entered.wait(timeout = 10)
-    time.sleep(0.2)  # let followers queue
+    time.sleep(0.2)
     clock[0] = keyless._SETTINGS_CACHE_TTL_S + 1.0
     release.set()
     for t in threads:
@@ -350,7 +349,7 @@ def test_concurrent_keyless_checks_through_the_real_entrypoint_stay_bounded(monk
 
     with ThreadPoolExecutor(max_workers = pool_workers) as pool:
         futures = [pool.submit(asgi_request_is_keyless, scope) for _ in range(n_requests)]
-        time.sleep(0.2)  # fill the pool
+        time.sleep(0.2)
         late_future = pool.submit(asgi_request_is_keyless, scope)
         release.set()
         results = [f.result(timeout = 10) for f in futures]
@@ -971,7 +970,6 @@ def test_tool_policy_and_api_identity(monkeypatch):
     assert request.state.keyless_api_admitted is True
     assert admitted_without_credential(resolve(request)) is True
     assert admitted_without_session(request) is True
-    # Same verdict before one is recorded: read as credentialed, it would skip the keyless guards.
     assert admitted_without_session(request_for(headers = {"Authorization": "Bearer "})) is True
     assert inference._request_has_api_key(request) is True
     assert inference._request_used_api_key(request) is True
@@ -1170,7 +1168,6 @@ def test_the_keyless_load_probe_runs_off_the_event_loop(monkeypatch):
     seed_user(); set_keyless_api_access("full")
     request = request_for(headers = {"Host": "localhost:8888"})
     assert admitted_without_session(request)
-    # as the middleware leaves it, so the admission fallback skips the predicate
     keyless.mark_keyless_admission(request, True)
     threads: list[int] = []
     real = keyless._keyless_request_allowed_for_scope

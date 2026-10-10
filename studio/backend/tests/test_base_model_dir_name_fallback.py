@@ -18,9 +18,7 @@ import types
 
 import pytest
 
-# Keep this runnable where optional logging deps are absent. Probe the installed distribution,
-# not sys.modules: structlog is a real dependency, and stubbing it merely because nothing has
-# imported it yet would replace the package for every test collected afterwards.
+# Probe the installed dist, not sys.modules, before stubbing structlog.
 if importlib.util.find_spec("structlog") is None:  # pragma: no cover - minimal environments
 
     class _DummyLogger:
@@ -43,20 +41,18 @@ from utils.training_runs import (  # noqa: E402
 )
 
 
-# One name per script that `\w` accepts and the Hub's ASCII charset does not. Built as
-# names rather than bare characters because that is the shape the parser sees, and checked
-# against `\w` below so a case cannot quietly stop testing anything.
+# Names `\w` accepts but the Hub's ASCII charset rejects.
 _NON_ASCII_NAMES = (
-    "Café-8B",  # Latin-1 accent
-    "naïve_v2",  # Latin-1 diaeresis
-    "модель-8B",  # Cyrillic
-    "μοντέλο",  # Greek
-    "מודל",  # Hebrew
-    "نموذج",  # Arabic
-    "文件夹",  # Han
-    "モデル",  # Katakana
-    "ｑwen",  # fullwidth Latin
-    "Ａ",  # fullwidth capital
+    "Café-8B",
+    "naïve_v2",
+    "модель-8B",
+    "μοντέλο",
+    "מודל",
+    "نموذج",
+    "文件夹",
+    "モデル",
+    "ｑwen",
+    "Ａ",
 )
 
 
@@ -71,35 +67,24 @@ def test_the_non_ascii_cases_are_word_characters():
 @pytest.mark.parametrize(
     "dir_name,expected",
     [
-        # The shape the heuristic is written for.
         ("unsloth_Qwen3-8B_1771227800", "unsloth/Qwen3-8B"),
-        # A hand-made or foreign folder may carry a date-time stamp instead of an epoch.
         ("unsloth_Qwen3-8B_20260101-120000", "unsloth/Qwen3-8B"),
         ("unsloth_Qwen3-8B_20260101", "unsloth/Qwen3-8B"),
-        # Underscores inside the model name survive the round trip.
         ("unsloth_llama_3_8b_1771227800", "unsloth/llama_3_8b"),
-        # No model segment between the prefix and the timestamp: the originally reported bug.
         ("unsloth_Qwen3-8B", None),
         ("unsloth_", None),
         ("unsloth", None),
         ("unsloth__1771227800", None),
-        # A doubled separator means the name really does start with '_', which HF allows.
-        # Stripping it would resolve a different, equally valid repo.
         ("unsloth__Qwen3-8B_1771227800", "unsloth/_Qwen3-8B"),
-        # The project suffix is not part of the model name.
         ("unsloth_Qwen3-8B__project-demo_1771227800", "unsloth/Qwen3-8B"),
-        # ...and a name containing the marker is escaped by the generator.
         ("unsloth_x__project--y_1771227800", "unsloth/x__project-y"),
-        # A non-timestamp tail belongs to the model name, so the whole name is unparseable
-        # rather than truncated. Truncating gave 'unsloth/llama_3' -- valid, but nonexistent.
+        # A non-timestamp tail is part of the name, so the whole name is unparseable.
         ("unsloth_llama_3_8b", None),
         ("unsloth_gpt_oss_20b", None),
         ("unsloth_Qwen3-8B_final", None),
         ("unsloth_Qwen3-8B_v2", None),
         ("unsloth_Qwen3-8B_checkpoint-500", None),
-        # A model name that is itself all digits still round-trips.
         ("unsloth_20260101_1771227800", "unsloth/20260101"),
-        # Not ours: leave it to the caller's "could not detect" path.
         ("my-finetune_1771227800", None),
         ("meta-llama_Llama-3.1-8B_1771227800", None),
         ("Unsloth_Qwen3-8B_1771227800", None),
@@ -147,16 +132,16 @@ def test_the_bare_org_is_never_returned():
 @pytest.mark.parametrize(
     "dir_name",
     [
-        "unsloth_ _1771227800",  # space
-        "unsloth_._1771227800",  # bare dot
+        "unsloth_ _1771227800",
+        "unsloth_._1771227800",
         "unsloth_-_1771227800",  # a name may not start or end with '-'
-        "unsloth_..._1771227800",  # '..' is rejected outright
-        "unsloth_--_1771227800",  # so is '--'
+        "unsloth_..._1771227800",
+        "unsloth_--_1771227800",
         "unsloth_.git_1771227800",  # a repo id may not end with '.git'
-        "unsloth_a\tb_1771227800",  # control characters
+        "unsloth_a\tb_1771227800",
         "unsloth_\n_1771227800",
-        "unsloth_🦥_1771227800",  # not a word character
-        "unsloth_" + "a" * 97 + "_1771227800",  # the Hub caps a name at 96 characters
+        "unsloth_🦥_1771227800",
+        "unsloth_" + "a" * 97 + "_1771227800",
     ],
 )
 def test_a_folder_name_that_cannot_be_a_repo_id_is_refused(dir_name):
@@ -203,10 +188,7 @@ def test_the_transcribed_repo_id_rule_is_never_looser_than_the_hubs():
         "a b",
         "a\tb",
         "a-b.c_d",
-        # Non-ASCII word characters. `\w` matches all of these and the Hub's charset
-        # matches none of them, which is the direction this test exists to catch:
-        # huggingface_hub 1.32.0 put re.ASCII on its own REPO_ID_REGEX and only
-        # "Café-8B" was listed here, so one name stood in for a whole class.
+        # Non-ASCII word chars: `\w` matches them, the Hub charset does not.
         *_NON_ASCII_NAMES,
     ]
     looser = [
@@ -237,9 +219,9 @@ def test_no_non_ascii_letter_or_digit_can_reach_a_repo_id():
 @pytest.mark.parametrize(
     "stamp",
     [
-        "١٧٧١٢٢٧٨٠٠",  # Arabic-Indic
-        "१२३४५६",  # Devanagari
-        "１７７１２２",  # fullwidth
+        "١٧٧١٢٢٧٨٠٠",
+        "१२३४५६",
+        "１７７１２２",
     ],
 )
 def test_a_non_ascii_digit_run_is_not_a_timestamp(stamp):
@@ -255,7 +237,6 @@ def test_a_non_ascii_digit_run_is_not_a_timestamp(stamp):
 
 def _write_adapter(directory):
     directory.mkdir(parents = True)
-    # No base_model_name_or_path, so detection has to fall through to the directory name.
     (directory / "adapter_config.json").write_text(json.dumps({}), encoding = "utf-8")
     (directory / "adapter_model.safetensors").write_bytes(b"")
 
@@ -308,9 +289,7 @@ def test_a_trailing_separator_does_not_change_the_answer(tmp_path):
     assert get_base_model_from_lora(str(adapter) + "/") == "unsloth/Qwen3-8B"
 
 
-# --- the two resolvers in utils.transformers_version ---------------------------------------
-# _resolve_base_model is reached *through* get_base_model_from_lora, so while it kept its own
-# copy of the parse it rebuilt the bogus id one branch after the fixed function returned None.
+# _resolve_base_model is reached through get_base_model_from_lora.
 
 
 def test_the_transformers_resolvers_agree_with_the_model_config_one(tmp_path):

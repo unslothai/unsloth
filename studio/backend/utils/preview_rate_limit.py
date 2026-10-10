@@ -15,7 +15,6 @@ import threading
 import time
 from collections import deque
 
-# Window / ceiling for preview chat-completions per client IP.
 _WINDOW_SECONDS = 60.0
 _MAX_REQUESTS = 20
 # Bound memory on a public surface (many distinct IPs).
@@ -49,9 +48,7 @@ def check_rate_limit(key: str) -> int:
             if len(_buckets) >= _MAX_BUCKETS:
                 _evict_aged(now)
             if len(_buckets) >= _MAX_BUCKETS:
-                # Table is full of currently-active clients. Fail closed: deny the
-                # new key rather than evict a live bucket (which would hand out a
-                # rate-limit reset). Pathological only (>= _MAX_BUCKETS live IPs).
+                # Table full of live clients: fail closed rather than evict (an eviction resets the limit).
                 return max(1, int(_WINDOW_SECONDS))
             bucket = _buckets[key] = deque()
         _prune(bucket, now)

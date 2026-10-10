@@ -25,14 +25,10 @@ __all__ = [
 ]
 
 
-# A one-key box, not the refusal itself: `.set()` in a context copy is invisible to the original, where
-# `_friendly_error` runs, but copies share VALUES. See `open_slot`.
+# Copies of the context share VALUES, so the slot is a mutable box. See `open_slot`.
 _REFUSAL_SLOT: ContextVar[Optional[dict]] = ContextVar("unsloth_context_refusal", default = None)
 
-# Share of the irreducible prompt the latest turn must reach before the turn, not the conversation, is blamed. Never all
-# of it: the system prompt and template wrapper are in the floor too. Dominating is NOT the same as not fitting, so it
-# only earns the softer "most of this prompt is ..." wording; the flat "does not fit" needs the turn alone to exceed the
-# budget.
+# Share of the irreducible prompt the latest turn must reach to be blamed (soft wording only).
 _TURN_DOMINATES = 0.66
 
 
@@ -52,7 +48,6 @@ def open_slot() -> None:
 def _slot(*, create: bool = False) -> Optional[dict]:
     slot = _REFUSAL_SLOT.get()
     if slot is None and create:
-        # No one opened one, so this context is where the message is built too.
         slot = {"refusal": None}
         _REFUSAL_SLOT.set(slot)
     return slot
@@ -73,7 +68,6 @@ def record_fit(truncation) -> None:
 def clear() -> None:
     slot = _slot()
     if slot is not None:
-        # empty it as well as dropping it, so a worker mid-flight holding a reference cannot read a stale refusal back
         slot["refusal"] = None
     _REFUSAL_SLOT.set(None)
 
@@ -110,38 +104,20 @@ def _blame_latest_turn(context_tokens: int):
     latest_turn = _int(refusal.get("latest_turn_tokens"))
     if irreducible <= 0 or latest_turn <= 0:
         return None
-    # Only a COUNTED turn is comparable to `irreducible_tokens`. That is a tokenizer count of the rendered prompt; the
-    # fallback `latest_turn_tokens` is the message's JSON at four characters a token, so weighing them against each
-    # other compares a guess with a truth rather than two sides of one. Measured on the bundled gemma-4 template with a
-    # real Gemma tokenizer: 16,400 characters of newlines estimate 8,207 tokens against 557 rendered, 14.8x, which alone
-    # clears this ratio against a 8,629-token prompt the turn is 6.5% of -- next to a system prompt that is 93% of it.
-    # The user was then told "Most of this prompt is a single tool result" and to fetch a smaller slice of a file that
-    # was not the problem. Escaped JSON runs the other way at 0.86x, so the error is not even one-directional and cannot
-    # be corrected for. The producer now prices such a turn by difference against the prompt it measured
-    # (`turn_diagnosis`), so this flag is False only when nothing could be counted at all. There, no turn is named: a
-    # lost diagnosis costs the user a specific lever, a false one sends them after the wrong one. Absent flag means a
-    # producer that predates it, which was always a count.
+    # Only a COUNTED turn compares with `irreducible_tokens`: the char estimate can be off 15x either way.
+    # Absent flag means an older producer, which always counted.
     exact = bool(refusal.get("latest_turn_exact", True))
     if not exact:
         return None
-    # Both numbers price a whole rendered PROMPT, so both carry the same floor (template wrapper plus any tool
-    # catalogue). Left in, it swamps the comparison: a 6,000-token MCP catalogue makes a 20-token "hi" 97% of the
-    # irreducible prompt. Off BOTH sides, so the turn's contribution is compared against the rest of the conversation's.
+    # Subtract the shared floor (template wrapper, tool catalogue) from both sides, or it swamps the ratio.
     shared = _int(refusal.get("shared_prompt_tokens"))
     shared = max(0, min(shared, latest_turn - 1, irreducible - 1))
     latest_turn -= shared
     irreducible -= shared
     if latest_turn < _TURN_DOMINATES * irreducible:
         return None
-    # The WINDOW, not the fit's `prompt_target` (the window minus reserved reply room): llama-server admits a prompt on
-    # its size alone ("n_tokens() >= n_ctx" in tools/server/server-context.cpp, the check whose text this rewrites), so
-    # a turn between the two really would have been served and only earns the soft wording. `>=` to match that check.
-    # Compared without the shared floor, since the hard wording is a claim about the turn's own size.
+    # The WINDOW, not `prompt_target`: llama-server admits on "n_tokens() >= n_ctx" alone.
     window = recorded_context or context_tokens
-    # Reached only on a counted turn, per the gate above, so this is a claim about a size that was measured. A turn
-    # the template renders as nothing on its own is counted by difference, so every Gemma tool result can earn this
-    # wording again rather than being hedged down for being a guess. Not defaulted to "user": `describe_oversize`
-    # gives an unnameable role generic advice.
     role = str(refusal.get("latest_turn_role") or "")
     return role, not (window and latest_turn >= window)
 
@@ -174,9 +150,7 @@ def _history_cannot_help(context_tokens: int) -> bool:
     return irreducible > 0 and window > 0 and irreducible >= window
 
 
-# Per role: what to call the turn when it merely dominates, what to call it when it does not fit at all, and the lever
-# worth offering. The lever is why this splits by role -- "send it in smaller pieces" is useless for turns the user
-# did not type.
+# Split by role because the lever differs: the user cannot split turns they did not type.
 _ROLE_ADVICE = {
     "user": (
         "Most of this prompt is the message just sent",
@@ -188,28 +162,22 @@ _ROLE_ADVICE = {
         "A tool returned more than this context window can hold",
         "ask for a smaller slice of the file or page",
     ),
-    # The model passed a file-sized argument to a tool. The user did not type it and cannot split it, and the tool
-    # cannot be asked for less: `edit_file` with an empty `old_string` is whole-file creation, so the content IS the
-    # argument. The only levers are the window itself and not asking for a file this size in a window this small.
+    # `edit_file` with empty `old_string` is whole-file creation, so the content IS the argument.
     "assistant_tool_call": (
         "Most of this prompt is the file the model passed to a tool",
         "The file the model passed to a tool does not fit on its own",
         "ask for a smaller file, or raise the Context Length before retrying",
     ),
-    # The same shape with no file in it: an oversized program, command, query or MCP payload. "Ask for a smaller file"
-    # names the wrong thing and cannot be acted on, so this one says what is actually true of every tool.
     "assistant_tool_payload": (
         "Most of this prompt is what the model passed to a tool",
         "What the model passed to a tool does not fit on its own",
         "ask for less in one call, or raise the Context Length before retrying",
     ),
-    # The reply resumed after it hit Max Tokens: the user cannot split or shorten it.
     "assistant": (
         "Most of this prompt is the reply being continued",
         "The reply being continued is already too long for this window",
         "start a new reply",
     ),
-    # These survive eviction, so splitting one preserves the total and changes nothing.
     "system": (
         "Most of this prompt is the system instructions",
         "The system instructions do not fit on their own",
@@ -232,11 +200,7 @@ def oversize_advice(context_tokens: int) -> str:
     advice = _ROLE_ADVICE.get(blamed[0]) if blamed else None
     if advice is None:
         if _history_cannot_help(context_tokens):
-            # No turn to name, and yet "shorten the conversation" is not merely vague here, it is an action that
-            # provably cannot work: what survives eviction is already at or over the window. Named levers rather than a
-            # role, because the bulk is spread across the parts eviction never touches, and the recorded fields cannot
-            # say which of them it is -- `shared_prompt_tokens` bundles the template wrapper with the catalogue, so a
-            # large one does not prove there are tools. Both levers are offered, and neither is claimed to be the cause.
+            # What survives eviction is already over the window, so "shorten the conversation" cannot work.
             return (
                 "Even with every earlier turn dropped, this prompt would still be "
                 "too long, so shortening the conversation will not help. Increase the "
@@ -268,8 +232,6 @@ def describe_oversize(request_tokens: int, context_tokens: int) -> str:
     ) + oversize_advice(context_tokens)
 
 
-# What the user can actually shorten, per tool. Anything absent gets the neutral line: an MCP tool's payload is not a
-# file and not a program, and guessing at it is worse than saying the one thing that is true of every tool.
 _TOOL_LEVERS = {
     "edit_file": "ask for a smaller file",
     "python": "run a shorter program",
@@ -299,9 +261,7 @@ def describe_unservable_tool_call(
     ``compacted_calls`` is reported when history was already spent trying to make room, so
     "increase the Context Length" does not read as advice nobody tried.
     """
-    # Says "leaving no room to reply" rather than only quoting the two numbers. The bar is the window minus a small
-    # reply floor, so a refusal at 3,740 against 4,096 reads as a contradiction unless the message accounts for the gap
-    # it is refusing over.
+    # The bar is window minus a reply floor, so explain the gap or the numbers look contradictory.
     head = (
         f"Not enough context left to run {tool_name}: the next request would be about "
         f"{request_tokens} tokens of a {context_tokens}-token window, leaving no room to "
@@ -314,9 +274,7 @@ def describe_unservable_tool_call(
             f"Arguments from {compacted_calls} earlier tool {calls} were already compacted "
             "to make room. "
         )
-    # The gate runs for EVERY enabled tool, so the file wording was reaching an oversized `python`, `terminal`, web or
-    # MCP call and telling the user to ask for a smaller file when no file was involved -- advice that cannot make the
-    # actual program, command or payload any smaller. `edit_file` keeps the line it was written for.
+    # The gate runs for every tool, so non-file tools get neutral advice.
     lever = _TOOL_LEVERS.get(tool_name, "ask for less in one call")
     return (
         head + tried + "Nothing was written. Increase the Context Length in Model settings, "

@@ -13,17 +13,14 @@ from typing import Any
 MANAGED_PRIVATE_PROVIDER_URLS_SETTING_KEY = "managed_private_provider_urls_allowed"
 DEFAULT_MANAGED_PRIVATE_PROVIDER_URLS_ALLOWED = False
 
-# Refuses private addresses for EVERY account, owner included, and outranks the stored preference:
-# what an operator set in the environment is not undone from a settings page.
+# Blocks private addresses for every account and outranks the stored preference.
 BLOCK_PRIVATE_ENV = "UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS"
 
-# Asked by every managed outbound request; uncached it costs a fresh SQLite connection (~600us) on
-# the shared loop. A write drops the entry, so the TTL only bounds staleness in ANOTHER process.
+# Cache briefly: each uncached read costs a SQLite connection on the shared loop.
 _CACHE_TTL_SECONDS = 1.0
 _cache_lock = threading.Lock()
 _cached: tuple[float, bool] | None = None
-# Bumped by every write: a read that started earlier must not publish what it saw, or a disable
-# keeps allowing private egress for the rest of the TTL.
+# Bumped by every write so an older read cannot publish stale state.
 _generation = 0
 
 
@@ -103,8 +100,8 @@ def set_managed_private_provider_urls_allowed(value: Any) -> bool:
     from storage.studio_db import upsert_app_settings
     from utils.account_context import OWNER, run_as
 
-    # Owner-bound like the read: the two halves have to name one store.
+    # Owner-bound like the read: both halves must name one store.
     run_as(OWNER, upsert_app_settings, {MANAGED_PRIVATE_PROVIDER_URLS_SETTING_KEY: parsed})
-    # Dropped, not replaced with `parsed`: a write that did not land must not be believed.
+    # Drop, do not cache `parsed`: the write may not have landed.
     forget_cached_setting()
     return parsed

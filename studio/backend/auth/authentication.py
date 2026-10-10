@@ -32,7 +32,7 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 REFRESH_TOKEN_EXPIRE_DAYS = 7
 
-# internal schemes, never sent by a client: no token at all, and a token to ignore if unusable
+# Internal schemes, never sent by a client.
 KEYLESS_SCHEME = "Keyless"
 KEYLESS_FALLBACK_SCHEME = "KeylessBearer"
 _KEYLESS_CREDENTIALS = HTTPAuthorizationCredentials(
@@ -352,7 +352,7 @@ async def credentials_for_token(
 
     if token is not None and not token.strip():
         token = None
-    # Settings/listener reads hit SQLite and DNS, so keep them off the event loop.
+    # Settings/listener reads hit SQLite and DNS; keep them off the event loop.
     if token and token not in APPROVED_DUMMY_BEARERS:
         return HTTPAuthorizationCredentials(scheme = "Bearer", credentials = token)
     eligible = await run_in_threadpool(keyless_request_allowed, request)
@@ -370,7 +370,7 @@ async def subject_for_header_or_query_token(request: Any, token: Optional[str]) 
     read for itself. An ``<img src>`` and the native save command fetch without a header."""
     header = request.headers.get("authorization") or ""
     header_token = header[7:] if header.lower().startswith("bearer ") else ""
-    # A blank header is the absent header, so the `?token=` such a caller sends is still owed.
+    # A blank header counts as absent, so a ?token= is still honored.
     credentials = await credentials_for_token(request, header_token.strip() or token or None)
     if credentials is None:
         raise HTTPException(
@@ -429,7 +429,6 @@ async def get_current_subject_allow_password_change(
     return subject
 
 
-# The literal the examples ship with; pasted unedited more often than a revoked key.
 API_KEY_PLACEHOLDER = f"{API_KEY_PREFIX}YOUR_KEY"
 
 
@@ -521,7 +520,6 @@ async def _get_current_credential(
             detail = "Invalid token payload",
         )
     bind_account(AccountContext(record["account_id"], record["username"], record["role"]))
-    # A managed token carrying the desktop marker gets no owner password-change bypass.
     is_desktop = payload.get("desktop") is True and record.get("role") == "owner"
     if must_change_password and not allow_password_change and not is_desktop:
         raise HTTPException(

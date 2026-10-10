@@ -197,7 +197,7 @@ def test_family_default_is_hosted_int8_and_needs_no_torchao():
     fam = get_family("qwen-image-2.1")
     mode, auto = resolve_te_quant_request(None, fam.te_quant_auto)
     assert (mode, auto) == ("int8", True)
-    # No keep-bf16 schedule, so every pre-load gate sees the fp8 storage cast: no torchao, offload allowed.
+    # No keep-bf16 schedule, so pre-load gates see the fp8 storage cast: no torchao, offload allowed.
     assert effective_te_quant(mode, fam.name) == "fp8"
     assert not te_quant_needs_resident_weights(effective_te_quant(mode, fam.name))
 
@@ -212,10 +212,8 @@ def test_int8_source_prefers_the_convrot_file_then_the_fp8_one():
         FP8_NAME,
         "Qwen-Image-2.1-text_encoder-FP8.pt",
     )
-    # An explicit fp8 request never asks for the int8 file.
     fp8 = tpq.te_prequant_sources(fam, te_quant_mode = "fp8", target = CUDA_BF16)["text_encoder"]
     assert INT8_NAME not in tpq.te_candidate_filenames(fp8)
-    # Families without a hosted int8 encoder resolve nothing for int8, as before.
     assert (
         tpq.te_prequant_sources(get_family("qwen-image"), te_quant_mode = "int8", target = CUDA_BF16)
         == {}
@@ -243,7 +241,6 @@ def test_int8_file_loads_as_convrot_linears_and_matches_its_dequantized_weights(
     assert sum(isinstance(m, cls) for m in layers.modules()) == 2 * 7
     assert not any(isinstance(m, torch.nn.Linear) for m in layers.modules())
     assert all(m.weight.dtype == torch.int8 for m in layers.modules() if isinstance(m, cls))
-    # Vision tower and embedding stay dense.
     assert any(isinstance(m, torch.nn.Linear) for m in encoder.model.visual.modules())
     # Plain tensors only, so Module.to() and group offloading move it like any module.
     assert all(
@@ -255,7 +252,6 @@ def test_int8_file_loads_as_convrot_linears_and_matches_its_dequantized_weights(
     got = _hidden(encoder, ids)
     for a, b in zip(expected, got):
         torch.testing.assert_close(b, a, rtol = 1e-4, atol = 1e-4)
-    # and it is close to the dense bf16 encoder it was quantized from
     dense = _hidden(reference, ids)[-1]
     cos = torch.nn.functional.cosine_similarity(dense.flatten(), got[-1].flatten(), dim = 0)
     assert cos > 0.99
@@ -312,7 +308,6 @@ def test_mirror_serves_the_int8_file_before_the_hub(tmp_path, monkeypatch):
     assert tpq.te_prequant_hub_files({"text_encoder": src}, NoApi()) == {
         "text_encoder": [(INT8_NAME, 7)]
     }
-    # An escaping name is never served.
     assert tpq.te_prequant_mirror_path(REPO, "../x") is None
 
 
@@ -407,7 +402,6 @@ def test_an_unreachable_hub_still_takes_the_cached_fp8_file(tmp_path, monkeypatc
     src = tpq.resolve_te_prequant_source(get_family("qwen-image-2.1"), "text_encoder", "int8")
     assert tpq._resolve_checkpoint_path(src, None, cache_dir = str(tmp_path)) == str(fp8)
     assert asked == [(INT8_NAME, False), (FP8_NAME, True)]
-    # Nothing cached at all: the outage itself surfaces.
     monkeypatch.setattr(
         huggingface_hub,
         "hf_hub_download",
@@ -470,7 +464,7 @@ def test_an_int8_file_that_will_not_build_falls_back_to_the_fp8_names(monkeypatc
             get_family("qwen-image-2.1"), BASE, te_quant_mode = "int8", target = CUDA_BF16, dtype = None
         )
         assert out.get("text_encoder") is expected
-        # Only a present-but-unbuildable int8 file earns a second (fp8) attempt; a 404 already fell through.
+        # Only a present-but-unbuildable int8 file earns an fp8 retry; a 404 already fell through.
         assert calls == (
             [(INT8_NAME, "int8"), (FP8_NAME, "fp8")] if held else [(INT8_NAME, "int8")]
         )

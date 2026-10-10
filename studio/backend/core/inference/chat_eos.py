@@ -17,7 +17,6 @@ torch / unsloth) so it is unit-testable without the full inference stack.
 
 from typing import Optional
 
-# Canonical assistant-turn-end markers per chat family.
 _CHAT_TURN_END_TOKENS = (
     "<|im_end|>",
     "<|eot_id|>",
@@ -25,10 +24,9 @@ _CHAT_TURN_END_TOKENS = (
     "<end_of_turn>",
     "<turn|>",
     "<|end|>",
-    "<|end_of_turn|>",  # OpenChat, distinct from Gemma's
+    "<|end_of_turn|>",
 )
-# harmony/gpt-oss uses <|end|> as a channel delimiter, not the turn end, and has its own streamer, so its eos is left
-# untouched.
+# harmony/gpt-oss uses <|end|> as a channel delimiter, not the turn end.
 _HARMONY_MARKERS = ("<|channel|>", "<|constrain|>")
 
 

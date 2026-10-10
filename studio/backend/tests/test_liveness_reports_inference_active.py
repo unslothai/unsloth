@@ -32,7 +32,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-_BACKEND_DIR = Path(__file__).resolve().parent.parent  # studio/backend
+_BACKEND_DIR = Path(__file__).resolve().parent.parent
 _COMMANDS_RS = _BACKEND_DIR.parent / "src-tauri" / "src" / "commands.rs"
 
 
@@ -213,17 +213,7 @@ def test_the_marker_costs_nothing_to_read():
     a registry len() rather than asking the backend what it is doing."""
     result = _probe()["probes"]
 
-    # Two bounds, because they answer different questions and neither covers the other.
-    #
-    # The first is the one that matters: liveness against a route in the same app that
-    # only returns a dict. Both pay the same interpreter, the same TestClient and the same
-    # scheduler, so what is left is the route's own work, and a second of new I/O shows up
-    # as a ratio however slow the runner is. Generous at 40x, since the floor here is tens
-    # of microseconds and small absolute jitter is a large ratio.
-    #
-    # The second is the absolute one the watchdog imposes: at or over its per-probe budget
-    # every real probe times out. A relative bound cannot see that, because a control that
-    # somehow took seconds would scale with it.
+    # relative bound vs a trivial route catches new I/O; absolute bound is the watchdog budget
     for state, sample in result.items():
         control = sample["control"]
         relative = max(control * 40, 0.05)

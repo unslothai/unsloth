@@ -177,7 +177,6 @@ def test_auto_detect_eval_forwards_explicit_token(monkeypatch):
     )
 
     assert result is not None
-    # Auto-detect (no explicit eval_split) probes the splits, then loads a candidate.
     assert probe_calls == [
         {
             "path": "org/gated",

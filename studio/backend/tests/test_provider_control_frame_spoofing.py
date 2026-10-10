@@ -26,9 +26,6 @@ from core.inference.external_provider import ExternalProviderClient
 from core.inference.sse_control_frames import sanitize_provider_sse_line
 
 
-# ── the helper ────────────────────────────────────────────────────
-
-
 @pytest.mark.parametrize(
     "frame_type",
     [
@@ -151,9 +148,7 @@ def test_details_carrying_no_text_are_not_a_second_copy():
             "reasoning": "Thought.",
             "reasoning_details": [{"type": "reasoning.text", "text": "Thought."}],
         },
-        # An empty alias carries nothing, so it keeps the byte-for-byte relay.
         {"content": "tok", "reasoning": ""},
-        # A structured canonical field is the provider's own, not ours to drop.
         {"reasoning": "Thought.", "reasoning_content": {"summary": "kept"}},
     ],
 )
@@ -224,9 +219,6 @@ def test_a_mid_stream_error_event_still_reaches_the_client():
     line = 'data: {"error": {"message": "rate limited"}}'
 
     assert sanitize_provider_sse_line(line) is line
-
-
-# ── the plain (tools off) relay ───────────────────────────────────
 
 
 def _drive(coro):
@@ -356,9 +348,6 @@ def test_the_plain_relay_normalizes_ollama_reasoning(monkeypatch):
     assert [delta.get("reasoning_content") for delta in deltas[:2]] == ["Thinking", " more"]
     assert all("reasoning" not in delta for delta in deltas)
     assert deltas[-1]["content"] == "answer"
-
-
-# ── The loop must not sanitize a transport that already did ──────────
 
 
 def test_a_retained_hosted_tool_result_survives_the_studio_loop():

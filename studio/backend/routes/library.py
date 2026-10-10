@@ -40,9 +40,8 @@ router = APIRouter()
 
 _MAX_UPLOAD_BYTES = LIBRARY_UPLOAD_MAX_BYTES
 _CHUNK_BYTES = 1024 * 1024
-# Raster images, audio and video render inline; anything else (svg and html included) downloads as
-# opaque bytes, as the sandbox route does, so a crafted upload cannot run script on the app origin.
-# Exact types, never a prefix: a stored "audio/x, text/html" is not audio.
+# Only raster/audio/video inline; svg/html download as bytes so they can't run script.
+# Exact types, never prefix match.
 _INLINE_IMAGE_TYPES = frozenset(
     {"image/png", "image/jpeg", "image/gif", "image/webp", "image/avif"}
 )
@@ -99,7 +98,6 @@ def _items_for_caller(items: list[dict], via_api_key: bool) -> list[dict]:
     for item in items:
         item = {**item, "id": _for_caller(item["id"], via_api_key)}
         base = (item.get("model") or {}).get("baseModel")
-        # A fine-tune of a local model names that folder; a Hub repo id is kept.
         if isinstance(base, str) and os.path.isabs(base):
             item["model"] = {**item["model"], "baseModel": cache_reference(base)}
         made_with = (item.get("audio") or {}).get("model")
@@ -128,7 +126,7 @@ class ItemRef(_ItemIdModel):
 
 
 class ItemDelete(ItemRef):
-    # The file a sandbox item was listed as, so a delete never takes one made at its path since.
+    # Delete only the file listed, never one made at its path since.
     fingerprint: Optional[str] = Field(default = None, max_length = 256)
 
 
@@ -220,8 +218,6 @@ def patch_item(body: ItemPatch, current_subject: str = Depends(get_current_subje
 
 @router.post("/items/opened")
 def mark_item_opened(body: ItemRef, current_subject: str = Depends(get_current_subject)) -> dict:
-    # Only an item that is there, and kept for the file it is now: an open landing after a delete
-    # must not leave a row that a file made at the same path later would take for its own.
     if not library.mark_opened(body.id):
         raise HTTPException(status_code = 404, detail = "Item not found")
     return {"ok": True}
@@ -295,7 +291,6 @@ def _reveal(path) -> None:
     from utils.paths.file_manager import file_manager_kind
     from utils.paths.path_utils import reveal_in_file_manager
 
-    # The UI hides Reveal on such a host; a direct call must not open a window nobody sees.
     if file_manager_kind() is None:
         raise HTTPException(status_code = 503, detail = "No file manager is available on this machine")
     try:
@@ -406,10 +401,7 @@ def _send(
     )
 
 
-# An audio or video preview plays from a link the element fetches itself, with range requests, so
-# a long file is never buffered whole and can seek. The bearer mints the link; the link alone then
-# serves that one item, in that one account, until it expires. A secret and domain of its own, so
-# a gallery's media link never works here, nor one of these there.
+# Media plays via a range-capable signed link scoped to one item; own secret and domain.
 _STREAM_LINK_TTL = 6 * 3600
 _STREAM_LINK_SECRET = secrets.token_bytes(32)
 _STREAM_LINK_DOMAIN = b"unsloth-library-stream\0"
@@ -545,9 +537,6 @@ async def get_locations(
     via_api_key: bool = Depends(authenticated_via_api_key),
 ) -> dict:
     from hub.utils.host_paths import redact_inventory_host_paths
-
-    # Settings > Library shows these to a signed-in user; an API key gets references, as the Hub
-    # inventory routes give it.
     locations = await run_in_threadpool(library.locations)
     return redact_inventory_host_paths({"locations": locations}, via_api_key = via_api_key)
 
@@ -563,8 +552,7 @@ async def reveal_location(
     if body.key not in entries:
         raise HTTPException(status_code = 404, detail = "Unknown location")
     path = Path(entries[body.key]["path"])
-    # A chosen folder that is gone is on a drive that is not there: making it would put the next
-    # saves beneath the mount point. Only a default is made.
+    # A missing chosen folder means an absent drive; creating it would write under the mount point.
     if not entries[body.key]["available"]:
         raise HTTPException(
             status_code = 409,
@@ -672,8 +660,7 @@ async def upload_files(
             for item_id in ids:
                 library_db.update_entry(item_id, folder_id = folderId, move = True)
     except BaseException as exc:
-        # All or nothing, so a retry never duplicates the files that did make it, and the grants
-        # this batch spent are given back, or its retry would be refused as a replay.
+        # All or nothing, and spent grants are returned, or a retry is refused as a replay.
         for record in records:
             await run_in_threadpool(library.delete_item, f"upload:{record['id']}")
         _release_leases(consumed)
@@ -699,7 +686,6 @@ def get_upload_file(upload_id: str, current_subject: str = Depends(get_current_s
     if record is None or path is None or not path.is_file():
         raise HTTPException(status_code = 404, detail = "File not found")
     content_type = _inline_type(record["contentType"])
-    # A note is saved through another URL, so the browser must ask again rather than reuse this.
     headers = {"Cache-Control": "private, no-cache", **_NOSNIFF}
     if content_type:
         return FileResponse(path, media_type = content_type, headers = headers)

@@ -110,7 +110,6 @@ def _rocminfo(monkeypatch, stack, output: str):
         "run",
         lambda *a, **k: types.SimpleNamespace(returncode = 0, stdout = output),
     )
-    # The sysfs fallback must not answer for the shelled probes above.
     monkeypatch.setattr(stack.os.path, "isdir", lambda p: False)
 
 
@@ -136,7 +135,7 @@ def test_the_request_does_not_invent_a_card(stack, monkeypatch):
     """The request relaxes which vendor wins, not whether there is a card to serve."""
     monkeypatch.setenv("UNSLOTH_FORCE_ROCM_TORCH", "1")
     monkeypatch.setattr(stack, "_has_usable_nvidia_gpu", lambda: True)
-    _rocminfo(monkeypatch, stack, "  Name:                    gfx000")  # CPU agent only
+    _rocminfo(monkeypatch, stack, "  Name:                    gfx000")
     assert stack._has_rocm_gpu() is False
 
 
@@ -183,8 +182,7 @@ def _bash(script: str, *, env: "dict | None" = None) -> str:
     return out.stdout.strip()
 
 
-# `command -v rocminfo` must not reach a real one on a ROCm build host, or these answers
-# would depend on the machine running the suite. Each harness names its own inventory.
+# Do not reach a real rocminfo on a ROCm build host.
 _rocminfo_stub = "rocminfo() { return 1; }"
 
 
@@ -237,15 +235,10 @@ def _index_url(env: str, stubs: str) -> str:
     """get_torch_index_url() under a stubbed host, returning the wheel index it picks."""
     script = "\n".join(
         [
-            # Every case here describes a Linux x86_64 host, so say so rather than letting
-            # the RUNNER answer. get_torch_index_url returns the cpu index outright for any
-            # other `uname -m`, which on the ubuntu-24.04-arm leg turned these into "the
-            # request selected cpu": two of them failed for a reason that is about the
-            # runner, and the cpu-index CONTROLS below passed for the same wrong reason.
+            # Pin Linux x86_64: other `uname -m` values return the cpu index outright.
             'uname() { case "${1:-}" in -m) echo x86_64 ;; *) echo Linux ;; esac; }',
             _shell_function("_rocm_torch_explicitly_requested"),
             stubs,
-            # The stubs above name this host's arch family, so it is not lifted here.
             *_wheel_route_defs(arch_family = False),
             # The generic route floors its leaf through this helper; left undefined, the
             # substitution is empty and every generic pick reads as a bare ".../whl/".
@@ -263,9 +256,7 @@ def _index_url(env: str, stubs: str) -> str:
     ).stdout
 
 
-# A bash function definition ends at its closing brace, so these are newline
-# separated: two on one line is a syntax error, which the first version of this
-# harness produced and read as "the flag did nothing".
+# Bash function definitions must be newline separated.
 _MIXED_HOST = "\n".join(
     [
         "_has_usable_nvidia_gpu() { return 0; }",
@@ -302,9 +293,6 @@ _NO_AMD_CARD = "\n".join(
         _MIXED_HOST.replace(
             "_has_amd_rocm_gpu() { return 0; }", "_has_amd_rocm_gpu() { return 1; }"
         ),
-        # Every source the route test can read, silenced together. Silencing only the
-        # ROCm runtime leaves the arch probes answering, which is the host the
-        # runtime-less reroute exists for rather than a machine with no AMD card.
         "_probe_amd_gfx_arch() { :; }",
         "_kfd_gfx_targets() { :; }",
         "_infer_linux_amd_gfx_arch() { :; }",
@@ -407,8 +395,7 @@ def _nvidia_wins(env: str, stubs: str) -> bool:
     return out.stdout.strip() == "NVIDIA"
 
 
-# The probes the route test reads, not its answer: stubbing _amd_request_has_a_wheel_route
-# itself would make every case below assert about the stub.
+# Stub the probes, not _amd_request_has_a_wheel_route, or cases assert about the stub.
 _NO_AMD = "\n".join(
     [
         "_has_amd_rocm_gpu() { return 1; }",
@@ -421,8 +408,7 @@ _NO_AMD = "\n".join(
 
 _ROUTABLE_AMD = "\n".join(
     [
-        # Kept so a predicate asking the OLD presence question still RUNS: an undefined
-        # function would make the unroutable case below fail for the wrong reason.
+        # Kept so a predicate asking the OLD presence question still runs.
         "_has_amd_rocm_gpu() { return 0; }",
         "_probe_amd_gfx_arch() { echo gfx1201; }",
         "_kfd_gfx_targets() { echo gfx1201; }",
@@ -527,9 +513,7 @@ def _index_after_the_guard(env: str, resolved: str, cuda_answer: str) -> str:
     script = "\n".join(
         [
             _shell_function("_rocm_torch_explicitly_requested"),
-            # Taken from install.sh rather than restated: a classifier restated
-            # here would agree with itself, and the mirror case below is exactly
-            # where it must not.
+            # Lifted from install.sh, not restated, so the classifier cannot agree with itself.
             _shell_function("_torch_index_url_leaf"),
             _shell_function("_torch_index_url_is_rocm"),
             "_has_usable_nvidia_gpu() { return 0; }",
@@ -683,7 +667,6 @@ def _gpu_summary_branch(
         (l for l in lines if l.startswith("if _has_usable_nvidia_gpu && ")),
         "if _nvidia_gpu_wins_over_amd; then",
     )
-    # The condition spans a continuation; take the rest of it verbatim.
     if head.rstrip().endswith("\\"):
         _at = lines.index(head)
         while lines[_at].rstrip().endswith("\\"):
@@ -703,9 +686,7 @@ def _gpu_summary_branch(
             "_has_amd_rocm_gpu() { return 0; }",
             f"TORCH_INDEX_URL={resolved!r}",
             f"_torch_index_pinned={'true' if pinned else 'false'}",
-            # export, not a VAR=VAL command prefix: a prefix applies to that one command and
-            # leaves the variable unset for everything after it, so the request would never
-            # be in effect and the first case below would pass without the fix.
+            # export, not a VAR=VAL prefix: a prefix only applies to one command.
             f"export {request}" if request else ":",
             head,
             "echo nvidia",
@@ -781,12 +762,9 @@ def _route_shell(probe: str, inferred: str, pci_ok: bool) -> bool:
         # gfx1010 (RDNA 1) is in neither the generic wheel nor any per-arch index.
         ("gfx1010", "", True, False),
         ("gfx1100", "", True, True),
-        # A Strix box with no rocminfo, amd-smi or KFD node is served per-arch wheels on a
-        # pure-AMD host by the reroute this predicate gates, so it is a route here too.
         ("", "gfx1151", True, True),
         ("", "gfx1030", False, False),
-        # gfx906's only route is the rocm6.3 legacy tag, which opens solely when it is the
-        # sole arch on the machine.
+        # gfx906's only route is the rocm6.3 legacy tag, open only when it is the sole arch.
         ("gfx906", "", True, True),
         ("gfx906\ngfx1010", "", True, False),
     ],
@@ -876,8 +854,6 @@ def _mixed_host(stack, monkeypatch, **over):
         "_physical_amd_gfx_archs",
         lambda: list(o["archs"]) or ([o["inferred"]] if o["inferred"] else []),
     )
-    # The masked list is what a probe that HONOURS the mask returns; ignore_visible_masks asks
-    # for the machine before any mask, which is the distinction the ROCr layer rests on.
     monkeypatch.setattr(
         stack,
         "_detect_amd_gfx_codes",
@@ -890,9 +866,7 @@ def _mixed_host(stack, monkeypatch, **over):
         "_probe_torch_runtime",
         lambda *a, **k: (True, True, o["torch"], "rocm" in o["torch"], ""),
     )
-    # The pin readers are deliberately NOT stubbed: the environment above is already
-    # cleared, so they answer None on their own, and a case that sets a pin needs the real
-    # reader to see it.
+    # Pin readers deliberately NOT stubbed: the env is cleared, and pin cases need the real reader.
     return o
 
 
@@ -1035,13 +1009,9 @@ def test_a_real_card_with_a_declared_arch_is_still_served(stack, monkeypatch):
         "_probe_torch_runtime",
         lambda *a, **k: (True, True, "2.11.0", False, True),
     )
-    # Not a no-op pip_install stub: this route installs through pip_install_try, which is
-    # a real subprocess too, so stopping at the probe is what keeps the test hermetic.
     assert _reaches_the_version_probe(stack, monkeypatch) is True
 
 
-# A card ROCm sees perfectly well and no index can serve. The two questions disagree here,
-# which is the whole point: the old predicate yields the NVIDIA GPU, the new one does not.
 _UNROUTABLE_AMD = "\n".join(
     [
         "_has_usable_nvidia_gpu() { return 0; }",
@@ -1067,9 +1037,7 @@ def test_the_reroute_predicate_still_yields_for_a_routable_one():
 
 def _shell_request_flag(value: "str | None") -> bool:
     """install.sh's own request test, run verbatim, for one value of the variable."""
-    # Through the environment rather than the script text: a tab quoted into a bash
-    # single-quoted string arrives as a literal backslash-t, so a harness that inlined the
-    # value would test a different string than the one named.
+    # Via the environment: a tab in bash single quotes is a literal backslash-t.
     env = dict(os.environ)
     env.pop("UNSLOTH_FORCE_ROCM_TORCH", None)
     if value is not None:
@@ -1113,8 +1081,6 @@ def _route_shell_masked(
 
 
 _ROUTE_YES_NO = "_amd_request_has_a_wheel_route && echo yes || echo no"
-# The published target, not the verdict: on a host whose integrated GPU enumerates first the
-# interesting failure is not whether ROCm wins but which card it wins FOR.
 _ROUTE_TARGET = (
     '_amd_request_has_a_wheel_route >/dev/null 2>&1; printf "%s" "${_AMD_REQUEST_TARGET_GFX:-}"'
 )
@@ -1147,8 +1113,6 @@ def _route_script(
     tail: str,
 ) -> str:
     emit = 'printf "%s\\n" ' + " ".join(repr(a) for a in physical) if physical else ":"
-    # KFD node order is what the mask ordinals index, and once rocminfo says nothing it is
-    # the only ordered source left, so a test about ordering cannot leave it stubbed empty.
     kfd_emit = 'printf "%s\\n" ' + " ".join(repr(a) for a in kfd) if kfd else ":"
     script = "\n".join(
         [
@@ -1167,18 +1131,13 @@ def _route_script(
 @pytest.mark.parametrize(
     "physical, mask, routes",
     [
-        # No probe can answer this: rocminfo is filtered only by ROCR_VISIBLE_DEVICES and
-        # amd-smi by neither, so a probe run under a HIP mask returns the whole machine and
-        # the route test answered yes on the card the mask had just hidden.
+        # rocminfo honours only ROCR_VISIBLE_DEVICES, amd-smi neither: no probe answers a HIP mask.
         (["gfx1100", "gfx1010"], "1", False),
         (["gfx1100", "gfx1010"], "0", True),
-        # Failing closed is about what cannot be resolved, not the whole variable: the
-        # runtime reads left to right and stops at the first entry naming no device, so the
-        # survivors are the PREFIX.
+        # The runtime stops at the first entry naming no device, so survivors are the prefix.
         (["gfx1100", "gfx1010"], "0,GPU-abcdef", True),
         (["gfx1100", "gfx1010"], "1,GPU-abcdef", False),
-        # gfx906's only route is the rocm6.3 legacy tag, and the reroute granting it inspects
-        # the UNMASKED inventory, refusing when a second AMD arch is present.
+        # gfx906's legacy reroute inspects the UNMASKED inventory and refuses a second AMD arch.
         (["gfx906", "gfx1100"], "0", False),
         # HIP remaps runtime ordinal 0 onto the head of the mask.
         (["gfx1100", "gfx1010"], "1,0", False),
@@ -1370,8 +1329,6 @@ def test_a_rocm_pin_is_still_honoured_over_an_nvidia_card(stack, monkeypatch):
     monkeypatch.setattr(stack, "NO_TORCH", False)
     monkeypatch.setattr(stack, "_has_usable_nvidia_gpu", lambda: True)
     monkeypatch.delenv("UNSLOTH_ROCM_TORCH_INSTALLED", raising = False)
-    # A ROCm pin skips the whole vendor-precedence block, so reaching the version probe
-    # is what "the pin still won" looks like from outside.
     assert _reaches_the_version_probe(stack, monkeypatch) is True
 
 
@@ -1405,17 +1362,13 @@ def _viable_masked(
 @pytest.mark.parametrize(
     "devices, mask, viable",
     [
-        # Which CARD the mask selects, not whether some arch on the bus has a route.
         (["gfx1100", "gfx1010"], "1", False),
         (["gfx1100", "gfx1010"], "0", True),
-        # _pick_visible_index folds an out-of-range ordinal and a UUID alike onto GPU 0,
-        # which is right for arch SELECTION and wrong for replacing a working stack: HIP
-        # exposes no device for either, so both fail closed. install.sh agrees on these.
+        # _pick_visible_index folds out-of-range ordinals and UUIDs onto GPU 0; HIP exposes neither.
         (["gfx1100", "gfx1010"], "7", False),
         (["gfx1100", "gfx1010"], "GPU-9d4f00a1", False),
         (["gfx1010", "gfx1100"], "1", True),
-        # gfx1033 is refused outright (studio/ROCM_RDNA2_APU.md), keyed on the SELECTED
-        # card: a gfx1033 anywhere would be the host-wide reading this replaces.
+        # gfx1033 is refused (studio/ROCM_RDNA2_APU.md), keyed on the selected card.
         (["gfx1033", "gfx1100"], "0", False),
         (["gfx1033", "gfx1100"], "1", True),
     ],
@@ -1726,16 +1679,12 @@ def test_a_declared_arch_over_a_mask_that_resolves_is_still_viable_in_python(sta
     )
 
 
-# A mixed AMD host: the arch the Deck gate refuses beside one it serves, with the kernel's
-# topology naming both in the order the masks index.
 _VAN_GOGH_PLUS_DGPU = "\n".join(
     [
         "_has_usable_nvidia_gpu() { return 0; }",
         "_has_amd_rocm_gpu() { return 0; }",
         "_probe_amd_gfx_arch() { printf '%s\\n' gfx1033 gfx1100; }",
-        # The real map, not a constant: without it gfx1033 has no per-arch family here and
-        # the route test declines for the wrong reason, so the control below would pass
-        # whatever the gate does.
+        # The real map: without it gfx1033 has no family and the control passes regardless.
         '_amd_arch_index_family_for_gfx() { case "$1" in'
         " gfx1100) echo gfx110X-all ;; gfx1033) echo gfx103X-all ;; *) return 1 ;; esac; }",
         "_kfd_gfx_targets() { printf '%s\\n' gfx1033 gfx1100; }",
@@ -2071,8 +2020,6 @@ def _reroute_family(physical: "list[str]", **mask: str) -> str:
             "_infer_linux_amd_gfx_arch() { :; }",
             "_amd_gpu_present_via_pci() { return 0; }",
             "_has_amd_rocm_gpu() { return 0; }",
-            # No NVIDIA card, so _nvidia_gpu_wins_over_amd answers no whatever the request
-            # did and the arms below differ only in the request and the mask.
             "_has_usable_nvidia_gpu() { return 1; }",
             _shell_function("_rocm_torch_explicitly_requested"),
             *_wheel_route_defs(rocminfo = _fake_rocminfo(physical)),
@@ -2089,8 +2036,6 @@ def _reroute_family(physical: "list[str]", **mask: str) -> str:
     return _bash(script, env = _route_env(mask))
 
 
-# gfx1033 shares gfx103X-all with the card beside it, which is what makes the family
-# disqualification reach a routable sibling in the first place.
 _DECK_PLUS_RDNA2 = ["gfx1033", "gfx1030"]
 
 
@@ -2147,9 +2092,6 @@ def test_a_feature_suffix_changes_the_spelling_and_not_the_answer(
     )
 
 
-# ── The feature suffix rocminfo prints, which users copy verbatim ───────────────────────
-
-
 @pytest.mark.parametrize(
     "declared,family",
     [
@@ -2183,9 +2125,6 @@ def test_an_unknown_arch_is_still_unrouted(stack, monkeypatch):
     assert stack._amd_arch_index_url("gfx1010:xnack-") is None
 
 
-# ── The Van Gogh gate, and what may exempt a host from it ──────────────────────────────
-
-
 def _bad_arch_verdict(
     *,
     declared: str,
@@ -2199,15 +2138,14 @@ def _bad_arch_verdict(
         .splitlines()
     )
     end = next(i for i, line in enumerate(lines) if "end of the miscomputing-arch gate" in line)
-    # The gate opens at its own header sentence; anchoring on the first
-    # `_amd_gfx_bad_arch=false` walking back would land inside the exemption branch.
+    # Anchor on the gate's header sentence; walking back from `_amd_gfx_bad_arch=false` lands in
+    # the exemption.
     start = next(
         i
         for i in range(end, 0, -1)
         if "Archs measured to compute INCORRECTLY under ROCm" in lines[i]
     )
-    # Wrapped in a function, because the lifted block ends in `return` and bash refuses
-    # that at top level -- unwrapped, execution ran on past the verdict.
+    # Wrapped in a function: the lifted block ends in `return`, which bash refuses at top level.
     gate = "_gate() {\n" + "\n".join(lines[start:end]) + "\n}"
     script = "\n".join(
         [
@@ -2226,7 +2164,6 @@ def _bad_arch_verdict(
             f'_amd_gfx_probe="{probed}"',
             "_amd_request_has_a_wheel_route || true",
             gate,
-            # The gate either PRINTS an index and returns, or falls through printing nothing.
             "_verdict=$(_gate || true)",
             'printf "%s\\n" "${_verdict:-kept}"',
         ]
@@ -2269,18 +2206,14 @@ def _reroute_family_for_target(
         .read_text(encoding = "utf-8")
         .splitlines()
     )
-    # From the bad-arch verdict, not from the target block alone: the gate CLEARS the family
-    # before the target may set it, and a lift that starts below that clearing tests a
-    # sequence install.sh never runs.
+    # Lift from the bad-arch verdict: the gate clears the family before the target sets it.
     start = next(
         i
         for i, line in enumerate(lines)
         if line.strip() == 'if [ "$_amd_reroute_bad_arch" = true ]; then'
     )
-    # To the close of the OUTER if, by indentation: the block nests one, so the first
-    # bare "fi" is the inner one and cutting there left an unterminated script.
+    # Cut at the outer if's fi by indentation; the first bare fi is the inner one.
     indent = len(lines[start]) - len(lines[start].lstrip())
-    # Two sibling blocks at this indent: the gate's clearing, then the target's assignment.
     closes = [
         i
         for i in range(start + 1, len(lines))
@@ -2348,7 +2281,6 @@ def test_an_unreadable_version_is_judged_as_the_installer_judges_it(stack, monke
     assert stack._forced_rocm_route_is_viable() is False
 
 
-# RDNA 4 takes the AMD per-arch route like Strix; those wheels bundle their own ROCm (#11935).
 @pytest.mark.parametrize("gfx", ["gfx1151", "gfx1103", "gfx1200", "gfx1201"])
 def test_an_unreadable_version_still_serves_the_arches_that_do_install(stack, monkeypatch, gfx):
     """The narrowing control."""
@@ -2417,8 +2349,6 @@ def test_a_probe_resolved_target_still_exempts_the_same_host(stack, monkeypatch)
     )
     monkeypatch.setattr(stack, "_detect_rocm_version", lambda: (6, 4))
     monkeypatch.setattr(stack, "_explicit_rocm_torch_index_url", lambda: None)
-    # Proves the control is about the PROBE path: the target must be the discrete card, not
-    # the integrated one the guard above rejects a declaration for.
     assert stack._runtime_gfx_target(None)[0] == "gfx1100"
     assert stack._forced_rocm_route_is_viable() is True
 
@@ -2441,10 +2371,6 @@ def test_the_documented_strix_declaration_still_routes(stack, monkeypatch):
     assert (
         _declared_on_physical(stack, monkeypatch, declared = "gfx1100", physical = ["gfx1151"]) is True
     )
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# The request must not authorise a swap it withdraws the moment the swap happens.
 
 
 def _viability_across_the_install(stack, monkeypatch, gfx, installed):
@@ -2503,10 +2429,6 @@ def test_the_cuda_repair_still_stands_down_after_the_swap(stack, monkeypatch):
     assert not calls, f"the CUDA repair overwrote the requested ROCm build: {calls}"
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# A feature suffix must not change which pins the install gets.
-
-
 def _inferred_install_args(stack, monkeypatch, arch):
     """The pip arguments _ensure_rocm_torch uses on its inferred-arch branch for ``arch``."""
     calls = []
@@ -2514,9 +2436,7 @@ def _inferred_install_args(stack, monkeypatch, arch):
     monkeypatch.setattr(stack, "pip_install_try", lambda *a, **k: calls.append(a))
     monkeypatch.setenv("UNSLOTH_ROCM_GFX_ARCH", arch)
     monkeypatch.delenv("UNSLOTH_FORCE_ROCM_TORCH", raising = False)
-    # ROCm wheels are x86_64 only, so _ensure_rocm_torch returns on its arch gate anywhere
-    # else and this helper answers [] on the ubuntu-24.04-arm runner. The case is about the
-    # arch SPELLING, not the host's architecture, so the host is stated like the rest.
+    # ROCm wheels are x86_64 only; state the host since this is about arch spelling.
     monkeypatch.setattr(stack.platform, "machine", lambda: "x86_64")
     monkeypatch.setattr(stack, "IS_WINDOWS", False)
     monkeypatch.setattr(stack, "IS_MACOS", False)
@@ -2605,10 +2525,6 @@ def test_the_host_that_did_ask_still_resolves_its_mask(stack, monkeypatch):
     assert _mask_probe_count(stack, monkeypatch, requested = True) > 0
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# The two halves must read one mask string the same way.
-
-
 def test_an_escaped_mask_is_not_decoded_into_an_ordinal(stack):
     """`awk -v vis=...` ESCAPE-PROCESSES its operand, so a literal four-character \061 arrived
     inside awk as the ordinal 1 and the shell half selected the second card."""
@@ -2623,7 +2539,6 @@ def test_an_escaped_mask_is_not_decoded_into_an_ordinal(stack):
     )
     assert out.returncode == 0, out.stderr
     assert out.stdout == "", f"an escaped ordinal resolved a device: {out.stdout!r}"
-    # And the twin's answer on the same string, which is what it has to agree with.
     os.environ["HIP_VISIBLE_DEVICES"] = "\\061"
     try:
         assert stack._hip_layer_mask_names_a_device(2) is False
@@ -2644,10 +2559,6 @@ def test_a_plain_ordinal_still_selects_its_device(stack):
     )
     assert out.returncode == 0, out.stderr
     assert out.stdout == "gfx1100", out.stdout
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# The miscomputing-arch gate must not inherit a target from an earlier call.
 
 
 def test_the_index_selector_does_not_inherit_a_previous_target(stack):

@@ -37,6 +37,6 @@ def test_macos_profile_refuses_symlink_creation_in_the_writable_roots(tmp_path, 
 
     deny = "(deny file-write-create (vnode-type SYMLINK))"
     assert deny in profile, "file-write* grants symlink creation unless it is subtracted back out"
-    # Later rules win, so the deny has to sit after every writable grant.
+    # Later rules win, so the deny must follow every writable grant.
     assert profile.rstrip().endswith(deny)
     assert profile.index(deny) > profile.rindex("(allow file-read* file-write* (subpath")

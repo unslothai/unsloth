@@ -23,7 +23,6 @@ from utils.hardware import nvidia
 
 GIB = 1 << 30
 MIB = 1 << 20
-# What a DGX Spark actually reports.
 SPARK_TOTAL_BYTES = 124609 * MIB
 SPARK_TOTAL_GB = round(SPARK_TOTAL_BYTES / GIB, 2)
 
@@ -91,7 +90,6 @@ def test_spark_recovers_the_capacity_nvidia_smi_will_not_report(monkeypatch):
 
     assert result["available"] is True
     assert device["name"] == "NVIDIA GB10"
-    # The regression: this was None, which the frontend reads as a 0 GiB card.
     assert device["memory_total_gb"] == SPARK_TOTAL_GB
 
 
@@ -135,9 +133,6 @@ def test_rocm_is_not_classified_by_the_cuda_integrated_flag(monkeypatch):
     monkeypatch.setattr(hw, "IS_ROCM", True)
 
     assert hw._cuda_props_are_integrated(props) is False
-
-
-# ── nothing above may reach a host that is not one of these parts ────────────
 
 
 def test_a_readable_smi_host_is_classified_but_never_rewritten(monkeypatch):
@@ -214,9 +209,6 @@ def test_an_unsizeable_card_is_still_reported_when_torch_cannot_answer(monkeypat
     assert result["devices"][0]["memory_total_gb"] is None
 
 
-# ── the live monitor ─────────────────────────────────────────────────────────
-
-
 def _smi_utilization(
     monkeypatch,
     vram_total_gb,
@@ -264,7 +256,6 @@ def test_monitor_sizes_the_spark_instead_of_showing_unknown(monkeypatch):
     assert device["vram_total_gb"] == SPARK_TOTAL_GB
     assert device["vram_used_gb"] == 21.0
     assert device["vram_utilization_pct"] == round(21.0 / SPARK_TOTAL_GB * 100, 1)
-    # Columns nvidia-smi DID answer are the CLI's, untouched.
     assert device["gpu_utilization_pct"] == 0.0
     assert device["temperature_c"] == 46.0
     assert device["power_draw_w"] == 12.09
@@ -408,15 +399,9 @@ def test_a_mismatched_device_order_refuses_the_join(monkeypatch):
     monkeypatch.setattr(hw, "_cuda_order_matches_smi", lambda: False)
     _smi_rows(monkeypatch, None)
 
-    # The resolver refuses outright rather than handing back a mapping to guess with.
     assert hw._integrated_cuda_inventory([0]) == ({}, "index")
 
-    # ...and the endpoint keeps the nvidia-smi rows rather than reaching the torch
-    # fallback. That fallback labels its rows with physical ids taken from the mask, so
-    # here it would publish one card's name and capacity under another card's index,
-    # which is the same wrong join by another route and is what GPU selection reads.
-    # An SMI row missing a total is the lesser answer, and the one this host had before
-    # the repair existed.
+    # Keep the SMI rows: the torch fallback labels rows by mask ids, the same wrong join.
     device = hw.get_backend_visible_gpu_info()["devices"][0]
     assert device["name"] == "NVIDIA GB10"
     assert device["memory_total_gb"] is None
@@ -442,7 +427,6 @@ def test_a_partial_torch_inventory_never_drops_an_smi_card(monkeypatch):
             {"index": 1, "name": "NVIDIA GB10", "memory_total_gb": None},
         ],
     )
-    # Only ordinal 0 answers, the shape a fallen-off-the-bus card produces.
     monkeypatch.setattr(
         hw,
         "_torch_get_device_inventory",
@@ -532,7 +516,5 @@ def test_a_known_usage_still_gets_its_percentage(monkeypatch):
     device = utilization["devices"][0]
 
     assert device["vram_total_gb"] == SPARK_TOTAL_GB
-    # Whichever of the two is larger. Both are lower bounds on occupancy of one pool,
-    # and here the CLI's own figure is the larger one.
     assert device["vram_used_gb"] == 30.0
     assert device["vram_utilization_pct"] == round((30.0 / SPARK_TOTAL_GB) * 100, 1)

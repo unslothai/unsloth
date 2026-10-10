@@ -60,7 +60,6 @@ def test_the_load_waits_for_a_background_import_in_flight(warm):
     load = threading.Thread(target = lambda: (warm.close_dynamo_import_window(log), done.set()))
     load.start()
     try:
-        # Still importing in the background: the load has not passed the gate.
         assert not done.wait(0.5), "the load entered diffusers while a background import ran"
     finally:
         release.set()
@@ -97,7 +96,6 @@ def test_a_load_path_reached_from_background_work_does_not_wait_on_itself(warm):
     t.join(5)
     assert not t.is_alive(), "background work deadlocked on its own window"
     assert result == [True]
-    # The background thread does not claim the window for loads.
     assert warm._media_import_claimed is False
 
 
@@ -118,7 +116,6 @@ def test_the_prewarm_skips_once_a_load_claimed_the_window(warm, monkeypatch):
     warm.claim_media_import_window()
     assert warm.prewarm_diffusers_if_image_models_exist() is False
     assert called == []
-    # Not latched: a later lifespan may still prewarm.
     assert warm._diffusers_prewarmed is False
 
 

@@ -74,9 +74,6 @@ def queue_removal(session_id, *, files = True):
     tools._pending_removals.setdefault(key, {})[session_id] = files
 
 
-# ── The exception path, with and without a queued delete ──────────
-
-
 def test_an_exception_leaves_no_lifecycle_state(removals):
     sentinel = ValueError("boom")
     with pytest.raises(ValueError) as caught:
@@ -114,9 +111,6 @@ def test_a_recreated_chat_keeps_its_folder_even_when_the_body_raises(monkeypatch
     assert_idle("after a skipped delete")
 
 
-# ── Nesting and case folding ──────────────────────────────────────
-
-
 def test_a_nested_guard_deletes_only_at_the_outer_exit(removals):
     queue_removal("nested")
     key = tools._session_key("nested")
@@ -149,9 +143,6 @@ def test_case_variant_ids_share_one_lifecycle_key(removals):
                 assert tools._active_sessions[key] == 2
                 raise ValueError("boom")
     assert_idle("after a case-variant failure")
-
-
-# ── Cleanup that itself fails ─────────────────────────────────────
 
 
 def test_a_failing_cleanup_still_releases_the_session(monkeypatch):
@@ -219,7 +210,6 @@ def test_a_failing_cleanup_wakes_a_waiter_for_the_same_chat(monkeypatch):
 
     second = threading.Thread(target = _second, name = "pr9640-waiter")
     second.start()
-    # The waiter must be blocked while the removal is in progress.
     assert not waiter_in.wait(0.5), "a call started inside a folder being deleted"
 
     release.set()
@@ -247,7 +237,6 @@ def test_one_failing_delete_does_not_silently_drop_the_others(monkeypatch):
     monkeypatch.setattr(tools, "_remove_session_sandbox_locked", _remove)
     monkeypatch.setattr(tools, "_thread_exists", lambda *a, **k: False)
     key = tools._session_key("a")
-    # Same lifecycle key, three exact ids queued behind it.
     tools._pending_removals[key] = {"a": True, "b": True, "c": True}
     with pytest.raises(OSError):
         with tools._session_in_flight("a"):
@@ -259,9 +248,6 @@ def test_one_failing_delete_does_not_silently_drop_the_others(monkeypatch):
         "c",
     ], "the batch now completes past a failure -- update this test and say so"
     assert_idle("after a partially failed batch")
-
-
-# ── Concurrency ───────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize("seed", list(range(100)))

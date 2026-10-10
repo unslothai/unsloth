@@ -31,11 +31,8 @@ def _step_recording() -> bool:
 
 BLOCK_GRAPHS_ENV = "UNSLOTH_DIFFUSION_BLOCK_GRAPHS"
 
-# Recordings kept per block (input layouts x weight placements); the least recently replayed goes first.
 MAX_GRAPHS_PER_BLOCK = 6
 
-# Distinct weight placements a block may see without one replay before it stops trying (address churn: a streaming
-# path without the slot ring, or disk offload). Each attempt costs one eager call, never a recording.
 MAX_UNREPLAYED_PLACEMENTS = 6
 
 _OFF = ("0", "off", "false", "no")
@@ -55,8 +52,7 @@ def block_graphs_requested() -> bool:
     return (os.environ.get(BLOCK_GRAPHS_ENV) or "").strip().lower() in ("1", "on", "true", "yes")
 
 
-# Default: only where every block stays on the device. Streamed steps are copy-bound (no gain, extra VRAM); model
-# offload re-uploads the weights every render, so every block would record again.
+# Streamed steps are copy-bound; model offload re-records every render.
 OPT_IN_REASON = (
     "offloaded denoiser streams its blocks: per-block CUDA graphs measured no faster (streamed steps are "
     "copy-bound) and hold extra VRAM; set " + BLOCK_GRAPHS_ENV + "=1 to record per block"
@@ -66,10 +62,6 @@ MODEL_OFFLOAD_REASON = (
     + BLOCK_GRAPHS_ENV
     + "=1 to record per block"
 )
-
-
-# Call trees. Like diffusion_cuda_graph's, plus the per-layer prefix K/V caches Qwen-Image-2.1 passes to each block:
-# read-only on a cached step, so their two tensors become static buffers too.
 
 
 def _kv_layer_cache(obj: Any) -> bool:
@@ -178,7 +170,6 @@ def _refusal(key: tuple, kwargs: dict) -> Optional[str]:
     why = walk(key)
     if why:
         return why
-    # A prefix K/V cache is only read on a cached step; the prefill writes it from Python.
     if _has_kv(key) and kwargs.get("kv_cache_mode") != "cached":
         return "kv_write"
     return None
@@ -279,12 +270,12 @@ class _Shared:
     ) -> None:
         self.device_index = device_index
         self.logger = logger
-        self.root: Any = None  # the denoiser, for its NVFP4 per-step precision branch
+        self.root: Any = None
         self.pool = None
         self.stream = None
         self.static_in: dict = {}
         self.static_out: dict = {}
-        self.static_refs: dict = {}  # slot -> recordings reading its buffers
+        self.static_refs: dict = {}
         self.warmed: set = set()
         self.pool_bytes = 0
         self.static_bytes = 0
@@ -394,11 +385,10 @@ class BlockGraph:
         self.bypassed = False
         self.poisoned = False
         self.capture_error: Optional[dict] = None
-        # (layout, placement) -> output meta of its first call; several, since CFG alternates two text lengths
         self.seen: "OrderedDict[tuple, tuple]" = OrderedDict()
         self.unreplayed_placements = 0
         self.churned = False
-        self.protect: Any = None  # None until resolved, then False or the NVFP4 step controller
+        self.protect: Any = None
         self.placements: set = set()
         self.refusals: dict = {}
         self.stats = {
@@ -448,7 +438,6 @@ class BlockGraph:
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         if _bg_capture_suppressed() or _step_recording():
-            # a whole-step graph above records this block's kernels (diffusion_cuda_graph), not a nested replay
             return self.compute(*args, **kwargs)
         if not self.enabled or self.bypassed or self.poisoned or self.churned or _bg_eager_forced():
             return self._eager(args, kwargs)
@@ -475,20 +464,19 @@ class BlockGraph:
             self.stats["refused_host_weight"] += 1
             return self._eager(args, kwargs)
         if any(t.device.type != "cuda" for t in live):
-            # A capture never records a host read, so a replay would keep the recorded value.
+            # A capture never records a host read.
             self.stats["refused_host_input"] += 1
             return self._eager(args, kwargs)
         if self.protect is None:
             self.protect = self._protect_controller()
         if self.protect:
-            # One recording per precision branch: a W4A4 replay at a W4A16 step would skip the protection.
+            # A W4A4 replay at a W4A16 step would skip the protection.
             from .diffusion_cuda_graph import protect_graph_key
             placement = (placement, protect_graph_key(self.protect))
         full = (key, placement)
         entry = self.cache.get(full)
         if entry is None:
             if full not in self.seen:
-                # First call at this layout and placement: run it for real (the warm-up), record on the next one.
                 return self._first_sighting(full, args, kwargs)
             entry = self._record(full, live)
             if entry is None:
@@ -546,8 +534,7 @@ class BlockGraph:
                 dst.copy_(src)
             static_args, static_kwargs = _unwalk(key, iter(entry.static_in))
             if slot not in self.shared.warmed:
-                # Once per block class and layout, on the compute stream (its cached blocks stay reusable): any guard
-                # the static buffers trip recompiles here, never inside the recording.
+                # Any guard the static buffers trip recompiles here, never inside the recording.
                 self.compute(*static_args, **static_kwargs)
                 self.shared.warmed.add(slot)
                 self.stats["warmups"] += 1
@@ -561,7 +548,6 @@ class BlockGraph:
                 before = torch.cuda.memory_reserved()
                 with _capturing():
                     try:
-                        # Inside the try: a capture_begin that raised after taking the pool is abandoned too.
                         graph.capture_begin(pool = pool, capture_error_mode = "thread_local")
                         try:
                             out = self.compute(*static_args, **static_kwargs)
@@ -574,7 +560,6 @@ class BlockGraph:
                         finally:
                             graph.capture_end()
                     except BaseException as exc:
-                        # Later blocks record into a fresh pool; this one stays with the graphs already in it.
                         retire_failed_capture(graph, pool, exc)
                         if self.shared.pool == pool:
                             self.shared.pool = None
@@ -715,7 +700,6 @@ class BlockGraphSet:
         for g in self.graphs:
             for k, v in g.stats.items():
                 total[k] = total.get(k, 0) + int(v)
-        # The whole-forward wrapper's names, so diffusion_cuda_graph.stats aggregates both kinds alike.
         total["refused_host_tensor"] = total.get("refused_host_weight", 0)
         total["cap_skips"] = total.get("evictions", 0)
         return total
@@ -848,7 +832,7 @@ def _device_index(transformer: Any, fallback: Any = None) -> Optional[int]:
         except Exception:  # noqa: BLE001
             continue
         if dev.type == "cuda":
-            return dev.index  # None: whichever CUDA device is current when the block runs
+            return dev.index
     return None
 
 
@@ -879,13 +863,11 @@ def install_block_graphs(
         compiled = getattr(block, "_compiled_call_impl", None)
         hook = _group_offload_hook(block)
         if hook is not None and compiled is not None:
-            # compiled through its hooks (UNSLOTH_DIFFUSION_COMPILE_BELOW_HOOKS=0): the compute is inside a dynamo frame
             why = "compiled through its offload hooks"
             refused[why] = refused.get(why, 0) + 1
             continue
         try:
             if hook is not None:
-                # Below the hook: the onload / offload stay eager Python and the recording holds only the compute.
                 registry = getattr(block, "_diffusers_hook", None)
                 refs = list(getattr(registry, "_fn_refs", None) or ())
                 target = getattr(block, "_unsloth_below_hook_ref", None)
@@ -1015,7 +997,6 @@ def compile_below_offload_hooks(transformer: Any, logger: Any = None) -> int:
         from . import diffusion_block_restride
 
         if diffusion_block_restride.is_wrapped(compiled):
-            # FLUX.1's block 0 keeps the slice layout of the others, so all of them share one compiled graph.
             fn = diffusion_block_restride.wrap(fn)
         target.forward = fn
         block._compiled_call_impl = None

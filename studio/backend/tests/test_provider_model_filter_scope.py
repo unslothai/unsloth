@@ -41,7 +41,6 @@ def _list_models(monkeypatch, base_url: str, ids: list[str]) -> list[str]:
 
 LIVE = [
     "gpt-5.5",
-    # Deployment / local names that read as non-chat to the OpenAI denylist.
     "gpt-5.5-image-analysis",
     "gpt-4o-audio-summariser",
     "internal-search-preview",

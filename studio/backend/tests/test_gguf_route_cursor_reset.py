@@ -163,10 +163,9 @@ def test_final_answer_survives_preface_then_disabled_tool_noop(monkeypatch):
     short final answer is not diffed away against the longer preface.
     """
     preface = "Let me run a quick command to double-check."
-    final = "All set."  # deliberately shorter than the preface -> truncation is visible
+    final = "All set."  # shorter than the preface so truncation is visible
 
-    # Single turn: visible preface + a call to `terminal`, which is NOT in the
-    # enabled tool list, so the controller marks it disabled -> internal no-op.
+    # terminal is not enabled, so the controller treats the call as an internal no-op.
     turn_stream = [
         _sse({"content": preface}),
         _sse(
@@ -199,7 +198,7 @@ def test_final_answer_survives_preface_then_disabled_tool_noop(monkeypatch):
     events = list(
         backend.generate_chat_completion_with_tools(
             messages = [{"role": "user", "content": "answer me"}],
-            tools = [_web_search_tool()],  # terminal intentionally absent
+            tools = [_web_search_tool()],
             temperature = 0.0,
             max_tool_iterations = 5,
         )
@@ -207,23 +206,17 @@ def test_final_answer_survives_preface_then_disabled_tool_noop(monkeypatch):
 
     replay = _replay_route_cursor(events)
 
-    # Disabled tool is an internal no-op: never executed, no visible card.
     assert executed == []
     assert replay["tool_starts"] == []
 
-    # The generator must emit an empty status that resets the route cursor
-    # before the final pass; otherwise `final` (shorter than `preface`) would
-    # be diffed to nothing and dropped.
+    # An empty status must reset the route cursor, or the shorter `final` diffs to nothing.
     assert "" in replay["statuses"], "no cursor-resetting empty status emitted"
 
-    # Both the preface and the final answer survive, in order, untruncated.
     assert preface in replay["visible"], replay["visible"]
     assert final in replay["visible"], replay["visible"]
     assert replay["visible"].index(preface) < replay["visible"].index(final)
     assert replay["visible"].count(preface) == 1
 
-    # Negative control: a route loop that does NOT reset on empty status (the
-    # pre-fix behaviour) would diff `final` against the stale preface cursor
-    # and drop it -- proving the empty status is load-bearing here.
+    # Negative control: without the reset `final` is dropped, proving the empty status matters.
     no_reset = _replay_route_cursor_without_status_reset(events)
     assert final not in no_reset["visible"], no_reset["visible"]

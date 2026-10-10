@@ -49,28 +49,22 @@ from pathlib import Path
 
 import pytest
 
-# Stub heavy / unavailable deps before importing the module under test.
-# Copied from tests/test_memory_estimate.py -- same reasons, and
-# tests/test_backend_tests_stub_heavy_imports.py enforces that it is here.
+# Stub heavy deps before import; test_backend_tests_stub_heavy_imports.py enforces this.
 
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# loggers
 _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
 
-# structlog. Carries get_logger because this stub is process-wide: whichever test
-# module is imported first wins the setdefault, and utils/prebuilt/freshness_flow
-# calls structlog.get_logger at import time.
+# Stub needs get_logger: process-wide setdefault, and freshness_flow calls it at import.
 _structlog_stub = _types.ModuleType("structlog")
 _structlog_stub.get_logger = lambda *a, **k: __import__("logging").getLogger("stub")
 sys.modules.setdefault("structlog", _structlog_stub)
 
-# httpx -- only stub when the real library is missing. Unconditional stubbing shadows
-# HTTPError/Response that huggingface_hub.errors imports at load time.
+# Only stub httpx when missing; otherwise huggingface_hub.errors imports break.
 try:
     import httpx as _httpx_real  # noqa: F401
 except ImportError:
@@ -112,11 +106,7 @@ import routes.inference as ri  # noqa: E402
 from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
 from models.inference import EstimateMemoryRequest  # noqa: E402
 
-# The GGUF blob writer and the platform/accelerator tables are LOADED, not copied: a
-# second copy of either drifts from the first, and then this file is asserting about
-# bytes and hosts that no other test in the tree recognises. By path, because
-# `tests` is not importable as a package name from every runner layout -- the idiom is
-# test_llama_extra_args_platforms.py:26-33.
+# Load shared fixtures by path, not copied; `tests` is not importable on every runner.
 _TESTS_DIR = Path(__file__).resolve().parent
 
 _kv_spec = _ilu.spec_from_file_location(
@@ -133,39 +123,19 @@ _plat_spec = _ilu.spec_from_file_location(
 _plat_mod = _ilu.module_from_spec(_plat_spec)
 _plat_spec.loader.exec_module(_plat_mod)
 
-# (label, sys.platform, os.name, WSL-shaped release or None) -- linux / wsl2 / windows / macos.
 PLATFORMS = _plat_mod.PLATFORMS
-# Moves sys.platform and the WSL markers, and deliberately NOT os.name; see its docstring
-# and the note on _apply_cell below.
+# Deliberately does NOT move os.name; see _apply_cell.
 _apply_platform = _plat_mod._apply_platform
 
 _GIB = 1024**3
 
-# platform.system() per platform label. The estimate reaches it through
-# utils.hardware.is_apple_silicon, which is `system() == "Darwin" and machine() == "arm64"`.
 _SYSTEM = {"linux": "Linux", "wsl2": "Linux", "windows": "Windows", "macos": "Darwin"}
 
 
-# A. The accelerator table
-
-
-# The upstream table by label, so a rename there fails here loudly instead of silently
-# re-pointing a cell at the wrong hardware.
 _UPSTREAM_ACCELERATORS = {
     label: (vulkan, memory) for label, vulkan, memory in _plat_mod.ACCELERATORS
 }
 
-# (label, vulkan, [(index, free_mib, total_mib)]). The four upstream entries reused
-# verbatim, plus the two this file adds:
-#
-#   amd-rocm      -- a HIP build. NOT Vulkan: the ROCm prebuilt carries a hipBLAS ggml
-#                    lib, so _is_vulkan_backend is False and the devices enumerate
-#                    through the torch/CUDA-shaped path as NVIDIA's do.
-#   apple-unified -- Metal, one device, which is what /api/system reports on Apple
-#                    Silicon: get_backend_visible_gpu_info's MLX arm emits a single
-#                    index-0 device whose "VRAM" is the machine's unified RAM. An empty
-#                    inventory here would be a second cpu-only cell asserting nothing
-#                    about unified memory.
 ACCELERATORS = [
     ("nvidia-single", *_UPSTREAM_ACCELERATORS["nvidia-single"]),
     ("nvidia-multi", *_UPSTREAM_ACCELERATORS["nvidia-multi"]),
@@ -202,11 +172,7 @@ MATRIX = [
     if _reachable(p[0], a[0])
 ]
 
-# 4 platforms x 6 accelerators, minus apple-unified on the three non-Darwin platforms.
 assert len(MATRIX) == 4 * 6 - 3 == 21
-
-
-# B. Applying a cell
 
 
 def _snapshot(memory) -> tuple:
@@ -237,12 +203,8 @@ def _apply_cell(monkeypatch, platform_row, accelerator_row) -> None:
     platform_label = platform_row[0]
     accelerator_label, vulkan, memory = accelerator_row
 
-    # sys.platform + the WSL markers, through the harness that already owns them.
     _apply_platform(monkeypatch, platform_row)
-    # The modules under test alias `sys` by `import sys`, so the object patched above is
-    # the object they read. Asserted rather than assumed: a future `from sys import
-    # platform` in either module would silently take this whole matrix off the branch it
-    # believes it is testing, and nothing else would notice.
+    # Asserted: a `from sys import platform` in either module would silently void the matrix.
     assert ri.sys is sys and llama_mod.sys is sys
 
     apple = accelerator_label == _UNIFIED
@@ -254,10 +216,8 @@ def _apply_cell(monkeypatch, platform_row, accelerator_row) -> None:
         raising = False,
     )
 
-    # The probed inference inventory, through main.py's own snapshot shape.
     monkeypatch.setitem(sys.modules, "main", SimpleNamespace(_system_gpu_cache = _snapshot(memory)))
 
-    # The llama.cpp build flavour and the CUDA-visible count.
     monkeypatch.setattr(
         LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda binary = None: vulkan)
     )
@@ -269,16 +229,12 @@ def _apply_cell(monkeypatch, platform_row, accelerator_row) -> None:
         ),
     )
 
-    # ROCm's own marker. Nothing on the estimate path branches on it today -- the
-    # estimator sees a HIP host and a CUDA host identically, and only `vulkan` and the
-    # device count move it -- so the amd-rocm cell's real job is to hold that true.
     monkeypatch.setattr(
         "utils.hardware.hardware.IS_ROCM", accelerator_label == "amd-rocm", raising = False
     )
     for mask in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
         monkeypatch.delenv(mask, raising = False)
-    # A GGML/LLAMA_ARG_* value inherited from the runner's shell would be read as the
-    # user's own setting and price a load nobody configured.
+    # Inherited GGML/LLAMA_ARG_* would be read as user settings.
     for inherited in (
         "LLAMA_ARG_CTX_SIZE",
         "LLAMA_ARG_MMPROJ",
@@ -290,20 +246,7 @@ def _apply_cell(monkeypatch, platform_row, accelerator_row) -> None:
     ):
         monkeypatch.delenv(inherited, raising = False)
 
-    # The llama-server binary, pinned for two reasons; the second is the interesting one:
-    #
-    #  * determinism. ``_tensor_latches_allow_a_split`` resolves the binary before asking
-    #    two in-process latches about it, so unpinned, whether a cell consults them at
-    #    all depends on whether the runner has llama.cpp installed.
-    #  * the Windows cells could not reach them otherwise. ``_find_llama_server_binary``
-    #    ends at ``shutil.which``, which calls
-    #    ``_winapi.NeedCurrentDirectoryForExePath`` under ``sys.platform == "win32"``.
-    #    On a Linux interpreter ``_winapi`` is None, so it raises AttributeError, the
-    #    caller's fail-open ``except`` swallows it, and every Windows cell skipped the
-    #    latch check while reporting a pass. An artifact of simulating win32 on Linux
-    #    rather than a product bug, but exactly the quiet hole that makes a green matrix
-    #    mean nothing, so the seam is moved above it.
-    #    test_platform_matrix_the_tensor_latch_lookup_runs_on_every_cell holds it open.
+    # Pin the binary: determinism, and shutil.which raises under simulated win32 on Linux.
     monkeypatch.setattr(
         LlamaCppBackend,
         "_find_llama_server_binary",
@@ -316,8 +259,6 @@ def _apply_cell(monkeypatch, platform_row, accelerator_row) -> None:
         ),
     )
 
-    # The capability probe shells out to llama-server --help. Pinned so a cell's numbers
-    # come from the header and the flags, not from whichever binary this runner has.
     monkeypatch.setattr(
         LlamaCppBackend,
         "probe_server_capabilities",
@@ -381,12 +322,6 @@ def _metal_budget_tripwire(monkeypatch):
     )
 
 
-# C. The model shapes
-
-
-# Realistic geometry. The numbers matter: at 32k the KV cache here is larger than the
-# weights, which is the regime the whole feature exists for and the one where a paired
-# subtraction that has come unpaired is visible rather than lost in rounding.
 _GQA_FIELDS = {
     "context_length": 262144,
     "block_count": 32,
@@ -399,18 +334,11 @@ _GQA_FIELDS = {
     "vocab_size": 152064,
 }
 
-# Sparse padding. _get_gguf_size_bytes is a stat(), so truncate() gives a 3 GiB weights
-# file that costs no disk. Without it every file is a few hundred bytes, the GB-scale
-# float in the files term rounds them to noise, and "weights do not move with the
-# context" would pass on numbers too small to have moved.
+# Sparse 3 GiB pad so file sizes are not rounded to noise.
 _WEIGHTS_BYTES = 3 * _GIB
 _PROJECTOR_BYTES = 600 * 1024 * 1024
 _DRAFTER_BYTES = 400 * 1024 * 1024
-# What "costs no disk" is worth on the runner that does not agree. POSIX gives a hole
-# for free; NTFS allocates and zero-fills every byte unless the file is marked sparse
-# FIRST, so twelve of these filled a Windows runner's disk and every cell in this file
-# errored with ENOSPC. The flag is asked for below; this is what the fixture falls back
-# to when it cannot be set, which keeps the shapes GB-scale without the 34 GB.
+# NTFS zero-fills unless marked sparse first (ENOSPC on Windows); fallback stays GB-scale.
 _DENSE_PAD_DIVISOR = 12
 
 
@@ -420,9 +348,6 @@ def _try_make_sparse(handle) -> bool:
     Windows only: FSCTL_SET_SPARSE has to be issued before the file is extended, or
     the extension is already committed. Everything else holes-punches on truncate().
     """
-    # FORCE_DENSE_PAD is how the fallback below gets exercised at all: it is the arm
-    # only Windows takes, and a POSIX box would otherwise never run the code that this
-    # file's own ENOSPC on a Windows runner is the reason for.
     if os.name != "nt" and not os.environ.get("FORCE_DENSE_PAD"):
         return True
     try:
@@ -494,7 +419,6 @@ def shapes(tmp_path_factory):
     gqa = _write_gguf(root, "gqa.gguf", "qwen3", _GQA_FIELDS, pad = _WEIGHTS_BYTES)
     built["gqa"] = (gqa, _config(gqa))
 
-    # MLA: a compressed latent cache, priced off kv_lora_rank rather than the head dims.
     mla = _write_gguf(
         root,
         "mla.gguf",
@@ -509,8 +433,6 @@ def shapes(tmp_path_factory):
     )
     built["mla"] = (mla, _config(mla))
 
-    # SWA: the cache is capped by the window, so kv_bytes plateaus in n_ctx instead of
-    # growing -- which is why the monotonicity invariant below is non-decreasing.
     swa = _write_gguf(
         root,
         "swa.gguf",
@@ -520,8 +442,6 @@ def shapes(tmp_path_factory):
     )
     built["swa"] = (swa, _config(swa))
 
-    # Hybrid Mamba: attention every full_attention_interval layers, recurrent state on
-    # the rest. Both terms are charged, from different formulas.
     hybrid = _write_gguf(
         root,
         "hybrid.gguf",
@@ -538,11 +458,7 @@ def shapes(tmp_path_factory):
     )
     built["hybrid_mamba"] = (hybrid, _config(hybrid))
 
-    # Pure SSM: block_count and embedding_length, no attention dims. NOT a degenerate
-    # stub -- llama.cpp reads the attention head counts with required=false
-    # (src/llama-model.cpp:1306 region) while block_count is required, so every Mamba,
-    # Mamba2 and RWKV model loads exactly like this. It is the kv_estimable=False path
-    # for a whole family of real models.
+    # Pure SSM loads with no attention dims in llama.cpp; the kv_estimable=False path.
     ssm = _write_gguf(
         root,
         "pure-ssm.gguf",
@@ -560,7 +476,6 @@ def shapes(tmp_path_factory):
     )
     built["pure_ssm"] = (ssm, _config(ssm))
 
-    # NextN / embedded MTP: a drafter with no file, whose draft cache is still allocated.
     nextn = _write_gguf(
         root,
         "nextn.gguf",
@@ -570,8 +485,6 @@ def shapes(tmp_path_factory):
     )
     built["nextn_mtp"] = (nextn, _config(nextn))
 
-    # Embedding model: a pooling type llama-server launches with --embedding, which caps
-    # the batch at the micro-batch and gives every slot an output buffer.
     embedding = _write_gguf(
         root,
         "embedding.gguf",
@@ -581,8 +494,6 @@ def shapes(tmp_path_factory):
     )
     built["embedding"] = (embedding, _config(embedding, identifier = "local/embed-model"))
 
-    # Vision: a target plus a projector file, which is charged AND carries encoder
-    # buffers of its own on top of the file.
     vision = _write_gguf(root, "vision.gguf", "qwen3", _GQA_FIELDS, pad = _WEIGHTS_BYTES)
     projector = _write_gguf(
         root, "mmproj-vision.gguf", "clip", {"has_vision_encoder": 1}, pad = _PROJECTOR_BYTES
@@ -592,7 +503,6 @@ def shapes(tmp_path_factory):
         _config(vision, gguf_mmproj_file = projector, is_vision = True),
     )
 
-    # A separate drafter sidecar: its own file in the weights AND its own KV on top.
     target = _write_gguf(root, "spec-target.gguf", "qwen3", _GQA_FIELDS, pad = _WEIGHTS_BYTES)
     drafter = _write_gguf(
         root,
@@ -603,8 +513,6 @@ def shapes(tmp_path_factory):
     )
     built["mtp_drafter"] = (target, _config(target, gguf_mtp_file = drafter))
 
-    # Truncated: a real file with an unreadable header. The parser raises, and the
-    # caller must still produce a well-formed answer rather than a partial number.
     truncated = root / "truncated.gguf"
     truncated.write_bytes(b"GGUF\x03\x00\x00\x00 truncated, nothing further is readable")
     _pad_to(truncated, _WEIGHTS_BYTES)
@@ -613,8 +521,6 @@ def shapes(tmp_path_factory):
     return built
 
 
-# Shapes that carry a drafter the mode has to be told about; everything else prices the
-# same under the default (auto) mode.
 _SPEC_SHAPES = {"mtp_drafter": "mtp"}
 
 SHAPE_NAMES = [
@@ -630,12 +536,7 @@ SHAPE_NAMES = [
     "truncated_header",
 ]
 
-# 4k / 32k / 128k. Three points, because two cannot distinguish "grew" from "grew then
-# fell back", and the weights term has to hold still across all of them.
 CONTEXTS = (4096, 32768, 131072)
-
-
-# D. Driving the real route
 
 
 def _price(shapes, shape_name: str, **kwargs):
@@ -652,8 +553,6 @@ def _price(shapes, shape_name: str, **kwargs):
         kwargs.setdefault("speculative_type", spec)
     request = EstimateMemoryRequest(model_path = gguf_path, **kwargs)
 
-    # Only the config resolution is replaced: it is the one step that can reach the
-    # network, and it is not what any of this is about.
     original = ri._cached_estimate_config
     ri._cached_estimate_config = lambda *a, **kw: config
     try:
@@ -725,13 +624,8 @@ def _assert_core_invariants(
     )
 
     if not response.kv_estimable:
-        # kv_bytes == 0 here means UNKNOWN, and the flag is the only thing separating it
-        # from a genuine zero.
         assert response.kv_bytes == 0, f"{where}: unsizable KV reported {response.kv_bytes} bytes"
         assert response.compute_bytes == 0, f"{where}: unsizable KV priced compute buffers"
-
-
-# E. The matrix
 
 
 @pytest.mark.parametrize("platform,accelerator", MATRIX)
@@ -783,8 +677,7 @@ def test_platform_matrix_weights_do_not_move_with_the_context_slider(
             f"{dict(zip(CONTEXTS, weights))}. The weights term is a subtraction; if it "
             f"moves, the term added and the term removed are no longer the same bytes."
         )
-        # Non-decreasing, not strictly increasing: a sliding-window cache is capped by
-        # its window and legitimately plateaus, and an unsizable one stays at 0.
+        # Non-decreasing: SWA caches plateau and unsizable ones stay 0.
         assert kv == sorted(
             kv
         ), f"[{cell}] {shape}: kv_bytes is not non-decreasing in n_ctx: {dict(zip(CONTEXTS, kv))}"
@@ -898,7 +791,6 @@ def test_platform_matrix_a_probed_empty_inventory_shows_no_gpu_footprint(
                 f"{response.gpu_bytes} GPU bytes"
             )
             assert response.drafter_runtime_gpu_bytes == 0, f"[{cell}] {shape}"
-            # Still a real load, just not one on a card.
             assert response.total_bytes > 0, f"[{cell}] {shape}"
         else:
             assert response.gpu_bytes > 0, (
@@ -930,8 +822,6 @@ def test_platform_matrix_an_unsizable_kv_still_carries_its_layer_count(
         f"{response.layer_count}; without it the offload split has no denominator"
     )
 
-    # And the count is load-bearing, not decorative: it is what makes -ngl 0 read as a
-    # CPU load rather than a GPU-resident one.
     ri._estimate_files_cache.clear()
     pinned = _price(shapes, "pure_ssm", n_ctx = 131072, gpu_memory_mode = "manual", gpu_layers = 0)
     _assert_core_invariants(pinned, cell = cell, shape = "pure_ssm", note = "-ngl 0")
@@ -953,12 +843,7 @@ def test_platform_matrix_an_unreadable_header_answers_without_inventing_a_cache(
     _assert_core_invariants(response, cell = cell, shape = "truncated_header")
     assert response.kv_estimable is False, f"[{cell}]"
     assert response.n_ctx == 0, f"[{cell}]: priced a context off a header it could not read"
-    # No block_count to recover: unlike the pure-SSM case above, this header carries
-    # nothing at all. See the pinned gap below for what that costs.
     assert response.layer_count is None, f"[{cell}]"
-
-
-# F. The claims this file exists to check independently
 
 
 def test_platform_matrix_the_itemization_is_five_terms_not_four(monkeypatch, shapes):
@@ -1009,9 +894,7 @@ def test_platform_matrix_the_metal_budget_is_never_reached(
     apple = accelerator[0] == _UNIFIED
 
     if apple:
-        # is_apple_silicon() is already True on this cell (Darwin + arm64), which is the
-        # ONLY gate in front of the mlx import. If any arm of the estimate consults the
-        # budget, this cell is where it fires.
+        # is_apple_silicon() is True here, the only gate before the mlx import.
         from utils.hardware import is_apple_silicon
         assert is_apple_silicon() is True
 
@@ -1035,8 +918,6 @@ def test_platform_matrix_the_metal_budget_is_never_reached(
         if not apple:
             break
 
-    # The autouse fixture asserts the recorder is empty at teardown; assert it here too
-    # so the failure names this cell rather than a teardown error.
     assert (
         _metal_budget_tripwire == []
     ), f"[{platform[0]}-{accelerator[0]}] reached _apple_metal_memory_budget_bytes"
@@ -1081,11 +962,7 @@ def test_platform_matrix_the_platform_label_alone_changes_nothing(monkeypatch, s
             len(set(by_platform.values())) == 1
         ), f"{accelerator_label} priced differently per platform: {by_platform}"
 
-    # And macOS on Apple Silicon prices the same load as any other single-device host.
-    # One pool is a CAPACITY fact, not a footprint one: the same bytes are allocated
-    # either way, and which pool they come out of is the panel's question, answered
-    # frontend-side from `singleMemoryPool` (memory-fit.ts). Nothing in the response
-    # distinguishes them, which is why the row cannot be read without that flag.
+    # Unified memory is a capacity fact; the frontend uses singleMemoryPool to read the row.
     assert answers[("macos", _UNIFIED)] == answers[("linux", "nvidia-single")]
 
 
@@ -1109,7 +986,6 @@ def test_platform_matrix_the_probed_inventory_owns_the_split_on_a_vulkan_build(
     cell = f"{platform[0]}-{accelerator[0]}"
     vulkan = accelerator[1]
 
-    # Two devices in the probed inventory, nothing visible to torch: the Vulkan shape.
     monkeypatch.setitem(
         sys.modules,
         "main",
@@ -1125,9 +1001,6 @@ def test_platform_matrix_the_probed_inventory_owns_the_split_on_a_vulkan_build(
     unpinned = _price(shapes, "gqa", n_ctx = 32768, tensor_parallel = True)
     _assert_core_invariants(unpinned, cell = cell, shape = "gqa", note = "unpinned tensor")
 
-    # The same request with the cards named explicitly. A pin answers for itself on
-    # every build, so it is the reference the probe-driven answer has to match on
-    # Vulkan and to differ from where the CUDA count legitimately says "one card".
     ri._estimate_files_cache.clear()
     pinned = _price(shapes, "gqa", n_ctx = 32768, tensor_parallel = True, selected_gpu_ids = [0, 1])
     _assert_core_invariants(pinned, cell = cell, shape = "gqa", note = "pinned tensor")
@@ -1139,8 +1012,6 @@ def test_platform_matrix_the_probed_inventory_owns_the_split_on_a_vulkan_build(
             f"{pinned.compute_bytes}; the CUDA count answered instead of the inventory"
         )
     else:
-        # torch sees nothing, so there is no split to price, and the pin is the only
-        # thing that can say otherwise.
         assert (
             unpinned.compute_bytes < pinned.compute_bytes
         ), f"[{cell}] a CUDA-shaped build reporting zero devices still priced a two-device split"
@@ -1195,19 +1066,10 @@ def test_platform_matrix_the_tensor_latch_lookup_runs_on_every_cell(
         f"inside _tensor_latches_allow_a_split raised and its fail-open except arm "
         f"answered instead, so this cell priced a tensor split it never checked."
     )
-    # And it asked about the cache pair this launch actually plans, not the default.
     assert asked[0][1] == ("q8_0", "q8_0"), f"[{cell}]: latch asked about {asked[0][1]}"
 
 
-# G. Regressions this matrix found
-#
-# This one was a strict xfail when the matrix first ran: a header that yields no dims
-# left layer_count None, and _gguf_offloaded_layer_fraction answered 1.0 for every such
-# request, so an explicit --gpu-layers 0 was reported as a fully GPU-resident load. The
-# pure-SSM case was fixed by keeping block_count out of the header walk; this one has no
-# count to keep. It does not need one -- zero layers on the GPU is knowable without
-# knowing how many layers there are, and the fraction is a scale factor for a PARTIAL
-# offload, which an explicit none is not.
+# Explicit --gpu-layers 0 is knowable without a layer count.
 
 
 def test_platform_matrix_a_manual_zero_offload_is_honoured_on_an_unreadable_header(

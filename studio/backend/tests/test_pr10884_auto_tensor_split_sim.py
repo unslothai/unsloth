@@ -91,28 +91,16 @@ def _normalized(values):
     return tuple(round(v / total, 9) for v in values)
 
 
-# --------------------------------------------------------------------------
-# 1. The fix itself, across card counts, vendors and ratios.
-# --------------------------------------------------------------------------
-
-
 @pytest.mark.parametrize("vulkan", [False, True], ids = ["cuda", "vulkan"])
 @pytest.mark.parametrize(
     "memory, ratio",
     [
-        # Two 24GB cards, the ordinary desktop pair.
         ([(0, 24_000, 24_000), (1, 24_000, 24_000)], [3, 1]),
-        # Two T4s, which is what a Kaggle session is.
         ([(0, 15_360, 15_360), (1, 15_360, 15_360)], [3, 1]),
-        # Reversed, so an off-by-order bug cannot pass both.
         ([(0, 24_000, 24_000), (1, 24_000, 24_000)], [1, 3]),
-        # An even ratio, explicitly asked for rather than defaulted.
         ([(0, 24_000, 24_000), (1, 24_000, 24_000)], [1, 1]),
-        # Three and four cards.
         ([(i, 24_000, 24_000) for i in range(3)], [2, 1, 1]),
         ([(i, 24_000, 24_000) for i in range(4)], [4, 3, 2, 1]),
-        # Mismatched cards, the #10355 complaint exactly: a slow small card
-        # that the user wants to carry less.
         ([(0, 11_000, 11_000), (1, 24_000, 24_000)], [1, 3]),
     ],
 )
@@ -174,11 +162,6 @@ def test_an_extreme_ratio_survives_formatting(tmp_path, ratio):
     assert _normalized(values) == pytest.approx(
         _normalized([float(x) for x in ratio]), abs = 1e-6
     ), f"{raw!r} is not the proportion that was asked for"
-
-
-# --------------------------------------------------------------------------
-# 2. Ratios that must NOT be forwarded.
-# --------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -271,7 +254,6 @@ def test_the_context_buffer_is_charged_flat_not_by_the_ratio(tmp_path):
     backend._compute_buffer_ctx_bytes = lambda *a, **k: cc_per_device_mib * mib
     model_mib = 14 * 1024
 
-    # usable - reserve = 23024 MiB a card, as in the even-share cell above.
     ceiling_mib = 23_024
     assert model_mib / 2 + cc_per_device_mib < ceiling_mib, "the planner would not have"
     assert 0.9 * model_mib < ceiling_mib - cc_per_device_mib, "charged flat, 1:9 fits"
@@ -351,11 +333,6 @@ def test_manual_mode_is_untouched_by_the_new_branch(tmp_path):
     assert backend._auto_tensor_split is None, "manual mode must not record an auto ratio"
 
 
-# --------------------------------------------------------------------------
-# 3. Hardware shapes where tensor parallelism is not available at all.
-# --------------------------------------------------------------------------
-
-
 def test_a_single_gpu_never_gets_a_split(tmp_path):
     backend, gguf = _tp_backend(tmp_path, memory = [(0, 24_000, 24_000)])
     cmd = _auto_tp(backend, gguf, tensor_split = [3, 1], gpu_ids = [0])
@@ -394,16 +371,8 @@ def test_paravirtual_metal_never_launches_a_tensor_split(tmp_path, monkeypatch):
     assert _flag(cmd, "--tensor-split") is None
 
 
-# --------------------------------------------------------------------------
-# 3b. The placement planner's own recovery arm.
-#
-# `load_model` prices the load inside one long `try`, and its `except` arm is a
-# designed degradation: it drops the plan, sets `--fit on` and launches anyway.
-# It resets `tp_tensor_split` to None but deliberately NOT `tensor_parallel` --
-# which is exactly the state the new fallback fires in, with `gpu_indices`
-# rebuilt from a WIDER set than the `tp_gpus` the planner had filtered, or not
-# rebuilt at all. Three shapes, all of which launched cleanly before the PR.
-# --------------------------------------------------------------------------
+# load_model's except arm drops the plan and sets --fit on but keeps tensor_parallel,
+# so the fallback fires with gpu_indices wider than tp_gpus (or not rebuilt).
 
 
 def _planner_raises(backend):
@@ -448,11 +417,6 @@ def test_a_plan_that_fails_before_the_gpu_survey_still_launches(tmp_path):
     backend._get_gguf_size_bytes = _boom
     cmd = _auto_tp(backend, gguf, tensor_split = [3, 1], gpu_ids = [0, 1])
     assert cmd
-
-
-# --------------------------------------------------------------------------
-# 4. Reload deduplication -- the half that can regress an already-working path.
-# --------------------------------------------------------------------------
 
 
 def _intent(gguf, **kwargs):
@@ -556,11 +520,6 @@ def test_a_layer_split_load_clears_the_recorded_ratio(tmp_path):
         n_ctx = 4096,
     )
     assert backend._auto_tensor_split is None
-
-
-# --------------------------------------------------------------------------
-# 6. What /status reports after a recovery rewrites the argv.
-# --------------------------------------------------------------------------
 
 
 def _crash_once_with_an_arch_error(backend):

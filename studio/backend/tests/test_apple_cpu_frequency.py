@@ -121,7 +121,6 @@ class TestCpuFrequencyMhz:
         assert hardware.cpu_frequency_mhz() == 3600.0
 
     def test_non_apple_low_value_is_not_rescaled(self, monkeypatch):
-        # A container reporting a genuinely low clock must not be multiplied.
         monkeypatch.setattr(hardware, "is_apple_silicon", lambda: False)
         _fake_psutil(monkeypatch, 400.0)
         assert hardware.cpu_frequency_mhz() == 400.0
@@ -143,8 +142,7 @@ class TestCpuFrequencyMhz:
         assert hardware.cpu_frequency_mhz() == 4000.0
 
     def test_fixed_psutil_value_is_left_alone(self, monkeypatch):
-        # Once psutil ships giampaolo/psutil#2824 the value is already plausible,
-        # so no ioreg call and no rescale.
+        # Once psutil ships the fix the value is plausible: no ioreg, no rescale.
         monkeypatch.setattr(hardware, "is_apple_silicon", lambda: True)
         _fake_psutil(monkeypatch, 4512.0)
 
@@ -198,7 +196,6 @@ class TestCpuFrequencyMhz:
         assert hardware.cpu_frequency_mhz() is None
 
     def test_psutil_failure_on_apple_falls_back_to_ioreg(self, monkeypatch):
-        # psutil raises on M5, where the table indexes it hardcodes are absent.
         monkeypatch.setattr(hardware, "is_apple_silicon", lambda: True)
         _fake_psutil(monkeypatch, None, raises = True)
         _fake_ioreg(monkeypatch, [{"voltage-states13-sram": _M4_PERF_TABLE}])
@@ -220,7 +217,6 @@ class TestCpuFrequencyMhz:
         assert hardware.cpu_frequency_mhz() == 4512.0
 
     def test_zero_reading_on_apple_still_reaches_ioreg(self, monkeypatch):
-        # Some M5 builds return 0.0 rather than raising.
         monkeypatch.setattr(hardware, "is_apple_silicon", lambda: True)
         _fake_psutil(monkeypatch, 0.0)
         _fake_ioreg(monkeypatch, [{"voltage-states5-sram": _M4_PERF_TABLE}])
@@ -262,21 +258,17 @@ class TestOnRealAppleSilicon:
     def test_reported_frequency_is_plausible(self):
         mhz = hardware.cpu_frequency_mhz()
         if mhz is None:
-            # Virtualised Apple Silicon (GitHub's macos-14/15 runners) has
-            # neither cpu_freq nor pmgr tables; the UI just omits the row.
             pytest.skip("neither psutil nor ioreg exposes a CPU clock on this host")
         assert hardware._MIN_PLAUSIBLE_CPU_MHZ <= mhz <= hardware._MAX_PLAUSIBLE_CPU_MHZ
 
     def test_ioreg_reader_agrees_with_psutil(self):
-        # On M1-M3 psutil is already correct, so the ioreg reader must match it;
-        # on M4+ psutil is the broken side, so compare against its x1000 rescale.
+        # psutil is correct on M1-M3; on M4+ compare against its x1000 rescale.
         import psutil
 
         peak = hardware._read_apple_cpu_peak_mhz()
         if peak is None:
             pytest.skip("no voltage-state tables exposed on this host")
-        # Nothing to compare against where psutil has no reading of its own: an
-        # M5 raises, a virtualised host has no cpu_freq. The tables still work.
+        # M5 raises and virtualised hosts lack cpu_freq.
         reader = getattr(psutil, "cpu_freq", None)
         if reader is None:
             pytest.skip("psutil exposes no cpu_freq on this host")

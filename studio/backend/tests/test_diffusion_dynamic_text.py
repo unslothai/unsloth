@@ -336,7 +336,7 @@ def test_dense_h3_dynamic_true_arms_only_the_unbacked_temb():
     assert installed is dt.unbacked_supported()
     try:
         m(12, 2)
-        assert m.seen == before  # the prompt-length list is left alone under dynamic=True
+        assert m.seen == before
         if dt.unbacked_supported():
             assert "L['temb']" in m.seen_unbacked.split(",")
             assert "L['temb']" not in (_cfg().unbacked_sources or "").split(",")

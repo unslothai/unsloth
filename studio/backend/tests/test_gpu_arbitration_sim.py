@@ -105,7 +105,7 @@ class Simulator:
 
     def training(self, account):
         def reserve():
-            # Must run BEFORE the training route's destructive cleanup, under its admission gate.
+            # Must run before the training route's destructive cleanup, under its admission gate.
             arb.raise_if_other_accounts_active()
             arb.release(arb.DIFFUSION)
             arb.release(arb.VIDEO)
@@ -195,7 +195,6 @@ def test_sim_stop_and_delete_cancel_only_the_target(sim, route, deleting):
         with pytest.raises(HTTPException) as refused:
             run_as(ALICE, route._raise_or_cancel_active_generations, force = True, action = "Load")
         assert refused.value.detail["error"] == "gpu_busy"
-    # Delete cancels Alice's own run; a refused force leaves it running.
     assert a.is_set() == deleting and not b.is_set()
     assert generations.foreign_count(BOB.account_id) == 1  # cancellation is not completion
     sim.finish("a")
@@ -234,7 +233,6 @@ def test_route_preflight_and_force_respect_accounts(route, sim, force, cancel):
         )
     assert refused.value.status_code == 409
     assert refused.value.detail["error"] == "gpu_busy"
-    # Refused for a foreign generation, so the caller's chats are never cancelled.
     assert not mine.is_set()
     assert not theirs.is_set()
     body = str(refused.value.detail)

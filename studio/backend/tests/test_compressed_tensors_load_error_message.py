@@ -290,7 +290,6 @@ def test_the_mlx_refusal_is_unchanged():
     "message",
     [
         "Network connection timed out",
-        # Names the library without being about it missing. Must not be swallowed.
         "Failed to parse the config of this compressed-tensors export",
     ],
 )
@@ -327,7 +326,6 @@ def test_the_refusal_names_no_quantization_scheme():
         )
     assert "compressed-tensors" in refusal
     assert "GGUF" in refusal
-    # Unqualified "4-bit" reads as a no-op to someone who already picked W4A16.
     assert "bitsandbytes 4-bit" in refusal
 
     assert "NVFP4" in inference_route._NVFP4_INFERENCE_UNSUPPORTED_MESSAGE

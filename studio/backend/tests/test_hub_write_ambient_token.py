@@ -51,16 +51,12 @@ def _publish_manager(monkeypatch, seen):
     monkeypatch.setattr(
         data_recipe_jobs_routes,
         "publish_recipe_dataset",
-        # link_endpoint is keyword-only at the real call site, so **kwargs here keeps
-        # the stub from going stale the next time the route grows an argument.
+        # **kwargs keeps the stub from going stale when the route grows an argument.
         lambda *, artifact_path, repo_id, description, hf_token, private, **kwargs: (
             seen.update(token = hf_token, **kwargs)
             or f"{kwargs.get('link_endpoint') or OFFICIAL_HF}/datasets/{repo_id}"
         ),
     )
-
-
-# ---------------------------------------------------------------- recipe dataset publish
 
 
 def test_publish_refuses_an_api_key_without_a_token(monkeypatch):
@@ -90,11 +86,8 @@ def test_publish_allows_a_token_bearing_key_and_a_ui_session(
     )
     assert response.status_code == 200
     assert seen["token"] == expected
-    # The published link is built for the caller, not for the host running Studio.
     assert seen["link_endpoint"] == OFFICIAL_HF
 
-
-# ------------------------------------------------------------------------ export routes
 
 _EXPORTS = [
     ("/api/export/merged", "export_merged_model", {}),
@@ -183,9 +176,6 @@ def test_load_checkpoint_forwards_the_policy(
     assert kwargs["allow_ambient"] is expected_flag
 
 
-# ------------------------------------------------------------------------ export worker
-
-
 @pytest.fixture
 def worker_in_process(monkeypatch):
     """Let run_export_process run here without it taking over the pytest process:
@@ -202,7 +192,6 @@ def worker_in_process(monkeypatch):
     "allow_ambient,caller_token,env_token,disable_implicit,passed",
     [
         (False, None, None, "1", None),
-        # The caller's token is passed, not planted: this worker serves later callers.
         (False, "hf_caller", None, "1", "hf_caller"),
         (True, None, "hf_operator_secret", None, None),
     ],
@@ -241,7 +230,6 @@ def test_the_worker_environment_matches_the_callers_policy(
     assert seen["HF_TOKEN"] == env_token
     assert seen["DISABLE_IMPLICIT"] == disable_implicit
     if not allow_ambient:
-        # The operator's aliases go even when the caller supplied its own credential.
         assert seen["HF_HUB_TOKEN"] is None
     assert seen["passed"] == passed
 
@@ -295,7 +283,6 @@ def test_a_non_ambient_worker_holds_no_credential_for_the_next_caller(
         )
 
     assert seen["env"] == dict.fromkeys(seen["env"], None), seen["env"]
-    # The caller keeps its own credential; it is passed, not planted.
     assert seen["passed"] == "hf_caller"
 
 
@@ -388,11 +375,7 @@ def test_the_load_preflight_runs_under_the_callers_credential(
     assert seen["subdirs"] == expected
     assert seen["file_security"] == expected
     assert backend.load_checkpoint.call_args.kwargs["hf_token"] == expected
-    # Tier detection reads config.json off the hub cache, which the sentinel is refused.
     assert seen["tier"] == (expected or None)
-
-
-# ------------------------------------------------------------------------ export backend
 
 
 @pytest.mark.parametrize(
@@ -435,7 +418,6 @@ def test_the_weight_loader_never_receives_none_for_an_anonymous_caller(
         checkpoint_path = "owner/model", hf_token = hf_token
     )
 
-    # The probes take the plain token; only the loaders get the sentinel.
     assert seen["audio"] == (expected or None)
     assert seen["vision"] == (expected or None)
     assert seen["loader"] == expected
@@ -445,8 +427,7 @@ def test_hf_login_reads_none_as_fetch_the_operators_stored_token():
     """The upstream contract the sentinel exists for. If this flips, the threading is moot."""
     import inspect
 
-    # Not importorskip: that skips only on ModuleNotFoundError, and unsloth raises a plain
-    # ImportError ("Unsloth: torch not found") on a torch-less install, which is supported.
+    # Not importorskip: unsloth raises a plain ImportError on torch-less installs.
     try:
         from unsloth.models._utils import hf_login
     except ImportError as exc:

@@ -182,7 +182,6 @@ def test_a_differently_cased_swap_target_is_loaded_under_its_cached_spelling(
 
 
 def test_a_differently_cased_target_short_a_shard_still_loads_as_named(mapper, hub_cache):
-    # Matching the case is not enough on its own: the copy still has to be loadable.
     _cache_repo(hub_cache, UPSTREAM)
     _cache_repo(hub_cache, PREQUANT.upper(), missing_shard = True)
 
@@ -230,7 +229,6 @@ def test_uncached_named_repo_keeps_the_swap(mapper, hub_cache):
 def test_checkpoint_in_a_previous_cache_root_keeps_the_swap(
     mapper, hub_cache, tmp_path_factory, monkeypatch
 ):
-    # The loader cannot reuse weights from a previous cache root.
     from utils.utils import hf_cache_snapshot_is_loadable
 
     previous = tmp_path_factory.mktemp("previous-hub-cache")
@@ -257,7 +255,6 @@ def test_quantized_checkpoint_keeps_the_swap(mapper, hub_cache, load_in_4bit):
 
 
 def test_name_the_installed_tables_do_not_know_skips_the_mapper(mapper, hub_cache):
-    # Leave remote mapper lookups to the loader.
     _cache_repo(hub_cache, "someone/custom-model")
 
     assert _exact_model_name_for_load(_config("someone/custom-model"), True) is None
@@ -303,8 +300,7 @@ def test_load_model_hands_the_verdict_to_both_loaders():
         and v.func.id == "_exact_model_name_for_load"
     )
     assert verdicts, "load_model never calls _exact_model_name_for_load"
-    # Whatever the flag and the path are called, they have to be computed FROM the
-    # verdict, so a rename stays green and a hardcoded True or config.path does not.
+    # Values must be computed from the verdict, so a hardcoded True or config.path fails.
     derived = verdicts | assigned_from(
         lambda v: any(isinstance(n, ast.Name) and n.id in verdicts for n in ast.walk(v))
     )

@@ -64,11 +64,10 @@ def prune_log_dir(
                 saw_protected = True
                 continue
         except OSError:
-            # Dangling symlink, vanished file, or an unreadable directory.
             continue
         entries.append((stat.st_mtime, path))
 
-    # The protected file occupies one of the slots, so the total stays at `keep`.
+    # The protected file occupies one slot.
     room = keep - 1 if saw_protected else keep
     entries.sort(key = lambda item: item[0])
     if room > 0:

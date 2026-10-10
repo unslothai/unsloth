@@ -434,7 +434,6 @@ for key, values in TEMPLATE_TO_MODEL_MAPPER.items():
     for value in values:
         MODEL_TO_TEMPLATE_MAPPER[value] = key
 
-    # Also map lowercased names.
     lowered_key = key.lower()
     for value in values:
         MODEL_TO_TEMPLATE_MAPPER[value.lower()] = lowered_key
@@ -485,8 +484,7 @@ TEMPLATE_TO_RESPONSES_MAPPER = {
         "instruction": "<|im_start|>user\n",
         "response": "<|im_start|>assistant\n",
     },
-    # No "<think>" suffix: Qwen3-Thinking-2507 strips it from non-final turns
-    # and QwQ renders none, so a marker holding it masks those responses.
+    # No "<think>": Qwen3-Thinking-2507 and QwQ omit it on non-final turns.
     "qwen3-thinking": {
         "instruction": "<|im_start|>user\n",
         "response": "<|im_start|>assistant\n",
@@ -527,16 +525,13 @@ TEMPLATE_TO_RESPONSES_MAPPER = {
         "instruction": "<|im_start|>user<|im_sep|>",
         "response": "<|im_start|>assistant<|im_sep|>",
     },
-    # No surrounding spaces: "[INST]"/"[/INST]" are single special tokens in Mistral v0.3, so a
-    # padded string never matches and everything masks. Same for Llama-2's SentencePiece.
+    # No padding: [INST]/[/INST] are single special tokens, so padded markers never match.
     "mistral": {
         "instruction": "[INST]",
         "response": "[/INST]",
     },
     "llama": {
-        # <s>-anchored: llama-2 tokenizes [INST] after <s> as bare "[" on
-        # transformers 5.x (standalone gives space-prefixed "▁["), so an
-        # unanchored marker misses every turn boundary there.
+        # Anchored on <s>: transformers 5.x tokenizes [INST] after <s> as a bare "[".
         "instruction": "<s>[INST]",
         "response": "[/INST]",
     },
@@ -581,8 +576,7 @@ TEMPLATE_TO_RESPONSES_MAPPER = {
         "instruction": "<|im_start|>user\n",
         "response": "<|im_start|>assistant\n",
     },
-    # No trailing space: SentencePiece folds it into the next content token ("_Hello"), so the
-    # padded marker never matches and masks everything.
+    # No trailing space: SentencePiece folds it into the next token, so it never matches.
     "starling": {
         "instruction": "GPT4 Correct User:",
         "response": "GPT4 Correct Assistant:",
@@ -591,9 +585,7 @@ TEMPLATE_TO_RESPONSES_MAPPER = {
         "instruction": "<|im_start|>user\n",
         "response": "<|im_start|>assistant\n",
     },
-    # "[gMASK]<sop>" appears once at text start.
-    # "<think>" is scaffolding GLM-4.x renders as a lone "</think>" on non-final turns, so "<|assistant|><think>" never
-    # matches.
+    # GLM renders "<think>" as a lone "</think>" on non-final turns, so it is omitted.
     "glm": {
         "instruction": "<|user|>",
         "response": "<|assistant|>",

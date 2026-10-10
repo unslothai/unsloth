@@ -35,8 +35,7 @@ from utils.paths.scan_folder_health import (
 )
 
 
-# os.geteuid is missing on Windows, and a skipif condition is evaluated at import,
-# so the check has to be resolved before the decorator sees it.
+# os.geteuid is missing on Windows and skipif evaluates at import.
 requires_posix_permissions = pytest.mark.skipif(
     os.name == "nt" or getattr(os, "geteuid", lambda: 0)() == 0,
     reason = "needs POSIX mode bits and a non-root user",
@@ -59,7 +58,6 @@ def test_a_readable_directory_passes_the_probe(tmp_path: Path):
 
 
 def test_an_empty_directory_still_passes(tmp_path: Path):
-    # Nothing to list is not the same as refusing to list.
     empty = tmp_path / "empty"
     empty.mkdir()
     assert is_readable_dir(str(empty)) is True
@@ -265,7 +263,6 @@ def test_a_healthy_folder_stays_ok_when_models_were_found(tmp_path: Path):
 
 
 def test_a_folder_that_disappeared_reports_missing(tmp_path: Path):
-    # Unmounted drive or renamed folder: the scanners return nothing, same as empty.
     note_scan_folder_scanned(str(tmp_path / "gone"), found = False)
     assert scan_folder_status(str(tmp_path / "gone")) == STATUS_MISSING
 
@@ -289,7 +286,6 @@ def test_the_real_scan_records_a_folder_it_cannot_read(tmp_path: Path):
         collect_local_models(tmp_path, custom_folders = list(rows))
         assert annotate_scan_folders(rows)[0]["status"] == STATUS_PERMISSION_DENIED
 
-        # And it recovers on its own once the folder is readable again.
         denied.chmod(stat.S_IRWXU)
         collect_local_models(tmp_path, custom_folders = list(rows))
         assert annotate_scan_folders(rows)[0]["status"] == STATUS_OK
@@ -363,9 +359,7 @@ def test_a_model_deleted_mid_scan_does_not_condemn_the_folder(tmp_path: Path):
             return next(self._entries)
 
     def _vanishing(path = "."):
-        # Read the listing to completion, then delete the temp dir. The entry is
-        # still in what we hand back, exactly as when a download renames it away
-        # between the folder being listed and the child being opened.
+        # Delete after listing, as when a download renames an entry away mid-scan.
         if str(path) == str(folder) and doomed.exists():
             with real_scandir(path) as entries:
                 listed = list(entries)
@@ -567,7 +561,6 @@ def test_the_deep_probe_finds_the_denial_in_a_few_opens(tmp_path: Path, monkeypa
     monkeypatch.setattr(os, "scandir", counting_scandir)
     try:
         assert probe_status(str(tmp_path), children = True) == STATUS_PERMISSION_DENIED
-        # Root, publisher, model.
         assert len(opened) == 3
     finally:
         denied.chmod(stat.S_IRWXU)
@@ -579,7 +572,6 @@ def test_this_file_can_be_collected_without_geteuid(monkeypatch):
     monkeypatch.delattr(os, "geteuid", raising = False)
     monkeypatch.setattr(os, "name", "nt")
     namespace: dict = {"__name__": "windows_collection_probe"}
-    # The module body is what pytest evaluates while collecting.
     exec(compile(source, __file__, "exec"), namespace)
 
 
@@ -598,10 +590,7 @@ def test_the_child_probe_is_bounded(tmp_path: Path, monkeypatch):
         return real_scandir(path, *args, **kwargs)
 
     monkeypatch.setattr(os, "scandir", counting_scandir)
-    # Too wide to finish inside the budget, so the answer is "did not see
-    # everything", not "healthy". Only an exhaustive probe may report ok.
     assert probe_status(str(tmp_path), children = True) == STATUS_UNKNOWN
-    # One shared budget across the whole walk, however deep or wide the tree.
     assert len(opened) <= health._PROBE_OPEN_LIMIT
 
 
@@ -690,7 +679,6 @@ def test_an_exhausted_budget_does_not_clear_a_known_failure(tmp_path: Path):
 
     for i in range(health._PROBE_OPEN_LIMIT * 3):
         (tmp_path / f"model{i:03d}").mkdir()
-    # Deterministically past the budget: pick by real listing order, not by name.
     order = [entry.name for entry in os.scandir(tmp_path)]
     denied = tmp_path / order[-1]
     denied.chmod(0o000)
@@ -713,7 +701,6 @@ def test_a_wide_folder_still_clears_once_it_is_fixed(tmp_path: Path):
         (tmp_path / f"model{i:03d}").mkdir()
     order = [entry.name for entry in os.scandir(tmp_path)]
     fixed = tmp_path / order[-1]
-    # Recorded as the cause, but readable again by the time the scan runs.
     health._failed[str(tmp_path)] = (STATUS_PARTIAL, str(fixed))
 
     note_scan_folder_scanned(str(tmp_path), found = True)
@@ -847,7 +834,6 @@ def test_the_snapshot_level_costs_nothing_on_a_plain_folder(tmp_path: Path, monk
 
     monkeypatch.setattr(os, "scandir", counting_scandir)
     try:
-        # Root, publisher, model. The component level is still out of reach.
         assert probe_status(str(tmp_path), children = True) == STATUS_OK
         assert len(opened) == 3
     finally:

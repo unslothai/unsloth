@@ -167,9 +167,7 @@ async def _drive(base_url, session_id, decision):
                 event = json.loads(line[len("data: ") :])
                 events.append(event)
                 if event["type"] == "tool_start":
-                    # The stream is now blocked on the gate; the confirm
-                    # POST (echoing approval_id) must still be served over a
-                    # second connection.
+                    # The stream is blocked on the gate; the confirm POST uses a second connection.
                     approval_id = event["approval_id"]
                     await _gate_is_blocking(approval_id)
                     r = await client.post(
@@ -210,9 +208,7 @@ def test_deny_resumes_stream_with_rejection_result():
 
 
 def test_tool_start_precedes_the_block_and_carries_approval_id():
-    # The first streamed event is always tool_start, proving the buttons
-    # can render before the backend pauses for the decision -- and it
-    # carries the approval_id / awaiting_confirmation the UI needs.
+    # tool_start comes first so the buttons render before the backend pauses.
     events, _ = _run("sess-order", "allow")
     assert events[0]["type"] == "tool_start"
     assert events[0]["awaiting_confirmation"] is True

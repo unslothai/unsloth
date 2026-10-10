@@ -51,7 +51,6 @@ def blobs(monkeypatch, tmp_path):
     blobs_dir.mkdir(parents = True)
     monkeypatch.setenv("HF_HUB_CACHE", str(root))
     monkeypatch.setattr(download_registry, "hf_cache_root", lambda **_kwargs: root)
-    # The cache-dir iterators resolve the root through hf_cache_state, not the caller.
     monkeypatch.setattr(hf_cache_state, "hf_cache_root", lambda **_kwargs: root)
     monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda *_a, **_k: [root])
     return blobs_dir
@@ -159,7 +158,6 @@ def test_resumable_partial_survives_a_matching_marker(monkeypatch, blobs):
     partial.write_bytes(b"x" * 25)
     _abandon(partial)
 
-    # Too fresh at download start, so prepare leaves it alone.
     assert _prepare() == 0
     assert partial.exists()
 
@@ -237,7 +235,6 @@ def test_a_skipped_partial_is_swept_once_it_ages_out(monkeypatch, blobs):
     assert _prepare() == 0
     assert partial.exists()
 
-    # By the time that download reaches a terminal state the grace has elapsed.
     _abandon(partial)
     assert download_registry.sweep_abandoned_partials("model", "Org/Model") == 1
     assert not partial.exists()
@@ -352,7 +349,6 @@ def test_a_reaped_job_does_not_wait_out_the_grace_on_its_own_blobs(monkeypatch, 
     partial.write_bytes(b"x" * 25)
     _shared_setup_1(blobs, monkeypatch)
 
-    # Without the ownership claim it has to wait, which is what stranded it for the session.
     assert download_registry.sweep_abandoned_partials("model", "Org/Model") == 0
     assert partial.exists()
 
@@ -417,8 +413,7 @@ def test_the_sweep_accepts_the_string_root_the_metadata_holds(monkeypatch, tmp_p
     partial.write_bytes(b"x" * 25)
     _abandon(partial)
 
-    # A Path-only signature raised AttributeError here and the caller's broad except swallowed it, so
-    # the terminal sweep silently did nothing for every real download.
+    # A Path-only signature raised AttributeError that the caller swallowed.
     swept = download_registry.sweep_abandoned_partials(
         "model",
         "Org/Model",
@@ -503,7 +498,6 @@ def test_a_companion_the_dead_worker_was_writing_is_owned_too(monkeypatch, blobs
     companion.write_bytes(b"x" * 25)
     _shared_setup_1(blobs, monkeypatch)
 
-    # Ownership limited to the variant's own quant leaves the companion waiting out the grace.
     assert (
         download_registry.sweep_abandoned_partials(
             "model",
@@ -670,11 +664,8 @@ def test_a_filesystem_without_flock_does_not_escape_the_probe(monkeypatch, tmp_p
 
     monkeypatch.setattr(filelock, "FileLock", _NoFlock)
 
-    # No lock file: nobody has locked this blob, whatever the filesystem supports.
     assert hf_cache_state.blob_download_lock_held(entry, _MAIN) is False
 
-    # With one, the answer is "held" rather than an exception, which is also what a SoftFileLock would
-    # say, since its file IS the lock.
     lock_path.touch()
     assert hf_cache_state.blob_download_lock_held(entry, _MAIN) is True
 

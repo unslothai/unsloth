@@ -313,10 +313,8 @@ def test_the_4_6_xhigh_remap_reads_the_id_the_same_way_the_spec_lookup_does(mode
     assert body["output_config"] == {"effort": "max"}
 
 
-# Mistral documents reasoning_effort for mistral-small-latest and mistral-medium-3-5 only, with
-# values "high" and "none": https://docs.mistral.ai/capabilities/reasoning/
-# mistral-large, codestral and the older mistral-medium releases are absent from that page and
-# reject the parameter, so no caller-supplied effort may reach them.
+# Mistral documents reasoning_effort ('high'/'none') only for mistral-small-latest and
+# mistral-medium-3-5: https://docs.mistral.ai/capabilities/reasoning/
 @pytest.mark.parametrize(
     "model", ["mistral-large-latest", "codestral-latest", "mistral-medium-2505"]
 )
@@ -366,7 +364,6 @@ def test_every_mistral_model_the_snapshot_gives_an_effort_ladder_is_on_the_wire_
     for model, efforts in sorted(snapshot.items()):
         spec = ep_mod._mistral_thinking_spec(model)
         assert spec.style == "reasoning_effort", f"{model} is offered a ladder but sends nothing"
-        # The frontend clamps a catalog ladder to CATALOG_REASONING_WIRE.mistral before it renders,
-        # so only the values in both sets can ever be selected; those are the ones that must arrive.
+        # The frontend clamps to CATALOG_REASONING_WIRE.mistral; only the overlap is selectable.
         for effort in set(efforts) & set(spec.efforts):
             assert _body("mistral", model, reasoning_effort = effort)["reasoning_effort"] == effort

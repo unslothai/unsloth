@@ -114,10 +114,9 @@ def test_later_forwards_keep_depth_groups_in_flight_ahead():
     _forward(pf, groups)
     log.clear()
     pf.begin()
-    # nothing at the forward start: a top-level upload on the compute stream must reach the copy engine first
+    # no copy at forward start: the top-level upload must reach the copy engine first
     assert not log
     pf.onload(groups[0])
-    # the first block queues itself first; running a, b and c are in flight: depth 2 ahead
     assert [n for k, n in log if k == "copy"] == ["a", "b", "c"]
     for g in groups:
         if g is not groups[0]:
@@ -152,7 +151,6 @@ def test_resident_groups_are_skipped_and_not_counted():
     pf.begin()
     assert not log
     pf.kick()
-    # the streamed tail is queued while the resident head runs
     assert [n for k, n in log if k == "copy"] == ["d", "e"]
     pf.kick()
     assert [n for k, n in log if k == "copy"] == ["d", "e"]
@@ -162,8 +160,7 @@ def test_resident_groups_are_skipped_and_not_counted():
 def test_off_order_forward_stops_prefetch_and_rerecords():
     pf, groups, log = _cpu_prefetcher("abcdef", depth = 2)
     _forward(pf, groups)
-    _forward(pf, groups, skip = "c")  # a conditional block did not run
-    # the copied-ahead c was freed at the end, and the order now omits it
+    _forward(pf, groups, skip = "c")
     assert ("free", "c") in log
     assert pf.order == [id(g) for g in groups if g.name != "c"]
     assert pf.inflight_bytes == 0 and not pf.ready
@@ -196,9 +193,7 @@ def test_depth_env(monkeypatch):
 
 
 def test_resident_onload_skips_the_copy_stream_wait_when_fenced(monkeypatch):
-    pytest.importorskip(
-        "diffusers.hooks"
-    )  # _keep_groups_resident imports it and leaves the groups alone without it
+    pytest.importorskip("diffusers.hooks")  # _keep_groups_resident is a no-op without this import
 
     class Stream:
         waits = 0
@@ -230,9 +225,7 @@ def test_resident_onload_skips_the_copy_stream_wait_when_fenced(monkeypatch):
     module._unsloth_stream_state["kick"] = lambda: kicks.append(1)
     for g in groups:
         g.onload_()
-    assert (
-        Stream.waits == 0 and len(kicks) == 2
-    )  # each resident onload may start the forward's prefetch
+    assert Stream.waits == 0 and len(kicks) == 2
     del module._unsloth_stream_state["kick"]
     module._unsloth_stream_state["fenced"] = False
     for g in groups:
@@ -269,7 +262,7 @@ class _Net(torch.nn.Module):
             if upto is not None and i >= upto:
                 break
             if self.sleep_cycles:
-                # a slow GPU: the host runs ahead and later copies are queued long before this block reads its weights
+                # simulate a slow GPU so the host queues later copies before this block reads
                 torch.cuda._sleep(self.sleep_cycles)
             x = torch.nn.functional.gelu(block(x))
         return self.proj_out(x)
@@ -405,12 +398,12 @@ def test_slow_gpu_keeps_memory_in_the_window_and_reads_the_right_weights(monkeyp
         got = net(x)
         host_ahead = not torch.cuda.current_stream().query()
         torch.cuda.synchronize()
-        # reserved, not allocated: a block freed under record_stream leaves the allocated count but stays reserved
+        # reserved, not allocated: record_stream frees drop allocated bytes but stay reserved
         peak = torch.cuda.max_memory_reserved() - base
     assert torch.equal(got, want)
-    assert host_ahead  # the forward returned while the GPU was still running its blocks
+    assert host_ahead
     block_bytes = 2048 * 2048 * 4 + 2048 * 4
-    # window (2 groups) + activations + top-level group; diffusers' record_stream path reserved 204 vs 44 MiB here
+    # window (2 groups) + activations + top-level group
     assert peak <= pf.window + 2 * block_bytes, (peak, pf.window)
 
 
@@ -533,7 +526,6 @@ def test_torchao_int8_weights_stream_bit_identical(version):
     _streamed(net)
     pf = op.module_prefetcher(net)
     assert pf is not None
-    # the torchao top-level group (proj_in / proj_out) is driven too, from pinned copies on the copy stream
     top = net._diffusers_hook.get_hook("group_offloading").group
     assert top.stream is not None and pf.owns(top)
     assert all(c.is_pinned() for c in top.cpu_param_dict.values())
@@ -542,15 +534,15 @@ def test_torchao_int8_weights_stream_bit_identical(version):
         ref(x)
         want, ref_syncs = _count_syncs(
             lambda: ref(x)
-        )  # whatever the resident int8 op itself syncs (torchao 0.17: 1)
+        )  # syncs the resident int8 op does itself (torchao 0.17: 1)
         net(x)
         for _ in range(3):
             got, syncs = _count_syncs(lambda: net(x))
             torch.cuda.synchronize()
             assert torch.equal(got, want)
-            # offload adds none: torchao 0.17's v1 int8 ``to`` drops non_blocking (6 waits per block without the fix)
+            # torchao 0.17 int8 `to` drops non_blocking; offload must add no syncs
             assert syncs == ref_syncs
     assert pf.stats["prefetched"] > 0
     go = pytest.importorskip("diffusers.hooks.group_offloading")
-    # judged by the inner tensors: the torchao wrapper keeps reporting the device it was onloaded to
+    # the torchao wrapper reports its onload device, so check the inner tensors
     assert dm._placed_on(net.proj_in.weight, "cpu", go._is_torchao_tensor)

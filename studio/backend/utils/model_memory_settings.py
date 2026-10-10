@@ -28,13 +28,11 @@ NO_RAM_RESERVE_SETTING_KEY = "model_memory_no_ram_reserve"
 DEFAULT_KEEP_RESIDENT = False
 DEFAULT_NO_RAM_RESERVE = False
 
-# Read on the load path and every idle poll, so memo briefly to spare SQLite.
-# Matches openai_auto_switch_settings.
+# Read on hot paths, so memo briefly to spare SQLite.
 _CACHE_TTL_S = 2.0
 _cache_lock = threading.Lock()
 _cache: dict[tuple[str, str], tuple[float, Any]] = {}
-# Bumped on every write. A read that began before a write must not fill the cache with the value it already fetched, or
-# the new setting would appear to revert for the rest of the TTL and a load could launch contradicting it.
+# Bumped on every write so a read started earlier does not cache a stale value.
 _generation: dict[tuple[str, str], int] = {}
 
 
@@ -50,8 +48,7 @@ def _coerce_bool(value: Any) -> Optional[bool]:
     return None
 
 
-# A write racing a read is rare, so a couple of retries always converges. The
-# bound only exists so a pathological write storm cannot spin here forever.
+# Bound only guards against a pathological write storm.
 _MAX_REREADS = 3
 
 
@@ -67,15 +64,13 @@ def _cached_setting(key: str) -> Any:
             from storage.studio_db import get_app_setting
             stored = run_as(OWNER, get_app_setting, key, None)
         except Exception:
-            # An unreadable DB must not fail a load; fall back to the default.
+            # An unreadable DB must not fail a load.
             return None
         with _cache_lock:
             if _generation.get(cache_key, 0) == generation:
                 _cache[cache_key] = (time.monotonic(), stored)
                 return stored
-        # A write committed while this read was in flight, so `stored` predates
-        # it. Returning it would let a load launch with flags contradicting the
-        # setting that was just saved, so read again against the new generation.
+        # A write landed mid-read; read again against the new generation.
     return stored
 
 

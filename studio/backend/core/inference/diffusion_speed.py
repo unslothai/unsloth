@@ -53,8 +53,7 @@ SPEED_MAX = "max"
 SPEED_MODES = (SPEED_OFF, SPEED_EAGER, SPEED_DEFAULT, SPEED_MAX)
 
 
-# (attribute, snapshot key). The first and last are Studio's own; the rest are what torchao's
-# recommended_inductor_config_setter() flips.
+# (attribute, snapshot key); first and last are Studio's, the rest torchao's config setter flips.
 _INDUCTOR_FLAGS = (
     ("emulate_precision_casts", "inductor_emulate_precision_casts"),
     ("coordinate_descent_tuning", "inductor_coordinate_descent_tuning"),
@@ -70,8 +69,7 @@ _INDUCTOR_MODULE = "torch._inductor.config"
 _INDUCTOR_TRITON_MODULE = "torch._inductor.config.triton"
 
 
-# allow_fp16_accumulation has one owner: writes during an open scope go to the recorded process value, so closing
-# the scope restores the latest value, not a stale copy.
+# allow_fp16_accumulation has one owner: writes in an open scope go to the recorded value.
 _FP16_ACCUM_LOCK = threading.RLock()
 _fp16_accum_scopes: list = []
 _fp16_accum_base: Optional[bool] = None
@@ -338,8 +336,7 @@ def compile_eligible(target: Any, *, is_gguf: bool, family: Any) -> bool:
     dtype = getattr(target, "dtype", None)
     if _is_bfloat16(dtype):
         return True
-    # fp16-incompatible families run in fp32 (unmeasured under compile) or in fp16 behind diffusion_fp16_guard, which
-    # must stay eager: the int8 fused MLP installed for compile replaces the guard's FFN forward.
+    # fp16 guard path must stay eager: the compile int8 fused MLP replaces the guard's FFN.
     if bool(getattr(family, "fp16_incompatible", False)):
         return False
     return _is_float16(dtype) and _fp16_compile_capable(target)
@@ -357,7 +354,7 @@ def family_compiles_regionally(family: Any) -> bool:
     name = getattr(family, "transformer_class", None)
     if not isinstance(name, str) or not name:
         return True
-    # Called before load_pipeline's guard; `import diffusers` imports torch._dynamo, so wait for the torch warm.
+    # `import diffusers` imports torch._dynamo, so wait for the torch warm.
     try:
         from loggers import get_logger
         from utils.torch_warmup import close_dynamo_import_window
@@ -461,14 +458,13 @@ def apply_speed_optims(
     }
     mode = normalize_speed_mode(speed_mode)
     if getattr(target, "backend", None) == "rocm":
-        # Memory, not speed, so before the `off` return: ROCm has no fused SDPA for the VAE's head dim 384 / 512.
+        # Before the `off` return: ROCm has no fused SDPA for the VAE's head dim 384 / 512.
         try:
             from .diffusion_vae_attn_chunked import install as install_vae_attn_chunks
             install_vae_attn_chunks(getattr(pipe, "vae", None), target, logger)
         except Exception as exc:  # noqa: BLE001 - keep stock attention
             _warn(logger, "vae attention chunks", exc)
-    # TF32 (max) and cudnn.benchmark (any non-off CUDA load) are process-global; the caller restores them so a later
-    # `off` load never inherits them.
+    # TF32 and cudnn.benchmark are process-global; the caller restores them.
     if mode == SPEED_OFF:
         return applied
 
@@ -484,11 +480,10 @@ def apply_speed_optims(
     filter_reductions = compile_config.family_filters_reductions(family)
 
     applied["vae_single_frame"] = _vae_single_frame(pipe, logger)
-    # Lossless: a channels-last VAE speeds up its convs with no numeric change.
     applied["channels_last"] = _vae_channels_last(
         pipe, logger, fused = on_cuda and _fused_vae_planned(pipe)
     )
-    # Near-lossless, not bit-identical, so never on "off" (returned above).
+    # Near-lossless, not bit-identical, so never on "off".
     applied["vae_fp16_decode"] = _video_vae_half_decode(pipe, target, family, logger)
     if on_cuda:
         applied["vae_fused"] = _install_fused_vae(pipe, logger)
@@ -505,18 +500,15 @@ def apply_speed_optims(
             family, logger, dtype = getattr(target, "dtype", None), speed_mode = mode
         )
 
-    # The compile lever, per tier. default = LIGHT: GGUF compiles ONLY the dequant op chain (cheap, VRAM-free,
-    # resolution-invariant); dense falls back to the regional block compile. max = FULL: regional max-autotune compile
-    # of the repeated block. eager = no compile.
+    # default: GGUF compiles only the dequant chain, dense uses regional compile; max: autotune.
     if mode == SPEED_DEFAULT:
-        # Asked directly: this arm never reaches compile_eligible(), unlike the dense arm below.
+        # Asked directly: this arm never reaches compile_eligible().
         if is_gguf and on_cuda and family_allows_compile and torch_compile_runtime_available():
             applied["compiled_dequant"] = gguf_compile.install_compiled_dequant(logger)
         elif compile_eligible(target, is_gguf = is_gguf, family = family) and not fp16_unet_offloaded(
             target, pipe, offload_active = offload_active
         ):
-            # A U-Net (SDXL) fuses QKV BEFORE its whole-module compile: 36.3 vs 39.3 ms/step (LPIPS 0.033). DiTs were
-            # neutral, so they keep the fuse on max only.
+            # A U-Net fuses QKV before its whole-module compile; DiTs fuse on max only.
             if _denoiser_unet(pipe) is not None:
                 applied["fused_qkv"] = _fuse_qkv(pipe, logger)
             applied["compiled"] = _compile_repeated_blocks(
@@ -551,7 +543,6 @@ def apply_speed_optims(
         )
 
     if applied["compiled"] and _vae_decode_compile_allowed(pipe, mode):
-        # A U-Net keeps the decode recipe its whole-module compile was measured with.
         applied["compiled_vae_decode"] = _compile_vae_decode(
             pipe,
             logger,
@@ -559,7 +550,7 @@ def apply_speed_optims(
             eager_when_tiled = _vae_eager_when_tiled(pipe),
         )
 
-    # Fused passes feed cuDNN channels-last activations; contiguous weights would be relaid out per call.
+    # Fused passes feed cuDNN channels-last; contiguous weights would be relaid per call.
     fused_cl = bool(getattr(getattr(pipe, "vae", None), "_unsloth_vae_fused_cl_weights", False))
     if (
         applied["channels_last"]
@@ -572,7 +563,6 @@ def apply_speed_optims(
     elif applied["compiled_vae_decode"] and not _channels_last_decode_wins(
         pipe, target, False, offload_active
     ):
-        # A decode compile that fails at first call falls back eager: relayout then.
         try:
             pipe.vae._unsloth_eager_contiguous = True
         except Exception:  # noqa: BLE001
@@ -604,11 +594,11 @@ def apply_speed_optims(
                 offloaded = after_placement,
             )
             if ok and after_placement:
-                # The slot and the recorded copies depend on the hooks placement installs: arm_graphs_after_placement.
+                # Slot and recorded copies depend on placement hooks: see arm_graphs_after_placement.
                 ok, reason = False, "armed after placement"
                 try:
                     pipe._unsloth_cuda_graph_after_placement = True
-                    # A family that opts in only offloaded must not get a resident graph if the denoiser stays put.
+                    # An offload-only opt-in must not get a resident graph if the denoiser stays put.
                     pipe._unsloth_cuda_graph_offload_only = not bool(
                         getattr(family, "supports_cuda_graph", cuda_graph_default)
                     )
@@ -616,7 +606,6 @@ def apply_speed_optims(
                     pass
         except Exception as exc:  # noqa: BLE001 - an unimportable graph layer means eager, never a failed load
             _warn(logger, "cuda graph eligibility", exc)
-        # Stashed either way: status reports WHY graphs are off, not just that they are.
         try:
             pipe._unsloth_cuda_graph_reason = reason
         except Exception:  # noqa: BLE001
@@ -733,11 +722,10 @@ def _vae_single_frame(pipe: Any, logger: Any) -> bool:
         return False
 
 
-# channels_last: slower on the stock path (72.7 vs 89 ms), faster once the fused norms install (104.7 vs 121.0 ms).
 _VAE_CHANNELS_LAST_DENY: frozenset[str] = frozenset({"AutoencoderKLQwenImage21"})
 
 
-# DiT-only VAEs: cudnn.benchmark saves ~3 ms per decode (fused, 1024) but re-tunes 0.7-2 s at every new resolution.
+# cudnn.benchmark re-tunes 0.7-2 s at every new resolution.
 _CUDNN_BENCHMARK_DENY_VAES: frozenset[str] = frozenset({"AutoencoderKLQwenImage21"})
 
 
@@ -889,9 +877,7 @@ def _video_vae_half_decode(pipe: Any, target: Any, family: Any, logger: Any) -> 
         return False
 
 
-# U-Net denoisers ship no ``_repeated_blocks``, so the regional compile cannot reach them; these classes get a
-# WHOLE-module STATIC compile. SDXL (B200, 30 steps / 1024px): 26.9 vs 45.9 ms/step, 1.61x end-to-end at LPIPS 0.034.
-# Static means a recompile per (height, width, batch).
+# U-Nets have no ``_repeated_blocks``: whole-module STATIC compile, recompiles per shape.
 _UNET_WHOLE_COMPILE: frozenset[str] = frozenset({"UNet2DConditionModel"})
 
 
@@ -907,8 +893,6 @@ def compiled_shapes_are_static(pipe: Any, speed_mode: Optional[str]) -> bool:
     """Whether this load's compiled artifacts are per-(width, height, batch); the compile cache keys on it."""
     mode = normalize_speed_mode(speed_mode)
     if mode == SPEED_MAX:
-        # An auto-dynamic DiT generalises a dimension once and then reuses that graph for unseen values, so a new
-        # (width, height, batch) is not a new artifact; the Dynamo graph-count delta marks the renders that compiled.
         return _denoiser_unet(pipe) is not None or not auto_dynamic_active(pipe)
     if mode != SPEED_DEFAULT:
         return False
@@ -942,7 +926,7 @@ def int8_gemm_live(pipe: Any, optims: Any) -> list:
     return optims
 
 
-# Blocks MEASURED to raise inductor CantSplit under dynamic = True; measure before adding.
+# Blocks measured to raise inductor CantSplit under dynamic=True; measure before adding.
 _STREAM_MERGING_BLOCKS: frozenset[str] = frozenset({"FluxSingleTransformerBlock"})
 
 _STREAM_MERGE_DETECT_ENV = "UNSLOTH_STATIC_STREAM_MERGE_DETECT"
@@ -1025,12 +1009,8 @@ def _compile_repeated_blocks(
             ensure_repeated_blocks(transformer)
         except Exception as exc:  # noqa: BLE001 - optimisation only
             _warn(logger, "repeated block discovery", exc)
-    # default: dynamic=True, fast cold start, no recompile on resolution change. max: max-autotune-no-cudagraphs +
-    # automatic dynamic (None): the first shape compiles static and autotuned, and a dimension that then changes is
-    # generalised once. dynamic=False recompiled on every new prompt length for DiTs whose blocks see the text tokens
-    # (Qwen-Image-2.1: 4-6s on about half of new prompts). Inductor's own cudagraph modes fail on the regional block --
-    # "accessing tensor output of CUDAGraphs that has been overwritten" -- so the tier stays on -no-cudagraphs and the
-    # capture is taken one level up, at the denoiser module.
+    # dynamic=False recompiled per prompt length on text-token DiTs.
+    # Inductor cudagraph modes fail on regional blocks, so capture happens at the denoiser.
     static_shapes = (not max_autotune) and _dits_merge_streams(dits)
     if static_shapes and logger is not None:
         logger.info(
@@ -1048,20 +1028,17 @@ def _compile_repeated_blocks(
     try:
         import torch
 
-        # Via compile_config: the lazy compile runs on the render thread, which on torch 2.12+ cannot see these writes.
-        # Heterogeneous-block DiTs (Z-Image needs ~11 graphs) exceed dynamo's default recompile_limit of 8, where a
-        # resident load hard-errors under fullgraph, so raise it to 64. NOT force_parameter_static_shapes=False: no win
-        # and ~6x slower.
+        # Via compile_config: the render thread on torch 2.12+ cannot see these writes.
+        # recompile_limit 64: heterogeneous-block DiTs exceed the default 8 under fullgraph.
+        # Not force_parameter_static_shapes=False: no win and ~6x slower.
         dynamo_cfg = getattr(getattr(torch, "_dynamo", None), "config", None)
         if dynamo_cfg is not None:
             for _limit_attr in ("recompile_limit", "cache_size_limit"):  # name varies by torch ver
                 if hasattr(dynamo_cfg, _limit_attr):
                     current = compile_config.get_knob(_DYNAMO_MODULE, _limit_attr) or 0
                     compile_config.set_knob(_DYNAMO_MODULE, _limit_attr, max(current, 64))
-        # Match eager intermediate rounding in inductor's fused pointwise kernels: they keep chains in fp32 where eager
-        # materialises bf16 between ops, a per-forward delta a multi-step denoise amplifies. Measured LPIPS vs eager:
-        # Qwen-Image 0.019 to 0.006, HunyuanVideo-1.5-720p 0.221 to 0.052, at ~zero cost. Process-global, so
-        # snapshot_backend_flags restores it on unload.
+        # Match eager bf16 rounding in fused pointwise kernels (multi-step denoise amplifies drift).
+        # Process-global: snapshot_backend_flags restores it on unload.
         inductor_cfg = _inductor_config()
         if inductor_cfg is not None and hasattr(inductor_cfg, "emulate_precision_casts"):
             compile_config.set_knob(_INDUCTOR_MODULE, "emulate_precision_casts", True)
@@ -1075,16 +1052,13 @@ def _compile_repeated_blocks(
     except Exception as exc:  # noqa: BLE001 - optimisation only
         _warn(logger, "compile_repeated_blocks", exc)
         return False
-    # A block whose attention runs inside sdpa_kernel would otherwise bypass AOTAutogradCache on every start.
+    # Else a block attending inside sdpa_kernel bypasses AOTAutogradCache on every start.
     try:
         from . import diffusion_aot_cache
         diffusion_aot_cache.install(logger)
     except Exception as exc:  # noqa: BLE001 - optimisation only
         _warn(logger, "sdpa aot cache", exc)
     if unet is not None:
-        # Whole-module static compile for the U-Net classes above. fullgraph mirrors the regional decision; dynamic is
-        # ALWAYS False, so each new (height, width, batch) pays its own compile. ``Module.compile`` keeps the module
-        # identity.
         unet_kwargs: dict[str, Any] = {"fullgraph": kwargs["fullgraph"], "dynamic": False}
         if max_autotune:
             unet_kwargs["mode"] = "max-autotune-no-cudagraphs"
@@ -1096,7 +1070,6 @@ def _compile_repeated_blocks(
         except Exception as exc:  # noqa: BLE001 - optimisation only
             _warn(logger, "unet whole-module compile", exc)
             return False
-    # Compile every denoiser DiT (dual-DiT families run both); a per-DiT failure degrades only that one to eager.
     engaged = False
     for transformer in dits:
         dit_kwargs = dict(kwargs)
@@ -1107,9 +1080,9 @@ def _compile_repeated_blocks(
             and _carries_torchao_weights(transformer)
             and _dits_merge_streams([transformer])
         ):
-            # Auto dynamic hits CantSplit on torchao stream-merging blocks and drops to eager; static recompiles.
+            # Auto dynamic hits CantSplit on torchao stream-merging blocks; static recompiles.
             dit_kwargs["dynamic"] = False
-        # Read by auto_dynamic_active: the generalising recompile on a new text length must reach the bundle.
+        # Read by auto_dynamic_active.
         transformer._unsloth_auto_dynamic = dit_kwargs["dynamic"] is None
         if type(transformer).__name__ == "QwenImage21Transformer2DModel":
             try:
@@ -1117,18 +1090,17 @@ def _compile_repeated_blocks(
                 install_real_rope(logger)
             except Exception as exc:  # noqa: BLE001 - optimisation only
                 _warn(logger, "qwen-image-2.1 real rope", exc)
-        # Before the compile: the regional compile traces whatever forward the blocks carry at the first call.
+        # Before the compile: it traces whatever forward the blocks carry at the first call.
         try:
             from .diffusion_int8_fused import install as install_int8_fused
             install_int8_fused(transformer, logger, offload_active = offload_active)
         except Exception as exc:  # noqa: BLE001 - optimisation only
             _warn(logger, "int8 fused mlp", exc)
-        # After the fused MLP (its down projection calls the same GEMM), before the compile traces the Linears.
+        # After the fused MLP (same GEMM), before the compile traces the Linears.
         try:
             from .diffusion_int8_gemm import install as install_int8_gemm
 
-            # Keyed on the DENOISER's placement (an encoder-only stream keeps it resident). A moved denoiser installs
-            # against its onload device; a weight found elsewhere at call time keeps the stock path.
+            # Keyed on the DENOISER's placement; a weight elsewhere at call time keeps the stock path.
             moved = offload_active if denoiser_offloaded is None else bool(denoiser_offloaded)
             if moved and onload_device is not None:
                 transformer._unsloth_int8_gemm = install_int8_gemm(
@@ -1168,8 +1140,6 @@ def _compile_repeated_blocks(
         try:
             transformer.compile_repeated_blocks(**dit_kwargs)
             engaged = True
-            # Kept so a caller that moves the compile below an offload hook (MiniMax-H3's streamed denoiser) compiles
-            # with exactly these settings.
             try:
                 transformer._unsloth_regional_compile_kwargs = dict(dit_kwargs)
             except Exception:  # noqa: BLE001 - not a settable module (tests/fakes)
@@ -1177,30 +1147,27 @@ def _compile_repeated_blocks(
         except Exception as exc:  # noqa: BLE001 - optimisation only
             _warn(logger, "compile_repeated_blocks", exc)
             continue
-        # dynamic=True (dense H3) still needs the unbacked temb, else step 1 compiles a second graph.
+        # dynamic=True (dense H3) still needs the unbacked temb, else step 1 compiles twice.
         try:
             from . import diffusion_dynamic_text
             diffusion_dynamic_text.install(transformer, logger, dynamic = dit_kwargs["dynamic"])
         except Exception as exc:  # noqa: BLE001 - optimisation only
             _warn(logger, "dynamic text dims", exc)
-        # compile_repeated_blocks is lazy: inductor only runs on the first forward, inside generate(), where a lowering
-        # bug would fail the render. Guard every compiled block so such a failure drops this DiT to eager instead.
+        # Compile is lazy (first forward in generate()): guard blocks so failures drop to eager.
         guard_compiled_blocks(transformer, logger)
-        # After the guard (it wraps the guarded call): FLUX.1's first single block otherwise compiles a second graph.
+        # After the guard: FLUX.1's first single block otherwise compiles a second graph.
         try:
             from . import diffusion_block_restride
             diffusion_block_restride.install(transformer, logger)
         except Exception as exc:  # noqa: BLE001 - optimisation only
             _warn(logger, "block restride", exc)
-        # Inductor turns the prefix KV cache's clone into a view of the full K/V buffer, which pins it for the render.
+        # Inductor turns the KV cache clone into a view that pins the full K/V buffer.
         try:
             from .diffusion_prefix_kv import install_prefix_kv_compaction
             install_prefix_kv_compaction(transformer, logger)
         except Exception as exc:  # noqa: BLE001 - optimisation only
             _warn(logger, "prefix kv compaction", exc)
-        # A step cache engaged BEFORE this compile already wrapped each block forward in a disabled hook, so the compute
-        # branch would run eager and forfeit the regional compile. Re-point the hooks' inner forward at compiled
-        # wrappers (no-op without them).
+        # A step cache engaged earlier wrapped block forwards; re-point them at compiled wrappers.
         try:
             from .diffusion_cache import _compile_hooked_block_inners
             _compile_hooked_block_inners(transformer, logger)
@@ -1248,7 +1215,7 @@ def compile_dynamic(transformer: Any, dynamic: Optional[bool]) -> Optional[bool]
     (text + target, length s87 - s89) then fuses into torchao's per-row activation-quant reduction (CantSplit on torch
     2.12 / 2.13 without ``diffusion_inductor_backports``). Even with the backport it is slower than automatic dynamic
     (None), which does not recompile across prompt lengths or resolutions."""
-    # Static kernels for video DiTs: dynamic shapes made LTX-2.3's QK-norm + RoPE kernels ~3x slower.
+    # Static kernels for video DiTs: dynamic shapes made LTX-2.3's QK-norm + RoPE ~3x slower.
     if transformer is not None and getattr(transformer, "_unsloth_compile_static", False):
         return False
     if dynamic and transformer is not None and _carries_torchao_weights(transformer):
@@ -1282,8 +1249,7 @@ def is_compile_failure(exc: BaseException) -> bool:
         return False
     from .diffusion_batched import is_oom_error
 
-    # The batch backoff's own classifier walks the whole cause chain, so an OOM anywhere in it goes to the backoff
-    # (which recognises the same outer exception) instead of the eager retry.
+    # OOM anywhere in the cause chain goes to the batch backoff, not the eager retry.
     if is_oom_error(exc):
         return False
     kinds: list = []
@@ -1337,7 +1303,7 @@ class _CompileGuard:
         guard = self
 
         def guarded(*args: Any, **kwargs: Any) -> Any:
-            # Compile still in flight in the background: entering it here would compile inline.
+            # Compile still in flight in the background: entering here would compile inline.
             if guard.error is None and not _bg_eager_forced():
                 compile_config.apply()
                 try:
@@ -1346,7 +1312,7 @@ class _CompileGuard:
                     if not is_compile_failure(exc):
                         raise
                     guard.fail(exc, owner)
-                    # The handled exception pins inductor's frames (and the traced fake tensors) through the retry.
+                    # The handled exception pins inductor's frames through the retry.
                     exc.__traceback__ = None
             return eager(*args, **kwargs)
 
@@ -1432,7 +1398,7 @@ def settle_compile_fallback(
     if vae_error and "compiled_vae_decode" in updated:
         updated.remove("compiled_vae_decode")
     if tuple(updated) != optims:
-        # The load states are frozen dataclasses; the status must still reflect what actually runs.
+        # Load states are frozen dataclasses; status must still reflect what actually runs.
         object.__setattr__(state, "speed_optims", tuple(updated))
     return fallback
 
@@ -1474,11 +1440,9 @@ COMPILE_VAE_ENV = "UNSLOTH_DIFFUSION_COMPILE_VAE"
 _VAE_TRUE_TOKENS = ("1", "true", "yes", "on")
 _VAE_FALSE_TOKENS = ("0", "false", "no", "off")
 
-# Correct compiled but not worth it (Qwen-Image VAE: ~54 s first compile for ~23 ms/decode). Keyed by class, never by
-# the single-frame marker, which is installed after the compile-cache fingerprint is taken.
+# Not worth compiling (Qwen-Image VAE). Keyed by class: the marker comes after fingerprinting.
 _VAE_COMPILE_DENY: frozenset[str] = frozenset({"AutoencoderKLQwenImage", "AutoencoderKLWan"})
 
-# ``auto`` compiles only measured VAEs: video DiTs also pass through apply_speed_optims.
 _VAE_COMPILE_ALLOW: frozenset[str] = frozenset({"AutoencoderKL", "AutoencoderKLFlux2"})
 
 
@@ -1517,7 +1481,7 @@ def _vae_decode_compile_allowed(pipe: Any, speed_mode: str) -> bool:
         return False
     if _denoiser_unet(pipe) is not None:
         return True
-    # H3's fused decoder never calls the blocks, so compiling them would be reported but never run.
+    # H3's fused decoder never calls the blocks, so compiling them would never run.
     if getattr(getattr(pipe, "vae", None), "_unsloth_decode_blocks_bypassed", False):
         return False
     raw = os.environ.get(COMPILE_VAE_ENV, "").strip().lower()
@@ -1548,7 +1512,6 @@ def _vae_contiguous(pipe: Any, logger: Any) -> bool:
         return False
 
 
-# VAE classes whose decode layout was measured; any other keeps channels_last.
 _VAE_LAYOUT_MEASURED: frozenset[str] = frozenset({"AutoencoderKL", "AutoencoderKLFlux2"})
 
 
@@ -1628,7 +1591,7 @@ def _guard_compiled_decode(
                         "diffusion.speed: torch.compile failed on the VAE decode (%s); decoding eager",
                         error,
                     )
-                # The handled exception pins inductor's frames (and the traced fake tensors) through the retry.
+                # The handled exception pins inductor's frames through the retry.
                 exc.__traceback__ = None
         return eager(*args, **kwargs)
 
@@ -1643,13 +1606,13 @@ def _compile_vae_decode(
 ) -> bool:
     """torch.compile the VAE ``decode`` in place; no cudagraphs, whose capture would pin decode activations."""
     vae = getattr(pipe, "vae", None)
-    # An outer wrapper that must stay eager (fp16 non-finite check) exposes the slot it calls through.
+    # An outer wrapper that must stay eager exposes the slot it calls through.
     outer = getattr(vae, "__dict__", {}).get("decode") if vae is not None else None
     owner = getattr(outer, "_unsloth_decode_slot", None) or vae
     decode = getattr(owner, "decode", None) if vae is not None else None
     if not callable(decode):
         return False
-    # A regional block guard does not clear _unsloth_compiled_decode when it falls back, so the error is read first.
+    # A block guard does not clear _unsloth_compiled_decode on fallback, so read the error first.
     if _vae_compile_error(vae):
         return False
     # A dual-DiT family calls apply_speed_optims twice over the same pipe.
@@ -1663,7 +1626,6 @@ def _compile_vae_decode(
     try:
         import torch
 
-        # dynamic=True: automatic dynamic pays a second compile on the next resolution for no steady-state gain.
         kwargs: dict[str, Any] = {"fullgraph": False, "dynamic": True}
         if max_autotune:
             kwargs["mode"] = "max-autotune-no-cudagraphs"
@@ -1722,7 +1684,7 @@ def _enable_cudnn_benchmark(logger: Any) -> bool:
 
         from core._torchao_stub import _module_is_rocm
 
-        # On ROCm this is MIOpen's exhaustive search: a first VAE decode tuned for 10 to 23 minutes and crashed a gfx1030.
+        # On ROCm this is MIOpen's exhaustive search: very slow first decode, can crash.
         if _module_is_rocm(torch):
             return False
         _write_cudnn_benchmark(torch.backends.cudnn, True)
@@ -1744,8 +1706,6 @@ def _enable_tf32(logger: Any) -> bool:
         return False
 
 
-# Families the overflow harness found to produce non-finite activations under fp16 accumulation. Empty by measurement:
-# no overflow across all six families.
 _FP16_ACCUM_DENY: frozenset[str] = frozenset()
 
 
@@ -1795,15 +1755,13 @@ def _enable_fp16_accumulation(
 def _fuse_qkv(pipe: Any, logger: Any) -> bool:
     from .diffusion_native_quant import is_native_quantised
 
-    # Fusing reads each projection's .weight, which a native layer dequantises: a dense to_qkv beside the int8 buffers.
+    # Fusing reads .weight, which a native layer dequantises to a dense to_qkv.
     if any(is_native_quantised(dit) for dit in _denoiser_dits(pipe)):
         if logger is not None:
             logger.info(
                 "diffusion.speed: fuse_qkv skipped (native quantised projections stay unfused)"
             )
         return False
-    # Prefer the pipe-level fuse (covers every component); else fuse each denoiser DiT so a dual-DiT family fuses BOTH
-    # experts.
     fn = getattr(pipe, "fuse_qkv_projections", None)
     if callable(fn):
         try:
