@@ -176,7 +176,7 @@ test("memory figures are keyboard targets with the full value as their name", ()
 test("breakdown captions preserve word groups", () => {
   assert.ok(
     render({ expanded: true }).includes(
-      glueNoteItems("f16 · 262,144 tokens · 4 slots"),
+      glueNoteItems(`f16 · ${(262144).toLocaleString()} tokens · 4 slots`),
     ),
   );
 });
