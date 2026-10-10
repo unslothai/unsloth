@@ -8489,6 +8489,33 @@ def _apply_model_ini_to_request(request, model_identifier: str, label: str):
     return request
 
 
+_MODEL_INI_SAMPLING = {
+    "--temp": "temperature",
+    "--top-p": "top_p",
+    "--top-k": "top_k",
+    "--min-p": "min_p",
+    "--repeat-penalty": "repetition_penalty",
+    "--presence-penalty": "presence_penalty",
+}
+
+
+def _with_model_ini_sampling(inference: Optional[dict], llama_backend) -> Optional[dict]:
+    """``inference`` with the resident unsloth.ini's sampling values on top: the chat sends its
+    sliders on every request, so a server default alone would never reach the user."""
+    prefix = _model_ini_prefix(llama_backend)
+    if not inference or not prefix:
+        return inference
+    merged = dict(inference)
+    for flag, value in zip(prefix, prefix[1:]):
+        key = _MODEL_INI_SAMPLING.get(flag)
+        if key:
+            try:
+                merged[key] = int(value) if key == "top_k" else float(value)
+            except ValueError:
+                continue
+    return merged
+
+
 def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
     """Runtime state shared by load, dedupe, and status; duplicates echo active settings."""
     fields = {
@@ -8614,8 +8641,9 @@ def _gguf_load_response(
         is_lora = False,
         is_gguf = True,
         is_local_model = is_local_model,
-        inference = load_inference_config(
-            inference_identifier or llama_backend.model_identifier or model
+        inference = _with_model_ini_sampling(
+            load_inference_config(inference_identifier or llama_backend.model_identifier or model),
+            llama_backend,
         ),
         # Advisory, and None on nearly every load. Recorded by load_model when the
         # weights outgrow fast memory, so the client can say why generation is slow.
@@ -22327,7 +22355,9 @@ async def _slot_status(current_subject: str):
             _native_grant_backed = getattr(llama_backend, "_native_grant_backed", False)
             # Shared with /chat/count_tokens, so a client can tell whose tokenizer counted.
             _display_model_id, _reported_model_identifier = _llama_status_model_ids(llama_backend)
-            _inference_cfg = load_inference_config(_model_id) if _model_id else None
+            _inference_cfg = _with_model_ini_sampling(
+                load_inference_config(_model_id) if _model_id else None, llama_backend
+            )
             # Don't surface Unsloth's auto-applied bundled family template (e.g. the
             # gemma-4 override) as a user-authored override: the frontend adopts
             # status.chat_template_override as editable state and would otherwise

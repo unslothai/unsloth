@@ -504,3 +504,21 @@ def test_already_loaded_dedupe_sees_the_ini_both_ways():
     )
     off = LoadRequest(model_path = "owner/repo", gguf_variant = "Q4_K_M")
     assert _active_gguf_intent(off, backend, **kwargs).extra_args == ("--top-k", "20")
+
+
+def test_ini_sampling_becomes_the_chat_defaults():
+    from routes.inference import _with_model_ini_sampling
+
+    backend = _Backend(
+        ["--ctx-size", "4096", "--temp", "0.42", "--top-k", "17", "--top-p", "0.77"],
+        ["--ctx-size", "4096", "--temp", "0.42", "--top-k", "17", "--top-p", "0.77"],
+    )
+    base = {"temperature": 0.6, "top_p": 0.95, "top_k": 20, "min_p": 0.01}
+    assert _with_model_ini_sampling(base, backend) == {
+        "temperature": 0.42,
+        "top_p": 0.77,
+        "top_k": 17,
+        "min_p": 0.01,
+    }
+    assert base["temperature"] == 0.6
+    assert _with_model_ini_sampling(base, _Backend(["--temp", "0.42"], [])) is base
