@@ -311,3 +311,24 @@ def test_a_metal_fit_is_clamped_to_the_wired_limit(tmp_path, monkeypatch):
     assert unbounded == _metal.NATIVE
     assert clamped is not None and clamped < unbounded
     assert load("under-weights", 4096).vram_fit_context_length is None
+
+
+def test_a_metal_fit_charges_swa_checkpoints(tmp_path, monkeypatch):
+    # The fit floor fits the 20 GiB budget, but not once 15 GiB of checkpoints join it.
+    def load(sub, ckpt_bytes):
+        (tmp_path / sub).mkdir()
+        return _metal._launch(
+            tmp_path / sub,
+            monkeypatch,
+            n_ctx = 1024,
+            real_fit = True,
+            budget_bytes = 20 * GB,
+            weights_bytes = GB,
+            kv_per_token = 256 * 1024,
+            extra_args = ["--ctx-checkpoints", "1"],
+            wired_bytes = 24 * GB,
+            ckpt_bytes = ckpt_bytes,
+        )["backend"]
+
+    assert load("no-checkpoints", 0).vram_fit_context_length is not None
+    assert load("checkpoints", 15 * GB).vram_fit_context_length is None

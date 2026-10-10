@@ -26939,6 +26939,18 @@ class LlamaCppBackend:
                                     )
                         # The paravirtual pin loads on CPU, so no Metal budget held anything.
                         _vram_fit_ctx = None if _paravirtual_cpu_forced else _apple_measured_ceiling
+                        # The measured ceiling was priced without SWA checkpoints; re-fit with them.
+                        if _vram_fit_ctx and (
+                            _apple_footprint_mib(_vram_fit_ctx, _fit_ctx_checkpoints)
+                            > _apple_fit_budget_mib
+                        ):
+                            _ckpt_cap = _apple_ctx_fit(_vram_fit_ctx, _FIT_FLOOR_MIN_CTX)
+                            _vram_fit_ctx = (
+                                _ckpt_cap
+                                if _apple_footprint_mib(_ckpt_cap, _fit_ctx_checkpoints)
+                                <= _apple_fit_budget_mib
+                                else None
+                            )
                         # Past the wired limit Metal refuses, so it is the harder ceiling when readable.
                         _fit_wired_mib = (
                             int(
