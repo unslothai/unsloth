@@ -117,6 +117,14 @@ def test_flat_json_string_tools_are_trained_in_the_chat_tool_shape():
     assert texts[0].startswith(_catalog(_WEATHER))
 
 
+def test_nested_tools_without_type_gain_the_function_discriminator():
+    nested = {"function": _WEATHER["function"]}
+
+    texts = _format([{"messages": _MESSAGES, "tools": [nested]}])
+
+    assert texts[0].startswith(_catalog({**nested, "type": "function"}))
+
+
 def test_each_row_trains_only_its_own_tools():
     texts = _format(
         [

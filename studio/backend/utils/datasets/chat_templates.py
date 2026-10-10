@@ -190,10 +190,14 @@ def _row_tools(tools):
     tools = [_json_cell(tool) for tool in tools]
     if not tools or not all(isinstance(tool, dict) for tool in tools):
         return None
-    return [
-        {"type": "function", "function": tool} if "function" not in tool and "name" in tool else tool
-        for tool in tools
-    ]
+    normalized = []
+    for tool in tools:
+        if tool.get("type") is None and isinstance(tool.get("function"), dict):
+            tool = {**tool, "type": "function"}
+        elif "function" not in tool and "name" in tool:
+            tool = {"type": "function", "function": tool}
+        normalized.append(tool)
+    return normalized
 
 
 def _render_conversation(tokenizer, conversation, tools = None, fallback_without_tools = True):
