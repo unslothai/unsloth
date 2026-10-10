@@ -255,8 +255,7 @@ def _base_sample_sigmas(
 
 
 def _cgroup_cpu_limit(root: str = "/sys/fs/cgroup", proc_cgroup: str = "/proc/self/cgroup") -> Optional[int]:
-    """The tightest cgroup v2 CPU quota over this process's cgroup and its parents, in whole CPUs
-    (rounded up), or None when there is none or it cannot be read (cgroup v1, macOS, Windows)."""
+    """Tightest cgroup v2 cpu.max over this cgroup and its parents, in whole CPUs; None if unreadable."""
     try:
         with open(proc_cgroup, encoding = "utf-8") as f:
             rel = next(line.split("::", 1)[1].strip() for line in f if line.startswith("0::"))
@@ -279,10 +278,8 @@ def _cgroup_cpu_limit(root: str = "/sys/fs/cgroup", proc_cgroup: str = "/proc/se
 
 
 def _default_threads() -> int:
-    """sd.cpp ``--threads``: ``UNSLOTH_CPU_THREADS`` when set (the budget the other native engines
-    honour), else the physical-core estimate ``os.cpu_count() // 2``, capped by a cgroup CPU quota:
-    ``os.cpu_count()`` sees every host CPU inside a container, so a 4-CPU quota on a 192-CPU host
-    otherwise ran 96 threads on 4 CPUs of time."""
+    """``UNSLOTH_CPU_THREADS``, else ``os.cpu_count() // 2`` capped by the cgroup quota (``os.cpu_count()``
+    ignores container quotas: 96 threads on a 4-CPU quota ran about 4x slower)."""
     try:
         configured = int(os.environ.get("UNSLOTH_CPU_THREADS") or 0)
     except ValueError:
