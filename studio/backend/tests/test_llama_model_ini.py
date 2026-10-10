@@ -767,3 +767,41 @@ def test_main_gpu_is_left_to_studios_gpu_selection():
     assert [(i["key"], i["reason"]) for i in compiled.ignored] == [
         ("main-gpu", "use Studio's GPU selection instead")
     ]
+
+
+def test_typed_sampler_spellings_and_bounds_decide_what_is_promoted():
+    from routes.inference import _with_model_ini_sampling
+
+    base = {"temperature": 0.7, "top_p": 0.95}
+    # llama.cpp accepts --top_p; the typed value after the INI's wins.
+    backend = _Backend(["--top-p", "0.8", "--top_p", "0.2"], ["--top-p", "0.8"])
+    assert _with_model_ini_sampling(base, backend)["top_p"] == 0.2
+    # Past the chat bounds: launched as typed, never pushed into the sliders.
+    backend = _Backend(["--temp", "0.6", "--temp", "3"], ["--temp", "0.6"])
+    assert _with_model_ini_sampling(base, backend) is base
+
+
+def test_managed_offline_lookup_authorizes_offline(monkeypatch):
+    import routes.models as models_routes
+
+    _patch_locate(monkeypatch, "c = 4096\n")
+    seen = {}
+    monkeypatch.setattr(models_routes.account_access, "managed_account", lambda: True)
+    monkeypatch.setattr(
+        models_routes.account_access, "require_model_access", lambda repo, **k: seen.update(k)
+    )
+    monkeypatch.setattr(models_routes, "_resolve_hub_token", lambda header, token: None)
+    body = asyncio.run(
+        models_routes.get_model_ini(
+            repo_id = "u/M-GGUF",
+            gguf_variant = "Q8_0",
+            local_path = None,
+            hf_token = None,
+            offline = True,
+            native_path_lease = None,
+            hf_token_header = None,
+            current_subject = "member",
+            via_api_key = False,
+        )
+    )
+    assert body.found and seen == {"offline": True}

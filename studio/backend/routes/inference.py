@@ -8523,6 +8523,15 @@ _MODEL_INI_SAMPLING = {
     "--repeat-penalty": "repetition_penalty",
     "--presence-penalty": "presence_penalty",
 }
+# ChatCompletionRequest's bounds: a promoted value outside them would 422 every chat request.
+_MODEL_INI_SAMPLING_BOUNDS = {
+    "temperature": (0.0, 2.0),
+    "top_p": (0.0, 1.0),
+    "top_k": (-1, 100),
+    "min_p": (0.0, 1.0),
+    "repetition_penalty": (1.0, 2.0),
+    "presence_penalty": (0.0, 2.0),
+}
 
 
 def _model_ini_sampling_values(llama_backend) -> dict:
@@ -8535,9 +8544,11 @@ def _model_ini_sampling_values(llama_backend) -> dict:
     supplied = {_MODEL_INI_SAMPLING[t] for t in record[0] if t in _MODEL_INI_SAMPLING}
     tokens = [str(t) for t in getattr(llama_backend, "extra_args", None) or record[0]]
     values: dict = {}
+    from core.inference.llama_server_args import _flag_name
+
     for i, token in enumerate(tokens):
-        flag, eq, inline = token.partition("=")
-        key = _MODEL_INI_SAMPLING.get(flag)
+        _, eq, inline = token.partition("=")
+        key = _MODEL_INI_SAMPLING.get(_flag_name(token) or "")
         if key not in supplied:
             continue
         value = inline if eq else (tokens[i + 1] if i + 1 < len(tokens) else None)
@@ -8545,7 +8556,12 @@ def _model_ini_sampling_values(llama_backend) -> dict:
             values[key] = int(value) if key == "top_k" else float(value)
         except (TypeError, ValueError):
             continue
-    return values
+    # A typed override past the chat bounds launches as typed but is not pushed into the sliders.
+    return {
+        key: value
+        for key, value in values.items()
+        if _MODEL_INI_SAMPLING_BOUNDS[key][0] <= value <= _MODEL_INI_SAMPLING_BOUNDS[key][1]
+    }
 
 
 def _model_ini_sampling_keys(llama_backend) -> list[str]:

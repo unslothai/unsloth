@@ -4887,7 +4887,9 @@ async def get_model_ini(
             raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc))) from exc
         repo_id, local_path = str(grant.canonical_path), None
     if account_access.managed_account():
-        await asyncio.to_thread(account_access.require_model_access, repo_id)
+        await asyncio.to_thread(
+            account_access.require_model_access, repo_id, **({"offline": True} if offline else {})
+        )
         # The listing authorizes its own local copies; this route reads only what the grant names.
         local_path = None
     hf_token = _resolve_hub_token(hf_token_header, hf_token)
