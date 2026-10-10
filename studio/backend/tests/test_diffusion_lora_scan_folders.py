@@ -108,3 +108,34 @@ def test_the_picker_route_reports_fine_tuned(catalog):
     rows = asyncio.run(scan_diffusion_loras(family = None, current_subject = "subject"))["loras"]
     flags = {row["id"]: row["fine_tuned"] for row in rows if row["source"] == "local"}
     assert flags == {"trained": True, "downloaded": False}
+
+
+@pytest.mark.parametrize("scanner", ["routes", "inventory"])
+def test_a_marked_gguf_in_a_subfolder_is_not_a_model(tmp_path, scanner):
+    if scanner == "routes":
+        from routes.models import _scan_models_dir
+    else:
+        from hub.services.models.local_inventory import _scan_models_dir
+
+    folder = tmp_path / "image-loras"
+    folder.mkdir()
+    (folder / "style.gguf").write_bytes(b"GGUF" + b"\0" * 60)
+    (folder / "style.json").write_text(json.dumps(_MARK))
+    assert _scan_models_dir(tmp_path) == []
+
+
+def test_a_managed_account_only_sees_custom_folder_loras_it_may_access(
+    catalog, tmp_path, monkeypatch
+):
+    from hub.services.models import account_access
+
+    folder = tmp_path / "shared"
+    _safetensors(folder / "style.safetensors", sidecar = _MARK)
+    add_scan_folder_with_status(str(folder))
+    monkeypatch.setattr(account_access, "managed_account", lambda: True)
+    monkeypatch.setattr(account_access, "model_visible", lambda reference, **_: False)
+    assert _local() == {}
+    with pytest.raises(FileNotFoundError):
+        dl.export_local_lora("style", tmp_path / "out")
+    with pytest.raises(FileNotFoundError):
+        dl.resolve_one("style", 1.0)

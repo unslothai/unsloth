@@ -160,10 +160,18 @@ def _scan_local() -> list[LoraCatalogEntry]:
     used = {entry_id for _, entry_id in found}
     seen = {os.path.normcase(os.path.realpath(p)) for p in files}
     # Custom models folders contribute only sidecar-marked image LoRAs, so model weights never show up here.
-    for root in _scan_folder_roots():
+    roots = _scan_folder_roots()
+    visible = lambda p: True  # noqa: E731
+    if roots:
+        from hub.services.models import account_access
+
+        # Gate here, not only in the listing route: export and generation resolve ids through this scan.
+        if account_access.managed_account():
+            visible = account_access.model_visible
+    for root in roots:
         for p in _weight_files(root):
             key = os.path.normcase(os.path.realpath(p))
-            if key in seen or not is_image_lora_file(p):
+            if key in seen or not is_image_lora_file(p) or not visible(str(p)):
                 continue
             seen.add(key)
             entry_id, n = p.stem, 2

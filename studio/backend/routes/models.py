@@ -437,10 +437,13 @@ def _servable_gguf_names(directory: Path) -> list[str]:
     """The ``.gguf`` names in *directory* that count as a model being present there. An imatrix is
     calibration data, not a model artifact; mmproj and MTP drafters DO count, since they are
     companions of a real model and presence is all they decide."""
+    from core.inference.diffusion_lora import is_image_lora_file
     return [
         p.name
         for p in directory.glob("*.gguf")
-        if not is_appledouble_metadata(p) and not _is_imatrix_path(p.name)
+        if not is_appledouble_metadata(p)
+        and not _is_imatrix_path(p.name)
+        and not is_image_lora_file(p)
     ]
 
 
@@ -3187,7 +3190,8 @@ async def scan_diffusion_loras(
     """
     from core.inference import diffusion_lora
 
-    entries = diffusion_lora.list_loras(family = family)
+    # Custom models folders can sit on slow or network storage.
+    entries = await asyncio.to_thread(diffusion_lora.list_loras, family = family)
     if account_access.managed_account():
         entries = await asyncio.to_thread(account_access.filter_model_rows, entries)
     return {
