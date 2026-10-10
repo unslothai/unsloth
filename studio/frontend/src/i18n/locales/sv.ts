@@ -3112,9 +3112,9 @@ export const sv = {
       },
       mcp: {
         title: "Agentåtkomst (MCP)",
-        description: "Låt kodagenter som Claude Code och Codex använda Unsloth Studio via MCP. Agenter loggar in med en åtkomsttoken från den här sidan.",
+        description: "Låt kodagenter som Claude Code och Codex använda Unsloth via MCP. Agenter loggar in med en åtkomsttoken från den här sidan.",
         enable: "Tillåt agentanslutningar",
-        enableDescription: "Betjänar /mcp/ för förfrågningar som har en åtkomsttoken för Unsloth Studio.",
+        enableDescription: "Betjänar /mcp/ för förfrågningar som har en åtkomsttoken för Unsloth.",
         lockedByEnv: "Angiven av {name}.",
         loadError: "Det gick inte att läsa in inställningarna för agentåtkomst.",
         saveError: "Det gick inte att spara inställningen för agentåtkomst.",
