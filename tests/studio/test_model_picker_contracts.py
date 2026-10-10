@@ -3173,8 +3173,11 @@ def test_override_writes_are_ordered_per_model():
         "const key = modelOverrideKey( normalizeModelIdentity(modelId), normalizeGgufVariantIdentity(ggufVariant), );"
         in src
     )
-    # Chained on the settled tail, so one failed write cannot cancel the next.
-    assert "previous .catch(() => {}) .then(() => sendModelOverride(" in src
+    # Chained on the settled tails (allSettled), so one failed write cannot cancel the next.
+    assert "Promise.allSettled([forgetBarrier, writesByKey.get(key)])" in src
+    # A forget clears every alias on the server, so it waits on every key's tail, not just its own.
+    assert "Promise.allSettled([forgetBarrier, ...writesByKey.values()])" in src
+    assert "const write = previous.then(() => sendModelOverride(" in src
     # The tail is stored, or every writer chains on the same empty slot.
     assert "writesByKey.set(key, write);" in src
     # Only the last writer clears the slot, or a queue still building loses order.

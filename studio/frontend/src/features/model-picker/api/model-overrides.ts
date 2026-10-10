@@ -504,6 +504,9 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
 // One in-flight write per model, so writes commit in issue order: otherwise the older
 // response can land last and resurrect the entry the newer one replaced. Models overlap.
 const writesByKey = new Map<string, Promise<ModelOverrideWriteResult>>();
+// A forget clears every alias of a cached repo on the server, so per-key order is not enough: it
+// waits for every write in flight, and every write after it waits for the forget.
+let forgetBarrier: Promise<unknown> = Promise.resolve();
 
 export interface ModelOverrideWriteResult {
   overrides: ApiModelOverrides;
@@ -537,12 +540,18 @@ export async function putModelOverride(
     normalizeModelIdentity(modelId),
     normalizeGgufVariantIdentity(ggufVariant),
   );
-  // Chain on the settled tail: a failed write must not cancel the next one.
-  const previous = writesByKey.get(key) ?? Promise.resolve();
-  const write = previous
-    .catch(() => {})
-    .then(() => sendModelOverride(modelId, ggufVariant, config, options));
+  const isForget = config === null && !options?.keepLaunchFlags;
+  // Chain on the settled tails: a failed write must not cancel the next one.
+  const previous = isForget
+    ? Promise.allSettled([forgetBarrier, ...writesByKey.values()])
+    : Promise.allSettled([forgetBarrier, writesByKey.get(key)]);
+  const write = previous.then(() =>
+    sendModelOverride(modelId, ggufVariant, config, options),
+  );
   writesByKey.set(key, write);
+  if (isForget) {
+    forgetBarrier = write.catch(() => {});
+  }
   try {
     return await write;
   } finally {
