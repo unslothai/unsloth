@@ -4283,7 +4283,6 @@ def test_the_spill_raise_helper_only_raises():
     assert _moe_spill_batch_ubatch(None, None, **{**on, "n_moe_layers": 0}) == (None, None)
 
 
-# ---------------------------------------------------------------------------
 # MoE experts in host RAM: --moe-cache-mib auto, and lazily read tables.
 
 _MOE_CACHE = ["--moe-cache-mib", "auto"]
@@ -4465,8 +4464,7 @@ def test_a_spilled_moe_on_one_gpu_loading_pinned_gets_the_cache(tmp_path, _moe_c
         ("dense", dict(moe = False)),
         ("no_spill", dict(spilled = False)),
         ("two_gpus", dict(gpus = 2)),
-        # 15 GiB of experts plus the 8 GiB prompt cache cannot be pinned in 16 GiB
-        # of RAM, but the whole 20 GiB load still fits it with the card's 8 GiB.
+        # 15 GiB experts + 8 GiB prompt cache > 16 GiB RAM; the 20 GiB load alone fits.
         ("ram_cannot_pin_experts", dict(ram_gib = 24)),
         ("ram_cannot_pin_anything", dict(ram_gib = 8)),
         (
@@ -4620,8 +4618,7 @@ def test_every_retry_drops_the_moe_cache_first():
             True,
         ),
         ("error: unknown model architecture: 'foo'", False),
-        # The fork logs both lines on every healthy cache setup, so a later unrelated
-        # failure is not the cache's.
+        # Logged on every healthy cache setup: a later failure is not the cache's.
         (
             "common_fit_params: moe cache auto: 12288 MiB, 96 experts resident\n"
             "llama_moe_cache_init: MoE cache size = 12288.00 MiB\n"
@@ -4726,8 +4723,7 @@ def _qwen38_mode(
     host_only_bytes = 0,
     monkeypatch = None,
 ):
-    # A 16 GiB card with 15.5 GiB free under the 1 GiB fit margin, and a 32 GiB host
-    # showing 30 GiB available. 0.5 GiB KV and 0.5 GiB compute buffer.
+    # 16 GiB card (15.5 free, 1 GiB margin), 30 GiB RAM available, 0.5 GiB KV + compute.
     return LlamaCppBackend._fit_derived_load_mode(
         _RamStub(30 * 1024),
         model_size = _QWEN38_TOTAL,
@@ -4749,11 +4745,9 @@ def test_a_lazily_read_table_is_not_pinned_ram(monkeypatch):
     monkeypatch.setattr(hardware, "is_apple_silicon", lambda: False)
     # 67.55 + 1 GiB against 14.5 GiB of VRAM leaves 54 GiB for 28 GiB of RAM: mmap.
     assert _qwen38_mode(0) is None
-    # Without the 26.82 GiB table it is 41.7 GiB: 27.2 GiB of host RAM, which fits
-    # under the 2 GiB headroom the table's working set pages through.
+    # Without the 26.82 GiB table: 41.7 GiB, 27.2 GiB of RAM, which fits pinned.
     assert _qwen38_mode(_QWEN38_PLE) == LlamaCppBackend._FIT_LOAD_MODE
-    # The expert cache would need all 37.11 GiB of experts pinned: not on this host,
-    # so it launches pinned without the cache.
+    # The cache needs all 37.11 GiB of experts pinned: pinned without it.
     assert _qwen38_mode(_QWEN38_PLE, host_only_bytes = _QWEN38_EXPERTS) is None
 
 
@@ -5111,9 +5105,7 @@ def test_the_header_scan_reads_writer_output(tmp_path, monkeypatch):
     assert named == {"per_layer_token_embd.weight": 8 * 16 * 4}
     assert experts == expected_experts
 
-    # A quant type the installed gguf package predates is sized from the next
-    # tensor's offset, or the end of the file for the last, which with the writer's
-    # alignment padding is at least the real size and less than one alignment more.
+    # Unknown quant type: sized from the next offset / end of file, within one alignment.
     monkeypatch.delitem(GGML_QUANT_SIZES, q8)
     monkeypatch.delitem(GGML_QUANT_SIZES, GGMLQuantizationType.F16)
     _arch, named, experts = LlamaCppBackend()._gguf_tensor_scan(first)
