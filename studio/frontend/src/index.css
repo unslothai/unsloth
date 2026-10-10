@@ -6025,17 +6025,22 @@ html:has([data-blocking-screen]) .interface-zoom-position {
 	container: files-panel / inline-size;
 	font-family: var(--font-sans);
 	background-color: #ffffff;
-	/* Light mode: border instead of shadow. */
-	border: 1px solid color-mix(in oklab, var(--foreground) calc(12% * var(--contrast-edge-gain, 1)), transparent);
-	transition: box-shadow 0.1s, border-color 0.1s;
+	/* Light mode: a crisp hairline from a 1px-blur ring (a translucent border reads faint) over a soft lift. */
+	--files-panel-edge:
+		0 0 1px 0 rgb(0 0 0 / calc(0.62 * var(--contrast-edge-gain, 1))),
+		0 4px 4px 0 rgb(0 0 0 / 0.04);
+	border: 1px solid transparent;
+	box-shadow: var(--files-panel-edge);
+	transition: box-shadow 0.1s;
 }
 .dark .unsloth-files-panel {
 	background-color: var(--card);
-	border-color: transparent;
 	box-shadow: var(--composer-shadow);
 }
 .unsloth-files-panel[data-dragging="true"] {
-	border-color: var(--primary);
+	box-shadow:
+		0 0 0 1.5px var(--primary),
+		var(--files-panel-edge);
 }
 .dark .unsloth-files-panel[data-dragging="true"] {
 	box-shadow:
