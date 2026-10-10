@@ -22,6 +22,8 @@ export interface NativeDocumentFolderSelection {
   /** Opaque directory lease. This is deliberately not a filesystem path. */
   token: string;
   displayName: string;
+  /** When the lease was signed to expire. Older shells omit it. */
+  expiresAtMs?: number;
 }
 
 export async function pickNativeDocumentFolder(): Promise<NativeDocumentFolderSelection | null> {

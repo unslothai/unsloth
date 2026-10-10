@@ -8,10 +8,11 @@ handlers explicitly send their database transaction through Starlette's threadpo
 """
 
 import asyncio
+import re
 import sqlite3
 from typing import Annotated, Any, Literal, Optional, Union
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from pydantic import (
     BaseModel,
     BeforeValidator,
@@ -23,6 +24,7 @@ from pydantic import (
 )
 
 from auth.authentication import get_current_subject
+from core import chat_originals
 from auth import policy
 from routes.chat_generation_runs import cancel_account_run
 from core.inference.llama_server_args import (
@@ -38,6 +40,7 @@ from utils.reasoning_budget import validate_reasoning_budget_message
 from utils.api_errors import safe_validation_errors
 from utils.utils import safe_curated_detail, log_and_http_error
 from storage.studio_db import (
+    ChatForkActiveGenerationError,
     ChatMessageConflictError,
     ChatMessageProtectedError,
     ChatThreadDeletedError,
@@ -68,7 +71,9 @@ from storage.studio_db import (
     list_chat_settings,
     list_chat_messages,
     list_chat_messages_for_threads,
+    count_chat_messages_for_threads,
     list_chat_threads,
+    remap_chat_thread_document_ids,
     sync_chat_messages,
     update_chat_project,
     update_chat_thread,
@@ -178,6 +183,10 @@ class ChatThread(BaseModel):
     anthropicCodeExecContainerId: Optional[str] = None
     forkedFromThreadId: Optional[str] = None
     forkedFromMessageId: Optional[str] = None
+    forkBoundaryMessageId: Optional[str] = None
+    forkTitleBase: Optional[str] = None
+    # Server-set on rename, move or (un)archive.
+    modifiedAt: Optional[int] = None
     settings: Optional[ChatThreadSettings] = None
 
     @field_serializer("settings")
@@ -318,6 +327,10 @@ class ChatProject(BaseModel):
     updatedAt: int
 
 
+class ChatAgentsMd(BaseModel):
+    text: str = ""
+
+
 class ChatProjectDeleted(ChatProject):
     """The deleted project, plus the member sandboxes that still hold files."""
 
@@ -405,6 +418,10 @@ class ChatPresetLoadConfig(BaseModel):
     customContextLength: Optional[int] = Field(default = None, gt = 0)
     maxSeqLength: Optional[float] = None
     kvCacheDtype: Optional[str] = None
+    mlxKvQuant: Optional[
+        Literal["auto", "8", "6", "5", "4", "3", "2", "tq-4", "tq-3.5", "tq-3", "tq-2"]
+    ] = None
+    # Declared only because extra="forbid" would 400 the whole save for a client still sending it.
     mlxKvBits: Optional[Literal[8, 6, 5, 4, 3, 2]] = None
     speculativeType: Optional[str] = None
     specDraftNMax: Optional[int] = Field(default = None, ge = 1, le = 16)
@@ -455,6 +472,13 @@ class ChatResearchWebsitePolicy(BaseModel):
     )
 
 
+class ChatResearchMcpSource(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    serverId: str = Field(min_length = 1, max_length = 200)
+    tool: str = Field(min_length = 1, max_length = 500)
+
+
 class ChatSettingsPayload(BaseModel):
     model_config = ConfigDict(extra = "forbid", allow_inf_nan = False)
 
@@ -477,7 +501,8 @@ class ChatSettingsPayload(BaseModel):
     searchImages: Optional[bool] = None
     autoHealToolCalls: Optional[bool] = None
     nudgeToolCalls: Optional[bool] = None
-    maxToolCallsPerMessage: Optional[int] = Field(default = None, ge = 1)
+    deduplicateToolCalls: Optional[bool] = None
+    maxToolCallsPerMessage: Optional[int] = Field(default = None, ge = 0)
     toolCallTimeout: Optional[int] = Field(default = None, ge = 1)
 
     # Composer and RAG toggles. They describe the installation, not the browser that set them, so a
@@ -489,6 +514,7 @@ class ChatSettingsPayload(BaseModel):
     webFetchToolsEnabled: Optional[bool] = None
     deepResearchEnabled: Optional[bool] = None
     researchWebsitePolicy: Optional[ChatResearchWebsitePolicy] = None
+    researchMcpSources: Optional[list[ChatResearchMcpSource]] = Field(default = None, max_length = 20)
     # Seconds per Deep Research model request; zero leaves the total wall clock off. Bounded
     # like the run route so a value it would reject cannot be persisted and replayed.
     researchModelTimeoutSeconds: Optional[int] = Field(default = None, ge = 0, le = 365 * 24 * 3600)
@@ -498,6 +524,7 @@ class ChatSettingsPayload(BaseModel):
     confirmToolCalls: Optional[bool] = None
     # "full" (Full access) is session-only by design and never persisted.
     permissionMode: Optional[Literal["ask", "auto", "off"]] = None
+    sandboxLevel: Optional[Literal["high", "low"]] = None
     ragSource: Optional[
         Annotated[
             Union[ChatRagThreadSource, ChatRagKnowledgeBaseSource],
@@ -524,13 +551,12 @@ class ChatSettingsPayload(BaseModel):
     contextPolicy: Optional[Literal["inherit", "checkpoint", "rolling"]] = None
     compactionHeadroomRatio: Optional[float] = Field(default = None, ge = 0.0, le = 0.9)
 
-    @field_validator("researchModelTimeoutSeconds", mode = "before")
+    @field_validator("researchModelTimeoutSeconds", "maxToolCallsPerMessage", mode = "before")
     @classmethod
     def _not_a_boolean(cls, value: Any) -> Any:
-        # bool subclasses int, so False coerces to the 0 sentinel and would persist as
-        # unlimited for every later run. The run route rejects booleans for the same reason.
+        # bool subclasses int, so False would persist as the 0 sentinel for every later run.
         if isinstance(value, bool):
-            raise ValueError("researchModelTimeoutSeconds must be an integer, not a boolean")
+            raise ValueError("Expected an integer, got a boolean.")
         return value
 
     @field_validator("researchModelTimeoutSeconds")
@@ -585,6 +611,10 @@ class ChatMessagesBatchRequest(BaseModel):
 
 class ChatMessagesBatchResponse(BaseModel):
     messagesByThreadId: dict[str, list[ChatMessage]]
+
+
+class ChatMessageCountsResponse(BaseModel):
+    countsByThreadId: dict[str, int]
 
 
 class ChatImportLedgerResponse(BaseModel):
@@ -824,9 +854,10 @@ async def delete_threads(
     # Keyed by thread id, so the folder is unreachable once the thread is gone; done in a worker because the
     # post-upgrade legacy move can be a cross-filesystem copy.
     removed, kept = await _remove_sandboxes(payload.ids, payload.delete_files)
-    # Archived turns are keyed by thread id and unreferenced once the thread is gone, so
-    # drop them rather than leaking a scope per deleted chat.
-    await run_in_threadpool(_remove_conversation_archives, payload.ids, cutoff = cutoff)
+    # Archived turns and uploaded documents are keyed by thread id and unreferenced once the thread
+    # is gone, so drop them rather than leaking scopes per deleted chat.
+    await run_in_threadpool(_remove_thread_rag_data, payload.ids, cutoff = cutoff)
+    await run_in_threadpool(chat_originals.sweep)
     return {"status": "deleted", "sandboxes_removed": removed, "sandboxes_kept": kept}
 
 
@@ -836,25 +867,59 @@ def _archive_cutoff() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _remove_conversation_archives(thread_ids, *, cutoff: "str | None" = None) -> None:
-    """Drop each deleted thread's archived turns. Never raises."""
+def _remove_thread_rag_data(thread_ids, *, cutoff: "str | None" = None) -> None:
+    """Drop each deleted thread's archived turns and uploaded documents. Never raises."""
     try:
         from core.rag import conversation_archive
     except Exception:
         return
     for thread_id in thread_ids or []:
         # Cut at the instant the delete was accepted, not on recreation: another tab can have recreated this
-        # id, and skipping the scope left the deleted conversation recallable. Everything archived before
+        # id, and skipping the scope left the deleted conversation recallable. Everything stored before
         # that instant belongs to the deleted conversation, everything after to the new one.
         recreated = get_chat_thread(str(thread_id)) is not None
         if recreated and not cutoff:
             continue
+        created_before = cutoff if recreated else None
         try:
-            conversation_archive.delete_for_thread(
-                str(thread_id), created_before = cutoff if recreated else None
-            )
+            conversation_archive.delete_for_thread(str(thread_id), created_before = created_before)
         except Exception:
             logger.warning("Could not remove the conversation archive for %s", thread_id)
+        try:
+            conversation_archive.delete_thread_documents(
+                str(thread_id), created_before = created_before
+            )
+        except Exception:
+            logger.warning("Could not remove the uploaded documents for %s", thread_id)
+
+
+def _copy_thread_rag_documents(source_thread_id: str, thread_id: str) -> bool:
+    """Copy the source's uploads into the fork. False when the fork should warn that some were
+    left behind."""
+    try:
+        from core.rag import conversation_archive
+        from storage import rag_db
+
+        if not rag_db.rag_available():
+            return not conversation_archive.thread_has_documents(source_thread_id)
+        document_ids, missed = conversation_archive.copy_thread_documents(
+            source_thread_id, thread_id
+        )
+        if get_chat_thread(thread_id) is None:
+            conversation_archive.delete_thread_documents(thread_id)
+            return False
+        if not document_ids and get_chat_thread(source_thread_id) is None:
+            return False
+        remap_chat_thread_document_ids(thread_id, document_ids)
+        return not missed
+    except Exception:
+        logger.warning(
+            "Could not copy the uploaded documents of %s to %s",
+            source_thread_id,
+            thread_id,
+            exc_info = True,
+        )
+        return False
 
 
 async def _remove_sandboxes(thread_ids, delete_files: bool) -> "tuple[int, list[str]]":
@@ -929,6 +994,9 @@ def _decode_attachment_base64(payload: str) -> bytes:
     corrupted bytes, so raise 422."""
     import base64
 
+    # An imported file part can keep its data URL; base64 has no ':', so this never cuts a payload.
+    if payload[:5].lower() == "data:" and "," in payload:
+        payload = payload.split(",", 1)[1]
     normalized = "".join(payload.split())
     altchars = b"-_" if ("-" in normalized or "_" in normalized) else None
     normalized += "=" * (-len(normalized) % 4)
@@ -936,6 +1004,20 @@ def _decode_attachment_base64(payload: str) -> bytes:
         return base64.b64decode(normalized, altchars = altchars, validate = True)
     except Exception as exc:  # noqa: BLE001 - corrupt stored payload
         raise HTTPException(status_code = 422, detail = "Attachment data is corrupt") from exc
+
+
+# A long paste is attached as text under its own tag (attachmentContentText in pasted-text.ts).
+_ATTACHMENT_TAG_RE = re.compile(r"<(attachment|pasted_text) name=[^\n]*>\n(.*)\n</\1>", re.DOTALL)
+_ATTACHMENT_LABEL_RE = re.compile(r"\[(?:PDF|DOCX|HTML|ODS|ODT|XLSX|PPTX|RTF): [^\n]*\]\n")
+
+
+def _attachment_body_text(text: str) -> str:
+    """An attachment's text without its chat wrapper, as the file itself reads."""
+    tagged = _ATTACHMENT_TAG_RE.fullmatch(text)
+    if tagged:
+        return tagged.group(2)
+    labelled = _ATTACHMENT_LABEL_RE.match(text)
+    return text[labelled.end() :] if labelled else text
 
 
 _AUDIO_FORMAT_MEDIA_TYPES = {
@@ -957,21 +1039,47 @@ def _safe_image_media_type(media_type: str) -> str:
     return "application/octet-stream"
 
 
+@router.post("/attachment-originals")
+def upload_attachment_original(
+    file: UploadFile = File(...), current_subject: str = Depends(get_current_subject)
+) -> dict:
+    """Store an attachment's original file; the message records the returned hash. Any name is
+    taken, since the python tool reads every text and code format. Sync, so disk writes run in
+    the threadpool."""
+    try:
+        sha256, size = chat_originals.save(
+            iter(lambda: file.file.read(1024 * 1024), b""),
+            chat_originals.max_bytes(file.filename or ""),
+        )
+    except chat_originals.TooLarge:
+        raise HTTPException(status_code = 413, detail = f"{file.filename} is too large")
+    chat_originals.sweep()
+    return {"sha256": sha256, "sizeBytes": size}
+
+
 @router.get("/attachments/{message_id}/{attachment_id}/file")
 def get_attachment_file(
     message_id: str,
     attachment_id: str,
     current_subject: str = Depends(get_current_subject),
 ):
-    """Serve one attachment's stored content: image or audio bytes, or
-    extracted text."""
+    """Serve one attachment's stored content: a document's original file, image, audio or video
+    bytes, or extracted text."""
     import urllib.parse
 
-    from fastapi.responses import Response
+    from fastapi.responses import FileResponse, Response
 
     attachment = get_chat_attachment(message_id, attachment_id)
     if attachment is None:
         raise HTTPException(status_code = 404, detail = "Attachment not found")
+
+    original = chat_originals.path_for(attachment)
+    if original is not None:
+        return FileResponse(
+            original,
+            media_type = "application/octet-stream",
+            headers = {"X-Content-Type-Options": "nosniff"},
+        )
 
     attachment_content_type = attachment.get("contentType")
     texts: list[str] = []
@@ -1011,9 +1119,19 @@ def get_attachment_file(
                     )
                 )
                 return Response(content = data, media_type = media_type)
+        file_data = part.get("data")
+        mime_type = str(part.get("mimeType") or attachment_content_type or "")
+        mime_type = mime_type.split(";", 1)[0].strip().lower()
+        if (
+            part.get("type") == "file"
+            and isinstance(file_data, str)
+            and file_data
+            and re.fullmatch(r"video/[a-z0-9.+-]+", mime_type)
+        ):
+            return Response(content = _decode_attachment_base64(file_data), media_type = mime_type)
         text = part.get("text")
         if isinstance(text, str) and text:
-            texts.append(text)
+            texts.append(_attachment_body_text(text))
     if texts:
         return Response(content = "\n".join(texts), media_type = "text/plain; charset=utf-8")
     raise HTTPException(status_code = 404, detail = "Attachment has no stored content")
@@ -1039,6 +1157,7 @@ def delete_attachment(
         ) from exc
     if not deleted:
         raise HTTPException(status_code = 404, detail = "Attachment not found")
+    chat_originals.sweep()
     return {"ok": True}
 
 
@@ -1083,6 +1202,15 @@ def get_project(project_id: str, current_subject: str = Depends(get_current_subj
     return ChatProject(**project)
 
 
+@router.get("/agents-md", response_model = ChatAgentsMd)
+def get_agents_md(
+    project_id: Optional[str] = Query(None), current_subject: str = Depends(get_current_subject)
+):
+    from core.agents_md import agents_md_text
+    project = get_chat_project(project_id) if project_id else None
+    return ChatAgentsMd(text = agents_md_text(project))
+
+
 @router.patch("/projects/{project_id}", response_model = ChatProject)
 def patch_project(
     project_id: str,
@@ -1125,7 +1253,7 @@ def _delete_project_rag_sources(project_id: str) -> None:
             return
         folder_sync.retire_scope(scope, owned)
         # The purge takes the whole scope, `owned` or not, so bounding retirement buys nothing
-        # unless the purge is skipped too.
+        # unless the purge is skipped too. A recreate racing this is unretired by upsert_chat_project.
         if rag_db.rag_available():
             folder_sync.delete_retired_scope(scope)
 
@@ -1175,8 +1303,9 @@ async def delete_project(
         await run_in_threadpool(_delete_project_rag_sources, project_id)
     except Exception:  # noqa: BLE001 - source cleanup must not block project deletion
         logger.warning("failed to delete RAG sources for project %s", project_id, exc_info = True)
-    # The project's chats go with it, so their archives have to as well.
-    await run_in_threadpool(_remove_conversation_archives, member_ids, cutoff = cutoff)
+    # The project's chats go with it, so their archives and documents have to as well.
+    await run_in_threadpool(_remove_thread_rag_data, member_ids, cutoff = cutoff)
+    await run_in_threadpool(chat_originals.sweep)
     if project.get("sandboxPath"):
         from core.inference.tools import (
             finish_workspace_delete_when_idle,
@@ -1311,6 +1440,16 @@ def batch_thread_messages(
     return ChatMessagesBatchResponse(messagesByThreadId = by_thread)
 
 
+@router.post("/messages:counts", response_model = ChatMessageCountsResponse)
+def count_thread_messages(
+    payload: ChatMessagesBatchRequest, current_subject: str = Depends(get_current_subject)
+):
+    """Per-thread message counts, without message bodies."""
+    return ChatMessageCountsResponse(
+        countsByThreadId = count_chat_messages_for_threads(payload.threadIds)
+    )
+
+
 @router.get("/threads/{thread_id}/messages/{message_id}", response_model = ChatMessage)
 def get_thread_message(
     thread_id: str,
@@ -1338,8 +1477,8 @@ def save_thread_message(
     if get_chat_thread(thread_id) is None:
         raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
     try:
-        return ChatMessage(
-            **upsert_chat_message(payload.model_dump(), allow_generation_edit = allow_generation_edit)
+        saved = upsert_chat_message(
+            payload.model_dump(), allow_generation_edit = allow_generation_edit
         )
     except sqlite3.IntegrityError as exc:
         if get_chat_thread(thread_id) is None:
@@ -1354,6 +1493,8 @@ def save_thread_message(
             log = logger,
             headers = _conflict_headers(exc),
         ) from exc
+    chat_originals.sweep()
+    return ChatMessage(**saved)
 
 
 @router.put("/threads/{thread_id}/messages", response_model = ChatMessageListResponse)
@@ -1374,16 +1515,11 @@ def replace_thread_messages(
         raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
     messages = [message.model_dump() for message in payload.messages]
     try:
-        return ChatMessageListResponse(
-            messages = [
-                ChatMessage(**m)
-                for m in sync_chat_messages(
-                    thread_id,
-                    messages,
-                    prune_missing = payload.pruneMissing,
-                    deleted_message_ids = payload.deletedMessageIds,
-                )
-            ]
+        synced = sync_chat_messages(
+            thread_id,
+            messages,
+            prune_missing = payload.pruneMissing,
+            deleted_message_ids = payload.deletedMessageIds,
         )
     except sqlite3.IntegrityError as exc:
         if get_chat_thread(thread_id) is None:
@@ -1398,6 +1534,8 @@ def replace_thread_messages(
             log = logger,
             headers = _conflict_headers(exc),
         ) from exc
+    chat_originals.sweep()
+    return ChatMessageListResponse(messages = [ChatMessage(**m) for m in synced])
 
 
 @router.get("/count", response_model = ChatCountResponse)
@@ -1514,11 +1652,12 @@ async def clear_history(
     # By id: the rows went with the threads, so nothing can look them up now.
     _cancel_research_runs(request, cleared_runs)
     _cancel_chat_generation_runs(request, cleared_chat_runs)
-    # Same archive cleanup as DELETE /threads. Without it "Clear all chats" leaves every
-    # conversation searchable in rag.db, and a reused thread id reads the old archive.
+    # Same cleanup as DELETE /threads. Without it "Clear all chats" leaves every conversation
+    # searchable in rag.db, and a reused thread id reads the old archive.
     await run_in_threadpool(
-        _remove_conversation_archives, list(dict.fromkeys(thread_ids + cleared)), cutoff = cutoff
+        _remove_thread_rag_data, list(dict.fromkeys(thread_ids + cleared)), cutoff = cutoff
     )
+    await run_in_threadpool(chat_originals.sweep)
     # "Clear all chats" is the common bulk delete.
     # delete_files matches DELETE /threads: off by default, since the files are the user's.
     removed, kept = await _remove_sandboxes(list(dict.fromkeys(thread_ids + cleared)), delete_files)
@@ -1595,7 +1734,8 @@ def put_settings(payload: dict[str, Any], current_subject: str = Depends(get_cur
 
 
 class ChatForkRequest(BaseModel):
-    messageId: str
+    # an omitted message selects the tip within the fork transaction.
+    messageId: Optional[str] = None
     newThreadId: str
     createdAt: int
 
@@ -1629,36 +1769,51 @@ def fork_thread(
     """
     import uuid
 
+    from hub.services.models import account_access
+    from state import active_generations
+
     source = get_chat_thread(thread_id)
     if source is None:
         raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
-    if get_chat_message(thread_id, payload.messageId) is None:
+    # A generation in flight leaves the tip unsettled: the last message is a prompt with no
+    # answer yet, or a reply still being written, and a fork taken now would end there. A
+    # client check cannot close this on its own, since another tab can start a generation
+    # between its snapshot and this request.
+    if thread_id in active_generations.active_thread_ids(account_access.account_scope()):
+        raise HTTPException(
+            status_code = 409,
+            detail = "This chat is still generating. Fork it once it finishes.",
+        )
+    if payload.messageId is not None and get_chat_message(thread_id, payload.messageId) is None:
         raise HTTPException(
             status_code = 404,
             detail = f"Message {payload.messageId} not found in thread {thread_id}",
         )
-    base_title = source.get("title") or "New Chat"
-    new_title = f"fork · {base_title}"
     try:
         forked = fork_chat_thread(
             source_thread_id = thread_id,
             branch_message_id = payload.messageId,
             new_thread_id = payload.newThreadId,
-            new_title = new_title,
             created_at = payload.createdAt,
             id_factory = lambda: str(uuid.uuid4()),
         )
+    except ChatForkActiveGenerationError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
     except ChatThreadDeletedError as exc:
         raise _deleted_thread_error(payload.newThreadId) from exc
     if forked is None:
         # The source can be deleted between the reads above and the fork transaction, which the
         # threadpool lets run concurrently. Report it gone rather than as a server fault.
-        raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
-    messages = list_chat_messages(payload.newThreadId)
+        raise HTTPException(status_code = 404, detail = f"Thread {thread_id} or fork message not found")
     # Stub: v1 always starts a fresh container and surfaces the same warning for every provider.
     warning: Optional[str] = None
     if source.get("openaiCodeExecContainerId") or source.get("anthropicCodeExecContainerId"):
         warning = "Sandbox starts fresh in fork; files from parent are not carried over."
+    if not _copy_thread_rag_documents(thread_id, payload.newThreadId):
+        warning = " ".join(
+            filter(None, [warning, "Documents attached to the parent chat were not copied."])
+        )
+    messages = list_chat_messages(payload.newThreadId)
     return ChatForkResponse(
         thread = thread_from_row(forked),
         messages = [ChatMessage(**m) for m in messages],

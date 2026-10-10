@@ -1,5 +1,6 @@
 """Responsive overflow contracts for the settings dialog."""
 
+import re
 from pathlib import Path
 
 
@@ -15,7 +16,16 @@ SETTINGS = REPO / "studio/frontend/src/features/settings"
 
 def test_dialog_content_can_shrink_inside_the_dialog_grid():
     source = SETTINGS_DIALOG.read_text(encoding = "utf-8")
-    assert "flex h-full min-h-0 min-w-0 w-full max-sm:flex-col" in source
+    assert "flex h-full min-h-0 min-w-0 w-full" in source
+    # Stacks on the dialog's measured width (`data-stacked`), not a viewport breakpoint: #11648 made the
+    # interface scale work in the browser, and `max-sm:` reads the viewport, which a larger UI does not change.
+    # Tailwind's data variant reads the attribute on the element carrying the class, so both sit in one tag.
+    at = source.index("min-w-0 w-full data-stacked:flex-col")
+    tag = source[source.rindex("<div", 0, at) : source.index(">", at)]
+    assert (
+        "data-stacked={stacked || undefined}" in tag
+    ), "the stacking attribute left the flex container"
+    assert "group/settings" in tag, "the stacked children read group/settings off this container"
     assert "relative flex min-h-0 min-w-0 flex-1 flex-col" in source
 
 
@@ -25,7 +35,15 @@ def test_api_monitor_entries_and_expanded_text_can_shrink():
     assert '"flex w-full min-w-0 flex-col gap-1 border-b border-border/50' in source
     assert '<section className="flex min-w-0 flex-col gap-1.5">' in source
     # Prompt and reply are unbounded user text: height-capped, scrollable, wrapped.
-    assert "max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted/50" in source
+    # Read as tokens: #12431 added scroll-rounded to these boxes, which changes none of this.
+    text_boxes = [
+        set(literal.split())
+        for literal in re.findall(r'"([^"\n]*)"', source)
+        if {"whitespace-pre-wrap", "rounded-lg"} <= set(literal.split())
+    ]
+    assert text_boxes, "no wrapped, rounded text box in the API monitor"
+    for tokens in text_boxes:
+        assert {"max-h-72", "overflow-auto", "break-words"} <= tokens, sorted(tokens)
     # A model id or path has no spaces to wrap on, so it needs break-all.
     assert 'className="min-w-0 break-all font-mono' in source
 
@@ -62,7 +80,9 @@ def test_embedding_model_controls_stack_on_the_narrowest_viewports():
         str(path.relative_to(REPO))
         for path in owners
         if not (
-            'className="max-[360px]:flex-col max-[360px]:items-stretch max-[360px]:gap-3"'
+            # The quoted class string, whether it is the whole className or one argument of
+            # cn(...) beside a conditional class, which is how #12875 writes it.
+            '"max-[360px]:flex-col max-[360px]:items-stretch max-[360px]:gap-3"'
             in (source := path.read_text(encoding = "utf-8"))
             # The fixed width has to give way at the breakpoint: flex-1 for the
             # combobox, a full row for the picker trigger.

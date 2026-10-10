@@ -12,22 +12,39 @@
 __all__ = [
     "SyntheticDataKit",
 ]
+import socket
 import subprocess
 import threading
 from collections import deque
 import time
 import os
+import importlib.util as _importlib_util
+
+
+def _hf_transfer_importable() -> bool:
+    # huggingface_hub < 1.0 raises on every download when the flag is on and the package is
+    # missing (it is optional, and absent on Windows on ARM). find_spec never imports it, and
+    # raises ValueError for a sys.modules stub whose __spec__ is None.
+    try:
+        return _importlib_util.find_spec("hf_transfer") is not None
+    except (ImportError, ValueError):
+        return False
+
 
 _OFFLINE_VALS = {"1", "true", "yes", "on"}
-if not (
-    os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in _OFFLINE_VALS
-    or os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower() in _OFFLINE_VALS
+# An explicit value is the caller's (Studio sets "0" for its Xet fallback), as in unsloth_zoo.
+if (
+    "HF_HUB_ENABLE_HF_TRANSFER" not in os.environ
+    and not (
+        os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in _OFFLINE_VALS
+        or os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower() in _OFFLINE_VALS
+    )
+    and _hf_transfer_importable()
 ):
     os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
 import requests
 import torch
 import gc
-import time
 import re
 from unsloth_zoo.log import logger
 import numpy as np
@@ -171,7 +188,38 @@ def _remaining(deadline):
     return None if deadline is None else deadline - time.monotonic()
 
 
+def _port_is_free(port):
+    """Whether `vllm serve --port port` could bind, probed the way vLLM binds (all interfaces, SO_REUSEADDR)."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        if os.name != "nt":
+            # On Windows SO_REUSEADDR lets a bind steal a port in use, so the probe would always pass.
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            s.bind(("", port))
+        except OSError:
+            return False
+    return True
+
+
+def _pick_vllm_port(port):
+    """`port` as given, else 8000, else a free port when 8000 is taken (Studio in the Unsloth Docker image)."""
+    if port is not None:
+        return int(port)
+    if _port_is_free(SyntheticDataKit.port):
+        return SyntheticDataKit.port
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("", 0))
+        free = s.getsockname()[1]
+    print(
+        f"Unsloth: port {SyntheticDataKit.port} is in use, so the vLLM server will use port {free}."
+    )
+    return free
+
+
 class SyntheticDataKit:
+    # Kept as the class default so kits built without __init__ still have a port.
+    port = 8000
+
     def __init__(
         self,
         model_name = "unsloth/Llama-3.1-8B-Instruct-unsloth-bnb-4bit",
@@ -181,6 +229,7 @@ class SyntheticDataKit:
         conservativeness = 1.0,
         token = None,
         timeout = 1200,
+        port = None,
         **kwargs,
     ):
         assert type(model_name) is str
@@ -242,10 +291,14 @@ class SyntheticDataKit:
         if "model" in engine_args:
             del engine_args["model"]
 
+        # Picked here, not before the model download, so a released fallback port is not left free for minutes.
+        self.port = _pick_vllm_port(port)
         subprocess_commands = [
             "vllm",
             "serve",
             str(model_name),
+            "--port",
+            str(self.port),
         ]
         for key, value in engine_args.items():
             flag = key.replace("_", "-")
@@ -315,11 +368,11 @@ class SyntheticDataKit:
         is ten minutes, not the hundred the message promises.
         """
         deadline = _deadline(timeout)
-        while not self.check_vllm_status():
+        while not self.check_vllm_status(self.port):
             if deadline is not None and time.monotonic() >= deadline:
                 self._fail_vllm_server(
                     "printed its readiness line but never answered "
-                    f"http://localhost:8000/metrics (waited {timeout:g} seconds)"
+                    f"http://localhost:{self.port}/metrics (waited {timeout:g} seconds)"
                 )
             time.sleep(poll_interval)
 
@@ -372,7 +425,7 @@ class SyntheticDataKit:
             f"Unsloth: the vLLM server behind SyntheticDataKit "
             f"{what_happened}.\n"
             f"Nothing after this point can work: `synthetic-data-kit` reaches "
-            f"the model over http://localhost:8000/v1, so ingest/create/"
+            f"the model over http://localhost:{self.port}/v1, so ingest/create/"
             f'save-as would each report "VLLM server not available", write '
             f"no file, and leave the failure to surface as a FileNotFoundError "
             f"much later on.\n"
@@ -403,10 +456,10 @@ class SyntheticDataKit:
         )
 
     @staticmethod
-    def check_vllm_status():
+    def check_vllm_status(port = 8000):
         try:
             # requests has no default timeout, so a stalled server hung here.
-            response = requests.get("http://localhost:8000/metrics", timeout = 5)
+            response = requests.get(f"http://localhost:{port}/metrics", timeout = 5)
             return response.status_code == 200
         except requests.exceptions.RequestException:
             # ConnectionError alone let a read timeout escape as a stray traceback out of the readiness loop.
@@ -546,6 +599,7 @@ class SyntheticDataKit:
             .replace("{cleanup_threshold}", str(cleanup_threshold))
             .replace("{cleanup_batch_size}", str(cleanup_batch_size))
             .replace("{cleanup_temperature}", str(cleanup_temperature))
+            .replace("{port}", str(self.port))
         )
 
         with open("synthetic_data_kit_config.yaml", "w", encoding = "utf-8") as f:

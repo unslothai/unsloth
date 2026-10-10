@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
+import io
 import json
 import os
 import re
@@ -218,6 +220,41 @@ def test_scan_packages_pip_download_failure_propagates(tmp_path):
         f"--- stderr ---\n{proc.stderr}"
     )
     assert "SCAN INCOMPLETE" in combined or "pip download failed" in combined
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        "./evilpkg",
+        "git+https://example.invalid/evil.git",
+        "evil @ https://example.invalid/evil-1.0.tar.gz",
+        "evil-1.0.tar.gz",
+        "evil.zip[x]",
+        "evil.zip [x]",
+        "evil.tar.gz[a] ; python_version>'3'",
+    ],
+)
+def test_direct_source_specs_never_reach_pip(tmp_path, monkeypatch, spec):
+    calls = []
+    monkeypatch.setattr(sp.subprocess, "run", lambda *a, **k: calls.append(a))
+    for with_deps in (False, True):
+        results, errors = sp.download_packages([spec], str(tmp_path), with_deps = with_deps)
+        assert results == []
+        assert errors and "refusing to download" in errors[0]
+    assert calls == []
+
+
+def test_index_specs_still_reach_pip():
+    errors = []
+    specs = [
+        "torch>=2.4.0",
+        "foo[bar,baz]>=1,<2",
+        "six>=1.16 ; python_version>'3'",
+        "zope.interface!=5.*",
+        "backports.lzma",
+    ]
+    assert sp._split_index_specs(specs, errors) == specs
+    assert errors == []
 
 
 def test_archive_corruption_produces_critical_finding(tmp_path):
@@ -512,6 +549,27 @@ def test_context_dependent_unsloth_zoo_findings_are_digest_pinned():
             "unsloth_zoo/compiler.py",
             "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
         ),
+        # Both approved for the first time alongside compiler.py, and both for the same
+        # reason it is on this list: the matched lines are ordinary metaprogramming that
+        # says nothing about the rest of the file. vllm_utils.py builds attribute paths
+        # out of checkpoint-supplied state dict keys and execs them; moe_utils.py execs a
+        # cached copy of itself, having first compared it byte for byte against the
+        # in-tree source. Approving either on evidence alone would let a later payload in
+        # the same file ride an unchanged match.
+        (
+            "unsloth_zoo/vllm_utils.py",
+            "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+        ),
+        (
+            "unsloth_zoo/temporary_patches/moe_utils.py",
+            "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+        ),
+        # Pinned since 2026.9.x for the same reason as compiler.py: it imports modules by
+        # name and execs, so the matched lines say nothing about the rest of the file.
+        (
+            "unsloth_zoo/mlx/loader.py",
+            "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+        ),
     }
     # The evidence hashes of the superseded compiler.py variants, which are already
     # in the baseline unpinned. These are frozen by construction: an evidence hash is
@@ -527,6 +585,11 @@ def test_context_dependent_unsloth_zoo_findings_are_digest_pinned():
         "ec1875fd32d00fe885e566ebda75163e46e838ca31020abb57e0991892c2bdf7",
         "d8dabff7099fd84e1276c932c7bb70ba273333e5708eb149fec6a6130856085d",
         "610993c0b6f612bbbf2fa0b593591375e7b20cb5c9b516ea60b6c44a8b9430e9",
+        # mlx/loader.py variants approved before its entries were pinned.
+        "7b44760032c5df6d379ccfdd0bff3d23f857f64e08210fa0fba8d2881d457634",
+        "99be0b8b885c428ef382cdf98fe5cc7691a3fe65fdf2ff2d1ebfb3a152711dc0",
+        "511d74ad8e4d5a219b0485b23f295fb1b27ba49b734cbb664225f20a996f426d",
+        "70a40c97be03c8b24e15abcd4911b42cd1b30bcb67cf345464c600d19aeb1f77",
     }
     pinned = set()
     for entry in entries:
@@ -1723,7 +1786,41 @@ def test_marker_holds_by_default():
     # package may install on another, so these deps must still be scanned.
     assert sp._marker_holds_by_default("sys_platform == 'win32'") is True
     assert sp._marker_holds_by_default("python_version == '3.13'") is True
-    assert sp._marker_holds_by_default("sys_platform == 'win32' and extra == 'gpu'") is True
+    # ...but AND-ed with an extra they still need the extra: no target installs these by default.
+    assert sp._marker_holds_by_default("sys_platform == 'win32' and extra == 'gpu'") is False
+    assert sp._marker_holds_by_default('extra == "dev" and python_version >= "3.9"') is False
+    assert (
+        sp._marker_holds_by_default(
+            'extra == "dev" and (python_version >= "3.8" and python_version < "3.9")'
+        )
+        is False
+    )
+    # An OR with a platform branch, or a default-true extra comparison, is reachable somewhere.
+    assert sp._marker_holds_by_default("extra == 'dev' or sys_platform == 'win32'") is True
+    assert (
+        sp._marker_holds_by_default(
+            "(extra == 'dev' and python_version >= '3.9') or sys_platform == 'win32'"
+        )
+        is True
+    )
+    assert sp._marker_holds_by_default("extra != 'dev' and sys_platform == 'win32'") is True
+
+
+def test_requires_dist_recovery_does_not_pull_a_dev_extra():
+    """loguru 0.7.3 gates its whole dev toolchain on `extra == "dev" and python_version ...`.
+    When its tree failed to co-resolve, the recovery path scanned pytest, tox, sphinx, mypy and
+    pre-commit as if a default install pulled them, and their findings failed the extras shard."""
+    meta = _meta(
+        [],
+        requires = [
+            'colorama>=0.3.4; sys_platform == "win32"',
+            'pre-commit==4.0.1; extra == "dev" and python_version >= "3.9"',
+            'tox==4.23.2; extra == "dev" and python_version >= "3.8"',
+            'pytest==8.3.2; extra == "dev" and python_version >= "3.8"',
+            'sphinx==8.1.3; extra == "dev" and python_version >= "3.11"',
+        ],
+    )
+    assert sp._requires_dist_names(meta) == ["colorama>=0.3.4"]
 
 
 def test_requires_dist_for_fails_closed_on_missing_pin_metadata(monkeypatch):
@@ -1968,6 +2065,30 @@ def test_write_baseline_preserves_an_existing_pin(tmp_path):
     sp._write_baseline(str(bl), [f])
     doc2 = json.loads(bl.read_text(encoding = "utf-8"))
     assert doc2["entries"][0]["file_sha256"] == "a" * 64
+
+
+def test_write_baseline_keeps_a_pinned_site_pinned_when_its_evidence_changes(tmp_path):
+    """A release that edits the matched lines at a pinned site gives the finding a new
+    evidence hash. The re-approval must still carry the file digest: unpinned, the new
+    variant would suppress the finding for any file contents (#12884 wrote one)."""
+    bl = tmp_path / "bl.json"
+    old = _mk(sp.HIGH, "p", "a.py", "c1", "L1: x")
+    old.file_sha256 = "a" * 64
+    sp._write_baseline(str(bl), [old])
+    doc = json.loads(bl.read_text(encoding = "utf-8"))
+    doc["entries"][0]["file_sha256"] = "a" * 64
+    bl.write_text(json.dumps(doc), encoding = "utf-8")
+
+    changed = _mk(sp.HIGH, "p", "a.py", "c1", "L1: x | L2: y")
+    changed.file_sha256 = "b" * 64
+    fresh = _mk(sp.HIGH, "p", "b.py", "c1", "L1: x")
+    fresh.file_sha256 = "c" * 64
+    out = tmp_path / "out.json"
+    sp._write_baseline(str(out), [changed, fresh], source = str(bl))
+    by_file = {e["file"]: e for e in json.loads(out.read_text(encoding = "utf-8"))["entries"]}
+    assert by_file["a.py"]["file_sha256"] == "b" * 64
+    # A site never reviewed under a pin keeps the old default.
+    assert "file_sha256" not in by_file["b.py"]
 
 
 def test_check_py_file_stamps_the_file_digest():
@@ -2713,3 +2834,119 @@ def test_building_the_fixtures_leaves_the_callers_environment_alone() -> None:
             os.environ.pop("SOURCE_DATE_EPOCH", None)
         else:
             os.environ["SOURCE_DATE_EPOCH"] = previous
+
+
+# --- what a reopened baseline entry is told to be -----------------------------------------
+
+
+def _reviewed_site_report(tmp_path, entries, findings):
+    """Run the reopened-site reporter over a hand-written baseline and return what it printed."""
+    path = tmp_path / "baseline.json"
+    path.write_text(json.dumps({"entries": entries}), encoding = "utf-8")
+    loaded = sp._load_baseline(str(path))
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        sp._report_reviewed_sites(findings, loaded, str(path))
+    return buffer.getvalue()
+
+
+_EXEC_CHECK = "Advanced obfuscation (marshal/compile/zlib) + exec/eval"
+
+
+def _exec_entry(evidence, digest = None):
+    entry = {
+        "package": "unsloth-zoo",
+        "file": "unsloth_zoo/compiler.py",
+        "check": _EXEC_CHECK,
+        "severity": sp.HIGH,
+        "evidence": evidence,
+        "evidence_hash": sp._evidence_hash(evidence),
+    }
+    if digest is not None:
+        entry["file_sha256"] = digest
+    return entry
+
+
+def _exec_finding(evidence, digest = ""):
+    return sp.Finding(
+        sp.HIGH, "unsloth-zoo", "unsloth_zoo/compiler.py", _EXEC_CHECK, evidence, digest
+    )
+
+
+def test_an_occurrence_added_to_a_reviewed_file_is_not_called_a_mere_change(tmp_path):
+    """A file's matches are aggregated into one finding, so appending a new `exec` reopens the
+    same `(package, file, check)` an edited one does. Membership of that triple therefore cannot
+    mean "the flagged code changed": reporting it that way sends a genuinely new occurrence down
+    the narrow "did known metaprogramming move" path, which is the one review it must not get.
+    """
+    report = _reviewed_site_report(
+        tmp_path,
+        [_exec_entry("L10: exec(compile(src, path, 'exec'))")],
+        [_exec_finding("L10: exec(compile(src, path, 'exec'))\nL88: eval(user_supplied)")],
+    )
+    assert "1 matched line(s) appended to a reviewed file, none gone" in report, report
+    assert "read it as you would a new site" in report, report
+
+
+def test_a_pin_miss_says_the_matched_code_is_unchanged(tmp_path):
+    """Identical evidence under a digest pin that no longer matches: the flagged lines did not
+    change, some other edit to the file did. Calling that "different evidence" describes the one
+    thing that is provably the same.
+    """
+    evidence = "L10: exec(compile(src, path, 'exec'))"
+    report = _reviewed_site_report(
+        tmp_path,
+        [_exec_entry(evidence, digest = "a" * 64)],
+        [_exec_finding(evidence, digest = "b" * 64)],
+    )
+    assert "same matched code, file digest outside the pin" in report, report
+    assert "new matched line(s)" not in report, report
+
+
+def test_a_rewritten_match_is_called_a_rewrite_and_not_a_new_occurrence(tmp_path):
+    report = _reviewed_site_report(
+        tmp_path,
+        [_exec_entry("L10: exec(compile(src, path, 'exec'))")],
+        [_exec_finding("L10: exec(compile(src, path, 'exec'), module.__dict__)")],
+    )
+    assert "1 matched line(s) added and 1 gone: the flagged code was rewritten" in report, report
+    assert "appended" not in report, report
+
+
+def test_a_rewritten_match_still_asks_for_the_full_read(tmp_path):
+    """Deliberate, and the reason it is pinned: a multiset diff cannot separate "this line was
+    rewritten" from "one left, an unrelated one arrived", and both leave flagged code nobody has
+    read in its current form. Reserving the full read for strict additions would send
+    `exec(compile(src, path, "exec"))` -> `exec(payload)` -- an edit, by the diff -- down the
+    narrow "did known metaprogramming move" path, which is the review that misses it.
+    """
+    report = _reviewed_site_report(
+        tmp_path,
+        [_exec_entry("L10: exec(compile(src, path, 'exec'))")],
+        [_exec_finding("L10: exec(payload)")],
+    )
+    assert "read it as you would a new site" in report, report
+
+
+def test_a_match_that_only_disappeared_does_not_ask_for_the_full_read(tmp_path):
+    """The other side of that choice: nothing flagged arrived, so there is nothing unread."""
+    report = _reviewed_site_report(
+        tmp_path,
+        [_exec_entry("L10: exec(one)\nL20: exec(two)")],
+        [_exec_finding("L10: exec(one)")],
+    )
+    assert "1 matched line(s) gone, none added" in report, report
+    assert "read it as you would a new site" not in report, report
+
+
+def test_a_site_that_was_never_reviewed_gets_no_line(tmp_path):
+    report = _reviewed_site_report(
+        tmp_path,
+        [_exec_entry("L10: exec(compile(src, path, 'exec'))")],
+        [
+            sp.Finding(
+                sp.HIGH, "unsloth-zoo", "unsloth_zoo/vllm_utils.py", _EXEC_CHECK, "L4: exec(new)"
+            )
+        ],
+    )
+    assert report.strip() == "", report

@@ -122,11 +122,12 @@ test("the scope-change effect takes a ticket on the way out", () => {
 });
 
 // A superseded failure describes a scope no longer shown, and a host without the
-// vector extension 503s every one of these: no toast per composer opened.
+// vector extension 503s every one of these: no toast per composer opened. The desktop-update
+// guard may sit between the two, but nothing that reports may come before the supersession check.
 test("a failure is only reported for the request still being awaited", () => {
   assert.match(
     USE_RAG_DOCUMENTS,
-    /if \(refreshSeq\.current !== requestId\) return true;\s*if \(\s*!opts\?\.silentErrors &&\s*!useRagAvailabilityStore\.getState\(\)\.isUnavailable\(\)/,
+    /if \(refreshSeq\.current !== requestId\) return true;(?:(?!toast\.error)[\s\S]){0,400}?if \(\s*!opts\?\.silentErrors &&\s*!useRagAvailabilityStore\.getState\(\)\.isUnavailable\(\)/,
   );
 });
 

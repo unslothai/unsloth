@@ -2,12 +2,12 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toastError, toastSuccess } from "@/shared/toast";
 import { normalizeNonEmptyName } from "@/utils";
 import { removeUnstructuredBlock } from "../api";
 import {
   buildSignature,
-  copyTextToClipboard,
   formatSavedLabel,
 } from "../executions/execution-helpers";
 import { useRecipeStudioStore } from "../stores/recipe-studio";
@@ -229,6 +229,8 @@ export function useRecipePersistence({
   const [workflowName, setWorkflowName] = useState("Unnamed");
   const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
   const [savedSignature, setSavedSignature] = useState("");
+  // Autosave does not retry the exact content that just failed (e.g. a 409 from another window).
+  const [failedSignature, setFailedSignature] = useState<string | null>(null);
   const [saveLoading, setSaveLoading] = useState(false);
   const [copied, setCopied] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
@@ -295,25 +297,30 @@ export function useRecipePersistence({
         payload: currentPayload,
       });
       setLastSavedAt(result.updatedAt);
+      setFailedSignature(null);
       setSavedSignature(buildSignature(nextName, currentPayload));
       drainQueuedUploadCleanups(currentPayload);
     } catch (error) {
       console.error("Save recipe failed:", error);
-      toastError("Save failed", "Could not save recipe.");
+      setFailedSignature(buildSignature(nextName, currentPayload));
+      toastError(
+        "Save failed",
+        error instanceof Error ? error.message : "Could not save recipe.",
+      );
     } finally {
       setSaveLoading(false);
     }
   }, [currentPayload, onPersistRecipe, recipeId, saveLoading, workflowName]);
 
   useEffect(() => {
-    if (!isDirty || saveLoading) {
+    if (!isDirty || saveLoading || failedSignature === currentSignature) {
       return;
     }
     const timeoutId = window.setTimeout(() => {
       void persistRecipe();
     }, 800);
     return () => window.clearTimeout(timeoutId);
-  }, [isDirty, persistRecipe, saveLoading]);
+  }, [currentSignature, failedSignature, isDirty, persistRecipe, saveLoading]);
 
   // Drain queued cleanups even when autosave is skipped: a net-zero edit (add then remove an
   // unstructured seed before the 800ms debounce) keeps isDirty false, so the autosave effect never
@@ -333,9 +340,7 @@ export function useRecipePersistence({
       const safePayload = sanitizeSeedForShare(
         stripApiKeys(payloadResult.payload),
       );
-      const ok = await copyTextToClipboard(
-        JSON.stringify(safePayload, null, 2),
-      );
+      const ok = await copyToClipboard(JSON.stringify(safePayload, null, 2));
       if (!ok) {
         throw new Error("Clipboard not available.");
       }

@@ -33,6 +33,95 @@ test("a sole Hub quant collapses only after dependency-aware verification", () =
   );
 });
 
+// The shape a real cached repo has: a Hub answer lists every published quant while one is on
+// disk. Counting listed quants instead made the collapse unreachable.
+test("one quant on disk collapses even when the repo publishes many", () => {
+  const quants = [
+    "Q2_K",
+    "Q3_K_M",
+    "Q4_K_M",
+    "Q5_K_M",
+    "Q6_K",
+    "Q8_0",
+    "F16",
+    "BF16",
+  ];
+  const variants = quants.map((quant) => ({
+    quant,
+    downloaded: quant === "Q4_K_M",
+  }));
+
+  const sole = verifiedSoleHubVariant(variants, false, true);
+  assert.equal(sole?.quant, "Q4_K_M", "the one quant on disk is the sole quant");
+});
+
+test("a second quant on disk keeps the expander", () => {
+  const variants = [
+    { quant: "Q4_K_M", downloaded: true },
+    { quant: "Q6_K", downloaded: true },
+    { quant: "Q8_0", downloaded: false },
+  ];
+  assert.equal(verifiedSoleHubVariant(variants, false, true), null);
+});
+
+// Resume lives in the expander, so a torn quant keeps it even beside a clean sibling.
+test("a torn quant beside a complete one keeps the expander", () => {
+  const variants = [
+    { quant: "Q4_K_M", downloaded: true },
+    { quant: "Q6_K", downloaded: false, partial: true },
+  ];
+  assert.equal(verifiedSoleHubVariant(variants, false, true), null);
+});
+
+// Only GgufVariantExpander wires onUpdateVariant; the collapsed row's menu is pin and delete
+// only, so collapsing an updateable quant would drop the update action from the default view.
+test("an updateable quant keeps the expander", () => {
+  const variants = [
+    { quant: "Q4_K_M", downloaded: true, update_available: true },
+    { quant: "Q6_K", downloaded: false },
+  ];
+  assert.equal(verifiedSoleHubVariant(variants, false, true), null);
+
+  // No update pending still collapses.
+  assert.equal(
+    verifiedSoleHubVariant(
+      [
+        { quant: "Q4_K_M", downloaded: true, update_available: false },
+        { quant: "Q6_K", downloaded: false },
+      ],
+      false,
+      true,
+    )?.quant,
+    "Q4_K_M",
+  );
+});
+
+// The companion concern behind the dependency gate, checked where it is answerable.
+test("a cached main GGUF still awaiting its drafter keeps the expander", () => {
+  const variants = [
+    {
+      quant: "Q4_K_M",
+      downloaded: true,
+      pending_drafter_filename: "gpt-oss-20b-MTP.gguf",
+    },
+    { quant: "Q6_K", downloaded: false },
+  ];
+  assert.equal(verifiedSoleHubVariant(variants, false, true), null);
+
+  // Null/absent means nothing is pending, which must still collapse.
+  assert.equal(
+    verifiedSoleHubVariant(
+      [
+        { quant: "Q4_K_M", downloaded: true, pending_drafter_filename: null },
+        { quant: "Q6_K", downloaded: false },
+      ],
+      false,
+      true,
+    )?.quant,
+    "Q4_K_M",
+  );
+});
+
 /** Two listed repos, each at its own cache version. */
 const targetsAt = (versionA: string, versionB: string): SoleQuantTarget[] => [
   {

@@ -2,15 +2,26 @@ import ast
 import re
 from pathlib import Path
 
+import pytest
+
 
 def _load_formatter_builders():
     # Extract _parse_combined_prompt and _create_formatter without importing unsloth (importing unsloth needs
     # unsloth_zoo / a GPU).
     source = Path(__file__).parents[2] / "unsloth" / "chat_templates.py"
     tree = ast.parse(source.read_text(encoding = "utf-8"))
-    wanted = {"_parse_combined_prompt", "_create_formatter"}
+    wanted = {
+        "_ESCAPED_BRACES_RE",
+        "_COLUMN_RE",
+        "_column_names_in",
+        "_parse_combined_prompt",
+        "_create_formatter",
+    }
     funcs = [
-        node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in wanted
+        node
+        for node in tree.body
+        if getattr(node, "name", None) in wanted
+        or (isinstance(node, ast.Assign) and getattr(node.targets[0], "id", None) in wanted)
     ]
     namespace = {"re": re}
     module = ast.Module(body = funcs, type_ignores = [])
@@ -97,9 +108,19 @@ def _load_to_sharegpt():
     # Same trick as above: pull to_sharegpt and the two helpers it calls out of the source without importing unsloth.
     source = Path(__file__).parents[2] / "unsloth" / "chat_templates.py"
     tree = ast.parse(source.read_text(encoding = "utf-8"))
-    wanted = {"_parse_combined_prompt", "_create_formatter", "to_sharegpt"}
+    wanted = {
+        "_ESCAPED_BRACES_RE",
+        "_COLUMN_RE",
+        "_column_names_in",
+        "_parse_combined_prompt",
+        "_create_formatter",
+        "to_sharegpt",
+    }
     funcs = [
-        node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in wanted
+        node
+        for node in tree.body
+        if getattr(node, "name", None) in wanted
+        or (isinstance(node, ast.Assign) and getattr(node.targets[0], "id", None) in wanted)
     ]
     namespace = {"re": re}
     module = ast.Module(body = funcs, type_ignores = [])
@@ -195,3 +216,71 @@ def test_null_cells_match_the_merged_prompt_path():
     plain = to_sharegpt(Dataset.from_dict(rows))
 
     assert [r["conversations"] for r in merged] == [r["conversations"] for r in plain]
+
+
+def test_conversation_extension_with_columns_kept():
+    to_sharegpt = _load_to_sharegpt()
+    converted = to_sharegpt(
+        _alpaca(),
+        merged_prompt = "{instruction}",
+        remove_unused_columns = False,
+        conversation_extension = 3,
+    )
+
+    assert converted.column_names == ["instruction", "output", "conversations"]
+    assert len(converted[0]["conversations"]) == 6
+
+
+def test_conversation_extension_drops_its_scaffolding_columns():
+    to_sharegpt = _load_to_sharegpt()
+    for extension in (2, 3, 4):
+        converted = to_sharegpt(
+            _alpaca(),
+            merged_prompt = "{instruction}",
+            remove_unused_columns = False,
+            conversation_extension = extension,
+        )
+        numbered = [name for name in converted.column_names if name.startswith("conversations")]
+        assert numbered == ["conversations"], converted.column_names
+        assert len(converted[0]["conversations"]) == 2 * extension
+
+
+def test_conversation_extension_unchanged_when_columns_removed():
+    to_sharegpt = _load_to_sharegpt()
+    converted = to_sharegpt(
+        _alpaca(),
+        merged_prompt = "{instruction}",
+        conversation_extension = 3,
+    )
+
+    assert converted.column_names == ["conversations"]
+    assert len(converted[0]["conversations"]) == 6
+    assert all(turn["value"] for row in converted for turn in row["conversations"])
+
+
+_ROWS = {"instruction": ["Sum 1 and 2"], "input": ["1 2"]}
+_COLS = ["instruction", "input"]
+
+
+def test_escaped_braces_are_not_column_names():
+    out = _render('Task: {instruction}\nReply as {{"answer": <number>}}', _COLS, _ROWS)
+    assert out == ['Task: Sum 1 and 2\nReply as {"answer": <number>}']
+
+
+def test_escaped_braces_beside_an_optional_block():
+    out = _render('{instruction}[[ / {input}]]\nFormat: {{"a": 1}}', _COLS, _ROWS)
+    assert out == ['Sum 1 and 2 / 1 2\nFormat: {"a": 1}']
+
+
+def test_escaped_braces_wrapping_a_real_column():
+    assert _render("{instruction} -> {{{input}}}", _COLS, _ROWS) == ["Sum 1 and 2 -> {1 2}"]
+
+
+def test_empty_escaped_pair():
+    out = _render("Set is {{}} and task is {instruction}", _COLS, _ROWS)
+    assert out == ["Set is {} and task is Sum 1 and 2"]
+
+
+def test_misspelled_column_still_rejected():
+    with pytest.raises(KeyError, match = "instrution"):
+        _render("Task: {instrution}", _COLS, _ROWS)

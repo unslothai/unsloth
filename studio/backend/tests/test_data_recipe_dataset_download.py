@@ -152,14 +152,29 @@ def test_build_dataset_download_leaves_no_temp_file_when_export_fails(tmp_path: 
         lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("export blew up")),
     )
 
-    before = set(Path(tempfile.gettempdir()).glob("*.jsonl"))
+    # A private system temp dir, not the shared one. The claim is "the failed export unlinked
+    # what it created", and reading that off $TMPDIR made it a claim about the whole box: the
+    # siblings in this file each leave a NamedTemporaryFile(suffix = ".jsonl") in flight until
+    # their own finally runs, and CI shards this suite with `-n 4 --dist loadgroup`, so a
+    # sibling on another worker could put a .jsonl there between the two reads and fail this
+    # test for something it does not measure. Pointing tempfile.tempdir at a directory only
+    # this test can reach makes the reading exact instead of merely usually-quiet, and lets
+    # the assertion be "nothing at all" rather than "the same set as a moment ago".
+    system_temp = tmp_path / "system-temp"
+    system_temp.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(system_temp))
+    assert Path(tempfile.gettempdir()) == system_temp, "the export must allocate under our dir"
+
     with pytest.raises(RuntimeError):
         build_dataset_download(
             artifact_path = str(dataset_path),
             export_format = "jsonl",
             filename_stem = "leaky",
         )
-    assert set(Path(tempfile.gettempdir()).glob("*.jsonl")) == before
+    assert sorted(system_temp.iterdir()) == [], (
+        "the failed export left its temporary file behind: "
+        f"{sorted(p.name for p in system_temp.iterdir())}"
+    )
 
 
 def test_build_dataset_download_parquet_zip_includes_images(tmp_path: Path, monkeypatch):
@@ -604,6 +619,55 @@ def test_to_jsonable_maps_pandas_missing_sentinels_to_none():
     for sentinel in (pd.NA, pd.NaT):
         assert to_jsonable(sentinel) is None
         assert to_preview_jsonable(sentinel) is None
+
+
+def test_to_jsonable_maps_non_finite_numbers_to_none():
+    np = pytest.importorskip("numpy")
+    from core.data_recipe.jsonable import to_jsonable, to_preview_jsonable
+
+    for value in (float("nan"), float("inf"), -math.inf, np.float64("nan"), np.float32("nan")):
+        assert to_jsonable(value) is None
+        assert to_preview_jsonable(value) is None
+    assert to_jsonable(np.float32(0.5)) == 0.5
+    assert to_jsonable(1.5) == 1.5
+
+
+def test_job_dataset_route_returns_a_missing_number_as_null(monkeypatch):
+    pd = pytest.importorskip("pandas")
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from core.data_recipe.jsonable import to_preview_jsonable_row
+
+    jobs_route = pytest.importorskip(
+        "routes.data_recipe.jobs",
+        reason = "studio backend routes unavailable",
+    )
+
+    frame = pd.DataFrame({"question": ["Q1", "Q2"], "score": [1.0, None]})
+    rows = to_preview_jsonable_row(frame.to_dict(orient = "records"))
+
+    class _FakeManager:
+        def get_dataset(
+            self,
+            job_id: str,
+            *,
+            limit: int,
+            offset: int = 0,
+        ):
+            return {"dataset": rows[offset : offset + limit], "total": len(rows)}
+
+    monkeypatch.setattr(jobs_route, "get_job_manager", lambda: _FakeManager())
+    app = FastAPI()
+    app.include_router(jobs_route.router)
+
+    response = TestClient(app, raise_server_exceptions = False).get("/jobs/job-1/dataset")
+
+    assert response.status_code == 200
+    assert response.json()["dataset"] == [
+        {"question": "Q1", "score": 1.0},
+        {"question": "Q2", "score": None},
+    ]
 
 
 def test_build_dataset_download_writes_a_missing_timestamp_as_null(tmp_path: Path, monkeypatch):

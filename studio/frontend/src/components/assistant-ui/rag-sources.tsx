@@ -9,10 +9,11 @@ import type { FC } from "react";
 import { type Citation, parseCitations } from "./citation-utils";
 import { CitationBadge } from "./tool-ui-knowledge-base";
 
-export const DocumentSourcesGroup: FC<{ sources: Citation[] }> = ({
-  sources: all,
-}) => {
-  // Map updates keep first-seen order, so dedup to best-scoring chunk per doc.
+export const DocumentSourcesGroup: FC<{
+  sources: Citation[];
+  label?: string;
+}> = ({ sources: all, label = "Document Sources" }) => {
+  // Map keeps first-seen order while retaining each document's top score.
   const byDoc = new Map<string, Citation>();
   for (const c of all) {
     const key = c.documentId ?? c.filename;
@@ -33,7 +34,7 @@ export const DocumentSourcesGroup: FC<{ sources: Citation[] }> = ({
   return (
     <div className="mt-2 mb-3">
       <div className="mb-1 text-xs font-medium text-muted-foreground">
-        Document Sources
+        {label}
       </div>
       <div className="flex flex-wrap gap-1.5">
         {sources.map((citation, i) => (

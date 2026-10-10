@@ -185,11 +185,7 @@ class TestNothingChangesWhenTheBudgetIsUnknown:
 
 
 # In the order they were added, so older positional callers keep their meaning.
-_TOOL_LOOP_HOOKS = (
-    "on_conversation_grew",
-    "on_decode_slot",
-    "admission_output_allowance",
-)
+_TOOL_LOOP_HOOKS = ("on_conversation_grew", "on_decode_slot", "thinking_budget_tokens")
 
 
 class TestOldCallers:
@@ -241,13 +237,29 @@ class TestOldCallers:
         names = list(
             inspect.signature(LlamaCppBackend.generate_chat_completion_with_tools).parameters
         )
-        tail = names[-len(_TOOL_LOOP_HOOKS) :]
-        assert tail == list(_TOOL_LOOP_HOOKS), f"the hooks must stay at the tail, got {tail}"
+        # Later parameters may only be appended after the hooks, never inserted before them.
+        start = names.index(_TOOL_LOOP_HOOKS[0])
+        hooks = names[start : start + len(_TOOL_LOOP_HOOKS)]
+        assert hooks == list(
+            _TOOL_LOOP_HOOKS
+        ), f"the hooks must stay together in order, got {hooks}"
         plain = list(inspect.signature(LlamaCppBackend.generate_chat_completion).parameters)
         assert plain[-2:] == [
             "admission_output_allowance",
             "on_prompt_fitted",
         ], f"a parameter was inserted rather than appended; signature ends {plain[-4:]}"
+
+    def test_the_sandbox_level_was_appended_rather_than_inserted(self):
+        import inspect
+
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        names = list(
+            inspect.signature(LlamaCppBackend.generate_chat_completion_with_tools).parameters
+        )
+        # The wire-cap allowance was appended after it.
+        assert names[-2:] == ["sandbox_level", "admission_output_allowance"]
+        assert names.index("promote_reasoning_only") == names.index("permission_mode") + 1
 
     def test_the_wait_timeout_has_a_sane_default(self):
         import inspect

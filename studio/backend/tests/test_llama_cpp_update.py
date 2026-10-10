@@ -16,7 +16,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -353,6 +353,22 @@ def test_status_source_build_skips_probe_while_job_runs(monkeypatch, tmp_path):
     assert probes == {"resolve": 0, "version": 0}
 
 
+def test_status_source_build_skips_probe_when_update_checks_disabled(monkeypatch, tmp_path):
+    binary = tmp_path / "build" / "bin" / "llama-server"
+    binary.parent.mkdir(parents = True)
+    binary.write_text("stub")
+    monkeypatch.setattr(upd, "_find_binary", lambda: str(binary))
+
+    def _resolve(*, force_refresh = False):
+        raise AssertionError("probed for a prebuilt despite UNSLOTH_DISABLE_UPDATE_CHECK=1")
+
+    monkeypatch.setattr(upd, "_resolve_prebuilt_for_host", _resolve)
+    monkeypatch.setenv("UNSLOTH_DISABLE_UPDATE_CHECK", "1")
+    st = upd.get_update_status(force_refresh = True)
+    assert st["update_available"] is False
+    assert st["source_build"] is False
+
+
 def test_installed_version_skips_probe_while_job_runs(monkeypatch, tmp_path):
     # Markerless build: get_installed_llama_version falls back to exec'ing
     # `llama-server --version`. While the updater swaps the tree that exec can
@@ -410,6 +426,24 @@ def test_start_update_no_marker_no_prebuilt_refuses(monkeypatch, tmp_path):
     res = upd.start_update()
     assert res["started"] is False
     assert res["reason"] == "no_prebuilt_available"
+
+
+def test_start_update_refuses_when_update_checks_disabled(monkeypatch, tmp_path):
+    install_dir = tmp_path / "llama.cpp"
+    binary = _write_install(install_dir, "b9493")
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
+
+    def _network(*args, **kwargs):
+        raise AssertionError("planned an update despite UNSLOTH_DISABLE_UPDATE_CHECK=1")
+
+    monkeypatch.setattr(upd, "_plan_llama_phase", _network)
+    monkeypatch.setattr(upd, "_pending_backend_migration", _network)
+    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", _network)
+    monkeypatch.setenv("UNSLOTH_DISABLE_UPDATE_CHECK", "1")
+    res = upd.start_update()
+    assert res["started"] is False
+    assert res["reason"] == "update_checks_disabled"
 
 
 def test_start_update_source_build_installs_prebuilt(monkeypatch, tmp_path):
@@ -1115,6 +1149,66 @@ def test_update_sets_maintenance_flag_and_unloads(monkeypatch, tmp_path):
     assert upd.get_update_status()["job"]["reload_required"] is True
     assert seen.get("flag_during_install") is True
     assert backend._llama_update_in_progress is False
+
+
+def test_update_drains_and_marks_each_kept_model_before_swapping(monkeypatch, tmp_path):
+    import core.inference.model_slots as model_slots
+
+    install_dir = tmp_path / "llama.cpp"
+    binary = _write_install(install_dir, "b9493")
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
+    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9518")
+    _inject_backend(monkeypatch, _FakeBackend())
+    kept = _FakeBackend()
+    monkeypatch.setattr(model_slots, "slots", [SimpleNamespace(llama = kept)])
+    seen = {}
+
+    def unload_llama_slots(strict = False):
+        # A load still holding the slot's lock would have finished before this runs.
+        seen["lock_free"] = kept._serial_load_lock.acquire(blocking = False)
+        seen["flag"] = kept._llama_update_in_progress
+        return 1
+
+    monkeypatch.setattr(model_slots, "unload_llama_slots", unload_llama_slots)
+    _patch_installer_popen(monkeypatch, on_start = lambda cmd: _write_install(install_dir, "b9518"))
+    assert upd.start_update()["started"] is True
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        if upd.get_update_status()["job"]["state"] in ("success", "error"):
+            break
+        time.sleep(0.05)
+    assert seen == {"lock_free": True, "flag": True}
+    # A slot the teardown kept (a non-GGUF model) is usable again once the update ends.
+    assert kept._llama_update_in_progress is False
+
+
+def test_update_stops_when_a_kept_model_would_not_unload(monkeypatch, tmp_path):
+    import core.inference.model_slots as model_slots
+
+    install_dir = tmp_path / "llama.cpp"
+    binary = _write_install(install_dir, "b9493")
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
+    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9518")
+    _inject_backend(monkeypatch, _FakeBackend())
+    monkeypatch.setattr(model_slots, "slots", [])
+
+    def stuck(strict = False):
+        assert strict
+        raise RuntimeError("Could not unload 1 model(s) kept alongside")
+
+    monkeypatch.setattr(model_slots, "unload_llama_slots", stuck)
+    spawned = []
+    _patch_installer_popen(monkeypatch, spawned = spawned)
+    assert upd.start_update()["started"] is True
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        if upd.get_update_status()["job"]["state"] in ("success", "error"):
+            break
+        time.sleep(0.05)
+    assert upd.get_update_status()["job"]["state"] == "error"
+    assert not any("install_llama_prebuilt" in " ".join(map(str, c)) for c in spawned)
 
 
 def test_update_clears_maintenance_flag_on_installer_failure(monkeypatch, tmp_path):

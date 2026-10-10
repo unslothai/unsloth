@@ -177,6 +177,7 @@ BACKEND_ISOLATED = [
     ),
     ("tests/test_web_fetch_extraction.py", "compares parse time at two input sizes"),
     ("tests/test_tool_call_parser_strict.py", "compares parse time at two nesting depths"),
+    ("tests/test_pr5624_regressions.py", "R1 parser's 1s bound exceeded under CPU contention"),
     # Found by staging rather than by the scan, and the scan cannot find it: see below.
     (
         "tests/test_tunnel_safe_long_post.py",
@@ -257,6 +258,10 @@ _CLOCKS = ("monotonic", "perf_counter", "process_time", "time")
 # onto something else.
 BENIGN_TIMING = {
     ("test_media_auto_switch.py", "_until"),
+    # A 600 s poll deadline while llama-server loads the model: descheduling only delays the poll.
+    ("test_decision_native_gpu.py", "_bare_llama_server"),
+    # A 10 s poll deadline: descheduling only delays the poll, it cannot make the condition false.
+    ("test_npu_chat_route.py", "_wait_for"),
     ("test_openai_auto_switch.py", "test_any_finished_download_drops_the_resolver_cache"),
     # A 600-second expiry checked against the wall clock.
     # Reading both sides of that gap late by whole seconds still leaves it true, and it only reaches this scan at all
@@ -265,6 +270,16 @@ BENIGN_TIMING = {
         "test_openai_codex_subscription.py",
         "test_account_claim_and_token_response_are_validated_without_returning_raw_body",
     ),
+    # A precondition, not a measurement: the snapshot is back-dated by _CACHE_TTL_S + 1s and the window is
+    # max(_CACHE_TTL_S, 0.0 * duty) because the last scan duration is pinned to 0.0, so the age starts a whole second
+    # past the bound and a descheduled worker only makes it older.
+    (
+        "test_account_local_model_resolver.py",
+        "test_a_warm_scan_queues_behind_another_accounts_scan",
+    ),
+    # A poll deadline: FakeSmi.wait_for_call loops until the fake nvidia-smi has logged the expected children and only
+    # asserts `time.monotonic() < deadline` against a 30s budget, so a descheduled worker just polls longer.
+    ("test_gpu_query_cache.py", "wait_for_call"),
 }
 
 

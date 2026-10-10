@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useAppShellReadySignal } from "@/components/app-readiness";
-import { useHfEndpoint } from "@/lib/hf-endpoint";
+import { useHfEndpoint, useHubSource } from "@/lib/hf-endpoint";
 import { usePlatformStore } from "@/config/env";
 import {
   applyActiveModelStatusToStore,
@@ -13,15 +13,19 @@ import {
   resolveInferenceCheckpointId,
   useChatRuntimeStore,
 } from "@/features/chat";
+import { audioPickSearch } from "@/features/audio/route-search";
 import { useHubInfiniteScroll } from "@/features/hub";
 import { useOnlineStatus } from "@/features/hub/hooks/use-online-status";
 import {
+  type ModelConfigHandoffRequest,
   clearModelConfigHandoff,
   createModelConfigHandoffRequestId,
   hfModelFitsDevice,
   loadScopedGpu,
   requestModelConfigHandoff,
 } from "@/features/model-picker";
+import { taskForMediaPick } from "@/features/model-picker/components/model-selector/audio-picker-policy";
+import { type NpuModel, type NpuPickerSource, useNpuStatus } from "@/features/npu";
 import { loadOpenAIAutoSwitchSettings } from "@/features/settings";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
@@ -62,6 +66,7 @@ import {
   ResultListHeader,
 } from "./catalog/models-table";
 import { ModelsToolbar } from "./catalog/models-toolbar";
+import { NpuCatalogList } from "./catalog/npu-catalog-list";
 import { OnDeviceFoldersDialog } from "./catalog/on-device-folders-dialog";
 import { OwnerScopeToggle } from "./catalog/owner-scope-toggle";
 import { useDiscoverSearch } from "./hooks/use-discover-search";
@@ -98,6 +103,7 @@ import { residentModelIdMatches } from "./lib/model-identity";
 import {
   createHubModelConfigHandoff,
   type HubModelRunSelection,
+  hubAudioTask,
 } from "./lib/model-run-selection";
 import {
   type ModelTypeFilter,
@@ -114,6 +120,7 @@ import { studioPageForTask } from "./lib/unsloth-support";
 import {
   buildDiscoverRows,
   detectResultFormat,
+  discoveryInventorySignature,
   isUnslothFinetunable,
   matchesCapability,
   matchesFormat,
@@ -234,24 +241,6 @@ function buildFocusedHeading({
   if (trimmed) return `Results for "${trimmed}"`;
   if (channel && channel.id !== DEFAULT_DISCOVER_CHANNEL) return channel.label;
   return isDataset ? "Datasets" : "Models";
-}
-
-function discoveryInventorySignature(
-  cachedRows: readonly CachedInventoryRow[],
-  localRows: readonly LocalInventoryRow[],
-): string {
-  const parts: string[] = [];
-  for (const row of cachedRows) {
-    parts.push(
-      `c:${row.repoId.toLowerCase()}:${row.modelFormat}:${row.partial ? "p" : "c"}`,
-    );
-  }
-  for (const row of localRows) {
-    parts.push(
-      `l:${(row.repoId ?? row.id).toLowerCase()}:${row.modelFormat}:${row.partial ? "p" : "c"}`,
-    );
-  }
-  return parts.sort().join("|");
 }
 
 function readModelsTabPreference(): ModelsTab | null {
@@ -486,7 +475,14 @@ export function ModelsPage() {
       } = {},
     ): Promise<void> => {
       const seq = ++residentStatusSeq.current;
-      const read = Promise.all([getInferenceStatus(), readIdleUnloadArmed()])
+      const selected = useChatRuntimeStore.getState().params.checkpoint;
+      const read = Promise.all([
+        getInferenceStatus(
+          undefined,
+          selected && !isExternalModelId(selected) ? selected : undefined,
+        ),
+        readIdleUnloadArmed(),
+      ])
         .then(([status, idleUnloadArmed]) => {
           if (seq !== residentStatusSeq.current)
             return supersedingRefresh(residentStatusSupersession.current, seq);
@@ -601,7 +597,14 @@ export function ModelsPage() {
     () => findChannel(activeChannelId),
     [activeChannelId],
   );
+  const [npuStatus, setNpuStatus] = useNpuStatus();
+  const npuSource: NpuPickerSource | undefined = npuStatus?.supported
+    ? { status: npuStatus, onStatusChange: setNpuStatus }
+    : undefined;
   const formatFilter = isDiscoverTab ? discoverFormat : downloadedFormat;
+  const npuCatalogSource =
+    formatFilter === "npu" && !isDatasetMode ? npuSource : undefined;
+  const showNpuCatalog = npuCatalogSource !== undefined;
   const setFormatFilter = useCallback(
     (next: ModelFormatFilter) => {
       if (isDiscoverTab) {
@@ -745,6 +748,33 @@ export function ModelsPage() {
     });
   }, [navigate, setModelsTab]);
 
+  // A capability link opens the sorted Discover list with that filter on (the feed ignores it).
+  // The param is consumed so later filter changes stick and a repeat link re-applies.
+  const urlCapability = hubSearch.capability ?? null;
+  useEffect(() => {
+    if (!urlCapability) return;
+    setResourceType("models");
+    setQuery("");
+    setDiscoverFormat("all");
+    setCapabilityFilter(urlCapability);
+    setSortBrowseActive(true);
+    // The media pages run curated Unsloth uploads, so start there.
+    setOwnerScope("unsloth");
+    void navigate({
+      to: "/hub",
+      // Discover models, whatever tab or kind the link carried.
+      search: (prev) => ({
+        ...prev,
+        tab: "discover",
+        kind: undefined,
+        capability: undefined,
+        section: undefined,
+        model: undefined,
+      }),
+      replace: true,
+    });
+  }, [urlCapability, navigate, setOwnerScope]);
+
   const handleSortChange = useCallback(
     (next: HfSortKey) => {
       setSortBy(next);
@@ -795,8 +825,14 @@ export function ModelsPage() {
     return null;
   }, [isChannelListMode, isFeedMode, activeChannel]);
 
-  const effectiveSort: HfSortKey =
+  const hubSource = useHubSource();
+  const requestedSort: HfSortKey =
     isFeedMode && liveListChannel ? liveListChannel.sort : sortBy;
+  // ModelScope has no creation-date sort; its closest is last modified.
+  const effectiveSort: HfSortKey =
+    hubSource === "modelscope" && requestedSort === "createdAt"
+      ? "lastModified"
+      : requestedSort;
   const effectiveDirection: HfSortDirection = isFeedMode ? "desc" : direction;
   // The format dropdown always filters the visible list, including the feed's "Latest" list, so
   // the default (GGUF) hides fp8/safetensors and picking a format actually changes the rows.
@@ -826,7 +862,8 @@ export function ModelsPage() {
   } = useDiscoverSearch({
     debouncedQuery,
     accessToken: apiHfToken,
-    isDiscoverTab,
+    // The NPU list replaces the Hub results, so they are not fetched behind it.
+    isDiscoverTab: isDiscoverTab && !showNpuCatalog,
     isDatasetMode,
     sortBy: effectiveSort,
     direction: effectiveDirection,
@@ -856,6 +893,7 @@ export function ModelsPage() {
     localRows: effectiveLocalRows,
     availableSet,
     partialSet,
+    downloadingSet,
     downloadedReady,
     inventorySettled,
     inventoryError,
@@ -928,11 +966,12 @@ export function ModelsPage() {
         },
         isAvailableOnDevice: availableSet.has(lower),
         isPartialOnDevice: partialSet.has(lower),
+        isDownloadingOnDevice: partialSet.has(lower) && downloadingSet.has(lower),
         summary: summaryParts.join(" · ") || ds.prettyName || "Dataset",
         capabilities: [],
       };
     });
-  }, [isDatasetMode, datasetResults, availableSet, partialSet]);
+  }, [isDatasetMode, datasetResults, availableSet, partialSet, downloadingSet]);
 
   const discoverRows = isDatasetMode ? datasetDiscoverRows : modelDiscoverRows;
 
@@ -1355,14 +1394,15 @@ export function ModelsPage() {
   ]);
 
   useEffect(() => {
-    if (!isModelDiscover || !sectionChannelId) return;
+    // A capability link clears the section itself; applying the preset would reset its filter.
+    if (!isModelDiscover || !sectionChannelId || urlCapability) return;
     const preset = findChannel(sectionChannelId);
     if (!preset) return;
     setDiscoverFormat(preset.format);
     setSortBy(preset.sort);
     setDirection("desc");
     setCapabilityFilter("all");
-  }, [isModelDiscover, sectionChannelId]);
+  }, [isModelDiscover, sectionChannelId, urlCapability]);
   const handleManageLocalFolders = useCallback(
     () => setFoldersDialogOpen(true),
     [],
@@ -1437,10 +1477,43 @@ export function ModelsPage() {
     },
     [navigate, setModelsTab, setOwnerScope],
   );
+  // A new chat opens with the model's run settings, where Load starts it.
+  const openRunSettingsInChat = useCallback(
+    (request: ModelConfigHandoffRequest) => {
+      clearNewChatDraft();
+      const chatRuntime = useChatRuntimeStore.getState();
+      chatRuntime.setActiveThreadId(null);
+      chatRuntime.setActiveProjectId(null);
+      chatRuntime.setIncognito(false);
+      requestModelConfigHandoff(request);
+      const { requestId } = request;
+      void navigate({ to: "/chat", search: { new: requestId } }).catch(() => {
+        clearModelConfigHandoff(requestId);
+      });
+    },
+    [navigate],
+  );
+
+  const handleRunNpu = useCallback(
+    (model: NpuModel) =>
+      openRunSettingsInChat({
+        requestId: createModelConfigHandoffRequestId(),
+        id: model.model_path,
+        displayName: model.id,
+        meta: {
+          source: "local",
+          isLora: false,
+          isDownloaded: true,
+          isVision: model.supports_vision,
+        },
+      }),
+    [openRunSettingsInChat],
+  );
+
   const handleRun = useCallback(
     async (
       selection: HubModelRunSelection,
-      mediaPage: ReturnType<typeof studioPageForTask>,
+      mediaPage: ReturnType<typeof studioPageForTask> | "audio",
     ) => {
       if (!selectedModel) return;
       if (mediaPage) {
@@ -1454,7 +1527,22 @@ export function ModelsPage() {
         }
         void navigate({
           to: `/${mediaPage}`,
-          search: diffusionRouteSearch(selectedModel.hubRepoId, selection),
+          search:
+            mediaPage === "audio"
+              ? audioPickSearch(selectedModel.hubRepoId, {
+                  ...selection,
+                  task: hubAudioTask(
+                    selectedModel,
+                    taskForMediaPick(
+                      selectedModel.pipelineTag,
+                      selectedModel.task,
+                    ),
+                  ),
+                  audioType: selectedModel.audioType,
+                  isGguf: selectedModel.isGguf,
+                  loadId: selectedModel.loadId,
+                })
+              : diffusionRouteSearch(selectedModel.hubRepoId, selection),
         });
         return;
       }
@@ -1479,15 +1567,7 @@ export function ModelsPage() {
           });
           return;
         }
-        clearNewChatDraft();
-        const chatRuntime = useChatRuntimeStore.getState();
-        chatRuntime.setActiveThreadId(null);
-        chatRuntime.setActiveProjectId(null);
-        chatRuntime.setIncognito(false);
-        requestModelConfigHandoff(request);
-        void navigate({ to: "/chat", search: { new: requestId } }).catch(() => {
-          clearModelConfigHandoff(requestId);
-        });
+        openRunSettingsInChat(request);
       } finally {
         runConfigOpenCoordinator.finish(controller);
         setRunConfigOpening((current) =>
@@ -1497,6 +1577,7 @@ export function ModelsPage() {
     },
     [
       navigate,
+      openRunSettingsInChat,
       refreshResidentModelStatus,
       runConfigOpenCoordinator,
       selectedModel,
@@ -1576,6 +1657,8 @@ export function ModelsPage() {
             deferredCapabilityFilter !== "all" ||
             (tab === "downloaded" && typeFilterActive)),
         typeFilterActive,
+        // A single format filter makes every row's format dot the same.
+        showFormatDots: isDatasetMode || deferredFormatFilter === "all",
       };
     },
     [
@@ -1768,8 +1851,9 @@ export function ModelsPage() {
     isDatasetMode,
   ]);
 
-  const detailOpen = urlModel !== null;
-  const splitMode = allModelsView === "split";
+  // NPU rows have no detail view; one left open would cover their list.
+  const detailOpen = urlModel !== null && !showNpuCatalog;
+  const splitMode = allModelsView === "split" && !showNpuCatalog;
   // Unreachable under the full-page detail overlay.
   const catalogCovered = detailOpen && !splitMode;
 
@@ -1811,6 +1895,7 @@ export function ModelsPage() {
           onManageLocalFolders={handleManageLocalFolders}
           onFreeUpSpace={handleFreeUpSpace}
           onOpenFineTune={() => handleOpenList("finetune")}
+          npuAvailable={npuSource !== undefined}
         />
       </HubTopBar>
 
@@ -1838,16 +1923,25 @@ export function ModelsPage() {
           aria-hidden={catalogCovered || undefined}
           inert={catalogCovered || undefined}
         >
-          <ModelsCatalog
-            state={catalogState}
-            pagination={catalogPagination}
-            handlers={catalogHandlers}
-            header={catalogHeader}
-            downloadedHeader={downloadedHeader}
-            resetScrollKey={filterResetSignature}
-            discoverView={allModelsView}
-            inventorySort={inventorySort}
-          />
+          {npuCatalogSource ? (
+            <NpuCatalogList
+              source={npuCatalogSource}
+              query={query}
+              onDevice={!isDiscoverTab}
+              onRun={handleRunNpu}
+            />
+          ) : (
+            <ModelsCatalog
+              state={catalogState}
+              pagination={catalogPagination}
+              handlers={catalogHandlers}
+              header={catalogHeader}
+              downloadedHeader={downloadedHeader}
+              resetScrollKey={filterResetSignature}
+              discoverView={allModelsView}
+              inventorySort={inventorySort}
+            />
+          )}
         </div>
 
         {splitMode ? (

@@ -30,6 +30,10 @@ interface BackendTrainingDefaults {
   eval_steps?: number;
   weight_decay?: number;
   random_seed?: number;
+  offload_layers?: number | "auto";
+  offload_vram_gb?: number | null;
+  offload_vram_gb_per_device?: Record<string, number | null> | (number | null)[] | null;
+  prefetch_depth?: number | "auto";
   vision_image_size?: number | string | null;
   packing?: boolean;
   train_on_completions?: boolean;
@@ -67,33 +71,54 @@ export interface BackendModelConfig {
   logging?: BackendLoggingDefaults;
 }
 
+export interface DecisionCheckpoint {
+  name: string;
+  subfolder: string | null;
+  description: string;
+}
+
 export interface ModelConfigResponse {
   id: string;
   model_name?: string | null;
   config?: BackendModelConfig | null;
   is_vision: boolean;
   is_embedding?: boolean;
+  is_decision?: boolean;
+  decision_checkpoints?: DecisionCheckpoint[] | null;
+  decision_layout?: DecisionLayout | null;
   is_audio: boolean;
   // False when the repo's tokenizer_config.json was unreadable (gated, offline,
   // upstream error), so is_audio false means unknown rather than "not audio".
   audio_type_known?: boolean;
   is_lora: boolean;
   base_model?: string | null;
-  model_type?: "text" | "vision" | "audio" | "embeddings" | null;
+  model_type?: "text" | "vision" | "audio" | "embeddings" | "decision" | null;
   max_position_embeddings?: number | null;
   model_size_bytes?: number | null;
+}
+
+// laya: a Laya checkpoint. clef: Cloudflare Clef. llm: a text or vision LLM trained with a Clef decision head.
+export type DecisionLayout = "laya" | "clef" | "llm";
+
+/** Clef and LLM decision runs have an LLM backbone, so they take QLoRA and the recipe's context; Laya is 16-bit at 1024 tokens. */
+export function decisionLayoutHasLlmBackbone(
+  layout: DecisionLayout | null | undefined,
+): boolean {
+  return layout === "clef" || layout === "llm";
 }
 
 export interface ModelConfigRequestOptions {
   preferLocalCache?: boolean;
   localPath?: string | null;
+  // Ask for an LLM's defaults as a decision model; Laya and Clef are decision models anyway.
+  asDecision?: boolean;
 }
 
 export interface LocalModelInfo {
   id: string;
   display_name: string;
   path: string;
-  source: "models_dir" | "hf_cache" | "lmstudio" | "ollama" | "hermes" | "custom";
+  source: "models_dir" | "hf_cache" | "lmstudio" | "omlx" | "ollama" | "hermes" | "custom";
   model_id?: string | null;
   updated_at?: number | null;
 }
@@ -153,6 +178,9 @@ export async function getModelConfig(
   }
   if (options?.localPath) {
     params.set("local_path", options.localPath);
+  }
+  if (options?.asDecision) {
+    params.set("as_decision", "true");
   }
   const query = params.toString();
   const response = await authFetch(

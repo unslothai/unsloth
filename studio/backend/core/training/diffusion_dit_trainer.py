@@ -46,6 +46,7 @@ from core.training.diffusion_train_common import (
     EventCb,
     LATENT_CACHE_OVER_BUDGET,
     StopCb,
+    bitsandbytes_optimizer_supported,
     _apply_perf_flags,
     _assert_trusted_base_model,
     _emit,
@@ -56,9 +57,11 @@ from core.training.diffusion_train_common import (
     _restore_perf_flags,
     discover_image_caption_pairs,
     has_functional_torchao,
-    native_bf16_supported,
+    flow_bf16_trainable,
+    native_bf16_supported_xpu,
     PermutationBatchSampler,
     repo_is_prequantized,
+    resolve_train_device,
     resolve_train_steps,
     restore_resume_state,
     write_resume_checkpoint,
@@ -268,13 +271,14 @@ def _bnb_4bit_config():
 _repo_is_prequantized = repo_is_prequantized
 
 
-def _load_quantized_transformer(transformer_cls, cfg):
+def _load_quantized_transformer(transformer_cls, cfg, device):
     """Load ``cfg.base_model``'s transformer subfolder as a trainable nf4 QLoRA module."""
     import torch
     return transformer_cls.from_pretrained(
         cfg.base_model,
         subfolder = "transformer",
         quantization_config = _bnb_4bit_config(),
+        device_map = {"": device},
         torch_dtype = torch.bfloat16,
         token = cfg.hf_token,
     )
@@ -307,7 +311,7 @@ def _load_dit_transformer(transformer_cls, cfg, device, base_precision):
 
     if base_precision == "nf4":
         if not repo_is_prequantized(cfg.base_model):
-            return _load_quantized_transformer(transformer_cls, cfg)
+            return _load_quantized_transformer(transformer_cls, cfg, device)
         transformer = transformer_cls.from_pretrained(
             cfg.base_model,
             subfolder = "transformer",
@@ -1194,8 +1198,18 @@ _LTX2_TARGETS = (
 _LTX2_TRAIN_FPS = 24.0
 
 
-def _ltx2_load_conditioners(cfg, device, weight_dtype):
+def _ltx2_pipeline_cls():
+    """``diffusers.LTX2Pipeline``, importable on the pinned transformers (see ltx2_import_compat)."""
+    from core.inference.ltx2_import_compat import ensure_ltx2_pipelines_importable
+
+    ensure_ltx2_pipelines_importable()
     from diffusers import LTX2Pipeline
+
+    return LTX2Pipeline
+
+
+def _ltx2_load_conditioners(cfg, device, weight_dtype):
+    LTX2Pipeline = _ltx2_pipeline_cls()
 
     pipe, vae = _load_pipe_without_transformer(LTX2Pipeline, cfg, device)
     # The connectors are not a text_encoder attribute, so _encoders_to_device never reaches them.
@@ -1296,13 +1310,13 @@ def _ltx2_audio_token_count(config, num_pixel_frames: int, fps: float) -> int:
 
 def _ltx2_pack(latents, conf):
     """[B,C,F,H,W] -> [B, F*H*W, C] via the pipeline's own patchifier."""
-    from diffusers import LTX2Pipeline
+    LTX2Pipeline = _ltx2_pipeline_cls()
     return LTX2Pipeline._pack_latents(latents, conf.patch_size, conf.patch_size_t)
 
 
 def _ltx2_unpack(pred, f, h, w, conf):
     """The inverse of ``_ltx2_pack``, back to the 5-D shape ``target = noise - latents`` has."""
-    from diffusers import LTX2Pipeline
+    LTX2Pipeline = _ltx2_pipeline_cls()
     return LTX2Pipeline._unpack_latents(pred, f, h, w, conf.patch_size, conf.patch_size_t)
 
 
@@ -1359,7 +1373,7 @@ def _ltx2_forward(transformer, noisy, timesteps, sigmas, embeds_batch, cfg, devi
 
 
 def _ltx2_save(pipe_cls, out_dir, transformer_lora_layers):
-    from diffusers import LTX2Pipeline
+    LTX2Pipeline = _ltx2_pipeline_cls()
     LTX2Pipeline.save_lora_weights(
         save_directory = out_dir,
         transformer_lora_layers = transformer_lora_layers,
@@ -1500,7 +1514,9 @@ def _open_resized(path, resolution):
     Returns the resized PIL image and its (rw, rh)."""
     from PIL import Image, ImageOps
 
-    img = ImageOps.exif_transpose(Image.open(path)).convert("RGB")
+    from core.inference.mcp_images import flattened_rgb
+
+    img = flattened_rgb(ImageOps.exif_transpose(Image.open(path)), background = (255, 255, 255))
     w0, h0 = img.size
     scale = resolution / min(w0, h0)
     rw, rh = max(resolution, round(w0 * scale)), max(resolution, round(h0 * scale))
@@ -1853,15 +1869,20 @@ def run_dit_lora_training(
             save_on_stop = False
         return True
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    # Fail fast on pre-Ampere CUDA, gating on NATIVE bf16 (capability major >= 8), since is_bf16_supported() counts
-    # emulation.
-    if device == "cuda" and not native_bf16_supported():
+    device = resolve_train_device()
+    # bf16 throughout (fp32 on a CPU-only box, to keep import/unit tests architecture-agnostic). Both accelerator
+    # guards gate on NATIVE bf16, since is_bf16_supported() counts emulation on CUDA and on XPU alike.
+    if device == "cuda" and not flow_bf16_trainable():
         raise ValueError(
             "This trainer requires a bfloat16-capable GPU (Ampere or newer); "
             "this CUDA device does not support bf16."
         )
-    weight_dtype = torch.bfloat16 if device == "cuda" else torch.float32
+    if device == "xpu" and not native_bf16_supported_xpu():
+        raise ValueError(
+            "This trainer requires a bfloat16-capable GPU; this XPU device does not "
+            "support bf16 natively."
+        )
+    weight_dtype = torch.bfloat16 if device in ("cuda", "xpu") else torch.float32
 
     _assert_trusted_base_model(cfg.base_model)
     # Check the repo this run will FETCH: the canonical id would raise for a gated base already redirected to its
@@ -2002,6 +2023,8 @@ def _train_dit(
         gc.collect()
         if device == "cuda":
             torch.cuda.empty_cache()
+        elif device == "xpu":
+            torch.xpu.empty_cache()
 
         # The cache keeps the posterior affine parameters, so per-step sampling noise is preserved.
         if use_cache:
@@ -2043,6 +2066,8 @@ def _train_dit(
         gc.collect()
         if device == "cuda":
             torch.cuda.empty_cache()
+        elif device == "xpu":
+            torch.xpu.empty_cache()
     # Variant picks use their own stream so the training loop index/noise draws stay seed-deterministic.
     variant_rng = random.Random(cfg.seed + 1)
 
@@ -2209,8 +2234,8 @@ def _train_dit(
     # bf16 autocast around the forward + loss, matching the diffusers dreambooth scripts: it reconciles the fp32 LoRA
     # params with the bnb 4-bit base matmuls.
     autocast = (
-        torch.autocast(device_type = "cuda", dtype = torch.bfloat16)
-        if device == "cuda"
+        torch.autocast(device_type = device, dtype = torch.bfloat16)
+        if device in ("cuda", "xpu")
         else nullcontext()
     )
     for opt_step in range(resumed, cfg.train_steps):
@@ -2394,11 +2419,14 @@ def _make_optimizer(params, lr):
 
     if os.environ.get("UNSLOTH_DIFFUSION_FP32_OPTIM", "") in ("1", "true"):
         return torch.optim.AdamW(params, lr = lr)
-    try:
-        import bitsandbytes as bnb
-        return bnb.optim.AdamW8bit(params, lr = lr)
-    except Exception:  # noqa: BLE001 -- bnb missing / no CUDA: fall back to torch AdamW
-        pass
+    # Checked before construction, not around it: on XPU the 8-bit optimizer builds fine and
+    # only dies at the first step(), which the except below would never see.
+    if bitsandbytes_optimizer_supported():
+        try:
+            import bitsandbytes as bnb
+            return bnb.optim.AdamW8bit(params, lr = lr)
+        except Exception:  # noqa: BLE001 -- bnb missing / no CUDA: fall back to torch AdamW
+            pass
     if torch.cuda.is_available():
         try:
             return torch.optim.AdamW(params, lr = lr, fused = True)

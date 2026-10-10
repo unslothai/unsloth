@@ -46,13 +46,11 @@ import type { TranslationKey } from "@/i18n";
 import { useT } from "@/i18n";
 import { getApiBase, isTauri } from "@/lib/api-base";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
-import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import { ArrowUpRight01Icon, Copy01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ApiProviderLogo } from "../../chat/api-provider-logo";
 import { loadCodingAgents } from "../api/coding-agents";
 import {
   buildAgentShellCommands,
@@ -60,6 +58,17 @@ import {
   normalizeHost,
   quoteShellArg,
 } from "../components/agent-command";
+import {
+  AgentIcon,
+  CommandBlock,
+  useCopyButton,
+} from "../components/agent-command-block";
+import {
+  type AgentDetails,
+  SUPPORTED_AGENTS,
+  UNSLOTH_START_DOCS_URL,
+  detailsFor,
+} from "../components/coding-agent-list";
 import { SettingsSection } from "../components/settings-section";
 import {
   isChatGenerativeHubModel,
@@ -71,7 +80,7 @@ import {
   useSettingsPanelPrefsStore,
 } from "../stores/settings-panel-prefs-store";
 
-const DOCS_URL = "https://unsloth.ai/docs/integrations/unsloth-start";
+const DOCS_URL = UNSLOTH_START_DOCS_URL;
 const FLAGS_DOCS_URL = `${DOCS_URL}#flags--options`;
 const EXAMPLE_MODEL_REPO = "unsloth/Qwen3.8-27B-GGUF";
 const EXAMPLE_MODEL_VARIANT = "UD-Q4_K_XL";
@@ -95,116 +104,12 @@ function canUseLocalAgentDetection(base: string): boolean {
   return isTauri && isLoopbackBase(base);
 }
 
-// bind feedback to the copied text so command changes cannot retain a stale tick.
-function useCopyButton(text: string) {
-  const textVersion = useMemo(() => Symbol(text), [text]);
-  const [copiedVersion, setCopiedVersion] = useState<symbol | null>(null);
-  const timeoutRef = useRef<number | null>(null);
-  const currentVersionRef = useRef(textVersion);
-
-  useEffect(() => {
-    currentVersionRef.current = textVersion;
-    return () => {
-      if (timeoutRef.current !== null) window.clearTimeout(timeoutRef.current);
-      timeoutRef.current = null;
-    };
-  }, [textVersion]);
-
-  const copy = async () => {
-    const requestedText = text;
-    const requestedVersion = textVersion;
-    if (!(await copyToClipboard(requestedText))) return;
-    if (currentVersionRef.current !== requestedVersion) return;
-    setCopiedVersion(requestedVersion);
-    if (timeoutRef.current !== null) window.clearTimeout(timeoutRef.current);
-    timeoutRef.current = window.setTimeout(() => {
-      setCopiedVersion(null);
-      timeoutRef.current = null;
-    }, 1600);
-  };
-
-  const reset = () => {
-    if (timeoutRef.current !== null) {
-      window.clearTimeout(timeoutRef.current);
-      timeoutRef.current = null;
-    }
-    setCopiedVersion(null);
-  };
-
-  return { copied: copiedVersion === textVersion, copy, reset };
-}
-
-type AgentDetails = {
-  id: string;
-  name: string;
-  docsUrl: string;
-  logo?: string;
-  icon?: string;
-  darkIcon?: string;
-  color?: string;
-  mark?: string;
-};
-
 type ParsedModel = {
   repo: string;
   variant: string | null;
 };
 
-// Names are untranslated, so `settings.agents.intro` lists them all to keep them searchable.
-const SUPPORTED_AGENTS: AgentDetails[] = [
-  {
-    id: "claude",
-    name: "Claude Code",
-    docsUrl: "https://unsloth.ai/docs/basics/claude-code",
-    logo: "anthropic",
-  },
-  {
-    id: "codex",
-    name: "OpenAI Codex",
-    docsUrl: "https://unsloth.ai/docs/basics/codex",
-    logo: "openai",
-  },
-  {
-    id: "hermes",
-    name: "Hermes Agent",
-    docsUrl: "https://unsloth.ai/docs/integrations/hermes-agent",
-    // hermes.png is the desktop app icon from NousResearch/hermes-agent (apps/desktop/assets/icon.png)
-    icon: "hermes.png",
-  },
-  {
-    id: "openclaw",
-    name: "OpenClaw",
-    docsUrl: "https://unsloth.ai/docs/integrations/openclaw",
-    icon: "openclaw.svg",
-  },
-  {
-    id: "opencode",
-    name: "OpenCode",
-    docsUrl: "https://unsloth.ai/docs/integrations/opencode",
-    icon: "opencode-light.svg",
-    darkIcon: "opencode-dark.svg",
-  },
-  {
-    id: "dsh",
-    name: "DeepSeek Harness",
-    docsUrl: "https://github.com/deepseek-ai/deepseek-harness",
-    logo: "deepseek",
-  },
-];
-
 const FALLBACK_AGENT = SUPPORTED_AGENTS[0];
-
-function detailsFor(agentId: string): AgentDetails {
-  return (
-    SUPPORTED_AGENTS.find((agent) => agent.id === agentId) ?? {
-      id: agentId,
-      name: agentId,
-      docsUrl: DOCS_URL,
-      color: "#64748B",
-      mark: agentId.slice(0, 2),
-    }
-  );
-}
 
 function splitModelVariant(model: string): ParsedModel {
   const value = model.trim();
@@ -403,61 +308,6 @@ function activeGgufSelection(
   };
 }
 
-function AgentIcon({
-  logo,
-  icon,
-  darkIcon,
-  color,
-  mark,
-}: {
-  logo?: string;
-  icon?: string;
-  darkIcon?: string;
-  color?: string;
-  mark?: string;
-}) {
-  if (logo) {
-    return (
-      <span className="flex size-5 shrink-0 items-center justify-center overflow-hidden rounded">
-        <ApiProviderLogo providerType={logo} className="size-5 rounded" />
-      </span>
-    );
-  }
-  if (icon) {
-    const iconSrc = `${import.meta.env.BASE_URL}agent-logos/${icon}`;
-    const darkIconSrc = darkIcon
-      ? `${import.meta.env.BASE_URL}agent-logos/${darkIcon}`
-      : null;
-    return (
-      <span className="flex size-5 shrink-0 items-center justify-center overflow-hidden rounded">
-        <img
-          src={iconSrc}
-          alt=""
-          aria-hidden={true}
-          className={cn("size-5 object-contain", darkIconSrc && "dark:hidden")}
-        />
-        {darkIconSrc ? (
-          <img
-            src={darkIconSrc}
-            alt=""
-            aria-hidden={true}
-            className="hidden size-5 object-contain dark:block"
-          />
-        ) : null}
-      </span>
-    );
-  }
-  return (
-    <span
-      aria-hidden={true}
-      style={{ backgroundColor: color }}
-      className="flex size-5 shrink-0 items-center justify-center rounded font-heading text-ui-10 font-semibold text-white"
-    >
-      {mark}
-    </span>
-  );
-}
-
 // Flag tokens are literal; only the descriptions are localized.
 const OPTION_ROWS: { flag: string; descKey: TranslationKey }[] = [
   { flag: "--model, -m", descKey: "settings.agents.options.model" },
@@ -514,7 +364,7 @@ function CopyableCode({
     <div className="relative min-w-0">
       <code
         className={cn(
-          "block min-w-0 whitespace-pre-wrap rounded-lg border border-border bg-background/70 py-2.5 pr-9 pl-4 font-mono text-ui-11 leading-relaxed text-foreground dark:border-transparent dark:bg-white/[0.05]",
+          "block min-w-0 whitespace-pre-wrap rounded-lg border border-border bg-background/70 py-2.5 pr-9 pl-4 font-mono text-ui-11 leading-relaxed text-foreground dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]",
           breakAll ? "break-all" : "break-words",
         )}
       >
@@ -525,36 +375,6 @@ function CopyableCode({
         onClick={onCopy}
         aria-label={copyLabel}
         className="absolute top-1.5 right-1.5 flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-      >
-        <HugeiconsIcon
-          icon={copied ? Tick02Icon : Copy01Icon}
-          className={cn("size-3.5", copied && "text-control-accent")}
-          strokeWidth={2}
-        />
-      </button>
-      <output className="sr-only" aria-live="polite">
-        {copied ? t("settings.agents.copied") : ""}
-      </output>
-    </div>
-  );
-}
-
-function CommandBlock({ command }: { command: string }) {
-  const t = useT();
-  const { copied, copy } = useCopyButton(command);
-
-  return (
-    <div className="group relative overflow-hidden rounded-xl border border-border bg-muted/40 dark:border-transparent dark:bg-white/[0.04]">
-      <pre className="hover-scrollbar overflow-x-auto py-3 pr-11 pl-4 text-xs leading-relaxed text-foreground">
-        <code className="font-mono whitespace-pre">{command}</code>
-      </pre>
-      <button
-        type="button"
-        onClick={copy}
-        aria-label={
-          copied ? t("settings.agents.copied") : t("settings.agents.copy")
-        }
-        className="absolute top-2 right-2 flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
       >
         <HugeiconsIcon
           icon={copied ? Tick02Icon : Copy01Icon}
@@ -1259,18 +1079,31 @@ export function AgentsTab() {
   // _require_gguf_for_agent): the picker only ever offers GGUF models.
 
   return (
-    <div className="flex min-w-0 max-w-full flex-col gap-8">
+    <div className="settings-page">
       {/* data-settings-label lets indexed settings search scroll to these. */}
       <header className="flex min-w-0 flex-col gap-1">
-        <h1
-          data-settings-label={t("settings.agents.title")}
-          className="text-xl font-semibold font-heading"
-        >
-          {t("settings.agents.title")}
-        </h1>
+        <div className="flex min-w-0 items-baseline gap-2">
+          <h1
+            data-settings-label={t("settings.agents.title")}
+            className="text-xl font-semibold font-heading"
+          >
+            {t("settings.agents.title")}
+          </h1>
+          {/* title, not aria-label, so the accessible name stays the visible text. */}
+          <a
+            href={DOCS_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            title={t("settings.agents.docsLabel")}
+            className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          >
+            {t("settings.agents.docs")}
+            <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
+          </a>
+        </div>
         <p
           data-settings-label={t("settings.agents.description")}
-          className="text-xs text-muted-foreground leading-relaxed"
+          className="text-xs text-muted-foreground"
         >
           {t("settings.agents.description")}
         </p>
@@ -1280,59 +1113,62 @@ export function AgentsTab() {
         data-settings-label={t("settings.agents.intro")}
         className="text-sm text-muted-foreground leading-relaxed"
       >
-        {/* The chip is the docs entry point, so no separate link is needed.
-            No aria-label: it would replace the visible "unsloth start" as the
+        {/* No aria-label: it would replace the visible "unsloth start" as the
             accessible name, leaving voice control unable to target it. */}
         <a
           href={DOCS_URL}
           target="_blank"
           rel="noopener noreferrer"
           title={t("settings.agents.readDocs")}
-          className="rounded bg-muted px-1 py-0.5 font-mono text-[0.85em] text-foreground underline decoration-border decoration-dotted underline-offset-2 transition-colors hover:decoration-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:bg-white/[0.08]"
+          className="rounded bg-muted px-1 py-0.5 font-mono text-[0.85em] text-foreground underline decoration-border decoration-dotted underline-offset-2 transition-colors hover:decoration-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:bg-[rgb(255_255_255_/_calc(0.08*var(--contrast-wash-gain,1)))]"
         >
           unsloth start
         </a>{" "}
         {t("settings.agents.intro")}
       </p>
 
-      <fieldset className="flex min-w-0 items-center gap-0.5">
-        <legend className="mb-2 text-xs font-medium text-foreground">
+      {/* Shared track + pill selector. The legend is sr-only: the two shell
+          names already say what the control picks. */}
+      <fieldset className="flex min-w-0">
+        <legend className="sr-only">
           {t("settings.agents.commandShell")}
         </legend>
-        <button
-          type="button"
-          onClick={() => {
-            setCommandOsOverride("unix");
-            setStoredOs("unix");
-            resetCopied();
-          }}
-          aria-pressed={commandOs === "unix"}
-          className={cn(
-            "rounded-full px-2.5 py-1 text-ui-11 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-            commandOs === "unix"
-              ? "hub-tab-toggle-pill text-foreground"
-              : "text-muted-foreground hover:text-foreground",
-          )}
-        >
-          {t("settings.apiKeys.osUnix")}
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            setCommandOsOverride("windows");
-            setStoredOs("windows");
-            resetCopied();
-          }}
-          aria-pressed={commandOs === "windows"}
-          className={cn(
-            "rounded-full px-2.5 py-1 text-ui-11 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-            commandOs === "windows"
-              ? "hub-tab-toggle-pill text-foreground"
-              : "text-muted-foreground hover:text-foreground",
-          )}
-        >
-          {t("settings.apiKeys.osWindows")}
-        </button>
+        <div className="hub-tab-toggle inline-flex h-8 items-center rounded-full">
+          <button
+            type="button"
+            onClick={() => {
+              setCommandOsOverride("unix");
+              setStoredOs("unix");
+              resetCopied();
+            }}
+            aria-pressed={commandOs === "unix"}
+            className={cn(
+              "inline-flex h-8 items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+              commandOs === "unix"
+                ? "hub-tab-toggle-pill text-foreground"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            {t("settings.apiKeys.osUnix")}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setCommandOsOverride("windows");
+              setStoredOs("windows");
+              resetCopied();
+            }}
+            aria-pressed={commandOs === "windows"}
+            className={cn(
+              "inline-flex h-8 items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+              commandOs === "windows"
+                ? "hub-tab-toggle-pill text-foreground"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            {t("settings.apiKeys.osWindows")}
+          </button>
+        </div>
       </fieldset>
 
       <section
@@ -1448,7 +1284,7 @@ export function AgentsTab() {
                     aria-label={t("settings.agents.model")}
                     aria-expanded={modelPickerOpen}
                     title={selectedModel}
-                    className="flex h-9 w-full items-center justify-between gap-2 rounded-lg border border-border bg-background px-3 text-left transition-colors hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:border-transparent dark:bg-white/[0.06] dark:hover:bg-white/10"
+                    className="flex h-9 w-full items-center justify-between gap-2 rounded-lg border border-border bg-background px-3 text-left transition-colors hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
                   >
                     <span className="min-w-0 truncate font-mono text-xs">
                       {labelFor(selectedModel)}
@@ -1528,10 +1364,10 @@ export function AgentsTab() {
             </div>
 
             <div className="flex min-w-0 flex-col gap-1.5">
-              <div className="flex h-5 items-center">
+              <div className="flex h-5 min-w-0 items-center">
                 <span
                   data-settings-label={t("settings.agents.quantization")}
-                  className="text-xs font-medium text-foreground"
+                  className="truncate text-xs font-medium text-foreground"
                 >
                   {t("settings.agents.quantization")}
                 </span>
@@ -1571,7 +1407,7 @@ export function AgentsTab() {
                     )}
                   </SelectValue>
                 </SelectTrigger>
-                <SelectContent align="start" className="min-w-[16rem]">
+                <SelectContent align="start" className="min-w-[min(calc(16rem*var(--ui-space-scale,1)),calc(100vw-32px))]">
                   {variants.map((variant) => {
                     // Size only: the recommended/downloaded tags wrapped every
                     // row onto two lines and made the list hard to scan.

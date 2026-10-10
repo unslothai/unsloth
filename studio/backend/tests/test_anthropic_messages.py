@@ -28,6 +28,8 @@ from models.inference import (
     AnthropicResponseToolUseBlock,
 )
 from core.inference.anthropic_compat import (
+    DOCUMENT_IMAGE_OMITTED,
+    DOCUMENT_OMITTED,
     anthropic_messages_to_openai,
     anthropic_schema_client_tool_kind,
     anthropic_tools_to_openai,
@@ -113,6 +115,50 @@ def _tool_result_event(**overrides):
         "result": "done",
         **overrides,
     }
+
+
+_WEB_SEARCH_RESULT = (
+    "Title: Releases · ggml-org/llama.cpp\n"
+    "URL: https://github.com/ggml-org/llama.cpp/releases\n"
+    "Snippet: b9999 (2026-09-28)"
+    "\n\n---\n\n"
+    "Title: llama.cpp - Wikipedia\n"
+    "URL: https://en.wikipedia.org/wiki/Llama.cpp\n"
+    "Snippet: llama.cpp is an open source library."
+    "\n\n---\n\nIMPORTANT: These are only short snippets."
+)
+_WEB_SEARCH_HITS = [
+    {
+        "type": "web_search_result",
+        "title": "Releases · ggml-org/llama.cpp",
+        "url": "https://github.com/ggml-org/llama.cpp/releases",
+        "encrypted_content": "",
+        "page_age": None,
+    },
+    {
+        "type": "web_search_result",
+        "title": "llama.cpp - Wikipedia",
+        "url": "https://en.wikipedia.org/wiki/Llama.cpp",
+        "encrypted_content": "",
+        "page_age": None,
+    },
+]
+_WEB_SEARCH_ERROR = {"type": "web_search_tool_result_error", "error_code": "unavailable"}
+_FETCHED_URL = "https://github.com/ggml-org/llama.cpp"
+_WEB_SEARCH_OUTCOMES = [
+    ({"query": "llama.cpp"}, "No results found.", []),
+    (
+        {"query": "llama.cpp"},
+        "Search failed: the search engines did not respond.",
+        _WEB_SEARCH_ERROR,
+    ),
+    (
+        {"url": _FETCHED_URL},
+        "# llama.cpp\nTitle: quoted page text\nURL: https://example.com",
+        [{**_WEB_SEARCH_HITS[0], "title": _FETCHED_URL, "url": _FETCHED_URL}],
+    ),
+    ({"url": _FETCHED_URL}, "Failed to fetch URL: HTTP 404 Not Found", _WEB_SEARCH_ERROR),
+]
 
 
 def _tool_result_turn(
@@ -246,13 +292,22 @@ def test_anthropic_reasoning_args_maps_effort_only_to_enable_thinking():
         is True
     )
     assert _anthropic_reasoning_args(_basic_payload())["enable_thinking"] is None
-    # An explicit boolean always wins over the effort mapping.
-    assert (
-        _anthropic_reasoning_args(_basic_payload(enable_thinking = True, reasoning_effort = "none"))[
-            "enable_thinking"
-        ]
-        is True
-    )
+    # An explicit boolean always wins; a contradictory effort is removed rather than
+    # riding along into model-specific template resolution.
+    assert _anthropic_reasoning_args(
+        _basic_payload(enable_thinking = True, reasoning_effort = "none")
+    ) == {
+        "enable_thinking": True,
+        "reasoning_effort": None,
+        "preserve_thinking": None,
+    }
+    assert _anthropic_reasoning_args(
+        _basic_payload(enable_thinking = False, reasoning_effort = "high")
+    ) == {
+        "enable_thinking": False,
+        "reasoning_effort": None,
+        "preserve_thinking": None,
+    }
 
 
 # thinking x reasoning_effort, every combination. The request model documents
@@ -471,7 +526,8 @@ def test_anthropic_emitter_holds_back_partial_think_tag():
     assert _emitter_client_text(events) == "Out"
 
 
-def test_streamed_anthropic_tool_use_records_api_monitor_reply(monkeypatch):
+@pytest.mark.parametrize("block_type", ["tool_use", "server_tool_use"])
+def test_streamed_anthropic_tool_use_records_api_monitor_reply(monkeypatch, block_type):
     import routes.inference as inf_mod
 
     monitor = ApiMonitor(max_entries = 3)
@@ -488,7 +544,7 @@ def test_streamed_anthropic_tool_use_records_api_monitor_reply(monkeypatch):
             "type": "content_block_start",
             "index": 0,
             "content_block": {
-                "type": "tool_use",
+                "type": block_type,
                 "id": "toolu_1",
                 "name": "lookup",
                 "input": {},
@@ -565,6 +621,29 @@ class TestToolActionNudge:
 
         assert "- guided: Guide this task." in nudge
         assert "create_skill" not in nudge
+        # without python or terminal, a skill's bundled scripts cannot run here.
+        assert "bundled scripts cannot run" in nudge
+        assert "Unsloth Studio's local Code tool" in nudge
+
+    @pytest.mark.parametrize("code_tool", ["python", "terminal"])
+    def test_skill_nudge_with_a_code_tool_does_not_warn_about_scripts(self, monkeypatch, code_tool):
+        import routes.inference as inference_routes
+
+        monkeypatch.setattr(
+            inference_routes,
+            "_enabled_agent_skills",
+            lambda: [{"name": "guided", "description": "Guide this task."}],
+        )
+        nudge = _build_tool_action_nudge(
+            tools = [
+                {"type": "function", "function": {"name": "read_skill"}},
+                {"type": "function", "function": {"name": code_tool}},
+            ],
+            model_name = "test",
+        )
+
+        assert "- guided: Guide this task." in nudge
+        assert "bundled scripts cannot run" not in nudge
 
 
 # =====================================================================
@@ -783,6 +862,63 @@ class TestAnthropicMessagesToOpenAI:
         assert tc["id"] == "tu_1"
         assert tc["function"]["name"] == "web_search"
         assert json.loads(tc["function"]["arguments"]) == {"query": "test"}
+
+    def test_replayed_web_search_becomes_call_and_result(self):
+        call = {"type": "server_tool_use", "name": "web_search", "input": {"query": "llama.cpp"}}
+        msgs = [
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Searching."},
+                    {**call, "id": "srvtoolu_fetch", "name": "web_fetch"},
+                    {**call, "id": "srvtoolu_1"},
+                    {
+                        "type": "web_search_tool_result",
+                        "tool_use_id": "srvtoolu_1",
+                        "content": _WEB_SEARCH_HITS,
+                    },
+                    {"type": "text", "text": "It is b9999."},
+                    {"type": "tool_use", "id": "tu_1", "name": "lookup", "input": {}},
+                ],
+            }
+        ]
+        search, result, answer = anthropic_messages_to_openai(msgs)
+
+        assert search["content"] == "Searching."
+        assert [tc["id"] for tc in search["tool_calls"]] == ["srvtoolu_1"]
+        assert result == {
+            "role": "tool",
+            "tool_call_id": "srvtoolu_1",
+            "content": (
+                "Title: Releases · ggml-org/llama.cpp\n"
+                "URL: https://github.com/ggml-org/llama.cpp/releases"
+                "\n\n---\n\n"
+                "Title: llama.cpp - Wikipedia\n"
+                "URL: https://en.wikipedia.org/wiki/Llama.cpp"
+            ),
+        }
+        assert answer["content"] == "It is b9999."
+        assert [tc["id"] for tc in answer["tool_calls"]] == ["tu_1"]
+
+    @pytest.mark.parametrize(
+        "content, text",
+        [([], "No results found."), (_WEB_SEARCH_ERROR, "Search failed: unavailable")],
+    )
+    def test_replayed_web_search_without_hits_ends_on_its_result(self, content, text):
+        # No ``input``: an unvalidated replayed block must not fail the request.
+        search_only = [
+            {"type": "server_tool_use", "id": "srvtoolu_1", "name": "web_search"},
+            {"type": "web_search_tool_result", "tool_use_id": "srvtoolu_1", "content": content},
+        ]
+        call, result = anthropic_messages_to_openai([{"role": "assistant", "content": search_only}])
+
+        assert call["tool_calls"][0]["function"]["arguments"] == "{}"
+        assert result == {"role": "tool", "tool_call_id": "srvtoolu_1", "content": text}
+
+    def test_empty_assistant_turn_is_kept(self):
+        assert anthropic_messages_to_openai([{"role": "assistant", "content": []}]) == [
+            {"role": "assistant"}
+        ]
 
     def test_tool_result_maps_to_tool_role(self):
         msgs = [_tool_result_turn(tool_use_id = "tu_1", content = "Result text")]
@@ -1028,7 +1164,188 @@ class TestAnthropicMessagesToOpenAI:
             }
         ]
         result = anthropic_messages_to_openai(msgs)
-        assert result[0]["content"] == "Line 1 Line 2"
+        assert result[0]["content"] == "Line 1\nLine 2"
+
+    @pytest.mark.parametrize(
+        "content, expected",
+        [
+            ("permission denied", "Error: permission denied"),
+            ("Error: disk full", "Error: disk full"),
+            ("", "Error: tool returned no content"),
+            (None, "Error: tool returned no content"),
+            ([{"type": "text", "text": "exit 1"}], "Error: exit 1"),
+            ([], "Error: tool returned no content"),
+        ],
+    )
+    def test_tool_result_is_error_marks_the_tool_message(self, content, expected):
+        block = {"type": "tool_result", "tool_use_id": "tu_1", "is_error": True, "content": content}
+        request = AnthropicMessagesRequest(
+            max_tokens = 16, messages = [{"role": "user", "content": [block]}]
+        )
+        result = anthropic_messages_to_openai([m.model_dump() for m in request.messages])
+        assert result == [{"role": "tool", "tool_call_id": "tu_1", "content": expected}]
+
+    @pytest.mark.parametrize("flag", [{}, {"is_error": False}, {"is_error": None}])
+    @pytest.mark.parametrize("content", ["42", ""])
+    def test_tool_result_without_is_error_is_unchanged(self, flag, content):
+        block = {"type": "tool_result", "tool_use_id": "tu_1", "content": content, **flag}
+        request = AnthropicMessagesRequest(
+            max_tokens = 16, messages = [{"role": "user", "content": [block]}]
+        )
+        result = anthropic_messages_to_openai([m.model_dump() for m in request.messages])
+        assert result == [{"role": "tool", "tool_call_id": "tu_1", "content": content}]
+
+    def test_tool_result_is_error_with_image_prepends_the_marker(self):
+        image = {
+            "type": "image",
+            "source": {"type": "base64", "media_type": "image/png", "data": "AAAA"},
+        }
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tu_1",
+                        "is_error": True,
+                        "content": [{"type": "text", "text": "crashed"}, image],
+                    }
+                ],
+            }
+        ]
+        parts = anthropic_messages_to_openai(msgs)[0]["content"]
+        assert [p["type"] for p in parts] == ["text", "text", "image_url"]
+        assert [p["text"] for p in parts[:2]] == ["Error:", "crashed"]
+
+    def test_tool_result_search_results_keep_title_source_and_text(self):
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tu_1",
+                        "content": [
+                            {
+                                "type": "search_result",
+                                "source": "https://docs.example.com/vault",
+                                "title": "Vault",
+                                "content": [
+                                    {"type": "text", "text": "The code is PURPLE-ELEPHANT-42."},
+                                    {"type": "text", "text": "Rotate it monthly."},
+                                ],
+                                "citations": {"enabled": True},
+                            },
+                            {
+                                "type": "search_result",
+                                "source": "kb://faq",
+                                "title": "FAQ",
+                                "content": [{"type": "text", "text": "Ask the admin."}],
+                            },
+                        ],
+                    },
+                ],
+            }
+        ]
+        result = anthropic_messages_to_openai(msgs)
+        assert result == [
+            {
+                "role": "tool",
+                "tool_call_id": "tu_1",
+                "content": "Title: Vault\nSource: https://docs.example.com/vault\n"
+                "The code is PURPLE-ELEPHANT-42.\nRotate it monthly.\n"
+                "Title: FAQ\nSource: kb://faq\nAsk the admin.",
+            }
+        ]
+
+    @pytest.mark.parametrize(
+        "source, body",
+        [
+            ({"type": "text", "media_type": "text/plain", "data": "Plain body."}, "Plain body."),
+            (
+                {
+                    "type": "content",
+                    "content": [
+                        {"type": "text", "text": "First chunk"},
+                        {"type": "text", "text": "Second chunk"},
+                    ],
+                },
+                "First chunk\nSecond chunk",
+            ),
+            ({"type": "content", "content": "Whole body."}, "Whole body."),
+            (
+                {
+                    "type": "content",
+                    "content": [
+                        {"type": "text", "text": "Before"},
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/png",
+                                "data": "iVBOR",
+                            },
+                        },
+                        {"type": "text", "text": "After"},
+                    ],
+                },
+                f"Before\n{DOCUMENT_IMAGE_OMITTED}\nAfter",
+            ),
+            (
+                {"type": "base64", "media_type": "application/pdf", "data": "JVBERi0="},
+                DOCUMENT_OMITTED,
+            ),
+            ({"type": "url", "url": "https://example.com/a.pdf"}, DOCUMENT_OMITTED),
+        ],
+    )
+    def test_tool_result_document_renders_its_readable_source(self, source, body):
+        document = {
+            "type": "document",
+            "source": source,
+            "title": "Handbook",
+            "context": "Internal",
+        }
+        msgs = [
+            {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "tu_1", "content": [document]}],
+            }
+        ]
+        result = anthropic_messages_to_openai(msgs)
+        assert result[0]["content"] == f"Title: Handbook\nContext: Internal\n{body}"
+
+    def test_top_level_search_result_and_document_reach_the_user_turn(self):
+        request = AnthropicMessagesRequest(
+            model = "x",
+            max_tokens = 16,
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "search_result",
+                            "source": "kb://vault",
+                            "title": "Vault",
+                            "content": [{"type": "text", "text": "PURPLE-ELEPHANT-42"}],
+                        },
+                        {
+                            "type": "document",
+                            "source": {"type": "text", "media_type": "text/plain", "data": "Memo."},
+                        },
+                        {"type": "document", "source": {"type": "content", "content": "Notes."}},
+                        {"type": "text", "text": "What is the code?"},
+                    ],
+                }
+            ],
+        )
+        result = anthropic_messages_to_openai([m.model_dump() for m in request.messages])
+        assert result == [
+            {
+                "role": "user",
+                "content": "Title: Vault\nSource: kb://vault\nPURPLE-ELEPHANT-42\n"
+                "Memo.\nNotes.\nWhat is the code?",
+            }
+        ]
 
     def test_image_base64_block_becomes_multimodal_part(self):
         msgs = [
@@ -1489,6 +1806,74 @@ class TestAnthropicStreamEmitter:
         parsed = json.loads(events[1].split("data: ")[1])
         assert parsed["delta"]["text"] == "After tool"
 
+    def _web_search_stream(
+        self,
+        result,
+        arguments = None,
+    ):
+        e = AnthropicStreamEmitter()
+        events = e.start("msg_1", "m")
+        events += e.feed(
+            _tool_event(
+                tool_name = "web_search",
+                arguments = arguments or {"query": "llama.cpp latest release"},
+            )
+        )
+        events += e.feed(_tool_result_event(tool_name = "web_search", result = result))
+        events += e.feed({"type": "content", "text": "The latest release is b9999."})
+        events += e.finish("end_turn")
+        return events, [json.loads(ev.split("data: ")[1]) for ev in events]
+
+    def test_web_search_streams_as_server_tool_with_source_links(self):
+        events, payloads = self._web_search_stream(_WEB_SEARCH_RESULT)
+        starts = [p for p in payloads if p["type"] == "content_block_start"]
+        stops = [p["index"] for p in payloads if p["type"] == "content_block_stop"]
+        blocks = [p["content_block"] for p in starts]
+
+        assert [b["type"] for b in blocks] == ["server_tool_use", "web_search_tool_result", "text"]
+        assert blocks[0]["id"].startswith("srvtoolu_")
+        assert blocks[0]["name"] == "web_search"
+        assert blocks[1] == {
+            "type": "web_search_tool_result",
+            "tool_use_id": blocks[0]["id"],
+            "content": _WEB_SEARCH_HITS,
+        }
+        assert stops == [p["index"] for p in starts] == [0, 1, 2]
+        assert {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {
+                "type": "input_json_delta",
+                "partial_json": json.dumps({"query": "llama.cpp latest release"}),
+            },
+        } in payloads
+        assert not any(ev.startswith("event: tool_result") for ev in events)
+        assert _emitter_client_text(events) == "The latest release is b9999."
+
+    def test_consecutive_web_searches_reusing_a_call_id_stay_separate(self):
+        e = AnthropicStreamEmitter()
+        events = e.start("msg_1", "m")
+        for i, url in enumerate(["https://e.com/0", "https://e.com/1"]):
+            events += e.feed(_tool_event(tool_name = "web_search", arguments = {"url": url}))
+            events += e.feed(_tool_result_event(tool_name = "web_search", result = f"page {i}"))
+        payloads = [json.loads(ev.split("data: ")[1]) for ev in events]
+        first, first_result, second, second_result = [
+            p["content_block"] for p in payloads if p["type"] == "content_block_start"
+        ]
+
+        assert first["id"] != second["id"]
+        assert first_result["tool_use_id"] == first["id"]
+        assert second_result["tool_use_id"] == second["id"]
+        assert second_result["content"][0]["url"] == "https://e.com/1"
+
+    @pytest.mark.parametrize("arguments, result, content", _WEB_SEARCH_OUTCOMES)
+    def test_web_search_result_content_by_outcome(self, arguments, result, content):
+        _, payloads = self._web_search_stream(result, arguments)
+        blocks = [p["content_block"] for p in payloads if p["type"] == "content_block_start"]
+
+        assert [b["type"] for b in blocks] == ["server_tool_use", "web_search_tool_result", "text"]
+        assert blocks[1]["content"] == content
+
 
 # =====================================================================
 # Non-streaming tool response tests
@@ -1668,6 +2053,76 @@ class TestAnthropicToolNonStreaming:
         assert tool_blocks[0]["id"].startswith("toolu_")
         assert tool_blocks[0]["name"] == "render_html"
         assert tool_blocks[0]["input"] == {"code": "<!doctype html><html></html>"}
+
+    def test_web_search_returns_server_tool_blocks_with_source_links(self):
+        def _run_gen():
+            yield _tool_event(tool_name = "web_search", arguments = {"query": "llama.cpp release"})
+            yield _tool_result_event(tool_name = "web_search", result = _WEB_SEARCH_RESULT)
+            yield {"type": "content", "text": "The latest release is b9999."}
+
+        response = asyncio.run(
+            _anthropic_tool_non_streaming(_connected_request(), _run_gen, "msg_1", "m")
+        )
+        body = json.loads(response.body)
+        call, result, text = body["content"]
+
+        assert call["type"] == "server_tool_use"
+        assert call["id"].startswith("srvtoolu_")
+        assert call["input"] == {"query": "llama.cpp release"}
+        assert result == {
+            "type": "web_search_tool_result",
+            "tool_use_id": call["id"],
+            "content": _WEB_SEARCH_HITS,
+        }
+        assert text == {"type": "text", "text": "The latest release is b9999."}
+        assert body["stop_reason"] == "end_turn"
+
+    def test_consecutive_web_searches_reusing_a_call_id_stay_separate(self):
+        # Text-parsed calls restart at call_0 on every tool-loop iteration.
+        def _run_gen():
+            for i, query in enumerate(["first", "second"]):
+                yield _tool_event(tool_name = "web_search", arguments = {"query": query})
+                yield _tool_result_event(
+                    tool_name = "web_search", result = f"Title: T{i}\nURL: https://e.com/{i}"
+                )
+
+        response = asyncio.run(
+            _anthropic_tool_non_streaming(_connected_request(), _run_gen, "msg_1", "m")
+        )
+        first, first_result, second, second_result = json.loads(response.body)["content"]
+
+        assert [first["input"], second["input"]] == [{"query": "first"}, {"query": "second"}]
+        assert first["id"] != second["id"]
+        assert first_result["tool_use_id"] == first["id"]
+        assert second_result["tool_use_id"] == second["id"]
+        assert second_result["content"][0]["url"] == "https://e.com/1"
+
+    def test_consecutive_tool_calls_reusing_a_call_id_keep_their_own_input(self):
+        def _run_gen():
+            for code in ["print(1)", "print(2)"]:
+                yield _tool_event(arguments = {"code": code})
+                yield _tool_result_event()
+
+        response = asyncio.run(
+            _anthropic_tool_non_streaming(_connected_request(), _run_gen, "msg_1", "m")
+        )
+        blocks = json.loads(response.body)["content"]
+
+        assert [b["input"] for b in blocks] == [{"code": "print(1)"}, {"code": "print(2)"}]
+
+    @pytest.mark.parametrize("arguments, result, content", _WEB_SEARCH_OUTCOMES)
+    def test_web_search_result_content_by_outcome(self, arguments, result, content):
+        def _run_gen():
+            yield _tool_event(tool_name = "web_search", arguments = arguments)
+            yield _tool_result_event(tool_name = "web_search", result = result)
+
+        response = asyncio.run(
+            _anthropic_tool_non_streaming(_connected_request(), _run_gen, "msg_1", "m")
+        )
+        call, search_result = json.loads(response.body)["content"]
+
+        assert search_result["tool_use_id"] == call["id"]
+        assert search_result["content"] == content
 
     def test_display_strip_gates_on_declared_tools(self):
         # A final answer containing NAME[ARGS]{json} is gated on the declared tools: undeclared
@@ -2371,8 +2826,7 @@ class TestAnthropicReasoningArgs:
         assert payload.resolved_enable_thinking() is True
 
     def test_budget_tokens_accepted_not_rejected(self):
-        """Claude Code always sends budget_tokens; llama-server has no budget,
-        so it must be ignored rather than 400'd."""
+        """Claude Code always sends budget_tokens; it must parse rather than 400."""
         payload = self._payload(thinking = {"type": "enabled", "budget_tokens": 4096})
         assert payload.thinking.budget_tokens == 4096
         assert payload.resolved_enable_thinking() is True
@@ -2456,7 +2910,7 @@ class TestNormalizeAnthropicOpenAIImages:
             _normalize_anthropic_openai_images(msgs, is_vision = False)
         assert exc.value.status_code == 400
 
-    def test_reencodes_jpeg_data_url_to_png(self):
+    def test_forwards_jpeg_data_url_unchanged(self):
         original_url = _jpeg_data_url()
         msgs = [
             {
@@ -2468,11 +2922,26 @@ class TestNormalizeAnthropicOpenAIImages:
             }
         ]
         _normalize_anthropic_openai_images(msgs, is_vision = True)
-        new_url = msgs[0]["content"][1]["image_url"]["url"]
-        assert new_url.startswith("data:image/png;base64,")
-        assert new_url != original_url
+        assert msgs[0]["content"][1]["image_url"]["url"] == original_url
 
-    def test_remote_url_left_unchanged(self):
+    def test_reencodes_webp_data_url_to_png(self):
+        from PIL import Image
+
+        buf = _BytesIO()
+        Image.new("RGB", (2, 2), (255, 0, 0)).save(buf, format = "WEBP")
+        url = "data:image/webp;base64," + _b64.b64encode(buf.getvalue()).decode("ascii")
+        msgs = [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": url}}]}]
+        _normalize_anthropic_openai_images(msgs, is_vision = True)
+        assert msgs[0]["content"][0]["image_url"]["url"].startswith("data:image/png;base64,iVBOR")
+
+    def test_remote_url_is_replaced_by_the_bytes_we_fetched(self, monkeypatch):
+        import core.inference.external_provider as ep
+
+        monkeypatch.setattr(
+            ep,
+            "safe_fetch_remote_image_sync",
+            lambda *_a, **_k: ("image/png", _jpeg_data_url().partition(",")[2]),
+        )
         msgs = [
             {
                 "role": "user",
@@ -2485,7 +2954,8 @@ class TestNormalizeAnthropicOpenAIImages:
             }
         ]
         _normalize_anthropic_openai_images(msgs, is_vision = True)
-        assert msgs[0]["content"][0]["image_url"]["url"] == "https://x.example/y.png"
+        # The bytes are JPEG whatever the server declared, and are labelled as such.
+        assert msgs[0]["content"][0]["image_url"]["url"] == _jpeg_data_url()
 
     def test_bad_base64_raises_400(self):
         msgs = [
@@ -2512,6 +2982,24 @@ class TestNormalizeAnthropicOpenAIImages:
 class TestAnthropicRequestedStudioTools:
     def test_recognizes_server_tool_by_type(self):
         tools = [{"type": "web_search_20250305", "name": "web_search"}]
+        assert _anthropic_requested_studio_tools(tools) == {"web_search"}
+
+    @pytest.mark.parametrize(
+        "tool_type",
+        [
+            "web_search",
+            "web_search_20250305",
+            "web_search_20260209",
+            "web_search_20260318",
+            "web_fetch",
+            "web_fetch_20250910",
+            "web_fetch_20260209",
+            "web_fetch_20260309",
+            "web_fetch_20260318",
+        ],
+    )
+    def test_recognizes_every_web_server_tool_version(self, tool_type):
+        tools = [{"type": tool_type, "name": tool_type.split("_2")[0]}]
         assert _anthropic_requested_studio_tools(tools) == {"web_search"}
 
     def test_recognizes_read_skill_server_tool_by_type(self):
@@ -2726,6 +3214,105 @@ class TestAnthropicMessagesToolRouting:
         _drive(anthropic_messages(payload, request = self._Request(), current_subject = "t"))
 
         assert captured["seed"] == 3407
+
+    _BUDGET_CASES = [
+        ({"thinking": {"type": "enabled", "budget_tokens": 128}}, 128),
+        ({"thinking": {"type": "adaptive", "budget_tokens": 128}}, 128),
+        ({"thinking": {"type": "enabled"}}, None),
+        ({"thinking": {"type": "enabled", "budget_tokens": 0}}, None),
+        ({"thinking": {"type": "disabled", "budget_tokens": 128}}, None),
+        ({"thinking": {"type": "enabled", "budget_tokens": 128}, "enable_thinking": False}, None),
+        ({"thinking": {"type": "enabled", "budget_tokens": 128}, "reasoning_effort": "none"}, None),
+        ({}, None),
+    ]
+
+    @pytest.mark.parametrize(("fields", "expected"), _BUDGET_CASES)
+    @pytest.mark.parametrize(
+        ("extra", "expected_path"),
+        [
+            ({}, "plain"),
+            ({"enable_tools": True, "permission_mode": "off"}, "tools"),
+        ],
+        ids = ["plain", "server-tools"],
+    )
+    def test_thinking_budget_reaches_internal_anthropic_generation(
+        self, monkeypatch, extra, expected_path, fields, expected
+    ):
+        backend = _mock_backend(monkeypatch)
+
+        _drive(
+            anthropic_messages(
+                _basic_payload(**fields, **extra),
+                request = self._Request(),
+                current_subject = "t",
+            )
+        )
+
+        [(path, kwargs)] = backend.calls
+        assert path == expected_path
+        assert kwargs.get("thinking_budget_tokens") == expected
+
+    @pytest.mark.parametrize(("fields", "expected"), _BUDGET_CASES)
+    @pytest.mark.parametrize("stream", [False, True])
+    def test_thinking_budget_reaches_anthropic_client_tool_passthrough(
+        self, monkeypatch, stream, fields, expected
+    ):
+        import routes.inference as inf_mod
+        from fastapi.responses import JSONResponse
+
+        _mock_backend(monkeypatch)
+        captured = {}
+
+        async def _passthrough(*args, **kwargs):
+            captured.update(kwargs)
+            return JSONResponse({"type": "message", "content": []})
+
+        helper = (
+            "_anthropic_passthrough_stream" if stream else "_anthropic_passthrough_non_streaming"
+        )
+        monkeypatch.setattr(inf_mod, helper, _passthrough)
+        payload = _basic_payload(
+            stream = stream,
+            tools = [{"name": "lookup", "input_schema": {"type": "object"}}],
+            **fields,
+        )
+
+        _drive(anthropic_messages(payload, request = self._Request(), current_subject = "t"))
+
+        assert captured.get("thinking_budget_tokens") == expected
+
+    @pytest.mark.parametrize("budget", [None, 128])
+    @pytest.mark.parametrize("stream", [False, True])
+    def test_passthrough_puts_thinking_budget_on_the_llama_server_body(
+        self, monkeypatch, stream, budget
+    ):
+        import routes.inference as inf_mod
+
+        real_builder = inf_mod._build_passthrough_payload
+        bodies = []
+
+        def _builder(*args, **kwargs):
+            bodies.append(real_builder(*args, **kwargs))
+            raise RuntimeError("body built")
+
+        monkeypatch.setattr(inf_mod, "_build_passthrough_payload", _builder)
+        backend = SimpleNamespace(base_url = "http://llama.test", context_length = 4096)
+        messages = [{"role": "user", "content": "hi"}]
+        common = (messages, [], 0.7, 0.95, 20, 16, "msg_1", "test-model")
+        if stream:
+            coro = inf_mod._anthropic_passthrough_stream(
+                self._Request(), threading.Event(), backend, *common, thinking_budget_tokens = budget
+            )
+        else:
+            coro = inf_mod._anthropic_passthrough_non_streaming(
+                backend, *common, thinking_budget_tokens = budget
+            )
+
+        with pytest.raises(RuntimeError, match = "body built"):
+            _drive(coro)
+
+        [body] = bodies
+        assert body.get("thinking_budget_tokens") == budget
 
     def test_client_tool_catalog_without_passthrough_is_rejected(self, monkeypatch):
         # /v1/chat/completions 400s this; /v1/messages answered in prose instead.
@@ -3198,6 +3785,35 @@ class TestAnthropicMessagesToolRouting:
         assert entry["status"] == "completed"
         assert entry["reply_preview"] == 'Tool call: lookup({"query": "weather"})'
 
+    def test_client_tool_non_streaming_expected_cancel_returns_anthropic_499(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        async def _cancelled(*_args, **_kwargs):
+            raise inf_mod._NonStreamingRequestCancelled("Request cancelled.")
+
+        _mock_backend(monkeypatch, base_url = "http://llama.test")
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monkeypatch.setattr(inf_mod, "_anthropic_passthrough_non_streaming", _cancelled)
+        payload = _basic_payload(
+            tools = [
+                {
+                    "name": "lookup",
+                    "description": "Look something up",
+                    "input_schema": {"type": "object", "properties": {}},
+                }
+            ]
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            _drive(anthropic_messages(payload, request = self._Request(), current_subject = "t"))
+
+        assert exc.value.status_code == 499
+        assert exc.value.detail["type"] == "error"
+        [entry] = monitor.snapshot()
+        assert entry["status"] == "cancelled"
+        assert monitor.active_count() == 0
+
     def test_plain_streaming_records_active_and_completed_monitor_entry(self, monkeypatch):
         import routes.inference as inf_mod
 
@@ -3278,11 +3894,14 @@ class TestAnthropicMessagesToolRouting:
         assert '"type": "error"' in blob
         assert "event: message_stop" not in blob
 
-    def test_mixed_server_and_client_tools_rejected_with_400(self, monkeypatch):
+    @pytest.mark.parametrize(
+        "tool_type", ["web_search_20250305", "web_search_20260209", "web_search_20260318"]
+    )
+    def test_mixed_server_and_client_tools_rejected_with_400(self, monkeypatch, tool_type):
         _mock_backend(monkeypatch)
         payload = _basic_payload(
             tools = [
-                {"type": "web_search_20250305", "name": "web_search"},
+                {"type": tool_type, "name": "web_search"},
                 {"name": "custom", "input_schema": {"type": "object"}},
             ],
         )
@@ -3504,17 +4123,22 @@ class TestAnthropicMessagesToolRouting:
         _drive(anthropic_messages(payload, request = None, current_subject = "t"))
         assert backend.calls[0][0] == "plain"
 
-    def test_server_tool_alias_enters_tool_path_when_policy_unset(self, monkeypatch):
+    @pytest.mark.parametrize(
+        "tool_type", ["web_search_20250305", "web_search_20260209", "web_search_20260318"]
+    )
+    def test_server_tool_alias_enters_tool_path_when_policy_unset(self, monkeypatch, tool_type):
         # Mirror of the previous test for the default (None) policy. An omitted
         # permission_mode still runs here because web_search is a safe server tool
         # (only a selected terminal/python would require the missing gate).
         backend = _mock_backend(monkeypatch)
         payload = _basic_payload(
-            tools = [{"type": "web_search_20250305", "name": "web_search"}],
+            tools = [{"type": tool_type, "name": "web_search"}],
         )
 
         _drive(anthropic_messages(payload, request = None, current_subject = "t"))
-        assert backend.calls[0][0] == "tools"
+        call_kind, kwargs = backend.calls[0]
+        assert call_kind == "tools"
+        assert [tool["function"]["name"] for tool in kwargs["tools"]] == ["web_search"]
 
     def test_api_server_tool_request_keeps_the_current_date(self, monkeypatch):
         import routes.inference as inf_mod
@@ -3889,9 +4513,39 @@ def test_user_unknown_block_rejected_not_silently_dropped():
             model = "x",
             max_tokens = 16,
             messages = [
-                {"role": "user", "content": [{"type": "document", "source": {}}]},
+                {"role": "user", "content": [{"type": "container_upload", "file_id": "f"}]},
             ],
         )
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        {"type": "base64", "media_type": "application/pdf", "data": "JVBERi0="},
+        {"type": "url", "url": "https://example.com/a.pdf"},
+        {"type": "file", "file_id": "file_1"},
+    ],
+)
+def test_user_unreadable_document_rejected_outside_tool_results(source):
+    from pydantic import ValidationError
+
+    document = {"type": "document", "source": source}
+    with pytest.raises(ValidationError, match = "unsupported document source type"):
+        AnthropicMessagesRequest(
+            model = "x",
+            max_tokens = 16,
+            messages = [{"role": "user", "content": [{"type": "text", "text": "Read"}, document]}],
+        )
+    AnthropicMessagesRequest(
+        model = "x",
+        max_tokens = 16,
+        messages = [
+            {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "t1", "content": [document]}],
+            }
+        ],
+    )
 
 
 def test_user_translatable_blocks_still_accepted():
@@ -5321,3 +5975,357 @@ def test_x_unsloth_effort_still_outranks_thinking_when_sent_explicitly():
     )
     assert args["enable_thinking"] is True
     assert args["reasoning_effort"] == "high"
+
+
+def test_the_anthropic_paths_promote_a_replayed_mcp_envelope():
+    """A client replaying an Anthropic history sends the envelope back inside the
+    tool_result. Without promotion the model reads megabytes of base64 as text and is
+    shown no picture -- the very defect this feature exists to remove, on the endpoint
+    Claude Code actually uses."""
+    import inspect
+
+    from routes import inference
+
+    generate = inspect.getsource(inference.anthropic_messages)
+    assert (
+        "_promote_mcp_history_images_async(" in generate
+    ), "the /v1/messages path never promotes the replayed envelope"
+    assert (
+        "replayed_image_parts = tuple(_anthropic_replayed_image_parts)" in generate
+    ), "the loop's conversation cap has to start from what promotion put back"
+
+    count = inspect.getsource(inference.anthropic_count_tokens)
+    assert "await _promote_mcp_history_images_async(" in count, (
+        "the count endpoint prices the base64 the completion never sends, and must "
+        "not do the Pillow work inline on the event loop"
+    )
+    assert "messages_override = openai_messages" in generate, (
+        "admission has to reserve against the translated list, or an Anthropic "
+        "tool_result block prices its envelope as dense text"
+    )
+
+
+def test_an_anthropic_replay_hands_the_model_the_picture_not_the_base64():
+    import asyncio
+    import base64
+    import io
+    import json
+
+    from PIL import Image
+
+    from core.inference import mcp_images
+    from routes.inference import _promote_mcp_history_images_async
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (12, 12), (24, 90, 219)).save(buffer, format = "PNG")
+    payload = base64.b64encode(buffer.getvalue()).decode()
+    envelope = json.dumps([{"data": payload, "mimeType": "image/png"}])
+
+    # The shape anthropic_messages_to_openai produces from a replayed tool_result.
+    messages = [
+        {"role": "user", "content": "take a screenshot"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "toolu_0",
+                    "type": "function",
+                    "function": {"name": "mcp__shot__capture", "arguments": "{}"},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "toolu_0",
+            "name": "mcp__shot__capture",
+            "content": "[1 image returned]\n" + mcp_images.SENTINEL + envelope,
+        },
+        {"role": "user", "content": "what colour was it"},
+    ]
+
+    promoted: list = []
+    out = asyncio.run(
+        _promote_mcp_history_images_async(messages, vision = True, promoted_out = promoted)
+    )
+
+    text = "".join(
+        message["content"] if isinstance(message.get("content"), str) else "" for message in out
+    ) + "".join(
+        part.get("text", "")
+        for message in out
+        if isinstance(message.get("content"), list)
+        for part in message["content"]
+        if part.get("type") == "text"
+    )
+    assert mcp_images.SENTINEL not in text
+    assert payload not in text, "the base64 reached the model as prompt text"
+    assert len(promoted) == 1
+    assert (
+        sum(
+            1
+            for message in out
+            if isinstance(message.get("content"), list)
+            for part in message["content"]
+            if part.get("type") == "image_url"
+        )
+        == 1
+    )
+
+
+def test_a_text_only_anthropic_model_is_not_shown_the_envelope_either():
+    import asyncio
+    import json
+
+    from core.inference import mcp_images
+    from routes.inference import _promote_mcp_history_images_async
+
+    envelope = json.dumps([{"data": "QUJD", "mimeType": "image/png"}])
+    messages = [
+        {
+            "role": "tool",
+            "tool_call_id": "toolu_0",
+            "name": "mcp__shot__capture",
+            "content": "[1 image returned]\n" + mcp_images.SENTINEL + envelope,
+        }
+    ]
+
+    out = asyncio.run(_promote_mcp_history_images_async(messages, vision = False))
+
+    assert mcp_images.SENTINEL not in json.dumps(out)
+    assert not any(isinstance(message.get("content"), list) for message in out)
+
+
+def test_the_anthropic_count_refuses_a_promoted_image_rather_than_undercount():
+    """count_chat_tokens renders /apply-template, which swaps each image for a short
+    media marker. Counting a promoted envelope there reports none of the projector
+    tokens /v1/messages really spends, and an undercount is what a client sizes its
+    context against -- so the OpenAI counter refuses this shape and so must this one."""
+    import inspect
+
+    from routes import inference
+
+    count = inspect.getsource(inference.anthropic_count_tokens)
+    refusal = count.index(
+        "asyncio.to_thread(_messages_have_promotable_mcp_images, openai_messages)"
+    )
+    promotion = count.index("_promote_mcp_history_images_async(")
+    assert refusal < promotion, (
+        "the refusal has to come BEFORE promotion, or the envelope is already "
+        "image parts by the time it is checked"
+    )
+    assert "Cannot count tokens for messages containing images." in count
+    assert (
+        "llama_backend.is_vision\n"
+        "        and _messages_mention_mcp_images(openai_messages)\n"
+        "        and await asyncio.to_thread(_messages_have_promotable_mcp_images, openai_messages)"
+    ) in count, (
+        "a text-only model has the envelope stripped and sends no pixels, so it "
+        "must still be counted rather than refused"
+    )
+
+
+def test_the_anthropic_envelope_is_promoted_before_tool_roles_are_folded_away():
+    """A template without tool-role support has the sanitizer fold every role="tool"
+    into a user message. _promote only looks at tool messages, so promoting after it
+    left the envelope as JSON in the prompt: megabytes of base64 read as text, and no
+    picture shown at all."""
+    import inspect
+
+    from routes import inference
+
+    for name, source in (
+        ("generation", inspect.getsource(inference.anthropic_messages)),
+        ("count", inspect.getsource(inference.anthropic_count_tokens)),
+    ):
+        promote = source.index("_promote_mcp_history_images_async(")
+        sanitize = source.index("_sanitize_anthropic_openai_messages(openai_messages")
+        assert (
+            promote < sanitize
+        ), f"{name}: the fold runs first and the envelope never reaches promotion"
+        named = source.index("_named_anthropic_tool_results(openai_messages)")
+        assert named < promote, f"{name}: provenance has to be restored first"
+
+
+def test_an_anthropic_client_tool_is_not_trusted_as_an_mcp_image_source():
+    """anthropic_messages_to_openai renders a tool_result with tool_call_id and no
+    name, and _promote reads an absent name as legacy MCP history it may trust. An
+    ordinary client tool whose output merely ends in a valid suffix was therefore
+    promoted as image input on the strength of nothing."""
+    import base64
+    import io
+    import json
+
+    from PIL import Image
+
+    from core.inference import mcp_images
+    from routes.inference import _named_anthropic_tool_results
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (8, 8), (10, 120, 200)).save(buffer, format = "PNG")
+    envelope = json.dumps(
+        [{"data": base64.b64encode(buffer.getvalue()).decode(), "mimeType": "image/png"}]
+    )
+    translated = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "toolu_0",
+                    "type": "function",
+                    "function": {"name": "read_file", "arguments": "{}"},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "toolu_0",
+            "content": "here you go\n" + mcp_images.SENTINEL + envelope,
+        },
+    ]
+
+    named = _named_anthropic_tool_results(translated)
+    assert named[1]["name"] == "read_file", "the result was not correlated to its call"
+
+    out = mcp_images.promote_history(named, vision = True)
+    assert not any(
+        isinstance(m.get("content"), list) for m in out
+    ), "a non-mcp__ tool was promoted as trusted image input"
+    # The suffix still comes off the text for everyone, MCP or not.
+    assert mcp_images.SENTINEL not in json.dumps(out)
+
+
+def test_a_real_mcp_tool_still_promotes_through_the_anthropic_naming():
+    import base64
+    import io
+    import json
+
+    from PIL import Image
+
+    from core.inference import mcp_images
+    from routes.inference import _named_anthropic_tool_results
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (8, 8), (10, 120, 200)).save(buffer, format = "PNG")
+    envelope = json.dumps(
+        [{"data": base64.b64encode(buffer.getvalue()).decode(), "mimeType": "image/png"}]
+    )
+    translated = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "toolu_0",
+                    "type": "function",
+                    "function": {"name": "mcp__shot__capture", "arguments": "{}"},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "toolu_0",
+            "content": "[1 image returned]\n" + mcp_images.SENTINEL + envelope,
+        },
+    ]
+
+    out = mcp_images.promote_history(_named_anthropic_tool_results(translated), vision = True)
+
+    assert (
+        sum(
+            1
+            for message in out
+            if isinstance(message.get("content"), list)
+            for part in message["content"]
+            if part.get("type") == "image_url"
+        )
+        == 1
+    )
+
+
+def test_repeated_anthropic_call_ids_are_paired_positionally():
+    """A conversation-wide id map renamed every earlier result with that id after the
+    newest call, suppressing an earlier MCP picture or trusting an earlier non-MCP one."""
+    from routes.inference import _named_anthropic_tool_results
+
+    def _call(name):
+        return {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "call_0", "type": "function", "function": {"name": name, "arguments": "{}"}}
+            ],
+        }
+
+    named = _named_anthropic_tool_results(
+        [
+            _call("mcp__shot__capture"),
+            {"role": "tool", "tool_call_id": "call_0", "content": "first"},
+            _call("read_file"),
+            {"role": "tool", "tool_call_id": "call_0", "content": "second"},
+        ]
+    )
+
+    assert [m.get("name") for m in named if m["role"] == "tool"] == [
+        "mcp__shot__capture",
+        "read_file",
+    ]
+
+
+def test_promoted_parts_take_the_anthropic_normalizer_off_the_loop():
+    """_anthropic_has_image was read off the original blocks, so a replay-only request
+    took the synchronous branch and re-decoded up to eight promoted PNGs on the loop."""
+    import inspect
+
+    from routes import inference
+
+    src = inspect.getsource(inference.anthropic_messages)
+    assert "if _anthropic_has_image or _anthropic_replayed_image_parts:" in src
+
+
+def test_the_anthropic_count_refusal_is_name_aware():
+    """The names are stamped from the calls right before the check, so a client tool
+    whose output merely ends in a valid envelope -- never promoted, suffix stripped --
+    must not turn a countable prompt into a 400."""
+    import inspect
+    import json
+
+    from core.inference import mcp_images
+    from routes import inference
+    from routes.inference import _messages_have_promotable_mcp_images, _named_anthropic_tool_results
+
+    src = inspect.getsource(inference.anthropic_count_tokens)
+    assert "asyncio.to_thread(_messages_have_promotable_mcp_images, openai_messages)" in src
+    assert "_messages_have_mcp_image_envelope(openai_messages)" not in src
+
+    envelope = json.dumps([{"data": "QUJD", "mimeType": "image/png"}])
+
+    def _translated(tool):
+        return _named_anthropic_tool_results(
+            [
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "toolu_0",
+                            "type": "function",
+                            "function": {"name": tool, "arguments": "{}"},
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "toolu_0",
+                    "content": "out\n" + mcp_images.SENTINEL + envelope,
+                },
+            ]
+        )
+
+    assert not _messages_have_promotable_mcp_images(_translated("read_file"))
+    assert _messages_have_promotable_mcp_images(_translated("mcp__shot__capture"))
+    # Unnamed and uncorrelated is still legacy history, and still refused.
+    assert _messages_have_promotable_mcp_images(
+        [{"role": "tool", "tool_call_id": "x", "content": "out\n" + mcp_images.SENTINEL + envelope}]
+    )

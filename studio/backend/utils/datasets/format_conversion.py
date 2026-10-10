@@ -21,6 +21,13 @@ def _quiet_bar_kwargs() -> dict:
         return {}
 
 
+def _normalize_role_alias(role) -> str:
+    """Stripped and lowercased, as `standardize_data_formats` and the preview do it."""
+    if role is None:
+        return ""
+    return str(role).strip().lower()
+
+
 def standardize_chat_format(
     dataset,
     tokenizer = None,
@@ -107,13 +114,14 @@ def standardize_chat_format(
     else:
         raise ValueError(f"Could not infer role/content keys for chat column '{chat_column}'")
 
+    # Keyed on the normalised alias: "Human" / " user " would reach the template raw.
     aliases_mapping = {}
     for x in aliases_for_system:
-        aliases_mapping[x] = "system"
+        aliases_mapping[_normalize_role_alias(x)] = "system"
     for x in aliases_for_user:
-        aliases_mapping[x] = "user"
+        aliases_mapping[_normalize_role_alias(x)] = "user"
     for x in aliases_for_assistant:
-        aliases_mapping[x] = "assistant"
+        aliases_mapping[_normalize_role_alias(x)] = "assistant"
 
     def _standardize_dataset(examples):
         convos = examples[chat_column]
@@ -131,12 +139,21 @@ def standardize_chat_format(
                 # Use the inferred keys first, falling back per-message so mixed ShareGPT/ChatML rows keep valid turns.
                 original_role = message.get(role_key)
                 original_content = message.get(content_key)
-                if original_role is None:
+                # Blank counts as absent for the ROLE, matching the preview: `is None` here
+                # trained {"role": "", "from": "gpt"} as a user turn. Content is not blank-
+                # checked, because an empty message is a legitimate value.
+                if not _normalize_role_alias(original_role):
                     original_role = message.get("role") or message.get("from") or ""
                 if original_content is None:
                     original_content = message.get("content") or message.get("value") or ""
 
-                standard_role = aliases_mapping.get(original_role, original_role)
+                # Unknown alias left as written; blank is "user", as most templates reject one.
+                normalized_role = _normalize_role_alias(original_role)
+                standard_role = (
+                    aliases_mapping.get(normalized_role, original_role)
+                    if normalized_role
+                    else "user"
+                )
 
                 if is_vlm:
                     original_content = [{"type": "text", "text": original_content}]
@@ -219,8 +236,9 @@ def convert_chatml_to_alpaca(
         instructions = []
         outputs = []
         inputs = []
+        column_systems = examples.get("system") or [None] * len(chatml_data)
 
-        for convo in chatml_data:
+        for convo, column_system in zip(chatml_data, column_systems):
             turns = []
             for msg in convo or []:
                 role = roles.get(msg.get("role") or msg.get("from"))
@@ -231,6 +249,13 @@ def convert_chatml_to_alpaca(
                     turns[-1][1] = f"{turns[-1][1]}\n\n{content}"
                 else:
                     turns.append([role, content])
+            # A separate system column fills in only when the conversation has no leading system turn.
+            if (
+                isinstance(column_system, str)
+                and column_system.strip()
+                and not (turns and turns[0][0] == "system")
+            ):
+                turns.insert(0, ["system", column_system])
 
             system = ""
             context = []
@@ -424,6 +449,8 @@ def convert_to_vlm_format(
                 image_data = Image.open(local_path).convert("RGB")
             else:
                 image_data = Image.open(image_data).convert("RGB")
+        elif image_data is None:
+            raise ValueError("Row has no image")
 
         text_data = sample[text_column]
         if isinstance(text_data, list) and len(text_data) > 0:
@@ -432,6 +459,8 @@ def convert_to_vlm_format(
 
         if uses_dynamic and instruction_column:
             current_instruction = sample[instruction_column]
+            if not isinstance(current_instruction, str) or not current_instruction.strip():
+                current_instruction = "Describe this image in detail."
         else:
             current_instruction = instruction
 
@@ -449,10 +478,18 @@ def convert_to_vlm_format(
         return {"messages": messages}
 
     total = len(dataset)
-    first_image = next(iter(dataset))[image_column]
+    first_image = next(
+        (row[image_column] for row in dataset if row[image_column] is not None), None
+    )
     has_urls = isinstance(first_image, str) and first_image.startswith(("http://", "https://"))
 
-    # Bare-filename detection: build a basename to repo_path lookup so filename-only images resolve via hf_hub_download during conversion.
+    if has_urls:
+        with_image = [i for i, url in enumerate(dataset[image_column]) if url is not None]
+        if len(with_image) < total:
+            logger.info(f"Skipping {total - len(with_image)}/{total} rows without an image")
+            dataset = dataset.select(with_image)
+            total = len(with_image)
+
     _image_lookup = None
     _IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff")
     if (
@@ -474,6 +511,10 @@ def convert_to_vlm_format(
                 for f in repo_files
                 if any(f.lower().endswith(ext) for ext in _IMAGE_EXTS)
             }
+            # Also key by the full relative path, e.g. "images/0001.jpg", as the ShareGPT converter does.
+            for f in repo_files:
+                if any(f.lower().endswith(ext) for ext in _IMAGE_EXTS):
+                    _image_lookup[f] = f
             if first_image in _image_lookup:
                 logger.info(
                     f"✅ Matched {len(_image_lookup)} image files in repo (e.g. '{first_image}' → '{_image_lookup[first_image]}')"
@@ -851,39 +892,71 @@ def convert_llava_to_vlm_format(dataset):
     """Convert Llava format to standard VLM format: Llava carries messages whose content blocks name an image by {'type': 'image', 'index': 0} plus a parallel images list, while the standard form inlines the PIL object as {'type': 'image', 'image': PIL_Image}."""
     from PIL import Image
 
-    logger.info(f"🔄 Converting {len(dataset)} samples from Llava format to standard VLM format...")
+    is_iterable = is_streaming_dataset(dataset)
+    if is_iterable:
+        logger.info("🔄 Converting streaming samples from Llava format to standard VLM format...")
+    else:
+        logger.info(
+            f"🔄 Converting {len(dataset)} samples from Llava format to standard VLM format..."
+        )
 
     def _convert_single_sample(sample):
         """Convert one llava sample to standard VLM format."""
         messages = sample["messages"]
         images = sample.get("images", [])
+        unindexed_image_index = 0
+        explicit_image_indices = set()
+        for message in messages:
+            content = message.get("content")
+            if not isinstance(content, list):
+                continue
+            for item in content:
+                if not isinstance(item, dict) or item.get("type") != "image":
+                    continue
+                image_index = item.get("index")
+                if isinstance(image_index, int) and not isinstance(image_index, bool):
+                    explicit_image_indices.add(image_index)
 
         new_messages = []
         for msg in messages:
             new_content = []
+            message_content = msg["content"]
 
-            for item in msg["content"]:
+            if isinstance(message_content, str):
+                new_messages.append(
+                    {
+                        "role": msg["role"],
+                        "content": [{"type": "text", "text": message_content}],
+                    }
+                )
+                continue
+
+            for item in message_content:
                 if item["type"] == "image":
-                    if "index" in item and item["index"] is not None:
-                        img_idx = item["index"]
-                        if img_idx < len(images):
-                            pil_image = images[img_idx]
-                            if isinstance(pil_image, str):
-                                pil_image = Image.open(pil_image).convert("RGB")
+                    img_idx = item.get("index")
+                    if img_idx is None:
+                        while unindexed_image_index in explicit_image_indices:
+                            unindexed_image_index += 1
+                        img_idx = unindexed_image_index
+                        unindexed_image_index += 1
+                    if not isinstance(img_idx, int) or isinstance(img_idx, bool):
+                        raise ValueError(f"Invalid Llava image index: {img_idx!r}")
+                    if not 0 <= img_idx < len(images):
+                        raise ValueError(
+                            f"Llava image index {img_idx} is missing from a row with "
+                            f"{len(images)} images"
+                        )
 
-                            new_content.append(
-                                {
-                                    "type": "image",
-                                    "image": pil_image,  # Actual PIL object
-                                }
-                            )
-                    else:
-                        if len(images) > 0:
-                            pil_image = images[0]
-                            if isinstance(pil_image, str):
-                                pil_image = Image.open(pil_image).convert("RGB")
+                    pil_image = images[img_idx]
+                    if isinstance(pil_image, str):
+                        pil_image = Image.open(pil_image).convert("RGB")
+                    elif not isinstance(pil_image, Image.Image):
+                        raise ValueError(
+                            f"Unsupported Llava image value at index {img_idx}: "
+                            f"{type(pil_image).__name__}"
+                        )
 
-                            new_content.append({"type": "image", "image": pil_image})
+                    new_content.append({"type": "image", "image": pil_image})
 
                 elif item["type"] == "text":
                     new_content.append({"type": "text", "text": item.get("text", "")})
@@ -892,7 +965,19 @@ def convert_llava_to_vlm_format(dataset):
 
         return {"messages": new_messages}
 
-    converted_list = [_convert_single_sample(sample) for sample in dataset]
+    if is_iterable:
+        remove_columns = dataset.column_names or list(next(iter(dataset), {}))
+        converted_dataset = dataset.map(
+            _convert_single_sample,
+            remove_columns = remove_columns,
+        )
+        try:
+            next(iter(converted_dataset), None)
+        except Exception as exc:
+            raise ValueError(f"Streaming Llava conversion failed on the first row: {exc}") from exc
+        logger.info("✅ Configured streaming Llava conversion")
+        return converted_dataset
 
+    converted_list = [_convert_single_sample(sample) for sample in dataset]
     logger.info(f"✅ Converted {len(converted_list)} samples")
     return converted_list

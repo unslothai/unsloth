@@ -37,6 +37,7 @@ from typing import Any, Callable, Optional
 from loggers import get_logger
 
 from .diffusion_krea2 import load_krea2_text_encoder, load_krea2_tokenizer
+from .diffusion_transformer_quant import mark_source_precision
 
 logger = get_logger(__name__)
 
@@ -419,7 +420,37 @@ def load_ideogram4_transformer(
         )
     check_cancelled()
     model.to(dtype)
-    return model
+    # Preserve the published source precision after widening the tensors to bf16.
+    return mark_source_precision(model, "fp8")
+
+
+def _hidden_states_on_mask_device(original: Callable[..., Any]) -> Callable[..., Any]:
+    """Return the tapped states on ``attention_mask``'s device: under group offload ``text_encoder.device`` reads CPU
+    (so the mask lands there) while the states come back on the GPU, and ``encode_prompt``'s multiply raised."""
+
+    def get_text_encoder_hidden_states(text_encoder, token_ids, attention_mask, pos_2d):
+        states = original(text_encoder, token_ids, attention_mask, pos_2d)
+        device = getattr(attention_mask, "device", None)
+        if device is None:
+            return states
+        return [s.to(device) if getattr(s, "device", device) != device else s for s in states]
+
+    get_text_encoder_hidden_states._unsloth_mask_device = True  # type: ignore[attr-defined]
+    return get_text_encoder_hidden_states
+
+
+def install_text_encoder_device_guard(pipe: Any) -> bool:
+    """Shadow the pipeline's static ``_get_text_encoder_hidden_states`` on this instance. Idempotent."""
+    original = getattr(pipe, "_get_text_encoder_hidden_states", None)
+    if not callable(original):
+        return False
+    if getattr(original, "_unsloth_mask_device", False):
+        return True
+    try:
+        pipe._get_text_encoder_hidden_states = _hidden_states_on_mask_device(original)
+    except Exception:  # noqa: BLE001 - a frozen / slotted pipeline keeps the stock path
+        return False
+    return True
 
 
 def load_ideogram4_pipeline(
@@ -465,7 +496,7 @@ def load_ideogram4_pipeline(
     )
     check_cancelled()
     logger.info("diffusion.ideogram4: assembled pipeline from %s per-component", repo_id)
-    return diffusers.Ideogram4Pipeline(
+    pipe = diffusers.Ideogram4Pipeline(
         scheduler = scheduler,
         vae = vae,
         text_encoder = text_encoder,
@@ -473,3 +504,5 @@ def load_ideogram4_pipeline(
         transformer = transformer,
         unconditional_transformer = unconditional_transformer,
     )
+    install_text_encoder_device_guard(pipe)
+    return pipe

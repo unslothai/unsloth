@@ -81,6 +81,7 @@ test("migration preserves tuned values while protecting them from model defaults
     loraRankBeforeCpt: null,
     loraAlphaBeforeCpt: null,
     loraVariantBeforeCpt: null,
+    trainOnCompletionsBeforeCpt: null,
   });
   assert.equal("wandbToken" in migrated, false);
 });

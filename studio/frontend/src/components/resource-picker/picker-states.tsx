@@ -3,7 +3,7 @@
 
 import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
-import { RefreshIcon } from "@hugeicons/core-free-icons";
+import { Refresh01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { PICKER_OPTION_FOCUS_VISIBLE_CLASS } from "./picker-focus";
 
@@ -14,11 +14,11 @@ export function RetryButton({ onRetry }: { onRetry: () => void }) {
       type="button"
       onClick={onRetry}
       className={cn(
-        "mt-1 inline-flex items-center gap-1.5 rounded-full border border-border/70 px-3 py-1 text-ui-11 font-medium text-foreground transition-colors hover:bg-foreground/[0.05]",
+        "mt-1 inline-flex items-center gap-1.5 rounded-full border border-border/70 px-3 py-1 text-ui-11 font-medium text-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)]",
         PICKER_OPTION_FOCUS_VISIBLE_CLASS,
       )}
     >
-      <HugeiconsIcon icon={RefreshIcon} strokeWidth={1.75} className="size-3" />
+      <HugeiconsIcon icon={Refresh01Icon} strokeWidth={1.75} className="size-3" />
       {t("picker.retry")}
     </button>
   );

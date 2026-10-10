@@ -10,7 +10,10 @@ https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md"""
 from __future__ import annotations
 
 import logging
+import math
 import os
+import re
+import struct
 import sys
 from typing import Any, Callable, Iterable, Mapping, Optional
 
@@ -24,6 +27,19 @@ logger = logging.getLogger(__name__)
 PARALLEL_MIN = 1
 PARALLEL_MAX = 64
 
+PARALLEL_DEFAULT = 4
+
+
+def clamp_parallel_slots(n_parallel) -> int:
+    if n_parallel is None:
+        return PARALLEL_DEFAULT
+    try:
+        asked = int(n_parallel)
+    except (TypeError, ValueError):
+        return PARALLEL_DEFAULT
+    return max(PARALLEL_MIN, min(PARALLEL_MAX, asked))
+
+
 # --batch-size / --ubatch-size range, mirrored by N_BATCH_MIN/MAX in per-model-config.ts
 BATCH_MIN = 1
 BATCH_MAX = 65536
@@ -36,7 +52,7 @@ CACHE_RAM_MAX_MIB = 1024 * 1024
 # llama.cpp allocates this default even when Studio emits no flag.
 LLAMA_CTX_CHECKPOINTS_DEFAULT = 32
 
-# Recurrent checkpoints live in host RAM and can be much larger than SWA snapshots.
+# Checkpoints live in host RAM: a hybrid's whole recurrent state, or an SWA model's window.
 CTX_CHECKPOINT_HOST_BUDGET_FRACTION = 0.05
 CTX_CHECKPOINT_HOST_BUDGET_FLOOR_BYTES = 1024**3
 # Keep rollback available; zero forces a full prompt re-ingest after divergence.
@@ -66,7 +82,6 @@ _DENYLIST_GROUPS: tuple[frozenset[str], ...] = (
     frozenset({"-hfv", "-hfrv", "--hf-repo-v"}),
     frozenset({"-hffv", "--hf-file-v"}),
     frozenset({"-hft", "--hf-token"}),
-    frozenset({"-mm", "--mmproj"}),
     frozenset({"-mmu", "--mmproj-url"}),
     # Networking: Unsloth binds + proxies; retargeting orphans the proxy.
     frozenset({"--host"}),
@@ -135,6 +150,56 @@ _DENYLIST_GROUPS: tuple[frozenset[str], ...] = (
 )
 
 _DENYLIST: frozenset[str] = frozenset().union(*_DENYLIST_GROUPS)
+
+# Pass-through flags whose value is a path the child opens (or, for --log-prompts-dir, writes under). llama-server runs
+# as the installation's OS user, and account model access is checked for the model being loaded, not for these, so in
+# multi-account mode only the owner may name one.
+OWNER_ONLY_PATH_FLAGS: frozenset[str] = frozenset(
+    {
+        "-mm",
+        "--mmproj",
+        "--spec-draft-model",
+        "-md",
+        "--model-draft",
+        "-mv",
+        "--model-vocoder",
+        "--lora",
+        "--lora-scaled",
+        "--control-vector",
+        "--control-vector-scaled",
+        "--chat-template-file",
+        "--grammar-file",
+        "-jf",
+        "--json-schema-file",
+        "-lcs",
+        "--lookup-cache-static",
+        "-lcd",
+        "--lookup-cache-dynamic",
+        "--log-prompts-dir",
+        # llama-server runs <dir>/ffmpeg to decode a video.
+        "--video-ffmpeg-dir",
+        # Not a path: llama-server sends the model's tensors to these hosts.
+        "--rpc",
+    }
+)
+
+
+def owner_only_path_args(args: Optional[Iterable[str]]) -> list[tuple[str, str]]:
+    """``(flag, value)`` for each OWNER_ONLY_PATH_FLAGS occurrence in ``args``, in order."""
+    tokens = [str(a) for a in args or ()]
+    found: list[tuple[str, str]] = []
+    for i, raw in enumerate(tokens):
+        flag = _flag_name(raw)
+        if flag in OWNER_ONLY_PATH_FLAGS:
+            _, eq, inline = raw.partition("=")
+            found.append((flag, inline if eq else (tokens[i + 1] if i + 1 < len(tokens) else "")))
+    return found
+
+
+def owner_only_path_flags(args: Optional[Iterable[str]]) -> list[str]:
+    """The OWNER_ONLY_PATH_FLAGS present in ``args``, in first-seen order."""
+    return list(dict.fromkeys(flag for flag, _ in owner_only_path_args(args)))
+
 
 # Flags that take TWO values rather than one. Scanned out of `llama-server --help`: every other option is `--flag
 # VALUE` or a switch, and this list exists so the positional check below does not refuse a legitimate second value.
@@ -346,6 +411,7 @@ def validate_extra_args(args: Optional[Iterable[str]]) -> list[str]:
     parse_cache_override(out)
     parse_split_mode_override(out)
     parse_gpu_layers_override(out)
+    parse_tensor_split_override(out)
     parse_reasoning_budget_override(out)
     parse_reasoning_budget_message_override(out)
     return out
@@ -527,6 +593,10 @@ _TEMPLATE_FLAGS: frozenset[str] = frozenset(
         "--chat-template",
         "--chat-template-file",
         "--chat-template-kwargs",
+        # enable_thinking's new spelling (#7526); a template override recomputes the default,
+        # so both must strip. Takes a value, so NOT in _BOOLEAN_SHADOWING_FLAGS.
+        "--reasoning",
+        "-rea",
         "--jinja",
         "--no-jinja",
     }
@@ -569,6 +639,8 @@ _FIT_FLAGS: frozenset[str] = frozenset({"-fit", "--fit"})
 # The fitter's per-device margin. Never stripped (llama.cpp is last-wins), so a pass-through value is what the child
 # really keeps free; see fit_target_margin_in.
 _FIT_TARGET_FLAGS: frozenset[str] = frozenset({"-fitt", "--fit-target"})
+# The fitter's context floor, also never stripped; see fit_ctx_in.
+_FIT_CTX_FLAGS: frozenset[str] = frozenset({"-fitc", "--fit-ctx"})
 _LAYER_OFFLOAD_FLAGS: frozenset[str] = _GPU_LAYER_FLAGS | _FIT_FLAGS
 _MOE_OFFLOAD_FLAGS: frozenset[str] = frozenset({"-ncmoe", "--n-cpu-moe", "-cmoe", "--cpu-moe"})
 _OFFLOAD_SHADOWING_FLAGS: frozenset[str] = _LAYER_OFFLOAD_FLAGS | _MOE_OFFLOAD_FLAGS
@@ -912,6 +984,100 @@ def parse_gpu_layers_override(args: Optional[Iterable[str]]) -> Optional[int]:
     return value
 
 
+def _as_emitted(value: float) -> float:
+    """``value`` as the manual launcher will write it, which is ``f"{x:g}"``: six significant
+    digits, so the text the child parses is not always the number validated here."""
+    return float(f"{value:g}")
+
+
+def _as_float32(value: float) -> float:
+    """``value`` as llama.cpp would hold it: overflow becomes inf rather than raising.
+
+    ``struct.pack`` raises OverflowError where the C cast it stands in for saturates, so the
+    caller would have to guard every call site instead of just testing isfinite once.
+    """
+    try:
+        return struct.unpack("=f", struct.pack("=f", value))[0]
+    except OverflowError:
+        return math.copysign(math.inf, value)
+
+
+# Largest share llama.cpp's float array can hold; anything above is out_of_range to std::stof.
+_FLOAT32_MAX = struct.unpack("=f", struct.pack("=f", 3.4028234663852886e38))[0]
+
+# FLT_MIN. libstdc++ throws out_of_range on any SUBNORMAL result too, so the range has a floor as
+# well as a ceiling (measured: stof("1e-38") throws, stof("0") is fine). Rounding decides, not the
+# literal: 1.1754943508222874e-38 rounds UP to FLT_MIN and is accepted.
+_FLOAT32_MIN_NORMAL = struct.unpack("=f", struct.pack("=f", 1.1754943508222875e-38))[0]
+
+
+def parse_tensor_split_override(
+    args: Optional[Iterable[str]], *, reserialized: bool = False
+) -> Optional[list[float]]:
+    """Return the last user-supplied ``-ts`` / ``--tensor-split`` ratios from extras.
+
+    Manual GPU memory with ``gpu_layers >= 0`` strips ``--tensor-split`` because the first-class
+    ``tensor_split`` field owns it. Callers must promote the last-wins extras value into that
+    field first, or an asymmetric MoE split such as ``-ts 2.2,1`` is discarded and llama-server
+    falls back to a near-even layer count (#11330).
+
+    Delimiters match llama.cpp's ``[,/]+`` (``-ts 3/1`` is the same as ``-ts 3,1``). Degenerate
+    values raise so ``validate_extra_args`` can refuse them as a 400 rather than stripping them
+    silently.
+
+    Bounds are llama.cpp's, not Python's: ``std::stof`` (common/arg.cpp) throws
+    ``std::out_of_range`` above FLT_MAX and on any subnormal, and the shares are prefix-summed
+    into a float array (llama-model.cpp), so a value this parser would take as a finite double
+    can still abort the server at startup. Every share is rounded to float32 BEFORE it joins the
+    total, because that is the order llama.cpp adds them in.
+
+    ``reserialized`` is which text the child will parse. Manual mode promotes the ratio into the
+    first-class field and the launcher writes it back out with ``f"{x:g}"``, six significant
+    digits, so there the emitted string is judged. Everywhere else ``-ts`` is pass-through and
+    llama-server reads the user's own text, so judging a rounded version would refuse input that
+    runs: ``-ts 1.1754943508222874e-38,1`` is fine as typed and subnormal once re-serialized.
+    """
+    raw_value = _last_flag_value(args, _TENSOR_SPLIT_FLAGS)
+    if raw_value is None:
+        return None
+    try:
+        parts = [float(p) for p in re.split(r"[,/]+", raw_value) if p.strip()]
+    except ValueError as exc:
+        raise ValueError(
+            "llama-server --tensor-split requires a comma- or slash-separated list of numbers"
+        ) from exc
+    if not parts:
+        raise ValueError(
+            "llama-server --tensor-split requires a comma- or slash-separated list of numbers"
+        )
+    if any((not math.isfinite(v)) or v < 0 for v in parts):
+        raise ValueError("llama-server --tensor-split entries must be finite and non-negative")
+    if sum(parts) <= 0:
+        raise ValueError("llama-server --tensor-split must have a positive total")
+    running = 0.0
+    for part in parts:
+        # The share as the CHILD will hold it: its own text under pass-through, the launcher's
+        # six-digit rendering once manual mode re-serializes it.
+        share = _as_float32(_as_emitted(part) if reserialized else part)
+        if not math.isfinite(share):
+            raise ValueError(
+                "llama-server --tensor-split entries must fit in a 32-bit float "
+                f"(at most {_FLOAT32_MAX:g})"
+            )
+        if part != 0 and share < _FLOAT32_MIN_NORMAL:
+            raise ValueError(
+                "llama-server --tensor-split entries must be 0 or at least "
+                f"{_FLOAT32_MIN_NORMAL:g}: a smaller share is a subnormal float and "
+                "std::stof refuses it"
+            )
+        # llama.cpp prefix-sums the shares it parsed, in float32, so the total is accumulated
+        # the same way rather than in double and compared once.
+        running = _as_float32(running + share)
+        if not math.isfinite(running):
+            raise ValueError("llama-server --tensor-split adds up past the 32-bit float range")
+    return parts
+
+
 def check_batch_floor(args: Optional[Iterable[str]], n_parallel: int) -> None:
     """Raise when a pass-through --batch-size would abort llama-server. The launcher raises the
     value it emits itself to ``max(slots, 2)``, with the measurements recorded beside that code:
@@ -957,6 +1123,25 @@ def fit_is_effectively_on(
     if raw_value is None:
         return True
     return str(raw_value).strip().lower() not in _ENV_FALSE_VALUES
+
+
+def fit_ctx_in(
+    args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> Optional[int]:
+    """Return the last --fit-ctx, falling back to the supplied environment.
+
+    Unset or invalid values return None. Preserve negatives: llama.cpp stores them
+    unsigned, disabling context reduction.
+    """
+    raw_value = _last_flag_value(args, _FIT_CTX_FLAGS)
+    if raw_value is None and env:
+        raw_value = env.get("LLAMA_ARG_FIT_CTX")
+    if raw_value is None:
+        return None
+    try:
+        return int(str(raw_value).strip())
+    except ValueError:
+        return None
 
 
 def fit_target_margin_in(
@@ -1700,13 +1885,7 @@ DENIED_ENV_VARS: tuple[str, ...] = (
     "LLAMA_ARG_UI_CONFIG_FILE",
     "LLAMA_ARG_UI_MCP_PROXY",
     "LLAMA_ARG_STATIC_PATH",
-    # Deliberately absent: LLAMA_ARG_MMPROJ and LLAMA_ARG_MMPROJ_URL. --mmproj is refused in the box because Unsloth
-    # resolves the projector itself, but the environment twin is an INPUT here: _launch_has_mmproj reads both to know
-    # the launch has a projector at all, which is what keeps the vision and audio state of a model loaded through an
-    # inherited one. Only the paravirtual CPU recovery drops them, where an unpinned projector is the corrupt path it
-    # is undoing. The pooling twins are absent for the opposite reason: load_model already pops LLAMA_ARG_POOLING /
-    # _RERANKING / _EMBEDDINGS itself. The multi-model server mode is absent too: a child holding its own model
-    # directory, preset and autoload policy is not the single model Unsloth launched and accounts for.
+    # LLAMA_ARG_MMPROJ / _URL stay allowed: _launch_has_mmproj reads them as launch inputs.
     "LLAMA_ARG_MODELS_DIR",
     "LLAMA_ARG_MODELS_PRESET",
     "LLAMA_ARG_MODELS_MAX",

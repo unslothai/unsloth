@@ -26,7 +26,7 @@ const DEFAULT_ISH = {
   customContextLength: null,
   maxSeqLength: null,
   kvCacheDtype: null,
-  mlxKvBits: null,
+  mlxKvQuant: null,
   speculativeType: null,
   specDraftNMax: null,
   nParallel: null,
@@ -43,7 +43,7 @@ const BLANK = {
   customContextLength: null,
   maxSeqLength: null,
   kvCacheDtype: null,
-  mlxKvBits: null,
+  mlxKvQuant: null,
   speculativeType: null,
   specDraftNMax: null,
   nParallel: null,
@@ -143,10 +143,11 @@ const FIELDS: {
     differs: { cache_type_kv: "f16" },
   },
   {
-    name: "MLX KV bits",
-    config: { mlxKvBits: 4 },
-    same: { mlx_kv_bits_requested: 4 },
-    differs: { mlx_kv_bits_requested: 8 },
+    name: "MLX KV quantization",
+    config: { mlxKvQuant: "4" },
+    same: { mlx_kv_quant_requested: "4" },
+    differs: { mlx_kv_quant_requested: "tq-4" },
+
   },
   {
     name: "speculative mode",
@@ -244,6 +245,11 @@ for (const field of FIELDS) {
     assert.equal(matches({}, { ...BLANK, ...field.config }), false);
   });
 }
+
+test("Auto adopts a resident model the backend reported as Auto", () => {
+  assert.equal(matches({ mlx_kv_quant_requested: "auto" }, { ...BLANK, mlxKvQuant: null }), true);
+  assert.equal(matches({ mlx_kv_quant_requested: "8" }, { ...BLANK, mlxKvQuant: null }), false);
+});
 
 /** Ordering is the backend's to choose: it narrows and reorders placement at fit time. */
 test("GPU placement compares as an order, not as a set", () => {
@@ -399,13 +405,26 @@ test("selectModel weighs the config and the lease before confirming a reload", (
   // written only by a completed load, so this path must not adopt one.
   // Widened as the gate's preamble grows: what matters is that the guard opens the block
   // the identity check sits in, not how many reads it makes first.
+  // Scoped to the adoption short-circuit: the runtime also checks residency while
+  // cancelling a superseded run, and adopting an earlier occurrence would read this
+  // guard as missing.
   const guard = USE_CHAT_MODEL_RUNTIME.lastIndexOf(
     "if (!forceReload && !nativePathToken) {",
-    identityCheck,
+    confirmPrompt,
   );
   assert.ok(
     guard > 0,
     "the resident short-circuit no longer excludes native-lease picks",
+  );
+  // Scoped past the guard: the runtime also checks residency when it reconciles a
+  // cancelled run, and reading the first occurrence would measure the wrong block.
+  const adoptionIdentityCheck = USE_CHAT_MODEL_RUNTIME.indexOf(
+    "residentModelMatchesPick(status",
+    guard,
+  );
+  assert.ok(
+    adoptionIdentityCheck > guard && adoptionIdentityCheck < confirmPrompt,
+    "the resident short-circuit no longer wraps the identity check",
   );
 });
 
@@ -701,6 +720,27 @@ test("a binary stand-down that cannot repair does not decline the shortcut", () 
   );
 });
 
+test("an MLX resident is judged on its speculative settings, a standing ngram reading as auto", () => {
+  const mlx = { ...DEFAULTS, is_gguf: false, is_mlx: true, speculative_type: "auto" };
+  const ngram = { ...STANDING, speculativeType: "ngram" };
+  assert.equal(matches(mlx, BLANK, ngram), true);
+  assert.equal(matches({ ...mlx, speculative_type: "ngram" }, BLANK, ngram), false);
+  assert.equal(matches(mlx, { ...BLANK, speculativeType: "eagle3" }), false);
+  const drafted = { ...BLANK, speculativeType: "auto", specDraftModel: "o/d" };
+  assert.equal(matches({ ...mlx, spec_draft_model: "o/d" }, drafted), true);
+  assert.equal(matches(mlx, drafted), false);
+  const deep = { ...BLANK, speculativeType: "mtp", specDraftNMax: 6 };
+  assert.equal(matches({ ...mlx, speculative_type: "mtp", spec_draft_n_max: 6 }, deep), true);
+  assert.equal(matches({ ...mlx, speculative_type: "mtp", spec_draft_n_max: 4 }, deep), false);
+  // An MLX load reads "+ngram" as its kind, which already copies; GGUF keeps the two apart.
+  const copying = { ...BLANK, speculativeType: "mtp+ngram" };
+  assert.equal(matches({ ...mlx, speculative_type: "mtp" }, copying), true);
+  assert.equal(matches({ ...DEFAULTS, speculative_type: "mtp" }, copying), false);
+  // llama.cpp's retry arms: an identical MLX load dedupes.
+  const notFound = { ...mlx, spec_fallback_reason: "drafter_not_found" };
+  assert.equal(residentSpeculativeNeedsRepair(notFound, "auto"), false);
+});
+
 test("a non-GGUF resident is not judged on a GGUF invocation field", () => {
   // requested_context_length is set only by the llama.cpp path. A safetensors or MLX
   // status never carries it, and the resolver answers the generation length for a
@@ -720,15 +760,13 @@ test("a non-GGUF resident is not judged on a GGUF invocation field", () => {
     }),
     false,
   );
-  // And a non-GGUF resident answers for the two fields the backend actually compares,
-  // which is all _mlx_runtime_settings_match looks at. cache_type_kv is deliberately not
-  // among them: it is a llama.cpp flag, and the non-GGUF branch never reads it.
+  // Non-GGUF matches only what the backend acts on; cache_type_kv is a llama.cpp flag it never reads.
   assert.equal(
     matches({ ...DEFAULTS, is_gguf: false, cache_type_kv: "q8_0" }, BLANK),
     true,
   );
   assert.equal(
-    matches({ ...DEFAULTS, is_gguf: false, mlx_kv_bits_requested: 4 }, BLANK),
+    matches({ ...DEFAULTS, is_gguf: false, mlx_kv_quant_requested: "4" }, BLANK),
     false,
   );
   assert.equal(
@@ -1125,9 +1163,9 @@ test("a diffusion pick is reduced to its lowest GPU, as the backend reduces it",
 
 test("no llama.cpp invocation field decides against a non-GGUF resident", () => {
   // The non-GGUF branch of /load checks identity and _mlx_runtime_settings_match, then
-  // answers already_loaded. Every other field here is a llama.cpp flag it never reads, so
-  // a persisted Manual mode, tensor split, slot count or batch size raised the prompt for
-  // a load that could not have changed anything.
+  // answers already_loaded. Every field here is a llama.cpp flag it never reads, so a
+  // persisted Manual mode, tensor split or batch size raised the prompt for a load that
+  // could not have changed anything.
   const resident = { ...DEFAULTS, is_gguf: false };
   assert.equal(
     matches(resident, {
@@ -1136,7 +1174,6 @@ test("no llama.cpp invocation field decides against a non-GGUF resident", () => 
       gpuLayers: 20,
       nCpuMoe: 8,
       tensorParallel: true,
-      nParallel: 4,
       nBatch: 2048,
       nUbatch: 512,
       selectedGpuIds: [1],
@@ -1150,6 +1187,19 @@ test("no llama.cpp invocation field decides against a non-GGUF resident", () => 
     matches({ ...resident, is_gguf: true }, { ...BLANK, nParallel: 4 }),
     false,
   );
+});
+
+test("a resident decoding at another width is not adopted, whichever backend", () => {
+  for (const is_gguf of [true, false]) {
+    assert.equal(
+      matches({ ...DEFAULTS, is_gguf, requested_parallel_slots: 4 }, { ...BLANK, nParallel: 2 }),
+      false,
+    );
+    assert.equal(
+      matches({ ...DEFAULTS, is_gguf, requested_parallel_slots: 2 }, { ...BLANK, nParallel: 2 }),
+      true,
+    );
+  }
 });
 
 test("a diffusion resident is judged on its NGL, not on the placement fields", () => {
@@ -1421,7 +1471,7 @@ test("unset nullable settings ask for the default, not for the resident value", 
     ...DEFAULTS,
     requested_context_length: 8192,
     cache_type_kv: "q8_0",
-    mlx_kv_bits_requested: 4,
+    mlx_kv_quant_requested: "4",
     requested_parallel_slots: 4,
     requested_n_batch: 2048,
     requested_n_ubatch: 512,
@@ -1432,7 +1482,7 @@ test("unset nullable settings ask for the default, not for the resident value", 
   for (const [key, value] of Object.entries({
     requested_context_length: 8192,
     cache_type_kv: "q8_0",
-    mlx_kv_bits_requested: 4,
+    mlx_kv_quant_requested: "4",
     requested_parallel_slots: 4,
     requested_n_batch: 2048,
     requested_n_ubatch: 512,
@@ -1657,7 +1707,7 @@ test("the shortcut re-reads and re-judges the status before adopting", () => {
     "the residency verdict is no longer callable against a second status",
   );
   const decision = USE_CHAT_MODEL_RUNTIME.search(
-    /const confirmedStatus = await getInferenceStatus\(\)/,
+    /const confirmedStatus = await readPickStatus\(\)/,
   );
   assert.ok(
     decision > 0,
@@ -1685,8 +1735,9 @@ test("the shortcut re-reads and re-judges the status before adopting", () => {
   );
   // A failed re-read must not adopt either: falling out of the block reaches /load.
   assert.ok(
-    USE_CHAT_MODEL_RUNTIME.indexOf("await getInferenceStatus().catch(() => null)", decision) ===
-      decision + "const confirmedStatus = ".length,
+    USE_CHAT_MODEL_RUNTIME.includes(
+      "getInferenceStatus(undefined, modelId).catch(() => null);",
+    ),
     "the re-read no longer tolerates a failed status",
   );
 });
@@ -1936,4 +1987,90 @@ test("legacy status without reasoning request echoes keeps its comparison", () =
     reasoning_budget: 32,
     reasoning_budget_message: "Conclude now.",
   }, { ...BLANK, reasoningBudget: 32, reasoningBudgetMessage: "Conclude now." }), true);
+});
+
+test("a pick asks the status about its own model and keeps or replaces the others per the box", () => {
+  const CONFIRM = readSrc("features/chat/utils/confirm-stop-running-chats.ts");
+  assert.equal(USE_CHAT_MODEL_RUNTIME.match(/await readPickStatus\(\)/g)?.length, 2);
+  assert.match(
+    USE_CHAT_MODEL_RUNTIME,
+    /let keepsOthers =\s*keepModelsLoaded && !forceReload && \(paramsNow\.engine \?\? "auto"\) === "auto";[\s\S]*?const touchesOnlySelected =\s*forceReload && !isExternalModelId\(paramsNow\.checkpoint\) && loadedNow\.length > 1;/,
+  );
+  assert.match(USE_CHAT_MODEL_RUNTIME, /touchesOnlySelected \? \(paramsNow\.checkpoint \?\? undefined\) : undefined,/);
+  assert.match(USE_CHAT_MODEL_RUNTIME, /stopQueuedRuns\(stopDecision, keepsOthers \|\| touchesOnlySelected\);/);
+  assert.match(USE_CHAT_MODEL_RUNTIME, /if \(!keepsOthers && !touchesOnlySelected\) \{\s*requestLocalPromptQueueStop\(\);/);
+  assert.match(USE_CHAT_MODEL_RUNTIME, /if \(currentCheckpoint && !keepsOthers\)/);
+  assert.match(USE_CHAT_MODEL_RUNTIME, /if \(!forceCancelActive && !touchesOnlySelected\) \{/);
+  assert.equal(
+    USE_CHAT_MODEL_RUNTIME.match(/alongside: keepModelsLoaded \|\| touchesOnlySelected,/g)?.length,
+    2,
+  );
+  assert.match(CONFIRM, /let running = model\s*\?\s*\[\]/);
+  assert.match(CONFIRM, /await getActiveGenerations\(model\)/);
+});
+
+test("ejects stop only the ejected model's chats; eject all asks once and unloads the others first", () => {
+  assert.match(
+    USE_CHAT_MODEL_RUNTIME,
+    /function stopQueuedRuns\(decision: StopRunningChatsDecision, scoped: boolean\): void \{\s*if \(scoped\) \{\s*requestScopedLocalPromptQueueStop\(decision\.promptQueueThreadIds\);\s*return;\s*\}\s*cancelPreStreamRunReservations\(decision\.preStreamRunTokens\);\s*requestLocalPromptQueueStop\(decision\.promptQueueThreadIds\);/,
+  );
+  assert.match(
+    USE_CHAT_MODEL_RUNTIME,
+    /confirmStopRunningChatsIfNeeded\("Unloading this model", "unload", keptId\)[\s\S]{0,80}?if \(!decision\.proceed\) return false;\s*stopQueuedRuns\(decision, true\);/,
+  );
+  assert.match(
+    USE_CHAT_MODEL_RUNTIME,
+    /const scope =\s*!confirmed && useChatRuntimeStore\.getState\(\)\.loadedModels\.length > 1\s*\?\s*params\.checkpoint\s*:\s*undefined;\s*const stopDecision =\s*confirmed \?\?\s*\(await confirmStopRunningChatsIfNeeded\(\s*"Unloading the model",\s*"unload",\s*scope,\s*\)\);/,
+  );
+  assert.match(USE_CHAT_MODEL_RUNTIME, /stopQueuedRuns\(stopDecision, Boolean\(scope\)\);/);
+  assert.match(
+    USE_CHAT_MODEL_RUNTIME,
+    /"Unloading every model",\s*"unload",\s*\);\s*if \(!decision\.proceed\) return false;\s*\/\/ Before any unload[^\n]*\n\s*stopQueuedRuns\(decision, false\);\s*\/\/ Others first/,
+  );
+  assert.match(
+    USE_CHAT_MODEL_RUNTIME,
+    /others\.map\(\(id\) =>\s*unloadModel\(\{ model_path: id, force_cancel_active: decision\.forceCancelActive \}\),\s*\),\s*\);\s*if \(selectedLocal && !\(await ejectModel\(undefined, decision\)\)\) return false;\s*await refresh\(\);/,
+  );
+});
+
+test("cancelling a load clears the selection unless kept models stay loaded and this run unloaded none", () => {
+  assert.match(
+    USE_CHAT_MODEL_RUNTIME,
+    /if \(!preserveCheckpoint\) \{[\s\S]{0,160}?if \(!useChatRuntimeStore\.getState\(\)\.keepModelsLoaded \|\| run\.residentModelUnloaded\) \{\s*clearCheckpoint\(\);\s*\}\s*await refresh\(\);/,
+  );
+});
+
+test("reloading one of several stays in its own slot; a new pick with the setting off replaces as before", () => {
+  // No preliminary unload for the reload: /load finds the model's slot and replaces it there, so
+  // the server's setting gate never sends it to the primary seat.
+  assert.doesNotMatch(USE_CHAT_MODEL_RUNTIME, /replacesOneOfSeveral/);
+  assert.match(USE_CHAT_MODEL_RUNTIME, /const touchesOnlySelected =\s*forceReload &&/);
+});
+
+
+test("a remembered split matches the resident without relying on another model's store ratio", () => {
+  const config = {
+    ...BLANK,
+    gpuMemoryMode: "manual" as const,
+    gpuLayers: 66,
+    selectedGpuIds: [1, 2, 0],
+    selectedGpuIndexKind: "physical" as const,
+    tensorSplit: [30, 20, 16],
+  };
+  const running = {
+    ...DEFAULTS,
+    gpu_memory_mode: "manual" as const,
+    gpu_layers: 66,
+    gpu_ids: [1, 2, 0],
+    requested_gpu_ids: [1, 2, 0],
+    tensor_split: [30, 20, 16],
+  };
+  assert.equal(matches(running, config), true);
+  assert.equal(matches({ ...running, tensor_split: [22, 22, 22] }, config), false);
+  assert.equal(matches(running, { ...config, tensorSplit: null }), false);
+  assert.equal(matches(
+    { ...running, gpu_ids: null, requested_gpu_ids: null, tensor_split: null },
+    config,
+    { ...STANDING, reconcileGpuIds: () => null },
+  ), true);
 });

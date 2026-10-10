@@ -6,8 +6,8 @@
 # "guide drift": the server preflight already passed and the agent CLI
 # already installed, so a failure here means the documented recipe in
 # unsloth_cli/commands/start.py no longer produces a working flow.
-# Self-updating: for all seven agents (claude, codex, hermes, openclaw,
-# opencode, pi, dsh) we obtain the exact env + command from
+# Self-updating: for all eight agents (claude, codex, hermes, openclaw,
+# opencode, pi, dsh, vibe) we obtain the exact env + command from
 # `unsloth start <agent> --no-launch` and run THAT, so a recipe change is
 # exercised automatically.
 # Every agent invocation is wrapped in `timeout` so a headless-TTY prompt
@@ -354,12 +354,24 @@ crosscheck_contract() {
         || guide_fail "dsh env key is no longer UNSLOTH_API_KEY (start.py _DSH_ENV_KEY)"
       home="$(raw_env DSH_HOME)"
       [ -n "$home" ] || guide_fail "DSH_HOME missing from connect output (start.py dsh())"
-      cfg="$home/settings.yaml"
-      if [ -f "$cfg" ]; then
-        grep -q 'openai-completions' "$cfg" \
-          || echo "::warning::dsh provider api is no longer 'openai-completions' (write_dsh_config)"
-        cp "$cfg" "$REDACTED_DIR/dsh-settings.yaml"
-      fi
+      # A --patch overlay, not settings.yaml: dsh 0.1.7 imports that only after the first boot.
+      cfg="$home/unsloth.patch.yml"
+      [ -f "$cfg" ] || guide_fail "dsh patch $cfg missing (start.py write_dsh_patch)"
+      grep -qF -- "--patch $cfg" "$raw" \
+        || guide_fail "dsh launch command no longer passes --patch $cfg (start.py _dsh_command)"
+      grep -q 'openai-completions' "$cfg" \
+        || echo "::warning::dsh provider api is no longer 'openai-completions' (write_dsh_patch)"
+      cp "$cfg" "$REDACTED_DIR/dsh-patch.yml"
+      ;;
+    vibe)
+      grep -q 'UNSLOTH_API_KEY' "$raw" \
+        || guide_fail "Vibe env key is no longer UNSLOTH_API_KEY (start.py _VIBE_ENV_KEY)"
+      # Provider and model ride in the env layer (start.py _vibe_env), not a config file.
+      cfg="$(raw_env VIBE_PROVIDERS)"
+      [ -n "$cfg" ] || guide_fail "VIBE_PROVIDERS missing from connect output (start.py _vibe_env)"
+      grep -q '"api_style": "openai"' <<<"$cfg" \
+        || echo "::warning::Vibe provider api_style is no longer 'openai' (start.py _vibe_env)"
+      printf '%s\n%s\n' "$cfg" "$(raw_env VIBE_MODELS)" > "$REDACTED_DIR/vibe-env.json"
       ;;
   esac
   redact "$REDACTED_DIR"/* 2>/dev/null || true
@@ -509,6 +521,8 @@ case "$MODE" in
       codex)    invoke_via_connect "$OUT" exec --dangerously-bypass-approvals-and-sandbox "$PROMPT" ;;
       opencode) invoke_via_connect "$OUT" run "$PROMPT" ;;
       pi)       invoke_via_connect "$OUT" -p "$PROMPT" ;;
+      # Zero tool schemas, as for claude/hermes: only the endpoint, auth and model are under test.
+      vibe)     invoke_via_connect "$OUT" --disabled-tools '*' -p "$PROMPT" ;;
       hermes)   patch_hermes_tools none
                 invoke_via_connect "$OUT" -z "$PROMPT" ;;
       openclaw) patch_openclaw_agent notools
@@ -572,7 +586,7 @@ case "$MODE" in
     # gate tool approval through their config (prompting by default), so file-edit
     # opts them into auto-approval to run edits/commands headlessly.
     case "$AGENT" in
-      opencode|openclaw) CONNECT_YOLO=1 ;;
+      opencode|openclaw|vibe) CONNECT_YOLO=1 ;;
       # A headless run has nobody to answer dsh's approval asks.
       dsh) CONNECT_YOLO=1; CONNECT_START_ARGS='--profile headless' ;;
     esac
@@ -622,6 +636,14 @@ case "$MODE" in
           fi ;;
         opencode) invoke_via_connect "$out" run "$prompt" ;;
         hermes)   invoke_via_connect "$out" -z "$prompt" ;;
+        vibe)
+          # Only the schemas the task needs, as for claude; -c continues the session under VIBE_HOME.
+          local tools=(--enabled-tools bash --enabled-tools read_file --enabled-tools write_file)
+          if [ "$cont" = "continue" ]; then
+            invoke_via_connect "$out" "${tools[@]}" -c -p "$prompt"
+          else
+            invoke_via_connect "$out" "${tools[@]}" -p "$prompt"
+          fi ;;
         openclaw) CONNECT_CMD_OVERRIDE=openclaw invoke_via_connect "$out" agent --local --agent ci \
                     --model "unsloth/${UNSLOTH_MODEL_ID}" --message "$prompt" ;;
         *)        invoke_via_connect "$out" "$prompt" ;;

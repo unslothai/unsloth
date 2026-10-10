@@ -115,10 +115,16 @@ def _load_plain(model_max_seq_length = _MODEL_MAX_SEQ_LENGTH):
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     try:
+        # No dtype kwarg: `dtype=` fails at the 4.52.4 floor, `torch_dtype=` is deprecated from 4.57.6. Cast after.
         tok = AutoTokenizer.from_pretrained(_MODEL)
-        model = AutoModelForCausalLM.from_pretrained(_MODEL, dtype = torch.float32)
+        model = AutoModelForCausalLM.from_pretrained(_MODEL).to(torch.float32)
     except OSError as e:
         pytest.skip(f"could not fetch {_MODEL} (network/hub): {str(e)[:150]}")
+    got = next(model.parameters()).dtype
+    assert got == torch.float32, (
+        f"the cast after load left the model in {got}, not float32. These tests compare "
+        f"losses, so a silent dtype change is a silent change of what they measure."
+    )
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
     model.max_seq_length = model_max_seq_length
@@ -186,18 +192,175 @@ def test_default_sft_construction_does_not_trip_the_guard(tmp_path, trl_has_guar
 
 
 def test_explicit_max_length_resolves_the_same_on_every_trl(tmp_path, trl_has_guard):
-    """The swap only moves the already-resolved length across to `max_seq_length`;
-    it must never reinstate the raw user `max_length`."""
+    """An explicit limit below the model cap survives the padding-free handoff.
+
+    Every TRL must truncate to the user's limit, even when `max_length` is cleared.
+    """
     trainer = _build(tmp_path, max_length = _USER_MAX_LENGTH)
     args = trainer.args
 
     assert args.padding_free is True
-    assert args.max_seq_length == _MODEL_MAX_SEQ_LENGTH
+    assert args.max_seq_length == _USER_MAX_LENGTH
     if trl_has_guard:
         assert args.max_length is None
     else:
-        assert args.max_length == _MODEL_MAX_SEQ_LENGTH
-    assert _longest(trainer) == _MODEL_MAX_SEQ_LENGTH
+        assert args.max_length == _USER_MAX_LENGTH
+    assert _longest(trainer) == _USER_MAX_LENGTH
+
+
+def _trl_default_max_length():
+    import dataclasses
+    for field in dataclasses.fields(_pristine_sft_config_cls()):
+        if field.name == "max_length":
+            return field.default
+    return None
+
+
+# 1025 is the first cap above TRL's 1024 default; 2048 is from_pretrained's own default.
+@pytest.mark.parametrize("model_cap", [1025, 2048, 8192])
+def test_an_untouched_max_length_default_does_not_cap_the_model_context(
+    tmp_path, trl_has_guard, model_cap
+):
+    """Honouring a limit the caller never set is the same bug in the other direction.
+
+    `SFTConfig.max_length` defaults to 1024 on every TRL from 0.22 onwards, so a cap
+    keyed on "is this positive" reads every default config as a request for 1024.
+    `_MODEL_MAX_SEQ_LENGTH = 128` sits below that default, where `min(128, 1024)` is 128
+    either way, which is why the default-construction test above cannot see this.
+    """
+    from datasets import Dataset
+
+    default_max_length = _trl_default_max_length()
+    assert default_max_length is None or default_max_length > 0, (
+        "this TRL defaults max_length to something falsy, so the regression "
+        "cannot be reproduced here"
+    )
+
+    def _long_text(tok):
+        return Dataset.from_list([{"text": "The quick brown fox. " * 4000}] * 4)
+
+    trainer = _build(tmp_path, dataset = _long_text, model_max_seq_length = model_cap)
+    args = trainer.args
+
+    assert args.max_seq_length == model_cap
+    if trl_has_guard:
+        assert args.max_length is None
+    else:
+        assert args.max_length == model_cap
+    assert _longest(trainer) == model_cap, (
+        f"a {model_cap}-token context was truncated to {_longest(trainer)}; the "
+        "untouched config default was read as an explicit request"
+    )
+
+
+@pytest.mark.parametrize("path", ["cli", "clone"])
+def test_a_rebuilt_default_config_still_does_not_cap_the_model(tmp_path, trl_has_guard, path):
+    """The two ways an untouched config comes back carrying its RESOLVED default.
+
+    `HfArgumentParser` builds one argparse argument per `dataclasses.fields()` entry and
+    passes every value through, and `dataclasses.replace` re-inits from the current field
+    values, so on both paths a config nobody capped arrives holding `max_length = 1024`.
+    Reading omission from the value is what keeps these safe: a constructor-provenance
+    marker is set on the original object and forged by both of these.
+    """
+    import dataclasses
+
+    from datasets import Dataset
+    from trl import SFTConfig
+
+    default_max_length = _trl_default_max_length()
+    if default_max_length is None or default_max_length <= 0:
+        pytest.skip("this TRL has no positive max_length default, so there is nothing to confuse")
+
+    if path == "cli":
+        from transformers import HfArgumentParser
+        (cfg,) = HfArgumentParser((SFTConfig,)).parse_args_into_dataclasses(
+            ["--output_dir", str(tmp_path)]
+        )
+    else:
+        cfg = dataclasses.replace(SFTConfig(output_dir = str(tmp_path)), learning_rate = 1e-4)
+    assert cfg.max_length == default_max_length
+
+    model, tok = _load_plain(8192)
+    text = "The quick brown fox. " * 4000
+    for key, value in (
+        ("per_device_train_batch_size", 2),
+        ("max_steps", 1),
+        ("report_to", "none"),
+        ("save_strategy", "no"),
+        ("use_cpu", True),
+        ("dataset_text_field", "text"),
+        ("fp16", False),
+        ("bf16", False),
+        ("optim", "adamw_torch"),
+    ):
+        setattr(cfg, key, value)
+    from trl import SFTTrainer
+
+    trainer = SFTTrainer(
+        model = model,
+        processing_class = tok,
+        args = cfg,
+        train_dataset = Dataset.from_list([{"text": text}] * 4),
+    )
+    assert _longest(trainer) == 8192, (
+        f"a config rebuilt via {path} carried its resolved default back in and capped an "
+        "8192-token context at it"
+    )
+
+
+def test_an_explicit_max_length_equal_to_the_default_keeps_the_model_length(tmp_path):
+    """The one case this cannot decide, pinned so it is a known limit and not a surprise.
+
+    `SFTConfig(max_length = 1024)` is indistinguishable from an untouched config once the
+    value is all you have, and every marker that could tell them apart is forged by the
+    CLI and clone paths above. This resolves to the model's length, which is what the
+    merge base did too, so it is a gap this change does not close rather than one it opens.
+    """
+    from datasets import Dataset
+    from trl import SFTConfig
+
+    default_max_length = _trl_default_max_length()
+    if default_max_length is None or default_max_length <= 0:
+        pytest.skip("this TRL has no positive max_length default")
+
+    model, tok = _load_plain(8192)
+    cfg = SFTConfig(
+        output_dir = str(tmp_path),
+        per_device_train_batch_size = 2,
+        max_steps = 1,
+        report_to = "none",
+        save_strategy = "no",
+        use_cpu = True,
+        dataset_text_field = "text",
+        fp16 = False,
+        bf16 = False,
+        optim = "adamw_torch",
+        max_length = default_max_length,
+    )
+    from trl import SFTTrainer
+
+    trainer = SFTTrainer(
+        model = model,
+        processing_class = tok,
+        args = cfg,
+        train_dataset = Dataset.from_list([{"text": "The quick brown fox. " * 4000}] * 4),
+    )
+    assert _longest(trainer) == 8192
+
+
+def test_the_cap_reads_an_explicit_max_length_not_a_positive_one():
+    """The behavioural test above needs a TRL whose default is positive; this one does not."""
+    from unsloth.models import rl
+
+    source = inspect.getsource(rl)
+    assert "_unsloth_explicit_max_length" in source
+    assert "_unsloth_default_max_length" in source
+    # Not a bare truthiness test on the value, which every default passes.
+    assert (
+        "min(model.max_seq_length, args.max_length) "
+        "if (getattr(args, 'max_length', None) or 0) > 0" not in source
+    )
 
 
 def test_max_seq_length_still_beats_max_length(tmp_path, trl_has_guard):
@@ -542,9 +705,12 @@ def test_pristine_trl_config_without_max_seq_length_still_truncates(tmp_path, tr
     from datasets import Dataset
 
     config_cls = _pristine_sft_config_cls()
-    assert not hasattr(
-        config_cls(output_dir = str(tmp_path)), "max_seq_length"
-    ), "this TRL declares max_seq_length, so the regression cannot be reproduced here"
+    # Precondition: only a TRL that dropped max_seq_length has the regression.
+    if hasattr(config_cls(output_dir = str(tmp_path)), "max_seq_length"):
+        pytest.skip(
+            "this TRL still declares max_seq_length, so the regression it guards cannot "
+            "exist here; the cap-copy path is covered by the max_length tests above"
+        )
 
     model, tok = _load_plain()
     text = "The quick brown fox. " * 200
@@ -930,6 +1096,19 @@ def _mask_supervised_dataset(tok):
     )
 
 
+def _has_supervised_token(row, mask_column):
+    """Whether a prepared row still trains on at least one token, in either form it can take.
+
+    Before TRL 1.7 the collator applies the mask, so the row keeps its mask column. From 1.7
+    TRL's _prepare_dataset turns the masks into `labels` and drops them, and unsloth-zoo's
+    sft_prepare_dataset does the same since unslothai/unsloth-zoo#1508, so the row carries
+    `labels` with -100 on every unsupervised token instead."""
+    if mask_column in row:
+        return any(m != 0 for m in row[mask_column])
+    assert "labels" in row, f"the row carries neither {mask_column} nor labels: {sorted(row)}"
+    return any(label != -100 for label in row["labels"])
+
+
 def test_rows_whose_mask_is_truncated_away_are_dropped(tmp_path, trl_has_guard):
     """Same rule the `labels` filter already applies, for the other two spellings."""
     if not trl_has_guard:
@@ -941,8 +1120,8 @@ def test_rows_whose_mask_is_truncated_away_are_dropped(tmp_path, trl_has_guard):
     trainer = _build(tmp_path, dataset = _mask_supervised_dataset, completion_only_loss = True)
     assert len(trainer.train_dataset) == 2, "the rows that kept their completion were dropped too"
     for row in trainer.train_dataset:
-        assert any(
-            m != 0 for m in row["completion_mask"]
+        assert _has_supervised_token(
+            row, "completion_mask"
         ), "a row with no supervised token survived truncation"
 
 
@@ -971,8 +1150,8 @@ def test_assistant_masks_are_filtered_even_with_the_loss_mode_off(tmp_path, trl_
     trainer = _build(tmp_path, dataset = _assistant_mask_dataset, assistant_only_loss = False)
     assert len(trainer.train_dataset) == 2, "the rows that kept their completion were dropped too"
     for row in trainer.train_dataset:
-        assert any(
-            m != 0 for m in row["assistant_masks"]
+        assert _has_supervised_token(
+            row, "assistant_masks"
         ), "a row TRL will label all -100 survived truncation"
 
 
@@ -3353,7 +3532,8 @@ def test_completion_only_reads_the_columns_the_split_actually_yields():
     from datasets import Dataset
 
     ds = Dataset.from_list([{"prompt": "a", "completion": "b", "input_ids": [1, 2]}])
-    ds.set_format("numpy", columns = ["input_ids"], output_all_columns = False)
+    # datasets<4 numpy/torch formatters import torchvision.io.VideoReader, gone in torchvision 0.28.
+    ds.set_format(None, columns = ["input_ids"], output_all_columns = False)
     assert "completion" in ds.column_names
     assert ds.format.get("columns") == ["input_ids"]
     assert "completion" not in ds[0]

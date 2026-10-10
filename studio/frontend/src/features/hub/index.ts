@@ -2,11 +2,14 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export {
+  DOWNLOAD_KIND,
   DownloadProgressBar,
   downloadManager,
   finishExternalJob,
   jobKeyOf,
   pendingDrafterPresentation,
+  scopedVariant,
+  type StagedDownloadProgress,
   startExternalJob,
   subscribeJobListeners,
   type TransportMode,
@@ -14,6 +17,7 @@ export {
   TRANSPORT_MODE_STORAGE_KEY,
   useDownloadManagerStore,
   useHttpPartialsResumable,
+  useRepoDownload,
   useTransportMode,
 } from "./download-manager";
 export { HfTokenIndicator } from "./components/hf-token-indicator";
@@ -24,8 +28,11 @@ export {
   useHubModelSearch,
 } from "./hooks/use-hub-model-search";
 export { useHubInfiniteScroll } from "./hooks/use-hub-infinite-scroll";
+export type { CapabilityKey } from "./lib/model-capabilities";
 export { useLatestRef } from "./hooks/use-latest-ref";
-export { useOnlineStatus } from "./hooks/use-online-status";
+export { useHubAvailability, useOnlineStatus } from "./hooks/use-online-status";
+export { isHuggingFaceOffline } from "./lib/network";
+export { HubFailureHint } from "./catalog/catalog-states";
 export {
   INVENTORY_HINT_KIND,
   INVENTORY_HINT_KINDS,
@@ -113,6 +120,7 @@ export {
 } from "./lib/model-identity";
 export {
   formatBytes,
+  formatRate,
   formatRelativeShort,
   ownerOf,
   repoOf,
@@ -134,3 +142,8 @@ export { TransportConflictDialog } from "./catalog/transport-conflict-dialog";
 export { TrainIcon } from "./components/train-icon";
 export { isHiddenModelId } from "./lib/hidden-models";
 export { classifyUnslothSupport, studioPageForTask } from "./lib/unsloth-support";
+export {
+  INVENTORY_FRESHNESS_WINDOW_MS,
+  isInventoryStampFresh,
+} from "./inventory/inventory-freshness";
+export { withAbort } from "./lib/abort-signals";

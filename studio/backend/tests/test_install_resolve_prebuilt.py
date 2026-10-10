@@ -16,6 +16,7 @@ from __future__ import annotations
 import contextlib
 import ctypes
 import dataclasses
+import hashlib
 import importlib
 import json
 import ntpath
@@ -394,11 +395,21 @@ def test_sm103_host_drops_cuda128_windows_build():
     assert [a.name for a in kept_b200] == [cuda128.name, cuda129.name]
 
 
+def _fixture_digest(name: str) -> str:
+    """Stand-in for the digest GitHub publishes; a fixture without one selects nothing."""
+    return hashlib.sha256(name.encode()).hexdigest()
+
+
 def _upstream_release(tag, asset_names):
     return {
         "tag_name": tag,
         "assets": [
-            {"name": n, "browser_download_url": f"https://example/{n}"} for n in asset_names
+            {
+                "name": n,
+                "browser_download_url": f"https://example/{n}",
+                "digest": f"sha256:{_fixture_digest(n)}",
+            }
+            for n in asset_names
         ],
     }
 
@@ -689,11 +700,9 @@ def _linux_arm64_vulkan_host():
     )
 
 
-def test_route_to_vulkan_prebuilt_linux_arm64_falls_back_to_upstream():
-    # The fork ships no ARM64 Vulkan bundle, so a forced-Vulkan Linux ARM64 host
-    # must keep planning against upstream (which publishes
-    # llama-<tag>-bin-ubuntu-vulkan-arm64.tar.gz). The fork pin is dropped because
-    # the two repos use different tag namespaces.
+def test_route_to_vulkan_prebuilt_linux_arm64_stays_on_the_fork():
+    # The fork publishes a linux-vulkan-arm64 bundle, so a forced-Vulkan Linux ARM64
+    # host keeps planning against the fork and its pin; nothing comes from upstream.
     routed, repo, tag, persist = ilp._route_to_vulkan_prebuilt(
         _linux_arm64_vulkan_host(),
         FORK,
@@ -702,15 +711,14 @@ def test_route_to_vulkan_prebuilt_linux_arm64_falls_back_to_upstream():
         llama_backend = "vulkan",
     )
 
-    assert repo == UPSTREAM
-    assert tag == ""
+    assert repo == FORK
+    assert tag == "b9596-mix-abc"
     assert persist == "vulkan"
     assert routed.has_intel_gpu is True
 
 
 def test_forced_vulkan_linux_arm64_still_resolves_a_vulkan_bundle():
-    # End to end for the routing above: without it the fork planner yields only the
-    # ARM64 CPU attempt, and the strict-Vulkan filter then leaves nothing to install.
+    # End to end: the fork's ARM64 Vulkan bundle survives the strict-Vulkan filter.
     routed, repo, _tag, _persist = ilp._route_to_vulkan_prebuilt(
         _linux_arm64_vulkan_host(),
         FORK,
@@ -718,22 +726,25 @@ def test_forced_vulkan_linux_arm64_still_resolves_a_vulkan_bundle():
         force_cpu = False,
         llama_backend = "vulkan",
     )
-    fork_attempts = ilp._linux_published_attempts(
-        routed, _published_vulkan_bundle("linux-vulkan", "linux-arm64")
+    assert repo == FORK
+    bundle = _published_vulkan_bundle("linux-arm64")
+    bundle.artifacts.insert(
+        0,
+        ilp.PublishedLlamaArtifact(
+            asset_name = "app-release-linux-arm64-vulkan",
+            install_kind = "linux-vulkan",
+            runtime_line = None,
+            coverage_class = None,
+            supported_sms = [],
+            min_sm = None,
+            max_sm = None,
+            bundle_profile = "linux-vulkan-arm64",
+            rank = 60,
+        ),
     )
-    assert [attempt.install_kind for attempt in fork_attempts] == ["linux-arm64"]
-
-    release = _upstream_release(
-        "b9925",
-        ["llama-b9925-bin-ubuntu-vulkan-arm64.tar.gz", "llama-b9925-bin-ubuntu-arm64.tar.gz"],
-    )
-    plan = ilp.direct_upstream_release_plan(release, routed, repo, "latest")
-    filtered = ilp._backend_only_release_plans([plan], "vulkan")
-
-    assert [attempt.name for attempt in filtered[0].attempts] == [
-        "llama-b9925-bin-ubuntu-vulkan-arm64.tar.gz"
-    ]
-    assert filtered[0].attempts[0].repo == UPSTREAM
+    bundle.assets["app-release-linux-arm64-vulkan"] = "https://example.invalid/arm64-vulkan.tar.gz"
+    attempts = ilp._linux_published_attempts(routed, bundle)
+    assert [attempt.name for attempt in attempts][:1] == ["app-release-linux-arm64-vulkan"]
 
 
 def test_route_to_vulkan_prebuilt_linux_arm64_keeps_an_explicit_repo_override():
@@ -1355,6 +1366,26 @@ def test_route_to_vulkan_prebuilt_auto_fallback_when_no_amd_gpu_reaches_floor():
     assert repo == FORK
     assert persist == "auto"
     assert routed.has_rocm is False
+
+
+def test_a_lone_rdna1_card_takes_the_vulkan_route(monkeypatch):
+    # RDNA 1 has ROCm torch (#11614) but no HIP llama.cpp prebuilt: route to Vulkan.
+    for var in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+        monkeypatch.delenv(var, raising = False)
+    host = _windows_amd_host(rocm_gfx_target = "gfx1010", rocm_gfx_targets = ["gfx1010"])
+    assert ilp._should_auto_vulkan_for_amd_windows(host, FORK) is True
+    routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
+    assert repo == FORK
+    assert persist == "auto"
+    assert routed.has_rocm is False
+
+
+def test_rdna1_beside_a_hip_capable_card_keeps_the_hip_bundle(monkeypatch):
+    # Mixed host keeps the HIP prebuilt: Vulkan would enumerate both cards.
+    for var in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+        monkeypatch.delenv(var, raising = False)
+    host = _windows_amd_host(rocm_gfx_target = "gfx1010", rocm_gfx_targets = ["gfx1010", "gfx1034"])
+    assert ilp._should_auto_vulkan_for_amd_windows(host, FORK) is False
 
 
 @pytest.mark.parametrize(
@@ -2199,9 +2230,16 @@ def test_a_manifest_the_loader_filters_out_does_not_answer_for_the_driver(monkey
 
     monkeypatch.setenv("VK_LOADER_DRIVERS_DISABLE", "*radeon*")
     assert ilp._amd_vulkan_icd_present() is False
-    # Disable is read first so a select list names drivers back in, which is the loader's order.
+    # Disable is read first and WINS: "the values from the disable environment variable will
+    # be considered before the enable or select environment variable" (Vulkan-Loader,
+    # LoaderInterfaceArchitecture.md), and drivers have no VK_LOADER_LAYERS_ALLOW counterpart
+    # to name one back in. This asserted the opposite, which is the misreading that counted a
+    # disabled Radeon as usable.
     monkeypatch.setenv("VK_LOADER_DRIVERS_SELECT", "RADEON_ICD.X86_64.JSON")
+    assert ilp._amd_vulkan_icd_present() is False
+    monkeypatch.delenv("VK_LOADER_DRIVERS_DISABLE")
     assert ilp._amd_vulkan_icd_present() is True
+    monkeypatch.setenv("VK_LOADER_DRIVERS_DISABLE", "*radeon*")
     # And a select list naming someone else's driver excludes this one on its own.
     monkeypatch.setenv("VK_LOADER_DRIVERS_SELECT", "intel_*")
     assert ilp._amd_vulkan_icd_present() is False

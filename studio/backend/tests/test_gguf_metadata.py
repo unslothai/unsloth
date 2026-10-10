@@ -370,6 +370,11 @@ def test_is_mmproj_by_metadata_signals():
     assert is_mmproj_by_metadata({"general.basename": "foo"}) is None
     assert is_mmproj_by_metadata({}) is None
     assert is_mmproj_by_metadata(None) is None
+    # llama.cpp's projector arch; ggml-org's SmolVLM projector says "clip-vision".
+    assert is_mmproj_by_metadata({"general.architecture": "clip", "general.type": "clip-vision"})
+    assert (
+        is_mmproj_by_metadata({"general.architecture": "llama", "general.type": "model"}) is False
+    )
 
 
 # --- pairing_score -----------------------------------------------------
@@ -555,6 +560,60 @@ def test_pairing_score_rejects_qualifier_without_separator():
         "general.basename": "Model",
     }
     assert pairing_score(weight, mmproj) == -1
+
+
+@pytest.mark.parametrize(
+    "left,right",
+    [
+        (
+            "https://huggingface.co/google/gemma-4-12B-it",
+            "https://huggingface.co/google/gemma-4-12b-it",
+        ),
+        (
+            "HTTPS://HUGGINGFACE.CO/Google/Gemma-4-12B-it.git/",
+            "http://huggingface.co/google/gemma-4-12b-it",
+        ),
+        ("https://huggingface.co/Google/Gemma-4-12B-it", "google/gemma-4-12b-it"),
+        ("Google/Gemma-4-12B-it", "https://huggingface.co/google/gemma-4-12b-it"),
+    ],
+)
+def test_pairing_score_hf_repo_case_insensitive(left, right):
+    key = "general.base_model.0.repo_url"
+    assert pairing_score({key: left}, {key: right}) == 100
+
+
+@pytest.mark.parametrize("host", ["huggingface.co", "huggingface.co.example.com"])
+def test_pairing_score_rejects_distinct_hf_repositories(host):
+    key = "general.base_model.0.repo_url"
+    assert (
+        pairing_score(
+            {key: f"https://{host}/google/gemma-4-12B-it"},
+            {key: f"https://{host}/google/gemma-4-27b-it"},
+        )
+        == -1
+    )
+
+
+def test_pairing_score_preserves_case_on_hf_lookalike_host():
+    key = "general.base_model.0.repo_url"
+    assert (
+        pairing_score(
+            {key: "https://huggingface.co.example.com/Google/Model"},
+            {key: "https://huggingface.co.example.com/google/model"},
+        )
+        == -1
+    )
+
+
+def test_pairing_score_preserves_case_in_hf_file_paths():
+    key = "general.base_model.0.repo_url"
+    assert (
+        pairing_score(
+            {key: "https://huggingface.co/google/model/blob/main/Config.json"},
+            {key: "https://huggingface.co/google/model/blob/main/config.json"},
+        )
+        == -1
+    )
 
 
 def test_pairing_score_preserves_case_sensitive_repo_paths():

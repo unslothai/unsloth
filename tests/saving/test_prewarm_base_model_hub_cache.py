@@ -242,6 +242,15 @@ def test_kaggle_and_colab_skip(monkeypatch, tmp_path):
         assert stubs.snapshot_download.calls == [], f"{flag} must skip pre-warm"
 
 
+def test_modelscope_skips(monkeypatch, tmp_path):
+    # The merge fetches the base from ModelScope (#3726), so a Hub copy would go unused.
+    monkeypatch.setenv("UNSLOTH_USE_MODELSCOPE", "1")
+    fn, stubs = _build_env(monkeypatch, tmp_path)
+    fn(_FakePeftModel(), save_method = "merged_16bit")
+    assert stubs.snapshot_download.calls == []
+    assert stubs.determine_base_model_source.calls == []
+
+
 @pytest.mark.parametrize("save_method", ["merged_4bit", "forced_merged_4bit", "lora"])
 def test_non_downloading_save_methods_skip(monkeypatch, tmp_path, save_method):
     fn, stubs = _build_env(monkeypatch, tmp_path)

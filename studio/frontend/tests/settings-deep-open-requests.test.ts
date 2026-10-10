@@ -133,20 +133,27 @@ test("consuming a scroll target clears it", () => {
   assert.equal(store.getState().scrollTarget, null);
 });
 
-test("the canvas network target lands on Chat and stays until Chat reads it", () => {
-  reset();
-  store.getState().openDialog("chat", { scrollTarget: "chat-canvas-network" });
-  assert.equal(store.getState().activeTab, "chat");
-  assert.equal(store.getState().scrollTarget, "chat-canvas-network");
-  store.getState().setActiveTab("about");
-  assert.equal(store.getState().scrollTarget, null);
+test("browser network and Library storage land on their tab and stay until it reads them", () => {
+  for (const [tab, target, from] of [
+    ["browser", "browser-html-network", null],
+    ["library", "library-storage", "data"],
+    ["general", "general-hub", "data"],
+  ] as const) {
+    reset();
+    if (from) store.getState().openDialog(from);
+    store.getState().openDialog(tab, { scrollTarget: target });
+    assert.equal(store.getState().activeTab, tab);
+    assert.equal(store.getState().scrollTarget, target);
+    store.getState().setActiveTab(from ?? "about");
+    assert.equal(store.getState().scrollTarget, null);
+  }
 });
 
 test("a deep link can provide a stable focus fallback", () => {
   reset();
   const fallback = {} as HTMLElement;
-  store.getState().openDialog("chat", {
-    scrollTarget: "chat-canvas-network",
+  store.getState().openDialog("browser", {
+    scrollTarget: "browser-html-network",
     focusFallback: fallback,
   });
   assert.equal(store.getState().openerFallback, fallback);

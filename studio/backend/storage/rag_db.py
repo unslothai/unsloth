@@ -128,7 +128,10 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             text TEXT NOT NULL,
             page_number INTEGER,
             source_page_index INTEGER,
+            page_char_start INTEGER,
+            page_char_end INTEGER,
             token_count INTEGER,
+            whole_document_token_count INTEGER,
             kind TEXT NOT NULL DEFAULT 'text',
             pdf_regions_json TEXT
         );
@@ -171,6 +174,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             last_error TEXT,
             last_scan_at TEXT,
             withheld_paths TEXT,
+            failed_files TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             UNIQUE(scope, path)
@@ -251,6 +255,13 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     # recover the order within a compaction epoch.
     if "archive_ordinal" not in cols:
         conn.execute("ALTER TABLE documents ADD COLUMN archive_ordinal INTEGER")
+    chunk_cols = {r[1] for r in conn.execute("PRAGMA table_info(chunks)").fetchall()}
+    if "page_char_start" not in chunk_cols:
+        conn.execute("ALTER TABLE chunks ADD COLUMN page_char_start INTEGER")
+    if "page_char_end" not in chunk_cols:
+        conn.execute("ALTER TABLE chunks ADD COLUMN page_char_end INTEGER")
+    if "whole_document_token_count" not in chunk_cols:
+        conn.execute("ALTER TABLE chunks ADD COLUMN whole_document_token_count INTEGER")
     # Partial, so it is empty until a chat is compacted and the MAX() that allocates the next ordinal is
     # an index probe rather than a scan.
     conn.execute(
@@ -284,6 +295,8 @@ def ensure_linked_folder_columns(conn: sqlite3.Connection) -> None:
     folder_cols = {r[1] for r in conn.execute("PRAGMA table_info(linked_folders)").fetchall()}
     if folder_cols and "withheld_paths" not in folder_cols:
         conn.execute("ALTER TABLE linked_folders ADD COLUMN withheld_paths TEXT")
+    if folder_cols and "failed_files" not in folder_cols:
+        conn.execute("ALTER TABLE linked_folders ADD COLUMN failed_files TEXT")
 
 
 def reset_schema_state_for_tests() -> None:

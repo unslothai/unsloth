@@ -43,7 +43,7 @@ export const MAX_REFERENCE_BYTES: Record<ReferenceKind, number> = {
  *  is the picker one, .3gp included, because the picker reads a recording's
  *  tracks once it has the file and a clip is refused then. */
 export const REFERENCE_PICKER_ACCEPT: Record<ReferenceKind, string> = {
-  video: VIDEO_ACCEPT,
+  video: `${VIDEO_ACCEPT},.ts,.mts`,
   audio: AUDIO_PICKER_ACCEPT,
 };
 

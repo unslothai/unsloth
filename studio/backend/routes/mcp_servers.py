@@ -5,7 +5,7 @@ import asyncio
 import json
 import sys
 import uuid
-from typing import Annotated
+from typing import Annotated, Optional
 from urllib.parse import urlparse
 
 import structlog
@@ -21,22 +21,30 @@ from auth.authentication import (
 )
 from core.inference.mcp_client import (
     TOOL_CACHE_INVALIDATING_FIELDS,
+    UI_RESOURCE_SCHEME,
     cache_tools,
+    call_tool_structured_sync,
+    get_cached_tools,
+    in_failure_cooloff,
     clear_oauth_tokens_async,
     close_mcp_sessions,
     invalidate_tool_cache,
     is_stdio,
     join_stdio_command,
     list_tools_async,
+    oauth_client_kwargs,
     parse_server_headers,
     parse_stdio_command,
     probe_timeout,
+    read_resource_sync,
     record_probe_failure,
     serialize_mcp_server_mutation,
     stdio_mcp_disabled_reason,
     stdio_mcp_enabled,
+    tool_visible_to,
 )
 from core.inference.mcp_config_import import parse_mcp_config
+from core.inference.mcp_image import image_input_mappings, image_mapping
 from models.mcp_servers import (
     BlenderTest,
     McpServerCreate,
@@ -49,6 +57,9 @@ from models.mcp_servers import (
     McpStdioCommand,
     McpStdioDecodeRequest,
     McpStdioEncodeResponse,
+    McpUiResourceResponse,
+    McpUiToolCallRequest,
+    McpUiToolCallResult,
 )
 from storage import mcp_servers_db
 from utils.utils import safe_curated_detail, log_and_http_error
@@ -152,6 +163,29 @@ def _normalize_headers(headers: dict[str, str] | None) -> dict[str, str] | None:
     return out or None
 
 
+def _image_mappings_active(row: dict) -> bool:
+    from core.inference.tools import _enabled_mcp_servers
+
+    # Same servers the model's MCP catalog keeps; a mapping elsewhere could never receive the image.
+    if not image_input_mappings(row) or not _enabled_mcp_servers([row]):
+        return False
+    if is_stdio(row["url"]) and not stdio_mcp_enabled():
+        return False
+    tools = get_cached_tools(row["id"])
+    return tools is None or any(
+        image_mapping(row, tool) for tool in tools if tool_visible_to(tool, "model")
+    )
+
+
+def _oauth_client(
+    client_id: str | None, client_secret: str | None
+) -> tuple[str | None, str | None]:
+    client_id = (client_id or "").strip() or None
+    if client_secret and not client_id:
+        raise HTTPException(status_code = 400, detail = "oauth_client_secret requires oauth_client_id")
+    return client_id, client_secret or None
+
+
 def _row_to_response(row: dict, *, include_headers: bool = True) -> McpServerResponse:
     return McpServerResponse(
         id = row["id"],
@@ -161,6 +195,10 @@ def _row_to_response(row: dict, *, include_headers: bool = True) -> McpServerRes
         headers = (parse_server_headers(row) or {}) if include_headers else {},
         is_enabled = bool(row["is_enabled"]),
         use_oauth = bool(row.get("use_oauth")),
+        oauth_client_id = row.get("oauth_client_id"),
+        has_oauth_client_secret = bool(row.get("oauth_client_secret")),
+        image_input_mappings = image_input_mappings(row),
+        image_mappings_active = _image_mappings_active(row),
         created_at = row["created_at"],
         updated_at = row["updated_at"],
     )
@@ -192,7 +230,9 @@ def list_builtins(
     if via_api_key or no_credential:
         item = blender.catalog_item()
         item.available = False
-        item.unavailable_reason = "An authenticated Studio UI session is required for Blender MCP."
+        item.unavailable_reason = (
+            "An authenticated Unsloth Studio UI session is required for Blender MCP."
+        )
         return [item]
     return [blender.catalog_item(_blender_row())]
 
@@ -306,10 +346,23 @@ def list_mcp_servers(
 ):
     rows = mcp_servers_db.list_servers()
     if via_api_key or no_credential:
-        # Drop the row, not just its fields: `url` is the argv (carries credentials), `headers` is the subprocess
-        # env, and a blanked url would round-trip into update as a bogus command.
+        # url/headers hold argv/env secrets; blanking url allows bogus commands on update.
         rows = [row for row in rows if not is_stdio(row["url"])]
     return [_row_to_response(row, include_headers = not no_credential) for row in rows]
+
+
+@router.get("/research-tools")
+async def list_research_search_tools(
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: ViaApiKey = False,
+    no_credential: WithoutCredential = False,
+):
+    from core.inference.tools import mcp_search_tools
+    tools = await mcp_search_tools(include_stdio = not (via_api_key or no_credential))
+    return [
+        {key: tool[key] for key in ("serverId", "serverName", "tool", "description")}
+        for tool in tools
+    ]
 
 
 @router.post("/", response_model = McpServerResponse, status_code = 201)
@@ -328,6 +381,11 @@ async def create_mcp_server(
     # OAuth is HTTP-only; force it off for stdio commands so a stale flag can't
     # push the probe onto the 305s OAuth timeout. Backend enforces this.
     use_oauth = payload.use_oauth and not is_stdio(url)
+    client_id, client_secret = (
+        _oauth_client(payload.oauth_client_id, payload.oauth_client_secret)
+        if use_oauth
+        else (None, None)
+    )
 
     server_id = uuid.uuid4().hex[:16]
     mcp_servers_db.create_server(
@@ -337,8 +395,15 @@ async def create_mcp_server(
         headers_json = json.dumps(headers) if headers else None,
         is_enabled = payload.is_enabled,
         use_oauth = use_oauth,
+        image_input_mappings_json = _mappings_json(payload.image_input_mappings),
+        oauth_client_id = client_id,
+        oauth_client_secret = client_secret,
     )
     return _row_to_response(mcp_servers_db.get_server(server_id))
+
+
+def _mappings_json(mappings) -> str:
+    return json.dumps([mapping.model_dump() for mapping in mappings or []])
 
 
 def _changes_from_payload(payload: McpServerUpdate) -> dict:
@@ -363,9 +428,17 @@ def _changes_from_payload(payload: McpServerUpdate) -> dict:
         if payload.use_oauth is None:
             raise HTTPException(status_code = 400, detail = "use_oauth must be true or false")
         changes["use_oauth"] = payload.use_oauth
+    if "image_input_mappings" in sent:
+        changes["image_input_mappings_json"] = _mappings_json(payload.image_input_mappings)
+    if "oauth_client_id" in sent:
+        changes["oauth_client_id"] = (payload.oauth_client_id or "").strip() or None
+    if "oauth_client_secret" in sent:
+        changes["oauth_client_secret"] = payload.oauth_client_secret or None
     # stdio is OAuth-less: drop a stale OAuth flag when switching to a command.
     if "url" in changes and is_stdio(changes["url"]):
         changes["use_oauth"] = False
+    if changes.get("use_oauth") is False:
+        changes["oauth_client_id"] = changes["oauth_client_secret"] = None
     return changes
 
 
@@ -389,6 +462,13 @@ async def update_mcp_server(
                 status_code = 400,
                 detail = "Use the managed integration setup to configure or enable this server.",
             )
+    client_id = changes.get("oauth_client_id", old.get("oauth_client_id"))
+    # A secret belongs to one client at one origin: a new client ID or URL drops it unless replaced.
+    if "oauth_client_secret" not in changes and (
+        client_id != old.get("oauth_client_id") or changes.get("url", old["url"]) != old["url"]
+    ):
+        changes["oauth_client_secret"] = None
+    _oauth_client(client_id, changes.get("oauth_client_secret", old.get("oauth_client_secret")))
     if not changes:
         raise HTTPException(status_code = 400, detail = "No fields to update")
     # Both directions, so an API key can neither repoint an http row at a command nor edit a stdio row's
@@ -404,9 +484,14 @@ async def update_mcp_server(
         and "headers_json" not in changes
     ):
         changes["headers_json"] = None
-    # Clear persisted OAuth tokens when the URL changes or OAuth is disabled
+    # Clear persisted OAuth tokens when the URL, the OAuth flag or the client changes
     if bool(old.get("use_oauth")) and (
-        ("url" in changes and changes["url"] != old["url"]) or changes.get("use_oauth") is False
+        ("url" in changes and changes["url"] != old["url"])
+        or changes.get("use_oauth") is False
+        or any(
+            changes.get(k, old.get(k)) != old.get(k)
+            for k in ("oauth_client_id", "oauth_client_secret")
+        )
     ):
         await clear_oauth_tokens_async(old["url"])
         # That await hands the loop to other requests.
@@ -431,7 +516,11 @@ async def update_mcp_server(
 
 @router.delete("/{server_id}", status_code = 204)
 @serialize_mcp_server_mutation
-async def delete_mcp_server(server_id: str, current_subject: str = Depends(get_current_subject)):
+async def delete_mcp_server(
+    server_id: str,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: ViaApiKey = False,
+):
     old = mcp_servers_db.get_server(server_id)
     if not old:
         raise HTTPException(status_code = 404, detail = "MCP server not found")
@@ -439,11 +528,39 @@ async def delete_mcp_server(server_id: str, current_subject: str = Depends(get_c
         raise HTTPException(
             status_code = 400, detail = "Managed integrations cannot be deleted; disable them instead."
         )
+    # Same rule as update: an API key cannot touch a stdio row.
+    if is_stdio(old["url"]):
+        require_ui_session_for_local_commands(via_api_key)
     if old.get("use_oauth"):
         await clear_oauth_tokens_async(old["url"])
     mcp_servers_db.delete_server(server_id)
     invalidate_tool_cache(server_id)
     await asyncio.to_thread(close_mcp_sessions, old["url"], parse_server_headers(old))
+
+
+@router.get("/{server_id}/tools")
+def list_mcp_server_tools(
+    server_id: str,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: ViaApiKey = False,
+):
+    """Cached tool names and input schemas, for choosing an image input mapping."""
+    server = mcp_servers_db.get_server(server_id)
+    if not server:
+        raise HTTPException(status_code = 404, detail = "MCP server not found")
+    if is_stdio(server["url"]):
+        require_ui_session_for_local_commands(via_api_key)
+    tools = get_cached_tools(server_id)
+    if tools is None:
+        raise HTTPException(status_code = 409, detail = "Refresh this server's tools first")
+    # App-only tools never reach the model, so a mapping on one could never be used.
+    return [
+        {"name": tool["name"], "inputSchema": tool.get("inputSchema") or tool.get("input_schema")}
+        for tool in tools
+        if isinstance(tool, dict)
+        and isinstance(tool.get("name"), str)
+        and tool_visible_to(tool, "model")
+    ]
 
 
 @router.post("/{server_id}/refresh", response_model = McpServerProbeResult)
@@ -473,6 +590,7 @@ async def refresh_mcp_server_tools(
             headers = parse_server_headers(server),
             timeout = probe_timeout(server["url"], use_oauth),
             use_oauth = use_oauth,
+            **oauth_client_kwargs(server),
         )
     except Exception as exc:  # noqa: BLE001 - surface transport+timeout errors to UI
         logger.error(
@@ -560,12 +678,22 @@ async def test_mcp_server(
         require_ui_session_for_local_commands(via_api_key)
     headers = _normalize_headers(payload.headers)
     use_oauth = payload.use_oauth and not is_stdio(url)
+    client_id, client_secret = _oauth_client(payload.oauth_client_id, payload.oauth_client_secret)
+    if use_oauth and payload.server_id and client_id and not client_secret:
+        stored = mcp_servers_db.get_server(payload.server_id) or {}
+        if stored.get("url") == url and stored.get("oauth_client_id") == client_id:
+            client_secret = stored.get("oauth_client_secret")
     try:
         tools = await list_tools_async(
             url = url,
             headers = headers,
             timeout = probe_timeout(url, use_oauth),
             use_oauth = use_oauth,
+            **oauth_client_kwargs(
+                {"oauth_client_id": client_id, "oauth_client_secret": client_secret}
+                if use_oauth
+                else {}
+            ),
         )
     except Exception as exc:  # noqa: BLE001
         logger.error(
@@ -576,3 +704,173 @@ async def test_mcp_server(
         return McpServerProbeResult(ok = False, error = safe_curated_detail(exc))
 
     return McpServerProbeResult(ok = True, tool_count = len(tools))
+
+
+_UI_TIMEOUT = 60.0
+UI_TOOL_APPROVAL_REQUIRED = "approval_required"
+
+
+def _ui_server_or_404(server_id: str, via_api_key: bool) -> dict:
+    """Re-read per request: a stale widget must not keep a removed server reachable."""
+    server = mcp_servers_db.get_server(server_id)
+    if not server:
+        raise HTTPException(status_code = 404, detail = "MCP server not found")
+    if not server.get("is_enabled"):
+        raise HTTPException(status_code = 400, detail = "MCP server is disabled")
+    if is_stdio(server["url"]):
+        require_ui_session_for_local_commands(via_api_key)
+        if not stdio_mcp_enabled():
+            raise HTTPException(status_code = 400, detail = stdio_mcp_disabled_reason())
+    return server
+
+
+def _row_still_matches(server_id: str, server: dict) -> bool:
+    current = mcp_servers_db.get_server(server_id)
+    return current is not None and all(
+        current.get(k) == server.get(k) for k in TOOL_CACHE_INVALIDATING_FIELDS
+    )
+
+
+# One discovery per server at a time: reopening a chat mounts every widget at once, each probing a cold cache.
+_discovery_locks: dict = {}
+
+
+async def _warm_tool_cache(server: dict) -> None:
+    """Rediscover once on a cold cache: a chat reopened after a restart never ran the chat path, and widget calls read the cache."""
+    server_id = server["id"]
+    async with _discovery_locks.setdefault(server_id, asyncio.Lock()):
+        tools = get_cached_tools(server_id)
+        if tools is None and not in_failure_cooloff(server_id):
+            use_oauth = bool(server.get("use_oauth"))
+            url = server["url"]
+            try:
+                tools = await list_tools_async(
+                    url = url,
+                    headers = parse_server_headers(server),
+                    timeout = probe_timeout(url, use_oauth),
+                    use_oauth = use_oauth,
+                    **oauth_client_kwargs(server),
+                )
+            except Exception:  # noqa: BLE001 - a probe failure reads as "nothing declared"
+                tools = None
+            # A row edited mid-probe: the old endpoint's answer must neither authorize a read nor be cached.
+            if not _row_still_matches(server_id, server):
+                tools = None
+            elif tools is None:
+                record_probe_failure(server_id, use_oauth)
+            else:
+                cache_tools(server_id, tools)
+
+
+def _ui_call_kwargs(server_id: str, server: dict, thread_id, session_id) -> dict:
+    from core.inference.tools import mcp_session_scope
+    return {
+        "url": server["url"],
+        "headers": parse_server_headers(server),
+        "timeout": _UI_TIMEOUT,
+        "use_oauth": bool(server.get("use_oauth")),
+        **oauth_client_kwargs(server),
+        # execute_tool's key, so a widget reaches the chat's own stdio subprocess.
+        "scope": mcp_session_scope(session_id, thread_id),
+        "config_check": lambda: _row_still_matches(server_id, server),
+    }
+
+
+@router.get("/{server_id}/ui-resource", response_model = McpUiResourceResponse)
+async def read_mcp_ui_resource(
+    server_id: str,
+    uri: str,
+    thread_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: ViaApiKey = False,
+):
+    server = _ui_server_or_404(server_id, via_api_key)
+    uri = (uri or "").strip()
+    # Any ui:// resource (widgets read their own assets), no other scheme: a filesystem server maps file:// onto the host.
+    if not uri.startswith(UI_RESOURCE_SCHEME):
+        raise HTTPException(status_code = 400, detail = "uri must be a ui:// resource")
+    from core.inference.tools import (
+        _STUDIO_CREDENTIAL_BLOCKED,
+        _mcp_arguments_reference_studio_credential,
+    )
+
+    if _mcp_arguments_reference_studio_credential({"uri": uri}):
+        raise HTTPException(status_code = 403, detail = _STUDIO_CREDENTIAL_BLOCKED)
+    await _warm_tool_cache(server)
+    try:
+        contents = await asyncio.to_thread(
+            read_resource_sync, uri = uri, **_ui_call_kwargs(server_id, server, thread_id, session_id)
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise log_and_http_error(
+            exc,
+            502,
+            "Could not load this MCP app's interface.",
+            event = "mcp_servers.ui_resource_failed",
+            log = logger,
+        )
+    return McpUiResourceResponse(**contents)
+
+
+@router.post("/{server_id}/ui-tool-call", response_model = McpUiToolCallResult)
+async def call_mcp_ui_tool(
+    server_id: str,
+    payload: McpUiToolCallRequest,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: ViaApiKey = False,
+):
+    """Widget is untrusted: server_id comes from the host frame, the tool must be discovered with "app" visibility, and it passes the confirm gate."""
+    from core.inference.tools import (
+        _STUDIO_CREDENTIAL_BLOCKED,
+        MCP_TOOL_PREFIX,
+        _mcp_arguments_reference_studio_credential,
+        is_potentially_unsafe_tool_call,
+        mcp_tool_definition,
+    )
+    from state.tool_policy import get_tool_policy
+
+    if get_tool_policy() is False:
+        raise HTTPException(status_code = 403, detail = "Tools are disabled on this server")
+    server = _ui_server_or_404(server_id, via_api_key)
+    tool_name = (payload.tool_name or "").strip()
+    if not tool_name:
+        raise HTTPException(status_code = 400, detail = "tool_name must not be empty")
+    # A mounted widget outlives the cache: an edit or off/on toggle of the server empties it.
+    await _warm_tool_cache(server)
+    tool = mcp_tool_definition(server_id, tool_name)
+    if tool is None:
+        raise HTTPException(
+            status_code = 404, detail = f"MCP server has no discovered tool named '{tool_name}'"
+        )
+    if not tool_visible_to(tool, "app"):
+        raise HTTPException(
+            status_code = 403, detail = f"Tool '{tool_name}' is not callable by an MCP app"
+        )
+    arguments = payload.arguments or {}
+    if _mcp_arguments_reference_studio_credential(arguments):
+        raise HTTPException(status_code = 403, detail = _STUDIO_CREDENTIAL_BLOCKED)
+    mode = payload.permission_mode
+    # An unstated or unknown mode asks; "auto" asks only for what the model's call would be asked for.
+    needs_approval = mode not in ("off", "full") and (
+        mode != "auto"
+        or is_potentially_unsafe_tool_call(f"{MCP_TOOL_PREFIX}{server_id}__{tool_name}", arguments)
+    )
+    if needs_approval and not payload.approved:
+        raise HTTPException(status_code = 409, detail = UI_TOOL_APPROVAL_REQUIRED)
+    try:
+        result = await asyncio.to_thread(
+            call_tool_structured_sync,
+            name = tool_name,
+            args = arguments,
+            **_ui_call_kwargs(server_id, server, payload.thread_id, payload.session_id),
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise log_and_http_error(
+            exc,
+            502,
+            "The MCP app's tool call failed.",
+            event = "mcp_servers.ui_tool_call_failed",
+            log = logger,
+        )
+    return McpUiToolCallResult(**result)

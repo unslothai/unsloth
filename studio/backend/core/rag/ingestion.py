@@ -15,7 +15,9 @@ import logging
 import os
 import queue
 import re
+import shutil
 import threading
+import uuid
 from collections.abc import Callable
 
 from core.rag import account_db as rag_db
@@ -70,6 +72,21 @@ def _remove_upload(stored_path: str | None, *, keep_path: str | None = None) -> 
         logger.warning("failed to remove RAG upload %s", stored_path, exc_info = True)
 
 
+def _copy_upload(stored_path: str | None) -> str | None:
+    if not stored_path or not os.path.isfile(stored_path):
+        return None
+    from utils.paths import ensure_dir, rag_uploads_root
+
+    ext = os.path.splitext(stored_path)[1].lower()
+    target = str(ensure_dir(rag_uploads_root()) / f"{uuid.uuid4().hex}{ext}")
+    try:
+        shutil.copyfile(stored_path, target)
+    except OSError:
+        _remove_upload(target)
+        raise
+    return target
+
+
 def _emit(job_id: str, event: dict) -> None:
     with _jobs_lock:
         q = _jobs.get(account_key(job_id))
@@ -101,6 +118,13 @@ def _set_job(
 def _progress(conn, job_id: str, stage: str, progress: float) -> None:
     if account_is_retired():
         raise job_leases.JobLeaseLost("Account is retired")
+    # An unlink stops a linked-folder document mid-embed, not after it (folder_sync imports this module).
+    from . import folder_sync
+
+    if folder_sync.is_cancel_requested(getattr(folder_sync._worker_state, "folder_id", None)):
+        # Terminal, so the folder cleanup can prune the row with the document it discards.
+        _set_job(conn, job_id, status = "failed", stage = "error", error = "Linked folder was removed")
+        raise job_leases.JobLeaseLost("Linked folder was removed")
     if not job_leases.renew_owned(conn, job_leases.INGESTION, job_id):
         raise job_leases.JobLeaseLost("Ingestion job lease was reclaimed")
     _set_job(conn, job_id, status = "running", stage = stage, progress = progress)
@@ -470,6 +494,7 @@ def start_ingestion(
     linked_relative_path: str | None = None,
     background: bool = True,
     content_hash: str | None = None,
+    reuse_identical: bool = False,
 ) -> tuple[str, str]:
     """Create the document + job rows and spawn the worker, returning
     ``(document_id, job_id)``. A duplicate content hash in this scope returns the
@@ -480,7 +505,10 @@ def start_ingestion(
     reconciliation hashes it to detect content-identical renames) pass that digest
     through instead of paying for a second full read of the file. Must be the lowercase
     hex sha256 of ``stored_path``; a mismatched value would misfile the document under
-    the wrong hash, so it is trusted as given and never reverified here."""
+    the wrong hash, so it is trusted as given and never reverified here.
+
+    ``reuse_identical`` (dedupe=False only) copies a completed same-hash document's index
+    onto a new row instead of re-embedding, keeping per-path ownership for linked folders."""
     account_path(stored_path)
     if account_is_retired():
         raise RuntimeError("Account is retired")
@@ -500,6 +528,12 @@ def start_ingestion(
         # RESERVED lock that long fails concurrent writers with "database is locked".
         effective_model = model_name or config.effective_embedding_model()
         effective_identity = embeddings.embedding_identity(effective_model)
+        # Prefetch before BEGIN IMMEDIATE: a cold read scans the vec0 partition and would starve other writers.
+        prefetched = None
+        if reuse_identical and not dedupe:
+            candidate = store.reusable_document_by_hash(conn, scope, sha, ext, effective_identity)
+            if candidate is not None:
+                prefetched = (candidate["id"], store.prefetch_donor_vectors(conn, candidate))
         # The job lease is committed in the same transaction as the document, so cleanup never observes an
         # unowned in-flight document.
         conn.execute("BEGIN IMMEDIATE")
@@ -556,6 +590,59 @@ def start_ingestion(
             for failed in store.failed_documents_by_hash(conn, scope, sha):
                 store.delete_document(conn, failed["id"], commit = False)
                 _remove_upload(failed.get("stored_path"), keep_path = stored_path)
+
+        if reuse_identical and not dedupe:
+            donor = store.reusable_document_by_hash(conn, scope, sha, ext, effective_identity)
+            if donor is not None:
+                conn.execute("SAVEPOINT reuse_identical")
+                reused_id = store.create_document(
+                    conn,
+                    scope = scope,
+                    filename = filename,
+                    sha256 = sha,
+                    kb_id = kb_id,
+                    thread_id = thread_id,
+                    project_id = project_id,
+                    status = "completed",
+                    stored_path = stored_path,
+                    embedding_model = donor["embedding_model"],
+                    linked_folder_id = linked_folder_id,
+                    linked_relative_path = linked_relative_path,
+                    commit = False,
+                )
+                donor_chunks = donor["num_chunks"] or 0
+                copied = store.copy_document_index(
+                    conn,
+                    donor,
+                    reused_id,
+                    scope,
+                    prefetched[1] if prefetched and prefetched[0] == donor["id"] else None,
+                )
+                if rag_db.vec_table_exists(conn) and copied != donor_chunks:
+                    # Donor lost vectors: ingest normally rather than copy a dense-search-invisible doc.
+                    conn.execute("ROLLBACK TO reuse_identical")
+                    conn.execute("RELEASE reuse_identical")
+                    logger.info(
+                        "linked-folder reuse donor %s in scope %s is missing vectors; "
+                        "falling back to a normal ingest",
+                        donor["id"],
+                        scope,
+                    )
+                else:
+                    conn.execute("RELEASE reuse_identical")
+                    conn.execute(
+                        "UPDATE documents SET num_chunks=? WHERE id=?",
+                        (donor_chunks, reused_id),
+                    )
+                    job_id = _new_job(conn, reused_id, scope, status = "completed", progress = 1.0)
+                    with _jobs_lock:
+                        _jobs[account_key(job_id)] = queue.Queue()
+                    _emit(
+                        job_id,
+                        {"type": "complete", "num_chunks": donor_chunks, "reused": True},
+                    )
+                    _emit(job_id, None)
+                    return reused_id, job_id
 
         document_id = store.create_document(
             conn,

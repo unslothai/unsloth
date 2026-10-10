@@ -43,6 +43,7 @@ activate_install_tree = INSTALL_LLAMA_PREBUILT.activate_install_tree
 activate_staged_dir = INSTALL_LLAMA_PREBUILT.activate_staged_dir
 create_install_staging_dir = INSTALL_LLAMA_PREBUILT.create_install_staging_dir
 replace_with_busy_retry = INSTALL_LLAMA_PREBUILT.replace_with_busy_retry
+blocked_replace_hint = INSTALL_LLAMA_PREBUILT.blocked_replace_hint
 remove_tree_logged = INSTALL_LLAMA_PREBUILT.remove_tree_logged
 prune_stale_install_side_paths = INSTALL_LLAMA_PREBUILT.prune_stale_install_side_paths
 sha256_file = INSTALL_LLAMA_PREBUILT.sha256_file
@@ -1116,6 +1117,150 @@ def test_replace_with_busy_retry_waits_out_a_transient_windows_lock(
 
     assert attempts["count"] == 3
     assert (destination / "payload.txt").read_text() == "payload\n"
+
+
+def test_blocked_replace_hint_names_the_cause_per_winerror():
+    assert "scanner" in blocked_replace_hint(32)
+    denied = blocked_replace_hint(5)
+    assert "access is denied" in denied and "ACL" in denied
+    not_empty = blocked_replace_hint(145)
+    assert "not empty" in not_empty and "scanner" not in not_empty
+
+
+def _run_denied_replace(tmp_path, monkeypatch, failures):
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "payload.txt").write_text("payload\n")
+    destination = tmp_path / "dst"
+    original_replace = INSTALL_LLAMA_PREBUILT.os.replace
+    attempts = {"count": 0}
+
+    def access_denied(src, dst):
+        attempts["count"] += 1
+        if attempts["count"] <= failures:
+            exc = OSError(errno.EACCES, "Access is denied")
+            exc.winerror = 5
+            raise exc
+        return original_replace(src, dst)
+
+    logged: list[str] = []
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "name", "nt")
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", access_denied)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "log", logged.append)
+    return source, destination, logged
+
+
+def test_replace_with_busy_retry_prints_acl_repair_once_when_denial_persists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    source, destination, logged = _run_denied_replace(tmp_path, monkeypatch, failures = 99)
+    with pytest.raises(OSError):
+        replace_with_busy_retry(source, destination, attempts = 3)
+    retry_lines = [line for line in logged if "blocked (5)" in line]
+    assert len(retry_lines) == 2 and "scanner" not in retry_lines[0].split("--")[0]
+    assert all("takeown" not in line for line in retry_lines)
+    # One command per line so each can be pasted; src is the tree, dst does not exist yet.
+    assert logged.count(f'takeown /F "{source}" /R /D Y') == 1
+    assert logged.count(f'icacls "{source}" /reset /T') == 1
+    assert not any(str(destination) in line for line in logged if "takeown" in line)
+    assert any("Controlled folder access" in line for line in logged)
+
+
+def test_replace_with_busy_retry_offers_no_recursive_repair_for_a_linked_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    target = tmp_path / "external"
+    target.mkdir()
+    link = tmp_path / "linked"
+    try:
+        link.symlink_to(target, target_is_directory = True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+    _source, destination, logged = _run_denied_replace(tmp_path, monkeypatch, failures = 99)
+    # os.name is spoofed to "nt", so the real probe would look for Windows reparse attributes.
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_is_link_or_junction", lambda p: p == link)
+    with pytest.raises(OSError):
+        replace_with_busy_retry(link, destination, attempts = 2)
+    assert not any("takeown" in line or "icacls" in line for line in logged)
+    assert any("contains a link" in line for line in logged)
+
+
+def test_replace_with_busy_retry_offers_no_recursive_repair_over_a_nested_link(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    source, destination, logged = _run_denied_replace(tmp_path, monkeypatch, failures = 99)
+    try:
+        (source / "link-out").symlink_to(outside, target_is_directory = True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_is_link_or_junction", lambda p: p.is_symlink())
+    with pytest.raises(OSError):
+        replace_with_busy_retry(source, destination, attempts = 2)
+    assert not any("takeown" in line or "icacls" in line for line in logged)
+
+
+def test_replace_with_busy_retry_offers_only_a_root_repair_for_an_unlistable_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    source, destination, logged = _run_denied_replace(tmp_path, monkeypatch, failures = 99)
+
+    def denied_walk(
+        top,
+        onerror = None,
+        **_kwargs,
+    ):
+        onerror(PermissionError(errno.EACCES, "Access is denied", str(top)))
+        return iter(())
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_is_link_or_junction", lambda p: False)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "walk", denied_walk)
+    with pytest.raises(OSError):
+        replace_with_busy_retry(source, destination, attempts = 2)
+    assert f'takeown /F "{source}"' in logged
+    assert f'icacls "{source}" /reset /L' in logged
+    assert not any(
+        "/R" in line or "/T" in line for line in logged if "takeown" in line or "icacls" in line
+    )
+
+
+def test_replace_with_busy_retry_offers_a_root_repair_when_the_root_cannot_be_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    source, destination, logged = _run_denied_replace(tmp_path, monkeypatch, failures = 99)
+    real_lstat = type(source).lstat
+
+    def denied_lstat(self):
+        if self == source:
+            raise PermissionError(errno.EACCES, "Access is denied")
+        return real_lstat(self)
+
+    monkeypatch.setattr(type(source), "lstat", denied_lstat)
+    with pytest.raises(OSError):
+        replace_with_busy_retry(source, destination, attempts = 2)
+    assert f'takeown /F "{source}"' in logged
+    assert not any("contains a link" in line for line in logged)
+
+
+def test_replace_with_busy_retry_can_withhold_the_acl_repair(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    source, destination, logged = _run_denied_replace(tmp_path, monkeypatch, failures = 99)
+    with pytest.raises(OSError):
+        replace_with_busy_retry(source, destination, attempts = 2, acl_repair = False)
+    assert not any("takeown" in line or "icacls" in line for line in logged)
+
+
+def test_replace_with_busy_retry_skips_acl_repair_when_denial_clears(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    source, destination, logged = _run_denied_replace(tmp_path, monkeypatch, failures = 1)
+    replace_with_busy_retry(source, destination)
+    assert (destination / "payload.txt").read_text() == "payload\n"
+    assert any("blocked (5)" in line for line in logged)
+    assert not any("takeown" in line for line in logged)
 
 
 def test_replace_with_busy_retry_does_not_retry_a_posix_permission_error(
@@ -2324,7 +2469,7 @@ def test_install_prebuilt_falls_back_to_older_release_plan(
     monkeypatch.setattr(
         INSTALL_LLAMA_PREBUILT,
         "ensure_converter_scripts",
-        lambda install_dir, llama_tag: ensured_tags.append(llama_tag),
+        lambda install_dir, llama_tag, **kwargs: ensured_tags.append(llama_tag),
     )
 
     install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
@@ -2334,13 +2479,29 @@ def test_install_prebuilt_falls_back_to_older_release_plan(
     assert ensured_tags == ["b9001"]
 
 
-def write_linux_install_shape(install_dir: Path) -> None:
+def _write_entrypoints(install_dir: Path) -> None:
+    """The two entrypoints, executable, in both the places a caller looks.
+
+    Executable because a real extraction leaves them so, and because
+    existing_install_matches_choice now asks _entrypoint_is_runnable rather than
+    exists(): a tree it keeps but installed_runtime_health rejects is a repair loop.
+    """
     runtime_dir = install_dir / "build" / "bin"
     runtime_dir.mkdir(parents = True, exist_ok = True)
-    (install_dir / "llama-server").write_text("#!/bin/sh\n", encoding = "utf-8")
-    (install_dir / "llama-quantize").write_text("#!/bin/sh\n", encoding = "utf-8")
-    (runtime_dir / "llama-server").write_text("#!/bin/sh\n", encoding = "utf-8")
-    (runtime_dir / "llama-quantize").write_text("#!/bin/sh\n", encoding = "utf-8")
+    for directory in (install_dir, runtime_dir):
+        for name in ("llama-server", "llama-quantize"):
+            binary = directory / name
+            binary.write_text("#!/bin/sh\n", encoding = "utf-8")
+            binary.chmod(0o755)
+
+
+def write_linux_install_shape(install_dir: Path) -> None:
+    runtime_dir = install_dir / "build" / "bin"
+    _write_entrypoints(install_dir)
+    # Since the upstream impl split, llama-server and llama-quantize carry no entry
+    # code of their own and load these by DT_NEEDED, so a Linux payload owes them.
+    (runtime_dir / "libllama-server-impl.so").write_bytes(b"DLL")
+    (runtime_dir / "libllama-quantize-impl.so").write_bytes(b"DLL")
     # libllama-common.so* (PR #5135) is a required runtime payload health group.
     (runtime_dir / "libllama-common.so.0").write_bytes(b"DLL")
     (runtime_dir / "libllama.so.0").write_bytes(b"DLL")
@@ -2369,6 +2530,7 @@ def write_windows_install_shape(
         for name in (
             "llama-common.dll",
             "llama-server-impl.dll",
+            "llama-quantize-impl.dll",
             "ggml.dll",
             "ggml-base.dll",
             "ggml-cpu-x64.dll",
@@ -2396,11 +2558,15 @@ def write_macos_install_shape(
     include_libmtmd: bool = True,
 ) -> None:
     runtime_dir = install_dir / "build" / "bin"
-    runtime_dir.mkdir(parents = True, exist_ok = True)
-    (install_dir / "llama-server").write_text("#!/bin/sh\n", encoding = "utf-8")
-    (install_dir / "llama-quantize").write_text("#!/bin/sh\n", encoding = "utf-8")
-    (runtime_dir / "llama-server").write_text("#!/bin/sh\n", encoding = "utf-8")
-    (runtime_dir / "llama-quantize").write_text("#!/bin/sh\n", encoding = "utf-8")
+    _write_entrypoints(install_dir)
+    # The rest of the libraries a real macos-arm64 bundle ships. The toggles above
+    # stay the ones a caller flips, so an off toggle still leaves the tree short of
+    # one whole library rather than of the whole payload.
+    for name in ("libllama-common.0.dylib", "libggml-base.0.dylib", "libggml-cpu.0.dylib"):
+        (runtime_dir / name).write_bytes(b"DLL")
+    # The macOS half of the impl split, shipped unversioned; same reason as the Linux shape.
+    (runtime_dir / "libllama-server-impl.dylib").write_bytes(b"DLL")
+    (runtime_dir / "libllama-quantize-impl.dylib").write_bytes(b"DLL")
     if include_libllama:
         (runtime_dir / "libllama.0.dylib").write_bytes(b"DLL")
     if include_libggml:
@@ -3351,6 +3517,55 @@ def test_install_prebuilt_skips_when_older_release_fallback_matches_existing_ins
     assert call_log == ["b9002"]
 
 
+@pytest.mark.skipif(os.name == "nt", reason = "the root wrapper is written on POSIX only")
+@pytest.mark.parametrize("name", ["llama-server", "llama-quantize"])
+def test_a_damaged_root_entrypoint_stops_the_release_being_reused(tmp_path: Path, name: str):
+    """Codex 3973890098, P1. The keep decision graded only build/bin, so an online repair
+    took the shortcut, replaced nothing, and every later launch offered the same repair
+    again. Both read _damaged_entrypoint now.
+
+    Codex 4056336250, P2 narrowed what the LAUNCH side of it may reject: the resolver
+    returns the first usable candidate, so it walks past a root wrapper with no execute
+    bit and runs build/bin, and marking that tree stale repairs a runtime that works. The
+    keep decision is deliberately left strict, since replacing a rotten wrapper is exactly
+    what a reinstall is for, and that direction is safe: the launch verdict is never
+    stricter than the repair that answers it."""
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    write_linux_install_shape(install_dir)
+    host = linux_host()
+    choice = asset_choice(name = "llama-b9001-bin-ubuntu-x64-good.tar.gz")
+    checksums = release_checksums((choice.name, choice.expected_sha256, PREBUILT))
+    write_metadata(install_dir, choice, checksums)
+    kwargs = dict(
+        llama_tag = "b9001",
+        release_tag = "release-1",
+        choice = choice,
+        approved_checksums = checksums,
+    )
+    assert existing_install_matches_choice(install_dir, host, **kwargs) is True
+    assert INSTALL_LLAMA_PREBUILT.installed_runtime_health(install_dir, host = host) == (True, "")
+
+    (install_dir / name).chmod(0o644)
+    # Walked past by the resolver, so the runtime still starts and launch says so.
+    assert INSTALL_LLAMA_PREBUILT.installed_runtime_health(install_dir, host = host) == (True, "")
+    assert (
+        existing_install_matches_choice(install_dir, host, **kwargs) is False
+    ), "a reinstall is what replaces a rotten root wrapper"
+
+    # Empty is the damage the resolver does NOT walk past: is_file() and the execute bit
+    # both survive a truncation, so discovery selects it and the exec dies on ENOEXEC.
+    (install_dir / name).write_text("", encoding = "utf-8")
+    (install_dir / name).chmod(0o755)
+    assert INSTALL_LLAMA_PREBUILT.installed_runtime_health(install_dir, host = host) == (
+        False,
+        "llama_runtime_binaries_missing",
+    )
+    assert (
+        existing_install_matches_choice(install_dir, host, **kwargs) is False
+    ), "a tree the probe rejects and this keeps is a repair that changes nothing"
+
+
 def test_install_prebuilt_skips_same_release_fallback_attempt_when_installed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -3526,7 +3741,7 @@ def test_install_prebuilt_same_tag_upstream_failure_uses_older_unsloth_release_p
     monkeypatch.setattr(
         INSTALL_LLAMA_PREBUILT,
         "ensure_converter_scripts",
-        lambda install_dir, llama_tag: None,
+        lambda install_dir, llama_tag, **kwargs: None,
     )
 
     install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
@@ -3872,6 +4087,112 @@ def test_linux_runtime_overlay_copies_llama_tool_impl_libraries(tmp_path: Path) 
     ):
         assert (runtime_dir / name).exists(), f"missing {name}"
     assert not (runtime_dir / "llama-cli").exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "Windows st_mode carries no POSIX mode bits")
+@pytest.mark.parametrize("bundles_fit_params", [True, False])
+def test_macos_install_makes_llama_fit_params_executable(
+    tmp_path: Path, bundles_fit_params: bool
+) -> None:
+    """#12901: the guarded extractor drops archive modes, so the optional Metal
+    probe must be chmod'ed like llama-server, and bundles without it still install."""
+    install_from_archives = INSTALL_LLAMA_PREBUILT.install_from_archives
+
+    work = tmp_path / "work"
+    install = tmp_path / "install"
+    archives = tmp_path / "archives"
+    work.mkdir()
+    install.mkdir()
+    archives.mkdir()
+
+    names = ["llama-server", "llama-quantize", "libllama.dylib", "libggml.dylib"]
+    if bundles_fit_params:
+        names.append("llama-fit-params")
+    bundle = archives / "llama-b9001-bin-macos-arm64.tar.gz"
+    with tarfile.open(bundle, "w:gz") as archive:
+        for name in names:
+            add_bytes_to_tar(archive, name, f"{name}\n".encode(), mode = 0o755)
+
+    import hashlib
+
+    choice = asset_choice(
+        name = bundle.name,
+        source_label = "published",
+        install_kind = "macos-arm64",
+        expected_sha256 = hashlib.sha256(bundle.read_bytes()).hexdigest(),
+    )
+
+    orig_download = INSTALL_LLAMA_PREBUILT.download_file_verified
+
+    def fake_download(url, target_path, **kw):
+        shutil.copy2(bundle, target_path)
+
+    INSTALL_LLAMA_PREBUILT.download_file_verified = fake_download
+    try:
+        install_from_archives(choice, macos_host(), install, work)
+    finally:
+        INSTALL_LLAMA_PREBUILT.download_file_verified = orig_download
+
+    fit_params = install / "build" / "bin" / "llama-fit-params"
+    if bundles_fit_params:
+        assert stat.S_IMODE(fit_params.stat().st_mode) == 0o755
+    else:
+        assert not fit_params.exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "Windows st_mode carries no POSIX mode bits")
+@pytest.mark.parametrize("skip_path", ["no_network_check", "plan_match"])
+def test_a_reused_install_repairs_a_non_executable_llama_fit_params(
+    tmp_path: Path, monkeypatch, skip_path: str
+) -> None:
+    """#12901: installs made before the fix keep a 0644 probe, and an update on the same
+    release returns before any extraction, so the skip paths must restore the bit."""
+    M = INSTALL_LLAMA_PREBUILT
+    install_dir = tmp_path / "llama.cpp"
+    helper = install_dir / "build" / "bin" / "llama-fit-params"
+    helper.parent.mkdir(parents = True)
+    helper.write_bytes(b"probe\n")
+    helper.chmod(0o644)
+
+    host = macos_host()
+    choice = asset_choice(name = "llama-b9001-bin-macos-arm64.tar.gz", install_kind = "macos-arm64")
+    release_plan = M.InstallReleasePlan(
+        requested_tag = "latest",
+        llama_tag = "b9001",
+        release_tag = "release-1",
+        attempts = [choice],
+        approved_checksums = release_checksums((choice.name, choice.expected_sha256, UPSTREAM)),
+    )
+    route = types.SimpleNamespace(
+        host = host, backend = "auto", published_repo = "unslothai/llama.cpp", published_release_tag = ""
+    )
+    monkeypatch.setattr(M, "route_backend_request", lambda **_k: route)
+    monkeypatch.setattr(
+        M,
+        "existing_install_current_without_plan",
+        lambda *_a, **_k: skip_path == "no_network_check",
+    )
+    monkeypatch.setattr(
+        M,
+        "select_backend_install",
+        lambda **_k: M.BackendSelection(
+            backend = "auto",
+            host = host,
+            published_repo = "unslothai/llama.cpp",
+            published_release_tag = "",
+            requested_tag = "latest",
+            release_plans = [release_plan],
+            persist_llama_backend = None,
+            persist_rocm_gfx = None,
+        ),
+    )
+    monkeypatch.setattr(M, "existing_install_matches_plan", lambda *_a, **_k: True)
+    monkeypatch.setattr(M, "diffusion_visual_server_backfill_needed", lambda *_a, **_k: False)
+    monkeypatch.setattr(M, "sync_marker_selection", lambda *_a, **_k: None)
+
+    M.install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
+
+    assert stat.S_IMODE(helper.stat().st_mode) == 0o755
 
 
 def test_python_runtime_dirs_covers_cu13_and_library_bin(monkeypatch, tmp_path: Path) -> None:
@@ -4270,7 +4591,7 @@ def test_diffusion_visual_server_uses_approved_checksum_download(monkeypatch, tm
     monkeypatch.setattr(
         INSTALL_LLAMA_PREBUILT,
         "github_release_assets",
-        lambda repo, tag: {asset_name: asset_url},
+        lambda repo, tag: (_ for _ in ()).throw(AssertionError("listed the release over the API")),
     )
 
     def fake_download_file(url, destination):
@@ -4305,15 +4626,16 @@ def test_diffusion_visual_server_uses_approved_checksum_download(monkeypatch, tm
     assert target.stat().st_mode & 0o777 == 0o755
 
 
-def test_diffusion_visual_server_refuses_unapproved_release_asset(monkeypatch, tmp_path: Path):
-    asset_name = "llama-diffusion-gemma-visual-server-attacker-linux"
+def test_diffusion_visual_server_skips_when_the_manifest_names_no_visual_server(
+    monkeypatch, tmp_path: Path
+):
     verified_calls: list[str] = []
     raw_calls: list[str] = []
 
     monkeypatch.setattr(
         INSTALL_LLAMA_PREBUILT,
         "github_release_assets",
-        lambda repo, tag: {asset_name: "https://example.test/" + asset_name},
+        lambda repo, tag: (_ for _ in ()).throw(AssertionError("listed the release over the API")),
     )
 
     def fake_download_file(url, destination):
@@ -4408,6 +4730,7 @@ _LLAMA_CPP_NO_SPACE=false
 _LLAMA_CPP_DEGRADED=false
 _explicit_llama_backend=""
 _STUDIO_HOME_IS_CUSTOM=false
+_RUNTIME_ROOT_IS_CUSTOM=false
 _STUDIO_OWNED_MARKER=".unsloth-owned"
 step() { echo "step: $2"; }
 substep() { echo "substep: $1"; }
@@ -4799,6 +5122,12 @@ _SHARED_PAYLOAD = {
         "libggml-base.so",
         "libggml-cpu.so",
         "libmtmd.so",
+        # The entry code llama-server and llama-quantize lost to the upstream impl
+        # split; they load these by DT_NEEDED. Owed by a published or upstream
+        # bundle only, and these markers carry no bNNNN tag, which the gate reads
+        # as "assume current".
+        "libllama-server-impl.so",
+        "libllama-quantize-impl.so",
     ],
     "windows": ["llama.dll"],
 }
@@ -4865,20 +5194,20 @@ def _complete_existing_llama_install(
             path.write_text("#!/bin/sh\nexit 0\n" if ok else "", encoding = "utf-8")
             os.chmod(path, 0o755 if executable else 0o644)
         else:
-            path.write_text("", encoding = "utf-8")
+            path.write_text("x", encoding = "utf-8")
             os.chmod(path, 0o755 if executable else 0o644)
     platform = "windows" if windows else "linux"
     if payload:
         for name in _SHARED_PAYLOAD[platform]:
-            (runtime_dir / name).write_text("", encoding = "utf-8")
+            (runtime_dir / name).write_text("x", encoding = "utf-8")
         for name in _BACKEND_PAYLOAD.get((platform, backend), ()):
-            (runtime_dir / name).write_text("", encoding = "utf-8")
+            (runtime_dir / name).write_text("x", encoding = "utf-8")
         if source == "published" and visual_server:
             for name in _PUBLISHED_PAYLOAD[platform]:
-                (runtime_dir / name).write_text("", encoding = "utf-8")
+                (runtime_dir / name).write_text("x", encoding = "utf-8")
         if runtime_asset is not None and paired_runtime:
             for name in ("cudart64_13.dll", "cublas64_13.dll", "cublasLt64_13.dll"):
-                (runtime_dir / name).write_text("", encoding = "utf-8")
+                (runtime_dir / name).write_text("x", encoding = "utf-8")
     return install_dir
 
 
@@ -4896,6 +5225,26 @@ def test_release_listing_failure_keeps_a_complete_existing_install(tmp_path, mon
     install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
 
     assert (install_dir / "llama-server").exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "Windows st_mode carries no POSIX mode bits")
+def test_an_offline_keep_repairs_a_non_executable_llama_fit_params(tmp_path, monkeypatch):
+    """#12901: an update that cannot reach the release keeps the tree, so it must repair the probe too."""
+
+    def boom(*args, **kwargs):
+        raise urllib.error.URLError("connection reset")
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_fork_manifest_release_plans", boom)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "detect_host", linux_host)
+
+    install_dir = _complete_existing_llama_install(tmp_path)
+    helper = install_dir / "build" / "bin" / "llama-fit-params"
+    helper.write_bytes(b"probe\n")
+    helper.chmod(0o644)
+
+    install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
+
+    assert stat.S_IMODE(helper.stat().st_mode) == 0o755
 
 
 def test_release_listing_failure_does_not_keep_a_non_executable_install(tmp_path, monkeypatch):
@@ -5869,6 +6218,7 @@ def test_windows_prebuilt_health_requires_the_shared_runtime(install_kind: str):
         "llama-common.dll",
         "llama-server.exe",
         "llama-server-impl.dll",
+        "llama-quantize-impl.dll",
         "ggml.dll",
         "ggml-base.dll",
         "ggml-cpu*.dll",
@@ -5882,7 +6232,12 @@ def test_windows_source_build_does_not_require_the_shared_runtime():
     fail a healthy tree."""
     patterns = _flat(runtime_payload_health_groups("windows-cpu", source_label = None))
     assert "llama.dll" in patterns
-    for absent in ("llama-common.dll", "llama-server-impl.dll", "mtmd.dll"):
+    for absent in (
+        "llama-common.dll",
+        "llama-server-impl.dll",
+        "llama-quantize-impl.dll",
+        "mtmd.dll",
+    ):
         assert absent not in patterns
 
 
@@ -5902,7 +6257,12 @@ _PRE_SPLIT_WINDOWS_PAYLOAD = (
     "ggml-cpu-haswell.dll",
     "mtmd.dll",
 )
-_POST_SPLIT_WINDOWS_PAYLOAD = _PRE_SPLIT_WINDOWS_PAYLOAD + ("llama-server-impl.dll",)
+# Both halves of the split, which is what a post-b9283 bundle ships: llama-quantize.exe
+# links against its own impl library exactly as llama-server.exe does against the server's.
+_POST_SPLIT_WINDOWS_PAYLOAD = _PRE_SPLIT_WINDOWS_PAYLOAD + (
+    "llama-server-impl.dll",
+    "llama-quantize-impl.dll",
+)
 
 
 @pytest.mark.parametrize(
@@ -6411,11 +6771,57 @@ def test_a_marker_naming_a_backend_this_platform_cannot_hold_is_not_current(tmp_
 
 
 def test_a_marker_whose_request_and_backend_disagree_is_not_current(tmp_path, monkeypatch):
-    """persisted_marker_backend_request stores "auto" whenever the request and the
-    bundle that landed disagree, so a concrete request must name the bundle's own
-    backend. Anything else was not written by this installer."""
+    """A concrete request must name the bundle's own backend, or say outright that it is
+    a request the install could not honour (the test below). A bare disagreement with no
+    such flag was not written by this installer."""
     install_dir = _current_install(tmp_path, monkeypatch, backend_request = "vulkan")
     assert _check(install_dir, backend_request = "vulkan") is False
+
+
+# A request the install could not honour is PRESERVED now (#11143), so the fast path holds two
+# lines at once: retry the choice when something moved, and do not pay the full listing plus
+# re-validation on every update of a host that simply cannot serve it.
+_UNSATISFIED = dict(backend_request = "vulkan", backend_request_unsatisfied = True)
+
+
+def test_an_unsatisfied_choice_read_off_the_marker_does_not_reinstall_every_update(
+    tmp_path, monkeypatch
+):
+    """Nothing moved, so the install on disk is still the one this run would produce. The
+    request stays recorded, owed a retry, not retried here."""
+    install_dir = _current_install(tmp_path, monkeypatch, **_UNSATISFIED)
+    assert _check(install_dir, backend_request = "vulkan") is True
+    marker = json.loads((install_dir / "UNSLOTH_PREBUILT_INFO.json").read_text(encoding = "utf-8"))
+    assert marker["backend_request"] == "vulkan"
+
+
+def test_an_unsatisfied_choice_named_by_this_run_is_re_asserted(tmp_path, monkeypatch):
+    """--llama-backend vulkan (or Settings, which passes it) is someone asking again by
+    hand: take the full path, where the request is re-asserted and, if it still cannot be
+    served, fails loudly instead of silently keeping the bundle it did not ask for."""
+    install_dir = _current_install(tmp_path, monkeypatch, **_UNSATISFIED)
+    assert _check(install_dir, backend_request = "vulkan", backend_request_mandatory = True) is False
+
+
+def test_an_unsatisfied_choice_is_retried_when_the_release_moves(tmp_path, monkeypatch):
+    """The "something changed" half: a new release republishes the bundles, so the choice
+    gets another go. Same for new hardware, which the host_profile check already covers."""
+    install_dir = _current_install(tmp_path, monkeypatch, **_UNSATISFIED)
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT, "_download_host_latest_release_tag", lambda _repo: "release-2"
+    )
+    assert _check(install_dir, backend_request = "vulkan") is False
+
+
+def test_an_old_marker_is_read_as_a_satisfied_choice(tmp_path, monkeypatch):
+    """No flag means satisfied, so every install made before the field behaves exactly as
+    it did: a recorded choice that names the installed backend stays current."""
+    install_dir = _current_install(tmp_path, monkeypatch, backend_request = "cpu", backend = "cpu")
+    marker = json.loads((install_dir / "UNSLOTH_PREBUILT_INFO.json").read_text(encoding = "utf-8"))
+    assert "backend_request_unsatisfied" not in marker
+    assert _check(install_dir, backend_request = "cpu") is True
+    # And the mandatory flag changes nothing for it: there is no unmet request to re-assert.
+    assert _check(install_dir, backend_request = "cpu", backend_request_mandatory = True) is True
 
 
 def test_a_truncated_shared_library_is_not_current(tmp_path, monkeypatch):
@@ -7008,6 +7414,23 @@ def test_the_planner_records_the_newest_release_a_mac_walked_past(monkeypatch):
     _, plans = module._fork_manifest_release_plans("latest", host, "unslothai/llama.cpp", "")
     assert plans[0].release_tag == "r2"
     assert plans[0].walk_back is None
+
+
+def test_a_late_rocm_listing_failure_keeps_the_vulkan_plan(monkeypatch):
+    module = INSTALL_LLAMA_PREBUILT
+    vulkan = release_plan([asset_choice(install_kind = "linux-vulkan")], release_checksums())
+
+    def rocm_plans():
+        yield vulkan
+        raise urllib.error.URLError("CDN down, API timed out")
+
+    monkeypatch.setattr(
+        module,
+        "resolve_simple_install_release_plans",
+        lambda *args: ("latest", module.LazyReleasePlans(rocm_plans())),
+    )
+    kept = module._with_rocm_behind_vulkan([vulkan], "latest", linux_host(), "", "")
+    assert [plan.release_tag for plan in kept] == [vulkan.release_tag]
 
 
 def test_a_reused_marker_takes_the_walk_back_this_run_made():

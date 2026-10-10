@@ -1447,9 +1447,10 @@ class TestTheOpeningLeaseIsPricedOnTheProfiledPrompt:
     def test_the_reservation_hands_the_backends_profile_over(self):
         import inspect
 
-        from routes.inference import _openai_llama_admission_reserve
+        from routes.inference import _openai_llama_admission_estimate
 
-        source = inspect.getsource(_openai_llama_admission_reserve)
+        # The estimate the reservation is sized by, split out so it can run off the loop.
+        source = inspect.getsource(_openai_llama_admission_estimate)
         assert "markup = _openai_llama_admission_markup(llama_backend)," in source
 
 
