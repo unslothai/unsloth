@@ -814,6 +814,10 @@ def test_page_that_fits_keeps_its_links(monkeypatch):
             "x^2 and 10^(.5), $19.99",
         ),
         (
+            'claim<sup class="fnref">2</sup>, fact<sup class="fn-ref">3</sup>, Marca<sup>MR</sup>',
+            "claim2, fact3, MarcaMR",
+        ),
+        (
             "M<sup>me</sup> Dupont, D<sup>r</sup> Martin, n<sup>o</sup> 5, Om<sup>e</sup>",
             "Mme Dupont, Dr Martin, no 5, Om^e",
         ),

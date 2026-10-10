@@ -211,7 +211,7 @@ _MIN_SCOPE_SPAN_CHARS = 256
 _INLINE_EMPHASIS = {"strong": "**", "b": "**", "em": "*", "i": "*"}
 
 _PLAIN_SUFFIXES = frozenset(
-    {"st", "nd", "rd", "th", "tm", "sm", "mc", "md", "(tm)", "(sm)", "(r)", "(c)"}
+    {"st", "nd", "rd", "th", "tm", "sm", "mc", "md", "(tm)", "(sm)", "(r)", "(c)", "mr", "m.r."}
 )
 # French / Romance ordinals after a digit (1er, 2e, 1º, 2ª); after a letter "e" can be Euler's number
 # XVe siècle, François Ier: a Roman numeral takes ordinals like a digit
@@ -299,7 +299,7 @@ _CODE_PRICE_TAIL = re.compile(r"\b([A-Z]{3})[ \u00a0\u202f]?\d(?:[\d,.'’]|[ \u
 # note markers that keep their plain-text form, like Wikipedia's class="reference"
 _FOOTNOTE_CLASSES = frozenset({"reference", "footnote", "footnote-ref", "noteref", "fn", "cite"})
 # class token parts (split on - and _) starting with these mark a note too: footnote-reference, citation
-_FOOTNOTE_CLASS_PREFIXES = ("footnote", "noteref", "cite", "citation", "endnote")
+_FOOTNOTE_CLASS_PREFIXES = ("footnote", "noteref", "cite", "citation", "endnote", "fnref")
 _CLASS_PART_SPLIT = re.compile(r"[-_]")
 # deeper <sup> nests render as plain text: each tracked level rescans its whole suffix on close
 _MAX_SUP_DEPTH = 8
@@ -1206,7 +1206,7 @@ class _MarkdownRenderer(HTMLParser):
                 any(
                     token in _FOOTNOTE_CLASSES
                     or any(
-                        part.startswith(_FOOTNOTE_CLASS_PREFIXES)
+                        part == "fn" or part.startswith(_FOOTNOTE_CLASS_PREFIXES)
                         for part in _CLASS_PART_SPLIT.split(token)
                     )
                     for token in (attr_dict.get("class") or "").lower().split()
