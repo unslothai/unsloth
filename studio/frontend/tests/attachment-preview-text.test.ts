@@ -1872,10 +1872,12 @@ test("Word list counters follow Word's sharing, restart and bullet rules", async
         "word/_rels/document.xml.rels": relationships([["numbering", "numbering.xml"]]),
         "word/document.xml": strToU8(
           `<w:document ${ns}><w:body>${item("a")}<w:p><w:r><mc:AlternateContent><mc:Choice Requires="wps">${item("box")}</mc:Choice>` +
-            `<mc:Fallback>${item("box")}</mc:Fallback></mc:AlternateContent></w:r></w:p>${item("b")}</w:body></w:document>`,
+            `<mc:Fallback>${item("box")}</mc:Fallback></mc:AlternateContent></w:r></w:p>${item("b")}` +
+            '<w:p><w:r><mc:AlternateContent><mc:Choice Requires="wps"><w:p><w:pPr><w:sectPr/></w:pPr></w:p></mc:Choice><mc:Fallback/></mc:AlternateContent></w:r></w:p>' +
+            `${item("c")}</w:body></w:document>`,
         ),
         "word/numbering.xml": strToU8(
-          `<w:numbering ${ns}><w:abstractNum w:abstractNumId="1">${levels}</w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num></w:numbering>`,
+          `<w:numbering ${ns} xmlns:w15="http://schemas.microsoft.com/office/word/2012/wordml"><w:abstractNum w:abstractNumId="1" w15:restartNumberingAfterBreak="1">${levels}</w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num></w:numbering>`,
         ),
       });
       const { default: mammoth } = await import("mammoth");
@@ -1884,7 +1886,7 @@ test("Word list counters follow Word's sharing, restart and bullet rules", async
       Object.assign(globals, original);
     }
   })();
-  assert.equal(boxed, "1. a | 2. box | 3. b");
+  assert.equal(boxed, "1. a | 2. box | 3. b | 4. c");
   const sections: [string, number, number, boolean?][] = [["a", 1, 0], ["b", 1, 0, true], ["c", 1, 0]];
   assert.equal(await docxListText(levels, plain, sections, ' w15:restartNumberingAfterBreak="1"'), "1. a | 2. b | 1. c");
   assert.equal(await docxListText(levels, plain, sections, ' w15:restartNumberingAfterBreak="0"'), "1. a | 2. b | 3. c");

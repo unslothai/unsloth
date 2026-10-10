@@ -1109,11 +1109,16 @@ function injectDocxListNumbers(archive: Uint8Array): Uint8Array {
   const nums = byId(numbering.root, n, "num", "numId");
   const styles = related("styles");
   const styleById = styles ? byId(styles.root, styles.w, "style", "styleId") : new Map<string, Element>();
+  const styleNumbering = new Map<string, Element | undefined>();
   const styleNumPr = (id: string | undefined, depth = 0): Element | undefined => {
-    const style = id === undefined ? undefined : styleById.get(id);
+    if (id === undefined) return undefined;
+    if (styleNumbering.has(id)) return styleNumbering.get(id);
+    const style = styleById.get(id);
     if (!style || depth > 20) return undefined;
     const pPr = childElements(style, style.namespaceURI ?? "", "pPr")[0];
-    return (pPr && childElements(pPr, style.namespaceURI ?? "", "numPr")[0]) ?? styleNumPr(wordValue(style, "basedOn"), depth + 1);
+    const numPr = (pPr && childElements(pPr, style.namespaceURI ?? "", "numPr")[0]) ?? styleNumPr(wordValue(style, "basedOn"), depth + 1);
+    styleNumbering.set(id, numPr);
+    return numPr;
   };
 
   type Level = { lvl?: Element; start: number; format?: string; restart?: string; legal: boolean; text: string };
@@ -1218,15 +1223,18 @@ function injectDocxListNumbers(archive: Uint8Array): Uint8Array {
   };
   // Mammoth reads only mc:Fallback, so paragraphs under mc:Choice must not count twice.
   const MC = "http://schemas.openxmlformats.org/markup-compatibility/2006";
-  const inChoice = (node: Node) => {
-    for (let at = node.parentNode; at; at = at.parentNode) {
-      if ((at as Element).localName === "Choice" && (at as Element).namespaceURI === MC) return true;
-    }
-    return false;
-  };
-  for (const p of Array.from(doc.getElementsByTagNameNS(w, "p"))) {
+  const paragraphs: Element[] = [];
+  const stack: Element[] = [doc.documentElement];
+  while (stack.length) {
+    const node = stack.pop()!;
+    if (node.localName === "Choice" && node.namespaceURI === MC) continue;
+    if (node.localName === "p" && node.namespaceURI === w) paragraphs.push(node);
+    const kids = Array.from(node.childNodes).filter((child): child is Element => child.nodeType === ELEMENT_NODE);
+    for (let i = kids.length - 1; i >= 0; i--) stack.push(kids[i]);
+  }
+  for (const p of paragraphs) {
     const pPr = childElements(p, w, "pPr")[0];
-    if (!inChoice(p)) label(p, pPr);
+    label(p, pPr);
     // A section break restarts the lists that opt in (Word's "restart numbering after break").
     if (pPr && childElements(pPr, w, "sectPr").length) for (const id of restartsAfterBreak) counters.delete(id);
   }
