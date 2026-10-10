@@ -4,7 +4,7 @@
 """The startup notice for AMD Windows drivers with the ROCm/TheRock#7221 idle-eviction bug.
 
 Adrenalin 26.5.1 through PRO 26.9.1 page out live allocations on an idle RDNA4 card, which
-freezes multi-GPU hosts; 26.3.1 (32.0.22042.14002) is the last good build and 26.9.2
+freezes multi-GPU hosts; 26.5.1 (32.0.31007.1017) is the first bad build and 26.9.2
 (32.0.32015.2008) the fix. Every adapter and driver version here is pinned: nothing reads the
 host's registry or WMI.
 """
@@ -20,6 +20,7 @@ import utils.hardware.hardware as hw
 from utils.hardware import nvidia
 
 LAST_GOOD = "32.0.22042.14002"  # Adrenalin 26.3.1
+FIRST_BAD = "32.0.31007.1017"  # Adrenalin 26.5.1
 BROKEN = "32.0.31041.1004"  # Adrenalin 26.8.1
 FIXED = "32.0.32015.2008"  # Adrenalin 26.9.2
 
@@ -85,8 +86,13 @@ def test_driver_version_parses_both_spellings(value, expected):
     [
         ("32.0.21001.9005", False),  # older than 26.3.1
         (LAST_GOOD, False),
-        ("32.0.22042.14003", True),
-        ("32.0.23017.1001", True),
+        ("32.0.22042.14003", False),
+        ("32.0.23017.1001", False),  # 26.1.1
+        ("32.0.23033.1002", False),  # 26.3.1 R9700 package, measured clean in TheRock#7221
+        ("32.0.31007.1016", False),
+        (FIRST_BAD, True),
+        ("32.0.31036.15", True),  # PRO 26.Q3
+        ("32.0.31041.3013", True),  # 26.9.1
         (BROKEN, True),
         ("32.0.32015.2007", True),
         (FIXED, False),
