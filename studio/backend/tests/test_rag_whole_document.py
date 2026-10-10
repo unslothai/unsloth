@@ -259,6 +259,19 @@ def test_whole_document_context_keeps_text_repeated_on_the_next_page(rag_conn):
     assert text.count("ACME Confidential") == 2
 
 
+def test_whole_document_context_keeps_indentation_after_overlap(rag_conn):
+    _add_doc(
+        rag_conn,
+        store.thread_scope("t1"),
+        "d1",
+        "code.md",
+        "h1",
+        ["paragraph\nshared line", "shared line\n    indented code"],
+    )
+    _text, sources = tool.whole_document_context(scope_thread_id = "t1", max_tokens = 6000)
+    assert sources[1]["text"] == "    indented code"
+
+
 # ── build_rag_autoinject wiring ──────────────────────────────────────
 
 

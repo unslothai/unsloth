@@ -321,7 +321,7 @@ def _drop_chunk_overlap(prev: str, text: str) -> str:
         if (i == 0 or prev[i - 1].isspace()) and text.startswith(prev[i:]):
             rest = text[len(prev) - i :]
             if not rest or rest[0].isspace():
-                return rest.lstrip()
+                return rest.lstrip("\r\n")
     return text
 
 
