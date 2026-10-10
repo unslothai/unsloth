@@ -71,9 +71,11 @@ class _HtmlTable:
 
 def _html_span(attrs, name: str, limit: int) -> int:
     try:
-        return min(max(int(dict(attrs).get(name) or 1), 1), limit)
+        value = int(dict(attrs).get(name) or 1)
     except ValueError:
         return 1
+    # rowspan="0" runs to the end of its row group
+    return limit if value == 0 and name == "rowspan" else min(max(value, 1), limit)
 
 
 class _Stripper(HTMLParser):
@@ -101,6 +103,8 @@ class _Stripper(HTMLParser):
             return
         for col in range(len(row), len(table.spans)):
             table.spans[col] = max(table.spans[col] - 1, 0)
+        while table.spans and not table.spans[-1]:
+            table.spans.pop()
         if len(row) == 1:
             table.sink.extend(line for line in row[0] or () if line is not None)
             return
@@ -121,6 +125,7 @@ class _Stripper(HTMLParser):
         if table.row is None:
             table.row = []
         row, spans = table.row, table.spans
+        start = len(row)
         while len(row) < len(spans) and spans[len(row)]:
             spans[len(row)] -= 1
             row.append(None)
@@ -128,10 +133,11 @@ class _Stripper(HTMLParser):
         cell: list[str] = []
         rowspan = _html_span(attrs, "rowspan", 65534)
         colspan = _html_span(attrs, "colspan", 1000)
-        # Each spanned slot adds an empty field, so cap them by the input size.
-        if colspan * rowspan - 1 > self._span_budget:
+        # Each spanned slot is an empty field, so stop spanning once they outnumber the input's characters.
+        self._span_budget -= len(row) - start + colspan - 1
+        if self._span_budget < 0:
             rowspan = colspan = 1
-        self._span_budget -= colspan * rowspan - 1
+            spans[:] = [0] * len(spans)
         for i in range(colspan):
             if len(row) < len(spans):
                 spans[len(row)] = rowspan - 1
