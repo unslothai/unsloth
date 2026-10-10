@@ -52,9 +52,6 @@ def _registry(monkeypatch, *records):
     )
 
 
-# ============================================ version parsing
-
-
 @pytest.mark.parametrize(
     "value,expected",
     [
@@ -76,9 +73,6 @@ def _registry(monkeypatch, *records):
 )
 def test_driver_version_parses_both_spellings(value, expected):
     assert hw._parse_windows_driver_version(value) == expected
-
-
-# ============================================ the range
 
 
 @pytest.mark.parametrize(
@@ -121,9 +115,6 @@ def test_a_qwordshaped_driver_version_is_accepted_too():
     assert notice is not None and notice["driver_version"] == BROKEN
 
 
-# ============================================ which cards
-
-
 def test_a_non_amd_card_is_never_flagged():
     nvidia_card = {"vendor": "nvidia", "name": "NVIDIA GeForce RTX 4090", "driver_version": BROKEN}
     assert hw.amd_driver_idle_evict_notice([nvidia_card]) is None
@@ -155,9 +146,6 @@ def test_an_arch_from_the_registry_beats_the_name():
     assert hw.amd_driver_idle_evict_notice([_amd(name = "RX 9070 (rebadged)", gfx = "gfx1100")]) is None
 
 
-# ============================================ severity
-
-
 def test_one_gpu_is_a_warning():
     assert hw.amd_driver_idle_evict_notice([_amd()])["severity"] == "warning"
 
@@ -180,9 +168,6 @@ def test_more_than_one_gpu_is_critical(others):
 
 def test_no_devices_is_no_notice():
     assert hw.amd_driver_idle_evict_notice([]) is None
-
-
-# ============================================ the startup check
 
 
 class _InlineThread:
@@ -302,9 +287,6 @@ def test_a_thread_that_will_not_start_never_raises(monkeypatch):
     monkeypatch.setattr(hw.threading, "Thread", _cannot_start)
     hw.start_amd_driver_check()
     assert hw.amd_driver_warning_report() == {}
-
-
-# ============================================ the registry read and the inventory
 
 
 def _fake_winreg(subkeys):

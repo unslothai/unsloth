@@ -3321,7 +3321,7 @@ def _windows_amd_adapter_records_or_none(
     return by_luid
 
 
-# ROCm/TheRock#7221: Adrenalin 26.5.1 through PRO 26.9.1 let Windows power down an idle RDNA4 card and page out live HIP allocations, which freezes the whole system on multi-GPU hosts. 26.5.1 is the first bad build, 26.9.2 the fix. Anchored on 26.5.1, not 26.3.1: RDNA4's 26.1.1-26.3.1 builds are 32.0.23xxx (gpuopen.com/version-table), above the other 26.3.1 package 32.0.22042.14002, and 32.0.23033.1002 was measured clean in the issue.
+# ROCm/TheRock#7221: Adrenalin 26.5.1 through PRO 26.9.1 let Windows power down an idle RDNA4 card and page out live HIP allocations, which freezes the whole system on multi-GPU hosts. 26.5.1 is the first bad build, 26.9.2 the fix; never a 26.3.1 bound, since RDNA4's clean 26.1.1-26.3.1 builds are 32.0.23xxx (gpuopen.com/version-table).
 _AMD_IDLE_EVICT_FIRST_BAD_DRIVER = (32, 0, 31007, 1017)
 _AMD_IDLE_EVICT_FIXED_DRIVER = (32, 0, 32015, 2008)
 _AMD_IDLE_EVICT_ISSUE_URL = "https://github.com/ROCm/TheRock/issues/7221"

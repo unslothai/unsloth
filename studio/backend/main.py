@@ -2415,7 +2415,6 @@ def _get_cached_system_gpu_info(
             "vram_used_gb_aggregate": utilization_info.get("vram_used_gb_aggregate")
             if aggregate_basis_matches
             else None,
-            # Windows AMD driver with the ROCm/TheRock#7221 idle-eviction bug; absent otherwise.
             **amd_driver_warning_report(),
         }
 
