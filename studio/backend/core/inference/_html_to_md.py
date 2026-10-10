@@ -218,7 +218,7 @@ _PLAIN_SUFFIXES = frozenset(
 _ROMAN_NUMERAL_TAIL = re.compile(r"(?<![^\W\d_])[IVXLCDM]+$")
 # French superior abbreviations: Mme, Mlle, Mgr, Dr, Pr, no, St, Cie; keyed on the whole base word
 _SUPERIOR_ABBREVIATIONS = {
-    "M": frozenset({"me", "mes", "lle", "lles", "gr", "e"}),
+    "M": frozenset({"me", "mes", "lle", "lles", "gr", "e", "r", "rs"}),
     "D": frozenset({"r", "rs"}),
     "P": frozenset({"r", "rs"}),
     "n": frozenset({"o", "os"}),
@@ -1283,10 +1283,15 @@ class _MarkdownRenderer(HTMLParser):
             return
 
         closing_sup = None
-        if tag == "sup" and self._sup_starts and "sup" in self._open_tags:
-            depth = len(self._open_tags) - 1 - self._open_tags[::-1].index("sup")
-            if self._sup_starts[-1][0] == depth:
-                closing_sup = self._sup_starts.pop()[1]
+        # O(1): only a <sup> that is still the innermost open tag converts; malformed nesting drops on unwind
+        if (
+            tag == "sup"
+            and self._sup_starts
+            and self._open_tags
+            and self._open_tags[-1] == "sup"
+            and self._sup_starts[-1][0] == len(self._open_tags) - 1
+        ):
+            closing_sup = self._sup_starts.pop()[1]
 
         if not self._exit_tag(tag):
             return
