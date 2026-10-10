@@ -243,3 +243,58 @@ def test_a_local_turbo_gguf_without_a_card_takes_the_named_grid(monkeypatch):
     )
     assert grid == TURBO_GRID and base == "Qwen/Qwen-Image-2.1-Turbo"
     assert calls["index"][-1][0] == "Qwen/Qwen-Image-2.1-Turbo"
+
+
+@pytest.mark.parametrize(
+    "gguf, base_repo, staged",
+    [
+        (GGUF, None, True),
+        ("qwen_image_2.1_Q4_K_M.gguf", None, False),
+        (GGUF, "Qwen/Qwen-Image-2.1", False),
+    ],
+)
+def test_the_native_plan_stages_a_named_variants_index(monkeypatch, gguf, base_repo, staged):
+    # Locality approves a cache-only load from this plan, so the index the load reads for its grid is in it.
+    from core.inference.diffusion import DiffusionBackend
+
+    repo = "someone/Qwen-Image-2.1-GGUF"
+    b = SdCppDiffusionBackend(engine = _FakeEngine())
+    monkeypatch.setattr(b, "_asset_specs", lambda *a, **k: [(repo, gguf, "diffusion_model")])
+    monkeypatch.setattr(b, "_flux2_inner_dim", lambda *a, **k: None)
+    monkeypatch.setattr(bk, "_assert_pick_is_not_speech", lambda *a, **k: None)
+    monkeypatch.setattr(bk, "_fetch_repo_map", lambda specs, token: {repo: repo})
+    monkeypatch.setattr(b, "_preflight_companion_repos", lambda *a, **k: None)
+    monkeypatch.setattr(b, "_plan_file_sizes", lambda by_repo, token: {})
+    monkeypatch.setattr(
+        DiffusionBackend, "_hub_file_is_loadable", staticmethod(lambda *a, **k: False)
+    )
+    plan = b.download_plan(repo, gguf_filename = gguf, base_repo = base_repo, model_kind = "gguf")
+    index = [e for e in plan["entries"] if e["repo_id"] == "Qwen/Qwen-Image-2.1-Turbo"]
+    assert (index == [{**index[0], "files": ["model_index.json"], "checkpoint": False}]) if staged else index == []
+
+
+def test_a_card_resolved_grid_base_is_linked_to_the_pick(monkeypatch):
+    # begin_load linked only the family default; the base the card named holds the index a cache-only reload needs.
+    from hub.utils import companion_assets
+
+    from .test_sd_cpp_backend import _shared_setup_1
+
+    links = []
+    monkeypatch.setattr(companion_assets, "record_companion_link", lambda c, b: links.append((c, b)))
+    monkeypatch.setattr(
+        bk, "_base_sample_sigmas", lambda *a, **k: (TURBO_GRID, "Qwen/Qwen-Image-2.1-Turbo")
+    )
+    monkeypatch.setattr(bk, "find_sd_server_binary", lambda: None)
+    b = SdCppDiffusionBackend()
+    _shared_setup_1(b, _FakeEngine(), monkeypatch)
+    b._load_token = 1
+    b._run_load(
+        repo_id = "someone/community-gguf",
+        gguf_filename = "model-Q4_K_M.gguf",
+        base = FAM.base_repo,
+        fam = FAM,
+        hf_token = None,
+        _load_token = 1,
+    )
+    assert b._state is not None and b._state.sample_sigmas == TURBO_GRID
+    assert ("someone/community-gguf", "Qwen/Qwen-Image-2.1-Turbo") in links

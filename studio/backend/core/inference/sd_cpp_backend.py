@@ -2989,6 +2989,14 @@ class SdCppDiffusionBackend:
                 local_files_only = local_files_only,
                 named_base = named_variant_base(fam, repo_id, gguf_filename),
             )
+            if grid_base != base:
+                # The card can name a base begin_load did not know; link it so the delete guard keeps its index.
+                try:
+                    from hub.utils.companion_assets import record_companion_link
+
+                    record_companion_link(repo_id, grid_base)
+                except Exception as exc:  # noqa: BLE001 -- bookkeeping never fails a load
+                    logger.debug("sd_cpp.companion_link_record_failed: %s", exc)
 
             files = SdCppModelFiles(
                 diffusion_model = paths["diffusion_model"],
@@ -3362,6 +3370,14 @@ class SdCppDiffusionBackend:
             into = merged.setdefault(fetch_repo[repo], [])
             into.extend(n for n in names if n not in into)
         by_repo = merged
+        # A cache-only load of a named variant reads the variant's model_index.json for its grid
+        # (_base_sample_sigmas); planned with the assets so locality never approves a pick that would silently fall
+        # back to sd.cpp's own schedule.
+        grid_base = None if base_repo else named_variant_base(fam, repo_id, gguf_filename)
+        if fam.name in _SAMPLE_SIGMAS_FAMILIES and grid_base:
+            names = by_repo.setdefault(grid_base, [])
+            if "model_index.json" not in names:
+                names.append("model_index.json")
         fetch_repo_id = fetch_repo.get(repo_id, repo_id)
         # AFTER the swap: preflighting the upstream id would refuse the very picks the ungated mirror exists to rescue
         self._preflight_companion_repos(by_repo, fetch_repo_id, hf_token)

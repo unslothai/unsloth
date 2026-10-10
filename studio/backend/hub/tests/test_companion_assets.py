@@ -722,6 +722,19 @@ def test_a_variant_named_by_an_alias_spelling_still_pins_its_base(monkeypatch):
     assert asyncio.run(companion_cleanup.orphan_companions_response())["companions"] == []
 
 
+def test_a_turbo_gguf_pins_the_turbo_index_without_a_recorded_link(monkeypatch):
+    """A native Turbo load reads Qwen/Qwen-Image-2.1-Turbo's model_index.json for its sampling grid,
+    so that cached index has a dependent while the GGUF is installed, link or no link."""
+    turbo = "Qwen/Qwen-Image-2.1-Turbo"
+    _install(
+        monkeypatch,
+        _repo("someone/Qwen-Image-2.1-Turbo-GGUF", [("qwen_image_2.1_turbo_Q4_K_M.gguf", 2_000_000)]),
+        _repo(turbo, [("model_index.json", 460)]),
+    )
+    assert companion_cleanup.companion_dependents(turbo) == ["someone/Qwen-Image-2.1-Turbo-GGUF"]
+    assert asyncio.run(companion_cleanup.orphan_companions_response())["companions"] == []
+
+
 def test_every_cached_gguf_in_one_repo_pins_its_own_base(monkeypatch):
     """One generic repo can hold checkpoints of two families in separate subdirectories, and the
     loader selects either by file name. Probing only the first left the other's base orphaned."""
