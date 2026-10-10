@@ -116,9 +116,20 @@ type Truth = true | false | null;
 
 function underAnEmptyList(node: ts.Node, jobKeys: string): Truth {
   // Queued plans show before their first job exists, so the panel hides only when both are empty.
-  const queued = panelComponent().body?.statements.flatMap(statement =>
+  const declarations = panelComponent().body?.statements.flatMap(statement =>
     ts.isVariableStatement(statement) ? [...statement.declarationList.declarations] : []
-  ).find(declaration => declaration.initializer?.getText() === "useQueuedHubEntries()")?.name.getText();
+  ) ?? [];
+  // Prefer the combined route queue over its Hub-only input.
+  const combined = declarations.find(declaration =>
+    declaration.initializer && ts.isArrayLiteralExpression(declaration.initializer) &&
+    declaration.initializer.elements.some(element =>
+      ts.isSpreadElement(element) && ts.isCallExpression(element.expression) &&
+      element.expression.expression.getText() === "queuedStagedEntries"
+    )
+  );
+  const queued = (combined ?? declarations.find(declaration =>
+    declaration.initializer?.getText() === "useQueuedHubEntries()"
+  ))?.name.getText();
   if (isEmptyTest(node, jobKeys) || (queued && isEmptyTest(node, queued))) return true;
   if (ts.isParenthesizedExpression(node)) {
     return underAnEmptyList(node.expression, jobKeys);
