@@ -233,7 +233,8 @@ def _two_card_load(tmp_path, monkeypatch, **load_kwargs):
     backend, gguf = _matrix.cell_backend(
         tmp_path, monkeypatch, _matrix.PLATFORMS[0], accelerator, model_fraction = _TWO_CARD_FRACTION
     )
-    _matrix._launch(backend, gguf, n_ctx = 0, **load_kwargs)
+    load_kwargs.setdefault("n_ctx", 0)
+    _matrix._launch(backend, gguf, **load_kwargs)
     return backend
 
 
@@ -265,3 +266,9 @@ def test_a_gpu_ids_pin_ignores_the_device_env_it_clears(tmp_path, monkeypatch):
     monkeypatch.setenv("LLAMA_ARG_DEVICE", "CUDA0")
     backend = _two_card_load(tmp_path, monkeypatch, gpu_ids = [0, 1])
     assert backend.vram_fit_context_length is not None
+
+
+def test_a_one_card_device_pin_under_a_two_card_cap_claims_no_fit(tmp_path, monkeypatch):
+    # The explicit context fits one card, so the selection credits one; the cap pooled two.
+    backend = _two_card_load(tmp_path, monkeypatch, n_ctx = 2048, extra_args = ("--device", "CUDA0"))
+    assert backend.vram_fit_context_length is None

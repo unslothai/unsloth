@@ -26344,8 +26344,6 @@ class LlamaCppBackend:
                                 reverse = True,
                             )
                             best_cap = 0
-                            # Only subsets the layer planner may pick (a forced GPU floor).
-                            _plannable_cap = 0
                             _cap_fraction = _vram_frac - _flat_mtp_reserve
                             for n_gpus in range(1, len(ranked_for_cap) + 1):
                                 subset = ranked_for_cap[:n_gpus]
@@ -26381,12 +26379,11 @@ class LlamaCppBackend:
                                 ) / (1024 * 1024)
                                 if footprint_mib <= pool_budget:
                                     best_cap = max(best_cap, capped)
-                                    if n_gpus >= _layer_min_gpus:
-                                        _plannable_cap = max(_plannable_cap, capped)
                             if best_cap > 0:
                                 max_available_ctx = best_cap
                                 _ctx_cap_fits = True
-                                _vram_fit_ctx = _plannable_cap or None
+                                # A forced GPU floor plans subsets this sweep did not hold to it.
+                                _vram_fit_ctx = best_cap if _layer_min_gpus <= 1 else None
                             else:
                                 # Weights exceed 90% of every GPU subset, so no
                                 # context fits. Anchor the UI "safe zone" at the
@@ -30727,6 +30724,9 @@ class LlamaCppBackend:
                         # A hand-set fitter or split ratio re-places what the fit priced.
                         or _extra_args_set_any_flag(_child_extras, _VRAM_FIT_VOIDING_FLAGS)
                         or any(_child_env.get(name) for name in _VRAM_FIT_VOIDING_ENV_VARS)
+                        # Any surviving --device: the cap sweep may have pooled cards it leaves out.
+                        or _extra_args_main_device(_child_extras) is not None
+                        or _child_env.get("LLAMA_ARG_DEVICE")
                         # --no-kv-offload keeps the whole cache in host RAM at any context.
                         or not _kv_offload_from_args(_child_extras, _child_env)
                     ):
